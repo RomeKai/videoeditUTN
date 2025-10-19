@@ -137,3 +137,60 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Entorno virtual
+env/
+venv/
+
+# Archivos de entorno
+.env
+*.env
+
+# Archivos compilados de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Base de datos local
+db.sqlite3
+
+# Archivos de logs
+*.log
+
+# Archivos de VS Code
+.vscode/
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# Archivos de migraciones (opcional, si querés ignorarlos)
+**/migrations/*.py
+!**/migrations/__init__.py
+
+# Archivos de caché
+*.cache
+*.bak
+*.swp
+
+# Archivos de configuración de Python
+*.egg-info/
+dist/
+build/
+
+# Docker
+*.log
+*.pid
+*.db
+*.sock
+docker-compose.override.yml
+.env.docker
+
+# Testing
+htmlcov/
+.tox/
+.coverage
+.cache/
+nosetests.xml
+coverage.xml
+*.cover
