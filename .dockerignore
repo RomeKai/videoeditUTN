@@ -1,1 +1,19 @@
 ﻿# .dockerignore placeholder
+# Ignorar caches y archivos de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Entorno virtual
+venv/
+env/
+
+# Git
+.git
+.gitignore
+
+# Archivos locales
+*.env
+*.log
+docker-compose.override.yml
