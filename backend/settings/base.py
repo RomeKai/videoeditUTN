@@ -1,25 +1,22 @@
-﻿import environ
+﻿from pathlib import Path
 import os
-from datetime import timedelta
-from pathlib import Path
+import environ
 
-# --- Paths ---
+# 1. Configuración de Rutas
+# Estamos en backend/settings/base.py, así que subimos 3 niveles para llegar a la raíz
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
-# --- Inicializar django-environ ---
-env = environ.Env(
-    DEBUG=(bool, False)
-)
-
-# Leer archivo .env
+# 2. Inicializar Environ
+env = environ.Env()
+# Leer el archivo .env de la raíz
 environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 
-# --- Variables base ---
-DEBUG = env.bool("DEBUG", default=False)
-SECRET_KEY = env.str("SECRET_KEY", default="unsafe-secret-key")
-ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost"])
+# --- SEGURIDAD ---
+SECRET_KEY = env('SECRET_KEY', default='django-insecure-clave-temporal-dev')
+DEBUG = env.bool('DEBUG', default=False)
+ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['*'])
 
-# --- Aplicaciones ---
+# --- APLICACIONES (Modular) ---
 DJANGO_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -32,26 +29,29 @@ DJANGO_APPS = [
 THIRD_PARTY_APPS = [
     'rest_framework',
     'corsheaders',
-    'django_celery_beat',
-    'django_celery_results',
+    # 'django_celery_results', # Descomentar cuando configures Celery
+    # 'drf_yasg',              # Descomentar cuando instales Swagger
 ]
 
+# Estas carpetas deben existir en tu directorio 'apps/'
+# backend/settings/base.py
+
 LOCAL_APPS = [
-    'apps.users',
+    'apps.core',
+    'apps.users',  # <-- Simple y directo, ahora que la carpeta está bien ubicada
     'apps.videos',
     'apps.ia',
     'apps.payments',
     'apps.integrations',
-    'apps.core',
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
-# --- Middleware ---
+# --- MIDDLEWARE ---
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
+    'corsheaders.middleware.CorsMiddleware', # CORS debe ir antes de Common
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -59,16 +59,15 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-# --- URLs & WSGI ---
 ROOT_URLCONF = 'backend.urls'
 WSGI_APPLICATION = 'backend.wsgi.application'
 
-# --- Templates ---
+# --- TEMPLATES ---
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
         'DIRS': [],
-        'APP_DIRS': True,
+        'APP_DIRS': True, # Busca templates dentro de cada app
         'OPTIONS': {
             'context_processors': [
                 'django.template.context_processors.debug',
@@ -80,63 +79,48 @@ TEMPLATES = [
     },
 ]
 
-# --- Database ---
+# --- BASE DE DATOS (Inteligente) ---
+# Si en el .env hay DATABASE_URL, usa eso (Postgres).
+# Si no hay, usa SQLite automáticamente (ideal para probar ahora mismo).
 DATABASES = {
-    'default': env.db(),  # Lee DATABASE_URL automáticamente
+    'default': env.db('DATABASE_URL', default='sqlite:///db.sqlite3')
 }
 
-# --- Password validation ---
+# --- PASSWORD VALIDATION ---
 AUTH_PASSWORD_VALIDATORS = [
-    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
+    { 'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator', },
+    { 'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator', },
+    { 'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator', },
+    { 'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator', },
 ]
 
-# --- Internacionalización ---
-LANGUAGE_CODE = 'en-us'
+# --- INTERNATIONALIZATION ---
+LANGUAGE_CODE = 'es-es'
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
-# --- Archivos estáticos y media ---
+# --- STATIC & MEDIA ---
 STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
-# --- User model ---
-AUTH_USER_MODEL = 'users.User'
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# --- REST Framework ---
+# --- USUARIO PERSONALIZADO ---
+# IMPORTANTE: Mantén esto comentado hasta que crees el modelo User en apps/users/models.py
+AUTH_USER_MODEL = 'users.User' 
+
+# --- DRF CONFIG ---
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': [
+    'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
-    ],
-    'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.IsAuthenticated',
-    ],
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 10,
+    ),
 }
 
-# --- Celery ---
-CELERY_BROKER_URL = env("REDIS_URL")
-CELERY_RESULT_BACKEND = env("REDIS_URL")
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
-CELERY_TIMEZONE = TIME_ZONE
-
-# --- JWT ---
-SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
-}
-
-# --- AWS ---
-AWS_ACCESS_KEY_ID = env("AWS_ACCESS_KEY_ID", default=None)
-AWS_SECRET_ACCESS_KEY = env("AWS_SECRET_ACCESS_KEY", default=None)
-AWS_STORAGE_BUCKET_NAME = env("AWS_STORAGE_BUCKET_NAME", default=None)
-AWS_S3_REGION_NAME = env("AWS_S3_REGION_NAME", default="us-east-1")
+# --- CELERY CONFIG (Leída de env) ---
+if 'REDIS_URL' in os.environ:
+    CELERY_BROKER_URL = env('REDIS_URL')
+    CELERY_RESULT_BACKEND = env('REDIS_URL')

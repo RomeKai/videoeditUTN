@@ -1,3 +1,6 @@
-﻿# requirements placeholder
-Django>=5.0
+﻿django
+django-environ
+djangorestframework
+django-cors-headers
 psycopg2-binary
+Django>=5.0
