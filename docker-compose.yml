@@ -1,0 +1,53 @@
+﻿version: '3.8'
+
+services:
+  # --- SERVICIO 1: Base de Datos ---
+  db:
+    image: postgres:15-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=backend_db
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=admin
+    ports:
+      - "5432:5432"
+
+  # --- SERVICIO 2: Redis (Cola de tareas) ---
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  # --- SERVICIO 3: API Web (Ligera) ---
+  web:
+    build:
+      context: .
+      target: web  # <--- USA LA PARTE LIGERA DEL DOCKERFILE
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+
+  # --- SERVICIO 4: Worker IA (Pesado) ---
+  worker:
+    build:
+      context: .
+      target: worker # <--- USA LA PARTE PESADA DEL DOCKERFILE
+    command: celery -A backend worker -l info
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+
+volumes:
+  postgres_data:

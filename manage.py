@@ -6,10 +6,8 @@ import sys
 def main():
     # Usa la variable de entorno DJANGO_SETTINGS_MODULE si está definida,
     # si no, por defecto carga settings de desarrollo.
-    os.environ.setdefault(
-        "DJANGO_SETTINGS_MODULE",
-        os.environ.get("DJANGO_SETTINGS_MODULE", "backend.settings.dev")
-    )
+    # Es lo mismo, pero más fácil de leer:
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.settings.dev')
     try:
         from django.core.management import execute_from_command_line
     except ImportError as exc:

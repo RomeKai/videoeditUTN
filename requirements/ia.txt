@@ -1,0 +1,20 @@
+﻿# --- Base Numérica ---
+numpy
+pandas
+
+# --- Procesamiento de Audio/Video ---
+moviepy                # Edición de video (cortar, unir, texto)
+librosa                # Análisis de audio (detectar ritmo, silencios)
+pydub                  # Manipulación simple de audio
+
+# --- Inteligencia Artificial ---
+openai-whisper         # Transcripción de audio a texto
+sentence-transformers  # Para buscar "momentos clave" por significado
+scikit-learn           # Para tu heurística de clasificación (Random Forest/XGBoost)
+
+# --- PyTorch (Versión CPU para Docker) ---
+# IMPORTANTE: Usamos la versión CPU para que la imagen no pese 5GB innecesariamente en Dev.
+# Si tienes GPU en producción, esto se cambia allá.
+torch --index-url https://download.pytorch.org/whl/cpu
+torchaudio --index-url https://download.pytorch.org/whl/cpu
+torchvision --index-url https://download.pytorch.org/whl/cpu
