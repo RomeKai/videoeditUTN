@@ -114,10 +114,24 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'users.User' 
 
 # --- DRF CONFIG ---
+# backend/settings/base.py
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
+    'DEFAULT_PERMISSION_CLASSES': (
+        'rest_framework.permissions.IsAuthenticated', # Por defecto, todo privado
+    ),
+}
+
+# Configuración de JWT (Tiempos de vida del token)
+from datetime import timedelta
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=25),  # El token de uso dura 1 hora
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=3),     # El de refresco dura 1 día
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
 }
 
 # --- CELERY CONFIG (Leída de env) ---

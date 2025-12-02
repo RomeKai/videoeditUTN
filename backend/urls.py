@@ -1,10 +1,15 @@
 ﻿from django.contrib import admin
 from django.urls import path, include
+# Importamos las vistas de SimpleJWT
+from rest_framework_simplejwt.views import (
+    TokenObtainPairView,
+    TokenRefreshView,
+)
 
 urlpatterns = [
-    # 1. Panel de Administración
     path('admin/', admin.site.urls),
-
-    # 2. Aquí irán tus APIs en el futuro (ej: /api/v1/videos)
-    # path('api/v1/', include('apps.core.urls')),
+    
+    # Rutas de Autenticación
+    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'), # Login
+    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'), # Refrescar sesión
 ]
