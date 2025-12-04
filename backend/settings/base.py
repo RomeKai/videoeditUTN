@@ -122,7 +122,7 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated', # Por defecto, todo privado
-    ),
+    ),'DEFAULT_PAGINATION_CLASS': None,
 }
 
 # Configuración de JWT (Tiempos de vida del token)
