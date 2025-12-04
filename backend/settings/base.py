@@ -29,6 +29,7 @@ DJANGO_APPS = [
 THIRD_PARTY_APPS = [
     'rest_framework',
     'corsheaders',
+    'drf_spectacular',
     # 'django_celery_results', # Descomentar cuando configures Celery
     # 'drf_yasg',              # Descomentar cuando instales Swagger
 ]
@@ -122,7 +123,10 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated', # Por defecto, todo privado
-    ),'DEFAULT_PAGINATION_CLASS': None,
+    ),
+    'DEFAULT_PAGINATION_CLASS': None,
+
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
 
 # Configuración de JWT (Tiempos de vida del token)
@@ -138,3 +142,17 @@ SIMPLE_JWT = {
 if 'REDIS_URL' in os.environ:
     CELERY_BROKER_URL = env('REDIS_URL')
     CELERY_RESULT_BACKEND = env('REDIS_URL')
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'OneCreator API',
+    'DESCRIPTION': 'API para la gestión y edición automatizada de videos con IA.',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    # Configuración para que el botón "Authorize" funcione con JWT
+    'COMPONENT_SPLIT_REQUEST': True,
+    'SWAGGER_UI_SETTINGS': {
+        'deepLinking': True,
+        'persistAuthorization': True,
+        'displayOperationId': True,
+    },
+}

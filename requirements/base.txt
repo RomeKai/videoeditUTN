@@ -4,6 +4,7 @@ django-environ         # Para leer .env
 djangorestframework    # Para la API
 django-cors-headers    # Para conectar con React/Frontend
 psycopg2-binary        # Driver de Base de Datos
+drf-spectacular
 
 # --- Tareas Asíncronas ---
 celery                 # El gestor de tareas
@@ -18,7 +19,8 @@ requests               # Para llamar a APIs externas (Twitch, YouTube)
 boto3                  # Vital para subir videos a AWS S3 / R2
 pillow                 # Manejo de imágenes (Avatares, Thumbnails)
 python-magic           # Para validar que un video sea realmente un video (seguridad)
-drf-yasg               # Documentación Swagger (Swagger es útil en prod también)
+
+drf-spectacular    
 
 # --- Seguridad ---
 djangorestframework-simplejwt  # Autenticación JWT para la APIs
