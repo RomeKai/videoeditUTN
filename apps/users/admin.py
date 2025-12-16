@@ -1,27 +1,44 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
-from .models import User
+from .models import User, Workspace, WorkspaceMember
+
+# --- INLINE: Ver a qué Workspaces pertenece el usuario ---
+class WorkspaceMemberInline(admin.TabularInline):
+    model = WorkspaceMember
+    extra = 0
+    fields = ('workspace', 'role', 'status', 'joined_at')
+    readonly_fields = ('joined_at',)
 
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
     """
-    Configuración del panel de admin para tu usuario personalizado.
-    Heredamos de UserAdmin para mantener toda la seguridad de contraseñas de Django.
+    Panel de Usuario limpio. 
+    Ya no mostramos tokens aquí porque los tokens pertenecen al Workspace.
     """
+    # 1. Columnas visuales
+    list_display = ('email', 'username', 'is_email_verified', 'is_staff', 'date_joined')
     
-    # 1. Qué columnas ver en la lista de usuarios
-    list_display = ('email', 'username', 'tokens_balance', 'current_plan', 'is_staff')
+    # 2. Filtros
+    list_filter = ('is_staff', 'is_superuser', 'is_email_verified')
     
-    # 2. Filtros laterales (para buscar rápido)
-    list_filter = ('current_plan', 'is_staff', 'is_superuser')
-    
-    # 3. Campos editables en el formulario de "Ver Usuario"
-    # Agregamos una sección extra llamada "Negocio" para tus campos nuevos
+    # 3. Quitamos los fieldsets de 'Negocio' porque esos campos ya no están en User
+    # Usamos los defaults de Django UserAdmin pero agregamos nuestros campos de estado
     fieldsets = UserAdmin.fieldsets + (
-        ('Información de Negocio', {'fields': ('tokens_balance', 'current_plan')}),
+        ('Estado SaaS', {'fields': ('is_email_verified', 'tour_completed', 'terms_accepted_at')}),
     )
     
-    # 4. Campos editables al "Crear Usuario"
-    add_fieldsets = UserAdmin.add_fieldsets + (
-        ('Información de Negocio', {'fields': ('tokens_balance', 'current_plan')}),
-    )
+    # Agregamos la tabla de workspaces al final de la ficha del usuario
+    inlines = [WorkspaceMemberInline]
+
+
+# --- NUEVO: Administrar los Workspaces (Agencias) ---
+class WorkspaceMemberWorkspaceInline(admin.TabularInline):
+    model = WorkspaceMember
+    extra = 0
+
+@admin.register(Workspace)
+class WorkspaceAdmin(admin.ModelAdmin):
+    list_display = ('name', 'owner', 'current_plan', 'created_at')
+    list_filter = ('current_plan',)
+    search_fields = ('name', 'owner__email')
+    inlines = [WorkspaceMemberWorkspaceInline]
