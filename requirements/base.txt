@@ -19,6 +19,6 @@ requests               # Para llamar a APIs externas (Twitch, YouTube)
 boto3                  # Vital para subir videos a AWS S3 / R2
 pillow                 # Manejo de imágenes (Avatares, Thumbnails)
 python-magic           # Para validar que un video sea realmente un video (seguridad)   
-
+moviepy                # Para procesar videos (thumbnails, conversiones) 
 # --- Seguridad ---
 djangorestframework-simplejwt  # Autenticación JWT para la APIs

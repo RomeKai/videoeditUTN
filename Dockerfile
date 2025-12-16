@@ -6,12 +6,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Instalamos dependencias del sistema (incluyendo libmagic para validación de archivos)
+# CAMBIO CRÍTICO AQUI: Agregamos 'ffmpeg' a la lista de instalaciones base.
+# Ahora tanto la Web (para cobrar) como el Worker (para editar) tendrán FFmpeg.
 RUN apt-get update && apt-get install -y \
-    libpq-dev gcc netcat-openbsd libmagic1 \
+    libpq-dev gcc netcat-openbsd libmagic1 ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Instalamos primero lo ligero (Web)
+# Asegúrate de que 'moviepy' esté dentro de este base.txt
 COPY ./requirements/base.txt /app/requirements/base.txt
 RUN pip install --no-cache-dir -r /app/requirements/base.txt
 
@@ -27,10 +29,9 @@ CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
 # --- ETAPA 3: WORKER (Pesada - IA) ---
 FROM base as worker
 
-# 1. Instalamos FFmpeg (Vital para video)
-RUN apt-get update && apt-get install -y ffmpeg
+# NOTA: Ya no instalamos ffmpeg aquí porque lo hereda de 'base'
 
-# 2. Instalamos las librerías pesadas de IA
+# 2. Instalamos las librerías pesadas de IA (Torch, etc.)
 COPY ./requirements/ia.txt /app/requirements/ia.txt
 RUN pip install --no-cache-dir -r /app/requirements/ia.txt
 
@@ -38,5 +39,4 @@ RUN pip install --no-cache-dir -r /app/requirements/ia.txt
 COPY . /app
 
 # Comando por defecto (Celery Worker)
-# IMPORTANTE: Ajustamos '-A backend' porque ahí está tu celery.py
 CMD ["celery", "-A", "backend", "worker", "-l", "info"]
