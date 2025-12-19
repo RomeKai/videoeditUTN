@@ -1,4 +1,5 @@
 ﻿
+version: '3.8'
 
 services:
   # --- SERVICIO 1: Base de Datos ---
@@ -23,7 +24,8 @@ services:
   web:
     build:
       context: .
-      target: web  # <--- USA LA PARTE LIGERA DEL DOCKERFILE
+      target: web
+    # Asegúrate que el comando apunte correctamente a donde esté tu manage.py
     command: python manage.py runserver 0.0.0.0:8000
     volumes:
       - .:/app
@@ -31,6 +33,9 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      # ESTO ES CRUCIAL: Apunta a tu configuración de desarrollo
+      - DJANGO_SETTINGS_MODULE=backend.settings.dev
     depends_on:
       - db
       - redis
@@ -39,12 +44,18 @@ services:
   worker:
     build:
       context: .
-      target: worker # <--- USA LA PARTE PESADA DEL DOCKERFILE
+      target: worker
+    # El comando -A backend es correcto porque tu carpeta se llama 'backend'
     command: celery -A backend worker -l info
     volumes:
       - .:/app
     env_file:
       - .env
+    environment:
+      # ESTO ARREGLA EL ERROR "ImproperlyConfigured":
+      - DJANGO_SETTINGS_MODULE=backend.settings.dev
+      # Forzamos la URL del broker por seguridad (aunque esté en settings)
+      - CELERY_BROKER_URL=redis://redis:6379/0
     depends_on:
       - db
       - redis
