@@ -18,7 +18,8 @@ whitenoise             # Para servir archivos estáticos en Docker
 requests               # Para llamar a APIs externas (Twitch, YouTube)
 boto3                  # Vital para subir videos a AWS S3 / R2
 pillow                 # Manejo de imágenes (Avatares, Thumbnails)
-python-magic           # Para validar que un video sea realmente un video (seguridad)   
 moviepy                # Para procesar videos (thumbnails, conversiones) 
+yt-dlp                 # Para descargar videos de YouTube, Twitch, etc.(URL)
 # --- Seguridad ---
 djangorestframework-simplejwt  # Autenticación JWT para la APIs
+python-magic           # Para validar que un video sea realmente un video (seguridad)  
