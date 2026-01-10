@@ -58,6 +58,19 @@ class VideoProject(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     created_at = models.DateTimeField(auto_now_add=True)
 
+   
+
+    class IntelligenceLevel(models.TextChoices):
+        FAST = 'fast', 'Rápido (GPT-4o-mini)'       # Para usuarios Free / Pruebas
+        SMART = 'smart', 'Inteligente (GPT-4o)'     # Para usuarios Pro / Viralidad Máxima
+
+
+    intelligence_level = models.CharField(
+        max_length=10,
+        choices=IntelligenceLevel.choices,
+        default=IntelligenceLevel.FAST
+    )
+
     def __str__(self):
         return f"{self.title} ({self.workspace_id})"
 

@@ -7,6 +7,7 @@ moviepy                # Edición de video (cortar, unir, texto)
 
 # --- Inteligencia Artificial ---
 openai-whisper         # El cerebro: Transcripción de audio a texto
+openai>=1.0.0
 
 # --- PyTorch (Versión CPU para Docker) ---
 # Usamos CPU para mantener la imagen ligera en desarrollo.

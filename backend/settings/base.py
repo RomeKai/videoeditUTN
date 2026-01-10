@@ -129,6 +129,9 @@ REST_FRAMEWORK = {
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
 
+# --- IA CONFIG ---
+OPENAI_API_KEY = env('OPENAI_API_KEY', default=None)
+
 # Configuración de JWT (Tiempos de vida del token)
 from datetime import timedelta
 SIMPLE_JWT = {
