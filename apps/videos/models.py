@@ -22,8 +22,9 @@ class BrandKit(models.Model):
         return f"{self.name} ({self.workspace_id})"
 
 
-# --- 2. PROYECTO (Híbrido: URL o Archivo) ---
+# --- 2. PROYECTO (Core) ---
 class VideoProject(models.Model):
+    # --- Enums de Configuración ---
     class Type(models.TextChoices):
         REPURPOSE = 'repurpose', 'Viralizar (Largo -> Cortos)'
         SINGLE_EDIT = 'single_edit', 'Edición (Clip -> Clip)'
@@ -41,35 +42,47 @@ class VideoProject(models.Model):
         READY = 'ready', 'Listo'
         FAILED = 'failed', 'Error'
 
+    class IntelligenceLevel(models.TextChoices):
+        FAST = 'fast', 'Rápido (GPT-4o-mini)'       # Para usuarios Free / Pruebas
+        SMART = 'smart', 'Inteligente (GPT-4o)'     # Para usuarios Pro / Viralidad Máxima
+
+    # --- NUEVOS ENUMS DE RENDERIZADO ---
+    class AspectRatio(models.TextChoices):
+        PORTRAIT_9_16 = '9:16', 'Vertical (TikTok/Reels)'
+        SQUARE_1_1 = '1:1', 'Cuadrado (Post)'
+        LANDSCAPE_16_9 = '16:9', 'Horizontal (YouTube)'
+
+    class Layout(models.TextChoices):
+        FILL = 'fill', 'Relleno (Crop Central)'       # Clásico
+        FIT = 'fit', 'Ajustar (Bordes Negros)'        # Video completo pequeño
+        BLURRED = 'blurred', 'Fondo Borroso'          # Estilo moderno
+        SPLIT = 'split', 'Split Screen (Gaming)'      # Arriba/Abajo
+        PIP = 'pip', 'Picture in Picture'             # Gamer en esquina
+
+    # --- Campos del Modelo ---
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey('users.Workspace', on_delete=models.CASCADE, related_name='projects')
     uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='uploaded_videos')
     
     title = models.CharField(max_length=255, default="Nuevo Proyecto")
+    
+    # Configuración General
     project_type = models.CharField(max_length=20, choices=Type.choices, default=Type.REPURPOSE)
     editing_style = models.CharField(max_length=20, choices=EditingStyle.choices, default=EditingStyle.DYNAMIC)
+    intelligence_level = models.CharField(max_length=10, choices=IntelligenceLevel.choices, default=IntelligenceLevel.FAST)
     brand_kit = models.ForeignKey(BrandKit, on_delete=models.SET_NULL, null=True, blank=True)
     
-    # --- CAMBIO CLAVE: Soportar URL o Archivo ---
+    # Configuración de Renderizado (NUEVOS)
+    aspect_ratio = models.CharField(max_length=10, choices=AspectRatio.choices, default=AspectRatio.PORTRAIT_9_16)
+    render_layout = models.CharField(max_length=10, choices=Layout.choices, default=Layout.FILL)
+
+    # Archivos Fuente
     source_file = models.FileField(upload_to='videos/raw/%Y/%m/', null=True, blank=True)
     video_url = models.URLField(max_length=500, null=True, blank=True, help_text="URL de YouTube/Vimeo si no se sube archivo")
     
     metadata = models.JSONField(default=dict, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     created_at = models.DateTimeField(auto_now_add=True)
-
-   
-
-    class IntelligenceLevel(models.TextChoices):
-        FAST = 'fast', 'Rápido (GPT-4o-mini)'       # Para usuarios Free / Pruebas
-        SMART = 'smart', 'Inteligente (GPT-4o)'     # Para usuarios Pro / Viralidad Máxima
-
-
-    intelligence_level = models.CharField(
-        max_length=10,
-        choices=IntelligenceLevel.choices,
-        default=IntelligenceLevel.FAST
-    )
 
     def __str__(self):
         return f"{self.title} ({self.workspace_id})"

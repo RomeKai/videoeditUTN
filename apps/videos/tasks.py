@@ -3,20 +3,18 @@ import uuid
 from celery import shared_task
 from django.conf import settings
 from django.core.files import File
-from moviepy import VideoFileClip
+
+# --- NOTA: Eliminamos imports globales de moviepy/RenderEngine para evitar CRASH en Web ---
 
 # Importamos Modelos
 from apps.videos.models import VideoProject, VideoClip
 from apps.payments.models import Transaction
 
-# Importamos Servicios de IA
+# Importamos Servicios (Solo los seguros, que no usan CV2/MoviePy al importarse)
 from apps.videos.services.ai_engine import AIEngine
 from apps.videos.services.selection_engine import SelectionEngine
 
 def download_from_youtube(url, output_folder):
-    """
-    Descarga usando yt-dlp con importación lazy para evitar crasheos en web.
-    """
     import yt_dlp
     
     filename = f"{uuid.uuid4()}.mp4"
@@ -65,45 +63,39 @@ def process_video_pipeline(project_id, transaction_id=None):
 
         video_path = project.source_file.path
 
-        # --- FASE 1.5: ANÁLISIS TÉCNICO (MOVIDO ARRIBA) ---
-        # Calculamos la duración AHORA para usarla en la estrategia de selección
+        # --- FASE 1.5: DATOS TÉCNICOS ---
         print("📏 Calculando duración y resolución...")
         duration = 0
         try:
-            clip = VideoFileClip(video_path)
-            duration = clip.duration
-            project.metadata['duration'] = duration
-            project.metadata['resolution'] = clip.size
-            clip.close() # Cerramos rápido para liberar memoria
+            # 🔥 IMPORTACIÓN LAZY: Solo cargamos moviepy aquí dentro
+            from moviepy import VideoFileClip
+            
+            with VideoFileClip(video_path) as clip:
+                duration = clip.duration
+                project.metadata['duration'] = duration
+                project.metadata['resolution'] = clip.size
         except Exception as e:
             print(f"⚠️ No se pudo leer metadata técnica: {e}")
 
-        # --- FASE 2: TRANSCRIPCIÓN IA (Whisper) ---
+        # --- FASE 2: INTELIGENCIA ARTIFICIAL (Whisper) ---
         print("🧠 Iniciando transcripción con Whisper...")
-        
-        # A. Extraer Audio
         audio_path = AIEngine.extract_audio(video_path)
         
-        # B. Transcribir
         try:
             transcription = AIEngine.transcribe_audio(audio_path)
-            
-            # C. Guardar resultados crudos
             project.metadata['language'] = transcription['language']
             project.metadata['full_text'] = transcription['full_text']
-            # Guardamos toda la estructura para usos futuros
             project.metadata['transcription'] = transcription 
-            
         finally:
-            # Limpieza obligatoria del audio temporal
             if os.path.exists(audio_path):
                 os.remove(audio_path)
 
-        # --- FASE 3: SELECCIÓN INTELIGENTE (GPT Strategy) ---
+        # --- FASE 3: SELECCIÓN INTELIGENTE (GPT) ---
         print(f"🤖 Consultando Motor de Selección (Nivel: {project.intelligence_level})...")
         
+        created_clips = [] 
+        
         try:
-            # Usamos el SelectionEngine con la estrategia configurada
             ai_suggestions = SelectionEngine.select_viral_clips(
                 transcription_data=project.metadata,
                 project_title=project.title,
@@ -115,7 +107,7 @@ def process_video_pipeline(project_id, transaction_id=None):
             print(f"💾 Guardando {len(ai_suggestions)} clips sugeridos en DB...")
             
             for clip_data in ai_suggestions:
-                VideoClip.objects.create(
+                clip = VideoClip.objects.create(
                     project=project,
                     title=clip_data.get('title', 'Clip sugerido'),
                     start_time=clip_data.get('start', 0.0),
@@ -124,13 +116,27 @@ def process_video_pipeline(project_id, transaction_id=None):
                     ai_reasoning=clip_data.get('reasoning', ''),
                     status=VideoClip.Status.DRAFT
                 )
+                created_clips.append(clip)
                 
             project.metadata['ai_selection_done'] = True
 
         except Exception as e:
             print(f"⚠️ Error en Selección de IA: {e}")
-            # No hacemos raise para no fallar todo el proyecto.
-            # El usuario tendrá el video y la transcripción, aunque sin sugerencias automáticas.
+
+        # --- FASE 4: RENDERIZADO AUTOMÁTICO (Las Manos) ---
+        if created_clips:
+            print(f"✂️ Iniciando Renderizado de {len(created_clips)} clips...")
+            
+            # 🔥 IMPORTACIÓN LAZY CRÍTICA 🔥
+            # Importamos RenderEngine AQUÍ para que el contenedor WEB no explote al iniciar.
+            from apps.videos.services.render_engine import RenderEngine
+            
+            for clip in created_clips:
+                try:
+                    RenderEngine.render_clip(clip.id)
+                except Exception as e:
+                    print(f"⚠️ Falló render del clip {clip.id}: {e}")
+                    # Continuamos con el siguiente clip
 
         # --- FIN ---
         if transaction_id:
@@ -145,11 +151,10 @@ def process_video_pipeline(project_id, transaction_id=None):
 
     except Exception as e:
         print(f"❌ [ERROR CRÍTICO] {e}")
-        # Actualizamos estado a FAILED si algo crítico rompió el proceso
         try:
             project = VideoProject.objects.get(id=project_id)
             project.status = VideoProject.Status.FAILED
             project.save()
         except:
-            pass
+            pass 
         return f"Failed: {e}"
