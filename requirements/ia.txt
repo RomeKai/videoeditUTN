@@ -2,15 +2,15 @@
 numpy
 
 # --- Procesamiento de Audio/Video ---
-ffmpeg-python          # CRÍTICO: Lo usamos en AIEngine para extraer audio del video
-moviepy                # Edición de video (cortar, unir, texto)
+ffmpeg-python
+# CAMBIO: Quitamos "==2.0.0.dev2" para volver a la versión compatible con tu código
+moviepy
 
 # --- Inteligencia Artificial ---
-openai-whisper         # El cerebro: Transcripción de audio a texto
+openai-whisper
 openai>=1.0.0
 
-# --- PyTorch (Versión CPU para Docker) ---
-# Usamos CPU para mantener la imagen ligera en desarrollo.
-#torch --index-url https://download.pytorch.org/whl/cpu
-#torchaudio --index-url https://download.pytorch.org/whl/cpu
-#torchvision --index-url https://download.pytorch.org/whl/cpu
+# --- FIX CRÍTICO: Face Tracking ---
+# (ESTO SÍ LO DEJAMOS, porque es lo que hizo que la IA detectara la cara)
+mediapipe==0.10.9
+protobuf==3.20.3

@@ -68,7 +68,7 @@ def process_video_pipeline(project_id, transaction_id=None):
         duration = 0
         try:
             # 🔥 IMPORTACIÓN LAZY: Solo cargamos moviepy aquí dentro
-            from moviepy import VideoFileClip
+            from moviepy.video.io.VideoFileClip import VideoFileClip
             
             with VideoFileClip(video_path) as clip:
                 duration = clip.duration

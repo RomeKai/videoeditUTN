@@ -3,7 +3,7 @@ import math
 from rest_framework import viewsets, permissions, parsers, status
 from rest_framework.response import Response
 from django.core.exceptions import ValidationError # Para capturar el error de saldo
-from moviepy import VideoFileClip
+
 
 # Modelos y Serializers de Videos
 from .models import VideoProject, BrandKit
@@ -64,6 +64,7 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
         # CASO A: Archivo Local
         if project.source_file:
             try:
+                from moviepy.video.io.VideoFileClip import VideoFileClip
                 # Usamos moviepy para leer la duración
                 clip = VideoFileClip(project.source_file.path)
                 duration_seconds = clip.duration

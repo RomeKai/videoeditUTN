@@ -6,14 +6,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# CAMBIO CRÍTICO AQUI: Agregamos 'ffmpeg' a la lista de instalaciones base.
-# Ahora tanto la Web (para cobrar) como el Worker (para editar) tendrán FFmpeg.
+# CAMBIO APLICADO: Agregamos librerías gráficas para MediaPipe/OpenCV
 RUN apt-get update && apt-get install -y \
-    libpq-dev gcc netcat-openbsd libmagic1 ffmpeg \
+    libpq-dev \
+    gcc \
+    netcat-openbsd \
+    libmagic1 \
+    ffmpeg \
+    libgl1 \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Instalamos primero lo ligero (Web)
-# Asegúrate de que 'moviepy' esté dentro de este base.txt
 COPY ./requirements/base.txt /app/requirements/base.txt
 RUN pip install --no-cache-dir -r /app/requirements/base.txt
 
