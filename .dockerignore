@@ -17,3 +17,4 @@ env/
 *.env
 *.log
 docker-compose.override.yml
+media/
