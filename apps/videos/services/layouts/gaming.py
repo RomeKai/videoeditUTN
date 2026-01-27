@@ -4,7 +4,7 @@ from django.conf import settings
 from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
 from moviepy.video.VideoClip import ColorClip, TextClip 
 from ..face_tracker import FaceTracker
-from .base import BaseLayout 
+from .interface import BaseLayout 
 
 class SplitLayout(BaseLayout):
     """
