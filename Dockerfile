@@ -1,4 +1,4 @@
-﻿# --- ETAPA 1: BASE (Común) ---
+# --- ETAPA 1: BASE (Común) ---
 FROM python:3.11-slim as base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -16,7 +16,11 @@ RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
     imagemagick \
+    fonts-liberation \ 
     && rm -rf /var/lib/apt/lists/*
+
+# Configuración de seguridad de ImageMagick (a veces necesaria para permitir texto)
+RUN find /etc/ImageMagick*/ -name "policy.xml" -exec sed -i 's/none/read,write/g' {} \;
 
 COPY ./requirements/base.txt /app/requirements/base.txt
 RUN pip install --no-cache-dir -r /app/requirements/base.txt

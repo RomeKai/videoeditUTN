@@ -1,12 +1,12 @@
-﻿from .standard import FillLayout, FitLayout
+from .standard import FillLayout, FitLayout
 from .blur_pip import BlurredLayout
-from .gaming import SplitLayout
+from .gaming import GamingLayout # Corrected import
 
 LAYOUT_REGISTRY = {
     'fill': FillLayout,
     'fit': FitLayout,
     'blurred': BlurredLayout,
-    'split': SplitLayout,
+    'split': GamingLayout, # Corrected mapping
     'pip': FitLayout, 
 }
 
