@@ -75,6 +75,7 @@ class VideoProject(models.Model):
     # Configuración de Renderizado (NUEVOS)
     aspect_ratio = models.CharField(max_length=10, choices=AspectRatio.choices, default=AspectRatio.PORTRAIT_9_16)
     render_layout = models.CharField(max_length=10, choices=Layout.choices, default=Layout.FILL)
+    add_subtitles = models.BooleanField(default=True, help_text="¿Deseas agregar subtítulos automáticos?")
 
     # Archivos Fuente
     source_file = models.FileField(upload_to='videos/raw/%Y/%m/', null=True, blank=True)
