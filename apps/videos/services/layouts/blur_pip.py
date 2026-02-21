@@ -1,41 +1,70 @@
-from moviepy import CompositeVideoClip
-# En v2, importamos 'vfx' como el módulo que contiene todos los efectos
+from moviepy import CompositeVideoClip, ColorClip
 import moviepy.video.fx as vfx 
 from .interface import BaseLayout
+from ..face_tracker import FaceTracker
+import logging
+
+logger = logging.getLogger(__name__)
 
 class BlurredLayout(BaseLayout):
     """
-    Layout para MoviePy v2.0+
-    - Capa principal nítida en el centro.
-    - Fondo borroso y oscurecido llenando la pantalla 9:16.
+    Layout Profesional 'Blur PIP' (Picture-in-Picture):
+    - Fondo borroso anclado dinámicamente al rostro.
+    - Capa principal nítida con centrado inteligente.
+    - Optimizado para MoviePy v2.0+.
     """
     def apply(self, clip):
-        # 1. CAPA PRINCIPAL (Foreground)
-        # Usamos .resized() y .with_position() (Sintaxis v2)
-        main = clip.resized(width=self.target_w)
+        target_w, target_h = self.target_w, self.target_h
         
-        # Si al ajustar al ancho se pasa de alto, recortamos un poco arriba/abajo
-        if main.h > self.target_h:
-            main = main.cropped(x_center=main.w/2, y_center=main.h/2, height=self.target_h)
-            
-        main = main.with_position("center")
+        # 1. INTELIGENCIA ESPACIAL
+        tracker = FaceTracker()
+        face_data = tracker.detect_face_center(clip)
+        tracker.close()
 
-        # 2. CAPA DE FONDO (Background)
-        # Queremos que llene toda la altura (1920px usualmente)
-        background = clip.resized(height=self.target_h)
+        # Determinamos el centro de interés (focux_x)
+        # Si hay cara, lo usamos; si no, usamos el centro geométrico.
+        focus_x = face_data[0] if face_data else clip.w // 2
+        focus_y = face_data[1] if face_data else clip.h // 2
+
+        # 2. CAPA DE FONDO (Blurred Background)
+        # Escalamos para llenar la altura y luego recortamos el ancho
+        bg = clip.resized(height=target_h)
+        # El recorte del fondo sigue al sujeto para coherencia de color
+        bg_focus_x = int(focus_x * (bg.h / clip.h))
+        bg = bg.cropped(x_center=bg_focus_x, width=target_w)
         
-        # Recortamos los lados sobrantes para que tenga el ancho exacto (1080px)
-        background = background.cropped(x_center=background.w/2, width=self.target_w)
-        
-        # 3. APLICAR EFECTOS (Blur + Oscuridad)
-        # En v2 usamos .with_effects([]) pasando una lista de efectos instanciados
-        background = background.with_effects([
-            vfx.GaussianBlur(sigma=25),    # Desenfoque fuerte
-            vfx.MultiplyColor(factor=0.6)  # Oscurecer al 60%
+        bg = bg.with_effects([
+            vfx.GaussianBlur(sigma=30),    # Desenfoque cinemático
+            vfx.MultiplyColor(factor=0.5)  # Oscurecer para dar contraste
         ])
+
+        # 3. CAPA PRINCIPAL (Foreground Sharp)
+        # Típicamente el video original escalado al ancho del reel
+        fg = clip.resized(width=target_w)
         
-        # 4. COMPOSICIÓN
-        return CompositeVideoClip(
-            [background, main], 
-            size=(self.target_w, self.target_h)
-        )
+        # Si el video es más alto que el target (ej. formato 4:5), 
+        # hacemos un recorte inteligente centrado en la cara.
+        if fg.h > target_h:
+            fg_focus_y = int(focus_y * (fg.w / clip.w))
+            fg = fg.cropped(y_center=fg_focus_y, height=target_h)
+        
+        fg = fg.with_position("center")
+
+        # 4. SEPARACIÓN ESTÉTICA (Sombra/Borde sutil)
+        # Creamos un borde negro muy fino para separar las capas
+        border_size = 4
+        shadow = ColorClip(
+            size=(fg.w + border_size, fg.h + border_size), 
+            color=(0,0,0), 
+            duration=clip.duration
+        ).with_opacity(0.3).with_position("center")
+
+        # 5. COMPOSICIÓN FINAL
+        layers = [bg, shadow, fg]
+        final_composition = CompositeVideoClip(layers, size=(target_w, target_h))
+        
+        if clip.audio:
+            final_composition = final_composition.with_audio(clip.audio)
+            
+        logger.info(f"✅ BlurredLayout aplicado con éxito (Focus X: {focus_x})")
+        return final_composition

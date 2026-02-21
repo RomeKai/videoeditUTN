@@ -12,12 +12,11 @@ class FaceTracker:
             min_detection_confidence=0.5
         )
 
-    def detect_face_center(self, clip, num_samples=5):
+    def detect_face_center(self, clip, num_samples=10):
         try:
             dur = clip.duration
-            # Muestreamos en 5 puntos diferentes del clip
             times_to_check = np.linspace(0.5, dur - 0.5, num=num_samples)
-            face_coords = []
+            face_data = [] # Cambiamos el nombre para que sea más claro
             
             for t in times_to_check:
                 try:
@@ -29,26 +28,40 @@ class FaceTracker:
                         best_detection = max(results.detections, key=lambda d: d.score[0])
                         bbox = best_detection.location_data.relative_bounding_box
                         
-                        # FILTRO ANTI-BASURA: Ignorar cajas < 5% de la pantalla (Logos, NPCs)
-                        if bbox.width < 0.05 or bbox.height < 0.05:
+                        # 🔥 FILTRO PRO: Ignorar caras minúsculas o con baja confianza
+                        # Si mide menos de 40px en un video HD, probablemente no es el streamer.
+                        face_w = int(bbox.width * width)
+                        face_h = int(bbox.height * height)
+                        
+                        if face_w < 40 or face_h < 40 or best_detection.score[0] < 0.6:
                             continue
                             
                         center_x = int((bbox.xmin + bbox.width / 2) * width)
                         center_y = int((bbox.ymin + bbox.height / 2) * height)
-                        face_coords.append((center_x, center_y))
+                        
+                        face_data.append((center_x, center_y, face_w, face_h))
                 except:
                     continue
 
-            if not face_coords:
+            if not face_data:
                 logger.warning("⚠️ Sin rostros válidos detectados.")
                 return None
 
-            # MEDIANA MATEMÁTICA: Mitiga el jitter y descarta falsos positivos anómalos
-            median_x = int(np.median([c[0] for c in face_coords]))
-            median_y = int(np.median([c[1] for c in face_coords]))
+            # 🔥 RECHAZO DE OUTLIERS: Si tenemos varias muestras, eliminamos las más lejanas
+            # para evitar que un frame con un cartel o un efecto del juego ensucie la mediana.
+            if len(face_data) >= 3:
+                # Ordenamos por X y quitamos el máximo y el mínimo si hay suficientes muestras
+                face_data.sort(key=lambda d: d[0])
+                face_data = face_data[1:-1]
+
+            # Mediana matemática para las 4 dimensiones restantes
+            median_x = int(np.median([d[0] for d in face_data]))
+            median_y = int(np.median([d[1] for d in face_data]))
+            median_w = int(np.median([d[2] for d in face_data]))
+            median_h = int(np.median([d[3] for d in face_data]))
             
-            logger.info(f"📍 Cara del streamer anclada en X={median_x}, Y={median_y}")
-            return (median_x, median_y)
+            logger.info(f"📍 Cara anclada en X={median_x}, Y={median_y} | Tamaño: {median_w}x{median_h}px")
+            return (median_x, median_y, median_w, median_h)
 
         except Exception as e:
             logger.error(f"Error en FaceTracker: {e}")
