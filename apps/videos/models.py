@@ -1,4 +1,4 @@
-﻿import uuid
+import uuid
 from django.db import models
 from django.conf import settings
 
@@ -75,7 +75,24 @@ class VideoProject(models.Model):
     # Configuración de Renderizado (NUEVOS)
     aspect_ratio = models.CharField(max_length=10, choices=AspectRatio.choices, default=AspectRatio.PORTRAIT_9_16)
     render_layout = models.CharField(max_length=10, choices=Layout.choices, default=Layout.FILL)
+    
+    # Subtítulos Pro
+    class SubtitleSize(models.TextChoices):
+        SMALL = 'small', 'Pequeño'
+        MEDIUM = 'medium', 'Mediano'
+        LARGE = 'large', 'Grande'
+
+    class SubtitlePosition(models.TextChoices):
+        TOP = 'top', 'Arriba'
+        CENTER = 'center', 'Centro'
+        BOTTOM = 'bottom', 'Abajo'
+
     add_subtitles = models.BooleanField(default=True, help_text="¿Deseas agregar subtítulos automáticos?")
+    subtitle_color = models.CharField(max_length=7, default="#FFFF00", help_text="Color hexadecimal")
+    subtitle_with_emojis = models.BooleanField(default=False, help_text="¿Agregar emojis automáticos?")
+    subtitle_words_per_segment = models.IntegerField(default=3, help_text="Máximo de palabras")
+    subtitle_size = models.CharField(max_length=10, choices=SubtitleSize.choices, default=SubtitleSize.MEDIUM)
+    subtitle_position = models.CharField(max_length=10, choices=SubtitlePosition.choices, default=SubtitlePosition.BOTTOM)
 
     # Archivos Fuente
     source_file = models.FileField(upload_to='videos/raw/%Y/%m/', null=True, blank=True)

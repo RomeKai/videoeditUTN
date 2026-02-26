@@ -63,19 +63,39 @@ class RenderEngine:
             # Subtítulos
             if getattr(project, 'add_subtitles', True):
                 existing_transcription = project.metadata.get('transcription', [])
+                
+                # Configuramos opciones
+                sub_color = getattr(project, 'subtitle_color', '#FFFF00')
+                use_emojis = getattr(project, 'subtitle_with_emojis', False)
+                sub_size = getattr(project, 'subtitle_size', 'medium')
+                sub_pos = getattr(project, 'subtitle_position', 'bottom')
+                max_w = getattr(project, 'subtitle_words_per_segment', 3)
+                
+                # Instanciamos motor para obtener el mapa de emojis
+                subtitler = SubtitleEngine(
+                    color=sub_color, 
+                    with_emojis=use_emojis,
+                    size_type=sub_size,
+                    position_type=sub_pos
+                )
+                
+                emoji_map = subtitler.EMOJI_MAP if use_emojis else None
+
                 if existing_transcription:
-                    segments = RenderEngine._slice_segments(existing_transcription, clip_obj.start_time, clip_obj.end_time)
+                    # 1. Cortamos los segmentos base (palabras sueltas)
+                    raw_segments = RenderEngine._slice_segments(existing_transcription, clip_obj.start_time, clip_obj.end_time)
+                    
+                    # 2. Agrupamos con la nueva lógica de ruptura por emoji
+                    segments = TranscriptionEngine.group_words(raw_segments, max_words=max_w, emoji_map=emoji_map)
                 else:
                     # Fallback de respaldo
                     temp_audio_path = os.path.join(temp_dir, f"audio_{clip_obj.id}.mp3")
                     original_clip.audio.write_audiofile(temp_audio_path, codec='mp3', logger=None)
                     transcriber = TranscriptionEngine(model_size="tiny") 
-                    segments = transcriber.transcribe(temp_audio_path)
+                    raw_segments = transcriber.transcribe(temp_audio_path, word_timestamps=True)
+                    segments = TranscriptionEngine.group_words(raw_segments, max_words=max_w, emoji_map=emoji_map)
 
                 if segments:
-                    # Inyectamos el tamaño que el usuario solicitó desde metadata
-                    user_font_size = project.metadata.get('subtitle_size', 40)
-                    subtitler = SubtitleEngine(font_size=user_font_size)
                     final_clip = subtitler.add_subtitles(video_layout_processed, segments)
                 else:
                     final_clip = video_layout_processed

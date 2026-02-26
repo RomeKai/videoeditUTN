@@ -1,4 +1,4 @@
-﻿import os
+import os
 import uuid
 import logging
 from celery import shared_task
@@ -92,16 +92,16 @@ def process_video_pipeline(project_id, transaction_id=None):
         # Instanciamos el motor (usa 'tiny' o 'base' según prefieras velocidad vs precisión)
         transcriber = TranscriptionEngine(model_size="base")
         
-        # Transcribimos (Whisper lee el video directo, no hace falta extraer audio aparte)
-        segments = transcriber.transcribe(video_path)
+        # Transcribimos con marcas de tiempo por palabra para mayor precisión en cortes
+        segments = transcriber.transcribe(video_path, word_timestamps=True)
         
         # Reconstruimos el texto completo para el SelectionEngine
         full_text = " ".join([seg['text'] for seg in segments])
         
         # Guardamos en metadata
-        project.metadata['language'] = 'detected' # Whisper lo detecta auto, podríamos mejorar el Engine para devolverlo
+        project.metadata['language'] = 'detected' 
         project.metadata['full_text'] = full_text
-        project.metadata['transcription'] = segments # Guardamos los segmentos con timestamps
+        project.metadata['transcription'] = segments # Ahora son palabras individuales
         project.save()
 
         # --- FASE 3: SELECCIÓN INTELIGENTE (GPT) ---
