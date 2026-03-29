@@ -1,0 +1,16 @@
+﻿# Hereda de base (para tener todo junto al desarrollar)
+-r base.txt
+
+# --- Testing Framework ---
+pytest
+pytest-django
+pytest-cov             # Reporte de cobertura
+pytest-mock            # Para simular servicios externos
+pytest-xdist           # Para correr tests en paralelo (rápido)
+pytest-asyncio         # Tests asíncronos
+pytest-celery          # Tests de tareas
+
+# --- Datos Falsos ---
+factory-boy            # (Seguramente 'factory' se refería a esto)
+Faker                  # Generar emails/nombres falsos
+coverage               # Análisis de código probado
