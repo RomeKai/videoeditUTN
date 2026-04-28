@@ -25,6 +25,8 @@ def download_from_youtube(url, output_folder):
         'outtmpl': output_path,
         'quiet': True,
         'no_warnings': True,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'referer': 'https://www.google.com/',
     }
     
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -49,19 +51,25 @@ def process_video_pipeline(project_id, transaction_id=None):
 
         # --- FASE 1: OBTENCIÓN (Descarga) ---
         if not project.source_file and project.video_url:
-            logger.info(f"⬇️ Descargando: {project.video_url}")
-            download_dir = os.path.join(settings.MEDIA_ROOT, 'videos', 'raw', 'downloads')
-            os.makedirs(download_dir, exist_ok=True)
-            
-            local_path = download_from_youtube(project.video_url, download_dir)
-            
-            # Guardamos en Django Storage
-            with open(local_path, 'rb') as f:
-                project.source_file.save(os.path.basename(local_path), File(f), save=True)
-            
-            # Limpieza local
-            if os.path.exists(local_path):
-                os.remove(local_path)
+            # Soporte para archivos locales (para tests)
+            if os.path.exists(project.video_url):
+                logger.info(f"📂 Usando archivo local: {project.video_url}")
+                with open(project.video_url, 'rb') as f:
+                    project.source_file.save(os.path.basename(project.video_url), File(f), save=True)
+            else:
+                logger.info(f"⬇️ Descargando de URL: {project.video_url}")
+                download_dir = os.path.join(settings.MEDIA_ROOT, 'videos', 'raw', 'downloads')
+                os.makedirs(download_dir, exist_ok=True)
+                
+                local_path = download_from_youtube(project.video_url, download_dir)
+                
+                # Guardamos en Django Storage
+                with open(local_path, 'rb') as f:
+                    project.source_file.save(os.path.basename(local_path), File(f), save=True)
+                
+                # Limpieza local
+                if os.path.exists(local_path):
+                    os.remove(local_path)
 
         if not project.source_file:
             raise Exception("No video source found (ni archivo ni URL)")

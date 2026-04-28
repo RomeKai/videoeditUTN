@@ -57,7 +57,8 @@ class RenderEngine:
             
             # Aplicar Layout
             target_w, target_h = RenderEngine._get_target_resolution(project.aspect_ratio)
-            layout_strategy = get_layout_strategy(project.render_layout, target_w, target_h)
+            use_ft = getattr(project, 'use_facetracking', False)
+            layout_strategy = get_layout_strategy(project.render_layout, target_w, target_h, use_facetracking=use_ft)
             video_layout_processed = layout_strategy.apply(original_clip)
             
             # Subtítulos

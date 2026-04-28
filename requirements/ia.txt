@@ -1,16 +1,15 @@
-﻿# --- Base Numérica ---
+# --- Base Numérica ---
 numpy
 
 # --- Procesamiento de Audio/Video ---
 ffmpeg-python
-# CAMBIO: Quitamos "==2.0.0.dev2" para volver a la versión compatible con tu código
+# MoviePy compatible
 moviepy
 
 # --- Inteligencia Artificial ---
 openai-whisper
 openai>=1.0.0
 
-# --- FIX CRÍTICO: Face Tracking ---
-# (ESTO SÍ LO DEJAMOS, porque es lo que hizo que la IA detectara la cara)
-mediapipe==0.10.9
-protobuf==3.20.3
+# --- FIX: Face Tracking (Actualizado para compatibilidad) ---
+mediapipe>=0.10.30
+protobuf>=3.20.3

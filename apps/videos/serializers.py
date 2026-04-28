@@ -25,7 +25,7 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     brand_kit_name = serializers.CharField(source='brand_kit.name', read_only=True)
     
     source_file = serializers.FileField(required=False)
-    video_url = serializers.URLField(required=False)
+    video_url = serializers.CharField(required=False, allow_blank=True)
 
     class Meta:
         model = VideoProject
@@ -58,15 +58,20 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         project.metadata = project.metadata or {}
         
         if 'max_clips' in raw: project.metadata['max_clips'] = int(raw['max_clips'])
-        if 'subtitle_size' in raw: project.metadata['subtitle_size'] = int(raw['subtitle_size'])
+        if 'subtitle_size' in raw: project.metadata['subtitle_size'] = raw['subtitle_size']
         if 'aspect_ratio' in raw: project.aspect_ratio = raw['aspect_ratio']
         if 'render_layout' in raw: project.render_layout = raw['render_layout']
-        elif 'layout' in raw: project.render_layout = raw['layout'] # Soporte por si mandas "layout"
+        elif 'layout' in raw: project.render_layout = raw['layout']
         
         # Inyección de subtítulos
         if 'add_subtitles' in raw:
             val = raw['add_subtitles']
             project.add_subtitles = str(val).lower() in ['true', '1', 't', 'y', 'yes']
+            
+        # Inyección de FaceTracking
+        if 'use_facetracking' in raw:
+            val = raw['use_facetracking']
+            project.use_facetracking = str(val).lower() in ['true', '1', 't', 'y', 'yes']
             
         project.save()
         return project

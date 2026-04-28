@@ -10,6 +10,6 @@ LAYOUT_REGISTRY = {
     'pip': FitLayout, 
 }
 
-def get_layout_strategy(layout_name, target_w, target_h):
+def get_layout_strategy(layout_name, target_w, target_h, use_facetracking=False):
     strategy_class = LAYOUT_REGISTRY.get(layout_name, FillLayout)
-    return strategy_class(target_w, target_h)
+    return strategy_class(target_w, target_h, use_facetracking=use_facetracking)

@@ -94,6 +94,9 @@ class VideoProject(models.Model):
     subtitle_size = models.CharField(max_length=10, choices=SubtitleSize.choices, default=SubtitleSize.MEDIUM)
     subtitle_position = models.CharField(max_length=10, choices=SubtitlePosition.choices, default=SubtitlePosition.BOTTOM)
 
+    # Opciones de IA en Renderizado
+    use_facetracking = models.BooleanField(default=False, help_text="¿Deseas que la cámara siga automáticamente el rostro?")
+
     # Archivos Fuente
     source_file = models.FileField(upload_to='videos/raw/%Y/%m/', null=True, blank=True)
     video_url = models.URLField(max_length=500, null=True, blank=True, help_text="URL de YouTube/Vimeo si no se sube archivo")
