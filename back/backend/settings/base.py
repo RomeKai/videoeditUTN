@@ -1,58 +1,38 @@
-﻿from pathlib import Path
+from backend.settings.base import env, BASE_DIR
 import os
-import environ
 
-# 1. Configuración de Rutas
-# Estamos en backend/settings/base.py, así que subimos 3 niveles para llegar a la raíz
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
+# --- PRODUCTION MODE ---
+# DEBUG must be False in production
+DEBUG = False
 
-# 2. Inicializar Environ
-env = environ.Env()
-# Leer el archivo .env de la raíz
-environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
+# Allowed hosts from .env
+ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=[])
 
-# --- SEGURIDAD ---
-SECRET_KEY = env('SECRET_KEY', default='django-insecure-clave-temporal-dev')
-DEBUG = env.bool('DEBUG', default=False)
-ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['*'])
+# --- CORS (Restrictive) ---
+CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[])
 
-# --- APLICACIONES (Modular) ---
-DJANGO_APPS = [
-    'django.contrib.admin',
-    'django.contrib.auth',
-    'django.contrib.contenttypes',
-    'django.contrib.sessions',
-    'django.contrib.messages',
-    'django.contrib.staticfiles',
-]
+# --- SECURITY (Hardening) ---
+# SECURE_SSL_REDIRECT = True
+# SESSION_COOKIE_SECURE = True
+# CSRF_COOKIE_SECURE = True
+# SECURE_BROWSER_XSS_FILTER = True
+# SECURE_CONTENT_TYPE_NOSNIFF = True
 
-THIRD_PARTY_APPS = [
-    'rest_framework',
-    'corsheaders',
-    'drf_spectacular',
-    # 'django_celery_results', # Descomentar cuando configures Celery
-    # 'drf_yasg',              # Descomentar cuando instales Swagger
-]
+# --- STATIC & MEDIA STORAGE (WhiteNoise / S3) ---
+# WhiteNoise configuration (Standard for Docker deployments)
+# INSTALLED_APPS += ["whitenoise.runserver_nostatic"]
+# MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
+# STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
-# Estas carpetas deben existir en tu directorio 'apps/'
-# backend/settings/base.py
-
-LOCAL_APPS = [
-    'apps.core',
-    'apps.users',  # <-- Simple y directo, ahora que la carpeta está bien ubicada
-    'apps.videos',
-    'apps.ia',
-    'apps.payments',
-    'apps.integrations',
-]
-
-INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
-
-# --- MIDDLEWARE ---
+# AWS S3 Storage (Enable when bucket is ready)
+# if env('AWS_ACCESS_KEY_ID', default=None):
+#     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+#     STATICFILES_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+-- MIDDLEWARE ---
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'corsheaders.middleware.CorsMiddleware', # CORS debe ir antes de Common
+    'corsheaders.middleware.CorsMiddleware', # CORS must be before Common
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -68,7 +48,7 @@ TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
         'DIRS': [],
-        'APP_DIRS': True, # Busca templates dentro de cada app
+        'APP_DIRS': True, # Search for templates within each app
         'OPTIONS': {
             'context_processors': [
                 'django.template.context_processors.debug',
@@ -80,9 +60,8 @@ TEMPLATES = [
     },
 ]
 
-# --- BASE DE DATOS (Inteligente) ---
-# Si en el .env hay DATABASE_URL, usa eso (Postgres).
-# Si no hay, usa SQLite automáticamente (ideal para probar ahora mismo).
+# --- DATABASE ---
+# Uses DATABASE_URL (Postgres) if available in .env, defaults to SQLite
 DATABASES = {
     'default': env.db('DATABASE_URL', default='sqlite:///db.sqlite3')
 }
@@ -96,7 +75,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 # --- INTERNATIONALIZATION ---
-LANGUAGE_CODE = 'es-es'
+LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
@@ -110,48 +89,43 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# --- USUARIO PERSONALIZADO ---
-# IMPORTANTE: Mantén esto comentado hasta que crees el modelo User en apps/users/models.py
+# --- CUSTOM USER MODEL ---
 AUTH_USER_MODEL = 'users.User' 
 
 # --- DRF CONFIG ---
-# backend/settings/base.py
-
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
-        'rest_framework.permissions.IsAuthenticated', # Por defecto, todo privado
+        'rest_framework.permissions.IsAuthenticated',
     ),
     'DEFAULT_PAGINATION_CLASS': None,
-
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
 
-# --- IA CONFIG ---
+# --- AI CONFIG ---
 OPENAI_API_KEY = env('OPENAI_API_KEY', default=None)
 
-# Configuración de JWT (Tiempos de vida del token)
+# JWT Configuration
 from datetime import timedelta
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=25),  # El token de uso dura 1 hora
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=3),     # El de refresco dura 1 día
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=25),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=3),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
 }
 
-# --- CELERY CONFIG (Leída de env) ---
+# --- CELERY CONFIG ---
 if 'REDIS_URL' in os.environ:
     CELERY_BROKER_URL = env('REDIS_URL')
     CELERY_RESULT_BACKEND = env('REDIS_URL')
 
 SPECTACULAR_SETTINGS = {
     'TITLE': 'OneCreator API',
-    'DESCRIPTION': 'API para la gestión y edición automatizada de videos con IA.',
+    'DESCRIPTION': 'API for automated AI video management and editing.',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
-    # Configuración para que el botón "Authorize" funcione con JWT
     'COMPONENT_SPLIT_REQUEST': True,
     'SWAGGER_UI_SETTINGS': {
         'deepLinking': True,

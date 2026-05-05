@@ -1,23 +1,27 @@
+#!/usr/bin/env python
 import os
-# Silenciar errores de GPU en MediaPipe antes de importar
-os.environ['MEDIAPIPE_DISABLE_GPU'] = '1'
+import sys
 
-from moviepy import CompositeVideoClip, ColorClip
-from .interface import BaseLayout
-from ..face_tracker import FaceTracker
-import logging
+def main():
+    """Run administrative tasks."""
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.settings.dev')
+    try:
+        from django.core.management import execute_from_command_line
+    except ImportError as exc:
+        raise ImportError(
+            "Couldn't import Django. Are you sure it's installed and "
+            "available on your PYTHONPATH environment variable? Did you "
+            "forget to activate a virtual environment?"
+        ) from exc
+    execute_from_command_line(sys.argv)
 
-logger = logging.getLogger(__name__)
-
-class GamingLayout(BaseLayout):
-    def apply(self, clip, camera_pos='top'):
-        target_w, target_h = self.target_w, self.target_h
-        
-        # Proporción Reels: 35% Cámara, 65% Juego
+if __name__ == "__main__":
+    main()
+era, 65% Gameplay
         cam_h = int(target_h * 0.35) 
         game_h = target_h - cam_h
         
-        # 1. TRAYECTORIA DE ROSTRO (OPCIONAL)
+        # 1. Face Tracking (Optional)
         path = None
         if self.use_facetracking:
             tracker = FaceTracker()
@@ -25,13 +29,13 @@ class GamingLayout(BaseLayout):
             tracker.close()
             avg_w, avg_h = path.get_average_size()
         else:
-            # Fallback a dimensiones centrales si no hay tracking
+            # Fallback to center dimensions if tracking is disabled
             avg_w, avg_h = clip.w // 3, clip.h // 3
 
-        # MATEMÁTICA CÁMARA (Dimensiones Estáticas)
+        # Camera Mathematics (Static Dimensions)
         cam_target_aspect = target_w / cam_h
         
-        # Smart Zoom Logic (Estática para el tamaño)
+        # Smart Zoom Logic (Static size calculation)
         face_relative_height = avg_h / clip.h
         if face_relative_height < 0.15:
             multiplier = 1.6
@@ -43,7 +47,7 @@ class GamingLayout(BaseLayout):
         src_crop_h = int(avg_h * multiplier) if avg_h > 0 else int(clip.h * 0.40)
         src_crop_w = int(src_crop_h * cam_target_aspect)
         
-        # Ajuste de seguridad para el tamaño
+        # Safety bounds check
         if src_crop_w > clip.w:
             src_crop_w = clip.w
             src_crop_h = int(src_crop_w / cam_target_aspect)
@@ -51,7 +55,7 @@ class GamingLayout(BaseLayout):
             src_crop_h = clip.h
             src_crop_w = int(src_crop_h * cam_target_aspect)
 
-        # 2. APLICAR RECORTE (DINÁMICO O ESTÁTICO)
+        # 2. Apply Cropping (Dynamic or Static)
         if self.use_facetracking and path:
             def get_face_frame(get_frame, t):
                 frame = get_frame(t)
@@ -61,16 +65,15 @@ class GamingLayout(BaseLayout):
                 return frame[y1:y1+src_crop_h, x1:x1+src_crop_w]
             cam = clip.transform(get_face_frame)
         else:
-            # Recorte central fijo si no hay tracking
+            # Fixed center crop
             cam = clip.cropped(x_center=clip.w//2, y_center=clip.h//2, width=src_crop_w, height=src_crop_h)
 
         cam = cam.resized(width=target_w, height=cam_h)
         cam = cam.with_position(('center', 'top'))
 
-        # 3. MATEMÁTICA GAMEPLAY (CROP CENTRAL FIJO)
+        # 3. Gameplay Mathematics (Fixed Center Crop)
         game_target_aspect = target_w / game_h
         
-        # Calculamos crop estático para gameplay
         if (clip.w / clip.h) > game_target_aspect:
             game_crop_h = clip.h
             game_crop_w = int(clip.h * game_target_aspect)
@@ -82,7 +85,7 @@ class GamingLayout(BaseLayout):
         game = game.resized(width=target_w, height=game_h)
         game = game.with_position(('center', 'bottom'))
 
-        # 4. COMPOSICIÓN
+        # 4. Composition
         bg = ColorClip(size=(target_w, target_h), color=(0,0,0), duration=clip.duration)
         final_composition = CompositeVideoClip([bg, game, cam], size=(target_w, target_h))
         

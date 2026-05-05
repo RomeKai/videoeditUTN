@@ -1,4 +1,4 @@
-﻿
+
 version: '3.8'
 
 services:
@@ -23,16 +23,16 @@ services:
   # --- SERVICIO 3: API Web (Ligera) ---
   web:
     build:
-      context: .
+      context: ./back
       target: web
     # Asegúrate que el comando apunte correctamente a donde esté tu manage.py
     command: python manage.py runserver 0.0.0.0:8000
     volumes:
-      - .:/app
+      - ./back:/app
     ports:
       - "8000:8000"
     env_file:
-      - .env
+      - ./back/.env
     environment:
       # ESTO ES CRUCIAL: Apunta a tu configuración de desarrollo
       - DJANGO_SETTINGS_MODULE=backend.settings.dev
@@ -43,14 +43,14 @@ services:
   # --- SERVICIO 4: Worker IA (Pesado) ---
   worker:
     build:
-      context: .
+      context: ./back
       target: worker
     # El comando -A backend es correcto porque tu carpeta se llama 'backend'
     command: celery -A backend worker -l info
     volumes:
-      - .:/app
+      - ./back:/app
     env_file:
-      - .env
+      - ./back/.env
     environment:
       # ESTO ARREGLA EL ERROR "ImproperlyConfigured":
       - DJANGO_SETTINGS_MODULE=backend.settings.dev
