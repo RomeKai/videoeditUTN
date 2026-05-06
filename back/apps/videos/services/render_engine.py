@@ -11,21 +11,27 @@ from apps.videos.services.subtitle_engine import SubtitleEngine
 logger = logging.getLogger(__name__)
 
 class RenderEngine:
+    """
+    Core engine responsible for physical video rendering and assembly.
+    Handles layout application, subtitle burning, and codec optimization.
+    """
     @staticmethod
-    def _get_target_resolution(aspect_ratio_str):
+    def _get_target_resolution(aspect_ratio_str: str):
+        """Calculates resolution based on aspect ratio, forcing even numbers for H.264."""
         target_h = 1080  
         if aspect_ratio_str == '9:16': target_w = int(target_h * (9/16)) 
         elif aspect_ratio_str == '1:1': target_w = target_h 
         elif aspect_ratio_str == '16:9': target_w = int(target_h * (16/9)) 
         else: target_w = int(target_h * (9/16)) 
         
-        # 🛡️ OBLIGATORIO: Forzar pares para evitar el crash del Códec H.264
+        # Ensure dimensions are even to prevent H.264 codec crashes
         target_w = target_w if target_w % 2 == 0 else target_w + 1
         target_h = target_h if target_h % 2 == 0 else target_h + 1
         return target_w, target_h
 
     @staticmethod
     def _slice_segments(global_segments, clip_start, clip_end):
+        """Extracts transcription segments that fall within a specific time range."""
         clip_segments = []
         for seg in global_segments:
             if seg['end'] > clip_start and seg['start'] < clip_end:
@@ -37,6 +43,10 @@ class RenderEngine:
 
     @staticmethod
     def render_clip(clip_id):
+        """
+        Full rendering pipeline for a single VideoClip.
+        Includes layout processing, subtitle generation, and S3 persistence.
+        """
         clip_obj, original_clip, final_clip = None, None, None
         output_path, temp_audio_path = None, None
 
@@ -52,27 +62,26 @@ class RenderEngine:
             os.makedirs(temp_dir, exist_ok=True)
             output_path = os.path.join(temp_dir, filename)
 
-            # Cargar Video (Subclip)
+            # Load Video (Subclip using MoviePy 2.0 syntax)
             original_clip = VideoFileClip(original_path).subclipped(clip_obj.start_time, clip_obj.end_time)
             
-            # Aplicar Layout
+            # Apply Layout Strategy (GoF Strategy Pattern)
             target_w, target_h = RenderEngine._get_target_resolution(project.aspect_ratio)
             use_ft = getattr(project, 'use_facetracking', False)
             layout_strategy = get_layout_strategy(project.render_layout, target_w, target_h, use_facetracking=use_ft)
             video_layout_processed = layout_strategy.apply(original_clip)
             
-            # Subtítulos
+            # Subtitle Processing
             if getattr(project, 'add_subtitles', True):
                 existing_transcription = project.metadata.get('transcription', [])
                 
-                # Configuramos opciones
+                # Configuration options
                 sub_color = getattr(project, 'subtitle_color', '#FFFF00')
                 use_emojis = getattr(project, 'subtitle_with_emojis', False)
                 sub_size = getattr(project, 'subtitle_size', 'medium')
                 sub_pos = getattr(project, 'subtitle_position', 'bottom')
                 max_w = getattr(project, 'subtitle_words_per_segment', 3)
                 
-                # Instanciamos motor para obtener el mapa de emojis
                 subtitler = SubtitleEngine(
                     color=sub_color, 
                     with_emojis=use_emojis,
@@ -83,13 +92,10 @@ class RenderEngine:
                 emoji_map = subtitler.EMOJI_MAP if use_emojis else None
 
                 if existing_transcription:
-                    # 1. Cortamos los segmentos base (palabras sueltas)
                     raw_segments = RenderEngine._slice_segments(existing_transcription, clip_obj.start_time, clip_obj.end_time)
-                    
-                    # 2. Agrupamos con la nueva lógica de ruptura por emoji
                     segments = TranscriptionEngine.group_words(raw_segments, max_words=max_w, emoji_map=emoji_map)
                 else:
-                    # Fallback de respaldo
+                    # Fallback transcription if missing in metadata
                     temp_audio_path = os.path.join(temp_dir, f"audio_{clip_obj.id}.mp3")
                     original_clip.audio.write_audiofile(temp_audio_path, codec='mp3', logger=None)
                     transcriber = TranscriptionEngine(model_size="tiny") 
@@ -103,7 +109,7 @@ class RenderEngine:
             else:
                 final_clip = video_layout_processed
 
-            # 🚀 RENDERIZADO FÍSICO CON PARÁMETROS SEGUROS
+            # 🚀 PHYSICAL RENDERING WITH OPTIMIZED PARAMS
             final_clip.write_videofile(
                 output_path,
                 codec='libx264',
@@ -115,7 +121,7 @@ class RenderEngine:
                 logger=None
             )
             
-            # Guardar en Storage de Django
+            # Save to Django Storage (S3 or Local)
             with open(output_path, 'rb') as f:
                 clip_obj.output_file.save(filename, File(f), save=True)
                 
@@ -124,13 +130,13 @@ class RenderEngine:
             return True
 
         except Exception as e:
-            logger.error(f"❌ Falló Render {clip_id}: {e}", exc_info=True)
+            logger.error(f"❌ Render Failed for clip {clip_id}: {e}", exc_info=True)
             if clip_obj:
                 clip_obj.status = VideoClip.Status.DRAFT
                 clip_obj.save()
             raise e
         finally:
-            # Limpieza de recursos
+            # Resource cleanup
             try:
                 if original_clip: original_clip.close()
                 if final_clip and final_clip != original_clip: final_clip.close()

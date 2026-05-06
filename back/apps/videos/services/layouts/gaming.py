@@ -1,23 +1,22 @@
-#!/usr/bin/env python
 import os
-import sys
+# Disable MediaPipe GPU errors before importing
+os.environ['MEDIAPIPE_DISABLE_GPU'] = '1'
 
-def main():
-    """Run administrative tasks."""
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.settings.dev')
-    try:
-        from django.core.management import execute_from_command_line
-    except ImportError as exc:
-        raise ImportError(
-            "Couldn't import Django. Are you sure it's installed and "
-            "available on your PYTHONPATH environment variable? Did you "
-            "forget to activate a virtual environment?"
-        ) from exc
-    execute_from_command_line(sys.argv)
+from moviepy import CompositeVideoClip, ColorClip
+from apps.videos.services.layouts.interface import BaseLayout
+from apps.videos.services.face_tracker import FaceTracker
+import logging
 
-if __name__ == "__main__":
-    main()
-era, 65% Gameplay
+logger = logging.getLogger(__name__)
+
+class GamingLayout(BaseLayout):
+    """
+    Split-screen layout optimized for gaming content (Camera top, Gameplay bottom).
+    """
+    def apply(self, clip, camera_pos='top'):
+        target_w, target_h = self.target_w, self.target_h
+        
+        # Reels Proportion: 35% Camera, 65% Gameplay
         cam_h = int(target_h * 0.35) 
         game_h = target_h - cam_h
         

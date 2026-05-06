@@ -1,80 +1,78 @@
 import os
-# Silenciar errores de GPU en MediaPipe antes de importar
+# Disable MediaPipe GPU errors before importing
 os.environ['MEDIAPIPE_DISABLE_GPU'] = '1'
 
 from moviepy import CompositeVideoClip, ColorClip
 import moviepy.video.fx as vfx 
-from .interface import BaseLayout
-from ..face_tracker import FaceTracker
+from apps.videos.services.layouts.interface import BaseLayout
+from apps.videos.services.face_tracker import FaceTracker
 import logging
 
 logger = logging.getLogger(__name__)
 
 class BlurredLayout(BaseLayout):
     """
-    Layout Profesional 'Blur PIP' (Picture-in-Picture):
-    - Fondo borroso escalado.
-    - Capa principal nítida con centrado inteligente opcional (FaceTracking).
+    Professional 'Blur PIP' (Picture-in-Picture) Layout:
+    - Blurred and scaled background.
+    - Sharp foreground layer with optional intelligent centering (FaceTracking).
     """
     def apply(self, clip):
         target_w, target_h = self.target_w, self.target_h
         path = None
 
-        # 1. TRAYECTORIA (OPCIONAL)
+        # 1. Trajectory (Optional)
         if self.use_facetracking:
             tracker = FaceTracker()
             path = tracker.generate_path(clip, fps=2.0)
             tracker.close()
 
-        # 2. CAPA DE FONDO (Blurred Background)
-        # Escalamos el video para que cubra todo el alto (o ancho)
+        # 2. Background Layer (Blurred Background)
+        # Scale the video to cover the entire height (or width)
         bg = clip.resized(height=target_h)
         if bg.w < target_w:
             bg = clip.resized(width=target_w)
         
-        # Recorte del fondo (Fijo al centro para estabilidad si no hay tracking)
+        # Background crop (Fixed to center for stability if no tracking)
         bg = bg.cropped(x_center=bg.w//2, y_center=bg.h//2, width=target_w, height=target_h)
         
-        # Efectos de desenfoque y oscurecimiento
+        # Blur and darkening effects
+        # Note: In MoviePy 2.0+, effects are accessed via with_effects
         bg = bg.with_effects([
             vfx.GaussianBlur(sigma=30),
-            vfx.MultiplyColor(factor=0.6) # Un poco más claro que antes
+            vfx.MultiplyColor(factor=0.6)
         ])
 
-        # 3. CAPA PRINCIPAL (Foreground Sharp)
-        # Ajustamos el video para que quepa en el ancho del target
+        # 3. Foreground Layer (Sharp)
+        # Adjust video to fit target width
         fg = clip.resized(width=target_w)
         
         if fg.h > target_h:
-            # Si el video es más alto que la pantalla, recortamos el alto
+            # If video is taller than target, crop the height
             if self.use_facetracking and path:
-                # Seguimiento facial en el recorte vertical
+                # Face tracking for vertical crop
                 def get_fg_frame(get_frame, t):
                     frame = get_frame(t)
                     _, face_y, _, _ = path.get_at(t)
-                    # Escalar face_y al tamaño del clip redimensionado (fg)
+                    # Scale face_y to the resized clip height (fg)
                     scale_y = fg.h / clip.h
                     y_center = int(face_y * scale_y)
                     
                     y1 = max(0, min(y_center - (target_h // 2), fg.h - target_h))
-                    # Como ya redimensionamos 'fg', necesitamos extraer del frame de 'fg'
-                    # Pero fg es un clip derivado, mejor trabajar sobre el frame redimensionado
-                    # MoviePy transform nos da el frame del clip actual (fg)
                     return frame[y1:y1+target_h, :]
                 
                 fg = fg.transform(get_fg_frame)
             else:
-                # Recorte central estático
+                # Static center crop
                 fg = fg.cropped(y_center=fg.h//2, height=target_h)
         
         fg = fg.with_position("center")
 
-        # 4. COMPOSICIÓN FINAL
+        # 4. Final Composition
         layers = [bg, fg]
         final_composition = CompositeVideoClip(layers, size=(target_w, target_h))
         
         if clip.audio:
             final_composition = final_composition.with_audio(clip.audio)
             
-        logger.info(f"✅ BlurredLayout aplicado (FaceTracking: {self.use_facetracking})")
+        logger.info(f"✅ BlurredLayout applied (FaceTracking: {self.use_facetracking})")
         return final_composition
