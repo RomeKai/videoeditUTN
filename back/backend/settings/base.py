@@ -1,34 +1,49 @@
-from backend.settings.base import env, BASE_DIR
+from pathlib import Path
 import os
+import environ
 
-# --- PRODUCTION MODE ---
-# DEBUG must be False in production
-DEBUG = False
+# 1. Path Configuration
+# Located in backend/settings/base.py, move up 3 levels to reach the root
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
-# Allowed hosts from .env
-ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=[])
+# 2. Initialize Environ
+env = environ.Env()
+# Read .env file from root
+environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 
-# --- CORS (Restrictive) ---
-CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[])
+# --- SECURITY ---
+SECRET_KEY = env('SECRET_KEY', default='django-insecure-temp-key-dev')
+DEBUG = env.bool('DEBUG', default=False)
+ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['*'])
 
-# --- SECURITY (Hardening) ---
-# SECURE_SSL_REDIRECT = True
-# SESSION_COOKIE_SECURE = True
-# CSRF_COOKIE_SECURE = True
-# SECURE_BROWSER_XSS_FILTER = True
-# SECURE_CONTENT_TYPE_NOSNIFF = True
+# --- APPLICATIONS (Modular) ---
+DJANGO_APPS = [
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+]
 
-# --- STATIC & MEDIA STORAGE (WhiteNoise / S3) ---
-# WhiteNoise configuration (Standard for Docker deployments)
-# INSTALLED_APPS += ["whitenoise.runserver_nostatic"]
-# MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
-# STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+THIRD_PARTY_APPS = [
+    'rest_framework',
+    'corsheaders',
+    'drf_spectacular',
+]
 
-# AWS S3 Storage (Enable when bucket is ready)
-# if env('AWS_ACCESS_KEY_ID', default=None):
-#     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
-#     STATICFILES_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
--- MIDDLEWARE ---
+LOCAL_APPS = [
+    'apps.core',
+    'apps.users',
+    'apps.videos',
+    'apps.ia',
+    'apps.payments',
+    'apps.integrations',
+]
+
+INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
+
+# --- MIDDLEWARE ---
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
