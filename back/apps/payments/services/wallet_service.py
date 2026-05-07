@@ -1,6 +1,7 @@
 from django.db import transaction
 from decimal import Decimal
 from ..models import Wallet, Transaction
+from apps.videos.tasks import process_video_pipeline
 
 class PaymentError(Exception):
     """Base exception for payment-related errors."""
@@ -11,7 +12,7 @@ class InsufficientFundsError(PaymentError):
     pass
 
 @transaction.atomic
-def reserve_funds(wallet_id, amount: Decimal, user=None, description="") -> Transaction:
+def reserve_funds(wallet_id, amount: Decimal, project_id=None, user=None, description="") -> Transaction:
     """
     Locks funds in the workspace's wallet before an operation begins.
     Uses select_for_update to prevent race conditions.
@@ -41,6 +42,12 @@ def reserve_funds(wallet_id, amount: Decimal, user=None, description="") -> Tran
         status=Transaction.Status.RESERVED,
         description=description
     )
+    
+    # DISPARO DE TAREA CELERY (Sincronización con Video Factory)
+    if project_id:
+        # Importación local para evitar circularidad extrema si fuera necesario, 
+        # pero aquí lo hacemos al inicio si el diseño lo permite.
+        process_video_pipeline.delay(project_id, transaction_id=txn.id)
     
     return txn
 
