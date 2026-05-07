@@ -11,5 +11,6 @@ def create_workspace_wallet(sender, instance, created, **kwargs):
     if created:
         Wallet.objects.create(
             workspace=instance,
-            balance=0.00
+            available_balance=0.00,
+            reserved_balance=0.00
         )

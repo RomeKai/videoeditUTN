@@ -12,7 +12,7 @@ class TransactionInline(admin.TabularInline):
 
 @admin.register(Wallet)
 class WalletAdmin(admin.ModelAdmin):
-    list_display = ('workspace', 'balance', 'updated_at')
+    list_display = ('workspace', 'available_balance', 'reserved_balance', 'updated_at')
     search_fields = ('workspace__name',)
     inlines = [TransactionInline]
 
