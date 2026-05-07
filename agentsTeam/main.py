@@ -10,7 +10,7 @@ def run_factory(user_requirement: str):
     """
     Orchestrates the AI Engineering Factory with strict rate limits and targeted tasks.
     """
-    print(f"🚀 Initializing Engineering Factory for: {user_requirement}")
+    print(f"Initializing Engineering Factory for: {user_requirement}")
     
     # Initialize Agents from the Factory
     architect = EngineeringFactory.architect()
@@ -69,12 +69,32 @@ def run_factory(user_requirement: str):
     return factory_crew.kickoff()
 
 if __name__ == "__main__":
-    print("✦ AI Engineering Factory Online (Survival Mode) ✦")
+    print("AI Engineering Factory Online (Survival Mode)")
     requirement = "Implement the Coin reservation logic (Transaction.reserve_funds) in the wallet system."
     
     try:
         result = run_factory(requirement)
-        print("\n\n✅ [FACTORY DELIVERY COMPLETED]")
+        print("\n\n[FACTORY DELIVERY COMPLETED]")
+        
+        # PERSISTENCE LAYER
+        try:
+            # Ensure delivery directory exists
+            os.makedirs("delivery", exist_ok=True)
+            
+            # Access pydantic data
+            delivery_code = result.final_source_code
+            
+            delivery_path = "delivery/latest_code.py"
+            with open(delivery_path, "w", encoding="utf-8") as f:
+                f.write(delivery_code)
+            
+            print(f"Code successfully persisted to: {delivery_path}")
+            print("--------------------------------------------------")
+        except AttributeError:
+            print("Warning: Could not extract final_source_code from result.")
+        except Exception as save_error:
+            print(f"Error saving delivery: {save_error}")
+
         print(result)
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\nError: {e}")
