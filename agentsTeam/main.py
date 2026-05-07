@@ -1,55 +1,80 @@
+import os
 from crewai import Crew, Task, Process
 from agents import EngineeringFactory
-from contracts import ArchitectureContract, QAApprovalContract
-import os
+from contracts import TechnicalSpecification, QAReport
 from dotenv import load_dotenv
 
 load_dotenv()
 
-def run_factory(requirement: str):
-    # Instantiate the team
+def run_factory(user_requirement: str):
+    """
+    Orchestrates the AI Engineering Factory with strict rate limits and targeted tasks.
+    """
+    print(f"🚀 Initializing Engineering Factory for: {user_requirement}")
+    
+    # Initialize Agents from the Factory
     architect = EngineeringFactory.architect()
-    developer = EngineeringFactory.engineer()
-    auditor = EngineeringFactory.qa_tester()
+    engineer = EngineeringFactory.engineer()
+    qa_auditor = EngineeringFactory.qa_tester()
 
-    # Task 1: Architectural Design
-    task_architecture = Task(
-        description=f"Analyze the following requirement: '{requirement}'. Scan the /back directory to understand the impact. Create a professional Architecture Contract.",
-        expected_output="A structured ArchitectureContract object with proposed files and design patterns.",
+    # 1. Analysis & Design Task: Targeted file reading to save tokens
+    analysis_task = Task(
+        description=(
+            f"Analyze the following requirement: '{user_requirement}'. "
+            "1. Read 'saas_context.md' for infrastructure rules. "
+            "2. Read the specific file 'back/apps/payments/models.py' to understand the current Wallet and Transaction logic. "
+            "3. Design a step-by-step technical implementation plan for Coin reservation."
+        ),
+        expected_output="A structured JSON TechnicalSpecification object.",
         agent=architect,
-        output_json=ArchitectureContract
+        output_pydantic=TechnicalSpecification
     )
 
-    # Task 2: Implementation
-    task_implementation = Task(
-        description="Based on the Architecture Contract, implement the necessary code. Use MoviePy 2.0+ and ensure all logic is decoupled and asynchronous.",
-        expected_output="The full source code for the modified or new files.",
-        agent=developer,
-        context=[task_architecture]
+    # 2. Implementation Task: Sequential context from Architect
+    implementation_task = Task(
+        description=(
+            "Based on the Architect's TechnicalSpecification: "
+            "1. Read 'back/apps/payments/models.py' again if needed. "
+            "2. Write the complete Python code for 'reserve_funds' with atomic rollback. "
+            "3. Ensure the implementation is decoupled and follows Django best practices."
+        ),
+        expected_output="Functional Python source code for the requested feature.",
+        agent=engineer,
+        context=[analysis_task]
     )
 
-    # Task 3: Quality Audit
-    task_audit = Task(
-        description="Review the implementation. Check for security (OAuth2), performance (CPU/Memory), and video consistency. Generate a QA Approval report.",
-        expected_output="A QAApprovalContract report confirming if the code is ready for production.",
-        agent=auditor,
-        context=[task_implementation],
-        output_json=QAApprovalContract
+    # 3. Quality Audit Task: Final validation
+    audit_task = Task(
+        description=(
+            "Audit the implementation for security and financial integrity: "
+            "1. Verify atomic rollback logic in the provided code. "
+            "2. Check for potential race conditions during fund reservation. "
+            "3. Provide the final approved version of the code."
+        ),
+        expected_output="A structured QAReport JSON.",
+        agent=qa_auditor,
+        context=[implementation_task],
+        output_pydantic=QAReport
     )
 
-    # Assemble the Crew
+    # Assemble the Crew with Strict Rate Limiting (max_rpm=3)
     factory_crew = Crew(
-        agents=[architect, developer, auditor],
-        tasks=[task_architecture, task_implementation, task_audit],
-        process=Process.sequential, # Strict engineering pipeline
+        agents=[architect, engineer, qa_auditor],
+        tasks=[analysis_task, implementation_task, audit_task],
+        process=Process.sequential,
+        max_rpm=3, # SHACKLE: Drastically reduce RPM to protect Free Tier
         verbose=True
     )
-
+    
     return factory_crew.kickoff()
 
 if __name__ == "__main__":
-    print("🚀 All-in-One Viral Studio Factory is Online.")
-    user_req = input("Enter the engineering requirement: ")
-    result = run_factory(user_req)
-    print("\n--- FINAL OUTPUT ---")
-    print(result)
+    print("✦ AI Engineering Factory Online (Survival Mode) ✦")
+    requirement = "Implement the Coin reservation logic (Transaction.reserve_funds) in the wallet system."
+    
+    try:
+        result = run_factory(requirement)
+        print("\n\n✅ [FACTORY DELIVERY COMPLETED]")
+        print(result)
+    except Exception as e:
+        print(f"\n❌ Error: {e}")

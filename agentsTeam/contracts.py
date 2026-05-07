@@ -1,6 +1,31 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict
 
+class TechnicalSpecification(BaseModel):
+    """
+    Blueprint defined by the Lead Architect before implementation.
+    Acts as a 'Technical Contract' for the Engineering team.
+    """
+    requirement_id: str = Field(description="Unique identifier for the requirement")
+    affected_files: List[str] = Field(description="List of files to be created or modified")
+    implementation_plan: List[str] = Field(description="Step-by-step logic and architecture design")
+    database_changes: List[str] = Field(description="Description of changes to Django models or migrations")
+    security_risk_assessment: str = Field(description="Analysis of potential security or performance risks")
+
+class QAReport(BaseModel):
+    """
+    Audit report for the Quality Assurance engineer to approve or reject a task.
+    Ensures engineering excellence and financial/system stability.
+    """
+    is_approved: bool = Field(description="True if the code is ready for production")
+    code_quality_score: float = Field(ge=0.0, le=10.0, description="Overall score from 1 to 10")
+    financial_integrity_check: bool = Field(description="Verifies that transaction rollbacks are properly handled")
+    performance_check: bool = Field(description="Verifies CPU/Memory optimization standards")
+    final_source_code: str = Field(description="The definitive and corrected code approved by QA")
+    audit_notes: str = Field(description="Technical feedback and justification for the decision")
+
+# --- Original Contracts (Kept for compatibility) ---
+
 class ArchitectureContract(BaseModel):
     """
     Blueprint defined by the Lead Architect before implementation.
