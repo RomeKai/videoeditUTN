@@ -7,6 +7,11 @@ class BrandKit(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey('users.Workspace', on_delete=models.CASCADE, related_name='brand_kits')
     name = models.CharField(max_length=100, default="Mi Marca Personal")
+    description = models.TextField(
+        blank=True, 
+        null=True, 
+        help_text="Detailed notes about the brand identity, tone of voice, and specific stylistic guidelines."
+    )
     
     primary_color = models.CharField(max_length=7, default="#FF0000")
     secondary_color = models.CharField(max_length=7, default="#FFFFFF")
