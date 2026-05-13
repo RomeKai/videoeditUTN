@@ -2,6 +2,8 @@ import os
 # Disable MediaPipe GPU errors before importing
 os.environ['MEDIAPIPE_DISABLE_GPU'] = '1'
 
+import cv2
+import numpy as np
 from moviepy import CompositeVideoClip, ColorClip
 import moviepy.video.fx as vfx 
 from apps.videos.services.layouts.interface import BaseLayout
@@ -9,6 +11,11 @@ from apps.videos.services.face_tracker import FaceTracker
 import logging
 
 logger = logging.getLogger(__name__)
+
+def apply_gaussian_blur(image, sigma=30):
+    """Effect function to apply blur using OpenCV."""
+    # OpenCV GaussianBlur kernel size must be odd and positive, or (0,0) to use sigma
+    return cv2.GaussianBlur(image, (0, 0), sigmaX=sigma, sigmaY=sigma)
 
 class BlurredLayout(BaseLayout):
     """
@@ -36,9 +43,9 @@ class BlurredLayout(BaseLayout):
         bg = bg.cropped(x_center=bg.w//2, y_center=bg.h//2, width=target_w, height=target_h)
         
         # Blur and darkening effects
-        # Note: In MoviePy 2.0+, effects are accessed via with_effects
+        # MoviePy 2.0+ uses with_effects, but for custom CV2 blur we use image_transform or transform
+        bg = bg.image_transform(lambda img: apply_gaussian_blur(img, sigma=30))
         bg = bg.with_effects([
-            vfx.GaussianBlur(sigma=30),
             vfx.MultiplyColor(factor=0.6)
         ])
 

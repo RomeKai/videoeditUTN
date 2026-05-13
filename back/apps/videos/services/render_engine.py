@@ -68,7 +68,8 @@ class RenderEngine:
             # Apply Layout Strategy (GoF Strategy Pattern)
             target_w, target_h = RenderEngine._get_target_resolution(project.aspect_ratio)
             use_ft = getattr(project, 'use_facetracking', False)
-            layout_strategy = get_layout_strategy(project.render_layout, target_w, target_h, use_facetracking=use_ft)
+            gp_pos = getattr(project, 'gameplay_position', 'center')
+            layout_strategy = get_layout_strategy(project.render_layout, target_w, target_h, use_facetracking=use_ft, gameplay_pos=gp_pos)
             video_layout_processed = layout_strategy.apply(original_clip)
             
             # Subtitle Processing

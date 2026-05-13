@@ -64,6 +64,11 @@ class VideoProject(models.Model):
         SPLIT = 'split', 'Split Screen (Gaming)'      # Arriba/Abajo
         PIP = 'pip', 'Picture in Picture'             # Gamer en esquina
 
+    class GameplayPosition(models.TextChoices):
+        LEFT = 'left', 'Izquierda'
+        CENTER = 'center', 'Centro'
+        RIGHT = 'right', 'Derecha'
+
     # --- Campos del Modelo ---
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey('users.Workspace', on_delete=models.CASCADE, related_name='projects')
@@ -80,6 +85,7 @@ class VideoProject(models.Model):
     # Configuración de Renderizado (NUEVOS)
     aspect_ratio = models.CharField(max_length=10, choices=AspectRatio.choices, default=AspectRatio.PORTRAIT_9_16)
     render_layout = models.CharField(max_length=10, choices=Layout.choices, default=Layout.FILL)
+    gameplay_position = models.CharField(max_length=10, choices=GameplayPosition.choices, default=GameplayPosition.CENTER)
     
     # Subtítulos Pro
     class SubtitleSize(models.TextChoices):
