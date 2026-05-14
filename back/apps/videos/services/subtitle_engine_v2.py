@@ -74,55 +74,84 @@ class SubtitleEngineV2:
 
     def _render_karaoke_frame(self, chunk: SubtitleSegmentV2, t: float, font_size: int, video_w: int):
         """
-        Renders a single frame of a subtitle chunk with the current word highlighted.
+        Renders a multi-line subtitle frame with the current word highlighted.
+        Ensures text never overflows video_w.
         """
-        # Determine which word is currently active
+        # 1. Setup
         active_word_index = -1
         for i, word in enumerate(chunk.words):
             if word.start <= t <= word.end:
                 active_word_index = i
                 break
-        
-        # If no word is active (e.g. gap), default to the first or last depending on time
         if active_word_index == -1:
             if t < chunk.words[0].start: active_word_index = 0
             else: active_word_index = len(chunk.words) - 1
 
-        # Use Pillow to render multi-color text
         font = ImageFont.truetype(self.font_abs_path, font_size)
+        max_content_w = int(video_w * 0.85) # 85% of screen width
         
-        # Calculate positions for each word
-        draw_words = []
-        total_w = 0
-        space_w = draw.textbbox((0, 0), " ", font=font)[2] if 'draw' in locals() else 10 # approximate
+        # 2. Layout Logic (Multi-line Word Wrap)
+        lines = []
+        current_line = []
+        current_line_w = 0
+        space_w = 15 # fixed space width for simplicity in V2
         
-        # Pre-measure all words
         temp_img = Image.new("RGBA", (video_w, 200))
         temp_draw = ImageDraw.Draw(temp_img)
-        
+
         for i, word in enumerate(chunk.words):
-            w = temp_draw.textbbox((0, 0), word.text.upper(), font=font)[2]
+            text = word.text.upper()
+            w = temp_draw.textbbox((0, 0), text, font=font)[2]
             color = self.config.highlight_color if i == active_word_index else self.config.primary_color
-            draw_words.append({"text": word.text.upper(), "width": w, "color": color})
-            total_w += w
-        
-        total_w += (len(draw_words) - 1) * 15 # spaces
-        
-        # Create final image
+            
+            # If word exceeds max width alone, it's a huge word, but usually it fits.
+            # If current line + word exceeds max width, move to next line.
+            if current_line and (current_line_w + space_w + w) > max_content_w:
+                lines.append({"words": current_line, "width": current_line_w})
+                current_line = []
+                current_line_w = 0
+            
+            if current_line:
+                current_line_w += space_w
+            
+            current_line.append({"text": text, "width": w, "color": color})
+            current_line_w += w
+            
+        if current_line:
+            lines.append({"words": current_line, "width": current_line_w})
+
+        # 3. Final Image Generation
+        line_height = int(font_size * 1.3)
         padding = 40
-        img_w = int(total_w + padding * 2)
-        img_h = int(font_size * 2)
+        img_w = video_w # Always use full width for centering stability
+        img_h = (len(lines) * line_height) + (padding * 2)
+        
+        # Ensure img_h is even
+        img_h = img_h if img_h % 2 == 0 else img_h + 1
+        
         img = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
         
-        curr_x = padding
-        y_pos = img_h // 2
+        curr_y = padding + (line_height // 2)
         
-        for i, dw in enumerate(draw_words):
-            # Draw stroke/outline
-            draw.text((curr_x, y_pos), dw["text"], font=font, fill=dw["color"], 
-                      stroke_width=self.config.stroke_width, stroke_fill=self.config.stroke_color, anchor="lm")
-            curr_x += dw["width"] + 15
+        for line in lines:
+            # Start X for this line to be centered
+            curr_x = (img_w - line["width"]) // 2
+            
+            for word_obj in line["words"]:
+                # Draw word with stroke
+                draw.text(
+                    (curr_x, curr_y), 
+                    word_obj["text"], 
+                    font=font, 
+                    fill=word_obj["color"], 
+                    stroke_width=self.config.stroke_width, 
+                    stroke_fill=self.config.stroke_color, 
+                    anchor="lm"
+                )
+                curr_x += word_obj["width"] + space_w
+            
+            curr_y += line_height
             
         return np.array(img)
 
