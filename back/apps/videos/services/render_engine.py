@@ -6,7 +6,7 @@ from moviepy import VideoFileClip
 from apps.videos.models import VideoClip
 from apps.videos.services.layouts import get_layout_strategy
 from apps.videos.services.transcription_engine import TranscriptionEngine
-from apps.videos.services.subtitle_engine import SubtitleEngine, StyleConfig
+from apps.videos.services.subtitle_engine_v2 import SubtitleEngineV2, SubtitleConfigV2
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,19 @@ class RenderEngine:
                 new_start = max(0.0, seg['start'] - clip_start)
                 new_end = min(clip_end - clip_start, seg['end'] - clip_start)
                 if new_end > new_start:
-                    clip_segments.append({"text": seg['text'], "start": new_start, "end": new_end})
+                    # Maintain word metadata if present
+                    new_seg = {"text": seg['text'], "start": new_start, "end": new_end}
+                    if "words" in seg:
+                        new_words = []
+                        for w in seg["words"]:
+                            if w['end'] > clip_start and w['start'] < clip_end:
+                                new_words.append({
+                                    "text": w["text"],
+                                    "start": max(0.0, w["start"] - clip_start),
+                                    "end": min(clip_end - clip_start, w["end"] - clip_start)
+                                })
+                        new_seg["words"] = new_words
+                    clip_segments.append(new_seg)
         return clip_segments
 
     @staticmethod
@@ -72,41 +84,39 @@ class RenderEngine:
             layout_strategy = get_layout_strategy(project.render_layout, target_w, target_h, use_facetracking=use_ft, gameplay_pos=gp_pos)
             video_layout_processed = layout_strategy.apply(original_clip)
             
-            # Subtitle Processing
+            # Advanced Subtitle Processing (V2)
             if getattr(project, 'add_subtitles', True):
                 existing_transcription = project.metadata.get('transcription', [])
                 
-                # Configuration options and Mapping
-                sub_color = getattr(project, 'subtitle_color', '#FFFF00')
-                sub_size = getattr(project, 'subtitle_size', 'medium')
-                sub_pos = getattr(project, 'subtitle_position', 'bottom')
-                max_w = getattr(project, 'subtitle_words_per_segment', 3)
-                
-                size_map = {"small": 0.04, "medium": 0.06, "large": 0.09}
-                pos_map = {"top": 0.20, "center": 0.50, "bottom": 0.85}
-                
-                config = StyleConfig(
+                # Configuration options mapped from project/defaults
+                sub_config = SubtitleConfigV2(
                     font_path='Montserrat-Bold.ttf',
-                    font_size_percent=size_map.get(sub_size, 0.06),
-                    primary_color=sub_color,
-                    y_position_percent=pos_map.get(sub_pos, 0.85)
+                    font_size_percent=0.055,
+                    user_scale_factor=getattr(project, 'subtitle_scale_factor', 1.0),
+                    primary_color=getattr(project, 'subtitle_color', '#FFFFFF'),
+                    highlight_color='#FFFF00',
+                    stroke_color='#000000',
+                    stroke_width=6,
+                    words_per_box=getattr(project, 'subtitle_words_per_segment', 3),
+                    y_position_percent=0.75,
+                    animation_type='pop'
                 )
                 
-                subtitler = SubtitleEngine(style_config=config)
+                subtitler = SubtitleEngineV2(config=sub_config)
 
                 if existing_transcription:
-                    raw_segments = RenderEngine._slice_segments(existing_transcription, clip_obj.start_time, clip_obj.end_time)
-                    segments = TranscriptionEngine.group_words(raw_segments, max_words=max_w)
+                    segments = RenderEngine._slice_segments(existing_transcription, clip_obj.start_time, clip_obj.end_time)
                 else:
-                    # Fallback transcription if missing in metadata
+                    # Fallback transcription
                     temp_audio_path = os.path.join(temp_dir, f"audio_{clip_obj.id}.mp3")
                     original_clip.audio.write_audiofile(temp_audio_path, codec='mp3', logger=None)
                     transcriber = TranscriptionEngine(model_size="tiny") 
-                    raw_segments = transcriber.transcribe(temp_audio_path, word_timestamps=True)
-                    segments = TranscriptionEngine.group_words(raw_segments, max_words=max_w)
+                    segments = transcriber.transcribe(temp_audio_path, word_timestamps=True)
 
                 if segments:
-                    final_clip = subtitler.add_subtitles(video_layout_processed, segments)
+                    subtitle_clips = subtitler.generate_clips(video_layout_processed, segments)
+                    final_clip = CompositeVideoClip([video_layout_processed] + subtitle_clips, size=video_layout_processed.size)
+                    final_clip.duration = video_layout_processed.duration
                 else:
                     final_clip = video_layout_processed
             else:
