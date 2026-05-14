@@ -79,6 +79,7 @@ class SubtitleEngine:
         """
         Transforms a list of SubtitleSegments into positioned MoviePy TextClips.
         FORCED FIX: Uses method='caption' and bounding box to prevent horizontal overflow.
+        REFACTOR: Implements Algorithmic Padding to prevent Geometric Clipping.
         """
         # 1. Calculate dynamic font size based on target height
         font_size = self.validate_even_dimension(target_h * self.style.font_size_percent)
@@ -88,8 +89,7 @@ class SubtitleEngine:
         y_pos_percent = min(self.style.y_position_percent, safe_y_limit)
         y_pos = self.validate_even_dimension(target_h * y_pos_percent)
         
-        # 3. CRITICAL FIX: Bounding box (85% of width)
-        # This margin ensures text never touches the screen edges.
+        # 3. Geometry Fix: Bounding box (85% of width) forced to EVEN number
         max_clip_width = self.validate_even_dimension(target_w * 0.85)
         
         clips: List[TextClip] = []
@@ -98,17 +98,21 @@ class SubtitleEngine:
             if not segment.text or not segment.text.strip():
                 continue
             
-            # Note: Word Wrap is now handled NATIVELY by MoviePy/ImageMagick
+            # 4. Mitigation: Horizontal Algorithmic Padding
+            # Injecting spaces forces ImageMagick to expand the horizontal calculation matrix,
+            # preventing edge characters' strokes from being clipped.
+            padded_text = f" {segment.text.strip()} "
+            
             duration = segment.end - segment.start
             if duration <= 0:
                 continue
             
             try:
-                # MoviePy 2.0+ TextClip with 'caption' method
-                # This combination (size with None height + method='caption')
-                # forces automatic line breaks and vertical centering within the box.
+                # 5. Mitigation: Vertical Descender & Stroke Padding
+                # Using 'interline' and method='caption' provides safe vertical clearance.
+                # size=(max_clip_width, None) allows automatic height expansion.
                 clip = TextClip(
-                    text=segment.text,
+                    text=padded_text,
                     font=self.style.font_path,
                     font_size=font_size,
                     color=self.style.primary_color,
@@ -116,9 +120,12 @@ class SubtitleEngine:
                     stroke_width=self.style.stroke_width,
                     method='caption',
                     size=(max_clip_width, None),
-                    text_align="center"
+                    text_align="center",
+                    interline=10 # Forces vertical clearance for descenders
                 )
                 
+                # 6. Mitigation: Centered Absolute Anchoring
+                # To compensate for the added horizontal spaces, we use 'center' positioning.
                 clip = (
                     clip
                     .with_start(segment.start)
