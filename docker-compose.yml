@@ -36,6 +36,7 @@ services:
     environment:
       # ESTO ES CRUCIAL: Apunta a tu configuración de desarrollo
       - DJANGO_SETTINGS_MODULE=backend.settings.dev
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       - db
       - redis
@@ -54,8 +55,7 @@ services:
     environment:
       # ESTO ARREGLA EL ERROR "ImproperlyConfigured":
       - DJANGO_SETTINGS_MODULE=backend.settings.dev
-      # Forzamos la URL del broker por seguridad (aunque esté en settings)
-      - CELERY_BROKER_URL=redis://redis:6379/0
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       - db
       - redis

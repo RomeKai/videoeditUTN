@@ -35,6 +35,21 @@ def download_from_youtube(url, output_folder):
     return output_path
 
 @shared_task
+def render_clip_task(clip_id):
+    """
+    Task wrapper for the RenderEngine.render_clip method.
+    Allows for asynchronous rendering of individual clips.
+    """
+    logger.info(f"🎬 [RENDER TASK START] Rendering Clip {clip_id}")
+    from apps.videos.services.render_engine import RenderEngine
+    try:
+        RenderEngine.render_clip(clip_id)
+        return f"Clip {clip_id} rendered successfully"
+    except Exception as e:
+        logger.error(f"❌ [RENDER TASK FAILED] {clip_id}: {e}")
+        return f"Failed {clip_id}: {e}"
+
+@shared_task
 def process_video_pipeline(project_id, transaction_id=None):
     logger.info(f"🎬 [TASK START] Procesando Proyecto {project_id}")
     
