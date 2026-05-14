@@ -78,6 +78,7 @@ class SubtitleEngine:
     ) -> List[TextClip]:
         """
         Transforms a list of SubtitleSegments into positioned MoviePy TextClips.
+        FORCED FIX: Uses method='caption' and bounding box to prevent horizontal overflow.
         """
         # 1. Calculate dynamic font size based on target height
         font_size = self.validate_even_dimension(target_h * self.style.font_size_percent)
@@ -87,8 +88,9 @@ class SubtitleEngine:
         y_pos_percent = min(self.style.y_position_percent, safe_y_limit)
         y_pos = self.validate_even_dimension(target_h * y_pos_percent)
         
-        # 3. Bounding box (80% of width)
-        max_clip_width = self.validate_even_dimension(target_w * 0.8)
+        # 3. CRITICAL FIX: Bounding box (85% of width)
+        # This margin ensures text never touches the screen edges.
+        max_clip_width = self.validate_even_dimension(target_w * 0.85)
         
         clips: List[TextClip] = []
         
@@ -96,15 +98,17 @@ class SubtitleEngine:
             if not segment.text or not segment.text.strip():
                 continue
             
-            display_text = self._wrap_text(segment.text)
+            # Note: Word Wrap is now handled NATIVELY by MoviePy/ImageMagick
             duration = segment.end - segment.start
             if duration <= 0:
                 continue
             
             try:
-                # MoviePy 2.0+ TextClip
+                # MoviePy 2.0+ TextClip with 'caption' method
+                # This combination (size with None height + method='caption')
+                # forces automatic line breaks and vertical centering within the box.
                 clip = TextClip(
-                    text=display_text,
+                    text=segment.text,
                     font=self.style.font_path,
                     font_size=font_size,
                     color=self.style.primary_color,
