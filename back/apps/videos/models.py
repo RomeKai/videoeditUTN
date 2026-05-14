@@ -63,6 +63,8 @@ class VideoProject(models.Model):
         BLURRED = 'blurred', 'Fondo Borroso'          # Estilo moderno
         SPLIT = 'split', 'Split Screen (Gaming)'      # Arriba/Abajo
         PIP = 'pip', 'Picture in Picture'             # Gamer en esquina
+        VERSUS = 'versus', 'Versus (2 Personas)'      # Cara a Cara
+        ACTIVE = 'active', 'Speaker Dinámico'         # Seguir al que habla
 
     class GameplayPosition(models.TextChoices):
         LEFT = 'left', 'Izquierda'
@@ -86,6 +88,7 @@ class VideoProject(models.Model):
     aspect_ratio = models.CharField(max_length=10, choices=AspectRatio.choices, default=AspectRatio.PORTRAIT_9_16)
     render_layout = models.CharField(max_length=10, choices=Layout.choices, default=Layout.FILL)
     gameplay_position = models.CharField(max_length=10, choices=GameplayPosition.choices, default=GameplayPosition.CENTER)
+    speaker_tracking = models.BooleanField(default=False) # NUEVO: Switch para seguir al que habla
     
     # Subtítulos Pro
     class SubtitleSize(models.TextChoices):
