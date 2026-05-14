@@ -5,6 +5,7 @@ numpy
 ffmpeg-python
 # MoviePy compatible
 moviepy
+opencv-python-headless
 
 # --- Inteligencia Artificial ---
 openai-whisper
