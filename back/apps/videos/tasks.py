@@ -34,6 +34,114 @@ def download_from_youtube(url, output_folder):
         
     return output_path
 
+import time
+import random
+from datetime import timedelta
+from django.utils import timezone
+from django.db import transaction
+from django.core.cache import cache
+from apps.videos.models import VideoProject, VideoClip, ScheduledPost
+
+logger = logging.getLogger(__name__)
+
+class ThirdPartyAPIError(Exception):
+    """Exception raised when a social media API fails."""
+    pass
+
+@shared_task
+def dispatch_scheduled_posts_batch():
+    """
+    Orchestrator: Dispatches posts scheduled for the next hour.
+    Runs every hour via Celery Beat.
+    """
+    now = timezone.now()
+    window_end = now + timedelta(hours=1)
+    
+    # Batch query for scheduled posts in the next hour
+    scheduled_posts = ScheduledPost.objects.filter(
+        status=ScheduledPost.Status.SCHEDULED,
+        publish_at__range=(now, window_end)
+    )
+    
+    count = 0
+    for post in scheduled_posts:
+        with transaction.atomic():
+            # Lock the row for update and check status again to prevent race conditions
+            post_to_queue = ScheduledPost.objects.select_for_update().get(id=post.id)
+            if post_to_queue.status == ScheduledPost.Status.SCHEDULED:
+                post_to_queue.status = ScheduledPost.Status.QUEUED
+                post_to_queue.save()
+                
+                # Send to worker with specific ETA
+                upload_to_social_network.apply_async(
+                    args=[post_to_queue.id],
+                    eta=post_to_queue.publish_at
+                )
+                count += 1
+    
+    logger.info(f"🚀 [DISPATCHER] Queued {count} posts for distribution.")
+    return f"Queued {count} posts."
+
+@shared_task(bind=True, max_retries=3)
+def upload_to_social_network(self, post_id):
+    """
+    Worker: Uploads a video clip to the specified social network.
+    Uses Distributed Locking to prevent cross-site double posting.
+    """
+    lock_id = f"lock_post_publish_{post_id}"
+    # 1. Distributed Lock (Timeout 5 minutes)
+    # cache.add returns False if the key already exists
+    if not cache.add(lock_id, "locked", 300):
+        logger.warning(f"🔒 [WORKER] Aborting post {post_id}: Task already running or locked.")
+        return "Locked"
+
+    try:
+        with transaction.atomic():
+            post = ScheduledPost.objects.select_for_update().get(id=post_id)
+            if post.status == ScheduledPost.Status.PUBLISHED:
+                return "Already Published"
+            
+            post.status = ScheduledPost.Status.PROCESSING
+            post.save()
+
+        logger.info(f"📤 [WORKER] Publishing {post.platform} post {post_id}...")
+        
+        # 2. Simulation of Third-Party API Call
+        time.sleep(2)
+        
+        # 20% failure rate for simulation
+        if random.random() < 0.20:
+            raise ThirdPartyAPIError("Connection timeout with social media API.")
+        
+        # 3. Success state
+        post.status = ScheduledPost.Status.PUBLISHED
+        post.error_log = None
+        post.save()
+        logger.info(f"✅ [WORKER] Post {post_id} successfully published on {post.platform}.")
+        
+        return f"Published to {post.platform}"
+
+    except ThirdPartyAPIError as exc:
+        # 4. Resilience: Exponential Backoff
+        logger.error(f"⚠️ [WORKER] API Error for post {post_id}: {exc}")
+        post.retry_count += 1
+        post.error_log = str(exc)
+        post.save()
+        
+        # Calculate countdown: 60s, 360s, 1200s...
+        raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+
+    except Exception as e:
+        logger.error(f"❌ [WORKER] Critical failure for post {post_id}: {e}")
+        post.status = ScheduledPost.Status.FAILED
+        post.error_log = str(e)
+        post.save()
+        return "Failed"
+
+    finally:
+        # 5. Cierre: Liberar el lock
+        cache.delete(lock_id)
+
 @shared_task
 def render_clip_task(clip_id):
     """

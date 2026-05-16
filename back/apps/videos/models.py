@@ -150,6 +150,51 @@ class VideoClip(models.Model):
     def __str__(self):
         return self.title
 
+class ScheduledPost(models.Model):
+    """
+    State Machine for social media distribution.
+    Orchestrates when and where a video clip is published.
+    """
+    class Platform(models.TextChoices):
+        TIKTOK = 'TIKTOK', 'TikTok'
+        INSTAGRAM_REELS = 'INSTAGRAM_REELS', 'Instagram Reels'
+        YOUTUBE_SHORTS = 'YOUTUBE_SHORTS', 'YouTube Shorts'
+
+    class Status(models.TextChoices):
+        DRAFT = 'DRAFT', 'Borrador'
+        SCHEDULED = 'SCHEDULED', 'Programado'
+        QUEUED = 'QUEUED', 'En Cola (ETA)'
+        PROCESSING = 'PROCESSING', 'Publicando...'
+        PUBLISHED = 'PUBLISHED', 'Publicado'
+        FAILED = 'FAILED', 'Fallido'
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    video_clip = models.ForeignKey(VideoClip, on_delete=models.CASCADE, related_name='scheduled_posts')
+    
+    platform = models.CharField(max_length=20, choices=Platform.choices)
+    publish_at = models.DateTimeField(verbose_name="Publish Date (UTC)")
+    
+    status = models.CharField(
+        max_length=20, 
+        choices=Status.choices, 
+        default=Status.DRAFT
+    )
+    
+    error_log = models.TextField(null=True, blank=True)
+    retry_count = models.IntegerField(default=0)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['publish_at']
+        indexes = [
+            models.Index(fields=['status', 'publish_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.platform} @ {self.publish_at}"
+
 
 # --- 4. LAYERS ---
 class ClipLayer(models.Model):
