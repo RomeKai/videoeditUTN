@@ -4,8 +4,12 @@ from .models import Wallet, Transaction, SubscriptionPlan
 
 @admin.register(SubscriptionPlan)
 class SubscriptionPlanAdmin(admin.ModelAdmin):
-    list_display = ('name', 'max_video_duration_seconds', 'max_resolution', 'has_watermark', 'base_render_discount', 'is_active')
-    list_filter = ('is_active', 'max_resolution', 'has_watermark')
+    list_display = (
+        'name', 'max_video_duration_seconds', 'max_resolution', 
+        'has_watermark', 'base_discount_rate', 'allow_scheduling', 
+        'allow_crossposting', 'has_seo_optimization', 'has_thumbnail_engine', 'is_active'
+    )
+    list_filter = ('is_active', 'max_resolution', 'has_watermark', 'allow_scheduling', 'has_seo_optimization')
     search_fields = ('name',)
 
 @admin.register(Wallet)

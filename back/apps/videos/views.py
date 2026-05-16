@@ -59,8 +59,8 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"error": f"Error al guardar proyecto: {str(e)}"}, status=500)
 
-        # 4. CÁLCULO DE COSTO DINÁMICO (FINOPS V2)
-        from apps.payments.services.pricing_engine import PricingEngine, PlanLimitExceededError
+        # 4. CÁLCULO DE COSTO DINÁMICO (FINOPS V3)
+        from apps.payments.services.pricing_engine import PricingEngine, PlanLimitExceededError, FeatureNotAllowedError
         
         cost_in_tokens = Decimal('0.0')
         duration_seconds = 0
@@ -72,21 +72,27 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
                 with VideoFileClip(project.source_file.path) as clip:
                     duration_seconds = int(clip.duration)
                 
-                # Calculamos costo usando el motor oficial
+                # Detectamos features solicitadas (estos campos vendrán del frontend o metadata)
+                features_requested = {
+                    'seo_optimization': project.metadata.get('use_seo', False),
+                    'ai_thumbnail': project.metadata.get('use_ai_thumbnail', False),
+                }
+
+                # Calculamos costo usando el motor oficial V3
                 cost_in_tokens = PricingEngine.calculate_render_cost(
                     duration_seconds=duration_seconds,
-                    uses_ai_subtitles=project.add_subtitles,
-                    resolution=project.aspect_ratio, # Por ahora usamos aspect_ratio como proxy de res
+                    resolution=project.aspect_ratio, # '720p', '1080p', etc.
+                    features_requested=features_requested,
                     plan=workspace.subscription_plan
                 )
                 
-            except PlanLimitExceededError as e:
+            except (PlanLimitExceededError, FeatureNotAllowedError) as e:
                 project.delete()
                 return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
             except Exception as e:
                 project.delete()
-                logger.error(f"Error calculando costo: {e}")
-                return Response({"error": "El archivo de video es ilegible o corrupto."}, status=status.HTTP_400_BAD_REQUEST)
+                logger.error(f"Error calculando costo V3: {e}")
+                return Response({"error": "Error interno al procesar el presupuesto del video."}, status=status.HTTP_400_BAD_REQUEST)
         
         # CASO B: URL (YouTube/Vimeo)
         elif project.video_url:

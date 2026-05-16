@@ -17,16 +17,15 @@ def create_default_workspace(sender, instance, created, **kwargs):
         default_name = instance.username or instance.email.split('@')[0]
         workspace_name = f"Espacio de {default_name}"
 
-        # Intentamos obtener el plan Free por defecto
-        free_plan = SubscriptionPlan.objects.filter(name='Free').first()
+        # Intentamos obtener el plan Starter por defecto
+        default_plan = SubscriptionPlan.objects.filter(name='Starter').first()
 
         # 1. Crear el Workspace
         workspace = Workspace.objects.create(
             name=workspace_name, 
             owner=instance,
-            subscription_plan=free_plan
+            subscription_plan=default_plan
         )
-
         # 2. Vincular al usuario como ADMIN
         WorkspaceMember.objects.create(
             workspace=workspace,
