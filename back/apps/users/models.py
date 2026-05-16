@@ -47,7 +47,13 @@ class Workspace(models.Model):
     owner = models.ForeignKey(User, on_delete=models.PROTECT, related_name='owned_workspaces')
     
     # El Plan y los Límites viven aquí
-    current_plan = models.CharField(max_length=20, choices=PlanType.choices, default=PlanType.FREE)
+    subscription_plan = models.ForeignKey(
+        'payments.SubscriptionPlan', 
+        on_delete=models.PROTECT, 
+        related_name='workspaces',
+        null=True,
+        blank=True
+    )
     
     created_at = models.DateTimeField(auto_now_add=True)
     

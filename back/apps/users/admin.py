@@ -38,7 +38,7 @@ class WorkspaceMemberWorkspaceInline(admin.TabularInline):
 
 @admin.register(Workspace)
 class WorkspaceAdmin(admin.ModelAdmin):
-    list_display = ('name', 'owner', 'current_plan', 'created_at')
-    list_filter = ('current_plan',)
+    list_display = ('name', 'owner', 'subscription_plan', 'created_at')
+    list_filter = ('subscription_plan',)
     search_fields = ('name', 'owner__email')
     inlines = [WorkspaceMemberWorkspaceInline]

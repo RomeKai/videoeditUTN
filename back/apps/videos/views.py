@@ -1,5 +1,7 @@
 ﻿import os
 import math
+import logging
+from decimal import Decimal
 from rest_framework import viewsets, permissions, parsers, status
 from rest_framework.response import Response
 from django.core.exceptions import ValidationError # Para capturar el error de saldo
@@ -57,37 +59,40 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"error": f"Error al guardar proyecto: {str(e)}"}, status=500)
 
-        # 4. CÁLCULO DE COSTO (TOKENS)
-        cost_in_tokens = 0
-        duration_minutes = 0
+        # 4. CÁLCULO DE COSTO DINÁMICO (FINOPS V2)
+        from apps.payments.services.pricing_engine import PricingEngine, PlanLimitExceededError
+        
+        cost_in_tokens = Decimal('0.0')
+        duration_seconds = 0
 
         # CASO A: Archivo Local
         if project.source_file:
             try:
-                from moviepy.video.io.VideoFileClip import VideoFileClip
-                # Usamos moviepy para leer la duración
-                clip = VideoFileClip(project.source_file.path)
-                duration_seconds = clip.duration
-                clip.close()
+                from moviepy import VideoFileClip
+                with VideoFileClip(project.source_file.path) as clip:
+                    duration_seconds = int(clip.duration)
                 
-                # Regla de negocio: 1 Token por minuto (mínimo 1)
-                duration_minutes = math.ceil(duration_seconds / 60)
-                cost_in_tokens = max(1, duration_minutes)
+                # Calculamos costo usando el motor oficial
+                cost_in_tokens = PricingEngine.calculate_render_cost(
+                    duration_seconds=duration_seconds,
+                    uses_ai_subtitles=project.add_subtitles,
+                    resolution=project.aspect_ratio, # Por ahora usamos aspect_ratio como proxy de res
+                    plan=workspace.subscription_plan
+                )
                 
-            except Exception as e:
-                # Si el archivo está corrupto, limpiamos y fallamos
+            except PlanLimitExceededError as e:
                 project.delete()
-                if os.path.exists(project.source_file.path):
-                    os.remove(project.source_file.path)
-                print(f"Error MoviePy: {e}")
-                return Response({"error": "El archivo de video es ilegible o corrupto."}, status=400)
+                return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
+            except Exception as e:
+                project.delete()
+                logger.error(f"Error calculando costo: {e}")
+                return Response({"error": "El archivo de video es ilegible o corrupto."}, status=status.HTTP_400_BAD_REQUEST)
         
         # CASO B: URL (YouTube/Vimeo)
         elif project.video_url:
-            # Como no sabemos la duración aún, cobramos 1 token por iniciar
-            # El worker puede ajustar el costo después si es necesario
-            duration_minutes = 0 
-            cost_in_tokens = 1   
+            # Para URLs, reservamos un costo base de 10 minutos (provisional)
+            # El worker ajustará el costo real tras la descarga
+            cost_in_tokens = Decimal('10.0')
 
         # 5. COBRO (RESERVA DE FONDOS)
         try:

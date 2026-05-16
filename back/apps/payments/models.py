@@ -5,6 +5,39 @@ from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
 from apps.users.models import Workspace # Importamos Workspace, no User
 
+class SubscriptionPlan(models.Model):
+    """
+    Tier-based feature flags and pricing configuration.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=50, unique=True, verbose_name=_("Plan Name"))
+    
+    # Limits & Features
+    max_video_duration_seconds = models.IntegerField(default=60, verbose_name=_("Max Duration (sec)"))
+    max_members = models.IntegerField(default=1, verbose_name=_("Max Members"))
+    has_watermark = models.BooleanField(default=True, verbose_name=_("Has Watermark"))
+    max_resolution = models.CharField(
+        max_length=10, 
+        default='720p', 
+        choices=[('720p', '720p'), ('1080p', '1080p'), ('4K', '4K')],
+        verbose_name=_("Max Resolution")
+    )
+    
+    # FinOps
+    base_render_discount = models.DecimalField(
+        max_digits=5, 
+        decimal_places=2, 
+        default=0.00, 
+        help_text=_("Ej: 0.20 for 20% discount"),
+        verbose_name=_("Base Render Discount")
+    )
+    
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
+
 class Wallet(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     

@@ -63,10 +63,19 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         if 'render_layout' in raw: project.render_layout = raw['render_layout']
         elif 'layout' in raw: project.render_layout = raw['layout']
         
-        # Inyección de subtítulos
+        # New Layout Controls
+        if 'gameplay_position' in raw: project.gameplay_position = raw['gameplay_position']
+        if 'speaker_tracking' in raw: 
+            project.speaker_tracking = str(raw['speaker_tracking']).lower() in ['true', '1', 't', 'y', 'yes']
+
+        # Subtitle Controls
         if 'add_subtitles' in raw:
             val = raw['add_subtitles']
             project.add_subtitles = str(val).lower() in ['true', '1', 't', 'y', 'yes']
+        
+        if 'subtitle_color' in raw: project.subtitle_color = raw['subtitle_color']
+        if 'subtitle_scale_factor' in raw: project.subtitle_scale_factor = float(raw['subtitle_scale_factor'])
+        if 'subtitle_words_per_segment' in raw: project.subtitle_words_per_segment = int(raw['subtitle_words_per_segment'])
             
         # Inyección de FaceTracking
         if 'use_facetracking' in raw:
