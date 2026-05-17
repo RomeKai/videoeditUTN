@@ -42,9 +42,11 @@ class VideoProject(models.Model):
         CUSTOM = 'custom', 'Personalizado'
 
     class Status(models.TextChoices):
-        PENDING = 'pending', 'En Cola'
-        PROCESSING = 'processing', 'Analizando IA'
-        READY = 'ready', 'Listo'
+        UPLOADED = 'uploaded', 'Subido'
+        INGESTING = 'ingesting', 'Ingesta / Analizando IA'
+        AWAITING_APPROVAL = 'awaiting_approval', 'Esperando Aprobación'
+        RENDERING = 'rendering', 'Renderizando'
+        COMPLETED = 'completed', 'Completado'
         FAILED = 'failed', 'Error'
 
     class IntelligenceLevel(models.TextChoices):
@@ -78,12 +80,18 @@ class VideoProject(models.Model):
     
     title = models.CharField(max_length=255, default="Nuevo Proyecto")
     
+    # Almacenamiento Cloud
+    original_s3_key = models.CharField(max_length=1024, blank=True, null=True, verbose_name="Original S3 Key")
+    proxy_s3_key = models.CharField(max_length=1024, blank=True, null=True, verbose_name="Proxy S3 Key")
+
     # Configuración General
     project_type = models.CharField(max_length=20, choices=Type.choices, default=Type.REPURPOSE)
     editing_style = models.CharField(max_length=20, choices=EditingStyle.choices, default=EditingStyle.DYNAMIC)
     intelligence_level = models.CharField(max_length=10, choices=IntelligenceLevel.choices, default=IntelligenceLevel.FAST)
+    auto_render_bypass = models.BooleanField(default=False, help_text="Si es True, salta el paso de aprobación y renderiza directo.")
     brand_kit = models.ForeignKey(BrandKit, on_delete=models.SET_NULL, null=True, blank=True)
     
+    # ... (skipping some lines for brevity in instruction, but including them in new_string) ...
     # Configuración de Renderizado (NUEVOS)
     aspect_ratio = models.CharField(max_length=10, choices=AspectRatio.choices, default=AspectRatio.PORTRAIT_9_16)
     render_layout = models.CharField(max_length=10, choices=Layout.choices, default=Layout.FILL)
@@ -116,7 +124,8 @@ class VideoProject(models.Model):
     video_url = models.URLField(max_length=500, null=True, blank=True, help_text="URL de YouTube/Vimeo si no se sube archivo")
     
     metadata = models.JSONField(default=dict, blank=True)
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    ai_rationale_log = models.JSONField(default=dict, blank=True, verbose_name="AI Rationale")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.UPLOADED)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

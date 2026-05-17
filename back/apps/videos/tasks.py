@@ -255,161 +255,130 @@ def render_clip_task(clip_id):
         logger.error(f"❌ [RENDER TASK FAILED] {clip_id}: {e}")
         return f"Failed {clip_id}: {e}"
 
-@shared_task
-def process_video_pipeline(project_id, transaction_id=None):
-    logger.info(f"🎬 [TASK START] Procesando Proyecto {project_id}")
-    
+@celery_app.task(bind=True, max_retries=2)
+def process_initial_ingestion(self, project_id):
+    """
+    Multimodal Ingestion Pipeline (Paper Edit V1 + Video Sync)
+    1. Download/Obtain Source
+    2. Parallel: Transcription (Whisper) & Proxy Generation (FFmpeg)
+    3. AI Selection & Rationale
+    4. S3 Offloading
+    5. State Bifurcation (Bypass vs Awaiting Approval)
+    """
+    logger.info(f"🚀 [INGESTION] Starting project {project_id}")
+    from apps.videos.services.s3_service import S3StorageManager
+    from apps.videos.services.transcription_engine import TranscriptionEngine
+    import subprocess
+
     try:
         project = VideoProject.objects.get(id=project_id)
-        if transaction_id:
-            try:
-                tx = Transaction.objects.get(id=transaction_id)
-            except Transaction.DoesNotExist:
-                tx = None
-        
-        project.status = 'processing' # Asegúrate de que coincida con tus choices del modelo
+        project.status = VideoProject.Status.INGESTING
         project.save()
 
-        # --- FASE 1: OBTENCIÓN (Descarga) ---
+        # --- 1. OBTAIN SOURCE ---
         if not project.source_file and project.video_url:
-            # Soporte para archivos locales (para tests)
-            if os.path.exists(project.video_url):
-                logger.info(f"📂 Usando archivo local: {project.video_url}")
-                with open(project.video_url, 'rb') as f:
-                    project.source_file.save(os.path.basename(project.video_url), File(f), save=True)
-            else:
-                logger.info(f"⬇️ Descargando de URL: {project.video_url}")
-                download_dir = os.path.join(settings.MEDIA_ROOT, 'videos', 'raw', 'downloads')
-                os.makedirs(download_dir, exist_ok=True)
-                
-                local_path = download_from_youtube(project.video_url, download_dir)
-                
-                # Guardamos en Django Storage
-                with open(local_path, 'rb') as f:
-                    project.source_file.save(os.path.basename(local_path), File(f), save=True)
-                
-                # Limpieza local
-                if os.path.exists(local_path):
-                    os.remove(local_path)
+            logger.info(f"⬇️ Downloading from URL: {project.video_url}")
+            download_dir = os.path.join(settings.MEDIA_ROOT, 'videos', 'raw', 'downloads')
+            os.makedirs(download_dir, exist_ok=True)
+            local_path = download_from_youtube(project.video_url, download_dir)
+            with open(local_path, 'rb') as f:
+                project.source_file.save(os.path.basename(local_path), File(f), save=True)
+            if os.path.exists(local_path): os.remove(local_path)
 
-        if not project.source_file:
-            raise Exception("No video source found (ni archivo ni URL)")
+        source_path = project.source_file.path
+        temp_dir = os.path.dirname(source_path)
 
-        video_path = project.source_file.path
-
-        # --- FASE 1.5: DATOS TÉCNICOS ---
-        logger.info("📏 Calculando duración y resolución...")
-        duration = 0
-        try:
-            # 🔥 IMPORTACIÓN LAZY: MoviePy
-            from moviepy.video.io.VideoFileClip import VideoFileClip
-            
-            with VideoFileClip(video_path) as clip:
-                duration = clip.duration
-                project.metadata['duration'] = duration
-                # Guardamos resolución como lista/tupla simple para que sea serializable en JSON
-                project.metadata['resolution'] = list(clip.size) 
-        except Exception as e:
-            logger.warning(f"⚠️ No se pudo leer metadata técnica: {e}")
-
-        # --- FASE 2: INTELIGENCIA ARTIFICIAL (Transcipción con Nuevo Engine) ---
-        logger.info("🧠 Iniciando transcripción con TranscriptionEngine...")
-        
-        # 🔥 IMPORTACIÓN LAZY: Whisper es pesado
-        from apps.videos.services.transcription_engine import TranscriptionEngine
-        
-        # Instanciamos el motor (usa 'tiny' o 'base' según prefieras velocidad vs precisión)
-        transcriber = TranscriptionEngine(model_size="base")
-        
-        # Transcribimos con marcas de tiempo por palabra para mayor precisión en cortes
-        segments = transcriber.transcribe(video_path, word_timestamps=True)
-        
-        # Reconstruimos el texto completo para el SelectionEngine
-        full_text = " ".join([seg['text'] for seg in segments])
-        
-        # Guardamos en metadata
-        project.metadata['language'] = 'detected' 
-        project.metadata['full_text'] = full_text
-        project.metadata['transcription'] = segments # Ahora son palabras individuales
+        # --- 2. UPLOAD ORIGINAL TO S3 ---
+        user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
+        orig_s3_key = S3StorageManager.upload_video(source_path, user_id, str(project.id))
+        project.original_s3_key = orig_s3_key
         project.save()
 
-        # --- FASE 3: SELECCIÓN INTELIGENTE (GPT) ---
-        logger.info(f"🤖 Consultando Motor de Selección (Nivel: {getattr(project, 'intelligence_level', 'standard')})...")
-        
-        created_clips = [] 
-        
+        # --- 3. PROXY GENERATION (FFmpeg) ---
+        proxy_filename = f"proxy_{project.id}.mp4"
+        proxy_local_path = os.path.join(temp_dir, proxy_filename)
+
+        logger.info(f"🎞️ Generating Web Proxy: {proxy_local_path}")
+        ffmpeg_cmd = [
+            'ffmpeg', '-y', '-i', source_path,
+            '-vf', 'scale=-2:480',
+            '-vcodec', 'libx264', '-profile:v', 'main', '-crf', '28',
+            '-acodec', 'aac', '-b:a', '96k',
+            proxy_local_path
+        ]
+
         try:
-            # SelectionEngine usa 'full_text' para entender el contexto
-            ai_suggestions = SelectionEngine.select_viral_clips(
-                transcription_data=project.metadata,
-                project_title=project.title,
-                editing_style=getattr(project, 'editing_style', 'dynamic'),
-                duration=duration,
-                intelligence_level=getattr(project, 'intelligence_level', 'standard')
+            subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+            # Upload Proxy to S3
+            proxy_s3_key = S3StorageManager.upload_video(proxy_local_path, user_id, str(project.id))
+            project.proxy_s3_key = proxy_s3_key
+            logger.info(f"✅ Proxy uploaded: {proxy_s3_key}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"❌ FFmpeg Proxy failed: {e.stderr.decode()}")
+            # We don't abort the whole ingestion if proxy fails, but it's bad for UX
+        finally:
+            if os.path.exists(proxy_local_path): os.remove(proxy_local_path)
+
+        # --- 4. TRANSCRIPTION ---
+        logger.info("🧠 Transcribing...")
+        transcriber = TranscriptionEngine(model_size="base")
+        segments = transcriber.transcribe(source_path, word_timestamps=True)
+        full_text = " ".join([seg['text'] for seg in segments])
+
+        project.metadata['full_text'] = full_text
+        project.metadata['transcription'] = segments
+
+        # --- 5. AI SELECTION (RATIONALE) ---
+        from moviepy import VideoFileClip
+        with VideoFileClip(source_path) as clip:
+            duration = clip.duration
+            project.metadata['duration'] = duration
+            project.metadata['resolution'] = list(clip.size)
+
+        ai_suggestions = SelectionEngine.select_viral_clips(
+            transcription_data=project.metadata,
+            project_title=project.title,
+            duration=duration,
+            intelligence_level=project.intelligence_level
+        )
+
+        project.ai_rationale_log = {"suggestions_count": len(ai_suggestions), "raw_ai_output": ai_suggestions}
+
+        created_clips = []
+        for clip_data in ai_suggestions:
+            clip_obj = VideoClip.objects.create(
+                project=project,
+                title=clip_data.get('title', 'Clip sugerido'),
+                start_time=clip_data.get('start', 0.0),
+                end_time=clip_data.get('end', 10.0),
+                virality_score=clip_data.get('virality_score', 0),
+                ai_reasoning=clip_data.get('reasoning', ''),
+                status='draft'
             )
-            
-            logger.info(f"💾 Guardando {len(ai_suggestions)} clips sugeridos en DB...")
-            
-            for clip_data in ai_suggestions:
-                clip = VideoClip.objects.create(
-                    project=project,
-                    title=clip_data.get('title', 'Clip sugerido'),
-                    start_time=clip_data.get('start', 0.0),
-                    end_time=clip_data.get('end', 10.0),
-                    virality_score=clip_data.get('virality_score', 0),
-                    ai_reasoning=clip_data.get('reasoning', ''),
-                    status='draft' # o VideoClip.Status.DRAFT
-                )
-                created_clips.append(clip)
-                
-            project.metadata['ai_selection_done'] = True
+            created_clips.append(clip_obj)
+
+        # --- 6. STATE BIFURCATION ---
+        if project.auto_render_bypass:
+            logger.info("⏩ Auto-render bypass active. Rendering clips...")
+            project.status = VideoProject.Status.RENDERING
             project.save()
-
-        except Exception as e:
-            logger.error(f"⚠️ Error en Selección de IA: {e}")
-            # Fallback: Si falla la IA, podríamos crear un clip manual o dejarlo vacío
-            pass
-
-        # --- FASE 4: RENDERIZADO AUTOMÁTICO ---
-        if created_clips:
-            logger.info(f"✂️ Iniciando Renderizado de {len(created_clips)} clips...")
-            
-            # 🔥 IMPORTACIÓN LAZY CRÍTICA 🔥
             from apps.videos.services.render_engine import RenderEngine
-            
             for clip in created_clips:
                 try:
                     RenderEngine.render_clip(clip.id)
                 except Exception as e:
-                    logger.error(f"⚠️ Falló render del clip {clip.id}: {e}")
-                    clip.status = 'failed'
-                    clip.save()
+                    logger.error(f"⚠️ Render failed for clip {clip.id}: {e}")
+            project.status = VideoProject.Status.COMPLETED
+        else:
+            logger.info("⏳ Ingestion complete. Awaiting user approval.")
+            project.status = VideoProject.Status.AWAITING_APPROVAL
 
-        # --- FIN ---
-        if transaction_id and tx:
-            try:
-                tx.status = 'confirmed' # Transaction.Status.CONFIRMED
-                tx.save()
-            except:
-                pass
-
-        project.status = 'completed' # VideoProject.Status.READY/COMPLETED
         project.save()
-        
-        logger.info(f"✅ [TASK END] Éxito total. Proyecto {project_id} finalizado.")
-        return f"Success {project_id}"
+        return f"Ingestion Success {project_id}"
 
     except Exception as e:
-        logger.error(f"❌ [ERROR CRÍTICO] {e}", exc_info=True)
-        try:
-            project = VideoProject.objects.get(id=project_id)
-            project.status = 'failed'
+        logger.error(f"❌ [INGESTION ERROR] {e}", exc_info=True)
+        if 'project' in locals():
+            project.status = VideoProject.Status.FAILED
             project.save()
-            
-            if transaction_id:
-                tx = Transaction.objects.get(id=transaction_id)
-                tx.status = 'cancelled'
-                tx.save()
-        except:
-            pass 
-        return f"Failed: {e}"
+        raise self.retry(exc=e, countdown=60)

@@ -10,7 +10,7 @@ from django.core.exceptions import ValidationError # Para capturar el error de s
 # Modelos y Serializers de Videos
 from .models import VideoProject, BrandKit
 from .serializers import VideoProjectSerializer, BrandKitSerializer
-from .tasks import process_video_pipeline
+from .tasks import process_initial_ingestion
 
 from apps.users.models import Workspace
 from apps.payments.models import Transaction
@@ -53,9 +53,9 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        # 3. GUARDADO INICIAL (Status: Pending)
+        # 3. GUARDADO INICIAL (Status: Uploaded)
         try:
-            project = serializer.save(workspace=workspace, uploaded_by=user, status='pending')
+            project = serializer.save(workspace=workspace, uploaded_by=user, status=VideoProject.Status.UPLOADED)
         except Exception as e:
             return Response({"error": f"Error al guardar proyecto: {str(e)}"}, status=500)
 
@@ -129,8 +129,7 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
             return Response({"error": "Error procesando el pago."}, status=500)
 
         # 6. ENVIAR A CELERY (Exitoso)
-        # Pasamos ID del proyecto y ID de la transacción para confirmarla luego
-        process_video_pipeline.delay(project.id, tx.id)
+        process_initial_ingestion.delay(project.id)
 
         # Respuesta API
         response_data = serializer.data
@@ -138,6 +137,6 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
             "tokens_reserved": cost_in_tokens,
             "transaction_id": tx.id
         }
-        response_data['message'] = "Proyecto creado. IA procesando..."
-        
+        response_data['message'] = "Video subido. Iniciando ingesta multimodal..."
+
         return Response(response_data, status=status.HTTP_201_CREATED)

@@ -23,6 +23,7 @@ class VideoClipSerializer(serializers.ModelSerializer):
 class VideoProjectSerializer(serializers.ModelSerializer):
     clips = VideoClipSerializer(many=True, read_only=True)
     brand_kit_name = serializers.CharField(source='brand_kit.name', read_only=True)
+    proxy_url = serializers.SerializerMethodField()
     
     source_file = serializers.FileField(required=False)
     video_url = serializers.CharField(required=False, allow_blank=True)
@@ -30,7 +31,13 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     class Meta:
         model = VideoProject
         fields = '__all__'
-        read_only_fields = ('id', 'workspace', 'uploaded_by', 'status', 'created_at', 'metadata', 'clips')
+        read_only_fields = ('id', 'workspace', 'uploaded_by', 'status', 'created_at', 'metadata', 'clips', 'original_s3_key', 'proxy_s3_key', 'ai_rationale_log')
+
+    def get_proxy_url(self, obj):
+        if obj.proxy_s3_key:
+            from apps.videos.services.s3_service import S3StorageManager
+            return S3StorageManager.generate_presigned_url(obj.proxy_s3_key, expiration_seconds=3600)
+        return None
 
     def validate(self, data):
         file = data.get('source_file')
@@ -67,6 +74,9 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         if 'gameplay_position' in raw: project.gameplay_position = raw['gameplay_position']
         if 'speaker_tracking' in raw: 
             project.speaker_tracking = str(raw['speaker_tracking']).lower() in ['true', '1', 't', 'y', 'yes']
+        
+        if 'auto_render_bypass' in raw:
+            project.auto_render_bypass = str(raw['auto_render_bypass']).lower() in ['true', '1', 't', 'y', 'yes']
 
         # Subtitle Controls
         if 'add_subtitles' in raw:
