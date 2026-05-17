@@ -42,13 +42,15 @@ from django.db import transaction
 from django.core.cache import cache
 from apps.videos.models import VideoProject, VideoClip, ScheduledPost
 
+from backend.celery import app as celery_app
+
 logger = logging.getLogger(__name__)
 
 class ThirdPartyAPIError(Exception):
     """Exception raised when a social media API fails."""
     pass
 
-@shared_task
+@celery_app.task
 def dispatch_scheduled_posts_batch():
     """
     Orchestrator: Dispatches posts scheduled for the next hour.
@@ -82,7 +84,7 @@ def dispatch_scheduled_posts_batch():
     logger.info(f"🚀 [DISPATCHER] Queued {count} posts for distribution.")
     return f"Queued {count} posts."
 
-@shared_task(bind=True, max_retries=3)
+@celery_app.task(bind=True, max_retries=3)
 def upload_to_social_network(self, post_id):
     """
     Worker: Uploads a video clip to the specified social network.

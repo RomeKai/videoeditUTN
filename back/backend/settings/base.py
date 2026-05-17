@@ -148,3 +148,14 @@ SPECTACULAR_SETTINGS = {
         'displayOperationId': True,
     },
 }
+
+# --- REDIS CACHE (CRITICAL FOR LOCKS) ---
+CACHES = {
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': os.environ.get('REDIS_URL', 'redis://redis:6379/0'),
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+        }
+    }
+}

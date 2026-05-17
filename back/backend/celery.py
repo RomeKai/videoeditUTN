@@ -9,6 +9,14 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.settings.dev')
 
 app = Celery('backend')
 
+# Forced Fix for Docker: Priority to Env Var
+import os
+redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
+app.conf.update(
+    broker_url=redis_url,
+    result_backend=redis_url,
+)
+
 # Lee la configuración desde el archivo de settings de Django
 app.config_from_object('django.conf:settings', namespace='CELERY')
 

@@ -3,6 +3,7 @@ Django>=5.0
 django-environ         # Para leer .env
 djangorestframework    # Para la API
 django-cors-headers    # Para conectar con React/Frontend
+django-redis           # Cache y Locks en Redis
 psycopg2-binary        # Driver de Base de Datos
 drf-spectacular
 
