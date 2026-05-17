@@ -138,8 +138,10 @@ def upload_to_social_network(self, post_id):
         }
         target_platform = platform_map.get(post.platform, 'tiktok')
         
-        # We use a default caption if the project metadata doesn't have one
-        caption = post.video_clip.project.metadata.get('caption', f"Check this out! #Viral #{target_platform}")
+        # Priority: 1. AI Generated Caption, 2. Project Metadata, 3. Default
+        caption = post.generated_caption or post.video_clip.project.metadata.get('caption')
+        if not caption:
+            caption = f"Check this out! #Viral #{target_platform}"
 
         response = AyrshareClient.send_post(
             profile_key=profile_key,
@@ -176,7 +178,58 @@ def upload_to_social_network(self, post_id):
     finally:
         cache.delete(lock_id)
 
-@shared_task
+@celery_app.task(bind=True, max_retries=3)
+def process_video_seo(self, post_id):
+    """
+    Task: Generates viral SEO metadata for a scheduled post.
+    1. Extracts transcript from project.
+    2. Calls SEOOptimizationService (LLM).
+    3. Formats and saves caption/hashtags to ScheduledPost.
+    """
+    from apps.videos.services.seo_engine import SEOOptimizationService
+    
+    try:
+        post = ScheduledPost.objects.select_related('video_clip__project').get(id=post_id)
+        project = post.video_clip.project
+        
+        transcript = project.metadata.get('full_text', '')
+        if not transcript:
+            # Try to reconstruct from segments if full_text is missing
+            segments = project.metadata.get('transcription', [])
+            transcript = " ".join([s.get('text', '') for s in segments])
+
+        if not transcript:
+            logger.warning(f"⚠️ [SEO] No transcript found for post {post_id}. Aborting.")
+            return "No Transcript"
+
+        # 1. Generate Metadata via AI
+        seo_service = SEOOptimizationService()
+        metadata = seo_service.generate_metadata(
+            transcript_text=transcript,
+            target_niche=project.metadata.get('niche', 'general')
+        )
+
+        # 2. Format Caption (Body + Hashtags)
+        formatted_hashtags = " ".join([f"#{h.strip()}" for h in metadata.hashtags])
+        final_caption = f"{metadata.description_body}\n\n.\n.\n{formatted_hashtags}"
+
+        # 3. Save to ScheduledPost
+        post.generated_caption = final_caption
+        post.generated_hashtags = metadata.hashtags
+        
+        # Save additional tweaks in error_log or a dedicated field if exists
+        # For now, let's keep it in the main caption
+        post.save()
+
+        logger.info(f"✅ [SEO] Metadata generated for post {post_id}")
+        return f"SEO Success: {metadata.viral_title}"
+
+    except Exception as e:
+        logger.error(f"❌ [SEO] Failed for post {post_id}: {e}")
+        # Retry for OpenAI timeouts or network issues
+        raise self.retry(exc=e, countdown=60)
+
+@celery_app.task
 def render_clip_task(clip_id):
     """
     Task wrapper for the RenderEngine.render_clip method.

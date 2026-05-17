@@ -183,6 +183,10 @@ class ScheduledPost(models.Model):
     error_log = models.TextField(null=True, blank=True)
     retry_count = models.IntegerField(default=0)
     
+    # AI SEO Metadata (Generated)
+    generated_caption = models.TextField(null=True, blank=True, verbose_name="AI Caption")
+    generated_hashtags = models.JSONField(null=True, blank=True, verbose_name="AI Hashtags")
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
