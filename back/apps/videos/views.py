@@ -4,6 +4,7 @@ import logging
 from decimal import Decimal
 from rest_framework import viewsets, permissions, parsers, status
 from rest_framework.response import Response
+from rest_framework.decorators import action
 from django.core.exceptions import ValidationError # Para capturar el error de saldo
 
 
@@ -38,6 +39,81 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return VideoProject.objects.filter(workspace__members=self.request.user).order_by('-created_at')
+
+    @action(detail=True, methods=['post'], url_path='approve-paper-edit')
+    def approve_paper_edit(self, request, pk=None):
+        """
+        Endpoint: User approves exact segments from the Paper Edit interface.
+        Receives: List of {"start": float, "end": float, "text": "..."}
+        """
+        project = self.get_object()
+        
+        if project.status != VideoProject.Status.AWAITING_APPROVAL:
+            return Response({"error": f"El proyecto no está en espera de aprobación. Estado actual: {project.status}"}, status=400)
+
+        approved_segments = request.data.get('approved_segments', [])
+        if not approved_segments or not isinstance(approved_segments, list):
+            return Response({"error": "Debe proporcionar una lista de 'approved_segments'."}, status=400)
+
+        # 1. Validar y Calcular Duración Neta (Float Precision)
+        total_duration = 0.0
+        try:
+            for seg in approved_segments:
+                start = float(seg.get('start', 0))
+                end = float(seg.get('end', 0))
+                if end <= start:
+                    return Response({"error": f"Segmento inválido: end ({end}) <= start ({start})"}, status=400)
+                total_duration += (end - start)
+        except (ValueError, TypeError):
+            return Response({"error": "Los timestamps deben ser valores numéricos (float)."}, status=400)
+
+        # 2. Cálculo de Costo Final (PricingEngine V3)
+        from apps.payments.services.pricing_engine import PricingEngine
+        workspace = project.workspace
+        
+        # Features solicitadas (las persistimos en metadata o las recibimos ahora)
+        features_requested = {
+            'seo_optimization': project.metadata.get('use_seo', False),
+            'ai_thumbnail': project.metadata.get('use_ai_thumbnail', False),
+        }
+
+        try:
+            final_cost = PricingEngine.calculate_render_cost(
+                duration_seconds=int(math.ceil(total_duration)),
+                resolution=project.aspect_ratio,
+                features_requested=features_requested,
+                plan=workspace.subscription_plan
+            )
+        except Exception as e:
+            return Response({"error": f"Error en el motor de precios: {str(e)}"}, status=400)
+
+        # 3. Reserva de Fondos para el Render Final
+        try:
+            tx = Transaction.reserve_funds(
+                workspace=workspace,
+                user=request.user,
+                amount=final_cost,
+                description=f"Render Final (Paper Edit): {project.title}"
+            )
+        except ValidationError as e:
+            return Response({"error": e.message, "required": final_cost}, status=402)
+
+        # 4. Actualización y Despacho
+        project.metadata['approved_segments'] = approved_segments
+        project.metadata['final_duration'] = total_duration
+        project.status = VideoProject.Status.RENDERING
+        project.save()
+
+        # Invocamos la tarea de renderizado no lineal
+        from .tasks import render_video_segments
+        render_video_segments.delay(project.id)
+
+        return Response({
+            "message": "Edición aprobada. Iniciando renderizado de alta calidad...",
+            "project_id": project.id,
+            "final_cost": final_cost,
+            "transaction_id": tx.id
+        }, status=200)
 
     def create(self, request, *args, **kwargs):
         user = request.user
