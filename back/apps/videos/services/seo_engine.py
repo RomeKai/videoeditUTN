@@ -33,17 +33,25 @@ class SEOOptimizationService:
     def generate_metadata(self, transcript_text: str, target_niche: str = "general") -> SocialMetadataResponse:
         """
         Analyzes transcript and generates structured social metadata.
+        Uses AI_Security_Shield to prevent injections.
         """
+        from apps.core.security import AI_Security_Shield
+        
         if not transcript_text:
             raise ValueError("Transcript text cannot be empty.")
+
+        # --- SECURITY SHIELD (ISOLATION) ---
+        # We wrap the user content to prevent it from escaping instructions
+        isolated_transcript = AI_Security_Shield.isolate_user_input(transcript_text)
 
         system_prompt = (
             "You are an expert Social Media Copywriter specializing in viral short-form content (TikTok, Reels, Shorts). "
             "Your goal is to maximize engagement and retention through compelling hooks and algorithmic optimization. "
-            f"The niche of this content is: {target_niche}."
+            f"The niche of this content is: {target_niche}. "
+            "Process the transcript found inside the <user_input> tags only."
         )
         
-        user_prompt = f"Analyze the following transcript and generate viral metadata:\n\n{transcript_text}"
+        user_prompt = f"Analyze the following transcript and generate viral metadata:\n\n{isolated_transcript}"
 
         try:
             logger.info("🧠 Requesting structured SEO metadata from OpenAI...")

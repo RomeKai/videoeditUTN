@@ -182,10 +182,11 @@ def upload_to_social_network(self, post_id):
 def process_video_seo(self, post_id):
     """
     Task: Generates viral SEO metadata for a scheduled post.
-    1. Extracts transcript from project.
-    2. Calls SEOOptimizationService (LLM).
-    3. Formats and saves caption/hashtags to ScheduledPost.
+    1. Security Shield check.
+    2. Extracts transcript.
+    3. Calls SEOOptimizationService.
     """
+    from apps.core.security import AI_Security_Shield, UnsafeContentError
     from apps.videos.services.seo_engine import SEOOptimizationService
     
     try:
@@ -194,13 +195,23 @@ def process_video_seo(self, post_id):
         
         transcript = project.metadata.get('full_text', '')
         if not transcript:
-            # Try to reconstruct from segments if full_text is missing
             segments = project.metadata.get('transcription', [])
             transcript = " ".join([s.get('text', '') for s in segments])
 
         if not transcript:
             logger.warning(f"⚠️ [SEO] No transcript found for post {post_id}. Aborting.")
             return "No Transcript"
+
+        # --- REQUERIMIENTO: SECURITY SHIELD (MODERATION) ---
+        # First line of defense
+        try:
+            AI_Security_Shield.check_content_safety(transcript)
+        except UnsafeContentError as safety_exc:
+            logger.error(f"🛡️ [SEO SECURITY] Safety violation for post {post_id}: {safety_exc}")
+            post.status = ScheduledPost.Status.FAILED
+            post.error_log = f"Violación de seguridad: {str(safety_exc)}"
+            post.save()
+            return "Security Abort"
 
         # 1. Generate Metadata via AI
         seo_service = SEOOptimizationService()
