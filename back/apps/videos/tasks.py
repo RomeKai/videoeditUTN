@@ -87,14 +87,19 @@ def dispatch_scheduled_posts_batch():
 @celery_app.task(bind=True, max_retries=3)
 def upload_to_social_network(self, post_id):
     """
-    Worker: Uploads a video clip to the specified social network.
-    Uses Distributed Locking to prevent cross-site double posting.
+    Worker: Uploads a video clip via Ayrshare API.
+    Lifecycle:
+    1. Lock verification (Redis).
+    2. S3 Presigned URL generation (Short-lived).
+    3. Ayrshare delegation with User Profile Key.
+    4. Exponential Backoff on failure.
     """
+    from apps.integrations.ayrshare_api import AyrshareClient, AyrshareAPIError
+    from apps.videos.services.s3_service import S3StorageManager
+
     lock_id = f"lock_post_publish_{post_id}"
-    # 1. Distributed Lock (Timeout 5 minutes)
-    # cache.add returns False if the key already exists
     if not cache.add(lock_id, "locked", 300):
-        logger.warning(f"🔒 [WORKER] Aborting post {post_id}: Task already running or locked.")
+        logger.warning(f"🔒 [WORKER] Aborting post {post_id}: Already running.")
         return "Locked"
 
     try:
@@ -103,45 +108,72 @@ def upload_to_social_network(self, post_id):
             if post.status == ScheduledPost.Status.PUBLISHED:
                 return "Already Published"
             
+            # Validation: Does the workspace have an Ayrshare Key?
+            workspace = post.video_clip.project.workspace
+            profile_key = workspace.ayrshare_profile_key
+            
+            if not profile_key:
+                logger.error(f"❌ [WORKER] Post {post_id} FAILED: No ayrshare_profile_key for workspace {workspace.id}")
+                post.status = ScheduledPost.Status.FAILED
+                post.error_log = "Error: Ayrshare Profile Key not configured in workspace."
+                post.save()
+                return "Configuration Missing"
+
             post.status = ScheduledPost.Status.PROCESSING
             post.save()
 
-        logger.info(f"📤 [WORKER] Publishing {post.platform} post {post_id}...")
+        # 1. Generate S3 Presigned URL (Valid for 1 hour)
+        # This URL is what Ayrshare will use to download and re-upload the video.
+        s3_key = post.video_clip.s3_object_key
+        if not s3_key:
+            raise Exception("No s3_object_key found for the video clip.")
+
+        media_url = S3StorageManager.generate_presigned_url(s3_key, expiration_seconds=3600)
         
-        # 2. Simulation of Third-Party API Call
-        time.sleep(2)
+        # 2. Call Ayrshare API
+        platform_map = {
+            'TIKTOK': 'tiktok',
+            'INSTAGRAM_REELS': 'instagram',
+            'YOUTUBE_SHORTS': 'youtube'
+        }
+        target_platform = platform_map.get(post.platform, 'tiktok')
         
-        # 20% failure rate for simulation
-        if random.random() < 0.20:
-            raise ThirdPartyAPIError("Connection timeout with social media API.")
-        
+        # We use a default caption if the project metadata doesn't have one
+        caption = post.video_clip.project.metadata.get('caption', f"Check this out! #Viral #{target_platform}")
+
+        response = AyrshareClient.send_post(
+            profile_key=profile_key,
+            s3_media_url=media_url,
+            caption=caption,
+            platforms=[target_platform]
+        )
+
         # 3. Success state
         post.status = ScheduledPost.Status.PUBLISHED
-        post.error_log = None
+        post.error_log = f"Ayrshare ID: {response.get('id')}"
         post.save()
-        logger.info(f"✅ [WORKER] Post {post_id} successfully published on {post.platform}.")
+        logger.info(f"✅ [WORKER] Post {post_id} published via Ayrshare.")
         
-        return f"Published to {post.platform}"
+        return f"Published via Ayrshare: {target_platform}"
 
-    except ThirdPartyAPIError as exc:
-        # 4. Resilience: Exponential Backoff
-        logger.error(f"⚠️ [WORKER] API Error for post {post_id}: {exc}")
+    except AyrshareAPIError as exc:
+        # Resilience: Exponential Backoff for 3rd party instability
+        logger.error(f"⚠️ [WORKER] Ayrshare API Error: {exc}")
         post.retry_count += 1
-        post.error_log = str(exc)
+        post.error_log = f"Retry {post.retry_count}: {str(exc)}"
         post.save()
         
-        # Calculate countdown: 60s, 360s, 1200s...
+        # Backoff: 60s, 360s, 1200s...
         raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
 
     except Exception as e:
-        logger.error(f"❌ [WORKER] Critical failure for post {post_id}: {e}")
+        logger.error(f"❌ [WORKER] Critical failure: {e}")
         post.status = ScheduledPost.Status.FAILED
-        post.error_log = str(e)
+        post.error_log = f"Critical: {str(e)}"
         post.save()
         return "Failed"
 
     finally:
-        # 5. Cierre: Liberar el lock
         cache.delete(lock_id)
 
 @shared_task
