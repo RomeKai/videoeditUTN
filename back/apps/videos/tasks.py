@@ -95,7 +95,7 @@ def upload_to_social_network(self, post_id):
     4. Exponential Backoff on failure.
     """
     from apps.integrations.ayrshare_api import AyrshareClient, AyrshareAPIError
-    from apps.videos.services.s3_service import S3StorageManager
+    from apps.videos.services.storage_service import CloudflareR2Manager
 
     lock_id = f"lock_post_publish_{post_id}"
     if not cache.add(lock_id, "locked", 300):
@@ -128,7 +128,7 @@ def upload_to_social_network(self, post_id):
         if not s3_key:
             raise Exception("No s3_object_key found for the video clip.")
 
-        media_url = S3StorageManager.generate_presigned_url(s3_key, expiration_seconds=3600)
+        media_url = CloudflareR2Manager.generate_presigned_url(s3_key, expiration_seconds=3600)
         
         # 2. Call Ayrshare API
         platform_map = {
@@ -265,7 +265,7 @@ def render_video_segments(self, project_id):
     4. S3 Upload & Final Cleanup.
     """
     logger.info(f"🎬 [FINAL RENDER] Starting for project {project_id}")
-    from apps.videos.services.s3_service import S3StorageManager
+    from apps.videos.services.storage_service import CloudflareR2Manager
     from apps.videos.services.render_engine import RenderEngine
     from moviepy import VideoFileClip, concatenate_videoclips
     import tempfile
@@ -283,7 +283,7 @@ def render_video_segments(self, project_id):
         
         # Use tempfile to ensure cleanup
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_high_res:
-            S3StorageManager.get_client().download_file(
+            CloudflareR2Manager.get_client().download_file(
                 settings.AWS_STORAGE_BUCKET_NAME, 
                 s3_key, 
                 tmp_high_res.name
@@ -358,7 +358,7 @@ def render_video_segments(self, project_id):
             )
 
             user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
-            final_s3_key = S3StorageManager.upload_video(output_path, user_id, f"{project.id}/final")
+            final_s3_key = CloudflareR2Manager.upload_video(output_path, user_id, f"{project.id}/final")
 
             # 5. FINAL PERSISTENCE
             # We create a final VideoClip record to represent the full edited video
@@ -399,7 +399,7 @@ def process_initial_ingestion(self, project_id):
     5. State Bifurcation (Bypass vs Awaiting Approval)
     """
     logger.info(f"🚀 [INGESTION] Starting project {project_id}")
-    from apps.videos.services.s3_service import S3StorageManager
+    from apps.videos.services.storage_service import CloudflareR2Manager
     from apps.videos.services.transcription_engine import TranscriptionEngine
     import subprocess
 
@@ -423,7 +423,7 @@ def process_initial_ingestion(self, project_id):
 
         # --- 2. UPLOAD ORIGINAL TO S3 ---
         user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
-        orig_s3_key = S3StorageManager.upload_video(source_path, user_id, str(project.id))
+        orig_s3_key = CloudflareR2Manager.upload_video(source_path, user_id, str(project.id))
         project.original_s3_key = orig_s3_key
         project.save()
 
@@ -443,7 +443,7 @@ def process_initial_ingestion(self, project_id):
         try:
             subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
             # Upload Proxy to S3
-            proxy_s3_key = S3StorageManager.upload_video(proxy_local_path, user_id, str(project.id))
+            proxy_s3_key = CloudflareR2Manager.upload_video(proxy_local_path, user_id, str(project.id))
             project.proxy_s3_key = proxy_s3_key
             logger.info(f"✅ Proxy uploaded: {proxy_s3_key}")
         except subprocess.CalledProcessError as e:

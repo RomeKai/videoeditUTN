@@ -35,8 +35,8 @@ class VideoProjectSerializer(serializers.ModelSerializer):
 
     def get_proxy_url(self, obj):
         if obj.proxy_s3_key:
-            from apps.videos.services.s3_service import S3StorageManager
-            return S3StorageManager.generate_presigned_url(obj.proxy_s3_key, expiration_seconds=3600)
+            from apps.videos.services.storage_service import CloudflareR2Manager
+            return CloudflareR2Manager.generate_presigned_url(obj.proxy_s3_key, expiration_seconds=3600)
         return None
 
     def validate(self, data):

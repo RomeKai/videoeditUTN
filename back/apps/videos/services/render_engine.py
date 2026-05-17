@@ -121,10 +121,10 @@ class RenderEngine:
             )
             
             # 5. S3 STORAGE PIPELINE
-            from apps.videos.services.s3_service import S3StorageManager
+            from apps.videos.services.storage_service import CloudflareR2Manager
             
             user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
-            s3_key = S3StorageManager.upload_video(
+            s3_key = CloudflareR2Manager.upload_video(
                 local_file_path=output_path,
                 user_id=user_id,
                 project_id=str(project.id)
