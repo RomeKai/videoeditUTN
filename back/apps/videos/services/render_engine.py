@@ -2,18 +2,18 @@ import os
 import logging
 from django.conf import settings
 from django.core.files import File
-from moviepy import VideoFileClip
+from moviepy import VideoFileClip, CompositeVideoClip
 from apps.videos.models import VideoClip
 from apps.videos.services.layouts import get_layout_strategy
 from apps.videos.services.transcription_engine import TranscriptionEngine
-from apps.videos.services.subtitle_engine_v2 import SubtitleEngineV2, SubtitleConfigV2
+from apps.videos.services.subtitle_engine import SubtitleEngine, StyleConfig
 
 logger = logging.getLogger(__name__)
 
 class RenderEngine:
     """
     Core engine responsible for physical video rendering and assembly.
-    Handles layout application, subtitle burning, and codec optimization.
+    Handles layout application, subtitle burning, and cloud-native S3 lifecycle.
     """
     @staticmethod
     def _get_target_resolution(aspect_ratio_str: str):
@@ -38,26 +38,14 @@ class RenderEngine:
                 new_start = max(0.0, seg['start'] - clip_start)
                 new_end = min(clip_end - clip_start, seg['end'] - clip_start)
                 if new_end > new_start:
-                    # Maintain word metadata if present
-                    new_seg = {"text": seg['text'], "start": new_start, "end": new_end}
-                    if "words" in seg:
-                        new_words = []
-                        for w in seg["words"]:
-                            if w['end'] > clip_start and w['start'] < clip_end:
-                                new_words.append({
-                                    "text": w["text"],
-                                    "start": max(0.0, w["start"] - clip_start),
-                                    "end": min(clip_end - clip_start, w["end"] - clip_start)
-                                })
-                        new_seg["words"] = new_words
-                    clip_segments.append(new_seg)
+                    clip_segments.append({"text": seg['text'], "start": new_start, "end": new_end})
         return clip_segments
 
     @staticmethod
     def render_clip(clip_id):
         """
         Full rendering pipeline for a single VideoClip.
-        Includes layout processing, subtitle generation, and S3 persistence.
+        Includes layout processing, subtitle generation, S3 upload, and local cleanup.
         """
         clip_obj, original_clip, final_clip = None, None, None
         output_path, temp_audio_path = None, None
@@ -74,55 +62,53 @@ class RenderEngine:
             os.makedirs(temp_dir, exist_ok=True)
             output_path = os.path.join(temp_dir, filename)
 
-            # Load Video (Subclip using MoviePy 2.0 syntax)
+            # 1. Load Video (MoviePy 2.0 syntax)
             original_clip = VideoFileClip(original_path).subclipped(clip_obj.start_time, clip_obj.end_time)
             
-            # Apply Layout Strategy (GoF Strategy Pattern)
+            # 2. Apply Layout Strategy (GoF Strategy Pattern)
             target_w, target_h = RenderEngine._get_target_resolution(project.aspect_ratio)
             use_ft = getattr(project, 'use_facetracking', False)
             gp_pos = getattr(project, 'gameplay_position', 'center')
             layout_strategy = get_layout_strategy(project.render_layout, target_w, target_h, use_facetracking=use_ft, gameplay_pos=gp_pos)
             video_layout_processed = layout_strategy.apply(original_clip)
             
-            # Advanced Subtitle Processing (V2)
+            # 3. Subtitle Processing
             if getattr(project, 'add_subtitles', True):
                 existing_transcription = project.metadata.get('transcription', [])
                 
-                # Configuration options mapped from project/defaults
-                sub_config = SubtitleConfigV2(
+                # Configuration mapping from project defaults
+                size_map = {"small": 0.04, "medium": 0.06, "large": 0.09}
+                pos_map = {"top": 0.20, "center": 0.50, "bottom": 0.85}
+                
+                config = StyleConfig(
                     font_path='Montserrat-Bold.ttf',
-                    font_size_percent=0.055,
-                    user_scale_factor=getattr(project, 'subtitle_scale_factor', 1.0),
-                    primary_color=getattr(project, 'subtitle_color', '#FFFFFF'),
-                    highlight_color='#FFFF00',
-                    stroke_color='#000000',
-                    stroke_width=6,
-                    words_per_box=getattr(project, 'subtitle_words_per_segment', 3),
-                    y_position_percent=0.75,
-                    animation_type='pop'
+                    font_size_percent=size_map.get(project.subtitle_size, 0.06),
+                    primary_color=project.subtitle_color,
+                    y_position_percent=pos_map.get(project.subtitle_position, 0.85)
                 )
                 
-                subtitler = SubtitleEngineV2(config=sub_config)
+                subtitler = SubtitleEngine(style_config=config)
+                max_w = project.subtitle_words_per_segment
 
                 if existing_transcription:
-                    segments = RenderEngine._slice_segments(existing_transcription, clip_obj.start_time, clip_obj.end_time)
+                    raw_segments = RenderEngine._slice_segments(existing_transcription, clip_obj.start_time, clip_obj.end_time)
+                    segments = TranscriptionEngine.group_words(raw_segments, max_words=max_w)
                 else:
                     # Fallback transcription
                     temp_audio_path = os.path.join(temp_dir, f"audio_{clip_obj.id}.mp3")
                     original_clip.audio.write_audiofile(temp_audio_path, codec='mp3', logger=None)
                     transcriber = TranscriptionEngine(model_size="tiny") 
-                    segments = transcriber.transcribe(temp_audio_path, word_timestamps=True)
+                    raw_segments = transcriber.transcribe(temp_audio_path, word_timestamps=True)
+                    segments = TranscriptionEngine.group_words(raw_segments, max_words=max_w)
 
                 if segments:
-                    subtitle_clips = subtitler.generate_clips(video_layout_processed, segments)
-                    final_clip = CompositeVideoClip([video_layout_processed] + subtitle_clips, size=video_layout_processed.size)
-                    final_clip.duration = video_layout_processed.duration
+                    final_clip = subtitler.add_subtitles(video_layout_processed, segments)
                 else:
                     final_clip = video_layout_processed
             else:
                 final_clip = video_layout_processed
 
-            # 🚀 PHYSICAL RENDERING WITH OPTIMIZED PARAMS
+            # 4. Physical Rendering
             final_clip.write_videofile(
                 output_path,
                 codec='libx264',
@@ -134,25 +120,41 @@ class RenderEngine:
                 logger=None
             )
             
-            # Save to Django Storage (S3 or Local)
-            with open(output_path, 'rb') as f:
-                clip_obj.output_file.save(filename, File(f), save=True)
-                
+            # 5. S3 STORAGE PIPELINE
+            from apps.videos.services.s3_service import S3StorageManager
+            
+            user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
+            s3_key = S3StorageManager.upload_video(
+                local_file_path=output_path,
+                user_id=user_id,
+                project_id=str(project.id)
+            )
+            
+            # 6. Persistence & Status Update
+            clip_obj.s3_object_key = s3_key
             clip_obj.status = VideoClip.Status.COMPLETED
             clip_obj.save()
+            
+            logger.info(f"✅ Render and Cloud Upload successful: {clip_id}")
             return True
 
         except Exception as e:
-            logger.error(f"❌ Render Failed for clip {clip_id}: {e}", exc_info=True)
+            logger.error(f"❌ Render Engine failed for clip {clip_id}: {e}", exc_info=True)
             if clip_obj:
                 clip_obj.status = VideoClip.Status.DRAFT
                 clip_obj.save()
             raise e
+            
         finally:
-            # Resource cleanup
+            # 7. GARBAGE COLLECTION (Local Disk Cleanup)
+            logger.info("🧹 Cleaning up local rendering files...")
             try:
                 if original_clip: original_clip.close()
                 if final_clip and final_clip != original_clip: final_clip.close()
-                if output_path and os.path.exists(output_path): os.remove(output_path)
-                if temp_audio_path and os.path.exists(temp_audio_path): os.remove(temp_audio_path)
-            except: pass
+                
+                if output_path and os.path.exists(output_path): 
+                    os.remove(output_path)
+                if temp_audio_path and os.path.exists(temp_audio_path): 
+                    os.remove(temp_audio_path)
+            except Exception as cleanup_err:
+                logger.warning(f"⚠️ Cleanup error: {cleanup_err}")

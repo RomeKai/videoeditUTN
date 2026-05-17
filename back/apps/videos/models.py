@@ -135,7 +135,7 @@ class VideoClip(models.Model):
     project = models.ForeignKey(VideoProject, on_delete=models.CASCADE, related_name='clips')
     
     title = models.CharField(max_length=255)
-    output_file = models.FileField(upload_to='videos/clips/%Y/%m/', null=True, blank=True)
+    s3_object_key = models.CharField(max_length=1024, blank=True, null=True, verbose_name="S3 Key")
     
     start_time = models.FloatField()
     end_time = models.FloatField()
