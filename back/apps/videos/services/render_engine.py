@@ -74,7 +74,7 @@ class RenderEngine:
             
             # 3. Subtitle Processing
             if getattr(project, 'add_subtitles', True):
-                existing_transcription = project.metadata.get('transcription', [])
+                existing_transcription = project.transcript_data
                 
                 # Configuration mapping from project defaults
                 size_map = {"small": 0.04, "medium": 0.06, "large": 0.09}

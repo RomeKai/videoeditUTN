@@ -272,20 +272,20 @@ def render_video_segments(self, project_id):
 
     try:
         project = VideoProject.objects.get(id=project_id)
-        approved_segments = project.metadata.get('approved_segments', [])
+        approved_segments = project.approved_segments
         
         if not approved_segments:
             raise Exception("No segments approved for rendering.")
 
-        # 1. DOWNLOAD ORIGINAL FROM S3 (Temporary)
-        s3_key = project.original_s3_key
-        if not s3_key: raise Exception("No original_s3_key found.")
+        # 1. DOWNLOAD ORIGINAL FROM R2 (Temporary)
+        r2_key = project.original_r2_key
+        if not r2_key: raise Exception("No original_r2_key found.")
         
         # Use tempfile to ensure cleanup
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_high_res:
             CloudflareR2Manager.get_client().download_file(
-                settings.AWS_STORAGE_BUCKET_NAME, 
-                s3_key, 
+                settings.CLOUDFLARE_R2_BUCKET_NAME, 
+                r2_key, 
                 tmp_high_res.name
             )
             local_high_res_path = tmp_high_res.name
@@ -361,6 +361,10 @@ def render_video_segments(self, project_id):
             final_s3_key = CloudflareR2Manager.upload_video(output_path, user_id, f"{project.id}/final")
 
             # 5. FINAL PERSISTENCE
+            project.final_export_r2_key = final_s3_key
+            project.status = VideoProject.Status.COMPLETED
+            project.save()
+
             # We create a final VideoClip record to represent the full edited video
             final_clip_obj = VideoClip.objects.create(
                 project=project,
@@ -370,9 +374,6 @@ def render_video_segments(self, project_id):
                 s3_object_key=final_s3_key,
                 status=VideoClip.Status.COMPLETED
             )
-
-            project.status = VideoProject.Status.COMPLETED
-            project.save()
 
             # Clean up local output
             if os.path.exists(output_path): os.remove(output_path)
@@ -423,9 +424,10 @@ def process_initial_ingestion(self, project_id):
 
         # --- 2. UPLOAD ORIGINAL TO S3 ---
         user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
-        orig_s3_key = CloudflareR2Manager.upload_video(source_path, user_id, str(project.id))
-        project.original_s3_key = orig_s3_key
+        orig_r2_key = CloudflareR2Manager.upload_video(source_path, user_id, str(project.id))
+        project.original_r2_key = orig_r2_key
         project.save()
+
 
         # --- 3. PROXY GENERATION (FFmpeg) ---
         proxy_filename = f"proxy_{project.id}.mp4"
@@ -442,13 +444,12 @@ def process_initial_ingestion(self, project_id):
 
         try:
             subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
-            # Upload Proxy to S3
-            proxy_s3_key = CloudflareR2Manager.upload_video(proxy_local_path, user_id, str(project.id))
-            project.proxy_s3_key = proxy_s3_key
-            logger.info(f"✅ Proxy uploaded: {proxy_s3_key}")
+            # Upload Proxy to R2
+            proxy_r2_key = CloudflareR2Manager.upload_video(proxy_local_path, user_id, str(project.id))
+            project.proxy_r2_key = proxy_r2_key
+            logger.info(f"✅ Proxy uploaded to R2: {proxy_r2_key}")
         except subprocess.CalledProcessError as e:
             logger.error(f"❌ FFmpeg Proxy failed: {e.stderr.decode()}")
-            # We don't abort the whole ingestion if proxy fails, but it's bad for UX
         finally:
             if os.path.exists(proxy_local_path): os.remove(proxy_local_path)
 
@@ -457,9 +458,9 @@ def process_initial_ingestion(self, project_id):
         transcriber = TranscriptionEngine(model_size="base")
         segments = transcriber.transcribe(source_path, word_timestamps=True)
         full_text = " ".join([seg['text'] for seg in segments])
-
+        
         project.metadata['full_text'] = full_text
-        project.metadata['transcription'] = segments
+        project.transcript_data = segments
 
         # --- 5. AI SELECTION (RATIONALE) ---
         from moviepy import VideoFileClip

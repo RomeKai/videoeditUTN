@@ -18,7 +18,7 @@ class VideoClipSerializer(serializers.ModelSerializer):
     class Meta:
         model = VideoClip
         fields = '__all__'
-        read_only_fields = ('id', 'project', 'status', 'output_file', 'virality_score', 'ai_reasoning')
+        read_only_fields = ('id', 'project', 'status', 's3_object_key', 'virality_score', 'ai_reasoning')
 
 class VideoProjectSerializer(serializers.ModelSerializer):
     clips = VideoClipSerializer(many=True, read_only=True)
@@ -31,12 +31,16 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     class Meta:
         model = VideoProject
         fields = '__all__'
-        read_only_fields = ('id', 'workspace', 'uploaded_by', 'status', 'created_at', 'metadata', 'clips', 'original_s3_key', 'proxy_s3_key', 'ai_rationale_log')
+        read_only_fields = (
+            'id', 'workspace', 'uploaded_by', 'status', 'created_at', 'metadata', 'clips', 
+            'original_r2_key', 'proxy_r2_key', 'final_export_r2_key', 
+            'ai_rationale_log', 'transcript_data', 'approved_segments'
+        )
 
     def get_proxy_url(self, obj):
-        if obj.proxy_s3_key:
+        if obj.proxy_r2_key:
             from apps.videos.services.storage_service import CloudflareR2Manager
-            return CloudflareR2Manager.generate_presigned_url(obj.proxy_s3_key, expiration_seconds=3600)
+            return CloudflareR2Manager.generate_presigned_url(obj.proxy_r2_key, expiration_seconds=3600)
         return None
 
     def validate(self, data):
