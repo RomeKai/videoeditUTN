@@ -1,30 +1,35 @@
 import uuid
 from django.db import models
 from django.conf import settings
+from django.utils.translation import gettext_lazy as _
 
 # --- 1. BRAND KIT ---
 class BrandKit(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey('users.Workspace', on_delete=models.CASCADE, related_name='brand_kits')
-    name = models.CharField(max_length=100, default="Mi Marca Personal")
-    description = models.TextField(
-        blank=True, 
-        null=True, 
-        help_text="Detailed notes about the brand identity, tone of voice, and specific stylistic guidelines."
-    )
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='brand_kits', null=True, blank=True)
     
-    primary_color = models.CharField(max_length=7, default="#FF0000")
-    secondary_color = models.CharField(max_length=7, default="#FFFFFF")
-    font_family = models.CharField(max_length=50, default="Montserrat")
+    name = models.CharField(max_length=100)
+    description = models.TextField(blank=True)
     
-    logo = models.FileField(upload_to='brands/logos/', null=True, blank=True)
-    intro_video = models.FileField(upload_to='brands/assets/', null=True, blank=True)
-    outro_video = models.FileField(upload_to='brands/assets/', null=True, blank=True)
+    # Fuentes y Colores
+    primary_font = models.FileField(upload_to='assets/fonts/', null=True, blank=True)
+    secondary_font = models.FileField(upload_to='assets/fonts/', null=True, blank=True)
     
-    ai_instructions = models.TextField(blank=True)
+    primary_color = models.CharField(max_length=7, default="#FFFFFF") # Hex
+    secondary_color = models.CharField(max_length=7, default="#000000")
+    accent_color = models.CharField(max_length=7, default="#FFFF00")
+
+    # Assets Gráficos
+    watermark_logo = models.ImageField(upload_to='assets/logos/', null=True, blank=True)
+    intro_video = models.FileField(upload_to='assets/videos/', null=True, blank=True)
+    outro_video = models.FileField(upload_to='assets/videos/', null=True, blank=True)
+    
+    is_default = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.name} ({self.workspace_id})"
+        return f"{self.name} ({self.workspace.name})"
 
 
 # --- 2. PROYECTO (Core) ---
@@ -50,23 +55,22 @@ class VideoProject(models.Model):
         FAILED = 'failed', 'Error'
 
     class IntelligenceLevel(models.TextChoices):
-        FAST = 'fast', 'Rápido (GPT-4o-mini)'       # Para usuarios Free / Pruebas
-        SMART = 'smart', 'Inteligente (GPT-4o)'     # Para usuarios Pro / Viralidad Máxima
+        FAST = 'fast', 'Rápido (GPT-4o-mini)'
+        SMART = 'smart', 'Inteligente (GPT-4o)'
 
-    # --- NUEVOS ENUMS DE RENDERIZADO ---
     class AspectRatio(models.TextChoices):
         PORTRAIT_9_16 = '9:16', 'Vertical (TikTok/Reels)'
-        SQUARE_1_1 = '1:1', 'Cuadrado (Post)'
+        SQUARE_1_1 = '1:Post', 'Cuadrado (Post)'
         LANDSCAPE_16_9 = '16:9', 'Horizontal (YouTube)'
 
     class Layout(models.TextChoices):
-        FILL = 'fill', 'Relleno (Crop Central)'       # Clásico
-        FIT = 'fit', 'Ajustar (Bordes Negros)'        # Video completo pequeño
-        BLURRED = 'blurred', 'Fondo Borroso'          # Estilo moderno
-        SPLIT = 'split', 'Split Screen (Gaming)'      # Arriba/Abajo
-        PIP = 'pip', 'Picture in Picture'             # Gamer en esquina
-        VERSUS = 'versus', 'Versus (2 Personas)'      # Cara a Cara
-        ACTIVE = 'active', 'Speaker Dinámico'         # Seguir al que habla
+        FILL = 'fill', 'Relleno (Crop Central)'
+        FIT = 'fit', 'Ajustar (Bordes Negros)'
+        BLURRED = 'blurred', 'Fondo Borroso'
+        SPLIT = 'split', 'Split Screen (Gaming)'
+        PIP = 'pip', 'Picture in Picture'
+        VERSUS = 'versus', 'Versus (2 Personas)'
+        ACTIVE = 'active', 'Speaker Dinámico'
 
     class GameplayPosition(models.TextChoices):
         LEFT = 'left', 'Izquierda'
@@ -80,9 +84,10 @@ class VideoProject(models.Model):
     
     title = models.CharField(max_length=255, default="Nuevo Proyecto")
     
-    # Almacenamiento Cloud
-    original_s3_key = models.CharField(max_length=1024, blank=True, null=True, verbose_name="Original S3 Key")
-    proxy_s3_key = models.CharField(max_length=1024, blank=True, null=True, verbose_name="Proxy S3 Key")
+    # Almacenamiento Cloudflare R2
+    original_r2_key = models.CharField(max_length=1024, blank=True, null=True, verbose_name="Original R2 Key")
+    proxy_r2_key = models.CharField(max_length=1024, blank=True, null=True, verbose_name="Proxy R2 Key")
+    final_export_r2_key = models.CharField(max_length=1024, blank=True, null=True, verbose_name="Final Export R2 Key")
 
     # Configuración General
     project_type = models.CharField(max_length=20, choices=Type.choices, default=Type.REPURPOSE)
@@ -91,12 +96,11 @@ class VideoProject(models.Model):
     auto_render_bypass = models.BooleanField(default=False, help_text="Si es True, salta el paso de aprobación y renderiza directo.")
     brand_kit = models.ForeignKey(BrandKit, on_delete=models.SET_NULL, null=True, blank=True)
     
-    # ... (skipping some lines for brevity in instruction, but including them in new_string) ...
-    # Configuración de Renderizado (NUEVOS)
+    # Configuración de Renderizado
     aspect_ratio = models.CharField(max_length=10, choices=AspectRatio.choices, default=AspectRatio.PORTRAIT_9_16)
     render_layout = models.CharField(max_length=10, choices=Layout.choices, default=Layout.FILL)
     gameplay_position = models.CharField(max_length=10, choices=GameplayPosition.choices, default=GameplayPosition.CENTER)
-    speaker_tracking = models.BooleanField(default=False) # NUEVO: Switch para seguir al que habla
+    speaker_tracking = models.BooleanField(default=False)
     
     # Subtítulos Pro
     class SubtitleSize(models.TextChoices):
@@ -119,17 +123,21 @@ class VideoProject(models.Model):
     # Opciones de IA en Renderizado
     use_facetracking = models.BooleanField(default=False, help_text="¿Deseas que la cámara siga automáticamente el rostro?")
 
-    # Archivos Fuente
+    # Archivos Fuente (Opcional si ya está en R2)
     source_file = models.FileField(upload_to='videos/raw/%Y/%m/', null=True, blank=True)
     video_url = models.URLField(max_length=500, null=True, blank=True, help_text="URL de YouTube/Vimeo si no se sube archivo")
     
+    # Metadatos IA y Paper Edit (Sprint 1 Specs)
     metadata = models.JSONField(default=dict, blank=True)
     ai_rationale_log = models.JSONField(default=dict, blank=True, verbose_name="AI Rationale")
+    transcript_data = models.JSONField(null=True, blank=True, verbose_name="Transcript Data (JSON)")
+    approved_segments = models.JSONField(null=True, blank=True, verbose_name="Approved Segments (Floats)")
+    
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.UPLOADED)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.title} ({self.workspace_id})"
+        return f"{self.title} ({self.workspace.name})"
 
 
 # --- 3. CLIP ---
@@ -144,20 +152,47 @@ class VideoClip(models.Model):
     project = models.ForeignKey(VideoProject, on_delete=models.CASCADE, related_name='clips')
     
     title = models.CharField(max_length=255)
-    s3_object_key = models.CharField(max_length=1024, blank=True, null=True, verbose_name="S3 Key")
+    # Mantener s3_object_key por compatibilidad con r2_key
+    s3_object_key = models.CharField(max_length=1024, blank=True, null=True, verbose_name="R2/S3 Key")
     
     start_time = models.FloatField()
     end_time = models.FloatField()
     
     virality_score = models.IntegerField(default=0)
     ai_reasoning = models.TextField(blank=True)
-    ai_metadata = models.JSONField(default=dict, blank=True) 
     
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return self.title
+        return f"{self.title} @ {self.start_time}s"
+
+
+# --- 4. CAPA / OVERLAY ---
+class ClipLayer(models.Model):
+    class LayerType(models.TextChoices):
+        TEXT = 'text', 'Texto / Subtítulo'
+        IMAGE = 'image', 'Imagen / Logo'
+        VIDEO = 'video', 'Video Overlay'
+        AUDIO = 'audio', 'Audio / Música'
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    clip = models.ForeignKey(VideoClip, on_delete=models.CASCADE, related_name='layers')
+    
+    layer_type = models.CharField(max_length=20, choices=LayerType.choices)
+    start_time = models.FloatField(default=0.0)
+    end_time = models.FloatField(null=True, blank=True)
+    
+    content = models.TextField(blank=True) 
+    asset_file = models.FileField(upload_to='assets/layers/', null=True, blank=True)
+    
+    config = models.JSONField(default=dict, blank=True)
+    is_ai_generated = models.BooleanField(default=False)
+    prompt_used = models.CharField(max_length=255, blank=True)
+
+    def __str__(self):
+        return f"{self.layer_type} @ {self.start_time}s"
+
 
 class ScheduledPost(models.Model):
     """
@@ -207,27 +242,3 @@ class ScheduledPost(models.Model):
 
     def __str__(self):
         return f"{self.platform} @ {self.publish_at}"
-
-
-# --- 4. LAYERS ---
-class ClipLayer(models.Model):
-    class LayerType(models.TextChoices):
-        IMAGE = 'image', 'Imagen'
-        VIDEO = 'video', 'B-Roll'
-        TEXT = 'text', 'Texto'
-        SOUND = 'sound', 'Efecto de Sonido'
-        SUBTITLE = 'subtitle', 'Línea de Subtítulo'
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    clip = models.ForeignKey(VideoClip, on_delete=models.CASCADE, related_name='layers')
-    layer_type = models.CharField(max_length=20, choices=LayerType.choices)
-    file = models.FileField(upload_to='assets/%Y/%m/', null=True, blank=True)
-    text_content = models.CharField(max_length=255, blank=True)
-    start_time = models.FloatField()
-    duration = models.FloatField(default=2.0)
-    position_data = models.JSONField(default=dict, blank=True)
-    is_ai_generated = models.BooleanField(default=False)
-    prompt_used = models.CharField(max_length=255, blank=True)
-
-    def __str__(self):
-        return f"{self.layer_type} @ {self.start_time}s"
