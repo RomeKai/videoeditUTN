@@ -392,22 +392,24 @@ def render_video_segments(self, project_id):
 @celery_app.task(bind=True, max_retries=2)
 def process_initial_ingestion(self, project_id):
     """
-    Multimodal Ingestion Pipeline (Paper Edit V1 + Video Sync)
+    Multimodal Ingestion Pipeline V2 (Paper Edit V1 + Video Sync)
     1. Download/Obtain Source
-    2. Parallel: Transcription (Whisper) & Proxy Generation (FFmpeg)
-    3. AI Selection & Rationale
-    4. S3 Offloading
-    5. State Bifurcation (Bypass vs Awaiting Approval)
+    2. Upload Original to R2
+    3. Generate Web Proxy (FFmpeg 480p) & Upload to R2
+    4. Parallel: Transcription (Whisper) & AI Selection
+    5. State Bifurcation
     """
-    logger.info(f"🚀 [INGESTION] Starting project {project_id}")
+    logger.info(f"🚀 [INGESTION V2] Starting project {project_id}")
     from apps.videos.services.storage_service import CloudflareR2Manager
     from apps.videos.services.transcription_engine import TranscriptionEngine
-    import subprocess
+    from apps.videos.utils.ffmpeg_utils import FFmpegManager
 
     try:
-        project = VideoProject.objects.get(id=project_id)
-        project.status = VideoProject.Status.INGESTING
-        project.save()
+        # Atomic lock and initial status update
+        with transaction.atomic():
+            project = VideoProject.objects.select_for_update().get(id=project_id)
+            project.status = VideoProject.Status.INGESTING
+            project.save()
 
         # --- 1. OBTAIN SOURCE ---
         if not project.source_file and project.video_url:
@@ -421,37 +423,36 @@ def process_initial_ingestion(self, project_id):
 
         source_path = project.source_file.path
         temp_dir = os.path.dirname(source_path)
-
-        # --- 2. UPLOAD ORIGINAL TO S3 ---
         user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
-        orig_r2_key = CloudflareR2Manager.upload_video(source_path, user_id, str(project.id))
-        project.original_r2_key = orig_r2_key
-        project.save()
 
+        # --- 2. UPLOAD ORIGINAL TO R2 ---
+        orig_r2_key = CloudflareR2Manager.upload_video(source_path, user_id, str(project.id))
+        
+        with transaction.atomic():
+            project = VideoProject.objects.select_for_update().get(id=project_id)
+            project.original_r2_key = orig_r2_key
+            project.save()
 
         # --- 3. PROXY GENERATION (FFmpeg) ---
         proxy_filename = f"proxy_{project.id}.mp4"
         proxy_local_path = os.path.join(temp_dir, proxy_filename)
-
-        logger.info(f"🎞️ Generating Web Proxy: {proxy_local_path}")
-        ffmpeg_cmd = [
-            'ffmpeg', '-y', '-i', source_path,
-            '-vf', 'scale=-2:480',
-            '-vcodec', 'libx264', '-profile:v', 'main', '-crf', '28',
-            '-acodec', 'aac', '-b:a', '96k',
-            proxy_local_path
-        ]
-
+        
         try:
-            subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+            FFmpegManager.generate_web_proxy(source_path, proxy_local_path)
+            
             # Upload Proxy to R2
             proxy_r2_key = CloudflareR2Manager.upload_video(proxy_local_path, user_id, str(project.id))
-            project.proxy_r2_key = proxy_r2_key
+            
+            with transaction.atomic():
+                project = VideoProject.objects.select_for_update().get(id=project_id)
+                project.proxy_r2_key = proxy_r2_key
+                project.save()
+                
             logger.info(f"✅ Proxy uploaded to R2: {proxy_r2_key}")
-        except subprocess.CalledProcessError as e:
-            logger.error(f"❌ FFmpeg Proxy failed: {e.stderr.decode()}")
+        except Exception as e:
+            logger.error(f"⚠️ Proxy generation failed but continuing ingestion: {e}")
         finally:
-            if os.path.exists(proxy_local_path): os.remove(proxy_local_path)
+            FFmpegManager.cleanup_local_file(proxy_local_path)
 
         # --- 4. TRANSCRIPTION ---
         logger.info("🧠 Transcribing...")
@@ -459,60 +460,79 @@ def process_initial_ingestion(self, project_id):
         segments = transcriber.transcribe(source_path, word_timestamps=True)
         full_text = " ".join([seg['text'] for seg in segments])
         
-        project.metadata['full_text'] = full_text
-        project.transcript_data = segments
-
         # --- 5. AI SELECTION (RATIONALE) ---
         from moviepy import VideoFileClip
         with VideoFileClip(source_path) as clip:
             duration = clip.duration
-            project.metadata['duration'] = duration
-            project.metadata['resolution'] = list(clip.size)
+            res = list(clip.size)
+
+        metadata_payload = {
+            'full_text': full_text,
+            'duration': duration,
+            'resolution': res
+        }
 
         ai_suggestions = SelectionEngine.select_viral_clips(
-            transcription_data=project.metadata,
+            transcription_data=metadata_payload,
             project_title=project.title,
             duration=duration,
             intelligence_level=project.intelligence_level
         )
 
-        project.ai_rationale_log = {"suggestions_count": len(ai_suggestions), "raw_ai_output": ai_suggestions}
+        # Update Project and create Clips in one atomic block
+        with transaction.atomic():
+            project = VideoProject.objects.select_for_update().get(id=project_id)
+            project.metadata.update(metadata_payload)
+            project.transcript_data = segments
+            project.ai_rationale_log = {
+                "suggestions_count": len(ai_suggestions), 
+                "raw_ai_output": ai_suggestions
+            }
 
-        created_clips = []
-        for clip_data in ai_suggestions:
-            clip_obj = VideoClip.objects.create(
-                project=project,
-                title=clip_data.get('title', 'Clip sugerido'),
-                start_time=clip_data.get('start', 0.0),
-                end_time=clip_data.get('end', 10.0),
-                virality_score=clip_data.get('virality_score', 0),
-                ai_reasoning=clip_data.get('reasoning', ''),
-                status='draft'
-            )
-            created_clips.append(clip_obj)
+            created_clips = []
+            for clip_data in ai_suggestions:
+                clip_obj = VideoClip.objects.create(
+                    project=project,
+                    title=clip_data.get('title', 'Clip sugerido'),
+                    start_time=clip_data.get('start', 0.0),
+                    end_time=clip_data.get('end', 10.0),
+                    virality_score=clip_data.get('virality_score', 0),
+                    ai_reasoning=clip_data.get('reasoning', ''),
+                    status=VideoClip.Status.DRAFT
+                )
+                created_clips.append(clip_obj)
 
-        # --- 6. STATE BIFURCATION ---
-        if project.auto_render_bypass:
-            logger.info("⏩ Auto-render bypass active. Rendering clips...")
-            project.status = VideoProject.Status.RENDERING
+            # --- 6. STATE BIFURCATION ---
+            if project.auto_render_bypass:
+                logger.info("⏩ Auto-render bypass active. Rendering clips...")
+                project.status = VideoProject.Status.RENDERING
+                project.save()
+                
+                # We can't easily do nested atomic or complex logic inside loop for rendering
+                # but we trigger the rendering for each clip
+                from apps.videos.services.render_engine import RenderEngine
+                for clip in created_clips:
+                    try:
+                        RenderEngine.render_clip(clip.id)
+                    except Exception as e:
+                        logger.error(f"⚠️ Render failed for clip {clip.id}: {e}")
+                
+                project.status = VideoProject.Status.COMPLETED
+            else:
+                logger.info("⏳ Ingestion complete. Awaiting user approval.")
+                project.status = VideoProject.Status.AWAITING_APPROVAL
+
             project.save()
-            from apps.videos.services.render_engine import RenderEngine
-            for clip in created_clips:
-                try:
-                    RenderEngine.render_clip(clip.id)
-                except Exception as e:
-                    logger.error(f"⚠️ Render failed for clip {clip.id}: {e}")
-            project.status = VideoProject.Status.COMPLETED
-        else:
-            logger.info("⏳ Ingestion complete. Awaiting user approval.")
-            project.status = VideoProject.Status.AWAITING_APPROVAL
-
-        project.save()
+            
         return f"Ingestion Success {project_id}"
 
     except Exception as e:
         logger.error(f"❌ [INGESTION ERROR] {e}", exc_info=True)
-        if 'project' in locals():
-            project.status = VideoProject.Status.FAILED
-            project.save()
+        try:
+            with transaction.atomic():
+                project = VideoProject.objects.select_for_update().get(id=project_id)
+                project.status = VideoProject.Status.FAILED
+                project.save()
+        except:
+            pass
         raise self.retry(exc=e, countdown=60)
