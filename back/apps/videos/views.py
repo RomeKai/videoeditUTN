@@ -40,6 +40,41 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return VideoProject.objects.filter(workspace__members=self.request.user).order_by('-created_at')
 
+    @action(detail=True, methods=['get'], url_path='paper-edit-data')
+    def paper_edit_data(self, request, pk=None):
+        """
+        Endpoint: Retrieves all necessary data for the Paper Edit interface.
+        Returns:
+        - proxy_url: Presigned URL for the lightweight 480p video.
+        - transcript: The full Whisper-generated segments with timestamps.
+        - ai_suggestions: The initial clips suggested by the AI.
+        """
+        project = self.get_object()
+        
+        from apps.videos.services.storage_service import CloudflareR2Manager
+        
+        proxy_url = None
+        if project.proxy_r2_key:
+            proxy_url = CloudflareR2Manager.generate_presigned_url(
+                project.proxy_r2_key, 
+                expiration_seconds=7200 # 2 hours for editing sessions
+            )
+        
+        # We also need the suggestions as VideoClips
+        from .serializers import VideoClipSerializer
+        clips = project.clips.all()
+        clips_serializer = VideoClipSerializer(clips, many=True)
+
+        return Response({
+            "project_id": project.id,
+            "title": project.title,
+            "status": project.status,
+            "proxy_url": proxy_url,
+            "transcript": project.transcript_data,
+            "ai_suggestions": clips_serializer.data,
+            "metadata": project.metadata
+        }, status=200)
+
     @action(detail=True, methods=['post'], url_path='approve-paper-edit')
     def approve_paper_edit(self, request, pk=None):
         """
