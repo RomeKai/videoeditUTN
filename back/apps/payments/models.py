@@ -100,3 +100,30 @@ class Transaction(models.Model):
 
     def __str__(self):
         return f"Tx {self.id}: {self.amount} ({self.status})"
+
+    @staticmethod
+    def reserve_funds(workspace, user, amount, description=""):
+        """
+        Static helper to reserve funds from a workspace wallet.
+        """
+        with transaction.atomic():
+            # Get or create wallet for the workspace (should exist, but let's be safe)
+            wallet, _ = Wallet.objects.select_for_update().get_or_create(workspace=workspace)
+
+            if wallet.available_balance < amount:
+                raise ValidationError(f"Saldo insuficiente en el Workspace. Requerido: {amount}, Disponible: {wallet.available_balance}")
+
+            # Move funds
+            wallet.available_balance -= amount
+            wallet.reserved_balance += amount
+            wallet.save()
+
+            # Create transaction
+            return Transaction.objects.create(
+                wallet=wallet,
+                created_by=user,
+                amount=amount,
+                transaction_type=Transaction.Type.SPEND,
+                status=Transaction.Status.RESERVED,
+                description=description
+            )

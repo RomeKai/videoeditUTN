@@ -8,6 +8,7 @@ from django.core.files import File
 # Importamos Modelos
 from apps.videos.models import VideoProject, VideoClip
 from apps.payments.models import Transaction
+from moviepy import VideoFileClip, concatenate_videoclips
 
 # Importamos Servicios (SelectionEngine suele ser seguro, TranscriptionEngine lo cargaremos lazy por si acaso)
 from apps.videos.services.selection_engine import SelectionEngine
@@ -461,7 +462,6 @@ def process_initial_ingestion(self, project_id):
         full_text = " ".join([seg['text'] for seg in segments])
         
         # --- 5. AI SELECTION (RATIONALE) ---
-        from moviepy import VideoFileClip
         with VideoFileClip(source_path) as clip:
             duration = clip.duration
             res = list(clip.size)
@@ -536,3 +536,13 @@ def process_initial_ingestion(self, project_id):
         except:
             pass
         raise self.retry(exc=e, countdown=60)
+
+@celery_app.task(bind=True)
+def process_video_pipeline(self, project_id, transaction_id=None):
+    """
+    Orchestrator task that links payments and ingestion.
+    """
+    logger.info(f"🧬 [PIPELINE] Starting for project {project_id} (Tx: {transaction_id})")
+    # For now, it delegates to initial ingestion. 
+    # In the future, it could handle the full lifecycle.
+    return process_initial_ingestion.delay(project_id)

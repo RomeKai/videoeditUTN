@@ -44,12 +44,19 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         return None
 
     def validate(self, data):
-        file = data.get('source_file')
-        url = data.get('video_url')
-        if not file and not url:
-            raise serializers.ValidationError("Debes proporcionar un 'source_file' o una 'video_url'.")
-        if file and url:
-            raise serializers.ValidationError("No puedes enviar archivo y URL al mismo tiempo.")
+        # En caso de creación (POST) o si se están enviando estos campos específicamente en un PATCH
+        if not self.instance or 'source_file' in data or 'video_url' in data:
+            file = data.get('source_file')
+            url = data.get('video_url')
+            
+            # Si es creación, exigimos uno de los dos
+            if not self.instance:
+                if not file and not url:
+                    raise serializers.ValidationError("Debes proporcionar un 'source_file' o una 'video_url'.")
+            
+            # En cualquier caso, no permitimos ambos
+            if file and url:
+                raise serializers.ValidationError("No puedes enviar archivo y URL al mismo tiempo.")
         return data
 
     def validate_source_file(self, value):

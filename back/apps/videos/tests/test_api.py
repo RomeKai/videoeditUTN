@@ -24,29 +24,40 @@ class PrivateVideoProjectAPITests(APITestCase):
     """Pruebas de API para proyectos de video que SÍ requieren autenticación"""
 
     def setUp(self):
+        from apps.users.models import Workspace
         # 1. Crear usuario de prueba para autenticar
         self.user = User.objects.create_user(
-            username='testuser', # <-- AGREGADO
+            username='testuser',
             email='test@onecreator.com',
             password='testpassword'
-)
+        )
         # 2. Autenticar el cliente de prueba con el usuario
         self.client.force_authenticate(user=self.user)
         
-        # 3. Crear proyectos de prueba
+        # 3. Crear Workspace
+        self.workspace = Workspace.objects.create(name="Test Workspace", owner=self.user)
+        self.workspace.members.add(self.user)
+
+        # 4. Crear proyectos de prueba
         self.project1 = VideoProject.objects.create(
-            user=self.user,
+            workspace=self.workspace,
+            uploaded_by=self.user,
             title='Mi Primer Clip',
-            source_file='test/path/file1.mp4' # No necesitamos archivo real para el test
+            source_file='test/path/file1.mp4'
         )
-        # Crear un proyecto que pertenece a OTRO usuario
+        
+        # Crear un proyecto que pertenece a OTRO usuario/workspace
         other_user = User.objects.create_user(
-            username='otheruser', # <-- AGREGADO
+            username='otheruser',
             email='other@onecreator.com',
             password='otherpassword'
         )
+        self.other_workspace = Workspace.objects.create(name="Other Workspace", owner=other_user)
+        self.other_workspace.members.add(other_user)
+        
         self.project_other = VideoProject.objects.create(
-            user=other_user,
+            workspace=self.other_workspace,
+            uploaded_by=other_user,
             title='Proyecto Secreto',
             source_file='test/path/file_secret.mp4'
         )
@@ -111,9 +122,9 @@ class VideoProjectUpdateTests(PrivateVideoProjectAPITests):
         res = self.client.patch(url, payload)
         
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        # El estado real en la DB debe seguir siendo 'pending' (o el valor por defecto)
+        # El estado real en la DB debe seguir siendo el valor por defecto
         self.project1.refresh_from_db()
-        self.assertEqual(self.project1.status, 'pending')
+        self.assertEqual(self.project1.status, VideoProject.Status.UPLOADED)
 
 
 class VideoProjectDeleteTests(PrivateVideoProjectAPITests):
