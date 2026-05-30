@@ -2,7 +2,7 @@ import os
 import asyncio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from crewai_tools import BaseTool
+from crewai.tools import BaseTool
 
 class EngramMCPClient:
     """

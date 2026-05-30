@@ -1,54 +1,41 @@
-# System Architecture Overview
+# System Architecture Overview (V2 - Gentle-AI Edition)
 
-This document provides a high-level overview of the **OneCreator** system architecture, detailing the core components, data flow, and infrastructure orchestration.
+This document provides the authoritative overview of the **OneCreator** system architecture, detailing our transition to zero-egress storage, single-database task management, and cognitive engineering standards.
 
-## 1. Architectural Philosophy
+## 1. Engineering Philosophy (SDD Protocol)
 
-### Current State: Monolithic Architecture
-OneCreator is currently implemented as a **Modular Monolith**. This architectural choice was made to accelerate development and simplify deployment during the platform's initial phase. Given the current user base, a monolithic approach allows for faster iteration, easier debugging, and lower operational overhead.
+OneCreator is developed using the **Gentle-AI Spec-Driven Development (SDD)** protocol. This mandate ensures that:
+*   **Design First:** No code is implemented without a prior Technical Specification (SDD) in Markdown.
+*   **Persistent Memory:** All architectural decisions are stored in **Engram** (local SQLite memory) to prevent amnesia and ensure consistency across sessions.
+*   **Modular Monolith:** The system remains a modular monolith to maximize iteration speed while maintaining strict separation of concerns (Apps: `videos`, `ia`, `payments`, `users`, `integrations`).
 
-### Future Roadmap: Microservices Transition
-As the platform scales and the volume of concurrent video processing tasks increases, the system is designed to be decomposed into independent **microservices**. This future transition will allow for:
-*   **Independent Scaling:** Scaling the Render Engine independently from the user management API.
-*   **Technological Flexibility:** Utilizing different technology stacks for specific services (e.g., dedicated C++ or Rust services for high-performance video encoding).
-*   **Enhanced Fault Tolerance:** Isolating failures within specific domains to ensure overall system stability.
+## 2. Core Components & Infrastructure
 
-## 2. Core Components
+### Single Source of Truth (PostgreSQL)
+We have consolidated our infrastructure by utilizing **PostgreSQL** for both data persistence and task orchestration:
+*   **Data:** Stores user profiles, workspaces, video projects, and financial transactions.
+*   **Task Queue (Procrastinate):** We have migrated away from Celery/Redis to **Procrastinate**. This utilizes PostgreSQL's native `FOR UPDATE SKIP LOCKED` mechanism, reducing points of failure and ensuring task execution is transactionally bound to database changes.
+*   **Vector Search:** `pgvector` is used for semantic search and AI-driven Prompt-to-Edit features.
 
-### Backend (Django)
-The system is built on **Django 5.0+** using the **Django REST Framework (DRF)**. It handles:
-*   User authentication and workspace management.
-*   API endpoints for video project creation and management.
-*   Coordination of asynchronous tasks.
-*   Business logic for the internal wallet and transaction system.
+### Zero-Egress Storage (Cloudflare R2)
+All media assets are stored in **Cloudflare R2** to eliminate egress fees and maximize scalability:
+*   **Source Media:** Raw high-resolution uploads.
+*   **Web Proxies:** Lightweight (480p) versions generated during ingestion for the "Paper Edit" interface.
+*   **Final Renders:** Production-ready outputs for social media distribution.
 
-### Asynchronous Task Queue (Celery & Redis)
-Video processing is a resource-intensive operation and is handled asynchronously:
-*   **Celery:** Manages the execution of background tasks such as transcription, AI scoring, and video rendering.
-*   **Redis:** Acts as the message broker between the Django API and Celery workers, ensuring reliable task distribution.
+### AI Engineering Factory
+The autonomous department resides in `/agentsTeam`, utilizing **CrewAI** and **LangGraph** to automate the SDD cycle. It performs architectural audits and implementation tasks following strict enrutamiento of models (Pro for design, Flash for execution).
 
-### Database (PostgreSQL)
-A relational database is utilized for persistent storage:
-*   **PostgreSQL:** Stores user data, video project metadata, clip information, and financial transactions.
-*   **pgvector:** An extension for PostgreSQL used to store and query AI-generated embeddings for semantic search and Prompt-to-Edit features.
+## 3. Data & Media Pipeline (Ingestion V2)
 
-## 2. Infrastructure and Storage
+1.  **Ingestion & Proxy Generation:** Upon upload, a **Procrastinate** task is triggered. It uses **FFmpeg** to generate an ultra-lightweight web proxy (<480p) with `-movflags +faststart` for immediate browser playback.
+2.  **Multimodal Analysis:** **Whisper** generates high-fidelity transcripts, while the **Selection Engine** (LLM/XGBoost) identifies potential viral moments.
+3.  **Paper Edit:** The frontend uses the web proxy and transcript to allow users to visually adjust clip durations without lag.
+4.  **Context-Aware Rendering:** The **Render Engine** (MoviePy 2.0+) applies layouts, subtitles, and face tracking based on the approved segments.
+5.  **Social Orchestration:** Final clips are distributed via the **Ayrshare API** with AI-optimized SEO (Titles/Hashtags).
 
-### Media Storage (AWS S3)
-All binary assets are stored in **AWS S3** to ensure scalability and high availability:
-*   **Source Videos:** Original high-resolution uploads.
-*   **Processed Clips:** Final rendered outputs ready for distribution.
-*   **Temporary Assets:** Extracted audio and intermediate processing files.
+## 4. Financial Integrity (FinOps)
 
-### Containerization (Docker)
-The entire application environment is orchestrated using **Docker** and **Docker Compose**:
-*   **Multi-Container Setup:** Separate containers for the API, Celery workers, Redis, and PostgreSQL.
-*   **Environment Parity:** Ensures consistent development and production environments.
-
-## 3. Data Flow
-
-1.  **Upload:** User uploads a video through the API, which is stored directly in S3.
-2.  **Analysis:** A Celery task is triggered to transcribe the audio (Whisper) and score the content for virality (XGBoost/LLM).
-3.  **Selection:** Based on AI scoring, specific segments are identified as potential viral clips.
-4.  **Rendering:** The Render Engine processes the selected clips, applying layouts, face tracking, and dynamic subtitles.
-5.  **Delivery:** Final clips are saved to S3, and the user is notified of completion.
+The platform implements a strict "Wallet per Workspace" model:
+*   **Transactional Safety:** All balance modifications use `select_for_update()` within atomic transactions.
+*   **Fund Reservation:** Tasks (like rendering or AI analysis) reserve funds before starting and only "commit" the spend upon successful completion, ensuring users are never overcharged.

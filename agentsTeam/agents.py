@@ -2,9 +2,14 @@ import os
 from dotenv import load_dotenv
 from crewai import Agent
 from crewai_tools import FileReadTool
-from .mcp_engram_client import EngramTool
+try:
+    from .mcp_engram_client import EngramTool
+except ImportError:
+    from mcp_engram_client import EngramTool
 
-load_dotenv()
+# Explicitly load .env from the current directory
+env_path = os.path.join(os.path.dirname(__file__), '.env')
+load_dotenv(env_path)
 
 google_key = os.getenv("GOOGLE_API_KEY", "")
 os.environ["GEMINI_API_KEY"] = google_key
@@ -23,7 +28,7 @@ tool_engram = EngramTool()
 class EngineeringFactory:
     @staticmethod
     def architect():
-        # PHASE 1: Strong reasoning (Pro) + Memory (Engram) + SDD Skill
+        # PHASE 1: Strong reasoning + Memory (Engram) + SDD Skill
         return Agent(
             role="Lead Software Architect",
             goal="Design architectural blueprints and Technical Specifications (SDD) in Markdown.",
@@ -32,7 +37,7 @@ class EngineeringFactory:
             max_iter=5,
             allow_delegation=False,
             verbose=True,
-            llm='gemini/gemini-1.5-pro-latest' 
+            llm='gemini/gemini-flash-latest' # Using Flash for reliability and speed
         )
 
     @staticmethod
@@ -46,7 +51,7 @@ class EngineeringFactory:
             max_iter=3,
             allow_delegation=False,
             verbose=True,
-            llm='gemini/gemini-1.5-flash-latest'
+            llm='gemini/gemini-flash-latest'
         )
 
     @staticmethod
@@ -60,5 +65,7 @@ class EngineeringFactory:
             max_iter=3,
             allow_delegation=True,
             verbose=True,
-            llm='gemini/gemini-1.5-flash-latest'
+            llm='gemini/gemini-flash-latest'
         )
+
+
