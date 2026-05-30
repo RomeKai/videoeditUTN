@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 from crewai import Agent
 from crewai_tools import FileReadTool
+from .mcp_engram_client import EngramTool
 
 load_dotenv()
 
@@ -17,46 +18,47 @@ def load_skill(filename):
         return f.read()
 
 tool_leer_codigo = FileReadTool()
+tool_engram = EngramTool()
 
 class EngineeringFactory:
     @staticmethod
     def architect():
-        # MODEL ROUTING: Architect uses a stronger/smarter model for Spec-Driven Development
+        # PHASE 1: Strong reasoning (Pro) + Memory (Engram) + SDD Skill
         return Agent(
             role="Lead Software Architect",
-            goal="Design architectural contracts and Technical Specifications (SDD).",
+            goal="Design architectural blueprints and Technical Specifications (SDD) in Markdown.",
             backstory=load_skill("architect_skill.md"),
-            tools=[tool_leer_codigo],
-            max_iter=3,
+            tools=[tool_leer_codigo, tool_engram],
+            max_iter=5,
             allow_delegation=False,
             verbose=True,
-            llm='gemini/gemini-1.5-pro-latest' # High intelligence for SDD
+            llm='gemini/gemini-1.5-pro-latest' 
         )
 
     @staticmethod
     def engineer():
-        # MODEL ROUTING: Executor uses a faster/cheaper model to just output code
+        # PHASE 2: Fast execution (Flash) + Translation focus
         return Agent(
             role="Senior Video Backend Developer",
-            goal="Translate the Architect's SDD into production-ready source code.",
+            goal="Translate the Architect's Markdown SDD into functional Python code.",
             backstory=load_skill("developer_skill.md"),
             tools=[tool_leer_codigo],
             max_iter=3,
             allow_delegation=False,
             verbose=True,
-            llm='gemini/gemini-1.5-flash-latest' # Fast/cheap for execution
+            llm='gemini/gemini-1.5-flash-latest'
         )
 
     @staticmethod
     def qa_tester():
-        # MODEL ROUTING: Reviewer uses a fast model for strict validation
+        # PHASE 3: Fast auditing (Flash) + Memory (Engram) for persistence
         return Agent(
             role="Critique-Bot (QA Reviewer)",
-            goal="Ensure the developer's code strictly adheres to the Architect's SDD.",
+            goal="Ensure the code strictly adheres to the SDD. Guard memory with Engram.",
             backstory=load_skill("reviewer_skill.md"),
-            tools=[tool_leer_codigo],
+            tools=[tool_leer_codigo, tool_engram],
             max_iter=3,
             allow_delegation=True,
             verbose=True,
-            llm='gemini/gemini-1.5-flash-latest' # Fast validation
+            llm='gemini/gemini-1.5-flash-latest'
         )
