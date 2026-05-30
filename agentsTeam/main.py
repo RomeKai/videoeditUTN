@@ -9,53 +9,54 @@ load_dotenv()
 
 def run_factory(user_requirement: str):
     """
-    Orchestrates the AI Engineering Factory with strict rate limits and targeted tasks.
-    Now generalized to accept any user requirement.
+    Orchestrates the AI Engineering Factory using Gentle-AI SDD Principles.
     """
-    print(f"Initializing Engineering Factory for: {user_requirement}")
+    print(f"Initializing SDD Engineering Factory for: {user_requirement}")
     
     # Initialize Agents from the Factory
     architect = EngineeringFactory.architect()
     engineer = EngineeringFactory.engineer()
     qa_auditor = EngineeringFactory.qa_tester()
 
-    # 1. Analysis & Design Task: Targeted file reading to save tokens
+    # PHASE 1: Architect - Spec-Driven Development
     analysis_task = Task(
         description=(
-            f"Analyze the following requirement: '{user_requirement}'. "
-            "1. Read 'saas_context.md' for infrastructure rules and current architecture. "
-            "2. Identify and read relevant project files to understand the current implementation (if applicable). "
-            "3. Design a step-by-step technical implementation plan and define necessary data structures."
+            f"Analyze the following requirement: '{user_requirement}'.\n"
+            "1. Read 'saas_context.md' for infrastructure rules.\n"
+            "2. Identify and read relevant project files.\n"
+            "3. [MEMORY CHECK] Query historical architectural decisions (Simulated Engram memory) before proceeding.\n"
+            "4. Output the immutable TechnicalSpecification (SDD) blueprint. Do NOT write functional code."
         ),
         expected_output="A structured JSON TechnicalSpecification object.",
         agent=architect,
         output_pydantic=TechnicalSpecification
     )
 
-    # 2. Implementation Task: Sequential context from Architect
+    # PHASE 2: Executor - Translation
     implementation_task = Task(
         description=(
-            "Based on the Architect's TechnicalSpecification: "
-            "1. Implement the solution following all architectural guidelines and best practices. "
-            "2. Use MoviePy 2.0+ for video processing if required. "
-            "3. Ensure the implementation is modular, typed, and follows SOLID principles."
+            "Based strictly on the Architect's TechnicalSpecification: \n"
+            "1. Implement the requested source code.\n"
+            "2. Follow the architectural guidelines and design patterns exactly as specified.\n"
+            "3. Do not invent new features or libraries outside the Spec."
         ),
-        expected_output="Functional Python source code for the requested feature.",
+        expected_output="Functional Python source code.",
         agent=engineer,
         context=[analysis_task]
     )
 
-    # 3. Quality Audit Task: Final validation
+    # PHASE 3: Reviewer - QA & Veto
     audit_task = Task(
         description=(
-            "Audit the implementation for quality, security, and performance: "
-            "1. Verify the logic meets all requirements and handles edge cases. "
-            "2. Check for potential performance bottlenecks or security risks. "
-            "3. Provide the final approved version of the code."
+            "Audit the implementation against the SDD: \n"
+            "1. Compare the Developer's code against the Architect's TechnicalSpecification.\n"
+            "2. Reject the code (is_approved=False) if it deviates from the Spec.\n"
+            "3. Verify security and asynchronous boundaries (e.g., Celery, transaction locks).\n"
+            "4. Provide the final approved version of the code only if it passes all checks."
         ),
         expected_output="A structured QAReport JSON.",
         agent=qa_auditor,
-        context=[implementation_task],
+        context=[analysis_task, implementation_task], # Needs both to compare
         output_pydantic=QAReport
     )
 
@@ -71,9 +72,8 @@ def run_factory(user_requirement: str):
     return factory_crew.kickoff()
 
 if __name__ == "__main__":
-    print("AI Engineering Factory Online (Survival Mode)")
+    print("Gentle-AI Engineering Factory Online (SDD Mode)")
     
-    # Accept requirement from command line or use default
     if len(sys.argv) > 1:
         requirement = sys.argv[1]
     else:
@@ -87,15 +87,11 @@ if __name__ == "__main__":
         try:
             os.makedirs("delivery", exist_ok=True)
             
-            # Access pydantic data
-            # The result object from CrewAI 0.28+ might be a CrewOutput
-            # We try to extract the final_source_code from the last task output
             if hasattr(result, 'pydantic'):
                 delivery_code = result.pydantic.final_source_code
             elif isinstance(result, dict) and 'final_source_code' in result:
                 delivery_code = result['final_source_code']
             else:
-                # Fallback: try to find it in the raw string if pydantic failed
                 import re
                 code_match = re.search(r"final_source_code='(.*?)'", str(result), re.DOTALL)
                 if code_match:

@@ -5,56 +5,58 @@ from crewai_tools import FileReadTool
 
 load_dotenv()
 
-# FIX: Read the API key and force an empty string as default to avoid "str | None" type errors.
 google_key = os.getenv("GOOGLE_API_KEY", "")
-
-# GLOBAL FIX: Force CrewAI (Agents, Tools, and Tasks) to use Gemini 1.5 Flash.
-# Based on diagnostic, 'gemini-flash-latest' is the valid identifier for this.
 os.environ["GEMINI_API_KEY"] = google_key
 os.environ["OPENAI_API_KEY"] = google_key # Routing trick for LiteLLM
-os.environ["OPENAI_MODEL_NAME"] = "gemini/gemini-flash-latest" 
 
-# Use only FileReadTool to prevent 'Fanning Out' and excessive token consumption.
+# Utility to load Gentle-AI Skills
+def load_skill(filename):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base_dir, 'skills', filename)
+    with open(path, 'r', encoding='utf-8') as f:
+        return f.read()
+
 tool_leer_codigo = FileReadTool()
 
 class EngineeringFactory:
     @staticmethod
     def architect():
+        # MODEL ROUTING: Architect uses a stronger/smarter model for Spec-Driven Development
         return Agent(
             role="Lead Software Architect",
-            goal="Scan specific code files and design architectural contracts using GoF/GRASP.",
-            backstory="Expert at mapping dependencies and ensuring SOLID compliance. "
-                      "You generate structured Architecture Contracts based on provided files.",
+            goal="Design architectural contracts and Technical Specifications (SDD).",
+            backstory=load_skill("architect_skill.md"),
             tools=[tool_leer_codigo],
-            max_iter=3, # SHACKLE: Limit iterations to save quota
+            max_iter=3,
             allow_delegation=False,
             verbose=True,
-            llm='gemini/gemini-flash-latest'
+            llm='gemini/gemini-1.5-pro-latest' # High intelligence for SDD
         )
 
     @staticmethod
     def engineer():
+        # MODEL ROUTING: Executor uses a faster/cheaper model to just output code
         return Agent(
             role="Senior Video Backend Developer",
-            goal="Implement logic following the Architecture Contract and MoviePy 2.0 standards.",
-            backstory="Master of Python, Celery, and FFmpeg. You write clean, performant, and decoupled code.",
+            goal="Translate the Architect's SDD into production-ready source code.",
+            backstory=load_skill("developer_skill.md"),
             tools=[tool_leer_codigo],
-            max_iter=3, # SHACKLE: Limit iterations to save quota
+            max_iter=3,
             allow_delegation=False,
             verbose=True,
-            llm='gemini/gemini-flash-latest'
+            llm='gemini/gemini-1.5-flash-latest' # Fast/cheap for execution
         )
 
     @staticmethod
     def qa_tester():
+        # MODEL ROUTING: Reviewer uses a fast model for strict validation
         return Agent(
-            role="Automated Testing & Audit Expert",
-            goal="Verify code efficiency, security, and video processing integrity.",
-            backstory="Hard-to-please auditor. You check for CPU spikes, frame skipping, "
-                      "and proper OAuth2 token handling.",
+            role="Critique-Bot (QA Reviewer)",
+            goal="Ensure the developer's code strictly adheres to the Architect's SDD.",
+            backstory=load_skill("reviewer_skill.md"),
             tools=[tool_leer_codigo],
-            max_iter=3, # SHACKLE: Limit iterations to save quota
+            max_iter=3,
             allow_delegation=True,
             verbose=True,
-            llm='gemini/gemini-flash-latest'
+            llm='gemini/gemini-1.5-flash-latest' # Fast validation
         )
