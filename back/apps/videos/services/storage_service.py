@@ -1,4 +1,4 @@
-import boto3
+﻿import boto3
 import logging
 import os
 from django.conf import settings
@@ -57,22 +57,22 @@ class CloudflareR2Manager:
             mock_dest = os.path.join(settings.MEDIA_ROOT, 'r2_mock', r2_key)
             os.makedirs(os.path.dirname(mock_dest), exist_ok=True)
             shutil.copy2(local_file_path, mock_dest)
-            logger.info(f"📁 [R2 MOCK] Saved file locally: {mock_dest}")
+            logger.info(f"ðŸ“ [R2 MOCK] Saved file locally: {mock_dest}")
             return r2_key
 
         client = cls.get_client()
         try:
-            logger.info(f"📤 Uploading {local_file_path} to Cloudflare R2 bucket {settings.CLOUDFLARE_R2_BUCKET_NAME}...")
+            logger.info(f"ðŸ“¤ Uploading {local_file_path} to Cloudflare R2 bucket {settings.CLOUDFLARE_R2_BUCKET_NAME}...")
             client.upload_file(
                 local_file_path, 
                 settings.CLOUDFLARE_R2_BUCKET_NAME, 
                 r2_key,
                 ExtraArgs={'ContentType': 'video/mp4'} # R2 handles ACLs via bucket settings usually
             )
-            logger.info(f"✅ Successfully uploaded to R2: {r2_key}")
+            logger.info(f"âœ… Successfully uploaded to R2: {r2_key}")
             return r2_key
         except ClientError as e:
-            logger.error(f"❌ Failed to upload to R2: {e}")
+            logger.error(f"âŒ Failed to upload to R2: {e}")
             raise e
 
     @classmethod
@@ -96,5 +96,32 @@ class CloudflareR2Manager:
             )
             return url
         except ClientError as e:
-            logger.error(f"❌ Failed to generate presigned URL from R2: {e}")
+            logger.error(f"âŒ Failed to generate presigned URL from R2: {e}")
             return ""
+
+
+    @classmethod
+    def delete_object(cls, r2_object_key: str) -> bool:
+        """
+        Deletes an object from Cloudflare R2 (or local mock).
+        Returns True if successful.
+        """
+        if cls.is_mock_mode():
+            mock_path = os.path.join(settings.MEDIA_ROOT, 'r2_mock', r2_object_key)
+            if os.path.exists(mock_path):
+                os.remove(mock_path)
+                logger.info(f"🗑️ [R2 MOCK] Deleted file: {mock_path}")
+                return True
+            return False
+
+        client = cls.get_client()
+        try:
+            logger.info(f"🗑️ Deleting {r2_object_key} from R2...")
+            client.delete_object(
+                Bucket=settings.CLOUDFLARE_R2_BUCKET_NAME,
+                Key=r2_object_key
+            )
+            return True
+        except ClientError as e:
+            logger.error(f"❌ Failed to delete from R2: {e}")
+            return False
