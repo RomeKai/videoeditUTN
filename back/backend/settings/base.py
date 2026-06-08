@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 import os
 import environ
 
@@ -159,3 +159,6 @@ CLOUDFLARE_R2_REGION = 'auto' # R2 standard
 
 # Custom Endpoint for R2
 CLOUDFLARE_R2_ENDPOINT_URL = f"https://{CLOUDFLARE_R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if CLOUDFLARE_R2_ACCOUNT_ID else None
+
+# --- ASSETS ---
+FONTS_DIR = os.path.join(BASE_DIR, 'assets', 'fonts')
