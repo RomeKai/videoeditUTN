@@ -1,4 +1,4 @@
-import os
+﻿import os
 import logging
 from django.conf import settings
 from django.core.files import File
@@ -7,6 +7,7 @@ from apps.videos.models import VideoClip
 from apps.videos.services.layouts import get_layout_strategy
 from apps.videos.services.transcription_engine import TranscriptionEngine
 from apps.videos.services.subtitle_engine import SubtitleEngine, StyleConfig
+from apps.videos.utils.moviepy_utils import RENDER_FPS, RENDER_CODEC, RENDER_AUDIO_CODEC, RENDER_PRESET, FFMPEG_PARAMS, ensure_even
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +26,8 @@ class RenderEngine:
         else: target_w = int(target_h * (9/16)) 
         
         # Ensure dimensions are even to prevent H.264 codec crashes
-        target_w = target_w if target_w % 2 == 0 else target_w + 1
-        target_h = target_h if target_h % 2 == 0 else target_h + 1
+        target_w = ensure_even(target_w)
+        target_h = ensure_even(target_h)
         return target_w, target_h
 
     @staticmethod
@@ -111,12 +112,12 @@ class RenderEngine:
             # 4. Physical Rendering
             final_clip.write_videofile(
                 output_path,
-                codec='libx264',
-                audio_codec='aac',
-                fps=24,
-                preset='fast',
+                codec=RENDER_CODEC,
+                audio_codec=RENDER_AUDIO_CODEC,
+                fps=RENDER_FPS,
+                preset=RENDER_PRESET,
                 threads=4,
-                ffmpeg_params=['-pix_fmt', 'yuv420p', '-profile:v', 'main'],
+                ffmpeg_params=FFMPEG_PARAMS,
                 logger=None
             )
             
@@ -135,11 +136,11 @@ class RenderEngine:
             clip_obj.status = VideoClip.Status.COMPLETED
             clip_obj.save()
             
-            logger.info(f"✅ Render and Cloud Upload successful: {clip_id}")
+            logger.info(f"âœ… Render and Cloud Upload successful: {clip_id}")
             return True
 
         except Exception as e:
-            logger.error(f"❌ Render Engine failed for clip {clip_id}: {e}", exc_info=True)
+            logger.error(f"âŒ Render Engine failed for clip {clip_id}: {e}", exc_info=True)
             if clip_obj:
                 clip_obj.status = VideoClip.Status.DRAFT
                 clip_obj.save()
@@ -147,7 +148,7 @@ class RenderEngine:
             
         finally:
             # 7. GARBAGE COLLECTION (Local Disk Cleanup)
-            logger.info("🧹 Cleaning up local rendering files...")
+            logger.info("ðŸ§¹ Cleaning up local rendering files...")
             try:
                 if original_clip: original_clip.close()
                 if final_clip and final_clip != original_clip: final_clip.close()
@@ -157,4 +158,4 @@ class RenderEngine:
                 if temp_audio_path and os.path.exists(temp_audio_path): 
                     os.remove(temp_audio_path)
             except Exception as cleanup_err:
-                logger.warning(f"⚠️ Cleanup error: {cleanup_err}")
+                logger.warning(f"âš ï¸ Cleanup error: {cleanup_err}")

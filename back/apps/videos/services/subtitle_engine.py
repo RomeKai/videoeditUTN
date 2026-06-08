@@ -1,10 +1,11 @@
-import textwrap
+﻿import textwrap
 import logging
 from typing import List, Dict, Any, Tuple, Optional
 from pydantic import BaseModel, Field, field_validator
 from moviepy import TextClip, CompositeVideoClip
 from django.conf import settings
 import os
+from apps.videos.utils.moviepy_utils import ensure_even
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ class SubtitleEngine:
         self.style = style_config
         # Ensure font path is absolute if it's relative to assets
         if not os.path.isabs(self.style.font_path):
-            self.style.font_path = os.path.join(settings.BASE_DIR, 'assets', 'fonts', self.style.font_path)
+            self.style.font_path = os.path.join(settings.FONTS_DIR, self.style.font_path)
 
     @staticmethod
     def validate_even_dimension(value: float) -> int:
@@ -82,15 +83,15 @@ class SubtitleEngine:
         REFACTOR: Implements Algorithmic Padding to prevent Geometric Clipping.
         """
         # 1. Calculate dynamic font size based on target height
-        font_size = self.validate_even_dimension(target_h * self.style.font_size_percent)
+        font_size = ensure_even(target_h * self.style.font_size_percent)
         
         # 2. Enforce Social Media Safe Zones (TikTok/Reels compliance)
         safe_y_limit = 0.70
         y_pos_percent = min(self.style.y_position_percent, safe_y_limit)
-        y_pos = self.validate_even_dimension(target_h * y_pos_percent)
+        y_pos = ensure_even(target_h * y_pos_percent)
         
         # 3. Geometry Fix: Bounding box (85% of width) forced to EVEN number
-        max_clip_width = self.validate_even_dimension(target_w * 0.85)
+        max_clip_width = ensure_even(target_w * 0.85)
         
         clips: List[TextClip] = []
         
