@@ -1,4 +1,4 @@
-from rest_framework import serializers
+﻿from rest_framework import serializers
 from .models import VideoProject, VideoClip, ClipLayer, BrandKit
 
 class BrandKitSerializer(serializers.ModelSerializer):
@@ -44,12 +44,12 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         return None
 
     def validate(self, data):
-        # En caso de creación (POST) o si se están enviando estos campos específicamente en un PATCH
+        # En caso de creaciÃ³n (POST) o si se estÃ¡n enviando estos campos especÃ­ficamente en un PATCH
         if not self.instance or 'source_file' in data or 'video_url' in data:
             file = data.get('source_file')
             url = data.get('video_url')
             
-            # Si es creación, exigimos uno de los dos
+            # Si es creaciÃ³n, exigimos uno de los dos
             if not self.instance:
                 if not file and not url:
                     raise serializers.ValidationError("Debes proporcionar un 'source_file' o una 'video_url'.")
@@ -64,14 +64,14 @@ class VideoProjectSerializer(serializers.ModelSerializer):
             if not value.name.lower().endswith(('.mp4', '.mov', '.avi')):
                 raise serializers.ValidationError("Solo se permiten archivos de video (.mp4, .mov, .avi)")
             if value.size > 500 * 1024 * 1024:
-                raise serializers.ValidationError("El archivo es demasiado grande (Máx 500MB)")
+                raise serializers.ValidationError("El archivo es demasiado grande (MÃ¡x 500MB)")
         return value
 
     def create(self, validated_data):
         # Creamos el proyecto normal
         project = super().create(validated_data)
         
-        # INYECCIÓN DINÁMICA: Atrapamos los campos crudos del CURL
+        # INYECCIÃ“N DINÃMICA: Atrapamos los campos crudos del CURL
         raw = self.initial_data
         project.metadata = project.metadata or {}
         
@@ -98,10 +98,16 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         if 'subtitle_scale_factor' in raw: project.subtitle_scale_factor = float(raw['subtitle_scale_factor'])
         if 'subtitle_words_per_segment' in raw: project.subtitle_words_per_segment = int(raw['subtitle_words_per_segment'])
             
-        # Inyección de FaceTracking
+        # InyecciÃ³n de FaceTracking
         if 'use_facetracking' in raw:
+        if ('remove_silences' in raw):
+            project.remove_silences = str(raw['remove_silences']).lower() in ['true', '1', 't', 'y', 'yes']
             val = raw['use_facetracking']
+        if ('remove_silences' in raw):
+            project.remove_silences = str(raw['remove_silences']).lower() in ['true', '1', 't', 'y', 'yes']
             project.use_facetracking = str(val).lower() in ['true', '1', 't', 'y', 'yes']
+        if ('remove_silences' in raw):
+            project.remove_silences = str(raw['remove_silences']).lower() in ['true', '1', 't', 'y', 'yes']
             
         project.save()
         return project

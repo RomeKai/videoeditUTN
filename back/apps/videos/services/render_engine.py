@@ -7,6 +7,7 @@ from apps.videos.models import VideoClip
 from apps.videos.services.layouts import get_layout_strategy
 from apps.videos.services.transcription_engine import TranscriptionEngine
 from apps.videos.services.subtitle_engine import SubtitleEngine, StyleConfig
+from apps.videos.utils.ffmpeg_utils import FFmpegManager
 from apps.videos.utils.moviepy_utils import RENDER_FPS, RENDER_CODEC, RENDER_AUDIO_CODEC, RENDER_PRESET, FFMPEG_PARAMS, ensure_even
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,13 @@ class RenderEngine:
             clip_obj.save()
             
             logger.info(f"âœ… Render and Cloud Upload successful: {clip_id}")
+            if project.remove_silences:
+                logger.info(f'✂️ Applying Silence Removal to clip {clip_id}')
+                final_output_temp = output_path.replace('.mp4', '_processed.mp4')
+                FFmpegManager.remove_silences_from_video(output_path, final_output_temp)
+                if os.path.exists(final_output_temp):
+                    os.remove(output_path)
+                    os.rename(final_output_temp, output_path)
             return True
 
         except Exception as e:
