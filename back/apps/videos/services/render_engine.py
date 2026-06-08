@@ -82,7 +82,7 @@ class RenderEngine:
                 pos_map = {"top": 0.20, "center": 0.50, "bottom": 0.85}
                 
                 config = StyleConfig(
-                    font_path='Montserrat-Bold.ttf',
+                    font_path=os.path.join(settings.FONTS_DIR, 'Montserrat-Bold.ttf'),
                     font_size_percent=size_map.get(project.subtitle_size, 0.06),
                     primary_color=project.subtitle_color,
                     y_position_percent=pos_map.get(project.subtitle_position, 0.85)

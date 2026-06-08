@@ -1,4 +1,4 @@
-import os
+﻿import os
 # Disable MediaPipe GPU errors before importing
 os.environ['MEDIAPIPE_DISABLE_GPU'] = '1'
 
@@ -46,7 +46,7 @@ class BlurredLayout(BaseLayout):
         # MoviePy 2.0+ uses with_effects, but for custom CV2 blur we use image_transform or transform
         bg = bg.image_transform(lambda img: apply_gaussian_blur(img, sigma=30))
         bg = bg.with_effects([
-            vfx.MultiplyColor(factor=0.6)
+            vfx.multiply_color(factor=0.6)
         ])
 
         # 3. Foreground Layer (Sharp)
@@ -81,5 +81,5 @@ class BlurredLayout(BaseLayout):
         if clip.audio:
             final_composition = final_composition.with_audio(clip.audio)
             
-        logger.info(f"✅ BlurredLayout applied (FaceTracking: {self.use_facetracking})")
+        logger.info(f"âœ… BlurredLayout applied (FaceTracking: {self.use_facetracking})")
         return final_composition

@@ -1,4 +1,5 @@
-import whisper
+﻿import whisper
+import torch
 import os
 import logging
 from typing import List, Dict, Any, Optional
@@ -25,8 +26,10 @@ class TranscriptionEngine:
         Only loads into memory when needed.
         """
         if self._model is None:
-            logger.info(f"🧠 [TranscriptionEngine] Loading Whisper model ({self.model_size})...")
-            self._model = whisper.load_model(self.model_size)
+            logger.info(f"ðŸ§  [TranscriptionEngine] Loading Whisper model ({self.model_size})...")
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            logger.info(f'🧠 [TranscriptionEngine] Running on: {device}')
+            self._model = whisper.load_model(self.model_size, device=device)
         return self._model
 
     def transcribe(self, audio_path: str, word_timestamps: bool = True) -> List[Dict[str, Any]]:
@@ -37,7 +40,7 @@ class TranscriptionEngine:
         if not os.path.exists(audio_path):
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-        logger.info(f"🎙️ [TranscriptionEngine] Starting transcription (word_timestamps={word_timestamps})...")
+        logger.info(f"ðŸŽ™ï¸ [TranscriptionEngine] Starting transcription (word_timestamps={word_timestamps})...")
         
         try:
             # fp16=False is crucial for CPU inference. 
@@ -59,7 +62,7 @@ class TranscriptionEngine:
                     "text": str(seg.get("text", "")).strip()
                 })
         
-        logger.info(f"🎙️ [TranscriptionEngine] Transcription completed: {len(segments)} segments.")
+        logger.info(f"ðŸŽ™ï¸ [TranscriptionEngine] Transcription completed: {len(segments)} segments.")
         return segments
 
     def _process_word_level_segments(self, result: Dict[str, Any]) -> List[Dict[str, Any]]:

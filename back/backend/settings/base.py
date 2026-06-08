@@ -163,3 +163,5 @@ CLOUDFLARE_R2_ENDPOINT_URL = f"https://{CLOUDFLARE_R2_ACCOUNT_ID}.r2.cloudflares
 
 # --- ASSETS ---
 FONTS_DIR = os.path.join(BASE_DIR, 'assets', 'fonts')
+
+AYRSHARE_API_KEY = env('AYRSHARE_API_KEY', default=None)
