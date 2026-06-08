@@ -1,4 +1,4 @@
-import cv2
+﻿import cv2
 import numpy as np
 import logging
 import os
@@ -62,7 +62,7 @@ class GameplaySaliencyDetector:
                         np.arange(scaled_w), 
                         x_motion
                     )
-                    motion_map += x_motion_full
+                    cv2.accumulateWeighted(x_motion_full.reshape(1, -1), motion_map.reshape(1, -1), 0.1)
 
                 prev_frame_gray = roi_gray
 
@@ -86,7 +86,7 @@ class GameplaySaliencyDetector:
             margin = int(width * 0.1)
             best_x = max(margin, min(width - margin, best_x))
             
-            logger.info(f"✅ SaliencyDetector: Detected stable gameplay x_center at {best_x}px (diff: {center_dist}px)")
+            logger.info(f"âœ… SaliencyDetector: Detected stable gameplay x_center at {best_x}px (diff: {center_dist}px)")
             return best_x
 
         except Exception as e:
