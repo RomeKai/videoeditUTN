@@ -106,6 +106,10 @@ class VideoProject(models.Model):
     render_layout = models.CharField(max_length=10, choices=Layout.choices, default=Layout.FILL)
     gameplay_position = models.CharField(max_length=10, choices=GameplayPosition.choices, default=GameplayPosition.CENTER)
     camera_selection_position = models.CharField(max_length=10, choices=CameraSelectionPosition.choices, default=CameraSelectionPosition.CENTER)
+    # Precise Manual Crop (Normalized 0.0 - 1.0)
+    manual_camera_x = models.FloatField(default=0.5)
+    manual_camera_y = models.FloatField(default=0.2)
+    manual_camera_zoom = models.FloatField(default=1.0)
     speaker_tracking = models.BooleanField(default=False)
     
     # SubtÃ­tulos Pro

@@ -13,6 +13,6 @@ LAYOUT_REGISTRY = {
     'active': ActiveSpeakerLayout,
 }
 
-def get_layout_strategy(layout_name, target_w, target_h, use_facetracking=False, gameplay_pos='center', camera_selection_pos='center'):
+def get_layout_strategy(layout_name, target_w, target_h, use_facetracking=False, gameplay_pos='center', camera_selection_pos='center', manual_camera_coords=None):
     strategy_class = LAYOUT_REGISTRY.get(layout_name, FillLayout)
-    return strategy_class(target_w, target_h, use_facetracking=use_facetracking, gameplay_pos=gameplay_pos, camera_selection_pos=camera_selection_pos)
+    return strategy_class(target_w, target_h, use_facetracking=use_facetracking, gameplay_pos=gameplay_pos, camera_selection_pos=camera_selection_pos, manual_camera_coords=manual_camera_coords)
