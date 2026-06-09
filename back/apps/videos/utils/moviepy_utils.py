@@ -18,4 +18,5 @@ LANDSCAPE_ASPECT_RATIO = 16/9
 
 def ensure_even(val: int) -> int:
     """Ensures value is even for H.264 compatibility."""
+    val = int(round(val))
     return val if val % 2 == 0 else val + 1

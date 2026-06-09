@@ -1,4 +1,4 @@
-﻿import os
+import os
 import logging
 from django.conf import settings
 from django.core.files import File
@@ -121,6 +121,17 @@ class RenderEngine:
                 ffmpeg_params=FFMPEG_PARAMS,
                 logger=None
             )
+
+            # --- OPTIONAL: Silence Removal (Jump Cuts) ---
+            # IMPORTANT: Must happen BEFORE upload to R2
+            if project.remove_silences:
+                logger.info(f"✂️ Applying Silence Removal (Jump Cuts) to clip {clip_obj.id}")
+                processed_path = output_path.replace('.mp4', '_processed.mp4')
+                FFmpegManager.remove_silences_from_video(output_path, processed_path)
+                if os.path.exists(processed_path):
+                    os.remove(output_path)
+                    os.rename(processed_path, output_path)
+                    logger.info(f"✅ Silence removal applied successfully.")
             
             # 5. S3 STORAGE PIPELINE
             from apps.videos.services.storage_service import CloudflareR2Manager
@@ -137,18 +148,11 @@ class RenderEngine:
             clip_obj.status = VideoClip.Status.COMPLETED
             clip_obj.save()
             
-            logger.info(f"âœ… Render and Cloud Upload successful: {clip_id}")
-            if project.remove_silences:
-                logger.info(f'✂️ Applying Silence Removal to clip {clip_id}')
-                final_output_temp = output_path.replace('.mp4', '_processed.mp4')
-                FFmpegManager.remove_silences_from_video(output_path, final_output_temp)
-                if os.path.exists(final_output_temp):
-                    os.remove(output_path)
-                    os.rename(final_output_temp, output_path)
+            logger.info(f"✅ Render and Cloud Upload successful: {clip_id}")
             return True
 
         except Exception as e:
-            logger.error(f"âŒ Render Engine failed for clip {clip_id}: {e}", exc_info=True)
+            logger.error(f"❌ Render Engine failed for clip {clip_id}: {e}", exc_info=True)
             if clip_obj:
                 clip_obj.status = VideoClip.Status.DRAFT
                 clip_obj.save()
@@ -156,7 +160,7 @@ class RenderEngine:
             
         finally:
             # 7. GARBAGE COLLECTION (Local Disk Cleanup)
-            logger.info("ðŸ§¹ Cleaning up local rendering files...")
+            logger.info("🧹 Cleaning up local rendering files...")
             try:
                 if original_clip: original_clip.close()
                 if final_clip and final_clip != original_clip: final_clip.close()
@@ -166,4 +170,4 @@ class RenderEngine:
                 if temp_audio_path and os.path.exists(temp_audio_path): 
                     os.remove(temp_audio_path)
             except Exception as cleanup_err:
-                logger.warning(f"âš ï¸ Cleanup error: {cleanup_err}")
+                logger.warning(f"⚠️ Cleanup error: {cleanup_err}")

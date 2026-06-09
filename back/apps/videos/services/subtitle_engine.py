@@ -118,7 +118,7 @@ class SubtitleEngine:
                     font_size=font_size,
                     color=self.style.primary_color,
                     stroke_color=self.style.stroke_color,
-                    stroke_width=self.style.stroke_width,
+                    stroke_width=int(self.style.stroke_width),
                     method='caption',
                     size=(max_clip_width, None),
                     text_align="center",
