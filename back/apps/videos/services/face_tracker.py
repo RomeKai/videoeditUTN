@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 import logging
 import os
 import cv2
@@ -15,7 +15,7 @@ try:
     MEDIAPIPE_TASKS_AVAILABLE = True
 except (ImportError, ModuleNotFoundError):
     MEDIAPIPE_TASKS_AVAILABLE = False
-    logger.warning("⚠️ MediaPipe Tasks not found. Face tracking will be disabled.")
+    logger.warning("âš ï¸ MediaPipe Tasks not found. Face tracking will be disabled.")
 
 from apps.videos.services.tracking_utils import TrackingPoint, TrackingPath, MovingAverageSmoothing
 
@@ -37,11 +37,11 @@ class FaceTracker:
                 base_options = python.BaseOptions(model_asset_path=model_path)
                 options = vision.FaceDetectorOptions(base_options=base_options, min_detection_confidence=min_detection_confidence)
                 self.detector = vision.FaceDetector.create_from_options(options)
-                logger.info("✅ FaceTracker: MediaPipe Tasks Detector initialized.")
+                logger.info("âœ… FaceTracker: MediaPipe Tasks Detector initialized.")
             except Exception as e:
                 logger.error(f"Failed to initialize MediaPipe FaceDetector: {e}")
 
-    def generate_path(self, clip, fps: float = 2.0) -> TrackingPath:
+    def generate_path(self, clip, fps: float = 3.0) -> TrackingPath:
         """
         Analyzes video clip at specific intervals to map face movement.
         """
@@ -87,10 +87,10 @@ class FaceTracker:
                     continue
 
             if not points:
-                logger.warning(f"⚠️ FaceTracker: No faces detected in {len(times_to_check)} frames.")
+                logger.warning(f"âš ï¸ FaceTracker: No faces detected in {len(times_to_check)} frames.")
                 points = [TrackingPoint(0, width // 2, height // 2, width // 3, height // 3)]
             else:
-                logger.info(f"✅ FaceTracker: {detections_count} successful detections.")
+                logger.info(f"âœ… FaceTracker: {detections_count} successful detections.")
             
             return TrackingPath(points, smoothing_strategy=MovingAverageSmoothing(window_size=5))
         except Exception as e:

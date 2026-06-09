@@ -64,7 +64,7 @@ class BlurredLayout(BaseLayout):
                     scale_y = fg.h / clip.h
                     y_center = int(face_y * scale_y)
                     
-                    y1 = max(0, min(y_center - (target_h // 2), fg.h - target_h))
+                    y1 = max(0, min(y_center - int(target_h * 0.40), fg.h - target_h))
                     return frame[y1:y1+target_h, :]
                 
                 fg = fg.transform(get_fg_frame)

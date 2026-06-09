@@ -1,4 +1,4 @@
-import os
+﻿import os
 # Disable MediaPipe GPU errors before importing
 os.environ['MEDIAPIPE_DISABLE_GPU'] = '1'
 
@@ -43,7 +43,7 @@ class GamingLayout(BaseLayout):
             multiplier = 2.0
             y_offset = 0.35
             
-        src_crop_h = int(avg_h * multiplier) if avg_h > 0 else int(clip.h * 0.40)
+        src_crop_h = int(avg_h * 2.2) if avg_h > 0 else int(clip.h * 0.45)
         src_crop_w = int(src_crop_h * cam_target_aspect)
         
         if src_crop_w > clip.w:
