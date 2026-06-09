@@ -83,6 +83,7 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         
         # New Layout Controls
         if 'gameplay_position' in raw: project.gameplay_position = raw['gameplay_position']
+        if ('camera_selection_position' in raw): project.camera_selection_position = raw['camera_selection_position']
         if 'speaker_tracking' in raw: 
             project.speaker_tracking = str(raw['speaker_tracking']).lower() in ['true', '1', 't', 'y', 'yes']
         

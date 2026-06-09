@@ -72,6 +72,11 @@ class VideoProject(models.Model):
         VERSUS = 'versus', 'Versus (2 Personas)'
         ACTIVE = 'active', 'Speaker DinÃ¡mico'
 
+    class CameraSelectionPosition(models.TextChoices):
+        LEFT = 'left', 'Izquierda'
+        CENTER = 'center', 'Centro'
+        RIGHT = 'right', 'Derecha'
+
     class GameplayPosition(models.TextChoices):
         LEFT = 'left', 'Izquierda'
         CENTER = 'center', 'Centro'
@@ -100,6 +105,7 @@ class VideoProject(models.Model):
     aspect_ratio = models.CharField(max_length=10, choices=AspectRatio.choices, default=AspectRatio.PORTRAIT_9_16)
     render_layout = models.CharField(max_length=10, choices=Layout.choices, default=Layout.FILL)
     gameplay_position = models.CharField(max_length=10, choices=GameplayPosition.choices, default=GameplayPosition.CENTER)
+    camera_selection_position = models.CharField(max_length=10, choices=CameraSelectionPosition.choices, default=CameraSelectionPosition.CENTER)
     speaker_tracking = models.BooleanField(default=False)
     
     # SubtÃ­tulos Pro
