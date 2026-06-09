@@ -70,7 +70,7 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
         project = self.get_object()
         
         if project.status != VideoProject.Status.AWAITING_APPROVAL:
-            return Response({"error": f"El proyecto no está en espera de aprobación. Estado actual: {project.status}"}, status=400)
+            return Response({"error": f"El proyecto no estÃ¡ en espera de aprobaciÃ³n. Estado actual: {project.status}"}, status=400)
 
         approved_segments = request.data.get('approved_segments', [])
         if not approved_segments or not isinstance(approved_segments, list):
@@ -82,10 +82,10 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
                 start = float(seg.get('start', 0))
                 end = float(seg.get('end', 0))
                 if end <= start:
-                    return Response({"error": f"Segmento inválido: end ({end}) <= start ({start})"}, status=400)
+                    return Response({"error": f"Segmento invÃ¡lido: end ({end}) <= start ({start})"}, status=400)
                 total_duration += (end - start)
         except (ValueError, TypeError):
-            return Response({"error": "Los timestamps deben ser valores numéricos (float)."}, status=400)
+            return Response({"error": "Los timestamps deben ser valores numÃ©ricos (float)."}, status=400)
 
         from apps.payments.services.pricing_engine import PricingEngine
         workspace = project.workspace
@@ -106,7 +106,7 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
             return Response({"error": f"Error en el motor de precios: {str(e)}"}, status=400)
 
         try:
-            # Centralización en wallet_service para integridad financiera
+            # CentralizaciÃ³n en wallet_service para integridad financiera
             tx = wallet_service.reserve_funds(
                 wallet_id=workspace.wallet.id,
                 amount=final_cost,
@@ -128,7 +128,7 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
         render_video_segments.delay(project.id)
 
         return Response({
-            "message": "Edición aprobada. Iniciando renderizado de alta calidad...",
+            "message": "EdiciÃ³n aprobada. Iniciando renderizado de alta calidad...",
             "project_id": project.id,
             "final_cost": final_cost,
             "transaction_id": tx.id
@@ -184,7 +184,7 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
             cost_in_tokens = Decimal('10.0')
 
         try:
-            # Asegurar que el workspace tenga billetera (autocuración)
+            # Asegurar que el workspace tenga billetera (autocuraciÃ³n)
             from apps.payments.models import Wallet
             wallet, _ = Wallet.objects.get_or_create(workspace=workspace)
             
@@ -220,3 +220,34 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
         response_data['message'] = "Video subido. Iniciando ingesta multimodal..."
 
         return Response(response_data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='prompt-edit')
+    def prompt_edit(self, request, pk=None):
+        """
+        Endpoint: User sends a natural language prompt to edit the project.
+        Receives: {"prompt": "string"}
+        """
+        project = self.get_object()
+        prompt = request.data.get('prompt')
+        
+        if not prompt:
+            return Response({"error": "Debe proporcionar un 'prompt'."}, status=400)
+
+        from .services.prompt_editor import PromptEditorEngine
+        updates = PromptEditorEngine.interpret_edit_prompt(prompt)
+        
+        if not updates:
+            return Response({"message": "No se identificaron cambios para aplicar."}, status=200)
+
+        # Apply updates to the project
+        for field, value in updates.items():
+            if hasattr(project, field):
+                setattr(project, field, value)
+        
+        project.save()
+        
+        return Response({
+            "message": "Prompt aplicado exitosamente.",
+            "applied_updates": updates,
+            "project_id": project.id
+        }, status=200)
