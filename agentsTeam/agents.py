@@ -1,71 +1,61 @@
 import os
 from dotenv import load_dotenv
 from crewai import Agent
-from crewai_tools import FileReadTool
-try:
-    from .mcp_engram_client import EngramTool
-except ImportError:
-    from mcp_engram_client import EngramTool
+from crewai_tools import FileReadTool, DirectoryReadTool
 
-# Explicitly load .env from the current directory
-env_path = os.path.join(os.path.dirname(__file__), '.env')
-load_dotenv(env_path)
+load_dotenv()
 
+# FIX: Read the API key and force an empty string as default to avoid "str | None" type errors.
 google_key = os.getenv("GOOGLE_API_KEY", "")
+
+# GLOBAL FIX: Force CrewAI (Agents, Tools, and Tasks) to use Gemini 1.5 Pro.
+# This ensures no fallback to other models and stabilizes the connection via LiteLLM.
 os.environ["GEMINI_API_KEY"] = google_key
 os.environ["OPENAI_API_KEY"] = google_key # Routing trick for LiteLLM
+os.environ["OPENAI_MODEL_NAME"] = "gemini/gemini-1.5-pro" # Force most stable version
 
-# Utility to load Gentle-AI Skills
-def load_skill(filename):
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(base_dir, 'skills', filename)
-    with open(path, 'r', encoding='utf-8') as f:
-        return f.read()
+# Point to the root directory where the Django code resides.
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+repo_dir = os.path.join(base_dir, "back")
 
+tool_explorar_repo = DirectoryReadTool(directory=repo_dir)
 tool_leer_codigo = FileReadTool()
-tool_engram = EngramTool()
 
 class EngineeringFactory:
     @staticmethod
     def architect():
-        # PHASE 1: Strong reasoning + Memory (Engram) + SDD Skill
         return Agent(
             role="Lead Software Architect",
-            goal="Design architectural blueprints and Technical Specifications (SDD) in Markdown.",
-            backstory=load_skill("architect_skill.md"),
-            tools=[tool_leer_codigo, tool_engram],
-            max_iter=5,
+            goal="Scan codebase and design architectural contracts using GoF/GRASP.",
+            backstory="Expert at mapping dependencies and ensuring SOLID compliance. "
+                      "You generate structured Architecture Contracts.",
+            tools=[tool_explorar_repo, tool_leer_codigo],
             allow_delegation=False,
             verbose=True,
-            llm='gemini/gemini-flash-latest' # Using Flash for reliability and speed
+            llm='gemini/gemini-1.5-pro'
         )
 
     @staticmethod
     def engineer():
-        # PHASE 2: Fast execution (Flash) + Translation focus
         return Agent(
             role="Senior Video Backend Developer",
-            goal="Translate the Architect's Markdown SDD into functional Python code.",
-            backstory=load_skill("developer_skill.md"),
+            goal="Implement logic following the Architecture Contract and MoviePy 2.0 standards.",
+            backstory="Master of Python, Celery, and FFmpeg. You write clean, performant, and decoupled code.",
             tools=[tool_leer_codigo],
-            max_iter=3,
             allow_delegation=False,
             verbose=True,
-            llm='gemini/gemini-flash-latest'
+            llm='gemini/gemini-1.5-pro'
         )
 
     @staticmethod
     def qa_tester():
-        # PHASE 3: Fast auditing (Flash) + Memory (Engram) for persistence
         return Agent(
-            role="Critique-Bot (QA Reviewer)",
-            goal="Ensure the code strictly adheres to the SDD. Guard memory with Engram.",
-            backstory=load_skill("reviewer_skill.md"),
-            tools=[tool_leer_codigo, tool_engram],
-            max_iter=3,
+            role="Automated Testing & Audit Expert",
+            goal="Verify code efficiency, security, and video processing integrity.",
+            backstory="Hard-to-please auditor. You check for CPU spikes, frame skipping, "
+                      "and proper OAuth2 token handling.",
+            tools=[tool_leer_codigo],
             allow_delegation=True,
             verbose=True,
-            llm='gemini/gemini-flash-latest'
+            llm='gemini/gemini-1.5-pro'
         )
-
-
