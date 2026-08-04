@@ -1,22 +1,22 @@
-﻿"""
-MoviePy 2.0+ Rendering Defaults & Utils.
-Centralizes codec, fps, and quality parameters for the entire SaaS.
-"""
-from decimal import Decimal
+﻿from moviepy.video.io.VideoFileClip import VideoFileClip
 
-# --- RENDERING DEFAULTS ---
-RENDER_FPS = 24
-RENDER_CODEC = 'libx264'
-RENDER_AUDIO_CODEC = 'aac'
-RENDER_PRESET = 'fast'
-FFMPEG_PARAMS = ['-pix_fmt', 'yuv420p', '-profile:v', 'main']
+def preparar_video_viral(input_path: str, output_path: str) -> None:
+    """
+    Prepares a video for viral sharing by resizing it to a vertical format.
+    - Resizes the video to 1080x1920 resolution.
+    - Ensures strict even-numbered dimensions for compatibility.
+    - Uses H.264 codec for encoding.
+    
+    Parameters:
+        input_path (str): The path to the input video file.
+        output_path (str): The path where the output video will be saved.
+    """
+    # Load the video file
+    with VideoFileClip(input_path) as video:
+        # Resize video to fit vertical format
+        resized_video = video.resize(newsize=(1080, 1920))  # Ensures even resolution
 
-# --- LAYOUT CONSTANTS ---
-REELS_ASPECT_RATIO = 9/16
-SQUARE_ASPECT_RATIO = 1/1
-LANDSCAPE_ASPECT_RATIO = 16/9
+        # Write the output file using H.264 codec
+        resized_video.write_videofile(output_path, codec='libx264')
 
-def ensure_even(val: int) -> int:
-    """Ensures value is even for H.264 compatibility."""
-    val = int(round(val))
-    return val if val % 2 == 0 else val + 1
+# No need to explicitly close video due to 'with' context manager
