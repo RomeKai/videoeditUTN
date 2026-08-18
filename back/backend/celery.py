@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 import os  # <--- 1. Te faltaba importar os
 from celery import Celery
 
@@ -10,7 +10,6 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.settings.dev')
 app = Celery('backend')
 
 # Forced Fix for Docker: Priority to Env Var
-import os
 redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
 app.conf.update(
     broker_url=redis_url,

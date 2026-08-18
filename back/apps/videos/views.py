@@ -1,4 +1,4 @@
-﻿import os
+import os
 import math
 import logging
 from decimal import Decimal
@@ -221,33 +221,3 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
 
         return Response(response_data, status=status.HTTP_201_CREATED)
 
-    @action(detail=True, methods=['post'], url_path='prompt-edit')
-    def prompt_edit(self, request, pk=None):
-        """
-        Endpoint: User sends a natural language prompt to edit the project.
-        Receives: {"prompt": "string"}
-        """
-        project = self.get_object()
-        prompt = request.data.get('prompt')
-        
-        if not prompt:
-            return Response({"error": "Debe proporcionar un 'prompt'."}, status=400)
-
-        from .services.prompt_editor import PromptEditorEngine
-        updates = PromptEditorEngine.interpret_edit_prompt(prompt)
-        
-        if not updates:
-            return Response({"message": "No se identificaron cambios para aplicar."}, status=200)
-
-        # Apply updates to the project
-        for field, value in updates.items():
-            if hasattr(project, field):
-                setattr(project, field, value)
-        
-        project.save()
-        
-        return Response({
-            "message": "Prompt aplicado exitosamente.",
-            "applied_updates": updates,
-            "project_id": project.id
-        }, status=200)

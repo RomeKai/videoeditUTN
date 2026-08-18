@@ -19,6 +19,6 @@ class WalletAdmin(admin.ModelAdmin):
 
 @admin.register(Transaction)
 class TransactionAdmin(admin.ModelAdmin):
-    list_display = ('id', 'wallet', 'amount', 'transaction_type', 'status', 'created_at')
+    list_display = ('id', 'wallet', 'amount', 'transaction_type', 'status', 'description')
     list_filter = ('transaction_type', 'status')
     search_fields = ('id', 'wallet__workspace__name', 'description')

@@ -11,11 +11,11 @@ OneCreator is developed using the **Gentle-AI Spec-Driven Development (SDD)** pr
 
 ## 2. Core Components & Infrastructure
 
-### Single Source of Truth (PostgreSQL)
-We have consolidated our infrastructure by utilizing **PostgreSQL** for both data persistence and task orchestration:
+### Single Source of Truth (PostgreSQL + Redis)
+We use **PostgreSQL** for data persistence and **Redis** as the message broker for **Celery**, our definitive async task queue:
 *   **Data:** Stores user profiles, workspaces, video projects, and financial transactions.
-*   **Task Queue (Procrastinate):** We have migrated away from Celery/Redis to **Procrastinate**. This utilizes PostgreSQL's native `FOR UPDATE SKIP LOCKED` mechanism, reducing points of failure and ensuring task execution is transactionally bound to database changes.
-*   **Vector Search:** `pgvector` is used for semantic search and AI-driven Prompt-to-Edit features.
+*   **Task Queue (Celery + Redis):** All asynchronous work — video ingestion, rendering, transcription, and social publishing — runs as Celery tasks. This is the permanent, definitive architecture. A migration to Procrastinate was evaluated and **cancelled**.
+*   **Vector Search:** `pgvector` extension is planned for semantic search (not yet implemented).
 
 ### Zero-Egress Storage (Cloudflare R2)
 All media assets are stored in **Cloudflare R2** to eliminate egress fees and maximize scalability:

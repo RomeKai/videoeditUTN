@@ -1,4 +1,4 @@
-﻿from rest_framework import serializers
+from rest_framework import serializers
 from .models import VideoProject, VideoClip, ClipLayer, BrandKit
 
 class BrandKitSerializer(serializers.ModelSerializer):
@@ -102,15 +102,12 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         if 'subtitle_scale_factor' in raw: project.subtitle_scale_factor = float(raw['subtitle_scale_factor'])
         if 'subtitle_words_per_segment' in raw: project.subtitle_words_per_segment = int(raw['subtitle_words_per_segment'])
             
-        # InyecciÃ³n de FaceTracking
+        # Face Tracking injection
         if 'use_facetracking' in raw:
-        if ('remove_silences' in raw):
-            project.remove_silences = str(raw['remove_silences']).lower() in ['true', '1', 't', 'y', 'yes']
             val = raw['use_facetracking']
-        if ('remove_silences' in raw):
-            project.remove_silences = str(raw['remove_silences']).lower() in ['true', '1', 't', 'y', 'yes']
             project.use_facetracking = str(val).lower() in ['true', '1', 't', 'y', 'yes']
-        if ('remove_silences' in raw):
+
+        if 'remove_silences' in raw:
             project.remove_silences = str(raw['remove_silences']).lower() in ['true', '1', 't', 'y', 'yes']
             
         project.save()
