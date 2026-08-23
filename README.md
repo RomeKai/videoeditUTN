@@ -1,10 +1,5 @@
 # 🎬 OneCreator — All-in-One Viral Studio
 
-> ⚠️ **Aviso de Propiedad Intelectual y Contexto Académico**
->
-> Este repositorio es un entorno de desarrollo creado como trabajo práctico para la **Universidad Tecnológica Nacional (UTN)**. La arquitectura base, el modelo de negocio y el núcleo del motor de video son propiedad intelectual exclusiva de **Romeo Lorenzo Monfroglio**. Las contribuciones realizadas por el equipo de desarrollo durante este ciclo académico están sujetas a los términos detallados en [`CONTRIBUTING.md`](./CONTRIBUTING.md). Consultar [`LICENSE`](./LICENSE) para más información.
-
----
 
 **OneCreator** es una plataforma SaaS de edición automatizada de video que utiliza inteligencia artificial para transformar contenido de formato largo en clips virales optimizados para redes sociales.
 
@@ -382,6 +377,14 @@ Para guía detallada sobre workflow, convenciones y proceso de PR, consultá [`C
 
 ---
 
+
+> ⚠️ **Aviso de Propiedad Intelectual y Contexto Académico**
+>
+> Este repositorio es un entorno de desarrollo creado como trabajo práctico para la **Universidad Tecnológica Nacional (UTN)**. La arquitectura base, el modelo de negocio y el núcleo del motor de video son propiedad intelectual exclusiva de **Romeo Lorenzo Monfroglio**. Las contribuciones realizadas por el equipo de desarrollo durante este ciclo académico están sujetas a los términos detallados en [`CONTRIBUTING.md`](./CONTRIBUTING.md). Consultar [`LICENSE`](./LICENSE) para más información.
+
+---
+
 <div align="center">
   <sub>Desarrollado por <strong>Romeo Lorenzo Monfroglio</strong> — UTN 2026</sub>
 </div>
+
