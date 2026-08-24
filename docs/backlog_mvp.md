@@ -1,8 +1,9 @@
-# 📋 OneCreator — MVP Backlog
+# 📋 OneCreator — MVP Backlog v2
 
 > **Proyecto:** OneCreator — All-in-One Viral Studio
-> **Equipo:** Dev 1 – Dev 5
-> **Sprint Goal:** MVP funcional end-to-end para demostración académica (UTN)
+> **Equipo:** Dev 1 – Dev 5 | **Timeline:** 3 meses (~12 semanas)
+> **Visión:** Competir directamente con Opus Clips — core robusto primero, frontend al final.
+> **Principios:** Security-first, guardrails en toda IA, eficiencia en procesamiento.
 
 ---
 
@@ -10,427 +11,505 @@
 
 | Etiqueta | Significado |
 |----------|-------------|
-| 🟢 `exists` | Código funcional ya presente en el repositorio |
-| 🟡 `partial` | Modelo/servicio existe pero incompleto o sin endpoint |
-| 🔴 `missing` | No existe — hay que construirlo desde cero |
-| `P0` | Must-have para el MVP |
-| `P1` | Should-have (mejora significativa) |
-| `P2` | Nice-to-have (post-MVP) |
+| 🟢 `exists` | Código funcional en el repo |
+| 🟡 `partial` | Modelo/servicio existe pero incompleto |
+| 🔴 `missing` | Hay que construirlo desde cero |
+| `P0` | Must-have — sin esto no hay producto |
+| `P1` | Should-have — diferenciador competitivo |
+| `P2` | Nice-to-have — post-MVP |
 
 ---
 
-## Módulo 1 — Edición e Inteligencia Artificial
+## Roadmap por Fase
 
-### EDIT-01: Recorte Inteligente de Mejores Momentos `P0` 🟢 `exists`
+```
+ MES 1 (Semanas 1-4)         MES 2 (Semanas 5-8)         MES 3 (Semanas 9-12)
+┌────────────────────┐   ┌────────────────────┐   ┌────────────────────┐
+│ CORE ENGINE        │   │ PROMPT-TO-EDIT     │   │ DISTRIBUCIÓN +     │
+│ • Face Tracking v2 │   │ • Motor completo   │   │   SOCIAL PUBLISH   │
+│ • Layouts nuevos   │   │ • Guardrails IA    │   │ • Calendar engine  │
+│ • Worker perf      │   │ • Preview pipeline │   │ • Multi-platform   │
+│ • Security layer   │   │                    │   │ • Frontend MVP     │
+│ • Tests pipeline   │   │ MONETIZACIÓN       │   │                    │
+│                    │   │ • Stripe checkout  │   │ POLISH + DEPLOY    │
+│                    │   │ • Watermark inject │   │ • CI/CD            │
+└────────────────────┘   └────────────────────┘   └────────────────────┘
+```
+
+---
+
+## Módulo 1 — Core Engine (Mes 1)
+
+> Objetivo: que el pipeline de video edite a nivel producción — rápido, preciso, seguro.
+
+---
+
+### CORE-01: Face Tracking v2 — Multi-face + Smoothing Mejorado `P0` 🟡 `partial`
 
 **Descripción:**
-El sistema analiza un video largo usando Whisper (transcripción) + GPT-4o-mini (selección) y propone clips virales con timestamps y justificación. El pipeline completo ya existe en `tasks.py` → `TranscriptionEngine` → `SelectionEngine`.
+El `FaceTracker` actual usa MediaPipe Tasks con un modelo `.tflite` estático. Funciona para un solo rostro pero tiene limitaciones críticas:
+- **Single-face only:** `max()` sobre detecciones descarta todas las caras excepto la de mayor score.
+- **Sin interpolación temporal:** frames sin detección usan el `last_valid_point`, causando saltos.
+- **Sampling a 3 fps fijo:** insuficiente para movimiento rápido, excesivo para talking heads.
+- **Sin cache de modelo:** se reinicializa por cada clip renderizado.
 
-**Estado actual:** Pipeline funcional (validado con `clash.mp4`). Falla solo si no hay `OPENAI_API_KEY`.
+**Tareas técnicas:**
+1. Multi-face tracking: trackear N caras simultáneamente, asignar IDs persistentes entre frames (tracking por proximidad).
+2. Interpolación temporal: cuando se pierde una detección, interpolar posición entre el último y siguiente punto válido (no repetir el último).
+3. Smoothing adaptativo: reemplazar `MovingAverageSmoothing(window=5)` por Exponential Moving Average con factor configurable por estilo de video.
+4. Adaptive sampling rate: 1-2 fps para podcast/talking-head, 5+ fps para gaming/acción rápida (derivar del `editing_style`).
+5. Singleton del modelo: cargar `FaceDetector` una vez por worker process, no por clip.
+
+**Archivos a modificar:**
+- `services/face_tracker.py` — refactor completo
+- `services/tracking_utils.py` — agregar EMA smoothing + interpolation
+- `services/layouts/` — adaptar para recibir multi-face paths
 
 **Criterios de Aceptación:**
-- [x] El usuario sube un video vía `POST /api/v1/projects/`.
-- [x] El worker transcribe con Whisper (local, sin API key).
-- [x] GPT-4o-mini selecciona clips y devuelve JSON estructurado.
-- [x] El proyecto pasa a `awaiting_approval` con clips propuestos.
-- [ ] El usuario puede revisar, aceptar o rechazar cada clip propuesto.
+- [ ] Trackea hasta 3 caras simultáneamente con IDs estables.
+- [ ] Sin saltos visibles entre frames — transiciones suaves.
+- [ ] Sampling rate varía según `editing_style` del proyecto.
+- [ ] El modelo MediaPipe se carga una sola vez por worker (singleton).
+- [ ] Test con video de 2+ personas que demuestre tracking estable.
 
 ---
 
-### EDIT-02: Subtítulos Dinámicos con IA `P0` 🟢 `exists`
+### CORE-02: Speaker Detection Real — pyannote.audio `P1` 🔴 `missing`
 
 **Descripción:**
-Generación de subtítulos animados word-level usando datos de Whisper. El `SubtitleEngine` existe y está integrado en el render pipeline.
+`SpeakerTrackingEngine` es un stub: `detect_active_speaker_segment()` devuelve `[(0, clip.duration, 0)]` hardcodeado. Para el layout `active` (speaker dinámico) necesitamos detección real de quién habla.
 
-**Estado actual:** Motor funcional en `subtitle_engine.py`. Configuración por proyecto: color, tamaño, posición, palabras por segmento.
+**Tareas técnicas:**
+1. Integrar `pyannote.audio` para voice activity detection + speaker diarization.
+2. Correlacionar segments de audio con las caras detectadas por `FaceTracker` (proximity matching).
+3. Generar timeline de speaker activo: `[(start, end, face_id), ...]`.
+4. El layout `ActiveSpeakerLayout` consume este timeline para switchear entre caras.
 
 **Criterios de Aceptación:**
-- [x] Subtítulos generados automáticamente desde la transcripción Whisper.
-- [x] Configurables por proyecto: `subtitle_color`, `subtitle_size`, `subtitle_position`, `subtitle_words_per_segment`.
-- [ ] Preview visual de subtítulos antes del render final.
+- [ ] Diarización funcional: detecta al menos 2 speakers distintos.
+- [ ] Correlación audio → cara con al menos 80% de precisión en videos de podcast.
+- [ ] Fallback graceful: si la diarización falla, usar el face con mayor saliency.
+- [ ] No bloquea el pipeline si `pyannote` no está disponible (degradación graceful).
 
 ---
 
-### EDIT-03: Traducción de Subtítulos con IA `P1` 🔴 `missing`
+### CORE-03: Nuevos Layouts — Podcast, Cinematic, Trending `P0` 🔴 `missing`
 
 **Descripción:**
-Traducir subtítulos generados a otros idiomas usando GPT-4o-mini. Extender `SubtitleEngine` para aceptar un `target_language` y traducir el transcript antes de renderizar.
+Actualmente hay 6 layouts (`fill`, `fit`, `blurred`, `split`, `versus`, `active`). `pip` está mapeado a `FitLayout` (placeholder). Para competir con Opus Clips faltan layouts que son estándar en la industria.
+
+**Layouts nuevos a implementar:**
+
+| Layout | Descripción | Referencia |
+|--------|-------------|-----------|
+| `podcast` | Split horizontal 50/50 con face tracking independiente por mitad | Riverside.fm |
+| `cinematic` | Letterbox 2.35:1 con crop inteligente siguiendo la acción | Film look |
+| `pip_real` | Picture-in-Picture real — video principal + cámara en esquina (configurable) | Loom/OBS |
+| `trending` | Template rotativo: borde con gradiente + texto overlay + emoji | TikTok trends |
+| `reaction` | Video original arriba, reacción abajo (layout YouTube Shorts) | React content |
+
+**Archivos a crear/modificar:**
+- `services/layouts/podcast.py` — nuevo
+- `services/layouts/cinematic.py` — nuevo
+- `services/layouts/pip_real.py` — nuevo (reemplazar el placeholder)
+- `services/layouts/trending.py` — nuevo
+- `services/layouts/reaction.py` — nuevo
+- `services/layouts/__init__.py` — registrar en `LAYOUT_REGISTRY`
+- `models.py` — agregar al enum `Layout.choices`
 
 **Criterios de Aceptación:**
-- [ ] Endpoint para solicitar traducción a un idioma específico (es, en, pt, fr mínimo).
-- [ ] La traducción preserva los timestamps word-level originales.
-- [ ] El clip renderizado usa los subtítulos traducidos.
-- [ ] Si la traducción falla, el sistema usa los subtítulos originales como fallback.
+- [ ] Cada layout implementa la interfaz `LayoutStrategy` (método `apply(clip) → clip`).
+- [ ] Todos respetan `target_w × target_h` y producen dimensiones pares (H.264 safe).
+- [ ] `podcast` y `pip_real` usan multi-face tracking de CORE-01.
+- [ ] `trending` acepta parámetros configurables (color de borde, texto overlay).
+- [ ] Tests visuales: render de un clip de 5s con cada layout nuevo.
 
 ---
 
-### EDIT-04: Edición Fija con Marca de Agua (Plan Gratuito) `P0` 🟡 `partial`
+### CORE-04: Optimización de Performance del Worker `P0` 🟡 `partial`
 
 **Descripción:**
-Los usuarios del plan gratuito pueden editar videos pero el resultado lleva una marca de agua del producto. El modelo `BrandKit.watermark_logo` existe, el `SubscriptionPlan.has_watermark` existe, pero la lógica de inyección de watermark en el render pipeline no está implementada.
+El worker Celery actual procesa todo secuencialmente en un solo task. Un video de 763s tardó ~7 min solo en transcripción (CPU). Para competir con Opus Clips necesitamos resultados en <3 minutos para un video de 10 min.
+
+**Tareas técnicas:**
+
+1. **GPU acceleration para Whisper** (si disponible):
+   - Detectar CUDA/MPS al iniciar el worker.
+   - Usar modelo `small` con GPU vs `base` en CPU (mismo accuracy, 5x speed).
+
+2. **Parallel task chains:**
+   - Separar el pipeline monolítico en sub-tasks encadenadas con `celery.chain()`:
+     ```
+     upload_to_r2 | generate_proxy | transcribe | ai_select
+     ```
+   - `transcribe` y `generate_proxy` pueden correr en paralelo con `celery.group()`.
+
+3. **Whisper model preloading:**
+   - Precargar el modelo Whisper al iniciar el worker (signal `worker_init`), no al procesar cada video.
+   - Cache en variable global del process.
+
+4. **FFmpeg optimization:**
+   - Proxy generation: usar `-preset ultrafast` en vez de default.
+   - Render final: pool de threads para renderizar múltiples clips en paralelo.
+
+5. **Memory management:**
+   - Configurar `--max-memory-per-child` en Celery para reciclar workers que acumulan memoria.
+   - Cerrar explícitamente clips MoviePy en `finally` blocks (ya parcial).
+
+**Archivos a modificar:**
+- `backend/celery.py` — worker signals, memory config
+- `tasks.py` — refactorizar en sub-tasks + chain/group
+- `services/transcription_engine.py` — GPU detect, model preload
+- `utils/ffmpeg_utils.py` — ultrafast preset
 
 **Criterios de Aceptación:**
-- [ ] Si el plan del workspace tiene `has_watermark=True`, el render inyecta la marca de agua de OneCreator.
-- [ ] El watermark es semi-transparente, posición esquina inferior derecha.
-- [ ] Usuarios de planes pagos (`has_watermark=False`) no ven marca de agua.
-- [ ] El watermark no se puede quitar manipulando la API (validación server-side).
+- [ ] Video de 10 min procesado en <3 min con GPU, <6 min en CPU.
+- [ ] Whisper model se carga una sola vez por worker process.
+- [ ] Proxy generation y transcripción corren en paralelo.
+- [ ] Workers se reciclan después de 50 tareas (`max_tasks_per_child`).
+- [ ] Métricas de tiempo por etapa logueadas para benchmarking.
 
 ---
 
-### EDIT-05: Estilos de Edición Predefinidos `P0` 🟢 `exists`
+### CORE-05: Security Layer — AI Guardrails + Input Validation `P0` 🟡 `partial`
 
 **Descripción:**
-Múltiples estilos de edición definidos como `EditingStyle` en el modelo (`dynamic`, `minimalist`, `vlog`, `hormozi`, `custom`). Cada estilo afecta el prompt que se envía al LLM para seleccionar clips.
+`AI_Security_Shield` existe en `core/security.py` (aislamiento de input para prompts). Pero faltan guardrails críticos:
 
-**Estado actual:** Enums definidos. `SelectionEngine` los consume en el prompt.
+**Tareas técnicas:**
+
+1. **Validación de video input robusta:**
+   - Verificar MIME type real con `python-magic` (ya está en requirements pero no se usa en el upload).
+   - Limitar resolución máxima de input (4K = OK, 8K = rechazar).
+   - Scan de duración máxima contra el plan del workspace ANTES de subir a R2.
+
+2. **Output sanitization de IA:**
+   - Validar que el JSON del `SelectionEngine` tenga timestamps dentro del rango del video.
+   - Validar que `virality_score` esté entre 0-100.
+   - Rechazar respuestas con código ejecutable o prompts inyectados.
+
+3. **Rate limiting por workspace:**
+   - Máximo N proyectos concurrentes por workspace (según plan).
+   - Cooldown entre uploads (anti-abuse).
+
+4. **Audit trail:**
+   - Loguear todo prompt enviado a OpenAI en `ai_rationale_log`.
+   - Loguear input/output de cada servicio de IA para debugging.
 
 **Criterios de Aceptación:**
-- [x] El usuario selecciona un estilo al crear el proyecto.
-- [x] El `SelectionEngine` adapta su prompt según el estilo elegido.
-- [ ] Documentar qué produce cada estilo (diferencias observables en la selección de clips).
+- [ ] Video con MIME falso (`.mp4` que es `.txt`) se rechaza con error claro.
+- [ ] JSON de SelectionEngine con timestamps fuera de rango se descarta (no crashea).
+- [ ] Rate limit configurable por plan: free=2 concurrent, pro=10 concurrent.
+- [ ] Todo prompt enviado a OpenAI queda registrado en `ai_rationale_log`.
 
 ---
 
-### EDIT-06: Personalizar Estilo de Edición Recurrente (BrandKit) `P1` 🟡 `partial`
+### CORE-06: Tests de Integración del Pipeline `P0` 🟡 `partial`
 
 **Descripción:**
-Permitir al usuario guardar un `BrandKit` con colores, fuentes, logos y preferencias de edición que se apliquen automáticamente a cada proyecto. El modelo existe completo; faltan endpoints CRUD y la integración con el render engine.
+Tests existentes son mínimos. Para un core robusto necesitamos coverage del camino crítico.
 
 **Criterios de Aceptación:**
-- [ ] CRUD completo de BrandKit: `POST/GET/PATCH/DELETE /api/v1/brand-kits/`.
-- [ ] Al crear un proyecto, se puede asociar un `brand_kit_id`.
-- [ ] El render engine aplica `primary_color`, `watermark_logo`, `intro_video`, `outro_video` del BrandKit.
-- [ ] Un BrandKit marcado `is_default=True` se aplica automáticamente si no se especifica otro.
+- [ ] Test E2E: upload video 5s → transcription (Whisper tiny) → selection (mock OpenAI) → assert `awaiting_approval`.
+- [ ] Test de `PricingEngine`: todos los multiplicadores, edge cases, planes free vs pro.
+- [ ] Test de `WalletService`: reserve + commit, reserve + rollback, insufficient funds, concurrent reserve (race condition).
+- [ ] Test de `CloudflareR2Manager`: `USE_S3=False` mode (local bypass).
+- [ ] Test de cada `LayoutStrategy.apply()` con un clip sintético de 2s.
+- [ ] Mock de OpenAI en todos los tests (no gastar créditos en CI).
 
 ---
 
-### EDIT-07: IA Explicable — Rationale Log `P1` 🟡 `partial`
+## Módulo 2 — Prompt-to-Edit Engine (Mes 2)
+
+> Objetivo: el usuario describe lo que quiere en lenguaje natural y la IA edita el video.
+
+---
+
+### PTE-01: Motor de Prompt-to-Edit — Diseño e Implementación `P0` 🔴 `missing`
 
 **Descripción:**
-El campo `ai_rationale_log` existe en `VideoProject` (JSONField). El `SelectionEngine` devuelve `ai_reasoning` por clip. Falta exponerlo al frontend de manera legible.
+Sistema nuevo donde el usuario escribe un prompt de edición (ej: "Cortá los mejores momentos de humor, poné subtítulos grandes amarillos, layout vertical con fondo borroso") y el sistema traduce eso a configuración de proyecto + selección de clips.
+
+**Arquitectura propuesta:**
+
+```
+User Prompt
+     │
+     ▼
+┌─────────────────┐
+│ PromptParser     │  GPT-4o con Structured Outputs
+│ (LLM → Config)  │  Input: prompt + video metadata (duration, transcript summary)
+└────────┬────────┘  Output: ProjectConfig JSON (style, layout, subtitle config, etc.)
+         │
+         ▼
+┌─────────────────┐
+│ ConfigValidator  │  Valida contra el plan del user + limites del sistema
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Pipeline normal  │  Reutiliza SelectionEngine + RenderEngine con la config generada
+└─────────────────┘
+```
+
+**Output del PromptParser (Structured Output):**
+```json
+{
+  "editing_style": "dynamic",
+  "aspect_ratio": "9:16",
+  "render_layout": "blurred",
+  "add_subtitles": true,
+  "subtitle_color": "#FFFF00",
+  "subtitle_size": "large",
+  "max_clips": 3,
+  "clip_selection_criteria": "humor and engagement peaks",
+  "remove_silences": true,
+  "use_facetracking": true
+}
+```
+
+**Archivos a crear:**
+- `services/prompt_parser.py` — LLM prompt → ProjectConfig
+- `services/prompt_validator.py` — guardrails + plan validation
+- `views.py` — nuevo endpoint `POST /api/v1/projects/from-prompt/`
 
 **Criterios de Aceptación:**
-- [ ] El endpoint `GET /api/v1/projects/{id}/` incluye `ai_rationale_log` con explicación por clip.
-- [ ] Cada clip propuesto tiene: `reason` (por qué se seleccionó), `virality_score`, `timestamps`.
-- [ ] El usuario puede dar feedback (thumbs up/down) por clip para retroalimentación futura.
+- [ ] `POST /api/v1/projects/from-prompt/` acepta `{ "prompt": "...", "source_file": <video> }`.
+- [ ] El LLM genera un `ProjectConfig` JSON válido usando Structured Outputs.
+- [ ] Config se valida contra el plan del user (duración, resolución, features).
+- [ ] El pipeline existente se reutiliza al 100% — no se duplica lógica.
+- [ ] Prompts ambiguos generan config con defaults sensatos (no errores).
+- [ ] Prompt injection attempts se neutralizan via `AI_Security_Shield`.
 
 ---
 
-### EDIT-08: Retroalimentación y Ajustes Finos del Usuario `P2` 🔴 `missing`
+### PTE-02: Prompt-to-Edit — Selección Dirigida por Prompt `P1` 🔴 `missing`
 
 **Descripción:**
-Permitir al usuario ajustar los timestamps de un clip propuesto (mover inicio/fin), agregar/quitar clips antes de renderizar. La aprobación de segmentos existe como campo (`approved_segments`) pero no hay endpoint para editarlos.
+Extender el `SelectionEngine` para que acepte criterios de selección del prompt del usuario (ej: "momentos de humor", "picos de emoción", "partes educativas") además de la detección genérica de viralidad.
 
 **Criterios de Aceptación:**
-- [ ] Endpoint `PATCH /api/v1/projects/{id}/approve/` que acepta un array de segmentos editados.
-- [ ] El usuario puede mover `start_time` / `end_time` de cada clip dentro de ±10s.
-- [ ] El usuario puede descartar clips individuales de la propuesta.
-- [ ] Solo clips aprobados avanzan al render.
+- [ ] `SelectionEngine.select_viral_clips()` acepta un parámetro `selection_criteria: str` opcional.
+- [ ] El criteria del usuario se inyecta en el prompt del LLM de forma segura (aislado).
+- [ ] El `ai_reasoning` de cada clip refleja cómo el criteria influyó en la selección.
+- [ ] Sin criteria explícito, el comportamiento default no cambia.
 
 ---
 
-### EDIT-09: Layouts de Video (Dynamic Cropping) `P0` 🟢 `exists`
+### PTE-03: Preview Pipeline — Pre-render Rápido `P1` 🔴 `missing`
 
 **Descripción:**
-Múltiples estrategias de layout implementadas en `services/layouts/`: `fill`, `blurred`, `split` (gaming), `pip` (picture-in-picture). Cada una tiene su propio renderer.
-
-**Estado actual:** Funcional. Seleccionable por proyecto vía `render_layout`.
+Generar un preview de baja resolución (360p, sin subtítulos complejos) antes del render final para que el usuario vea qué va a obtener sin gastar tokens de render completo.
 
 **Criterios de Aceptación:**
-- [x] El usuario selecciona un layout al crear el proyecto.
-- [x] Face tracker (`MediaPipe`) posiciona la cámara dinámicamente.
-- [x] Soporte para `speaker_tracking` y posición manual del crop.
-- [ ] Preview visual de cada layout disponible (mockup o sample frame).
+- [ ] `POST /api/v1/clips/{id}/preview/` genera un render 360p en <30s.
+- [ ] El preview usa el layout seleccionado pero sin subtítulos animados (solo texto plano).
+- [ ] El preview se almacena temporalmente (TTL 1h, auto-cleanup).
+- [ ] No consume tokens del wallet (es gratuito).
 
 ---
 
-## Módulo 2 — Distribución (Redes Sociales)
+## Módulo 3 — Monetización (Mes 2)
 
-### DIST-01: Publicación en Redes Sociales `P0` 🟡 `partial`
+---
+
+### PAY-01: Watermark Injection en Render (Plan Free) `P0` 🟡 `partial`
 
 **Descripción:**
-El modelo `ScheduledPost` existe con state machine completa (`DRAFT` → `SCHEDULED` → `QUEUED` → `PROCESSING` → `PUBLISHED`). El `AyrshareClient` existe con `send_post()`. La task `upload_to_social_network` y `dispatch_scheduled_posts_batch` existen. Falta el endpoint REST para que el frontend cree y gestione scheduled posts.
+`SubscriptionPlan.has_watermark` existe. Falta la inyección física en `RenderEngine.render_clip()`.
 
 **Criterios de Aceptación:**
-- [ ] `POST /api/v1/clips/{clip_id}/schedule/` crea un `ScheduledPost`.
-- [ ] `GET /api/v1/scheduled-posts/` lista todos los posts programados del workspace.
-- [ ] `PATCH /api/v1/scheduled-posts/{id}/` permite modificar fecha y caption antes de publicar.
-- [ ] `DELETE /api/v1/scheduled-posts/{id}/` cancela un post no publicado.
-- [ ] La task `dispatch_scheduled_posts_batch` se ejecuta periódicamente (Celery Beat).
+- [ ] Si `plan.has_watermark == True`, el render superpone el logo de OneCreator.
+- [ ] Watermark: semi-transparente (40% opacity), esquina inferior derecha, 15% del ancho del video.
+- [ ] Asset del watermark en `back/assets/watermarks/onecreator_logo.png`.
+- [ ] Server-side enforced — no bypasseable desde la API.
+- [ ] Test: render con y sin watermark produce archivos diferentes.
 
 ---
 
-### DIST-02: Programación de Contenido (Calendario) `P1` 🔴 `missing`
+### PAY-02: Stripe Checkout — Compra de Tokens `P1` 🔴 `missing`
 
 **Descripción:**
-Vista de calendario que muestra los posts programados por fecha. Requiere un endpoint que devuelva posts agrupados por fecha para un rango dado.
+`stripe_service.py` es un stub vacío. Implementar Stripe Checkout Session para compra de tokens.
 
 **Criterios de Aceptación:**
-- [ ] `GET /api/v1/scheduled-posts/calendar/?from=2026-01-01&to=2026-01-31` devuelve posts agrupados por día.
-- [ ] Cada entrada incluye: `id`, `platform`, `publish_at`, `status`, `clip_title`, `thumbnail_url`.
-- [ ] El frontend puede renderizar un calendario mensual con esta data.
+- [ ] `POST /api/v1/payments/checkout/` crea un Stripe Checkout Session.
+- [ ] Webhook `POST /api/v1/payments/webhook/` procesa `checkout.session.completed`.
+- [ ] Tokens se acreditan en la Wallet tras pago exitoso (`Transaction.Type.DEPOSIT`).
+- [ ] Webhook verificado con `stripe.Webhook.construct_event()` (signature validation).
+- [ ] Idempotencia: mismo evento procesado 2 veces no duplica créditos.
 
 ---
 
-### DIST-03: Adaptación de Formato por Red Social `P1` 🟡 `partial`
+### PAY-03: Endpoint de Planes Públicos `P0` 🟡 `partial`
 
 **Descripción:**
-El `SEOOptimizationService` ya genera `platform_tweaks` (variaciones por plataforma) usando GPT-4o-mini. La task `process_video_seo` existe. Falta integrar el resultado con la creación de `ScheduledPost`.
+El modelo `SubscriptionPlan` existe completo. Falta un endpoint público que liste los planes.
 
 **Criterios de Aceptación:**
-- [ ] Al programar un post, el sistema pre-genera caption y hashtags optimizados por plataforma.
-- [ ] Los campos `generated_caption` y `generated_hashtags` del `ScheduledPost` se llenan automáticamente.
-- [ ] El usuario puede editar el caption generado antes de confirmar la publicación.
-- [ ] Los hashtags se adaptan al límite de cada plataforma (TikTok: 5, Instagram: 30, YouTube: 15).
+- [ ] `GET /api/v1/plans/` (público, sin auth) devuelve planes con pricing y features.
+- [ ] Incluye: `name`, `max_video_duration_seconds`, `max_resolution`, features flags, `base_discount_rate`.
+- [ ] Solo planes con `is_active=True`.
 
 ---
 
-### DIST-04: Optimización de Hashtags por Red Social `P1` 🟢 `exists`
+## Módulo 4 — Distribución Social (Mes 3)
+
+> Objetivo: publicación directa multi-plataforma, no un wrapper de Ayrshare.
+
+---
+
+### DIST-01: Social Auth — OAuth Flows por Plataforma `P0` 🔴 `missing`
 
 **Descripción:**
-El `SEOOptimizationService.generate_metadata()` ya devuelve hashtags optimizados y hora recomendada de publicación. Está implementado con Structured Outputs de OpenAI.
+Para publicar en redes sin Ayrshare como intermediario, necesitamos OAuth directo con cada plataforma. El archivo `social_auth.py` existe pero hay que implementar los flows.
+
+**Plataformas target (MVP):**
+
+| Plataforma | API | OAuth | Dificultad |
+|-----------|-----|-------|-----------|
+| TikTok | Content Posting API | OAuth 2.0 | Media — requiere app review |
+| YouTube | YouTube Data API v3 | OAuth 2.0 (Google) | Baja — bien documentado |
+| Instagram | Instagram Graph API | OAuth via Facebook | Alta — requiere Business account + app review |
 
 **Criterios de Aceptación:**
-- [x] GPT-4o-mini genera 5-8 hashtags relevantes por clip.
-- [x] Incluye `recommended_publish_hour_utc`.
-- [ ] Endpoint que exponga estos datos: `GET /api/v1/clips/{id}/seo/`.
+- [ ] Modelo `SocialAccount` con campos: `platform`, `access_token`, `refresh_token`, `expires_at`, `profile_data`.
+- [ ] `GET /api/v1/social/connect/{platform}/` inicia el OAuth flow (redirect a la plataforma).
+- [ ] `GET /api/v1/social/callback/{platform}/` procesa el callback y almacena tokens.
+- [ ] Tokens se encriptan en DB (no plain text).
+- [ ] Refresh automático de tokens expirados antes de publicar.
 
 ---
 
-## Módulo 3 — Monetización y Planes
-
-### PAY-01: Sistema de Wallet y Tokens `P0` 🟢 `exists`
+### DIST-02: Publishing Engine — Publicación Directa Multi-plataforma `P0` 🔴 `missing`
 
 **Descripción:**
-Sistema transaccional completo: `Wallet` (balance available/reserved), `Transaction` (RESERVE → COMMIT/ROLLBACK), `PricingEngine` (costo por segundo × resolución × features). Integrado con el pipeline de video.
-
-**Estado actual:** Funcional end-to-end. Validado en dry-run.
+Motor de publicación que sube el video directamente a cada API de plataforma, sin depender de Ayrshare. Reemplaza `AyrshareClient.send_post()`.
 
 **Criterios de Aceptación:**
-- [x] Al crear un proyecto, se reservan tokens según la duración y resolución.
-- [x] Si el render es exitoso, se commitea la reserva.
-- [x] Si el render falla, se hace rollback y se devuelven los tokens.
-- [x] `PricingEngine` calcula costos con multiplicadores por resolución y add-ons.
+- [ ] `PublishingEngine.publish(clip_id, platform, caption, hashtags)` sube el video directamente.
+- [ ] Adapta el video a los requisitos de cada plataforma:
+  - TikTok: max 10 min, aspect ratio 9:16, max 287 MB.
+  - YouTube Shorts: max 60s, vertical, max 256 MB.
+  - Instagram Reels: max 90s, min 3s, max 1 GB.
+- [ ] Retry con backoff exponencial si la API falla.
+- [ ] Status tracking: actualiza `ScheduledPost.status` en tiempo real.
+- [ ] Fallback a Ayrshare si la publicación directa falla y Ayrshare está configurado.
 
 ---
 
-### PAY-02: Planes de Suscripción (Feature Flags) `P0` 🟢 `exists`
+### DIST-03: Scheduling Engine — Celery Beat + Calendar `P0` 🟡 `partial`
 
 **Descripción:**
-Modelo `SubscriptionPlan` con feature flags: `max_video_duration_seconds`, `max_resolution`, `has_watermark`, `allow_scheduling`, `allow_crossposting`, `has_seo_optimization`, `has_thumbnail_engine`, `max_members`.
-
-**Estado actual:** Modelo completo. `PricingEngine` valida contra el plan.
+`ScheduledPost` model y `dispatch_scheduled_posts_batch` task existen. Falta Celery Beat y endpoints REST.
 
 **Criterios de Aceptación:**
-- [x] Modelo con todas las feature flags definidas.
-- [x] `PricingEngine` valida duración, resolución y features contra el plan.
-- [ ] `GET /api/v1/plans/` endpoint público que lista los planes disponibles con pricing.
-- [ ] Asociar un `SubscriptionPlan` al `Workspace` (FK faltante en modelo actual).
+- [ ] Servicio `beat` en `docker-compose.yml`.
+- [ ] `dispatch_scheduled_posts_batch` corre cada 5 min vía `CELERY_BEAT_SCHEDULE`.
+- [ ] CRUD completo: `POST/GET/PATCH/DELETE /api/v1/scheduled-posts/`.
+- [ ] `GET /api/v1/scheduled-posts/calendar/?from=...&to=...` devuelve posts por día.
+- [ ] SEO metadata auto-generado al crear un scheduled post (via `SEOOptimizationService`).
 
 ---
 
-### PAY-03: Compra de Tokens (Stripe Checkout) `P1` 🔴 `missing`
+### DIST-04: Adaptación de Contenido por Plataforma `P1` 🟡 `partial`
 
 **Descripción:**
-Permitir al usuario comprar tokens a través de Stripe Checkout. El archivo `stripe_service.py` existe como stub vacío.
+`SEOOptimizationService` genera `platform_tweaks`. Extender para que la adaptación sea más profunda: re-encode del video si es necesario (ej: YouTube Shorts requiere ≤60s).
 
 **Criterios de Aceptación:**
-- [ ] `POST /api/v1/payments/checkout/` crea una sesión de Stripe Checkout con el monto de tokens seleccionado.
-- [ ] Webhook de Stripe (`/api/v1/payments/webhook/`) recibe `checkout.session.completed` y acredita tokens en la Wallet.
-- [ ] Registro de la transacción como `Transaction.Type.DEPOSIT`.
-- [ ] Manejo de errores: pagos duplicados, sesiones expiradas.
+- [ ] Si el clip excede la duración máxima de la plataforma, ofrecer trimming automático.
+- [ ] Caption y hashtags adaptados por plataforma (límites: TikTok 2200 chars, IG 2200, YT 5000).
+- [ ] El usuario puede override el caption generado antes de confirmar.
 
 ---
 
-### PAY-04: Suscripción Mensual (Stripe Subscriptions) `P2` 🔴 `missing`
+## Módulo 5 — Frontend (Mes 3, últimas semanas)
 
-**Descripción:**
-Planes mensuales que habilitan features de la plataforma. Requiere Stripe Subscriptions + webhooks para activar/desactivar el plan del workspace.
-
-**Criterios de Aceptación:**
-- [ ] `POST /api/v1/payments/subscribe/` crea una suscripción en Stripe.
-- [ ] Webhooks manejan: `invoice.paid` (activar plan), `customer.subscription.deleted` (degradar a free).
-- [ ] El workspace refleja el plan activo en tiempo real.
-- [ ] Cancelación: el plan sigue activo hasta fin del período facturado.
+> Prioridad baja. MVP funcional mínimo que demuestre el core.
 
 ---
 
-## Módulo 4 — Frontend y Experiencia de Usuario
-
-### FE-01: Setup del Proyecto Frontend `P0` 🔴 `missing`
-
-**Descripción:**
-Crear la aplicación frontend. Stack recomendado: Next.js 14+ (App Router) o Vite + React. Configurar routing, auth context, API client, y design system base.
+### FE-01: Setup + Auth + Dashboard `P0` 🔴 `missing`
 
 **Criterios de Aceptación:**
-- [ ] Proyecto inicializado con estructura de carpetas definida.
-- [ ] Auth context con JWT (login, refresh, logout).
-- [ ] API client centralizado con interceptors para token refresh.
-- [ ] Design system base: tokens de color, tipografía, spacing.
-- [ ] Layout principal con sidebar y header.
+- [ ] App React/Next.js inicializada con design system base.
+- [ ] Login/registro con JWT.
+- [ ] Dashboard con lista de proyectos y balance del wallet.
 
 ---
 
-### FE-02: Pantalla de Login / Registro `P0` 🔴 `missing`
-
-**Descripción:**
-Formularios de login y registro que consumen los endpoints JWT existentes (`/api/token/`, `/api/v1/users/register/`).
+### FE-02: Upload + Configuración de Proyecto `P0` 🔴 `missing`
 
 **Criterios de Aceptación:**
-- [ ] Formulario de login con email + password.
-- [ ] Formulario de registro con nombre, email, password.
-- [ ] Validación client-side + errores del server.
-- [ ] Redirect a dashboard post-login.
-- [ ] Persist token en `httpOnly` cookie o `localStorage` con refresh automático.
+- [ ] Drag & drop de video o input de URL.
+- [ ] Wizard de configuración: estilo, layout, subtítulos.
+- [ ] Campo de prompt para Prompt-to-Edit (si PTE-01 está implementado).
+- [ ] Feedback visual de progreso del pipeline.
 
 ---
 
-### FE-03: Dashboard Principal `P0` 🔴 `missing`
-
-**Descripción:**
-Vista principal post-login que muestra: proyectos recientes, estado del wallet, y acciones rápidas (subir video).
+### FE-03: Revisión de Clips + Publish `P1` 🔴 `missing`
 
 **Criterios de Aceptación:**
-- [ ] Lista de proyectos del workspace con status, fecha, thumbnail.
-- [ ] Widget de Wallet con balance actual.
-- [ ] Botón "Nuevo Proyecto" que abre el flujo de upload.
-- [ ] Empty state para workspaces sin proyectos.
+- [ ] Vista de clips propuestos con score, reasoning, preview.
+- [ ] Aprobar/rechazar clips.
+- [ ] Programar publicación desde la vista del clip.
 
 ---
 
-### FE-04: Flujo de Upload y Configuración de Proyecto `P0` 🔴 `missing`
-
-**Descripción:**
-Wizard multi-step: (1) Subir video o pegar URL, (2) Configurar estilo/layout/subtítulos, (3) Confirmar y lanzar procesamiento.
-
-**Criterios de Aceptación:**
-- [ ] Step 1: Drag & drop de video o input de URL (YouTube/Twitch).
-- [ ] Step 2: Selección de `editing_style`, `aspect_ratio`, `render_layout`, toggle subtítulos.
-- [ ] Step 3: Resumen con costo estimado en tokens + botón "Procesar".
-- [ ] Feedback visual del estado: subiendo → procesando → listo.
-- [ ] Validaciones: tamaño máximo (500 MB), formatos permitidos (.mp4, .mov, .avi).
+## Módulo 6 — Infraestructura y DevOps
 
 ---
 
-### FE-05: Vista de Revisión de Clips (Approval) `P0` 🔴 `missing`
-
-**Descripción:**
-Cuando el proyecto está en `awaiting_approval`, el usuario ve los clips propuestos con su transcripción, score y reasoning. Puede aprobar, rechazar o ajustar cada clip.
+### INFRA-01: CI/CD — GitHub Actions `P1` 🔴 `missing`
 
 **Criterios de Aceptación:**
-- [ ] Lista de clips propuestos con: título, `virality_score`, `ai_reasoning`, preview del segmento.
-- [ ] Toggle aprobar/rechazar por clip.
-- [ ] Botón "Renderizar seleccionados" que lanza el render de los clips aprobados.
-- [ ] Mostrar `ai_rationale_log` de forma legible (transparencia de IA).
+- [ ] Workflow en cada PR: `manage.py check`, `makemigrations --check`, `test`.
+- [ ] Build de imágenes Docker para verificar Dockerfile.
+- [ ] Branch protection: merge bloqueado si checks fallan.
 
 ---
 
-### FE-06: Vista de Distribución / Calendario `P1` 🔴 `missing`
-
-**Descripción:**
-Calendario mensual con los posts programados. Drag & drop para reprogramar. Formulario para crear un nuevo scheduled post desde un clip renderizado.
+### INFRA-02: Monitoring y Logging Estructurado `P2` 🔴 `missing`
 
 **Criterios de Aceptación:**
-- [ ] Vista de calendario mensual con posts por día.
-- [ ] Click en un día abre formulario de programación.
-- [ ] Selección de plataforma(s): TikTok, Instagram Reels, YouTube Shorts.
-- [ ] Caption auto-generado (editable) con hashtags.
-- [ ] Status visual por post: draft, scheduled, published, failed.
+- [ ] Logs JSON estructurados (no plain text) para búsqueda en producción.
+- [ ] Métricas de tiempo por etapa del pipeline (dashboard).
+- [ ] Alertas cuando un task falla N veces consecutivas.
 
 ---
 
-### FE-07: Colaboración en Equipo (Workspace) `P2` 🟡 `partial`
+## Asignación Sugerida por Dev
 
-**Descripción:**
-El modelo `Workspace` + `WorkspaceMember` existe con roles (`admin`, `editor`, `viewer`). Falta la UI y los endpoints para invitar miembros, cambiar roles, y el flujo de aprobaciones.
-
-**Criterios de Aceptación:**
-- [ ] `POST /api/v1/workspaces/{id}/invite/` envía invitación por email.
-- [ ] Panel de miembros: lista con nombre, rol, status.
-- [ ] Admin puede cambiar roles y remover miembros.
-- [ ] Flujo de aprobación: clips deben ser aprobados por un admin antes de renderizar (opcional, configurable).
-
----
-
-## Módulo 5 — Infraestructura y DevOps
-
-### INFRA-01: Celery Beat para Tareas Programadas `P0` 🔴 `missing`
-
-**Descripción:**
-Agregar `celery-beat` al `docker-compose.yml` para ejecutar la task `dispatch_scheduled_posts_batch` periódicamente (cada 5 minutos). Sin esto, los posts programados nunca se publican.
-
-**Criterios de Aceptación:**
-- [ ] Servicio `beat` en `docker-compose.yml` corriendo `celery -A backend beat`.
-- [ ] `dispatch_scheduled_posts_batch` configurada en `CELERY_BEAT_SCHEDULE` (cada 5 min).
-- [ ] Posts con `status=SCHEDULED` y `publish_at <= now()` se procesan automáticamente.
+| Dev | Foco Principal | Issues Asignadas |
+|-----|---------------|-----------------|
+| **Dev 1** | Core Engine — Face Tracking + Layouts | CORE-01, CORE-02, CORE-03 |
+| **Dev 2** | Core Engine — Performance + Worker | CORE-04, CORE-06, INFRA-01 |
+| **Dev 3** | Prompt-to-Edit + IA | PTE-01, PTE-02, PTE-03, CORE-05 |
+| **Dev 4** | Distribución Social + Publishing | DIST-01, DIST-02, DIST-03, DIST-04 |
+| **Dev 5** | Monetización + Frontend | PAY-01, PAY-02, PAY-03, FE-01, FE-02, FE-03 |
 
 ---
 
-### INFRA-02: Tests de Integración del Pipeline `P1` 🟡 `partial`
+## Resumen Ejecutivo
 
-**Descripción:**
-Los tests unitarios existen en `tests/` pero faltan tests de integración del pipeline completo (upload → transcription → selection → render).
+| Prioridad | Issues | Core/Backend | Frontend |
+|-----------|--------|-------------|----------|
+| **P0** | 16 | 13 | 3 |
+| **P1** | 7 | 5 | 2 |
+| **P2** | 1 | 1 | 0 |
+| **Total** | **24** | **19** | **5** |
 
-**Criterios de Aceptación:**
-- [ ] Test que sube un video corto (5s) y verifica que el proyecto llega a `awaiting_approval`.
-- [ ] Mock de OpenAI para el `SelectionEngine` (no gastar créditos en CI).
-- [ ] Test de `PricingEngine` con todos los multiplicadores y edge cases.
-- [ ] Test de `WalletService` con race conditions (concurrent reserve).
+### Diferenciadores vs Opus Clips
 
----
-
-### INFRA-03: CI/CD con GitHub Actions `P2` 🔴 `missing`
-
-**Descripción:**
-Pipeline de CI que corre en cada PR: lint, tests, build de Docker image.
-
-**Criterios de Aceptación:**
-- [ ] GitHub Action que en cada PR ejecuta: `python manage.py check`, `makemigrations --check`, `test`.
-- [ ] Build de las imágenes Docker para verificar que el Dockerfile no está roto.
-- [ ] Bloqueo de merge si los checks fallan.
-
----
-
-## Resumen de Prioridades
-
-### P0 — Must-have para MVP (Sprint 1-2)
-
-| ID | Issue | Status |
-|----|-------|--------|
-| EDIT-01 | Recorte Inteligente de Mejores Momentos | 🟢 Funcional |
-| EDIT-02 | Subtítulos Dinámicos | 🟢 Funcional |
-| EDIT-04 | Edición con Marca de Agua (Plan Free) | 🟡 Falta inyección en render |
-| EDIT-05 | Estilos de Edición Predefinidos | 🟢 Funcional |
-| EDIT-09 | Layouts de Video | 🟢 Funcional |
-| DIST-01 | Publicación en Redes Sociales | 🟡 Falta endpoints REST |
-| PAY-01 | Sistema de Wallet y Tokens | 🟢 Funcional |
-| PAY-02 | Planes de Suscripción | 🟢 Modelo OK, falta endpoint |
-| FE-01 | Setup Frontend | 🔴 Por construir |
-| FE-02 | Login / Registro | 🔴 Por construir |
-| FE-03 | Dashboard | 🔴 Por construir |
-| FE-04 | Upload y Config de Proyecto | 🔴 Por construir |
-| FE-05 | Revisión de Clips | 🔴 Por construir |
-| INFRA-01 | Celery Beat | 🔴 Por construir |
-
-### P1 — Should-have (Sprint 3-4)
-
-| ID | Issue | Status |
-|----|-------|--------|
-| EDIT-03 | Traducción de Subtítulos | 🔴 Por construir |
-| EDIT-06 | BrandKit CRUD | 🟡 Modelo OK, falta endpoints |
-| EDIT-07 | IA Explicable — Rationale Log | 🟡 Data OK, falta exposición |
-| DIST-02 | Calendario de Contenido | 🔴 Por construir |
-| DIST-03 | Adaptación por Red Social | 🟡 Engine OK, falta integración |
-| DIST-04 | Hashtags Optimizados | 🟢 Engine funcional, falta endpoint |
-| PAY-03 | Compra de Tokens (Stripe) | 🔴 Por construir |
-| FE-06 | Vista Calendario | 🔴 Por construir |
-| INFRA-02 | Tests de Integración | 🟡 Parcial |
-
-### P2 — Nice-to-have (Backlog)
-
-| ID | Issue | Status |
-|----|-------|--------|
-| EDIT-08 | Feedback y Ajustes Finos | 🔴 Por construir |
-| PAY-04 | Suscripción Mensual (Stripe) | 🔴 Por construir |
-| FE-07 | Colaboración en Equipo | 🟡 Modelo OK, falta UI |
-| INFRA-03 | CI/CD GitHub Actions | 🔴 Por construir |
+| Feature | Opus Clips | OneCreator (Target) |
+|---------|-----------|-------------------|
+| Clip selection AI | GPT-4 | GPT-4o/4o-mini (configurable) |
+| Face tracking | Básico | Multi-face + speaker detection |
+| Layouts | ~5 | 11+ (con podcast, cinematic, trending) |
+| Prompt-to-Edit | No | Sí — lenguaje natural → config |
+| Social publishing | Integración limitada | Directo via OAuth (sin intermediarios) |
+| Watermark (free) | Sí | Sí |
+| Subtítulos | Estáticos | Word-level animados + traducción |
+| Transparencia IA | No | Sí — rationale log explicable |
