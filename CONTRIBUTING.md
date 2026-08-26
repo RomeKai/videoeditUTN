@@ -1,6 +1,6 @@
 # ⚖️ Guía de Contribución — OneCreator
 
-> ⚠️ **Lectura obligatoria antes de contribuir.**
+> **Lectura obligatoria antes de contribuir.**
 > Al enviar código a este repositorio, aceptás los términos del **Acuerdo de Contribución (CLA)** que se detalla al final de este documento. Si no estás de acuerdo, no abras Pull Requests.
 
 ---
