@@ -4,6 +4,7 @@
 
 | Integrante | Legajo |
 |-----------|--------|
+| Romeo Lorenzo Monfroglio | 31143 |
 | Franco Jimenez | 31848 |
 | Agustin Gonzalez Blasco | 31303 |
 | Franco Javier Portillo Colinas | 31089 |
