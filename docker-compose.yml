@@ -10,10 +10,10 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-admin}
     # No host port binding — internal network only (avoids conflict with local Postgres)
 
-  # --- SERVICE 2: Redis (Task queue broker) ---
+  # --- SERVICE 2: Valkey (Task queue broker — Redis-compatible, BSD-3 licensed) ---
   redis:
-    image: redis:7-alpine
-    # No host port binding — internal network only (avoids conflict with local Redis)
+    image: valkey/valkey:8-alpine
+    # No host port binding — internal network only (avoids conflict with local Valkey/Redis)
 
   # --- SERVICE 3: Web API ---
   web:
