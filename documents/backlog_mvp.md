@@ -188,6 +188,106 @@ Cada par tiene ADRs `proposed` que debe evaluar, debatir, y aceptar o rechazar. 
 
 ---
 
+### SPIKE-01: Estrategia de Transcripción para VPS sin GPU `P0` 🔴 `missing` ⚠️ RIESGO
+
+**Descripción:**
+Whisper `small` en CPU tarda ~7 minutos para 10 minutos de audio. En un VPS sin GPU, esto bloquea un worker Celery completo durante todo ese tiempo. Con 10 usuarios concurrentes, necesitaríamos 10 workers solo para transcripción — insostenible económicamente.
+
+**¿Por qué es un spike?**
+Esto no es implementación — es una investigación con PoC para decidir cuál de estas rutas tomar ANTES de optimizar el worker (CORE-04).
+
+**Alternativas a evaluar:**
+
+| Alternativa | Latencia (10min audio) | Costo | Word-timestamps | Offline |
+|-------------|----------------------|-------|-----------------|---------|
+| Whisper `small` en CPU | ~7 min | $0 | ✅ | ✅ |
+| `faster-whisper` (CTranslate2) en CPU | ~2 min (4x speedup) | $0 | ✅ | ✅ |
+| Groq Whisper API | ~3-5 seg | ~$0.01/10min | ✅ | ❌ |
+| Deepgram Nova-2 | ~5-10 seg | ~$0.01/min | ✅ | ❌ |
+| Whisper `small` en GPU (T4) | ~30 seg | $0.50/h (VPS con GPU) | ✅ | ✅ |
+
+**Subtareas técnicas:**
+
+| # | Subtarea | Talla | Dev |
+|---|---------|-------|-----|
+| 1 | PoC `faster-whisper` con las 3 transcripciones del PoC de IA-00 (2min, 10min, 30min). Medir latencia real en CPU del VPS target | M | Dev 1 + Dev 2 |
+| 2 | PoC Groq Whisper API: medir latencia, verificar word-level timestamps, evaluar rate limits del free tier | S | Dev 2 |
+| 3 | PoC Deepgram Nova-2: misma evaluación que Groq | S | Dev 2 |
+| 4 | Comparar calidad de transcripción (WER) entre las 3 opciones con mismo audio | M | Dev 1 |
+| 5 | Calcular costo proyectado a 100, 1000 y 10000 videos/mes para cada alternativa | S | Dev 1 |
+| 6 | Decisión: escribir ADR-007 con la estrategia elegida. Puede ser híbrida (local para dev, API para prod) | S | Dev 1 |
+
+**Definition of Done:**
+- [ ] Benchmark real con las 3 alternativas más viables
+- [ ] ADR-007 (Transcription Strategy) creado con datos del PoC
+- [ ] Decisión compatible con la infra target (VPS sin GPU)
+- [ ] Si se elige API externa → plan de fallback a local si la API cae
+
+**Riesgos:**
+- 🔴 Sin esta decisión, CORE-04 (worker optimization) se optimiza para el caso incorrecto
+- 🟡 Groq/Deepgram introducen dependencia de red — si la API cae, el pipeline se frena
+- 🟡 `faster-whisper` no es mantenido por OpenAI — riesgo de abandono del proyecto
+
+**Impacto en backlog:**
+- Si se elige `faster-whisper` → CORE-04 subtarea 6 pasa de "evaluar" a "implementar"
+- Si se elige API externa → ADR-002 se supersede, `TranscriptionEngine` necesita refactor
+- En ambos casos, CORE-04 subtarea 2 (model preloading) puede simplificarse o eliminarse
+
+**ADR asociado:** ADR-007 (por crear)
+**Par responsable:** 🧠 Par IA (Dev 1 + Dev 2) — puede ejecutarse en paralelo con IA-00
+
+---
+
+### SPIKE-02: Viabilidad de Publicación Social Directa y Alternativas a pyannote `P0` 🔴 `missing` ⚠️ RIESGO
+
+**Descripción:**
+Dos riesgos detectados que pueden impactar el timeline del MVP si no se investigan temprano:
+
+**Riesgo A — App Review de TikTok e Instagram:**
+Publicar videos via API requiere aprobación de la plataforma. Estos procesos son lentos e impredecibles:
+- **TikTok Content Posting API**: requiere app review + company verification. Timeline reportado: 2-8 semanas.
+- **Instagram Graph API (Reels)**: requiere Facebook Business verification + app review. Timeline: 2-6 semanas.
+- **YouTube Data API v3**: API key + OAuth consent screen. Timeline: 1-3 días (el más simple).
+
+Si el Par Producto no inicia el proceso de app review en Semana 0-1, puede que en Mes 3 no tengan acceso a las APIs.
+
+**Riesgo B — pyannote.audio para speaker detection (CORE-02):**
+El modelo de diarización pesa ~1GB y requiere aceptar la licencia de Hugging Face. En un VPS sin GPU, la diarización de un video de 10 minutos puede tardar 5+ minutos adicionales. Para el MVP, hay alternativas más livianas:
+- **Detección por volumen de audio**: el speaker activo es el que tiene mayor RMS energy en el segmento. Simple, rápido, 0 dependencias extra.
+- **WebRTC VAD (Voice Activity Detection)**: detección de actividad de voz liviana (~100KB). No diferencia speakers, pero detecta quién habla vs silencio.
+
+**Subtareas técnicas:**
+
+| # | Subtarea | Talla | Par |
+|---|---------|-------|-----|
+| 1 | Registrar app en TikTok Developer Portal e iniciar app review | S | Par Producto |
+| 2 | Registrar app en Meta Developer Portal (Facebook/Instagram) e iniciar verificación | S | Par Producto |
+| 3 | Documentar timeline real del proceso de review (tracking semanal) | S | Par Producto |
+| 4 | PoC: speaker detection por volumen de audio (RMS energy por segmento temporal) vs pyannote | M | Par IA |
+| 5 | Evaluar si para el MVP, `ActiveSpeakerLayout` puede funcionar con RMS energy sin pyannote | S | Par IA |
+| 6 | Actualizar ADR-005 con los timelines reales de app review | S | Par Producto |
+
+**Definition of Done:**
+- [ ] Apps registradas en TikTok y Meta developer portals (no esperar aprobación, solo iniciar)
+- [ ] Timeline estimado de aprobación documentado
+- [ ] Decisión sobre pyannote vs alternativa liviana para MVP
+- [ ] CORE-02 actualizado si se cambia de approach
+- [ ] ADR-005 actualizado con datos reales
+
+**Riesgos:**
+- 🔴 Si no se inicia el app review AHORA, puede que en Mes 3 no haya acceso a TikTok/Instagram API
+- 🟡 pyannote pesa ~1GB en la imagen Docker — en un VPS con disco limitado, esto importa
+- 🟡 La detección por volumen es menos precisa que diarización real — aceptable para MVP, no para producción
+
+**Impacto en backlog:**
+- Si app review tarda >4 semanas → DIST-01 y DIST-02 se limitan a YouTube para el MVP
+- Si se descarta pyannote → CORE-02 se simplifica significativamente (de L a M)
+- Si se elige RMS energy → no se necesita modelo adicional en el worker
+
+**Par responsable:** 🚀 Par Producto (subtareas 1-3, 6) + 🧠 Par IA (subtareas 4-5)
+
+---
+
 ## Módulo 1 — Core Engine (Mes 1)
 
 > Objetivo: que el pipeline de video edite a nivel producción — rápido, preciso, seguro.
@@ -1004,6 +1104,7 @@ Motor de publicación que sube el video directamente a cada API de plataforma, s
 |Issue|Título|Prioridad|Estado|
 |-|-|-|-|
 |**IA-00**|**Evaluación y Selección de Proveedor LLM**|**`P0`**|**🔴 `missing` ⛔ BLOQUEANTE**|
+|**SPIKE-01**|**Estrategia de Transcripción para VPS sin GPU**|**`P0`**|**🔴 `missing` ⚠️ RIESGO**|
 |ARCH-01|Revisión de ADRs por Par|`P0`|🔴 `missing`|
 |CORE-01|Face Tracking v2 — Multi-face + Smoothing|`P0`|🟡 `partial`|
 |CORE-02|Speaker Detection — pyannote.audio|`P1`|🔴 `missing`|
@@ -1011,7 +1112,7 @@ Motor de publicación que sube el video directamente a cada API de plataforma, s
 |PTE-01|Motor de Prompt-to-Edit|`P0`|🔴 `missing`|
 |PTE-02|Selección Dirigida por Prompt|`P1`|🔴 `missing`|
 
-**Rationale:** IA-00 es la primera tarea porque define qué proveedor LLM usa todo el producto. CORE-01 y CORE-02 son ML puro (MediaPipe, pyannote). PTE-01/02 son el corazón LLM del producto. CORE-05 protege toda la superficie de IA.
+**Rationale:** IA-00 define el proveedor LLM del producto. SPIKE-01 define la estrategia de transcripción viable en VPS sin GPU — sin esto, CORE-04 optimiza para el caso incorrecto. CORE-01/02 son ML puro. PTE-01/02 son el corazón LLM. CORE-05 protege la superficie de IA.
 
 \---
 
@@ -1038,6 +1139,7 @@ Motor de publicación que sube el video directamente a cada API de plataforma, s
 
 |Issue|Título|Prioridad|Estado|
 |-|-|-|-|
+|**SPIKE-02**|**Viabilidad Publicación Social + Alternativas pyannote**|**`P0`**|**🔴 `missing` ⚠️ RIESGO**|
 |PAY-01|Watermark Injection en Render|`P0`|🟡 `partial`|
 |PAY-02|Stripe Checkout — Compra de Tokens|`P1`|🔴 `missing`|
 |PAY-03|Endpoint de Planes Públicos|`P0`|🟡 `partial`|
@@ -1049,13 +1151,17 @@ Motor de publicación que sube el video directamente a cada API de plataforma, s
 |FE-02|Upload + Configuración de Proyecto|`P0`|🔴 `missing`|
 |FE-03|Revisión de Clips + Publish|`P1`|🔴 `missing`|
 
-**Rationale:** Monetización (PAY-*) y distribución (DIST-*) son dominio de producto. Frontend (FE-\*) es la capa que consume ambos. Un par que domine los 3 módulos evita handoffs innecesarios y puede iterar rápido en el flujo completo del usuario.
+**Rationale:** SPIKE-02 debe iniciar en Semana 0-1 (registrar apps en TikTok/Meta ASAP). Monetización (PAY-*) y distribución (DIST-*) son dominio de producto. Frontend (FE-\*) consume ambos.
 
 \---
 
 ### 📌 Dependencias entre Pares
 
 ```
+⛔ IA-00 (LLM Provider) ──► PTE-01, PTE-02, CORE-05
+⚠️ SPIKE-01 (Transcripción) ──► CORE-04 (worker optimization)
+⚠️ SPIKE-02 (Social + pyannote) ──► DIST-01, CORE-02
+
 Par IA ──────────────────────────────────────────► Par Engine
   CORE-01 (multi-face) ──► CORE-03 (podcast/pip layouts lo consumen)
   CORE-05 (AI guardrails) ──► CORE-06 (tests deben cubrir guardrails)
@@ -1083,10 +1189,10 @@ Par IA ────────────────────────�
 
 |Prioridad|Issues|Core/Backend|Frontend|
 |-|-|-|-|
-|**P0**|15|13|2|
+|**P0**|17|15|2|
 |**P1**|7|6|1|
 |**P2**|1|1|0|
-|**Total**|**23**|**20**|**3**|
+|**Total**|**25**|**22**|**3**|
 
 ### Diferenciadores vs Opus Clips
 
