@@ -1095,6 +1095,100 @@ Motor de publicación que sube el video directamente a cada API de plataforma, s
 
 ---
 
+## Módulo 7 — Extras (si llegamos bien de tiempo) `P2`
+
+> Diferenciadores de producto que elevan la UX de "funcional" a "mágica". Solo se implementan si los Módulos 0-6 están completos y estables.
+
+---
+
+### EXTRA-01: Plantillas con IA por Nicho (Edición Fija) `P2` 🔴 `missing`
+
+**Descripción:**
+Reducir la fricción mental. Que el usuario diga "Soy de deportes" y la IA configure todo el estilo de golpe, eliminando la necesidad de configurar 10 parámetros manualmente.
+
+**Subtareas técnicas:**
+
+| # | Subtarea | Talla | Par | Tipo |
+|---|---------|-------|-----|------|
+| 1 | Diseñar modelo `NicheTemplate` con campos: `name`, `editing_style`, `subtitle_config`, `layout`, `color_palette`, `is_system` (no borrable) | M | Par Producto | Backend |
+| 2 | Crear migration + seed con 5-6 presets de sistema: **Deportes** (cortes rápidos, subtítulos gigantes en itálica, colores neón), **Podcast** (zoom suave, subtítulos minimalistas blancos, fuente Serif), **Gaming** (glitch transitions, colores RGB, fuente bold), **Finanzas** (clean, subtítulos profesionales, paleta azul/gris), **Entretenimiento** (dinámico, emojis, colores vibrantes) | M | Par Producto | Backend |
+| 3 | Endpoint `GET /api/v1/templates/` — devuelve plantillas de sistema + custom del usuario | S | Par Producto | Backend |
+| 4 | Endpoint `POST /api/v1/templates/` — el usuario puede crear templates custom basados en los de sistema | S | Par Producto | Backend |
+| 5 | Galería de Nichos en pantalla de nuevo proyecto: tarjetas visuales con preview del estilo. Al hacer clic, se precargan todos los parámetros | L | Par Producto | Frontend |
+| 6 | Integrar con `PromptParser` (PTE-01): si el usuario dice "estilo deportivo", mapear al template correspondiente | M | Par IA | Backend |
+
+**Criterios de Aceptación:**
+- [ ] La API devuelve una lista de "Plantillas Recomendadas" por nicho
+- [ ] Los presets de sistema no son editables ni borrables por el usuario
+- [ ] El usuario puede elegir un nicho con un solo clic en lugar de configurar manualmente
+- [ ] Si PTE-01 está implementado, el prompt "haceme un video deportivo" aplica el template correcto
+
+**Definition of Done:**
+- [ ] Criterios de aceptación cumplidos
+- [ ] Seed de templates ejecutable con `manage.py seed_templates`
+- [ ] Tests: cada template genera un `ProjectConfig` válido
+
+**Dependencia:** PTE-01 (para integración con prompt). Modelos de `Project` existentes para mapear campos.
+
+---
+
+### EXTRA-02: Automatización Recurrente — Estilo por Defecto Global `P2` 🔴 `missing`
+
+**Descripción:**
+Cero clics. Automatización extrema para creadores que suben videos todos los días. El usuario marca un estilo como "predeterminado" y todo video futuro se procesa con ese estilo sin preguntar.
+
+**Subtareas técnicas:**
+
+| # | Subtarea | Talla | Par | Tipo |
+|---|---------|-------|-----|------|
+| 1 | Agregar campo `is_default: BooleanField` al modelo `EditingPreset` (o `NicheTemplate`). Constraint: solo uno puede ser `True` por usuario | S | Par Producto | Backend |
+| 2 | Lógica: al crear un proyecto sin especificar estilo, el backend inyecta automáticamente el preset `is_default` del usuario | M | Par Producto | Backend |
+| 3 | Endpoint `PATCH /api/v1/presets/{id}/set-default/` — marca un preset como predeterminado (desmarca el anterior) | S | Par Producto | Backend |
+| 4 | UI: botón/icono de estrella en la lista de estilos para marcar como predeterminado. Cambio visual inmediato + notificación "Este será tu estilo para todos los videos futuros" | M | Par Producto | Frontend |
+
+**Criterios de Aceptación:**
+- [ ] Si un usuario crea un proyecto sin especificar estilo, el backend aplica su preset `is_default`
+- [ ] Solo un preset puede ser `is_default` por usuario (constraint en DB)
+- [ ] Cambio visual inmediato en la UI al marcar un preset como predeterminado
+- [ ] Si no hay preset por defecto, el sistema usa defaults genéricos (no falla)
+
+**Definition of Done:**
+- [ ] Criterios de aceptación cumplidos
+- [ ] Test: crear proyecto sin estilo → aplica default
+- [ ] Test: constraint de unicidad en DB funciona
+
+---
+
+### EXTRA-03: Integración B2B — Zero-Click Auto-Processing `P2` 🔴 `missing`
+
+**Descripción:**
+Para agencias o creadores con flujos automatizados. Si un video entra por webhook (ej: un stream de Twitch terminó), el sistema usa el Estilo por Defecto sin preguntar nada y procesa el video directo al render.
+
+**Subtareas técnicas:**
+
+| # | Subtarea | Talla | Par | Tipo |
+|---|---------|-------|-----|------|
+| 1 | Endpoint `POST /api/v1/webhooks/auto-process/` — recibe video URL + workspace API key, aplica preset default, lanza pipeline completo | L | Par Producto | Backend |
+| 2 | Autenticación por API key (no JWT) para webhooks — modelo `WorkspaceAPIKey` con hash del key | M | Par Producto | Backend |
+| 3 | Rate limiting específico para webhooks (más restrictivo que el UI) | S | Par Engine | Backend |
+| 4 | Notificación al usuario cuando el video está listo (email o webhook de callback) | M | Par Producto | Backend |
+| 5 | Documentación de la API de webhooks para integraciones externas | S | Par Producto | Docs |
+
+**Criterios de Aceptación:**
+- [ ] Flujo "Zero-Click" comprobado: video entra crudo → se procesa con el estilo global del usuario → se entrega listo
+- [ ] Autenticación por API key (no requiere OAuth flow para integraciones)
+- [ ] Si no hay preset por defecto, el webhook rechaza con error claro (no procesa con defaults genéricos)
+- [ ] Callback URL opcional para notificar cuando el video está listo
+
+**Definition of Done:**
+- [ ] Criterios de aceptación cumplidos
+- [ ] Test E2E: webhook → pipeline completo → output
+- [ ] Documentación de integración publicada
+
+**Dependencia:** EXTRA-02 (requiere preset por defecto). CORE-04 (worker optimizado). PAY-01 (watermark si es plan free).
+
+---
+
 ## Asignación por Pares (Pair Coding)
 
 ### 🧠 Par IA — Dev 1 (vos) + Dev 2
@@ -1104,7 +1198,6 @@ Motor de publicación que sube el video directamente a cada API de plataforma, s
 |Issue|Título|Prioridad|Estado|
 |-|-|-|-|
 |**IA-00**|**Evaluación y Selección de Proveedor LLM**|**`P0`**|**🔴 `missing` ⛔ BLOQUEANTE**|
-|**SPIKE-01**|**Estrategia de Transcripción para VPS sin GPU**|**`P0`**|**🔴 `missing` ⚠️ RIESGO**|
 |ARCH-01|Revisión de ADRs por Par|`P0`|🔴 `missing`|
 |CORE-01|Face Tracking v2 — Multi-face + Smoothing|`P0`|🟡 `partial`|
 |CORE-02|Speaker Detection — pyannote.audio|`P1`|🔴 `missing`|
@@ -1112,7 +1205,7 @@ Motor de publicación que sube el video directamente a cada API de plataforma, s
 |PTE-01|Motor de Prompt-to-Edit|`P0`|🔴 `missing`|
 |PTE-02|Selección Dirigida por Prompt|`P1`|🔴 `missing`|
 
-**Rationale:** IA-00 define el proveedor LLM del producto. SPIKE-01 define la estrategia de transcripción viable en VPS sin GPU — sin esto, CORE-04 optimiza para el caso incorrecto. CORE-01/02 son ML puro. PTE-01/02 son el corazón LLM. CORE-05 protege la superficie de IA.
+**Rationale:** IA-00 es la primera tarea porque define qué proveedor LLM usa todo el producto. CORE-01 y CORE-02 son ML puro (MediaPipe, pyannote). PTE-01/02 son el corazón LLM del producto. CORE-05 protege toda la superficie de IA.
 
 \---
 
@@ -1139,7 +1232,6 @@ Motor de publicación que sube el video directamente a cada API de plataforma, s
 
 |Issue|Título|Prioridad|Estado|
 |-|-|-|-|
-|**SPIKE-02**|**Viabilidad Publicación Social + Alternativas pyannote**|**`P0`**|**🔴 `missing` ⚠️ RIESGO**|
 |PAY-01|Watermark Injection en Render|`P0`|🟡 `partial`|
 |PAY-02|Stripe Checkout — Compra de Tokens|`P1`|🔴 `missing`|
 |PAY-03|Endpoint de Planes Públicos|`P0`|🟡 `partial`|
@@ -1151,17 +1243,13 @@ Motor de publicación que sube el video directamente a cada API de plataforma, s
 |FE-02|Upload + Configuración de Proyecto|`P0`|🔴 `missing`|
 |FE-03|Revisión de Clips + Publish|`P1`|🔴 `missing`|
 
-**Rationale:** SPIKE-02 debe iniciar en Semana 0-1 (registrar apps en TikTok/Meta ASAP). Monetización (PAY-*) y distribución (DIST-*) son dominio de producto. Frontend (FE-\*) consume ambos.
+**Rationale:** Monetización (PAY-*) y distribución (DIST-*) son dominio de producto. Frontend (FE-\*) es la capa que consume ambos. Un par que domine los 3 módulos evita handoffs innecesarios y puede iterar rápido en el flujo completo del usuario.
 
 \---
 
 ### 📌 Dependencias entre Pares
 
 ```
-⛔ IA-00 (LLM Provider) ──► PTE-01, PTE-02, CORE-05
-⚠️ SPIKE-01 (Transcripción) ──► CORE-04 (worker optimization)
-⚠️ SPIKE-02 (Social + pyannote) ──► DIST-01, CORE-02
-
 Par IA ──────────────────────────────────────────► Par Engine
   CORE-01 (multi-face) ──► CORE-03 (podcast/pip layouts lo consumen)
   CORE-05 (AI guardrails) ──► CORE-06 (tests deben cubrir guardrails)
@@ -1189,10 +1277,10 @@ Par IA ────────────────────────�
 
 |Prioridad|Issues|Core/Backend|Frontend|
 |-|-|-|-|
-|**P0**|17|15|2|
+|**P0**|15|13|2|
 |**P1**|7|6|1|
-|**P2**|1|1|0|
-|**Total**|**25**|**22**|**3**|
+|**P2**|4|3|1|
+|**Total**|**26**|**22**|**4**|
 
 ### Diferenciadores vs Opus Clips
 
@@ -1206,6 +1294,8 @@ Par IA ────────────────────────�
 |Watermark (free)|Sí|Sí|
 |Subtítulos|Estáticos|Word-level animados + traducción|
 |Transparencia IA|No|Sí — rationale log + audit trail explicable|
+|Niche Templates|No|Sí — presets por nicho con IA (deportes, podcast, gaming...)|
+|B2B / Zero-Click|No|Sí — webhook auto-processing con estilo por defecto|
 |Arquitectura documentada|No público|Sí — ADRs públicos, stack justificado|
 
 
