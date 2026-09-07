@@ -1298,5 +1298,83 @@ Par IA ────────────────────────�
 |B2B / Zero-Click|No|Sí — webhook auto-processing con estilo por defecto|
 |Arquitectura documentada|No público|Sí — ADRs públicos, stack justificado|
 
+---
 
+## 💡 Alternativas Ingenieriles y Creativas para los Spikes Técnicos
 
+> **Contexto de Arquitectura:** Stack Django 5 + Celery + Valkey en VPS sin GPU, Cloudflare R2 para storage, presupuesto acotado y plazo MVP de 12 semanas. Las siguientes propuestas maximizan la eficiencia de cómputo, eliminan dependencias bloqueantes y protegen la experiencia del creador.
+
+---
+
+### Spike 01: Transcripción Eficiente en VPS sin GPU
+
+El cuello de botella crítico no es el modelo en sí, sino transcribir audio completo de 30-60 minutos a nivel de palabra en un worker de CPU compartido.
+
+#### Alternativa 1.1: Pipeline Asimétrico en Dos Pasadas ("Lazy Word-Level Alignment")
+* **Concepto:** En un video largo de 30 minutos, el usuario solo extraerá entre 2 y 4 clips de 30-60 segundos. Calcular word-level timestamps para los 30 minutos enteros es un desperdicio de más del 85% del tiempo de cómputo del worker.
+* **Diseño e Implementación:**
+  1. **Pasada 1 (Detección macro / Fast Transcript):** Se extrae el audio en 16kHz mono y se ejecuta un VAD agresivo con FFmpeg para descartar silencios. Se transcribe con un modelo liviano (`whisper-base` local o Groq Whisper en free-tier, demorando < 5 segundos). Con esta transcripción cruda por oraciones, el `SelectionEngine` (LLM) puntúa y selecciona los mejores timestamps de clips virales.
+  2. **Pasada 2 (Alineación micro / Word-level quirúrgico):** Únicamente para los 2-3 minutos de clips seleccionados, se ejecuta `faster-whisper` (o `stable-ts`) con `word_timestamps=True`.
+* **Impacto en el Proyecto:**
+  * Reduce el tiempo de cómputo en CPU del VPS de ~20 minutos a **menos de 45 segundos** por video completo.
+  * Los workers de Celery no sufren saturación ni bloquean el procesamiento de otros usuarios concurrentes.
+  * Talla estimada de implementación: **M** (refactor en `TranscriptionEngine` y orquestación del pipeline).
+
+#### Alternativa 1.2: Serverless Offloading con Cloudflare Workers AI (`@cf/openai/whisper`)
+* **Concepto:** El proyecto ya adoptó **Cloudflare R2** para almacenamiento ([ADR-004](adrs/004-cloudflare-r2-storage.md)). Cloudflare ofrece **Workers AI**, ejecutando Whisper en GPUs de su red edge con integración directa al bucket R2.
+* **Diseño e Implementación:**
+  * El worker Celery sube el audio a R2 y emite un `POST` al endpoint REST de Cloudflare Workers AI con el modelo `@cf/openai/whisper-large-v3-turbo`.
+  * La transcripción corre en GPUs externas en ~5-10 segundos para 10 minutos de audio.
+  * Free tier incluye hasta 10.000 neuronas diarias gratuitas; el costo posterior es de fracciones de centavo por hora.
+* **Impacto en el Proyecto:**
+  * **0 MB de modelos Whisper en la imagen Docker** del worker VPS (ahorro masivo de RAM y tamaño de imagen).
+  * 0 uso de CPU del VPS durante la transcripción.
+  * Fallback transparente: si Cloudflare Workers AI falla, se degrada a `faster-whisper` local con modelo `tiny/base`.
+
+#### Alternativa 1.3: Compilado Nativo C++ con `whisper.cpp` + Cuantización INT8/Q5
+* **Concepto:** Si la política del proyecto exige 100% procesamiento local/on-premise sin depender de APIs externas, CTranslate2 en Python sigue arrastrando el overhead del runtime de Python. `whisper.cpp` aprovecha instrucciones AVX/AVX2/AVX-512 directamente en el procesador del VPS.
+* **Diseño e Implementación:**
+  * Subproceso CLI aislado o bindings CFFI llamando a binario optimizado `whisper.cpp` con modelo `small.en` cuantizado en `q5_1` o `int8`.
+  * La memoria RAM se asigna y libera inmediatamente al finalizar el subproceso, evitando fugas de memoria en workers de Celery de larga vida.
+
+---
+
+### Spike 02: Publicación Social y Detección de Hablante Liviana
+
+#### Problema A: Burocracia y Tiempos de App Review en TikTok / Instagram
+
+#### Alternativa 2.A.1: Enfoque "Creator Companion" (Viral Post Kit + Web Share API + Webhook Push)
+* **Concepto:** Los creadores de contenido profesionales casi nunca publican directo sin previsualizar en el móvil; prefieren agregar música trending nativa de TikTok o stickers de Instagram. Forzar la integración directa bloquea el lanzamiento del MVP por burocracia ajena al equipo.
+* **Diseño e Implementación:**
+  1. **Web Share API:** En mobile y navegadores compatibles, el botón "Publicar" invoca el native share sheet del dispositivo con el video y el caption ya en el portapapeles.
+  2. **Push Delivery:** Integrar un bot de Telegram / Discord o webhook con enlace temporal firmado de R2 para que el usuario reciba el clip listo para subir a su teléfono en un clic.
+  3. **Canal directo MVP:** Mantener **YouTube Shorts** como el único canal automatizado directo (aprobación OAuth casi instantánea) y dejar TikTok/Reels en modo "Descarga & Share Kit" para el día 1.
+* **Impacto en el Proyecto:**
+  * Elimina el riesgo P0 de bloqueo por aprobación de Meta/TikTok para la demo y entrega del MVP.
+  * Experiencia de usuario natural para el creador viral.
+
+#### Alternativa 2.A.2: Arquitectura Webhook Saliente ("Bring Your Own Social Aggregator")
+* **Concepto:** En vez de que OneCreator mantenga credenciales de aplicación empresarial multitenant en Meta Developer Portal, se provee un conector genérico de Webhooks (compatible con Make, Zapier o perfiles individuales de Buffer/Ayrshare).
+* **Diseño e Implementación:**
+  * Al completarse el render, OneCreator dispara un webhook `clip.ready` con la URL de R2, título, tags y copy optimizado por el LLM.
+  * Los usuarios avanzados pueden automatizar su distribución a cualquier plataforma sin que el proyecto asuma la responsabilidad de tokens de acceso ni permisos de apps.
+
+#### Problema B: Speaker Diarization sin el peso de `pyannote.audio` (1GB + CPU bound)
+
+#### Alternativa 2.B.1: Detección Visual de Hablante Activo mediante MediaPipe Lip Motion (MAR)
+* **Concepto:** El sistema ya utiliza **MediaPipe Tasks** para el `FaceTracker` ([CORE-01](#core-01-face-tracking-v2--multi-face--smoothing-mejorado-p0--partial)). Incorporar otro modelo pesado de audio de 1GB en Docker es redundante.
+* **Diseño e Implementación:**
+  * A partir de los landmarks faciales que MediaPipe ya detecta, se calcula el **Mouth Aspect Ratio (MAR)** (distancia entre labios superior e inferior vs ancho de boca).
+  * Se cruza la variación temporal de MAR con la energía de audio (VAD): si hay energía de voz y la cara $X$ presenta movimiento labial activo sostenido en esa ventana de frames, la cara $X$ se etiqueta como `active_speaker`.
+* **Impacto en el Proyecto:**
+  * **0 MB adicionales en la imagen Docker** (aprovecha la inferencia de MediaPipe que ya corre en el pipeline).
+  * Funciona perfectamente en CPU y es independiente del acento, idioma o calidad del micrófono.
+
+#### Alternativa 2.B.2: Heurística Estéreo + Diarización Semántica con LLM
+* **Concepto:** Gran parte de los podcasts multicámara graban pistas con micrófonos diferenciados o paneo estéreo (Canal Izquierdo = Anfitrión, Canal Derecho = Invitado). Para grabaciones en canal mono, el LLM en `SelectionEngine` ya procesa la semántica del diálogo.
+* **Diseño e Implementación:**
+  1. **Paso 1 (Audio Pan Analysis):** FFmpeg analiza si existen canales estéreo disociados mediante filtro `astats`. Si detecta asimetría, asigna speakers automáticamente por canal con costo de cómputo nulo.
+  2. **Paso 2 (Semantic Turn-Taking con LLM):** En videos mono, durante la llamada al LLM para seleccionar clips virales, se le solicita en el JSON Schema (`Structured Outputs`) que atribuya cada segmento de texto al `Speaker 1` o `Speaker 2` según el flujo de preguntas y respuestas.
+* **Impacto en el Proyecto:**
+  * No requiere instalar PyTorch pesado ni modelos de audio adicionales en el worker.
+  * Resuelve la necesidad de saber quién habla para alternar layouts dinámicos en el 90% de los casos de uso comunes.
