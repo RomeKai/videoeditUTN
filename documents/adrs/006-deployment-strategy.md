@@ -1,8 +1,9 @@
 # ADR-006: Estrategia de Deployment y CI/CD
 
 **Estado:** `proposed`
-**Fecha:** 2026-09-01
+**Fecha:** 2026-09-01 | revisión 2026-09-13
 **Par responsable:** ⚙️ Par Engine (Dev 3 + Dev 4)
+**Relacionado:** [ADR-007 — Core de IA remoto](007-remote-ai-core.md)
 
 ---
 
@@ -18,7 +19,7 @@ OneCreator tiene un `docker-compose.yml` funcional para desarrollo local con 4 s
 ### Restricciones
 
 - Budget limitado (proyecto académico con aspiración SaaS)
-- El worker necesita acceso a GPU para Whisper (o aceptar performance degradada en CPU)
+- ADR-002 requiere GPU o acepta performance degradada; ADR-007 propone eliminar esa necesidad mediante transcripción remota
 - El storage es Cloudflare R2 (no AWS — limita opciones de integración nativa)
 - El equipo tiene 6 devs — la infra no puede requerir un SRE dedicado
 
@@ -49,9 +50,9 @@ OneCreator tiene un `docker-compose.yml` funcional para desarrollo local con 4 s
 - **Contras:** Requiere adaptación de docker-compose a `fly.toml`. GPU machines son on-demand (latencia de cold start).
 
 #### VPS (Hetzner / DigitalOcean)
-- **Pros:** Control total. Hetzner ofrece servers con GPU (A100) a precios competitivos. Costo predecible.
+- **Pros:** Control total y costo predecible. Con inferencia remota, una instancia CPU pequeña puede ejecutar Django, Celery, FFmpeg y MoviePy sin reservar memoria para modelos.
 - **Contras:** Hay que configurar todo: nginx, SSL, monitoring, updates. Más trabajo operativo.
-- **Costo:** Hetzner ~$5/mes (CX22) a ~$150/mes (con GPU).
+- **Costo:** desde aproximadamente el rango de una VPS CPU básica; validar precio vigente antes de contratar.
 
 ---
 
@@ -59,7 +60,7 @@ OneCreator tiene un `docker-compose.yml` funcional para desarrollo local con 4 s
 
 **PENDIENTE** — El Par Engine debe evaluar:
 
-1. **¿Se necesita GPU en producción?** Si sí → Fly.io o Hetzner. Si se acepta CPU → Railway/Render es viable.
+1. **¿Se acepta ADR-007?** Si el piloto aprueba Groq, producción no necesita GPU para transcripción. Si se rechaza, el sizing debe volver a contemplar Whisper local.
 2. **¿Staging environment?** Mínimo: una rama `staging` que deploya automáticamente a un entorno separado.
 3. **CI pipeline**: GitHub Actions es la opción obvia dado que el repo ya está en GitHub.
 
@@ -67,10 +68,12 @@ OneCreator tiene un `docker-compose.yml` funcional para desarrollo local con 4 s
 
 ```
 CI/CD:        GitHub Actions
-Staging:      Railway (free tier, sin GPU — acepta Whisper tiny en CPU)
-Producción:   Fly.io (web + worker) + Fly GPU Machine (worker-gpu para transcripción)
+Staging:      VPS/PaaS CPU con AI_CORE_V2_ENABLED=True y datos de prueba autorizados
+Producción:   VPS CPU con web + worker; inferencia en Groq y Gemini
 Secretos:     Fly Secrets / GitHub Secrets (no .env en producción)
 ```
+
+Esta recomendación es condicional a la aceptación de ADR-001 y ADR-007. Durante el piloto se conserva una imagen legacy con Whisper para rollback; después del cutover el rollback consiste en redeplegar esa imagen, no en cargar Whisper automáticamente en la VPS activa.
 
 ### Pipeline sugerido
 
@@ -97,6 +100,7 @@ jobs:
 
 - [docker-compose.yml actual](../../docker-compose.yml)
 - [Dockerfile](../../back/Dockerfile)
+- [ADR-007: Core de IA remoto](007-remote-ai-core.md)
 - [Fly.io GPU Machines](https://fly.io/docs/gpus/)
 - [Railway](https://railway.app/)
 - [Hetzner Cloud](https://www.hetzner.com/cloud/)

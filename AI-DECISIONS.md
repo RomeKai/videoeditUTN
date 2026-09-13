@@ -28,6 +28,7 @@
 | 11 | 2026-08-25 | `documents/entregas/tp1.md` (One-Pager) | Claude Opus 4.6 | Síntesis del stack real del repo en formato académico | Definición de consigna, verificación técnica, condensación |
 | 12 | 2026-08-22 | `documents/backlog_mvp.md` (Backlog v2) | Claude Opus 4.6 | Análisis de código existente para generar issues con estado | Prioridades estratégicas, decisiones de producto, requerimientos |
 | 13 | 2026-08-28 | `docker-compose.yml` — Migración Redis → Valkey | Claude Opus 4.6 | Reemplazo de imagen `redis:7-alpine` por `valkey/valkey:8-alpine` en Docker Compose | Decisión estratégica de migración, validación de compatibilidad de protocolo, aprobación de cambios |
+| 14 | 2026-09-13 | ADR-001, ADR-002, ADR-006, ADR-007 y plan del core de IA | OpenAI Codex | Revisión del core existente, contraste con documentación vigente y redacción de decisiones/plan | Selección de Gemini, Groq y LiteLLM; aprobación del alcance; revisión final por el equipo |
 
 ---
 
@@ -50,3 +51,27 @@ Claude Opus 4.6 (Antigravity IDE). Se solicitó actuar como DevOps Engineer y Ar
 - **Beneficio a largo plazo:** Se elimina el riesgo de licencia restrictiva, se garantiza continuidad open-source bajo BSD-3-Clause, y se alinea el stack con la política de la cátedra de utilizar software libre auditado.
 - **Verificación:** El desarrollador debe ejecutar `docker compose up --build` y confirmar que el worker Celery conecta correctamente al broker y procesa tareas sin errores.
 
+---
+
+### Detalle — Entrada #14: Modernización del core de IA
+
+**Problema abordado:**
+El diseño aceptado de Whisper local requiere CPU/RAM o GPU que no encajan con una VPS de bajos recursos. La selección de clips también mantiene clientes de proveedores acoplados, un modelo Gemini anterior y validación insuficiente de la salida.
+
+**Prompt / herramienta utilizada:**
+OpenAI Codex. Se solicitó revisar exclusivamente el core de IA, comparar opciones actuales de precio/calidad y preparar una propuesta y un plan para Gemini 3.8 Flash, Groq Whisper Large V3 Turbo, context caching y LiteLLM.
+
+**Documentación y arquitectura generadas:**
+
+- ADR-001 se acotó a selección de clips y propone Gemini 3.8 Flash mediante LiteLLM SDK, con OpenAI como fallback.
+- ADR-002 conserva su estado histórico `accepted` y queda en revisión por ADR-007.
+- ADR-007 propone transcripción remota con Groq, normalización FLAC, chunks, checkpoints y criterios de aceptación.
+- ADR-006 refleja que una producción sin GPU depende de aceptar ADR-007.
+- El plan ejecutable se alineó con esos ADR y separa piloto, observación y retiro de Whisper local.
+
+**Validación y corrección humana requerida:**
+
+- El Par IA debe aprobar ADR-001 y ADR-007 después del piloto de 20 videos.
+- El equipo debe revisar términos de privacidad y retención de Groq y Google antes de usar contenido real.
+- Los precios y límites externos se deben verificar nuevamente al contratar o actualizar versiones.
+- ADR-002 solo puede marcarse `superseded` si el piloto cumple WER, timestamps, utilidad, costo y recuperación.

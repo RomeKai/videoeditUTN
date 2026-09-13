@@ -10,12 +10,13 @@
 
 | ADR | Título | Estado | Par Responsable |
 |-----|--------|--------|-----------------|
-| [001](001-llm-provider-selection.md) | Selección de proveedor LLM | `proposed` | 🧠 Par IA |
+| [001](001-llm-provider-selection.md) | Proveedor LLM para selección de clips | `proposed` | 🧠 Par IA |
 | [002](002-whisper-local-transcription.md) | Whisper local vs API de transcripción | `accepted` | 🧠 Par IA |
 | [003](003-rendering-stack.md) | Stack de rendering: MoviePy + FFmpeg | `accepted` | ⚙️ Par Engine |
 | [004](004-cloudflare-r2-storage.md) | Storage: Cloudflare R2 | `accepted` | ⚙️ Par Engine |
 | [005](005-social-publishing-strategy.md) | Publicación social: OAuth directo vs intermediarios | `proposed` | 🚀 Par Producto |
 | [006](006-deployment-strategy.md) | Estrategia de deployment y CI/CD | `proposed` | ⚙️ Par Engine |
+| [007](007-remote-ai-core.md) | Core de IA remoto para VPS de bajos recursos | `proposed` | 🧠 Par IA |
 
 ---
 

@@ -3,6 +3,7 @@
 **Estado:** `accepted`
 **Fecha:** 2026-06 (decisión original) | 2026-09-01 (documentación formal)
 **Par responsable:** 🧠 Par IA (Dev 1 + Dev 2)
+**En revisión por:** [ADR-007 — Core de IA remoto](007-remote-ai-core.md)
 
 ---
 
@@ -86,8 +87,17 @@ La API de Whisper de OpenAI **no soporta word-level timestamps**, que son obliga
 
 ---
 
+## Revisión de septiembre de 2026
+
+La decisión original asumía que el servicio debía funcionar offline y que producción dispondría de GPU. El deployment actual apunta a una VPS de bajos recursos sin GPU; por eso [ADR-007](007-remote-ai-core.md) propone Groq Whisper Large V3 Turbo como reemplazo remoto.
+
+Este ADR sigue `accepted` mientras se ejecuta el piloto. No debe marcarse como `superseded` hasta que ADR-007 cumpla sus umbrales de calidad, costo, timestamps y recuperación. Esta nota preserva la razón histórica de Whisper local sin anticipar el resultado del piloto.
+
+---
+
 ## Referencias
 
 - [Código: TranscriptionEngine](../../back/apps/videos/services/transcription_engine.py)
 - [AI-DECISIONS.md #2](../../AI-DECISIONS.md) — registro original de esta decisión
+- [ADR-007: propuesta de core de IA remoto](007-remote-ai-core.md)
 - [OpenAI Whisper API limitations](https://platform.openai.com/docs/guides/speech-to-text)
