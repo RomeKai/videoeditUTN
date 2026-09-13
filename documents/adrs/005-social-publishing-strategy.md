@@ -3,6 +3,7 @@
 **Estado:** `proposed`
 **Fecha:** 2026-09-01
 **Par responsable:** 🚀 Par Producto (Dev 5 + Dev 6)
+**Relacionado:** [ADR-008 — Metadata social con IA](008-ai-social-metadata.md)
 
 ---
 
@@ -13,6 +14,8 @@ OneCreator necesita publicar clips directamente a redes sociales (TikTok, YouTub
 - Stubs de `social_auth.py`, `youtube_api.py`, `twitch_api.py`
 
 La decisión es: ¿construimos OAuth directo con cada plataforma o usamos un intermediario como Ayrshare?
+
+La generación de captions y hashtags es una decisión independiente del transporte hacia cada red. [ADR-008](008-ai-social-metadata.md) define esa metadata y este ADR continúa limitado a autenticación, scheduling y publicación.
 
 ---
 

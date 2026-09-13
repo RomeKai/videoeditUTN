@@ -5,6 +5,7 @@
 **Par responsable:** 🧠 Par IA (Dev 1 + Dev 2)
 **Revisa:** [ADR-002 — Whisper local](002-whisper-local-transcription.md)
 **Complementa:** [ADR-001 — Proveedor LLM](001-llm-provider-selection.md)
+**Relacionado:** [ADR-008 — Metadata social con IA](008-ai-social-metadata.md)
 
 ---
 
@@ -15,6 +16,8 @@ La ingesta actual ejecuta `openai-whisper` dentro del worker Celery. El worker c
 En una medición documentada, un video de 763 segundos necesitó aproximadamente siete minutos de transcripción en CPU. Esta arquitectura contradice el deployment objetivo: una VPS económica, sin GPU y con poca memoria.
 
 La tarea de ingesta también encadena subida, proxy, transcripción, selección y persistencia. Si una etapa posterior falla, el retry puede repetir operaciones externas ya completadas y duplicar tiempo o costo.
+
+La metadata social se genera después de la ingesta y por `ScheduledPost`; no forma parte de los checkpoints definidos aquí. Su contrato, proveedor e idempotencia se documentan por separado en [ADR-008](008-ai-social-metadata.md).
 
 ### Fuerzas de decisión
 

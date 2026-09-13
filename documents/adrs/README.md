@@ -17,6 +17,7 @@
 | [005](005-social-publishing-strategy.md) | Publicación social: OAuth directo vs intermediarios | `proposed` | 🚀 Par Producto |
 | [006](006-deployment-strategy.md) | Estrategia de deployment y CI/CD | `proposed` | ⚙️ Par Engine |
 | [007](007-remote-ai-core.md) | Core de IA remoto para VPS de bajos recursos | `proposed` | 🧠 Par IA |
+| [008](008-ai-social-metadata.md) | Generación de metadata social con IA | `proposed` | 🧠 Par IA + 🚀 Par Producto |
 
 ---
 

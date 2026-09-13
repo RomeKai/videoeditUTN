@@ -29,6 +29,7 @@
 | 12 | 2026-08-22 | `documents/backlog_mvp.md` (Backlog v2) | Claude Opus 4.6 | Análisis de código existente para generar issues con estado | Prioridades estratégicas, decisiones de producto, requerimientos |
 | 13 | 2026-08-28 | `docker-compose.yml` — Migración Redis → Valkey | Claude Opus 4.6 | Reemplazo de imagen `redis:7-alpine` por `valkey/valkey:8-alpine` en Docker Compose | Decisión estratégica de migración, validación de compatibilidad de protocolo, aprobación de cambios |
 | 14 | 2026-09-13 | ADR-001, ADR-002, ADR-006, ADR-007 y plan del core de IA | OpenAI Codex | Revisión del core existente, contraste con documentación vigente y redacción de decisiones/plan | Selección de Gemini, Groq y LiteLLM; aprobación del alcance; revisión final por el equipo |
+| 15 | 2026-09-13 | ADR-008 — Metadata social con IA | OpenAI Codex | Análisis del flujo SEO existente y redacción de la decisión para captions y hashtags por plataforma | Propuesta de hashtags generados por LLM; aprobación de separar metadata social de transcripción y publicación |
 
 ---
 
@@ -75,3 +76,27 @@ OpenAI Codex. Se solicitó revisar exclusivamente el core de IA, comparar opcion
 - El equipo debe revisar términos de privacidad y retención de Groq y Google antes de usar contenido real.
 - Los precios y límites externos se deben verificar nuevamente al contratar o actualizar versiones.
 - ADR-002 solo puede marcarse `superseded` si el piloto cumple WER, timestamps, utilidad, costo y recuperación.
+
+---
+
+### Detalle — Entrada #15: Metadata social con IA
+
+**Problema abordado:**
+El código ya generaba captions y hashtags mediante `SEOOptimizationService`, pero la llamada estaba acoplada directamente a OpenAI, usaba la transcripción completa del proyecto y no formaba parte de las decisiones del nuevo core Gemini/LiteLLM.
+
+**Prompt / herramienta utilizada:**
+OpenAI Codex. Se solicitó evaluar si los hashtags debían agregarse al ADR-007 o documentarse como una decisión separada.
+
+**Documentación y arquitectura generadas:**
+
+- ADR-008 mantiene la selección de clips y la metadata social como contratos separados.
+- La metadata se genera por `ScheduledPost`, con la plataforma conocida y usando solo la transcripción temporizada del clip.
+- Gemini 3.8 Flash mediante LiteLLM es el proveedor primario; OpenAI queda como fallback opcional.
+- Se reutilizan `generated_caption` y `generated_hashtags`, con validación e idempotencia antes de publicar.
+- ADR-001, ADR-005 y ADR-007 enlazan la nueva decisión sin ampliar sus responsabilidades.
+
+**Validación y corrección humana requerida:**
+
+- El Par IA y el Par Producto deben aprobar el contrato, los límites configurables por plataforma y la muestra del piloto.
+- Solo se puede persistir y publicar metadata que cumpla el esquema local.
+- El piloto debe medir aceptación humana, costo por publicación y ausencia de regeneraciones duplicadas.

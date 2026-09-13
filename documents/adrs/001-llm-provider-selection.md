@@ -3,7 +3,7 @@
 **Estado:** `proposed`
 **Fecha:** 2026-09-01 | revisión 2026-09-13
 **Par responsable:** 🧠 Par IA (Dev 1 + Dev 2)
-**Relacionado:** [ADR-007 — Core de IA remoto](007-remote-ai-core.md)
+**Relacionado:** [ADR-007 — Core de IA remoto](007-remote-ai-core.md), [ADR-008 — Metadata social con IA](008-ai-social-metadata.md)
 
 ---
 
@@ -23,7 +23,7 @@ Este ADR decide únicamente la selección de clips y el mecanismo común para in
 
 Quedan fuera de alcance:
 
-- `SEOOptimizationService`.
+- `SEOOptimizationService`, gobernado por [ADR-008](008-ai-social-metadata.md).
 - `AI_Security_Shield` y la Moderation API.
 - Renderizado, face tracking y subtítulos.
 - Unificación de todas las llamadas de IA del repositorio.
