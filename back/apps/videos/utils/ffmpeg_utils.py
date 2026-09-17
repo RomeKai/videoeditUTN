@@ -1,7 +1,8 @@
-﻿import subprocess
+import subprocess
 import logging
 import os
 import shutil
+from typing import Optional, List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +64,78 @@ class FFmpegManager:
                 os.remove(file_path)
                 logger.info(f"ðŸ§¹ [FFMPEG] Cleaned up local file: {file_path}")
         except Exception as e:
-            logger.warning(f"âš ï¸ [FFMPEG] Could not cleanup file {file_path}: {e}")
+            logger.warning(f"âš ï¸  [FFMPEG] Could not cleanup file {file_path}: {e}")
 
+    @staticmethod
+    def extract_flac_audio(
+        input_path: str,
+        output_path: str,
+        start_time: Optional[float] = None,
+        duration: Optional[float] = None
+    ) -> str:
+        """
+        Extracts speech-optimized mono 16kHz FLAC audio from a media file.
+        Uses: -vn -ac 1 -ar 16000 -c:a flac
 
+        Args:
+            input_path: Source video or audio file path.
+            output_path: Target .flac file path.
+            start_time: Optional start offset in seconds.
+            duration: Optional segment duration in seconds.
+        """
+        if not os.path.exists(input_path):
+            raise FileNotFoundError(f"Input file not found: {input_path}")
+
+        command = ['ffmpeg', '-y']
+
+        # Fast seeking with -ss before -i if start_time provided
+        if start_time is not None and start_time > 0:
+            command.extend(['-ss', str(start_time)])
+
+        command.extend(['-i', input_path])
+
+        if duration is not None and duration > 0:
+            command.extend(['-t', str(duration)])
+
+        # Audio extraction flags: no video, 1 audio channel, 16kHz sample rate, flac codec
+        command.extend(['-vn', '-ac', '1', '-ar', '16000', '-c:a', 'flac', output_path])
+
+        logger.info(f"🎙️ [FFMPEG] Extracting FLAC: {input_path} (start={start_time}, dur={duration}) -> {output_path}")
+
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            return output_path
+        except subprocess.CalledProcessError as e:
+            error_msg = e.stderr or "Unknown error"
+            logger.error(f"❌ [FFMPEG] Failed to extract FLAC audio: {error_msg}")
+            raise RuntimeError(f"FFmpeg audio extraction failed: {error_msg}")
+        except Exception as e:
+            logger.error(f"❌ [FFMPEG] Unexpected error extracting audio: {str(e)}")
+            raise e
+
+    @staticmethod
+    def get_media_duration(file_path: str) -> float:
+        """
+        Retrieves the exact media duration in seconds using ffprobe.
+        """
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        command = [
+            'ffprobe',
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            file_path
+        ]
+
+        try:
+            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            duration_str = result.stdout.strip()
+            return float(duration_str)
+        except (subprocess.CalledProcessError, ValueError) as e:
+            logger.error(f"❌ [FFMPEG] Failed to get duration for {file_path}: {e}")
+            raise RuntimeError(f"Could not determine media duration for {file_path}: {e}")
 
     @staticmethod
     def remove_silences_from_video(input_path: str, output_path: str, noise_threshold: int = -30, duration: float = 0.5) -> str:

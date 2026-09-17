@@ -5,6 +5,7 @@ Unified contracts, error hierarchies, and shared abstractions for
 transcription, clip selection, and LLM provider interactions.
 """
 
+from .audio_preprocessor import AudioChunk, AudioPreprocessor
 from .contracts import (
     AIExecutionResult,
     ClipSelectionResult,
@@ -31,6 +32,9 @@ from .errors import (
 )
 
 __all__ = [
+    # Audio Preprocessor
+    "AudioPreprocessor",
+    "AudioChunk",
     # Contracts
     "WordTimestamp",
     "TranscriptionSegment",
