@@ -6,6 +6,7 @@ transcription, clip selection, and LLM provider interactions.
 """
 
 from .audio_preprocessor import AudioChunk, AudioPreprocessor
+from .groq_transcription import GroqTranscriptionProvider
 from .contracts import (
     AIExecutionResult,
     ClipSelectionResult,
@@ -35,6 +36,8 @@ __all__ = [
     # Audio Preprocessor
     "AudioPreprocessor",
     "AudioChunk",
+    # Groq Transcription Provider
+    "GroqTranscriptionProvider",
     # Contracts
     "WordTimestamp",
     "TranscriptionSegment",
