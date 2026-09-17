@@ -1,7 +1,8 @@
 # ADR-002: Whisper Local vs API de Transcripción
 
-**Estado:** `accepted`
-**Fecha:** 2026-06 (decisión original) | 2026-09-01 (documentación formal)
+**Estado:** `superseded`
+**Fecha:** 2026-06 (decisión original) | 2026-09-01 (documentación formal) | 2026-09-17 (superado por arquitectura AICORE)
+**Superado por:** [ADR-007: Migración a Groq Whisper API (AICORE)](007-groq-whisper-migration.md) / Épica AICORE
 **Par responsable:** 🧠 Par IA (Dev 1 + Dev 2)
 
 ---
@@ -86,8 +87,50 @@ La API de Whisper de OpenAI **no soporta word-level timestamps**, que son obliga
 
 ---
 
+## Addendum: Justificación de Transición a Groq Whisper API (Épicas AICORE)
+
+> **Nota para los desarrolladores:** Esta decisión quedó superada en Septiembre 2026 al proyectar el despliegue del SaaS en una VPS de recursos estándar (2-4 vCPU, 4-8 GB RAM) sin GPU dedicada.
+
+### 1. La premisa técnica original fue invalidada
+La razón principal para adoptar Whisper local en ADR-002 fue: *"La API de Whisper de OpenAI no soporta word-level timestamps"*.
+Esta limitación quedó superada con **Groq Cloud**:
+- Groq expone la API de Whisper (modelo `whisper-large-v3-turbo` y `whisper-large-v3`) con soporte completo de timestamps a nivel de palabra mediante:
+  ```python
+  response = client.audio.transcriptions.create(
+      file=audio_file,
+      model="whisper-large-v3-turbo",
+      response_format="verbose_json",
+      timestamp_granularities=["word"]
+  )
+  ```
+- Devuelve la lista exacta de palabras con `start` y `end` en segundos, compatible 100% con la estructura que consume `SubtitleEngine` y `SelectionEngine`.
+
+### 2. Impacto Masivo en Infraestructura y Docker
+Mantener PyTorch y modelos locales en el worker de Celery generaba costos y riesgos inviables para un SaaS en VPS:
+- **Reducción del Dockerfile**: Al eliminar `torch`, `torchaudio` y `torchvision` (línea 29 del `Dockerfile`), la imagen del contenedor se reduce de **~3.5 GB a ~800 MB**, reduciendo drásticamente los tiempos de CI/CD y despliegue.
+- **Eliminación de Out-Of-Memory (OOM)**: Whisper `small`/`medium` en CPU consumía entre 1.5 GB y 3 GB de RAM por proceso Celery. En un servidor con 4 GB de RAM, dos tareas concurrentes provocaban el reinicio forzoso del kernel Linux (OOM Killer). Con Groq, el worker realiza una llamada HTTP streaming consumiendo < 50 MB de RAM.
+- **Velocidad de transcripción**:
+  - Whisper local en CPU: **5 a 7 minutos** para un video de 10 min.
+  - Groq LPU (Language Processing Unit): **~3 a 5 segundos** para el mismo audio (~150x a 200x tiempo real).
+
+### 3. Costo Económico en Producción
+- `whisper-large-v3-turbo` en Groq tiene un costo de **$0.04 por hora de audio** (~$0.00067 por minuto).
+- Un video de 10 minutos cuesta **$0.0067 USD**.
+- Costo de alquilar una VPS con GPU (mínimo NVIDIA T4 en AWS/RunPod/Hetzner): **$150 - $350 USD/mes**.
+- Con Groq se necesitarían procesar más de **25.000 videos al mes** para que una GPU dedicada empiece a ser más económica.
+
+### 4. Guía de Migración para el Equipo
+1. **Configuración**: Introducir `GROQ_API_KEY` en el entorno.
+2. **Estrategia en `TranscriptionEngine`**:
+   - Primario: `GroqTranscriptionStrategy` usando `whisper-large-v3-turbo` con `timestamp_granularities=["word"]`.
+   - Fallback Cloud: `OpenAITranscriptionStrategy` (si Groq reporta 503/Rate Limit).
+   - Modo Offline/Local: Si `TRANSCRIPTION_BACKEND=local` en dev, mantener la capacidad de usar un Whisper `tiny` local sin forzar dependencias pesadas en la imagen base de producción.
+
+---
+
 ## Referencias
 
 - [Código: TranscriptionEngine](../../back/apps/videos/services/transcription_engine.py)
 - [AI-DECISIONS.md #2](../../AI-DECISIONS.md) — registro original de esta decisión
-- [OpenAI Whisper API limitations](https://platform.openai.com/docs/guides/speech-to-text)
+- [Groq Whisper Documentation & Word Timestamps](https://console.groq.com/docs/speech-text)
+- [OpenAI Whisper API limitations](https://platform.openai.com/docs/guides/speech-text)

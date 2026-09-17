@@ -1,7 +1,7 @@
 # ADR-003: Stack de Rendering — MoviePy + FFmpeg
 
 **Estado:** `accepted`
-**Fecha:** 2026-06 (decisión original) | 2026-09-01 (documentación formal)
+**Fecha:** 2026-06 (decisión original) | 2026-09-01 (documentación formal) | 2026-09-17 (análisis post-MVP y escalabilidad)
 **Par responsable:** ⚙️ Par Engine (Dev 3 + Dev 4)
 
 ---
@@ -79,9 +79,51 @@ Los subtítulos animados word-by-word con Pillow requieren renderizar overlays f
 
 ---
 
+## Addendum: Recomendación de Optimización Post-MVP — FFmpeg + Subtítulos ASS y Arquitectura de Workers (2026-09)
+
+> **Nota para los desarrolladores:** Este análisis evalúa la viabilidad del stack de rendering actual frente a una etapa de escalabilidad comercial y resuelve la duda de si separar el render en microservicios independientes.
+
+### 1. El verdadero cuello de botella de MoviePy (Pillow + Python Loops)
+En el diseño actual de `SubtitleEngine`:
+- Por cada palabra/segmento se genera una imagen RGBA en memoria con Pillow (`PIL.ImageDraw`).
+- MoviePy compone estas imágenes frame a frame dentro de un `CompositeVideoClip`.
+- **Problema de escala:** Python itera sobre millones de arrays NumPy en un solo hilo de CPU. Un clip vertical de 60 segundos con subtítulos animados palabra por palabra puede tardar entre **2 y 4 minutos** de renderizado en CPU y disparar el uso de memoria a más de 1.5 GB.
+
+### 2. Solución Recomendada: Subtítulos ASS (Advanced SubStation Alpha) con `libass`
+Para el rendering post-MVP, la optimización con mayor retorno de inversión técnica (ROI) es reemplazar el quemado de subtítulos en MoviePy por **FFmpeg con subtítulos ASS**:
+- **Formato ASS (`.ass`)**: Es el formato estándar de subtitulado avanzado. Soporta de forma nativa fuentes personalizadas, bordes, sombras, animaciones de color y efectos de karaoke palabra por palabra (`{\k<duración>}` o `{\kf<duración>}`).
+- **Flujo de trabajo:**
+  1. `SubtitleEngine` transforma el JSON de timestamps de Groq Whisper en un archivo plano de texto `.ass` (tarda < 5 milisegundos).
+  2. MoviePy (o FFmpeg directo) recorta el clip y prepara el layout (split / 9:16).
+  3. FFmpeg quema los subtítulos en una única pasada en C puro mediante su filtro nativo:
+     ```bash
+     ffmpeg -i input_clip.mp4 -vf "subtitles=clip_subtitles.ass:fontsdir=/app/fonts" -c:v libx264 -crf 23 -c:a copy output_clip.mp4
+     ```
+- **Rendimiento:** Quema subtítulos a **más de 100 fps** (tiempo real o superior), reduciendo el tiempo de renderizado de minutos a **pocos segundos**, con un consumo de RAM prácticamente plano.
+
+### 3. Estrategia de Escalamiento: Celery Queue Routing vs Microservicios Prematuros
+Frente al dilema de si aislar el rendering en un microservicio separado:
+- **No se recomienda extraer un microservicio independiente en esta etapa.** Implica gestionar subida/bajada de archivos de video pesados por red (HTTP/gRPC/S3), autenticación inter-servicio y duplicación de modelos en base de datos.
+- **La solución arquitectónica correcta:** **Desacoplamiento a nivel de colas de Celery (Queue Routing)** en la misma base de código:
+  ```bash
+  # Worker AI (I/O Bound - Transcripción Groq, Selección Gemini via LiteLLM):
+  # Alta concurrencia porque pasa el 95% del tiempo esperando respuestas HTTP
+  celery -A core worker -Q ai,default -c 10 --loglevel=INFO
+
+  # Worker Render (CPU Bound - Ffmpeg / MoviePy rendering):
+  # Concurrencia estricta (1 o 2 procesos por instancia para evitar saturar vCPUs y OOM)
+  celery -A core worker -Q render -c 1 --max-tasks-per-child=5 --loglevel=INFO
+  ```
+- **Ventaja:** Si la carga de renderizado crece en producción, simplemente se despliega el contenedor de Celery con `-Q render` en una máquina con más núcleos de CPU (o GPU para aceleración por hardware `h264_nvenc`), mientras el resto del SaaS sigue corriendo en la VPS básica sin alterar la lógica de negocio.
+
+---
+
 ## Referencias
 
 - [Código: RenderEngine](../../back/apps/videos/services/render_engine.py)
 - [Código: FFmpegManager](../../back/apps/videos/utils/ffmpeg_utils.py)
 - [Código: SubtitleEngine](../../back/apps/videos/services/subtitle_engine.py)
 - [MoviePy 2.0 migration](https://zulko.github.io/moviepy/)
+- [FFmpeg libass Subtitles Documentation](https://ffmpeg.org/ffmpeg-filters.html#subtitles-1)
+- [Celery Routing Tasks Documentation](https://docs.celeryq.dev/en/stable/userguide/routing.html)
+
