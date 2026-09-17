@@ -7,9 +7,14 @@ ffmpeg-python
 moviepy
 opencv-python-headless
 
-# --- Inteligencia Artificial ---
+# --- Inteligencia Artificial (Legacy & Piloto Local) ---
 openai-whisper
 openai>=1.0.0
+
+# --- Inteligencia Artificial (AI Core V2) ---
+litellm==1.63.1
+groq==0.18.0
+pydantic==2.10.6
 
 # --- FIX: Face Tracking (Actualizado para compatibilidad) ---
 mediapipe>=0.10.30
