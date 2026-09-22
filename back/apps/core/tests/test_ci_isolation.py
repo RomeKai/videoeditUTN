@@ -11,7 +11,6 @@ from apps.videos.services.storage_service import CloudflareR2Manager
 
 
 def test_external_socket_is_blocked_before_underlying_connect(network_guard):
-    assert False, "fallo controlado para validar el gate de pytest"
     called = False
 
     def fake_connect(sock, address):
