@@ -111,6 +111,12 @@ class CloudflareR2Manager:
     @staticmethod
     def delete_object(object_key: str) -> None:
         """Deletes an object from R2."""
+        if _is_local():
+            logger.info(f"[R2 LOCAL] Deleting local object: {object_key}")
+            if os.path.exists(object_key):
+                os.remove(object_key)
+            return
+
         client = _get_r2_client()
         bucket = settings.CLOUDFLARE_R2_BUCKET_NAME
         try:

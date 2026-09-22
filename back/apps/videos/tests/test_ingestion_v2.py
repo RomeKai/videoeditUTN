@@ -142,7 +142,7 @@ class PaperEditAPITests(APITestCase):
         
         # We need to mock the render task call to avoid starting a real celery task
         with patch('apps.videos.tasks.render_video_segments.delay') as mock_render:
-            with patch('apps.payments.models.Transaction.reserve_funds') as mock_reserve:
+            with patch('apps.videos.views.wallet_service.reserve_funds') as mock_reserve:
                 mock_reserve.return_value = MagicMock(id=123)
                 res = self.client.post(url, payload, format='json')
         
