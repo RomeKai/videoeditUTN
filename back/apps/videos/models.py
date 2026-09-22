@@ -26,7 +26,6 @@ class BrandKit(models.Model):
     outro_video = models.FileField(upload_to='assets/videos/', null=True, blank=True)
     
     is_default = models.BooleanField(default=False)
-    ci_drift_probe = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
