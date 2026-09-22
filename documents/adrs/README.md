@@ -16,6 +16,7 @@
 | [004](004-cloudflare-r2-storage.md) | Storage: Cloudflare R2 | `accepted` | ⚙️ Par Engine |
 | [005](005-social-publishing-strategy.md) | Publicación social: OAuth directo vs intermediarios | `proposed` | 🚀 Par Producto |
 | [006](006-deployment-strategy.md) | Estrategia de deployment y CI/CD | `proposed` | ⚙️ Par Engine |
+| [007](007-ci-github-actions.md) | Integración Continua con GitHub Actions | `proposed` | ⚙️ Par Engine |
 
 ---
 
