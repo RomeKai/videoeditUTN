@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
     imagemagick \
-    fonts-liberation \ 
+    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 # Configuración de seguridad de ImageMagick (a veces necesaria para permitir texto)
@@ -24,12 +24,24 @@ RUN find /etc/ImageMagick*/ -name "policy.xml" -exec sed -i 's/none/read,write/g
 
 COPY ./requirements/base.txt /app/requirements/base.txt
 COPY ./requirements/ia.txt /app/requirements/ia.txt
+COPY ./requirements/constraints-ci.txt /app/requirements/constraints-ci.txt
+
+RUN pip install --no-cache-dir --upgrade \
+    --constraint /app/requirements/constraints-ci.txt \
+    pip setuptools wheel
 
 # 1. INSTALACIÓN CRÍTICA: PyTorch CPU en base para consistencia
-RUN pip install --no-cache-dir torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir \
+    --constraint /app/requirements/constraints-ci.txt \
+    torch torchaudio torchvision \
+    --index-url https://download.pytorch.org/whl/cpu
 
-RUN pip install --no-cache-dir -r /app/requirements/base.txt
-RUN pip install --no-cache-dir -r /app/requirements/ia.txt
+RUN pip install --no-cache-dir \
+    --constraint /app/requirements/constraints-ci.txt \
+    --requirement /app/requirements/base.txt
+RUN pip install --no-cache-dir \
+    --constraint /app/requirements/constraints-ci.txt \
+    --requirement /app/requirements/ia.txt
 
 # --- ETAPA 2: WEB (Ligera) ---
 FROM base as web

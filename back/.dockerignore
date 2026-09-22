@@ -8,6 +8,13 @@ __pycache__/
 # Entorno virtual
 venv/
 env/
+.venv*/
+
+# Artefactos de tests
+.pytest_cache/
+.coverage
+coverage.xml
+test-results.xml
 
 # Git
 .git
