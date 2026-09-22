@@ -57,7 +57,6 @@ FROM base as worker
 # Ya tiene todo lo de base instalado
 # Copiamos el código
 COPY . /app
-RUN false # Fallo controlado para validar la matriz Docker de CI
 
 # Comando por defecto
 CMD ["celery", "-A", "backend", "worker", "-l", "info"]
