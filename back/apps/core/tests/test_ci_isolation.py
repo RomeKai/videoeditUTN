@@ -1,5 +1,7 @@
 import os
 import socket
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -8,6 +10,22 @@ from django.core import mail
 from django.core.mail import send_mail
 
 from apps.videos.services.storage_service import CloudflareR2Manager
+
+
+def test_controlled_subprocess_cannot_reach_external_network():
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import socket; "
+                "client = socket.create_connection(('1.1.1.1', 443), timeout=2); "
+                "client.close()"
+            ),
+        ],
+        check=True,
+        timeout=5,
+    )
 
 
 def test_external_socket_is_blocked_before_underlying_connect(network_guard):
