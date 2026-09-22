@@ -84,11 +84,25 @@ jobs:
           python -m pip check
 
       - name: Block external network during quality gates
+        env:
+          POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
         run: |
+          POSTGRES_CONTAINER_IP="$(
+            docker inspect \
+              --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+              "$POSTGRES_CONTAINER_ID"
+          )"
+          if [[ -z "$POSTGRES_CONTAINER_IP" ]]; then
+            printf 'Could not resolve the PostgreSQL service container IP\n' >&2
+            exit 1
+          fi
+
           sudo iptables-save > "$RUNNER_TEMP/iptables.rules"
           sudo ip6tables-save > "$RUNNER_TEMP/ip6tables.rules"
           sudo iptables -F OUTPUT
           sudo iptables -A OUTPUT -o lo -j ACCEPT
+          sudo iptables -A OUTPUT \
+            -p tcp -d "$POSTGRES_CONTAINER_IP" --dport 5432 -j ACCEPT
           sudo iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
           sudo iptables -P OUTPUT DROP
           sudo ip6tables -F OUTPUT
