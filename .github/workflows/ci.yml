@@ -34,7 +34,7 @@ jobs:
           --health-retries 5
     env:
       DJANGO_SETTINGS_MODULE: backend.settings.ci
-      DATABASE_URL: postgres://postgres:ci-password@localhost:5432/onecreator_ci
+      DATABASE_URL: postgres://postgres:ci-password@127.0.0.1:5432/onecreator_ci
       SECRET_KEY: ci-only-not-a-secret
       USE_S3: "False"
       AWS_EC2_METADATA_DISABLED: "true"
