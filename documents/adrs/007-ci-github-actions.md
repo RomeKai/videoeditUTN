@@ -91,7 +91,32 @@ Al 2026-09-21 se implementó el workflow y se obtuvo el siguiente baseline local
 - workflow aprobado por actionlint 1.7.12;
 - ausencia confirmada de publicación, login a registry y deployment.
 
-Esta evidencia no cambia todavía el ADR a `accepted`: faltan runs hosted positivos y negativos, mediciones de caché fría/caliente y branch protection verificada.
+### Evidencia hosted del PR #45
+
+La validación se ejecutó en el PR
+[`#45`](https://github.com/RomeKai/videoeditUTN/pull/45):
+
+- happy path verde en el
+  [run 35680140871](https://github.com/RomeKai/videoeditUTN/actions/runs/35680140871),
+  con `Quality` en 2m44s, builds `web`/`worker` verdes y `Required CI` verde;
+- test roto detectado por `pytest` y propagado a `Required CI` en el
+  [run 35680356083](https://github.com/RomeKai/videoeditUTN/actions/runs/35680356083);
+- drift de modelo detectado antes de pytest y propagado a `Required CI` en el
+  [run 35680616239](https://github.com/RomeKai/videoeditUTN/actions/runs/35680616239);
+- fallo controlado del target `worker`, con `web` y `Quality` verdes y
+  `Required CI` rojo, en el
+  [run 35680891478](https://github.com/RomeKai/videoeditUTN/actions/runs/35680891478);
+- intento de egreso desde un proceso hijo bloqueado por timeout, sin alcanzar
+  `1.1.1.1:443`, en el
+  [run 35681826108](https://github.com/RomeKai/videoeditUTN/actions/runs/35681826108);
+- ejecución limpia sin caché de pip ni BuildKit verde en el
+  [run 35682124222](https://github.com/RomeKai/videoeditUTN/actions/runs/35682124222),
+  con `Quality` en 2m53s, `web` en 2m09s y `worker` en 2m33s.
+
+El workflow completo cumple el presupuesto de cinco minutos tanto sin caché
+como con caché caliente. Todos los cambios deliberadamente rotos fueron
+retirados. El ADR permanece `proposed` únicamente porque branch protection no
+fue configurada ni verificada dentro de este alcance autorizado.
 
 ### Arquitectura del pipeline
 
@@ -190,7 +215,7 @@ Estas decisiones permanecen en `ADR-006` y deberán resolverse en un trabajo pos
 - [Backlog MVP — INFRA-01](../backlog_mvp.md#infra-01-cicd--github-actions-p1--missing)
 - [Backlog MVP — estrategia de testing](../backlog_mvp.md#estrategia-de-testing)
 - [Backlog MVP — CORE-06](../backlog_mvp.md#core-06-tests-de-integración-del-pipeline-p0--partial)
-- [Spike técnico INFRA-01](../infra-01-github-actions-spike.md)
+
 - [ADR-006: Estrategia de Deployment y CI/CD](006-deployment-strategy.md)
 - [Dockerfile actual](../../back/Dockerfile)
 - [Requirements de desarrollo](../../back/requirements/dev.txt)
