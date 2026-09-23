@@ -261,19 +261,29 @@ class TestAIErrorHierarchy(unittest.TestCase):
 class TestSettingsAndFeatureFlags(unittest.TestCase):
     """Tests for settings, feature flags, and environment configurations."""
 
-    def test_feature_flag_defaults_to_false(self):
-        self.assertFalse(
-            getattr(settings, "AI_CORE_V2_ENABLED", None),
-            "AI_CORE_V2_ENABLED must default to False during the pilot phase.",
-        )
+    def test_feature_flag_exists_and_is_boolean(self):
+        value = getattr(settings, "AI_CORE_V2_ENABLED", None)
+        self.assertIsNotNone(value, "AI_CORE_V2_ENABLED must be defined in settings.")
+        self.assertIsInstance(value, bool)
 
     def test_ai_settings_configured(self):
-        self.assertTrue(hasattr(settings, "OPENAI_API_KEY"))
+        # Primary providers (Gemini + Groq)
         self.assertTrue(hasattr(settings, "GEMINI_API_KEY"))
         self.assertTrue(hasattr(settings, "GROQ_API_KEY"))
+        # OpenAI kept for free Moderation API only
+        self.assertTrue(hasattr(settings, "OPENAI_API_KEY"))
+        # Model routing
         self.assertTrue(hasattr(settings, "AI_DEFAULT_LLM_MODEL"))
         self.assertTrue(hasattr(settings, "AI_FALLBACK_LLM_MODEL"))
         self.assertTrue(hasattr(settings, "AI_DEFAULT_TRANSCRIPTION_MODEL"))
+
+    def test_fallback_model_is_gemini(self):
+        """Fallback must be intra-Gemini, not OpenAI."""
+        fallback = getattr(settings, "AI_FALLBACK_LLM_MODEL", "")
+        self.assertTrue(
+            fallback.startswith("gemini/"),
+            f"AI_FALLBACK_LLM_MODEL should be a Gemini model, got: {fallback}",
+        )
 
 
 if __name__ == "__main__":

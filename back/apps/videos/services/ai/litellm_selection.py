@@ -2,8 +2,8 @@
 LiteLLM Clip Selection Provider (AI Core V2).
 
 Selects viral-worthy clips from a transcription using structured LLM output.
-Uses LiteLLM as an embedded SDK (no proxy) with Gemini 3.8 Flash as primary
-and gpt-4o-mini as optional fallback.
+Uses LiteLLM as an embedded SDK (no proxy) with Gemini 2.0 Flash as primary
+and Gemini 1.5 Flash as intra-family fallback.
 
 Design constraints:
 - JSON Schema for structured output is generated from Pydantic contracts.
@@ -49,7 +49,7 @@ class LiteLLMSelectionProvider:
     2. Call LiteLLM completion with JSON Schema response format.
     3. Parse and validate the structured response against Pydantic contracts.
     4. Validate clip timestamps against the actual video duration.
-    5. Fall back to gpt-4o-mini if primary fails AND OPENAI_API_KEY exists.
+    5. Fall back to Gemini 1.5 Flash on primary failure (same API key).
     6. Track token usage including implicit cache hits.
     """
 
@@ -62,7 +62,7 @@ class LiteLLMSelectionProvider:
             settings, "AI_DEFAULT_LLM_MODEL", "gemini/gemini-3.8-flash"
         )
         self._fallback_model = fallback_model or getattr(
-            settings, "AI_FALLBACK_LLM_MODEL", "gpt-4o-mini"
+            settings, "AI_FALLBACK_LLM_MODEL", "gemini/gemini-1.5-flash"
         )
 
         # Set API keys for LiteLLM from Django settings
@@ -71,11 +71,6 @@ class LiteLLMSelectionProvider:
         gemini_key = getattr(settings, "GEMINI_API_KEY", None)
         if gemini_key:
             litellm.api_key = gemini_key
-
-        openai_key = getattr(settings, "OPENAI_API_KEY", None)
-        if openai_key:
-            import os
-            os.environ.setdefault("OPENAI_API_KEY", openai_key)
 
         # Disable explicit caching
         litellm.cache = None
@@ -145,7 +140,7 @@ class LiteLLMSelectionProvider:
             # Attempt fallback if available
             if not self._has_fallback():
                 logger.error(
-                    "❌ [LiteLLMSelection] No fallback available (OPENAI_API_KEY not set)."
+                    "❌ [LiteLLMSelection] No fallback available (GEMINI_API_KEY not set)."
                 )
                 raise self._classify_error(primary_exc) from primary_exc
 
@@ -386,10 +381,14 @@ class LiteLLMSelectionProvider:
 
     def _has_fallback(self) -> bool:
         """
-        Returns True only if OPENAI_API_KEY is configured.
+        Returns True when a fallback model is available.
+
+        With Gemini-only architecture, fallback uses the same API key
+        as primary (different model), so it's always available if
+        GEMINI_API_KEY is set.
         """
-        openai_key = getattr(settings, "OPENAI_API_KEY", None)
-        return bool(openai_key)
+        gemini_key = getattr(settings, "GEMINI_API_KEY", None)
+        return bool(gemini_key)
 
     # ------------------------------------------------------------------
     # Error classification

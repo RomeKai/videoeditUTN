@@ -7,9 +7,9 @@ ffmpeg-python
 moviepy
 opencv-python-headless
 
-# --- Inteligencia Artificial (Legacy & Piloto Local) ---
+# --- Inteligencia Artificial (Legacy: Whisper local + OpenAI Moderation API) ---
 openai-whisper
-openai>=1.0.0
+openai>=1.0.0  # Required by litellm (transitive) + free Moderation API (security.py)
 
 # --- Inteligencia Artificial (AI Core V2) ---
 litellm==1.63.1

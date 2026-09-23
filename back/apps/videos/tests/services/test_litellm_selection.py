@@ -4,7 +4,7 @@ Unit tests for LiteLLMSelectionProvider (AICORE-4).
 Validates all acceptance criteria:
 1. LiteLLM used as embedded SDK, no proxy.
 2. Gemini 3.8 Flash is the primary provider.
-3. gpt-4o-mini is fallback only when OPENAI_API_KEY exists.
+3. Gemini 1.5 Flash is fallback (same API key, intra-family).
 4. Response uses JSON Schema generated from Pydantic.
 5. Clips validated against actual video duration.
 6. Input, output, and implicit cache tokens tracked.
@@ -125,16 +125,15 @@ class TestProviderInitialization(unittest.TestCase):
     @patch("apps.videos.services.ai.litellm_selection.settings")
     def test_default_models_from_settings(self, mock_settings):
         mock_settings.AI_DEFAULT_LLM_MODEL = "gemini/gemini-3.8-flash"
-        mock_settings.AI_FALLBACK_LLM_MODEL = "gpt-4o-mini"
+        mock_settings.AI_FALLBACK_LLM_MODEL = "gemini/gemini-1.5-flash"
         mock_settings.GEMINI_API_KEY = "test-gemini-key"
-        mock_settings.OPENAI_API_KEY = "test-openai-key"
 
         import litellm
         with patch.object(litellm, "cache", None):
             provider = LiteLLMSelectionProvider()
 
         self.assertEqual(provider._primary_model, "gemini/gemini-3.8-flash")
-        self.assertEqual(provider._fallback_model, "gpt-4o-mini")
+        self.assertEqual(provider._fallback_model, "gemini/gemini-1.5-flash")
 
     def test_explicit_models_override(self):
         provider = _build_provider(
@@ -328,9 +327,8 @@ class TestExplicitCacheDisabled(unittest.TestCase):
     @patch("apps.videos.services.ai.litellm_selection.settings")
     def test_litellm_cache_set_to_none(self, mock_settings):
         mock_settings.AI_DEFAULT_LLM_MODEL = "gemini/gemini-3.8-flash"
-        mock_settings.AI_FALLBACK_LLM_MODEL = "gpt-4o-mini"
+        mock_settings.AI_FALLBACK_LLM_MODEL = "gemini/gemini-1.5-flash"
         mock_settings.GEMINI_API_KEY = "key"
-        mock_settings.OPENAI_API_KEY = None
 
         import litellm
         litellm.cache = "should_be_cleared"
@@ -400,17 +398,16 @@ class TestFallbackBehavior(unittest.TestCase):
         self.assertEqual(call_count, 2)
 
     @patch("apps.videos.services.ai.litellm_selection.settings")
-    def test_has_fallback_checks_openai_key(self, mock_settings):
-        mock_settings.OPENAI_API_KEY = None
+    def test_has_fallback_checks_gemini_key(self, mock_settings):
+        mock_settings.GEMINI_API_KEY = None
         provider = _build_provider()
-        # Manually set so _has_fallback reads from mock
         with patch.object(type(provider), "_has_fallback",
-                          lambda self: bool(getattr(mock_settings, "OPENAI_API_KEY", None))):
+                          lambda self: bool(getattr(mock_settings, "GEMINI_API_KEY", None))):
             self.assertFalse(provider._has_fallback())
 
-        mock_settings.OPENAI_API_KEY = "sk-test"
+        mock_settings.GEMINI_API_KEY = "test-key"
         with patch.object(type(provider), "_has_fallback",
-                          lambda self: bool(getattr(mock_settings, "OPENAI_API_KEY", None))):
+                          lambda self: bool(getattr(mock_settings, "GEMINI_API_KEY", None))):
             self.assertTrue(provider._has_fallback())
 
 
