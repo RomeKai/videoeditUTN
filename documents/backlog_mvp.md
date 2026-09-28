@@ -605,7 +605,7 @@ Tests existentes son mínimos. Para un core robusto necesitamos coverage del cam
 * \[ ] Test E2E: upload video 5s → transcription (Whisper tiny) → selection (mock OpenAI) → assert `awaiting\_approval`.
 * \[ ] Test de `PricingEngine`: todos los multiplicadores, edge cases, planes free vs pro.
 * \[ ] Test de `WalletService`: reserve + commit, reserve + rollback, insufficient funds, concurrent reserve (race condition).
-* \[ ] Test de `CloudflareR2Manager`: `USE\_S3=False` mode (local bypass).
+* \[ ] Test de `CloudflareR2Manager`: `USE\_R2=False` mode (local bypass).
 * \[ ] Test de cada `LayoutStrategy.apply()` con un clip sintético de 2s.
 * [ ] Mock de LLM en todos los tests (no gastar créditos en CI).
 
@@ -616,7 +616,7 @@ Tests existentes son mínimos. Para un core robusto necesitamos coverage del cam
 | 1 | Test E2E del pipeline completo con video sintético | L | Genera video de 5s con MoviePy, corre todo |
 | 2 | Test suite de `PricingEngine` | M | Multiplicadores, edge cases, planes |
 | 3 | Test suite de `WalletService` (incluye race condition con `select_for_update`) | L | Concurrencia es el caso difícil |
-| 4 | Test de `CloudflareR2Manager` en modo local | S | `USE_S3=False` bypass |
+| 4 | Test de `CloudflareR2Manager` en modo local | S | `USE_R2=False` bypass |
 | 5 | Test de cada `LayoutStrategy.apply()` con clip sintético | M | Assert dimensiones pares, no crash |
 | 6 | Fixtures: video sintético de 2s + transcripción mock + LLM response mock | M | Compartidas entre tests |
 | 7 | CI config para correr tests (prerequisito de INFRA-01) | S | `pytest.ini` + `conftest.py` |

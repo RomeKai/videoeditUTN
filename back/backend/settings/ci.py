@@ -36,7 +36,7 @@ DEBUG = False
 SECRET_KEY = "ci-only-not-a-secret"
 ALLOWED_HOSTS = ["localhost", "127.0.0.1", "testserver"]
 
-USE_S3 = False
+USE_R2 = False
 EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 CACHES = {
     "default": {

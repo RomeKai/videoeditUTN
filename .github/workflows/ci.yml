@@ -36,7 +36,7 @@ jobs:
       DJANGO_SETTINGS_MODULE: backend.settings.ci
       DATABASE_URL: postgres://postgres:ci-password@127.0.0.1:5432/onecreator_ci
       SECRET_KEY: ci-only-not-a-secret
-      USE_S3: "False"
+      USE_R2: "False"
       AWS_EC2_METADATA_DISABLED: "true"
       OPENAI_API_KEY: test-key-not-valid
       GEMINI_API_KEY: test-key-not-valid

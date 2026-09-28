@@ -25,7 +25,7 @@ from {settings_module} import *
 print(json.dumps({{
     "database_engine": DATABASES["default"]["ENGINE"],
     "debug": DEBUG,
-    "use_s3": globals().get("USE_S3"),
+    "use_r2": globals().get("USE_R2"),
     "email_backend": globals().get("EMAIL_BACKEND"),
     "celery_eager": globals().get("CELERY_TASK_ALWAYS_EAGER"),
     "celery_eager_propagates": globals().get("CELERY_TASK_EAGER_PROPAGATES"),
@@ -114,7 +114,7 @@ def test_ci_settings_are_hermetic_for_postgresql():
 
     assert settings["database_engine"] == "django.db.backends.postgresql"
     assert settings["debug"] is False
-    assert settings["use_s3"] is False
+    assert settings["use_r2"] is False
     assert settings["email_backend"] == "django.core.mail.backends.locmem.EmailBackend"
     assert settings["celery_eager"] is True
     assert settings["celery_eager_propagates"] is True
@@ -145,7 +145,7 @@ def test_production_settings_compose_the_base_configuration():
             "DATABASE_URL": "postgres://postgres:test@127.0.0.1:5432/onecreator_ci",
             "ALLOWED_HOSTS": "localhost",
             "CORS_ALLOWED_ORIGINS": "https://example.invalid",
-            "USE_S3": "True",
+            "USE_R2": "True",
         },
     )
     settings = parse_settings_output(result)
@@ -156,4 +156,4 @@ def test_production_settings_compose_the_base_configuration():
     assert settings["secret_key"] is True
     assert settings["root_urlconf"] == "backend.urls"
     assert settings["debug"] is False
-    assert settings["use_s3"] is True
+    assert settings["use_r2"] is True

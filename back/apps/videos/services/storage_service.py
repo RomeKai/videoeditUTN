@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 
 
 def _is_local() -> bool:
-    """Returns True when USE_S3=False — all operations work on the local filesystem."""
-    return not getattr(settings, 'USE_S3', False)
+    """Returns True when USE_R2=False — all operations work on the local filesystem."""
+    return not getattr(settings, 'USE_R2', False)
 
 
 def _get_r2_client():
@@ -41,10 +41,10 @@ class CloudflareR2Manager:
         Uploads a file to R2 and returns its object key.
         Key format: videos/{user_id}/{folder}/{uuid}.ext
 
-        When USE_S3=False, skips R2 and returns the local path as the key.
+        When USE_R2=False, skips R2 and returns the local path as the key.
         """
         if _is_local():
-            logger.info(f"[R2 LOCAL] USE_S3=False — skipping upload, using local path: {local_path}")
+            logger.info(f"[R2 LOCAL] USE_R2=False — skipping upload, using local path: {local_path}")
             return local_path
 
         ext = os.path.splitext(local_path)[-1] or ".mp4"
@@ -68,7 +68,7 @@ class CloudflareR2Manager:
         """
         Generates a temporary presigned URL for a given R2 object key.
 
-        When USE_S3=False, the object_key is the local absolute path;
+        When USE_R2=False, the object_key is the local absolute path;
         returns a /media/ URL relative to MEDIA_URL.
         """
         if _is_local():
@@ -95,10 +95,10 @@ class CloudflareR2Manager:
         """
         Downloads an R2 object to a local path.
 
-        When USE_S3=False, object_key is already a local path — just copies it.
+        When USE_R2=False, object_key is already a local path — just copies it.
         """
         if _is_local():
-            logger.info(f"[R2 LOCAL] USE_S3=False — copying {object_key} → {local_path}")
+            logger.info(f"[R2 LOCAL] USE_R2=False — copying {object_key} → {local_path}")
             if object_key != local_path:
                 shutil.copy2(object_key, local_path)
             return
