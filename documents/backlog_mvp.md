@@ -1225,7 +1225,6 @@ Para agencias o creadores con flujos automatizados. Si un video entra por webhoo
 **Rationale:** Layouts (CORE-03) y performance (CORE-04) comparten contexto de FFmpeg/MoviePy/Celery. PTE-03 (preview) depende de los layouts ya implementados. Tests (CORE-06) e infra (INFRA-01/02) aseguran la calidad de todo lo que produce este par y el par de IA.
 
 \---
-
 ### 🚀 Par Producto — Dev 5 + Dev 6
 
 > Foco: monetización, distribución social y la cara visible del producto (frontend).
