@@ -1,14 +1,16 @@
-﻿import whisper
+import whisper
 import torch
 import os
 import logging
 from typing import List, Dict, Any, Optional
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
 class TranscriptionEngine:
     """
-    Service for transcribing audio/video using OpenAI's Whisper.
+    Service for transcribing audio/video.
+    Supports AI Core V2 (Groq Whisper API) and fallback to local Whisper.
     Supports word-level timestamps and segment grouping.
     """
     def __init__(self, model_size: str = "tiny"):
@@ -18,6 +20,7 @@ class TranscriptionEngine:
         """
         self.model_size = model_size
         self._model = None
+        self.last_full_text: Optional[str] = None
 
     @property
     def model(self):
@@ -26,7 +29,7 @@ class TranscriptionEngine:
         Only loads into memory when needed.
         """
         if self._model is None:
-            logger.info(f"ðŸ§  [TranscriptionEngine] Loading Whisper model ({self.model_size})...")
+            logger.info(f"🧠 [TranscriptionEngine] Loading Whisper model ({self.model_size})...")
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
             logger.info(f'🧠 [TranscriptionEngine] Running on: {device}')
             self._model = whisper.load_model(self.model_size, device=device)
@@ -35,12 +38,43 @@ class TranscriptionEngine:
     def transcribe(self, audio_path: str, word_timestamps: bool = True) -> List[Dict[str, Any]]:
         """
         Transcribes an audio or video file.
+        Routes to Groq Whisper when AI_CORE_V2_ENABLED is active,
+        falling back to local Whisper if unavailable.
         Returns a list of clean transcription segments.
         """
         if not os.path.exists(audio_path):
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-        logger.info(f"ðŸŽ™ï¸ [TranscriptionEngine] Starting transcription (word_timestamps={word_timestamps})...")
+        # AI Core V2 Provider Routing
+        if getattr(settings, "AI_CORE_V2_ENABLED", False) and getattr(settings, "GROQ_API_KEY", None):
+            try:
+                from apps.videos.services.ai.audio_preprocessor import AudioPreprocessor
+                from apps.videos.services.ai.groq_transcription import GroqTranscriptionProvider
+
+                logger.info("🎙️ [TranscriptionEngine] Routing via GroqTranscriptionProvider (AI Core V2)...")
+                preprocessor = AudioPreprocessor()
+                with preprocessor.process(audio_path) as chunks:
+                    provider = GroqTranscriptionProvider()
+                    exec_result = provider.transcribe(chunks)
+                    tx_result = exec_result.data
+                    self.last_full_text = tx_result.full_text
+
+                    if word_timestamps:
+                        return [
+                            {"start": w.start, "end": w.end, "text": w.text}
+                            for w in tx_result.words
+                        ]
+                    return [
+                        {"start": s.start, "end": s.end, "text": s.text}
+                        for s in tx_result.segments
+                    ]
+            except Exception as e:
+                logger.warning(
+                    "⚠️ [TranscriptionEngine] Groq transcription failed, falling back to local Whisper: %s",
+                    e,
+                )
+
+        logger.info(f"🎙️ [TranscriptionEngine] Starting local Whisper transcription (word_timestamps={word_timestamps})...")
         
         try:
             # fp16=False is crucial for CPU inference. 

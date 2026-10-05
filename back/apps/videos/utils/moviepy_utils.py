@@ -1,4 +1,19 @@
-﻿from moviepy.video.io.VideoFileClip import VideoFileClip
+# --- Rendering Constants ---
+RENDER_FPS = 24
+RENDER_CODEC = 'libx264'
+RENDER_AUDIO_CODEC = 'aac'
+RENDER_PRESET = 'medium'
+FFMPEG_PARAMS = ['-pix_fmt', 'yuv420p']
+
+
+def ensure_even(val: float | int) -> int:
+    """
+    Ensures dimension is an even integer to prevent H.264 / libx264 codec crashes.
+    Odd dimensions cause ffmpeg error: 'width not divisible by 2'.
+    """
+    val_int = int(round(val))
+    return val_int if val_int % 2 == 0 else val_int + 1
+
 
 def preparar_video_viral(input_path: str, output_path: str) -> None:
     """
@@ -6,17 +21,16 @@ def preparar_video_viral(input_path: str, output_path: str) -> None:
     - Resizes the video to 1080x1920 resolution.
     - Ensures strict even-numbered dimensions for compatibility.
     - Uses H.264 codec for encoding.
-    
-    Parameters:
-        input_path (str): The path to the input video file.
-        output_path (str): The path where the output video will be saved.
     """
-    # Load the video file
+    from moviepy import VideoFileClip
+
     with VideoFileClip(input_path) as video:
-        # Resize video to fit vertical format
-        resized_video = video.resize(newsize=(1080, 1920))  # Ensures even resolution
+        resized_video = video.resized(new_size=(1080, 1920))
+        resized_video.write_videofile(
+            output_path,
+            codec=RENDER_CODEC,
+            fps=RENDER_FPS,
+            preset=RENDER_PRESET,
+            ffmpeg_params=FFMPEG_PARAMS,
+        )
 
-        # Write the output file using H.264 codec
-        resized_video.write_videofile(output_path, codec='libx264')
-
-# No need to explicitly close video due to 'with' context manager

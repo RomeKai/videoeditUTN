@@ -35,7 +35,7 @@ class GeminiFlashStrategy(ClipSelectionStrategy):
     """Primary strategy: Gemini 2.0 Flash via LiteLLM. 1M context, lowest cost."""
 
     def get_model_name(self) -> str:
-        return getattr(settings, "AI_DEFAULT_LLM_MODEL", "gemini/gemini-2.0-flash")
+        return getattr(settings, "AI_DEFAULT_LLM_MODEL", "gemini/gemini-flash-latest")
 
     def get_max_tokens_context(self) -> int:
         return 1000000
@@ -70,7 +70,7 @@ class GeminiFallbackStrategy(ClipSelectionStrategy):
     """Fallback strategy: Gemini 1.5 Flash via LiteLLM. Same API key, proven stability."""
 
     def get_model_name(self) -> str:
-        return getattr(settings, "AI_FALLBACK_LLM_MODEL", "gemini/gemini-1.5-flash")
+        return getattr(settings, "AI_FALLBACK_LLM_MODEL", "gemini/gemini-flash-lite-latest")
 
     def get_max_tokens_context(self) -> int:
         return 1000000
@@ -156,6 +156,36 @@ class SelectionEngine:
         # Approximate character limit based on token context (avg 4 chars per token)
         char_limit = strategy.get_max_tokens_context() * 3
         full_text = str(transcription_data.get('full_text', ''))[:char_limit]
+
+        # AI Core V2 Provider Routing
+        if getattr(settings, "AI_CORE_V2_ENABLED", False) and getattr(settings, "GEMINI_API_KEY", None):
+            try:
+                from apps.videos.services.ai.litellm_selection import LiteLLMSelectionProvider
+
+                logger.info("🧠 [SelectionEngine] Routing via LiteLLMSelectionProvider (AI Core V2)...")
+                provider = LiteLLMSelectionProvider()
+                video_dur = float(duration) if duration and duration > 0 else 300.0
+                exec_result = provider.select_clips(
+                    transcript=full_text,
+                    video_duration=video_dur,
+                    target_count=target_clips,
+                    editing_style=editing_style,
+                )
+                return [
+                    {
+                        "start": clip.start,
+                        "end": clip.end,
+                        "title": clip.title,
+                        "virality_score": clip.virality_score,
+                        "reasoning": clip.reasoning,
+                    }
+                    for clip in exec_result.data.clips
+                ]
+            except Exception as e:
+                logger.warning(
+                    "⚠️ [SelectionEngine] AI Core V2 selection failed, falling back to strategy: %s",
+                    e,
+                )
 
         # 3. AI Prompt Construction
         prompt = f"""

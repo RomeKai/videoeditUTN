@@ -59,10 +59,10 @@ class LiteLLMSelectionProvider:
         fallback_model: Optional[str] = None,
     ):
         self._primary_model = primary_model or getattr(
-            settings, "AI_DEFAULT_LLM_MODEL", "gemini/gemini-3.8-flash"
+            settings, "AI_DEFAULT_LLM_MODEL", "gemini/gemini-flash-latest"
         )
         self._fallback_model = fallback_model or getattr(
-            settings, "AI_FALLBACK_LLM_MODEL", "gemini/gemini-1.5-flash"
+            settings, "AI_FALLBACK_LLM_MODEL", "gemini/gemini-flash-lite-latest"
         )
 
         # Set API keys for LiteLLM from Django settings
@@ -203,17 +203,34 @@ class LiteLLMSelectionProvider:
 
         try:
             start = time.monotonic()
-            response = litellm.completion(
-                model=model,
-                messages=messages,
-                response_format={
-                    "type": "json_object",
-                    "response_schema": _CLIP_SELECTION_SCHEMA,
-                },
-                temperature=0.7,
-            )
-            latency = time.monotonic() - start
+            response_format: Dict[str, Any] = {"type": "json_object"}
+            if _CLIP_SELECTION_SCHEMA:
+                response_format["response_schema"] = _CLIP_SELECTION_SCHEMA
 
+            try:
+                response = litellm.completion(
+                    model=model,
+                    messages=messages,
+                    response_format=response_format,
+                    temperature=0.7,
+                )
+            except Exception as endpoint_err:
+                err_str = str(endpoint_err).lower()
+                if "unavailable" in err_str or "503" in err_str or "not supported" in err_str:
+                    logger.warning(
+                        "⚠️ [LiteLLMSelection] Structured schema call failed (%s), retrying with json_object",
+                        type(endpoint_err).__name__,
+                    )
+                    response = litellm.completion(
+                        model=model,
+                        messages=messages,
+                        response_format={"type": "json_object"},
+                        temperature=0.7,
+                    )
+                else:
+                    raise
+
+            latency = time.monotonic() - start
             content = response.choices[0].message.content
             usage = self._extract_usage(response, model, latency)
 
@@ -250,7 +267,7 @@ class LiteLLMSelectionProvider:
             f"- Editing style: {editing_style}.\n"
             "- Provide a catchy title, virality score (0-100), reasoning, "
             "optional hook text, and relevant hashtags for each clip.\n\n"
-            "Respond with a valid JSON object matching the provided schema."
+            "CRITICAL: Respond with a valid JSON object with a single 'clips' array: {\"clips\": [...]}"
         )
 
         user_prompt = (
@@ -276,14 +293,26 @@ class LiteLLMSelectionProvider:
         """
         Parses LLM JSON output into a validated ClipSelectionResult.
         """
+        content_clean = raw_content.strip()
+        if content_clean.startswith("```"):
+            content_clean = content_clean.replace("```json", "").replace("```", "").strip()
+
         try:
-            data = json.loads(raw_content)
+            data = json.loads(content_clean)
         except (json.JSONDecodeError, TypeError) as exc:
             raise AIContractValidationError(
                 message=f"LLM response is not valid JSON: {type(exc).__name__}",
                 provider="litellm",
                 raw_response=None,  # Never log raw response
             ) from exc
+
+        if isinstance(data, list):
+            data = {"clips": data}
+        elif isinstance(data, dict) and "clips" not in data:
+            for key in ["viral_clips", "moments", "data", "results", "items"]:
+                if key in data and isinstance(data[key], list):
+                    data = {"clips": data[key]}
+                    break
 
         try:
             result = ClipSelectionResult(**data)

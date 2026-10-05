@@ -459,7 +459,7 @@ def process_initial_ingestion(self, project_id):
         logger.info("🧠 Transcribing...")
         transcriber = TranscriptionEngine(model_size="base")
         segments = transcriber.transcribe(source_path, word_timestamps=True)
-        full_text = " ".join([seg['text'] for seg in segments])
+        full_text = getattr(transcriber, 'last_full_text', None) or " ".join([seg['text'] for seg in segments])
         
         # --- 5. AI SELECTION (RATIONALE) ---
         with VideoFileClip(source_path) as clip:
