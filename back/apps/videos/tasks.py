@@ -473,7 +473,8 @@ def process_initial_ingestion(self, project_id):
         }
 
         ai_suggestions = SelectionEngine.select_viral_clips(
-            transcription_data=metadata_payload,
+            # Segments are passed separately (not stored in metadata) so the LLM sees real timestamps.
+            transcription_data={**metadata_payload, 'segments': segments},
             project_title=project.title,
             duration=duration,
             intelligence_level=project.intelligence_level

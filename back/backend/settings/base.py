@@ -127,12 +127,17 @@ GEMINI_API_KEY = env('GEMINI_API_KEY', default=None)
 GROQ_API_KEY = env('GROQ_API_KEY', default=None)
 XAI_API_KEY = env('XAI_API_KEY', default=None)
 
-# OpenAI — used ONLY for free Moderation API (AI_Security_Shield)
+# OpenAI — Moderation API (AI_Security_Shield) and LLM fallback for clip selection
 OPENAI_API_KEY = env('OPENAI_API_KEY', default=None)
 
 # AI Core V2 Model Configuration
 AI_DEFAULT_LLM_MODEL = env('AI_DEFAULT_LLM_MODEL', default='gemini/gemini-flash-latest')
-AI_FALLBACK_LLM_MODEL = env('AI_FALLBACK_LLM_MODEL', default='gemini/gemini-flash-lite-latest')
+# Cross-provider fallback (plan D3): a same-provider fallback does not survive an outage or account block.
+AI_FALLBACK_LLM_MODEL = env('AI_FALLBACK_LLM_MODEL', default='openai/gpt-4o-mini')
+# Hard timeout per LLM call; retries are owned by Celery, not LiteLLM.
+AI_LLM_TIMEOUT_SECONDS = env.float('AI_LLM_TIMEOUT_SECONDS', default=60.0)
+# Transcript cap sized for the smallest context window in the chain (gpt-4o-mini, 128K tokens).
+AI_LLM_MAX_TRANSCRIPT_CHARS = env.int('AI_LLM_MAX_TRANSCRIPT_CHARS', default=400000)
 AI_DEFAULT_TRANSCRIPTION_MODEL = env('AI_DEFAULT_TRANSCRIPTION_MODEL', default='whisper-large-v3-turbo')
 
 # Transcription backend when AI_CORE_V2_ENABLED=True: 'groq' (default) | 'local'.
