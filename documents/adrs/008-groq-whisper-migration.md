@@ -1,4 +1,4 @@
-# ADR-007: Transcripción remota con Groq Whisper y eliminación del fallback local
+# ADR-008: Transcripción remota con Groq Whisper y eliminación del fallback local
 
 **Estado:** `accepted`
 **Fecha:** 2026-10-06

@@ -1,5 +1,5 @@
-from backend.settings.base import env, BASE_DIR
-import os
+from .base import *  # noqa: F403
+from .base import env
 
 # --- MODO PRODUCCIÓN ---
 # ¡CRÍTICO! Nunca True en producción, o te pueden robar las claves.
