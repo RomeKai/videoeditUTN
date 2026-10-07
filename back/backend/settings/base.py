@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 import os
 import environ
 
@@ -120,9 +120,21 @@ REST_FRAMEWORK = {
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
 
-# --- AI CONFIG ---
-OPENAI_API_KEY = env('OPENAI_API_KEY', default=None)
+# --- AI CONFIG & FEATURE FLAGS ---
+AI_CORE_V2_ENABLED = env.bool('AI_CORE_V2_ENABLED', default=False)
+
+# Provider Credentials (obtained exclusively from environment variables)
 GEMINI_API_KEY = env('GEMINI_API_KEY', default=None)
+GROQ_API_KEY = env('GROQ_API_KEY', default=None)
+XAI_API_KEY = env('XAI_API_KEY', default=None)
+
+# OpenAI — used ONLY for free Moderation API (AI_Security_Shield)
+OPENAI_API_KEY = env('OPENAI_API_KEY', default=None)
+
+# AI Core V2 Model Configuration
+AI_DEFAULT_LLM_MODEL = env('AI_DEFAULT_LLM_MODEL', default='gemini/gemini-flash-latest')
+AI_FALLBACK_LLM_MODEL = env('AI_FALLBACK_LLM_MODEL', default='gemini/gemini-flash-lite-latest')
+AI_DEFAULT_TRANSCRIPTION_MODEL = env('AI_DEFAULT_TRANSCRIPTION_MODEL', default='whisper-large-v3-turbo')
 
 # JWT Configuration
 from datetime import timedelta

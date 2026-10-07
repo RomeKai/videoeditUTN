@@ -36,30 +36,46 @@ class CloudflareR2Manager:
         return _get_r2_client()
 
     @staticmethod
-    def upload_video(local_path: str, user_id: str, folder: str = "") -> str:
+    def upload_video(local_path: str = None, user_id: str = "system", folder: str = "", **kwargs) -> str:
         """
         Uploads a file to R2 and returns its object key.
         Key format: videos/{user_id}/{folder}/{uuid}.ext
 
         When USE_R2=False, skips R2 and returns the local path as the key.
+        Supports both (local_path, folder) and (local_file_path, project_id) parameter conventions.
         """
-        if _is_local():
-            logger.info(f"[R2 LOCAL] USE_R2=False — skipping upload, using local path: {local_path}")
-            return local_path
+        path = local_path or kwargs.get("local_file_path")
+        if not path:
+            raise ValueError("upload_video requires a local file path.")
 
-        ext = os.path.splitext(local_path)[-1] or ".mp4"
+        target_folder = folder or kwargs.get("project_id", "")
+
+        if _is_local():
+            if "temp" in path:
+                ext = os.path.splitext(path)[-1] or ".mp4"
+                filename = f"{uuid.uuid4()}{ext}"
+                dest_dir = os.path.join(settings.MEDIA_ROOT, "videos", str(user_id), str(target_folder))
+                os.makedirs(dest_dir, exist_ok=True)
+                dest_path = os.path.join(dest_dir, filename)
+                shutil.copy2(path, dest_path)
+                logger.info(f"[R2 LOCAL] USE_R2=False — saved temp video to permanent storage: {dest_path}")
+                return dest_path
+            logger.info(f"[R2 LOCAL] USE_R2=False — skipping upload, using local path: {path}")
+            return path
+
+        ext = os.path.splitext(path)[-1] or ".mp4"
         filename = f"{uuid.uuid4()}{ext}"
         parts = ["videos", str(user_id)]
-        if folder:
-            parts.append(str(folder))
+        if target_folder:
+            parts.append(str(target_folder))
         parts.append(filename)
         object_key = "/".join(parts)
 
         client = _get_r2_client()
         bucket = settings.CLOUDFLARE_R2_BUCKET_NAME
 
-        logger.info(f"☁️  [R2] Uploading {local_path} → {bucket}/{object_key}")
-        client.upload_file(local_path, bucket, object_key)
+        logger.info(f"☁️  [R2] Uploading {path} → {bucket}/{object_key}")
+        client.upload_file(path, bucket, object_key)
         logger.info(f"✅ [R2] Upload complete: {object_key}")
         return object_key
 
