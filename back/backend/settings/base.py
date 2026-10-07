@@ -161,8 +161,10 @@ if 'REDIS_URL' in os.environ:
 
 # Redis used for the distributed pipeline lock (same instance as the broker).
 REDIS_URL = env('REDIS_URL', default='redis://redis:6379/0')
-# Lock TTL must exceed the slowest pipeline stage (long-video transcription).
-PIPELINE_LOCK_TTL = env.int('PIPELINE_LOCK_TTL', default=3600)
+# Short TTL on purpose: the lock is renewed by a heartbeat while its worker is
+# alive, so the TTL only decides how long a crashed worker's lock keeps the
+# redelivered task waiting (it retries, see PIPELINE_LOCK_* in tasks.py).
+PIPELINE_LOCK_TTL = env.int('PIPELINE_LOCK_TTL', default=300)
 
 # Heavy MoviePy renders get their own queue so they cannot starve ingestion.
 # Workers must consume both queues: `celery -A backend worker -Q celery,render`.

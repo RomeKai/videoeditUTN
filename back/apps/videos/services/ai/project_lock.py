@@ -9,6 +9,7 @@ project without the lock is never an option.
 """
 
 import logging
+import threading
 from contextlib import contextmanager
 
 import redis
@@ -18,20 +19,69 @@ from apps.videos.services.ai.errors import RetryableAIError
 
 logger = logging.getLogger(__name__)
 
-# Worst case for one stage (long transcription) must stay well under the TTL.
-DEFAULT_LOCK_TTL_SECONDS = 3600
+# Short on purpose: the lock is renewed while its owner is alive (heartbeat), so
+# the TTL only bounds how long a *dead* worker's lock keeps its project blocked
+# before the redelivered task can take over. It must stay well below Celery's
+# broker visibility_timeout (see CELERY_BROKER_TRANSPORT_OPTIONS in settings).
+DEFAULT_LOCK_TTL_SECONDS = 300
+# The heartbeat renews this many times per TTL window.
+_HEARTBEATS_PER_TTL = 3
 
 
 class ProjectLockedError(Exception):
     """Another worker currently holds the lock for this project."""
 
 
+class ProjectLockLostError(Exception):
+    """The lock expired or was taken over while its owner was still working."""
+
+
 def get_redis_client():
     return redis.Redis.from_url(settings.REDIS_URL)
 
 
+class ProjectLockHandle:
+    """Owner-side view of a held lock: renewal and loss detection."""
+
+    def __init__(self, lock, ttl, project_id):
+        self._lock = lock
+        self._ttl = ttl
+        self._project_id = project_id
+        self.lost = threading.Event()
+
+    def renew(self):
+        """Resets the TTL. Raises ``ProjectLockLostError`` if the lock is no longer ours."""
+        if self.lost.is_set():
+            raise ProjectLockLostError(f"Lock for project {self._project_id} was lost")
+        try:
+            self._lock.extend(self._ttl, replace_ttl=True)
+        except redis.exceptions.LockError as exc:
+            self.lost.set()
+            raise ProjectLockLostError(
+                f"Lock for project {self._project_id} was lost: {exc}"
+            ) from exc
+        except redis.exceptions.RedisError:
+            # Transient: the remaining TTL still covers a few missed renewals.
+            logger.warning(
+                "pipeline.lock_renew_failed project_id=%s", self._project_id,
+                extra={"project_id": str(self._project_id)},
+            )
+
+
+def _heartbeat(handle, stop, interval):
+    while not stop.wait(interval):
+        try:
+            handle.renew()
+        except ProjectLockLostError:
+            logger.warning(
+                "pipeline.lock_lost project_id=%s", handle._project_id,
+                extra={"project_id": str(handle._project_id)},
+            )
+            return
+
+
 @contextmanager
-def project_lock(project_id, client=None, ttl=None):
+def project_lock(project_id, client=None, ttl=None, heartbeat=True):
     client = client if client is not None else get_redis_client()
     ttl = ttl or getattr(settings, "PIPELINE_LOCK_TTL", DEFAULT_LOCK_TTL_SECONDS)
     lock = client.lock(f"lock:pipeline:project:{project_id}", timeout=ttl)
@@ -48,9 +98,24 @@ def project_lock(project_id, client=None, ttl=None):
     if not acquired:
         raise ProjectLockedError(f"Project {project_id} is being processed by another worker")
 
+    handle = ProjectLockHandle(lock, ttl, project_id)
+    stop = threading.Event()
+    thread = None
+    if heartbeat:
+        thread = threading.Thread(
+            target=_heartbeat,
+            args=(handle, stop, max(ttl / _HEARTBEATS_PER_TTL, 0.05)),
+            name=f"project-lock-heartbeat-{project_id}",
+            daemon=True,
+        )
+        thread.start()
+
     try:
-        yield
+        yield handle
     finally:
+        stop.set()
+        if thread is not None:
+            thread.join(timeout=5)
         try:
             lock.release()
         except redis.exceptions.LockError:

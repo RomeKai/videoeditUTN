@@ -1,9 +1,15 @@
+import time
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, override_settings
 
 from apps.videos.services.ai.errors import RetryableAIError, is_retryable_error
-from apps.videos.services.ai.project_lock import ProjectLockedError, project_lock
+from apps.videos.services.ai.project_lock import (
+    DEFAULT_LOCK_TTL_SECONDS,
+    ProjectLockedError,
+    ProjectLockLostError,
+    project_lock,
+)
 from apps.videos.tests.fakes import DownRedis, FakeRedis
 
 
@@ -61,3 +67,42 @@ class ProjectLockTests(SimpleTestCase):
 
         from_url.assert_called_once()
         self.assertEqual(from_url.call_args.args[0], "redis://example:6379/5")
+
+
+class ProjectLockRenewalTests(SimpleTestCase):
+    def test_default_ttl_is_short_so_a_dead_workers_lock_expires_quickly(self):
+        self.assertLessEqual(DEFAULT_LOCK_TTL_SECONDS, 600)
+
+    def test_renew_extends_the_ttl_of_the_held_lock(self):
+        client = FakeRedis()
+
+        with project_lock("p1", client=client, ttl=100, heartbeat=False) as handle:
+            handle.renew()
+
+        self.assertEqual(client.locks[0].extend_calls, [(100, True)])
+
+    def test_heartbeat_keeps_extending_the_lock_during_a_long_stage(self):
+        client = FakeRedis()
+
+        with project_lock("p1", client=client, ttl=0.3):
+            time.sleep(0.5)
+
+        self.assertGreaterEqual(len(client.locks[0].extend_calls), 1)
+
+    def test_heartbeat_stops_after_the_lock_is_released(self):
+        client = FakeRedis()
+
+        with project_lock("p1", client=client, ttl=0.3):
+            pass
+        calls = len(client.locks[0].extend_calls)
+        time.sleep(0.3)
+
+        self.assertEqual(len(client.locks[0].extend_calls), calls)
+
+    def test_renew_raises_when_the_lock_was_lost(self):
+        client = FakeRedis()
+
+        with self.assertRaises(ProjectLockLostError):
+            with project_lock("p1", client=client, ttl=100, heartbeat=False) as handle:
+                client.held.clear()  # TTL expired and the key is gone
+                handle.renew()

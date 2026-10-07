@@ -29,7 +29,11 @@ from apps.videos.services.ai.pipeline_state import (
     reopen,
     set_stage_status,
 )
-from apps.videos.services.ai.project_lock import ProjectLockedError, project_lock
+from apps.videos.services.ai.project_lock import (
+    ProjectLockedError,
+    ProjectLockLostError,
+    project_lock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -507,6 +511,12 @@ def render_video_segments(self, project_id):
 PIPELINE_MAX_RETRIES = 5
 PIPELINE_RETRY_BASE_SECONDS = 30
 PIPELINE_RETRY_CAP_SECONDS = 600
+# A redelivered task that finds the project lock held either collided with a live
+# worker or with the leftover lock of a dead one. Retrying shortly, for longer
+# than the lock TTL (project_lock.DEFAULT_LOCK_TTL_SECONDS), lets the dead
+# worker's lock expire instead of dropping the job.
+PIPELINE_LOCK_RETRY_SECONDS = 45
+PIPELINE_LOCK_MAX_RETRIES = 8
 
 _CLIP_SUGGESTION_FIELDS = {'start', 'end', 'title', 'virality_score', 'reasoning'}
 
@@ -735,12 +745,18 @@ def _stage_dispatch_render(project_id):
             transaction.on_commit(lambda clip_id=clip_id: render_clip_task.delay(str(clip_id)))
 
 
-def _run_ingestion(project_id, attempt, progress=None):
+def _run_ingestion(project_id, attempt, progress=None, lock=None):
     """
     ``progress['stage']`` always holds the stage this worker believes the project
     is at, so a failure handler can guard its writes by ownership.
     """
     progress = progress if progress is not None else {}
+
+    def renew_lock():
+        # Between stages: extend the TTL and stop if the lock was lost meanwhile.
+        if lock is not None:
+            lock.renew()
+
     project = VideoProject.objects.get(pk=project_id)
     stage = project.pipeline_stage
     progress['stage'] = stage
@@ -764,24 +780,28 @@ def _run_ingestion(project_id, attempt, progress=None):
         VideoProject.objects.filter(pk=project_id).update(status=VideoProject.Status.INGESTING)
 
     if stage == PipelineStage.UPLOADED:
+        renew_lock()
         with _running_stage(project_id, PipelineStage.AUDIO_EXTRACTED, attempt):
             _stage_prepare_source(project_id)
         stage = PipelineStage.AUDIO_EXTRACTED
         progress['stage'] = stage
 
     if stage == PipelineStage.AUDIO_EXTRACTED:
+        renew_lock()
         with _running_stage(project_id, PipelineStage.TRANSCRIBED, attempt):
             _stage_transcribe(project_id)
         stage = PipelineStage.TRANSCRIBED
         progress['stage'] = stage
 
     if stage == PipelineStage.TRANSCRIBED:
+        renew_lock()
         with _running_stage(project_id, PipelineStage.CLIPS_SELECTED, attempt):
             _stage_select_clips(project_id)
         stage = PipelineStage.CLIPS_SELECTED
         progress['stage'] = stage
 
     if stage == PipelineStage.CLIPS_SELECTED:
+        renew_lock()
         if VideoProject.objects.get(pk=project_id).auto_render_bypass:
             logger.info("⏩ Auto-render bypass active. Dispatching clip renders.")
             with _running_stage(project_id, PipelineStage.RENDER_DISPATCHED, attempt):
@@ -839,9 +859,26 @@ def process_initial_ingestion(self, project_id):
     )
     progress = {}
     try:
-        with project_lock(project_id):
-            return _run_ingestion(project_id, attempt, progress)
-    except (ProjectLockedError, PipelineConflictError) as exc:
+        with project_lock(project_id) as lock:
+            return _run_ingestion(project_id, attempt, progress, lock)
+    except ProjectLockedError as exc:
+        if self.request.retries < PIPELINE_LOCK_MAX_RETRIES:
+            logger.warning(
+                "pipeline.lock_busy_retrying project_id=%s attempt=%d", project_id, attempt,
+                extra={'project_id': str(project_id), 'attempt': attempt},
+            )
+            raise self.retry(
+                exc=exc,
+                countdown=PIPELINE_LOCK_RETRY_SECONDS,
+                max_retries=PIPELINE_LOCK_MAX_RETRIES,
+            )
+        # Still held after outlasting the TTL: a live worker owns the project.
+        logger.warning(
+            "pipeline.skipped project_id=%s attempt=%d reason=%s", project_id, attempt, exc,
+            extra={'project_id': str(project_id), 'attempt': attempt},
+        )
+        return f"Skipped {project_id}: {exc}"
+    except (ProjectLockLostError, PipelineConflictError) as exc:
         logger.warning(
             "pipeline.skipped project_id=%s attempt=%d reason=%s", project_id, attempt, exc,
             extra={'project_id': str(project_id), 'attempt': attempt},

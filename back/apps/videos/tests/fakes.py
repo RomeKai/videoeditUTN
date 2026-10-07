@@ -11,6 +11,7 @@ class FakeLock:
         self.name = name
         self.timeout = timeout
         self._token = None
+        self.extend_calls = []
 
     def acquire(self, blocking=True, **kwargs):
         with self._store.guard:
@@ -18,6 +19,13 @@ class FakeLock:
                 return False
             self._token = object()
             self._store.held[self.name] = self._token
+            return True
+
+    def extend(self, additional_time, replace_ttl=False):
+        with self._store.guard:
+            if self._store.held.get(self.name) is not self._token:
+                raise redis.exceptions.LockNotOwnedError("not owner")
+            self.extend_calls.append((additional_time, replace_ttl))
             return True
 
     def release(self):
@@ -34,10 +42,13 @@ class FakeRedis:
         self.guard = threading.Lock()
         self.held = {}
         self.lock_calls = []
+        self.locks = []
 
     def lock(self, name, timeout=None, **kwargs):
         self.lock_calls.append((name, timeout))
-        return FakeLock(self, name, timeout)
+        lock = FakeLock(self, name, timeout)
+        self.locks.append(lock)
+        return lock
 
 
 class DownRedis:

@@ -22,7 +22,13 @@ from apps.videos.services.ai.errors import (
 )
 from apps.videos.services.ai.pipeline_state import PipelineStage, advance
 from apps.videos.services.ai.pipeline_state import PipelineConflictError
-from apps.videos.tasks import _merge_metadata, _retry_countdown, process_initial_ingestion
+from apps.videos.tasks import (
+    PIPELINE_LOCK_MAX_RETRIES,
+    PIPELINE_LOCK_RETRY_SECONDS,
+    _merge_metadata,
+    _retry_countdown,
+    process_initial_ingestion,
+)
 from apps.videos.tests.fakes import DownRedis, FakeRedis
 
 User = get_user_model()
@@ -331,6 +337,76 @@ class ConcurrencyTests(IngestionHarness, TestCase):
         self.mock_transcribe.assert_not_called()
         self.mock_select.assert_not_called()
         self.assertEqual(project.pipeline_stage, PipelineStage.UPLOADED)
+        self.assertNotEqual(project.status, VideoProject.Status.FAILED)
+
+    def test_redelivery_while_the_lock_is_held_retries_and_succeeds_once_released(self):
+        project = self.make_project()
+        stale_lock = self.redis.lock(f"lock:pipeline:project:{project.id}")
+        stale_lock.acquire()  # a dead worker's lock, not yet expired
+        attempts = []
+
+        def client_factory():
+            attempts.append(1)
+            if len(attempts) == 3:
+                stale_lock.release()  # the TTL expired between retries
+            return self.redis
+
+        self._patch(REDIS_CLIENT, side_effect=client_factory)
+
+        result = self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertTrue(result.successful())
+        self.assertNotIn("Skipped", result.result)
+        self.assertEqual(len(attempts), 3)
+        self.mock_transcribe.assert_called_once()
+        self.assertEqual(project.pipeline_stage, PipelineStage.CLIPS_SELECTED)
+
+    def test_lock_retries_use_a_short_bounded_countdown(self):
+        project = self.make_project()
+        self.redis.lock(f"lock:pipeline:project:{project.id}").acquire()
+
+        with patch.object(
+            process_initial_ingestion, "retry", side_effect=RuntimeError("retry")
+        ) as retry:
+            result = self.run_task(project)
+
+        self.assertTrue(result.failed())
+        self.assertEqual(retry.call_args.kwargs["countdown"], PIPELINE_LOCK_RETRY_SECONDS)
+        self.assertLessEqual(PIPELINE_LOCK_RETRY_SECONDS, 60)
+
+    def test_lock_retries_outlast_the_lock_ttl_then_give_up_quietly(self):
+        from apps.videos.services.ai.project_lock import DEFAULT_LOCK_TTL_SECONDS
+
+        project = self.make_project()
+        self.redis.lock(f"lock:pipeline:project:{project.id}").acquire()
+        attempts = []
+        self._patch(REDIS_CLIENT, side_effect=lambda: attempts.append(1) or self.redis)
+
+        result = self.run_task(project)
+
+        self.assertGreater(
+            PIPELINE_LOCK_MAX_RETRIES * PIPELINE_LOCK_RETRY_SECONDS, DEFAULT_LOCK_TTL_SECONDS
+        )
+        self.assertTrue(result.successful())
+        self.assertIn("Skipped", result.result)
+        self.assertEqual(len(attempts), PIPELINE_LOCK_MAX_RETRIES + 1)
+
+    def test_lock_lost_mid_run_stops_before_the_next_paid_stage(self):
+        project = self.make_project()
+
+        def lock_expires_during_transcription(*args, **kwargs):
+            self.redis.held.clear()
+            return transcription_result()
+
+        self.mock_transcribe.side_effect = lock_expires_during_transcription
+
+        result = self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertTrue(result.successful())
+        self.assertIn("Skipped", result.result)
+        self.mock_select.assert_not_called()
         self.assertNotEqual(project.status, VideoProject.Status.FAILED)
 
     def test_lost_compare_and_set_stops_the_loser_without_failing_the_project(self):
