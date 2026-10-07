@@ -49,7 +49,7 @@ Para un SaaS de video, el egress domina los costos. Con 5TB de transferencia men
 
 ### Modo desarrollo
 
-`USE_S3=False` bypass R2 y usa filesystem local — permite desarrollo sin credenciales de cloud.
+`USE_R2=False` bypass R2 y usa filesystem local — permite desarrollo sin credenciales de cloud.
 
 ---
 

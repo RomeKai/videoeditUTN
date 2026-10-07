@@ -9,7 +9,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 # 2. Initialize Environ
 env = environ.Env()
 # Read .env file from root
-environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
+if os.environ.get('DJANGO_SETTINGS_MODULE') != 'backend.settings.ci':
+    environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 
 # --- SECURITY ---
 SECRET_KEY = env('SECRET_KEY', default='django-insecure-temp-key-dev')
@@ -157,6 +158,7 @@ CLOUDFLARE_R2_ACCESS_KEY_ID = env('CLOUDFLARE_R2_ACCESS_KEY_ID', default=None)
 CLOUDFLARE_R2_SECRET_ACCESS_KEY = env('CLOUDFLARE_R2_SECRET_ACCESS_KEY', default=None)
 CLOUDFLARE_R2_BUCKET_NAME = env('CLOUDFLARE_R2_BUCKET_NAME', default=None)
 CLOUDFLARE_R2_REGION = 'auto' # R2 standard
+USE_R2 = env.bool('USE_R2', default=False)
 
 # Custom Endpoint for R2
 CLOUDFLARE_R2_ENDPOINT_URL = f"https://{CLOUDFLARE_R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if CLOUDFLARE_R2_ACCOUNT_ID else None
