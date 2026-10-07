@@ -159,6 +159,11 @@ if 'REDIS_URL' in os.environ:
     CELERY_BROKER_URL = env('REDIS_URL')
     CELERY_RESULT_BACKEND = env('REDIS_URL')
 
+# Redis used for the distributed pipeline lock (same instance as the broker).
+REDIS_URL = env('REDIS_URL', default='redis://redis:6379/0')
+# Lock TTL must exceed the slowest pipeline stage (long-video transcription).
+PIPELINE_LOCK_TTL = env.int('PIPELINE_LOCK_TTL', default=3600)
+
 SPECTACULAR_SETTINGS = {
     'TITLE': 'OneCreator API',
     'DESCRIPTION': 'API for automated AI video management and editing.',
