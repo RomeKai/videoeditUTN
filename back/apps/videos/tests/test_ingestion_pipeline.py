@@ -21,7 +21,8 @@ from apps.videos.services.ai.errors import (
     RetryableAIError,
 )
 from apps.videos.services.ai.pipeline_state import PipelineStage, advance
-from apps.videos.tasks import _retry_countdown, process_initial_ingestion
+from apps.videos.services.ai.pipeline_state import PipelineConflictError
+from apps.videos.tasks import _merge_metadata, _retry_countdown, process_initial_ingestion
 from apps.videos.tests.fakes import DownRedis, FakeRedis
 
 User = get_user_model()
@@ -278,6 +279,44 @@ class LegacyRowTests(IngestionHarness, TestCase):
         self.assertEqual(project.metadata["full_text"], "Hello world")
 
 
+class MergeMetadataTests(IngestionHarness, TestCase):
+    def test_existing_probe_and_transcript_keys_are_never_overwritten(self):
+        project = self.make_project(
+            metadata={"duration": 10.0, "resolution": [1, 1], "full_text": "kept", "niche": "x"}
+        )
+
+        _merge_metadata(
+            project.id,
+            {"duration": 99.0, "resolution": [9, 9], "full_text": "new", "extra": 1},
+        )
+
+        project.refresh_from_db()
+        self.assertEqual(
+            project.metadata,
+            {"duration": 10.0, "resolution": [1, 1], "full_text": "kept", "niche": "x", "extra": 1},
+        )
+
+    def test_missing_keys_are_written(self):
+        project = self.make_project(metadata={"niche": "x"})
+
+        _merge_metadata(project.id, {"duration": 5.0})
+
+        project.refresh_from_db()
+        self.assertEqual(project.metadata, {"niche": "x", "duration": 5.0})
+
+    def test_merge_does_not_act_when_the_caller_lost_ownership(self):
+        project = self.make_project(metadata={"niche": "x"})
+        advance(project.id, PipelineStage.UPLOADED, PipelineStage.AUDIO_EXTRACTED)
+
+        with self.assertRaises(PipelineConflictError):
+            _merge_metadata(
+                project.id, {"duration": 5.0}, expected_stage=PipelineStage.UPLOADED
+            )
+
+        project.refresh_from_db()
+        self.assertEqual(project.metadata, {"niche": "x"})
+
+
 class ConcurrencyTests(IngestionHarness, TestCase):
     def test_locked_project_is_not_processed_by_a_second_worker(self):
         project = self.make_project()
@@ -314,6 +353,23 @@ class ConcurrencyTests(IngestionHarness, TestCase):
         self.assertEqual(project.pipeline_stage, PipelineStage.TRANSCRIBED)
         self.assertNotEqual(project.status, VideoProject.Status.FAILED)
         self.assertEqual(project.clips.count(), 0)
+
+    def test_failure_after_losing_ownership_does_not_fail_the_project(self):
+        project = self.make_project()
+
+        def other_worker_wins_then_this_one_fails(*args, **kwargs):
+            advance(project.id, PipelineStage.AUDIO_EXTRACTED, PipelineStage.TRANSCRIBED)
+            raise AIAuthenticationError("bad key")
+
+        self.mock_transcribe.side_effect = other_worker_wins_then_this_one_fails
+
+        result = self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertTrue(result.failed())
+        self.assertEqual(project.pipeline_stage, PipelineStage.TRANSCRIBED)
+        self.assertNotEqual(project.status, VideoProject.Status.FAILED)
+        self.assertEqual(project.pipeline_stage_status["transcribed"], "completed")
 
     def test_redis_down_never_processes_without_the_lock(self):
         project = self.make_project()

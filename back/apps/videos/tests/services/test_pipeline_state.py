@@ -143,6 +143,45 @@ class PipelineStateTests(TestCase):
         self.project.refresh_from_db()
         self.assertEqual(self.project.status, VideoProject.Status.RENDERING)
 
+    def test_set_stage_status_is_a_noop_when_the_caller_lost_ownership(self):
+        advance(self.project.id, PipelineStage.UPLOADED, PipelineStage.AUDIO_EXTRACTED)
+
+        with self.assertRaises(PipelineConflictError):
+            set_stage_status(
+                self.project.id, PipelineStage.AUDIO_EXTRACTED, StageStatus.FAILED,
+                expected_stage=PipelineStage.UPLOADED,
+            )
+
+        self.project.refresh_from_db()
+        self.assertEqual(
+            self.project.pipeline_stage_status, {"audio_extracted": "completed"}
+        )
+
+    def test_set_stage_status_with_matching_expected_stage_writes(self):
+        set_stage_status(
+            self.project.id, PipelineStage.AUDIO_EXTRACTED, StageStatus.RUNNING,
+            expected_stage=PipelineStage.UPLOADED,
+        )
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.pipeline_stage_status, {"audio_extracted": "running"})
+
+    def test_mark_failed_does_not_act_when_the_caller_lost_ownership(self):
+        advance(self.project.id, PipelineStage.UPLOADED, PipelineStage.AUDIO_EXTRACTED)
+
+        mark_failed(self.project.id, expected_stage=PipelineStage.UPLOADED)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.AUDIO_EXTRACTED)
+        self.assertNotEqual(self.project.status, VideoProject.Status.FAILED)
+
+    def test_mark_failed_with_matching_expected_stage_fails_the_project(self):
+        mark_failed(self.project.id, expected_stage=PipelineStage.UPLOADED)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.FAILED)
+        self.assertEqual(self.project.status, VideoProject.Status.FAILED)
+
     def test_record_error_stores_code_and_timestamp(self):
         record_error(self.project.id, "AIAuthenticationError")
 

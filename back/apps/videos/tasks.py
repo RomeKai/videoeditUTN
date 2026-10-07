@@ -517,20 +517,40 @@ def _retry_countdown(retries):
     return ceiling / 2 + random.uniform(0, ceiling / 2)
 
 
-def _merge_metadata(project_id, updates):
+# Keys that describe the source/transcript: once written they are authoritative
+# and a slower or duplicate worker must not replace them.
+_WRITE_ONCE_METADATA_KEYS = frozenset({'duration', 'resolution', 'full_text'})
+
+
+def _merge_metadata(project_id, updates, expected_stage=None):
     """
     Merges ``updates`` into ``VideoProject.metadata`` without clobbering other keys
     (e.g. max_clips, subtitle_size). Short read-modify-write under a row lock.
+    Write-once keys (duration, resolution, full_text) are kept if already present.
+    With ``expected_stage`` the merge only happens while the project is still at
+    that stage; otherwise ``PipelineConflictError`` (the caller lost ownership).
     """
     with transaction.atomic():
         project = VideoProject.objects.select_for_update().get(pk=project_id)
-        merged = {**(project.metadata or {}), **updates}
+        if expected_stage is not None and project.pipeline_stage != expected_stage:
+            raise PipelineConflictError(
+                f"Project {project_id} is no longer at stage {expected_stage}"
+            )
+        existing = project.metadata or {}
+        accepted = {
+            key: value for key, value in updates.items()
+            if not (key in _WRITE_ONCE_METADATA_KEYS and key in existing)
+        }
+        merged = {**existing, **accepted}
         VideoProject.objects.filter(pk=project_id).update(metadata=merged)
 
 
 @contextmanager
 def _running_stage(project_id, stage, attempt):
-    set_stage_status(project_id, stage, StageStatus.RUNNING)
+    # The project sits at the previous stage while ``stage`` is being produced;
+    # status writes are guarded by it so a worker that lost ownership stays silent.
+    owner_stage = STAGE_ORDER[STAGE_ORDER.index(stage) - 1]
+    set_stage_status(project_id, stage, StageStatus.RUNNING, expected_stage=owner_stage)
     logger.info(
         "pipeline.stage_started project_id=%s stage=%s attempt=%d", project_id, stage, attempt,
         extra={'project_id': str(project_id), 'stage': str(stage), 'attempt': attempt},
@@ -546,7 +566,9 @@ def _running_stage(project_id, stage, attempt):
             extra={'project_id': str(project_id), 'stage': str(stage), 'attempt': attempt},
         )
         try:
-            set_stage_status(project_id, stage, StageStatus.FAILED)
+            set_stage_status(project_id, stage, StageStatus.FAILED, expected_stage=owner_stage)
+        except PipelineStateError:
+            logger.warning("pipeline.status_write_skipped project_id=%s stage=%s", project_id, stage)
         except (DatabaseError, VideoProject.DoesNotExist):
             logger.exception("pipeline.status_write_failed project_id=%s stage=%s", project_id, stage)
         raise
@@ -608,7 +630,10 @@ def _stage_prepare_source(project_id):
         _generate_proxy(project, source_path, user_id)
 
     duration, resolution = _probe_video(source_path)
-    _merge_metadata(project_id, {'duration': duration, 'resolution': resolution})
+    _merge_metadata(
+        project_id, {'duration': duration, 'resolution': resolution},
+        expected_stage=PipelineStage.UPLOADED,
+    )
     advance(project_id, PipelineStage.UPLOADED, PipelineStage.AUDIO_EXTRACTED)
 
 
@@ -629,7 +654,7 @@ def _stage_transcribe(project_id):
         _merge_metadata(project_id, {
             'full_text': tx.full_text,
             'transcription_usage': result.usage.model_dump(),
-        })
+        }, expected_stage=PipelineStage.AUDIO_EXTRACTED)
         VideoProject.objects.filter(pk=project_id).update(transcript_data=segments)
         advance(project_id, PipelineStage.AUDIO_EXTRACTED, PipelineStage.TRANSCRIBED)
 
@@ -643,7 +668,10 @@ def _stage_select_clips(project_id):
     if duration is None:
         # Rows created before pipeline state may lack the probe result.
         duration, resolution = _probe_video(project.source_file.path)
-        _merge_metadata(project_id, {'duration': duration, 'resolution': resolution})
+        _merge_metadata(
+            project_id, {'duration': duration, 'resolution': resolution},
+            expected_stage=PipelineStage.TRANSCRIBED,
+        )
         metadata = {**metadata, 'duration': duration, 'resolution': resolution}
 
     result = SelectionEngine.select_viral_clips_detailed(
@@ -680,7 +708,10 @@ def _stage_select_clips(project_id):
             "suggestions_count": len(suggestions),
             "raw_ai_output": suggestions,
         })
-        _merge_metadata(project_id, {'selection_usage': result.usage.model_dump()})
+        _merge_metadata(
+            project_id, {'selection_usage': result.usage.model_dump()},
+            expected_stage=PipelineStage.TRANSCRIBED,
+        )
         advance(project_id, PipelineStage.TRANSCRIBED, PipelineStage.CLIPS_SELECTED)
 
 
@@ -704,14 +735,21 @@ def _stage_dispatch_render(project_id):
             transaction.on_commit(lambda clip_id=clip_id: render_clip_task.delay(str(clip_id)))
 
 
-def _run_ingestion(project_id, attempt):
+def _run_ingestion(project_id, attempt, progress=None):
+    """
+    ``progress['stage']`` always holds the stage this worker believes the project
+    is at, so a failure handler can guard its writes by ownership.
+    """
+    progress = progress if progress is not None else {}
     project = VideoProject.objects.get(pk=project_id)
     stage = project.pipeline_stage
+    progress['stage'] = stage
 
     if stage == PipelineStage.FAILED:
         # Manual re-dispatch of a failed project: resume where it stopped.
         stage = last_completed_stage(project)
         reopen(project_id, stage)
+        progress['stage'] = stage
 
     if stage in TERMINAL_STAGES or stage == PipelineStage.RENDER_DISPATCHED:
         return f"Nothing to do for {project_id}: already {stage}"
@@ -720,6 +758,7 @@ def _run_ingestion(project_id, attempt):
     inferred = infer_completed_stage(project)
     if STAGE_ORDER.index(inferred) > STAGE_ORDER.index(stage):
         stage = advance_to(project_id, stage, inferred)
+        progress['stage'] = stage
 
     if stage in (PipelineStage.UPLOADED, PipelineStage.AUDIO_EXTRACTED, PipelineStage.TRANSCRIBED):
         VideoProject.objects.filter(pk=project_id).update(status=VideoProject.Status.INGESTING)
@@ -728,16 +767,19 @@ def _run_ingestion(project_id, attempt):
         with _running_stage(project_id, PipelineStage.AUDIO_EXTRACTED, attempt):
             _stage_prepare_source(project_id)
         stage = PipelineStage.AUDIO_EXTRACTED
+        progress['stage'] = stage
 
     if stage == PipelineStage.AUDIO_EXTRACTED:
         with _running_stage(project_id, PipelineStage.TRANSCRIBED, attempt):
             _stage_transcribe(project_id)
         stage = PipelineStage.TRANSCRIBED
+        progress['stage'] = stage
 
     if stage == PipelineStage.TRANSCRIBED:
         with _running_stage(project_id, PipelineStage.CLIPS_SELECTED, attempt):
             _stage_select_clips(project_id)
         stage = PipelineStage.CLIPS_SELECTED
+        progress['stage'] = stage
 
     if stage == PipelineStage.CLIPS_SELECTED:
         if VideoProject.objects.get(pk=project_id).auto_render_bypass:
@@ -755,7 +797,7 @@ def _run_ingestion(project_id, attempt):
     return f"Ingestion Success {project_id}"
 
 
-def _record_pipeline_failure(project_id, exc, attempt, final):
+def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
     logger.error(
         "pipeline.failed project_id=%s attempt=%d final=%s error=%s",
         project_id, attempt, final, type(exc).__name__,
@@ -768,7 +810,7 @@ def _record_pipeline_failure(project_id, exc, attempt, final):
         )
         record_error(project_id, type(exc).__name__)
         if final:
-            mark_failed(project_id)
+            mark_failed(project_id, expected_stage=stage)
     except (DatabaseError, VideoProject.DoesNotExist):
         logger.exception("pipeline.failure_not_recorded project_id=%s", project_id)
 
@@ -795,9 +837,10 @@ def process_initial_ingestion(self, project_id):
         "pipeline.started project_id=%s attempt=%d", project_id, attempt,
         extra={'project_id': str(project_id), 'attempt': attempt},
     )
+    progress = {}
     try:
         with project_lock(project_id):
-            return _run_ingestion(project_id, attempt)
+            return _run_ingestion(project_id, attempt, progress)
     except (ProjectLockedError, PipelineConflictError) as exc:
         logger.warning(
             "pipeline.skipped project_id=%s attempt=%d reason=%s", project_id, attempt, exc,
@@ -806,7 +849,9 @@ def process_initial_ingestion(self, project_id):
         return f"Skipped {project_id}: {exc}"
     except Exception as exc:
         will_retry = is_retryable_error(exc) and self.request.retries < self.max_retries
-        _record_pipeline_failure(project_id, exc, attempt, final=not will_retry)
+        _record_pipeline_failure(
+            project_id, exc, attempt, final=not will_retry, stage=progress.get('stage')
+        )
         if will_retry:
             raise self.retry(exc=exc, countdown=_retry_countdown(self.request.retries))
         raise

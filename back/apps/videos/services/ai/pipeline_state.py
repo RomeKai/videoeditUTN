@@ -123,13 +123,22 @@ def advance_to(project_id, current: str, target: str) -> str:
     return current
 
 
-def set_stage_status(project_id, stage: str, status: str) -> None:
+def set_stage_status(
+    project_id, stage: str, status: str, expected_stage: Optional[str] = None
+) -> None:
     """
     Records pending/running/completed/failed for one stage without touching the others.
     A completed stage is never downgraded (e.g. by a worker that lost the race).
+    When ``expected_stage`` is given the write only happens while the project is
+    still at that stage; otherwise ``PipelineConflictError`` is raised (the caller
+    lost ownership and must not touch the row).
     """
     with transaction.atomic():
         project = VideoProject.objects.select_for_update().get(pk=project_id)
+        if expected_stage is not None and project.pipeline_stage != expected_stage:
+            raise PipelineConflictError(
+                f"Project {project_id} is no longer at stage {expected_stage}"
+            )
         statuses = dict(project.pipeline_stage_status or {})
         if statuses.get(str(stage)) == StageStatus.COMPLETED:
             return
@@ -152,11 +161,21 @@ def reopen(project_id, stage: str) -> None:
     )
 
 
-def mark_failed(project_id) -> None:
-    """Terminal failure: stage and user-facing status. Finished projects are left alone."""
+def mark_failed(project_id, expected_stage: Optional[str] = None) -> None:
+    """
+    Terminal failure: stage and user-facing status. Finished projects are left alone.
+    When ``expected_stage`` is given and the project moved on (another worker owns
+    it now), nothing is written.
+    """
     with transaction.atomic():
         project = VideoProject.objects.select_for_update().get(pk=project_id)
         if project.pipeline_stage in TERMINAL_STAGES:
+            return
+        if expected_stage is not None and project.pipeline_stage != expected_stage:
+            logger.warning(
+                "pipeline.mark_failed_skipped project_id=%s expected=%s actual=%s",
+                project_id, expected_stage, project.pipeline_stage,
+            )
             return
         VideoProject.objects.filter(pk=project_id).update(
             pipeline_stage=PipelineStage.FAILED, status=VideoProject.Status.FAILED
