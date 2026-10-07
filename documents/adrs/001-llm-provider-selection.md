@@ -100,7 +100,7 @@ OneCreator usa LLMs en tres puntos críticos del pipeline:
 
 ## Decisión
 
-**APROBADO — Adopción de Google Gemini 3.8 Flash como proveedor primario unificado a través de LiteLLM, con OpenAI GPT-4o-mini como fallback secundario.**
+**APROBADO — Adopción de Google Gemini 3.8 Flash como proveedor primario unificado a través de LiteLLM, con Gemini Flash-Lite como fallback secundario por defecto (OpenAI GPT-4o-mini disponible como fallback cross-provider vía `AI_FALLBACK_LLM_MODEL`).**
 
 1. **Proveedor Primario**: **Google Gemini 3.8 Flash** para `SelectionEngine` y `SEOOptimizationService`. Su ventana de 1M tokens y costo ($0.10/1M tokens) lo hacen óptimo para ingesta completa de transcripciones sin truncamiento.
 2. **Capa de Abstracción Universal**: En lugar de implementar SDKs directos propietarios en cada servicio, se adopta **LiteLLM** (`litellm`). LiteLLM estandariza la interfaz bajo el formato OpenAI-compatible, permitiendo intercambiar modelos simplemente cambiando variables de entorno (`model="gemini/gemini-3.8-flash"` o `model="gpt-4o-mini"`).
@@ -180,7 +180,7 @@ Esto permite que el servidor web / VPS opere con recursos mínimos (1-2 vCPUs, 2
 
 > Corrige la deriva entre este ADR y el código tras el commit `ec69e07`, que había consolidado la cadena en Gemini → Gemini-Lite.
 
-1. **Cadena de fallback cross-provider.** Primario: `AI_DEFAULT_LLM_MODEL` (Gemini Flash). Secundario: `AI_FALLBACK_LLM_MODEL=openai/gpt-4o-mini`. Un fallback dentro del mismo proveedor no sobrevive a una caída de la API ni a un bloqueo de la cuenta. El fallback solo se activa si es otro modelo y su key está configurada.
+1. **Cadena de fallback (default Gemini → Gemini Flash-Lite, cross-provider opcional).** Primario: `AI_DEFAULT_LLM_MODEL` (Gemini Flash). Secundario por defecto: `AI_FALLBACK_LLM_MODEL=gemini/gemini-flash-lite-latest`. *Decisión posterior:* el default pasó de `openai/gpt-4o-mini` a un modelo Gemini porque la cuenta de OpenAI del proyecto no tiene créditos; el tradeoff es que un fallback del mismo proveedor cubre errores a nivel de modelo pero no sobrevive a una caída de la API ni a un bloqueo de la cuenta. La resiliencia cross-provider sigue disponible configurando `AI_FALLBACK_LLM_MODEL=openai/gpt-4o-mini` (con `OPENAI_API_KEY` válida). El fallback solo se activa si es otro modelo y su key está configurada.
 2. **Credenciales por llamada.** `llm_credentials.resolve_api_key(model)` mapea el prefijo del modelo (`gemini/`, `openai/`, `groq/`, `xai/`) a su setting, y la key se pasa en `completion(api_key=...)`. Queda prohibido mutar `litellm.api_key`: es estado global del proceso y filtraría keys entre proveedores.
 3. **Parámetros de llamada.** `temperature=0.1` (es una tarea de extracción estructurada), `timeout=AI_LLM_TIMEOUT_SECONDS` y `num_retries=0` (los reintentos son responsabilidad de Celery). Formato estructurado según el proveedor: `json_schema` no estricto para OpenAI y `response_schema` para Gemini.
 4. **Transcript con timestamps reales.** El LLM recibe líneas `[START-END] texto` (`transcript_formatter.py`) y los cortes deben coincidir con esos límites. Antes recibía texto plano y los timestamps eran inventados. El tope `AI_LLM_MAX_TRANSCRIPT_CHARS` está dimensionado para la ventana de 128K de gpt-4o-mini.

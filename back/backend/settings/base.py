@@ -133,11 +133,14 @@ OPENAI_API_KEY = env('OPENAI_API_KEY', default=None)
 
 # AI Core V2 Model Configuration
 AI_DEFAULT_LLM_MODEL = env('AI_DEFAULT_LLM_MODEL', default='gemini/gemini-flash-latest')
-# Cross-provider fallback (plan D3): a same-provider fallback does not survive an outage or account block.
-AI_FALLBACK_LLM_MODEL = env('AI_FALLBACK_LLM_MODEL', default='openai/gpt-4o-mini')
+# Default fallback stays inside Gemini (Flash-Lite): it needs no extra account or credits, but it does not
+# survive a Gemini outage or account block. Set AI_FALLBACK_LLM_MODEL=openai/gpt-4o-mini (or another
+# provider) for cross-provider resilience; the fallback only activates if that provider's key is set.
+AI_FALLBACK_LLM_MODEL = env('AI_FALLBACK_LLM_MODEL', default='gemini/gemini-flash-lite-latest')
 # Hard timeout per LLM call; retries are owned by Celery, not LiteLLM.
 AI_LLM_TIMEOUT_SECONDS = env.float('AI_LLM_TIMEOUT_SECONDS', default=60.0)
-# Transcript cap sized for the smallest context window in the chain (gpt-4o-mini, 128K tokens).
+# Transcript cap sized for the smallest context window plausible in the chain (gpt-4o-mini, 128K tokens),
+# so the same cap stays valid if a cross-provider fallback is configured.
 AI_LLM_MAX_TRANSCRIPT_CHARS = env.int('AI_LLM_MAX_TRANSCRIPT_CHARS', default=400000)
 AI_DEFAULT_TRANSCRIPTION_MODEL = env('AI_DEFAULT_TRANSCRIPTION_MODEL', default='whisper-large-v3-turbo')
 
