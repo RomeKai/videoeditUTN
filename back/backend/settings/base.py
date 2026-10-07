@@ -166,6 +166,16 @@ REDIS_URL = env('REDIS_URL', default='redis://redis:6379/0')
 # redelivered task waiting (it retries, see PIPELINE_LOCK_* in tasks.py).
 PIPELINE_LOCK_TTL = env.int('PIPELINE_LOCK_TTL', default=300)
 
+# Redis broker visibility timeout. Tasks use acks_late, so a running task stays
+# unacked and Redis redelivers it once this timeout passes. It must be comfortably
+# greater than PIPELINE_LOCK_TTL plus the longest stage (long-video transcription,
+# heavy renders); the default of 1 hour would redeliver still-running tasks.
+# Trade-off: if a whole worker host dies, its unacked tasks come back only after
+# this timeout (the lock TTL, not this value, governs same-host crash recovery).
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    'visibility_timeout': env.int('CELERY_VISIBILITY_TIMEOUT', default=4 * 3600),
+}
+
 # Heavy MoviePy renders get their own queue so they cannot starve ingestion.
 # Workers must consume both queues: `celery -A backend worker -Q celery,render`.
 CELERY_TASK_ROUTES = {
