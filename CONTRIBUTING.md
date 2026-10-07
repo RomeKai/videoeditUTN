@@ -106,9 +106,79 @@ docker compose logs web --tail 50
 # Ejecutar un comando Django dentro del container
 docker compose exec web python manage.py shell
 
-# Correr los tests
-docker compose exec web python manage.py test
+# Correr la suite automatizada en el entorno con dependencias de desarrollo
+cd back && python -m pytest
 ```
+
+### Reproducir CI localmente
+
+La suite automatizada requiere Python 3.11, PostgreSQL 15 y las constraints
+generadas en Linux. No usa SQLite porque los tests financieros validan
+transacciones, concurrencia y `select_for_update`.
+
+```bash
+# PostgreSQL efímero de test
+docker run --rm --name onecreator-ci-postgres \
+  -e POSTGRES_DB=onecreator_ci \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=ci-password \
+  -p 5432:5432 \
+  postgres:15-alpine
+
+# En otra terminal, desde back/
+python3.11 -m venv venv
+. venv/bin/activate
+python -m pip install --upgrade \
+  -c requirements/constraints-ci.txt \
+  pip setuptools wheel
+python -m pip install \
+  -c requirements/constraints-ci.txt \
+  torch torchaudio torchvision \
+  --index-url https://download.pytorch.org/whl/cpu
+python -m pip install \
+  -c requirements/constraints-ci.txt \
+  -r requirements/dev.txt \
+  -r requirements/ia.txt
+python -m pip check
+
+export DJANGO_SETTINGS_MODULE=backend.settings.ci
+export DATABASE_URL=postgres://postgres:ci-password@127.0.0.1:5432/onecreator_ci
+export AWS_EC2_METADATA_DISABLED=true
+
+python manage.py check
+python manage.py makemigrations --check --dry-run
+python -m pytest \
+  --cov=apps \
+  --cov-report=term-missing \
+  --cov-report=xml:coverage.xml \
+  --junitxml=test-results.xml
+
+DJANGO_SETTINGS_MODULE=backend.settings.prod \
+SECRET_KEY=ci-only-not-a-secret \
+ALLOWED_HOSTS=localhost \
+CORS_ALLOWED_ORIGINS=https://example.invalid \
+python manage.py check --deploy
+```
+
+`pytest.ini` limita la suite automatizada a `back/apps/`. Los scripts visuales
+y manuales de `back/tests/unit/` quedan excluidos hasta que se conviertan en
+tests automatizados. Los reportes se generan en `back/coverage.xml` y
+`back/test-results.xml`.
+
+CI bloquea el tráfico externo: ningún test debe contactar OpenAI, Gemini,
+Cloudflare R2, Ayrshare ni otro proveedor real. Usá datos sintéticos y mocks
+en los límites del sistema.
+
+### Extender el pipeline
+
+- Agregá checks de Django, migraciones y pytest al job `quality`.
+- Agregá validaciones de imágenes a `docker-build` o a otro job sin publicar.
+- Todo job bloqueante nuevo debe agregarse tanto a `needs` como a la validación
+  explícita de `Required CI`.
+- No uses filtros `paths` en este workflow: pueden dejar un required check
+  permanentemente pendiente.
+- No agregues `continue-on-error` a controles bloqueantes, llamadas a APIs
+  reales, secretos de producción, login a registries ni pasos de deployment.
 
 ---
 
@@ -164,7 +234,7 @@ docs(readme): update Docker setup instructions
 
 - [ ] El código compila sin errores: `docker compose exec web python manage.py check`
 - [ ] Las migraciones están al día: `docker compose exec web python manage.py makemigrations --check`
-- [ ] Los tests pasan (si aplica): `docker compose exec web python manage.py test`
+- [ ] Los tests pasan: `cd back && python -m pytest`
 - [ ] No hay secretos, API keys o rutas absolutas hardcodeadas
 - [ ] Los commits siguen Conventional Commits
 

@@ -130,8 +130,8 @@ OPENAI_API_KEY=<tu-api-key-de-openai>
 # ==========================================
 # STORAGE
 # ==========================================
-USE_S3=False
-# Completar solo si USE_S3=True:
+USE_R2=False
+# Completar solo si USE_R2=True:
 # CLOUDFLARE_R2_ACCOUNT_ID=
 # CLOUDFLARE_R2_ACCESS_KEY_ID=
 # CLOUDFLARE_R2_SECRET_ACCESS_KEY=
@@ -226,7 +226,7 @@ POST /api/v1/projects/ (upload)
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│ 2. STORAGE      │  Upload original a R2 (o bypass local si USE_S3=False)
+│ 2. STORAGE      │  Upload original a R2 (o bypass local si USE_R2=False)
 └────────┬────────┘
          ▼
 ┌─────────────────┐
@@ -291,7 +291,7 @@ videoeditUTN/
 │       │   │   ├── transcription_engine.py   # Whisper (local)
 │       │   │   ├── selection_engine.py       # GPT-4o clip selection
 │       │   │   ├── render_engine.py          # MoviePy 2.0 render pipeline
-│       │   │   ├── storage_service.py        # Cloudflare R2 (USE_S3 guard)
+│       │   │   ├── storage_service.py        # Cloudflare R2 (USE_R2 guard)
 │       │   │   ├── face_tracker.py           # MediaPipe face detection
 │       │   │   ├── subtitle_engine.py        # Dynamic subtitle generation
 │       │   │   └── layouts/                  # Layout strategies (fill, split, PiP)
