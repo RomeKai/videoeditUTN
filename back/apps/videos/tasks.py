@@ -331,13 +331,37 @@ class ClipRenderTask(celery_app.Task):
             logger.exception("render.failure_not_recorded clip_id=%s", clip_id)
 
 
-@celery_app.task(bind=True, base=ClipRenderTask)
+def _claim_clip_for_render(clip_id, redelivered=False):
+    """
+    Compare-and-set DRAFT/FAILED -> RENDERING. Only one delivery wins; a duplicate
+    finds the clip RENDERING (or COMPLETED) and must skip. A *redelivered* message
+    may also take over a clip stuck in RENDERING: its worker died (acks_late) and
+    nothing else would ever finish it.
+    """
+    claimable = [VideoClip.Status.DRAFT, VideoClip.Status.FAILED]
+    if redelivered:
+        claimable.append(VideoClip.Status.RENDERING)
+    return VideoClip.objects.filter(pk=clip_id, status__in=claimable).update(
+        status=VideoClip.Status.RENDERING
+    ) == 1
+
+
+# acks_late + reject_on_worker_lost: a worker killed mid-render (OOM in MoviePy)
+# gets the message redelivered instead of losing the clip. Safe because the clip
+# is claimed with a CAS and a COMPLETED clip is a no-op.
+@celery_app.task(
+    bind=True,
+    base=ClipRenderTask,
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
 def render_clip_task(self, clip_id):
     """
     Task wrapper for the RenderEngine.render_clip method.
     Renders one clip on the dedicated `render` queue. Errors propagate (the task
     is reported as FAILURE, never as a SUCCESS string); on_failure records them.
-    Idempotent: re-running a rendered clip is a no-op.
+    Idempotent: re-running a rendered clip is a no-op, and duplicate deliveries
+    of the same clip render only once.
     """
     logger.info(f"🎬 [RENDER TASK START] Rendering Clip {clip_id}")
     from apps.videos.services.render_engine import RenderEngine
@@ -348,6 +372,11 @@ def render_clip_task(self, clip_id):
         logger.info(f"⏭️ [RENDER TASK] Clip {clip_id} already rendered, skipping")
         finalize_project_render(clip.project_id)
         return f"Clip {clip_id} already rendered"
+
+    redelivered = bool((self.request.delivery_info or {}).get('redelivered'))
+    if not _claim_clip_for_render(clip_id, redelivered=redelivered):
+        logger.info(f"⏭️ [RENDER TASK] Clip {clip_id} is being rendered by another delivery, skipping")
+        return f"Clip {clip_id} already claimed"
 
     previous_key = clip.s3_object_key
     RenderEngine.render_clip(clip_id)

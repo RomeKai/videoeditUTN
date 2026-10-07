@@ -7,7 +7,7 @@ from django.test import TestCase, TransactionTestCase
 from apps.users.models import Workspace
 from apps.videos.models import ScheduledPost, VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import PipelineStage
-from apps.videos.tasks import render_clip_task, upload_to_social_network
+from apps.videos.tasks import _claim_clip_for_render, render_clip_task, upload_to_social_network
 from backend.celery import app as celery_app
 
 User = get_user_model()
@@ -84,6 +84,51 @@ class RenderClipTaskTests(RenderHarness, TestCase):
             result = render_clip_task.apply(args=[str(clip.id)])
 
         self.assertTrue(result.successful())
+
+    def test_duplicate_delivery_while_rendering_does_not_render_twice(self):
+        clip = self.make_clip()
+        nested_results = []
+
+        def render_with_duplicate_delivery(clip_id):
+            # The same message is delivered again while the first one is rendering.
+            nested_results.append(render_clip_task.apply(args=[str(clip_id)]))
+            return self.completing_render(clip_id)
+
+        with patch(RENDER, side_effect=render_with_duplicate_delivery) as render:
+            render_clip_task.apply(args=[str(clip.id)])
+
+        self.assertEqual(render.call_count, 1)
+        self.assertTrue(nested_results[0].successful())
+        clip.refresh_from_db()
+        self.assertEqual(clip.status, VideoClip.Status.COMPLETED)
+
+    def test_clip_already_rendering_by_another_delivery_is_skipped(self):
+        clip = self.make_clip(status=VideoClip.Status.RENDERING)
+
+        with patch(RENDER) as render:
+            result = render_clip_task.apply(args=[str(clip.id)])
+
+        self.assertTrue(result.successful())
+        render.assert_not_called()
+
+    def test_claim_moves_a_draft_clip_to_rendering_exactly_once(self):
+        clip = self.make_clip()
+
+        self.assertTrue(_claim_clip_for_render(clip.id, redelivered=False))
+        self.assertFalse(_claim_clip_for_render(clip.id, redelivered=False))
+
+        clip.refresh_from_db()
+        self.assertEqual(clip.status, VideoClip.Status.RENDERING)
+
+    def test_a_redelivered_message_may_reclaim_a_clip_abandoned_in_rendering(self):
+        clip = self.make_clip(status=VideoClip.Status.RENDERING)
+
+        # The worker that claimed it died: acks_late redelivers the message.
+        self.assertTrue(_claim_clip_for_render(clip.id, redelivered=True))
+
+    def test_render_task_survives_worker_loss_by_acking_late(self):
+        self.assertTrue(render_clip_task.acks_late)
+        self.assertTrue(render_clip_task.reject_on_worker_lost)
 
     def test_all_clips_rendered_completes_the_project(self):
         clips = [self.make_clip() for _ in range(3)]
