@@ -164,6 +164,12 @@ REDIS_URL = env('REDIS_URL', default='redis://redis:6379/0')
 # Lock TTL must exceed the slowest pipeline stage (long-video transcription).
 PIPELINE_LOCK_TTL = env.int('PIPELINE_LOCK_TTL', default=3600)
 
+# Heavy MoviePy renders get their own queue so they cannot starve ingestion.
+# Workers must consume both queues: `celery -A backend worker -Q celery,render`.
+CELERY_TASK_ROUTES = {
+    'apps.videos.tasks.render_clip_task': {'queue': 'render'},
+}
+
 SPECTACULAR_SETTINGS = {
     'TITLE': 'OneCreator API',
     'DESCRIPTION': 'API for automated AI video management and editing.',

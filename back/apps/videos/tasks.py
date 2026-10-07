@@ -71,6 +71,10 @@ class ThirdPartyAPIError(Exception):
     """Exception raised when a social media API fails."""
     pass
 
+class PostConfigurationError(Exception):
+    """Raised when a post cannot be published because the workspace is misconfigured."""
+    pass
+
 @celery_app.task
 def dispatch_scheduled_posts_batch():
     """
@@ -128,20 +132,25 @@ def upload_to_social_network(self, post_id):
             post = ScheduledPost.objects.select_for_update().get(id=post_id)
             if post.status == ScheduledPost.Status.PUBLISHED:
                 return "Already Published"
-            
+
             # Validation: Does the workspace have an Ayrshare Key?
             workspace = post.video_clip.project.workspace
             profile_key = workspace.ayrshare_profile_key
-            
+
             if not profile_key:
                 logger.error(f"❌ [WORKER] Post {post_id} FAILED: No ayrshare_profile_key for workspace {workspace.id}")
                 post.status = ScheduledPost.Status.FAILED
                 post.error_log = "Error: Ayrshare Profile Key not configured in workspace."
                 post.save()
-                return "Configuration Missing"
+                # Committed on exit of the atomic block; raised after so the task is not reported as SUCCESS.
+                missing_key = True
+            else:
+                missing_key = False
+                post.status = ScheduledPost.Status.PROCESSING
+                post.save()
 
-            post.status = ScheduledPost.Status.PROCESSING
-            post.save()
+        if missing_key:
+            raise PostConfigurationError(f"No ayrshare_profile_key for workspace {workspace.id}")
 
         # 1. Generate S3 Presigned URL (Valid for 1 hour)
         # This URL is what Ayrshare will use to download and re-upload the video.
@@ -182,19 +191,27 @@ def upload_to_social_network(self, post_id):
     except AyrshareAPIError as exc:
         # Resilience: Exponential Backoff for 3rd party instability
         logger.error(f"⚠️ [WORKER] Ayrshare API Error: {exc}")
-        post.retry_count += 1
-        post.error_log = f"Retry {post.retry_count}: {str(exc)}"
-        post.save()
-        
-        # Backoff: 60s, 360s, 1200s...
+        # Updated by id: `post` may not be bound if the failure happened before the fetch.
+        ScheduledPost.objects.filter(id=post_id).update(
+            retry_count=F('retry_count') + 1,
+            error_log=f"Retry {self.request.retries + 1}: {str(exc)}",
+        )
+
+        # Backoff: 60s, 120s, 240s... (TD-04: replaces the fixed 60s countdown)
         raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+
+    except PostConfigurationError:
+        # Already persisted as FAILED above; deterministic, so never retried.
+        raise
 
     except Exception as e:
         logger.error(f"❌ [WORKER] Critical failure: {e}")
-        post.status = ScheduledPost.Status.FAILED
-        post.error_log = f"Critical: {str(e)}"
-        post.save()
-        return "Failed"
+        ScheduledPost.objects.filter(id=post_id).update(
+            status=ScheduledPost.Status.FAILED,
+            error_log=f"Critical: {str(e)}",
+        )
+        # Re-raised so Celery records FAILURE instead of reporting a silent SUCCESS.
+        raise
 
     finally:
         cache.delete(lock_id)
@@ -261,20 +278,86 @@ def process_video_seo(self, post_id):
         # Retry for OpenAI timeouts or network issues
         raise self.retry(exc=e, countdown=60)
 
-@celery_app.task
-def render_clip_task(clip_id):
+def finalize_project_render(project_id):
+    """
+    Closes the render fan-out once every clip reached a final state: all rendered
+    -> COMPLETED, any failed -> PARTIAL (never COMPLETED with failures). Safe to
+    call after every clip: counting happens under the project row lock, so only
+    the call that sees the last clip finish transitions the project.
+    """
+    with transaction.atomic():
+        project = VideoProject.objects.select_for_update().get(pk=project_id)
+        if project.pipeline_stage != PipelineStage.RENDER_DISPATCHED:
+            return None
+
+        statuses = set(
+            VideoClip.objects.filter(project_id=project_id).values_list('status', flat=True)
+        )
+        if statuses & {VideoClip.Status.DRAFT, VideoClip.Status.RENDERING}:
+            return None
+
+        if VideoClip.Status.FAILED in statuses:
+            stage, status = PipelineStage.PARTIAL, VideoProject.Status.PARTIAL
+        else:
+            stage, status = PipelineStage.COMPLETED, VideoProject.Status.COMPLETED
+
+        try:
+            advance(project_id, PipelineStage.RENDER_DISPATCHED, stage)
+        except PipelineConflictError:
+            return None
+        VideoProject.objects.filter(pk=project_id).update(status=status)
+
+    logger.info(
+        "pipeline.render_finalized project_id=%s stage=%s", project_id, stage,
+        extra={'project_id': str(project_id), 'stage': str(stage)},
+    )
+    return stage
+
+
+class ClipRenderTask(celery_app.Task):
+    """Marks the clip (and possibly the project) as failed when a render task fails for good."""
+
+    def on_failure(self, exc, task_id, args, kwargs, einfo):
+        clip_id = args[0] if args else kwargs.get('clip_id')
+        try:
+            clip = VideoClip.objects.get(pk=clip_id)
+            VideoClip.objects.filter(pk=clip_id).update(status=VideoClip.Status.FAILED)
+            finalize_project_render(clip.project_id)
+        except (DatabaseError, VideoClip.DoesNotExist):
+            logger.exception("render.failure_not_recorded clip_id=%s", clip_id)
+
+
+@celery_app.task(bind=True, base=ClipRenderTask)
+def render_clip_task(self, clip_id):
     """
     Task wrapper for the RenderEngine.render_clip method.
-    Allows for asynchronous rendering of individual clips.
+    Renders one clip on the dedicated `render` queue. Errors propagate (the task
+    is reported as FAILURE, never as a SUCCESS string); on_failure records them.
+    Idempotent: re-running a rendered clip is a no-op.
     """
     logger.info(f"🎬 [RENDER TASK START] Rendering Clip {clip_id}")
     from apps.videos.services.render_engine import RenderEngine
-    try:
-        RenderEngine.render_clip(clip_id)
-        return f"Clip {clip_id} rendered successfully"
-    except Exception as e:
-        logger.error(f"❌ [RENDER TASK FAILED] {clip_id}: {e}")
-        return f"Failed {clip_id}: {e}"
+    from apps.videos.services.storage_service import CloudflareR2Manager
+
+    clip = VideoClip.objects.get(pk=clip_id)
+    if clip.status == VideoClip.Status.COMPLETED and clip.s3_object_key:
+        logger.info(f"⏭️ [RENDER TASK] Clip {clip_id} already rendered, skipping")
+        finalize_project_render(clip.project_id)
+        return f"Clip {clip_id} already rendered"
+
+    previous_key = clip.s3_object_key
+    RenderEngine.render_clip(clip_id)
+
+    new_key = VideoClip.objects.values_list('s3_object_key', flat=True).get(pk=clip_id)
+    if previous_key and previous_key != new_key:
+        # Re-render after a failure: do not leave the old upload orphaned in R2.
+        try:
+            CloudflareR2Manager.delete_object(previous_key)
+        except Exception:
+            logger.exception(f"⚠️ [RENDER TASK] Could not delete orphan R2 object {previous_key}")
+
+    finalize_project_render(clip.project_id)
+    return f"Clip {clip_id} rendered successfully"
 
 @celery_app.task(bind=True, max_retries=2)
 def render_video_segments(self, project_id):
