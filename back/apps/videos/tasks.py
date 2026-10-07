@@ -12,6 +12,24 @@ from moviepy import VideoFileClip, concatenate_videoclips
 
 # Importamos Servicios (SelectionEngine suele ser seguro, TranscriptionEngine lo cargaremos lazy por si acaso)
 from apps.videos.services.selection_engine import SelectionEngine
+from apps.videos.services.ai.errors import NonRetryableAIError, is_retryable_error
+from apps.videos.services.ai.pipeline_state import (
+    STAGE_ORDER,
+    TERMINAL_STAGES,
+    PipelineConflictError,
+    PipelineStage,
+    PipelineStateError,
+    StageStatus,
+    advance,
+    advance_to,
+    infer_completed_stage,
+    last_completed_stage,
+    mark_failed,
+    record_error,
+    reopen,
+    set_stage_status,
+)
+from apps.videos.services.ai.project_lock import ProjectLockedError, project_lock
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +55,11 @@ def download_from_youtube(url, output_folder):
 
 import time
 import random
+from contextlib import contextmanager
 from datetime import timedelta
 from django.utils import timezone
-from django.db import transaction
+from django.db import DatabaseError, transaction
+from django.db.models import F
 from django.core.cache import cache
 from apps.videos.models import VideoProject, VideoClip, ScheduledPost
 
@@ -390,153 +410,323 @@ def render_video_segments(self, project_id):
             project.save()
         raise self.retry(exc=e, countdown=60)
 
-@celery_app.task(bind=True, max_retries=2)
-def process_initial_ingestion(self, project_id):
+# --- INGESTION PIPELINE (AICORE-7: recoverable, idempotent) ---
+#
+# Stages (see services/ai/pipeline_state.py):
+#   UPLOADED -> AUDIO_EXTRACTED (source in R2 + proxy + probe)
+#            -> TRANSCRIBED     (transcript persisted)
+#            -> CLIPS_SELECTED  (clips persisted)
+#            -> RENDER_DISPATCHED (auto_render_bypass only) -> COMPLETED | PARTIAL
+# Each stage persists its output BEFORE advancing, so a retry resumes at the
+# failed stage and never repeats paid AI calls. No DB transaction is ever open
+# while calling R2, FFmpeg, MoviePy, Groq or the LLM.
+
+PIPELINE_MAX_RETRIES = 5
+PIPELINE_RETRY_BASE_SECONDS = 30
+PIPELINE_RETRY_CAP_SECONDS = 600
+
+_CLIP_SUGGESTION_FIELDS = {'start', 'end', 'title', 'virality_score', 'reasoning'}
+
+
+def _retry_countdown(retries):
+    """Exponential backoff (30s, 60s, 120s... capped) with equal jitter to avoid retry storms."""
+    ceiling = min(PIPELINE_RETRY_BASE_SECONDS * (2 ** retries), PIPELINE_RETRY_CAP_SECONDS)
+    return ceiling / 2 + random.uniform(0, ceiling / 2)
+
+
+def _merge_metadata(project_id, updates):
     """
-    Multimodal Ingestion Pipeline V2 (Paper Edit V1 + Video Sync)
-    1. Download/Obtain Source
-    2. Upload Original to R2
-    3. Generate Web Proxy (FFmpeg 480p) & Upload to R2
-    4. Parallel: Transcription (Whisper) & AI Selection
-    5. State Bifurcation
+    Merges ``updates`` into ``VideoProject.metadata`` without clobbering other keys
+    (e.g. max_clips, subtitle_size). Short read-modify-write under a row lock.
     """
-    logger.info(f"🚀 [INGESTION V2] Starting project {project_id}")
+    with transaction.atomic():
+        project = VideoProject.objects.select_for_update().get(pk=project_id)
+        merged = {**(project.metadata or {}), **updates}
+        VideoProject.objects.filter(pk=project_id).update(metadata=merged)
+
+
+@contextmanager
+def _running_stage(project_id, stage, attempt):
+    set_stage_status(project_id, stage, StageStatus.RUNNING)
+    logger.info(
+        "pipeline.stage_started project_id=%s stage=%s attempt=%d", project_id, stage, attempt,
+        extra={'project_id': str(project_id), 'stage': str(stage), 'attempt': attempt},
+    )
+    try:
+        yield
+    except PipelineStateError:
+        # Another worker owns the project now: this stage did not fail.
+        raise
+    except Exception:
+        logger.error(
+            "pipeline.stage_failed project_id=%s stage=%s attempt=%d", project_id, stage, attempt,
+            extra={'project_id': str(project_id), 'stage': str(stage), 'attempt': attempt},
+        )
+        try:
+            set_stage_status(project_id, stage, StageStatus.FAILED)
+        except (DatabaseError, VideoProject.DoesNotExist):
+            logger.exception("pipeline.status_write_failed project_id=%s stage=%s", project_id, stage)
+        raise
+    logger.info(
+        "pipeline.stage_completed project_id=%s stage=%s attempt=%d", project_id, stage, attempt,
+        extra={'project_id': str(project_id), 'stage': str(stage), 'attempt': attempt},
+    )
+
+
+def _probe_video(source_path):
+    with VideoFileClip(source_path) as clip:
+        return clip.duration, list(clip.size)
+
+
+def _generate_proxy(project, source_path, user_id):
+    """Web proxy for the paper-edit UI. Optional: failures never block ingestion."""
     from apps.videos.services.storage_service import CloudflareR2Manager
-    from apps.videos.services.transcription_engine import TranscriptionEngine
     from apps.videos.utils.ffmpeg_utils import FFmpegManager
 
+    proxy_local_path = os.path.join(os.path.dirname(source_path), f"proxy_{project.id}.mp4")
     try:
-        # Atomic lock and initial status update
-        with transaction.atomic():
-            project = VideoProject.objects.select_for_update().get(id=project_id)
-            project.status = VideoProject.Status.INGESTING
-            project.save()
+        FFmpegManager.generate_web_proxy(source_path, proxy_local_path)
+        proxy_r2_key = CloudflareR2Manager.upload_video(proxy_local_path, user_id, str(project.id))
+        VideoProject.objects.filter(pk=project.id).update(proxy_r2_key=proxy_r2_key)
+        logger.info(f"✅ Proxy uploaded to R2: {proxy_r2_key}")
+    except Exception:
+        logger.exception("⚠️ Proxy generation failed but continuing ingestion")
+    finally:
+        FFmpegManager.cleanup_local_file(proxy_local_path)
 
-        # --- 1. OBTAIN SOURCE ---
-        if not project.source_file and project.video_url:
-            logger.info(f"⬇️ Downloading from URL: {project.video_url}")
-            download_dir = os.path.join(settings.MEDIA_ROOT, 'videos', 'raw', 'downloads')
-            os.makedirs(download_dir, exist_ok=True)
-            local_path = download_from_youtube(project.video_url, download_dir)
+
+def _stage_prepare_source(project_id):
+    from apps.videos.services.storage_service import CloudflareR2Manager
+
+    project = VideoProject.objects.get(pk=project_id)
+
+    if not project.source_file and project.video_url:
+        logger.info(f"⬇️ Downloading from URL: {project.video_url}")
+        download_dir = os.path.join(settings.MEDIA_ROOT, 'videos', 'raw', 'downloads')
+        os.makedirs(download_dir, exist_ok=True)
+        local_path = download_from_youtube(project.video_url, download_dir)
+        try:
             with open(local_path, 'rb') as f:
-                project.source_file.save(os.path.basename(local_path), File(f), save=True)
-            if os.path.exists(local_path): os.remove(local_path)
-
-        source_path = project.source_file.path
-        temp_dir = os.path.dirname(source_path)
-        user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
-
-        # --- 2. UPLOAD ORIGINAL TO R2 ---
-        orig_r2_key = CloudflareR2Manager.upload_video(source_path, user_id, str(project.id))
-        
-        with transaction.atomic():
-            project = VideoProject.objects.select_for_update().get(id=project_id)
-            project.original_r2_key = orig_r2_key
-            project.save()
-
-        # --- 3. PROXY GENERATION (FFmpeg) ---
-        proxy_filename = f"proxy_{project.id}.mp4"
-        proxy_local_path = os.path.join(temp_dir, proxy_filename)
-        
-        try:
-            FFmpegManager.generate_web_proxy(source_path, proxy_local_path)
-            
-            # Upload Proxy to R2
-            proxy_r2_key = CloudflareR2Manager.upload_video(proxy_local_path, user_id, str(project.id))
-            
-            with transaction.atomic():
-                project = VideoProject.objects.select_for_update().get(id=project_id)
-                project.proxy_r2_key = proxy_r2_key
-                project.save()
-                
-            logger.info(f"✅ Proxy uploaded to R2: {proxy_r2_key}")
-        except Exception as e:
-            logger.error(f"⚠️ Proxy generation failed but continuing ingestion: {e}")
+                project.source_file.save(os.path.basename(local_path), File(f), save=False)
         finally:
-            FFmpegManager.cleanup_local_file(proxy_local_path)
+            if os.path.exists(local_path):
+                os.remove(local_path)
+        VideoProject.objects.filter(pk=project_id).update(source_file=project.source_file.name)
 
-        # --- 4. TRANSCRIPTION ---
-        logger.info("🧠 Transcribing...")
-        transcriber = TranscriptionEngine(model_size="base")
-        segments = transcriber.transcribe(source_path, word_timestamps=True)
-        full_text = getattr(transcriber, 'last_full_text', None) or " ".join([seg['text'] for seg in segments])
-        
-        # --- 5. AI SELECTION (RATIONALE) ---
-        with VideoFileClip(source_path) as clip:
-            duration = clip.duration
-            res = list(clip.size)
+    source_path = project.source_file.path
+    user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
 
-        metadata_payload = {
-            'full_text': full_text,
+    # A retry after a later failure inside this stage must not re-upload.
+    if not project.original_r2_key:
+        orig_r2_key = CloudflareR2Manager.upload_video(source_path, user_id, str(project.id))
+        VideoProject.objects.filter(pk=project_id).update(original_r2_key=orig_r2_key)
+
+    if not project.proxy_r2_key:
+        _generate_proxy(project, source_path, user_id)
+
+    duration, resolution = _probe_video(source_path)
+    _merge_metadata(project_id, {'duration': duration, 'resolution': resolution})
+    advance(project_id, PipelineStage.UPLOADED, PipelineStage.AUDIO_EXTRACTED)
+
+
+def _stage_transcribe(project_id):
+    from apps.videos.services.transcription_engine import TranscriptionEngine
+
+    project = VideoProject.objects.get(pk=project_id)
+    result = TranscriptionEngine(model_size="base").transcribe_detailed(project.source_file.path)
+
+    tx = result.data
+    segments = [{'start': w.start, 'end': w.end, 'text': w.text} for w in tx.words] or [
+        {'start': s.start, 'end': s.end, 'text': s.text} for s in tx.segments
+    ]
+
+    # Persist the transcript and advance together: selection can fail and retry
+    # without ever paying for transcription again.
+    with transaction.atomic():
+        _merge_metadata(project_id, {
+            'full_text': tx.full_text,
+            'transcription_usage': result.usage.model_dump(),
+        })
+        VideoProject.objects.filter(pk=project_id).update(transcript_data=segments)
+        advance(project_id, PipelineStage.AUDIO_EXTRACTED, PipelineStage.TRANSCRIBED)
+
+
+def _stage_select_clips(project_id):
+    project = VideoProject.objects.get(pk=project_id)
+    segments = project.transcript_data or []
+    metadata = project.metadata or {}
+
+    duration = metadata.get('duration')
+    if duration is None:
+        # Rows created before pipeline state may lack the probe result.
+        duration, resolution = _probe_video(project.source_file.path)
+        _merge_metadata(project_id, {'duration': duration, 'resolution': resolution})
+        metadata = {**metadata, 'duration': duration, 'resolution': resolution}
+
+    result = SelectionEngine.select_viral_clips_detailed(
+        # Segments are passed separately (not stored in metadata) so the LLM sees real timestamps.
+        transcription_data={
+            'full_text': metadata.get('full_text') or " ".join(s['text'] for s in segments),
             'duration': duration,
-            'resolution': res
-        }
+            'resolution': metadata.get('resolution'),
+            'segments': segments,
+        },
+        project_title=project.title,
+        duration=duration,
+        intelligence_level=project.intelligence_level,
+    )
+    suggestions = [clip.model_dump(include=_CLIP_SUGGESTION_FIELDS) for clip in result.data.clips]
 
-        ai_suggestions = SelectionEngine.select_viral_clips(
-            # Segments are passed separately (not stored in metadata) so the LLM sees real timestamps.
-            transcription_data={**metadata_payload, 'segments': segments},
-            project_title=project.title,
-            duration=duration,
-            intelligence_level=project.intelligence_level
-        )
-
-        # Update Project and create Clips in one atomic block
-        with transaction.atomic():
-            project = VideoProject.objects.select_for_update().get(id=project_id)
-            project.metadata.update(metadata_payload)
-            project.transcript_data = segments
-            project.ai_rationale_log = {
-                "suggestions_count": len(ai_suggestions), 
-                "raw_ai_output": ai_suggestions
-            }
-
-            created_clips = []
-            for clip_data in ai_suggestions:
-                clip_obj = VideoClip.objects.create(
-                    project=project,
-                    title=clip_data.get('title', 'Clip sugerido'),
-                    start_time=clip_data.get('start', 0.0),
-                    end_time=clip_data.get('end', 10.0),
-                    virality_score=clip_data.get('virality_score', 0),
-                    ai_reasoning=clip_data.get('reasoning', ''),
-                    status=VideoClip.Status.DRAFT
+    with transaction.atomic():
+        VideoProject.objects.select_for_update().get(pk=project_id)
+        # Dedupe: clips from a previous attempt are reused, never duplicated.
+        if not VideoClip.objects.filter(project_id=project_id).exists():
+            VideoClip.objects.bulk_create([
+                VideoClip(
+                    project_id=project_id,
+                    title=data['title'],
+                    start_time=data['start'],
+                    end_time=data['end'],
+                    virality_score=int(data['virality_score']),
+                    ai_reasoning=data['reasoning'],
+                    status=VideoClip.Status.DRAFT,
                 )
-                created_clips.append(clip_obj)
+                for data in suggestions
+            ])
+        VideoProject.objects.filter(pk=project_id).update(ai_rationale_log={
+            "suggestions_count": len(suggestions),
+            "raw_ai_output": suggestions,
+        })
+        _merge_metadata(project_id, {'selection_usage': result.usage.model_dump()})
+        advance(project_id, PipelineStage.TRANSCRIBED, PipelineStage.CLIPS_SELECTED)
 
-            # --- 6. STATE BIFURCATION ---
-            if project.auto_render_bypass:
-                logger.info("⏩ Auto-render bypass active. Rendering clips...")
-                project.status = VideoProject.Status.RENDERING
-                project.save()
-                
-                # We can't easily do nested atomic or complex logic inside loop for rendering
-                # but we trigger the rendering for each clip
-                from apps.videos.services.render_engine import RenderEngine
-                for clip in created_clips:
-                    try:
-                        RenderEngine.render_clip(clip.id)
-                    except Exception as e:
-                        logger.error(f"⚠️ Render failed for clip {clip.id}: {e}")
-                
-                project.status = VideoProject.Status.COMPLETED
-            else:
-                logger.info("⏳ Ingestion complete. Awaiting user approval.")
-                project.status = VideoProject.Status.AWAITING_APPROVAL
 
-            project.save()
-            
-        return f"Ingestion Success {project_id}"
+def _stage_dispatch_render(project_id):
+    """
+    auto_render_bypass: one render task per clip, queued only AFTER the transition
+    commits. Rendering never runs inside this transaction.
+    """
+    with transaction.atomic():
+        VideoProject.objects.select_for_update().get(pk=project_id)
+        clip_ids = list(
+            VideoClip.objects.filter(project_id=project_id, status=VideoClip.Status.DRAFT)
+            .values_list('id', flat=True)
+        )
+        if not clip_ids:
+            raise NonRetryableAIError("Selection produced no clips to render.", provider="pipeline")
 
-    except Exception as e:
-        logger.error(f"❌ [INGESTION ERROR] {e}", exc_info=True)
-        try:
-            with transaction.atomic():
-                project = VideoProject.objects.select_for_update().get(id=project_id)
-                project.status = VideoProject.Status.FAILED
-                project.save()
-        except:
-            pass
-        raise self.retry(exc=e, countdown=60)
+        advance(project_id, PipelineStage.CLIPS_SELECTED, PipelineStage.RENDER_DISPATCHED)
+        VideoProject.objects.filter(pk=project_id).update(status=VideoProject.Status.RENDERING)
+        for clip_id in clip_ids:
+            transaction.on_commit(lambda clip_id=clip_id: render_clip_task.delay(str(clip_id)))
+
+
+def _run_ingestion(project_id, attempt):
+    project = VideoProject.objects.get(pk=project_id)
+    stage = project.pipeline_stage
+
+    if stage == PipelineStage.FAILED:
+        # Manual re-dispatch of a failed project: resume where it stopped.
+        stage = last_completed_stage(project)
+        reopen(project_id, stage)
+
+    if stage in TERMINAL_STAGES or stage == PipelineStage.RENDER_DISPATCHED:
+        return f"Nothing to do for {project_id}: already {stage}"
+
+    # Rows without recorded state may already hold a transcript or clips.
+    inferred = infer_completed_stage(project)
+    if STAGE_ORDER.index(inferred) > STAGE_ORDER.index(stage):
+        stage = advance_to(project_id, stage, inferred)
+
+    if stage in (PipelineStage.UPLOADED, PipelineStage.AUDIO_EXTRACTED, PipelineStage.TRANSCRIBED):
+        VideoProject.objects.filter(pk=project_id).update(status=VideoProject.Status.INGESTING)
+
+    if stage == PipelineStage.UPLOADED:
+        with _running_stage(project_id, PipelineStage.AUDIO_EXTRACTED, attempt):
+            _stage_prepare_source(project_id)
+        stage = PipelineStage.AUDIO_EXTRACTED
+
+    if stage == PipelineStage.AUDIO_EXTRACTED:
+        with _running_stage(project_id, PipelineStage.TRANSCRIBED, attempt):
+            _stage_transcribe(project_id)
+        stage = PipelineStage.TRANSCRIBED
+
+    if stage == PipelineStage.TRANSCRIBED:
+        with _running_stage(project_id, PipelineStage.CLIPS_SELECTED, attempt):
+            _stage_select_clips(project_id)
+        stage = PipelineStage.CLIPS_SELECTED
+
+    if stage == PipelineStage.CLIPS_SELECTED:
+        if VideoProject.objects.get(pk=project_id).auto_render_bypass:
+            logger.info("⏩ Auto-render bypass active. Dispatching clip renders.")
+            with _running_stage(project_id, PipelineStage.RENDER_DISPATCHED, attempt):
+                _stage_dispatch_render(project_id)
+        else:
+            logger.info("⏳ Ingestion complete. Awaiting user approval.")
+            # Guarded: a redelivered task must not undo a later user action.
+            VideoProject.objects.filter(
+                pk=project_id,
+                status__in=[VideoProject.Status.UPLOADED, VideoProject.Status.INGESTING],
+            ).update(status=VideoProject.Status.AWAITING_APPROVAL)
+
+    return f"Ingestion Success {project_id}"
+
+
+def _record_pipeline_failure(project_id, exc, attempt, final):
+    logger.error(
+        "pipeline.failed project_id=%s attempt=%d final=%s error=%s",
+        project_id, attempt, final, type(exc).__name__,
+        extra={'project_id': str(project_id), 'attempt': attempt},
+        exc_info=exc,
+    )
+    try:
+        VideoProject.objects.filter(pk=project_id).update(
+            pipeline_attempts=F('pipeline_attempts') + 1
+        )
+        record_error(project_id, type(exc).__name__)
+        if final:
+            mark_failed(project_id)
+    except (DatabaseError, VideoProject.DoesNotExist):
+        logger.exception("pipeline.failure_not_recorded project_id=%s", project_id)
+
+
+# acks_late + reject_on_worker_lost: if the worker dies mid-task (OOM during
+# MoviePy/Whisper) the message is redelivered instead of silently lost. Running
+# the task twice is safe because every stage is idempotent: transitions are
+# compare-and-set, the Redis lock keeps two workers off the same project, and
+# stage outputs (transcript, clips) are persisted and reused, never recomputed.
+@celery_app.task(
+    bind=True,
+    max_retries=PIPELINE_MAX_RETRIES,
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
+def process_initial_ingestion(self, project_id):
+    """
+    Multimodal Ingestion Pipeline V2 (Paper Edit V1 + Video Sync), recoverable.
+    Retryable errors back off exponentially (TD-04: replaces the fixed 60s
+    countdown); non-retryable errors fail the project immediately.
+    """
+    attempt = self.request.retries + 1
+    logger.info(
+        "pipeline.started project_id=%s attempt=%d", project_id, attempt,
+        extra={'project_id': str(project_id), 'attempt': attempt},
+    )
+    try:
+        with project_lock(project_id):
+            return _run_ingestion(project_id, attempt)
+    except (ProjectLockedError, PipelineConflictError) as exc:
+        logger.warning(
+            "pipeline.skipped project_id=%s attempt=%d reason=%s", project_id, attempt, exc,
+            extra={'project_id': str(project_id), 'attempt': attempt},
+        )
+        return f"Skipped {project_id}: {exc}"
+    except Exception as exc:
+        will_retry = is_retryable_error(exc) and self.request.retries < self.max_retries
+        _record_pipeline_failure(project_id, exc, attempt, final=not will_retry)
+        if will_retry:
+            raise self.retry(exc=exc, countdown=_retry_countdown(self.request.retries))
+        raise
 
 @celery_app.task(bind=True)
 def process_video_pipeline(self, project_id, transaction_id=None):

@@ -124,12 +124,36 @@ def advance_to(project_id, current: str, target: str) -> str:
 
 
 def set_stage_status(project_id, stage: str, status: str) -> None:
-    """Records pending/running/completed/failed for one stage without touching the others."""
+    """
+    Records pending/running/completed/failed for one stage without touching the others.
+    A completed stage is never downgraded (e.g. by a worker that lost the race).
+    """
     with transaction.atomic():
         project = VideoProject.objects.select_for_update().get(pk=project_id)
         statuses = dict(project.pipeline_stage_status or {})
+        if statuses.get(str(stage)) == StageStatus.COMPLETED:
+            return
         statuses[str(stage)] = str(status)
         VideoProject.objects.filter(pk=project_id).update(pipeline_stage_status=statuses)
+
+
+def reopen(project_id, stage: str) -> None:
+    """Moves a FAILED project back to ``stage`` so the pipeline can resume from it."""
+    advance(project_id, PipelineStage.FAILED, stage)
+    VideoProject.objects.filter(pk=project_id).update(
+        pipeline_error_code="", pipeline_error_at=None
+    )
+
+
+def mark_failed(project_id) -> None:
+    """Terminal failure: stage and user-facing status. Finished projects are left alone."""
+    with transaction.atomic():
+        project = VideoProject.objects.select_for_update().get(pk=project_id)
+        if project.pipeline_stage in TERMINAL_STAGES:
+            return
+        VideoProject.objects.filter(pk=project_id).update(
+            pipeline_stage=PipelineStage.FAILED, status=VideoProject.Status.FAILED
+        )
 
 
 def record_error(project_id, code: str) -> None:

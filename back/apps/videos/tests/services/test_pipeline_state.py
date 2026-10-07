@@ -12,7 +12,10 @@ from apps.videos.services.ai.pipeline_state import (
     advance_to,
     can_transition,
     infer_completed_stage,
+    last_completed_stage,
+    mark_failed,
     record_error,
+    reopen,
     set_stage_status,
 )
 
@@ -81,6 +84,46 @@ class PipelineStateTests(TestCase):
             self.project.pipeline_stage_status,
             {"transcribed": "failed", "audio_extracted": "completed"},
         )
+
+    def test_completed_stage_is_never_downgraded(self):
+        set_stage_status(self.project.id, PipelineStage.TRANSCRIBED, StageStatus.COMPLETED)
+        set_stage_status(self.project.id, PipelineStage.TRANSCRIBED, StageStatus.RUNNING)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.pipeline_stage_status["transcribed"], "completed")
+
+    def test_mark_failed_sets_stage_and_project_status(self):
+        mark_failed(self.project.id)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.FAILED)
+        self.assertEqual(self.project.status, VideoProject.Status.FAILED)
+
+    def test_mark_failed_leaves_finished_projects_alone(self):
+        VideoProject.objects.filter(pk=self.project.id).update(
+            pipeline_stage=PipelineStage.COMPLETED, status=VideoProject.Status.COMPLETED
+        )
+
+        mark_failed(self.project.id)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.COMPLETED)
+        self.assertEqual(self.project.status, VideoProject.Status.COMPLETED)
+
+    def test_reopen_resumes_failed_project_at_last_completed_stage(self):
+        advance_to(self.project.id, PipelineStage.UPLOADED, PipelineStage.TRANSCRIBED)
+        record_error(self.project.id, "Boom")
+        mark_failed(self.project.id)
+        self.project.refresh_from_db()
+
+        resume_at = last_completed_stage(self.project)
+        reopen(self.project.id, resume_at)
+
+        self.project.refresh_from_db()
+        self.assertEqual(resume_at, PipelineStage.TRANSCRIBED)
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.TRANSCRIBED)
+        self.assertEqual(self.project.pipeline_error_code, "")
+        self.assertIsNone(self.project.pipeline_error_at)
 
     def test_record_error_stores_code_and_timestamp(self):
         record_error(self.project.id, "AIAuthenticationError")
