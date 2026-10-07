@@ -125,6 +125,24 @@ class PipelineStateTests(TestCase):
         self.assertEqual(self.project.pipeline_error_code, "")
         self.assertIsNone(self.project.pipeline_error_at)
 
+    def test_reopen_resets_the_user_facing_status_so_the_pipeline_can_finish(self):
+        advance_to(self.project.id, PipelineStage.UPLOADED, PipelineStage.CLIPS_SELECTED)
+        mark_failed(self.project.id)
+
+        reopen(self.project.id, PipelineStage.CLIPS_SELECTED)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, VideoProject.Status.INGESTING)
+
+    def test_reopen_at_render_dispatched_restores_rendering_status(self):
+        advance_to(self.project.id, PipelineStage.UPLOADED, PipelineStage.RENDER_DISPATCHED)
+        mark_failed(self.project.id)
+
+        reopen(self.project.id, PipelineStage.RENDER_DISPATCHED)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, VideoProject.Status.RENDERING)
+
     def test_record_error_stores_code_and_timestamp(self):
         record_error(self.project.id, "AIAuthenticationError")
 

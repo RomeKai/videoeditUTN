@@ -208,6 +208,27 @@ class StageResumeTests(IngestionHarness, TestCase):
         self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
         self.assertEqual(project.pipeline_error_code, "")
 
+    def test_redispatching_a_project_failed_after_selection_reaches_awaiting_approval(self):
+        project = self.make_project(transcript_data=[{"text": "hi", "start": 0.0, "end": 1.0}])
+        VideoClip.objects.create(project=project, title="c", start_time=0, end_time=5)
+        VideoProject.objects.filter(pk=project.id).update(
+            pipeline_stage=PipelineStage.FAILED,
+            status=VideoProject.Status.FAILED,
+            pipeline_stage_status={
+                "audio_extracted": "completed",
+                "transcribed": "completed",
+                "clips_selected": "completed",
+            },
+        )
+
+        result = self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertTrue(result.successful())
+        self.assertEqual(project.pipeline_stage, PipelineStage.CLIPS_SELECTED)
+        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
+        self.mock_select.assert_not_called()
+
     def test_retry_countdown_is_exponential_with_bounded_jitter(self):
         for retries in range(5):
             ceiling = min(30 * 2 ** retries, 600)

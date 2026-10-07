@@ -140,8 +140,15 @@ def set_stage_status(project_id, stage: str, status: str) -> None:
 def reopen(project_id, stage: str) -> None:
     """Moves a FAILED project back to ``stage`` so the pipeline can resume from it."""
     advance(project_id, PipelineStage.FAILED, stage)
+    # mark_failed set the user-facing status to FAILED; without resetting it a
+    # resume past the early stages would never reach AWAITING_APPROVAL/COMPLETED.
+    status = (
+        VideoProject.Status.RENDERING
+        if stage == PipelineStage.RENDER_DISPATCHED
+        else VideoProject.Status.INGESTING
+    )
     VideoProject.objects.filter(pk=project_id).update(
-        pipeline_error_code="", pipeline_error_at=None
+        pipeline_error_code="", pipeline_error_at=None, status=status
     )
 
 
