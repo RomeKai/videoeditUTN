@@ -37,7 +37,7 @@ if "litellm" not in sys.modules:
     _litellm_stub.cache = None
     sys.modules["litellm"] = _litellm_stub
 
-from django.test import override_settings
+from django.test import SimpleTestCase, override_settings
 
 from apps.videos.services.ai.contracts import (
     AIExecutionResult,
@@ -81,7 +81,7 @@ def _fake_provider() -> MagicMock:
 
 
 @override_settings(AI_CORE_V2_ENABLED=True)
-class TestV2Routing(unittest.TestCase):
+class TestV2Routing(SimpleTestCase):
     def test_public_response_keeps_five_keys(self):
         clips = SelectionEngine.select_viral_clips(
             transcription_data={"full_text": "Hola mundo", "segments": _SEGMENTS},
@@ -170,7 +170,7 @@ class TestV2Routing(unittest.TestCase):
 
 @override_settings(AI_CORE_V2_ENABLED=False, GEMINI_API_KEY="g-key",
                    AI_DEFAULT_LLM_MODEL="gemini/gemini-flash-latest")
-class TestLegacyRouting(unittest.TestCase):
+class TestLegacyRouting(SimpleTestCase):
     def test_flag_off_uses_legacy_strategy_not_provider(self):
         provider = _fake_provider()
         payload = json.dumps({"clips": [{"start": 0.0, "end": 20.0, "title": "t",

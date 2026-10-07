@@ -34,7 +34,7 @@ except Exception:
     pass
 
 from django.core.exceptions import ImproperlyConfigured
-from django.test import override_settings
+from django.test import SimpleTestCase, override_settings
 
 from apps.videos.services import transcription_engine as te_module
 from apps.videos.services.ai.contracts import (
@@ -108,7 +108,7 @@ class _FakePreprocessor:
             self.exited = True
 
 
-class _TranscriptionTestCase(unittest.TestCase):
+class _TranscriptionTestCase(SimpleTestCase):
     def setUp(self):
         fd, self.audio_path = tempfile.mkstemp(suffix=".flac")
         os.close(fd)
@@ -132,7 +132,7 @@ class _TranscriptionTestCase(unittest.TestCase):
 # 4. Import side effects
 # ---------------------------------------------------------------------------
 
-class TestImportIsCheap(unittest.TestCase):
+class TestImportIsCheap(SimpleTestCase):
     def test_module_import_does_not_import_heavy_or_network_modules(self):
         forbidden = {"whisper", "torch", "groq", "litellm"}
         seen = set()
@@ -162,7 +162,7 @@ class TestImportIsCheap(unittest.TestCase):
 # 6. Backend resolution
 # ---------------------------------------------------------------------------
 
-class TestResolveBackend(unittest.TestCase):
+class TestResolveBackend(SimpleTestCase):
     @override_settings(AI_CORE_V2_ENABLED=False, TRANSCRIPTION_BACKEND="groq")
     def test_flag_off_forces_local_even_if_backend_is_groq(self):
         self.assertIs(TranscriptionEngine.resolve_backend(), TranscriptionBackend.LOCAL)
@@ -318,7 +318,7 @@ class TestLocalPath(_TranscriptionTestCase):
 # Static helpers (unchanged behavior)
 # ---------------------------------------------------------------------------
 
-class TestGroupWordsUnchanged(unittest.TestCase):
+class TestGroupWordsUnchanged(SimpleTestCase):
     def test_groups_by_max_words(self):
         words = [{"start": i, "end": i + 1, "text": f"w{i}"} for i in range(5)]
         grouped = TranscriptionEngine.group_words(words, max_words=2)
