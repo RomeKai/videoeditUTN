@@ -2,7 +2,7 @@
 SelectionEngine — public facade for viral clip selection (AICORE-6).
 
 Routing:
-- ``AI_CORE_V2_ENABLED=True``  -> LiteLLMSelectionProvider (Gemini -> OpenAI fallback,
+- ``AI_CORE_V2_ENABLED=True``  -> LiteLLMSelectionProvider (Gemini -> Gemini-Lite default fallback, cross-provider via AI_FALLBACK_LLM_MODEL,
   structured output, grounded timestamps). Errors propagate typed; there is no
   silent fallback to the legacy selector (it would re-bill the same provider
   and hide the real failure).
@@ -107,10 +107,10 @@ class GeminiFlashStrategy(_LiteLLMLegacyStrategy):
 
 
 class GeminiFallbackStrategy(_LiteLLMLegacyStrategy):
-    """Secondary legacy strategy: model from AI_FALLBACK_LLM_MODEL (cross-provider)."""
+    """Secondary legacy strategy: model from AI_FALLBACK_LLM_MODEL (Gemini Flash-Lite by default)."""
 
     setting_name = "AI_FALLBACK_LLM_MODEL"
-    default_model = "openai/gpt-4o-mini"
+    default_model = "gemini/gemini-flash-lite-latest"
 
 
 # --- 3. CONTEXT (SELECTION ENGINE) ---

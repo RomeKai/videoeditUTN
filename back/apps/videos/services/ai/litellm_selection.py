@@ -3,7 +3,8 @@ LiteLLM Clip Selection Provider (AI Core V2).
 
 Selects viral-worthy clips from a transcription using structured LLM output.
 Uses LiteLLM as an embedded SDK (no proxy) with a cross-provider fallback chain
-(ADR-001 / plan D3): Gemini Flash as primary, OpenAI gpt-4o-mini as secondary.
+(ADR-001 / plan D3): Gemini Flash as primary, Gemini Flash-Lite as default secondary
+(cross-provider, e.g. openai/gpt-4o-mini, via AI_FALLBACK_LLM_MODEL).
 
 Design constraints:
 - JSON Schema for structured output is generated from Pydantic contracts.
@@ -56,7 +57,7 @@ _CLIP_SELECTION_SCHEMA = ClipSelectionResult.model_json_schema()
 # and timestamps anchored to the provided lines.
 _TEMPERATURE = 0.1
 _DEFAULT_TIMEOUT_SECONDS = 60.0
-_DEFAULT_FALLBACK_MODEL = "openai/gpt-4o-mini"
+_DEFAULT_FALLBACK_MODEL = "gemini/gemini-flash-lite-latest"
 _DEFAULT_MAX_TRANSCRIPT_CHARS = 400_000
 # Editing styles are single-word slugs (VideoProject.EditingStyle).
 _EDITING_STYLE_RE = re.compile(r"[a-z][a-z0-9_-]{0,23}")
@@ -547,8 +548,9 @@ class LiteLLMSelectionProvider:
     def _has_fallback(self) -> bool:
         """
         A fallback is only useful when it is a different model whose provider
-        key is configured. Same-provider fallbacks (Flash -> Flash-Lite) do not
-        survive an API outage or an account block, so the default is OpenAI.
+        key is configured. Same-provider fallbacks (Flash -> Flash-Lite, the default)
+        cover model-level errors but not an API outage or an account block;
+        set AI_FALLBACK_LLM_MODEL to another provider for that resilience.
         """
         fallback = getattr(self, "_fallback_model", None)
         if not fallback or fallback == getattr(self, "_primary_model", None):
