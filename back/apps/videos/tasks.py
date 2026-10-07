@@ -12,6 +12,7 @@ from moviepy import VideoFileClip, concatenate_videoclips
 
 # Importamos Servicios (SelectionEngine suele ser seguro, TranscriptionEngine lo cargaremos lazy por si acaso)
 from apps.videos.services.selection_engine import SelectionEngine
+from apps.videos.services.ai.contracts import ProviderUsage
 from apps.videos.services.ai.errors import NonRetryableAIError, is_retryable_error
 from apps.videos.services.ai.pipeline_state import (
     STAGE_ORDER,
@@ -713,7 +714,7 @@ def _stage_select_clips(project_id):
         )
         metadata = {**metadata, 'duration': duration, 'resolution': resolution}
 
-    result = SelectionEngine.select_viral_clips_detailed(
+    selection_kwargs = dict(
         # Segments are passed separately (not stored in metadata) so the LLM sees real timestamps.
         transcription_data={
             'full_text': metadata.get('full_text') or " ".join(s['text'] for s in segments),
@@ -725,7 +726,25 @@ def _stage_select_clips(project_id):
         duration=duration,
         intelligence_level=project.intelligence_level,
     )
-    suggestions = [clip.model_dump(include=_CLIP_SUGGESTION_FIELDS) for clip in result.data.clips]
+    if getattr(settings, 'AI_CORE_V2_ENABLED', False):
+        result = SelectionEngine.select_viral_clips_detailed(**selection_kwargs)
+        suggestions = [clip.model_dump(include=_CLIP_SUGGESTION_FIELDS) for clip in result.data.clips]
+        usage = result.usage
+    else:
+        # Kill switch off: the legacy selector stays in charge (the V2 path always
+        # goes through LiteLLM). Usage is synthetic so persistence is unchanged.
+        legacy_clips = SelectionEngine.select_viral_clips(**selection_kwargs)
+        suggestions = [
+            {
+                'start': clip['start'],
+                'end': clip['end'],
+                'title': clip['title'],
+                'virality_score': clip.get('virality_score', 0),
+                'reasoning': clip.get('reasoning', ''),
+            }
+            for clip in legacy_clips
+        ]
+        usage = ProviderUsage(provider='legacy', model='legacy', estimated_cost_usd=0.0)
 
     with transaction.atomic():
         VideoProject.objects.select_for_update().get(pk=project_id)
@@ -748,7 +767,7 @@ def _stage_select_clips(project_id):
             "raw_ai_output": suggestions,
         })
         _merge_metadata(
-            project_id, {'selection_usage': result.usage.model_dump()},
+            project_id, {'selection_usage': usage.model_dump()},
             expected_stage=PipelineStage.TRANSCRIBED,
         )
         advance(project_id, PipelineStage.TRANSCRIBED, PipelineStage.CLIPS_SELECTED)

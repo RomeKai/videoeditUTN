@@ -2,7 +2,7 @@ import os
 import shutil
 import tempfile
 from unittest.mock import patch, MagicMock
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.conf import settings
 from rest_framework.test import APITestCase
 from rest_framework import status
@@ -64,6 +64,7 @@ class IngestionV2Tests(TestCase):
         self.assertIn('scale=-2:480', command)
         self.assertIn('+faststart', command)
 
+    @override_settings(AI_CORE_V2_ENABLED=True)
     @patch('apps.videos.services.ai.project_lock.get_redis_client', return_value=FakeRedis())
     @patch('apps.videos.services.storage_service.CloudflareR2Manager.upload_video')
     @patch('apps.videos.services.transcription_engine.TranscriptionEngine.transcribe_detailed')

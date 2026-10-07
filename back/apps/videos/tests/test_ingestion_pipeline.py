@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 
 from apps.users.models import Workspace
 from apps.videos.models import VideoClip, VideoProject
@@ -74,6 +74,11 @@ class IngestionHarness:
         self.workspace = Workspace.objects.create(name="Pipe Workspace", owner=user)
         self.user = user
         self.redis = FakeRedis()
+
+        # Pipeline tests exercise the V2 selection path unless a test says otherwise.
+        flag = override_settings(AI_CORE_V2_ENABLED=True)
+        flag.enable()
+        self.addCleanup(flag.disable)
 
         self.mock_transcribe = self._patch(TRANSCRIBE, return_value=transcription_result())
         self.mock_select = self._patch(SELECT, return_value=selection_result())
@@ -283,6 +288,58 @@ class LegacyRowTests(IngestionHarness, TestCase):
         self.assertEqual(project.metadata["subtitle_size"], "large")
         self.assertEqual(project.metadata["niche"], "gaming")
         self.assertEqual(project.metadata["full_text"], "Hello world")
+
+
+LEGACY_SELECT = "apps.videos.services.selection_engine.SelectionEngine.select_viral_clips"
+
+
+class FeatureFlagTests(IngestionHarness, TestCase):
+    def legacy_clips(self):
+        return [
+            {"start": 0.0, "end": 5.0, "title": "Legacy", "virality_score": 80, "reasoning": "r"}
+        ]
+
+    @override_settings(AI_CORE_V2_ENABLED=False)
+    def test_flag_off_uses_the_legacy_selector_and_never_the_litellm_path(self):
+        project = self.make_project()
+
+        with patch(LEGACY_SELECT, return_value=self.legacy_clips()) as legacy:
+            result = self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertTrue(result.successful())
+        legacy.assert_called_once()
+        self.mock_select.assert_not_called()
+        self.assertEqual(project.pipeline_stage, PipelineStage.CLIPS_SELECTED)
+        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
+        self.assertEqual(project.clips.get().title, "Legacy")
+        self.assertEqual(project.ai_rationale_log["suggestions_count"], 1)
+
+    @override_settings(AI_CORE_V2_ENABLED=False)
+    def test_flag_off_records_synthetic_zero_cost_usage(self):
+        project = self.make_project()
+
+        with patch(LEGACY_SELECT, return_value=self.legacy_clips()):
+            self.run_task(project)
+
+        project.refresh_from_db()
+        usage = project.metadata["selection_usage"]
+        self.assertEqual(usage["provider"], "legacy")
+        self.assertEqual(usage["total_tokens"], 0)
+        self.assertEqual(usage["estimated_cost_usd"], 0.0)
+
+    @override_settings(AI_CORE_V2_ENABLED=True)
+    def test_flag_on_uses_the_detailed_v2_selector(self):
+        project = self.make_project()
+
+        with patch(LEGACY_SELECT) as legacy:
+            result = self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertTrue(result.successful())
+        self.mock_select.assert_called_once()
+        legacy.assert_not_called()
+        self.assertEqual(project.metadata["selection_usage"]["provider"], "litellm")
 
 
 class MergeMetadataTests(IngestionHarness, TestCase):
