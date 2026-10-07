@@ -484,16 +484,79 @@ class RenderDispatchTests(IngestionHarness, TestCase):
 
         self.mock_render.assert_not_called()
 
-    def test_redelivered_task_does_not_dispatch_renders_twice(self):
+    def test_redelivered_task_does_not_dispatch_clips_that_already_rendered(self):
         project = self.make_project(auto_render_bypass=True)
 
         with self.captureOnCommitCallbacks(execute=True):
             self.run_task(project)
+        VideoClip.objects.filter(project=project).update(status=VideoClip.Status.COMPLETED)
         with self.captureOnCommitCallbacks(execute=True):
             self.run_task(project)
 
         self.assertEqual(self.mock_render.call_count, 1)
         self.mock_transcribe.assert_called_once()
+
+    def test_rerun_after_the_worker_died_before_on_commit_dispatches_the_clips(self):
+        self.mock_select.return_value = selection_result(count=2)
+        project = self.make_project(auto_render_bypass=True)
+
+        with self.captureOnCommitCallbacks(execute=False):
+            self.run_task(project)  # worker dies before the on_commit callbacks run
+        self.mock_render.assert_not_called()
+
+        result = self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertTrue(result.successful())
+        self.assertEqual(self.mock_render.call_count, 2)
+        self.assertEqual(project.pipeline_stage, PipelineStage.RENDER_DISPATCHED)
+        self.mock_transcribe.assert_called_once()
+
+    def test_delay_failure_keeps_the_stage_resumable(self):
+        project = self.make_project(auto_render_bypass=True)
+        self.mock_render.side_effect = [ConnectionError("broker down"), None]
+
+        with self.assertRaises(ConnectionError):
+            with self.captureOnCommitCallbacks(execute=True):
+                self.run_task(project)
+
+        result = self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertTrue(result.successful())
+        self.assertEqual(self.mock_render.call_count, 2)
+        self.assertEqual(project.pipeline_stage, PipelineStage.RENDER_DISPATCHED)
+
+    def test_failed_dispatch_is_resumable_after_reopen(self):
+        project = self.make_project(auto_render_bypass=True)
+        with self.captureOnCommitCallbacks(execute=False):
+            self.run_task(project)
+        VideoProject.objects.filter(pk=project.id).update(
+            pipeline_stage=PipelineStage.FAILED, status=VideoProject.Status.FAILED
+        )
+
+        result = self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertTrue(result.successful())
+        self.assertEqual(self.mock_render.call_count, 1)
+        self.assertEqual(project.pipeline_stage, PipelineStage.RENDER_DISPATCHED)
+        self.assertEqual(project.status, VideoProject.Status.RENDERING)
+
+    def test_resume_with_all_clips_rendered_finalizes_the_project(self):
+        project = self.make_project(auto_render_bypass=True)
+        with self.captureOnCommitCallbacks(execute=False):
+            self.run_task(project)
+        VideoClip.objects.filter(project=project).update(
+            status=VideoClip.Status.COMPLETED, s3_object_key="clips/x.mp4"
+        )
+
+        self.run_task(project)
+
+        project.refresh_from_db()
+        self.mock_render.assert_not_called()
+        self.assertEqual(project.pipeline_stage, PipelineStage.COMPLETED)
+        self.assertEqual(project.status, VideoProject.Status.COMPLETED)
 
 
 class NoOpenTransactionTests(IngestionHarness, TransactionTestCase):

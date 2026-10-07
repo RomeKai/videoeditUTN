@@ -754,10 +754,12 @@ def _stage_select_clips(project_id):
         advance(project_id, PipelineStage.TRANSCRIBED, PipelineStage.CLIPS_SELECTED)
 
 
-def _stage_dispatch_render(project_id):
+def _stage_dispatch_render(project_id, progress=None):
     """
     auto_render_bypass: one render task per clip, queued only AFTER the transition
-    commits. Rendering never runs inside this transaction.
+    commits. Rendering never runs inside this transaction. If the worker dies or
+    ``.delay()`` fails after the commit, the project is left at RENDER_DISPATCHED
+    with its clips still DRAFT and ``_resume_render_dispatch`` queues them again.
     """
     with transaction.atomic():
         VideoProject.objects.select_for_update().get(pk=project_id)
@@ -769,9 +771,43 @@ def _stage_dispatch_render(project_id):
             raise NonRetryableAIError("Selection produced no clips to render.", provider="pipeline")
 
         advance(project_id, PipelineStage.CLIPS_SELECTED, PipelineStage.RENDER_DISPATCHED)
+        if progress is not None:
+            # The stage is ours now: a failure past this point must be recorded against it.
+            progress['stage'] = PipelineStage.RENDER_DISPATCHED
         VideoProject.objects.filter(pk=project_id).update(status=VideoProject.Status.RENDERING)
         for clip_id in clip_ids:
             transaction.on_commit(lambda clip_id=clip_id: render_clip_task.delay(str(clip_id)))
+
+
+def _resume_render_dispatch(project_id):
+    """
+    Project is at RENDER_DISPATCHED: (re)queue every clip still DRAFT. Duplicates
+    are harmless: render_clip_task claims the clip with a CAS and skips COMPLETED
+    ones. With nothing left to queue, closes the fan-out if every clip finished.
+    """
+    clip_ids = list(
+        VideoClip.objects.filter(project_id=project_id, status=VideoClip.Status.DRAFT)
+        .values_list('id', flat=True)
+    )
+    if not clip_ids:
+        finalize_project_render(project_id)
+        return f"Render already dispatched for {project_id}"
+
+    failure = None
+    for clip_id in clip_ids:
+        try:
+            render_clip_task.delay(str(clip_id))
+        except Exception as exc:
+            logger.exception("render.dispatch_failed project_id=%s clip_id=%s", project_id, clip_id)
+            failure = failure or exc
+    if failure is not None:
+        raise failure
+
+    logger.info(
+        "pipeline.render_redispatched project_id=%s clips=%d", project_id, len(clip_ids),
+        extra={'project_id': str(project_id)},
+    )
+    return f"Render re-dispatched for {project_id}: {len(clip_ids)} clips"
 
 
 def _run_ingestion(project_id, attempt, progress=None, lock=None):
@@ -796,8 +832,12 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None):
         reopen(project_id, stage)
         progress['stage'] = stage
 
-    if stage in TERMINAL_STAGES or stage == PipelineStage.RENDER_DISPATCHED:
+    if stage in TERMINAL_STAGES:
         return f"Nothing to do for {project_id}: already {stage}"
+
+    if stage == PipelineStage.RENDER_DISPATCHED:
+        renew_lock()
+        return _resume_render_dispatch(project_id)
 
     # Rows without recorded state may already hold a transcript or clips.
     inferred = infer_completed_stage(project)
@@ -834,7 +874,7 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None):
         if VideoProject.objects.get(pk=project_id).auto_render_bypass:
             logger.info("⏩ Auto-render bypass active. Dispatching clip renders.")
             with _running_stage(project_id, PipelineStage.RENDER_DISPATCHED, attempt):
-                _stage_dispatch_render(project_id)
+                _stage_dispatch_render(project_id, progress)
         else:
             logger.info("⏳ Ingestion complete. Awaiting user approval.")
             # Guarded: a redelivered task must not undo a later user action.
