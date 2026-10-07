@@ -2,7 +2,7 @@
 
 **Estado:** `superseded`
 **Fecha:** 2026-06 (decisión original) | 2026-09-01 (documentación formal) | 2026-09-17 (superado por arquitectura AICORE)
-**Superado por:** [ADR-007: Migración a Groq Whisper API (AICORE)](007-groq-whisper-migration.md) / Épica AICORE
+**Superado por:** [ADR-008: Migración a Groq Whisper API (AICORE)](008-groq-whisper-migration.md) / Épica AICORE
 **Par responsable:** 🧠 Par IA (Dev 1 + Dev 2)
 
 ---

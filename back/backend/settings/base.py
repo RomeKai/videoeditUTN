@@ -136,6 +136,11 @@ AI_DEFAULT_LLM_MODEL = env('AI_DEFAULT_LLM_MODEL', default='gemini/gemini-flash-
 AI_FALLBACK_LLM_MODEL = env('AI_FALLBACK_LLM_MODEL', default='gemini/gemini-flash-lite-latest')
 AI_DEFAULT_TRANSCRIPTION_MODEL = env('AI_DEFAULT_TRANSCRIPTION_MODEL', default='whisper-large-v3-turbo')
 
+# Transcription backend when AI_CORE_V2_ENABLED=True: 'groq' (default) | 'local'.
+# There is no automatic fallback between backends (ADR-008): Groq failures are
+# retried by Celery; 'local' loads openai-whisper and is meant for dev/rollback only.
+TRANSCRIPTION_BACKEND = env('TRANSCRIPTION_BACKEND', default='groq')
+
 # JWT Configuration
 from datetime import timedelta
 SIMPLE_JWT = {
