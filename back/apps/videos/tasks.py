@@ -13,7 +13,7 @@ from moviepy import VideoFileClip, concatenate_videoclips
 # Importamos Servicios (SelectionEngine suele ser seguro, TranscriptionEngine lo cargaremos lazy por si acaso)
 from apps.videos.services.selection_engine import SelectionEngine
 from apps.videos.services.ai.contracts import ProviderUsage
-from apps.videos.services.ai.errors import NonRetryableAIError, is_retryable_error
+from apps.videos.services.ai.errors import AIError, NonRetryableAIError, is_retryable_error
 from apps.videos.services.ai.pipeline_state import (
     STAGE_ORDER,
     TERMINAL_STAGES,
@@ -551,6 +551,75 @@ PIPELINE_LOCK_MAX_RETRIES = 8
 _CLIP_SUGGESTION_FIELDS = {'start', 'end', 'title', 'virality_score', 'reasoning'}
 
 
+# --- Transient infrastructure errors -----------------------------------------
+# errors.is_retryable_error only knows AI/provider failures. The source-preparation
+# and persistence stages also fail transiently on R2, yt-dlp, the filesystem and
+# the database; those must back off and retry instead of failing the project for
+# good. Deterministic errors (403, missing file, private video) stay non-retryable.
+
+_TRANSIENT_S3_ERROR_CODES = frozenset({
+    'SlowDown', 'RequestTimeout', 'ServiceUnavailable', 'InternalError',
+    'Throttling', 'ThrottlingException', 'RequestLimitExceeded', 'TooManyRequests',
+})
+_PERMANENT_DOWNLOAD_MARKERS = (
+    'video unavailable', 'private video', 'sign in', 'unsupported url', 'copyright',
+    'not available', 'does not exist', 'has been removed', 'members-only', 'age-restricted',
+)
+_DETERMINISTIC_OS_ERRORS = (
+    FileNotFoundError, PermissionError, IsADirectoryError, NotADirectoryError, FileExistsError,
+)
+
+
+def _is_retryable_pipeline_error(exc):
+    """AI errors keep their own flag; known transient infrastructure errors retry."""
+    if isinstance(exc, AIError):
+        return is_retryable_error(exc)
+    if is_retryable_error(exc):
+        return True
+
+    from django.db import InterfaceError, OperationalError
+    if isinstance(exc, (OperationalError, InterfaceError)):
+        return True
+
+    try:
+        from botocore.exceptions import BotoCoreError, ClientError
+    except ImportError:  # pragma: no cover - boto3 is a hard dependency
+        BotoCoreError = ClientError = ()
+    if ClientError and isinstance(exc, ClientError):
+        error = exc.response.get('Error', {})
+        http_status = exc.response.get('ResponseMetadata', {}).get('HTTPStatusCode', 0) or 0
+        return (
+            http_status >= 500
+            or http_status in (408, 429)
+            or error.get('Code') in _TRANSIENT_S3_ERROR_CODES
+        )
+    if BotoCoreError and isinstance(exc, BotoCoreError):
+        # Endpoint/connection/read-timeout failures; config errors are rare and bounded by max_retries.
+        return True
+
+    try:
+        from yt_dlp.utils import DownloadError
+    except ImportError:  # pragma: no cover
+        DownloadError = ()
+    if DownloadError and isinstance(exc, DownloadError):
+        message = str(exc).lower()
+        return not any(marker in message for marker in _PERMANENT_DOWNLOAD_MARKERS)
+
+    try:
+        from kombu.exceptions import OperationalError as BrokerError
+        import redis
+        broker_errors = (BrokerError, redis.exceptions.ConnectionError, redis.exceptions.TimeoutError)
+    except ImportError:  # pragma: no cover
+        broker_errors = ()
+    if broker_errors and isinstance(exc, broker_errors):
+        return True
+
+    if isinstance(exc, OSError):
+        return not isinstance(exc, _DETERMINISTIC_OS_ERRORS)
+
+    return False
+
+
 def _retry_countdown(retries):
     """Exponential backoff (30s, 60s, 120s... capped) with equal jitter to avoid retry storms."""
     ceiling = min(PIPELINE_RETRY_BASE_SECONDS * (2 ** retries), PIPELINE_RETRY_CAP_SECONDS)
@@ -973,7 +1042,7 @@ def process_initial_ingestion(self, project_id):
         )
         return f"Skipped {project_id}: {exc}"
     except Exception as exc:
-        will_retry = is_retryable_error(exc) and self.request.retries < self.max_retries
+        will_retry = _is_retryable_pipeline_error(exc) and self.request.retries < self.max_retries
         _record_pipeline_failure(
             project_id, exc, attempt, final=not will_retry, stage=progress.get('stage')
         )

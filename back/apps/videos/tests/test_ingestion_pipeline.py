@@ -2,7 +2,8 @@ from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import connection
+from botocore.exceptions import ClientError, EndpointConnectionError
+from django.db import OperationalError, connection
 from django.test import TestCase, TransactionTestCase, override_settings
 
 from apps.users.models import Workspace
@@ -25,6 +26,7 @@ from apps.videos.services.ai.pipeline_state import PipelineConflictError
 from apps.videos.tasks import (
     PIPELINE_LOCK_MAX_RETRIES,
     PIPELINE_LOCK_RETRY_SECONDS,
+    _is_retryable_pipeline_error,
     _merge_metadata,
     _retry_countdown,
     process_initial_ingestion,
@@ -340,6 +342,93 @@ class FeatureFlagTests(IngestionHarness, TestCase):
         self.mock_select.assert_called_once()
         legacy.assert_not_called()
         self.assertEqual(project.metadata["selection_usage"]["provider"], "litellm")
+
+
+def client_error(code, status):
+    return ClientError(
+        {"Error": {"Code": code, "Message": "x"}, "ResponseMetadata": {"HTTPStatusCode": status}},
+        "PutObject",
+    )
+
+
+class RetryableInfraErrorTests(IngestionHarness, TestCase):
+    def test_transient_infrastructure_errors_are_retryable(self):
+        from yt_dlp.utils import DownloadError
+
+        transient = [
+            EndpointConnectionError(endpoint_url="https://r2"),
+            client_error("SlowDown", 503),
+            client_error("InternalError", 500),
+            DownloadError("HTTP Error 503: Service Unavailable"),
+            DownloadError("Read timed out"),
+            OSError("disk hiccup"),
+            OperationalError("server closed the connection"),
+        ]
+        for exc in transient:
+            with self.subTest(exc=repr(exc)):
+                self.assertTrue(_is_retryable_pipeline_error(exc))
+
+    def test_deterministic_errors_stay_non_retryable(self):
+        from yt_dlp.utils import DownloadError
+
+        deterministic = [
+            client_error("AccessDenied", 403),
+            client_error("NoSuchBucket", 404),
+            DownloadError("Video unavailable"),
+            DownloadError("Private video. Sign in if you've been granted access"),
+            FileNotFoundError("missing.mp4"),
+            PermissionError("denied"),
+            ValueError("bad input"),
+            AIAuthenticationError("bad key"),
+        ]
+        for exc in deterministic:
+            with self.subTest(exc=repr(exc)):
+                self.assertFalse(_is_retryable_pipeline_error(exc))
+
+    def test_non_retryable_ai_errors_are_not_overridden_by_the_safelist(self):
+        class OddAIError(AIAuthenticationError, OSError):
+            pass
+
+        self.assertFalse(_is_retryable_pipeline_error(OddAIError("x")))
+
+    def test_transient_r2_failure_in_source_preparation_is_retried(self):
+        project = self.make_project()
+        calls = []
+
+        def flaky_upload(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise EndpointConnectionError(endpoint_url="https://r2")
+            return "r2_key"
+
+        self.mock_upload.side_effect = flaky_upload
+
+        result = self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertTrue(result.successful())
+        self.assertEqual(project.pipeline_stage, PipelineStage.CLIPS_SELECTED)
+        self.assertEqual(project.pipeline_attempts, 1)
+
+    def test_transient_database_error_in_a_stage_is_retried(self):
+        project = self.make_project()
+        self.mock_select.side_effect = [OperationalError("db gone"), selection_result()]
+
+        result = self.run_task(project)
+
+        self.assertTrue(result.successful())
+        self.assertEqual(self.mock_select.call_count, 2)
+
+    def test_deterministic_r2_error_fails_the_project_without_retrying(self):
+        project = self.make_project()
+        self.mock_upload.side_effect = client_error("AccessDenied", 403)
+
+        result = self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertTrue(result.failed())
+        self.assertEqual(self.mock_upload.call_count, 1)
+        self.assertEqual(project.pipeline_stage, PipelineStage.FAILED)
 
 
 class MergeMetadataTests(IngestionHarness, TestCase):
