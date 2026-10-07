@@ -3,6 +3,26 @@
 import threading
 
 import redis
+from django.test import override_settings
+
+
+class CapturedTaskFailures:
+    """Test mixin: ``task.apply()`` captures failures in the EagerResult.
+
+    ``backend.settings.ci`` sets ``CELERY_TASK_EAGER_PROPAGATES=True`` while the
+    default settings do not. Tests that assert on ``result.failed()`` must not
+    depend on whichever settings module runs them, so the flag is pinned to
+    False for the class and restored afterwards.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # Celery reads this through the Django settings namespace (CELERY_*),
+        # so override_settings is the layer that actually takes effect.
+        override = override_settings(CELERY_TASK_EAGER_PROPAGATES=False)
+        override.enable()
+        cls.addClassCleanup(override.disable)
 
 
 class FakeLock:

@@ -31,7 +31,7 @@ from apps.videos.tasks import (
     _retry_countdown,
     process_initial_ingestion,
 )
-from apps.videos.tests.fakes import DownRedis, FakeRedis
+from apps.videos.tests.fakes import CapturedTaskFailures, DownRedis, FakeRedis
 
 User = get_user_model()
 
@@ -67,7 +67,7 @@ def selection_result(count=1):
     )
 
 
-class IngestionHarness:
+class IngestionHarness(CapturedTaskFailures):
     """Shared fixtures: every external dependency mocked, Redis replaced by a fake."""
 
     def setUp(self):

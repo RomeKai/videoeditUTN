@@ -8,6 +8,7 @@ from apps.users.models import Workspace
 from apps.videos.models import ScheduledPost, VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import PipelineStage
 from apps.videos.tasks import _claim_clip_for_render, render_clip_task, upload_to_social_network
+from apps.videos.tests.fakes import CapturedTaskFailures
 from backend.celery import app as celery_app
 
 User = get_user_model()
@@ -16,7 +17,7 @@ RENDER = "apps.videos.services.render_engine.RenderEngine.render_clip"
 DELETE = "apps.videos.services.storage_service.CloudflareR2Manager.delete_object"
 
 
-class RenderHarness:
+class RenderHarness(CapturedTaskFailures):
     def setUp(self):
         super().setUp()
         user = User.objects.create_user(username="rend", email="rend@test.com", password="pw")
@@ -192,7 +193,7 @@ class RenderNoTransactionTests(RenderHarness, TransactionTestCase):
         self.assertEqual(observed, [False])
 
 
-class UploadToSocialNetworkTests(TestCase):
+class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
     def setUp(self):
         user = User.objects.create_user(username="soc", email="soc@test.com", password="pw")
         self.workspace = Workspace.objects.create(
