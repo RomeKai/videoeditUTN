@@ -1,5 +1,5 @@
 """
-Unit tests for TranscriptionEngine backend routing (AICORE-5 / ADR-007).
+Unit tests for TranscriptionEngine backend routing (AICORE-5 / ADR-008).
 
 Acceptance criteria covered:
 1. transcribe() keeps its public signature and {start, end, text} output.

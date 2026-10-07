@@ -34,12 +34,14 @@ class FinancialIntegrityTests(TransactionTestCase):
         
         def attempt_spend():
             # We must close the connection in each thread for Django's TransactionTestCase
-            connection.close() 
+            connection.close()
             try:
                 reserve_funds(self.wallet.id, amount_to_spend, user=self.user, description="Concurrent test")
                 return True
             except Exception:
                 return False
+            finally:
+                connection.close()
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             results = list(executor.map(lambda _: attempt_spend(), range(num_threads)))
