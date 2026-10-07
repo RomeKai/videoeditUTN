@@ -238,6 +238,49 @@ class TestStructuredOutput(unittest.TestCase):
                     )
 
 
+class TestSchemaRetryHeuristic(unittest.TestCase):
+    """The json_object retry must only fire for structured-output rejections.
+
+    Found by the live smoke test: a Gemini 404 (model not found, message contains
+    "not supported") and 503 overloads triggered a second, pointless call.
+    """
+
+    @staticmethod
+    def _error(message, status_code):
+        exc = Exception(message)
+        exc.status_code = status_code
+        return exc
+
+    def _calls_for(self, exc):
+        provider = _build_provider()
+        import litellm
+        with patch.object(litellm, "completion", side_effect=exc) as mock_comp:
+            with patch.object(provider, "_has_fallback", return_value=False):
+                with self.assertRaises(Exception):
+                    provider.select_clips(transcript="Test content", video_duration=300.0)
+        return mock_comp.call_count
+
+    def test_model_not_found_is_not_retried(self):
+        exc = self._error("models/x is not found for API version, or is not supported for generateContent", 404)
+        self.assertEqual(self._calls_for(exc), 1)
+
+    def test_overload_503_is_not_retried(self):
+        self.assertEqual(self._calls_for(self._error("The model is overloaded. 503 Service Unavailable", 503)), 1)
+
+    def test_rate_limit_is_not_retried(self):
+        self.assertEqual(self._calls_for(self._error("quota exceeded, not supported tier", 429)), 1)
+
+    def test_schema_rejection_retries_once_with_json_object(self):
+        provider = _build_provider()
+        ok = _make_llm_response(_valid_clips_response())
+        import litellm
+        rejection = self._error("response_format json_schema is not supported by this model", 400)
+        with patch.object(litellm, "completion", side_effect=[rejection, ok]) as mock_comp:
+            provider.select_clips(transcript="Test content", video_duration=300.0)
+        self.assertEqual(mock_comp.call_count, 2)
+        self.assertEqual(mock_comp.call_args.kwargs["response_format"], {"type": "json_object"})
+
+
 class TestClipValidation(unittest.TestCase):
     """AC: Clips validated against actual video duration."""
 

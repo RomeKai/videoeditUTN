@@ -257,8 +257,7 @@ class LiteLLMSelectionProvider:
                     response_format=self._response_format(model), **call_kwargs
                 )
             except Exception as endpoint_err:
-                err_str = str(endpoint_err).lower()
-                if "unavailable" in err_str or "503" in err_str or "not supported" in err_str:
+                if self._is_schema_rejection(endpoint_err):
                     logger.warning(
                         "selection.schema_unsupported model=%s error=%s retrying with json_object",
                         model,
@@ -284,6 +283,20 @@ class LiteLLMSelectionProvider:
 
         except Exception as exc:
             raise self._classify_error(exc) from exc
+
+    @staticmethod
+    def _is_schema_rejection(exc: Exception) -> bool:
+        """
+        True only when the provider rejected the structured-output request itself,
+        so a plain ``json_object`` retry can succeed. Auth, not-found, rate-limit
+        and overload errors never benefit from a second call with another format.
+        """
+        status_code = getattr(exc, "status_code", None)
+        if status_code in (401, 403, 404, 429):
+            return False
+        message = str(exc).lower()
+        hints = ("response_format", "response_schema", "json_schema", "schema", "structured output")
+        return any(hint in message for hint in hints)
 
     @staticmethod
     def _response_format(model: str) -> Dict[str, Any]:
