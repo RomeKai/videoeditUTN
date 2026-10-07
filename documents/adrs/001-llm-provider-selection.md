@@ -173,3 +173,17 @@ Esto permite que el servidor web / VPS opere con recursos mínimos (1-2 vCPUs, 2
 - [Groq Cloud API Reference](https://console.groq.com/docs/speech-text)
 - [OpenAI Pricing](https://openai.com/api/pricing/)
 - [instructor library (multi-provider Structured Outputs)](https://github.com/jxnl/instructor)
+
+---
+
+## Addendum 2026-10-06: Alineación con la implementación (AICORE-6, #40)
+
+> Corrige la deriva entre este ADR y el código tras el commit `ec69e07`, que había consolidado la cadena en Gemini → Gemini-Lite.
+
+1. **Cadena de fallback cross-provider.** Primario: `AI_DEFAULT_LLM_MODEL` (Gemini Flash). Secundario: `AI_FALLBACK_LLM_MODEL=openai/gpt-4o-mini`. Un fallback dentro del mismo proveedor no sobrevive a una caída de la API ni a un bloqueo de la cuenta. El fallback solo se activa si es otro modelo y su key está configurada.
+2. **Credenciales por llamada.** `llm_credentials.resolve_api_key(model)` mapea el prefijo del modelo (`gemini/`, `openai/`, `groq/`, `xai/`) a su setting, y la key se pasa en `completion(api_key=...)`. Queda prohibido mutar `litellm.api_key`: es estado global del proceso y filtraría keys entre proveedores.
+3. **Parámetros de llamada.** `temperature=0.1` (es una tarea de extracción estructurada), `timeout=AI_LLM_TIMEOUT_SECONDS` y `num_retries=0` (los reintentos son responsabilidad de Celery). Formato estructurado según el proveedor: `json_schema` no estricto para OpenAI y `response_schema` para Gemini.
+4. **Transcript con timestamps reales.** El LLM recibe líneas `[START-END] texto` (`transcript_formatter.py`) y los cortes deben coincidir con esos límites. Antes recibía texto plano y los timestamps eran inventados. El tope `AI_LLM_MAX_TRANSCRIPT_CHARS` está dimensionado para la ventana de 128K de gpt-4o-mini.
+5. **Aislamiento.** El transcript pasa por `AI_Security_Shield.isolate_user_input()`. Ese import es diferido porque `security.py` carga el SDK de OpenAI. Antes de formatear se neutralizan los corchetes y saltos de línea dentro del texto, para impedir que el audio falsifique líneas `[START-END]`.
+6. **Sin fallback silencioso a legacy.** Con `AI_CORE_V2_ENABLED=True` los errores se propagan con su tipo; el selector legacy solo se usa con el flag apagado.
+7. **Pendiente (TD-02):** la caché por hash de transcripción (§3 del addendum anterior) sigue sin implementar y queda condicionada a los datos del piloto (#42).
