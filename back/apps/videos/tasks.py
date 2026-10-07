@@ -408,117 +408,115 @@ def render_video_segments(self, project_id):
     from moviepy import VideoFileClip, concatenate_videoclips
     import tempfile
 
+    output_path = None
     try:
         project = VideoProject.objects.get(id=project_id)
         approved_segments = project.approved_segments
-        
+
         if not approved_segments:
             raise Exception("No segments approved for rendering.")
 
         # 1. DOWNLOAD ORIGINAL FROM R2 (Temporary)
         r2_key = project.original_r2_key
         if not r2_key: raise Exception("No original_r2_key found.")
-        
-        # Use tempfile to ensure cleanup
-        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_high_res:
+
+        # The source copy lives in a TemporaryDirectory so it is removed on every
+        # exit path, not only on success (Bug 4).
+        with tempfile.TemporaryDirectory() as work_dir:
+            local_high_res_path = os.path.join(work_dir, 'source.mp4')
             CloudflareR2Manager.get_client().download_file(
-                settings.CLOUDFLARE_R2_BUCKET_NAME, 
-                r2_key, 
-                tmp_high_res.name
+                settings.CLOUDFLARE_R2_BUCKET_NAME,
+                r2_key,
+                local_high_res_path
             )
-            local_high_res_path = tmp_high_res.name
 
-        # 2. NON-LINEAR EDITING (Cuts)
-        with VideoFileClip(local_high_res_path) as original_clip:
-            subclips = []
-            for seg in approved_segments:
-                start = float(seg['start'])
-                end = float(seg['end'])
-                # MoviePy 2.0+ subclipped method
-                subclips.append(original_clip.subclipped(start, end))
-
-            # Concatenate all approved parts
-            edited_clip = concatenate_videoclips(subclips)
-            
-            # 3. APPLY LAYOUT & SUBTITLES (Reuse RenderEngine Logic)
-            target_w, target_h = RenderEngine._get_target_resolution(project.aspect_ratio)
-            use_ft = project.use_facetracking
-            gp_pos = project.gameplay_position
-            
-            from apps.videos.services.layouts import get_layout_strategy
-            layout_strategy = get_layout_strategy(project.render_layout, target_w, target_h, use_facetracking=use_ft, gameplay_pos=gp_pos)
-            video_layout_processed = layout_strategy.apply(edited_clip)
-
-            # Burn Subtitles if requested
-            if project.add_subtitles:
-                from apps.videos.services.subtitle_engine import SubtitleEngine, StyleConfig
-                # Mapping settings
-                size_map = {"small": 0.04, "medium": 0.06, "large": 0.09}
-                pos_map = {"top": 0.20, "center": 0.50, "bottom": 0.85}
-                
-                sub_config = StyleConfig(
-                    font_path='Montserrat-Bold.ttf',
-                    font_size_percent=size_map.get(project.subtitle_size, 0.06),
-                    primary_color=project.subtitle_color,
-                    y_position_percent=pos_map.get(project.subtitle_position, 0.85)
-                )
-                
-                subtitler = SubtitleEngine(style_config=sub_config)
-                
-                # IMPORTANT: In Paper Edit, the transcription timings must be RE-CALCULATED
-                # because the final video is shorter. For simplicity, we use the original text
-                # from the segments provided by the user.
-                final_segments = []
-                curr_t = 0.0
+            # 2. NON-LINEAR EDITING (Cuts)
+            with VideoFileClip(local_high_res_path) as original_clip:
+                subclips = []
                 for seg in approved_segments:
-                    dur = float(seg['end']) - float(seg['start'])
-                    final_segments.append({"text": seg.get('text', ''), "start": curr_t, "end": curr_t + dur})
-                    curr_t += dur
+                    start = float(seg['start'])
+                    end = float(seg['end'])
+                    # MoviePy 2.0+ subclipped method
+                    subclips.append(original_clip.subclipped(start, end))
+
+                # Concatenate all approved parts
+                edited_clip = concatenate_videoclips(subclips)
+            
+                # 3. APPLY LAYOUT & SUBTITLES (Reuse RenderEngine Logic)
+                target_w, target_h = RenderEngine._get_target_resolution(project.aspect_ratio)
+                use_ft = project.use_facetracking
+                gp_pos = project.gameplay_position
+            
+                from apps.videos.services.layouts import get_layout_strategy
+                layout_strategy = get_layout_strategy(project.render_layout, target_w, target_h, use_facetracking=use_ft, gameplay_pos=gp_pos)
+                video_layout_processed = layout_strategy.apply(edited_clip)
+
+                # Burn Subtitles if requested
+                if project.add_subtitles:
+                    from apps.videos.services.subtitle_engine import SubtitleEngine, StyleConfig
+                    # Mapping settings
+                    size_map = {"small": 0.04, "medium": 0.06, "large": 0.09}
+                    pos_map = {"top": 0.20, "center": 0.50, "bottom": 0.85}
                 
-                final_clip = subtitler.add_subtitles(video_layout_processed, final_segments)
-            else:
-                final_clip = video_layout_processed
+                    sub_config = StyleConfig(
+                        font_path='Montserrat-Bold.ttf',
+                        font_size_percent=size_map.get(project.subtitle_size, 0.06),
+                        primary_color=project.subtitle_color,
+                        y_position_percent=pos_map.get(project.subtitle_position, 0.85)
+                    )
+                
+                    subtitler = SubtitleEngine(style_config=sub_config)
+                
+                    # IMPORTANT: In Paper Edit, the transcription timings must be RE-CALCULATED
+                    # because the final video is shorter. For simplicity, we use the original text
+                    # from the segments provided by the user.
+                    final_segments = []
+                    curr_t = 0.0
+                    for seg in approved_segments:
+                        dur = float(seg['end']) - float(seg['start'])
+                        final_segments.append({"text": seg.get('text', ''), "start": curr_t, "end": curr_t + dur})
+                        curr_t += dur
+                
+                    final_clip = subtitler.add_subtitles(video_layout_processed, final_segments)
+                else:
+                    final_clip = video_layout_processed
 
-            # 4. EXPORT & S3 UPLOAD
-            output_filename = f"final_{project.id}.mp4"
-            output_dir = os.path.join(settings.MEDIA_ROOT, 'videos', 'final')
-            os.makedirs(output_dir, exist_ok=True)
-            output_path = os.path.join(output_dir, output_filename)
+                # 4. EXPORT & S3 UPLOAD
+                output_filename = f"final_{project.id}.mp4"
+                output_dir = os.path.join(settings.MEDIA_ROOT, 'videos', 'final')
+                os.makedirs(output_dir, exist_ok=True)
+                output_path = os.path.join(output_dir, output_filename)
 
-            final_clip.write_videofile(
-                output_path,
-                codec='libx264',
-                audio_codec='aac',
-                fps=24,
-                preset='slow', # High quality for final
-                threads=4,
-                logger=None
-            )
+                final_clip.write_videofile(
+                    output_path,
+                    codec='libx264',
+                    audio_codec='aac',
+                    fps=24,
+                    preset='slow', # High quality for final
+                    threads=4,
+                    logger=None
+                )
 
-            user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
-            final_s3_key = CloudflareR2Manager.upload_video(output_path, user_id, f"{project.id}/final")
+                user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
+                final_s3_key = CloudflareR2Manager.upload_video(output_path, user_id, f"{project.id}/final")
 
-            # 5. FINAL PERSISTENCE
-            project.final_export_r2_key = final_s3_key
-            project.status = VideoProject.Status.COMPLETED
-            project.save()
+                # 5. FINAL PERSISTENCE
+                project.final_export_r2_key = final_s3_key
+                project.status = VideoProject.Status.COMPLETED
+                project.save()
 
-            # We create a final VideoClip record to represent the full edited video
-            final_clip_obj = VideoClip.objects.create(
-                project=project,
-                title="VIDEO FINAL EDITADO",
-                start_time=0,
-                end_time=edited_clip.duration,
-                s3_object_key=final_s3_key,
-                status=VideoClip.Status.COMPLETED
-            )
+                # We create a final VideoClip record to represent the full edited video
+                final_clip_obj = VideoClip.objects.create(
+                    project=project,
+                    title="VIDEO FINAL EDITADO",
+                    start_time=0,
+                    end_time=edited_clip.duration,
+                    s3_object_key=final_s3_key,
+                    status=VideoClip.Status.COMPLETED
+                )
 
-            # Clean up local output
-            if os.path.exists(output_path): os.remove(output_path)
-            if os.path.exists(local_high_res_path): os.remove(local_high_res_path)
-
-            logger.info(f"✅ [FINAL RENDER] Success for project {project_id}")
-            return f"Render Success: {final_s3_key}"
+                logger.info(f"✅ [FINAL RENDER] Success for project {project_id}")
+                return f"Render Success: {final_s3_key}"
 
     except Exception as e:
         logger.error(f"❌ [FINAL RENDER ERROR] {e}", exc_info=True)
@@ -526,6 +524,11 @@ def render_video_segments(self, project_id):
             project.status = VideoProject.Status.FAILED
             project.save()
         raise self.retry(exc=e, countdown=60)
+    finally:
+        # The rendered output is written under MEDIA_ROOT, outside the temporary
+        # directory, so it is removed explicitly on every exit path.
+        if output_path and os.path.exists(output_path):
+            os.remove(output_path)
 
 # --- INGESTION PIPELINE (AICORE-7: recoverable, idempotent) ---
 #
