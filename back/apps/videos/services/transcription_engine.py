@@ -5,7 +5,7 @@ Backends:
 - ``groq``  (AI Core V2, default): remote Whisper Large V3 Turbo via Groq.
 - ``local`` (legacy): openai-whisper on the worker CPU/GPU.
 
-Routing rules (see ADR-007):
+Routing rules (see ADR-008):
 - ``AI_CORE_V2_ENABLED=False``  -> legacy local Whisper (pilot kill switch).
 - ``AI_CORE_V2_ENABLED=True``   -> ``TRANSCRIPTION_BACKEND`` (``groq`` by default).
 
