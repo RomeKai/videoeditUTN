@@ -59,4 +59,4 @@ FROM base as worker
 COPY . /app
 
 # Comando por defecto
-CMD ["celery", "-A", "backend", "worker", "-l", "info"]
+CMD ["celery", "-A", "backend", "worker", "-l", "info", "-Q", "celery,render"]

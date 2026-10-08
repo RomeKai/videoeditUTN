@@ -52,6 +52,21 @@ class VideoProject(models.Model):
         AWAITING_APPROVAL = 'awaiting_approval', 'Esperando AprobaciÃ³n'
         RENDERING = 'rendering', 'Renderizando'
         COMPLETED = 'completed', 'Completado'
+        PARTIAL = 'partial', 'Completado con errores'
+        FAILED = 'failed', 'Error'
+
+    class PipelineStage(models.TextChoices):
+        """
+        Last stage the ingestion pipeline finished (see services/ai/pipeline_state.py).
+        Kept apart from ``Status`` (user-facing) so retries can resume precisely.
+        """
+        UPLOADED = 'uploaded', 'Subido'
+        AUDIO_EXTRACTED = 'audio_extracted', 'Fuente preparada'
+        TRANSCRIBED = 'transcribed', 'Transcrito'
+        CLIPS_SELECTED = 'clips_selected', 'Clips seleccionados'
+        RENDER_DISPATCHED = 'render_dispatched', 'Render despachado'
+        COMPLETED = 'completed', 'Completado'
+        PARTIAL = 'partial', 'Completado con errores'
         FAILED = 'failed', 'Error'
 
     class IntelligenceLevel(models.TextChoices):
@@ -145,6 +160,15 @@ class VideoProject(models.Model):
     approved_segments = models.JSONField(null=True, blank=True, verbose_name="Approved Segments (Floats)")
     
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.UPLOADED)
+
+    # Recoverable ingestion pipeline state (AICORE-7). Dedicated columns instead of
+    # ``metadata`` so concurrent metadata writers cannot clobber it.
+    pipeline_stage = models.CharField(max_length=32, choices=PipelineStage.choices, default=PipelineStage.UPLOADED)
+    pipeline_stage_status = models.JSONField(default=dict, blank=True, help_text="Per-stage pending/running/completed/failed.")
+    pipeline_attempts = models.PositiveIntegerField(default=0)
+    pipeline_error_code = models.CharField(max_length=100, blank=True, default="")
+    pipeline_error_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -158,6 +182,7 @@ class VideoClip(models.Model):
         RENDERING = 'rendering', 'Renderizando'
         COMPLETED = 'completed', 'Listo para descargar'
         PUBLISHED = 'published', 'Publicado'
+        FAILED = 'failed', 'Error'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(VideoProject, on_delete=models.CASCADE, related_name='clips')

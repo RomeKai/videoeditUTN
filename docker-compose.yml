@@ -40,7 +40,7 @@ services:
     build:
       context: ./back
       target: worker
-    command: celery -A backend worker -l info
+    command: celery -A backend worker -l info -Q celery,render
     volumes:
       - ./back:/app
     env_file:

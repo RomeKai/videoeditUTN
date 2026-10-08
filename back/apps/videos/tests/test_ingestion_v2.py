@@ -2,7 +2,7 @@ import os
 import shutil
 import tempfile
 from unittest.mock import patch, MagicMock
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.conf import settings
 from rest_framework.test import APITestCase
 from rest_framework import status
@@ -13,6 +13,15 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from apps.videos.models import VideoProject, VideoClip
 from apps.videos.utils.ffmpeg_utils import FFmpegManager
 from apps.videos.tasks import process_initial_ingestion
+from apps.videos.services.ai.contracts import (
+    AIExecutionResult,
+    ClipSelectionResult,
+    ProviderUsage,
+    TranscriptionResult,
+    ViralClip,
+    WordTimestamp,
+)
+from apps.videos.tests.fakes import FakeRedis
 from apps.users.models import Workspace
 
 User = get_user_model()
@@ -55,18 +64,31 @@ class IngestionV2Tests(TestCase):
         self.assertIn('scale=-2:480', command)
         self.assertIn('+faststart', command)
 
+    @override_settings(AI_CORE_V2_ENABLED=True)
+    @patch('apps.videos.services.ai.project_lock.get_redis_client', return_value=FakeRedis())
     @patch('apps.videos.services.storage_service.CloudflareR2Manager.upload_video')
-    @patch('apps.videos.services.transcription_engine.TranscriptionEngine.transcribe')
-    @patch('apps.videos.services.selection_engine.SelectionEngine.select_viral_clips')
+    @patch('apps.videos.services.transcription_engine.TranscriptionEngine.transcribe_detailed')
+    @patch('apps.videos.services.selection_engine.SelectionEngine.select_viral_clips_detailed')
     @patch('apps.videos.utils.ffmpeg_utils.FFmpegManager.generate_web_proxy')
     @patch('apps.videos.tasks.VideoFileClip', create=True)
-    def test_process_initial_ingestion_task(self, mock_vfc, mock_proxy, mock_select, mock_transcribe, mock_upload):
+    def test_process_initial_ingestion_task(self, mock_vfc, mock_proxy, mock_select, mock_transcribe, mock_upload, _mock_redis):
         """Test the full Celery task pipeline."""
         # Setup mocks
         mock_upload.return_value = "r2_key_test"
-        mock_transcribe.return_value = [{"text": "Hello world", "start": 0.0, "end": 2.0}]
-        mock_select.return_value = [{"title": "Clip 1", "start": 0.0, "end": 2.0, "virality_score": 90, "reasoning": "Test"}]
-        
+        mock_transcribe.return_value = AIExecutionResult(
+            data=TranscriptionResult(
+                full_text="Hello world",
+                words=[WordTimestamp(text="Hello world", start=0.0, end=2.0)],
+            ),
+            usage=ProviderUsage(provider="groq", model="whisper"),
+        )
+        mock_select.return_value = AIExecutionResult(
+            data=ClipSelectionResult(clips=[
+                ViralClip(title="Clip 1", start=0.0, end=2.0, virality_score=90, reasoning="Test")
+            ]),
+            usage=ProviderUsage(provider="litellm", model="gemini"),
+        )
+
         # Mock MoviePy VideoFileClip
         mock_clip_instance = MagicMock()
         mock_clip_instance.duration = 10.0
