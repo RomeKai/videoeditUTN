@@ -86,12 +86,19 @@ class AIUsageRecordModelTests(TestCase):
         record.refresh_from_db()
         self.assertEqual(record.estimated_cost_usd, Decimal("0.000000375"))
 
-    def test_unique_per_project_stage_attempt_and_role(self):
+    def test_same_project_stage_attempt_and_role_may_repeat_nothing_is_unique(self):
+        # Insert-only model: a re-executed stage at the same attempt is a distinct
+        # billed execution and must be able to add its own row.
         project = make_project()
         AIUsageRecord.objects.create(project=project, **usage_fields())
+        AIUsageRecord.objects.create(project=project, **usage_fields())
 
-        with self.assertRaises(IntegrityError), transaction.atomic():
-            AIUsageRecord.objects.create(project=project, **usage_fields())
+        self.assertEqual(AIUsageRecord.objects.filter(project=project).count(), 2)
+        self.assertFalse(AIUsageRecord._meta.constraints)
+        self.assertIn(
+            ("project", "stage", "attempt", "role"),
+            [tuple(index.fields) for index in AIUsageRecord._meta.indexes],
+        )
 
     def test_different_role_attempt_stage_or_project_do_not_collide(self):
         project = make_project()
@@ -161,16 +168,18 @@ class RecordUsagesTests(TestCase):
         self.assertEqual(row.pricing_version, PRICING_VERSION)
         self.assertIsNone(row.error_code)
 
-    def test_a_redelivery_updates_the_row_instead_of_duplicating_it(self):
+    def test_two_billed_executions_at_the_same_attempt_keep_two_rows(self):
         self.record([selection_usage(prompt_tokens=10)])
         first = AIUsageRecord.objects.get()
 
         self.record([selection_usage(prompt_tokens=99)])
 
-        row = AIUsageRecord.objects.get()
-        self.assertEqual(row.pk, first.pk)
-        self.assertEqual(row.prompt_tokens, 99)
-        self.assertEqual(row.created_at, first.created_at)
+        self.assertEqual(AIUsageRecord.objects.count(), 2)
+        first.refresh_from_db()
+        self.assertEqual(first.prompt_tokens, 10)
+        self.assertEqual(
+            sorted(AIUsageRecord.objects.values_list("prompt_tokens", flat=True)), [10, 99]
+        )
 
     def test_primary_and_fallback_attempts_are_separate_rows(self):
         self.record([
@@ -201,7 +210,7 @@ class RecordUsagesTests(TestCase):
 
     def test_write_failure_is_swallowed_and_logged_with_the_class_name_only(self):
         with patch.object(
-            AIUsageRecord.objects, "update_or_create", side_effect=RuntimeError(f"db says {SECRET}")
+            AIUsageRecord.objects, "create", side_effect=RuntimeError(f"db says {SECRET}")
         ):
             with self.assertLogs("apps.videos.services.ai.usage_recorder", level="WARNING") as logs:
                 written = self.record([selection_usage()])
@@ -215,7 +224,7 @@ class RecordUsagesTests(TestCase):
         self.assertTrue(all(record.exc_info is None for record in logs.records))
 
     def test_failure_of_one_row_does_not_stop_the_others(self):
-        real = AIUsageRecord.objects.update_or_create
+        real = AIUsageRecord.objects.create
         calls = []
 
         def flaky(**kwargs):
@@ -224,7 +233,7 @@ class RecordUsagesTests(TestCase):
                 raise RuntimeError("boom")
             return real(**kwargs)
 
-        with patch.object(AIUsageRecord.objects, "update_or_create", side_effect=flaky):
+        with patch.object(AIUsageRecord.objects, "create", side_effect=flaky):
             written = self.record([selection_usage(), selection_usage(role="fallback")])
 
         self.assertEqual(written, 1)
@@ -232,7 +241,7 @@ class RecordUsagesTests(TestCase):
 
     def test_a_database_error_inside_the_write_does_not_poison_the_surrounding_transaction(self):
         with patch.object(
-            AIUsageRecord.objects, "update_or_create", side_effect=IntegrityError("constraint")
+            AIUsageRecord.objects, "create", side_effect=IntegrityError("constraint")
         ):
             self.record([selection_usage()])
 

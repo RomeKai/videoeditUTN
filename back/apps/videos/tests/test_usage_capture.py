@@ -221,7 +221,7 @@ class UsageCaptureTests(IngestionHarness, TestCase):
         project = self.make_project()
 
         with patch.object(
-            AIUsageRecord.objects, "update_or_create", side_effect=RuntimeError("metrics db down")
+            AIUsageRecord.objects, "create", side_effect=RuntimeError("metrics db down")
         ):
             with self.assertLogs("apps.videos.services.ai.usage_recorder", level="WARNING") as logs:
                 result = self.run_task(project)
@@ -238,7 +238,7 @@ class UsageCaptureTests(IngestionHarness, TestCase):
         project = self.make_project()
 
         with patch.object(
-            AIUsageRecord.objects, "update_or_create", side_effect=RuntimeError("metrics db down")
+            AIUsageRecord.objects, "create", side_effect=RuntimeError("metrics db down")
         ):
             result = self.run_task(project)
 

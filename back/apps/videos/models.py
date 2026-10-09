@@ -282,7 +282,9 @@ class ScheduledPost(models.Model):
 
 class AIUsageRecord(models.Model):
     """
-    One row per AI call attempt (AICORE-8): source of the pilot metrics export.
+    One row per executed AI call attempt (AICORE-8): source of the pilot metrics
+    export. Insert-only: rows are never updated or replaced, so a stage that runs
+    twice (redelivery, lost ownership) leaves two rows and both charges stay visible.
 
     Privacy by construction: no free-text column exists. ``error_code`` is the
     CLASS NAME of the AIError (never ``str(exc)``) and ``resolved_model`` is a
@@ -333,15 +335,14 @@ class AIUsageRecord(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
-        constraints = [
-            # A Celery redelivery of the same task updates the row instead of duplicating it.
-            models.UniqueConstraint(
-                fields=['project', 'stage', 'attempt', 'role'],
-                name='uniq_ai_usage_project_stage_attempt_role',
-            ),
-        ]
         indexes = [
             models.Index(fields=['created_at', 'project'], name='ai_usage_created_project_idx'),
+            # NOT unique on purpose: rows are insert-only, one per actual execution.
+            # A redelivery or a lost-ownership re-run keeps the same ``attempt``, and
+            # overwriting would hide a second billed execution.
+            models.Index(
+                fields=['project', 'stage', 'attempt', 'role'], name='ai_usage_pk_stage_att_role_idx'
+            ),
         ]
 
     def __str__(self):

@@ -3,9 +3,10 @@ Persists AI usage as ``AIUsageRecord`` rows (AICORE-8).
 
 Metrics are observability, not the critical path:
 
-- Each row is written with ``update_or_create`` on the unique key
-  ``(project, stage, attempt, role)`` in its own SHORT transaction, so a Celery
-  redelivery updates the row instead of duplicating it.
+- Rows are INSERT-ONLY (``create`` in its own SHORT transaction): one row per
+  actual execution. A redelivery or lost-ownership re-run shares the same
+  ``attempt`` but is a distinct billed execution, so it must never overwrite an
+  earlier row. A worker killed mid-call writes nothing (invisible by design).
 - A failed write is logged (``metrics.write_failed``, exception CLASS NAME only)
   and swallowed: the pipeline stage must never fail because a metric did not
   persist.
@@ -108,12 +109,12 @@ def _record_one(project_id, stage: str, pipeline_version: str, attempt: int, usa
         "pricing_version": usage.pricing_version,
     }
     with transaction.atomic():
-        AIUsageRecord.objects.update_or_create(
+        AIUsageRecord.objects.create(
             project_id=project_id,
             stage=stage,
             attempt=attempt,
             role=usage.role,
-            defaults=defaults,
+            **defaults,
         )
 
 
