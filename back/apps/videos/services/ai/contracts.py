@@ -7,7 +7,7 @@ Defines strongly-typed, runtime-validated schemas for:
 3. Provider Usage (token consumption, latency metrics, and estimated cost).
 """
 
-from typing import Any, Dict, Generic, List, Optional, TypeVar
+from typing import Any, Dict, Generic, List, Literal, Optional, TypeVar
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -146,6 +146,16 @@ class ProviderUsage(BaseModel):
     duration_seconds: float = Field(default=0.0, ge=0.0, description="Wall-clock duration of the API call")
     estimated_cost_usd: Optional[float] = Field(default=None, ge=0.0, description="Estimated cost in USD")
     cached: bool = Field(default=False, description="Whether response was served from cache")
+    role: Literal["primary", "fallback"] = Field(
+        default="primary", description="Whether the primary or the fallback model produced this call"
+    )
+    cache_read_tokens: int = Field(default=0, ge=0, description="Prompt tokens served from the provider cache")
+    audio_seconds: Optional[float] = Field(
+        default=None, ge=0.0, description="Audio duration submitted (transcription only)"
+    )
+    pricing_version: Optional[str] = Field(
+        default=None, description="Version of the pricing table used for estimated_cost_usd"
+    )
 
     @model_validator(mode="after")
     def auto_compute_total_tokens(self) -> "ProviderUsage":
