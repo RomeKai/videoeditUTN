@@ -41,6 +41,7 @@ from apps.videos.services.ai.errors import (
     AIServerError,
     AITimeoutError,
 )
+from apps.videos.services.ai.pricing import PRICING_VERSION, estimate_llm_cost
 from apps.videos.services.ai.llm_credentials import provider_for_model, resolve_api_key
 from apps.videos.services.ai.transcript_formatter import (
     LINE_FORMAT_DESCRIPTION,
@@ -63,6 +64,13 @@ _DEFAULT_MAX_TRANSCRIPT_CHARS = 400_000
 _EDITING_STYLE_RE = re.compile(r"[a-z][a-z0-9_-]{0,23}")
 
 KeyResolver = Callable[[str], Optional[str]]
+
+
+def _non_negative_int(value: Any) -> int:
+    """Token counts from provider objects: only real ints count, anything else is 0."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)
 
 
 class LiteLLMSelectionProvider:
@@ -190,6 +198,7 @@ class LiteLLMSelectionProvider:
                     messages=messages,
                     video_duration=video_duration,
                 )
+                usage = usage.model_copy(update={"role": "fallback"})
                 self._log_success("fallback", result, usage)
                 return AIExecutionResult[ClipSelectionResult](data=result, usage=usage, success=True)
 
@@ -522,24 +531,34 @@ class LiteLLMSelectionProvider:
         """
         usage = getattr(response, "usage", None)
 
-        prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-        completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+        prompt_tokens = _non_negative_int(getattr(usage, "prompt_tokens", 0))
+        completion_tokens = _non_negative_int(getattr(usage, "completion_tokens", 0))
 
-        # Implicit cache tracking (Gemini reports this automatically)
-        cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
-        cache_creation_tokens = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        # Implicit cache tracking: Anthropic-style field first, then the
+        # OpenAI-style prompt_tokens_details.cached_tokens LiteLLM maps Gemini to.
+        cache_read_tokens = _non_negative_int(getattr(usage, "cache_read_input_tokens", 0))
+        if cache_read_tokens == 0:
+            details = getattr(usage, "prompt_tokens_details", None)
+            cache_read_tokens = _non_negative_int(getattr(details, "cached_tokens", 0))
 
         # Determine provider name from model string
         provider = model.split("/")[0] if "/" in model else "openai"
 
-        return ProviderUsage(
+        usage_record = ProviderUsage(
             provider=provider,
             model=model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
             duration_seconds=round(latency, 3),
             cached=cache_read_tokens > 0,
+            cache_read_tokens=cache_read_tokens,
+            pricing_version=PRICING_VERSION,
         )
+        cost = estimate_llm_cost(model, usage_record)
+        # Decimal -> float only at the contract boundary; None = unknown price.
+        usage_record.estimated_cost_usd = None if cost is None else float(round(cost, 9))
+        return usage_record
 
     # ------------------------------------------------------------------
     # Fallback logic

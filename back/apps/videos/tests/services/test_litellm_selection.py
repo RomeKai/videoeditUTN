@@ -63,6 +63,7 @@ from apps.videos.services.ai.errors import (
     AITimeoutError,
     is_retryable_error,
 )
+from apps.videos.services.ai.pricing import PRICING_VERSION
 from apps.videos.services.ai.litellm_selection import (
     LiteLLMSelectionProvider,
     _CLIP_SELECTION_SCHEMA,
@@ -663,6 +664,87 @@ class TestAICORE6Hardening(unittest.TestCase):
     def test_no_transcript_and_no_segments_is_rejected(self):
         with self.assertRaises(ValueError):
             _build_provider().select_clips(transcript="  ", video_duration=300.0)
+
+
+class TestUsageMetricsAICore8(unittest.TestCase):
+    """AICORE-8: cache tokens, total, cost, pricing version and role in usage."""
+
+    def test_extract_usage_fills_cache_total_cost_and_version(self):
+        provider = _build_provider(primary="openai/gpt-4o-mini")
+        response = _make_llm_response(
+            _valid_clips_response(), prompt_tokens=1000, completion_tokens=200, cache_read=400
+        )
+        usage = provider._extract_usage(response, "openai/gpt-4o-mini", 1.2345)
+
+        self.assertEqual(usage.cache_read_tokens, 400)
+        self.assertEqual(usage.total_tokens, 1200)
+        self.assertEqual(usage.pricing_version, PRICING_VERSION)
+        self.assertEqual(usage.role, "primary")
+        expected = (600 * 0.15 + 400 * 0.075 + 200 * 0.60) / 1_000_000
+        self.assertAlmostEqual(usage.estimated_cost_usd, expected, places=9)
+
+    def test_cache_read_from_prompt_tokens_details(self):
+        """LiteLLM exposes cached tokens under prompt_tokens_details for OpenAI-style usage."""
+        response = types.SimpleNamespace(
+            usage=types.SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=10,
+                prompt_tokens_details=types.SimpleNamespace(cached_tokens=64),
+            )
+        )
+        usage = LiteLLMSelectionProvider._extract_usage(response, "openai/gpt-4o-mini", 0.5)
+        self.assertEqual(usage.cache_read_tokens, 64)
+        self.assertTrue(usage.cached)
+
+    def test_unknown_model_cost_is_none_not_zero(self):
+        response = _make_llm_response(_valid_clips_response(), prompt_tokens=10, completion_tokens=5)
+        usage = LiteLLMSelectionProvider._extract_usage(response, "gemini/gemini-flash-latest", 0.1)
+        self.assertIsNone(usage.estimated_cost_usd)
+        self.assertEqual(usage.total_tokens, 15)
+        self.assertEqual(usage.pricing_version, PRICING_VERSION)
+
+    def test_missing_usage_does_not_crash(self):
+        usage = LiteLLMSelectionProvider._extract_usage(types.SimpleNamespace(), "openai/gpt-4o-mini", 0.1)
+        self.assertEqual(usage.cache_read_tokens, 0)
+        self.assertEqual(usage.total_tokens, 0)
+
+    def test_role_primary_when_primary_answers(self):
+        provider = _build_provider()
+        import litellm
+        with patch.object(litellm, "completion", return_value=_make_llm_response(_valid_clips_response())):
+            result = provider.select_clips(transcript="Test", video_duration=300.0)
+        self.assertEqual(result.usage.role, "primary")
+
+    def test_role_fallback_when_secondary_answers(self):
+        provider = _build_provider()
+        valid = _make_llm_response(_valid_clips_response(), prompt_tokens=1000, completion_tokens=100)
+        calls = []
+
+        def side_effect(**kwargs):
+            calls.append(kwargs["model"])
+            if len(calls) == 1:
+                raise Exception("Primary failed")
+            return valid
+
+        import litellm
+        with patch.object(litellm, "completion", side_effect=side_effect):
+            with patch.object(provider, "_has_fallback", return_value=True):
+                result = provider.select_clips(transcript="Test", video_duration=300.0)
+
+        self.assertEqual(result.usage.role, "fallback")
+        self.assertEqual(result.usage.model, "openai/gpt-4o-mini")
+        self.assertIsNotNone(result.usage.estimated_cost_usd)
+
+    def test_usage_and_logs_carry_no_transcript_text(self):
+        provider = _build_provider()
+        secret = "SECRET_TRANSCRIPT_X"
+        import litellm
+        with patch.object(litellm, "completion", return_value=_make_llm_response(_valid_clips_response())):
+            with self.assertLogs("apps.videos.services.ai", level="DEBUG") as cm:
+                result = provider.select_clips(transcript=secret, video_duration=300.0)
+                logging.getLogger("apps.videos.services.ai").debug("sentinel")
+        self.assertNotIn(secret, result.usage.model_dump_json())
+        self.assertNotIn(secret, " ".join(r.getMessage() for r in cm.records))
 
 
 if __name__ == "__main__":
