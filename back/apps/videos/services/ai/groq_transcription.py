@@ -31,10 +31,10 @@ from apps.videos.services.ai.errors import (
     AIAuthenticationError,
     AIConnectionError,
     AIContractValidationError,
-    AIError,
     AIRateLimitError,
     AIServerError,
     AITimeoutError,
+    is_billing_uncertain,
 )
 
 logger = logging.getLogger(__name__)
@@ -130,7 +130,7 @@ class GroqTranscriptionProvider:
                 chunk_cost = estimate_asr_cost(self._model, chunk.duration)
                 total_cost = None if (total_cost is None or chunk_cost is None) else total_cost + chunk_cost
 
-                result = self._parse_response(raw_response)
+                result = self._parse_billed_response(raw_response)
 
                 # Apply temporal offset for this chunk
                 if chunk.start_time > 0:
@@ -159,26 +159,25 @@ class GroqTranscriptionProvider:
                     latency,
                 )
         except Exception as exc:
-            error = exc
-            if not isinstance(exc, AIError):
-                # A billed chunk whose response cannot be processed is a
-                # deterministic failure. Only the class name is kept: the raw
-                # message could echo fragments of the transcript.
-                error = AIContractValidationError(
-                    message=f"Groq response could not be processed: {type(exc).__name__}",
-                    provider=_PROVIDER_NAME,
-                    model=self._model,
-                )
+            # The ORIGINAL exception is re-raised unchanged so Celery/pipeline
+            # retry semantics (SoftTimeLimitExceeded, OSError, ...) are untouched;
+            # only the usage billed so far is attached to it.
             if billed_chunks:
-                error.usage_attempts = [
-                    self._usage(
-                        total_latency, total_audio_duration, total_cost,
-                        error_code=type(error).__name__,
+                # A timeout/dropped connection leaves the failing chunk's charge
+                # uncertain, so the partial cost is unknown rather than a floor.
+                cost = None if is_billing_uncertain(exc) else total_cost
+                try:
+                    exc.usage_attempts = [
+                        self._usage(
+                            total_latency, total_audio_duration, cost,
+                            error_code=type(exc).__name__,
+                        )
+                    ]
+                except (AttributeError, TypeError):
+                    logger.warning(
+                        "transcription.usage_not_attached error=%s", type(exc).__name__
                     )
-                ]
-            if error is exc:
-                raise
-            raise error from exc
+            raise
 
         merged = TranscriptionResult(
             full_text=" ".join(all_text_parts),
@@ -265,6 +264,22 @@ class GroqTranscriptionProvider:
     # ------------------------------------------------------------------
     # Response parsing
     # ------------------------------------------------------------------
+
+    def _parse_billed_response(self, raw: dict) -> TranscriptionResult:
+        """
+        ``_parse_response`` for a response the API already answered (and billed).
+        An unparseable payload is a deterministic contract failure (before, a raw
+        ValueError, equally non-retryable): it is reported with the class name
+        only, because the raw message could echo fragments of the transcript.
+        """
+        try:
+            return self._parse_response(raw)
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise AIContractValidationError(
+                message=f"Groq response could not be parsed: {type(exc).__name__}",
+                provider=_PROVIDER_NAME,
+                model=self._model,
+            ) from exc
 
     def _parse_response(self, raw: dict) -> TranscriptionResult:
         """

@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, mock_open, patch
 from apps.videos.services.ai.contracts import AIExecutionResult, ClipSelectionResult, ProviderUsage
 from apps.videos.services.ai.errors import (
     AIAuthenticationError,
+    AIConnectionError,
     AIContractValidationError,
     AIError,
     AIRateLimitError,
@@ -241,6 +242,64 @@ class TranscriptionPartialUsageTests(unittest.TestCase):
         # Only the class name of the parse failure may leave this module.
         self.assertNotIn(SECRET, str(ctx.exception))
         self.assertFalse(is_retryable_error(ctx.exception))
+
+    def test_timeout_on_a_later_chunk_makes_the_partial_cost_unknown(self):
+        # Named like the Groq SDK classes: the provider classifies by class name.
+        class APITimeoutError(Exception):
+            pass
+
+        class APIConnectionError(Exception):
+            pass
+
+        for sdk_error, expected in (
+            (APITimeoutError("slow"), AITimeoutError),
+            (APIConnectionError("reset"), AIConnectionError),
+        ):
+            with self.subTest(error=expected.__name__):
+                provider = self._provider([self._response(_fake_groq_response()), sdk_error])
+
+                with patch("builtins.open", mock_open(read_data=b"audio")):
+                    with self.assertRaises(expected) as ctx:
+                        provider.transcribe(self._chunks())
+
+                (partial,) = ctx.exception.usage_attempts
+                # Chunk 1 was billed, but chunk 2 may have been too: not a known cost.
+                self.assertIsNone(partial.estimated_cost_usd)
+                self.assertEqual(partial.audio_seconds, 600.0)
+                self.assertEqual(partial.error_code, expected.__name__)
+
+    def test_non_ai_error_keeps_its_type_and_retry_semantics_and_carries_the_partial(self):
+        from apps.videos.tasks import _is_retryable_pipeline_error
+
+        provider = self._provider(
+            [self._response(_fake_groq_response()), self._response(_fake_groq_response())]
+        )
+        boom = OSError("disk hiccup")
+
+        with patch("builtins.open", mock_open(read_data=b"audio")):
+            with patch.object(provider, "_apply_offset", side_effect=boom):
+                with self.assertRaises(OSError) as ctx:
+                    provider.transcribe(self._chunks())
+
+        self.assertIs(ctx.exception, boom)
+        self.assertTrue(_is_retryable_pipeline_error(ctx.exception))
+        (partial,) = ctx.exception.usage_attempts
+        self.assertEqual(partial.audio_seconds, 600.0 + 602.0)
+        self.assertEqual(partial.error_code, "OSError")
+
+    def test_celery_soft_time_limit_is_not_rewrapped(self):
+        from celery.exceptions import SoftTimeLimitExceeded
+
+        provider = self._provider(
+            [self._response(_fake_groq_response()), self._response(_fake_groq_response())]
+        )
+
+        with patch("builtins.open", mock_open(read_data=b"audio")):
+            with patch.object(provider, "_apply_offset", side_effect=SoftTimeLimitExceeded()):
+                with self.assertRaises(SoftTimeLimitExceeded) as ctx:
+                    provider.transcribe(self._chunks())
+
+        self.assertEqual(len(ctx.exception.usage_attempts), 1)
 
     def test_unpriced_model_keeps_cost_unknown_in_the_partial(self):
         provider = self._provider([self._response(_fake_groq_response()), AIServerError("down")])
