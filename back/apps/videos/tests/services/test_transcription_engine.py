@@ -291,6 +291,14 @@ class TestLocalPath(_TranscriptionTestCase):
         self.assertEqual(result.usage.model, "whisper-tiny")
         self.assertEqual(result.usage.estimated_cost_usd, 0.0)
 
+    def test_local_detailed_usage_carries_audio_seconds_and_pricing_version(self):
+        from apps.videos.services.ai.pricing import PRICING_VERSION
+
+        result = self._engine_with_fake_model().transcribe_detailed(self.audio_path)
+
+        self.assertEqual(result.usage.audio_seconds, 0.9)
+        self.assertEqual(result.usage.pricing_version, PRICING_VERSION)
+
     def test_local_detailed_silent_audio_is_non_retryable(self):
         engine = self._engine()
         engine._model = MagicMock()

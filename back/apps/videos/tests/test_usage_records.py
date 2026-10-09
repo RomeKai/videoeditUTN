@@ -1,4 +1,5 @@
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, models, transaction
@@ -6,8 +7,17 @@ from django.test import TestCase
 
 from apps.users.models import Workspace
 from apps.videos.models import AIUsageRecord, VideoProject
+from apps.videos.services.ai.contracts import ProviderUsage
+from apps.videos.services.ai.errors import AIServerError, AITimeoutError
+from apps.videos.services.ai.pricing import PRICING_VERSION
+from apps.videos.services.ai.usage_recorder import (
+    failure_usage,
+    record_usages,
+    usages_for_failure,
+)
 
 User = get_user_model()
+SECRET = "SECRET_TRANSCRIPT_X"
 
 
 def make_project(title="Usage"):
@@ -112,3 +122,171 @@ class AIUsageRecordModelTests(TestCase):
         self.assertIn(("created_at", "project"), index_fields)
         self.assertTrue(AIUsageRecord._meta.get_field("created_at").db_index)
         self.assertTrue(AIUsageRecord._meta.get_field("project").db_index)
+
+
+def selection_usage(**overrides):
+    fields = dict(
+        provider="gemini", model="gemini/gemini-3.8-flash", prompt_tokens=1000,
+        completion_tokens=100, cache_read_tokens=200, duration_seconds=1.25,
+        estimated_cost_usd=0.000000375, pricing_version=PRICING_VERSION,
+        resolved_model="gemini-3.8-flash-001",
+    )
+    fields.update(overrides)
+    return ProviderUsage(**fields)
+
+
+class RecordUsagesTests(TestCase):
+    def setUp(self):
+        self.project = make_project("rec")
+
+    def record(self, usages, attempt=0, stage="selection", version="v2"):
+        return record_usages(self.project.id, stage, version, usages, attempt=attempt)
+
+    def test_writes_every_column_from_the_usage(self):
+        self.record([selection_usage()])
+
+        row = AIUsageRecord.objects.get()
+        self.assertEqual(
+            (row.stage, row.pipeline_version, row.attempt, row.role, row.success),
+            ("selection", "v2", 0, "primary", True),
+        )
+        self.assertEqual((row.provider, row.model), ("gemini", "gemini/gemini-3.8-flash"))
+        self.assertEqual(row.resolved_model, "gemini-3.8-flash-001")
+        self.assertEqual(
+            (row.prompt_tokens, row.completion_tokens, row.total_tokens, row.cache_read_tokens),
+            (1000, 100, 1100, 200),
+        )
+        self.assertEqual(row.latency_seconds, 1.25)
+        self.assertEqual(row.estimated_cost_usd, Decimal("0.000000375"))
+        self.assertEqual(row.pricing_version, PRICING_VERSION)
+        self.assertIsNone(row.error_code)
+
+    def test_a_redelivery_updates_the_row_instead_of_duplicating_it(self):
+        self.record([selection_usage(prompt_tokens=10)])
+        first = AIUsageRecord.objects.get()
+
+        self.record([selection_usage(prompt_tokens=99)])
+
+        row = AIUsageRecord.objects.get()
+        self.assertEqual(row.pk, first.pk)
+        self.assertEqual(row.prompt_tokens, 99)
+        self.assertEqual(row.created_at, first.created_at)
+
+    def test_primary_and_fallback_attempts_are_separate_rows(self):
+        self.record([
+            selection_usage(error_code="AIContractValidationError"),
+            selection_usage(role="fallback", model="gemini/gemini-2.5-flash"),
+        ])
+
+        primary, fallback = AIUsageRecord.objects.order_by("role")[::-1]
+        self.assertEqual((primary.role, primary.success, primary.error_code), ("primary", False, "AIContractValidationError"))
+        self.assertEqual((fallback.role, fallback.success), ("fallback", True))
+        self.assertEqual(primary.prompt_tokens, 1000)
+
+    def test_attempt_defaults_to_the_projects_pipeline_attempts(self):
+        VideoProject.objects.filter(pk=self.project.id).update(pipeline_attempts=3)
+
+        record_usages(self.project.id, "selection", "v2", [selection_usage()])
+
+        self.assertEqual(AIUsageRecord.objects.get().attempt, 3)
+
+    def test_unknown_cost_stays_null_and_non_finite_cost_is_not_stored(self):
+        self.record([selection_usage(estimated_cost_usd=None)], attempt=0)
+        self.record([selection_usage(estimated_cost_usd=float("inf"))], attempt=1)
+
+        self.assertEqual(
+            list(AIUsageRecord.objects.order_by("attempt").values_list("estimated_cost_usd", flat=True)),
+            [None, None],
+        )
+
+    def test_write_failure_is_swallowed_and_logged_with_the_class_name_only(self):
+        with patch.object(
+            AIUsageRecord.objects, "update_or_create", side_effect=RuntimeError(f"db says {SECRET}")
+        ):
+            with self.assertLogs("apps.videos.services.ai.usage_recorder", level="WARNING") as logs:
+                written = self.record([selection_usage()])
+
+        self.assertEqual(written, 0)
+        output = " ".join(record.getMessage() for record in logs.records)
+        self.assertIn("metrics.write_failed", output)
+        self.assertIn("RuntimeError", output)
+        self.assertNotIn(SECRET, output)
+        self.assertNotIn("db says", output)
+        self.assertTrue(all(record.exc_info is None for record in logs.records))
+
+    def test_failure_of_one_row_does_not_stop_the_others(self):
+        real = AIUsageRecord.objects.update_or_create
+        calls = []
+
+        def flaky(**kwargs):
+            calls.append(kwargs["role"])
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+            return real(**kwargs)
+
+        with patch.object(AIUsageRecord.objects, "update_or_create", side_effect=flaky):
+            written = self.record([selection_usage(), selection_usage(role="fallback")])
+
+        self.assertEqual(written, 1)
+        self.assertEqual(AIUsageRecord.objects.get().role, "fallback")
+
+    def test_a_database_error_inside_the_write_does_not_poison_the_surrounding_transaction(self):
+        with patch.object(
+            AIUsageRecord.objects, "update_or_create", side_effect=IntegrityError("constraint")
+        ):
+            self.record([selection_usage()])
+
+        # TestCase wraps the test in a transaction: it must still be usable.
+        self.assertEqual(VideoProject.objects.filter(pk=self.project.id).count(), 1)
+
+    def test_unknown_project_is_logged_not_raised(self):
+        import uuid
+
+        written = record_usages(uuid.uuid4(), "selection", "v2", [selection_usage()])
+
+        self.assertEqual(written, 0)
+
+    def test_overlong_strings_are_truncated_not_rejected(self):
+        self.record([selection_usage(model="m" * 200, provider="p" * 200, error_code="E" * 200)])
+
+        row = AIUsageRecord.objects.get()
+        self.assertEqual((len(row.model), len(row.provider), len(row.error_code)), (64, 64, 64))
+
+
+class FailureUsageTests(TestCase):
+    def test_failure_usage_is_zero_cost_with_the_class_name_only(self):
+        usage = failure_usage(AIServerError(f"boom {SECRET}"), "groq", "whisper", 2.5)
+
+        self.assertEqual(usage.error_code, "AIServerError")
+        self.assertEqual((usage.total_tokens, usage.estimated_cost_usd), (0, 0.0))
+        self.assertEqual(usage.duration_seconds, 2.5)
+        self.assertEqual(usage.pricing_version, PRICING_VERSION)
+        self.assertNotIn(SECRET, usage.model_dump_json())
+
+    def test_timeouts_leave_the_cost_unknown_not_zero(self):
+        usage = failure_usage(AITimeoutError(), "groq", "whisper", 60.0)
+
+        self.assertIsNone(usage.estimated_cost_usd)
+
+    def test_carried_attempts_win_over_a_synthetic_failure_row(self):
+        error = AIServerError("down")
+        error.usage_attempts = [selection_usage(error_code="AIContractValidationError")]
+
+        usages = usages_for_failure(error, "gemini", "m", 1.0)
+
+        self.assertEqual(usages, error.usage_attempts)
+
+    def test_carried_attempts_without_an_error_code_are_marked_failed(self):
+        error = AIServerError("down")
+        error.usage_attempts = [selection_usage()]
+
+        (usage,) = usages_for_failure(error, "gemini", "m", 1.0)
+
+        self.assertEqual(usage.error_code, "AIServerError")
+        self.assertEqual(usage.prompt_tokens, 1000)
+
+    def test_without_carried_attempts_one_failure_row_is_built(self):
+        (usage,) = usages_for_failure(ValueError(SECRET), "gemini", "m", 0.4)
+
+        self.assertEqual(usage.error_code, "ValueError")
+        self.assertEqual(usage.duration_seconds, 0.4)
