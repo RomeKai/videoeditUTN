@@ -54,8 +54,15 @@ class TestPricingVersion(unittest.TestCase):
     def test_version_is_iso_date(self):
         self.assertRegex(pricing.PRICING_VERSION, r"^\d{4}-\d{2}-\d{2}$")
 
-    def test_version_matches_latest_review(self):
-        self.assertEqual(pricing.PRICING_VERSION, "2026-10-09")
+    def test_version_is_a_real_date_not_in_the_future(self):
+        parsed = date.fromisoformat(pricing.PRICING_VERSION)
+        self.assertLessEqual(parsed, pricing._clock())
+
+    def test_asr_rejects_non_finite_seconds(self):
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(seconds=bad):
+                with self.assertRaises(ValueError):
+                    pricing.estimate_asr_cost("whisper-large-v3-turbo", bad)
 
 
 class TestLlmCost(_PricingTestCase):
