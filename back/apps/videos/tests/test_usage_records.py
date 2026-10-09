@@ -255,6 +255,21 @@ class RecordUsagesTests(TestCase):
 
         self.assertEqual(written, 0)
 
+    def test_resolved_model_is_restricted_to_a_safe_charset(self):
+        cases = [
+            ("gemini-3.8-flash-001", "gemini-3.8-flash-001"),
+            ("models/gemini:2.5_flash/v1", "models/gemini:2.5_flash/v1"),
+            ("gpt-4o <script>alert(1)</script>", "gpt-4oscriptalert1/script"),
+            ("model with spaces\nand newline", "modelwithspacesandnewline"),
+            ("m" * 200, "m" * 64),
+            ("!!! ???", None),
+        ]
+        for attempt, (raw, expected) in enumerate(cases):
+            with self.subTest(raw=raw[:20]):
+                self.record([selection_usage(resolved_model=raw)], attempt=attempt)
+                row = AIUsageRecord.objects.get(attempt=attempt)
+                self.assertEqual(row.resolved_model, expected)
+
     def test_overlong_strings_are_truncated_not_rejected(self):
         self.record([selection_usage(model="m" * 200, provider="p" * 200, error_code="E" * 200)])
 

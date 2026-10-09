@@ -19,6 +19,7 @@ Call these helpers AFTER the stage artifact is persisted and outside any
 
 import logging
 import math
+import re
 from decimal import Decimal
 from typing import List, Optional, Sequence
 
@@ -90,12 +91,25 @@ def _cost_to_decimal(cost: Optional[float]) -> Optional[Decimal]:
     return Decimal(repr(float(cost))).quantize(_COST_QUANTUM)
 
 
+_SAFE_MODEL_CHARS = re.compile(r"[^A-Za-z0-9._:/-]")
+
+
+def _safe_model_name(name: Optional[str]) -> Optional[str]:
+    """
+    Provider-reported model name restricted to [A-Za-z0-9._:/-] (max 64). It comes
+    from a provider response, so anything else is dropped; nothing left => NULL.
+    """
+    if not name:
+        return None
+    return _SAFE_MODEL_CHARS.sub("", name)[:64] or None
+
+
 def _record_one(project_id, stage: str, pipeline_version: str, attempt: int, usage: ProviderUsage) -> None:
     defaults = {
         "pipeline_version": pipeline_version,
         "provider": usage.provider[:64],
         "model": usage.model[:64],
-        "resolved_model": usage.resolved_model[:64] if usage.resolved_model else None,
+        "resolved_model": _safe_model_name(usage.resolved_model),
         "success": usage.error_code is None,
         "error_code": usage.error_code[:64] if usage.error_code else None,
         "prompt_tokens": usage.prompt_tokens,
