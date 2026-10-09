@@ -92,7 +92,9 @@ PROJECT_COLUMNS: Tuple[str, ...] = (
 )
 
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
-_DURATION_REGEX = r"^[0-9]+(\.[0-9]+)?$"
+# Bounded (<= 9 integer and <= 6 decimal digits, i.e. up to ~31 years in seconds):
+# an unbounded string would overflow the float cast and abort the whole export.
+_DURATION_REGEX = r"^[0-9]{1,9}(\.[0-9]{1,6})?$"
 
 
 def sanitize_csv_text(value: str) -> str:

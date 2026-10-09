@@ -280,6 +280,22 @@ class ProjectLevelTests(TestCase):
                 self.assertEqual(row["cost_per_30min_usd"], "")
                 self.assertEqual(row["total_cost_usd"], "0.010000000")
 
+    def test_absurdly_long_numeric_strings_do_not_abort_the_export(self):
+        # A 400-digit string would overflow the float cast in Postgres and abort
+        # the whole export: it must just yield no duration.
+        cases = {
+            "huge_integer": {"duration": "9" * 400},
+            "huge_decimals": {"duration": "1." + "0" * 400},
+            "ten_integer_digits": {"duration": "1234567890"},
+        }
+        for label, metadata in cases.items():
+            with self.subTest(label):
+                VideoProject.objects.all().delete()
+                make_record(make_project(f"big-{label}", metadata=metadata))
+                row = project_rows()[0]
+                self.assertEqual(row["cost_per_30min_usd"], "")
+                self.assertEqual(row["source_duration_s"], "")
+
     def test_numeric_string_duration_is_accepted(self):
         make_record(make_project(metadata={"duration": "1800"}), estimated_cost_usd=Decimal("0.03"))
         self.assertEqual(Decimal(project_rows()[0]["cost_per_30min_usd"]), Decimal("0.03"))
