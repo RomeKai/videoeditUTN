@@ -18,6 +18,9 @@
 | [006](006-deployment-strategy.md) | Estrategia de deployment y CI/CD | `proposed` | ⚙️ Par Engine |
 | [007](007-ci-github-actions.md) | Integración Continua con GitHub Actions | `proposed` | ⚙️ Par Engine |
 | [008](008-groq-whisper-migration.md) | Transcripción remota con Groq y sin fallback local | `accepted` | 🧠 Par IA |
+| [011](011-content-moderation.md) | Moderación de contenido: cobertura, política de fallo y resultado | `proposed` | 🧠 Par IA + 🚀 Par Producto |
+
+> Los ADR 009 (broker Celery + Valkey) y 010 (PyAV, reemplaza al 003) están reservados por el plan de estabilización y se redactan en una fase posterior.
 
 ---
 
