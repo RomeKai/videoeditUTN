@@ -35,6 +35,8 @@
 | Costo p95 | Percentil 95 de `cost_per_30min_usd` por video. Se reporta, sin umbral propio | Informativo |
 | Costo completo | `cost_complete = True` en cada proyecto de la muestra | 100 % de los proyectos |
 
+**Los criterios de costo se evalúan solo sobre proyectos V2.** La selección legacy llama a un LLM pago cuyo usage no se captura, así que sus registros llevan costo NULL: todo proyecto legacy sale con `cost_complete = False` y sin `cost_per_30min_usd` (ver salvedad h). Las comparaciones de costo legacy vs. V2 **no son equivalentes**: se excluye legacy del cálculo de costo (los criterios de WER, timestamps y calidad sí comparan ambos motores).
+
 ### 1.2 Fuentes de cada número
 
 | Métrica | Fuente |
@@ -48,7 +50,10 @@
 ```
 docker compose exec web python manage.py export_ai_pilot_metrics \
   --since 2026-10-09 --until 2026-10-16 --level project --format csv --output /tmp/pilot_project.csv
+docker compose cp web:/tmp/pilot_project.csv ./pilot_project.csv
 ```
+
+El servicio de `docker-compose.yml` se llama `web`. `--output` escribe **dentro del contenedor**: hay que copiar el archivo al host con `docker compose cp` (o apuntar `--output` a una ruta del volumen montado `./back:/app`, p. ej. `/app/pilot_project.csv`, y no versionarlo). Sin `--output`, el export va a stdout y se puede redirigir en el host con `docker compose exec -T web ... > pilot_project.csv`.
 
 | Argumento | Valor | Nota |
 |-----------|-------|------|
@@ -129,6 +134,8 @@ Registro de la decisión: [fecha, responsable].
 | Registro | Planilla fuera de la BD, con clave `clip_id` |
 | Métrica | (aceptados + cambios mínimos) / total de clips evaluados |
 
+La comparación ciega legacy vs. V2 es solo de **calidad**. No incluye costo: los registros legacy tienen costo NULL (sección 1.1, salvedad h).
+
 La planilla no debe contener títulos ni transcripts del usuario: solo `clip_id`, motor (enmascarado hasta cerrar la evaluación), veredicto de cada evaluador y veredicto final.
 
 ---
@@ -156,7 +163,7 @@ La planilla no debe contener títulos ni transcripts del usuario: solo `clip_id`
 | Gate | Condición de paso | Si falla |
 |------|-------------------|----------|
 | **G0** | La imagen contiene ambos caminos (`python -c "import whisper, torch, groq, litellm"` dentro del contenedor); el smoke legacy está en verde; la medición en vivo y la verificación de precios están hechas (ver abajo) | No se activa V2 |
-| **G1** | Se cumple la tabla de la sección 1.1 | Se para, se documenta y se vuelve a diseño. No se avanza |
+| **G1** | Se cumple la tabla de la sección 1.1 (los criterios de costo, solo sobre proyectos V2) | Se para, se documenta y se vuelve a diseño. No se avanza |
 | **G2** | Ninguna etapa completada se repite (sección 6); los proyectos terminan en el estado correcto; los `NonRetryable` no reintentan | Se corrige antes de abrir a usuarios |
 | **G3** | 7 días corridos, 100 o más trabajos V2, ningún disparador de rollback activado y criterios de costo sostenidos | Rollback y reinicio del conteo |
 
@@ -202,10 +209,14 @@ Los fallos se inyectan **desde afuera**. No hay código de inyección de fallos 
 
 | Chequeo | Cómo |
 |---------|------|
-| Un solo cobro de transcripción exitoso por proyecto | Export nivel `record`: una sola fila `stage=transcription`, `success=True` por `project_id` |
-| Sin etapa repetida | Revisar `attempt` en `AIUsageRecord` y los timestamps de etapa (`pipeline_stage_status`): una etapa completada no reaparece con un `attempt` posterior |
+| Un solo cobro de transcripción exitoso por proyecto | Export nivel `record`: contar las filas con `stage=transcription` y `success=True` por `project_id`. El esperado es 1 |
+| Sin etapa repetida | Los registros son **solo de inserción**: una ejecución real deja una fila y nunca se pisa otra. Dos filas `success=True` de la misma etapa en un proyecto son dos cobros reales y se investigan (ver la lectura de abajo) |
 | Estado final correcto | `status` y `final_stage` en el export nivel `project` |
 | `NonRetryable` sin reintentos | Un único registro `success=False` con el `error_code` correspondiente |
+
+**Cómo leer un reintento por fallo de persistencia.** Si la llamada al proveedor se cobró pero falló al guardar el artefacto de la etapa (por ejemplo, perdió la propiedad del proyecto), se escribe una fila `success=True` y el reintento escribe otra, con el mismo `attempt` o con `attempt` N+1. Son **dos cobros reales**, y es lo que debe mostrar el export: la etapa se pagó dos veces. Para distinguirlo de una repetición indebida, cruzar con `pipeline_stage_status` y los timestamps: si la etapa terminó una sola vez pero hay dos filas exitosas, hubo un fallo de persistencia (o una reentrega) y G2 se evalúa sobre esos casos.
+
+**Salvedad:** un worker muerto en medio de la llamada (`docker kill`) **no escribe ninguna fila**: ese cobro es invisible para el export (salvedad i). En el escenario del worker muerto, el conteo de filas es una cota inferior de lo realmente facturado.
 
 ---
 
@@ -216,7 +227,7 @@ Los fallos se inyectan **desde afuera**. No hay código de inyección de fallos 
 | Disparador | Umbral |
 |------------|--------|
 | Tasa de fallos de V2 | Mayor que la de legacy + 5 puntos porcentuales en 24 h |
-| Costo agregado | Mayor a USD 0,04 por 30 min |
+| Costo agregado | Mayor a USD 0,04 por 30 min, medido sobre proyectos V2 (legacy no tiene costo medible, salvedad h) |
 | Caída de Groq | Mayor a 30 min |
 
 ### 7.2 Pasos
@@ -290,7 +301,10 @@ Límites conocidos de lo que el piloto mide. Leerlos antes de interpretar los n�
 | a | El fallback del LLM es **temporalmente del mismo proveedor** (`gemini-3.5-flash-lite` después de `gemini-3.8-flash`, addendum de ADR-001) | `fallback_used` mide fallos a nivel de modelo. **No** mide resiliencia ante una caída del proveedor, un problema de key o de cuota |
 | b | Los precios de Gemini 3.6, 3.7 y 3.8 Flash se duplican el 2027-01-01. `pricing.py` maneja el período | Las comparaciones de costo a ambos lados de esa fecha no son equivalentes |
 | c | El SDK de Groq reintenta internamente hasta 2 veces. Un request que expiró del lado del cliente pero se completó en el servidor se factura y es invisible | En ese caso poco frecuente, el costo de ASR es una cota inferior |
-| d | Los timeouts y las conexiones cortadas registran costo NULL (desconocido) | Ese proyecto queda con `cost_complete = False` |
+| d | Los timeouts y las conexiones cortadas registran costo NULL (desconocido), también en una transcripción con chunks ya cobrados cuyo siguiente chunk expiró | Ese proyecto queda con `cost_complete = False`. Un worker muerto en plena llamada no deja fila alguna (salvedad i) y no aparece ni como NULL |
 | e | `response.model` y `completion_tokens` con el modelo fijado deben verificarse con una llamada real en G0 | Si `completion_tokens` no incluye los thinking tokens de Gemini, el costo está subestimado: verificar contra el usage metadata del proveedor antes de confiar en los costos |
 | f | Los precios de Groq y Gemini deben reverificarse contra las páginas oficiales en G0 (`PRICING_VERSION` de `pricing.py`) | Con precios desactualizados, el criterio de costo no es confiable |
 | g | La moderación de contenido cubre solo los primeros 10.000 caracteres y no cubre el camino de ingesta (ADR-011) | Fuera del alcance de este piloto, pero es un límite conocido |
+| h | La selección legacy no captura el usage del LLM: sus registros llevan costo NULL y todo proyecto legacy tiene `cost_complete = False` | El costo legacy no es comparable con el de V2. Los criterios y el disparador de costo se evalúan solo sobre V2 |
+| i | Los registros son solo de inserción y se escriben después de la llamada. Un worker muerto en medio de una llamada no deja registro | Un cobro de un worker matado es invisible: el costo y los conteos son una cota inferior en ese caso |
+| j | Un fallo de persistencia después de una llamada cobrada deja una fila exitosa y el reintento otra | Es correcto (dos cobros reales), pero se lee como etapa repetida: ver 6.1 |
