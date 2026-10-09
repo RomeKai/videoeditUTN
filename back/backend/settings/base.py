@@ -130,6 +130,9 @@ XAI_API_KEY = env('XAI_API_KEY', default=None)
 
 # OpenAI — Moderation API (AI_Security_Shield) and LLM fallback for clip selection
 OPENAI_API_KEY = env('OPENAI_API_KEY', default=None)
+# Hard timeout (seconds) for the Moderation call. The shield fails closed: a timeout blocks the
+# content and the task retries with backoff; SDK-level retries are disabled (Celery owns retries).
+MODERATION_TIMEOUT_SECONDS = env.float('MODERATION_TIMEOUT_SECONDS', default=10.0)
 
 # AI Core V2 Model Configuration
 AI_DEFAULT_LLM_MODEL = env('AI_DEFAULT_LLM_MODEL', default='gemini/gemini-flash-latest')

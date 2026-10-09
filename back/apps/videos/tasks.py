@@ -229,7 +229,7 @@ def process_video_seo(self, post_id):
     2. Extracts transcript.
     3. Calls SEOOptimizationService.
     """
-    from apps.core.security import AI_Security_Shield, UnsafeContentError
+    from apps.core.security import AI_Security_Shield, ModerationError, UnsafeContentError
     from apps.videos.services.seo_engine import SEOOptimizationService
     
     try:
@@ -277,6 +277,21 @@ def process_video_seo(self, post_id):
 
         logger.info(f"✅ [SEO] Metadata generated for post {post_id}")
         return f"SEO Success: {metadata.viral_title}"
+
+    except ModerationError as mod_exc:
+        # Fail closed: no moderation verdict => content does not pass. Must stay above
+        # the generic handler, which would retry blindly with a fixed countdown.
+        logger.error(
+            "🛡️ [SEO SECURITY] Moderation failed for post %s: code=%s retryable=%s retries=%s",
+            post_id, mod_exc.code, mod_exc.retryable, self.request.retries,
+        )
+        if mod_exc.retryable and self.request.retries < self.max_retries:
+            raise self.retry(countdown=_retry_countdown(self.request.retries))
+        # Static code only: never the provider message or any user text.
+        ScheduledPost.objects.filter(id=post_id).update(
+            status=ScheduledPost.Status.FAILED, error_log=mod_exc.code,
+        )
+        return "Moderation Failed"
 
     except Exception as e:
         logger.error(f"❌ [SEO] Failed for post {post_id}: {e}")
