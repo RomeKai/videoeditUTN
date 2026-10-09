@@ -102,11 +102,16 @@ class AI_Security_Shield:
 
             response = client.moderations.create(input=safe_payload)
             result = response.results[0]
+            # Any shape error in the verdict is a failure to moderate, never "safe".
+            flagged = result.flagged
+            if not isinstance(flagged, bool):
+                raise TypeError("moderation verdict 'flagged' is not a bool")
+            categories = result.categories
         except Exception as exc:
             raise _classify_moderation_failure(exc) from None
 
-        if result.flagged:
-            logger.warning(f"🚨 [SECURITY] Content flagged as unsafe: {result.categories}")
+        if flagged:
+            logger.warning(f"🚨 [SECURITY] Content flagged as unsafe: {categories}")
             raise UnsafeContentError("El contenido proporcionado infringe las políticas de seguridad y no puede ser procesado.")
 
         return True

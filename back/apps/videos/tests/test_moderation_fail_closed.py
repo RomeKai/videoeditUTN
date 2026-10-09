@@ -1,5 +1,9 @@
 """AI_Security_Shield must fail closed: no verdict from moderation never means "safe"."""
 
+import os
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -79,9 +83,36 @@ class CheckContentSafetyTests(SimpleTestCase):
         factory.assert_called_once_with(api_key="test-key", timeout=7.0, max_retries=0)
 
     def test_default_timeout_setting_is_ten_seconds(self):
-        from backend.settings import base
+        # Clean-env load of base settings in a subprocess: independent of CI/.env values.
+        env = {k: v for k, v in os.environ.items() if k != "MODERATION_TIMEOUT_SECONDS"}
+        env.update(SECRET_KEY="x", DJANGO_SETTINGS_MODULE="backend.settings.ci")
+        out = subprocess.run(
+            [sys.executable, "-I", "-c",
+             "import sys; sys.path.insert(0, '.');"
+             "from backend.settings import base; print(base.MODERATION_TIMEOUT_SECONDS)"],
+            capture_output=True, text=True, cwd=str(Path(__file__).resolve().parents[3]),
+            env=env, timeout=60,
+        )
+        self.assertEqual(out.stdout.strip(), "10.0", out.stderr[-500:])
 
-        self.assertEqual(base.MODERATION_TIMEOUT_SECONDS, 10.0)
+    def test_malformed_verdicts_fail_closed_as_retryable(self):
+        malformed = {
+            "missing_flagged": SimpleNamespace(results=[SimpleNamespace(categories=None)]),
+            "flagged_none": SimpleNamespace(
+                results=[SimpleNamespace(flagged=None, categories=None)]
+            ),
+            "flagged_non_bool": SimpleNamespace(
+                results=[SimpleNamespace(flagged="false", categories=None)]
+            ),
+            "empty_results": SimpleNamespace(results=[]),
+        }
+        for name, response in malformed.items():
+            client = MagicMock()
+            client.moderations.create.return_value = response
+            with self.subTest(name), patch(OPENAI_CLIENT, return_value=client):
+                with self.assertRaises(ModerationUnavailableError) as ctx:
+                    AI_Security_Shield.check_content_safety("hello")
+                self.assertEqual(ctx.exception.code, "moderation_unavailable")
 
     def test_missing_api_key_is_non_retryable_and_skips_the_api(self):
         for key in (None, ""):
@@ -220,6 +251,47 @@ class ProcessVideoSeoModerationTests(CapturedTaskFailures, TestCase):
                 self.run_task(retries=0)
         self.assertNotEqual(retry.call_args.kwargs.get("countdown"), 60)
         self.assertNotIn("exc", retry.call_args.kwargs)
+
+    def test_malformed_verdict_end_to_end_uses_typed_path_not_generic_handler(self):
+        responses = [
+            SimpleNamespace(results=[SimpleNamespace(categories=None)]),
+            SimpleNamespace(results=[SimpleNamespace(flagged=None, categories=None)]),
+            SimpleNamespace(results=[]),
+        ]
+        for response in responses:
+            ScheduledPost.objects.filter(pk=self.post.pk).update(
+                status=ScheduledPost.Status.QUEUED, error_log=None
+            )
+            client = MagicMock()
+            client.moderations.create.return_value = response
+            with override_settings(OPENAI_API_KEY="k", MODERATION_TIMEOUT_SECONDS=5), patch(
+                OPENAI_CLIENT, return_value=client
+            ), patch.object(process_video_seo, "retry", side_effect=Retry()) as retry:
+                with self.assertRaises(Retry):
+                    self.run_task(retries=0)
+                self.assertNotEqual(retry.call_args.kwargs["countdown"], 60)
+                self.assertNotIn("exc", retry.call_args.kwargs)
+                retry.reset_mock()
+                with self.assertLogs("apps.videos.tasks", level="ERROR") as logs:
+                    self.run_task(retries=process_video_seo.max_retries)
+                retry.assert_not_called()
+                self.assertIn("Moderation failed", "\n".join(logs.output))
+            self.post.refresh_from_db()
+            self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
+            self.assertEqual(self.post.error_log, "moderation_unavailable")
+
+    def test_generic_handler_logs_exception_class_only(self):
+        boom = RuntimeError(SECRET_TEXT)
+        with patch(self.CHECK, side_effect=boom), patch.object(
+            process_video_seo, "retry", side_effect=Retry()
+        ):
+            with self.assertLogs("apps.videos.tasks", level="DEBUG") as logs:
+                # ModerationError is typed; a plain RuntimeError reaches the generic handler.
+                with self.assertRaises(Retry):
+                    self.run_task()
+        output = "\n".join(logs.output)
+        self.assertNotIn(SECRET_TEXT, output)
+        self.assertIn("RuntimeError", output)
 
     def test_task_logs_do_not_leak_transcript(self):
         with patch(self.CHECK, side_effect=ModerationBlockedError(code="moderation_quota")):

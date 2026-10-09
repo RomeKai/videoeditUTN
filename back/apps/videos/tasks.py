@@ -294,7 +294,7 @@ def process_video_seo(self, post_id):
         return "Moderation Failed"
 
     except Exception as e:
-        logger.error(f"❌ [SEO] Failed for post {post_id}: {e}")
+        logger.error(f"❌ [SEO] Failed for post {post_id}: {type(e).__name__}")
         # Retry for OpenAI timeouts or network issues
         raise self.retry(exc=e, countdown=60)
 
