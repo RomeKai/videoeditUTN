@@ -3,8 +3,8 @@ LiteLLM Clip Selection Provider (AI Core V2).
 
 Selects viral-worthy clips from a transcription using structured LLM output.
 Uses LiteLLM as an embedded SDK (no proxy) with a cross-provider fallback chain
-(ADR-001 / plan D3): Gemini Flash as primary, Gemini Flash-Lite as default secondary
-(cross-provider, e.g. openai/gpt-4o-mini, via AI_FALLBACK_LLM_MODEL).
+(ADR-001 / plan D3): Gemini Flash as primary, Gemini Flash-Lite as a temporary
+same-provider secondary (cross-provider target via AI_FALLBACK_LLM_MODEL).
 
 Design constraints:
 - JSON Schema for structured output is generated from Pydantic contracts.
@@ -58,7 +58,8 @@ _CLIP_SELECTION_SCHEMA = ClipSelectionResult.model_json_schema()
 # and timestamps anchored to the provided lines.
 _TEMPERATURE = 0.1
 _DEFAULT_TIMEOUT_SECONDS = 60.0
-_DEFAULT_FALLBACK_MODEL = "gemini/gemini-flash-lite-latest"
+_DEFAULT_PRIMARY_MODEL = "gemini/gemini-3.8-flash"
+_DEFAULT_FALLBACK_MODEL = "gemini/gemini-3.5-flash-lite"
 _DEFAULT_MAX_TRANSCRIPT_CHARS = 400_000
 # Editing styles are single-word slugs (VideoProject.EditingStyle).
 _EDITING_STYLE_RE = re.compile(r"[a-z][a-z0-9_-]{0,23}")
@@ -100,7 +101,7 @@ class LiteLLMSelectionProvider:
         key_resolver: Optional[KeyResolver] = None,
     ):
         self._primary_model = primary_model or getattr(
-            settings, "AI_DEFAULT_LLM_MODEL", "gemini/gemini-flash-latest"
+            settings, "AI_DEFAULT_LLM_MODEL", _DEFAULT_PRIMARY_MODEL
         )
         self._fallback_model = fallback_model or getattr(
             settings, "AI_FALLBACK_LLM_MODEL", _DEFAULT_FALLBACK_MODEL

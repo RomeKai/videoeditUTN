@@ -62,7 +62,7 @@ class _LiteLLMLegacyStrategy(ClipSelectionStrategy):
     """Shared single-call implementation; subclasses only choose the model setting."""
 
     setting_name: str = "AI_DEFAULT_LLM_MODEL"
-    default_model: str = "gemini/gemini-flash-latest"
+    default_model: str = "gemini/gemini-3.8-flash"
 
     def get_model_name(self) -> str:
         return getattr(settings, self.setting_name, self.default_model)
@@ -103,14 +103,14 @@ class GeminiFlashStrategy(_LiteLLMLegacyStrategy):
     """Primary legacy strategy: model from AI_DEFAULT_LLM_MODEL."""
 
     setting_name = "AI_DEFAULT_LLM_MODEL"
-    default_model = "gemini/gemini-flash-latest"
+    default_model = "gemini/gemini-3.8-flash"
 
 
 class GeminiFallbackStrategy(_LiteLLMLegacyStrategy):
     """Secondary legacy strategy: model from AI_FALLBACK_LLM_MODEL (Gemini Flash-Lite by default)."""
 
     setting_name = "AI_FALLBACK_LLM_MODEL"
-    default_model = "gemini/gemini-flash-lite-latest"
+    default_model = "gemini/gemini-3.5-flash-lite"
 
 
 # --- 3. CONTEXT (SELECTION ENGINE) ---

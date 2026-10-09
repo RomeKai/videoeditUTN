@@ -132,11 +132,12 @@ XAI_API_KEY = env('XAI_API_KEY', default=None)
 OPENAI_API_KEY = env('OPENAI_API_KEY', default=None)
 
 # AI Core V2 Model Configuration
-AI_DEFAULT_LLM_MODEL = env('AI_DEFAULT_LLM_MODEL', default='gemini/gemini-flash-latest')
-# Default fallback stays inside Gemini (Flash-Lite): it needs no extra account or credits, but it does not
-# survive a Gemini outage or account block. Set AI_FALLBACK_LLM_MODEL=openai/gpt-4o-mini (or another
-# provider) for cross-provider resilience; the fallback only activates if that provider's key is set.
-AI_FALLBACK_LLM_MODEL = env('AI_FALLBACK_LLM_MODEL', default='gemini/gemini-flash-lite-latest')
+AI_DEFAULT_LLM_MODEL = env('AI_DEFAULT_LLM_MODEL', default='gemini/gemini-3.8-flash')
+# Fallback is same-provider (Gemini Flash-Lite) and TEMPORARY: it covers model-level failures but not a Gemini
+# outage, quota or key problem. Objective: cross-provider; candidate groq/openai/gpt-oss-120b, gated by the
+# org's real Groq TPM limits. Llama models on Groq only support json_object and are unpriced. The fallback
+# only activates if that provider's key is set.
+AI_FALLBACK_LLM_MODEL = env('AI_FALLBACK_LLM_MODEL', default='gemini/gemini-3.5-flash-lite')
 # Hard timeout per LLM call; retries are owned by Celery, not LiteLLM.
 AI_LLM_TIMEOUT_SECONDS = env.float('AI_LLM_TIMEOUT_SECONDS', default=60.0)
 # Transcript cap sized for the smallest context window plausible in the chain (gpt-4o-mini, 128K tokens),

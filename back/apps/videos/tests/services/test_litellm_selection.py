@@ -666,6 +666,56 @@ class TestAICORE6Hardening(unittest.TestCase):
             _build_provider().select_clips(transcript="  ", video_duration=300.0)
 
 
+class TestDefaultModels(unittest.TestCase):
+    """Code-level defaults (used when settings lack the keys) track the settings defaults."""
+
+    PRIMARY = "gemini/gemini-3.8-flash"
+    FALLBACK = "gemini/gemini-3.5-flash-lite"
+
+    def test_provider_constants(self):
+        from apps.videos.services.ai import litellm_selection as mod
+
+        self.assertEqual(mod._DEFAULT_PRIMARY_MODEL, self.PRIMARY)
+        self.assertEqual(mod._DEFAULT_FALLBACK_MODEL, self.FALLBACK)
+
+    def test_provider_falls_back_to_constants_without_settings(self):
+        class _Bare:
+            pass
+
+        with patch("apps.videos.services.ai.litellm_selection.settings", _Bare()):
+            provider = LiteLLMSelectionProvider(key_resolver=lambda _m: "k")
+        self.assertEqual(provider._primary_model, self.PRIMARY)
+        self.assertEqual(provider._fallback_model, self.FALLBACK)
+
+    def test_legacy_strategy_defaults(self):
+        from apps.videos.services.selection_engine import (
+            GeminiFallbackStrategy,
+            GeminiFlashStrategy,
+        )
+
+        self.assertEqual(GeminiFlashStrategy.default_model, self.PRIMARY)
+        self.assertEqual(GeminiFallbackStrategy.default_model, self.FALLBACK)
+
+    def test_no_moving_aliases_as_defaults(self):
+        from apps.videos.services.selection_engine import (
+            GeminiFallbackStrategy,
+            GeminiFlashStrategy,
+        )
+
+        for default in (GeminiFlashStrategy.default_model, GeminiFallbackStrategy.default_model):
+            self.assertNotIn("-latest", default)
+
+    @unittest.skipIf(
+        os.environ.get("AI_DEFAULT_LLM_MODEL") or os.environ.get("AI_FALLBACK_LLM_MODEL"),
+        "model env vars override the settings defaults",
+    )
+    def test_settings_defaults(self):
+        from django.conf import settings
+
+        self.assertEqual(settings.AI_DEFAULT_LLM_MODEL, self.PRIMARY)
+        self.assertEqual(settings.AI_FALLBACK_LLM_MODEL, self.FALLBACK)
+
+
 class TestUsageMetricsAICore8(unittest.TestCase):
     """AICORE-8: cache tokens, total, cost, pricing version and role in usage."""
 
