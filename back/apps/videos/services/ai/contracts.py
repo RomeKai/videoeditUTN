@@ -156,6 +156,11 @@ class ProviderUsage(BaseModel):
     pricing_version: Optional[str] = Field(
         default=None, description="Version of the pricing table used for estimated_cost_usd"
     )
+    resolved_model: Optional[str] = Field(
+        default=None,
+        description="Model name the provider reports having served (never user text); "
+        "`model` stays the requested identifier",
+    )
 
     @model_validator(mode="after")
     def auto_compute_total_tokens(self) -> "ProviderUsage":

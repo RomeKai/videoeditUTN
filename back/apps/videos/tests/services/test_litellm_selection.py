@@ -708,6 +708,35 @@ class TestUsageMetricsAICore8(unittest.TestCase):
         self.assertEqual(usage.cache_read_tokens, 0)
         self.assertEqual(usage.total_tokens, 0)
 
+    def test_resolved_model_filled_from_real_string(self):
+        response = types.SimpleNamespace(
+            model="gpt-4o-mini-2024-07-18",
+            usage=types.SimpleNamespace(prompt_tokens=1_000_000, completion_tokens=0),
+        )
+        usage = LiteLLMSelectionProvider._extract_usage(response, "openai/gpt-4o-mini", 0.1)
+        self.assertEqual(usage.resolved_model, "gpt-4o-mini-2024-07-18")
+        # `model` keeps what the code asked for, and the cost follows that key
+        # (the dated resolved name is not in the price table).
+        self.assertEqual(usage.model, "openai/gpt-4o-mini")
+        self.assertAlmostEqual(usage.estimated_cost_usd, 0.15, places=9)
+
+    def test_resolved_model_none_for_non_string_or_missing(self):
+        # A MagicMock attribute must never leak into the contract.
+        mock_response = _make_llm_response(_valid_clips_response())
+        usage = LiteLLMSelectionProvider._extract_usage(mock_response, "openai/gpt-4o-mini", 0.1)
+        self.assertIsNone(usage.resolved_model)
+
+        for value in (None, "", "   ", 123):
+            with self.subTest(value=value):
+                response = types.SimpleNamespace(model=value)
+                usage = LiteLLMSelectionProvider._extract_usage(response, "openai/gpt-4o-mini", 0.1)
+                self.assertIsNone(usage.resolved_model)
+
+        usage = LiteLLMSelectionProvider._extract_usage(
+            types.SimpleNamespace(), "openai/gpt-4o-mini", 0.1
+        )
+        self.assertIsNone(usage.resolved_model)
+
     def test_role_primary_when_primary_answers(self):
         provider = _build_provider()
         import litellm

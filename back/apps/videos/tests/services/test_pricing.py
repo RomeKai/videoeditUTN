@@ -33,6 +33,7 @@ class TestProviderUsageBackwardCompat(unittest.TestCase):
         self.assertIsNone(usage.audio_seconds)
         self.assertIsNone(usage.pricing_version)
         self.assertIsNone(usage.estimated_cost_usd)
+        self.assertIsNone(usage.resolved_model)
 
     def test_new_fields_accept_values(self):
         usage = ProviderUsage(

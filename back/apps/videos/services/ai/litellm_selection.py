@@ -544,9 +544,17 @@ class LiteLLMSelectionProvider:
         # Determine provider name from model string
         provider = model.split("/")[0] if "/" in model else "openai"
 
+        # Model the provider says answered (may differ from the requested alias).
+        # Only a real non-empty str is accepted so mocks/objects never leak.
+        # Capturing provider-specific ``modelVersion`` is deferred until a live
+        # measurement shows what LiteLLM actually exposes.
+        resolved = getattr(response, "model", None)
+        resolved_model = resolved.strip() if isinstance(resolved, str) and resolved.strip() else None
+
         usage_record = ProviderUsage(
             provider=provider,
             model=model,
+            resolved_model=resolved_model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=prompt_tokens + completion_tokens,
