@@ -8,11 +8,12 @@ with offset correction and overlap deduplication.
 Design constraints:
 - Never logs raw audio bytes or full transcript text.
 - Error classification follows the AICORE-1 hierarchy strictly.
-- Cost estimation uses Groq's published rate of $0.111/hour.
+- Cost estimation comes from the versioned table in ``pricing.py`` (per-model rate).
 """
 
 import logging
 import time
+from decimal import Decimal
 from typing import List, Optional, Tuple
 
 from django.conf import settings
@@ -25,6 +26,7 @@ from apps.videos.services.ai.contracts import (
     TranscriptionSegment,
     WordTimestamp,
 )
+from apps.videos.services.ai.pricing import PRICING_VERSION, estimate_asr_cost
 from apps.videos.services.ai.errors import (
     AIAuthenticationError,
     AIConnectionError,
@@ -34,9 +36,6 @@ from apps.videos.services.ai.errors import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Groq Whisper pricing: $0.111 per hour of audio
-_COST_PER_HOUR_USD = 0.111
 
 # Provider identifier used in ProviderUsage
 _PROVIDER_NAME = "groq"
@@ -102,6 +101,9 @@ class GroqTranscriptionProvider:
         all_text_parts: List[str] = []
         total_latency = 0.0
         total_audio_duration = 0.0
+        # Groq bills each request separately (with a minimum length), so the
+        # cost is the sum over chunks; None as soon as one chunk is unpriced.
+        total_cost: Optional[Decimal] = Decimal(0)
 
         prev_chunk_end: Optional[float] = None
 
@@ -137,6 +139,8 @@ class GroqTranscriptionProvider:
             all_segments.extend(result.segments)
             all_text_parts.append(result.full_text)
             total_audio_duration += chunk.duration
+            chunk_cost = estimate_asr_cost(self._model, chunk.duration)
+            total_cost = None if (total_cost is None or chunk_cost is None) else total_cost + chunk_cost
 
             prev_chunk_end = chunk.end_time
 
@@ -159,7 +163,10 @@ class GroqTranscriptionProvider:
             provider=_PROVIDER_NAME,
             model=self._model,
             duration_seconds=total_latency,
-            estimated_cost_usd=self._estimate_cost(total_audio_duration),
+            # Decimal -> float only at the contract boundary; None = unknown price.
+            estimated_cost_usd=None if total_cost is None else float(round(total_cost, 6)),
+            audio_seconds=total_audio_duration,
+            pricing_version=PRICING_VERSION,
         )
 
         return AIExecutionResult[TranscriptionResult](
@@ -423,17 +430,3 @@ class GroqTranscriptionProvider:
             model=self._model,
             raw_error=exc,
         )
-
-    # ------------------------------------------------------------------
-    # Cost estimation
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _estimate_cost(duration_seconds: float) -> float:
-        """
-        Estimates transcription cost based on Groq's published rate.
-        $0.111 per hour of audio.
-        """
-        if duration_seconds <= 0:
-            return 0.0
-        return round((duration_seconds / 3600.0) * _COST_PER_HOUR_USD, 6)

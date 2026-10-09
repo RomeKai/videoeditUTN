@@ -49,6 +49,7 @@ from apps.videos.services.ai.contracts import (
     TranscriptionSegment,
     WordTimestamp,
 )
+from apps.videos.services.ai.pricing import PRICING_VERSION
 from apps.videos.services.ai.errors import (
     AIAuthenticationError,
     AIConnectionError,
@@ -273,19 +274,6 @@ class TestOverlapDeduplication(unittest.TestCase):
 class TestMetricsCalculation(unittest.TestCase):
     """AC: Calculates latency, duration, and estimated cost."""
 
-    def test_cost_estimation(self):
-        # 1 hour = $0.111
-        cost = GroqTranscriptionProvider._estimate_cost(3600.0)
-        self.assertAlmostEqual(cost, 0.111, places=4)
-
-        # 30 minutes = $0.0555
-        cost = GroqTranscriptionProvider._estimate_cost(1800.0)
-        self.assertAlmostEqual(cost, 0.0555, places=4)
-
-        # 0 seconds = $0
-        cost = GroqTranscriptionProvider._estimate_cost(0.0)
-        self.assertEqual(cost, 0.0)
-
     def test_transcribe_populates_usage_metrics(self):
         mock_client = MagicMock()
         mock_response = MagicMock()
@@ -303,8 +291,44 @@ class TestMetricsCalculation(unittest.TestCase):
         self.assertEqual(exec_result.usage.model, "whisper-large-v3-turbo")
         self.assertGreater(exec_result.usage.duration_seconds, 0.0)
 
-        expected_cost = (120.0 / 3600.0) * 0.111
+        # Turbo rate (USD 0.04/h), not the large-v3 rate (finding H3).
+        expected_cost = (120.0 / 3600.0) * 0.04
         self.assertAlmostEqual(exec_result.usage.estimated_cost_usd, expected_cost, places=5)
+        self.assertEqual(exec_result.usage.audio_seconds, 120.0)
+        self.assertEqual(exec_result.usage.pricing_version, PRICING_VERSION)
+        self.assertEqual(exec_result.usage.role, "primary")
+
+    def _transcribe_with_model(self, model, durations):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.model_dump.return_value = _fake_groq_response(duration=10.0)
+        mock_client.audio.transcriptions.create.return_value = mock_response
+        provider = _build_provider_with_mock_client(mock_client)
+        provider._model = model
+        chunks = []
+        start = 0.0
+        for i, d in enumerate(durations):
+            chunks.append(_make_chunk(index=i, start=start, end=start + d))
+            start += d
+        with patch("builtins.open", mock_open(read_data=b"audio")):
+            return provider.transcribe(chunks)
+
+    def test_turbo_uses_own_rate_not_large_v3(self):
+        turbo = self._transcribe_with_model("whisper-large-v3-turbo", [3600.0])
+        large = self._transcribe_with_model("whisper-large-v3", [3600.0])
+        self.assertAlmostEqual(turbo.usage.estimated_cost_usd, 0.04, places=6)
+        self.assertAlmostEqual(large.usage.estimated_cost_usd, 0.111, places=6)
+
+    def test_unknown_model_cost_is_none_not_zero(self):
+        result = self._transcribe_with_model("whisper-mystery", [60.0])
+        self.assertIsNone(result.usage.estimated_cost_usd)
+        self.assertEqual(result.usage.audio_seconds, 60.0)
+
+    def test_minimum_billable_length_applies_per_chunk(self):
+        # Two 4 s chunks are each billed as 10 s -> 20 s billed in total.
+        result = self._transcribe_with_model("whisper-large-v3-turbo", [4.0, 4.0])
+        self.assertAlmostEqual(result.usage.estimated_cost_usd, 20.0 / 3600.0 * 0.04, places=6)
+        self.assertEqual(result.usage.audio_seconds, 8.0)
 
 
 class TestErrorClassification(unittest.TestCase):
