@@ -195,7 +195,7 @@ def upload_to_social_network(self, post_id):
 
     except AyrshareAPIError as exc:
         # Resilience: Exponential Backoff for 3rd party instability
-        logger.error(f"⚠️ [WORKER] Ayrshare API Error: {exc}")
+        logger.error("⚠️ [WORKER] Ayrshare API Error: %s", type(exc).__name__)
         # Updated by id: `post` may not be bound if the failure happened before the fetch.
         ScheduledPost.objects.filter(id=post_id).update(
             retry_count=F('retry_count') + 1,
@@ -210,7 +210,7 @@ def upload_to_social_network(self, post_id):
         raise
 
     except Exception as e:
-        logger.error(f"❌ [WORKER] Critical failure: {e}")
+        logger.error("❌ [WORKER] Critical failure: %s", type(e).__name__)
         ScheduledPost.objects.filter(id=post_id).update(
             status=ScheduledPost.Status.FAILED,
             error_log=f"Critical: {str(e)}",
@@ -250,7 +250,7 @@ def process_video_seo(self, post_id):
         try:
             AI_Security_Shield.check_content_safety(transcript)
         except UnsafeContentError as safety_exc:
-            logger.error(f"🛡️ [SEO SECURITY] Safety violation for post {post_id}: {safety_exc}")
+            logger.error(f"🛡️ [SEO SECURITY] Safety violation for post {post_id}: {type(safety_exc).__name__}")
             post.status = ScheduledPost.Status.FAILED
             post.error_log = f"Violación de seguridad: {str(safety_exc)}"
             post.save()
@@ -343,8 +343,10 @@ class ClipRenderTask(celery_app.Task):
             clip = VideoClip.objects.get(pk=clip_id)
             VideoClip.objects.filter(pk=clip_id).update(status=VideoClip.Status.FAILED)
             finalize_project_render(clip.project_id)
-        except (DatabaseError, VideoClip.DoesNotExist):
-            logger.exception("render.failure_not_recorded clip_id=%s", clip_id)
+        except (DatabaseError, VideoClip.DoesNotExist) as record_exc:
+            logger.error(
+                "render.failure_not_recorded clip_id=%s error=%s", clip_id, type(record_exc).__name__
+            )
 
 
 def _claim_clip_for_render(clip_id, redelivered=False):
@@ -402,8 +404,11 @@ def render_clip_task(self, clip_id):
         # Re-render after a failure: do not leave the old upload orphaned in R2.
         try:
             CloudflareR2Manager.delete_object(previous_key)
-        except Exception:
-            logger.exception(f"⚠️ [RENDER TASK] Could not delete orphan R2 object {previous_key}")
+        except Exception as delete_exc:
+            logger.error(
+                "⚠️ [RENDER TASK] Could not delete orphan R2 object for clip %s error=%s",
+                clip_id, type(delete_exc).__name__,
+            )
 
     finalize_project_render(clip.project_id)
     return f"Clip {clip_id} rendered successfully"
@@ -534,7 +539,9 @@ def render_video_segments(self, project_id):
                 return f"Render Success: {final_s3_key}"
 
     except Exception as e:
-        logger.error(f"❌ [FINAL RENDER ERROR] {e}", exc_info=True)
+        logger.error(
+            "❌ [FINAL RENDER ERROR] project_id=%s error=%s", project_id, type(e).__name__
+        )
         if 'project' in locals():
             project.status = VideoProject.Status.FAILED
             project.save()
@@ -696,8 +703,11 @@ def _running_stage(project_id, stage, attempt):
             set_stage_status(project_id, stage, StageStatus.FAILED, expected_stage=owner_stage)
         except PipelineStateError:
             logger.warning("pipeline.status_write_skipped project_id=%s stage=%s", project_id, stage)
-        except (DatabaseError, VideoProject.DoesNotExist):
-            logger.exception("pipeline.status_write_failed project_id=%s stage=%s", project_id, stage)
+        except (DatabaseError, VideoProject.DoesNotExist) as status_exc:
+            logger.error(
+                "pipeline.status_write_failed project_id=%s stage=%s error=%s",
+                project_id, stage, type(status_exc).__name__,
+            )
         raise
     logger.info(
         "pipeline.stage_completed project_id=%s stage=%s attempt=%d", project_id, stage, attempt,
@@ -721,8 +731,11 @@ def _generate_proxy(project, source_path, user_id):
         proxy_r2_key = CloudflareR2Manager.upload_video(proxy_local_path, user_id, str(project.id))
         VideoProject.objects.filter(pk=project.id).update(proxy_r2_key=proxy_r2_key)
         logger.info(f"✅ Proxy uploaded to R2: {proxy_r2_key}")
-    except Exception:
-        logger.exception("⚠️ Proxy generation failed but continuing ingestion")
+    except Exception as proxy_exc:
+        logger.error(
+            "⚠️ Proxy generation failed but continuing ingestion project_id=%s error=%s",
+            project.id, type(proxy_exc).__name__,
+        )
     finally:
         FFmpegManager.cleanup_local_file(proxy_local_path)
 
@@ -733,7 +746,7 @@ def _stage_prepare_source(project_id):
     project = VideoProject.objects.get(pk=project_id)
 
     if not project.source_file and project.video_url:
-        logger.info(f"⬇️ Downloading from URL: {project.video_url}")
+        logger.info("⬇️ Downloading source from URL for project %s", project_id)
         download_dir = os.path.join(settings.MEDIA_ROOT, 'videos', 'raw', 'downloads')
         os.makedirs(download_dir, exist_ok=True)
         local_path = download_from_youtube(project.video_url, download_dir)
@@ -904,7 +917,10 @@ def _resume_render_dispatch(project_id):
         try:
             render_clip_task.delay(str(clip_id))
         except Exception as exc:
-            logger.exception("render.dispatch_failed project_id=%s clip_id=%s", project_id, clip_id)
+            logger.error(
+                "render.dispatch_failed project_id=%s clip_id=%s error=%s",
+                project_id, clip_id, type(exc).__name__,
+            )
             failure = failure or exc
     if failure is not None:
         raise failure
@@ -997,7 +1013,6 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
         "pipeline.failed project_id=%s attempt=%d final=%s error=%s",
         project_id, attempt, final, type(exc).__name__,
         extra={'project_id': str(project_id), 'attempt': attempt},
-        exc_info=exc,
     )
     try:
         VideoProject.objects.filter(pk=project_id).update(
@@ -1006,8 +1021,11 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
         record_error(project_id, type(exc).__name__)
         if final:
             mark_failed(project_id, expected_stage=stage)
-    except (DatabaseError, VideoProject.DoesNotExist):
-        logger.exception("pipeline.failure_not_recorded project_id=%s", project_id)
+    except (DatabaseError, VideoProject.DoesNotExist) as record_exc:
+        logger.error(
+            "pipeline.failure_not_recorded project_id=%s error=%s",
+            project_id, type(record_exc).__name__,
+        )
 
 
 # acks_late + reject_on_worker_lost: if the worker dies mid-task (OOM during
@@ -1049,13 +1067,15 @@ def process_initial_ingestion(self, project_id):
             )
         # Still held after outlasting the TTL: a live worker owns the project.
         logger.warning(
-            "pipeline.skipped project_id=%s attempt=%d reason=%s", project_id, attempt, exc,
+            "pipeline.skipped project_id=%s attempt=%d reason=%s",
+            project_id, attempt, type(exc).__name__,
             extra={'project_id': str(project_id), 'attempt': attempt},
         )
         return f"Skipped {project_id}: {exc}"
     except (ProjectLockLostError, PipelineConflictError) as exc:
         logger.warning(
-            "pipeline.skipped project_id=%s attempt=%d reason=%s", project_id, attempt, exc,
+            "pipeline.skipped project_id=%s attempt=%d reason=%s",
+            project_id, attempt, type(exc).__name__,
             extra={'project_id': str(project_id), 'attempt': attempt},
         )
         return f"Skipped {project_id}: {exc}"
