@@ -90,5 +90,5 @@ class GameplaySaliencyDetector:
             return best_x
 
         except Exception as e:
-            logger.error(f"Error in SaliencyDetector: {e}")
+            logger.error(f"Error in SaliencyDetector: {type(e).__name__}")
             return clip.w // 2

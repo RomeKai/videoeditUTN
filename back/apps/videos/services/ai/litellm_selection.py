@@ -489,8 +489,7 @@ class LiteLLMSelectionProvider:
         for clip in clips:
             if clip.start >= video_duration:
                 logger.warning(
-                    "⚠️ [LiteLLMSelection] Dropping clip '%s': start (%.1f) >= duration (%.1f)",
-                    clip.title,
+                    "⚠️ [LiteLLMSelection] Dropping clip: start (%.1f) >= duration (%.1f)",
                     clip.start,
                     video_duration,
                 )
@@ -498,8 +497,7 @@ class LiteLLMSelectionProvider:
 
             if clip.end > video_duration:
                 logger.info(
-                    "📐 [LiteLLMSelection] Clamping clip '%s' end from %.1f to %.1f",
-                    clip.title,
+                    "📐 [LiteLLMSelection] Clamping clip end from %.1f to %.1f",
                     clip.end,
                     video_duration,
                 )
