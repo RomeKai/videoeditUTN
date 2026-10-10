@@ -162,6 +162,12 @@ class ProviderUsage(BaseModel):
         "`model` stays the requested identifier",
     )
 
+    error_code: Optional[str] = Field(
+        default=None,
+        description="CLASS NAME of the AIError that ended this attempt (None = it answered); "
+        "never an error message",
+    )
+
     @model_validator(mode="after")
     def auto_compute_total_tokens(self) -> "ProviderUsage":
         if self.total_tokens == 0 and (self.prompt_tokens > 0 or self.completion_tokens > 0):
@@ -180,3 +186,7 @@ class AIExecutionResult(BaseModel, Generic[T]):
     data: T
     usage: ProviderUsage
     success: bool = True
+    # Every provider attempt made, in order (failed primary first, then the one
+    # that answered). ``usage`` stays the final answering usage. Empty when the
+    # producer made a single attempt and did not track attempts.
+    attempts: List[ProviderUsage] = Field(default_factory=list)

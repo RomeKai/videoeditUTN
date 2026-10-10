@@ -234,6 +234,7 @@ class TranscriptionEngine:
             WordTimestamp,
         )
         from apps.videos.services.ai.errors import AIContractValidationError
+        from apps.videos.services.ai.pricing import PRICING_VERSION
 
         full_text = str(raw.get("text", "")).strip()
         if not full_text:
@@ -283,7 +284,10 @@ class TranscriptionEngine:
             provider="local",
             model=f"whisper-{self.model_size}",
             duration_seconds=round(latency, 3),
+            # Local inference has no API charge: a real zero (unlike a missing price).
             estimated_cost_usd=0.0,
+            audio_seconds=data.duration,
+            pricing_version=PRICING_VERSION,
         )
         return AIExecutionResult[TranscriptionResult](data=data, usage=usage, success=True)
 

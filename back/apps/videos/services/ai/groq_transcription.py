@@ -30,9 +30,11 @@ from apps.videos.services.ai.pricing import PRICING_VERSION, estimate_asr_cost
 from apps.videos.services.ai.errors import (
     AIAuthenticationError,
     AIConnectionError,
+    AIContractValidationError,
     AIRateLimitError,
     AIServerError,
     AITimeoutError,
+    is_billing_uncertain,
 )
 
 logger = logging.getLogger(__name__)
@@ -106,50 +108,76 @@ class GroqTranscriptionProvider:
         total_cost: Optional[Decimal] = Decimal(0)
 
         prev_chunk_end: Optional[float] = None
+        # Chunks the API answered (and therefore billed). Counted right after the
+        # call, before parsing, so a chunk that answered but cannot be parsed is
+        # still paid for in the totals attached to the error.
+        billed_chunks = 0
 
-        for chunk in chunks:
-            logger.info(
-                "🎙️ [GroqTranscription] Processing chunk %d "
-                "(offset=%.3fs, duration=%.3fs)",
-                chunk.chunk_index,
-                chunk.start_time,
-                chunk.duration,
-            )
-
-            raw_response, latency = self._call_groq_api(chunk.file_path)
-            total_latency += latency
-
-            result = self._parse_response(raw_response)
-
-            # Apply temporal offset for this chunk
-            if chunk.start_time > 0:
-                result = self._apply_offset(result, chunk.start_time)
-
-            # Deduplicate overlap-zone words
-            if prev_chunk_end is not None and result.words:
-                result_words = self._deduplicate_overlap(
-                    words=result.words,
-                    prev_end=prev_chunk_end,
-                    overlap=2.0,
+        try:
+            for chunk in chunks:
+                logger.info(
+                    "🎙️ [GroqTranscription] Processing chunk %d "
+                    "(offset=%.3fs, duration=%.3fs)",
+                    chunk.chunk_index,
+                    chunk.start_time,
+                    chunk.duration,
                 )
-            else:
-                result_words = list(result.words)
 
-            all_words.extend(result_words)
-            all_segments.extend(result.segments)
-            all_text_parts.append(result.full_text)
-            total_audio_duration += chunk.duration
-            chunk_cost = estimate_asr_cost(self._model, chunk.duration)
-            total_cost = None if (total_cost is None or chunk_cost is None) else total_cost + chunk_cost
+                raw_response, latency = self._call_groq_api(chunk.file_path)
+                billed_chunks += 1
+                total_latency += latency
+                total_audio_duration += chunk.duration
+                chunk_cost = estimate_asr_cost(self._model, chunk.duration)
+                total_cost = None if (total_cost is None or chunk_cost is None) else total_cost + chunk_cost
 
-            prev_chunk_end = chunk.end_time
+                result = self._parse_billed_response(raw_response)
 
-            logger.info(
-                "✅ [GroqTranscription] Chunk %d done: %d words, latency=%.3fs",
-                chunk.chunk_index,
-                len(result_words),
-                latency,
-            )
+                # Apply temporal offset for this chunk
+                if chunk.start_time > 0:
+                    result = self._apply_offset(result, chunk.start_time)
+
+                # Deduplicate overlap-zone words
+                if prev_chunk_end is not None and result.words:
+                    result_words = self._deduplicate_overlap(
+                        words=result.words,
+                        prev_end=prev_chunk_end,
+                        overlap=2.0,
+                    )
+                else:
+                    result_words = list(result.words)
+
+                all_words.extend(result_words)
+                all_segments.extend(result.segments)
+                all_text_parts.append(result.full_text)
+
+                prev_chunk_end = chunk.end_time
+
+                logger.info(
+                    "✅ [GroqTranscription] Chunk %d done: %d words, latency=%.3fs",
+                    chunk.chunk_index,
+                    len(result_words),
+                    latency,
+                )
+        except Exception as exc:
+            # The ORIGINAL exception is re-raised unchanged so Celery/pipeline
+            # retry semantics (SoftTimeLimitExceeded, OSError, ...) are untouched;
+            # only the usage billed so far is attached to it.
+            if billed_chunks:
+                # A timeout/dropped connection leaves the failing chunk's charge
+                # uncertain, so the partial cost is unknown rather than a floor.
+                cost = None if is_billing_uncertain(exc) else total_cost
+                try:
+                    exc.usage_attempts = [
+                        self._usage(
+                            total_latency, total_audio_duration, cost,
+                            error_code=type(exc).__name__,
+                        )
+                    ]
+                except (AttributeError, TypeError):
+                    logger.warning(
+                        "transcription.usage_not_attached error=%s", type(exc).__name__
+                    )
+            raise
 
         merged = TranscriptionResult(
             full_text=" ".join(all_text_parts),
@@ -159,20 +187,37 @@ class GroqTranscriptionProvider:
             duration=total_audio_duration,
         )
 
-        usage = ProviderUsage(
-            provider=_PROVIDER_NAME,
-            model=self._model,
-            duration_seconds=total_latency,
-            # Decimal -> float only at the contract boundary; None = unknown price.
-            estimated_cost_usd=None if total_cost is None else float(round(total_cost, 6)),
-            audio_seconds=total_audio_duration,
-            pricing_version=PRICING_VERSION,
-        )
+        usage = self._usage(total_latency, total_audio_duration, total_cost)
 
         return AIExecutionResult[TranscriptionResult](
             data=merged,
             usage=usage,
             success=True,
+        )
+
+    def _usage(
+        self,
+        latency: float,
+        audio_seconds: float,
+        cost: Optional[Decimal],
+        error_code: Optional[str] = None,
+    ) -> ProviderUsage:
+        """
+        Usage for the chunks billed so far. Counted per chunk that ANSWERED
+        (Groq bills each answered request, minimum length applied). Not counted:
+        retries inside the Groq SDK (default max_retries=2 on connection errors,
+        408/409/429 and 5xx). Those responses carry no charge, except a timed-out
+        request the server may still have completed, which the client cannot see.
+        """
+        return ProviderUsage(
+            provider=_PROVIDER_NAME,
+            model=self._model,
+            duration_seconds=latency,
+            # Decimal -> float only at the contract boundary; None = unknown price.
+            estimated_cost_usd=None if cost is None else float(round(cost, 6)),
+            audio_seconds=audio_seconds,
+            pricing_version=PRICING_VERSION,
+            error_code=error_code,
         )
 
     def transcribe_chunk(self, chunk: AudioChunk) -> AIExecutionResult[TranscriptionResult]:
@@ -219,6 +264,22 @@ class GroqTranscriptionProvider:
     # ------------------------------------------------------------------
     # Response parsing
     # ------------------------------------------------------------------
+
+    def _parse_billed_response(self, raw: dict) -> TranscriptionResult:
+        """
+        ``_parse_response`` for a response the API already answered (and billed).
+        An unparseable payload is a deterministic contract failure (before, a raw
+        ValueError, equally non-retryable): it is reported with the class name
+        only, because the raw message could echo fragments of the transcript.
+        """
+        try:
+            return self._parse_response(raw)
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise AIContractValidationError(
+                message=f"Groq response could not be parsed: {type(exc).__name__}",
+                provider=_PROVIDER_NAME,
+                model=self._model,
+            ) from exc
 
     def _parse_response(self, raw: dict) -> TranscriptionResult:
         """
