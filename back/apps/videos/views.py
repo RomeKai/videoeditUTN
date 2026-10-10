@@ -80,7 +80,12 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
         try:
             approved_segments = validate_approved_segments(approved_segments)
         except InvalidSegmentsError as e:
-            return Response({"error": f"Invalid approved_segments: {e}"}, status=400)
+            if e.kind == "timestamps":
+                return Response({"error": "Los timestamps deben ser valores numéricos (float)."}, status=400)
+            return Response({"error": (
+                "Los segmentos aprobados son inválidos: cada segmento debe tener "
+                "'start' y 'end' numéricos con 0 <= start < end."
+            )}, status=400)
 
         total_duration = sum(seg["end"] - seg["start"] for seg in approved_segments)
 

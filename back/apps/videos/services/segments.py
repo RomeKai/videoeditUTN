@@ -4,19 +4,26 @@ from typing import Any, Dict, List
 
 
 class InvalidSegmentsError(ValueError):
-    """The approved segments do not have the expected shape. Messages are static: no user text."""
+    """
+    The approved segments do not have the expected shape. Messages are static (no user
+    text). ``kind`` is ``"timestamps"`` for non-numeric/non-finite times, else ``"shape"``.
+    """
+
+    def __init__(self, message: str, kind: str = "shape"):
+        super().__init__(message)
+        self.kind = kind
 
 
 def _as_time(value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        raise InvalidSegmentsError("Segment timestamps must be numbers.")
+        raise InvalidSegmentsError("Segment timestamps must be numbers.", kind="timestamps")
     try:
         # Numeric strings were accepted by the approval endpoint before; keep them.
         number = float(value)
     except ValueError:
-        raise InvalidSegmentsError("Segment timestamps must be numbers.") from None
+        raise InvalidSegmentsError("Segment timestamps must be numbers.", kind="timestamps") from None
     if not math.isfinite(number):
-        raise InvalidSegmentsError("Segment timestamps must be finite.")
+        raise InvalidSegmentsError("Segment timestamps must be finite.", kind="timestamps")
     return number
 
 

@@ -30,6 +30,11 @@ LAYOUT = "apps.videos.services.layouts.get_layout_strategy"
 RESERVE = "apps.videos.views.wallet_service.reserve_funds"
 DELAY = "apps.videos.tasks.render_video_segments.delay"
 
+SEGMENT_BOUNDS_MESSAGE = (
+    "Los segmentos aprobados son inválidos: cada segmento debe tener "
+    "'start' y 'end' numéricos con 0 <= start < end."
+)
+
 SEGMENTS = [
     {"start": 0.0, "end": 2.0, "text": "private words"},
     {"start": 5, "end": 7.5, "text": "more private words"},
@@ -106,15 +111,21 @@ class ApprovePaperEditStoresColumnTests(APITestCase):
         self.assertEqual(self.project.metadata["final_duration"], 4.5)
         delay.assert_called_once_with(self.project.id)
 
-    def test_invalid_segments_are_rejected_before_charging(self):
-        for bad in (
-            [{"start": -1, "end": 2}],
-            [{"start": "nan", "end": 2}],
-            ["not-a-dict"],
-        ):
+    def test_invalid_segments_are_rejected_before_charging_with_spanish_message(self):
+        cases = [
+            ([{"start": "nan", "end": 2}], "Los timestamps deben ser valores numéricos (float)."),
+            ([{"start": "a", "end": 2}], "Los timestamps deben ser valores numéricos (float)."),
+            ([{"start": -1, "end": 2}], SEGMENT_BOUNDS_MESSAGE),
+            ([{"start": 3, "end": 2}], SEGMENT_BOUNDS_MESSAGE),
+            ([{"start": 0}], SEGMENT_BOUNDS_MESSAGE),
+            (["not-a-dict"], SEGMENT_BOUNDS_MESSAGE),
+            ([{"start": 0, "end": 1, "text": 5}], SEGMENT_BOUNDS_MESSAGE),
+        ]
+        for bad, message in cases:
             with self.subTest(bad=bad):
                 res, delay, reserve = self._approve(bad)
                 self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertEqual(res.data["error"], message)
                 reserve.assert_not_called()
                 delay.assert_not_called()
                 self.project.refresh_from_db()
