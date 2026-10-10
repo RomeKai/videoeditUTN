@@ -11,6 +11,7 @@ from django.core.exceptions import ValidationError
 from .models import VideoProject, BrandKit
 from .serializers import VideoProjectSerializer, BrandKitSerializer
 from .tasks import process_initial_ingestion
+from .services.segments import InvalidSegmentsError, validate_approved_segments
 
 from apps.users.models import Workspace
 from apps.payments.models import Transaction
@@ -76,16 +77,12 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
         if not approved_segments or not isinstance(approved_segments, list):
             return Response({"error": "Debe proporcionar una lista de 'approved_segments'."}, status=400)
 
-        total_duration = 0.0
         try:
-            for seg in approved_segments:
-                start = float(seg.get('start', 0))
-                end = float(seg.get('end', 0))
-                if end <= start:
-                    return Response({"error": f"Segmento invÃ¡lido: end ({end}) <= start ({start})"}, status=400)
-                total_duration += (end - start)
-        except (ValueError, TypeError):
-            return Response({"error": "Los timestamps deben ser valores numÃ©ricos (float)."}, status=400)
+            approved_segments = validate_approved_segments(approved_segments)
+        except InvalidSegmentsError as e:
+            return Response({"error": f"Invalid approved_segments: {e}"}, status=400)
+
+        total_duration = sum(seg["end"] - seg["start"] for seg in approved_segments)
 
         from apps.payments.services.pricing_engine import PricingEngine
         workspace = project.workspace
@@ -119,10 +116,11 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
             logger.error(f"Error reserving funds: {e}")
             return Response({"error": "Error procesando el pago."}, status=500)
 
-        project.metadata['approved_segments'] = approved_segments
+        # Single source of truth for the render task: the typed column.
+        project.approved_segments = approved_segments
         project.metadata['final_duration'] = total_duration
         project.status = VideoProject.Status.RENDERING
-        project.save()
+        project.save(update_fields=['approved_segments', 'metadata', 'status'])
 
         from .tasks import render_video_segments
         render_video_segments.delay(project.id)

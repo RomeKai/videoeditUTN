@@ -30,6 +30,7 @@ from apps.videos.services.ai.pipeline_state import (
     reopen,
     set_stage_status,
 )
+from apps.videos.services.segments import InvalidSegmentsError, validate_approved_segments
 from apps.videos.services.ai.project_lock import (
     ProjectLockedError,
     ProjectLockLostError,
@@ -408,6 +409,30 @@ def render_clip_task(self, clip_id):
     finalize_project_render(clip.project_id)
     return f"Clip {clip_id} rendered successfully"
 
+def _resolve_approved_segments(project):
+    """
+    Segments to render: the ``approved_segments`` column, falling back to
+    ``metadata['approved_segments']`` for projects approved before the column
+    became the single source. Missing or malformed segments are deterministic
+    failures, so they raise a non-retryable error with a static message.
+    """
+    raw = project.approved_segments
+    if not raw:
+        raw = (project.metadata or {}).get('approved_segments')
+    if not raw:
+        raise NonRetryableAIError(
+            "No segments approved for rendering.",
+            provider="render", metadata={'code': 'no_approved_segments'},
+        )
+    try:
+        return validate_approved_segments(raw)
+    except InvalidSegmentsError as exc:
+        raise NonRetryableAIError(
+            f"Approved segments are invalid: {exc}",
+            provider="render", metadata={'code': 'invalid_approved_segments'},
+        ) from None
+
+
 @celery_app.task(bind=True, max_retries=2)
 def render_video_segments(self, project_id):
     """
@@ -426,10 +451,7 @@ def render_video_segments(self, project_id):
     output_path = None
     try:
         project = VideoProject.objects.get(id=project_id)
-        approved_segments = project.approved_segments
-
-        if not approved_segments:
-            raise Exception("No segments approved for rendering.")
+        approved_segments = _resolve_approved_segments(project)
 
         # 1. DOWNLOAD ORIGINAL FROM R2 (Temporary)
         r2_key = project.original_r2_key
@@ -533,6 +555,12 @@ def render_video_segments(self, project_id):
                 logger.info(f"✅ [FINAL RENDER] Success for project {project_id}")
                 return f"Render Success: {final_s3_key}"
 
+    except NonRetryableAIError as e:
+        # Deterministic failure (bad or missing segments): retrying cannot fix it.
+        logger.error(f"❌ [FINAL RENDER ERROR] project {project_id}: {e.message}")
+        VideoProject.objects.filter(pk=project_id).update(status=VideoProject.Status.FAILED)
+        record_error(project_id, e.metadata.get('code', 'render_failed'))
+        raise
     except Exception as e:
         logger.error(f"❌ [FINAL RENDER ERROR] {e}", exc_info=True)
         if 'project' in locals():
