@@ -6,13 +6,18 @@ from django.conf import settings
 from django.core.files import File
 
 # Importamos Modelos
-from apps.videos.models import VideoProject, VideoClip
+from apps.videos.models import AIUsageRecord, VideoProject, VideoClip
 from apps.payments.models import Transaction
 from moviepy import VideoFileClip, concatenate_videoclips
 
 # Importamos Servicios (SelectionEngine suele ser seguro, TranscriptionEngine lo cargaremos lazy por si acaso)
-from apps.videos.services.selection_engine import SelectionEngine
+from apps.videos.services.selection_engine import GeminiFlashStrategy, SelectionEngine
 from apps.videos.services.ai.contracts import ProviderUsage
+from apps.videos.services.ai.usage_recorder import (
+    record_usages,
+    usages_for_failure,
+    usages_for_success,
+)
 from apps.videos.services.ai.errors import AIError, NonRetryableAIError, is_retryable_error
 from apps.videos.services.ai.pipeline_state import (
     STAGE_ORDER,
@@ -764,26 +769,87 @@ def _stage_prepare_source(project_id):
     advance(project_id, PipelineStage.UPLOADED, PipelineStage.AUDIO_EXTRACTED)
 
 
+def _llm_identity(model):
+    """(provider, model) of a LiteLLM model string; a bare name defaults to openai."""
+    return (model.split('/')[0] if '/' in model else 'openai'), model
+
+
+def _record_call_failure(project_id, stage, pipeline_version, exc, identity, started):
+    """
+    One usage row per attempt of a failed provider call: the attempts the error
+    carries (billed ones included) or a zero-token row with the measured latency.
+    Never raises; the caller re-raises the original exception unchanged.
+    """
+    provider, model = identity
+    record_usages(
+        project_id, stage, pipeline_version,
+        usages_for_failure(exc, provider, model, time.monotonic() - started),
+    )
+
+
+def _persist_then_record_usage(project_id, stage, pipeline_version, usages, persist):
+    """
+    Runs ``persist`` (the stage artifact + transition) and writes the usage rows
+    AFTER it, outside its transaction. If persisting fails the call was billed
+    anyway, so the rows are still written before the error propagates.
+    """
+    try:
+        persist()
+    except Exception:
+        record_usages(project_id, stage, pipeline_version, usages)
+        raise
+    record_usages(project_id, stage, pipeline_version, usages)
+
+
 def _stage_transcribe(project_id):
-    from apps.videos.services.transcription_engine import TranscriptionEngine
+    from apps.videos.services.transcription_engine import TranscriptionBackend, TranscriptionEngine
 
     project = VideoProject.objects.get(pk=project_id)
-    result = TranscriptionEngine(model_size="base").transcribe_detailed(project.source_file.path)
+    model_size = "base"
+    engine = TranscriptionEngine(model_size=model_size)
+
+    # Fixed once from the backend the engine resolves (groq -> v2, local Whisper
+    # -> legacy) and never re-read: the usage rows describe what actually ran.
+    backend = engine.resolve_backend()
+    pipeline_version = (
+        AIUsageRecord.PipelineVersion.V2
+        if backend is TranscriptionBackend.GROQ
+        else AIUsageRecord.PipelineVersion.LEGACY
+    )
+    if backend is TranscriptionBackend.GROQ:
+        identity = ('groq', getattr(settings, 'AI_DEFAULT_TRANSCRIPTION_MODEL', 'whisper-large-v3-turbo'))
+    else:
+        identity = ('local', f'whisper-{model_size}')
+
+    started = time.monotonic()
+    try:
+        result = engine.transcribe_detailed(project.source_file.path)
+    except Exception as exc:
+        _record_call_failure(
+            project_id, AIUsageRecord.Stage.TRANSCRIPTION, pipeline_version, exc, identity, started
+        )
+        raise
 
     tx = result.data
     segments = [{'start': w.start, 'end': w.end, 'text': w.text} for w in tx.words] or [
         {'start': s.start, 'end': s.end, 'text': s.text} for s in tx.segments
     ]
 
-    # Persist the transcript and advance together: selection can fail and retry
-    # without ever paying for transcription again.
-    with transaction.atomic():
-        _merge_metadata(project_id, {
-            'full_text': tx.full_text,
-            'transcription_usage': result.usage.model_dump(),
-        }, expected_stage=PipelineStage.AUDIO_EXTRACTED)
-        VideoProject.objects.filter(pk=project_id).update(transcript_data=segments)
-        advance(project_id, PipelineStage.AUDIO_EXTRACTED, PipelineStage.TRANSCRIBED)
+    def persist():
+        # Persist the transcript and advance together: selection can fail and retry
+        # without ever paying for transcription again.
+        with transaction.atomic():
+            _merge_metadata(project_id, {
+                'full_text': tx.full_text,
+                'transcription_usage': result.usage.model_dump(),
+            }, expected_stage=PipelineStage.AUDIO_EXTRACTED)
+            VideoProject.objects.filter(pk=project_id).update(transcript_data=segments)
+            advance(project_id, PipelineStage.AUDIO_EXTRACTED, PipelineStage.TRANSCRIBED)
+
+    _persist_then_record_usage(
+        project_id, AIUsageRecord.Stage.TRANSCRIPTION, pipeline_version,
+        usages_for_success(result), persist,
+    )
 
 
 def _stage_select_clips(project_id):
@@ -813,14 +879,33 @@ def _stage_select_clips(project_id):
         duration=duration,
         intelligence_level=project.intelligence_level,
     )
+    started = time.monotonic()
     if getattr(settings, 'AI_CORE_V2_ENABLED', False):
-        result = SelectionEngine.select_viral_clips_detailed(**selection_kwargs)
+        # Fixed by the branch that actually executes; never re-read afterwards.
+        pipeline_version = AIUsageRecord.PipelineVersion.V2
+        identity = _llm_identity(getattr(settings, 'AI_DEFAULT_LLM_MODEL', 'unknown'))
+        try:
+            result = SelectionEngine.select_viral_clips_detailed(**selection_kwargs)
+        except Exception as exc:
+            _record_call_failure(
+                project_id, AIUsageRecord.Stage.SELECTION, pipeline_version, exc, identity, started
+            )
+            raise
         suggestions = [clip.model_dump(include=_CLIP_SUGGESTION_FIELDS) for clip in result.data.clips]
         usage = result.usage
+        usage_rows = usages_for_success(result)
     else:
+        pipeline_version = AIUsageRecord.PipelineVersion.LEGACY
+        identity = _llm_identity(GeminiFlashStrategy().get_model_name())
         # Kill switch off: the legacy selector stays in charge (the V2 path always
         # goes through LiteLLM). Usage is synthetic so persistence is unchanged.
-        legacy_clips = SelectionEngine.select_viral_clips(**selection_kwargs)
+        try:
+            legacy_clips = SelectionEngine.select_viral_clips(**selection_kwargs)
+        except Exception as exc:
+            _record_call_failure(
+                project_id, AIUsageRecord.Stage.SELECTION, pipeline_version, exc, identity, started
+            )
+            raise
         suggestions = [
             {
                 'start': clip['start'],
@@ -832,32 +917,45 @@ def _stage_select_clips(project_id):
             for clip in legacy_clips
         ]
         usage = ProviderUsage(provider='legacy', model='legacy', estimated_cost_usd=0.0)
+        # The legacy strategy is a real paid LLM call whose tokens are not captured,
+        # so its cost is UNKNOWN (None), never the false zero above (which only
+        # feeds the metadata UI cache).
+        usage_rows = [ProviderUsage(
+            provider=identity[0], model=identity[1],
+            duration_seconds=round(time.monotonic() - started, 3),
+            estimated_cost_usd=None,
+        )]
 
-    with transaction.atomic():
-        VideoProject.objects.select_for_update().get(pk=project_id)
-        # Dedupe: clips from a previous attempt are reused, never duplicated.
-        if not VideoClip.objects.filter(project_id=project_id).exists():
-            VideoClip.objects.bulk_create([
-                VideoClip(
-                    project_id=project_id,
-                    title=data['title'],
-                    start_time=data['start'],
-                    end_time=data['end'],
-                    virality_score=int(data['virality_score']),
-                    ai_reasoning=data['reasoning'],
-                    status=VideoClip.Status.DRAFT,
-                )
-                for data in suggestions
-            ])
-        VideoProject.objects.filter(pk=project_id).update(ai_rationale_log={
-            "suggestions_count": len(suggestions),
-            "raw_ai_output": suggestions,
-        })
-        _merge_metadata(
-            project_id, {'selection_usage': usage.model_dump()},
-            expected_stage=PipelineStage.TRANSCRIBED,
-        )
-        advance(project_id, PipelineStage.TRANSCRIBED, PipelineStage.CLIPS_SELECTED)
+    def persist():
+        with transaction.atomic():
+            VideoProject.objects.select_for_update().get(pk=project_id)
+            # Dedupe: clips from a previous attempt are reused, never duplicated.
+            if not VideoClip.objects.filter(project_id=project_id).exists():
+                VideoClip.objects.bulk_create([
+                    VideoClip(
+                        project_id=project_id,
+                        title=data['title'],
+                        start_time=data['start'],
+                        end_time=data['end'],
+                        virality_score=int(data['virality_score']),
+                        ai_reasoning=data['reasoning'],
+                        status=VideoClip.Status.DRAFT,
+                    )
+                    for data in suggestions
+                ])
+            VideoProject.objects.filter(pk=project_id).update(ai_rationale_log={
+                "suggestions_count": len(suggestions),
+                "raw_ai_output": suggestions,
+            })
+            _merge_metadata(
+                project_id, {'selection_usage': usage.model_dump()},
+                expected_stage=PipelineStage.TRANSCRIBED,
+            )
+            advance(project_id, PipelineStage.TRANSCRIBED, PipelineStage.CLIPS_SELECTED)
+
+    _persist_then_record_usage(
+        project_id, AIUsageRecord.Stage.SELECTION, pipeline_version, usage_rows, persist
+    )
 
 
 def _stage_dispatch_render(project_id, progress=None):

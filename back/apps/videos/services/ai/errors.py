@@ -5,12 +5,19 @@ Explicitly separates retryable (transient) failures from non-retryable
 (deterministic/permanent) failures to guide Celery task retries and fallback chains.
 """
 
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from apps.videos.services.ai.contracts import ProviderUsage
 
 
 class AIError(Exception):
     """
     Base exception for all AI Core service operations.
+
+    ``usage_attempts`` carries the provider attempts made before the failure
+    (billed ones included) so the caller can still account for what was paid.
+    It is purely additive: it never affects ``is_retryable``.
     """
     is_retryable: bool = False
 
@@ -30,6 +37,7 @@ class AIError(Exception):
         self.status_code = status_code
         self.raw_error = raw_error
         self.metadata = metadata or {}
+        self.usage_attempts: List["ProviderUsage"] = []
 
     def __str__(self) -> str:
         provider_str = self.provider or "UnknownProvider"
@@ -171,3 +179,12 @@ def is_retryable_error(exc: Exception) -> bool:
         return True
 
     return False
+
+
+def is_billing_uncertain(exc: BaseException) -> bool:
+    """
+    True when a failed call may still have been billed upstream: a client-side
+    timeout or a dropped connection says nothing about whether the provider
+    finished the work. Other failures (auth, 429, 5xx, validation) carry no charge.
+    """
+    return isinstance(exc, (AITimeoutError, AIConnectionError))

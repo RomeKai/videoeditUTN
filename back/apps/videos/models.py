@@ -278,3 +278,72 @@ class ScheduledPost(models.Model):
 
     def __str__(self):
         return f"{self.platform} @ {self.publish_at}"
+
+
+class AIUsageRecord(models.Model):
+    """
+    One row per executed AI call attempt (AICORE-8): source of the pilot metrics
+    export. Insert-only: rows are never updated or replaced, so a stage that runs
+    twice (redelivery, lost ownership) leaves two rows and both charges stay visible.
+
+    Privacy by construction: no free-text column exists. ``error_code`` is the
+    CLASS NAME of the AIError (never ``str(exc)``) and ``resolved_model`` is a
+    model name reported by the provider, so a title, transcript, prompt or
+    provider message can never reach this table.
+    """
+
+    class Stage(models.TextChoices):
+        TRANSCRIPTION = 'transcription', 'Transcription'
+        SELECTION = 'selection', 'Selection'
+
+    class PipelineVersion(models.TextChoices):
+        LEGACY = 'legacy', 'Legacy'
+        V2 = 'v2', 'AI Core V2'
+
+    class Role(models.TextChoices):
+        PRIMARY = 'primary', 'Primary'
+        FALLBACK = 'fallback', 'Fallback'
+
+    project = models.ForeignKey(
+        VideoProject, on_delete=models.CASCADE, related_name='ai_usage_records', db_index=True
+    )
+    stage = models.CharField(max_length=16, choices=Stage.choices)
+    pipeline_version = models.CharField(max_length=8, choices=PipelineVersion.choices)
+    attempt = models.PositiveSmallIntegerField(help_text="VideoProject.pipeline_attempts when recorded.")
+    role = models.CharField(max_length=8, choices=Role.choices)
+
+    provider = models.CharField(max_length=64)
+    model = models.CharField(max_length=64)
+    resolved_model = models.CharField(max_length=64, null=True, blank=True)
+
+    success = models.BooleanField()
+    error_code = models.CharField(max_length=64, null=True, blank=True)
+
+    prompt_tokens = models.PositiveIntegerField(default=0)
+    completion_tokens = models.PositiveIntegerField(default=0)
+    total_tokens = models.PositiveIntegerField(default=0)
+    cache_read_tokens = models.PositiveIntegerField(default=0)
+    audio_seconds = models.FloatField(null=True, blank=True)
+    latency_seconds = models.FloatField()
+    cached = models.BooleanField(default=False)
+
+    # 9 decimals (the plan said 6): LLM costs per call are often below 1e-6 USD
+    # and pricing.py rounds to 9 places, so 6 would truncate them to zero.
+    estimated_cost_usd = models.DecimalField(max_digits=14, decimal_places=9, null=True, blank=True)
+    pricing_version = models.CharField(max_length=16, null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['created_at', 'project'], name='ai_usage_created_project_idx'),
+            # NOT unique on purpose: rows are insert-only, one per actual execution.
+            # A redelivery or a lost-ownership re-run keeps the same ``attempt``, and
+            # overwriting would hide a second billed execution.
+            models.Index(
+                fields=['project', 'stage', 'attempt', 'role'], name='ai_usage_pk_stage_att_role_idx'
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.stage}/{self.role} attempt={self.attempt} ({self.project_id})"

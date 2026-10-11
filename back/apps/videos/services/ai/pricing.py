@@ -28,6 +28,7 @@ Rules:
 """
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -235,8 +236,8 @@ def estimate_asr_cost(
     billable length is applied per request, so multi-chunk callers must sum
     this function over chunks.
     """
-    if seconds < 0:
-        raise ValueError("seconds must be >= 0")
+    if not math.isfinite(seconds) or seconds < 0:
+        raise ValueError("seconds must be a finite number >= 0")
     price = _lookup(ASR_PRICES, _model_key(model, _DEFAULT_ASR_PROVIDER), on)
     if price is None:
         return None

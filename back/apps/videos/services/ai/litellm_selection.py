@@ -40,6 +40,7 @@ from apps.videos.services.ai.errors import (
     AIRateLimitError,
     AIServerError,
     AITimeoutError,
+    is_billing_uncertain,
 )
 from apps.videos.services.ai.pricing import PRICING_VERSION, estimate_llm_cost
 from apps.videos.services.ai.llm_credentials import provider_for_model, resolve_api_key
@@ -169,14 +170,22 @@ class LiteLLMSelectionProvider:
             timestamped=timestamped,
         )
 
+        # Every attempt made, in order: a billed primary whose output was unusable
+        # must still be accounted for when the fallback answers (or also fails).
+        attempts: List[ProviderUsage] = []
+
         try:
-            result, usage = self._call_and_parse(
+            result, usage = self._attempt(
                 model=self._primary_model,
+                role="primary",
                 messages=messages,
                 video_duration=video_duration,
             )
+            attempts.append(usage)
             self._log_success("primary", result, usage)
-            return AIExecutionResult[ClipSelectionResult](data=result, usage=usage, success=True)
+            return AIExecutionResult[ClipSelectionResult](
+                data=result, usage=usage, success=True, attempts=attempts
+            )
 
         except Exception as primary_exc:
             logger.warning(
@@ -184,6 +193,7 @@ class LiteLLMSelectionProvider:
                 self._primary_model,
                 type(primary_exc).__name__,
             )
+            attempts.extend(getattr(primary_exc, "usage_attempts", None) or [])
 
             if not self._has_fallback():
                 logger.error(
@@ -191,17 +201,22 @@ class LiteLLMSelectionProvider:
                     "primary, or its provider key is missing)",
                     self._fallback_model,
                 )
-                raise self._classify_error(primary_exc) from primary_exc
+                error = self._classify_error(primary_exc)
+                error.usage_attempts = list(attempts)
+                raise error from primary_exc
 
             try:
-                result, usage = self._call_and_parse(
+                result, usage = self._attempt(
                     model=self._fallback_model,
+                    role="fallback",
                     messages=messages,
                     video_duration=video_duration,
                 )
-                usage = usage.model_copy(update={"role": "fallback"})
+                attempts.append(usage)
                 self._log_success("fallback", result, usage)
-                return AIExecutionResult[ClipSelectionResult](data=result, usage=usage, success=True)
+                return AIExecutionResult[ClipSelectionResult](
+                    data=result, usage=usage, success=True, attempts=attempts
+                )
 
             except Exception as fallback_exc:
                 logger.error(
@@ -209,7 +224,61 @@ class LiteLLMSelectionProvider:
                     self._fallback_model,
                     type(fallback_exc).__name__,
                 )
-                raise self._classify_error(fallback_exc) from fallback_exc
+                attempts.extend(getattr(fallback_exc, "usage_attempts", None) or [])
+                error = self._classify_error(fallback_exc)
+                error.usage_attempts = list(attempts)
+                raise error from fallback_exc
+
+    def _attempt(
+        self,
+        model: str,
+        role: str,
+        messages: List[Dict[str, str]],
+        video_duration: float,
+    ) -> Tuple[ClipSelectionResult, ProviderUsage]:
+        """
+        One provider attempt. On success returns the usage tagged with ``role``.
+        On failure raises a classified AIError whose ``usage_attempts`` holds the
+        usage of THIS attempt: the real billed usage when the call answered but
+        the output was unusable, or a zero-token entry when it never answered.
+        """
+        started = time.monotonic()
+        try:
+            result, usage = self._call_and_parse(
+                model=model, messages=messages, video_duration=video_duration
+            )
+        except Exception as exc:
+            error = self._classify_error(exc)
+            if not error.usage_attempts:
+                error.usage_attempts = [
+                    self._unanswered_usage(model, role, error, time.monotonic() - started)
+                ]
+            else:
+                error.usage_attempts = [
+                    attempt.model_copy(update={"role": role, "error_code": type(error).__name__})
+                    for attempt in error.usage_attempts
+                ]
+            raise error from exc
+        return result, usage.model_copy(update={"role": role})
+
+    @staticmethod
+    def _unanswered_usage(
+        model: str, role: str, error: AIError, elapsed: float
+    ) -> ProviderUsage:
+        """
+        Usage for a call that never produced a response: providers do not charge
+        for it (cost 0), except when a timeout/connection drop leaves the billing
+        unknown, which is reported as an unknown cost (None), never a false zero.
+        """
+        return ProviderUsage(
+            provider=model.split("/")[0] if "/" in model else "openai",
+            model=model,
+            role=role,
+            duration_seconds=round(elapsed, 3),
+            estimated_cost_usd=None if is_billing_uncertain(error) else 0.0,
+            pricing_version=PRICING_VERSION,
+            error_code=type(error).__name__,
+        )
 
     # ------------------------------------------------------------------
     # LLM interaction
@@ -225,7 +294,13 @@ class LiteLLMSelectionProvider:
         Calls LiteLLM and parses the structured response.
         """
         response, usage = self._call_llm(model, messages)
-        result = self._parse_response(response, video_duration)
+        try:
+            result = self._parse_response(response, video_duration)
+        except Exception as exc:
+            # The call answered, so it was billed: keep its real usage on the error.
+            error = self._classify_error(exc)
+            error.usage_attempts = [usage.model_copy(update={"error_code": type(error).__name__})]
+            raise error from exc
         return result, usage
 
     def _call_llm(
