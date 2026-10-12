@@ -208,6 +208,10 @@ def estimate_llm_cost(
     included, as LiteLLM/OpenAI/Gemini report it); the cached share is billed
     at the cached rate (or the regular input rate when the cached price is
     unknown) and the rest at the regular input rate.
+
+    ``usage.reasoning_tokens`` are billed at the OUTPUT rate and are ADDITIVE to
+    ``usage.completion_tokens`` (the extractor only fills it with tokens that
+    ``completion_tokens`` does not already contain), so nothing is counted twice.
     """
     price = _lookup(LLM_PRICES, _model_key(model, _DEFAULT_LLM_PROVIDER), on)
     if price is None:
@@ -223,7 +227,7 @@ def estimate_llm_cost(
     return (
         Decimal(fresh) * price.input_per_mtok
         + Decimal(cached) * cached_rate
-        + Decimal(usage.completion_tokens) * price.output_per_mtok
+        + Decimal(usage.completion_tokens + usage.reasoning_tokens) * price.output_per_mtok
     ) / _MILLION
 
 
