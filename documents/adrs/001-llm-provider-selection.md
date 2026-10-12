@@ -180,10 +180,14 @@ Esto permite que el servidor web / VPS opere con recursos mínimos (1-2 vCPUs, 2
 
 > Corrige la deriva entre este ADR y el código tras el commit `ec69e07`, que había consolidado la cadena en Gemini → Gemini-Lite.
 
-1. **Cadena de fallback (temporal: mismo proveedor).** Primario: `AI_DEFAULT_LLM_MODEL` (Gemini Flash). Secundario por defecto: `AI_FALLBACK_LLM_MODEL=gemini/gemini-flash-lite-latest` (commit `340d751`). *Decisión posterior:* el default pasó de `openai/gpt-4o-mini` a un modelo Gemini porque la cuenta de OpenAI del proyecto no tiene créditos.
+1. **Cadena de fallback (temporal: mismo proveedor).** Primario: `AI_DEFAULT_LLM_MODEL=gemini/gemini-3.8-flash`. Secundario: `AI_FALLBACK_LLM_MODEL=gemini/gemini-3.5-flash-lite`. Ambos son versiones fijas, no alias móviles (commit `a28b49f`), para que el costo tenga precio en `pricing.py` y el piloto sea reproducible. *Decisión posterior:* el default pasó de `openai/gpt-4o-mini` a un modelo Gemini porque la cuenta de OpenAI del proyecto no tiene créditos (commit `340d751`).
    - **Qué cubre:** fallos a nivel de modelo (rate limit del modelo, timeout, 5xx de ese modelo).
    - **Qué no cubre:** una caída del proveedor, la cuota agotada ni un problema con la key. Con el mismo proveedor, cualquiera de esos casos tumba primario y secundario a la vez.
-   - **Objetivo:** volver a una cadena cross-provider. Se evaluará `groq/<llama>` usando la key de Groq ya existente, y hay que verificar antes que soporte `json_object`. Mientras tanto, la resiliencia cross-provider sigue disponible configurando `AI_FALLBACK_LLM_MODEL=openai/gpt-4o-mini` con una `OPENAI_API_KEY` válida.
+   - **Objetivo:** volver a una cadena cross-provider. Evaluación al 2026-10-11:
+     - Los modelos Llama de Groq quedan **descartados**: solo admiten `json_object` (sin schema) y no tienen precio publicado.
+     - `groq/openai/gpt-oss-120b` admite `json_schema` estricto y tiene precio, pero con los límites actuales de la organización (8.000 tokens por minuto, 200.000 por día) no acepta un transcript de 25 minutos. Solo es viable en un plan de Groq con más capacidad.
+     - `openai/gpt-4o-mini` sigue disponible configurando `AI_FALLBACK_LLM_MODEL=openai/gpt-4o-mini` con una `OPENAI_API_KEY` con crédito.
+     - La elección se cierra en el [ADR-012](012-model-profiles-and-capacity.md) (D-C5), junto con los tiers de producción.
    - El fallback solo se activa si es otro modelo y su key está configurada.
 2. **Credenciales por llamada.** `llm_credentials.resolve_api_key(model)` mapea el prefijo del modelo (`gemini/`, `openai/`, `groq/`, `xai/`) a su setting, y la key se pasa en `completion(api_key=...)`. Queda prohibido mutar `litellm.api_key`: es estado global del proceso y filtraría keys entre proveedores.
 3. **Parámetros de llamada.** `temperature=0.1` (es una tarea de extracción estructurada), `timeout=AI_LLM_TIMEOUT_SECONDS` y `num_retries=0` (los reintentos son responsabilidad de Celery). Formato estructurado según el proveedor: `json_schema` no estricto para OpenAI y `response_schema` para Gemini.

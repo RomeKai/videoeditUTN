@@ -152,7 +152,7 @@ La planilla no debe contener títulos ni transcripts del usuario: solo `clip_id`
 | 4 | Correr el export y verificar `pipeline_version=legacy` | |
 | 5 | Medición en vivo y verificación de precios (ver G0) | **G0** |
 | 6 | Activar V2 solo para el usuario interno del piloto: maestro en `True` y allowlist = `[pilot_user_id]` | |
-| 7 | Procesar los 20 videos con V2 y el mismo set con legacy | |
+| 7 | Procesar los 20 videos con V2 y el mismo set con legacy, repartidos en varios días según la capacidad de transcripción (ver 5.4) | |
 | 8 | Calcular WER y timestamps, exportar costo y latencia, completar la evaluación humana | **G1** |
 | 9 | Ejecutar los fallos inducidos (sección 6) | **G2** |
 | 10 | Habilitación gradual y observación (5.3) | **G3** |
@@ -173,6 +173,9 @@ La planilla no debe contener títulos ni transcripts del usuario: solo `clip_id`
 |------|-----------|
 | Medición en vivo | Una llamada real para confirmar qué devuelve `response.model` con el modelo fijado y si `completion_tokens` incluye los thinking tokens de Gemini. Si no los incluye, el costo está subestimado: verificar contra el usage metadata del proveedor antes de confiar en los costos |
 | Precios | Verificar contra las páginas oficiales de Groq y Gemini y comparar con `pricing.py` (`PRICING_VERSION`). Si difieren, corregir por PR antes de medir |
+| Perfil de modelos | El piloto usa los mismos modelos, versiones y tiers que producción ([ADR-012](../adrs/012-model-profiles-and-capacity.md), D-C1). Si no, el go/no-go no es válido |
+| Privacidad | Los proveedores corren en tier pago, con términos verificados que excluyen el uso de los datos para entrenamiento (ADR-012, D-C2). Sin esto no se procesan videos de usuarios |
+| Capacidad | Los límites de transcripción y de LLM alcanzan para el calendario de 5.4. Con los límites de Groq relevados el 2026-10-11, la evaluación se reparte en varios días y G3 requiere ampliar la capacidad |
 
 ### 5.3 Habilitación gradual (después de G2)
 
@@ -192,6 +195,25 @@ La planilla no debe contener títulos ni transcripts del usuario: solo `clip_id`
 | Costo agregado | `total_cost_usd`, `cost_per_30min_usd` y `cost_complete` |
 
 Un disparador de rollback (sección 7) activa el rollback inmediato y reinicia el conteo.
+
+### 5.4 Capacidad y calendario
+
+Límites de la organización en Groq relevados en la consola el 2026-10-11 (detalle y análisis en [ADR-012](../adrs/012-model-profiles-and-capacity.md)):
+
+| Recurso | Límite actual |
+|---------|---------------|
+| Audio de `whisper-large-v3-turbo` | 7.200 s por hora (2 h) y 28.800 s por día (8 h) |
+| Requests de transcripción | 20 por minuto y 2.000 por día |
+
+Consecuencias para el piloto:
+
+| Fase | Audio estimado | Plan |
+|------|----------------|------|
+| Evaluación de los 20 videos (2.1) | Entre ~7 h y ~16 h según la composición, más el solapamiento entre chunks | Repartir en **2 o 3 días** y como máximo un video de 90 min por hora. El set legacy usa Whisper local y no consume cuota de Groq |
+| G3: ≥ 100 trabajos V2 en 7 días | ~50 h con un promedio de 30 min (~7 h por día) | Al límite, sin margen para picos. **Ampliar la capacidad antes de 5.3** (ADR-012, D-C5) |
+| Soft-launch (50 creadores, ~21 videos por día de 25 min) | ~8,75 a 8,9 h por día; el pico de 5 uploads simultáneos suma 7.500 s | Supera el límite diario y el horario. Requisito de producción en ADR-012 |
+
+Al superar un límite, Groq responde 429. El pipeline lo reintenta con backoff (AICORE-7), así que no se pierde trabajo, pero la entrega se demora (ver salvedad k).
 
 ---
 
@@ -308,3 +330,25 @@ Límites conocidos de lo que el piloto mide. Leerlos antes de interpretar los n�
 | h | La selección legacy no captura el usage del LLM: sus registros llevan costo NULL y todo proyecto legacy tiene `cost_complete = False` | El costo legacy no es comparable con el de V2. Los criterios y el disparador de costo se evalúan solo sobre V2 |
 | i | Los registros son solo de inserción y se escriben después de la llamada. Un worker muerto en medio de una llamada no deja registro | Un cobro de un worker matado es invisible: el costo y los conteos son una cota inferior en ese caso |
 | j | Un fallo de persistencia después de una llamada cobrada deja una fila exitosa y el reintento otra | Es correcto (dos cobros reales), pero se lee como etapa repetida: ver 6.1 |
+| k | Los 429 por límite de capacidad se reintentan con backoff | La latencia p95 sube por capacidad, no por el modelo. Leerla junto con la cantidad de registros con `error_code = AIRateLimitError` del export de nivel `record` |
+| l | Hasta que se corrija, `completion_tokens` no incluye los tokens de razonamiento de Gemini (hallazgo del G0, sección 11) | El costo de selección con Gemini es una cota inferior aunque `cost_complete` sea `True` |
+
+## 11. Registro de ejecución
+
+### 11.1 G0, primera corrida (2026-10-12): NO PASA
+
+| Ítem del G0 | Resultado | Detalle |
+|-------------|-----------|---------|
+| Imagen con ambos caminos | Cumplido | Imports de `whisper`, `torch`, `groq` y `litellm` verificados en el contenedor |
+| Medición en vivo | Cumplido, con hallazgo | Video propio de 763 s: 5.800 tokens de entrada en la selección (~456 por minuto). El primario respondió 503 y el fallback completó la etapa. `resolved_model` devuelve el modelo fijado |
+| Tokens de razonamiento | **Bloqueante para el costo** | No se cuentan en `completion_tokens`: el costo de selección con Gemini está subestimado. Ver [ADR-012](../adrs/012-model-profiles-and-capacity.md), "Medición del G0" |
+| Precios | Cumplido | `pricing.py` coincide con las páginas oficiales de Groq y Gemini (consulta del 2026-10-12) |
+| Perfil de modelos y privacidad | **No cumplido** | El proyecto de Google estaba en tier gratuito (20 requests por día en `gemini-3.8-flash` y uso de datos para entrenamiento) |
+| Capacidad | **No cumplido** | Groq en límites de desarrollo (8 h de audio por día) |
+
+### 11.2 Para la segunda corrida del G0
+
+1. Tier pago de Google y Developer Tier de Groq activos (decisión del owner del 2026-10-13); confirmar en las consolas los límites efectivos.
+2. Corrección de los tokens de razonamiento mergeada (conteo como salida y columna en `AIUsageRecord`).
+3. Repetir la medición con un video de ~25 min y el primario `gemini-3.8-flash`, y verificar el costo por 30 min contra USD 0,04 con los tokens de razonamiento incluidos.
+4. Si el costo supera el umbral, evaluar limitar el razonamiento del modelo y validar la calidad de los clips antes de G1.
