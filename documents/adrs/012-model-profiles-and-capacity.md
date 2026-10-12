@@ -44,7 +44,31 @@ Los límites de Gemini para `gemini-3.8-flash` y `gemini-3.5-flash-lite` en el t
 | LLM de fallback vía Groq | Un transcript de 25 min ocupa ~6.000 tokens de entrada según la estimación del owner, más el prompt, los timestamps por línea, la salida y el razonamiento | 8.000 tokens por minuto | `gpt-oss-120b` **no sirve** como fallback con estos límites |
 | LLM primario en el pico | 4 a 5 transcripciones en el mismo minuto: ~24.000 a 30.000 tokens de entrada por minuto, como mínimo | Sin relevar | A verificar |
 
-La cifra de ~6.000 tokens es una estimación de piso: el prompt real agrega un timestamp `[START-END]` por línea, el system prompt, la salida en JSON y los tokens de razonamiento de Gemini. El valor real sale de la medición del G0 (`prompt_tokens` y `completion_tokens` en el export de AICORE-8) y es el que debe usarse para dimensionar.
+La cifra de ~6.000 tokens era una estimación de piso. La medición del G0 (sección siguiente) la reemplaza: **~456 tokens de entrada por minuto de audio, ~11.400 para un video de 25 minutos**.
+
+### Medición del G0 (2026-10-12)
+
+Ingestión real de un video propio de 763 s (12 min 43 s) con V2 activado. Fuente: export de `export_ai_pilot_metrics` y relevamiento de consolas y términos hecho por el owner.
+
+| Dato | Valor medido |
+|------|--------------|
+| Tokens de entrada de la selección | 5.800 (≈ 456 por minuto de audio) |
+| Tokens de salida visibles | 466 |
+| Proyección para 25 min | ~11.400 tokens de entrada |
+| Requisito de LLM recalculado (D-C5) | **≥ ~114.000 tokens por minuto** (2 × 11.400 × 5) |
+| Costo medido | USD 0,0269 por 30 min, **con el fallback más barato y sin tokens de razonamiento** (ver abajo) |
+| Fallback en vivo | El primario respondió 503 y el fallback (`gemini-3.5-flash-lite`) completó la etapa; se registraron las dos filas |
+| `resolved_model` | Devuelve el modelo fijado, no un alias |
+
+Hallazgos:
+
+- **Tokens de razonamiento no contados.** En una llamada directa a `gemini-3.8-flash`, `total_tokens` (113) superó `prompt + completion` (2 + 9) en 102: son tokens de razonamiento, que Google factura como salida y LiteLLM no incluye en `completion_tokens`. Además, `_extract_usage` recalcula `total_tokens` como entrada más salida y descarta el total del proveedor. **El costo de selección con Gemini está subestimado** y `cost_complete=True` no lo detecta. Corrección pendiente: contar esos tokens como salida y guardarlos en `AIUsageRecord` (migración `0004`).
+- **Riesgo para el criterio de costo.** Para 30 min con el primario `gemini-3.8-flash`: transcripción ~USD 0,020, entrada de selección ~USD 0,010 y salida visible ~USD 0,002, o sea **~USD 0,032 sin razonamiento**. Cada 1.000 tokens de razonamiento suman USD 0,00375: con ~2.000 se supera el umbral de USD 0,04. El 2027-01-01 el precio de 3.8 se duplica.
+- **Tier gratuito de Gemini observado:** `gemini-3.8-flash` con 5 RPM, 250.000 TPM y 20 RPD; `gemini-3.5-flash-lite` con 15 RPM, 250.000 TPM y 500 RPD. No alcanza ni para la muestra del piloto y, además, ese tier usa los datos para entrenamiento.
+- **Términos de privacidad (consulta del 2026-10-12):** el tier pago de Gemini, Groq y la API de OpenAI declaran no usar los datos de la API para entrenamiento, con retención limitada a monitoreo de abuso. D-C2 se cumple en tiers pagos.
+- **Groq Developer Tier:** según el relevamiento del owner, eleva la transcripción a 400.000 s de audio por hora y 400 RPM a USD 0,04 por hora de audio. **No verificado** por nosotros: confirmarlo en la consola después de activarlo.
+
+**Estado de los tiers:** el owner decidió activar la facturación de Google (tier pago) y el Developer Tier de Groq el 2026-10-13. Este ADR asume ambos activos desde esa fecha; el G0 se repite con ellos.
 
 ---
 
@@ -93,7 +117,7 @@ Requisitos mínimos, con margen ×2 sobre la demanda del soft-launch:
 | Recurso | Requisito |
 |---------|-----------|
 | Transcripción | ≥ 18 h de audio por día y ≥ 2,5 h por hora |
-| LLM primario | Tokens por minuto ≥ 2 × (tokens reales por transcripción medidos en G0 × 5 concurrentes) |
+| LLM primario | Tokens por minuto ≥ 2 × (tokens reales por transcripción × 5 concurrentes). Con la medición del G0: **≥ ~114.000** |
 | LLM de fallback | El mismo requisito, en **otro proveedor** |
 
 Candidatos a evaluar (sin decidir):

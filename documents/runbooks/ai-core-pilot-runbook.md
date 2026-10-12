@@ -331,3 +331,24 @@ Límites conocidos de lo que el piloto mide. Leerlos antes de interpretar los n�
 | i | Los registros son solo de inserción y se escriben después de la llamada. Un worker muerto en medio de una llamada no deja registro | Un cobro de un worker matado es invisible: el costo y los conteos son una cota inferior en ese caso |
 | j | Un fallo de persistencia después de una llamada cobrada deja una fila exitosa y el reintento otra | Es correcto (dos cobros reales), pero se lee como etapa repetida: ver 6.1 |
 | k | Los 429 por límite de capacidad se reintentan con backoff | La latencia p95 sube por capacidad, no por el modelo. Leerla junto con la cantidad de registros con `error_code = AIRateLimitError` del export de nivel `record` |
+| l | Hasta que se corrija, `completion_tokens` no incluye los tokens de razonamiento de Gemini (hallazgo del G0, sección 11) | El costo de selección con Gemini es una cota inferior aunque `cost_complete` sea `True` |
+
+## 11. Registro de ejecución
+
+### 11.1 G0, primera corrida (2026-10-12): NO PASA
+
+| Ítem del G0 | Resultado | Detalle |
+|-------------|-----------|---------|
+| Imagen con ambos caminos | Cumplido | Imports de `whisper`, `torch`, `groq` y `litellm` verificados en el contenedor |
+| Medición en vivo | Cumplido, con hallazgo | Video propio de 763 s: 5.800 tokens de entrada en la selección (~456 por minuto). El primario respondió 503 y el fallback completó la etapa. `resolved_model` devuelve el modelo fijado |
+| Tokens de razonamiento | **Bloqueante para el costo** | No se cuentan en `completion_tokens`: el costo de selección con Gemini está subestimado. Ver [ADR-012](../adrs/012-model-profiles-and-capacity.md), "Medición del G0" |
+| Precios | Cumplido | `pricing.py` coincide con las páginas oficiales de Groq y Gemini (consulta del 2026-10-12) |
+| Perfil de modelos y privacidad | **No cumplido** | El proyecto de Google estaba en tier gratuito (20 requests por día en `gemini-3.8-flash` y uso de datos para entrenamiento) |
+| Capacidad | **No cumplido** | Groq en límites de desarrollo (8 h de audio por día) |
+
+### 11.2 Para la segunda corrida del G0
+
+1. Tier pago de Google y Developer Tier de Groq activos (decisión del owner del 2026-10-13); confirmar en las consolas los límites efectivos.
+2. Corrección de los tokens de razonamiento mergeada (conteo como salida y columna en `AIUsageRecord`).
+3. Repetir la medición con un video de ~25 min y el primario `gemini-3.8-flash`, y verificar el costo por 30 min contra USD 0,04 con los tokens de razonamiento incluidos.
+4. Si el costo supera el umbral, evaluar limitar el razonamiento del modelo y validar la calidad de los clips antes de G1.
