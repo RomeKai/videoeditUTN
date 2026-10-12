@@ -62,6 +62,10 @@ Claude Opus 4.6 (Antigravity IDE). Se solicitó actuar como DevOps Engineer y Ar
 | 15 | 2026-10-07 / 2026-10-08 | AICORE-7 (#41): pipeline de ingestión recuperable e idempotente (PR #49) | Claude (Claude Code) | Implementación de la máquina de estados, el lock por proyecto y el render por clip, con tests; corrección posterior de los hallazgos de revisión | Revisión y merge del PR #49 (RomeKai) |
 | 16 | 2026-10-07 / 2026-10-08 | Fuga de disco en `render_video_segments` (PR #50) | Claude (Claude Code) | Test que reproduce la fuga y corrección con `TemporaryDirectory` y `finally` | Revisión y merge del PR #50 (RomeKai) |
 | 17 | 2026-10-07 | Integración con `dev`: resolución de conflictos y renumeración de ADRs (PRs #46 a #48) | Claude (Claude Code) | Resolución de los conflictos de `.env.example`, `storage_service.py` y del índice de ADRs; renumeración del ADR de Groq de 007 a 008 | Revisión y merge de los PRs #46, #47 y #48 (RomeKai) |
+| 18 | 2026-10-09 | `AI_Security_Shield` falla cerrada: errores tipados, timeout y veredictos malformados tratados como fallo (PR #52) | Claude (Claude Code) | Implementación con tests; segunda pasada que cerró dos casos de falla abierta detectados en revisión | Revisión y merge del PR #52 (RomeKai) |
+| 19 | 2026-10-09 | ADR-011 (moderación, `proposed`) y addendum de ADR-001 sobre el fallback temporal del mismo proveedor (PRs #53 y #54) | Claude (Claude Code) | Redacción a partir de hechos verificados en el código | Revisión y merge de los PRs #53 y #54 (RomeKai) |
+| 20 | 2026-10-09 | AICORE-8 (#42), parte 1: tabla de precios versionada con períodos, contrato `ProviderUsage` extendido y modelos fijados (`gemini-3.8-flash` / `gemini-3.5-flash-lite`) | Claude (Claude Code) | Implementación con tests a partir de precios relevados en fuentes oficiales | Integración directa en `dev` de seis commits (`1acd58c` a `a28b49f`), sin PR (RomeKai) |
+| 21 | 2026-10-09 / 2026-10-11 | AICORE-8 (#42), parte 2: `AIUsageRecord` (migración `0003`), captura por intento, comando `export_ai_pilot_metrics` y runbook del piloto (PR #55) | Claude (Claude Code) | Implementación con tests; correcciones de contabilidad tras revisión (registro de solo inserción, costos inciertos en NULL) | Revisión y merge del PR #55 (RomeKai) |
 
 ---
 
@@ -87,3 +91,21 @@ Claude Code con agentes delegados para la exploración del código, la implement
 - **Fuera de alcance, detectado:** `render_video_segments` lee `project.approved_segments`, pero la vista guarda los segmentos en `metadata['approved_segments']`.
 - **Merge:** PR #49 mergeado por `RomeKai` el 2026-10-08.
 
+### Detalle — Entrada #21: Métricas de uso de IA y export del piloto (AICORE-8)
+
+**Problema abordado:**
+El piloto de AI Core V2 (#43) exige medir costo, latencia y fallos por etapa, pero el uso de los proveedores solo se guardaba como un valor suelto en `project.metadata`, que se pisaba en cada intento y convivía con el texto del transcript. Además, el costo de Groq usaba una tarifa equivocada (la de `whisper-large-v3` para `whisper-large-v3-turbo`).
+
+**Prompt / Herramienta utilizada:**
+Claude Code con agentes delegados para la implementación con TDD y para revisiones independientes del diff antes de cada push. El issue #42 fijó los criterios de aceptación.
+
+**Código / Arquitectura generada:**
+- `services/ai/pricing.py`: precios en código con períodos de vigencia y `Decimal`; un modelo sin precio devuelve `None`, nunca 0.
+- `AIUsageRecord` (migración `0003`): una fila por ejecución real, sin columnas de texto libre y de solo inserción, para no perder cobros repetidos.
+- Captura en `tasks.py` fuera de transacciones con I/O, tolerante a fallos de escritura.
+- `export_ai_pilot_metrics`: columnas en lista blanca, anti CSV-injection y costo por 30 min sobre la duración real del video.
+
+**Validación y Corrección Humana:**
+- **Pruebas:** el cuerpo del PR #55 registra 446 tests con `manage.py test` y 465 con `pytest` bajo `settings.ci`.
+- **Revisión:** una revisión independiente detectó que el upsert por intento sobrescribía filas cobradas; se cambió a inserción pura antes del merge.
+- **Merge:** PR #55 mergeado por `RomeKai` el 2026-10-11.
