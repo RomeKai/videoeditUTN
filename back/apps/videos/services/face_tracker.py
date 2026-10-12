@@ -39,7 +39,7 @@ class FaceTracker:
                 self.detector = vision.FaceDetector.create_from_options(options)
                 logger.info("âœ… FaceTracker: MediaPipe Tasks Detector initialized.")
             except Exception as e:
-                logger.error(f"Failed to initialize MediaPipe FaceDetector: {e}")
+                logger.error(f"Failed to initialize MediaPipe FaceDetector: {type(e).__name__}")
 
     def generate_path(self, clip, fps: float = 3.0) -> TrackingPath:
         """
@@ -83,7 +83,7 @@ class FaceTracker:
                     if last_valid_point:
                         points.append(TrackingPoint(t, last_valid_point.x, last_valid_point.y, last_valid_point.w, last_valid_point.h))
                 except Exception as e:
-                    logger.warning(f"Error processing frame at t={t}: {e}")
+                    logger.warning(f"Error processing frame at t={t}: {type(e).__name__}")
                     continue
 
             if not points:
@@ -94,7 +94,7 @@ class FaceTracker:
             
             return TrackingPath(points, smoothing_strategy=MovingAverageSmoothing(window_size=5))
         except Exception as e:
-            logger.error(f"Error in FaceTracker generation: {e}")
+            logger.error(f"Error in FaceTracker generation: {type(e).__name__}")
             return TrackingPath([TrackingPoint(0, width // 2, height // 2, width // 3, height // 3)])
 
     def close(self):

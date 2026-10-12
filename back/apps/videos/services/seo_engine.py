@@ -103,9 +103,9 @@ class SEOOptimizationService:
                 raise ValueError("LLM returned an empty response for SEO metadata.")
 
             metadata = SocialMetadataResponse.model_validate_json(raw)
-            logger.info("✅ SEO Metadata generated successfully: %s", metadata.viral_title)
+            logger.info("✅ SEO Metadata generated successfully")
             return metadata
 
         except Exception as e:
-            logger.error("❌ SEO generation failed (%s): %s", self._model, e)
+            logger.error("❌ SEO generation failed (%s): %s", self._model, type(e).__name__)
             raise

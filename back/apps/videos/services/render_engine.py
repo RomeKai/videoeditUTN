@@ -154,7 +154,7 @@ class RenderEngine:
             return True
 
         except Exception as e:
-            logger.error(f"âŒ Render Engine failed for clip {clip_id}: {e}", exc_info=True)
+            logger.error(f"âŒ Render Engine failed for clip {clip_id}: {type(e).__name__}")
             if clip_obj:
                 clip_obj.status = VideoClip.Status.DRAFT
                 clip_obj.save()
@@ -172,4 +172,4 @@ class RenderEngine:
                 if temp_audio_path and os.path.exists(temp_audio_path): 
                     os.remove(temp_audio_path)
             except Exception as cleanup_err:
-                logger.warning(f"âš ï¸ Cleanup error: {cleanup_err}")
+                logger.warning(f"âš ï¸ Cleanup error: {type(cleanup_err).__name__}")

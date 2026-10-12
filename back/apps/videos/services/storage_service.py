@@ -139,5 +139,5 @@ class CloudflareR2Manager:
             client.delete_object(Bucket=bucket, Key=object_key)
             logger.info(f"🗑️  [R2] Deleted: {object_key}")
         except ClientError as e:
-            logger.error(f"❌ [R2] Delete failed for {object_key}: {e}")
+            logger.error(f"❌ [R2] Delete failed for {object_key}: {type(e).__name__}")
             raise

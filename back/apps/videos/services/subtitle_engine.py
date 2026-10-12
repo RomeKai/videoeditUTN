@@ -136,7 +136,7 @@ class SubtitleEngine:
                 
                 clips.append(clip)
             except Exception as e:
-                logger.error(f"Error creating TextClip for segment '{segment.text}': {e}")
+                logger.error("Error creating TextClip for subtitle segment: %s", type(e).__name__)
                 
         return clips
 

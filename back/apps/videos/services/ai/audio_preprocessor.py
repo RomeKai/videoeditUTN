@@ -186,7 +186,7 @@ class AudioPreprocessor:
                         os.remove(path)
                         logger.debug(f"🧹 [AudioPreprocessor] Removed temporary file: {path}")
                 except Exception as cleanup_err:
-                    logger.warning(f"⚠️ [AudioPreprocessor] Could not delete temp file {path}: {cleanup_err}")
+                    logger.warning(f"⚠️ [AudioPreprocessor] Could not delete temp file {path}: {type(cleanup_err).__name__}")
 
     @classmethod
     @contextmanager
