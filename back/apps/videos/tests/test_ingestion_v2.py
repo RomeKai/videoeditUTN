@@ -171,4 +171,4 @@ class PaperEditAPITests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.project.refresh_from_db()
         self.assertEqual(self.project.status, VideoProject.Status.RENDERING)
-        self.assertEqual(self.project.metadata['approved_segments'][0]['start'], 0.0)
+        self.assertEqual(self.project.approved_segments[0]['start'], 0.0)
