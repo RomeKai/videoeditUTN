@@ -61,6 +61,7 @@ EXPORT_COLUMNS: Tuple[str, ...] = (
     "error_code",
     "prompt_tokens",
     "completion_tokens",
+    "reasoning_tokens",
     "total_tokens",
     "cache_read_tokens",
     "audio_seconds",
@@ -84,6 +85,7 @@ PROJECT_COLUMNS: Tuple[str, ...] = (
     "fallback_used",
     "cached_any",
     "total_tokens",
+    "reasoning_tokens",
     "total_cost_usd",
     "cost_per_30min_usd",
     "cost_complete",
@@ -211,6 +213,7 @@ class Command(BaseCommand):
                 version_count=Count(f"{records}__pipeline_version", distinct=True),
                 version_max=Max(f"{records}__pipeline_version"),
                 tokens_sum=Sum(f"{records}__total_tokens"),
+                reasoning_sum=Sum(f"{records}__reasoning_tokens"),
                 cost_sum=Sum(f"{records}__estimated_cost_usd"),
                 transcription_latency=Sum(
                     f"{records}__latency_seconds",
@@ -225,7 +228,7 @@ class Command(BaseCommand):
             .values(
                 "id", "pipeline_stage", "status", "pipeline_attempts", "source_duration",
                 "records_count", "failed_records", "fallback_count", "cached_count",
-                "null_cost_count", "version_count", "version_max", "tokens_sum", "cost_sum",
+                "null_cost_count", "version_count", "version_max", "tokens_sum", "reasoning_sum", "cost_sum",
                 "transcription_latency", "selection_latency",
             )
             .iterator(chunk_size=CHUNK_SIZE)
@@ -260,6 +263,7 @@ class Command(BaseCommand):
             "fallback_used": row["fallback_count"] > 0,
             "cached_any": row["cached_count"] > 0,
             "total_tokens": row["tokens_sum"],
+            "reasoning_tokens": row["reasoning_sum"],
             "total_cost_usd": _plain(total_cost),
             "cost_per_30min_usd": _plain(per_30min),
             "cost_complete": count > 0 and row["null_cost_count"] == 0,
