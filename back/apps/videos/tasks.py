@@ -18,7 +18,12 @@ from apps.videos.services.ai.usage_recorder import (
     usages_for_failure,
     usages_for_success,
 )
-from apps.videos.services.ai.errors import AIError, NonRetryableAIError, is_retryable_error
+from apps.videos.services.ai.errors import (
+    AIEmptySelectionError,
+    AIError,
+    NonRetryableAIError,
+    is_retryable_error,
+)
 from apps.videos.services.ai.pipeline_state import (
     STAGE_ORDER,
     TERMINAL_STAGES,
@@ -919,6 +924,9 @@ def _stage_select_clips(project_id):
         project_title=project.title,
         duration=duration,
         intelligence_level=project.intelligence_level,
+        # User preferences were stored but never reached the selector.
+        editing_style=project.editing_style,
+        max_clips=metadata.get('max_clips'),
     )
     started = time.monotonic()
     if getattr(settings, 'AI_CORE_V2_ENABLED', False):
@@ -972,6 +980,14 @@ def _stage_select_clips(project_id):
             VideoProject.objects.select_for_update().get(pk=project_id)
             # Dedupe: clips from a previous attempt are reused, never duplicated.
             if not VideoClip.objects.filter(project_id=project_id).exists():
+                if not suggestions:
+                    # Never advance to CLIPS_SELECTED without clips: the project
+                    # would wait for an approval of nothing, or fail at dispatch
+                    # and resume past selection forever. The usage rows are still
+                    # written by _persist_then_record_usage (the call was billed).
+                    raise AIEmptySelectionError(
+                        "Selection produced no clips.", provider="pipeline"
+                    )
                 VideoClip.objects.bulk_create([
                     VideoClip(
                         project_id=project_id,

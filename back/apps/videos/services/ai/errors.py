@@ -162,9 +162,63 @@ class AIContractValidationError(NonRetryableAIError):
         self.raw_response = raw_response
 
 
+class AIEmptySelectionError(AIContractValidationError):
+    """
+    Raised when clip selection answered but no usable clip survived validation
+    (empty list, every clip out of range, malformed or overlapping). Asking the
+    same model again yields the same answer, so it is non-retryable; the
+    selection provider still tries its fallback model once.
+    """
+    def __init__(self, message: str = "AI selection produced no usable clips", **kwargs):
+        super().__init__(message, **kwargs)
+
+
+class AINoSpeechDetectedError(AIContractValidationError):
+    """
+    Raised when transcription answered but found no speech at all (music,
+    silence). Deterministic for the same audio, so it is non-retryable; selection
+    must never run on an empty transcript.
+    """
+    def __init__(self, message: str = "No speech detected in the audio", **kwargs):
+        super().__init__(message, **kwargs)
+
+
 # ==============================================================================
 # HELPER FUNCTIONS
 # ==============================================================================
+
+# Client errors (4xx) that a later identical request can still succeed on.
+_RETRYABLE_CLIENT_STATUSES = frozenset({408, 409, 425, 429})
+_CONTENT_POLICY_MARKERS = ("contentpolicy", "contentfilter", "safety")
+
+
+def non_retryable_error_class(exc: BaseException) -> Optional[type]:
+    """
+    The NonRetryableAIError subclass a provider exception maps to, or None when
+    the caller's own rules (auth, rate limit, timeout, 5xx, connection) apply.
+
+    A 4xx answer is the provider rejecting THIS request (malformed payload,
+    unknown model, file too large, context window exceeded): retrying the same
+    request only bills more attempts. 401/403 stay with the caller's auth
+    mapping; 408/409/425/429 are transient and stay retryable.
+    """
+    name = type(exc).__name__.lower()
+    if any(marker in name for marker in _CONTENT_POLICY_MARKERS):
+        return AIContentFilterError
+
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, bool) or not isinstance(status_code, int):
+        return None
+    if status_code == 402:
+        return AIQuotaExceededError
+    if (
+        400 <= status_code < 500
+        and status_code not in (401, 403)
+        and status_code not in _RETRYABLE_CLIENT_STATUSES
+    ):
+        return AIInvalidRequestError
+    return None
+
 
 def is_retryable_error(exc: Exception) -> bool:
     """

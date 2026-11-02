@@ -31,16 +31,22 @@ from apps.videos.services.ai.errors import (
     AIAuthenticationError,
     AIConnectionError,
     AIContractValidationError,
+    AINoSpeechDetectedError,
     AIRateLimitError,
     AIServerError,
     AITimeoutError,
     is_billing_uncertain,
+    non_retryable_error_class,
 )
 
 logger = logging.getLogger(__name__)
 
 # Provider identifier used in ProviderUsage
 _PROVIDER_NAME = "groq"
+
+
+def _midpoint(segment: TranscriptionSegment) -> float:
+    return (segment.start + segment.end) / 2.0
 
 
 class GroqTranscriptionProvider:
@@ -107,6 +113,8 @@ class GroqTranscriptionProvider:
         # cost is the sum over chunks; None as soon as one chunk is unpriced.
         total_cost: Optional[Decimal] = Decimal(0)
 
+        # End of the previous chunk that produced speech (None after a silent
+        # chunk: there is nothing of it to deduplicate against).
         prev_chunk_end: Optional[float] = None
         # Chunks the API answered (and therefore billed). Counted right after the
         # call, before parsing, so a chunk that answered but cannot be parsed is
@@ -131,23 +139,39 @@ class GroqTranscriptionProvider:
                 total_cost = None if (total_cost is None or chunk_cost is None) else total_cost + chunk_cost
 
                 result = self._parse_billed_response(raw_response)
+                if result is None:
+                    # Music or silence in this window: nothing to merge. Only the
+                    # whole audio being speechless is an error (checked below).
+                    logger.info(
+                        "transcription.chunk_without_speech chunk=%d", chunk.chunk_index
+                    )
+                    prev_chunk_end = None
+                    continue
 
                 # Apply temporal offset for this chunk
                 if chunk.start_time > 0:
                     result = self._apply_offset(result, chunk.start_time)
 
-                # Deduplicate overlap-zone words
-                if prev_chunk_end is not None and result.words:
+                result_words = list(result.words)
+                result_segments = list(result.segments)
+                if prev_chunk_end is not None and chunk.start_time < prev_chunk_end:
+                    # Both chunks transcribed the overlap window. Split it at its
+                    # midpoint: the previous chunk keeps what starts before it and
+                    # this chunk what starts after, so no word appears twice and
+                    # words cut by a chunk edge come from the chunk that heard them whole.
+                    overlap = prev_chunk_end - chunk.start_time
+                    cutoff = prev_chunk_end - (overlap / 2.0)
+                    all_words = [w for w in all_words if w.start < cutoff]
                     result_words = self._deduplicate_overlap(
-                        words=result.words,
+                        words=result_words,
                         prev_end=prev_chunk_end,
-                        overlap=2.0,
+                        overlap=overlap,
                     )
-                else:
-                    result_words = list(result.words)
+                    all_segments = [s for s in all_segments if _midpoint(s) < cutoff]
+                    result_segments = [s for s in result_segments if _midpoint(s) >= cutoff]
 
                 all_words.extend(result_words)
-                all_segments.extend(result.segments)
+                all_segments.extend(result_segments)
                 all_text_parts.append(result.full_text)
 
                 prev_chunk_end = chunk.end_time
@@ -157,6 +181,25 @@ class GroqTranscriptionProvider:
                     chunk.chunk_index,
                     len(result_words),
                     latency,
+                )
+
+            if len(all_text_parts) > 1:
+                # Joining raw chunk texts would repeat every overlap window. The
+                # deduplicated words are exact at the cut (a segment can straddle
+                # it), so they are the merged transcript; segments only without words.
+                parts = [w.text for w in all_words] or [s.text for s in all_segments]
+                full_text = " ".join(parts)
+            else:
+                full_text = " ".join(all_text_parts)
+
+            if not full_text.strip():
+                # Raised inside the try so the billed chunks are still accounted
+                # for. Same outcome as the local backend: never select clips on
+                # an empty transcript.
+                raise AINoSpeechDetectedError(
+                    message="Groq found no speech in any audio chunk.",
+                    provider=_PROVIDER_NAME,
+                    model=self._model,
                 )
         except Exception as exc:
             # The ORIGINAL exception is re-raised unchanged so Celery/pipeline
@@ -180,7 +223,7 @@ class GroqTranscriptionProvider:
             raise
 
         merged = TranscriptionResult(
-            full_text=" ".join(all_text_parts),
+            full_text=full_text,
             words=all_words,
             segments=all_segments,
             language=None,
@@ -265,7 +308,7 @@ class GroqTranscriptionProvider:
     # Response parsing
     # ------------------------------------------------------------------
 
-    def _parse_billed_response(self, raw: dict) -> TranscriptionResult:
+    def _parse_billed_response(self, raw: dict) -> Optional[TranscriptionResult]:
         """
         ``_parse_response`` for a response the API already answered (and billed).
         An unparseable payload is a deterministic contract failure (before, a raw
@@ -281,54 +324,65 @@ class GroqTranscriptionProvider:
                 model=self._model,
             ) from exc
 
-    def _parse_response(self, raw: dict) -> TranscriptionResult:
+    def _parse_response(self, raw: dict) -> Optional[TranscriptionResult]:
         """
         Maps the Groq verbose_json response to TranscriptionResult contracts.
+
+        Returns None when the chunk holds no speech (empty text and no words):
+        a placeholder text would let selection invent clips over music/silence.
+        Blank words and segments are skipped instead of failing the whole chunk.
         """
-        full_text = raw.get("text", "").strip()
+        full_text = (raw.get("text") or "").strip()
 
         # Parse word-level timestamps
-        words: List[WordTimestamp] = []
-        for w in raw.get("words", []):
-            words.append(
-                WordTimestamp(
-                    text=w.get("word", "").strip(),
-                    start=float(w.get("start", 0.0)),
-                    end=float(w.get("end", 0.0)),
-                )
-            )
+        words = self._parse_words(raw.get("words") or [])
 
         # Parse segment-level timestamps
         segments: List[TranscriptionSegment] = []
-        for seg in raw.get("segments", []):
-            seg_words: List[WordTimestamp] = []
-            for sw in seg.get("words", []):
-                seg_words.append(
-                    WordTimestamp(
-                        text=sw.get("word", "").strip(),
-                        start=float(sw.get("start", 0.0)),
-                        end=float(sw.get("end", 0.0)),
-                    )
-                )
+        for seg in raw.get("segments") or []:
+            seg_text = (seg.get("text") or "").strip()
+            if not seg_text:
+                continue
             segments.append(
                 TranscriptionSegment(
                     start=float(seg.get("start", 0.0)),
                     end=float(seg.get("end", 0.0)),
-                    text=seg.get("text", "").strip(),
-                    words=seg_words,
+                    text=seg_text,
+                    words=self._parse_words(seg.get("words") or []),
                 )
             )
+
+        if not full_text:
+            full_text = " ".join(w.text for w in words)
+        if not full_text:
+            return None
 
         language = raw.get("language", "es")
         duration = raw.get("duration")
 
         return TranscriptionResult(
-            full_text=full_text if full_text else "transcription",
+            full_text=full_text,
             words=words,
             segments=segments,
             language=language,
             duration=float(duration) if duration is not None else None,
         )
+
+    @staticmethod
+    def _parse_words(raw_words) -> List[WordTimestamp]:
+        words: List[WordTimestamp] = []
+        for w in raw_words:
+            text = (w.get("word") or "").strip()
+            if not text:
+                continue
+            words.append(
+                WordTimestamp(
+                    text=text,
+                    start=float(w.get("start", 0.0)),
+                    end=float(w.get("end", 0.0)),
+                )
+            )
+        return words
 
     # ------------------------------------------------------------------
     # Offset and deduplication
@@ -405,6 +459,8 @@ class GroqTranscriptionProvider:
 
         - 401/403 -> AIAuthenticationError (non-retryable)
         - 429     -> AIRateLimitError (retryable)
+        - other 4xx (except 408/409/425) -> AIInvalidRequestError,
+          AIQuotaExceededError (402) or AIContentFilterError (non-retryable)
         - 5xx     -> AIServerError (retryable)
         - Timeout -> AITimeoutError (retryable)
         - Connection errors -> AIConnectionError (retryable)
@@ -436,6 +492,18 @@ class GroqTranscriptionProvider:
                 retry_after=retry_after,
                 provider=_PROVIDER_NAME,
                 model=self._model,
+                raw_error=exc,
+            )
+
+        # 4xx rejections (bad request, file too large, unknown model) are
+        # deterministic: retrying re-uploads the audio for the same answer.
+        rejected_cls = non_retryable_error_class(exc)
+        if rejected_cls is not None:
+            return rejected_cls(
+                message=f"Groq rejected the request ({type(exc).__name__}): {message}",
+                provider=_PROVIDER_NAME,
+                model=self._model,
+                status_code=status_code,
                 raw_error=exc,
             )
 

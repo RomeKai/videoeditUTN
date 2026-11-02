@@ -32,15 +32,18 @@ from apps.videos.services.ai.contracts import (
     ProviderUsage,
     ViralClip,
 )
+from apps.videos.services.ai.clip_validation import sanitize_clips
 from apps.videos.services.ai.errors import (
     AIAuthenticationError,
     AIConnectionError,
     AIContractValidationError,
+    AIEmptySelectionError,
     AIError,
     AIRateLimitError,
     AIServerError,
     AITimeoutError,
     is_billing_uncertain,
+    non_retryable_error_class,
 )
 from apps.videos.services.ai.pricing import PRICING_VERSION, estimate_llm_cost
 from apps.videos.services.ai.llm_credentials import provider_for_model, resolve_api_key
@@ -180,6 +183,7 @@ class LiteLLMSelectionProvider:
                 role="primary",
                 messages=messages,
                 video_duration=video_duration,
+                target_count=target_count,
             )
             attempts.append(usage)
             self._log_success("primary", result, usage)
@@ -211,6 +215,7 @@ class LiteLLMSelectionProvider:
                     role="fallback",
                     messages=messages,
                     video_duration=video_duration,
+                    target_count=target_count,
                 )
                 attempts.append(usage)
                 self._log_success("fallback", result, usage)
@@ -235,6 +240,7 @@ class LiteLLMSelectionProvider:
         role: str,
         messages: List[Dict[str, str]],
         video_duration: float,
+        target_count: Optional[int] = None,
     ) -> Tuple[ClipSelectionResult, ProviderUsage]:
         """
         One provider attempt. On success returns the usage tagged with ``role``.
@@ -245,7 +251,10 @@ class LiteLLMSelectionProvider:
         started = time.monotonic()
         try:
             result, usage = self._call_and_parse(
-                model=model, messages=messages, video_duration=video_duration
+                model=model,
+                messages=messages,
+                video_duration=video_duration,
+                target_count=target_count,
             )
         except Exception as exc:
             error = self._classify_error(exc)
@@ -289,13 +298,14 @@ class LiteLLMSelectionProvider:
         model: str,
         messages: List[Dict[str, str]],
         video_duration: float,
+        target_count: Optional[int] = None,
     ) -> Tuple[ClipSelectionResult, ProviderUsage]:
         """
         Calls LiteLLM and parses the structured response.
         """
         response, usage = self._call_llm(model, messages)
         try:
-            result = self._parse_response(response, video_duration)
+            result = self._parse_response(response, video_duration, target_count)
         except Exception as exc:
             # The call answered, so it was billed: keep its real usage on the error.
             error = self._classify_error(exc)
@@ -511,9 +521,16 @@ class LiteLLMSelectionProvider:
         self,
         raw_content: str,
         video_duration: float,
+        target_count: Optional[int] = None,
     ) -> ClipSelectionResult:
         """
         Parses LLM JSON output into a validated ClipSelectionResult.
+
+        Clips are validated one by one (see ``clip_validation``): a single bad
+        clip no longer discards the whole paid answer. Raises
+        ``AIContractValidationError`` when there is no clip list at all and
+        ``AIEmptySelectionError`` when no clip survives; both trigger the
+        fallback model in ``select_clips``.
         """
         content_clean = raw_content.strip()
         if content_clean.startswith("```"):
@@ -536,58 +553,41 @@ class LiteLLMSelectionProvider:
                     data = {"clips": data[key]}
                     break
 
-        try:
-            result = ClipSelectionResult(**data)
-        except Exception as exc:
+        if not isinstance(data, dict) or not isinstance(data.get("clips"), list):
             raise AIContractValidationError(
-                message=f"LLM response does not match ClipSelectionResult schema: {exc}",
+                message="LLM response has no clip list.",
                 provider="litellm",
                 raw_response=None,
-            ) from exc
+            )
 
-        # Validate clips against video duration
-        result.clips = self._validate_clips(result.clips, video_duration)
+        try:
+            result = ClipSelectionResult.model_validate({**data, "clips": []})
+        except Exception:
+            # Optional echo fields (project_title, target_count...) are not used
+            # downstream; a bad one must not discard the clips. The error text is
+            # never kept: it would carry model output (input_value) into logs.
+            result = ClipSelectionResult()
+
+        result.clips = self._validate_clips(data["clips"], video_duration, target_count)
+        if not result.clips:
+            raise AIEmptySelectionError(
+                message="LLM selection contained no usable clips.",
+                provider="litellm",
+            )
 
         return result
 
     @staticmethod
     def _validate_clips(
-        clips: List[ViralClip],
+        clips: Sequence[Any],
         video_duration: float,
+        target_count: Optional[int] = None,
     ) -> List[ViralClip]:
         """
-        Filters out clips whose timestamps exceed the video duration.
-        Clips that start beyond the video duration are removed entirely.
-        Clips whose end exceeds the duration are clamped.
+        Keeps the renderable clips: valid, inside the video (end clamped),
+        non-overlapping and at most ``target_count``. See ``clip_validation``.
         """
-        validated: List[ViralClip] = []
-        for clip in clips:
-            if clip.start >= video_duration:
-                logger.warning(
-                    "⚠️ [LiteLLMSelection] Dropping clip: start (%.1f) >= duration (%.1f)",
-                    clip.start,
-                    video_duration,
-                )
-                continue
-
-            if clip.end > video_duration:
-                logger.info(
-                    "📐 [LiteLLMSelection] Clamping clip end from %.1f to %.1f",
-                    clip.end,
-                    video_duration,
-                )
-                clip = ViralClip(
-                    start=clip.start,
-                    end=video_duration,
-                    title=clip.title,
-                    virality_score=clip.virality_score,
-                    reasoning=clip.reasoning,
-                    hook_text=clip.hook_text,
-                    hashtags=clip.hashtags,
-                )
-
-            validated.append(clip)
-
+        validated, _ = sanitize_clips(clips, video_duration, target_count)
         return validated
 
     # ------------------------------------------------------------------
@@ -666,69 +666,89 @@ class LiteLLMSelectionProvider:
         """
         Maps LiteLLM and provider exceptions to the AICORE-1 error hierarchy.
         """
-        # Already-classified errors (missing key, contract violations) keep their type.
-        if isinstance(exc, AIError):
-            return exc
+        return classify_llm_error(exc)
 
-        status_code = getattr(exc, "status_code", None)
-        message = str(exc)
 
-        if status_code in (401, 403):
-            return AIAuthenticationError(
-                message=f"LLM authentication failed: {message}",
-                provider="litellm",
-                status_code=status_code,
-                raw_error=exc,
-            )
+def classify_llm_error(exc: Exception) -> AIError:
+    """
+    Maps LiteLLM and provider exceptions to the AICORE-1 error hierarchy.
+    Shared by the V2 provider and the legacy selector so both paths retry
+    (or stop) on the same failures.
+    """
+    # Already-classified errors (missing key, contract violations) keep their type.
+    if isinstance(exc, AIError):
+        return exc
 
-        if status_code == 429:
-            return AIRateLimitError(
-                message=f"LLM rate limit exceeded: {message}",
-                provider="litellm",
-                raw_error=exc,
-            )
+    status_code = getattr(exc, "status_code", None)
+    message = str(exc)
 
-        if status_code is not None and 500 <= status_code < 600:
-            return AIServerError(
-                message=f"LLM server error: {message}",
-                status_code=status_code,
-                provider="litellm",
-                raw_error=exc,
-            )
+    if status_code in (401, 403):
+        return AIAuthenticationError(
+            message=f"LLM authentication failed: {message}",
+            provider="litellm",
+            status_code=status_code,
+            raw_error=exc,
+        )
 
-        if isinstance(exc, (TimeoutError,)):
-            return AITimeoutError(
-                message=f"LLM request timed out: {message}",
-                provider="litellm",
-                raw_error=exc,
-            )
-
-        exc_name = type(exc).__name__.lower()
-        if "timeout" in exc_name:
-            return AITimeoutError(
-                message=f"LLM request timed out: {message}",
-                provider="litellm",
-                raw_error=exc,
-            )
-
-        if isinstance(exc, (ConnectionError, OSError)):
-            return AIConnectionError(
-                message=f"Failed to connect to LLM provider: {message}",
-                provider="litellm",
-                raw_error=exc,
-            )
-
-        if "connection" in exc_name:
-            return AIConnectionError(
-                message=f"Failed to connect to LLM provider: {message}",
-                provider="litellm",
-                raw_error=exc,
-            )
-
-        # Default: server error (retryable)
-        return AIServerError(
-            message=f"Unexpected LLM error: {message}",
-            status_code=status_code or 500,
+    if status_code == 429:
+        return AIRateLimitError(
+            message=f"LLM rate limit exceeded: {message}",
             provider="litellm",
             raw_error=exc,
         )
+
+    # 4xx rejections (bad request, unknown model, context window exceeded,
+    # content policy) are deterministic: retrying only bills more attempts.
+    rejected_cls = non_retryable_error_class(exc)
+    if rejected_cls is not None:
+        return rejected_cls(
+            message=f"LLM request rejected ({type(exc).__name__}): {message}",
+            provider="litellm",
+            status_code=status_code,
+            raw_error=exc,
+        )
+
+    if status_code is not None and 500 <= status_code < 600:
+        return AIServerError(
+            message=f"LLM server error: {message}",
+            status_code=status_code,
+            provider="litellm",
+            raw_error=exc,
+        )
+
+    if isinstance(exc, (TimeoutError,)):
+        return AITimeoutError(
+            message=f"LLM request timed out: {message}",
+            provider="litellm",
+            raw_error=exc,
+        )
+
+    exc_name = type(exc).__name__.lower()
+    if "timeout" in exc_name:
+        return AITimeoutError(
+            message=f"LLM request timed out: {message}",
+            provider="litellm",
+            raw_error=exc,
+        )
+
+    if isinstance(exc, (ConnectionError, OSError)):
+        return AIConnectionError(
+            message=f"Failed to connect to LLM provider: {message}",
+            provider="litellm",
+            raw_error=exc,
+        )
+
+    if "connection" in exc_name:
+        return AIConnectionError(
+            message=f"Failed to connect to LLM provider: {message}",
+            provider="litellm",
+            raw_error=exc,
+        )
+
+    # Default: server error (retryable)
+    return AIServerError(
+        message=f"Unexpected LLM error: {message}",
+        status_code=status_code or 500,
+        provider="litellm",
+        raw_error=exc,
+    )

@@ -233,14 +233,15 @@ class TranscriptionEngine:
             TranscriptionSegment,
             WordTimestamp,
         )
-        from apps.videos.services.ai.errors import AIContractValidationError
+        from apps.videos.services.ai.errors import AINoSpeechDetectedError
         from apps.videos.services.ai.pricing import PRICING_VERSION
 
         full_text = str(raw.get("text", "")).strip()
         if not full_text:
             # The contract requires non-empty text; silent audio is a deterministic
             # outcome, so it is reported as non-retryable instead of looping retries.
-            raise AIContractValidationError(
+            # Same error as the Groq backend so both report one static code.
+            raise AINoSpeechDetectedError(
                 message="Local Whisper returned an empty transcription (no speech detected).",
                 provider="local",
                 model=f"whisper-{self.model_size}",
