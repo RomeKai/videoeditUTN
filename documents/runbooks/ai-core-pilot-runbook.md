@@ -240,6 +240,20 @@ Los fallos se inyectan **desde afuera**. No hay código de inyección de fallos 
 
 **Salvedad:** un worker muerto en medio de la llamada (`docker kill`) **no escribe ninguna fila**: ese cobro es invisible para el export (salvedad i). En el escenario del worker muerto, el conteo de filas es una cota inferior de lo realmente facturado.
 
+### 6.2 Códigos de fallo deterministas
+
+Estos `pipeline_error_code` (y `error_code` del export) marcan un fallo que **no se reintenta**: repetir la misma llamada da el mismo resultado y solo suma cobros. Un video de la muestra que termine así no es un fallo de infraestructura; se analiza por su contenido.
+
+| Código | Etapa | Significado |
+|--------|-------|-------------|
+| `AINoSpeechDetectedError` | Transcripción | El audio no tiene habla (música, silencio). Igual se registra el cobro de los chunks enviados |
+| `AIEmptySelectionError` | Selección | El modelo primario y el fallback respondieron, pero ningún clip pasó la validación (fuera de rango, inválido o lista vacía). El proyecto no avanza a `clips_selected`; un re-despacho vuelve a correr la selección sin repetir la transcripción |
+| `AIInvalidRequestError` | Ambas | El proveedor rechazó el pedido con un 4xx (modelo inexistente, contexto excedido, archivo demasiado grande) |
+| `AIContentFilterError` | Selección | El proveedor bloqueó el contenido por su política |
+| `SoftTimeLimitExceeded` | Cualquiera | La corrida superó `PIPELINE_SOFT_TIME_LIMIT` (2 h por defecto); el lock del proyecto se libera |
+
+Los 401/403 siguen como `AIAuthenticationError`; los 408, 409, 425, 429, 5xx, timeouts y cortes de conexión siguen siendo reintentables.
+
 ---
 
 ## 7. Rollback
