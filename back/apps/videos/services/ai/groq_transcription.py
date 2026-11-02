@@ -36,6 +36,7 @@ from apps.videos.services.ai.errors import (
     AIServerError,
     AITimeoutError,
     is_billing_uncertain,
+    is_task_time_limit,
     non_retryable_error_class,
 )
 
@@ -162,10 +163,21 @@ class GroqTranscriptionProvider:
                     overlap = prev_chunk_end - chunk.start_time
                     cutoff = prev_chunk_end - (overlap / 2.0)
                     all_words = [w for w in all_words if w.start < cutoff]
+                    # The two chunks may time the same word slightly apart around
+                    # the cut. Resuming right after the last word kept from the
+                    # previous chunk (when it lies in the overlap) keeps a word
+                    # that both sides would otherwise drop.
+                    last_end = all_words[-1].end if all_words else None
+                    resume_at = (
+                        last_end
+                        if last_end is not None and chunk.start_time <= last_end < cutoff
+                        else None
+                    )
                     result_words = self._deduplicate_overlap(
                         words=result_words,
                         prev_end=prev_chunk_end,
                         overlap=overlap,
+                        resume_at=resume_at,
                     )
                     all_segments = [s for s in all_segments if _midpoint(s) < cutoff]
                     result_segments = [s for s in result_segments if _midpoint(s) >= cutoff]
@@ -302,6 +314,10 @@ class GroqTranscriptionProvider:
                 return dict(response), latency
 
         except Exception as exc:
+            if is_task_time_limit(exc):
+                # The task's deadline, not a Groq failure: wrapping it as a
+                # retryable error would restart the run (and re-bill every chunk).
+                raise
             raise self._classify_error(exc) from exc
 
     # ------------------------------------------------------------------
@@ -438,15 +454,20 @@ class GroqTranscriptionProvider:
         words: List[WordTimestamp],
         prev_end: float,
         overlap: float,
+        resume_at: Optional[float] = None,
     ) -> List[WordTimestamp]:
         """
         Removes words from the current chunk that fall within the overlap
         zone of the previous chunk.
 
         A word is considered a duplicate if its start timestamp is earlier
-        than the previous chunk's end minus a small tolerance (half the overlap).
+        than the previous chunk's end minus a small tolerance (half the overlap),
+        or than ``resume_at`` (end of the last word kept from the previous
+        chunk) when that is earlier.
         """
         cutoff = prev_end - (overlap / 2.0)
+        if resume_at is not None:
+            cutoff = min(cutoff, resume_at)
         return [w for w in words if w.start >= cutoff]
 
     # ------------------------------------------------------------------

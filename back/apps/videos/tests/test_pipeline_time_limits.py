@@ -8,8 +8,9 @@ from unittest.mock import patch
 
 from celery.exceptions import SoftTimeLimitExceeded
 from django.conf import settings
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 
+from apps.videos.models import AIUsageRecord
 from apps.videos.services.ai.pipeline_state import PipelineStage
 from apps.videos.tasks import _is_retryable_pipeline_error, process_initial_ingestion
 from apps.videos.tests.test_ingestion_pipeline import IngestionHarness
@@ -61,3 +62,46 @@ class FFmpegTimeoutTests(SimpleTestCase):
     def test_probe_is_bounded(self):
         run, _ = self._run(FFmpegManager.get_media_duration, "in.flac")
         self.assertEqual(run.call_args.kwargs["timeout"], FFmpegManager.PROBE_TIMEOUT_SECONDS)
+
+
+LEGACY = override_settings(AI_CORE_V2_ENABLED=False, GEMINI_API_KEY="g-key")
+
+
+class SoftLimitInsideProviderCallTests(IngestionHarness, TestCase):
+    """
+    The limit fires inside the provider call, below every classifier (the
+    selector is NOT mocked here, only the network call of the legacy strategy).
+    Method-level overrides: the harness enables V2 in setUp.
+    """
+
+    @LEGACY
+    def test_soft_limit_inside_the_llm_call_fails_without_retrying(self):
+        from apps.videos.services.selection_engine import GeminiFlashStrategy
+
+        project = self.make_project()
+        with patch.object(
+            GeminiFlashStrategy, "select_clips", side_effect=SoftTimeLimitExceeded()
+        ) as llm_call:
+            self.run_task(project)
+
+        project.refresh_from_db()
+        llm_call.assert_called_once()
+        self.assertEqual(project.pipeline_stage, PipelineStage.FAILED)
+        self.assertEqual(project.pipeline_error_code, "SoftTimeLimitExceeded")
+        record = AIUsageRecord.objects.get(project=project, stage=AIUsageRecord.Stage.SELECTION)
+        self.assertEqual(record.error_code, "SoftTimeLimitExceeded")
+        self.assertIsNone(record.estimated_cost_usd)
+
+    @LEGACY
+    def test_answered_but_empty_legacy_call_is_recorded_with_unknown_cost(self):
+        from apps.videos.services.selection_engine import GeminiFlashStrategy
+
+        project = self.make_project()
+        with patch.object(GeminiFlashStrategy, "select_clips", return_value='{"clips": []}'):
+            self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertEqual(project.pipeline_error_code, "AIEmptySelectionError")
+        record = AIUsageRecord.objects.get(project=project, stage=AIUsageRecord.Stage.SELECTION)
+        self.assertFalse(record.success)
+        self.assertIsNone(record.estimated_cost_usd)

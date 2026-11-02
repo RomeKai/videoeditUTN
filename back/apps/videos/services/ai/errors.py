@@ -235,10 +235,25 @@ def is_retryable_error(exc: Exception) -> bool:
     return False
 
 
+def is_task_time_limit(exc: BaseException) -> bool:
+    """
+    True for Celery's soft time limit: the TASK's own deadline, not a provider
+    failure. Providers must re-raise it untouched (never classify it as a
+    retryable AIError, never answer it with a fallback call) so the pipeline
+    fails the project instead of retrying with a fresh deadline.
+    """
+    try:
+        from celery.exceptions import SoftTimeLimitExceeded
+    except ImportError:  # pragma: no cover - celery is a hard dependency
+        return False
+    return isinstance(exc, SoftTimeLimitExceeded)
+
+
 def is_billing_uncertain(exc: BaseException) -> bool:
     """
     True when a failed call may still have been billed upstream: a client-side
-    timeout or a dropped connection says nothing about whether the provider
-    finished the work. Other failures (auth, 429, 5xx, validation) carry no charge.
+    timeout, a dropped connection or the task's time limit interrupting the
+    call say nothing about whether the provider finished the work. Other
+    failures (auth, 429, 5xx, validation) carry no charge.
     """
-    return isinstance(exc, (AITimeoutError, AIConnectionError))
+    return isinstance(exc, (AITimeoutError, AIConnectionError)) or is_task_time_limit(exc)

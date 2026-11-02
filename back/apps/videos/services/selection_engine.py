@@ -14,6 +14,7 @@ Both paths send the transcript as ``[START-END] text`` lines wrapped by
 
 import json
 import logging
+import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence
 
@@ -326,13 +327,11 @@ class SelectionEngine:
             '"virality_score": 80, "reasoning": "..." } ] }'
         )
 
-        from apps.videos.services.ai.clip_validation import sanitize_clips
-        from apps.videos.services.ai.errors import (
-            AIContractValidationError,
-            AIEmptySelectionError,
-        )
+        from apps.videos.services.ai.contracts import ProviderUsage
+        from apps.videos.services.ai.errors import AIError, is_task_time_limit
         from apps.videos.services.ai.litellm_selection import classify_llm_error
 
+        started = time.monotonic()
         try:
             try:
                 content = strategy.select_clips(prompt)
@@ -340,48 +339,83 @@ class SelectionEngine:
                 # Missing key / empty answer: deterministic, already non-retryable.
                 raise
             except Exception as exc:
+                if is_task_time_limit(exc):
+                    # The task's deadline: must reach the pipeline untouched.
+                    raise
                 # Same mapping as V2, so a 429/503/timeout is retried by the
                 # pipeline instead of failing the project on the first attempt.
                 raise classify_llm_error(exc) from exc
 
-            # Cleanup possible markdown code blocks from AI response
-            content = content.strip()
-            if content.startswith("```"):
-                content = content.replace("```json", "").replace("```", "").strip()
-
             try:
-                data = json.loads(content)
-            except (json.JSONDecodeError, TypeError) as exc:
-                raise AIContractValidationError(
-                    message=f"Legacy selection is not valid JSON: {type(exc).__name__}",
-                    provider="litellm",
-                ) from exc
-
-            # Extract list from wrapper object if present
-            raw_clips = data.get('clips', data) if isinstance(data, dict) else data
-            if not isinstance(raw_clips, list):
-                logger.warning("selection.legacy_non_list_output wrapping in list")
-                raw_clips = [raw_clips] if raw_clips else []
-
-            try:
-                video_duration = SelectionEngine._resolve_duration(duration, transcription_data)
-            except ValueError:
-                video_duration = None
-            clips, _ = sanitize_clips(
-                [SelectionEngine._with_legacy_defaults(item) for item in raw_clips],
-                video_duration,
-                target_clips,
-            )
-            if not clips:
-                raise AIEmptySelectionError(
-                    message="Legacy selection contained no usable clips.",
-                    provider="litellm",
+                return SelectionEngine._parse_legacy_answer(
+                    content, duration, transcription_data, target_clips
                 )
-            return [{key: getattr(clip, key) for key in _PUBLIC_CLIP_KEYS} for clip in clips]
+            except AIError as exc:
+                # The call answered, so it was billed although its output is
+                # unusable. The legacy path captures no tokens: cost unknown
+                # (None), never the false zero of a call that never answered.
+                model = strategy.get_model_name()
+                exc.usage_attempts = [ProviderUsage(
+                    provider=model.split('/')[0] if '/' in model else 'openai',
+                    model=model,
+                    duration_seconds=round(time.monotonic() - started, 3),
+                    estimated_cost_usd=None,
+                    error_code=type(exc).__name__,
+                )]
+                raise
 
         except Exception as e:
             logger.error("selection.legacy_failed error=%s", type(e).__name__)
             raise
+
+    @staticmethod
+    def _parse_legacy_answer(
+        content: str,
+        duration: Optional[float],
+        transcription_data: Mapping[str, Any],
+        target_clips: int,
+    ) -> List[Dict[str, Any]]:
+        """Parses and validates the legacy JSON answer with the V2 clip rules."""
+        from apps.videos.services.ai.clip_validation import sanitize_clips
+        from apps.videos.services.ai.errors import (
+            AIContractValidationError,
+            AIEmptySelectionError,
+        )
+
+        # Cleanup possible markdown code blocks from AI response
+        content = content.strip()
+        if content.startswith("```"):
+            content = content.replace("```json", "").replace("```", "").strip()
+
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise AIContractValidationError(
+                message=f"Legacy selection is not valid JSON: {type(exc).__name__}",
+                provider="litellm",
+            ) from exc
+
+        # Extract list from wrapper object if present
+        raw_clips = data.get('clips', data) if isinstance(data, dict) else data
+        if not isinstance(raw_clips, list):
+            logger.warning("selection.legacy_non_list_output wrapping in list")
+            raw_clips = [raw_clips] if raw_clips else []
+
+        try:
+            video_duration = SelectionEngine._resolve_duration(duration, transcription_data)
+        except ValueError:
+            video_duration = None
+        clips, _ = sanitize_clips(
+            [SelectionEngine._with_legacy_defaults(item) for item in raw_clips],
+            video_duration,
+            target_clips,
+        )
+        if not clips:
+            raise AIEmptySelectionError(
+                message="Legacy selection contained no usable clips.",
+                provider="litellm",
+            )
+        return [{key: getattr(clip, key) for key in _PUBLIC_CLIP_KEYS} for clip in clips]
 
     @staticmethod
     def _with_legacy_defaults(item: Any) -> Any:

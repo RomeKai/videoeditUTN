@@ -43,6 +43,7 @@ from apps.videos.services.ai.errors import (
     AIServerError,
     AITimeoutError,
     is_billing_uncertain,
+    is_task_time_limit,
     non_retryable_error_class,
 )
 from apps.videos.services.ai.pricing import PRICING_VERSION, estimate_llm_cost
@@ -199,6 +200,11 @@ class LiteLLMSelectionProvider:
             )
             attempts.extend(getattr(primary_exc, "usage_attempts", None) or [])
 
+            if is_task_time_limit(primary_exc):
+                # The task's deadline, not a model failure: no fallback call.
+                primary_exc.usage_attempts = list(attempts)
+                raise
+
             if not self._has_fallback():
                 logger.error(
                     "selection.no_fallback model=%s (fallback model unset, equal to "
@@ -230,6 +236,9 @@ class LiteLLMSelectionProvider:
                     type(fallback_exc).__name__,
                 )
                 attempts.extend(getattr(fallback_exc, "usage_attempts", None) or [])
+                if is_task_time_limit(fallback_exc):
+                    fallback_exc.usage_attempts = list(attempts)
+                    raise
                 error = self._classify_error(fallback_exc)
                 error.usage_attempts = list(attempts)
                 raise error from fallback_exc
@@ -257,6 +266,13 @@ class LiteLLMSelectionProvider:
                 target_count=target_count,
             )
         except Exception as exc:
+            if is_task_time_limit(exc):
+                # Re-raised untouched; the interrupted call may have been billed
+                # (unknown cost, never a false zero).
+                exc.usage_attempts = [
+                    self._unanswered_usage(model, role, exc, time.monotonic() - started)
+                ]
+                raise
             error = self._classify_error(exc)
             if not error.usage_attempts:
                 error.usage_attempts = [
@@ -272,7 +288,7 @@ class LiteLLMSelectionProvider:
 
     @staticmethod
     def _unanswered_usage(
-        model: str, role: str, error: AIError, elapsed: float
+        model: str, role: str, error: BaseException, elapsed: float
     ) -> ProviderUsage:
         """
         Usage for a call that never produced a response: providers do not charge
@@ -378,6 +394,8 @@ class LiteLLMSelectionProvider:
             return content, usage
 
         except Exception as exc:
+            if is_task_time_limit(exc):
+                raise
             raise self._classify_error(exc) from exc
 
     @staticmethod

@@ -336,6 +336,9 @@ def _groq_provider(*payloads):
     client = MagicMock()
     responses = []
     for payload in payloads:
+        if isinstance(payload, BaseException):
+            responses.append(payload)  # raised by the client for that chunk
+            continue
         response = MagicMock()
         response.model_dump.return_value = payload
         responses.append(response)
@@ -407,3 +410,101 @@ class GroqSpeechAndOverlapTests(SimpleTestCase):
         provider = _groq_provider(_groq_payload([("hola", 0.0, 0.5)], text="¡Hola, mundo!"))
         result = self._transcribe(provider, [_chunk(0, 0.0, 10.0)])
         self.assertEqual(result.data.full_text, "¡Hola, mundo!")
+
+
+class OverlapTimingDriftTests(GroqSpeechAndOverlapTests):
+    def test_a_word_timed_across_the_cut_by_each_chunk_is_kept_once(self):
+        # Cutoff 599: the previous chunk times "y" at 599.1 (after the cut) and
+        # the next one at 598.9 (before it). Neither side may drop it.
+        provider = _groq_provider(
+            _groq_payload([("x", 598.4, 598.8), ("y", 599.1, 599.5)]),
+            _groq_payload([("x", 0.42, 0.8), ("y", 0.9, 1.3), ("z", 2.0, 2.4)]),
+        )
+        result = self._transcribe(provider, [_chunk(0, 0.0, 600.0), _chunk(1, 598.0, 1200.0)])
+        self.assertEqual([w.text for w in result.data.words], ["x", "y", "z"])
+
+
+class TaskTimeLimitPassthroughTests(SimpleTestCase):
+    """SoftTimeLimitExceeded is the task's deadline: never a retryable AIError."""
+
+    def test_v2_selection_reraises_it_without_calling_the_fallback(self):
+        from celery.exceptions import SoftTimeLimitExceeded
+
+        provider = _provider()
+        with patch.object(litellm, "completion", side_effect=SoftTimeLimitExceeded()) as completion:
+            with self.assertRaises(SoftTimeLimitExceeded) as ctx:
+                provider.select_clips(transcript="hola", video_duration=100.0)
+        self.assertEqual(completion.call_count, 1)
+        usage = ctx.exception.usage_attempts
+        self.assertEqual(len(usage), 1)
+        self.assertIsNone(usage[0].estimated_cost_usd)  # may have been billed
+        self.assertEqual(usage[0].error_code, "SoftTimeLimitExceeded")
+
+    def test_interrupted_fallback_keeps_the_billed_primary_attempt(self):
+        from celery.exceptions import SoftTimeLimitExceeded
+
+        provider = _provider()
+        with patch.object(litellm, "completion",
+                          side_effect=[_llm_response([]), SoftTimeLimitExceeded()]):
+            with self.assertRaises(SoftTimeLimitExceeded) as ctx:
+                provider.select_clips(transcript="hola", video_duration=100.0)
+        roles = [(u.role, u.error_code) for u in ctx.exception.usage_attempts]
+        self.assertEqual(
+            roles, [("primary", "AIEmptySelectionError"), ("fallback", "SoftTimeLimitExceeded")]
+        )
+
+    def test_groq_reraises_it_with_unknown_cost_for_the_billed_chunks(self):
+        from celery.exceptions import SoftTimeLimitExceeded
+
+        provider = _groq_provider(_groq_payload([("hola", 0.0, 0.5)]), SoftTimeLimitExceeded())
+        with patch("builtins.open", mock_open(read_data=b"audio")):
+            with self.assertRaises(SoftTimeLimitExceeded) as ctx:
+                provider.transcribe([_chunk(0, 0.0, 600.0), _chunk(1, 598.0, 1200.0)])
+        self.assertIsNone(ctx.exception.usage_attempts[0].estimated_cost_usd)
+
+    @override_settings(AI_CORE_V2_ENABLED=False, GEMINI_API_KEY="g-key")
+    def test_legacy_selection_reraises_it(self):
+        from celery.exceptions import SoftTimeLimitExceeded
+
+        with patch.object(GeminiFlashStrategy, "select_clips", side_effect=SoftTimeLimitExceeded()):
+            with self.assertRaises(SoftTimeLimitExceeded):
+                SelectionEngine.select_viral_clips(
+                    transcription_data={"full_text": "hola"}, project_title="p", duration=100.0
+                )
+
+
+@override_settings(AI_CORE_V2_ENABLED=False, GEMINI_API_KEY="g-key")
+class LegacyBilledFailureUsageTests(SimpleTestCase):
+    def test_an_answered_but_unusable_legacy_call_reports_unknown_cost(self):
+        with patch.object(GeminiFlashStrategy, "select_clips", return_value='{"clips": []}'):
+            with self.assertRaises(AIEmptySelectionError) as ctx:
+                SelectionEngine.select_viral_clips(
+                    transcription_data={"full_text": "hola"}, project_title="p", duration=100.0
+                )
+        usage = ctx.exception.usage_attempts
+        self.assertEqual(len(usage), 1)
+        self.assertIsNone(usage[0].estimated_cost_usd)
+        self.assertEqual((usage[0].provider, usage[0].error_code), ("gemini", "AIEmptySelectionError"))
+
+
+@override_settings(AI_CORE_V2_ENABLED=True, TRANSCRIPTION_BACKEND="groq")
+class SubtitleTranscriptionSilenceTests(SimpleTestCase):
+    def test_list_api_returns_no_words_for_a_silent_clip(self):
+        from contextlib import contextmanager
+
+        from apps.videos.services.transcription_engine import TranscriptionEngine
+
+        class _Preprocessor:
+            @contextmanager
+            def process(self, path):
+                yield [_chunk(0, 0.0, 10.0)]
+
+        groq = MagicMock()
+        groq.transcribe.side_effect = AINoSpeechDetectedError()
+        engine = TranscriptionEngine(
+            groq_provider_factory=lambda: groq, preprocessor_factory=_Preprocessor
+        )
+        with patch("os.path.exists", return_value=True):
+            self.assertEqual(engine.transcribe("clip.mp3"), [])
+            with self.assertRaises(AINoSpeechDetectedError):
+                engine.transcribe_detailed("clip.mp3")

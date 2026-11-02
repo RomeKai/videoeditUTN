@@ -114,7 +114,16 @@ class TranscriptionEngine:
                 return self._legacy_words(raw)
             return self._legacy_segments(raw)
 
-        exec_result = self._transcribe_groq(audio_path)
+        from apps.videos.services.ai.errors import AINoSpeechDetectedError
+
+        try:
+            exec_result = self._transcribe_groq(audio_path)
+        except AINoSpeechDetectedError:
+            # This list API (subtitles for a rendered clip) answers "no words"
+            # for silent audio, as the local backend always did; only the
+            # ingestion path (transcribe_detailed) treats it as a failure.
+            self.last_full_text = None
+            return []
         tx = exec_result.data
         self.last_full_text = tx.full_text
 
