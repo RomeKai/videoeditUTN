@@ -1175,11 +1175,16 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
 # the task twice is safe because every stage is idempotent: transitions are
 # compare-and-set, the Redis lock keeps two workers off the same project, and
 # stage outputs (transcript, clips) are persisted and reused, never recomputed.
+# The soft time limit (settings.PIPELINE_SOFT_TIME_LIMIT) raises
+# SoftTimeLimitExceeded, which is non-retryable: the project fails with that
+# code and the lock is released instead of being renewed by a hung worker.
 @celery_app.task(
     bind=True,
     max_retries=PIPELINE_MAX_RETRIES,
     acks_late=True,
     reject_on_worker_lost=True,
+    soft_time_limit=getattr(settings, 'PIPELINE_SOFT_TIME_LIMIT', 2 * 3600),
+    time_limit=getattr(settings, 'PIPELINE_TIME_LIMIT', 2 * 3600 + 300),
 )
 def process_initial_ingestion(self, project_id):
     """

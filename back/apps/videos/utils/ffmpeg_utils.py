@@ -11,6 +11,12 @@ class FFmpegManager:
     Utility class for FFmpeg operations, optimized for web proxy generation.
     """
 
+    # Upper bounds for the audio steps of AI ingestion: decoding a long video's
+    # audio takes minutes, a probe takes seconds. A hung process otherwise holds
+    # the worker (and the project lock, renewed by its heartbeat) indefinitely.
+    AUDIO_EXTRACT_TIMEOUT_SECONDS = 1800
+    PROBE_TIMEOUT_SECONDS = 120
+
     @staticmethod
     def generate_web_proxy(input_path: str, output_path: str) -> str:
         """
@@ -103,8 +109,16 @@ class FFmpegManager:
         logger.info(f"🎙️ [FFMPEG] Extracting FLAC: {input_path} (start={start_time}, dur={duration}) -> {output_path}")
 
         try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
+            subprocess.run(
+                command, check=True, capture_output=True, text=True,
+                timeout=FFmpegManager.AUDIO_EXTRACT_TIMEOUT_SECONDS,
+            )
             return output_path
+        except subprocess.TimeoutExpired as e:
+            # subprocess.run already killed the process. Deterministic for the
+            # same file in practice, so it is not retried (RuntimeError).
+            logger.error("[FFMPEG] FLAC extraction timed out after %ss", e.timeout)
+            raise RuntimeError(f"FFmpeg audio extraction timed out after {e.timeout}s") from e
         except subprocess.CalledProcessError as e:
             error_msg = e.stderr or "Unknown error"
             logger.error(f"❌ [FFMPEG] Failed to extract FLAC audio: {error_msg}")
@@ -130,10 +144,13 @@ class FFmpegManager:
         ]
 
         try:
-            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            result = subprocess.run(
+                command, check=True, capture_output=True, text=True,
+                timeout=FFmpegManager.PROBE_TIMEOUT_SECONDS,
+            )
             duration_str = result.stdout.strip()
             return float(duration_str)
-        except (subprocess.CalledProcessError, ValueError) as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as e:
             logger.error(f"❌ [FFMPEG] Failed to get duration for {file_path}: {e}")
             raise RuntimeError(f"Could not determine media duration for {file_path}: {e}")
 
