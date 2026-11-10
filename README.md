@@ -1,5 +1,17 @@
 # 🎬 OneCreator — All-in-One Viral Studio
 
+[![CI](https://github.com/RomeKai/videoeditUTN/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/RomeKai/videoeditUTN/actions/workflows/ci.yml)
+![License](https://img.shields.io/badge/License-All%20Rights%20Reserved-red?style=flat-square)
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
+![Django](https://img.shields.io/badge/Django-5.x-092E20?style=flat-square&logo=django&logoColor=white)
+![Celery](https://img.shields.io/badge/Celery-37814A?style=flat-square&logo=celery&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-4169E1?style=flat-square&logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat-square&logo=redis&logoColor=white)
+![OpenAI](https://img.shields.io/badge/OpenAI-Whisper%20%2B%20GPT--4o-412991?style=flat-square&logo=openai&logoColor=white)
+![FFmpeg](https://img.shields.io/badge/FFmpeg-007808?style=flat-square&logo=ffmpeg&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white)
+![Cloudflare R2](https://img.shields.io/badge/Cloudflare-R2-F38020?style=flat-square&logo=cloudflare&logoColor=white)
+
 
 **OneCreator** es una plataforma SaaS de edición automatizada de video que utiliza inteligencia artificial para transformar contenido de formato largo en clips virales optimizados para redes sociales.
 
