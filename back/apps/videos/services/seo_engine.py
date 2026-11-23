@@ -20,6 +20,7 @@ Output contract (validated locally before anything is persisted):
 Nothing the user or the model wrote is logged: only counts, model and tokens.
 """
 
+import copy
 import json
 import logging
 import re
@@ -247,16 +248,19 @@ class SEOOptimizationService(LiteLLMSelectionProvider):
     def _response_format(model: str) -> Dict[str, Any]:
         from apps.videos.services.ai.llm_credentials import provider_for_model
 
+        # A copy per call: LiteLLM edits the schema in place for Gemini (it drops
+        # additionalProperties), which would leak into the next call's payload.
+        schema = copy.deepcopy(_SOCIAL_METADATA_SCHEMA)
         provider = provider_for_model(model)
         if provider == "openai":
             return {
                 "type": "json_schema",
                 "json_schema": {
-                    "name": "social_metadata", "schema": _SOCIAL_METADATA_SCHEMA, "strict": False,
+                    "name": "social_metadata", "schema": schema, "strict": False,
                 },
             }
         if provider == "gemini":
-            return {"type": "json_object", "response_schema": _SOCIAL_METADATA_SCHEMA}
+            return {"type": "json_object", "response_schema": schema}
         return {"type": "json_object"}
 
     @staticmethod

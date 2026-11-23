@@ -78,7 +78,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from django.utils import timezone
 from django.db import DatabaseError, transaction
-from django.db.models import F
+from django.db.models import F, Q
 from django.core.cache import cache
 from apps.videos.models import VideoProject, VideoClip, ScheduledPost
 
@@ -271,11 +271,15 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
             return "SEO Already Generated"
         with _seo_post_lock(post_id) as acquired:
             if not acquired:
+                # Another worker is generating this post right now.
                 logger.info("seo.skipped post_id=%s reason=locked", post_id)
                 return "SEO Busy"
+            post.refresh_from_db()
+            if not regenerate and post.generated_caption and post.generated_hashtags:
+                return "SEO Already Generated"  # finished by another run before the lock
             if regenerate and self.request.retries == 0 and not capacity_waited_s:
                 _seo_pending_clear(post_id)  # a fresh request, not a retry of this one
-            return _generate_post_metadata(self, post, capacity_waited_s)
+            return _generate_post_metadata(self, post, capacity_waited_s, regenerate)
 
     except ModerationError as mod_exc:
         # Fail closed: no moderation verdict => content does not pass. Must stay above
@@ -314,9 +318,35 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
         raise
 
 
+# Codes this task writes to error_log; a later successful generation clears them.
+_SEO_FAILURE_CODES = (
+    'seo_no_clip_transcript', 'content_blocked', 'generated_content_blocked', 'capacity_timeout',
+)
+
+
 def _fail_seo_post(post_id, code):
-    ScheduledPost.objects.filter(id=post_id).update(
-        status=ScheduledPost.Status.FAILED, error_log=code
+    """
+    FAILED with a static code, unless publishing already started or finished:
+    a post published with another caption must never turn FAILED because of SEO.
+    """
+    ScheduledPost.objects.filter(id=post_id).exclude(
+        status__in=(ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED),
+    ).update(status=ScheduledPost.Status.FAILED, error_log=code)
+
+
+def _recover_seo_failed_post(post_id):
+    """
+    A post an earlier SEO failure left FAILED is recoverable (ADR-013): back to
+    DRAFT, so the user reviews the caption and schedules it again. It is never
+    re-scheduled on its own. Publishing failures are not touched.
+    """
+    seo_codes = (
+        Q(error_log__in=_SEO_FAILURE_CODES)
+        | Q(error_log__startswith='seo_')
+        | Q(error_log__startswith='moderation_')
+    )
+    ScheduledPost.objects.filter(seo_codes, id=post_id, status=ScheduledPost.Status.FAILED).update(
+        status=ScheduledPost.Status.DRAFT, error_log=None,
     )
 
 
@@ -381,14 +411,14 @@ def _seo_pending_clear(post_id):
         logger.warning("seo.pending_not_cleared post_id=%s error=%s", post_id, type(exc).__name__)
 
 
-def _generate_post_metadata(task, post, capacity_waited_s):
+def _generate_post_metadata(task, post, capacity_waited_s, regenerate=False):
     """Generates (or reuses the pending generation), moderates the output and stores it."""
     from apps.core.security import AI_Security_Shield, UnsafeContentError
     from apps.videos.services.seo_engine import SocialMetadata
 
     pending = _seo_pending_get(post.id)
     if pending is None:
-        outcome = _generate_social_metadata(task, post, capacity_waited_s)
+        outcome = _generate_social_metadata(task, post, capacity_waited_s, regenerate)
         if isinstance(outcome, str):  # waiting for capacity, or the post already failed
             return outcome
         pending = outcome
@@ -406,12 +436,13 @@ def _generate_post_metadata(task, post, capacity_waited_s):
     ScheduledPost.objects.filter(id=post.id).update(
         generated_caption=metadata.caption, generated_hashtags=metadata.hashtags,
     )
+    _recover_seo_failed_post(post.id)
     _seo_pending_clear(post.id)
     logger.info("seo.persisted post_id=%s hashtags=%d", post.id, len(metadata.hashtags))
     return "SEO Success"
 
 
-def _generate_social_metadata(task, post, capacity_waited_s):
+def _generate_social_metadata(task, post, capacity_waited_s, regenerate=False):
     """
     One paid generation: clip transcript, capacity, input moderation, LLM call
     and usage rows. Returns the metadata as a dict, or a status string when the
@@ -449,7 +480,7 @@ def _generate_social_metadata(task, post, capacity_waited_s):
             reservation = gate.reserve(_seo_demand(models, request), stage='seo')
         except CapacityUnavailable as capacity_exc:
             return _seo_wait_for_capacity(
-                str(post.id), capacity_exc, capacity_waited_s, task.request.retries
+                str(post.id), capacity_exc, capacity_waited_s, task.request.retries, regenerate
             )
 
     try:
@@ -1205,7 +1236,7 @@ def _release_seo_capacity(gate, reservation):
         })
 
 
-def _seo_wait_for_capacity(post_id, exc, waited_s, retries):
+def _seo_wait_for_capacity(post_id, exc, waited_s, retries, regenerate=False):
     """
     Re-queues SEO generation after the capacity wait; fails the post past the max
     wait. The Celery retry count travels with the message: a call that keeps
@@ -1213,15 +1244,15 @@ def _seo_wait_for_capacity(post_id, exc, waited_s, retries):
     """
     if waited_s + exc.wait_seconds > settings.AI_CAPACITY_MAX_WAIT_SECONDS:
         logger.error("seo.capacity_timeout post_id=%s waited_s=%.1f", post_id, waited_s)
-        ScheduledPost.objects.filter(id=post_id).update(
-            status=ScheduledPost.Status.FAILED, error_log='capacity_timeout',
-        )
+        _fail_seo_post(post_id, 'capacity_timeout')
         return "Capacity Timeout"
     countdown = _capacity_countdown(exc.wait_seconds)
     logger.info("seo.pending_capacity post_id=%s countdown_s=%.1f", post_id, countdown)
+    kwargs = {'capacity_waited_s': round(waited_s + countdown, 1)}
+    if regenerate:
+        kwargs['regenerate'] = True  # or the re-queued run would see the old caption and stop
     process_video_seo.apply_async(
-        args=[post_id], kwargs={'capacity_waited_s': round(waited_s + countdown, 1)},
-        countdown=countdown, retries=retries,
+        args=[post_id], kwargs=kwargs, countdown=countdown, retries=retries,
     )
     return "Waiting for capacity"
 

@@ -93,6 +93,7 @@ PROJECT_COLUMNS: Tuple[str, ...] = (
     # 30 min above keeps measuring transcription + selection only.
     "seo_records",
     "seo_cost_usd",
+    "seo_cost_complete",
 )
 
 INGESTION_STAGES = (AIUsageRecord.Stage.TRANSCRIPTION, AIUsageRecord.Stage.SELECTION)
@@ -244,23 +245,29 @@ class Command(BaseCommand):
         )
         for row in stream:
             project_row = self._project_row(row)
-            seo_count, seo_cost = seo.get(row["id"], (0, None))
+            seo_count, seo_cost, seo_unpriced = seo.get(row["id"], (0, None, 0))
             project_row["seo_records"] = seo_count
             project_row["seo_cost_usd"] = _plain(seo_cost)
+            # Same rule as cost_complete: every SEO row priced.
+            project_row["seo_cost_complete"] = seo_count > 0 and seo_unpriced == 0
             yield project_row
 
     @staticmethod
-    def _seo_by_project(projects) -> Dict[Any, Tuple[int, Optional[Decimal]]]:
-        """(rows, cost) of the SEO records of each project in the window."""
+    def _seo_by_project(projects) -> Dict[Any, Tuple[int, Optional[Decimal], int]]:
+        """(rows, cost, unpriced rows) of the SEO records of each project in the window."""
         rows = (
             AIUsageRecord.objects.filter(
                 stage=AIUsageRecord.Stage.SEO, project__in=projects.values("pk")
             )
             .values("project")
-            .annotate(count=Count("id"), cost=Sum("estimated_cost_usd"))
-            .values_list("project", "count", "cost")
+            .annotate(
+                count=Count("id"),
+                cost=Sum("estimated_cost_usd"),
+                unpriced=Count("id", filter=Q(estimated_cost_usd__isnull=True)),
+            )
+            .values_list("project", "count", "cost", "unpriced")
         )
-        return {project: (count, cost) for project, count, cost in rows}
+        return {project: (count, cost, unpriced) for project, count, cost, unpriced in rows}
 
     @staticmethod
     def _project_row(row: Dict[str, Any]) -> Dict[str, Any]:

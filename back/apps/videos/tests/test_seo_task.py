@@ -325,3 +325,102 @@ class ExportTests(TestCase):
         )
         stages = [json.loads(line)["stage"] for line in record_out.getvalue().splitlines()]
         self.assertEqual(sorted(stages), ["selection", "seo", "seo"])
+
+
+class ReviewRegressionTests(SeoTaskHarness, TestCase):
+    """Edge cases found in review (AICORE-17)."""
+
+    def test_a_regeneration_survives_a_capacity_wait(self):
+        from apps.videos.tests.test_capacity_pipeline import LIMITS, FakeCapacityStore
+
+        ScheduledPost.objects.filter(pk=self.post.pk).update(
+            generated_caption="OLD", generated_hashtags=TAGS
+        )
+        store = FakeCapacityStore()
+        store.denials = [5.0]
+        requeue = self._patch("apps.videos.tasks.process_video_seo.apply_async")
+        self._patch("apps.videos.services.ai.capacity.default_store", return_value=store)
+        with self.settings(AI_CAPACITY_ENABLED=True, AI_CAPACITY_LIMITS=LIMITS):
+            self.assertEqual(self.run_task(regenerate=True), "Waiting for capacity")
+            kwargs = requeue.call_args.kwargs["kwargs"]
+            self.assertTrue(kwargs["regenerate"])
+
+            result = self.run_task(retries=0, **kwargs)  # what the re-queued message runs
+
+        self.assertEqual(result, "SEO Success")
+        self.post.refresh_from_db()
+        self.assertEqual(self.post.generated_caption, CAPTION)
+
+    def test_a_final_seo_failure_never_touches_a_post_that_is_publishing_or_published(self):
+        from apps.videos.tasks import _fail_seo_post
+
+        for status in (ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED):
+            with self.subTest(status=status):
+                ScheduledPost.objects.filter(pk=self.post.pk).update(
+                    status=status, error_log="Ayrshare ID: 123"
+                )
+                _fail_seo_post(self.post.id, "seo_generation_failed:AIAuthenticationError")
+                self.post.refresh_from_db()
+                self.assertEqual((self.post.status, self.post.error_log), (status, "Ayrshare ID: 123"))
+
+    def test_a_successful_run_recovers_a_post_failed_by_seo_as_a_draft(self):
+        ScheduledPost.objects.filter(pk=self.post.pk).update(
+            status=ScheduledPost.Status.FAILED, error_log="moderation_unavailable"
+        )
+
+        self.run_task()
+
+        self.post.refresh_from_db()
+        self.assertEqual(self.post.status, ScheduledPost.Status.DRAFT)  # never re-scheduled alone
+        self.assertIsNone(self.post.error_log)
+        self.assertEqual(self.post.generated_caption, CAPTION)
+
+    def test_a_publishing_failure_is_not_cleared_by_seo(self):
+        ScheduledPost.objects.filter(pk=self.post.pk).update(
+            status=ScheduledPost.Status.FAILED, error_log="Critical: something"
+        )
+
+        self.run_task()
+
+        self.post.refresh_from_db()
+        self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
+        self.assertEqual(self.post.error_log, "Critical: something")
+
+    def test_metadata_stored_by_another_run_before_the_lock_is_not_paid_again(self):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def lock_after_another_run_finished(post_id):
+            ScheduledPost.objects.filter(pk=post_id).update(
+                generated_caption="otro worker", generated_hashtags=TAGS
+            )
+            yield True
+
+        with patch("apps.videos.tasks._seo_post_lock", lock_after_another_run_finished):
+            result = self.run_task()
+
+        self.assertEqual(result, "SEO Already Generated")
+        self.generate.assert_not_called()
+
+    def test_the_shared_schema_is_never_handed_to_litellm(self):
+        from apps.videos.services.seo_engine import _SOCIAL_METADATA_SCHEMA, SEOOptimizationService
+
+        payload = SEOOptimizationService._response_format("gemini/gemini-3.8-flash")
+        payload["response_schema"].pop("additionalProperties")  # what LiteLLM does for Gemini
+
+        self.assertIn("additionalProperties", _SOCIAL_METADATA_SCHEMA)
+
+    def test_the_export_flags_unpriced_seo_rows(self):
+        AIUsageRecord.objects.create(
+            project=self.project, stage="seo", pipeline_version="v2", attempt=1, role="primary",
+            provider="gemini", model="m", success=False, latency_seconds=1, total_tokens=0,
+            estimated_cost_usd=None,
+        )
+        out = StringIO()
+        call_command(
+            "export_ai_pilot_metrics", "--since=2000-01-01", "--level=project", "--format=jsonl",
+            stdout=out,
+        )
+        row = json.loads(out.getvalue().strip())
+        self.assertEqual(row["seo_records"], 1)
+        self.assertFalse(row["seo_cost_complete"])
