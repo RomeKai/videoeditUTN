@@ -140,6 +140,12 @@ LayoutValue = Literal["fill", "fit", "blurred", "split", "pip", "versus", "activ
 PositionValue = Literal["left", "center", "right"]
 SubtitleSizeValue = Literal["small", "medium", "large"]
 SubtitlePositionValue = Literal["top", "center", "bottom"]
+# The resolution tiers PricingEngine and SubscriptionPlan.max_resolution use.
+RenderResolutionValue = Literal["720p", "1080p", "4K"]
+
+# Requests the workspace plan may forbid and that change the price. They are
+# never applied as parsed: ConfigValidator (PTE-01b) checks them first.
+PLAN_GATED_FIELDS = ("render_resolution", "use_seo", "use_ai_thumbnail")
 
 PROJECT_CONFIG_MAX_CLIPS = 20
 
@@ -149,7 +155,8 @@ class ProjectConfig(BaseModel):
     Project settings a Prompt-to-Edit prompt can ask for. Only existing
     VideoProject fields and metadata keys, with the model's own choices; no
     price, plan, tier or approval field. ``None`` means "not asked": the
-    project default stays.
+    project default stays. The PLAN_GATED_FIELDS are requests the workspace
+    plan may forbid; ConfigValidator decides on them (PTE-01b).
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -171,6 +178,10 @@ class ProjectConfig(BaseModel):
     # Stored in VideoProject.metadata, like the create view does.
     max_clips: Optional[int] = Field(default=None, ge=1, le=PROJECT_CONFIG_MAX_CLIPS)
     selection_criteria: Optional[str] = Field(default=None, max_length=300)
+    # Plan-gated requests (PLAN_GATED_FIELDS), metadata keys the pricing reads.
+    render_resolution: Optional[RenderResolutionValue] = None
+    use_seo: Optional[bool] = None
+    use_ai_thumbnail: Optional[bool] = None
 
     @field_validator("subtitle_color", mode="before")
     @classmethod

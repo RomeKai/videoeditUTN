@@ -98,6 +98,14 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         
         if 'max_clips' in raw: project.metadata['max_clips'] = int(raw['max_clips'])
         if criteria: project.metadata['selection_criteria'] = criteria
+        # Prompt-to-Edit (PTE-01b): parsed at the start of ingestion; what the
+        # request sets explicitly wins over the parsed config.
+        prompt = self.context.get('pte_prompt')
+        if prompt is not None:
+            from .services.ai.prompt_validator import explicit_config_fields
+
+            project.metadata['pte_prompt'] = prompt
+            project.metadata['pte_explicit'] = explicit_config_fields(raw)
         if 'subtitle_size' in raw: project.metadata['subtitle_size'] = raw['subtitle_size']
         if 'aspect_ratio' in raw: project.aspect_ratio = raw['aspect_ratio']
         if 'render_layout' in raw: project.render_layout = raw['render_layout']
