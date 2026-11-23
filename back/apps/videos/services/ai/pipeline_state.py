@@ -26,6 +26,8 @@ class StageStatus(models.TextChoices):
     RUNNING = "running", "Running"
     COMPLETED = "completed", "Completed"
     FAILED = "failed", "Failed"
+    # Waiting for provider capacity (AICORE-11): neither a failure nor an attempt.
+    PENDING_CAPACITY = "pending_capacity", "Pending capacity"
 
 
 # Stages that do real work, in execution order. Their status is tracked in

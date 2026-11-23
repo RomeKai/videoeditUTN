@@ -188,6 +188,16 @@ class RecordLevelTests(TestCase):
         self.assertEqual(row["project_id"], str(project.pk))
         self.assertTrue(row["created_at"].endswith("+00:00"))
 
+    def test_reasoning_tokens_column_is_exported_as_a_plain_integer(self):
+        self.assertIn("reasoning_tokens", command.EXPORT_COLUMNS)
+        make_record(make_project(), reasoning_tokens=2000, total_tokens=2300)
+
+        csv_row = run_csv(f"--since={EPOCH}", "--level=record")[0]
+        json_row = json.loads(run(f"--since={EPOCH}", "--level=record", "--format=jsonl"))
+
+        self.assertEqual(csv_row["reasoning_tokens"], "2000")
+        self.assertEqual(json_row["reasoning_tokens"], 2000)
+
     def test_empty_window_csv_is_header_only_and_exits_zero(self):
         out = run(f"--since={EPOCH}", "--level=record")
         self.assertEqual(out.strip(), ",".join(command.EXPORT_COLUMNS))
@@ -233,7 +243,7 @@ class ProjectLevelTests(TestCase):
         self.assertEqual(row["failed_records"], "0")
         self.assertEqual(row["cost_complete"], "False")
         for column in (
-            "pipeline_version", "total_tokens", "total_cost_usd", "cost_per_30min_usd",
+            "pipeline_version", "total_tokens", "reasoning_tokens", "total_cost_usd", "cost_per_30min_usd",
             "transcription_latency_s", "selection_latency_s",
         ):
             self.assertEqual(row[column], "", column)
@@ -358,6 +368,17 @@ class ProjectLevelTests(TestCase):
         self.assertEqual(row["final_stage"], "clips_selected")
         self.assertEqual(row["status"], "awaiting_approval")
         self.assertEqual(row["records_count"], "3")
+
+    def test_sums_reasoning_tokens_per_project(self):
+        self.assertIn("reasoning_tokens", command.PROJECT_COLUMNS)
+        project = make_project()
+        make_record(project, attempt=1, reasoning_tokens=1500, total_tokens=1800)
+        make_record(project, attempt=2, reasoning_tokens=500, total_tokens=600)
+
+        row = project_rows()[0]
+
+        self.assertEqual(row["reasoning_tokens"], "2000")
+        self.assertEqual(row["total_tokens"], "2400")
 
     def test_empty_window_is_header_only(self):
         out = run("--since=2999-01-01", "--level=project")

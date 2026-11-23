@@ -67,6 +67,8 @@ El servicio de `docker-compose.yml` se llama `web`. `--output` escribe **dentro 
 
 **Costo por 30 min:** usa la duración del video fuente, no `audio_seconds`. Si falta la duración, la columna queda vacía.
 
+**Tokens de razonamiento:** `reasoning_tokens` (por registro y sumado por proyecto) son los thinking tokens de Gemini que el proveedor cobra como salida y que no están en `completion_tokens`. El costo los cuenta al precio de salida y `total_tokens` es prompt + completion + reasoning.
+
 ---
 
 ## 2. Muestra de 20 videos en español rioplatense
@@ -121,6 +123,33 @@ Se fija y se documenta **antes** de correr la evaluación. Se aplica igual a la 
 
 Registro de la decisión: [fecha, responsable].
 
+### 3.4 Cálculo automático de WER y timestamps
+
+El comando `evaluate_ai_transcription` calcula las dos métricas automáticas del G1 aplicando la normalización de §3.3. Las referencias se guardan en un directorio **fuera del repo**, con esta estructura:
+
+| Archivo | Contenido |
+|---------|-----------|
+| `manifest.csv` | Encabezado `video_id,project_id`. Un video aparece una vez por cada proyecto que lo procesó (V2 y legacy) |
+| `<video_id>.txt` | Transcripción de referencia (§3.1), en UTF-8 |
+| `<video_id>.anchors.csv` | Encabezado `time_seconds,text`: el tiempo de cada ancla (§3.2) y las primeras palabras de la frase |
+
+`video_id` es una etiqueta de la muestra (por ejemplo `v01`), con letras, números, `-` y `_`.
+
+```bash
+docker compose run --rm -T -v /ruta/a/referencias:/refs:ro web python manage.py evaluate_ai_transcription --references /refs --accents keep > pilot_eval.csv
+```
+
+Sin `--output`, el CSV sale por stdout y el resumen por stderr: el archivo queda en el host y el veredicto en la terminal. Con `--output`, igual que en el export (§1.3), la ruta es dentro del contenedor.
+
+- `--accents keep|strip` es obligatorio y tiene que coincidir con la decisión registrada en §3.3.
+- `--window` (5 s por defecto) es cuánto se busca alrededor de cada ancla.
+- El CSV tiene una fila por proyecto y una fila `ALL` por motor (`v2`, `legacy`).
+  - El WER del `ALL` es el de corpus: Σ errores / Σ palabras de referencia.
+  - El error de timestamps es la mediana de todas las anclas del motor.
+- Al final se imprime si cada motor cumple los umbrales del §1.1.
+- Las anclas sin match se informan aparte, no como error. Muchas anclas sin match indican referencias desalineadas o un ASR con muchos errores en los inicios de frase: revisar antes de dar el G1 por bueno.
+- La salida solo tiene ids, códigos de estado y números, nunca texto.
+
 ---
 
 ## 4. Evaluación humana
@@ -153,7 +182,7 @@ La planilla no debe contener títulos ni transcripts del usuario: solo `clip_id`
 | 5 | Medición en vivo y verificación de precios (ver G0) | **G0** |
 | 6 | Activar V2 solo para el usuario interno del piloto: maestro en `True` y allowlist = `[pilot_user_id]` | |
 | 7 | Procesar los 20 videos con V2 y el mismo set con legacy, repartidos en varios días según la capacidad de transcripción (ver 5.4) | |
-| 8 | Calcular WER y timestamps, exportar costo y latencia, completar la evaluación humana | **G1** |
+| 8 | Calcular WER y timestamps (`evaluate_ai_transcription`, §3.4), exportar costo y latencia, completar la evaluación humana | **G1** |
 | 9 | Ejecutar los fallos inducidos (sección 6) | **G2** |
 | 10 | Habilitación gradual y observación (5.3) | **G3** |
 | 11 | Completar el sign-off (sección 9) | |
@@ -171,7 +200,7 @@ La planilla no debe contener títulos ni transcripts del usuario: solo `clip_id`
 
 | Ítem | Qué hacer |
 |------|-----------|
-| Medición en vivo | Una llamada real para confirmar qué devuelve `response.model` con el modelo fijado y si `completion_tokens` incluye los thinking tokens de Gemini. Si no los incluye, el costo está subestimado: verificar contra el usage metadata del proveedor antes de confiar en los costos |
+| Medición en vivo | Una llamada real para confirmar qué devuelve `response.model` con el modelo fijado y que `reasoning_tokens` sea mayor que 0 en la selección con Gemini (los thinking tokens no vienen en `completion_tokens`; se derivan del total del proveedor y se cobran al precio de salida). Si es 0 con un modelo que razona, verificar contra el usage metadata del proveedor antes de confiar en los costos |
 | Precios | Verificar contra las páginas oficiales de Groq y Gemini y comparar con `pricing.py` (`PRICING_VERSION`). Si difieren, corregir por PR antes de medir |
 | Perfil de modelos | El piloto usa los mismos modelos, versiones y tiers que producción ([ADR-012](../adrs/012-model-profiles-and-capacity.md), D-C1). Si no, el go/no-go no es válido |
 | Privacidad | Los proveedores corren en tier pago, con términos verificados que excluyen el uso de los datos para entrenamiento (ADR-012, D-C2). Sin esto no se procesan videos de usuarios |
@@ -214,6 +243,50 @@ Consecuencias para el piloto:
 | Soft-launch (50 creadores, ~21 videos por día de 25 min) | ~8,75 a 8,9 h por día; el pico de 5 uploads simultáneos suma 7.500 s | Supera el límite diario y el horario. Requisito de producción en ADR-012 |
 
 Al superar un límite, Groq responde 429. El pipeline lo reintenta con backoff (AICORE-7), así que no se pierde trabajo, pero la entrega se demora (ver salvedad k).
+
+Con el rate limiting propio activo (sección 5.5), el pipeline espera **antes** de llamar y los 429 por cuota dejan de ser el camino normal.
+
+### 5.5 Rate limiting propio (AICORE-11)
+
+Con `AI_CAPACITY_ENABLED=True`, cada llamada a Groq (transcripción) y al LLM (selección y SEO) reserva capacidad en token buckets de Valkey antes de salir. Si no hay lugar, la etapa queda en `pending_capacity` y la tarea vuelve a la cola sin ocupar el worker. Esa espera no cuenta como intento fallido ni genera registros de costo. Diseño y decisiones en [ADR-012, D-C4](../adrs/012-model-profiles-and-capacity.md).
+
+**Límites por entorno.** `AI_CAPACITY_LIMITS` es un JSON en el `.env` con una entrada por modelo. Cada valor es el **80 %** del límite que muestra la consola del proveedor. Todo modelo que llame el pipeline necesita su entrada: el primario, el fallback y `groq/<modelo de Whisper>`. Si falta alguna, la etapa falla con `ImproperlyConfigured` antes de llamar al proveedor.
+
+| Entorno | `AI_CAPACITY_ENABLED` | Groq (`groq/whisper-large-v3-turbo`) | LLM (primario y fallback) |
+|---------|-----------------------|--------------------------------------|---------------------------|
+| Dev / CI | `False` | — | — |
+| Piloto / staging | `True` | Con lo relevado el 2026-10-11 (sección 5.4): `audio_seconds_per_hour` 5.760, `audio_seconds_per_day` 23.040, `requests_per_minute` 16, `requests_per_day` 1.600. Con el Developer Tier activo, recalcular con la consola | `tokens_per_minute` y `requests_per_minute` al 80 % del tier pago. **Pendiente de relevar en la consola**: el `.env.example` trae valores de ejemplo |
+| Producción | `True` | 80 % del tier elegido en D-C5 | 80 % del tier elegido en D-C5 |
+
+Recursos admitidos: `audio_seconds`, `tokens` y `requests`, por `minute`, `hour` o `day` (por ejemplo, `tokens_per_minute`). Una demanda usa todos los buckets configurados de su recurso.
+
+> **Cuentas compartidas.** Cada entorno tiene su propio Valkey. Si piloto y producción usan la **misma cuenta** de un proveedor, sus buckets no se ven entre sí: repartir el 80 % entre los dos (por ejemplo, 60 % y 20 %).
+
+**Qué se reserva y cómo se ajusta**
+
+| Llamada | Reserva | Ajuste después de la llamada |
+|---------|---------|------------------------------|
+| Transcripción (Groq) | Duración del video en segundos y un request por chunk de 10 min | Segundos facturados (`audio_seconds`). Si se desconocen, queda la reserva |
+| Selección (LiteLLM) | `456 × minutos de audio + 1.500 + 4.000` tokens y un request, en el primario **y** en el fallback si tiene key | Tokens reales de cada intento. Se devuelve lo del modelo que no se usó. Un timeout o una conexión cortada mantienen la reserva |
+| Selección legacy | Lo mismo, solo en el primario | Sin ajuste: el selector legacy no informa tokens |
+| SEO | `caracteres del transcript / 4 + 1.500 + 4.000` tokens del primario | Sin ajuste hasta #69 |
+
+Los coeficientes se configuran con `AI_CAPACITY_LLM_TOKENS_PER_AUDIO_MINUTE`, `AI_CAPACITY_LLM_PROMPT_TOKENS` y `AI_CAPACITY_LLM_OUTPUT_TOKENS`.
+
+**Espera y vencimiento.** Cada re-encolado espera el déficit del bucket, con un tope de `AI_CAPACITY_MAX_COUNTDOWN_SECONDS` (300 s) y entre 0 y 20 % de jitter. Si la espera prevista de una etapa supera `AI_CAPACITY_MAX_WAIT_SECONDS` (3.600 s), el proyecto falla con `pipeline_error_code=CapacityTimeoutError` (en SEO, el post queda con `error_log=capacity_timeout`). Una cuota **diaria** agotada produce esperas de horas, así que falla enseguida en vez de esperar al día siguiente: re-despachar cuando vuelva a haber cuota.
+
+Un video más largo que un bucket entero (por ejemplo, 2 h de audio contra 5.760 s por hora) espera a que el bucket esté lleno, pasa y lo deja en negativo. Los siguientes esperan a que se recupere. El bucket se rellena solo y nunca queda negativo de forma permanente.
+
+**Valkey caído.** La reserva falla y la etapa se reintenta con backoff, igual que el lock (AICORE-7). Nunca se llama al proveedor sin reserva.
+
+**Cómo leer la latencia**
+
+- Logs, sin texto del usuario: `pipeline.pending_capacity` (etapa, `countdown_s`, `planned_s`), `pipeline.capacity_granted` (`waited_s`), `pipeline.capacity_timeout`, `seo.pending_capacity`, `seo.capacity_timeout` y `capacity.settle_failed`.
+- `VideoProject.metadata["capacity_waited_s"]` guarda los segundos de espera por etapa. Mientras espera, `metadata["capacity_wait"]` muestra la etapa, desde cuándo y la espera planificada.
+- La latencia de punta a punta incluye la espera. `transcription_latency_s` y `selection_latency_s` del export miden solo la llamada al proveedor. Para comparar contra el criterio de latencia, restar `capacity_waited_s` y reportar las dos cifras.
+- Si hay `pending_capacity` frecuentes y sostenidos, falta capacidad: hay que ampliar el tier (D-C5). Subir los límites por encima del 80 % no sirve, porque solo devuelve los 429.
+
+**Verificación en staging.** Dejar para Groq solo `{"audio_seconds_per_minute": 120, "requests_per_minute": 16}` y subir dos videos de ~90 s, uno detrás del otro. El segundo tiene que quedar en `pending_capacity` unos 30 s, aparecer en `pipeline.pending_capacity` y completarse solo, con `pipeline_attempts` igual a 0 y sin filas de costo durante la espera. Después, restaurar los límites.
 
 ---
 
@@ -338,14 +411,14 @@ Límites conocidos de lo que el piloto mide. Leerlos antes de interpretar los n�
 | b | Los precios de Gemini 3.6, 3.7 y 3.8 Flash se duplican el 2027-01-01. `pricing.py` maneja el período | Las comparaciones de costo a ambos lados de esa fecha no son equivalentes |
 | c | El SDK de Groq reintenta internamente hasta 2 veces. Un request que expiró del lado del cliente pero se completó en el servidor se factura y es invisible | En ese caso poco frecuente, el costo de ASR es una cota inferior |
 | d | Los timeouts y las conexiones cortadas registran costo NULL (desconocido), también en una transcripción con chunks ya cobrados cuyo siguiente chunk expiró | Ese proyecto queda con `cost_complete = False`. Un worker muerto en plena llamada no deja fila alguna (salvedad i) y no aparece ni como NULL |
-| e | `response.model` y `completion_tokens` con el modelo fijado deben verificarse con una llamada real en G0 | Si `completion_tokens` no incluye los thinking tokens de Gemini, el costo está subestimado: verificar contra el usage metadata del proveedor antes de confiar en los costos |
+| e | `response.model` y `completion_tokens` con el modelo fijado deben verificarse con una llamada real en G0 | Los thinking tokens de Gemini no vienen en `completion_tokens`: se capturan como `reasoning_tokens` (total del proveedor menos prompt y completion) y se cobran al precio de salida. Verificar contra el usage metadata del proveedor |
 | f | Los precios de Groq y Gemini deben reverificarse contra las páginas oficiales en G0 (`PRICING_VERSION` de `pricing.py`) | Con precios desactualizados, el criterio de costo no es confiable |
 | g | La moderación de contenido cubre solo los primeros 10.000 caracteres y no cubre el camino de ingesta (ADR-011) | Fuera del alcance de este piloto, pero es un límite conocido |
 | h | La selección legacy no captura el usage del LLM: sus registros llevan costo NULL y todo proyecto legacy tiene `cost_complete = False` | El costo legacy no es comparable con el de V2. Los criterios y el disparador de costo se evalúan solo sobre V2 |
 | i | Los registros son solo de inserción y se escriben después de la llamada. Un worker muerto en medio de una llamada no deja registro | Un cobro de un worker matado es invisible: el costo y los conteos son una cota inferior en ese caso |
 | j | Un fallo de persistencia después de una llamada cobrada deja una fila exitosa y el reintento otra | Es correcto (dos cobros reales), pero se lee como etapa repetida: ver 6.1 |
 | k | Los 429 por límite de capacidad se reintentan con backoff | La latencia p95 sube por capacidad, no por el modelo. Leerla junto con la cantidad de registros con `error_code = AIRateLimitError` del export de nivel `record` |
-| l | Hasta que se corrija, `completion_tokens` no incluye los tokens de razonamiento de Gemini (hallazgo del G0, sección 11) | El costo de selección con Gemini es una cota inferior aunque `cost_complete` sea `True` |
+| l | Los registros anteriores a la migración `0004` (corrida 1 del G0, sección 11) tienen `reasoning_tokens = 0` aunque el modelo haya razonado | El costo de esos registros es una cota inferior aunque `cost_complete` sea `True`; no mezclarlos con las mediciones nuevas |
 
 ## 11. Registro de ejecución
 
