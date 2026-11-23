@@ -1042,7 +1042,9 @@ def _stage_prepare_source(project_id):
 
 def _llm_identity(model):
     """(provider, model) of a LiteLLM model string; a bare name defaults to openai."""
-    return (model.split('/')[0] if '/' in model else 'openai'), model
+    from apps.videos.services.ai.llm_credentials import provider_for_model
+
+    return provider_for_model(model), model
 
 
 def _record_call_failure(project_id, stage, pipeline_version, exc, identity, started):
@@ -1805,11 +1807,14 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
     soft_time_limit=getattr(settings, 'PIPELINE_SOFT_TIME_LIMIT', 2 * 3600),
     time_limit=getattr(settings, 'PIPELINE_TIME_LIMIT', 2 * 3600 + 300),
 )
-def process_initial_ingestion(self, project_id):
+def process_initial_ingestion(self, project_id, lock_retries=0):
     """
     Multimodal Ingestion Pipeline V2 (Paper Edit V1 + Video Sync), recoverable.
     Retryable errors back off exponentially (TD-04: replaces the fixed 60s
     countdown); non-retryable errors fail the project immediately.
+
+    Waiting for a busy project lock has its own counter (``lock_retries``,
+    AICORE-18): lock contention never spends the retries meant for errors.
     """
     attempt = self.request.retries + 1
     logger.info(
@@ -1821,16 +1826,20 @@ def process_initial_ingestion(self, project_id):
         with project_lock(project_id) as lock:
             return _run_ingestion(project_id, attempt, progress, lock)
     except ProjectLockedError as exc:
-        if self.request.retries < PIPELINE_LOCK_MAX_RETRIES:
+        if lock_retries < PIPELINE_LOCK_MAX_RETRIES:
             logger.warning(
-                "pipeline.lock_busy_retrying project_id=%s attempt=%d", project_id, attempt,
+                "pipeline.lock_busy_retrying project_id=%s attempt=%d lock_retry=%d",
+                project_id, attempt, lock_retries + 1,
                 extra={'project_id': str(project_id), 'attempt': attempt},
             )
-            raise self.retry(
-                exc=exc,
+            # Re-queued, not self.retry(): the error retry count travels unchanged.
+            process_initial_ingestion.apply_async(
+                args=[str(project_id)],
+                kwargs={'lock_retries': lock_retries + 1},
                 countdown=PIPELINE_LOCK_RETRY_SECONDS,
-                max_retries=PIPELINE_LOCK_MAX_RETRIES,
+                retries=self.request.retries,
             )
+            return f"Lock busy, re-queued {project_id}"
         # Still held after outlasting the TTL: a live worker owns the project.
         logger.warning(
             "pipeline.skipped project_id=%s attempt=%d reason=%s",

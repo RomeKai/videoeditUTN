@@ -313,7 +313,7 @@ class LiteLLMSelectionProvider:
         unknown, which is reported as an unknown cost (None), never a false zero.
         """
         return ProviderUsage(
-            provider=model.split("/")[0] if "/" in model else "openai",
+            provider=provider_for_model(model),
             model=model,
             role=role,
             duration_seconds=round(elapsed, 3),
@@ -710,8 +710,7 @@ class LiteLLMSelectionProvider:
             details = getattr(usage, "prompt_tokens_details", None)
             cache_read_tokens = _non_negative_int(getattr(details, "cached_tokens", 0))
 
-        # Determine provider name from model string
-        provider = model.split("/")[0] if "/" in model else "openai"
+        provider = provider_for_model(model)
 
         # Model the provider says answered (may differ from the requested alias).
         # Only a real non-empty str is accepted so mocks/objects never leak.

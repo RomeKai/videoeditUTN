@@ -116,13 +116,14 @@ class AIUsageRecordModelTests(TestCase):
 
         self.assertEqual(AIUsageRecord.objects.count(), 5)
 
-    def test_deleting_the_project_deletes_its_records(self):
+    def test_deleting_the_project_keeps_its_records(self):
+        # AICORE-18: the cost history outlives the project (see test_usage_history).
         project = make_project()
         AIUsageRecord.objects.create(project=project, **usage_fields())
 
         project.delete()
 
-        self.assertEqual(AIUsageRecord.objects.count(), 0)
+        self.assertEqual(AIUsageRecord.objects.count(), 1)
 
     def test_created_at_and_project_are_indexed_for_since_queries(self):
         index_fields = [tuple(index.fields) for index in AIUsageRecord._meta.indexes]
