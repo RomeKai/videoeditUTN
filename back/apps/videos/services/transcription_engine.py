@@ -57,10 +57,13 @@ class TranscriptionEngine:
         model_size: str = "tiny",
         groq_provider_factory: Optional[Callable[[], "GroqTranscriptionProvider"]] = None,
         preprocessor_factory: Optional[Callable[[], "AudioPreprocessor"]] = None,
+        v2_enabled: Optional[bool] = None,
     ):
         """
         Args:
             model_size: local Whisper size ('tiny', 'base', 'small', ...). Ignored by Groq.
+            v2_enabled: V2 for this project (rollout.v2_enabled_for); None reads
+                the master switch AI_CORE_V2_ENABLED.
             groq_provider_factory: builds the Groq provider (tests inject a fake).
             preprocessor_factory: builds the audio preprocessor (tests inject a fake).
         """
@@ -68,6 +71,7 @@ class TranscriptionEngine:
         self._model = None
         self._groq_provider_factory = groq_provider_factory
         self._preprocessor_factory = preprocessor_factory
+        self._v2_enabled = v2_enabled
         self.last_full_text: Optional[str] = None
 
     # ------------------------------------------------------------------
@@ -75,12 +79,16 @@ class TranscriptionEngine:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def resolve_backend() -> TranscriptionBackend:
+    def resolve_backend(v2_enabled: Optional[bool] = None) -> TranscriptionBackend:
         """
         Resolves the active backend from settings on every call (not cached),
         so flipping the flag takes effect without restarting the worker.
+        ``v2_enabled`` is the per-project rollout decision; None reads the
+        master switch.
         """
-        if not getattr(settings, "AI_CORE_V2_ENABLED", False):
+        if v2_enabled is None:
+            v2_enabled = getattr(settings, "AI_CORE_V2_ENABLED", False)
+        if not v2_enabled:
             return TranscriptionBackend.LOCAL
 
         raw = str(getattr(settings, "TRANSCRIPTION_BACKEND", TranscriptionBackend.GROQ.value))
@@ -105,7 +113,7 @@ class TranscriptionEngine:
         are unchanged from the legacy engine.
         """
         self._ensure_exists(audio_path)
-        backend = self.resolve_backend()
+        backend = self.resolve_backend(self._v2_enabled)
 
         if backend is TranscriptionBackend.LOCAL:
             raw = self._transcribe_local_raw(audio_path, word_timestamps=word_timestamps)
@@ -137,7 +145,7 @@ class TranscriptionEngine:
         (provider, model, latency, estimated cost). Always word-level.
         """
         self._ensure_exists(audio_path)
-        backend = self.resolve_backend()
+        backend = self.resolve_backend(self._v2_enabled)
 
         if backend is TranscriptionBackend.LOCAL:
             started = time.monotonic()

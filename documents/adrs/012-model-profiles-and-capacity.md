@@ -92,7 +92,7 @@ El mecanismo no cambia: cada entorno define sus modelos en su propio `.env`.
 - Según el owner, el tier gratuito de Gemini usa los datos para mejorar sus productos. Antes de pasar transcripts reales a cualquier proveedor hay que verificar sus términos vigentes y registrar la cláusula aplicable.
 - En desarrollo, el tier gratuito se usa solo con contenido propio, nunca con videos de usuarios.
 
-### D-C3. Chequeo de arranque (propuesta)
+### D-C3. Chequeo de arranque (implementado en AICORE-9)
 
 Un Django system check que falle el arranque en piloto y producción si:
 
@@ -100,7 +100,9 @@ Un Django system check que falle el arranque en piloto y producción si:
 - un modelo configurado no tiene precio vigente en `pricing.py`;
 - `TRANSCRIPTION_BACKEND` tiene un valor no admitido.
 
-La mala configuración se detecta en el arranque y no en la primera factura. La implementación entra en AICORE-9.
+La mala configuración se detecta en el arranque y no en la primera factura.
+
+**Implementación (AICORE-9):** `apps/videos/checks.py` (`videos.E001` a `E005`). Además de lo propuesto, valida `AI_LLM_REASONING_EFFORT` y, con `AI_CAPACITY_ENABLED`, que cada modelo que el pipeline reserva tenga límites válidos. El precio del modelo de transcripción se exige solo cuando corre Groq. Corre con cualquier comando de `manage.py`, incluido `migrate`.
 
 ### D-C4. Rate limiting propio con degradación ordenada (implementada en AICORE-11, #60)
 
@@ -163,7 +165,7 @@ Se mantiene condicionada a la evidencia del piloto. Es un candidato a mejora rá
 ## Plan de implementación
 
 1. **Antes del G0 del piloto:** relevar los límites de Gemini en tier pago, verificar los términos de privacidad de cada proveedor (D-C2) y ampliar la capacidad de Groq.
-2. **AICORE-9:** chequeo de arranque (D-C3) junto con el rollout por allowlist.
+2. **AICORE-9:** chequeo de arranque (D-C3) junto con el rollout por allowlist (`AI_CORE_V2_ALLOWLIST`). Implementados.
 3. **AICORE-11 (#60), antes del G3:** rate limiting con `pending_capacity` (D-C4). Configuración por entorno en la sección 5.5 del runbook del piloto.
 4. **Con las mediciones del G0:** cerrar D-C5 y pasar este ADR a `accepted`.
 

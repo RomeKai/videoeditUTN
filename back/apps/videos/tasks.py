@@ -1339,13 +1339,18 @@ def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries):
 def _stage_transcribe(project_id):
     from apps.videos.services.transcription_engine import TranscriptionBackend, TranscriptionEngine
 
+    from apps.videos.services.ai.rollout import v2_enabled_for
+
     project = VideoProject.objects.get(pk=project_id)
     model_size = "base"
-    engine = TranscriptionEngine(model_size=model_size)
+    # Per-project rollout (AICORE-9): decided once here and handed to the engine,
+    # so the backend below is the one that runs.
+    v2_enabled = v2_enabled_for(project)
+    engine = TranscriptionEngine(model_size=model_size, v2_enabled=v2_enabled)
 
     # Fixed once from the backend the engine resolves (groq -> v2, local Whisper
     # -> legacy) and never re-read: the usage rows describe what actually ran.
-    backend = engine.resolve_backend()
+    backend = engine.resolve_backend(v2_enabled)
     pipeline_version = (
         AIUsageRecord.PipelineVersion.V2
         if backend is TranscriptionBackend.GROQ
@@ -1512,6 +1517,9 @@ def _refund_ingestion_reservation(project_id):
 
 
 def _stage_select_clips(project_id):
+    from apps.videos.services.ai.llm_options import reasoning_effort_setting
+    from apps.videos.services.ai.rollout import v2_enabled_for
+
     project = VideoProject.objects.get(pk=project_id)
     segments = project.transcript_data or []
     metadata = project.metadata or {}
@@ -1543,7 +1551,7 @@ def _stage_select_clips(project_id):
         selection_criteria=metadata.get('selection_criteria'),
     )
     started = time.monotonic()
-    if getattr(settings, 'AI_CORE_V2_ENABLED', False):
+    if v2_enabled_for(project):
         # Fixed by the branch that actually executes; never re-read afterwards.
         pipeline_version = AIUsageRecord.PipelineVersion.V2
         identity = _llm_identity(getattr(settings, 'AI_DEFAULT_LLM_MODEL', 'unknown'))
@@ -1627,10 +1635,12 @@ def _stage_select_clips(project_id):
                 "suggestions_count": len(suggestions),
                 "raw_ai_output": suggestions,
             })
-            _merge_metadata(
-                project_id, {'selection_usage': usage.model_dump()},
-                expected_stage=PipelineStage.MODERATED,
-            )
+            _merge_metadata(project_id, {
+                'selection_usage': usage.model_dump(),
+                # The reasoning level this selection ran with, for the AICORE-14
+                # comparison in the pilot export ('default' = provider default).
+                'selection_reasoning_effort': reasoning_effort_setting() or 'default',
+            }, expected_stage=PipelineStage.MODERATED)
             advance(project_id, PipelineStage.MODERATED, PipelineStage.CLIPS_SELECTED)
 
     _persist_then_record_usage(
