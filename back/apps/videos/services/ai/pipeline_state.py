@@ -34,6 +34,7 @@ STAGE_ORDER: Tuple[str, ...] = (
     PipelineStage.UPLOADED,
     PipelineStage.AUDIO_EXTRACTED,
     PipelineStage.TRANSCRIBED,
+    PipelineStage.MODERATED,
     PipelineStage.CLIPS_SELECTED,
     PipelineStage.RENDER_DISPATCHED,
 )
@@ -46,7 +47,9 @@ TERMINAL_STAGES: FrozenSet[str] = frozenset(
 _TRANSITIONS: Dict[str, FrozenSet[str]] = {
     PipelineStage.UPLOADED: frozenset({PipelineStage.AUDIO_EXTRACTED, PipelineStage.FAILED}),
     PipelineStage.AUDIO_EXTRACTED: frozenset({PipelineStage.TRANSCRIBED, PipelineStage.FAILED}),
-    PipelineStage.TRANSCRIBED: frozenset({PipelineStage.CLIPS_SELECTED, PipelineStage.FAILED}),
+    # ADR-011 D-M2: the transcript is moderated before the paid selection call.
+    PipelineStage.TRANSCRIBED: frozenset({PipelineStage.MODERATED, PipelineStage.FAILED}),
+    PipelineStage.MODERATED: frozenset({PipelineStage.CLIPS_SELECTED, PipelineStage.FAILED}),
     PipelineStage.CLIPS_SELECTED: frozenset({PipelineStage.RENDER_DISPATCHED, PipelineStage.FAILED}),
     PipelineStage.RENDER_DISPATCHED: frozenset(
         {PipelineStage.COMPLETED, PipelineStage.PARTIAL, PipelineStage.FAILED}
