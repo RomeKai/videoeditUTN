@@ -788,16 +788,25 @@ class TestUsageMetricsAICore8(unittest.TestCase):
         self.assertEqual(usage.reasoning_tokens, 500_000)
         self.assertAlmostEqual(usage.estimated_cost_usd, 0.30 + 1.50, places=9)
 
-    def test_no_reasoning_when_total_equals_prompt_plus_completion(self):
-        # OpenAI convention: reasoning (even if itemised in completion_tokens_details)
-        # is already inside completion_tokens, so nothing is added.
+    def test_itemised_reasoning_inside_completion_is_split_out_not_added(self):
+        # OpenAI convention, and Gemini's since litellm 1.7x (AICORE-14): the
+        # reasoning is already inside completion_tokens and itemised in
+        # completion_tokens_details. It is split out (completion stays the
+        # visible output) and never added on top: total and cost are unchanged.
         response = self._gemini_response(
             100, 50, 150,
             completion_tokens_details=types.SimpleNamespace(reasoning_tokens=30),
         )
         usage = LiteLLMSelectionProvider._extract_usage(response, "openai/gpt-4o-mini", 0.5)
 
-        self.assertEqual(usage.reasoning_tokens, 0)
+        self.assertEqual((usage.completion_tokens, usage.reasoning_tokens), (20, 30))
+        self.assertEqual(usage.total_tokens, 150)
+
+    def test_without_reasoning_nothing_changes(self):
+        response = self._gemini_response(100, 50, 150)
+        usage = LiteLLMSelectionProvider._extract_usage(response, "openai/gpt-4o-mini", 0.5)
+
+        self.assertEqual((usage.completion_tokens, usage.reasoning_tokens), (50, 0))
         self.assertEqual(usage.total_tokens, 150)
 
     def test_reasoning_defaults_to_zero_for_missing_or_untrusted_totals(self):

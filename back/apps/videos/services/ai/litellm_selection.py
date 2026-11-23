@@ -650,6 +650,15 @@ class LiteLLMSelectionProvider:
         # litellm that folds thoughts into completion_tokens cannot double count.
         provider_total = _non_negative_int(getattr(usage, "total_tokens", 0))
         reasoning_tokens = max(0, provider_total - prompt_tokens - completion_tokens)
+        # litellm >= 1.7x (pinned 1.108.4, AICORE-14) folds the thoughts INTO
+        # completion_tokens and reports them in completion_tokens_details, so the
+        # gap above is 0. Split them back out: completion_tokens stays the visible
+        # output and the total and the cost are unchanged.
+        details = getattr(usage, "completion_tokens_details", None)
+        detailed_reasoning = _non_negative_int(getattr(details, "reasoning_tokens", 0))
+        if detailed_reasoning and not reasoning_tokens:
+            reasoning_tokens = min(detailed_reasoning, completion_tokens)
+            completion_tokens -= reasoning_tokens
 
         # Implicit cache tracking: Anthropic-style field first, then the
         # OpenAI-style prompt_tokens_details.cached_tokens LiteLLM maps Gemini to.

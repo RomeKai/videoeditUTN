@@ -122,11 +122,14 @@ class ProviderRequestTests(SimpleTestCase):
 
     @override_settings(AI_LLM_REASONING_EFFORT="")
     def test_reasoning_tokens_are_billed_as_output(self):
-        # 50 visible + 200 reasoning tokens: LiteLLM now reports 250 completion tokens.
+        # 50 visible + 200 reasoning tokens. LiteLLM 1.108 reports 250 completion
+        # tokens with 200 of them in completion_tokens_details; the usage keeps
+        # them apart (reasoning_tokens, #61) and bills all 250 as output.
         result = self.select(FakeGemini(gemini_body(prompt=100, candidates=50, thoughts=200)))
 
         usage = result.usage
-        self.assertEqual((usage.prompt_tokens, usage.completion_tokens), (100, 250))
+        self.assertEqual((usage.prompt_tokens, usage.completion_tokens), (100, 50))
+        self.assertEqual(usage.reasoning_tokens, 200)
         self.assertEqual(usage.total_tokens, 350)
         expected = estimate_llm_cost(
             PRIMARY, ProviderUsage(provider="gemini", model=PRIMARY, prompt_tokens=100, completion_tokens=250)
