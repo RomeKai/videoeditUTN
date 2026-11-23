@@ -16,13 +16,26 @@ _ORIGINAL_CREATE_CONNECTION = socket.create_connection
 _ORIGINAL_GETADDRINFO = socket.getaddrinfo
 
 
+def _capacity_test_redis_ports() -> set[int]:
+    """
+    Port of the local Valkey the capacity tests use (AICORE-11), when
+    CAPACITY_TEST_REDIS_URL is set. Still loopback-only, like PostgreSQL.
+    """
+    url = os.environ.get("CAPACITY_TEST_REDIS_URL")
+    if not url:
+        return set()
+    from urllib.parse import urlparse
+
+    return {urlparse(url).port or 6379}
+
+
 @dataclass
 class NetworkGuard:
-    """Blocks test-process network traffic except local PostgreSQL."""
+    """Blocks test-process network traffic except local PostgreSQL (and the capacity tests' Valkey)."""
 
     blocked_attempts: list[str] = field(default_factory=list)
     allowed_hostnames = frozenset({"localhost", "127.0.0.1", "::1", "testserver"})
-    allowed_ports = frozenset({5432})
+    allowed_ports = frozenset({5432} | _capacity_test_redis_ports())
 
     def checkpoint(self) -> int:
         return len(self.blocked_attempts)

@@ -190,6 +190,30 @@ CELERY_TASK_ROUTES = {
     'apps.videos.tasks.render_clip_task': {'queue': 'render'},
 }
 
+# A worker reserves only the task it is running: long ingestion tasks are not
+# hoarded by a worker that cannot start them (AICORE-11).
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
+# --- AI capacity (AICORE-11, ADR-012 D-C4) ---
+# Token buckets in Valkey reserved before every Groq/LLM call of the ingestion
+# pipeline. Off until the limits of the environment are configured (runbook).
+# AI_CAPACITY_LIMITS (JSON): {"<model>": {"<resource>_per_<window>": limit}},
+# resources audio_seconds | tokens | requests, windows minute | hour | day,
+# set BELOW the provider's limits (e.g. 80 %). Model keys: the LiteLLM model
+# string, and "groq/<model>" for transcription.
+AI_CAPACITY_ENABLED = env.bool('AI_CAPACITY_ENABLED', default=False)
+AI_CAPACITY_LIMITS = env.json('AI_CAPACITY_LIMITS', default={})
+# Longest a project may wait for capacity per stage before failing with
+# CapacityTimeoutError; each re-queue waits at most AI_CAPACITY_MAX_COUNTDOWN_SECONDS.
+AI_CAPACITY_MAX_WAIT_SECONDS = env.int('AI_CAPACITY_MAX_WAIT_SECONDS', default=3600)
+AI_CAPACITY_MAX_COUNTDOWN_SECONDS = env.int('AI_CAPACITY_MAX_COUNTDOWN_SECONDS', default=300)
+# Selection reservation estimate: input from the audio length (G0: ~456 tokens
+# per minute) plus the prompt and the output (visible + reasoning); settled
+# with the real usage after the call.
+AI_CAPACITY_LLM_TOKENS_PER_AUDIO_MINUTE = env.int('AI_CAPACITY_LLM_TOKENS_PER_AUDIO_MINUTE', default=456)
+AI_CAPACITY_LLM_PROMPT_TOKENS = env.int('AI_CAPACITY_LLM_PROMPT_TOKENS', default=1500)
+AI_CAPACITY_LLM_OUTPUT_TOKENS = env.int('AI_CAPACITY_LLM_OUTPUT_TOKENS', default=4000)
+
 SPECTACULAR_SETTINGS = {
     'TITLE': 'OneCreator API',
     'DESCRIPTION': 'API for automated AI video management and editing.',

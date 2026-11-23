@@ -36,6 +36,7 @@ from apps.videos.services.ai.pipeline_state import (
     set_stage_status,
 )
 from apps.videos.services.segments import InvalidSegmentsError, validate_approved_segments
+from apps.videos.services.ai.capacity import CapacityUnavailable
 from apps.videos.services.ai.project_lock import (
     ProjectLockedError,
     ProjectLockLostError,
@@ -64,10 +65,11 @@ def download_from_youtube(url, output_folder):
         
     return output_path
 
+import math
 import time
 import random
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from django.utils import timezone
 from django.db import DatabaseError, transaction
 from django.db.models import F
@@ -228,7 +230,7 @@ def upload_to_social_network(self, post_id):
         cache.delete(lock_id)
 
 @celery_app.task(bind=True, max_retries=3)
-def process_video_seo(self, post_id):
+def process_video_seo(self, post_id, capacity_waited_s=0.0):
     """
     Task: Generates viral SEO metadata for a scheduled post.
     1. Security Shield check.
@@ -261,6 +263,15 @@ def process_video_seo(self, post_id):
             post.error_log = f"Violación de seguridad: {str(safety_exc)}"
             post.save()
             return "Security Abort"
+
+        # Same LLM as clip selection, so SEO reserves capacity too (AICORE-11).
+        # The service reports no usage yet (#69 rewrites it): the estimate stands.
+        gate = _capacity_gate()
+        if gate is not None:
+            try:
+                gate.reserve(_seo_demand(transcript), stage='seo')
+            except CapacityUnavailable as capacity_exc:
+                return _seo_wait_for_capacity(post_id, capacity_exc, capacity_waited_s)
 
         # 1. Generate Metadata via AI
         seo_service = SEOOptimizationService()
@@ -727,6 +738,15 @@ def _running_stage(project_id, stage, attempt):
     except PipelineStateError:
         # Another worker owns the project now: this stage did not fail.
         raise
+    except CapacityUnavailable:
+        # Waiting for provider capacity (AICORE-11) is not a failure.
+        try:
+            set_stage_status(
+                project_id, stage, StageStatus.PENDING_CAPACITY, expected_stage=owner_stage
+            )
+        except PipelineStateError:
+            logger.warning("pipeline.status_write_skipped project_id=%s stage=%s", project_id, stage)
+        raise
     except Exception:
         logger.error(
             "pipeline.stage_failed project_id=%s stage=%s attempt=%d", project_id, stage, attempt,
@@ -842,6 +862,208 @@ def _persist_then_record_usage(project_id, stage, pipeline_version, usages, pers
     record_usages(project_id, stage, pipeline_version, usages)
 
 
+# --- AI capacity (AICORE-11) -------------------------------------------------
+# Every Groq/LLM call of the pipeline reserves capacity first. No room means the
+# stage waits (pending_capacity) and the task is re-queued; it is not a failure.
+
+def _capacity_gate():
+    from apps.videos.services.ai.capacity import CapacityGate, capacity_enabled
+
+    return CapacityGate() if capacity_enabled() else None
+
+
+def _transcription_demand(model_key, duration):
+    from apps.videos.services.ai.audio_preprocessor import AudioPreprocessor
+
+    seconds = max(1.0, float(duration or 0))
+    chunks = max(1, math.ceil(seconds / AudioPreprocessor.WINDOW_DURATION_SECONDS))
+    return {model_key: {'audio_seconds': seconds, 'requests': chunks}}
+
+
+def _llm_demand(models, duration):
+    minutes = max(1.0, float(duration or 0) / 60.0)
+    tokens = (
+        math.ceil(minutes * settings.AI_CAPACITY_LLM_TOKENS_PER_AUDIO_MINUTE)
+        + settings.AI_CAPACITY_LLM_PROMPT_TOKENS
+        + settings.AI_CAPACITY_LLM_OUTPUT_TOKENS
+    )
+    return {model: {'tokens': tokens, 'requests': 1} for model in models}
+
+
+def _selection_models(v2_enabled):
+    """Models the selection stage may call: the fallback is reserved too, then refunded if unused."""
+    from apps.videos.services.ai.llm_credentials import resolve_api_key
+
+    if not v2_enabled:
+        return [GeminiFlashStrategy().get_model_name()]
+    primary = settings.AI_DEFAULT_LLM_MODEL
+    fallback = getattr(settings, 'AI_FALLBACK_LLM_MODEL', None)
+    models = [primary]
+    if fallback and fallback != primary and resolve_api_key(fallback):
+        models.append(fallback)
+    return models
+
+
+def _reserve_selection(project_id, v2_enabled, duration):
+    gate = _capacity_gate()
+    if gate is None:
+        return None, None, []
+    models = _selection_models(v2_enabled)
+    reservation = gate.reserve(_llm_demand(models, duration), stage=PipelineStage.CLIPS_SELECTED)
+    _capacity_granted(project_id, PipelineStage.CLIPS_SELECTED)
+    return gate, reservation, models
+
+
+def _selection_failure_usage(models, exc):
+    """
+    Usage of a failed selection: the attempts the error carries. Without them,
+    a timeout or dropped connection may still have been billed, so the
+    reservation is kept; any other failure never reached the model (refund).
+    """
+    from apps.videos.services.ai.errors import is_billing_uncertain
+
+    attempts = getattr(exc, 'usage_attempts', None)
+    if not attempts and is_billing_uncertain(exc):
+        return {}
+    return _llm_usage_by_model(models, attempts)
+
+
+def _llm_usage_by_model(models, usages):
+    """
+    Real usage per model from the attempts made. A model never called gets 0
+    (its reservation is refunded); a call whose billing is unknown keeps the
+    reserved tokens (None) rather than guessing.
+    """
+    actual = {model: {'tokens': 0, 'requests': 0} for model in models}
+    for usage in usages or []:
+        entry = actual.setdefault(usage.model, {'tokens': 0, 'requests': 0})
+        entry['requests'] += 1
+        if entry['tokens'] is None:
+            continue
+        if usage.error_code and usage.estimated_cost_usd is None:
+            entry['tokens'] = None
+        else:
+            entry['tokens'] += usage.total_tokens
+    return actual
+
+
+def _audio_usage(model_key, usage_or_exc):
+    """Billed audio seconds, or None when unknown (the reservation is kept)."""
+    from apps.videos.services.ai.errors import is_billing_uncertain
+
+    if isinstance(usage_or_exc, BaseException):
+        carried = getattr(usage_or_exc, 'usage_attempts', None) or []
+        if carried and carried[0].audio_seconds is not None:
+            seconds = carried[0].audio_seconds
+        elif is_billing_uncertain(usage_or_exc):
+            return {}
+        else:
+            seconds = 0.0  # rejected before any chunk was billed
+    else:
+        seconds = usage_or_exc.audio_seconds
+        if seconds is None:
+            return {}
+    return {model_key: {'audio_seconds': seconds}}
+
+
+def _capacity_granted(project_id, stage):
+    """Closes a pending_capacity wait: logs and stores how long it took (no text)."""
+    project = VideoProject.objects.get(pk=project_id)
+    metadata = project.metadata or {}
+    wait = metadata.get('capacity_wait')
+    if not wait or wait.get('stage') != stage:
+        return
+    try:
+        waited = (timezone.now() - datetime.fromisoformat(wait['since'])).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        waited = None
+    logger.info(
+        "pipeline.capacity_granted project_id=%s stage=%s waited_s=%s",
+        project_id, stage, "?" if waited is None else f"{waited:.1f}",
+        extra={'project_id': str(project_id), 'stage': str(stage)},
+    )
+    history = dict(metadata.get('capacity_waited_s') or {})
+    if waited is not None:
+        history[str(stage)] = round(history.get(str(stage), 0) + waited, 1)
+    _merge_metadata(project_id, {'capacity_wait': None, 'capacity_waited_s': history})
+
+
+def _capacity_countdown(wait_seconds):
+    """Re-queue delay: the bucket deficit, capped, plus up to 20 % jitter so waiting tasks spread out."""
+    countdown = min(max(wait_seconds, 1.0), float(settings.AI_CAPACITY_MAX_COUNTDOWN_SECONDS))
+    return countdown * (1 + random.uniform(0, 0.2))
+
+
+def _seo_demand(transcript):
+    """SEO prompt ~ the transcript (~4 characters per token) plus the fixed prompt and output."""
+    tokens = (
+        math.ceil(len(transcript) / 4)
+        + settings.AI_CAPACITY_LLM_PROMPT_TOKENS
+        + settings.AI_CAPACITY_LLM_OUTPUT_TOKENS
+    )
+    return {settings.AI_DEFAULT_LLM_MODEL: {'tokens': tokens, 'requests': 1}}
+
+
+def _seo_wait_for_capacity(post_id, exc, waited_s):
+    """Re-queues SEO generation without spending a Celery retry; fails the post past the max wait."""
+    if waited_s + exc.wait_seconds > settings.AI_CAPACITY_MAX_WAIT_SECONDS:
+        logger.error("seo.capacity_timeout post_id=%s waited_s=%.1f", post_id, waited_s)
+        ScheduledPost.objects.filter(id=post_id).update(
+            status=ScheduledPost.Status.FAILED, error_log='capacity_timeout',
+        )
+        return "Capacity Timeout"
+    countdown = _capacity_countdown(exc.wait_seconds)
+    logger.info("seo.pending_capacity post_id=%s countdown_s=%.1f", post_id, countdown)
+    process_video_seo.apply_async(
+        args=[post_id], kwargs={'capacity_waited_s': round(waited_s + countdown, 1)},
+        countdown=countdown,
+    )
+    return "Waiting for capacity"
+
+
+def _wait_for_capacity(project_id, exc, attempt, owner_stage):
+    """
+    Re-queues the ingestion after the capacity wait instead of blocking the
+    worker. Not a failed attempt: pipeline_attempts and the usage rows are not
+    touched. Fails with CapacityTimeoutError once the planned waiting for the
+    stage would exceed AI_CAPACITY_MAX_WAIT_SECONDS.
+    """
+    from apps.videos.services.ai.capacity import CapacityTimeoutError
+
+    project = VideoProject.objects.get(pk=project_id)
+    wait = (project.metadata or {}).get('capacity_wait') or {}
+    if wait.get('stage') != exc.stage:
+        wait = {'stage': str(exc.stage), 'since': timezone.now().isoformat(), 'planned_s': 0.0}
+
+    if wait['planned_s'] + exc.wait_seconds > settings.AI_CAPACITY_MAX_WAIT_SECONDS:
+        logger.error(
+            "pipeline.capacity_timeout project_id=%s stage=%s planned_s=%.1f wait_s=%.1f",
+            project_id, exc.stage, wait['planned_s'], exc.wait_seconds,
+            extra={'project_id': str(project_id), 'stage': str(exc.stage)},
+        )
+        try:
+            set_stage_status(project_id, exc.stage, StageStatus.FAILED, expected_stage=owner_stage)
+        except PipelineStateError:
+            pass
+        _merge_metadata(project_id, {'capacity_wait': None})
+        _record_pipeline_failure(
+            project_id, CapacityTimeoutError("capacity wait exceeded"), attempt,
+            final=True, stage=owner_stage,
+        )
+        return f"Capacity timeout for {project_id}"
+
+    countdown = _capacity_countdown(exc.wait_seconds)
+    wait['planned_s'] = round(wait['planned_s'] + countdown, 1)
+    _merge_metadata(project_id, {'capacity_wait': wait})
+    logger.info(
+        "pipeline.pending_capacity project_id=%s stage=%s countdown_s=%.1f planned_s=%.1f",
+        project_id, exc.stage, countdown, wait['planned_s'],
+        extra={'project_id': str(project_id), 'stage': str(exc.stage)},
+    )
+    process_initial_ingestion.apply_async(args=[str(project_id)], countdown=countdown)
+    return f"Waiting for capacity: {project_id}"
+
+
 def _stage_transcribe(project_id):
     from apps.videos.services.transcription_engine import TranscriptionBackend, TranscriptionEngine
 
@@ -862,14 +1084,29 @@ def _stage_transcribe(project_id):
     else:
         identity = ('local', f'whisper-{model_size}')
 
+    # Remote transcription reserves Groq capacity first (local Whisper calls no provider).
+    gate = _capacity_gate() if backend is TranscriptionBackend.GROQ else None
+    reservation = None
+    capacity_model = f"groq/{identity[1]}"
+    if gate is not None:
+        reservation = gate.reserve(
+            _transcription_demand(capacity_model, (project.metadata or {}).get('duration')),
+            stage=PipelineStage.TRANSCRIBED,
+        )
+        _capacity_granted(project_id, PipelineStage.TRANSCRIBED)
+
     started = time.monotonic()
     try:
         result = engine.transcribe_detailed(project.source_file.path)
     except Exception as exc:
+        if gate is not None:
+            gate.settle(reservation, _audio_usage(capacity_model, exc))
         _record_call_failure(
             project_id, AIUsageRecord.Stage.TRANSCRIPTION, pipeline_version, exc, identity, started
         )
         raise
+    if gate is not None:
+        gate.settle(reservation, _audio_usage(capacity_model, result.usage))
 
     tx = result.data
     segments = [{'start': w.start, 'end': w.end, 'text': w.text} for w in tx.words] or [
@@ -925,19 +1162,28 @@ def _stage_select_clips(project_id):
         # Fixed by the branch that actually executes; never re-read afterwards.
         pipeline_version = AIUsageRecord.PipelineVersion.V2
         identity = _llm_identity(getattr(settings, 'AI_DEFAULT_LLM_MODEL', 'unknown'))
+        gate, reservation, capacity_models = _reserve_selection(project_id, True, duration)
         try:
             result = SelectionEngine.select_viral_clips_detailed(**selection_kwargs)
         except Exception as exc:
+            if gate is not None:
+                gate.settle(reservation, _selection_failure_usage(capacity_models, exc))
             _record_call_failure(
                 project_id, AIUsageRecord.Stage.SELECTION, pipeline_version, exc, identity, started
             )
             raise
+        if gate is not None:
+            gate.settle(
+                reservation, _llm_usage_by_model(capacity_models, result.attempts or [result.usage])
+            )
         suggestions = [clip.model_dump(include=_CLIP_SUGGESTION_FIELDS) for clip in result.data.clips]
         usage = result.usage
         usage_rows = usages_for_success(result)
     else:
         pipeline_version = AIUsageRecord.PipelineVersion.LEGACY
         identity = _llm_identity(GeminiFlashStrategy().get_model_name())
+        # The legacy call reports no tokens: the reservation stands as the estimate.
+        _reserve_selection(project_id, False, duration)
         # Kill switch off: the legacy selector stays in charge (the V2 path always
         # goes through LiteLLM). Usage is synthetic so persistence is unchanged.
         try:
@@ -1205,6 +1451,9 @@ def process_initial_ingestion(self, project_id):
             extra={'project_id': str(project_id), 'attempt': attempt},
         )
         return f"Skipped {project_id}: {exc}"
+    except CapacityUnavailable as exc:
+        # The lock is already released here: the re-queued task can take it.
+        return _wait_for_capacity(project_id, exc, attempt, progress.get('stage'))
     except Exception as exc:
         will_retry = _is_retryable_pipeline_error(exc) and self.request.retries < self.max_retries
         _record_pipeline_failure(
