@@ -557,6 +557,30 @@ class CapacityTimeoutRefundTests(CapacityHarness, TestCase):
         self.assertEqual(project.pipeline_error_code, "CapacityTimeoutError")
         self.assertEqual(txn.status, Transaction.Status.FAILED)
 
+    def test_only_the_call_that_failed_the_project_refunds_it(self):
+        from apps.videos.services.ai.capacity import CapacityTimeoutError
+        from apps.videos.tasks import _record_pipeline_failure
+
+        project, txn = self.make_reserved_project()
+        # While this run waited, another worker failed the project for a reason
+        # that keeps the reservation (e.g. a provider error).
+        VideoProject.objects.filter(pk=project.pk).update(pipeline_stage=PipelineStage.FAILED)
+
+        _record_pipeline_failure(
+            project.pk, CapacityTimeoutError("x"), 1, final=True, stage=PipelineStage.MODERATED,
+        )
+
+        txn.refresh_from_db()
+        self.assertEqual(txn.status, Transaction.Status.RESERVED)
+
+        # Control: the stage this call owns is failed and refunded.
+        VideoProject.objects.filter(pk=project.pk).update(pipeline_stage=PipelineStage.MODERATED)
+        _record_pipeline_failure(
+            project.pk, CapacityTimeoutError("x"), 1, final=True, stage=PipelineStage.MODERATED,
+        )
+        txn.refresh_from_db()
+        self.assertEqual(txn.status, Transaction.Status.FAILED)
+
     def test_other_final_failures_keep_the_reservation(self):
         from apps.videos.services.ai.errors import AIAuthenticationError
 

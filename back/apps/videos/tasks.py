@@ -1772,20 +1772,23 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
         project_id, attempt, final, type(exc).__name__,
         extra={'project_id': str(project_id), 'attempt': attempt},
     )
+    failed_now = False
     try:
         VideoProject.objects.filter(pk=project_id).update(
             pipeline_attempts=F('pipeline_attempts') + 1
         )
         record_error(project_id, type(exc).__name__)
         if final:
-            mark_failed(project_id, expected_stage=stage)
+            failed_now = mark_failed(project_id, expected_stage=stage)
     except (DatabaseError, VideoProject.DoesNotExist) as record_exc:
         logger.error(
             "pipeline.failure_not_recorded project_id=%s error=%s",
             project_id, type(record_exc).__name__,
         )
         return
-    if final and _refunds_reservation(exc):
+    # Only the call that failed the project refunds it: a project another worker
+    # moved on, or failed for another reason, keeps its reservation.
+    if failed_now and _refunds_reservation(exc):
         _refund_ingestion_reservation(project_id)
 
 
