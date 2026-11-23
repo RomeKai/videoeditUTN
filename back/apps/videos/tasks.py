@@ -253,25 +253,33 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0):
             logger.warning(f"⚠️ [SEO] No transcript found for post {post_id}. Aborting.")
             return "No Transcript"
 
+        # Same LLM as clip selection, so SEO reserves capacity too (AICORE-11). It
+        # comes before moderation so waiting for capacity never repeats that call.
+        # The service reports no usage yet (#69 rewrites it): the estimate stands.
+        gate = _capacity_gate()
+        reservation = None
+        if gate is not None:
+            try:
+                reservation = gate.reserve(_seo_demand(transcript), stage='seo')
+            except CapacityUnavailable as capacity_exc:
+                return _seo_wait_for_capacity(
+                    post_id, capacity_exc, capacity_waited_s, self.request.retries
+                )
+
         # --- REQUERIMIENTO: SECURITY SHIELD (MODERATION) ---
         # First line of defense
         try:
             AI_Security_Shield.check_content_safety(transcript)
         except UnsafeContentError as safety_exc:
+            _release_seo_capacity(gate, reservation)
             logger.error(f"🛡️ [SEO SECURITY] Safety violation for post {post_id}: {type(safety_exc).__name__}")
             post.status = ScheduledPost.Status.FAILED
             post.error_log = f"Violación de seguridad: {str(safety_exc)}"
             post.save()
             return "Security Abort"
-
-        # Same LLM as clip selection, so SEO reserves capacity too (AICORE-11).
-        # The service reports no usage yet (#69 rewrites it): the estimate stands.
-        gate = _capacity_gate()
-        if gate is not None:
-            try:
-                gate.reserve(_seo_demand(transcript), stage='seo')
-            except CapacityUnavailable as capacity_exc:
-                return _seo_wait_for_capacity(post_id, capacity_exc, capacity_waited_s)
+        except ModerationError:
+            _release_seo_capacity(gate, reservation)  # the LLM was never called
+            raise
 
         # 1. Generate Metadata via AI
         seo_service = SEOOptimizationService()
@@ -876,7 +884,9 @@ def _transcription_demand(model_key, duration):
     from apps.videos.services.ai.audio_preprocessor import AudioPreprocessor
 
     seconds = max(1.0, float(duration or 0))
-    chunks = max(1, math.ceil(seconds / AudioPreprocessor.WINDOW_DURATION_SECONDS))
+    # Upper bound: the preprocessor steps by window - overlap (a small file is one request).
+    step = AudioPreprocessor.WINDOW_DURATION_SECONDS - AudioPreprocessor.OVERLAP_SECONDS
+    chunks = max(1, math.ceil(seconds / step))
     return {model_key: {'audio_seconds': seconds, 'requests': chunks}}
 
 
@@ -940,8 +950,8 @@ def _llm_usage_by_model(models, usages):
         entry['requests'] += 1
         if entry['tokens'] is None:
             continue
-        if usage.error_code and usage.estimated_cost_usd is None:
-            entry['tokens'] = None
+        if usage.error_code and usage.estimated_cost_usd is None and not usage.total_tokens:
+            entry['tokens'] = None  # failed with unknown billing: keep the reservation
         else:
             entry['tokens'] += usage.total_tokens
     return actual
@@ -952,11 +962,13 @@ def _audio_usage(model_key, usage_or_exc):
     from apps.videos.services.ai.errors import is_billing_uncertain
 
     if isinstance(usage_or_exc, BaseException):
+        if is_billing_uncertain(usage_or_exc):
+            return {}  # the chunk in flight may have been billed
         carried = getattr(usage_or_exc, 'usage_attempts', None) or []
         if carried and carried[0].audio_seconds is not None:
+            if carried[0].estimated_cost_usd is None:
+                return {}  # the provider could not price it: unknown
             seconds = carried[0].audio_seconds
-        elif is_billing_uncertain(usage_or_exc):
-            return {}
         else:
             seconds = 0.0  # rejected before any chunk was billed
     else:
@@ -966,12 +978,27 @@ def _audio_usage(model_key, usage_or_exc):
     return {model_key: {'audio_seconds': seconds}}
 
 
+def _is_current_wait(wait, project, stage):
+    """
+    A wait belongs to this run only if it is for the same stage and no failed
+    attempt was recorded since it started; otherwise (e.g. a manual re-dispatch
+    after a failure) it is stale and a new wait starts.
+    """
+    return (
+        bool(wait) and wait.get('stage') == str(stage)
+        and wait.get('attempts') == project.pipeline_attempts
+    )
+
+
 def _capacity_granted(project_id, stage):
     """Closes a pending_capacity wait: logs and stores how long it took (no text)."""
     project = VideoProject.objects.get(pk=project_id)
     metadata = project.metadata or {}
     wait = metadata.get('capacity_wait')
-    if not wait or wait.get('stage') != stage:
+    if not wait:
+        return
+    if not _is_current_wait(wait, project, stage):
+        _merge_metadata(project_id, {'capacity_wait': None})  # stale: nothing to record
         return
     try:
         waited = (timezone.now() - datetime.fromisoformat(wait['since'])).total_seconds()
@@ -1004,8 +1031,20 @@ def _seo_demand(transcript):
     return {settings.AI_DEFAULT_LLM_MODEL: {'tokens': tokens, 'requests': 1}}
 
 
-def _seo_wait_for_capacity(post_id, exc, waited_s):
-    """Re-queues SEO generation without spending a Celery retry; fails the post past the max wait."""
+def _release_seo_capacity(gate, reservation):
+    """Moderation stopped the post before the LLM call: the reservation goes back."""
+    if gate is not None and reservation is not None:
+        gate.settle(reservation, {
+            bucket.model: {'tokens': 0, 'requests': 0} for bucket, _ in reservation.drawn
+        })
+
+
+def _seo_wait_for_capacity(post_id, exc, waited_s, retries):
+    """
+    Re-queues SEO generation after the capacity wait; fails the post past the max
+    wait. The Celery retry count travels with the message: a call that keeps
+    failing still runs out of retries even if capacity waits sit in between.
+    """
     if waited_s + exc.wait_seconds > settings.AI_CAPACITY_MAX_WAIT_SECONDS:
         logger.error("seo.capacity_timeout post_id=%s waited_s=%.1f", post_id, waited_s)
         ScheduledPost.objects.filter(id=post_id).update(
@@ -1016,24 +1055,31 @@ def _seo_wait_for_capacity(post_id, exc, waited_s):
     logger.info("seo.pending_capacity post_id=%s countdown_s=%.1f", post_id, countdown)
     process_video_seo.apply_async(
         args=[post_id], kwargs={'capacity_waited_s': round(waited_s + countdown, 1)},
-        countdown=countdown,
+        countdown=countdown, retries=retries,
     )
     return "Waiting for capacity"
 
 
-def _wait_for_capacity(project_id, exc, attempt, owner_stage):
+def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries):
     """
     Re-queues the ingestion after the capacity wait instead of blocking the
     worker. Not a failed attempt: pipeline_attempts and the usage rows are not
     touched. Fails with CapacityTimeoutError once the planned waiting for the
     stage would exceed AI_CAPACITY_MAX_WAIT_SECONDS.
+
+    The Celery retry count travels with the re-queued message, so a provider
+    call that keeps failing still runs out of retries (PIPELINE_MAX_RETRIES)
+    even when capacity waits sit between its attempts.
     """
     from apps.videos.services.ai.capacity import CapacityTimeoutError
 
     project = VideoProject.objects.get(pk=project_id)
     wait = (project.metadata or {}).get('capacity_wait') or {}
-    if wait.get('stage') != exc.stage:
-        wait = {'stage': str(exc.stage), 'since': timezone.now().isoformat(), 'planned_s': 0.0}
+    if not _is_current_wait(wait, project, exc.stage):
+        wait = {
+            'stage': str(exc.stage), 'since': timezone.now().isoformat(), 'planned_s': 0.0,
+            'attempts': project.pipeline_attempts,
+        }
 
     if wait['planned_s'] + exc.wait_seconds > settings.AI_CAPACITY_MAX_WAIT_SECONDS:
         logger.error(
@@ -1060,7 +1106,9 @@ def _wait_for_capacity(project_id, exc, attempt, owner_stage):
         project_id, exc.stage, countdown, wait['planned_s'],
         extra={'project_id': str(project_id), 'stage': str(exc.stage)},
     )
-    process_initial_ingestion.apply_async(args=[str(project_id)], countdown=countdown)
+    process_initial_ingestion.apply_async(
+        args=[str(project_id)], countdown=countdown, retries=retries
+    )
     return f"Waiting for capacity: {project_id}"
 
 
@@ -1453,7 +1501,22 @@ def process_initial_ingestion(self, project_id):
         return f"Skipped {project_id}: {exc}"
     except CapacityUnavailable as exc:
         # The lock is already released here: the re-queued task can take it.
-        return _wait_for_capacity(project_id, exc, attempt, progress.get('stage'))
+        try:
+            return _wait_for_capacity(
+                project_id, exc, attempt, progress.get('stage'), self.request.retries
+            )
+        except Exception as wait_exc:
+            # Parking failed (e.g. the database): handled like any stage error,
+            # never left in pending_capacity with no message in the queue.
+            will_retry = (
+                _is_retryable_pipeline_error(wait_exc) and self.request.retries < self.max_retries
+            )
+            _record_pipeline_failure(
+                project_id, wait_exc, attempt, final=not will_retry, stage=progress.get('stage')
+            )
+            if will_retry:
+                raise self.retry(exc=wait_exc, countdown=_retry_countdown(self.request.retries))
+            raise
     except Exception as exc:
         will_retry = _is_retryable_pipeline_error(exc) and self.request.retries < self.max_retries
         _record_pipeline_failure(

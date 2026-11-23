@@ -181,6 +181,14 @@ def buckets_for(model: str, resource: str) -> List[Bucket]:
             f"AI_CAPACITY_LIMITS has no limits for {model!r}; every model the "
             "pipeline calls needs them while AI_CAPACITY_ENABLED is on."
         )
+    known = {f"{r}_per_{w}" for r in RESOURCES for w in WINDOWS}
+    unknown = sorted(set(model_limits) - known)
+    if unknown or not model_limits:
+        # A typo (tokens_per_min) would silently leave the model unlimited.
+        raise ImproperlyConfigured(
+            f"AI_CAPACITY_LIMITS[{model!r}] needs keys among {sorted(known)}; "
+            f"unknown: {unknown or 'none given'}."
+        )
     buckets = []
     for window in WINDOWS:
         value = model_limits.get(f"{resource}_per_{window}")

@@ -55,6 +55,13 @@ class BucketConfigTests(SimpleTestCase):
         with self.assertRaises(ImproperlyConfigured):
             buckets_for("openai/gpt-4o-mini", "tokens")
 
+    def test_unknown_or_missing_limit_keys_are_rejected(self):
+        # A typo would otherwise leave the model unlimited while the flag is on.
+        for limits in ({"m": {"tokens_per_min": 100}}, {"m": {"tokens_per_second": 1}}, {"m": {}}):
+            with self.subTest(limits=limits), override_settings(AI_CAPACITY_LIMITS=limits):
+                with self.assertRaises(ImproperlyConfigured):
+                    buckets_for("m", "tokens")
+
     def test_invalid_limits_are_rejected(self):
         for value in (0, -5, "x", float("inf")):
             with self.subTest(value=value), override_settings(

@@ -13,11 +13,13 @@ from unittest.mock import patch
 
 import redis
 from django.conf import settings
+from django.db import OperationalError
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.videos.models import VideoProject
 from apps.videos.services.ai.contracts import AIExecutionResult, ProviderUsage
 from apps.videos.services.ai.errors import AIServerError, AITimeoutError
+from apps.videos.tasks import _merge_metadata
 from apps.videos.services.ai.pipeline_state import STAGE_ORDER, PipelineStage
 from apps.videos.tests.test_ingestion_pipeline import (
     IngestionHarness,
@@ -111,6 +113,7 @@ class CapacityWaitTests(CapacityHarness, TestCase):
 
         self.requeue.assert_called_once()
         self.assertEqual(self.requeue.call_args.kwargs["args"], [str(project.id)])
+        self.assertEqual(self.requeue.call_args.kwargs["retries"], 0)
         countdown = self.requeue.call_args.kwargs["countdown"]
         self.assertGreaterEqual(countdown, 30.0)
         self.assertLessEqual(countdown, 36.0)  # at most +20 % jitter
@@ -436,6 +439,8 @@ class SeoCapacityTests(TestCase):
         self.assertEqual(result, "Waiting for capacity")
         call = self.apply_async.call_args
         self.assertEqual(call.kwargs["args"], [str(self.post.id)])
+        self.assertEqual(call.kwargs["retries"], 0)
+        self.check_content_safety.assert_not_called()  # moderation runs once capacity is granted
         self.assertGreaterEqual(call.kwargs["countdown"], 20.0)
         self.assertEqual(call.kwargs["kwargs"]["capacity_waited_s"], round(call.kwargs["countdown"], 1))
         self.post.refresh_from_db()
@@ -454,3 +459,108 @@ class SeoCapacityTests(TestCase):
         self.post.refresh_from_db()
         self.assertEqual(self.post.status, self.ScheduledPost.Status.FAILED)
         self.assertEqual(self.post.error_log, "capacity_timeout")
+
+    def test_unsafe_content_returns_the_reservation(self):
+        from apps.core.security import UnsafeContentError
+
+        self.check_content_safety.side_effect = UnsafeContentError("unsafe")
+        with patch(self.SERVICE) as service:
+            result = self.run_task()
+
+        service.return_value.generate_metadata.assert_not_called()
+        self.assertEqual(result, "Security Abort")
+        self.assertEqual(self.store.drawn[key(PRIMARY, "tokens_per_minute")], 0)
+        self.assertEqual(self.store.drawn[key(PRIMARY, "requests_per_minute")], 0)
+
+
+class CapacityReviewRegressionTests(CapacityHarness, TestCase):
+    """Edge cases found in review: retries across waits, parking errors, stale waits."""
+
+    def deny_nth_selection_reserve(self, n, wait=5.0):
+        original = self.store.reserve
+        seen = []
+
+        def reserve(demands):
+            if any(bucket.model == PRIMARY for bucket, _ in demands):
+                seen.append(1)
+                if len(seen) == n:
+                    return False, wait
+            return original(demands)
+
+        self.store.reserve = reserve
+
+    def test_the_retry_count_survives_a_capacity_wait(self):
+        # Granted -> the call fails (retry 1) -> no room: the re-queued message
+        # must carry retries=1, or a failing call could repeat forever.
+        project = self.make_project()
+        self.mock_select.side_effect = AIServerError("down")
+        self.deny_nth_selection_reserve(2)
+
+        self.run_task(project)
+
+        self.assertEqual(self.mock_select.call_count, 1)
+        self.assertEqual(self.requeue.call_args.kwargs["retries"], 1)
+
+    def test_an_error_while_parking_is_retried_not_left_pending(self):
+        project = self.make_project()
+        self.store.denials = [5.0]
+
+        with patch(
+            "apps.videos.tasks._wait_for_capacity", side_effect=OperationalError("db down")
+        ):
+            result = self.run_task(project)  # the Celery retry runs once the store grants
+
+        project.refresh_from_db()
+        self.assertTrue(result.successful())
+        self.assertEqual(project.pipeline_attempts, 1)
+        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
+
+    def test_a_wait_left_by_an_earlier_failed_run_does_not_count(self):
+        project = self.make_project()
+        _merge_metadata(project.id, {"capacity_wait": {
+            "stage": "transcribed", "since": "2026-01-01T00:00:00+00:00",
+            "planned_s": 3500.0, "attempts": 0,
+        }})
+        VideoProject.objects.filter(pk=project.id).update(pipeline_attempts=1)
+        self.store.denials = [200.0]
+
+        self.run_task(project)
+
+        project.refresh_from_db()
+        self.requeue.assert_called_once()  # a fresh wait, not a timeout
+        self.assertNotEqual(project.status, VideoProject.Status.FAILED)
+        self.assertLess(project.metadata["capacity_wait"]["planned_s"], 300)
+
+    def test_a_transcription_timeout_keeps_the_audio_reservation(self):
+        project = self.make_project()
+        timeout = AITimeoutError("slow")
+        timeout.usage_attempts = [ProviderUsage(
+            provider="groq", model="whisper-large-v3-turbo", audio_seconds=4.0,
+            error_code="AITimeoutError",
+        )]
+        answered = transcription_result()
+        answered.usage.audio_seconds = 10.0
+        self.mock_transcribe.side_effect = [timeout, answered]
+
+        self.run_task(project)
+
+        # 10 s kept from the timed-out attempt (may have been billed) + 10 s billed.
+        self.assertEqual(self.store.drawn[key(GROQ, "audio_seconds_per_hour")], 20.0)
+
+
+class CapacityHelperTests(SimpleTestCase):
+    def test_chunk_requests_follow_the_overlapping_windows(self):
+        from apps.videos.tasks import _transcription_demand
+
+        self.assertEqual(_transcription_demand(GROQ, 598)[GROQ]["requests"], 1)
+        self.assertEqual(_transcription_demand(GROQ, 1199)[GROQ]["requests"], 3)
+
+    def test_known_tokens_of_a_failed_attempt_are_settled(self):
+        from apps.videos.tasks import _llm_usage_by_model
+
+        parsed_badly = ProviderUsage(provider="gemini", model=PRIMARY, total_tokens=900,
+                                     error_code="AIContractValidationError")
+        unknown = ProviderUsage(provider="gemini", model=PRIMARY, error_code="AITimeoutError")
+        self.assertEqual(_llm_usage_by_model([PRIMARY], [parsed_badly])[PRIMARY]["tokens"], 900)
+        self.assertIsNone(_llm_usage_by_model([PRIMARY], [unknown])[PRIMARY]["tokens"])
+
