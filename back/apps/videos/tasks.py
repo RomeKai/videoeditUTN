@@ -614,6 +614,7 @@ def render_video_segments(self, project_id):
 # Stages (see services/ai/pipeline_state.py):
 #   UPLOADED -> AUDIO_EXTRACTED (source in R2 + proxy + probe)
 #            -> TRANSCRIBED     (transcript persisted)
+#            -> MODERATED       (transcript + user text passed moderation, ADR-011)
 #            -> CLIPS_SELECTED  (clips persisted)
 #            -> RENDER_DISPATCHED (auto_render_bypass only) -> COMPLETED | PARTIAL
 # Each stage persists its output BEFORE advancing, so a retry resumes at the
@@ -658,6 +659,13 @@ def _is_retryable_pipeline_error(exc):
         return is_retryable_error(exc)
     if is_retryable_error(exc):
         return True
+
+    from apps.core.security import ModerationError
+    if isinstance(exc, ModerationError):
+        # ADR-011 D-M4: no verdict yet (timeout, 5xx, 429) retries with backoff;
+        # a misconfigured or exhausted account does not. Blocked content
+        # (UnsafeContentError) never retries.
+        return exc.retryable
 
     from django.db import InterfaceError, OperationalError
     if isinstance(exc, (OperationalError, InterfaceError)):
@@ -1183,6 +1191,115 @@ def _stage_transcribe(project_id):
     )
 
 
+def _moderation_payload(project):
+    """
+    Everything that reaches the selection LLM and is not ours: the user's own
+    text (title, and the selection criteria once PTE-02 exists) and the transcript.
+    """
+    metadata = project.metadata or {}
+    transcript = metadata.get('full_text') or " ".join(
+        str(item.get('text', '')) for item in (project.transcript_data or [])
+    )
+    parts = [project.title or "", str(metadata.get('selection_criteria') or ""), transcript]
+    return "\n".join(part for part in parts if part and part.strip())
+
+
+def _stage_moderate(project_id):
+    """
+    ADR-011 D-M2: moderate before paying for the selection LLM. Blocked content
+    raises UnsafeContentError and a missing verdict raises a ModerationError
+    (retryable or not); both reach the pipeline handler, which fails the project
+    and refunds it once no retry is left. A ModerationOverride lets it through.
+    Only the outcome and latency are stored, never text.
+    """
+    from apps.core.security import AI_Security_Shield
+    from apps.videos.models import ModerationOverride
+
+    project = VideoProject.objects.get(pk=project_id)
+    started = time.monotonic()
+
+    if ModerationOverride.objects.filter(project_id=project_id).exists():
+        outcome = 'overridden'
+        logger.warning(
+            "pipeline.moderation_overridden project_id=%s", project_id,
+            extra={'project_id': str(project_id)},
+        )
+    else:
+        try:
+            AI_Security_Shield.check_content_safety(_moderation_payload(project))
+        except Exception as exc:
+            try:
+                _merge_metadata(
+                    project_id, _moderation_outcome(type(exc).__name__, started),
+                    expected_stage=PipelineStage.TRANSCRIBED,
+                )
+            except (DatabaseError, PipelineStateError) as record_exc:
+                # Recording the outcome must never mask the moderation failure.
+                logger.error(
+                    "pipeline.moderation_outcome_not_recorded project_id=%s error=%s",
+                    project_id, type(record_exc).__name__,
+                )
+            raise
+        outcome = 'passed'
+
+    with transaction.atomic():
+        _merge_metadata(
+            project_id, _moderation_outcome(outcome, started),
+            expected_stage=PipelineStage.TRANSCRIBED,
+        )
+        advance(project_id, PipelineStage.TRANSCRIBED, PipelineStage.MODERATED)
+
+
+def _moderation_outcome(outcome, started):
+    """D-M7 metrics stored on the project: outcome (or error class) and latency, no text."""
+    return {'moderation': {
+        'outcome': outcome,
+        'latency_s': round(time.monotonic() - started, 3),
+        'checked_at': timezone.now().isoformat(),
+    }}
+
+
+def _is_moderation_failure(exc):
+    from apps.core.security import ModerationError, UnsafeContentError
+
+    return isinstance(exc, (ModerationError, UnsafeContentError))
+
+
+def _refund_ingestion_reservation(project_id):
+    """
+    Returns the tokens reserved when the project was created (``metadata
+    ['reservation_id']``, set by the create view) if the project ended FAILED.
+    Idempotent and never raises: a missing or already settled reservation is
+    only logged, and payment errors never mask the original failure.
+    """
+    from django.core.exceptions import ValidationError
+
+    # Deferred: wallet_service imports this module at load time.
+    from apps.payments.services.wallet_service import PaymentError, rollback_reservation
+
+    try:
+        project = VideoProject.objects.get(pk=project_id)
+        if project.pipeline_stage != PipelineStage.FAILED:
+            return
+        reservation_id = (project.metadata or {}).get('reservation_id')
+        if not reservation_id:
+            logger.warning("pipeline.refund_skipped project_id=%s reason=no_reservation", project_id)
+            return
+        if not Transaction.objects.filter(
+            pk=reservation_id, status=Transaction.Status.RESERVED
+        ).exists():
+            logger.info("pipeline.refund_skipped project_id=%s reason=not_reserved", project_id)
+            return
+        rollback_reservation(reservation_id)
+        logger.info(
+            "pipeline.refunded project_id=%s", project_id, extra={'project_id': str(project_id)}
+        )
+    except (PaymentError, DatabaseError, VideoProject.DoesNotExist, ValidationError) as exc:
+        logger.error(
+            "pipeline.refund_failed project_id=%s error=%s", project_id, type(exc).__name__
+        )
+
+
 def _stage_select_clips(project_id):
     project = VideoProject.objects.get(pk=project_id)
     segments = project.transcript_data or []
@@ -1194,7 +1311,7 @@ def _stage_select_clips(project_id):
         duration, resolution = _probe_video(project.source_file.path)
         _merge_metadata(
             project_id, {'duration': duration, 'resolution': resolution},
-            expected_stage=PipelineStage.TRANSCRIBED,
+            expected_stage=PipelineStage.MODERATED,
         )
         metadata = {**metadata, 'duration': duration, 'resolution': resolution}
 
@@ -1301,9 +1418,9 @@ def _stage_select_clips(project_id):
             })
             _merge_metadata(
                 project_id, {'selection_usage': usage.model_dump()},
-                expected_stage=PipelineStage.TRANSCRIBED,
+                expected_stage=PipelineStage.MODERATED,
             )
-            advance(project_id, PipelineStage.TRANSCRIBED, PipelineStage.CLIPS_SELECTED)
+            advance(project_id, PipelineStage.MODERATED, PipelineStage.CLIPS_SELECTED)
 
     _persist_then_record_usage(
         project_id, AIUsageRecord.Stage.SELECTION, pipeline_version, usage_rows, persist
@@ -1404,7 +1521,10 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None):
         stage = advance_to(project_id, stage, inferred)
         progress['stage'] = stage
 
-    if stage in (PipelineStage.UPLOADED, PipelineStage.AUDIO_EXTRACTED, PipelineStage.TRANSCRIBED):
+    if stage in (
+        PipelineStage.UPLOADED, PipelineStage.AUDIO_EXTRACTED,
+        PipelineStage.TRANSCRIBED, PipelineStage.MODERATED,
+    ):
         VideoProject.objects.filter(pk=project_id).update(status=VideoProject.Status.INGESTING)
 
     if stage == PipelineStage.UPLOADED:
@@ -1422,6 +1542,13 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None):
         progress['stage'] = stage
 
     if stage == PipelineStage.TRANSCRIBED:
+        renew_lock()
+        with _running_stage(project_id, PipelineStage.MODERATED, attempt):
+            _stage_moderate(project_id)
+        stage = PipelineStage.MODERATED
+        progress['stage'] = stage
+
+    if stage == PipelineStage.MODERATED:
         renew_lock()
         with _running_stage(project_id, PipelineStage.CLIPS_SELECTED, attempt):
             _stage_select_clips(project_id)
@@ -1463,6 +1590,11 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
             "pipeline.failure_not_recorded project_id=%s error=%s",
             project_id, type(record_exc).__name__,
         )
+        return
+    if final and _is_moderation_failure(exc):
+        # ADR-011 D-M4/D-M5: a project stopped by moderation (blocked content or
+        # no verdict after the retries) gets its tokens back.
+        _refund_ingestion_reservation(project_id)
 
 
 # acks_late + reject_on_worker_lost: if the worker dies mid-task (OOM during
