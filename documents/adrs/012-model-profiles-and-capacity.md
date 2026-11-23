@@ -102,12 +102,15 @@ Un Django system check que falle el arranque en piloto y producción si:
 
 La mala configuración se detecta en el arranque y no en la primera factura. La implementación entra en AICORE-9.
 
-### D-C4. Rate limiting propio con degradación ordenada (propuesta)
+### D-C4. Rate limiting propio con degradación ordenada (implementada en AICORE-11, #60)
 
 - Un token bucket en Valkey por proveedor y recurso: segundos de audio por hora y por día para la transcripción, y tokens y requests por minuto para el LLM.
 - Los buckets se configuran **por debajo** del límite del proveedor (por ejemplo, al 80 %), para absorber errores de estimación.
 - Antes de cada llamada, la etapa reserva capacidad. Si no la hay, la tarea vuelve a la cola con un countdown y la etapa queda en `pending_capacity`. Ese estado no cuenta como intento fallido ni genera cobro.
-- **Abierto:** el tiempo máximo de espera antes de marcar el proyecto como fallido y el mensaje que ve el usuario.
+- **Espera máxima (decidido):** 1 hora por etapa (`AI_CAPACITY_MAX_WAIT_SECONDS=3600`). Cada re-encolado espera el déficit del bucket, con tope de 5 minutos y jitter. Si la espera prevista supera la máxima, el proyecto falla enseguida con `pipeline_error_code=CapacityTimeoutError` (en SEO, `error_log=capacity_timeout`). Una cuota diaria agotada falla así en vez de esperar al día siguiente.
+- **Lo que ve el usuario (decidido):** mientras espera, el proyecto sigue en "Procesando". Si se vence la espera: *"Hay mucha demanda en este momento y no pudimos procesar tu video. Volvé a intentarlo en unos minutos."* Mostrarlo requiere exponer el código de error en la API y mapearlo en el frontend (pendiente). La devolución del saldo reservado se suma cuando se mergee la etapa de moderación (AICORE-13), que ya trae el reembolso.
+- **Ajuste con el uso real:** la reserva es una estimación (transcripción: duración del video; LLM: ~456 tokens por minuto de audio, más prompt y salida, en el primario y en el fallback). Después de cada llamada se ajusta con los segundos y tokens reales y se devuelve lo del modelo que no se usó. Un timeout o una conexión cortada mantienen la reserva, porque pudieron facturarse.
+- **Valkey caído:** la reserva falla con un error reintentable y no se llama al proveedor, igual que el lock de AICORE-7.
 - Motivo: es preferible demorar la entrega de forma ordenada antes que recibir 429 del proveedor. Hoy esos 429 se reintentan con backoff (AICORE-7), pero inflan la latencia p95 y consumen reintentos.
 
 ### D-C5. Tiers de producción (ABIERTA)
@@ -161,5 +164,5 @@ Se mantiene condicionada a la evidencia del piloto. Es un candidato a mejora rá
 
 1. **Antes del G0 del piloto:** relevar los límites de Gemini en tier pago, verificar los términos de privacidad de cada proveedor (D-C2) y ampliar la capacidad de Groq.
 2. **AICORE-9:** chequeo de arranque (D-C3) junto con el rollout por allowlist.
-3. **Issue nuevo, antes del G3:** rate limiting con `pending_capacity` (D-C4).
+3. **AICORE-11 (#60), antes del G3:** rate limiting con `pending_capacity` (D-C4). Configuración por entorno en la sección 5.5 del runbook del piloto.
 4. **Con las mediciones del G0:** cerrar D-C5 y pasar este ADR a `accepted`.
