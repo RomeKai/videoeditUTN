@@ -9,6 +9,7 @@ settlement) can be checked stage by stage.
 """
 
 from collections import defaultdict
+from decimal import Decimal
 from unittest.mock import patch
 
 import redis
@@ -16,6 +17,8 @@ from django.conf import settings
 from django.db import OperationalError
 from django.test import SimpleTestCase, TestCase, override_settings
 
+from apps.payments.models import Transaction, Wallet
+from apps.payments.services.wallet_service import reserve_funds
 from apps.videos.models import VideoProject
 from apps.videos.services.ai.contracts import AIExecutionResult, ProviderUsage
 from apps.videos.services.ai.errors import AIServerError, AITimeoutError
@@ -483,6 +486,89 @@ class SeoCapacityTests(TestCase):
         self.assertEqual(result, "Security Abort")
         self.assertEqual(self.store.drawn[key(PRIMARY, "tokens_per_minute")], 0)
         self.assertEqual(self.store.drawn[key(PRIMARY, "requests_per_minute")], 0)
+
+
+class CapacityTimeoutRefundTests(CapacityHarness, TestCase):
+    """ADR-012 D-C4: a capacity timeout gives the reserved tokens back."""
+
+    def setUp(self):
+        super().setUp()
+        self.wallet, _ = Wallet.objects.get_or_create(workspace=self.workspace)
+        Wallet.objects.filter(pk=self.wallet.pk).update(
+            available_balance=Decimal("100.00"), reserved_balance=Decimal("0")
+        )
+
+    def make_reserved_project(self):
+        project = self.make_project()
+        txn = reserve_funds(self.wallet.id, Decimal("10.00"))
+        VideoProject.objects.filter(pk=project.pk).update(
+            metadata={**(project.metadata or {}), "reservation_id": str(txn.id)}
+        )
+        project.refresh_from_db()
+        return project, txn
+
+    def balances(self):
+        self.wallet.refresh_from_db()
+        return self.wallet.available_balance, self.wallet.reserved_balance
+
+    def test_timeout_refunds_the_reservation(self):
+        project, txn = self.make_reserved_project()
+        self.store.denials = [80.0, 80.0]
+
+        with override_settings(AI_CAPACITY_MAX_WAIT_SECONDS=100):
+            self.run_task(project)
+            self.run_task(project)
+
+        project.refresh_from_db()
+        txn.refresh_from_db()
+        self.assertEqual(project.pipeline_error_code, "CapacityTimeoutError")
+        self.assertEqual(txn.status, Transaction.Status.FAILED)
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+
+    def test_waiting_keeps_the_reservation(self):
+        project, txn = self.make_reserved_project()
+        self.store.denials = [80.0]
+
+        self.run_task(project)
+
+        txn.refresh_from_db()
+        self.assertEqual(txn.status, Transaction.Status.RESERVED)
+        self.assertEqual(self.balances(), (Decimal("90.00"), Decimal("10.00")))
+
+    def test_a_timeout_in_the_selection_refunds_too(self):
+        project, txn = self.make_reserved_project()
+        original_reserve = self.store.reserve
+
+        def deny_selection(demands):  # transcription passes, the selection never does
+            if any(bucket.model == PRIMARY for bucket, _ in demands):
+                return False, 80.0
+            return original_reserve(demands)
+
+        self.store.reserve = deny_selection
+
+        with override_settings(AI_CAPACITY_MAX_WAIT_SECONDS=100):
+            self.run_task(project)
+            self.run_task(project)
+
+        project.refresh_from_db()
+        txn.refresh_from_db()
+        self.mock_transcribe.assert_called_once()
+        self.mock_select.assert_not_called()
+        self.assertEqual(project.pipeline_error_code, "CapacityTimeoutError")
+        self.assertEqual(txn.status, Transaction.Status.FAILED)
+
+    def test_other_final_failures_keep_the_reservation(self):
+        from apps.videos.services.ai.errors import AIAuthenticationError
+
+        project, txn = self.make_reserved_project()
+        self.mock_transcribe.side_effect = AIAuthenticationError("bad key", provider="groq")
+
+        self.run_task(project)
+
+        project.refresh_from_db()
+        txn.refresh_from_db()
+        self.assertEqual(project.pipeline_stage, PipelineStage.FAILED)
+        self.assertEqual(txn.status, Transaction.Status.RESERVED)
 
 
 class CapacityReviewRegressionTests(CapacityHarness, TestCase):
