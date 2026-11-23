@@ -67,6 +67,8 @@ El servicio de `docker-compose.yml` se llama `web`. `--output` escribe **dentro 
 
 **Costo por 30 min:** usa la duración del video fuente, no `audio_seconds`. Si falta la duración, la columna queda vacía.
 
+**Tokens de razonamiento:** `reasoning_tokens` (por registro y sumado por proyecto) son los thinking tokens de Gemini que el proveedor cobra como salida y que no están en `completion_tokens`. El costo los cuenta al precio de salida y `total_tokens` es prompt + completion + reasoning.
+
 ---
 
 ## 2. Muestra de 20 videos en español rioplatense
@@ -171,7 +173,7 @@ La planilla no debe contener títulos ni transcripts del usuario: solo `clip_id`
 
 | Ítem | Qué hacer |
 |------|-----------|
-| Medición en vivo | Una llamada real para confirmar qué devuelve `response.model` con el modelo fijado y si `completion_tokens` incluye los thinking tokens de Gemini. Si no los incluye, el costo está subestimado: verificar contra el usage metadata del proveedor antes de confiar en los costos |
+| Medición en vivo | Una llamada real para confirmar qué devuelve `response.model` con el modelo fijado y que `reasoning_tokens` sea mayor que 0 en la selección con Gemini (los thinking tokens no vienen en `completion_tokens`; se derivan del total del proveedor y se cobran al precio de salida). Si es 0 con un modelo que razona, verificar contra el usage metadata del proveedor antes de confiar en los costos |
 | Precios | Verificar contra las páginas oficiales de Groq y Gemini y comparar con `pricing.py` (`PRICING_VERSION`). Si difieren, corregir por PR antes de medir |
 | Perfil de modelos | El piloto usa los mismos modelos, versiones y tiers que producción ([ADR-012](../adrs/012-model-profiles-and-capacity.md), D-C1). Si no, el go/no-go no es válido |
 | Privacidad | Los proveedores corren en tier pago, con términos verificados que excluyen el uso de los datos para entrenamiento (ADR-012, D-C2). Sin esto no se procesan videos de usuarios |
@@ -324,14 +326,14 @@ Límites conocidos de lo que el piloto mide. Leerlos antes de interpretar los n�
 | b | Los precios de Gemini 3.6, 3.7 y 3.8 Flash se duplican el 2027-01-01. `pricing.py` maneja el período | Las comparaciones de costo a ambos lados de esa fecha no son equivalentes |
 | c | El SDK de Groq reintenta internamente hasta 2 veces. Un request que expiró del lado del cliente pero se completó en el servidor se factura y es invisible | En ese caso poco frecuente, el costo de ASR es una cota inferior |
 | d | Los timeouts y las conexiones cortadas registran costo NULL (desconocido), también en una transcripción con chunks ya cobrados cuyo siguiente chunk expiró | Ese proyecto queda con `cost_complete = False`. Un worker muerto en plena llamada no deja fila alguna (salvedad i) y no aparece ni como NULL |
-| e | `response.model` y `completion_tokens` con el modelo fijado deben verificarse con una llamada real en G0 | Si `completion_tokens` no incluye los thinking tokens de Gemini, el costo está subestimado: verificar contra el usage metadata del proveedor antes de confiar en los costos |
+| e | `response.model` y `completion_tokens` con el modelo fijado deben verificarse con una llamada real en G0 | Los thinking tokens de Gemini no vienen en `completion_tokens`: se capturan como `reasoning_tokens` (total del proveedor menos prompt y completion) y se cobran al precio de salida. Verificar contra el usage metadata del proveedor |
 | f | Los precios de Groq y Gemini deben reverificarse contra las páginas oficiales en G0 (`PRICING_VERSION` de `pricing.py`) | Con precios desactualizados, el criterio de costo no es confiable |
 | g | La moderación de contenido cubre solo los primeros 10.000 caracteres y no cubre el camino de ingesta (ADR-011) | Fuera del alcance de este piloto, pero es un límite conocido |
 | h | La selección legacy no captura el usage del LLM: sus registros llevan costo NULL y todo proyecto legacy tiene `cost_complete = False` | El costo legacy no es comparable con el de V2. Los criterios y el disparador de costo se evalúan solo sobre V2 |
 | i | Los registros son solo de inserción y se escriben después de la llamada. Un worker muerto en medio de una llamada no deja registro | Un cobro de un worker matado es invisible: el costo y los conteos son una cota inferior en ese caso |
 | j | Un fallo de persistencia después de una llamada cobrada deja una fila exitosa y el reintento otra | Es correcto (dos cobros reales), pero se lee como etapa repetida: ver 6.1 |
 | k | Los 429 por límite de capacidad se reintentan con backoff | La latencia p95 sube por capacidad, no por el modelo. Leerla junto con la cantidad de registros con `error_code = AIRateLimitError` del export de nivel `record` |
-| l | Hasta que se corrija, `completion_tokens` no incluye los tokens de razonamiento de Gemini (hallazgo del G0, sección 11) | El costo de selección con Gemini es una cota inferior aunque `cost_complete` sea `True` |
+| l | Los registros anteriores a la migración `0004` (corrida 1 del G0, sección 11) tienen `reasoning_tokens = 0` aunque el modelo haya razonado | El costo de esos registros es una cota inferior aunque `cost_complete` sea `True`; no mezclarlos con las mediciones nuevas |
 
 ## 11. Registro de ejecución
 

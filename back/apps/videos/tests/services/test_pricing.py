@@ -102,6 +102,23 @@ class TestLlmCost(_PricingTestCase):
         self.assertEqual(a, b)
         self.assertEqual(a, c)
 
+    def test_reasoning_tokens_are_billed_at_the_output_price(self):
+        # gemini-2.5-flash-lite: 0.40 out per Mtok; reasoning is additive to completion.
+        usage = ProviderUsage(
+            provider="gemini", model="m", completion_tokens=1_000_000, reasoning_tokens=500_000
+        )
+        cost = pricing.estimate_llm_cost("gemini/gemini-2.5-flash-lite", usage)
+        self.assertEqual(cost, Decimal("0.40") + Decimal("0.20"))
+
+    def test_reasoning_only_usage_is_not_free(self):
+        usage = ProviderUsage(provider="gemini", model="m", reasoning_tokens=1_000_000)
+        cost = pricing.estimate_llm_cost("gemini/gemini-2.5-flash", usage)
+        self.assertEqual(cost, Decimal("2.50"))
+
+    def test_reasoning_with_unknown_model_is_none_not_zero(self):
+        usage = ProviderUsage(provider="gemini", model="m", reasoning_tokens=1000)
+        self.assertIsNone(pricing.estimate_llm_cost("gemini/gemini-flash-latest", usage))
+
     def test_gemini_priced_model(self):
         cost = pricing.estimate_llm_cost(
             "gemini/gemini-2.5-flash-lite",

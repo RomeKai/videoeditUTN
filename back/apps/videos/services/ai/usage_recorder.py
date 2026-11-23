@@ -114,6 +114,7 @@ def _record_one(project_id, stage: str, pipeline_version: str, attempt: int, usa
         "error_code": usage.error_code[:64] if usage.error_code else None,
         "prompt_tokens": usage.prompt_tokens,
         "completion_tokens": usage.completion_tokens,
+        "reasoning_tokens": usage.reasoning_tokens,
         "total_tokens": usage.total_tokens,
         "cache_read_tokens": usage.cache_read_tokens,
         "audio_seconds": usage.audio_seconds,

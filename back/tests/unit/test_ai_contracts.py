@@ -191,6 +191,19 @@ class TestProviderUsageContracts(unittest.TestCase):
         self.assertEqual(usage.total_tokens, 1750)
         self.assertFalse(usage.cached)
 
+    def test_provider_usage_total_includes_reasoning_tokens(self):
+        usage = ProviderUsage(
+            provider="gemini", model="gemini-2.5-flash",
+            prompt_tokens=1000, completion_tokens=200, reasoning_tokens=2000,
+        )
+        self.assertEqual(usage.total_tokens, 3200)
+
+    def test_provider_usage_reasoning_defaults_to_zero_and_rejects_negative(self):
+        usage = ProviderUsage(provider="gemini", model="m")
+        self.assertEqual(usage.reasoning_tokens, 0)
+        with self.assertRaises(ValidationError):
+            ProviderUsage(provider="gemini", model="m", reasoning_tokens=-1)
+
     def test_provider_usage_negative_tokens_rejected(self):
         with self.assertRaises(ValidationError):
             ProviderUsage(

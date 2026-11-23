@@ -608,6 +608,20 @@ class LiteLLMSelectionProvider:
         prompt_tokens = _non_negative_int(getattr(usage, "prompt_tokens", 0))
         completion_tokens = _non_negative_int(getattr(usage, "completion_tokens", 0))
 
+        # Reasoning ("thinking") tokens are billed as output but are NOT in
+        # completion_tokens for Gemini. Verified in litellm 1.63.2
+        # (vertex_and_google_ai_studio_gemini.py, _calculate_usage):
+        #   completion_tokens = usageMetadata.candidatesTokenCount   (no thoughts)
+        #   total_tokens      = usageMetadata.totalTokenCount        (with thoughts)
+        # and thoughtsTokenCount / completion_tokens_details.reasoning_tokens is
+        # never populated. The provider total is therefore the only signal, and
+        # the hidden tokens are what it exceeds prompt + completion by. For
+        # OpenAI-style usage (reasoning already inside completion_tokens) the
+        # total equals prompt + completion and nothing is added, so a future
+        # litellm that folds thoughts into completion_tokens cannot double count.
+        provider_total = _non_negative_int(getattr(usage, "total_tokens", 0))
+        reasoning_tokens = max(0, provider_total - prompt_tokens - completion_tokens)
+
         # Implicit cache tracking: Anthropic-style field first, then the
         # OpenAI-style prompt_tokens_details.cached_tokens LiteLLM maps Gemini to.
         cache_read_tokens = _non_negative_int(getattr(usage, "cache_read_input_tokens", 0))
@@ -631,7 +645,8 @@ class LiteLLMSelectionProvider:
             resolved_model=resolved_model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            total_tokens=prompt_tokens + completion_tokens,
+            reasoning_tokens=reasoning_tokens,
+            total_tokens=prompt_tokens + completion_tokens + reasoning_tokens,
             duration_seconds=round(latency, 3),
             cached=cache_read_tokens > 0,
             cache_read_tokens=cache_read_tokens,
