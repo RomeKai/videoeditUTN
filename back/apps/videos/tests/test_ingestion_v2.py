@@ -65,13 +65,14 @@ class IngestionV2Tests(TestCase):
         self.assertIn('+faststart', command)
 
     @override_settings(AI_CORE_V2_ENABLED=True)
+    @patch('apps.core.security.AI_Security_Shield.check_content_safety', return_value=True)
     @patch('apps.videos.services.ai.project_lock.get_redis_client', return_value=FakeRedis())
     @patch('apps.videos.services.storage_service.CloudflareR2Manager.upload_video')
     @patch('apps.videos.services.transcription_engine.TranscriptionEngine.transcribe_detailed')
     @patch('apps.videos.services.selection_engine.SelectionEngine.select_viral_clips_detailed')
     @patch('apps.videos.utils.ffmpeg_utils.FFmpegManager.generate_web_proxy')
     @patch('apps.videos.tasks.VideoFileClip', create=True)
-    def test_process_initial_ingestion_task(self, mock_vfc, mock_proxy, mock_select, mock_transcribe, mock_upload, _mock_redis):
+    def test_process_initial_ingestion_task(self, mock_vfc, mock_proxy, mock_select, mock_transcribe, mock_upload, _mock_redis, _mock_moderate):
         """Test the full Celery task pipeline."""
         # Setup mocks
         mock_upload.return_value = "r2_key_test"
