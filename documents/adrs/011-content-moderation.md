@@ -1,9 +1,9 @@
 # ADR-011: Moderación de contenido: cobertura, política de fallo y resultado
 
-**Estado:** `proposed`
-**Fecha:** 2026-10-09
+**Estado:** `accepted`
+**Fecha:** 2026-10-09 (propuesta), 2026-11-23 (decisiones D-M1 a D-M7)
 **Par responsable:** 🧠 Par IA + 🚀 Par Producto
-**Relacionado:** [ADR-001](001-llm-provider-selection.md) (aislamiento de entrada con `AI_Security_Shield`), [ADR-008](008-groq-whisper-migration.md) (errores tipados y reintentos), rama `fix/security-shield-fail-closed`
+**Relacionado:** [ADR-001](001-llm-provider-selection.md) (aislamiento de entrada con `AI_Security_Shield`), [ADR-008](008-groq-whisper-migration.md) (errores tipados y reintentos), PR #52 (fail-closed), [ADR-013](013-ai-social-metadata.md) (metadata social)
 
 > Los ADR 009 (broker) y 010 (PyAV) están reservados por el plan de estabilización. Por eso este es el 011.
 
@@ -28,7 +28,9 @@
 | Solo texto | No se modera el video ni las imágenes, solo el transcript. |
 | Resultado sin política | Ante contenido marcado, el post queda `FAILED` con un mensaje. No hay política para el proyecto ni para el cobro. |
 
-El owner definió el criterio de fallo: **si la moderación no puede dar un veredicto, el contenido no debe pasar.** La implementación está en la rama `fix/security-shield-fail-closed` y cubre solo la política de fallo y el timeout. El resto de las brechas es el objeto de las decisiones de abajo.
+El owner definió el criterio de fallo: **si la moderación no puede dar un veredicto, el contenido no debe pasar.**
+
+> **Actualización 2026-11-23:** la falla abierta y la falta de timeout se corrigieron en el PR #52 (fail-closed con errores tipados, timeout y sin reintentos del SDK). Siguen vigentes la cobertura parcial, la ingestión sin moderar, la moderación solo textual y la falta de política de resultado: las resuelven las decisiones de abajo.
 
 ### Restricciones
 
@@ -40,9 +42,9 @@ El owner definió el criterio de fallo: **si la moderación no puede dar un vere
 
 ## Decisiones
 
-Cada decisión se marca **ABIERTA** hasta que el par responsable la cierre. Se incluye una recomendación, no una resolución.
+Las decisiones se tomaron el **2026-11-23 (Par IA)**. Las tablas de opciones se conservan como registro de lo evaluado.
 
-### D-M1. Cobertura del texto (ABIERTA)
+### D-M1. Cobertura del texto (DECIDIDA: B)
 
 | Opción | Pros | Contras |
 |--------|------|---------|
@@ -52,7 +54,9 @@ Cada decisión se marca **ABIERTA** hasta que el par responsable la cierre. Se i
 
 **Recomendación: B.** El tamaño del bloque debe fijarse con el límite de entrada documentado de la API, que hay que verificar antes de implementar. Cualquier bloque marcado marca al conjunto.
 
-### D-M2. Dónde se modera (ABIERTA)
+**Decisión: B.** Se modera el texto completo en bloques de hasta 10.000 caracteres, el tamaño que ya se usaba con esta API, configurable con `MODERATION_BLOCK_CHARS`. Los bloques se cortan en espacios, se envían en orden y se corta en el primer bloque que bloquea. Implementación: #64.
+
+### D-M2. Dónde se modera (DECIDIDA: B)
 
 | Opción | Pros | Contras |
 |--------|------|---------|
@@ -62,9 +66,13 @@ Cada decisión se marca **ABIERTA** hasta que el par responsable la cierre. Se i
 
 **Recomendación: B**, manteniendo el chequeo del SEO sobre el texto final.
 
-### D-M3. Moderación visual (ABIERTA)
+**Decisión: B.** Una etapa nueva entre `transcribed` y `clips_selected` modera el transcript antes de pagar la selección. La misma etapa modera el texto que escribe el usuario y llega al LLM (criterio de selección de PTE-02, prompt de Prompt-to-Edit). El chequeo del SEO se mantiene y pasa a incluir el caption generado ([ADR-013](013-ai-social-metadata.md)). Implementación: #65.
+
+### D-M3. Moderación visual (DECIDIDA: no en el MVP)
 
 La moderación actual es solo textual. Evaluar si se modera el video (fotogramas o miniaturas) o si el riesgo visual se asume y se traslada a los términos de uso y a la denuncia posterior. **Sin recomendación**: depende del perfil de riesgo del producto.
+
+**Decisión:** no se modera el video en el MVP. Exigiría llamadas pagas por fotograma o modelos pesados en el worker, que es lo que el [ADR-008](008-groq-whisper-migration.md) sacó. El riesgo visual se cubre con los términos de uso, la moderación de las propias redes donde se publica y la denuncia posterior. Se revisa después del lanzamiento con datos de uso.
 
 ### D-M4. Política de fallo (decidida por el owner)
 
@@ -74,9 +82,11 @@ Fail-closed:
 - Fallos permanentes (key ausente, autenticación, cuota agotada): el elemento queda en `FAILED` con un código estático y no se reintenta.
 - Los logs contienen la clase del error, nunca el cuerpo de la respuesta ni el contenido.
 
-**Riesgo asociado:** si la moderación pasa a la ingestión (D-M2), una caída del proveedor **detiene toda la ingestión**. Hay que decidir si se acepta, o si se define un modo degradado explícito, con dueño y con métrica (**ABIERTA**).
+**Riesgo asociado:** si la moderación pasa a la ingestión (D-M2), una caída del proveedor **detiene toda la ingestión**. Hay que decidir si se acepta, o si se define un modo degradado explícito, con dueño y con métrica.
 
-### D-M5. Resultado ante contenido marcado (ABIERTA, decisión de producto)
+**Decisión (riesgo asociado): sin modo degradado.** Un fallo transitorio se reintenta con el backoff del pipeline (5 reintentos, entre 8 y 15 minutos en total). Si se agotan, el proyecto queda `FAILED` con un código estático y se devuelve la reserva de tokens. Un modo que siga sin moderar reabriría justo el riesgo que este ADR cierra. Con el volumen del MVP una caída larga es poco probable, y se ve en la métrica de bloqueos por disponibilidad (D-M7).
+
+### D-M5. Resultado ante contenido marcado (DECIDIDA)
 
 Hoy no está definido. A resolver por Producto:
 
@@ -85,13 +95,27 @@ Hoy no está definido. A resolver por Producto:
 - ¿Qué ve el usuario? El mensaje no debe revelar la categoría exacta ni el fragmento.
 - ¿Hay apelación o revisión humana?
 
-### D-M6. Proveedor y privacidad (ABIERTA)
+**Decisión:**
+
+- **Veredicto por categoría, no por `flagged`.** El producto apunta a gaming y streams, donde "violence" y "harassment" aparecen todo el tiempo ("lo maté", insultos en broma entre amigos). Bloquear por el `flagged` genérico generaría muchos falsos positivos.
+  - Categorías que **no bloquean** (solo métrica): `harassment`, `violence`, `self-harm`, `illicit`. Configurables con `MODERATION_NON_BLOCKING_CATEGORIES`.
+  - **Cualquier otra categoría marcada bloquea**: hoy `sexual`, `sexual/minors`, `hate`, `hate/threatening`, `harassment/threatening`, `self-harm/intent`, `self-harm/instructions`, `violence/graphic` e `illicit/violent`. Una categoría nueva que agregue la API bloquea hasta que se la clasifique (fail-closed).
+- **Alcance:** en la ingestión se bloquea el proyecto entero (todavía no hay clips); al publicar, solo esa publicación.
+- **Reembolso:** total, con `rollback_reservation`. El costo de la transcripción ya pagada (~USD 0,02 cada 30 min) lo absorbe la plataforma.
+- **Mensaje:** genérico, sin categoría ni fragmento (el de `UnsafeContentError`).
+- **Apelación:** sin flujo en la app en el MVP. El usuario escribe a soporte y un admin puede forzar el reprocesamiento desde el admin de Django; el override queda registrado (quién, cuándo y motivo). Se implementa con #65.
+
+### D-M6. Proveedor y privacidad (DECIDIDA: OpenAI Moderation)
 
 La Moderation API de OpenAI es la opción vigente por costo cero y por tener ya integrado el cliente. Alternativas a evaluar: otro proveedor remoto o un clasificador local. Un clasificador local volvería a cargar modelos pesados en el worker, que es lo que el [ADR-008](008-groq-whisper-migration.md) quiso evitar. Cualquier cambio de proveedor requiere revisar qué datos salen del sistema.
 
-### D-M7. Observabilidad (ABIERTA)
+**Decisión:** se mantiene la Moderation API de OpenAI, con el modelo fijado en forma explícita (`omni-moderation-latest`, configurable con `MODERATION_MODEL`) para que el set de categorías no cambie sin aviso. Antes del lanzamiento hay que citar en este ADR los términos vigentes de uso y retención de datos de la API.
+
+### D-M7. Observabilidad (DECIDIDA)
 
 Medir, sin guardar texto: tasa de contenido marcado, tasa de errores de la API por tipo, latencia por bloque y bloqueos por falla de disponibilidad. Debe poder exportarse junto con las métricas del piloto (AICORE-8) y no aportar columnas de texto libre.
+
+**Decisión:** por cada moderación se registran la cantidad de bloques, la latencia total, los nombres de las categorías marcadas (nunca texto), el resultado (pasa, bloquea o error con su clase) y si el bloqueo fue por disponibilidad. #64 los emite en logs; #65 los persiste para el export del piloto.
 
 ---
 
@@ -113,13 +137,14 @@ Medir, sin guardar texto: tasa de contenido marcado, tasa de errores de la API p
 
 - Una cuenta de OpenAI sin crédito puede bloquear la publicación. El comportamiento de la API en ese caso no está documentado y debe medirse.
 - Sin moderación visual (D-M3), el contenido problemático en imagen pasa si el audio es inocuo.
-- Mientras D-M1 y D-M2 no se implementen, la protección real sigue siendo parcial aunque el fallo sea fail-closed.
+- Mientras D-M1 y D-M2 no se implementen (#64 y #65), la protección real sigue siendo parcial aunque el fallo sea fail-closed.
+- Las categorías que no bloquean dejan pasar contenido agresivo pero habitual en gaming; si las redes lo rechazan, se revisa la lista con la métrica de D-M7.
 
 ---
 
-## Plan de implementación (tras cerrar las decisiones)
+## Plan de implementación
 
-1. Rama `fix/security-shield-fail-closed`: política de fallo y timeout (D-M4), ya en curso.
-2. Moderación del transcript completo por bloques (D-M1).
-3. Etapa de moderación en la ingestión (D-M2), con pruebas de inyección de fallos en CORE-06.
-4. Política de resultado y mensajes (D-M5) y observabilidad (D-M7).
+1. PR #52: política de fallo y timeout (D-M4). **Hecho.**
+2. #64 (AICORE-12): moderación del texto completo por bloques (D-M1), veredicto por categoría (D-M5), modelo fijado (D-M6) y métricas en logs (D-M7).
+3. #65 (AICORE-13): etapa de moderación en la ingestión (D-M2), sin modo degradado (D-M4), resultado, reembolso y override (D-M5) y métricas persistidas (D-M7).
+4. Después del lanzamiento: revisar D-M3 (moderación visual) y la lista de categorías con datos reales.

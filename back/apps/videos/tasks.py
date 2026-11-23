@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 import logging
@@ -41,6 +42,7 @@ from apps.videos.services.ai.pipeline_state import (
     set_stage_status,
 )
 from apps.videos.services.segments import InvalidSegmentsError, validate_approved_segments
+from apps.videos.services.ai.capacity import CapacityUnavailable
 from apps.videos.services.ai.project_lock import (
     ProjectLockedError,
     ProjectLockLostError,
@@ -69,13 +71,14 @@ def download_from_youtube(url, output_folder):
         
     return output_path
 
+import math
 import time
 import random
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from django.utils import timezone
 from django.db import DatabaseError, transaction
-from django.db.models import F
+from django.db.models import F, Q
 from django.core.cache import cache
 from apps.videos.models import VideoProject, VideoClip, ScheduledPost
 
@@ -185,7 +188,13 @@ def upload_to_social_network(self, post_id):
         target_platform = platform_map.get(post.platform, 'tiktok')
         
         # Priority: 1. AI Generated Caption, 2. Project Metadata, 3. Default
-        caption = post.generated_caption or post.video_clip.project.metadata.get('caption')
+        if post.generated_caption:
+            # Stored apart (ADR-013): the hashtags get their '#' only here.
+            from apps.videos.services.seo_engine import compose_caption
+
+            caption = compose_caption(post.generated_caption, post.generated_hashtags)
+        else:
+            caption = post.video_clip.project.metadata.get('caption')
         if not caption:
             caption = f"Check this out! #Viral #{target_platform}"
 
@@ -232,62 +241,45 @@ def upload_to_social_network(self, post_id):
     finally:
         cache.delete(lock_id)
 
+# Social metadata (AICORE-17, ADR-013). One generation at a time per post, and
+# the last generation kept until its output moderation passes, so a moderation
+# retry never pays for a second generation.
+SEO_LOCK_TTL_SECONDS = 600
+SEO_PENDING_TTL_SECONDS = 3600
+
+
 @celery_app.task(bind=True, max_retries=3)
-def process_video_seo(self, post_id):
+def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
     """
-    Task: Generates viral SEO metadata for a scheduled post.
-    1. Security Shield check.
-    2. Extracts transcript.
-    3. Calls SEOOptimizationService.
+    Caption and hashtags for one ScheduledPost from the clip's own transcript,
+    for the post's platform (AICORE-17, ADR-013).
+
+    - Idempotent: a post that already has them is not sent to the LLM again,
+      unless ``regenerate`` (an explicit user request).
+    - One generation at a time per post (Redis lock).
+    - The clip transcript is moderated before the call; the generated text
+      before it is stored.
+    - Every attempt writes an AIUsageRecord with stage ``seo``.
+    - A final failure leaves the post FAILED with a static code in
+      ``error_log``; non-retryable errors are not retried.
     """
-    from apps.core.security import AI_Security_Shield, ModerationError, UnsafeContentError
-    from apps.videos.services.seo_engine import SEOOptimizationService
-    
+    from apps.core.security import ModerationError
+
     try:
         post = ScheduledPost.objects.select_related('video_clip__project').get(id=post_id)
-        project = post.video_clip.project
-        
-        transcript = project.metadata.get('full_text', '')
-        if not transcript:
-            segments = project.metadata.get('transcription', [])
-            transcript = " ".join([s.get('text', '') for s in segments])
-
-        if not transcript:
-            logger.warning(f"⚠️ [SEO] No transcript found for post {post_id}. Aborting.")
-            return "No Transcript"
-
-        # --- REQUERIMIENTO: SECURITY SHIELD (MODERATION) ---
-        # First line of defense
-        try:
-            AI_Security_Shield.check_content_safety(transcript)
-        except UnsafeContentError as safety_exc:
-            logger.error(f"🛡️ [SEO SECURITY] Safety violation for post {post_id}: {type(safety_exc).__name__}")
-            post.status = ScheduledPost.Status.FAILED
-            post.error_log = f"Violación de seguridad: {str(safety_exc)}"
-            post.save()
-            return "Security Abort"
-
-        # 1. Generate Metadata via AI
-        seo_service = SEOOptimizationService()
-        metadata = seo_service.generate_metadata(
-            transcript_text=transcript,
-            target_niche=project.metadata.get('niche', 'general')
-        )
-
-        # 2. Format Caption (Body + Hashtags)
-        formatted_hashtags = " ".join([f"#{h.strip()}" for h in metadata.hashtags])
-        final_caption = f"{metadata.description_body}\n\n.\n.\n{formatted_hashtags}"
-
-        # 3. Save to ScheduledPost
-        post.generated_caption = final_caption
-        post.generated_hashtags = metadata.hashtags
-        
-        # Save additional tweaks in error_log or a dedicated field if exists
-        # For now, let's keep it in the main caption
-        post.save()
-
-        logger.info(f"✅ [SEO] Metadata generated for post {post_id}")
-        return f"SEO Success: {metadata.viral_title}"
+        if not regenerate and post.generated_caption and post.generated_hashtags:
+            return "SEO Already Generated"
+        with _seo_post_lock(post_id) as acquired:
+            if not acquired:
+                # Another worker is generating this post right now.
+                logger.info("seo.skipped post_id=%s reason=locked", post_id)
+                return "SEO Busy"
+            post.refresh_from_db()
+            if not regenerate and post.generated_caption and post.generated_hashtags:
+                return "SEO Already Generated"  # finished by another run before the lock
+            if regenerate and self.request.retries == 0 and not capacity_waited_s:
+                _seo_pending_clear(post_id)  # a fresh request, not a retry of this one
+            return _generate_post_metadata(self, post, capacity_waited_s, regenerate)
 
     except ModerationError as mod_exc:
         # Fail closed: no moderation verdict => content does not pass. Must stay above
@@ -299,15 +291,231 @@ def process_video_seo(self, post_id):
         if mod_exc.retryable and self.request.retries < self.max_retries:
             raise self.retry(countdown=_retry_countdown(self.request.retries))
         # Static code only: never the provider message or any user text.
-        ScheduledPost.objects.filter(id=post_id).update(
-            status=ScheduledPost.Status.FAILED, error_log=mod_exc.code,
-        )
+        _fail_seo_post(post_id, mod_exc.code)
         return "Moderation Failed"
 
-    except Exception as e:
-        logger.error(f"❌ [SEO] Failed for post {post_id}: {type(e).__name__}")
-        # Retry for OpenAI timeouts or network issues
-        raise self.retry(exc=e, countdown=60)
+    except AIError as exc:
+        # Classified provider errors: auth, configuration and 4xx stop here.
+        will_retry = exc.is_retryable and self.request.retries < self.max_retries
+        logger.error(
+            "seo.failed post_id=%s error=%s retry=%s", post_id, type(exc).__name__, will_retry
+        )
+        if will_retry:
+            raise self.retry(countdown=_retry_countdown(self.request.retries))
+        _fail_seo_post(post_id, f"seo_generation_failed:{type(exc).__name__}")
+        return "SEO Failed"
+
+    except Exception as exc:
+        will_retry = (
+            _is_retryable_pipeline_error(exc) and self.request.retries < self.max_retries
+        )
+        logger.error(
+            "seo.failed post_id=%s error=%s retry=%s", post_id, type(exc).__name__, will_retry
+        )
+        if will_retry:
+            raise self.retry(countdown=_retry_countdown(self.request.retries))
+        _fail_seo_post(post_id, f"seo_failed:{type(exc).__name__}")
+        raise
+
+
+# Codes this task writes to error_log; a later successful generation clears them.
+_SEO_FAILURE_CODES = (
+    'seo_no_clip_transcript', 'content_blocked', 'generated_content_blocked', 'capacity_timeout',
+)
+
+
+def _fail_seo_post(post_id, code):
+    """
+    FAILED with a static code, unless publishing already started or finished:
+    a post published with another caption must never turn FAILED because of SEO.
+    """
+    ScheduledPost.objects.filter(id=post_id).exclude(
+        status__in=(ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED),
+    ).update(status=ScheduledPost.Status.FAILED, error_log=code)
+
+
+def _recover_seo_failed_post(post_id):
+    """
+    A post an earlier SEO failure left FAILED is recoverable (ADR-013): back to
+    DRAFT, so the user reviews the caption and schedules it again. It is never
+    re-scheduled on its own. Publishing failures are not touched.
+    """
+    seo_codes = (
+        Q(error_log__in=_SEO_FAILURE_CODES)
+        | Q(error_log__startswith='seo_')
+        | Q(error_log__startswith='moderation_')
+    )
+    ScheduledPost.objects.filter(seo_codes, id=post_id, status=ScheduledPost.Status.FAILED).update(
+        status=ScheduledPost.Status.DRAFT, error_log=None,
+    )
+
+
+@contextmanager
+def _seo_post_lock(post_id):
+    """Yields whether this worker holds the post; Redis down is a retryable error."""
+    import redis
+
+    from apps.videos.services.ai.errors import RetryableAIError
+    from apps.videos.services.ai.project_lock import get_redis_client
+
+    lock = get_redis_client().lock(f"lock:seo:post:{post_id}", timeout=SEO_LOCK_TTL_SECONDS)
+    try:
+        acquired = lock.acquire(blocking=False)
+    except redis.exceptions.RedisError as exc:
+        raise RetryableAIError(
+            f"Redis unavailable, cannot lock post {post_id}", provider="redis"
+        ) from exc
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                lock.release()
+            except redis.exceptions.LockError:
+                logger.warning("seo.lock_not_owned post_id=%s", post_id)
+
+
+def _seo_pending_key(post_id):
+    return f"seo:pending:{post_id}"
+
+
+def _seo_pending_get(post_id):
+    from apps.videos.services.ai.project_lock import get_redis_client
+
+    raw = get_redis_client().get(_seo_pending_key(post_id))
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _seo_pending_set(post_id, data):
+    from apps.videos.services.ai.project_lock import get_redis_client
+
+    try:
+        get_redis_client().set(
+            _seo_pending_key(post_id), json.dumps(data), ex=SEO_PENDING_TTL_SECONDS
+        )
+    except Exception as exc:  # the result is still used right away
+        logger.warning("seo.pending_not_saved post_id=%s error=%s", post_id, type(exc).__name__)
+
+
+def _seo_pending_clear(post_id):
+    from apps.videos.services.ai.project_lock import get_redis_client
+
+    try:
+        get_redis_client().delete(_seo_pending_key(post_id))
+    except Exception as exc:
+        logger.warning("seo.pending_not_cleared post_id=%s error=%s", post_id, type(exc).__name__)
+
+
+def _generate_post_metadata(task, post, capacity_waited_s, regenerate=False):
+    """Generates (or reuses the pending generation), moderates the output and stores it."""
+    from apps.core.security import AI_Security_Shield, UnsafeContentError
+    from apps.videos.services.seo_engine import SocialMetadata
+
+    pending = _seo_pending_get(post.id)
+    if pending is None:
+        outcome = _generate_social_metadata(task, post, capacity_waited_s, regenerate)
+        if isinstance(outcome, str):  # waiting for capacity, or the post already failed
+            return outcome
+        pending = outcome
+        _seo_pending_set(post.id, pending)
+
+    metadata = SocialMetadata.model_validate(pending)
+    try:
+        AI_Security_Shield.check_content_safety(metadata.composed_caption())
+    except UnsafeContentError:
+        _seo_pending_clear(post.id)
+        logger.error("seo.output_blocked post_id=%s", post.id)
+        _fail_seo_post(post.id, "generated_content_blocked")
+        return "Security Abort"
+
+    ScheduledPost.objects.filter(id=post.id).update(
+        generated_caption=metadata.caption, generated_hashtags=metadata.hashtags,
+    )
+    _recover_seo_failed_post(post.id)
+    _seo_pending_clear(post.id)
+    logger.info("seo.persisted post_id=%s hashtags=%d", post.id, len(metadata.hashtags))
+    return "SEO Success"
+
+
+def _generate_social_metadata(task, post, capacity_waited_s, regenerate=False):
+    """
+    One paid generation: clip transcript, capacity, input moderation, LLM call
+    and usage rows. Returns the metadata as a dict, or a status string when the
+    post waits for capacity or already failed.
+    """
+    from apps.core.security import AI_Security_Shield, ModerationError, UnsafeContentError
+    from apps.videos.services.seo_engine import (
+        SEOOptimizationService,
+        SocialMetadataRequest,
+        clip_transcript,
+    )
+
+    clip = post.video_clip
+    project = clip.project
+    text = clip_transcript(project.transcript_data, clip.start_time, clip.end_time)
+    if not text:
+        # Never the whole project transcript as a substitute (ADR-013).
+        logger.warning("seo.no_clip_transcript post_id=%s", post.id)
+        _fail_seo_post(post.id, "seo_no_clip_transcript")
+        return "No Transcript"
+    request = SocialMetadataRequest(
+        clip_transcript=text,
+        clip_title=clip.title or "",
+        platform=post.platform,
+        target_niche=(project.metadata or {}).get('niche') or 'general',
+        language=getattr(settings, 'AI_SEO_LANGUAGE', 'es'),
+    )
+
+    # Capacity first (AICORE-11), so waiting for it never repeats the moderation call.
+    gate = _capacity_gate()
+    reservation, models = None, []
+    if gate is not None:
+        models = _selection_models(True)
+        try:
+            reservation = gate.reserve(_seo_demand(models, request), stage='seo')
+        except CapacityUnavailable as capacity_exc:
+            return _seo_wait_for_capacity(
+                str(post.id), capacity_exc, capacity_waited_s, task.request.retries, regenerate
+            )
+
+    try:
+        AI_Security_Shield.check_content_safety(_seo_moderation_payload(request))
+    except UnsafeContentError:
+        _release_seo_capacity(gate, reservation)
+        logger.error("seo.input_blocked post_id=%s", post.id)
+        _fail_seo_post(post.id, "content_blocked")
+        return "Security Abort"
+    except ModerationError:
+        _release_seo_capacity(gate, reservation)  # the LLM was never called
+        raise
+
+    started = time.monotonic()
+    try:
+        result = SEOOptimizationService().generate_metadata(request)
+    except Exception as exc:
+        if gate is not None:
+            gate.settle(reservation, _selection_failure_usage(models, exc))
+        _record_call_failure(
+            project.id, AIUsageRecord.Stage.SEO, AIUsageRecord.PipelineVersion.V2, exc,
+            _llm_identity(getattr(settings, 'AI_DEFAULT_LLM_MODEL', 'unknown')), started,
+        )
+        raise
+    if gate is not None:
+        gate.settle(reservation, _llm_usage_by_model(models, result.attempts or [result.usage]))
+    record_usages(
+        project.id, AIUsageRecord.Stage.SEO, AIUsageRecord.PipelineVersion.V2,
+        usages_for_success(result),
+    )
+    return result.data.model_dump()
+
+
+def _seo_moderation_payload(request):
+    return "\n".join(part for part in (request.clip_title, request.clip_transcript) if part)
 
 def finalize_project_render(project_id):
     """
@@ -595,6 +803,7 @@ def render_video_segments(self, project_id):
 # Stages (see services/ai/pipeline_state.py):
 #   UPLOADED -> AUDIO_EXTRACTED (source in R2 + proxy + probe)
 #            -> TRANSCRIBED     (transcript persisted)
+#            -> MODERATED       (transcript + user text passed moderation, ADR-011)
 #            -> CLIPS_SELECTED  (clips persisted)
 #            -> RENDER_DISPATCHED (auto_render_bypass only) -> COMPLETED | PARTIAL
 # Each stage persists its output BEFORE advancing, so a retry resumes at the
@@ -639,6 +848,13 @@ def _is_retryable_pipeline_error(exc):
         return is_retryable_error(exc)
     if is_retryable_error(exc):
         return True
+
+    from apps.core.security import ModerationError
+    if isinstance(exc, ModerationError):
+        # ADR-011 D-M4: no verdict yet (timeout, 5xx, 429) retries with backoff;
+        # a misconfigured or exhausted account does not. Blocked content
+        # (UnsafeContentError) never retries.
+        return exc.retryable
 
     from django.db import InterfaceError, OperationalError
     if isinstance(exc, (OperationalError, InterfaceError)):
@@ -731,6 +947,15 @@ def _running_stage(project_id, stage, attempt):
         yield
     except PipelineStateError:
         # Another worker owns the project now: this stage did not fail.
+        raise
+    except CapacityUnavailable:
+        # Waiting for provider capacity (AICORE-11) is not a failure.
+        try:
+            set_stage_status(
+                project_id, stage, StageStatus.PENDING_CAPACITY, expected_stage=owner_stage
+            )
+        except PipelineStateError:
+            logger.warning("pipeline.status_write_skipped project_id=%s stage=%s", project_id, stage)
         raise
     except Exception:
         logger.error(
@@ -849,6 +1074,251 @@ def _persist_then_record_usage(project_id, stage, pipeline_version, usages, pers
     record_usages(project_id, stage, pipeline_version, usages)
 
 
+# --- AI capacity (AICORE-11) -------------------------------------------------
+# Every Groq/LLM call of the pipeline reserves capacity first. No room means the
+# stage waits (pending_capacity) and the task is re-queued; it is not a failure.
+
+def _capacity_gate():
+    from apps.videos.services.ai.capacity import CapacityGate, capacity_enabled
+
+    return CapacityGate() if capacity_enabled() else None
+
+
+def _transcription_demand(model_key, duration):
+    from apps.videos.services.ai.audio_preprocessor import AudioPreprocessor
+
+    seconds = max(1.0, float(duration or 0))
+    # Upper bound: the preprocessor steps by window - overlap (a small file is one request).
+    step = AudioPreprocessor.WINDOW_DURATION_SECONDS - AudioPreprocessor.OVERLAP_SECONDS
+    chunks = max(1, math.ceil(seconds / step))
+    return {model_key: {'audio_seconds': seconds, 'requests': chunks}}
+
+
+def _llm_demand(models, duration):
+    minutes = max(1.0, float(duration or 0) / 60.0)
+    tokens = (
+        math.ceil(minutes * settings.AI_CAPACITY_LLM_TOKENS_PER_AUDIO_MINUTE)
+        + settings.AI_CAPACITY_LLM_PROMPT_TOKENS
+        + settings.AI_CAPACITY_LLM_OUTPUT_TOKENS
+    )
+    return {model: {'tokens': tokens, 'requests': 1} for model in models}
+
+
+def _selection_models(v2_enabled):
+    """Models the selection stage may call: the fallback is reserved too, then refunded if unused."""
+    from apps.videos.services.ai.llm_credentials import resolve_api_key
+
+    if not v2_enabled:
+        return [GeminiFlashStrategy().get_model_name()]
+    primary = settings.AI_DEFAULT_LLM_MODEL
+    fallback = getattr(settings, 'AI_FALLBACK_LLM_MODEL', None)
+    models = [primary]
+    if fallback and fallback != primary and resolve_api_key(fallback):
+        models.append(fallback)
+    return models
+
+
+def _reserve_selection(project_id, v2_enabled, duration):
+    gate = _capacity_gate()
+    if gate is None:
+        return None, None, []
+    models = _selection_models(v2_enabled)
+    reservation = gate.reserve(_llm_demand(models, duration), stage=PipelineStage.CLIPS_SELECTED)
+    _capacity_granted(project_id, PipelineStage.CLIPS_SELECTED)
+    return gate, reservation, models
+
+
+def _selection_failure_usage(models, exc):
+    """
+    Usage of a failed selection: the attempts the error carries. Without them,
+    a timeout or dropped connection may still have been billed, so the
+    reservation is kept; any other failure never reached the model (refund).
+    """
+    from apps.videos.services.ai.errors import is_billing_uncertain
+
+    attempts = getattr(exc, 'usage_attempts', None)
+    if not attempts and is_billing_uncertain(exc):
+        return {}
+    return _llm_usage_by_model(models, attempts)
+
+
+def _llm_usage_by_model(models, usages):
+    """
+    Real usage per model from the attempts made. A model never called gets 0
+    (its reservation is refunded); a call whose billing is unknown keeps the
+    reserved tokens (None) rather than guessing.
+    """
+    actual = {model: {'tokens': 0, 'requests': 0} for model in models}
+    for usage in usages or []:
+        entry = actual.setdefault(usage.model, {'tokens': 0, 'requests': 0})
+        entry['requests'] += 1
+        if entry['tokens'] is None:
+            continue
+        if usage.error_code and usage.estimated_cost_usd is None and not usage.total_tokens:
+            entry['tokens'] = None  # failed with unknown billing: keep the reservation
+        else:
+            entry['tokens'] += usage.total_tokens
+    return actual
+
+
+def _audio_usage(model_key, usage_or_exc):
+    """Billed audio seconds, or None when unknown (the reservation is kept)."""
+    from apps.videos.services.ai.errors import is_billing_uncertain
+
+    if isinstance(usage_or_exc, BaseException):
+        if is_billing_uncertain(usage_or_exc):
+            return {}  # the chunk in flight may have been billed
+        carried = getattr(usage_or_exc, 'usage_attempts', None) or []
+        if carried and carried[0].audio_seconds is not None:
+            if carried[0].estimated_cost_usd is None:
+                return {}  # the provider could not price it: unknown
+            seconds = carried[0].audio_seconds
+        else:
+            seconds = 0.0  # rejected before any chunk was billed
+    else:
+        seconds = usage_or_exc.audio_seconds
+        if seconds is None:
+            return {}
+    return {model_key: {'audio_seconds': seconds}}
+
+
+def _is_current_wait(wait, project, stage):
+    """
+    A wait belongs to this run only if it is for the same stage and no failed
+    attempt was recorded since it started; otherwise (e.g. a manual re-dispatch
+    after a failure) it is stale and a new wait starts.
+    """
+    return (
+        bool(wait) and wait.get('stage') == str(stage)
+        and wait.get('attempts') == project.pipeline_attempts
+    )
+
+
+def _capacity_granted(project_id, stage):
+    """Closes a pending_capacity wait: logs and stores how long it took (no text)."""
+    project = VideoProject.objects.get(pk=project_id)
+    metadata = project.metadata or {}
+    wait = metadata.get('capacity_wait')
+    if not wait:
+        return
+    if not _is_current_wait(wait, project, stage):
+        _merge_metadata(project_id, {'capacity_wait': None})  # stale: nothing to record
+        return
+    try:
+        waited = (timezone.now() - datetime.fromisoformat(wait['since'])).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        waited = None
+    logger.info(
+        "pipeline.capacity_granted project_id=%s stage=%s waited_s=%s",
+        project_id, stage, "?" if waited is None else f"{waited:.1f}",
+        extra={'project_id': str(project_id), 'stage': str(stage)},
+    )
+    history = dict(metadata.get('capacity_waited_s') or {})
+    if waited is not None:
+        history[str(stage)] = round(history.get(str(stage), 0) + waited, 1)
+    _merge_metadata(project_id, {'capacity_wait': None, 'capacity_waited_s': history})
+
+
+def _capacity_countdown(wait_seconds):
+    """Re-queue delay: the bucket deficit, capped, plus up to 20 % jitter so waiting tasks spread out."""
+    countdown = min(max(wait_seconds, 1.0), float(settings.AI_CAPACITY_MAX_COUNTDOWN_SECONDS))
+    return countdown * (1 + random.uniform(0, 0.2))
+
+
+def _seo_demand(models, request):
+    """
+    SEO prompt ~ the clip title and transcript (~4 characters per token) plus the
+    fixed prompt and output, on the primary and the fallback (refunded if unused).
+    """
+    tokens = (
+        math.ceil((len(request.clip_transcript) + len(request.clip_title)) / 4)
+        + settings.AI_CAPACITY_LLM_PROMPT_TOKENS
+        + settings.AI_CAPACITY_LLM_OUTPUT_TOKENS
+    )
+    return {model: {'tokens': tokens, 'requests': 1} for model in models}
+
+
+def _release_seo_capacity(gate, reservation):
+    """Moderation stopped the post before the LLM call: the reservation goes back."""
+    if gate is not None and reservation is not None:
+        gate.settle(reservation, {
+            bucket.model: {'tokens': 0, 'requests': 0} for bucket, _ in reservation.drawn
+        })
+
+
+def _seo_wait_for_capacity(post_id, exc, waited_s, retries, regenerate=False):
+    """
+    Re-queues SEO generation after the capacity wait; fails the post past the max
+    wait. The Celery retry count travels with the message: a call that keeps
+    failing still runs out of retries even if capacity waits sit in between.
+    """
+    if waited_s + exc.wait_seconds > settings.AI_CAPACITY_MAX_WAIT_SECONDS:
+        logger.error("seo.capacity_timeout post_id=%s waited_s=%.1f", post_id, waited_s)
+        _fail_seo_post(post_id, 'capacity_timeout')
+        return "Capacity Timeout"
+    countdown = _capacity_countdown(exc.wait_seconds)
+    logger.info("seo.pending_capacity post_id=%s countdown_s=%.1f", post_id, countdown)
+    kwargs = {'capacity_waited_s': round(waited_s + countdown, 1)}
+    if regenerate:
+        kwargs['regenerate'] = True  # or the re-queued run would see the old caption and stop
+    process_video_seo.apply_async(
+        args=[post_id], kwargs=kwargs, countdown=countdown, retries=retries,
+    )
+    return "Waiting for capacity"
+
+
+def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries):
+    """
+    Re-queues the ingestion after the capacity wait instead of blocking the
+    worker. Not a failed attempt: pipeline_attempts and the usage rows are not
+    touched. Fails with CapacityTimeoutError once the planned waiting for the
+    stage would exceed AI_CAPACITY_MAX_WAIT_SECONDS.
+
+    The Celery retry count travels with the re-queued message, so a provider
+    call that keeps failing still runs out of retries (PIPELINE_MAX_RETRIES)
+    even when capacity waits sit between its attempts.
+    """
+    from apps.videos.services.ai.capacity import CapacityTimeoutError
+
+    project = VideoProject.objects.get(pk=project_id)
+    wait = (project.metadata or {}).get('capacity_wait') or {}
+    if not _is_current_wait(wait, project, exc.stage):
+        wait = {
+            'stage': str(exc.stage), 'since': timezone.now().isoformat(), 'planned_s': 0.0,
+            'attempts': project.pipeline_attempts,
+        }
+
+    if wait['planned_s'] + exc.wait_seconds > settings.AI_CAPACITY_MAX_WAIT_SECONDS:
+        logger.error(
+            "pipeline.capacity_timeout project_id=%s stage=%s planned_s=%.1f wait_s=%.1f",
+            project_id, exc.stage, wait['planned_s'], exc.wait_seconds,
+            extra={'project_id': str(project_id), 'stage': str(exc.stage)},
+        )
+        try:
+            set_stage_status(project_id, exc.stage, StageStatus.FAILED, expected_stage=owner_stage)
+        except PipelineStateError:
+            pass
+        _merge_metadata(project_id, {'capacity_wait': None})
+        _record_pipeline_failure(
+            project_id, CapacityTimeoutError("capacity wait exceeded"), attempt,
+            final=True, stage=owner_stage,
+        )
+        return f"Capacity timeout for {project_id}"
+
+    countdown = _capacity_countdown(exc.wait_seconds)
+    wait['planned_s'] = round(wait['planned_s'] + countdown, 1)
+    _merge_metadata(project_id, {'capacity_wait': wait})
+    logger.info(
+        "pipeline.pending_capacity project_id=%s stage=%s countdown_s=%.1f planned_s=%.1f",
+        project_id, exc.stage, countdown, wait['planned_s'],
+        extra={'project_id': str(project_id), 'stage': str(exc.stage)},
+    )
+    process_initial_ingestion.apply_async(
+        args=[str(project_id)], countdown=countdown, retries=retries
+    )
+    return f"Waiting for capacity: {project_id}"
+
+
 def _stage_transcribe(project_id):
     from apps.videos.services.transcription_engine import TranscriptionBackend, TranscriptionEngine
 
@@ -869,14 +1339,29 @@ def _stage_transcribe(project_id):
     else:
         identity = ('local', f'whisper-{model_size}')
 
+    # Remote transcription reserves Groq capacity first (local Whisper calls no provider).
+    gate = _capacity_gate() if backend is TranscriptionBackend.GROQ else None
+    reservation = None
+    capacity_model = f"groq/{identity[1]}"
+    if gate is not None:
+        reservation = gate.reserve(
+            _transcription_demand(capacity_model, (project.metadata or {}).get('duration')),
+            stage=PipelineStage.TRANSCRIBED,
+        )
+        _capacity_granted(project_id, PipelineStage.TRANSCRIBED)
+
     started = time.monotonic()
     try:
         result = engine.transcribe_detailed(project.source_file.path)
     except Exception as exc:
+        if gate is not None:
+            gate.settle(reservation, _audio_usage(capacity_model, exc))
         _record_call_failure(
             project_id, AIUsageRecord.Stage.TRANSCRIPTION, pipeline_version, exc, identity, started
         )
         raise
+    if gate is not None:
+        gate.settle(reservation, _audio_usage(capacity_model, result.usage))
 
     tx = result.data
     segments = [{'start': w.start, 'end': w.end, 'text': w.text} for w in tx.words] or [
@@ -900,6 +1385,115 @@ def _stage_transcribe(project_id):
     )
 
 
+def _moderation_payload(project):
+    """
+    Everything that reaches the selection LLM and is not ours: the user's own
+    text (title, and the selection criteria once PTE-02 exists) and the transcript.
+    """
+    metadata = project.metadata or {}
+    transcript = metadata.get('full_text') or " ".join(
+        str(item.get('text', '')) for item in (project.transcript_data or [])
+    )
+    parts = [project.title or "", str(metadata.get('selection_criteria') or ""), transcript]
+    return "\n".join(part for part in parts if part and part.strip())
+
+
+def _stage_moderate(project_id):
+    """
+    ADR-011 D-M2: moderate before paying for the selection LLM. Blocked content
+    raises UnsafeContentError and a missing verdict raises a ModerationError
+    (retryable or not); both reach the pipeline handler, which fails the project
+    and refunds it once no retry is left. A ModerationOverride lets it through.
+    Only the outcome and latency are stored, never text.
+    """
+    from apps.core.security import AI_Security_Shield
+    from apps.videos.models import ModerationOverride
+
+    project = VideoProject.objects.get(pk=project_id)
+    started = time.monotonic()
+
+    if ModerationOverride.objects.filter(project_id=project_id).exists():
+        outcome = 'overridden'
+        logger.warning(
+            "pipeline.moderation_overridden project_id=%s", project_id,
+            extra={'project_id': str(project_id)},
+        )
+    else:
+        try:
+            AI_Security_Shield.check_content_safety(_moderation_payload(project))
+        except Exception as exc:
+            try:
+                _merge_metadata(
+                    project_id, _moderation_outcome(type(exc).__name__, started),
+                    expected_stage=PipelineStage.TRANSCRIBED,
+                )
+            except (DatabaseError, PipelineStateError) as record_exc:
+                # Recording the outcome must never mask the moderation failure.
+                logger.error(
+                    "pipeline.moderation_outcome_not_recorded project_id=%s error=%s",
+                    project_id, type(record_exc).__name__,
+                )
+            raise
+        outcome = 'passed'
+
+    with transaction.atomic():
+        _merge_metadata(
+            project_id, _moderation_outcome(outcome, started),
+            expected_stage=PipelineStage.TRANSCRIBED,
+        )
+        advance(project_id, PipelineStage.TRANSCRIBED, PipelineStage.MODERATED)
+
+
+def _moderation_outcome(outcome, started):
+    """D-M7 metrics stored on the project: outcome (or error class) and latency, no text."""
+    return {'moderation': {
+        'outcome': outcome,
+        'latency_s': round(time.monotonic() - started, 3),
+        'checked_at': timezone.now().isoformat(),
+    }}
+
+
+def _is_moderation_failure(exc):
+    from apps.core.security import ModerationError, UnsafeContentError
+
+    return isinstance(exc, (ModerationError, UnsafeContentError))
+
+
+def _refund_ingestion_reservation(project_id):
+    """
+    Returns the tokens reserved when the project was created (``metadata
+    ['reservation_id']``, set by the create view) if the project ended FAILED.
+    Idempotent and never raises: a missing or already settled reservation is
+    only logged, and payment errors never mask the original failure.
+    """
+    from django.core.exceptions import ValidationError
+
+    # Deferred: wallet_service imports this module at load time.
+    from apps.payments.services.wallet_service import PaymentError, rollback_reservation
+
+    try:
+        project = VideoProject.objects.get(pk=project_id)
+        if project.pipeline_stage != PipelineStage.FAILED:
+            return
+        reservation_id = (project.metadata or {}).get('reservation_id')
+        if not reservation_id:
+            logger.warning("pipeline.refund_skipped project_id=%s reason=no_reservation", project_id)
+            return
+        if not Transaction.objects.filter(
+            pk=reservation_id, status=Transaction.Status.RESERVED
+        ).exists():
+            logger.info("pipeline.refund_skipped project_id=%s reason=not_reserved", project_id)
+            return
+        rollback_reservation(reservation_id)
+        logger.info(
+            "pipeline.refunded project_id=%s", project_id, extra={'project_id': str(project_id)}
+        )
+    except (PaymentError, DatabaseError, VideoProject.DoesNotExist, ValidationError) as exc:
+        logger.error(
+            "pipeline.refund_failed project_id=%s error=%s", project_id, type(exc).__name__
+        )
+
+
 def _stage_select_clips(project_id):
     project = VideoProject.objects.get(pk=project_id)
     segments = project.transcript_data or []
@@ -911,7 +1505,7 @@ def _stage_select_clips(project_id):
         duration, resolution = _probe_video(project.source_file.path)
         _merge_metadata(
             project_id, {'duration': duration, 'resolution': resolution},
-            expected_stage=PipelineStage.TRANSCRIBED,
+            expected_stage=PipelineStage.MODERATED,
         )
         metadata = {**metadata, 'duration': duration, 'resolution': resolution}
 
@@ -929,25 +1523,35 @@ def _stage_select_clips(project_id):
         # User preferences were stored but never reached the selector.
         editing_style=project.editing_style,
         max_clips=metadata.get('max_clips'),
+        selection_criteria=metadata.get('selection_criteria'),
     )
     started = time.monotonic()
     if getattr(settings, 'AI_CORE_V2_ENABLED', False):
         # Fixed by the branch that actually executes; never re-read afterwards.
         pipeline_version = AIUsageRecord.PipelineVersion.V2
         identity = _llm_identity(getattr(settings, 'AI_DEFAULT_LLM_MODEL', 'unknown'))
+        gate, reservation, capacity_models = _reserve_selection(project_id, True, duration)
         try:
             result = SelectionEngine.select_viral_clips_detailed(**selection_kwargs)
         except Exception as exc:
+            if gate is not None:
+                gate.settle(reservation, _selection_failure_usage(capacity_models, exc))
             _record_call_failure(
                 project_id, AIUsageRecord.Stage.SELECTION, pipeline_version, exc, identity, started
             )
             raise
+        if gate is not None:
+            gate.settle(
+                reservation, _llm_usage_by_model(capacity_models, result.attempts or [result.usage])
+            )
         suggestions = [clip.model_dump(include=_CLIP_SUGGESTION_FIELDS) for clip in result.data.clips]
         usage = result.usage
         usage_rows = usages_for_success(result)
     else:
         pipeline_version = AIUsageRecord.PipelineVersion.LEGACY
         identity = _llm_identity(GeminiFlashStrategy().get_model_name())
+        # The legacy call reports no tokens: the reservation stands as the estimate.
+        _reserve_selection(project_id, False, duration)
         # Kill switch off: the legacy selector stays in charge (the V2 path always
         # goes through LiteLLM). Usage is synthetic so persistence is unchanged.
         try:
@@ -1008,9 +1612,9 @@ def _stage_select_clips(project_id):
             })
             _merge_metadata(
                 project_id, {'selection_usage': usage.model_dump()},
-                expected_stage=PipelineStage.TRANSCRIBED,
+                expected_stage=PipelineStage.MODERATED,
             )
-            advance(project_id, PipelineStage.TRANSCRIBED, PipelineStage.CLIPS_SELECTED)
+            advance(project_id, PipelineStage.MODERATED, PipelineStage.CLIPS_SELECTED)
 
     _persist_then_record_usage(
         project_id, AIUsageRecord.Stage.SELECTION, pipeline_version, usage_rows, persist
@@ -1111,7 +1715,10 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None):
         stage = advance_to(project_id, stage, inferred)
         progress['stage'] = stage
 
-    if stage in (PipelineStage.UPLOADED, PipelineStage.AUDIO_EXTRACTED, PipelineStage.TRANSCRIBED):
+    if stage in (
+        PipelineStage.UPLOADED, PipelineStage.AUDIO_EXTRACTED,
+        PipelineStage.TRANSCRIBED, PipelineStage.MODERATED,
+    ):
         VideoProject.objects.filter(pk=project_id).update(status=VideoProject.Status.INGESTING)
 
     if stage == PipelineStage.UPLOADED:
@@ -1129,6 +1736,13 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None):
         progress['stage'] = stage
 
     if stage == PipelineStage.TRANSCRIBED:
+        renew_lock()
+        with _running_stage(project_id, PipelineStage.MODERATED, attempt):
+            _stage_moderate(project_id)
+        stage = PipelineStage.MODERATED
+        progress['stage'] = stage
+
+    if stage == PipelineStage.MODERATED:
         renew_lock()
         with _running_stage(project_id, PipelineStage.CLIPS_SELECTED, attempt):
             _stage_select_clips(project_id)
@@ -1170,6 +1784,11 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
             "pipeline.failure_not_recorded project_id=%s error=%s",
             project_id, type(record_exc).__name__,
         )
+        return
+    if final and _is_moderation_failure(exc):
+        # ADR-011 D-M4/D-M5: a project stopped by moderation (blocked content or
+        # no verdict after the retries) gets its tokens back.
+        _refund_ingestion_reservation(project_id)
 
 
 # acks_late + reject_on_worker_lost: if the worker dies mid-task (OOM during
@@ -1235,6 +1854,24 @@ def process_initial_ingestion(self, project_id, lock_retries=0):
             extra={'project_id': str(project_id), 'attempt': attempt},
         )
         return f"Skipped {project_id}: {exc}"
+    except CapacityUnavailable as exc:
+        # The lock is already released here: the re-queued task can take it.
+        try:
+            return _wait_for_capacity(
+                project_id, exc, attempt, progress.get('stage'), self.request.retries
+            )
+        except Exception as wait_exc:
+            # Parking failed (e.g. the database): handled like any stage error,
+            # never left in pending_capacity with no message in the queue.
+            will_retry = (
+                _is_retryable_pipeline_error(wait_exc) and self.request.retries < self.max_retries
+            )
+            _record_pipeline_failure(
+                project_id, wait_exc, attempt, final=not will_retry, stage=progress.get('stage')
+            )
+            if will_retry:
+                raise self.retry(exc=wait_exc, countdown=_retry_countdown(self.request.retries))
+            raise
     except Exception as exc:
         will_retry = _is_retryable_pipeline_error(exc) and self.request.retries < self.max_retries
         _record_pipeline_failure(

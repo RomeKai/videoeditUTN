@@ -213,6 +213,11 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
             logger.error(f"Error reserving funds on create: {e}")
             return Response({"error": "Error procesando el pago."}, status=500)
 
+        # Links the reservation to the project so the pipeline can refund it when
+        # moderation stops the project (ADR-011 D-M5). Written before the task is queued.
+        project.metadata = {**(project.metadata or {}), 'reservation_id': str(tx.id)}
+        VideoProject.objects.filter(pk=project.pk).update(metadata=project.metadata)
+
         process_initial_ingestion.delay(project.id)
 
         response_data = serializer.data

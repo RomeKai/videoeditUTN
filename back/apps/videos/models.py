@@ -63,6 +63,7 @@ class VideoProject(models.Model):
         UPLOADED = 'uploaded', 'Subido'
         AUDIO_EXTRACTED = 'audio_extracted', 'Fuente preparada'
         TRANSCRIBED = 'transcribed', 'Transcrito'
+        MODERATED = 'moderated', 'Moderado'
         CLIPS_SELECTED = 'clips_selected', 'Clips seleccionados'
         RENDER_DISPATCHED = 'render_dispatched', 'Render despachado'
         COMPLETED = 'completed', 'Completado'
@@ -295,6 +296,7 @@ class AIUsageRecord(models.Model):
     class Stage(models.TextChoices):
         TRANSCRIPTION = 'transcription', 'Transcription'
         SELECTION = 'selection', 'Selection'
+        SEO = 'seo', 'Social metadata'
 
     class PipelineVersion(models.TextChoices):
         LEGACY = 'legacy', 'Legacy'
@@ -325,6 +327,8 @@ class AIUsageRecord(models.Model):
 
     prompt_tokens = models.PositiveIntegerField(default=0)
     completion_tokens = models.PositiveIntegerField(default=0)
+    # Billed as output but not part of completion_tokens (Gemini thinking).
+    reasoning_tokens = models.PositiveIntegerField(default=0)
     total_tokens = models.PositiveIntegerField(default=0)
     cache_read_tokens = models.PositiveIntegerField(default=0)
     audio_seconds = models.FloatField(null=True, blank=True)
@@ -351,3 +355,27 @@ class AIUsageRecord(models.Model):
 
     def __str__(self):
         return f"{self.stage}/{self.role} attempt={self.attempt} ({self.project_id})"
+
+
+class ModerationOverride(models.Model):
+    """
+    ADR-011 D-M5: an admin lets a project blocked by moderation through the
+    ingestion moderation stage. Insert-only audit record (who, when, why); the
+    stage passes without calling the API while one exists for the project.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(
+        VideoProject, on_delete=models.CASCADE, related_name='moderation_overrides'
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, editable=False,
+        related_name='+',
+    )
+    reason = models.TextField(help_text="Por qué se permite el contenido (revisión humana).")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Override de moderación {self.project_id} ({self.created_at:%Y-%m-%d})"

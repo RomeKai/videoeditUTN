@@ -26,6 +26,8 @@ class StageStatus(models.TextChoices):
     RUNNING = "running", "Running"
     COMPLETED = "completed", "Completed"
     FAILED = "failed", "Failed"
+    # Waiting for provider capacity (AICORE-11): neither a failure nor an attempt.
+    PENDING_CAPACITY = "pending_capacity", "Pending capacity"
 
 
 # Stages that do real work, in execution order. Their status is tracked in
@@ -34,6 +36,7 @@ STAGE_ORDER: Tuple[str, ...] = (
     PipelineStage.UPLOADED,
     PipelineStage.AUDIO_EXTRACTED,
     PipelineStage.TRANSCRIBED,
+    PipelineStage.MODERATED,
     PipelineStage.CLIPS_SELECTED,
     PipelineStage.RENDER_DISPATCHED,
 )
@@ -46,7 +49,9 @@ TERMINAL_STAGES: FrozenSet[str] = frozenset(
 _TRANSITIONS: Dict[str, FrozenSet[str]] = {
     PipelineStage.UPLOADED: frozenset({PipelineStage.AUDIO_EXTRACTED, PipelineStage.FAILED}),
     PipelineStage.AUDIO_EXTRACTED: frozenset({PipelineStage.TRANSCRIBED, PipelineStage.FAILED}),
-    PipelineStage.TRANSCRIBED: frozenset({PipelineStage.CLIPS_SELECTED, PipelineStage.FAILED}),
+    # ADR-011 D-M2: the transcript is moderated before the paid selection call.
+    PipelineStage.TRANSCRIBED: frozenset({PipelineStage.MODERATED, PipelineStage.FAILED}),
+    PipelineStage.MODERATED: frozenset({PipelineStage.CLIPS_SELECTED, PipelineStage.FAILED}),
     PipelineStage.CLIPS_SELECTED: frozenset({PipelineStage.RENDER_DISPATCHED, PipelineStage.FAILED}),
     PipelineStage.RENDER_DISPATCHED: frozenset(
         {PipelineStage.COMPLETED, PipelineStage.PARTIAL, PipelineStage.FAILED}
@@ -206,6 +211,8 @@ def last_completed_stage(project: VideoProject) -> str:
     resume: Optional[str] = PipelineStage.UPLOADED
     for stage in STAGE_ORDER[1:]:
         if statuses.get(stage) != StageStatus.COMPLETED:
+            if _predates_moderation(stage, statuses):
+                continue
             break
         resume = stage
     if (
@@ -216,3 +223,16 @@ def last_completed_stage(project: VideoProject) -> str:
         # guard): resuming past it would fail at render dispatch forever. Re-run it.
         resume = PipelineStage.TRANSCRIBED
     return resume
+
+
+def _predates_moderation(stage: str, statuses) -> bool:
+    """
+    Projects that selected clips before the moderation stage existed have no
+    status for it: their later completed stages stay valid (selection is not
+    paid again). Mirrors ``infer_completed_stage``, which also skips it.
+    """
+    return (
+        stage == PipelineStage.MODERATED
+        and stage not in statuses
+        and statuses.get(PipelineStage.CLIPS_SELECTED) == StageStatus.COMPLETED
+    )

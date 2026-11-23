@@ -37,7 +37,7 @@ from decimal import Decimal
 from typing import Any, Dict, Iterable, Iterator, Optional, Tuple
 
 from django.core.management.base import BaseCommand, CommandError, CommandParser
-from django.db.models import Case, Count, FloatField, Max, Q, Sum, When
+from django.db.models import Case, Count, FilteredRelation, FloatField, Max, Q, Sum, When
 from django.db.models.fields.json import KeyTextTransform
 from django.db.models.functions import Cast
 
@@ -61,6 +61,7 @@ EXPORT_COLUMNS: Tuple[str, ...] = (
     "error_code",
     "prompt_tokens",
     "completion_tokens",
+    "reasoning_tokens",
     "total_tokens",
     "cache_read_tokens",
     "audio_seconds",
@@ -84,12 +85,20 @@ PROJECT_COLUMNS: Tuple[str, ...] = (
     "fallback_used",
     "cached_any",
     "total_tokens",
+    "reasoning_tokens",
     "total_cost_usd",
     "cost_per_30min_usd",
     "cost_complete",
     "records_count",
     "failed_records",
+    # Social metadata per post (AICORE-17): apart, so the ingestion cost per
+    # 30 min above keeps measuring transcription + selection only.
+    "seo_records",
+    "seo_cost_usd",
+    "seo_cost_complete",
 )
+
+INGESTION_STAGES = (AIUsageRecord.Stage.TRANSCRIPTION, AIUsageRecord.Stage.SELECTION)
 
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 # Bounded (<= 9 integer and <= 6 decimal digits, i.e. up to ~31 years in seconds):
@@ -194,7 +203,13 @@ class Command(BaseCommand):
         # guard keeps non-numeric junk ("abc", null, negatives) from breaking
         # the cast; those rows simply get no duration.
         duration_text = KeyTextTransform("duration", "metadata")
-        records = "ai_usage_records"
+        # Project columns describe the ingestion (transcription + selection);
+        # SEO rows (AICORE-17) are reported in their own columns.
+        queryset = queryset.annotate(ingestion_records=FilteredRelation(
+            "ai_usage_records", condition=Q(ai_usage_records__stage__in=INGESTION_STAGES),
+        ))
+        seo = self._seo_by_project(queryset)
+        records = "ingestion_records"
         stream = (
             queryset.annotate(
                 _duration_text=duration_text,
@@ -211,6 +226,7 @@ class Command(BaseCommand):
                 version_count=Count(f"{records}__pipeline_version", distinct=True),
                 version_max=Max(f"{records}__pipeline_version"),
                 tokens_sum=Sum(f"{records}__total_tokens"),
+                reasoning_sum=Sum(f"{records}__reasoning_tokens"),
                 cost_sum=Sum(f"{records}__estimated_cost_usd"),
                 transcription_latency=Sum(
                     f"{records}__latency_seconds",
@@ -225,13 +241,36 @@ class Command(BaseCommand):
             .values(
                 "id", "pipeline_stage", "status", "pipeline_attempts", "source_duration",
                 "records_count", "failed_records", "fallback_count", "cached_count",
-                "null_cost_count", "version_count", "version_max", "tokens_sum", "cost_sum",
+                "null_cost_count", "version_count", "version_max", "tokens_sum", "reasoning_sum", "cost_sum",
                 "transcription_latency", "selection_latency",
             )
             .iterator(chunk_size=CHUNK_SIZE)
         )
         for row in stream:
-            yield self._project_row(row)
+            project_row = self._project_row(row)
+            seo_count, seo_cost, seo_unpriced = seo.get(row["id"], (0, None, 0))
+            project_row["seo_records"] = seo_count
+            project_row["seo_cost_usd"] = _plain(seo_cost)
+            # Same rule as cost_complete: every SEO row priced.
+            project_row["seo_cost_complete"] = seo_count > 0 and seo_unpriced == 0
+            yield project_row
+
+    @staticmethod
+    def _seo_by_project(projects) -> Dict[Any, Tuple[int, Optional[Decimal], int]]:
+        """(rows, cost, unpriced rows) of the SEO records of each project in the window."""
+        rows = (
+            AIUsageRecord.objects.filter(
+                stage=AIUsageRecord.Stage.SEO, project__in=projects.values("pk")
+            )
+            .values("project")
+            .annotate(
+                count=Count("id"),
+                cost=Sum("estimated_cost_usd"),
+                unpriced=Count("id", filter=Q(estimated_cost_usd__isnull=True)),
+            )
+            .values_list("project", "count", "cost", "unpriced")
+        )
+        return {project: (count, cost, unpriced) for project, count, cost, unpriced in rows}
 
     @staticmethod
     def _project_row(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -260,6 +299,7 @@ class Command(BaseCommand):
             "fallback_used": row["fallback_count"] > 0,
             "cached_any": row["cached_count"] > 0,
             "total_tokens": row["tokens_sum"],
+            "reasoning_tokens": row["reasoning_sum"],
             "total_cost_usd": _plain(total_cost),
             "cost_per_30min_usd": _plain(per_30min),
             "cost_complete": count > 0 and row["null_cost_count"] == 0,

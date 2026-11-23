@@ -1,5 +1,7 @@
 from django.contrib import admin
-from .models import VideoProject, VideoClip, ClipLayer, BrandKit, ScheduledPost
+from django.db import transaction
+
+from .models import BrandKit, ClipLayer, ModerationOverride, ScheduledPost, VideoClip, VideoProject
 
 # --- 1. BRAND KIT ---
 @admin.register(BrandKit)
@@ -57,3 +59,37 @@ class ScheduledPostAdmin(admin.ModelAdmin):
     list_display = ('id', 'video_clip', 'platform', 'publish_at', 'status')
     list_filter = ('platform', 'status')
     search_fields = ('video_clip__title',)
+
+
+# --- 6. MODERACIÓN (ADR-011 D-M5) ---
+@admin.register(ModerationOverride)
+class ModerationOverrideAdmin(admin.ModelAdmin):
+    """
+    Lets an admin release a project blocked by moderation after a human review.
+    Records are an audit trail: created with a mandatory reason, never edited or
+    deleted. Saving one re-dispatches the ingestion of a FAILED project, which
+    then passes the moderation stage without calling the API.
+    """
+    list_display = ('project', 'created_by', 'created_at')
+    search_fields = ('project__title', 'project__id')
+    raw_id_fields = ('project',)
+    readonly_fields = ('created_by', 'created_at')
+
+    def has_change_permission(self, request, obj=None):
+        return obj is None and super().has_change_permission(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def save_model(self, request, obj, form, change):
+        obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+        project = obj.project
+        if project.pipeline_stage == VideoProject.PipelineStage.FAILED:
+            from apps.videos.tasks import process_initial_ingestion
+
+            project_id = str(project.pk)
+            transaction.on_commit(lambda: process_initial_ingestion.delay(project_id))
+            self.message_user(request, "Override registrado: la ingestión se vuelve a encolar.")
+        else:
+            self.message_user(request, "Override registrado. El proyecto no está en FAILED: no se re-encola.")
