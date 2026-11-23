@@ -59,3 +59,17 @@ def test_registry_entries_receive_constructor_params():
 @pytest.mark.parametrize("value, expected", [(1080, 1080), (1081, 1082), (607.5, 608), (0, 0)])
 def test_ensure_even(value, expected):
     assert ensure_even(value) == expected
+
+
+@pytest.mark.parametrize("target_w, target_h", TARGETS)
+def test_split_layers_fill_the_full_width(target_w, target_h, synthetic_clip):
+    """
+    CompositeVideoClip fuerza el tamaño final, así que medirlo no alcanza: cada capa
+    (fondo, gameplay, cámara) tiene que ocupar el ancho exacto, sin columnas negras.
+    """
+    result = get_layout_strategy("split", target_w, target_h).apply(synthetic_clip)
+
+    cam_h = int(target_h * 0.35)
+    _bg, game, cam = result.clips
+    assert tuple(game.size) == (target_w, target_h - cam_h)
+    assert tuple(cam.size) == (target_w, cam_h)
