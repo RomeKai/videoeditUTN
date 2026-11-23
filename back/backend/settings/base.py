@@ -184,6 +184,15 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
     'visibility_timeout': env.int('CELERY_VISIBILITY_TIMEOUT', default=4 * 3600),
 }
 
+# Ceiling for one ingestion run (download, transcription, selection). The lock
+# heartbeat keeps a hung worker's lock alive forever, so without a limit a stuck
+# FFmpeg/provider call would block the project for good. The soft limit raises
+# SoftTimeLimitExceeded inside the task: the project fails with that static code
+# and the lock is released. The hard limit only kills a worker that ignored it.
+# Both must stay below CELERY_VISIBILITY_TIMEOUT.
+PIPELINE_SOFT_TIME_LIMIT = env.int('PIPELINE_SOFT_TIME_LIMIT', default=2 * 3600)
+PIPELINE_TIME_LIMIT = env.int('PIPELINE_TIME_LIMIT', default=PIPELINE_SOFT_TIME_LIMIT + 300)
+
 # Heavy MoviePy renders get their own queue so they cannot starve ingestion.
 # Workers must consume both queues: `celery -A backend worker -Q celery,render`.
 CELERY_TASK_ROUTES = {

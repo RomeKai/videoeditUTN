@@ -208,4 +208,11 @@ def last_completed_stage(project: VideoProject) -> str:
         if statuses.get(stage) != StageStatus.COMPLETED:
             break
         resume = stage
+    if (
+        resume == PipelineStage.CLIPS_SELECTED
+        and not VideoClip.objects.filter(project=project).exists()
+    ):
+        # Selection "completed" with zero clips (allowed before the empty-selection
+        # guard): resuming past it would fail at render dispatch forever. Re-run it.
+        resume = PipelineStage.TRANSCRIBED
     return resume
