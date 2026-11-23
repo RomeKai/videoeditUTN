@@ -107,13 +107,6 @@ class GeminiFlashStrategy(_LiteLLMLegacyStrategy):
     default_model = "gemini/gemini-3.8-flash"
 
 
-class GeminiFallbackStrategy(_LiteLLMLegacyStrategy):
-    """Secondary legacy strategy: model from AI_FALLBACK_LLM_MODEL (Gemini Flash-Lite by default)."""
-
-    setting_name = "AI_FALLBACK_LLM_MODEL"
-    default_model = "gemini/gemini-3.5-flash-lite"
-
-
 # --- 3. CONTEXT (SELECTION ENGINE) ---
 
 class SelectionEngine:
@@ -330,6 +323,7 @@ class SelectionEngine:
         from apps.videos.services.ai.contracts import ProviderUsage
         from apps.videos.services.ai.errors import AIError, is_task_time_limit
         from apps.videos.services.ai.litellm_selection import classify_llm_error
+        from apps.videos.services.ai.llm_credentials import provider_for_model
 
         started = time.monotonic()
         try:
@@ -356,7 +350,7 @@ class SelectionEngine:
                 # (None), never the false zero of a call that never answered.
                 model = strategy.get_model_name()
                 exc.usage_attempts = [ProviderUsage(
-                    provider=model.split('/')[0] if '/' in model else 'openai',
+                    provider=provider_for_model(model),
                     model=model,
                     duration_seconds=round(time.monotonic() - started, 3),
                     estimated_cost_usd=None,

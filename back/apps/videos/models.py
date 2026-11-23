@@ -304,8 +304,12 @@ class AIUsageRecord(models.Model):
         PRIMARY = 'primary', 'Primary'
         FALLBACK = 'fallback', 'Fallback'
 
+    # Cost history outlives the project (AICORE-18): deleting a project leaves its
+    # rows, and their project_id, in the pilot export. No DB constraint, so the
+    # dangling id is allowed; `record.project` raises DoesNotExist for those rows.
     project = models.ForeignKey(
-        VideoProject, on_delete=models.CASCADE, related_name='ai_usage_records', db_index=True
+        VideoProject, on_delete=models.DO_NOTHING, db_constraint=False,
+        related_name='ai_usage_records', db_index=True,
     )
     stage = models.CharField(max_length=16, choices=Stage.choices)
     pipeline_version = models.CharField(max_length=8, choices=PipelineVersion.choices)
