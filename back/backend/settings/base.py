@@ -133,6 +133,15 @@ OPENAI_API_KEY = env('OPENAI_API_KEY', default=None)
 # Hard timeout (seconds) for the Moderation call. The shield fails closed: a timeout blocks the
 # content and the task retries with backoff; SDK-level retries are disabled (Celery owns retries).
 MODERATION_TIMEOUT_SECONDS = env.float('MODERATION_TIMEOUT_SECONDS', default=10.0)
+# ADR-011: the whole text is moderated in blocks of this size (D-M1), with a pinned model
+# (D-M6). Flagged categories in the non-blocking list are only measured; any other flagged
+# category blocks, including ones the API adds later (D-M5, fail-closed).
+MODERATION_MODEL = env('MODERATION_MODEL', default='omni-moderation-latest')
+MODERATION_BLOCK_CHARS = env.int('MODERATION_BLOCK_CHARS', default=10000)
+MODERATION_NON_BLOCKING_CATEGORIES = env.list(
+    'MODERATION_NON_BLOCKING_CATEGORIES',
+    default=['harassment', 'violence', 'self-harm', 'illicit'],
+)
 
 # AI Core V2 Model Configuration
 AI_DEFAULT_LLM_MODEL = env('AI_DEFAULT_LLM_MODEL', default='gemini/gemini-3.8-flash')

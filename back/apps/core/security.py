@@ -1,5 +1,6 @@
-import logging
 import html
+import logging
+import time
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from openai import OpenAI
@@ -65,25 +66,108 @@ def _classify_moderation_failure(exc: Exception) -> ModerationError:
     return ModerationBlockedError(code=MODERATION_MISCONFIGURED)
 
 
+# ADR-011 D-M6: the model is pinned so its category set cannot change silently.
+DEFAULT_MODERATION_MODEL = "omni-moderation-latest"
+# ADR-011 D-M5: flagged but frequent in gaming/streaming content ("lo maté",
+# banter), so they are measured but never block. Any other flagged category
+# blocks, including categories the API adds later.
+DEFAULT_NON_BLOCKING_CATEGORIES = ("harassment", "violence", "self-harm", "illicit")
+
+
+def _normalize_category(name) -> str:
+    """API aliases ("self-harm/intent") and SDK field names ("self_harm_intent") compare equal."""
+    return str(name).strip().lower().replace("/", "_").replace("-", "_")
+
+
+def _flagged_categories(response) -> set:
+    """
+    Normalized names of the categories the verdict marks as true. Any shape
+    error is a failure to moderate (never "safe"): it raises TypeError, which
+    the caller classifies as a retryable ModerationError.
+    """
+    result = response.results[0]
+    flagged = result.flagged
+    if not isinstance(flagged, bool):
+        raise TypeError("moderation verdict 'flagged' is not a bool")
+    if not flagged:
+        return set()
+
+    categories = result.categories
+    if hasattr(categories, "model_dump"):
+        values = categories.model_dump(by_alias=True)
+    elif categories is not None and hasattr(categories, "__dict__"):
+        values = vars(categories)
+    else:
+        raise TypeError("moderation verdict has no categories")
+
+    names = set()
+    for name, value in values.items():
+        if value is None:  # categories a model does not score
+            continue
+        if not isinstance(value, bool):
+            raise TypeError("moderation category value is not a bool")
+        if value:
+            names.add(_normalize_category(name))
+    # Flagged without any category: the verdict cannot be classified, so it
+    # blocks (fail-closed) under a name that is never in the allow list.
+    return names or {"unclassified"}
+
+
+def split_into_blocks(text: str, max_chars: int) -> list:
+    """
+    Splits ``text`` into consecutive blocks of at most ``max_chars``, cut at
+    the last whitespace inside each window so words are not split. A single
+    token longer than the window is cut hard. Empty blocks are dropped.
+    """
+    if max_chars <= 0:
+        raise ValueError("max_chars must be positive")
+    blocks = []
+    remaining = text.strip()
+    while remaining:
+        if len(remaining) <= max_chars:
+            blocks.append(remaining)
+            break
+        window = remaining[: max_chars + 1]
+        cut = max(window.rfind(" "), window.rfind("\n"), window.rfind("\t"))
+        if cut <= 0:
+            cut = max_chars
+        block = remaining[:cut].strip()
+        if block:
+            blocks.append(block)
+        remaining = remaining[cut:].strip()
+    return blocks
+
+
 class AI_Security_Shield:
     """
     Middleware service to prevent Prompt Injection and ensure content safety.
     Acts as a firewall between user data and LLM services.
     """
     
+    # Default block size (ADR-011 D-M1): the payload size this API already
+    # moderated when only the first block was checked.
     MAX_CHARACTERS = 10000
 
     @staticmethod
     def check_content_safety(text_payload: str) -> bool:
         """
-        Calls OpenAI Moderation API to detect illegal or harmful content.
-        Raises UnsafeContentError if flagged.
-        """
-        if not text_payload:
-            return True
+        Moderates the WHOLE text with the OpenAI Moderation API (ADR-011).
 
-        # 1. Preventive Truncation
-        safe_payload = text_payload[:AI_Security_Shield.MAX_CHARACTERS]
+        - D-M1: the text is split into blocks of ``MODERATION_BLOCK_CHARS`` cut
+          at whitespace; blocks are checked in order and the check stops at the
+          first block that blocks.
+        - D-M5: the verdict is per category. Categories listed in
+          ``MODERATION_NON_BLOCKING_CATEGORIES`` (frequent in gaming content)
+          never block; any other flagged category does, including categories
+          the API adds later (fail-closed).
+        - D-M4: no verdict for any block means the content does NOT pass
+          (``ModerationError``, typed as retryable or not).
+        - D-M7: logs carry block counts, latency and category names only.
+
+        Raises UnsafeContentError when a block is blocked.
+        """
+        if not text_payload or not text_payload.strip():
+            return True
 
         # Fail closed: without a moderation verdict the content is NOT allowed.
         api_key = settings.OPENAI_API_KEY
@@ -91,29 +175,60 @@ class AI_Security_Shield:
             logger.error("🛡️ [SECURITY] Moderation misconfigured: OPENAI_API_KEY is not set")
             raise ModerationBlockedError(code=MODERATION_MISCONFIGURED)
 
-        try:
-            # Retries are owned by Celery, not by the SDK.
-            client = OpenAI(
-                api_key=api_key,
-                timeout=float(settings.MODERATION_TIMEOUT_SECONDS),
-                max_retries=0,
+        block_chars = int(
+            getattr(settings, "MODERATION_BLOCK_CHARS", AI_Security_Shield.MAX_CHARACTERS)
+        )
+        blocks = split_into_blocks(text_payload, block_chars)
+        model = getattr(settings, "MODERATION_MODEL", DEFAULT_MODERATION_MODEL)
+        non_blocking = {
+            _normalize_category(name)
+            for name in getattr(
+                settings, "MODERATION_NON_BLOCKING_CATEGORIES", DEFAULT_NON_BLOCKING_CATEGORIES
             )
-            logger.info("🛡️ [SECURITY] Checking content safety via OpenAI Moderation...")
+        }
 
-            response = client.moderations.create(input=safe_payload)
-            result = response.results[0]
-            # Any shape error in the verdict is a failure to moderate, never "safe".
-            flagged = result.flagged
-            if not isinstance(flagged, bool):
-                raise TypeError("moderation verdict 'flagged' is not a bool")
-            categories = result.categories
-        except Exception as exc:
-            raise _classify_moderation_failure(exc) from None
+        started = time.monotonic()
+        checked = 0
+        flagged_seen = set()
+        try:
+            try:
+                # Retries are owned by Celery, not by the SDK.
+                client = OpenAI(
+                    api_key=api_key,
+                    timeout=float(settings.MODERATION_TIMEOUT_SECONDS),
+                    max_retries=0,
+                )
+            except Exception as exc:
+                raise _classify_moderation_failure(exc) from None
+            for block in blocks:
+                try:
+                    response = client.moderations.create(input=block, model=model)
+                    flagged = _flagged_categories(response)
+                except Exception as exc:
+                    raise _classify_moderation_failure(exc) from None
+                checked += 1
+                flagged_seen.update(flagged)
+                blocking = sorted(flagged - non_blocking)
+                if blocking:
+                    logger.warning(
+                        "🚨 [SECURITY] moderation.blocked block=%d/%d categories=%s latency_s=%.3f",
+                        checked, len(blocks), ",".join(blocking), time.monotonic() - started,
+                    )
+                    raise UnsafeContentError(
+                        "El contenido proporcionado infringe las políticas de seguridad "
+                        "y no puede ser procesado."
+                    )
+        except ModerationError:
+            logger.error(
+                "🛡️ [SECURITY] moderation.failed blocks_checked=%d/%d latency_s=%.3f",
+                checked, len(blocks), time.monotonic() - started,
+            )
+            raise
 
-        if flagged:
-            logger.warning(f"🚨 [SECURITY] Content flagged as unsafe: {categories}")
-            raise UnsafeContentError("El contenido proporcionado infringe las políticas de seguridad y no puede ser procesado.")
-
+        logger.info(
+            "🛡️ [SECURITY] moderation.passed blocks=%d latency_s=%.3f non_blocking_flagged=%s",
+            len(blocks), time.monotonic() - started, ",".join(sorted(flagged_seen)) or "-",
+        )
         return True
 
     @staticmethod
