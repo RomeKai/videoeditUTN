@@ -58,7 +58,9 @@ class FillLayout(BaseLayout):
             final_clip = clip.cropped(x_center=clip.w//2, y_center=clip.h//2, width=crop_w, height=crop_h)
             logger.info("✨ Fill central estático aplicado")
 
-        final_clip = final_clip.resized(width=target_w, height=target_h)
+        # new_size fuerza el tamaño exacto: con width+height MoviePy 2 ignora width y
+        # el redondeo puede dar un ancho impar (ej. 359), inválido para H.264.
+        final_clip = final_clip.resized(new_size=(target_w, target_h))
         return final_clip
 
 class FitLayout(BaseLayout):

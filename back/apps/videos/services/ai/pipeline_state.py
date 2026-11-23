@@ -26,6 +26,8 @@ class StageStatus(models.TextChoices):
     RUNNING = "running", "Running"
     COMPLETED = "completed", "Completed"
     FAILED = "failed", "Failed"
+    # Waiting for provider capacity (AICORE-11): neither a failure nor an attempt.
+    PENDING_CAPACITY = "pending_capacity", "Pending capacity"
 
 
 # Stages that do real work, in execution order. Their status is tracked in
@@ -208,4 +210,11 @@ def last_completed_stage(project: VideoProject) -> str:
         if statuses.get(stage) != StageStatus.COMPLETED:
             break
         resume = stage
+    if (
+        resume == PipelineStage.CLIPS_SELECTED
+        and not VideoClip.objects.filter(project=project).exists()
+    ):
+        # Selection "completed" with zero clips (allowed before the empty-selection
+        # guard): resuming past it would fail at render dispatch forever. Re-run it.
+        resume = PipelineStage.TRANSCRIBED
     return resume

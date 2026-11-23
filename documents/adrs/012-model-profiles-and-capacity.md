@@ -62,7 +62,7 @@ Ingestión real de un video propio de 763 s (12 min 43 s) con V2 activado. Fuent
 
 Hallazgos:
 
-- **Tokens de razonamiento no contados.** En una llamada directa a `gemini-3.8-flash`, `total_tokens` (113) superó `prompt + completion` (2 + 9) en 102: son tokens de razonamiento, que Google factura como salida y LiteLLM no incluye en `completion_tokens`. Además, `_extract_usage` recalcula `total_tokens` como entrada más salida y descarta el total del proveedor. **El costo de selección con Gemini está subestimado** y `cost_complete=True` no lo detecta. Corrección pendiente: contar esos tokens como salida y guardarlos en `AIUsageRecord` (migración `0004`).
+- **Tokens de razonamiento no contados.** En una llamada directa a `gemini-3.8-flash`, `total_tokens` (113) superó `prompt + completion` (2 + 9) en 102: son tokens de razonamiento, que Google factura como salida y LiteLLM no incluye en `completion_tokens`. Además, `_extract_usage` recalcula `total_tokens` como entrada más salida y descarta el total del proveedor. **El costo de selección con Gemini está subestimado** y `cost_complete=True` no lo detecta. Corregido en `fix/ai-usage-reasoning-tokens`: el excedente del total del proveedor se cuenta como salida y se guarda en `AIUsageRecord.reasoning_tokens` (migración `0004`). Los registros anteriores a `0004` quedan con 0 y su costo es una cota inferior.
 - **Riesgo para el criterio de costo.** Para 30 min con el primario `gemini-3.8-flash`: transcripción ~USD 0,020, entrada de selección ~USD 0,010 y salida visible ~USD 0,002, o sea **~USD 0,032 sin razonamiento**. Cada 1.000 tokens de razonamiento suman USD 0,00375: con ~2.000 se supera el umbral de USD 0,04. El 2027-01-01 el precio de 3.8 se duplica.
 - **Tier gratuito de Gemini observado:** `gemini-3.8-flash` con 5 RPM, 250.000 TPM y 20 RPD; `gemini-3.5-flash-lite` con 15 RPM, 250.000 TPM y 500 RPD. No alcanza ni para la muestra del piloto y, además, ese tier usa los datos para entrenamiento.
 - **Términos de privacidad (consulta del 2026-10-12):** el tier pago de Gemini, Groq y la API de OpenAI declaran no usar los datos de la API para entrenamiento, con retención limitada a monitoreo de abuso. D-C2 se cumple en tiers pagos.
@@ -102,12 +102,15 @@ Un Django system check que falle el arranque en piloto y producción si:
 
 La mala configuración se detecta en el arranque y no en la primera factura. La implementación entra en AICORE-9.
 
-### D-C4. Rate limiting propio con degradación ordenada (propuesta)
+### D-C4. Rate limiting propio con degradación ordenada (implementada en AICORE-11, #60)
 
 - Un token bucket en Valkey por proveedor y recurso: segundos de audio por hora y por día para la transcripción, y tokens y requests por minuto para el LLM.
 - Los buckets se configuran **por debajo** del límite del proveedor (por ejemplo, al 80 %), para absorber errores de estimación.
 - Antes de cada llamada, la etapa reserva capacidad. Si no la hay, la tarea vuelve a la cola con un countdown y la etapa queda en `pending_capacity`. Ese estado no cuenta como intento fallido ni genera cobro.
-- **Abierto:** el tiempo máximo de espera antes de marcar el proyecto como fallido y el mensaje que ve el usuario.
+- **Espera máxima (decidido):** 1 hora por etapa (`AI_CAPACITY_MAX_WAIT_SECONDS=3600`). Cada re-encolado espera el déficit del bucket, con tope de 5 minutos y jitter. Si la espera prevista supera la máxima, el proyecto falla enseguida con `pipeline_error_code=CapacityTimeoutError` (en SEO, `error_log=capacity_timeout`). Una cuota diaria agotada falla así en vez de esperar al día siguiente.
+- **Lo que ve el usuario (decidido):** mientras espera, el proyecto sigue en "Procesando". Si se vence la espera: *"Hay mucha demanda en este momento y no pudimos procesar tu video. Volvé a intentarlo en unos minutos."* Mostrarlo requiere exponer el código de error en la API y mapearlo en el frontend (pendiente). La devolución del saldo reservado se suma cuando se mergee la etapa de moderación (AICORE-13), que ya trae el reembolso.
+- **Ajuste con el uso real:** la reserva es una estimación (transcripción: duración del video; LLM: ~456 tokens por minuto de audio, más prompt y salida, en el primario y en el fallback). Después de cada llamada se ajusta con los segundos y tokens reales y se devuelve lo del modelo que no se usó. Un timeout o una conexión cortada mantienen la reserva, porque pudieron facturarse.
+- **Valkey caído:** la reserva falla con un error reintentable y no se llama al proveedor, igual que el lock de AICORE-7.
 - Motivo: es preferible demorar la entrega de forma ordenada antes que recibir 429 del proveedor. Hoy esos 429 se reintentan con backoff (AICORE-7), pero inflan la latencia p95 y consumen reintentos.
 
 ### D-C5. Tiers de producción (ABIERTA)
@@ -161,7 +164,7 @@ Se mantiene condicionada a la evidencia del piloto. Es un candidato a mejora rá
 
 1. **Antes del G0 del piloto:** relevar los límites de Gemini en tier pago, verificar los términos de privacidad de cada proveedor (D-C2) y ampliar la capacidad de Groq.
 2. **AICORE-9:** chequeo de arranque (D-C3) junto con el rollout por allowlist.
-3. **Issue nuevo, antes del G3:** rate limiting con `pending_capacity` (D-C4).
+3. **AICORE-11 (#60), antes del G3:** rate limiting con `pending_capacity` (D-C4). Configuración por entorno en la sección 5.5 del runbook del piloto.
 4. **Con las mediciones del G0:** cerrar D-C5 y pasar este ADR a `accepted`.
 
 ---

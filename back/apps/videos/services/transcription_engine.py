@@ -114,7 +114,16 @@ class TranscriptionEngine:
                 return self._legacy_words(raw)
             return self._legacy_segments(raw)
 
-        exec_result = self._transcribe_groq(audio_path)
+        from apps.videos.services.ai.errors import AINoSpeechDetectedError
+
+        try:
+            exec_result = self._transcribe_groq(audio_path)
+        except AINoSpeechDetectedError:
+            # This list API (subtitles for a rendered clip) answers "no words"
+            # for silent audio, as the local backend always did; only the
+            # ingestion path (transcribe_detailed) treats it as a failure.
+            self.last_full_text = None
+            return []
         tx = exec_result.data
         self.last_full_text = tx.full_text
 
@@ -233,14 +242,15 @@ class TranscriptionEngine:
             TranscriptionSegment,
             WordTimestamp,
         )
-        from apps.videos.services.ai.errors import AIContractValidationError
+        from apps.videos.services.ai.errors import AINoSpeechDetectedError
         from apps.videos.services.ai.pricing import PRICING_VERSION
 
         full_text = str(raw.get("text", "")).strip()
         if not full_text:
             # The contract requires non-empty text; silent audio is a deterministic
             # outcome, so it is reported as non-retryable instead of looping retries.
-            raise AIContractValidationError(
+            # Same error as the Groq backend so both report one static code.
+            raise AINoSpeechDetectedError(
                 message="Local Whisper returned an empty transcription (no speech detected).",
                 provider="local",
                 model=f"whisper-{self.model_size}",

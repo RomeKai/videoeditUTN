@@ -321,6 +321,8 @@ class AIUsageRecord(models.Model):
 
     prompt_tokens = models.PositiveIntegerField(default=0)
     completion_tokens = models.PositiveIntegerField(default=0)
+    # Billed as output but not part of completion_tokens (Gemini thinking).
+    reasoning_tokens = models.PositiveIntegerField(default=0)
     total_tokens = models.PositiveIntegerField(default=0)
     cache_read_tokens = models.PositiveIntegerField(default=0)
     audio_seconds = models.FloatField(null=True, blank=True)
