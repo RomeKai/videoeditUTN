@@ -119,6 +119,26 @@ Medir, sin guardar texto: tasa de contenido marcado, tasa de errores de la API p
 
 ---
 
+### D-M8. Validación del archivo subido y registro de auditoría (CORE-05, #12)
+
+**Validación del upload (implementada).** Antes de guardar o cobrar un proyecto subido como archivo, `media_validation.validate_upload` comprueba que los bytes sean realmente un video procesable:
+
+- El tipo se detecta con libmagic sobre el contenido. El nombre y el header del cliente no cuentan. Solo pasan MP4, MOV y AVI.
+- `ffprobe` (con un timeout de 60 s) tiene que encontrar una pista de video, una duración y un tamaño. La duración y el tamaño deben quedar dentro de los límites del pipeline:
+  - `AI_UPLOAD_MAX_DURATION_SECONDS`: 3 h por defecto.
+  - `AI_UPLOAD_MAX_LONG_SIDE_PX`: 4096 por defecto.
+  - `AI_UPLOAD_MIN_SHORT_SIDE_PX`: 240 por defecto.
+- Los límites del plan (duración y resolución del render) siguen en `PricingEngine`. Ahora `PricingEngine` usa la duración medida acá y ya no decodifica el video otra vez con MoviePy.
+- Un rechazo devuelve 400 con un mensaje fijo y deja un log con un código estático. Ni el nombre del archivo ni la salida de `ffprobe` llegan al log ni a la respuesta.
+
+**Registro de auditoría con prompt y respuesta (descartado).** El backlog original pedía un `AIAuditLog` que guardara el prompt, la respuesta y los tiempos de cada llamada. No se implementa, porque choca con la regla de privacidad de este ADR y de ADR-012: no se persiste texto del usuario ni salidas crudas del modelo. La auditoría queda cubierta sin texto por:
+
+- `AIUsageRecord`: cada intento, con proveedor, modelo, tokens, costo, latencia y clase del error.
+- El resultado de moderación por proyecto (D-M7).
+- `ModerationOverride`: quién liberó qué proyecto y por qué.
+
+**Pendiente, fuera del núcleo de IA:** el rate limiting de la API por usuario (por ejemplo, de creación de proyectos). DRF necesita un cache compartido entre procesos, y hoy el proyecto no lo tiene: el `cache` de Django es local a cada proceso. El costo de IA ya está acotado por la reserva de tokens y por el control de capacidad (ADR-012, D-C4).
+
 ## Consecuencias
 
 ### Positivas

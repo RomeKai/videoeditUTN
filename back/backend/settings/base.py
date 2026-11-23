@@ -179,6 +179,12 @@ TRANSCRIPTION_BACKEND = env('TRANSCRIPTION_BACKEND', default='groq')
 # Prompt-to-Edit (PTE-01a): longest request sent to the parser; longer text is cut.
 AI_PROMPT_MAX_CHARS = env.int('AI_PROMPT_MAX_CHARS', default=1000)
 
+# Upload validation (CORE-05, #12): limits of the pipeline itself, checked with
+# ffprobe before the project is saved. The plan limits stay in PricingEngine.
+AI_UPLOAD_MAX_DURATION_SECONDS = env.int('AI_UPLOAD_MAX_DURATION_SECONDS', default=10800)
+AI_UPLOAD_MAX_LONG_SIDE_PX = env.int('AI_UPLOAD_MAX_LONG_SIDE_PX', default=4096)
+AI_UPLOAD_MIN_SHORT_SIDE_PX = env.int('AI_UPLOAD_MIN_SHORT_SIDE_PX', default=240)
+
 # JWT Configuration
 from datetime import timedelta
 SIMPLE_JWT = {
