@@ -424,3 +424,64 @@ class ReviewRegressionTests(SeoTaskHarness, TestCase):
         row = json.loads(out.getvalue().strip())
         self.assertEqual(row["seo_records"], 1)
         self.assertFalse(row["seo_cost_complete"])
+
+
+class DispatchReviewRegressionTests(SeoTaskHarness, TestCase):
+    """Edge cases found in the review of the SEO dispatch."""
+
+    def test_a_failed_regeneration_keeps_the_caption_and_the_post_publishable(self):
+        ScheduledPost.objects.filter(pk=self.post.pk).update(
+            status=ScheduledPost.Status.SCHEDULED, generated_caption="OLD", generated_hashtags=TAGS,
+        )
+        error = AIAuthenticationError("bad key")
+        error.usage_attempts = [usage(error_code="AIAuthenticationError", estimated_cost_usd=0.0)]
+        self.generate.side_effect = error
+
+        with self.assertLogs("apps.videos.tasks", level="WARNING") as logs:
+            result = self.run_task(regenerate=True)
+
+        self.assertEqual(result, "SEO Failed")
+        self.post.refresh_from_db()
+        self.assertEqual(self.post.status, ScheduledPost.Status.SCHEDULED)
+        self.assertEqual((self.post.generated_caption, self.post.generated_hashtags), ("OLD", TAGS))
+        self.assertIsNone(self.post.error_log)
+        self.assertTrue(any("seo.regenerate_failed" in line for line in logs.output))
+
+    def test_a_blocked_regeneration_keeps_the_previous_caption(self):
+        ScheduledPost.objects.filter(pk=self.post.pk).update(
+            status=ScheduledPost.Status.SCHEDULED, generated_caption="OLD", generated_hashtags=TAGS,
+        )
+        self.check.side_effect = [None, UnsafeContentError("x")]  # the new output is blocked
+
+        self.assertEqual(self.run_task(regenerate=True), "Security Abort")
+
+        self.post.refresh_from_db()
+        self.assertEqual(self.post.status, ScheduledPost.Status.SCHEDULED)
+        self.assertEqual(self.post.generated_caption, "OLD")
+
+    def test_a_regeneration_never_touches_a_post_that_is_publishing_or_published(self):
+        for status in (ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED):
+            with self.subTest(status=status):
+                ScheduledPost.objects.filter(pk=self.post.pk).update(
+                    status=status, generated_caption="OLD", generated_hashtags=TAGS,
+                )
+
+                self.assertEqual(self.run_task(regenerate=True), "SEO Skipped")
+
+                self.post.refresh_from_db()
+                self.assertEqual((self.post.status, self.post.generated_caption), (status, "OLD"))
+        self.generate.assert_not_called()
+
+    def test_publishing_that_starts_during_the_generation_keeps_its_caption(self):
+        def publishing_starts(_request):
+            ScheduledPost.objects.filter(pk=self.post.pk).update(status=ScheduledPost.Status.PROCESSING)
+            return generated()
+
+        self.generate.side_effect = publishing_starts
+
+        self.assertEqual(self.run_task(), "SEO Skipped")
+
+        self.post.refresh_from_db()
+        self.assertEqual(self.post.status, ScheduledPost.Status.PROCESSING)
+        self.assertIsNone(self.post.generated_caption)
+        self.assertIsNone(self.redis.get(f"seo:pending:{self.post.id}"))  # not reused later

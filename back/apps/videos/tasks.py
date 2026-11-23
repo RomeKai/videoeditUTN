@@ -275,6 +275,10 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
                 logger.info("seo.skipped post_id=%s reason=locked", post_id)
                 return "SEO Busy"
             post.refresh_from_db()
+            if post.status in _SEO_FROZEN_STATUSES:
+                # Publishing started or finished: its caption is final.
+                logger.info("seo.skipped post_id=%s reason=%s", post_id, post.status)
+                return "SEO Skipped"
             if not regenerate and post.generated_caption and post.generated_hashtags:
                 return "SEO Already Generated"  # finished by another run before the lock
             if regenerate and self.request.retries == 0 and not capacity_waited_s:
@@ -324,14 +328,22 @@ _SEO_FAILURE_CODES = (
 )
 
 
+# Publishing started or finished: SEO never changes these posts.
+_SEO_FROZEN_STATUSES = (ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED)
+
+
 def _fail_seo_post(post_id, code):
     """
     FAILED with a static code, unless publishing already started or finished:
     a post published with another caption must never turn FAILED because of SEO.
+    A failed regeneration keeps the caption it was replacing, and the post keeps
+    its status: it can still be published.
     """
-    ScheduledPost.objects.filter(id=post_id).exclude(
-        status__in=(ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED),
-    ).update(status=ScheduledPost.Status.FAILED, error_log=code)
+    posts = ScheduledPost.objects.filter(id=post_id).exclude(status__in=_SEO_FROZEN_STATUSES)
+    if posts.filter(generated_caption__gt='', generated_hashtags__isnull=False).exists():
+        logger.warning("seo.regenerate_failed post_id=%s code=%s", post_id, code)
+        return
+    posts.update(status=ScheduledPost.Status.FAILED, error_log=code)
 
 
 def _recover_seo_failed_post(post_id):
@@ -433,9 +445,14 @@ def _generate_post_metadata(task, post, capacity_waited_s, regenerate=False):
         _fail_seo_post(post.id, "generated_content_blocked")
         return "Security Abort"
 
-    ScheduledPost.objects.filter(id=post.id).update(
-        generated_caption=metadata.caption, generated_hashtags=metadata.hashtags,
-    )
+    stored = ScheduledPost.objects.filter(id=post.id).exclude(
+        status__in=_SEO_FROZEN_STATUSES,
+    ).update(generated_caption=metadata.caption, generated_hashtags=metadata.hashtags)
+    if not stored:
+        # Publishing started while this run generated: its caption is final.
+        _seo_pending_clear(post.id)
+        logger.info("seo.skipped post_id=%s reason=publishing", post.id)
+        return "SEO Skipped"
     _recover_seo_failed_post(post.id)
     _seo_pending_clear(post.id)
     logger.info("seo.persisted post_id=%s hashtags=%d", post.id, len(metadata.hashtags))

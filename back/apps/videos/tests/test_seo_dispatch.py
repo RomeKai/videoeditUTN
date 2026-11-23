@@ -162,17 +162,24 @@ class AdminRegenerateTests(SeoDispatchHarness):
         admin = User.objects.create_superuser(username="admin-seo", email="as@test.com", password="pw")
         self.client.force_login(admin)
 
-    def test_action_regenerates_only_posts_not_yet_publishing(self):
-        clip = self.make_clip()
-        draft = self.make_post(clip)
-        published = self.make_post(clip, status=ScheduledPost.Status.PUBLISHED)
+    def test_action_regenerates_only_paid_posts_not_yet_publishing(self):
+        with patch(DELAY):
+            clip = self.make_clip({"use_seo": True})
+            draft = self.make_post(clip)
+            processing = self.make_post(clip, status=ScheduledPost.Status.PROCESSING)
+            published = self.make_post(clip, status=ScheduledPost.Status.PUBLISHED)
+            unpaid = self.make_post(self.make_clip())
+        selected = [draft.pk, processing.pk, published.pk, unpaid.pk]
         with patch(APPLY_ASYNC) as apply_async, self.captureOnCommitCallbacks(execute=True):
             response = self.client.post(
                 reverse("admin:videos_scheduledpost_changelist"),
-                {"action": "regenerate_ai_metadata", "_selected_action": [draft.pk, published.pk]},
+                {"action": "regenerate_ai_metadata", "_selected_action": selected},
+                follow=True,
             )
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 200)
         apply_async.assert_called_once_with(args=[str(draft.pk)], kwargs={"regenerate": True})
+        self.assertContains(response, "Generación encolada para 1 publicaciones.")
+        self.assertContains(response, "3 se omitieron")
 
 
 class CreateWithSeoTests(TestCase):
@@ -189,7 +196,7 @@ class CreateWithSeoTests(TestCase):
         self.client.force_authenticate(user=self.user)
 
     def create(self, **payload):
-        body = {"title": "Remoto", "video_url": "https://www.youtube.com/watch?v=x"}
+        body = {"title": "Remoto", "video_url": "https://www.youtube.com/watch?v=x"}  # flat price
         body.update(payload)
         with patch("apps.videos.views.process_initial_ingestion.delay"):
             return self.client.post(reverse("project-list"), body, format="json")
@@ -200,6 +207,29 @@ class CreateWithSeoTests(TestCase):
         project = VideoProject.objects.get(pk=response.data["id"])
         self.assertIs(project.metadata["use_seo"], True)
         self.assertNotIn("use_seo", response.data)  # write-only
+
+    def reserved_amount(self, response):
+        from apps.payments.models import Transaction
+
+        project = VideoProject.objects.get(pk=response.data["id"])
+        return Transaction.objects.get(pk=project.metadata["reservation_id"]).amount
+
+    def test_url_project_with_seo_pays_the_add_on(self):
+        without = self.reserved_amount(self.create())
+        with_seo = self.reserved_amount(self.create(use_seo=True))
+        self.assertEqual(with_seo - without, Decimal("5.00"))
+
+    def test_url_project_with_seo_on_a_plan_without_it_is_rejected(self):
+        plan = SubscriptionPlan.objects.create(
+            name="sin-seo-url", has_seo_optimization=False, max_video_duration_seconds=3600,
+        )
+        Workspace.objects.filter(members=self.user).update(subscription_plan=plan)
+
+        response = self.create(title="Con SEO", use_seo=True)
+
+        self.assertEqual(response.status_code, 403, response.content[:300])
+        self.assertFalse(VideoProject.objects.filter(title="Con SEO").exists())
+        self.assertEqual(self.create(title="Sin SEO").status_code, 201)  # control
 
     def test_without_use_seo_nothing_is_stored(self):
         response = self.create()
@@ -227,13 +257,19 @@ class CreateWithSeoTests(TestCase):
         Workspace.objects.filter(members=self.user).update(subscription_plan=plan)
         clip = MagicMock()
         clip.__enter__.return_value.duration = 30
+        def upload(title, **extra):
+            return self.client.post(reverse("project-list"), {
+                "title": title, **extra,
+                "source_file": SimpleUploadedFile("v.mp4", b"0" * 10, content_type="video/mp4"),
+            }, format="multipart")
+
         with tempfile.TemporaryDirectory() as media, override_settings(MEDIA_ROOT=media), \
                 patch("moviepy.VideoFileClip", return_value=clip), \
                 patch("apps.videos.views.process_initial_ingestion.delay") as ingest:
-            response = self.client.post(reverse("project-list"), {
-                "title": "Subido", "use_seo": "true",
-                "source_file": SimpleUploadedFile("v.mp4", b"0" * 10, content_type="video/mp4"),
-            }, format="multipart")
-        self.assertEqual(response.status_code, 403, response.content[:300])
-        self.assertFalse(VideoProject.objects.filter(title="Subido").exists())
-        ingest.assert_not_called()
+            response = upload("Subido", use_seo="true")
+            self.assertEqual(response.status_code, 403, response.content[:300])
+            self.assertFalse(VideoProject.objects.filter(title="Subido").exists())
+            ingest.assert_not_called()
+
+            control = upload("Sin SEO")
+        self.assertEqual(control.status_code, 201, control.content[:300])
