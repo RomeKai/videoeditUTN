@@ -12,6 +12,8 @@ máquina de estados y base de datos son reales.
 from decimal import Decimal
 from unittest.mock import patch
 
+import os
+
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
@@ -26,6 +28,7 @@ from apps.videos.services.ai.contracts import (
     ViralClip,
     WordTimestamp,
 )
+from apps.videos.services.ai.errors import AIAuthenticationError
 from apps.videos.services.ai.pipeline_state import PipelineStage
 from apps.videos.tests.fakes import FakeRedis
 
@@ -102,6 +105,8 @@ def test_upload_to_awaiting_approval(api, wallet_factory, video_upload, fake_ai)
 
     # Storage local: original registrado y proxy generado de verdad por FFmpeg
     assert project.original_r2_key
+    # Solo prueba que el proxy se generó y registró; que el archivo siga existiendo
+    # lo cubre test_local_proxy_file_survives_ingestion (xfail por bug conocido).
     assert project.proxy_r2_key, "el proxy FFmpeg falló (la etapa lo traga sin cortar la ingesta)"
 
     # Probe real con MoviePy sobre el video sintético (2s, 640x360)
@@ -121,7 +126,9 @@ def test_upload_to_awaiting_approval(api, wallet_factory, video_upload, fake_ai)
     assert clip.virality_score == CLIP.virality_score
     assert clip.status == VideoClip.Status.DRAFT
 
-    # Pago: se reservaron tokens por 2s de video (2 * 0.5 = 1.00) y nada más
+    # Pago: se reservaron tokens por 2s de video (2 * 0.5 = 1.00) y nada más.
+    # El monto usa el multiplicador base porque la view pasa aspect_ratio como
+    # resolución (ver test_create_prices_with_a_real_resolution).
     txn = Transaction.objects.get(wallet=wallet)
     assert txn.status == Transaction.Status.RESERVED
     assert txn.amount == Decimal("1.00")
@@ -140,3 +147,71 @@ def test_upload_without_funds_is_rejected_and_nothing_runs(api, wallet_factory, 
     assert not VideoProject.objects.exists()
     transcribe.assert_not_called()
     select.assert_not_called()
+
+
+# --- Bugs conocidos: xfail estricto, se ponen en verde cuando se arreglen ------------
+
+def _upload(api, video_upload, title="Demo"):
+    res = api.post(PROJECTS_URL, {"title": title, "source_file": video_upload}, format="multipart")
+    assert res.status_code == 201, res.data
+    return VideoProject.objects.get(pk=res.data["id"])
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Bug storage local: con USE_R2=False upload_video devuelve el mismo path "
+           "(no contiene 'temp') y _generate_proxy lo borra en su finally, "
+           "así que proxy_r2_key apunta a un archivo inexistente.",
+)
+def test_local_proxy_file_survives_ingestion(api, wallet_factory, video_upload, fake_ai):
+    wallet_factory("100.00")
+    project = _upload(api, video_upload)
+
+    assert project.proxy_r2_key
+    assert os.path.exists(project.proxy_r2_key)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Bug: ningún código productivo llama a rollback_reservation; si la "
+           "ingesta falla, los tokens quedan reservados para siempre.",
+)
+def test_failed_ingestion_releases_the_reservation(api, wallet_factory, video_upload, fake_ai, settings):
+    # La falla de la tarea no debe propagarse al request de upload
+    settings.CELERY_TASK_EAGER_PROPAGATES = False
+    wallet = wallet_factory("100.00")
+    _, select = fake_ai
+    select.side_effect = AIAuthenticationError("credenciales inválidas")
+
+    project = _upload(api, video_upload, title="Falla IA")
+
+    project.refresh_from_db()
+    assert project.status == VideoProject.Status.FAILED
+    txn = Transaction.objects.get(wallet=wallet)
+    assert txn.status == Transaction.Status.FAILED
+    wallet.refresh_from_db()
+    assert wallet.available_balance == Decimal("100.00")
+    assert wallet.reserved_balance == Decimal("0")
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Bug: la view le pasa project.aspect_ratio ('9:16') como resolution al "
+           "PricingEngine, que no la reconoce y cae al multiplicador base sin "
+           "aplicar el límite de resolución del plan.",
+)
+def test_create_prices_with_a_real_resolution(api, wallet_factory, workspace, free_plan,
+                                              video_upload, fake_ai):
+    from apps.payments.services.pricing_engine import PricingEngine
+
+    free_plan.save()
+    workspace.subscription_plan = free_plan
+    workspace.save()
+    wallet_factory("100.00")
+
+    with patch.object(PricingEngine, "calculate_render_cost",
+                      wraps=PricingEngine.calculate_render_cost) as spy:
+        _upload(api, video_upload, title="Free 9:16")
+
+    resolution = spy.call_args.kwargs["resolution"]
+    assert resolution in PricingEngine.RESOLUTION_MULTIPLIERS
