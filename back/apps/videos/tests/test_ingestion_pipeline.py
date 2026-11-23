@@ -24,6 +24,7 @@ from apps.videos.services.ai.errors import (
 from apps.videos.services.ai.pipeline_state import PipelineStage, advance
 from apps.videos.services.ai.pipeline_state import PipelineConflictError
 from apps.videos.tasks import (
+    PIPELINE_MAX_RETRIES,
     PIPELINE_LOCK_MAX_RETRIES,
     PIPELINE_LOCK_RETRY_SECONDS,
     _is_retryable_pipeline_error,
@@ -488,7 +489,7 @@ class ConcurrencyTests(IngestionHarness, TestCase):
 
         project.refresh_from_db()
         self.assertTrue(result.successful())
-        self.assertIn("Skipped", result.result)
+        self.assertIn("Lock busy", result.result)  # re-queued; gives up once the lock outlives them
         self.mock_transcribe.assert_not_called()
         self.mock_select.assert_not_called()
         self.assertEqual(project.pipeline_stage, PipelineStage.UPLOADED)
@@ -517,18 +518,45 @@ class ConcurrencyTests(IngestionHarness, TestCase):
         self.mock_transcribe.assert_called_once()
         self.assertEqual(project.pipeline_stage, PipelineStage.CLIPS_SELECTED)
 
-    def test_lock_retries_use_a_short_bounded_countdown(self):
+    def test_lock_retries_use_a_short_bounded_countdown_and_their_own_counter(self):
         project = self.make_project()
         self.redis.lock(f"lock:pipeline:project:{project.id}").acquire()
 
-        with patch.object(
-            process_initial_ingestion, "retry", side_effect=RuntimeError("retry")
-        ) as retry:
-            result = self.run_task(project)
+        with patch.object(process_initial_ingestion, "apply_async") as requeue:
+            result = process_initial_ingestion.apply(
+                args=[str(project.id)], kwargs={"lock_retries": 2}, retries=3
+            )
 
-        self.assertTrue(result.failed())
-        self.assertEqual(retry.call_args.kwargs["countdown"], PIPELINE_LOCK_RETRY_SECONDS)
+        self.assertTrue(result.successful())
+        call = requeue.call_args.kwargs
+        self.assertEqual(call["countdown"], PIPELINE_LOCK_RETRY_SECONDS)
         self.assertLessEqual(PIPELINE_LOCK_RETRY_SECONDS, 60)
+        self.assertEqual(call["kwargs"], {"lock_retries": 3})
+        self.assertEqual(call["retries"], 3)  # the error budget is not touched
+
+    def test_lock_contention_does_not_spend_the_error_retries(self):
+        # Before AICORE-18, 3 busy-lock deliveries left only 2 of the 5 error
+        # retries, and the project failed on the 3rd provider error.
+        project = self.make_project()
+        stale_lock = self.redis.lock(f"lock:pipeline:project:{project.id}")
+        stale_lock.acquire()
+        deliveries = []
+
+        def client_factory():
+            deliveries.append(1)
+            if len(deliveries) == 4:
+                stale_lock.release()
+            return self.redis
+
+        self._patch(REDIS_CLIENT, side_effect=client_factory)
+        failures = [AIServerError("down")] * PIPELINE_MAX_RETRIES
+        self.mock_select.side_effect = failures + [selection_result()]
+
+        self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertEqual(self.mock_select.call_count, PIPELINE_MAX_RETRIES + 1)
+        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
 
     def test_lock_retries_outlast_the_lock_ttl_then_give_up_quietly(self):
         from apps.videos.services.ai.project_lock import DEFAULT_LOCK_TTL_SECONDS
@@ -538,13 +566,15 @@ class ConcurrencyTests(IngestionHarness, TestCase):
         attempts = []
         self._patch(REDIS_CLIENT, side_effect=lambda: attempts.append(1) or self.redis)
 
-        result = self.run_task(project)
+        with self.assertLogs("apps.videos.tasks", level="WARNING") as logs:
+            result = self.run_task(project)
 
         self.assertGreater(
             PIPELINE_LOCK_MAX_RETRIES * PIPELINE_LOCK_RETRY_SECONDS, DEFAULT_LOCK_TTL_SECONDS
         )
         self.assertTrue(result.successful())
-        self.assertIn("Skipped", result.result)
+        # The last re-queued delivery gives up quietly (eager mode runs them inline).
+        self.assertIn("pipeline.skipped", "\n".join(logs.output))
         self.assertEqual(len(attempts), PIPELINE_LOCK_MAX_RETRIES + 1)
 
     def test_lock_lost_mid_run_stops_before_the_next_paid_stage(self):

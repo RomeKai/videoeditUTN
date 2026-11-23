@@ -694,22 +694,14 @@ class TestDefaultModels(unittest.TestCase):
         self.assertEqual(provider._fallback_model, self.FALLBACK)
 
     def test_legacy_strategy_defaults(self):
-        from apps.videos.services.selection_engine import (
-            GeminiFallbackStrategy,
-            GeminiFlashStrategy,
-        )
+        from apps.videos.services.selection_engine import GeminiFlashStrategy
 
         self.assertEqual(GeminiFlashStrategy.default_model, self.PRIMARY)
-        self.assertEqual(GeminiFallbackStrategy.default_model, self.FALLBACK)
 
     def test_no_moving_aliases_as_defaults(self):
-        from apps.videos.services.selection_engine import (
-            GeminiFallbackStrategy,
-            GeminiFlashStrategy,
-        )
+        from apps.videos.services.selection_engine import GeminiFlashStrategy
 
-        for default in (GeminiFlashStrategy.default_model, GeminiFallbackStrategy.default_model):
-            self.assertNotIn("-latest", default)
+        self.assertNotIn("-latest", GeminiFlashStrategy.default_model)
 
     @unittest.skipIf(
         os.environ.get("AI_DEFAULT_LLM_MODEL") or os.environ.get("AI_FALLBACK_LLM_MODEL"),
