@@ -44,3 +44,35 @@ class AIUsageRecordMigrationTests(TransactionTestCase):
 
     def test_makemigrations_is_clean(self):
         call_command("makemigrations", "--check", "--dry-run", verbosity=0)
+
+
+class ReasoningTokensMigrationTests(TransactionTestCase):
+    migrate_from = [("videos", "0003_ai_usage_record")]
+    migrate_to = [("videos", "0004_aiusagerecord_reasoning_tokens")]
+
+    def tearDown(self):
+        call_command("migrate", verbosity=0)
+
+    def test_existing_rows_get_zero_reasoning_tokens(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_from)
+        old_apps = executor.loader.project_state(self.migrate_from).apps
+
+        Workspace = old_apps.get_model("users", "Workspace")
+        VideoProject = old_apps.get_model("videos", "VideoProject")
+        user_model = old_apps.get_model(*get_user_model()._meta.label_lower.split("."))
+        owner = user_model.objects.create(username="legacy-reason", email="legacy-reason@test.com")
+        workspace = Workspace.objects.create(name="Legacy", owner_id=owner.pk)
+        project = VideoProject.objects.create(workspace_id=workspace.pk, title="Legacy")
+        old_apps.get_model("videos", "AIUsageRecord").objects.create(
+            project_id=project.pk, stage="selection", pipeline_version="v2", attempt=0,
+            role="primary", provider="gemini", model="m", success=True, latency_seconds=0.1,
+            prompt_tokens=10, completion_tokens=5, total_tokens=15,
+        )
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_to)
+        new_apps = executor.loader.project_state(self.migrate_to).apps
+
+        row = new_apps.get_model("videos", "AIUsageRecord").objects.get(project_id=project.pk)
+        self.assertEqual((row.reasoning_tokens, row.total_tokens), (0, 15))
