@@ -133,8 +133,6 @@ OPENAI_API_KEY = env('OPENAI_API_KEY', default=None)
 # Hard timeout (seconds) for the Moderation call. The shield fails closed: a timeout blocks the
 # content and the task retries with backoff; SDK-level retries are disabled (Celery owns retries).
 MODERATION_TIMEOUT_SECONDS = env.float('MODERATION_TIMEOUT_SECONDS', default=10.0)
-# Prompt-to-Edit (PTE-01a): longest request sent to the parser; longer text is cut.
-AI_PROMPT_MAX_CHARS = env.int('AI_PROMPT_MAX_CHARS', default=1000)
 
 # AI Core V2 Model Configuration
 AI_DEFAULT_LLM_MODEL = env('AI_DEFAULT_LLM_MODEL', default='gemini/gemini-3.8-flash')
@@ -154,6 +152,8 @@ AI_DEFAULT_TRANSCRIPTION_MODEL = env('AI_DEFAULT_TRANSCRIPTION_MODEL', default='
 # There is no automatic fallback between backends (ADR-008): Groq failures are
 # retried by Celery; 'local' loads openai-whisper and is meant for dev/rollback only.
 TRANSCRIPTION_BACKEND = env('TRANSCRIPTION_BACKEND', default='groq')
+# Prompt-to-Edit (PTE-01a): longest request sent to the parser; longer text is cut.
+AI_PROMPT_MAX_CHARS = env.int('AI_PROMPT_MAX_CHARS', default=1000)
 
 # JWT Configuration
 from datetime import timedelta
