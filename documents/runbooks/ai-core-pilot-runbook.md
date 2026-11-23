@@ -121,6 +121,33 @@ Se fija y se documenta **antes** de correr la evaluación. Se aplica igual a la 
 
 Registro de la decisión: [fecha, responsable].
 
+### 3.4 Cálculo automático de WER y timestamps
+
+El comando `evaluate_ai_transcription` calcula las dos métricas automáticas del G1 aplicando la normalización de §3.3. Las referencias se guardan en un directorio **fuera del repo**, con esta estructura:
+
+| Archivo | Contenido |
+|---------|-----------|
+| `manifest.csv` | Encabezado `video_id,project_id`. Un video aparece una vez por cada proyecto que lo procesó (V2 y legacy) |
+| `<video_id>.txt` | Transcripción de referencia (§3.1), en UTF-8 |
+| `<video_id>.anchors.csv` | Encabezado `time_seconds,text`: el tiempo de cada ancla (§3.2) y las primeras palabras de la frase |
+
+`video_id` es una etiqueta de la muestra (por ejemplo `v01`), con letras, números, `-` y `_`.
+
+```bash
+docker compose run --rm -T -v /ruta/a/referencias:/refs:ro web python manage.py evaluate_ai_transcription --references /refs --accents keep > pilot_eval.csv
+```
+
+Sin `--output`, el CSV sale por stdout y el resumen por stderr: el archivo queda en el host y el veredicto en la terminal. Con `--output`, igual que en el export (§1.3), la ruta es dentro del contenedor.
+
+- `--accents keep|strip` es obligatorio y tiene que coincidir con la decisión registrada en §3.3.
+- `--window` (5 s por defecto) es cuánto se busca alrededor de cada ancla.
+- El CSV tiene una fila por proyecto y una fila `ALL` por motor (`v2`, `legacy`).
+  - El WER del `ALL` es el de corpus: Σ errores / Σ palabras de referencia.
+  - El error de timestamps es la mediana de todas las anclas del motor.
+- Al final se imprime si cada motor cumple los umbrales del §1.1.
+- Las anclas sin match se informan aparte, no como error. Muchas anclas sin match indican referencias desalineadas o un ASR con muchos errores en los inicios de frase: revisar antes de dar el G1 por bueno.
+- La salida solo tiene ids, códigos de estado y números, nunca texto.
+
 ---
 
 ## 4. Evaluación humana
@@ -153,7 +180,7 @@ La planilla no debe contener títulos ni transcripts del usuario: solo `clip_id`
 | 5 | Medición en vivo y verificación de precios (ver G0) | **G0** |
 | 6 | Activar V2 solo para el usuario interno del piloto: maestro en `True` y allowlist = `[pilot_user_id]` | |
 | 7 | Procesar los 20 videos con V2 y el mismo set con legacy, repartidos en varios días según la capacidad de transcripción (ver 5.4) | |
-| 8 | Calcular WER y timestamps, exportar costo y latencia, completar la evaluación humana | **G1** |
+| 8 | Calcular WER y timestamps (`evaluate_ai_transcription`, §3.4), exportar costo y latencia, completar la evaluación humana | **G1** |
 | 9 | Ejecutar los fallos inducidos (sección 6) | **G2** |
 | 10 | Habilitación gradual y observación (5.3) | **G3** |
 | 11 | Completar el sign-off (sección 9) | |
