@@ -63,11 +63,12 @@ El servicio de `docker-compose.yml` se llama `web`. `--output` escribe **dentro 
 | `--format` | `csv` (default) o `jsonl` | Ventana vacía: solo encabezado (csv) o nada (jsonl), exit 0 |
 | `--output` | ruta | Sin este argumento escribe a stdout |
 
+**Metadata social (AICORE-17):** cada intento de generar caption y hashtags de una publicación escribe un registro con `stage=seo`. En `--level=record` aparecen como cualquier otro registro. En `--level=project`, las columnas de costo, tokens y conteos siguen midiendo solo la ingestión (transcripción y selección), así que `cost_per_30min_usd` no cambia. La metadata va aparte en `seo_records`, `seo_cost_usd` y `seo_cost_complete`, que es falso si algún registro quedó sin precio. Para el criterio de costo por publicación de ADR-013, dividir `seo_cost_usd` por la cantidad de publicaciones del proyecto.
+
 **Privacidad:** el export no incluye títulos, transcripts, prompts, reasoning, email ni id de usuario. Los registros no tienen columnas de texto libre.
 
 **Costo por 30 min:** usa la duración del video fuente, no `audio_seconds`. Si falta la duración, la columna queda vacía.
 
-**Metadata social (AICORE-17):** cada intento de generar caption y hashtags de una publicación escribe un registro con `stage=seo`. En `--level=record` aparecen como cualquier otro registro. En `--level=project`, las columnas de costo, tokens y conteos siguen midiendo solo la ingestión (transcripción y selección), así que `cost_per_30min_usd` no cambia. La metadata va aparte en `seo_records`, `seo_cost_usd` y `seo_cost_complete`, que es falso si algún registro quedó sin precio. Para el criterio de costo por publicación de ADR-013, dividir `seo_cost_usd` por la cantidad de publicaciones del proyecto.
 
 ---
 
