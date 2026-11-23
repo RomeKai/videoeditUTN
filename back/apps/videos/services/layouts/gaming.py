@@ -64,7 +64,7 @@ class GamingLayout(BaseLayout):
         else:
             cam = clip.cropped(x_center=clip.w//2, y_center=clip.h//2, width=src_crop_w, height=src_crop_h)
 
-        cam = cam.resized(width=target_w, height=cam_h)
+        cam = cam.resized(new_size=(target_w, cam_h))
         cam = cam.with_position(('center', 'top'))
 
         # 2. Gameplay Tracking (Automation Priority)
@@ -101,7 +101,7 @@ class GamingLayout(BaseLayout):
 
         # Apply the final calculated center
         game = clip.cropped(x_center=best_x_center, y_center=clip.h//2, width=game_crop_w, height=game_crop_h)
-        game = game.resized(width=target_w, height=game_h)
+        game = game.resized(new_size=(target_w, game_h))
         game = game.with_position(('center', 'bottom'))
 
         # 3. Composition

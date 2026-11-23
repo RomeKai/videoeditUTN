@@ -753,6 +753,72 @@ class TestUsageMetricsAICore8(unittest.TestCase):
         self.assertEqual(usage.total_tokens, 15)
         self.assertEqual(usage.pricing_version, PRICING_VERSION)
 
+    # -- Reasoning ("thinking") tokens ------------------------------------
+    # litellm 1.63.2 maps Gemini usageMetadata as completion_tokens =
+    # candidatesTokenCount (thoughts excluded) and total_tokens =
+    # totalTokenCount (thoughts included); thoughtsTokenCount is not exposed.
+
+    @staticmethod
+    def _gemini_response(prompt, completion, total, **extra):
+        return types.SimpleNamespace(
+            usage=types.SimpleNamespace(
+                prompt_tokens=prompt, completion_tokens=completion, total_tokens=total, **extra
+            )
+        )
+
+    def test_reasoning_tokens_derived_from_provider_total(self):
+        response = self._gemini_response(1000, 200, 3200)
+        usage = LiteLLMSelectionProvider._extract_usage(response, "gemini/gemini-3.8-flash", 0.5)
+
+        self.assertEqual(usage.completion_tokens, 200)
+        self.assertEqual(usage.reasoning_tokens, 2000)
+        self.assertEqual(usage.total_tokens, 3200)
+
+    def test_reasoning_tokens_are_billed_at_the_output_price_without_double_counting(self):
+        response = self._gemini_response(1_000_000, 100_000, 1_600_000)
+        usage = LiteLLMSelectionProvider._extract_usage(response, "gemini/gemini-2.5-flash", 0.5)
+
+        # 0.30 input + (100k + 500k) * 2.50/Mtok output
+        self.assertEqual(usage.reasoning_tokens, 500_000)
+        self.assertAlmostEqual(usage.estimated_cost_usd, 0.30 + 1.50, places=9)
+
+    def test_no_reasoning_when_total_equals_prompt_plus_completion(self):
+        # OpenAI convention: reasoning (even if itemised in completion_tokens_details)
+        # is already inside completion_tokens, so nothing is added.
+        response = self._gemini_response(
+            100, 50, 150,
+            completion_tokens_details=types.SimpleNamespace(reasoning_tokens=30),
+        )
+        usage = LiteLLMSelectionProvider._extract_usage(response, "openai/gpt-4o-mini", 0.5)
+
+        self.assertEqual(usage.reasoning_tokens, 0)
+        self.assertEqual(usage.total_tokens, 150)
+
+    def test_reasoning_defaults_to_zero_for_missing_or_untrusted_totals(self):
+        for total in (None, "300", True, -5, 0):
+            with self.subTest(total=total):
+                response = self._gemini_response(100, 50, total)
+                usage = LiteLLMSelectionProvider._extract_usage(response, "openai/gpt-4o-mini", 0.1)
+                self.assertEqual(usage.reasoning_tokens, 0)
+                self.assertEqual(usage.total_tokens, 150)
+
+        absent = types.SimpleNamespace(
+            usage=types.SimpleNamespace(prompt_tokens=100, completion_tokens=50)
+        )
+        usage = LiteLLMSelectionProvider._extract_usage(absent, "openai/gpt-4o-mini", 0.1)
+        self.assertEqual((usage.reasoning_tokens, usage.total_tokens), (0, 150))
+
+        mock_response = _make_llm_response(_valid_clips_response(), prompt_tokens=10, completion_tokens=5)
+        usage = LiteLLMSelectionProvider._extract_usage(mock_response, "openai/gpt-4o-mini", 0.1)
+        self.assertEqual((usage.reasoning_tokens, usage.total_tokens), (0, 15))
+
+    def test_reasoning_with_unknown_model_keeps_cost_none(self):
+        response = self._gemini_response(10, 5, 2000)
+        usage = LiteLLMSelectionProvider._extract_usage(response, "gemini/gemini-flash-latest", 0.1)
+
+        self.assertEqual(usage.reasoning_tokens, 1985)
+        self.assertIsNone(usage.estimated_cost_usd)
+
     def test_missing_usage_does_not_crash(self):
         usage = LiteLLMSelectionProvider._extract_usage(types.SimpleNamespace(), "openai/gpt-4o-mini", 0.1)
         self.assertEqual(usage.cache_read_tokens, 0)
