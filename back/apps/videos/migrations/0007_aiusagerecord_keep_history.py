@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("videos", "0003_ai_usage_record"),
+        ("videos", "0006_aiusagerecord_seo_stage"),
     ]
 
     operations = [
