@@ -59,6 +59,21 @@ class ScheduledPostAdmin(admin.ModelAdmin):
     list_display = ('id', 'video_clip', 'platform', 'publish_at', 'status')
     list_filter = ('platform', 'status')
     search_fields = ('video_clip__title',)
+    actions = ('regenerate_ai_metadata',)
+
+    @admin.action(description="Regenerar caption y hashtags con IA")
+    def regenerate_ai_metadata(self, request, queryset):
+        """
+        Explicit regeneration (ADR-013): replaces the caption and hashtags. Posts
+        already publishing or published are skipped.
+        """
+        from .signals import queue_post_seo
+
+        skipped = (ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED)
+        posts = list(queryset.exclude(status__in=skipped).values_list('pk', flat=True))
+        for post_id in posts:
+            queue_post_seo(post_id, regenerate=True)
+        self.message_user(request, f"Generación encolada para {len(posts)} publicaciones.")
 
 
 # --- 6. MODERACIÓN (ADR-011 D-M5) ---
