@@ -63,6 +63,18 @@ class FakeRedis:
         self.held = {}
         self.lock_calls = []
         self.locks = []
+        self.values = {}
+
+    # Plain keys (expiry is not simulated).
+    def get(self, name):
+        return self.values.get(name)
+
+    def set(self, name, value, ex=None):
+        self.values[name] = value.encode() if isinstance(value, str) else value
+        return True
+
+    def delete(self, *names):
+        return sum(1 for name in names if self.values.pop(name, None) is not None)
 
     def lock(self, name, timeout=None, **kwargs):
         self.lock_calls.append((name, timeout))

@@ -32,8 +32,20 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # Real Valkey for the atomic capacity buckets (AICORE-11): their Lua
+      # scripts and concurrency cannot be tested against a fake.
+      valkey:
+        image: valkey/valkey:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       DJANGO_SETTINGS_MODULE: backend.settings.ci
+      CAPACITY_TEST_REDIS_URL: redis://127.0.0.1:6379/15
       DATABASE_URL: postgres://postgres:ci-password@127.0.0.1:5432/onecreator_ci
       SECRET_KEY: ci-only-not-a-secret
       USE_R2: "False"
@@ -86,6 +98,7 @@ jobs:
       - name: Block external network during quality gates
         env:
           POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
+          VALKEY_CONTAINER_ID: ${{ job.services.valkey.id }}
         run: |
           POSTGRES_CONTAINER_IP="$(
             docker inspect \
@@ -96,6 +109,15 @@ jobs:
             printf 'Could not resolve the PostgreSQL service container IP\n' >&2
             exit 1
           fi
+          VALKEY_CONTAINER_IP="$(
+            docker inspect \
+              --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+              "$VALKEY_CONTAINER_ID"
+          )"
+          if [[ -z "$VALKEY_CONTAINER_IP" ]]; then
+            printf 'Could not resolve the Valkey service container IP\n' >&2
+            exit 1
+          fi
 
           sudo iptables-save > "$RUNNER_TEMP/iptables.rules"
           sudo ip6tables-save > "$RUNNER_TEMP/ip6tables.rules"
@@ -103,6 +125,8 @@ jobs:
           sudo iptables -A OUTPUT -o lo -j ACCEPT
           sudo iptables -A OUTPUT \
             -p tcp -d "$POSTGRES_CONTAINER_IP" --dport 5432 -j ACCEPT
+          sudo iptables -A OUTPUT \
+            -p tcp -d "$VALKEY_CONTAINER_IP" --dport 6379 -j ACCEPT
           sudo iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
           sudo iptables -P OUTPUT DROP
           sudo ip6tables -F OUTPUT

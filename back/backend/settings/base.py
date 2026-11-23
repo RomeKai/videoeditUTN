@@ -123,6 +123,11 @@ REST_FRAMEWORK = {
 # --- AI CONFIG & FEATURE FLAGS ---
 AI_CORE_V2_ENABLED = env.bool('AI_CORE_V2_ENABLED', default=False)
 
+# LiteLLM reads model capabilities (reasoning support, prices) from its bundled map
+# instead of downloading the latest one on import: the map is pinned with the
+# library version, and importing never depends on the network (AICORE-14).
+os.environ.setdefault('LITELLM_LOCAL_MODEL_COST_MAP', 'True')
+
 # Provider Credentials (obtained exclusively from environment variables)
 GEMINI_API_KEY = env('GEMINI_API_KEY', default=None)
 GROQ_API_KEY = env('GROQ_API_KEY', default=None)
@@ -133,6 +138,15 @@ OPENAI_API_KEY = env('OPENAI_API_KEY', default=None)
 # Hard timeout (seconds) for the Moderation call. The shield fails closed: a timeout blocks the
 # content and the task retries with backoff; SDK-level retries are disabled (Celery owns retries).
 MODERATION_TIMEOUT_SECONDS = env.float('MODERATION_TIMEOUT_SECONDS', default=10.0)
+# ADR-011: the whole text is moderated in blocks of this size (D-M1), with a pinned model
+# (D-M6). Flagged categories in the non-blocking list are only measured; any other flagged
+# category blocks, including ones the API adds later (D-M5, fail-closed).
+MODERATION_MODEL = env('MODERATION_MODEL', default='omni-moderation-latest')
+MODERATION_BLOCK_CHARS = env.int('MODERATION_BLOCK_CHARS', default=10000)
+MODERATION_NON_BLOCKING_CATEGORIES = env.list(
+    'MODERATION_NON_BLOCKING_CATEGORIES',
+    default=['harassment', 'violence', 'self-harm', 'illicit'],
+)
 
 # AI Core V2 Model Configuration
 AI_DEFAULT_LLM_MODEL = env('AI_DEFAULT_LLM_MODEL', default='gemini/gemini-3.8-flash')
@@ -143,9 +157,20 @@ AI_DEFAULT_LLM_MODEL = env('AI_DEFAULT_LLM_MODEL', default='gemini/gemini-3.8-fl
 AI_FALLBACK_LLM_MODEL = env('AI_FALLBACK_LLM_MODEL', default='gemini/gemini-3.5-flash-lite')
 # Hard timeout per LLM call; retries are owned by Celery, not LiteLLM.
 AI_LLM_TIMEOUT_SECONDS = env.float('AI_LLM_TIMEOUT_SECONDS', default=60.0)
+# ADR-012 / AICORE-14: caps the selection model's hidden reasoning (billed as output).
+# minimal | low | medium | high; empty keeps the provider default. Only sent to models
+# LiteLLM knows can reason (see services/ai/llm_options.py).
+AI_LLM_REASONING_EFFORT = env('AI_LLM_REASONING_EFFORT', default='')
 # Transcript cap sized for the smallest context window plausible in the chain (gpt-4o-mini, 128K tokens),
 # so the same cap stays valid if a cross-provider fallback is configured.
 AI_LLM_MAX_TRANSCRIPT_CHARS = env.int('AI_LLM_MAX_TRANSCRIPT_CHARS', default=400000)
+# Clip boundaries (AICORE-16): with word timestamps, clips are snapped to whole
+# words and kept within [MIN, MAX] seconds at natural boundaries (a pause of at
+# least PAUSE seconds between words, or a sentence end). See clip_validation.py.
+AI_CLIP_MIN_SECONDS = env.float('AI_CLIP_MIN_SECONDS', default=15.0)
+AI_CLIP_MAX_SECONDS = env.float('AI_CLIP_MAX_SECONDS', default=60.0)
+AI_CLIP_SNAP_TOLERANCE_SECONDS = env.float('AI_CLIP_SNAP_TOLERANCE_SECONDS', default=1.0)
+AI_CLIP_PAUSE_SECONDS = env.float('AI_CLIP_PAUSE_SECONDS', default=0.5)
 AI_DEFAULT_TRANSCRIPTION_MODEL = env('AI_DEFAULT_TRANSCRIPTION_MODEL', default='whisper-large-v3-turbo')
 
 # Transcription backend when AI_CORE_V2_ENABLED=True: 'groq' (default) | 'local'.
@@ -200,6 +225,37 @@ PIPELINE_TIME_LIMIT = env.int('PIPELINE_TIME_LIMIT', default=PIPELINE_SOFT_TIME_
 CELERY_TASK_ROUTES = {
     'apps.videos.tasks.render_clip_task': {'queue': 'render'},
 }
+
+# A worker reserves only the task it is running: long ingestion tasks are not
+# hoarded by a worker that cannot start them (AICORE-11).
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
+# --- AI capacity (AICORE-11, ADR-012 D-C4) ---
+# Token buckets in Valkey reserved before every Groq/LLM call of the ingestion
+# pipeline. Off until the limits of the environment are configured (runbook).
+# AI_CAPACITY_LIMITS (JSON): {"<model>": {"<resource>_per_<window>": limit}},
+# resources audio_seconds | tokens | requests, windows minute | hour | day,
+# set BELOW the provider's limits (e.g. 80 %). Model keys: the LiteLLM model
+# string, and "groq/<model>" for transcription.
+AI_CAPACITY_ENABLED = env.bool('AI_CAPACITY_ENABLED', default=False)
+AI_CAPACITY_LIMITS = env.json('AI_CAPACITY_LIMITS', default={})
+# Longest a project may wait for capacity per stage before failing with
+# CapacityTimeoutError; each re-queue waits at most AI_CAPACITY_MAX_COUNTDOWN_SECONDS.
+AI_CAPACITY_MAX_WAIT_SECONDS = env.int('AI_CAPACITY_MAX_WAIT_SECONDS', default=3600)
+AI_CAPACITY_MAX_COUNTDOWN_SECONDS = env.int('AI_CAPACITY_MAX_COUNTDOWN_SECONDS', default=300)
+# Selection reservation estimate: input from the audio length (G0: ~456 tokens
+# per minute) plus the prompt and the output (visible + reasoning); settled
+# with the real usage after the call.
+AI_CAPACITY_LLM_TOKENS_PER_AUDIO_MINUTE = env.int('AI_CAPACITY_LLM_TOKENS_PER_AUDIO_MINUTE', default=456)
+AI_CAPACITY_LLM_PROMPT_TOKENS = env.int('AI_CAPACITY_LLM_PROMPT_TOKENS', default=1500)
+AI_CAPACITY_LLM_OUTPUT_TOKENS = env.int('AI_CAPACITY_LLM_OUTPUT_TOKENS', default=4000)
+
+# --- Social metadata per post (AICORE-17, ADR-013) ---
+# Language of the caption, and the limit of caption + hashtags per platform.
+AI_SEO_LANGUAGE = env('AI_SEO_LANGUAGE', default='es')
+AI_SEO_CAPTION_MAX_CHARS = env.json('AI_SEO_CAPTION_MAX_CHARS', default={
+    'TIKTOK': 2200, 'INSTAGRAM_REELS': 2200, 'YOUTUBE_SHORTS': 5000,
+})
 
 SPECTACULAR_SETTINGS = {
     'TITLE': 'OneCreator API',

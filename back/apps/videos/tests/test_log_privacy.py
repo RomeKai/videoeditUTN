@@ -268,6 +268,7 @@ class SocialTaskLogTests(LogPrivacyAssertions, CapturedTaskFailures, TestCase):
             uploaded_by=user,
             title=TITLE_MARKER,
             metadata={"full_text": f"transcript {TEXT_MARKER}"},
+            transcript_data=[{"start": 0.0, "end": 2.0, "text": f"transcript {TEXT_MARKER}"}],
         )
         clip = VideoClip.objects.create(
             project=project, title=TITLE_MARKER, start_time=0, end_time=5, s3_object_key="c.mp4"
@@ -307,10 +308,12 @@ class SocialTaskLogTests(LogPrivacyAssertions, CapturedTaskFailures, TestCase):
     def test_seo_safety_violation_does_not_log_message(self):
         from apps.core.security import UnsafeContentError
 
+        from apps.videos.tests.fakes import FakeRedis
+
         with patch(
             "apps.core.security.AI_Security_Shield.check_content_safety",
             side_effect=UnsafeContentError(f"{SECRET} {TEXT_MARKER}"),
-        ):
+        ), patch("apps.videos.services.ai.project_lock.get_redis_client", return_value=FakeRedis()):
             with capture_logs() as logs:
                 process_video_seo.apply(args=[self.post.id])
 
