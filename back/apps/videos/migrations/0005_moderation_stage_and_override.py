@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("videos", "0003_ai_usage_record"),
+        ("videos", "0004_aiusagerecord_reasoning_tokens"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
