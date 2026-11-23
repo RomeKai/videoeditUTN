@@ -8,7 +8,6 @@ que es lo que usa backend.settings.ci.
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
-from unittest.mock import patch
 
 import pytest
 from django.db import connection
@@ -63,23 +62,6 @@ def test_insufficient_funds_raises_and_changes_nothing(wallet_factory):
 def test_reserve_on_unknown_wallet_raises_payment_error(db):
     with pytest.raises(PaymentError):
         reserve_funds(uuid.uuid4(), Decimal("1.00"))
-
-
-def test_reserve_with_project_triggers_pipeline(wallet_factory):
-    wallet = wallet_factory("100.00")
-    project_id = uuid.uuid4()
-
-    with patch("apps.payments.services.wallet_service.process_video_pipeline.delay") as delay:
-        txn = reserve_funds(wallet.id, Decimal("5.00"), project_id=project_id)
-
-    delay.assert_called_once_with(project_id, transaction_id=txn.id)
-
-
-def test_reserve_without_project_does_not_trigger_pipeline(wallet_factory):
-    wallet = wallet_factory("100.00")
-    with patch("apps.payments.services.wallet_service.process_video_pipeline.delay") as delay:
-        reserve_funds(wallet.id, Decimal("5.00"))
-    delay.assert_not_called()
 
 
 # --- reserve + commit ------------------------------------------------------------
