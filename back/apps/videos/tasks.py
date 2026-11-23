@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 import logging
@@ -77,7 +78,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from django.utils import timezone
 from django.db import DatabaseError, transaction
-from django.db.models import F
+from django.db.models import F, Q
 from django.core.cache import cache
 from apps.videos.models import VideoProject, VideoClip, ScheduledPost
 
@@ -187,7 +188,13 @@ def upload_to_social_network(self, post_id):
         target_platform = platform_map.get(post.platform, 'tiktok')
         
         # Priority: 1. AI Generated Caption, 2. Project Metadata, 3. Default
-        caption = post.generated_caption or post.video_clip.project.metadata.get('caption')
+        if post.generated_caption:
+            # Stored apart (ADR-013): the hashtags get their '#' only here.
+            from apps.videos.services.seo_engine import compose_caption
+
+            caption = compose_caption(post.generated_caption, post.generated_hashtags)
+        else:
+            caption = post.video_clip.project.metadata.get('caption')
         if not caption:
             caption = f"Check this out! #Viral #{target_platform}"
 
@@ -234,79 +241,45 @@ def upload_to_social_network(self, post_id):
     finally:
         cache.delete(lock_id)
 
+# Social metadata (AICORE-17, ADR-013). One generation at a time per post, and
+# the last generation kept until its output moderation passes, so a moderation
+# retry never pays for a second generation.
+SEO_LOCK_TTL_SECONDS = 600
+SEO_PENDING_TTL_SECONDS = 3600
+
+
 @celery_app.task(bind=True, max_retries=3)
-def process_video_seo(self, post_id, capacity_waited_s=0.0):
+def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
     """
-    Task: Generates viral SEO metadata for a scheduled post.
-    1. Security Shield check.
-    2. Extracts transcript.
-    3. Calls SEOOptimizationService.
+    Caption and hashtags for one ScheduledPost from the clip's own transcript,
+    for the post's platform (AICORE-17, ADR-013).
+
+    - Idempotent: a post that already has them is not sent to the LLM again,
+      unless ``regenerate`` (an explicit user request).
+    - One generation at a time per post (Redis lock).
+    - The clip transcript is moderated before the call; the generated text
+      before it is stored.
+    - Every attempt writes an AIUsageRecord with stage ``seo``.
+    - A final failure leaves the post FAILED with a static code in
+      ``error_log``; non-retryable errors are not retried.
     """
-    from apps.core.security import AI_Security_Shield, ModerationError, UnsafeContentError
-    from apps.videos.services.seo_engine import SEOOptimizationService
-    
+    from apps.core.security import ModerationError
+
     try:
         post = ScheduledPost.objects.select_related('video_clip__project').get(id=post_id)
-        project = post.video_clip.project
-        
-        transcript = project.metadata.get('full_text', '')
-        if not transcript:
-            segments = project.metadata.get('transcription', [])
-            transcript = " ".join([s.get('text', '') for s in segments])
-
-        if not transcript:
-            logger.warning(f"⚠️ [SEO] No transcript found for post {post_id}. Aborting.")
-            return "No Transcript"
-
-        # Same LLM as clip selection, so SEO reserves capacity too (AICORE-11). It
-        # comes before moderation so waiting for capacity never repeats that call.
-        # The service reports no usage yet (#69 rewrites it): the estimate stands.
-        gate = _capacity_gate()
-        reservation = None
-        if gate is not None:
-            try:
-                reservation = gate.reserve(_seo_demand(transcript), stage='seo')
-            except CapacityUnavailable as capacity_exc:
-                return _seo_wait_for_capacity(
-                    post_id, capacity_exc, capacity_waited_s, self.request.retries
-                )
-
-        # --- REQUERIMIENTO: SECURITY SHIELD (MODERATION) ---
-        # First line of defense
-        try:
-            AI_Security_Shield.check_content_safety(transcript)
-        except UnsafeContentError as safety_exc:
-            _release_seo_capacity(gate, reservation)
-            logger.error(f"🛡️ [SEO SECURITY] Safety violation for post {post_id}: {type(safety_exc).__name__}")
-            post.status = ScheduledPost.Status.FAILED
-            post.error_log = f"Violación de seguridad: {str(safety_exc)}"
-            post.save()
-            return "Security Abort"
-        except ModerationError:
-            _release_seo_capacity(gate, reservation)  # the LLM was never called
-            raise
-
-        # 1. Generate Metadata via AI
-        seo_service = SEOOptimizationService()
-        metadata = seo_service.generate_metadata(
-            transcript_text=transcript,
-            target_niche=project.metadata.get('niche', 'general')
-        )
-
-        # 2. Format Caption (Body + Hashtags)
-        formatted_hashtags = " ".join([f"#{h.strip()}" for h in metadata.hashtags])
-        final_caption = f"{metadata.description_body}\n\n.\n.\n{formatted_hashtags}"
-
-        # 3. Save to ScheduledPost
-        post.generated_caption = final_caption
-        post.generated_hashtags = metadata.hashtags
-        
-        # Save additional tweaks in error_log or a dedicated field if exists
-        # For now, let's keep it in the main caption
-        post.save()
-
-        logger.info(f"✅ [SEO] Metadata generated for post {post_id}")
-        return f"SEO Success: {metadata.viral_title}"
+        if not regenerate and post.generated_caption and post.generated_hashtags:
+            return "SEO Already Generated"
+        with _seo_post_lock(post_id) as acquired:
+            if not acquired:
+                # Another worker is generating this post right now.
+                logger.info("seo.skipped post_id=%s reason=locked", post_id)
+                return "SEO Busy"
+            post.refresh_from_db()
+            if not regenerate and post.generated_caption and post.generated_hashtags:
+                return "SEO Already Generated"  # finished by another run before the lock
+            if regenerate and self.request.retries == 0 and not capacity_waited_s:
+                _seo_pending_clear(post_id)  # a fresh request, not a retry of this one
+            return _generate_post_metadata(self, post, capacity_waited_s, regenerate)
 
     except ModerationError as mod_exc:
         # Fail closed: no moderation verdict => content does not pass. Must stay above
@@ -318,15 +291,231 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0):
         if mod_exc.retryable and self.request.retries < self.max_retries:
             raise self.retry(countdown=_retry_countdown(self.request.retries))
         # Static code only: never the provider message or any user text.
-        ScheduledPost.objects.filter(id=post_id).update(
-            status=ScheduledPost.Status.FAILED, error_log=mod_exc.code,
-        )
+        _fail_seo_post(post_id, mod_exc.code)
         return "Moderation Failed"
 
-    except Exception as e:
-        logger.error(f"❌ [SEO] Failed for post {post_id}: {type(e).__name__}")
-        # Retry for OpenAI timeouts or network issues
-        raise self.retry(exc=e, countdown=60)
+    except AIError as exc:
+        # Classified provider errors: auth, configuration and 4xx stop here.
+        will_retry = exc.is_retryable and self.request.retries < self.max_retries
+        logger.error(
+            "seo.failed post_id=%s error=%s retry=%s", post_id, type(exc).__name__, will_retry
+        )
+        if will_retry:
+            raise self.retry(countdown=_retry_countdown(self.request.retries))
+        _fail_seo_post(post_id, f"seo_generation_failed:{type(exc).__name__}")
+        return "SEO Failed"
+
+    except Exception as exc:
+        will_retry = (
+            _is_retryable_pipeline_error(exc) and self.request.retries < self.max_retries
+        )
+        logger.error(
+            "seo.failed post_id=%s error=%s retry=%s", post_id, type(exc).__name__, will_retry
+        )
+        if will_retry:
+            raise self.retry(countdown=_retry_countdown(self.request.retries))
+        _fail_seo_post(post_id, f"seo_failed:{type(exc).__name__}")
+        raise
+
+
+# Codes this task writes to error_log; a later successful generation clears them.
+_SEO_FAILURE_CODES = (
+    'seo_no_clip_transcript', 'content_blocked', 'generated_content_blocked', 'capacity_timeout',
+)
+
+
+def _fail_seo_post(post_id, code):
+    """
+    FAILED with a static code, unless publishing already started or finished:
+    a post published with another caption must never turn FAILED because of SEO.
+    """
+    ScheduledPost.objects.filter(id=post_id).exclude(
+        status__in=(ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED),
+    ).update(status=ScheduledPost.Status.FAILED, error_log=code)
+
+
+def _recover_seo_failed_post(post_id):
+    """
+    A post an earlier SEO failure left FAILED is recoverable (ADR-013): back to
+    DRAFT, so the user reviews the caption and schedules it again. It is never
+    re-scheduled on its own. Publishing failures are not touched.
+    """
+    seo_codes = (
+        Q(error_log__in=_SEO_FAILURE_CODES)
+        | Q(error_log__startswith='seo_')
+        | Q(error_log__startswith='moderation_')
+    )
+    ScheduledPost.objects.filter(seo_codes, id=post_id, status=ScheduledPost.Status.FAILED).update(
+        status=ScheduledPost.Status.DRAFT, error_log=None,
+    )
+
+
+@contextmanager
+def _seo_post_lock(post_id):
+    """Yields whether this worker holds the post; Redis down is a retryable error."""
+    import redis
+
+    from apps.videos.services.ai.errors import RetryableAIError
+    from apps.videos.services.ai.project_lock import get_redis_client
+
+    lock = get_redis_client().lock(f"lock:seo:post:{post_id}", timeout=SEO_LOCK_TTL_SECONDS)
+    try:
+        acquired = lock.acquire(blocking=False)
+    except redis.exceptions.RedisError as exc:
+        raise RetryableAIError(
+            f"Redis unavailable, cannot lock post {post_id}", provider="redis"
+        ) from exc
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                lock.release()
+            except redis.exceptions.LockError:
+                logger.warning("seo.lock_not_owned post_id=%s", post_id)
+
+
+def _seo_pending_key(post_id):
+    return f"seo:pending:{post_id}"
+
+
+def _seo_pending_get(post_id):
+    from apps.videos.services.ai.project_lock import get_redis_client
+
+    raw = get_redis_client().get(_seo_pending_key(post_id))
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _seo_pending_set(post_id, data):
+    from apps.videos.services.ai.project_lock import get_redis_client
+
+    try:
+        get_redis_client().set(
+            _seo_pending_key(post_id), json.dumps(data), ex=SEO_PENDING_TTL_SECONDS
+        )
+    except Exception as exc:  # the result is still used right away
+        logger.warning("seo.pending_not_saved post_id=%s error=%s", post_id, type(exc).__name__)
+
+
+def _seo_pending_clear(post_id):
+    from apps.videos.services.ai.project_lock import get_redis_client
+
+    try:
+        get_redis_client().delete(_seo_pending_key(post_id))
+    except Exception as exc:
+        logger.warning("seo.pending_not_cleared post_id=%s error=%s", post_id, type(exc).__name__)
+
+
+def _generate_post_metadata(task, post, capacity_waited_s, regenerate=False):
+    """Generates (or reuses the pending generation), moderates the output and stores it."""
+    from apps.core.security import AI_Security_Shield, UnsafeContentError
+    from apps.videos.services.seo_engine import SocialMetadata
+
+    pending = _seo_pending_get(post.id)
+    if pending is None:
+        outcome = _generate_social_metadata(task, post, capacity_waited_s, regenerate)
+        if isinstance(outcome, str):  # waiting for capacity, or the post already failed
+            return outcome
+        pending = outcome
+        _seo_pending_set(post.id, pending)
+
+    metadata = SocialMetadata.model_validate(pending)
+    try:
+        AI_Security_Shield.check_content_safety(metadata.composed_caption())
+    except UnsafeContentError:
+        _seo_pending_clear(post.id)
+        logger.error("seo.output_blocked post_id=%s", post.id)
+        _fail_seo_post(post.id, "generated_content_blocked")
+        return "Security Abort"
+
+    ScheduledPost.objects.filter(id=post.id).update(
+        generated_caption=metadata.caption, generated_hashtags=metadata.hashtags,
+    )
+    _recover_seo_failed_post(post.id)
+    _seo_pending_clear(post.id)
+    logger.info("seo.persisted post_id=%s hashtags=%d", post.id, len(metadata.hashtags))
+    return "SEO Success"
+
+
+def _generate_social_metadata(task, post, capacity_waited_s, regenerate=False):
+    """
+    One paid generation: clip transcript, capacity, input moderation, LLM call
+    and usage rows. Returns the metadata as a dict, or a status string when the
+    post waits for capacity or already failed.
+    """
+    from apps.core.security import AI_Security_Shield, ModerationError, UnsafeContentError
+    from apps.videos.services.seo_engine import (
+        SEOOptimizationService,
+        SocialMetadataRequest,
+        clip_transcript,
+    )
+
+    clip = post.video_clip
+    project = clip.project
+    text = clip_transcript(project.transcript_data, clip.start_time, clip.end_time)
+    if not text:
+        # Never the whole project transcript as a substitute (ADR-013).
+        logger.warning("seo.no_clip_transcript post_id=%s", post.id)
+        _fail_seo_post(post.id, "seo_no_clip_transcript")
+        return "No Transcript"
+    request = SocialMetadataRequest(
+        clip_transcript=text,
+        clip_title=clip.title or "",
+        platform=post.platform,
+        target_niche=(project.metadata or {}).get('niche') or 'general',
+        language=getattr(settings, 'AI_SEO_LANGUAGE', 'es'),
+    )
+
+    # Capacity first (AICORE-11), so waiting for it never repeats the moderation call.
+    gate = _capacity_gate()
+    reservation, models = None, []
+    if gate is not None:
+        models = _selection_models(True)
+        try:
+            reservation = gate.reserve(_seo_demand(models, request), stage='seo')
+        except CapacityUnavailable as capacity_exc:
+            return _seo_wait_for_capacity(
+                str(post.id), capacity_exc, capacity_waited_s, task.request.retries, regenerate
+            )
+
+    try:
+        AI_Security_Shield.check_content_safety(_seo_moderation_payload(request))
+    except UnsafeContentError:
+        _release_seo_capacity(gate, reservation)
+        logger.error("seo.input_blocked post_id=%s", post.id)
+        _fail_seo_post(post.id, "content_blocked")
+        return "Security Abort"
+    except ModerationError:
+        _release_seo_capacity(gate, reservation)  # the LLM was never called
+        raise
+
+    started = time.monotonic()
+    try:
+        result = SEOOptimizationService().generate_metadata(request)
+    except Exception as exc:
+        if gate is not None:
+            gate.settle(reservation, _selection_failure_usage(models, exc))
+        _record_call_failure(
+            project.id, AIUsageRecord.Stage.SEO, AIUsageRecord.PipelineVersion.V2, exc,
+            _llm_identity(getattr(settings, 'AI_DEFAULT_LLM_MODEL', 'unknown')), started,
+        )
+        raise
+    if gate is not None:
+        gate.settle(reservation, _llm_usage_by_model(models, result.attempts or [result.usage]))
+    record_usages(
+        project.id, AIUsageRecord.Stage.SEO, AIUsageRecord.PipelineVersion.V2,
+        usages_for_success(result),
+    )
+    return result.data.model_dump()
+
+
+def _seo_moderation_payload(request):
+    return "\n".join(part for part in (request.clip_title, request.clip_transcript) if part)
 
 def finalize_project_render(project_id):
     """
@@ -1034,14 +1223,17 @@ def _capacity_countdown(wait_seconds):
     return countdown * (1 + random.uniform(0, 0.2))
 
 
-def _seo_demand(transcript):
-    """SEO prompt ~ the transcript (~4 characters per token) plus the fixed prompt and output."""
+def _seo_demand(models, request):
+    """
+    SEO prompt ~ the clip title and transcript (~4 characters per token) plus the
+    fixed prompt and output, on the primary and the fallback (refunded if unused).
+    """
     tokens = (
-        math.ceil(len(transcript) / 4)
+        math.ceil((len(request.clip_transcript) + len(request.clip_title)) / 4)
         + settings.AI_CAPACITY_LLM_PROMPT_TOKENS
         + settings.AI_CAPACITY_LLM_OUTPUT_TOKENS
     )
-    return {settings.AI_DEFAULT_LLM_MODEL: {'tokens': tokens, 'requests': 1}}
+    return {model: {'tokens': tokens, 'requests': 1} for model in models}
 
 
 def _release_seo_capacity(gate, reservation):
@@ -1052,7 +1244,7 @@ def _release_seo_capacity(gate, reservation):
         })
 
 
-def _seo_wait_for_capacity(post_id, exc, waited_s, retries):
+def _seo_wait_for_capacity(post_id, exc, waited_s, retries, regenerate=False):
     """
     Re-queues SEO generation after the capacity wait; fails the post past the max
     wait. The Celery retry count travels with the message: a call that keeps
@@ -1060,15 +1252,15 @@ def _seo_wait_for_capacity(post_id, exc, waited_s, retries):
     """
     if waited_s + exc.wait_seconds > settings.AI_CAPACITY_MAX_WAIT_SECONDS:
         logger.error("seo.capacity_timeout post_id=%s waited_s=%.1f", post_id, waited_s)
-        ScheduledPost.objects.filter(id=post_id).update(
-            status=ScheduledPost.Status.FAILED, error_log='capacity_timeout',
-        )
+        _fail_seo_post(post_id, 'capacity_timeout')
         return "Capacity Timeout"
     countdown = _capacity_countdown(exc.wait_seconds)
     logger.info("seo.pending_capacity post_id=%s countdown_s=%.1f", post_id, countdown)
+    kwargs = {'capacity_waited_s': round(waited_s + countdown, 1)}
+    if regenerate:
+        kwargs['regenerate'] = True  # or the re-queued run would see the old caption and stop
     process_video_seo.apply_async(
-        args=[post_id], kwargs={'capacity_waited_s': round(waited_s + countdown, 1)},
-        countdown=countdown, retries=retries,
+        args=[post_id], kwargs=kwargs, countdown=countdown, retries=retries,
     )
     return "Waiting for capacity"
 

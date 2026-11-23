@@ -21,6 +21,7 @@ from apps.videos.services.ai.contracts import AIExecutionResult, ProviderUsage
 from apps.videos.services.ai.errors import AIServerError, AITimeoutError
 from apps.videos.tasks import _merge_metadata
 from apps.videos.services.ai.pipeline_state import STAGE_ORDER, PipelineStage
+from apps.videos.tests.fakes import FakeRedis
 from apps.videos.tests.test_ingestion_pipeline import (
     IngestionHarness,
     selection_result,
@@ -384,7 +385,8 @@ class SeoCapacityTests(TestCase):
         user = get_user_model().objects.create_user(username="seo-cap", email="s@t.com", password="pw")
         workspace = Workspace.objects.create(name="SEO capacity", owner=user)
         project = VideoProject.objects.create(
-            workspace=workspace, uploaded_by=user, title="S", metadata={"full_text": "x" * 400}
+            workspace=workspace, uploaded_by=user, title="S",
+            transcript_data=[{"start": 0.0, "end": 2.0, "text": "x" * 399}],
         )
         clip = VideoClip.objects.create(project=project, title="c", start_time=0, end_time=5)
         self.post = ScheduledPost.objects.create(
@@ -397,6 +399,7 @@ class SeoCapacityTests(TestCase):
             ("apps.videos.services.ai.capacity.default_store", {"return_value": self.store}),
             (self.CHECK, {}),
             (self.SEO_REQUEUE, {}),
+            ("apps.videos.services.ai.project_lock.get_redis_client", {"return_value": FakeRedis()}),
         ):
             patcher = patch(target, **kwargs)
             setattr(self, target.rsplit(".", 1)[-1], patcher.start())
@@ -416,17 +419,26 @@ class SeoCapacityTests(TestCase):
         finally:
             process_video_seo.pop_request()
 
-    def test_seo_reserves_the_llm_before_calling_it(self):
+    def test_seo_reserves_primary_and_fallback_then_settles_to_real_usage(self):
+        from apps.videos.services.seo_engine import SocialMetadata
+
+        usage = ProviderUsage(provider="gemini", model=PRIMARY, total_tokens=700, estimated_cost_usd=0.0)
         with patch(self.SERVICE) as service:
             generate = service.return_value.generate_metadata
-            generate.return_value.hashtags = ["a"]
-            generate.return_value.description_body = "d"
-            generate.return_value.viral_title = "t"
+            generate.return_value = AIExecutionResult(
+                data=SocialMetadata(caption="d", hashtags=["a1", "b2", "c3", "d4", "e5"]),
+                usage=usage, attempts=[usage],
+            )
             self.run_task()
 
         generate.assert_called_once()
-        self.assertEqual(self.store.drawn[key(PRIMARY, "tokens_per_minute")], 100 + 1500 + 4000)
+        estimate = 100 + 1500 + 4000  # (399 transcript + 1 title characters) / 4
+        reserved = self.store.reserves[0]
+        self.assertEqual(reserved[key(PRIMARY, "tokens_per_minute")], estimate)
+        self.assertEqual(reserved[key(FALLBACK, "tokens_per_minute")], estimate)
+        self.assertEqual(self.store.drawn[key(PRIMARY, "tokens_per_minute")], 700)
         self.assertEqual(self.store.drawn[key(PRIMARY, "requests_per_minute")], 1)
+        self.assertEqual(self.store.drawn[key(FALLBACK, "tokens_per_minute")], 0)
 
     def test_no_room_requeues_without_spending_a_retry(self):
         self.store.denials = [20.0]

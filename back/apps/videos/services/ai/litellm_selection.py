@@ -373,7 +373,8 @@ class LiteLLMSelectionProvider:
         call_kwargs: Dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "temperature": _TEMPERATURE,
+            # Selection extracts (0.1); a subclass writing copy sets ``_temperature``.
+            "temperature": getattr(self, "_temperature", _TEMPERATURE),
             "timeout": self._timeout,
             # Celery owns retries; letting LiteLLM retry too would multiply calls.
             "num_retries": 0,
