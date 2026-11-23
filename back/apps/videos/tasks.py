@@ -1709,6 +1709,13 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None):
         renew_lock()
         return _resume_render_dispatch(project_id)
 
+    # Prompt-to-Edit (PTE-01b): parse and apply once, before any stage reads the
+    # project settings (idempotent; a project without a prompt is untouched).
+    if stage != PipelineStage.CLIPS_SELECTED:
+        from apps.videos.services.ai.prompt_validator import apply_prompt_to_project
+
+        apply_prompt_to_project(project_id)
+
     # Rows without recorded state may already hold a transcript or clips.
     inferred = infer_completed_stage(project)
     if STAGE_ORDER.index(inferred) > STAGE_ORDER.index(stage):

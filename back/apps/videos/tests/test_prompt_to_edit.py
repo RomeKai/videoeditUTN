@@ -1,0 +1,246 @@
+"""PTE-01b (#73): POST /api/v1/projects/from-prompt/ and the plan-checked config."""
+
+from decimal import Decimal
+from unittest.mock import patch
+
+from django.contrib.auth import get_user_model
+from django.test import TestCase
+from rest_framework.test import APIClient
+
+from apps.payments.models import SubscriptionPlan, Transaction, Wallet
+from apps.users.models import Workspace
+from apps.videos.models import AIUsageRecord, VideoProject
+from apps.videos.services.ai.contracts import AIExecutionResult, ProjectConfig, ProviderUsage
+from apps.videos.services.ai.errors import AIServerError
+from apps.videos.services.ai.prompt_validator import ConfigValidator, apply_prompt_to_project
+from apps.videos.tests.test_ingestion_pipeline import IngestionHarness
+
+User = get_user_model()
+
+URL = "/api/v1/projects/from-prompt/"
+DISPATCH = "apps.videos.views.process_initial_ingestion.delay"
+PARSER = "apps.videos.services.ai.prompt_parser.PromptParser"
+PROMPT = "vertical con fondo borroso, en 4K, cortá los momentos de humor"
+
+
+def plan(name, **limits):
+    created = SubscriptionPlan.objects.create(name=name, **limits)
+    return SubscriptionPlan.objects.get(pk=created.pk)  # Decimal fields, as in production
+
+
+def parsed(attempts=1, **settings):
+    usage = ProviderUsage(provider="gemini", model="gemini/gemini-3.8-flash", total_tokens=120,
+                          estimated_cost_usd=0.0001)
+    return AIExecutionResult[ProjectConfig](
+        data=ProjectConfig(**settings), usage=usage, attempts=[usage] * attempts,
+    )
+
+
+class FromPromptEndpointTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="pte", email="pte@test.com", password="pw")
+        self.workspace = Workspace.objects.create(name="PTE", owner=self.user)
+        self.workspace.members.add(self.user)
+        for workspace in self.user.workspaces.all():  # the user may own an auto-created one too
+            Wallet.objects.update_or_create(
+                workspace=workspace, defaults={"available_balance": Decimal("100.00")}
+            )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.dispatch = patch(DISPATCH).start()
+        self.addCleanup(patch.stopall)
+
+    def post(self, **data):
+        payload = {"title": "Desde prompt", "video_url": "https://youtu.be/x", **data}
+        return self.client.post(URL, payload, format="json")
+
+    def test_creates_reserves_and_dispatches_like_a_normal_upload(self):
+        res = self.post(prompt=PROMPT)
+
+        self.assertEqual(res.status_code, 201, res.data)
+        project = VideoProject.objects.get(pk=res.data["id"])
+        self.assertEqual(project.metadata["pte_prompt"], PROMPT)
+        self.assertEqual(res.data["prompt_config"]["status"], "pending")
+        self.assertEqual(res.data["cost_details"]["tokens_reserved"], Decimal("10.0"))
+        self.assertTrue(Transaction.objects.filter(pk=res.data["cost_details"]["transaction_id"]).exists())
+        self.dispatch.assert_called_once_with(project.id)
+
+    def test_the_fields_sent_explicitly_are_recorded_so_they_win(self):
+        res = self.post(prompt=PROMPT, aspect_ratio="16:9", max_clips=3, layout="fit")
+
+        project = VideoProject.objects.get(pk=res.data["id"])
+        self.assertEqual(
+            project.metadata["pte_explicit"], ["aspect_ratio", "max_clips", "render_layout"]
+        )
+        self.assertEqual(project.aspect_ratio, "16:9")
+
+    def test_an_empty_or_missing_prompt_is_rejected_before_reserving(self):
+        for data in ({}, {"prompt": ""}, {"prompt": "   "}):
+            with self.subTest(data=data):
+                res = self.post(**data)
+                self.assertEqual(res.status_code, 400)
+                self.assertIn("prompt", res.data)
+        self.assertFalse(VideoProject.objects.exists())
+        self.assertFalse(Transaction.objects.exists())
+        self.dispatch.assert_not_called()
+
+    def test_a_prompt_over_the_limit_is_rejected(self):
+        with self.settings(AI_PROMPT_MAX_CHARS=20):
+            res = self.post(prompt="x" * 21)
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(VideoProject.objects.exists())
+
+    def test_the_same_validation_as_a_normal_creation_applies(self):
+        res = self.client.post(URL, {"title": "Sin fuente", "prompt": PROMPT}, format="json")
+        self.assertEqual(res.status_code, 400)
+
+        Wallet.objects.update(available_balance=Decimal("0"))
+        res = self.post(prompt=PROMPT)
+        self.assertEqual(res.status_code, 402)
+        self.assertFalse(VideoProject.objects.exists())
+
+    def test_authentication_is_required(self):
+        res = APIClient().post(URL, {"prompt": PROMPT, "video_url": "https://youtu.be/x"}, format="json")
+        self.assertIn(res.status_code, (401, 403))
+
+
+class ConfigValidatorTests(TestCase):
+    def setUp(self):
+        self.free = plan("Free", max_resolution="720p")
+        self.pro = plan("Pro", max_resolution="4K", has_seo_optimization=True, has_thumbnail_engine=True)
+
+    def test_free_plan_with_a_prompt_that_asks_for_4k(self):
+        config = ProjectConfig(render_resolution="4K", aspect_ratio="16:9")
+
+        outcome = ConfigValidator.validate(config, self.free)
+
+        self.assertEqual(outcome.applied, {"aspect_ratio": "16:9"})
+        self.assertEqual(outcome.ignored, [{"field": "render_resolution", "reason": "plan"}])
+
+    def test_a_request_the_plan_allows_but_that_raises_the_price_is_ignored(self):
+        outcome = ConfigValidator.validate(ProjectConfig(render_resolution="4K", use_seo=True), self.pro)
+
+        self.assertEqual(outcome.applied, {})
+        self.assertEqual(
+            sorted(i["field"] for i in outcome.ignored if i["reason"] == "cost"),
+            ["render_resolution", "use_seo"],
+        )
+
+    def test_requests_that_keep_the_price_are_applied(self):
+        outcome = ConfigValidator.validate(
+            ProjectConfig(render_resolution="720p", use_ai_thumbnail=False), self.free
+        )
+        self.assertEqual(outcome.applied, {"render_resolution": "720p", "use_ai_thumbnail": False})
+
+    def test_paid_add_ons_outside_the_plan_are_ignored_for_the_plan(self):
+        outcome = ConfigValidator.validate(ProjectConfig(use_seo=True, use_ai_thumbnail=True), self.free)
+        self.assertEqual({i["reason"] for i in outcome.ignored}, {"plan"})
+
+    def test_explicit_request_fields_win(self):
+        outcome = ConfigValidator.validate(
+            ProjectConfig(aspect_ratio="9:16", max_clips=4), None, explicit_fields=["aspect_ratio"]
+        )
+        self.assertEqual(outcome.applied, {"max_clips": 4})
+        self.assertEqual(outcome.ignored, [{"field": "aspect_ratio", "reason": "explicit"}])
+
+
+class ApplyPromptTests(TestCase):
+    def setUp(self):
+        user = User.objects.create_user(username="apply", email="apply@test.com", password="pw")
+        self.workspace = Workspace.objects.create(
+            name="Apply", owner=user, subscription_plan=plan("Free", max_resolution="720p")
+        )
+        self.project = VideoProject.objects.create(
+            workspace=self.workspace, uploaded_by=user, title="P",
+            metadata={"pte_prompt": PROMPT, "pte_explicit": ["aspect_ratio"]},
+        )
+
+    def test_applies_what_is_allowed_and_reports_the_rest(self):
+        result = parsed(
+            aspect_ratio="9:16", render_layout="blurred", render_resolution="4K",
+            selection_criteria="momentos de humor", max_clips=3,
+        )
+        with patch(PARSER) as parser_cls:
+            parser_cls.return_value.parse.return_value = result
+            parse = parser_cls.return_value.parse
+            outcome = apply_prompt_to_project(self.project.pk)
+
+        parse.assert_called_once()
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.render_layout, "blurred")
+        self.assertEqual(self.project.aspect_ratio, "9:16")  # default kept: the request set it
+        self.assertEqual(self.project.metadata["selection_criteria"], "momentos de humor")
+        self.assertEqual(self.project.metadata["max_clips"], 3)
+        self.assertNotIn("render_resolution", self.project.metadata)
+        pte = self.project.metadata["pte"]
+        self.assertEqual(pte, outcome)
+        self.assertEqual(pte["status"], "applied")
+        self.assertIn({"field": "render_resolution", "reason": "plan"}, pte["ignored"])
+        self.assertIn({"field": "aspect_ratio", "reason": "explicit"}, pte["ignored"])
+        self.assertEqual(
+            AIUsageRecord.objects.filter(project=self.project, stage="prompt_parse").count(), 1
+        )
+
+    def test_a_parser_failure_keeps_the_defaults_and_records_the_attempts(self):
+        error = AIServerError("down")
+        error.usage_attempts = [
+            ProviderUsage(provider="gemini", model="m", role="primary", error_code="AIServerError"),
+            ProviderUsage(provider="gemini", model="f", role="fallback", error_code="AIServerError"),
+        ]
+        with patch(PARSER) as parser_cls:
+            parser_cls.return_value.parse.side_effect = error
+            outcome = apply_prompt_to_project(self.project.pk)
+
+        self.project.refresh_from_db()
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["error_code"], "AIServerError")
+        self.assertEqual(self.project.render_layout, VideoProject.Layout.FILL)
+        self.assertEqual(
+            AIUsageRecord.objects.filter(project=self.project, stage="prompt_parse").count(), 2
+        )
+
+    def test_it_runs_once(self):
+        with patch(PARSER) as parser_cls:
+            parser_cls.return_value.parse.return_value = parsed(max_clips=2)
+            parse = parser_cls.return_value.parse
+            apply_prompt_to_project(self.project.pk)
+            self.assertIsNone(apply_prompt_to_project(self.project.pk))
+        parse.assert_called_once()
+
+    def test_a_project_without_a_prompt_is_untouched(self):
+        VideoProject.objects.filter(pk=self.project.pk).update(metadata={})
+        with patch(PARSER) as parser_cls:
+            parse = parser_cls.return_value.parse
+            self.assertIsNone(apply_prompt_to_project(self.project.pk))
+        parse.assert_not_called()
+
+
+class IngestionIntegrationTests(IngestionHarness, TestCase):
+    def test_the_config_is_applied_before_selection_and_render_reuse_it(self):
+        project = self.make_project(metadata={"pte_prompt": PROMPT, "pte_explicit": []})
+        result = parsed(max_clips=2, selection_criteria="momentos de humor", render_layout="blurred")
+
+        with patch(PARSER) as parser_cls:
+            parser_cls.return_value.parse.return_value = result
+            parse = parser_cls.return_value.parse
+            self.run_task(project)
+            self.run_task(project)  # a redelivery does not parse again
+
+        parse.assert_called_once()
+        kwargs = self.mock_select.call_args.kwargs
+        self.assertEqual(kwargs["max_clips"], 2)
+        self.assertEqual(kwargs["selection_criteria"], "momentos de humor")
+        project.refresh_from_db()
+        self.assertEqual(project.render_layout, "blurred")
+        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
+
+    def test_a_parser_failure_does_not_stop_the_ingestion(self):
+        project = self.make_project(metadata={"pte_prompt": PROMPT})
+
+        with patch(PARSER) as parser_cls:
+            parser_cls.return_value.parse.side_effect = AIServerError("down")
+            self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
+        self.assertEqual(project.metadata["pte"]["status"], "failed")

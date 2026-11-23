@@ -40,6 +40,40 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return VideoProject.objects.filter(workspace__members=self.request.user).order_by('-created_at')
 
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        prompt = getattr(self, '_pte_prompt', None)
+        if prompt is not None:
+            context['pte_prompt'] = prompt
+        return context
+
+    @action(detail=False, methods=['post'], url_path='from-prompt')
+    def from_prompt(self, request):
+        """
+        Prompt-to-Edit (PTE-01b): same input, validation, auth and token
+        reservation as a normal creation, plus ``prompt``. The prompt is parsed
+        when ingestion starts, not in this request; the applied config shows up
+        in ``metadata['pte']``.
+        """
+        from .services.ai.prompt_parser import clean_prompt, prompt_max_chars
+
+        raw = request.data.get('prompt')
+        if raw is None or not str(raw).strip():
+            return Response({"prompt": ["Este campo es obligatorio."]}, status=status.HTTP_400_BAD_REQUEST)
+        if len(str(raw).strip()) > prompt_max_chars():
+            return Response(
+                {"prompt": [f"Máximo {prompt_max_chars()} caracteres."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        self._pte_prompt = clean_prompt(raw)
+        response = self.create(request)
+        if response.status_code == status.HTTP_201_CREATED:
+            response.data['prompt_config'] = {
+                "status": "pending",
+                "detail": "Se aplica al iniciar la ingesta; el resultado queda en metadata.pte.",
+            }
+        return response
+
     @action(detail=True, methods=['get'], url_path='paper-edit-data')
     def paper_edit_data(self, request, pk=None):
         project = self.get_object()
