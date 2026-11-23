@@ -19,7 +19,7 @@ from apps.core.security import (
 )
 from apps.payments.models import Transaction, Wallet
 from apps.payments.services.wallet_service import reserve_funds
-from apps.videos.models import ModerationOverride, VideoProject
+from apps.videos.models import ModerationOverride, VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import PipelineStage, StageStatus
 from apps.videos.tasks import _refund_ingestion_reservation
 from apps.videos.tests.test_ingestion_pipeline import IngestionHarness
@@ -281,3 +281,37 @@ class CreateViewReservationLinkTests(TestCase):
         project = VideoProject.objects.get(pk=response.data["id"])
         txn = Transaction.objects.get(pk=project.metadata["reservation_id"])
         self.assertEqual(txn.status, Transaction.Status.RESERVED)
+
+
+class ResumePointTests(ModerationStageHarness, TestCase):
+    def project_with(self, statuses):
+        project = self.make_project()
+        VideoProject.objects.filter(pk=project.pk).update(
+            pipeline_stage=PipelineStage.FAILED, pipeline_stage_status=statuses
+        )
+        project.refresh_from_db()
+        return project
+
+    def test_failed_moderation_resumes_at_moderation(self):
+        from apps.videos.services.ai.pipeline_state import last_completed_stage
+
+        project = self.project_with({
+            "audio_extracted": "completed", "transcribed": "completed", "moderated": "failed",
+        })
+        self.assertEqual(last_completed_stage(project), PipelineStage.TRANSCRIBED)
+
+    def test_projects_from_before_the_stage_keep_their_selection(self):
+        from apps.videos.services.ai.pipeline_state import last_completed_stage
+
+        project = self.project_with({
+            "audio_extracted": "completed", "transcribed": "completed",
+            "clips_selected": "completed", "render_dispatched": "failed",
+        })
+        VideoClip.objects.create(project=project, title="c", start_time=0, end_time=5)
+        self.assertEqual(last_completed_stage(project), PipelineStage.CLIPS_SELECTED)
+
+    def test_without_selection_the_missing_stage_is_not_skipped(self):
+        from apps.videos.services.ai.pipeline_state import last_completed_stage
+
+        project = self.project_with({"audio_extracted": "completed", "transcribed": "completed"})
+        self.assertEqual(last_completed_stage(project), PipelineStage.TRANSCRIBED)

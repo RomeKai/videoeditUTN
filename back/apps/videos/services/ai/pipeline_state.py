@@ -209,6 +209,21 @@ def last_completed_stage(project: VideoProject) -> str:
     resume: Optional[str] = PipelineStage.UPLOADED
     for stage in STAGE_ORDER[1:]:
         if statuses.get(stage) != StageStatus.COMPLETED:
+            if _predates_moderation(stage, statuses):
+                continue
             break
         resume = stage
     return resume
+
+
+def _predates_moderation(stage: str, statuses) -> bool:
+    """
+    Projects that selected clips before the moderation stage existed have no
+    status for it: their later completed stages stay valid (selection is not
+    paid again). Mirrors ``infer_completed_stage``, which also skips it.
+    """
+    return (
+        stage == PipelineStage.MODERATED
+        and stage not in statuses
+        and statuses.get(PipelineStage.CLIPS_SELECTED) == StageStatus.COMPLETED
+    )
