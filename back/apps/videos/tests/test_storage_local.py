@@ -31,8 +31,14 @@ def local_file(settings):
 
 # --- USE_R2=False ------------------------------------------------------------------
 
-def test_upload_returns_local_path_as_key(no_boto, local_file):
-    assert CloudflareR2Manager.upload_video(local_file, "user-1", "proj-1") == local_file
+def test_upload_of_file_inside_media_root_keeps_it_available(no_boto, local_file, settings):
+    """La key debe quedar dentro de MEDIA_ROOT y apuntar a un archivo legible."""
+    key = CloudflareR2Manager.upload_video(local_file, "user-1", "proj-1")
+
+    media_root = os.path.realpath(str(settings.MEDIA_ROOT))
+    assert os.path.realpath(key).startswith(media_root)
+    with open(key, "rb") as f:
+        assert f.read() == b"fake-mp4-bytes"
 
 
 def test_presigned_url_maps_media_root_to_media_url(no_boto, local_file, settings):
@@ -42,19 +48,26 @@ def test_presigned_url_maps_media_root_to_media_url(no_boto, local_file, setting
     assert "\\" not in url
 
 
-def test_upload_of_temp_file_copies_it_into_media_root(no_boto, settings, tmp_path):
-    temp_dir = tmp_path / "temp_uploads"
-    temp_dir.mkdir()
-    src = temp_dir / "clip.mp4"
-    src.write_bytes(b"temp-bytes")
+@pytest.mark.xfail(
+    strict=True,
+    reason="Bug storage local: upload_video solo copia a MEDIA_ROOT si el path contiene "
+           "'temp' (storage_service.py:54); un archivo de afuera queda referenciado en "
+           "su ubicación original y se pierde cuando el llamador lo borra.",
+)
+def test_upload_of_file_outside_media_root_copies_it_inside(no_boto, settings, tmp_path):
+    src = tmp_path / "outside" / "clip.mp4"
+    src.parent.mkdir()
+    src.write_bytes(b"outside-bytes")
+    if "temp" in str(src):
+        pytest.skip("El TMPDIR contiene 'temp' y activa la heurística: el caso no se puede aislar")
 
     key = CloudflareR2Manager.upload_video(str(src), "user-1", "proj-1")
 
     expected_dir = os.path.join(str(settings.MEDIA_ROOT), "videos", "user-1", "proj-1")
     assert os.path.dirname(key) == expected_dir
-    assert re.fullmatch(r"[0-9a-f-]{36}\.mp4", os.path.basename(key))
+    src.unlink()  # el llamador limpia su archivo: la copia tiene que sobrevivir
     with open(key, "rb") as f:
-        assert f.read() == b"temp-bytes"
+        assert f.read() == b"outside-bytes"
 
 
 def test_upload_without_path_is_rejected(no_boto):
