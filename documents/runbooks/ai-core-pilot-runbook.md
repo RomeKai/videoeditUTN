@@ -215,6 +215,50 @@ Consecuencias para el piloto:
 
 Al superar un límite, Groq responde 429. El pipeline lo reintenta con backoff (AICORE-7), así que no se pierde trabajo, pero la entrega se demora (ver salvedad k).
 
+Con el rate limiting propio activo (sección 5.5), el pipeline espera **antes** de llamar y los 429 por cuota dejan de ser el camino normal.
+
+### 5.5 Rate limiting propio (AICORE-11)
+
+Con `AI_CAPACITY_ENABLED=True`, cada llamada a Groq (transcripción) y al LLM (selección y SEO) reserva capacidad en token buckets de Valkey antes de salir. Si no hay lugar, la etapa queda en `pending_capacity` y la tarea vuelve a la cola sin ocupar el worker. Esa espera no cuenta como intento fallido ni genera registros de costo. Diseño y decisiones en [ADR-012, D-C4](../adrs/012-model-profiles-and-capacity.md).
+
+**Límites por entorno.** `AI_CAPACITY_LIMITS` es un JSON en el `.env` con una entrada por modelo. Cada valor es el **80 %** del límite que muestra la consola del proveedor. Todo modelo que llame el pipeline necesita su entrada: el primario, el fallback y `groq/<modelo de Whisper>`. Si falta alguna, la etapa falla con `ImproperlyConfigured` antes de llamar al proveedor.
+
+| Entorno | `AI_CAPACITY_ENABLED` | Groq (`groq/whisper-large-v3-turbo`) | LLM (primario y fallback) |
+|---------|-----------------------|--------------------------------------|---------------------------|
+| Dev / CI | `False` | — | — |
+| Piloto / staging | `True` | Con lo relevado el 2026-10-11 (sección 5.4): `audio_seconds_per_hour` 5.760, `audio_seconds_per_day` 23.040, `requests_per_minute` 16, `requests_per_day` 1.600. Con el Developer Tier activo, recalcular con la consola | `tokens_per_minute` y `requests_per_minute` al 80 % del tier pago. **Pendiente de relevar en la consola**: el `.env.example` trae valores de ejemplo |
+| Producción | `True` | 80 % del tier elegido en D-C5 | 80 % del tier elegido en D-C5 |
+
+Recursos admitidos: `audio_seconds`, `tokens` y `requests`, por `minute`, `hour` o `day` (por ejemplo, `tokens_per_minute`). Una demanda usa todos los buckets configurados de su recurso.
+
+> **Cuentas compartidas.** Cada entorno tiene su propio Valkey. Si piloto y producción usan la **misma cuenta** de un proveedor, sus buckets no se ven entre sí: repartir el 80 % entre los dos (por ejemplo, 60 % y 20 %).
+
+**Qué se reserva y cómo se ajusta**
+
+| Llamada | Reserva | Ajuste después de la llamada |
+|---------|---------|------------------------------|
+| Transcripción (Groq) | Duración del video en segundos y un request por chunk de 10 min | Segundos facturados (`audio_seconds`). Si se desconocen, queda la reserva |
+| Selección (LiteLLM) | `456 × minutos de audio + 1.500 + 4.000` tokens y un request, en el primario **y** en el fallback si tiene key | Tokens reales de cada intento. Se devuelve lo del modelo que no se usó. Un timeout o una conexión cortada mantienen la reserva |
+| Selección legacy | Lo mismo, solo en el primario | Sin ajuste: el selector legacy no informa tokens |
+| SEO | `caracteres del transcript / 4 + 1.500 + 4.000` tokens del primario | Sin ajuste hasta #69 |
+
+Los coeficientes se configuran con `AI_CAPACITY_LLM_TOKENS_PER_AUDIO_MINUTE`, `AI_CAPACITY_LLM_PROMPT_TOKENS` y `AI_CAPACITY_LLM_OUTPUT_TOKENS`.
+
+**Espera y vencimiento.** Cada re-encolado espera el déficit del bucket, con un tope de `AI_CAPACITY_MAX_COUNTDOWN_SECONDS` (300 s) y entre 0 y 20 % de jitter. Si la espera prevista de una etapa supera `AI_CAPACITY_MAX_WAIT_SECONDS` (3.600 s), el proyecto falla con `pipeline_error_code=CapacityTimeoutError` (en SEO, el post queda con `error_log=capacity_timeout`). Una cuota **diaria** agotada produce esperas de horas, así que falla enseguida en vez de esperar al día siguiente: re-despachar cuando vuelva a haber cuota.
+
+Un video más largo que un bucket entero (por ejemplo, 2 h de audio contra 5.760 s por hora) espera a que el bucket esté lleno, pasa y lo deja en negativo. Los siguientes esperan a que se recupere. El bucket se rellena solo y nunca queda negativo de forma permanente.
+
+**Valkey caído.** La reserva falla y la etapa se reintenta con backoff, igual que el lock (AICORE-7). Nunca se llama al proveedor sin reserva.
+
+**Cómo leer la latencia**
+
+- Logs, sin texto del usuario: `pipeline.pending_capacity` (etapa, `countdown_s`, `planned_s`), `pipeline.capacity_granted` (`waited_s`), `pipeline.capacity_timeout`, `seo.pending_capacity`, `seo.capacity_timeout` y `capacity.settle_failed`.
+- `VideoProject.metadata["capacity_waited_s"]` guarda los segundos de espera por etapa. Mientras espera, `metadata["capacity_wait"]` muestra la etapa, desde cuándo y la espera planificada.
+- La latencia de punta a punta incluye la espera. `transcription_latency_s` y `selection_latency_s` del export miden solo la llamada al proveedor. Para comparar contra el criterio de latencia, restar `capacity_waited_s` y reportar las dos cifras.
+- Si hay `pending_capacity` frecuentes y sostenidos, falta capacidad: hay que ampliar el tier (D-C5). Subir los límites por encima del 80 % no sirve, porque solo devuelve los 429.
+
+**Verificación en staging.** Dejar para Groq solo `{"audio_seconds_per_minute": 120, "requests_per_minute": 16}` y subir dos videos de ~90 s, uno detrás del otro. El segundo tiene que quedar en `pending_capacity` unos 30 s, aparecer en `pipeline.pending_capacity` y completarse solo, con `pipeline_attempts` igual a 0 y sin filas de costo durante la espera. Después, restaurar los límites.
+
 ---
 
 ## 6. Fallo inducido
