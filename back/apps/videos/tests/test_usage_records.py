@@ -67,8 +67,9 @@ class AIUsageRecordModelTests(TestCase):
                 record.completion_tokens,
                 record.total_tokens,
                 record.cache_read_tokens,
+                record.reasoning_tokens,
             ),
-            (0, 0, 0, 0),
+            (0, 0, 0, 0, 0),
         )
         self.assertIsNone(record.audio_seconds)
         self.assertIsNone(record.estimated_cost_usd)
@@ -115,13 +116,14 @@ class AIUsageRecordModelTests(TestCase):
 
         self.assertEqual(AIUsageRecord.objects.count(), 5)
 
-    def test_deleting_the_project_deletes_its_records(self):
+    def test_deleting_the_project_keeps_its_records(self):
+        # AICORE-18: the cost history outlives the project (see test_usage_history).
         project = make_project()
         AIUsageRecord.objects.create(project=project, **usage_fields())
 
         project.delete()
 
-        self.assertEqual(AIUsageRecord.objects.count(), 0)
+        self.assertEqual(AIUsageRecord.objects.count(), 1)
 
     def test_created_at_and_project_are_indexed_for_since_queries(self):
         index_fields = [tuple(index.fields) for index in AIUsageRecord._meta.indexes]
@@ -167,6 +169,13 @@ class RecordUsagesTests(TestCase):
         self.assertEqual(row.estimated_cost_usd, Decimal("0.000000375"))
         self.assertEqual(row.pricing_version, PRICING_VERSION)
         self.assertIsNone(row.error_code)
+
+    def test_persists_reasoning_tokens_and_total_that_includes_them(self):
+        self.record([selection_usage(reasoning_tokens=2000)])
+
+        row = AIUsageRecord.objects.get()
+        self.assertEqual(row.reasoning_tokens, 2000)
+        self.assertEqual(row.total_tokens, 1000 + 100 + 2000)
 
     def test_two_billed_executions_at_the_same_attempt_keep_two_rows(self):
         self.record([selection_usage(prompt_tokens=10)])
