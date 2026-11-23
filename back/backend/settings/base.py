@@ -164,6 +164,13 @@ AI_LLM_REASONING_EFFORT = env('AI_LLM_REASONING_EFFORT', default='')
 # Transcript cap sized for the smallest context window plausible in the chain (gpt-4o-mini, 128K tokens),
 # so the same cap stays valid if a cross-provider fallback is configured.
 AI_LLM_MAX_TRANSCRIPT_CHARS = env.int('AI_LLM_MAX_TRANSCRIPT_CHARS', default=400000)
+# Clip boundaries (AICORE-16): with word timestamps, clips are snapped to whole
+# words and kept within [MIN, MAX] seconds at natural boundaries (a pause of at
+# least PAUSE seconds between words, or a sentence end). See clip_validation.py.
+AI_CLIP_MIN_SECONDS = env.float('AI_CLIP_MIN_SECONDS', default=15.0)
+AI_CLIP_MAX_SECONDS = env.float('AI_CLIP_MAX_SECONDS', default=60.0)
+AI_CLIP_SNAP_TOLERANCE_SECONDS = env.float('AI_CLIP_SNAP_TOLERANCE_SECONDS', default=1.0)
+AI_CLIP_PAUSE_SECONDS = env.float('AI_CLIP_PAUSE_SECONDS', default=0.5)
 AI_DEFAULT_TRANSCRIPTION_MODEL = env('AI_DEFAULT_TRANSCRIPTION_MODEL', default='whisper-large-v3-turbo')
 
 # Transcription backend when AI_CORE_V2_ENABLED=True: 'groq' (default) | 'local'.
