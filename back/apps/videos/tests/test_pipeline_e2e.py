@@ -35,6 +35,7 @@ PROJECTS_URL = "/api/v1/projects/"
 TRANSCRIBE = "apps.videos.services.transcription_engine.TranscriptionEngine.transcribe_detailed"
 SELECT = "apps.videos.services.selection_engine.SelectionEngine.select_viral_clips_detailed"
 REDIS_CLIENT = "apps.videos.services.ai.project_lock.get_redis_client"
+MODERATION = "apps.core.security.AI_Security_Shield.check_content_safety"
 
 WORDS = [
     WordTimestamp(text="Hola", start=0.0, end=0.5),
