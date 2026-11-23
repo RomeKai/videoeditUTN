@@ -1329,6 +1329,7 @@ def _stage_select_clips(project_id):
         # User preferences were stored but never reached the selector.
         editing_style=project.editing_style,
         max_clips=metadata.get('max_clips'),
+        selection_criteria=metadata.get('selection_criteria'),
     )
     started = time.monotonic()
     if getattr(settings, 'AI_CORE_V2_ENABLED', False):

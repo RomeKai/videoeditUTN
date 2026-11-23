@@ -1,5 +1,9 @@
 from rest_framework import serializers
 from .models import VideoProject, VideoClip, ClipLayer, BrandKit
+from .services.ai.selection_criteria import (
+    MAX_SELECTION_CRITERIA_CHARS,
+    normalize_selection_criteria,
+)
 
 class BrandKitSerializer(serializers.ModelSerializer):
     class Meta:
@@ -27,6 +31,12 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     
     source_file = serializers.FileField(required=False)
     video_url = serializers.CharField(required=False, allow_blank=True)
+    # PTE-02: optional preference for the clip selector ("momentos de humor").
+    # Stored in metadata at creation; blank means none.
+    selection_criteria = serializers.CharField(
+        required=False, allow_blank=True, write_only=True,
+        max_length=MAX_SELECTION_CRITERIA_CHARS,
+    )
 
     class Meta:
         model = VideoProject
@@ -67,7 +77,13 @@ class VideoProjectSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("El archivo es demasiado grande (MÃ¡x 500MB)")
         return value
 
+    def update(self, instance, validated_data):
+        # The criterion only applies when the project is created (ingestion starts then).
+        validated_data.pop('selection_criteria', None)
+        return super().update(instance, validated_data)
+
     def create(self, validated_data):
+        criteria = normalize_selection_criteria(validated_data.pop('selection_criteria', None))
         # Creamos el proyecto normal
         project = super().create(validated_data)
         
@@ -76,6 +92,7 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         project.metadata = project.metadata or {}
         
         if 'max_clips' in raw: project.metadata['max_clips'] = int(raw['max_clips'])
+        if criteria: project.metadata['selection_criteria'] = criteria
         if 'subtitle_size' in raw: project.metadata['subtitle_size'] = raw['subtitle_size']
         if 'aspect_ratio' in raw: project.aspect_ratio = raw['aspect_ratio']
         if 'render_layout' in raw: project.render_layout = raw['render_layout']
