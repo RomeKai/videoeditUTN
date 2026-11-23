@@ -1779,23 +1779,36 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
         project_id, attempt, final, type(exc).__name__,
         extra={'project_id': str(project_id), 'attempt': attempt},
     )
+    failed_now = False
     try:
         VideoProject.objects.filter(pk=project_id).update(
             pipeline_attempts=F('pipeline_attempts') + 1
         )
         record_error(project_id, type(exc).__name__)
         if final:
-            mark_failed(project_id, expected_stage=stage)
+            failed_now = mark_failed(project_id, expected_stage=stage)
     except (DatabaseError, VideoProject.DoesNotExist) as record_exc:
         logger.error(
             "pipeline.failure_not_recorded project_id=%s error=%s",
             project_id, type(record_exc).__name__,
         )
         return
-    if final and _is_moderation_failure(exc):
-        # ADR-011 D-M4/D-M5: a project stopped by moderation (blocked content or
-        # no verdict after the retries) gets its tokens back.
+    # Only the call that failed the project refunds it: a project another worker
+    # moved on, or failed for another reason, keeps its reservation.
+    if failed_now and _refunds_reservation(exc):
         _refund_ingestion_reservation(project_id)
+
+
+def _refunds_reservation(exc):
+    """
+    Final failures that give the tokens back: content stopped by moderation
+    (blocked, or no verdict after the retries; ADR-011 D-M4/D-M5) and a
+    capacity wait that ran out (ADR-012 D-C4). In both the user got nothing
+    for the reservation through no failure of the video itself.
+    """
+    from apps.videos.services.ai.capacity import CapacityTimeoutError
+
+    return _is_moderation_failure(exc) or isinstance(exc, CapacityTimeoutError)
 
 
 # acks_late + reject_on_worker_lost: if the worker dies mid-task (OOM during
