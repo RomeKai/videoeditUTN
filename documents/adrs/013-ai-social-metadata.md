@@ -113,6 +113,16 @@ El adaptador de publicación agrega `#` al armar el caption final. `generated_ha
 
 Según [ADR-011](011-content-moderation.md): la transcripción del clip se modera antes de generar, y el caption y los hashtags generados se moderan antes de persistirlos. Un resultado bloqueado deja el post `FAILED` con un código estático y el mensaje genérico.
 
+### Disparo
+
+- La generación se encola sola cuando se crea un `ScheduledPost`, después de que la transacción hace commit. Editar un post nunca la vuelve a disparar.
+- Solo si el proyecto la pidió (`use_seo=true` al crearlo) y el plan del workspace la incluye (`has_seo_optimization`). Sin plan no hay límites, como en `PricingEngine`. Al crear el proyecto se valida contra el plan y se cobra el adicional `seo_optimization`, también para los proyectos con URL (que pagan una tarifa fija más el adicional).
+- No se encola si el post ya trae caption y hashtags, si ya se está publicando o si ya se publicó, ni al cargar fixtures.
+- Si el broker no responde, se registra `seo.dispatch_failed` y el post queda igual. El admin tiene la acción "Regenerar caption y hashtags con IA" para reintentarlo o para una regeneración explícita, solo para proyectos con SEO contratado.
+- Un post que ya empezó a publicarse o ya se publicó no cambia más: ni la generación ni una regeneración tocan su caption ni su estado.
+- Si una regeneración falla, el post conserva el caption anterior y su estado, así que se puede publicar igual. Solo la primera generación deja el post `FAILED`.
+- Los posts creados con `bulk_create` no disparan la señal: quien los cree así tiene que encolar la generación.
+
 ### Persistencia e idempotencia
 
 - `generated_caption` y `generated_hashtags` son la fuente persistente para la publicación.

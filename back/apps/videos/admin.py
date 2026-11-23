@@ -59,6 +59,30 @@ class ScheduledPostAdmin(admin.ModelAdmin):
     list_display = ('id', 'video_clip', 'platform', 'publish_at', 'status')
     list_filter = ('platform', 'status')
     search_fields = ('video_clip__title',)
+    actions = ('regenerate_ai_metadata',)
+
+    @admin.action(description="Regenerar caption y hashtags con IA")
+    def regenerate_ai_metadata(self, request, queryset):
+        """
+        Explicit regeneration (ADR-013): replaces the caption and hashtags. Only
+        for projects that asked for SEO on a plan that includes it; posts already
+        publishing or published are skipped. A failed regeneration keeps the
+        previous caption.
+        """
+        from .signals import queue_post_seo, seo_requested
+
+        skipped = (ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED)
+        candidates = queryset.exclude(status__in=skipped).select_related(
+            'video_clip__project__workspace__subscription_plan',
+        )
+        posts = [post.pk for post in candidates if seo_requested(post.video_clip.project)]
+        for post_id in posts:
+            queue_post_seo(post_id, regenerate=True)
+        ignored = queryset.count() - len(posts)
+        message = f"Generación encolada para {len(posts)} publicaciones."
+        if ignored:
+            message += f" {ignored} se omitieron (ya publicadas o sin SEO contratado)."
+        self.message_user(request, message)
 
 
 # --- 6. MODERACIÓN (ADR-011 D-M5) ---

@@ -271,7 +271,7 @@ Recursos admitidos: `audio_seconds`, `tokens` y `requests`, por `minute`, `hour`
 | Transcripción (Groq) | Duración del video en segundos y un request por chunk de 10 min | Segundos facturados (`audio_seconds`). Si se desconocen, queda la reserva |
 | Selección (LiteLLM) | `456 × minutos de audio + 1.500 + 4.000` tokens y un request, en el primario **y** en el fallback si tiene key | Tokens reales de cada intento. Se devuelve lo del modelo que no se usó. Un timeout o una conexión cortada mantienen la reserva |
 | Selección legacy | Lo mismo, solo en el primario | Sin ajuste: el selector legacy no informa tokens |
-| SEO | `caracteres del transcript / 4 + 1.500 + 4.000` tokens del primario | Sin ajuste hasta #69 |
+| SEO | `caracteres del título y del transcript del clip / 4 + 1.500 + 4.000` tokens y un request, en el primario y en el fallback | Tokens reales de cada intento, igual que la selección. Si la moderación frena el post antes de llamar al LLM, se devuelve todo |
 
 Los coeficientes se configuran con `AI_CAPACITY_LLM_TOKENS_PER_AUDIO_MINUTE`, `AI_CAPACITY_LLM_PROMPT_TOKENS` y `AI_CAPACITY_LLM_OUTPUT_TOKENS`.
 

@@ -219,6 +219,19 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
         
         elif project.video_url:
             cost_in_tokens = Decimal('10.0')
+            if project.metadata.get('use_seo'):
+                # The duration of a URL video is unknown here: only the SEO add-on
+                # is checked against the plan and charged (ADR-013).
+                try:
+                    cost_in_tokens += PricingEngine.calculate_render_cost(
+                        duration_seconds=0,
+                        resolution='720p',
+                        features_requested={'seo_optimization': True},
+                        plan=workspace.subscription_plan,
+                    )
+                except (PlanLimitExceededError, FeatureNotAllowedError) as e:
+                    project.delete()
+                    return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             # Asegurar que el workspace tenga billetera (autocuraciÃ³n)

@@ -37,6 +37,9 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         required=False, allow_blank=True, write_only=True,
         max_length=MAX_SELECTION_CRITERIA_CHARS,
     )
+    # Paid add-on (PricingEngine 'seo_optimization'): captions and hashtags are
+    # generated for each ScheduledPost of the project (ADR-013). Creation only.
+    use_seo = serializers.BooleanField(required=False, write_only=True)
 
     class Meta:
         model = VideoProject
@@ -80,10 +83,12 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         # The criterion only applies when the project is created (ingestion starts then).
         validated_data.pop('selection_criteria', None)
+        validated_data.pop('use_seo', None)  # charged at creation only
         return super().update(instance, validated_data)
 
     def create(self, validated_data):
         criteria = normalize_selection_criteria(validated_data.pop('selection_criteria', None))
+        use_seo = validated_data.pop('use_seo', None)
         # Creamos el proyecto normal
         project = super().create(validated_data)
         
@@ -134,6 +139,9 @@ class VideoProjectSerializer(serializers.ModelSerializer):
 
         if 'remove_silences' in raw:
             project.remove_silences = str(raw['remove_silences']).lower() in ['true', '1', 't', 'y', 'yes']
-            
+
+        # Read by the pricing right after this save, then by the SEO dispatch.
+        if use_seo is not None: project.metadata['use_seo'] = use_seo
+
         project.save()
         return project
