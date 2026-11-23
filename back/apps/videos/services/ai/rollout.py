@@ -11,16 +11,41 @@ the next stage of a project already in flight, and the usage rows record the
 path that actually ran (``pipeline_version``).
 """
 
-from typing import FrozenSet
+import uuid
+from typing import FrozenSet, List
 
 from django.conf import settings
 
 
-def v2_allowlist() -> FrozenSet[str]:
+def _canonical(value) -> str:
+    """A user id as the canonical UUID string, or the trimmed text if it is not one."""
+    text = str(value).strip()
+    try:
+        return str(uuid.UUID(text))
+    except ValueError:
+        return text.lower()
+
+
+def _raw_allowlist() -> List[str]:
     raw = getattr(settings, "AI_CORE_V2_ALLOWLIST", None) or ()
     if isinstance(raw, str):
         raw = raw.split(",")
-    return frozenset(str(item).strip().lower() for item in raw if str(item).strip())
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def invalid_allowlist_entries() -> List[str]:
+    """Entries that are not user ids (UUIDs): they would never match anyone."""
+    invalid = []
+    for item in _raw_allowlist():
+        try:
+            uuid.UUID(item)
+        except ValueError:
+            invalid.append(item)
+    return invalid
+
+
+def v2_allowlist() -> FrozenSet[str]:
+    return frozenset(_canonical(item) for item in _raw_allowlist())
 
 
 def v2_enabled_for(project) -> bool:
@@ -31,4 +56,4 @@ def v2_enabled_for(project) -> bool:
     if not allowlist:
         return True
     uploader = getattr(project, "uploaded_by_id", None)
-    return uploader is not None and str(uploader).lower() in allowlist
+    return uploader is not None and _canonical(uploader) in allowlist

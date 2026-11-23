@@ -1517,7 +1517,7 @@ def _refund_ingestion_reservation(project_id):
 
 
 def _stage_select_clips(project_id):
-    from apps.videos.services.ai.llm_options import reasoning_effort_setting
+    from apps.videos.services.ai.llm_options import reasoning_effort_setting, reasoning_kwargs
     from apps.videos.services.ai.rollout import v2_enabled_for
 
     project = VideoProject.objects.get(pk=project_id)
@@ -1551,7 +1551,13 @@ def _stage_select_clips(project_id):
         selection_criteria=metadata.get('selection_criteria'),
     )
     started = time.monotonic()
-    if v2_enabled_for(project):
+    v2_enabled = v2_enabled_for(project)
+    # The level actually sent to the primary model ('default' = none sent: no
+    # setting, or a model that cannot take it), for the AICORE-14 comparison.
+    selection_effort = reasoning_kwargs(
+        _selection_models(v2_enabled)[0], reasoning_effort_setting(),
+    ).get('reasoning_effort') or 'default'
+    if v2_enabled:
         # Fixed by the branch that actually executes; never re-read afterwards.
         pipeline_version = AIUsageRecord.PipelineVersion.V2
         identity = _llm_identity(getattr(settings, 'AI_DEFAULT_LLM_MODEL', 'unknown'))
@@ -1580,7 +1586,8 @@ def _stage_select_clips(project_id):
         # Kill switch off: the legacy selector stays in charge (the V2 path always
         # goes through LiteLLM). Usage is synthetic so persistence is unchanged.
         try:
-            legacy_clips = SelectionEngine.select_viral_clips(**selection_kwargs)
+            # The rollout already chose legacy for this project: never re-read the master switch.
+            legacy_clips = SelectionEngine.select_viral_clips(**selection_kwargs, v2_enabled=False)
         except Exception as exc:
             _record_call_failure(
                 project_id, AIUsageRecord.Stage.SELECTION, pipeline_version, exc, identity, started
@@ -1639,7 +1646,7 @@ def _stage_select_clips(project_id):
                 'selection_usage': usage.model_dump(),
                 # The reasoning level this selection ran with, for the AICORE-14
                 # comparison in the pilot export ('default' = provider default).
-                'selection_reasoning_effort': reasoning_effort_setting() or 'default',
+                'selection_reasoning_effort': selection_effort,
             }, expected_stage=PipelineStage.MODERATED)
             advance(project_id, PipelineStage.MODERATED, PipelineStage.CLIPS_SELECTED)
 

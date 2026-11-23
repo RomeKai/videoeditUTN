@@ -206,7 +206,10 @@ La planilla no debe contener títulos ni transcripts del usuario: solo `clip_id`
 | `videos.E002` | Un modelo configurado no tiene precio vigente en `pricing.py` (el de transcripción, solo si corre Groq) |
 | `videos.E003` | `TRANSCRIPTION_BACKEND` inválido con V2 activo |
 | `videos.E004` | `AI_LLM_REASONING_EFFORT` inválido |
-| `videos.E005` | Con `AI_CAPACITY_ENABLED`, un modelo que el pipeline reserva no tiene límites válidos en `AI_CAPACITY_LIMITS` |
+| `videos.E005` | Con `AI_CAPACITY_ENABLED`, un modelo que el pipeline reserva no tiene límites válidos en `AI_CAPACITY_LIMITS` (o la variable no es un objeto JSON) |
+| `videos.E006` | `AI_CORE_V2_ALLOWLIST` tiene entradas que no son ids de usuario (UUID): nunca coincidirían con nadie |
+
+Ojo: si la variable `AI_CORE_V2_ALLOWLIST` falta o está mal escrita, la lista queda vacía y V2 corre para todos. Verificarla antes del paso 6 de §5.1.
 
 **Qué incluye G0 además de los checks de imagen:**
 

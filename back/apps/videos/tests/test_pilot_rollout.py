@@ -16,7 +16,9 @@ from apps.videos.services.ai.rollout import v2_enabled_for
 from apps.videos.services.transcription_engine import TranscriptionBackend, TranscriptionEngine
 from apps.videos.tests.test_ingestion_pipeline import IngestionHarness, selection_result
 
-LEGACY_SELECT = "apps.videos.services.selection_engine.SelectionEngine.select_viral_clips"
+# The legacy implementation itself, not the dispatcher in front of it: patching the
+# dispatcher would hide a dispatcher that re-reads the master switch.
+LEGACY_IMPL = "apps.videos.services.selection_engine.SelectionEngine._select_legacy"
 UPLOADER = "8f14e45f-ceea-467f-a0e6-9c3f5f2b4a11"
 
 
@@ -44,6 +46,12 @@ class RolloutDecisionTests(SimpleTestCase):
     def test_a_comma_separated_string_also_works(self):
         self.assertTrue(v2_enabled_for(project_by(UPLOADER)))
 
+    @override_settings(AI_CORE_V2_ENABLED=True, AI_CORE_V2_ALLOWLIST=[UPLOADER.replace("-", "")])
+    def test_any_uuid_spelling_matches_the_uploader(self):
+        import uuid
+
+        self.assertTrue(v2_enabled_for(project_by(uuid.UUID(UPLOADER))))
+
     @override_settings(AI_CORE_V2_ENABLED=True, TRANSCRIPTION_BACKEND="groq")
     def test_the_engine_follows_the_project_decision_not_the_master_switch(self):
         self.assertIs(TranscriptionEngine.resolve_backend(False), TranscriptionBackend.LOCAL)
@@ -58,8 +66,8 @@ class RolloutPipelineTests(IngestionHarness, TestCase):
     def test_a_user_outside_the_allowlist_runs_the_legacy_path(self):
         project = self.make_project()
         legacy = [{"start": 0.0, "end": 5.0, "title": "t", "virality_score": 80, "reasoning": "r"}]
-        with self.settings(AI_CORE_V2_ALLOWLIST=["someone-else"]), \
-                patch(LEGACY_SELECT, return_value=legacy) as legacy_select, \
+        with self.settings(AI_CORE_V2_ALLOWLIST=["00000000-0000-0000-0000-000000000000"]), \
+                patch(LEGACY_IMPL, return_value=legacy) as legacy_select, \
                 patch.object(TranscriptionEngine, "resolve_backend", wraps=TranscriptionEngine.resolve_backend) as resolve:
             self.run_task(project)
 
@@ -80,6 +88,29 @@ class RolloutPipelineTests(IngestionHarness, TestCase):
         self.assertEqual(self.versions(project)["transcription"], AIUsageRecord.PipelineVersion.V2)
 
 
+class EngineRoutingTests(SimpleTestCase):
+    """The engine itself follows the project decision (not only the task that builds it)."""
+
+    @override_settings(AI_CORE_V2_ENABLED=True, TRANSCRIPTION_BACKEND="groq")
+    def test_a_project_outside_v2_transcribes_locally_even_with_the_master_switch_on(self):
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".mp4") as media, \
+                patch.object(TranscriptionEngine, "_transcribe_local_raw", return_value={"text": "", "segments": []}) as local, \
+                patch.object(TranscriptionEngine, "_transcribe_groq") as groq:
+            TranscriptionEngine(v2_enabled=False).transcribe(media.name)
+            local.assert_called_once()
+            groq.assert_not_called()
+
+            local.reset_mock()
+            try:
+                TranscriptionEngine(v2_enabled=True).transcribe(media.name)
+            except Exception:
+                pass  # the mocked Groq result is not a real one; only the routing matters
+            groq.assert_called_once()
+            local.assert_not_called()
+
+
 class ReasoningEffortRecordTests(IngestionHarness, TestCase):
     def export_rows(self):
         out = StringIO()
@@ -95,6 +126,14 @@ class ReasoningEffortRecordTests(IngestionHarness, TestCase):
                 project.refresh_from_db()
                 self.assertEqual(project.metadata["selection_reasoning_effort"], expected)
                 self.assertEqual(self.export_rows()[str(project.pk)]["reasoning_effort"], expected)
+
+    def test_a_model_that_cannot_reason_records_default(self):
+        with self.settings(AI_LLM_REASONING_EFFORT="low"), \
+                patch("apps.videos.services.ai.llm_options.reasoning_kwargs", return_value={}):
+            project = self.make_project()
+            self.run_task(project)
+        project.refresh_from_db()
+        self.assertEqual(project.metadata["selection_reasoning_effort"], "default")
 
     def test_the_export_only_shows_known_levels(self):
         project = self.make_project(metadata={"selection_reasoning_effort": "=HYPERLINK(\"x\")"})
@@ -156,6 +195,17 @@ class StartupCheckTests(SimpleTestCase):
         with self.settings(AI_CAPACITY_LIMITS=typo, **common), \
                 patch("apps.videos.services.ai.llm_credentials.resolve_api_key", return_value=None):
             self.assertEqual(self.ids(), ["videos.E005"])
+
+    def test_capacity_limits_that_are_not_an_object_are_an_error_not_a_crash(self):
+        for limits in ([1], "x", None):
+            with self.subTest(limits=limits), self.settings(AI_CAPACITY_ENABLED=True, AI_CAPACITY_LIMITS=limits):
+                self.assertIn("videos.E005", self.ids())
+
+    def test_allowlist_entries_must_be_user_ids(self):
+        with self.settings(AI_CORE_V2_ALLOWLIST=[UPLOADER, "franco"]):
+            self.assertIn("videos.E006", self.ids())
+        with self.settings(AI_CORE_V2_ALLOWLIST=[UPLOADER, UPLOADER.replace("-", "")]):
+            self.assertNotIn("videos.E006", self.ids())
 
     def test_has_current_price_never_logs_and_respects_periods(self):
         from datetime import date

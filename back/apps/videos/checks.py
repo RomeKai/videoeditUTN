@@ -56,7 +56,21 @@ def check_ai_configuration(app_configs=None, **kwargs):
 
     errors.extend(_reasoning_errors())
     errors.extend(_capacity_errors())
+    errors.extend(_allowlist_errors())
     return errors
+
+
+def _allowlist_errors():
+    from apps.videos.services.ai.rollout import invalid_allowlist_entries
+
+    invalid = invalid_allowlist_entries()
+    if not invalid:
+        return []
+    return [Error(
+        f"AI_CORE_V2_ALLOWLIST has {len(invalid)} entries that are not user ids (UUIDs).",
+        hint="Use the id of each user (VideoProject.uploaded_by); an entry that is not one never matches.",
+        id="videos.E006",
+    )]
 
 
 def _reasoning_errors():
@@ -75,7 +89,15 @@ def _capacity_errors():
     """With AI_CAPACITY_ENABLED, every model the pipeline calls needs valid limits."""
     if not getattr(settings, "AI_CAPACITY_ENABLED", False):
         return []
+    from collections.abc import Mapping
+
     from django.core.exceptions import ImproperlyConfigured
+
+    if not isinstance(getattr(settings, "AI_CAPACITY_LIMITS", None), Mapping):
+        return [Error(
+            "AI_CAPACITY_LIMITS must be a JSON object {model: {resource_per_window: limit}}.",
+            id="videos.E005",
+        )]
 
     from apps.videos.services.ai.capacity import RESOURCES, buckets_for
     from apps.videos.services.ai.llm_credentials import resolve_api_key

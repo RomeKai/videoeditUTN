@@ -206,9 +206,13 @@ class SelectionEngine:
         provider: Optional["LiteLLMSelectionProvider"] = None,
         max_clips: Optional[int] = None,
         selection_criteria: Optional[str] = None,
+        v2_enabled: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
         """
         Main client method for viral clip selection.
+
+        ``v2_enabled`` is the per-project rollout decision (AICORE-9,
+        ``rollout.v2_enabled_for``); None reads the master switch.
 
         ``transcription_data`` accepts ``full_text`` and, preferably, ``segments``
         (word/segment dicts with start, end, text) so cuts are grounded.
@@ -216,7 +220,9 @@ class SelectionEngine:
         Both paths validate the clips the same way and raise
         ``AIEmptySelectionError`` when none is usable.
         """
-        if getattr(settings, "AI_CORE_V2_ENABLED", False):
+        if v2_enabled is None:
+            v2_enabled = getattr(settings, "AI_CORE_V2_ENABLED", False)
+        if v2_enabled:
             exec_result = SelectionEngine.select_viral_clips_detailed(
                 transcription_data=transcription_data,
                 project_title=project_title,
