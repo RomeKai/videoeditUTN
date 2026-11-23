@@ -32,7 +32,7 @@ from apps.videos.services.ai.contracts import (
     ProviderUsage,
     ViralClip,
 )
-from apps.videos.services.ai.clip_validation import sanitize_clips
+from apps.videos.services.ai.clip_validation import ClipRules, sanitize_clips
 from apps.videos.services.ai.errors import (
     AIAuthenticationError,
     AIConnectionError,
@@ -185,6 +185,7 @@ class LiteLLMSelectionProvider:
                 messages=messages,
                 video_duration=video_duration,
                 target_count=target_count,
+                segments=segments,
             )
             attempts.append(usage)
             self._log_success("primary", result, usage)
@@ -222,6 +223,7 @@ class LiteLLMSelectionProvider:
                     messages=messages,
                     video_duration=video_duration,
                     target_count=target_count,
+                    segments=segments,
                 )
                 attempts.append(usage)
                 self._log_success("fallback", result, usage)
@@ -250,6 +252,7 @@ class LiteLLMSelectionProvider:
         messages: List[Dict[str, str]],
         video_duration: float,
         target_count: Optional[int] = None,
+        segments: Optional[Sequence[Mapping[str, Any]]] = None,
     ) -> Tuple[ClipSelectionResult, ProviderUsage]:
         """
         One provider attempt. On success returns the usage tagged with ``role``.
@@ -264,6 +267,7 @@ class LiteLLMSelectionProvider:
                 messages=messages,
                 video_duration=video_duration,
                 target_count=target_count,
+                segments=segments,
             )
         except Exception as exc:
             if is_task_time_limit(exc):
@@ -315,13 +319,14 @@ class LiteLLMSelectionProvider:
         messages: List[Dict[str, str]],
         video_duration: float,
         target_count: Optional[int] = None,
+        segments: Optional[Sequence[Mapping[str, Any]]] = None,
     ) -> Tuple[ClipSelectionResult, ProviderUsage]:
         """
         Calls LiteLLM and parses the structured response.
         """
         response, usage = self._call_llm(model, messages)
         try:
-            result = self._parse_response(response, video_duration, target_count)
+            result = self._parse_response(response, video_duration, target_count, segments)
         except Exception as exc:
             # The call answered, so it was billed: keep its real usage on the error.
             error = self._classify_error(exc)
@@ -473,6 +478,7 @@ class LiteLLMSelectionProvider:
 
         grounded = timestamped is not None and not timestamped.is_empty
         style = self._safe_editing_style(editing_style)
+        rules = ClipRules.from_settings()
 
         if grounded:
             input_rules = (
@@ -506,7 +512,7 @@ class LiteLLMSelectionProvider:
             "RULES\n"
             f"- Select exactly {int(target_count)} clips (fewer only if the transcript cannot "
             "support that many non-overlapping clips).\n"
-            "- Each clip should be 15-60 seconds long.\n"
+            f"- Each clip should be {rules.min_seconds:g}-{rules.max_seconds:g} seconds long.\n"
             f"- All timestamps must be within [0, {video_duration:.2f}] seconds.\n"
             f"{boundary_rules}"
             "- Clips must not overlap.\n"
@@ -540,6 +546,7 @@ class LiteLLMSelectionProvider:
         raw_content: str,
         video_duration: float,
         target_count: Optional[int] = None,
+        segments: Optional[Sequence[Mapping[str, Any]]] = None,
     ) -> ClipSelectionResult:
         """
         Parses LLM JSON output into a validated ClipSelectionResult.
@@ -586,7 +593,7 @@ class LiteLLMSelectionProvider:
             # never kept: it would carry model output (input_value) into logs.
             result = ClipSelectionResult()
 
-        result.clips = self._validate_clips(data["clips"], video_duration, target_count)
+        result.clips = self._validate_clips(data["clips"], video_duration, target_count, segments)
         if not result.clips:
             raise AIEmptySelectionError(
                 message="LLM selection contained no usable clips.",
@@ -600,12 +607,15 @@ class LiteLLMSelectionProvider:
         clips: Sequence[Any],
         video_duration: float,
         target_count: Optional[int] = None,
+        segments: Optional[Sequence[Mapping[str, Any]]] = None,
     ) -> List[ViralClip]:
         """
         Keeps the renderable clips: valid, inside the video (end clamped),
-        non-overlapping and at most ``target_count``. See ``clip_validation``.
+        non-overlapping and at most ``target_count``; with word-level
+        ``segments``, also anchored to words and to the target duration
+        (AICORE-16). See ``clip_validation``.
         """
-        validated, _ = sanitize_clips(clips, video_duration, target_count)
+        validated, _ = sanitize_clips(clips, video_duration, target_count, words=segments)
         return validated
 
     # ------------------------------------------------------------------
