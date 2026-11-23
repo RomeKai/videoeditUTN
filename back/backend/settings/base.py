@@ -176,6 +176,8 @@ AI_DEFAULT_TRANSCRIPTION_MODEL = env('AI_DEFAULT_TRANSCRIPTION_MODEL', default='
 # There is no automatic fallback between backends (ADR-008): Groq failures are
 # retried by Celery; 'local' loads openai-whisper and is meant for dev/rollback only.
 TRANSCRIPTION_BACKEND = env('TRANSCRIPTION_BACKEND', default='groq')
+# Prompt-to-Edit (PTE-01a): longest request sent to the parser; longer text is cut.
+AI_PROMPT_MAX_CHARS = env.int('AI_PROMPT_MAX_CHARS', default=1000)
 
 # JWT Configuration
 from datetime import timedelta

@@ -129,6 +129,67 @@ class ClipSelectionResult(BaseModel):
 
 
 # ==============================================================================
+# 2b. PROMPT-TO-EDIT CONTRACTS (PTE-01a, #72)
+# ==============================================================================
+
+# Same values as the VideoProject choices (a test keeps them in sync). Note the
+# model stores the square ratio as '1:Post'.
+EditingStyleValue = Literal["dynamic", "minimalist", "vlog", "hormozi", "custom"]
+AspectRatioValue = Literal["9:16", "1:Post", "16:9"]
+LayoutValue = Literal["fill", "fit", "blurred", "split", "pip", "versus", "active"]
+PositionValue = Literal["left", "center", "right"]
+SubtitleSizeValue = Literal["small", "medium", "large"]
+SubtitlePositionValue = Literal["top", "center", "bottom"]
+
+PROJECT_CONFIG_MAX_CLIPS = 20
+
+
+class ProjectConfig(BaseModel):
+    """
+    Project settings a Prompt-to-Edit prompt can ask for. Only existing
+    VideoProject fields and metadata keys, with the model's own choices; no
+    price, plan, tier or approval field. ``None`` means "not asked": the
+    project default stays.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    editing_style: Optional[EditingStyleValue] = None
+    aspect_ratio: Optional[AspectRatioValue] = None
+    render_layout: Optional[LayoutValue] = None
+    gameplay_position: Optional[PositionValue] = None
+    camera_selection_position: Optional[PositionValue] = None
+    speaker_tracking: Optional[bool] = None
+    use_facetracking: Optional[bool] = None
+    remove_silences: Optional[bool] = None
+    add_subtitles: Optional[bool] = None
+    subtitle_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    subtitle_size: Optional[SubtitleSizeValue] = None
+    subtitle_position: Optional[SubtitlePositionValue] = None
+    subtitle_with_emojis: Optional[bool] = None
+    subtitle_words_per_segment: Optional[int] = Field(default=None, ge=1, le=10)
+    # Stored in VideoProject.metadata, like the create view does.
+    max_clips: Optional[int] = Field(default=None, ge=1, le=PROJECT_CONFIG_MAX_CLIPS)
+    selection_criteria: Optional[str] = Field(default=None, max_length=300)
+
+    @field_validator("subtitle_color", mode="before")
+    @classmethod
+    def _upper_color(cls, value: Any) -> Any:
+        return value.strip().upper() if isinstance(value, str) else value
+
+    @field_validator("selection_criteria", mode="before")
+    @classmethod
+    def _clean_criteria(cls, value: Any) -> Any:
+        from apps.videos.services.ai.selection_criteria import normalize_selection_criteria
+
+        return normalize_selection_criteria(value) if value is not None else None
+
+    def requested(self) -> Dict[str, Any]:
+        """Only the settings the prompt asked for."""
+        return self.model_dump(exclude_none=True)
+
+
+# ==============================================================================
 # 3. PROVIDER USAGE & METRICS CONTRACTS
 # ==============================================================================
 

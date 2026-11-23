@@ -294,6 +294,7 @@ class AIUsageRecord(models.Model):
     """
 
     class Stage(models.TextChoices):
+        PROMPT_PARSE = 'prompt_parse', 'Prompt-to-Edit parse'
         TRANSCRIPTION = 'transcription', 'Transcription'
         SELECTION = 'selection', 'Selection'
         SEO = 'seo', 'Social metadata'
