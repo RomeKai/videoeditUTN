@@ -729,3 +729,23 @@ class NoOpenTransactionTests(IngestionHarness, TransactionTestCase):
             observed,
             {"transcribe": False, "select": False, "upload": False, "proxy": False},
         )
+
+
+class SelectionCriteriaRoutingTests(IngestionHarness, TestCase):
+    """PTE-02 (#71): the criterion stored at creation reaches the selector like max_clips."""
+
+    def test_the_stored_criterion_reaches_the_selector(self):
+        project = self.make_project(metadata={"selection_criteria": "momentos de humor"})
+
+        self.run_task(project)
+
+        self.assertEqual(
+            self.mock_select.call_args.kwargs["selection_criteria"], "momentos de humor"
+        )
+
+    def test_without_a_criterion_the_selector_gets_none(self):
+        project = self.make_project()
+
+        self.run_task(project)
+
+        self.assertIsNone(self.mock_select.call_args.kwargs["selection_criteria"])
