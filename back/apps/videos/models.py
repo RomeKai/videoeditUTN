@@ -63,6 +63,7 @@ class VideoProject(models.Model):
         UPLOADED = 'uploaded', 'Subido'
         AUDIO_EXTRACTED = 'audio_extracted', 'Fuente preparada'
         TRANSCRIBED = 'transcribed', 'Transcrito'
+        MODERATED = 'moderated', 'Moderado'
         CLIPS_SELECTED = 'clips_selected', 'Clips seleccionados'
         RENDER_DISPATCHED = 'render_dispatched', 'Render despachado'
         COMPLETED = 'completed', 'Completado'
@@ -349,3 +350,27 @@ class AIUsageRecord(models.Model):
 
     def __str__(self):
         return f"{self.stage}/{self.role} attempt={self.attempt} ({self.project_id})"
+
+
+class ModerationOverride(models.Model):
+    """
+    ADR-011 D-M5: an admin lets a project blocked by moderation through the
+    ingestion moderation stage. Insert-only audit record (who, when, why); the
+    stage passes without calling the API while one exists for the project.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(
+        VideoProject, on_delete=models.CASCADE, related_name='moderation_overrides'
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, editable=False,
+        related_name='+',
+    )
+    reason = models.TextField(help_text="Por qué se permite el contenido (revisión humana).")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Override de moderación {self.project_id} ({self.created_at:%Y-%m-%d})"

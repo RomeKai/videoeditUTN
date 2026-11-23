@@ -31,7 +31,9 @@ try:
 except Exception:
     pass
 
-if "litellm" not in sys.modules:
+try:  # real package in CI (requirements/ia.txt); stub only where it is not installed
+    import litellm  # noqa: F401
+except ImportError:
     _litellm_stub = types.ModuleType("litellm")
     _litellm_stub.completion = MagicMock()
     _litellm_stub.cache = None
