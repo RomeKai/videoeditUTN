@@ -44,6 +44,11 @@ from apps.videos.services.ai.errors import (
 )
 from apps.videos.services.ai.pricing import PRICING_VERSION, estimate_llm_cost
 from apps.videos.services.ai.llm_credentials import provider_for_model, resolve_api_key
+from apps.videos.services.ai.llm_options import (
+    apply_litellm_defaults,
+    reasoning_effort_setting,
+    reasoning_kwargs,
+)
 from apps.videos.services.ai.transcript_formatter import (
     LINE_FORMAT_DESCRIPTION,
     TimestampedTranscript,
@@ -93,6 +98,7 @@ class LiteLLMSelectionProvider:
     _timeout: float = _DEFAULT_TIMEOUT_SECONDS
     _max_transcript_chars: int = _DEFAULT_MAX_TRANSCRIPT_CHARS
     _key_resolver: KeyResolver = staticmethod(resolve_api_key)
+    _reasoning_effort: Optional[str] = None
 
     def __init__(
         self,
@@ -115,11 +121,14 @@ class LiteLLMSelectionProvider:
         )
         if key_resolver is not None:
             self._key_resolver = key_resolver
+        # Validated here so a bad value fails before any paid call (ImproperlyConfigured).
+        self._reasoning_effort = reasoning_effort_setting()
 
         import litellm
 
         # Explicit response caching stays disabled until the pilot proves it pays off (#42).
         litellm.cache = None
+        apply_litellm_defaults()
 
     # ------------------------------------------------------------------
     # Public API
@@ -334,6 +343,8 @@ class LiteLLMSelectionProvider:
             # Celery owns retries; letting LiteLLM retry too would multiply calls.
             "num_retries": 0,
             "api_key": api_key,
+            # ADR-012: capped reasoning, only for models that can reason.
+            **reasoning_kwargs(model, self._reasoning_effort),
         }
 
         try:

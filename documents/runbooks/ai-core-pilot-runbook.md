@@ -352,3 +352,21 @@ Límites conocidos de lo que el piloto mide. Leerlos antes de interpretar los n�
 2. Corrección de los tokens de razonamiento mergeada (conteo como salida y columna en `AIUsageRecord`).
 3. Repetir la medición con un video de ~25 min y el primario `gemini-3.8-flash`, y verificar el costo por 30 min contra USD 0,04 con los tokens de razonamiento incluidos.
 4. Si el costo supera el umbral, evaluar limitar el razonamiento del modelo y validar la calidad de los clips antes de G1.
+
+### 11.3 Medición del nivel de razonamiento (AICORE-14)
+
+Corresponde al paso 4 de §11.2. Requiere el PR del #66 desplegado.
+
+1. **Chequeo rápido de que el proveedor respeta el límite**, con las keys del entorno:
+
+   ```bash
+   docker compose run --rm -e RUN_LIVE_AI=1 web python manage.py test apps.videos.tests.live.test_live_ai_smoke.LiveReasoningEffortSmokeTest
+   ```
+
+   Imprime los tokens de razonamiento con `low` y con `high` (solo números) y falla si `low` razona más que `high`.
+2. **Corridas:** con el mismo video de ~25 min y el primario `gemini-3.8-flash`, procesar una vez sin el setting (referencia) y una vez con cada nivel `low`, `medium` y `high`. El nivel se cambia con `AI_LLM_REASONING_EFFORT` en el entorno del worker.
+3. **Registro por corrida:**
+   - Costo por 30 min (export nivel `project`).
+   - Tokens de salida de la selección (export nivel `record`).
+   - Revisión humana de los clips según §4.
+4. **Elección:** el nivel más bajo cuyos clips pasan la revisión. Se registra en [ADR-012](../adrs/012-model-profiles-and-capacity.md) por entorno, y se verifica que el costo por 30 min quede por debajo de USD 0,04.

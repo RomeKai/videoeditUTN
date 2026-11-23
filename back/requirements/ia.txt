@@ -9,12 +9,12 @@ opencv-python-headless
 
 # --- Inteligencia Artificial (Legacy: Whisper local + OpenAI Moderation API) ---
 openai-whisper
-openai==1.66.3  # litellm 1.63.x is incompatible with openai>=2 (TranscriptionCreateParams); also used by Moderation API (security.py)
+openai==2.54.0  # litellm 1.108.x requires openai>=2.20; also used by the Moderation API (security.py)
 
 # --- Inteligencia Artificial (AI Core V2) ---
-litellm==1.63.2
+litellm==1.108.4  # knows gemini-3.8-flash and maps reasoning_effort to its thinkingLevel (AICORE-14, #66)
 groq==0.18.0
-pydantic==2.10.6
+pydantic==2.14.3
 
 # --- FIX: Face Tracking (Actualizado para compatibilidad) ---
 mediapipe>=0.10.30

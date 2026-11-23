@@ -20,6 +20,11 @@ from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence
 from django.conf import settings
 
 from apps.videos.services.ai.llm_credentials import resolve_api_key
+from apps.videos.services.ai.llm_options import (
+    apply_litellm_defaults,
+    reasoning_effort_setting,
+    reasoning_kwargs,
+)
 from apps.videos.services.ai.transcript_formatter import (
     LINE_FORMAT_DESCRIPTION,
     build_timestamped_transcript,
@@ -79,6 +84,7 @@ class _LiteLLMLegacyStrategy(ClipSelectionStrategy):
             raise ValueError(f"Configuration Error: no API key configured for model '{model}'.")
 
         logger.info("selection.legacy_call model=%s", model)
+        apply_litellm_defaults()
         response = litellm.completion(
             model=model,
             messages=[
@@ -91,6 +97,8 @@ class _LiteLLMLegacyStrategy(ClipSelectionStrategy):
             num_retries=0,
             # Per-call key: never mutate the process-global litellm.api_key.
             api_key=api_key,
+            # ADR-012: same reasoning cap as the V2 provider.
+            **reasoning_kwargs(model, reasoning_effort_setting()),
         )
 
         content = response.choices[0].message.content
@@ -125,6 +133,9 @@ class SelectionEngine:
         primary model; 'level' is kept for a future Pro tier.
         """
         strategy = GeminiFlashStrategy()
+        # Fails fast (ImproperlyConfigured) on a bad AI_LLM_REASONING_EFFORT,
+        # before the paid call.
+        reasoning_effort_setting()
         if not resolve_api_key(strategy.get_model_name()):
             raise ValueError(
                 "Configuration Error: no API key configured for "

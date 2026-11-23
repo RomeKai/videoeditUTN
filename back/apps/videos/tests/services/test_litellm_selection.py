@@ -38,12 +38,18 @@ except Exception:
 # ---------------------------------------------------------------------------
 # Ensure litellm and groq stubs exist for test environments without them
 # ---------------------------------------------------------------------------
-if "groq" not in sys.modules:
+# Only where the packages are not installed: installing a stub just because the
+# real package was not imported yet would leak it into every later test module.
+try:
+    import groq  # noqa: F401
+except ImportError:
     _groq_stub = types.ModuleType("groq")
     _groq_stub.Groq = MagicMock
     sys.modules["groq"] = _groq_stub
 
-if "litellm" not in sys.modules:
+try:
+    import litellm  # noqa: F401
+except ImportError:
     _litellm_stub = types.ModuleType("litellm")
     _litellm_stub.completion = MagicMock()
     _litellm_stub.cache = None

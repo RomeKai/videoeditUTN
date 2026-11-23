@@ -38,6 +38,7 @@ from apps.videos.services.ai.errors import AIRateLimitError, AIServerError, AITi
 from apps.videos.services.ai.groq_transcription import GroqTranscriptionProvider
 from apps.videos.services.ai.litellm_selection import LiteLLMSelectionProvider
 from apps.videos.services.ai.llm_credentials import resolve_api_key
+from apps.videos.services.ai.transcript_formatter import build_timestamped_transcript
 
 _LIVE = os.environ.get("RUN_LIVE_AI") == "1"
 
@@ -166,3 +167,41 @@ class LiveClipSelectionSmokeTest(SimpleTestCase):
         self.assertTrue(outcome.success)
         self.assertEqual(outcome.usage.model, fallback)
         _assert_clips_valid(self, outcome.data)
+
+
+@skipUnless(_LIVE, "Live AI smoke tests are opt-in: set RUN_LIVE_AI=1")
+class LiveReasoningEffortSmokeTest(SimpleTestCase):
+    """
+    AICORE-14 (#66): the provider honors the reasoning cap. Sends the real
+    selection prompt twice and compares the reasoning tokens the provider
+    reports (``completion_tokens_details.reasoning_tokens``). Run it with the
+    model of the environment under test (AI_DEFAULT_LLM_MODEL).
+    """
+
+    def _reasoning_tokens(self, model, effort):
+        import litellm
+
+        provider = LiteLLMSelectionProvider(primary_model=model, fallback_model=model)
+        messages = provider._build_messages(
+            transcript="", video_duration=_VIDEO_DURATION, target_count=2,
+            editing_style="dynamic",
+            timestamped=build_timestamped_transcript(_SEGMENTS),
+        )
+        response = litellm.completion(
+            model=model, messages=messages, api_key=resolve_api_key(model),
+            reasoning_effort=effort, timeout=120, num_retries=0,
+        )
+        details = getattr(response.usage, "completion_tokens_details", None)
+        return int(getattr(details, "reasoning_tokens", 0) or 0)
+
+    def test_low_effort_reasons_no_more_than_high_effort(self):
+        model = settings.AI_DEFAULT_LLM_MODEL
+        if not resolve_api_key(model):
+            self.skipTest(f"No API key configured for {model}")
+
+        low = self._reasoning_tokens(model, "low")
+        high = self._reasoning_tokens(model, "high")
+
+        # Printed (counts only) so the runbook measurement can be recorded.
+        print(f"\n[reasoning] model={model} low={low} high={high}")
+        self.assertLessEqual(low, high)
