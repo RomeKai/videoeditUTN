@@ -57,7 +57,9 @@ def pipeline_env(settings):
     de otros tests.
     """
     settings.AI_CORE_V2_ENABLED = True
-    with patch(REDIS_CLIENT, return_value=FakeRedis()):
+    # Ingestion moderates before selection (AICORE-13): the verdict is mocked
+    # like every other AI provider here (no OpenAI call in CI).
+    with patch(REDIS_CLIENT, return_value=FakeRedis()), patch(MODERATION, return_value=None):
         yield
 
 
