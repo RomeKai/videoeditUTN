@@ -166,25 +166,26 @@ def reopen(project_id, stage: str) -> None:
     )
 
 
-def mark_failed(project_id, expected_stage: Optional[str] = None) -> None:
+def mark_failed(project_id, expected_stage: Optional[str] = None) -> bool:
     """
     Terminal failure: stage and user-facing status. Finished projects are left alone.
     When ``expected_stage`` is given and the project moved on (another worker owns
-    it now), nothing is written.
+    it now), nothing is written. Returns whether this call failed the project.
     """
     with transaction.atomic():
         project = VideoProject.objects.select_for_update().get(pk=project_id)
         if project.pipeline_stage in TERMINAL_STAGES:
-            return
+            return False
         if expected_stage is not None and project.pipeline_stage != expected_stage:
             logger.warning(
                 "pipeline.mark_failed_skipped project_id=%s expected=%s actual=%s",
                 project_id, expected_stage, project.pipeline_stage,
             )
-            return
+            return False
         VideoProject.objects.filter(pk=project_id).update(
             pipeline_stage=PipelineStage.FAILED, status=VideoProject.Status.FAILED
         )
+        return True
 
 
 def record_error(project_id, code: str) -> None:

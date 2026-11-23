@@ -120,7 +120,9 @@ class ContractTests(SimpleTestCase):
 
     def test_only_existing_project_fields_and_metadata_keys(self):
         model_fields = {f.name for f in VideoProject._meta.get_fields()}
-        metadata_keys = {"max_clips", "selection_criteria"}
+        metadata_keys = {
+            "max_clips", "selection_criteria", "render_resolution", "use_seo", "use_ai_thumbnail",
+        }
         self.assertLessEqual(set(ProjectConfig.model_fields), model_fields | metadata_keys)
 
     def test_no_price_plan_tier_or_approval_field(self):

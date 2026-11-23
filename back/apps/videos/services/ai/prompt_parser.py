@@ -236,6 +236,8 @@ class PromptParser(LiteLLMSelectionProvider):
             "(for example 'momentos de humor'), in the user's language, without any "
             "other instruction.\n"
             f"- 'max_clips' is at most {PROJECT_CONFIG_MAX_CLIPS}.\n"
+            "- 'render_resolution', 'use_seo' and 'use_ai_thumbnail' only record what "
+            "the user asked for; the system checks them against the user's plan.\n"
             "- There are no price, plan, quality tier or approval settings: never "
             "invent fields.\n\n"
             "OUTPUT\n"

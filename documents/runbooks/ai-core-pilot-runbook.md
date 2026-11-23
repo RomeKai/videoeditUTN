@@ -275,7 +275,7 @@ Recursos admitidos: `audio_seconds`, `tokens` y `requests`, por `minute`, `hour`
 
 Los coeficientes se configuran con `AI_CAPACITY_LLM_TOKENS_PER_AUDIO_MINUTE`, `AI_CAPACITY_LLM_PROMPT_TOKENS` y `AI_CAPACITY_LLM_OUTPUT_TOKENS`.
 
-**Espera y vencimiento.** Cada re-encolado espera el déficit del bucket, con un tope de `AI_CAPACITY_MAX_COUNTDOWN_SECONDS` (300 s) y entre 0 y 20 % de jitter. Si la espera prevista de una etapa supera `AI_CAPACITY_MAX_WAIT_SECONDS` (3.600 s), el proyecto falla con `pipeline_error_code=CapacityTimeoutError` (en SEO, el post queda con `error_log=capacity_timeout`). Una cuota **diaria** agotada produce esperas de horas, así que falla enseguida en vez de esperar al día siguiente: re-despachar cuando vuelva a haber cuota.
+**Espera y vencimiento.** Cada re-encolado espera el déficit del bucket, con un tope de `AI_CAPACITY_MAX_COUNTDOWN_SECONDS` (300 s) y entre 0 y 20 % de jitter. Si la espera prevista de una etapa supera `AI_CAPACITY_MAX_WAIT_SECONDS` (3.600 s), el proyecto falla con `pipeline_error_code=CapacityTimeoutError` y se le devuelven los tokens reservados (en SEO, el post queda con `error_log=capacity_timeout`). Si después se re-despacha a mano, corre sin reserva: no se vuelve a cobrar. Una cuota **diaria** agotada produce esperas de horas, así que falla enseguida en vez de esperar al día siguiente: re-despachar cuando vuelva a haber cuota.
 
 Un video más largo que un bucket entero (por ejemplo, 2 h de audio contra 5.760 s por hora) espera a que el bucket esté lleno, pasa y lo deja en negativo. Los siguientes esperan a que se recupere. El bucket se rellena solo y nunca queda negativo de forma permanente.
 
