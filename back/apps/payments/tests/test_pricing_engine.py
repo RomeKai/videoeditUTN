@@ -33,8 +33,16 @@ def test_resolution_multipliers(resolution, expected):
     assert cost(60, resolution) == expected
 
 
-def test_unknown_resolution_falls_back_to_base_multiplier():
-    assert cost(60, "8K") == cost(60, "720p")
+@pytest.mark.xfail(
+    strict=True,
+    reason="Bug: una resolución desconocida cae en silencio al multiplicador base "
+           "(pricing_engine.py:66 y :80). Así la view le pasa aspect_ratio ('9:16') "
+           "y nunca se aplican el multiplicador ni el límite del plan.",
+)
+@pytest.mark.parametrize("resolution", ["8K", "9:16"])
+def test_unknown_resolution_is_rejected(resolution):
+    with pytest.raises(ValueError):
+        cost(60, resolution)
 
 
 @pytest.mark.parametrize(
