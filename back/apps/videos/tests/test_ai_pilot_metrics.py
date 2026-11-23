@@ -475,7 +475,8 @@ class MemoryBoundTests(TestCase):
             make_record(project, attempt=attempt)
         with self.assertNumQueries(1):
             run(f"--since={EPOCH}", "--level=record")
-        with self.assertNumQueries(1):
+        # The project rows and, apart, the SEO rows per project (AICORE-17).
+        with self.assertNumQueries(2):
             run(f"--since={EPOCH}", "--level=project")
 
     def test_ten_thousand_records_export(self):

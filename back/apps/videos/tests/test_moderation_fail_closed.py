@@ -23,7 +23,7 @@ from apps.core.security import (
 from apps.users.models import Workspace
 from apps.videos.models import ScheduledPost, VideoClip, VideoProject
 from apps.videos.tasks import process_video_seo
-from apps.videos.tests.fakes import CapturedTaskFailures
+from apps.videos.tests.fakes import CapturedTaskFailures, FakeRedis
 
 User = get_user_model()
 
@@ -172,7 +172,8 @@ class ProcessVideoSeoModerationTests(CapturedTaskFailures, TestCase):
         user = User.objects.create_user(username="seo", email="seo@test.com", password="pw")
         workspace = Workspace.objects.create(name="SEO", owner=user)
         project = VideoProject.objects.create(
-            workspace=workspace, uploaded_by=user, title="S", metadata={"full_text": SECRET_TEXT}
+            workspace=workspace, uploaded_by=user, title="S", metadata={"full_text": SECRET_TEXT},
+            transcript_data=[{"start": 0.0, "end": 2.0, "text": SECRET_TEXT}],
         )
         clip = VideoClip.objects.create(project=project, title="c", start_time=0, end_time=5)
         self.post = ScheduledPost.objects.create(
@@ -181,6 +182,12 @@ class ProcessVideoSeoModerationTests(CapturedTaskFailures, TestCase):
             publish_at="2030-01-01T00:00:00Z",
             status=ScheduledPost.Status.QUEUED,
         )
+        # The task locks the post in Redis (AICORE-17).
+        redis_patch = patch(
+            "apps.videos.services.ai.project_lock.get_redis_client", return_value=FakeRedis()
+        )
+        redis_patch.start()
+        self.addCleanup(redis_patch.stop)
 
     def run_task(self, retries=0):
         process_video_seo.push_request(retries=retries)
@@ -231,7 +238,8 @@ class ProcessVideoSeoModerationTests(CapturedTaskFailures, TestCase):
                 self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
                 self.assertEqual(self.post.error_log, code)
 
-    def test_unsafe_content_path_is_unchanged(self):
+    def test_unsafe_content_fails_the_post_with_a_static_code(self):
+        # ADR-013: a static code, never the moderation message.
         with patch(self.CHECK, side_effect=UnsafeContentError("flagged")), patch.object(
             process_video_seo, "retry"
         ) as retry:
@@ -240,7 +248,7 @@ class ProcessVideoSeoModerationTests(CapturedTaskFailures, TestCase):
         self.assertEqual(result, "Security Abort")
         self.post.refresh_from_db()
         self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
-        self.assertTrue(self.post.error_log.startswith("Violación de seguridad"))
+        self.assertEqual(self.post.error_log, "content_blocked")
 
     def test_generic_handler_never_receives_moderation_errors(self):
         # A fixed countdown=60 retry would be the blind retry of the old generic handler.
@@ -284,14 +292,19 @@ class ProcessVideoSeoModerationTests(CapturedTaskFailures, TestCase):
         boom = RuntimeError(SECRET_TEXT)
         with patch(self.CHECK, side_effect=boom), patch.object(
             process_video_seo, "retry", side_effect=Retry()
-        ):
+        ) as retry:
             with self.assertLogs("apps.videos.tasks", level="DEBUG") as logs:
-                # ModerationError is typed; a plain RuntimeError reaches the generic handler.
-                with self.assertRaises(Retry):
+                # ModerationError is typed; a plain RuntimeError reaches the generic
+                # handler, which no longer retries what is not transient (AICORE-17).
+                with self.assertRaises(RuntimeError):
                     self.run_task()
+        retry.assert_not_called()
         output = "\n".join(logs.output)
         self.assertNotIn(SECRET_TEXT, output)
         self.assertIn("RuntimeError", output)
+        self.post.refresh_from_db()
+        self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
+        self.assertEqual(self.post.error_log, "seo_failed:RuntimeError")
 
     def test_task_logs_do_not_leak_transcript(self):
         with patch(self.CHECK, side_effect=ModerationBlockedError(code="moderation_quota")):

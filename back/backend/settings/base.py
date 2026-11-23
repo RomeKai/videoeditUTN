@@ -223,6 +223,13 @@ AI_CAPACITY_LLM_TOKENS_PER_AUDIO_MINUTE = env.int('AI_CAPACITY_LLM_TOKENS_PER_AU
 AI_CAPACITY_LLM_PROMPT_TOKENS = env.int('AI_CAPACITY_LLM_PROMPT_TOKENS', default=1500)
 AI_CAPACITY_LLM_OUTPUT_TOKENS = env.int('AI_CAPACITY_LLM_OUTPUT_TOKENS', default=4000)
 
+# --- Social metadata per post (AICORE-17, ADR-013) ---
+# Language of the caption, and the limit of caption + hashtags per platform.
+AI_SEO_LANGUAGE = env('AI_SEO_LANGUAGE', default='es')
+AI_SEO_CAPTION_MAX_CHARS = env.json('AI_SEO_CAPTION_MAX_CHARS', default={
+    'TIKTOK': 2200, 'INSTAGRAM_REELS': 2200, 'YOUTUBE_SHORTS': 5000,
+})
+
 SPECTACULAR_SETTINGS = {
     'TITLE': 'OneCreator API',
     'DESCRIPTION': 'API for automated AI video management and editing.',

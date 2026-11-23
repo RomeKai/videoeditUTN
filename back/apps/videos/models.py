@@ -295,6 +295,7 @@ class AIUsageRecord(models.Model):
     class Stage(models.TextChoices):
         TRANSCRIPTION = 'transcription', 'Transcription'
         SELECTION = 'selection', 'Selection'
+        SEO = 'seo', 'Social metadata'
 
     class PipelineVersion(models.TextChoices):
         LEGACY = 'legacy', 'Legacy'

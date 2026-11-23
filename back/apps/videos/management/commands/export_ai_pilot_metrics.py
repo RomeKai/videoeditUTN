@@ -37,7 +37,7 @@ from decimal import Decimal
 from typing import Any, Dict, Iterable, Iterator, Optional, Tuple
 
 from django.core.management.base import BaseCommand, CommandError, CommandParser
-from django.db.models import Case, Count, FloatField, Max, Q, Sum, When
+from django.db.models import Case, Count, FilteredRelation, FloatField, Max, Q, Sum, When
 from django.db.models.fields.json import KeyTextTransform
 from django.db.models.functions import Cast
 
@@ -89,7 +89,13 @@ PROJECT_COLUMNS: Tuple[str, ...] = (
     "cost_complete",
     "records_count",
     "failed_records",
+    # Social metadata per post (AICORE-17): apart, so the ingestion cost per
+    # 30 min above keeps measuring transcription + selection only.
+    "seo_records",
+    "seo_cost_usd",
 )
+
+INGESTION_STAGES = (AIUsageRecord.Stage.TRANSCRIPTION, AIUsageRecord.Stage.SELECTION)
 
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 # Bounded (<= 9 integer and <= 6 decimal digits, i.e. up to ~31 years in seconds):
@@ -194,7 +200,13 @@ class Command(BaseCommand):
         # guard keeps non-numeric junk ("abc", null, negatives) from breaking
         # the cast; those rows simply get no duration.
         duration_text = KeyTextTransform("duration", "metadata")
-        records = "ai_usage_records"
+        # Project columns describe the ingestion (transcription + selection);
+        # SEO rows (AICORE-17) are reported in their own columns.
+        queryset = queryset.annotate(ingestion_records=FilteredRelation(
+            "ai_usage_records", condition=Q(ai_usage_records__stage__in=INGESTION_STAGES),
+        ))
+        seo = self._seo_by_project(queryset)
+        records = "ingestion_records"
         stream = (
             queryset.annotate(
                 _duration_text=duration_text,
@@ -231,7 +243,24 @@ class Command(BaseCommand):
             .iterator(chunk_size=CHUNK_SIZE)
         )
         for row in stream:
-            yield self._project_row(row)
+            project_row = self._project_row(row)
+            seo_count, seo_cost = seo.get(row["id"], (0, None))
+            project_row["seo_records"] = seo_count
+            project_row["seo_cost_usd"] = _plain(seo_cost)
+            yield project_row
+
+    @staticmethod
+    def _seo_by_project(projects) -> Dict[Any, Tuple[int, Optional[Decimal]]]:
+        """(rows, cost) of the SEO records of each project in the window."""
+        rows = (
+            AIUsageRecord.objects.filter(
+                stage=AIUsageRecord.Stage.SEO, project__in=projects.values("pk")
+            )
+            .values("project")
+            .annotate(count=Count("id"), cost=Sum("estimated_cost_usd"))
+            .values_list("project", "count", "cost")
+        )
+        return {project: (count, cost) for project, count, cost in rows}
 
     @staticmethod
     def _project_row(row: Dict[str, Any]) -> Dict[str, Any]:
