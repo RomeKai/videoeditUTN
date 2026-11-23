@@ -142,6 +142,11 @@ class ProviderUsage(BaseModel):
     model: str = Field(..., min_length=1, description="Model identifier invoked")
     prompt_tokens: int = Field(default=0, ge=0, description="Tokens consumed in the prompt")
     completion_tokens: int = Field(default=0, ge=0, description="Tokens generated in the completion")
+    reasoning_tokens: int = Field(
+        default=0,
+        ge=0,
+        description="Reasoning (thinking) tokens billed as output on top of completion_tokens",
+    )
     total_tokens: int = Field(default=0, ge=0, description="Total tokens consumed")
     duration_seconds: float = Field(default=0.0, ge=0.0, description="Wall-clock duration of the API call")
     estimated_cost_usd: Optional[float] = Field(default=None, ge=0.0, description="Estimated cost in USD")
@@ -170,8 +175,8 @@ class ProviderUsage(BaseModel):
 
     @model_validator(mode="after")
     def auto_compute_total_tokens(self) -> "ProviderUsage":
-        if self.total_tokens == 0 and (self.prompt_tokens > 0 or self.completion_tokens > 0):
-            self.total_tokens = self.prompt_tokens + self.completion_tokens
+        if self.total_tokens == 0:
+            self.total_tokens = self.prompt_tokens + self.completion_tokens + self.reasoning_tokens
         return self
 
 

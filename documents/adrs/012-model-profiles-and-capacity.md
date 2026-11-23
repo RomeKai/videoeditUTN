@@ -62,7 +62,7 @@ Ingestión real de un video propio de 763 s (12 min 43 s) con V2 activado. Fuent
 
 Hallazgos:
 
-- **Tokens de razonamiento no contados.** En una llamada directa a `gemini-3.8-flash`, `total_tokens` (113) superó `prompt + completion` (2 + 9) en 102: son tokens de razonamiento, que Google factura como salida y LiteLLM no incluye en `completion_tokens`. Además, `_extract_usage` recalcula `total_tokens` como entrada más salida y descarta el total del proveedor. **El costo de selección con Gemini está subestimado** y `cost_complete=True` no lo detecta. Corrección pendiente: contar esos tokens como salida y guardarlos en `AIUsageRecord` (migración `0004`).
+- **Tokens de razonamiento no contados.** En una llamada directa a `gemini-3.8-flash`, `total_tokens` (113) superó `prompt + completion` (2 + 9) en 102: son tokens de razonamiento, que Google factura como salida y LiteLLM no incluye en `completion_tokens`. Además, `_extract_usage` recalcula `total_tokens` como entrada más salida y descarta el total del proveedor. **El costo de selección con Gemini está subestimado** y `cost_complete=True` no lo detecta. Corregido en `fix/ai-usage-reasoning-tokens`: el excedente del total del proveedor se cuenta como salida y se guarda en `AIUsageRecord.reasoning_tokens` (migración `0004`). Los registros anteriores a `0004` quedan con 0 y su costo es una cota inferior.
 - **Riesgo para el criterio de costo.** Para 30 min con el primario `gemini-3.8-flash`: transcripción ~USD 0,020, entrada de selección ~USD 0,010 y salida visible ~USD 0,002, o sea **~USD 0,032 sin razonamiento**. Cada 1.000 tokens de razonamiento suman USD 0,00375: con ~2.000 se supera el umbral de USD 0,04. El 2027-01-01 el precio de 3.8 se duplica.
 - **Tier gratuito de Gemini observado:** `gemini-3.8-flash` con 5 RPM, 250.000 TPM y 20 RPD; `gemini-3.5-flash-lite` con 15 RPM, 250.000 TPM y 500 RPD. No alcanza ni para la muestra del piloto y, además, ese tier usa los datos para entrenamiento.
 - **Términos de privacidad (consulta del 2026-10-12):** el tier pago de Gemini, Groq y la API de OpenAI declaran no usar los datos de la API para entrenamiento, con retención limitada a monitoreo de abuso. D-C2 se cumple en tiers pagos.
@@ -166,3 +166,23 @@ Se mantiene condicionada a la evidencia del piloto. Es un candidato a mejora rá
 2. **AICORE-9:** chequeo de arranque (D-C3) junto con el rollout por allowlist.
 3. **AICORE-11 (#60), antes del G3:** rate limiting con `pending_capacity` (D-C4). Configuración por entorno en la sección 5.5 del runbook del piloto.
 4. **Con las mediciones del G0:** cerrar D-C5 y pasar este ADR a `accepted`.
+
+---
+
+## Control del razonamiento (AICORE-14, #66)
+
+- **Setting:** `AI_LLM_REASONING_EFFORT` (`minimal`, `low`, `medium` o `high`; vacío deja el default del proveedor) limita el razonamiento del LLM de selección, tanto en V2 como en el camino legacy.
+  - LiteLLM lo traduce al `thinkingLevel` de Gemini 3. `gemini-3.8-flash` no acepta `minimal` y usa `low`.
+  - Solo se envía a modelos que LiteLLM marca como capaces de razonar, así que un fallback que no razona nunca lo recibe.
+  - Un valor inválido falla antes de cualquier llamada paga.
+- **Actualización de dependencias:** hizo falta subir litellm de 1.63.2 a 1.108.4, porque la 1.63 descartaba cualquier configuración de razonamiento y no conocía Gemini 3.8. Con litellm subieron:
+  - openai, de 1.66.3 a 2.54.0
+  - pydantic, de 2.10.6 a 2.14.3
+  - boto3, de 1.43.99 a 1.43.127
+
+  Todas las versiones elegidas tenían al menos dos semanas desde su publicación.
+- **Tokens de razonamiento:** con litellm 1.108.4, el `completion_tokens` de Gemini ya incluye los tokens de razonamiento y además los informa aparte en `completion_tokens_details.reasoning_tokens`. El costo estimado los cobra como salida sin cambios en `pricing.py`.
+- **Mapa de modelos:** se usa el que viene empaquetado con la versión de LiteLLM (`LITELLM_LOCAL_MODEL_COST_MAP=True`). Así, que un modelo "razone" o no solo cambia al cambiar de versión, y la importación nunca depende de la red.
+- **Resúmenes de razonamiento:** no se piden (`includeThoughts=false`), porque el pipeline no los usa.
+
+**Nivel por entorno:** se define con la medición del runbook (§11.3). Recomendación inicial: el mínimo que acepte el modelo, porque la selección es una tarea de extracción. Se sube solo si la revisión humana de los clips empeora.

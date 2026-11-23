@@ -48,6 +48,11 @@ from apps.videos.services.ai.errors import (
 )
 from apps.videos.services.ai.pricing import PRICING_VERSION, estimate_llm_cost
 from apps.videos.services.ai.llm_credentials import provider_for_model, resolve_api_key
+from apps.videos.services.ai.llm_options import (
+    apply_litellm_defaults,
+    reasoning_effort_setting,
+    reasoning_kwargs,
+)
 from apps.videos.services.ai.transcript_formatter import (
     LINE_FORMAT_DESCRIPTION,
     TimestampedTranscript,
@@ -97,6 +102,7 @@ class LiteLLMSelectionProvider:
     _timeout: float = _DEFAULT_TIMEOUT_SECONDS
     _max_transcript_chars: int = _DEFAULT_MAX_TRANSCRIPT_CHARS
     _key_resolver: KeyResolver = staticmethod(resolve_api_key)
+    _reasoning_effort: Optional[str] = None
 
     def __init__(
         self,
@@ -119,11 +125,14 @@ class LiteLLMSelectionProvider:
         )
         if key_resolver is not None:
             self._key_resolver = key_resolver
+        # Validated here so a bad value fails before any paid call (ImproperlyConfigured).
+        self._reasoning_effort = reasoning_effort_setting()
 
         import litellm
 
         # Explicit response caching stays disabled until the pilot proves it pays off (#42).
         litellm.cache = None
+        apply_litellm_defaults()
 
     # ------------------------------------------------------------------
     # Public API
@@ -361,6 +370,8 @@ class LiteLLMSelectionProvider:
             # Celery owns retries; letting LiteLLM retry too would multiply calls.
             "num_retries": 0,
             "api_key": api_key,
+            # ADR-012: capped reasoning, only for models that can reason.
+            **reasoning_kwargs(model, self._reasoning_effort),
         }
 
         try:
@@ -627,6 +638,29 @@ class LiteLLMSelectionProvider:
         prompt_tokens = _non_negative_int(getattr(usage, "prompt_tokens", 0))
         completion_tokens = _non_negative_int(getattr(usage, "completion_tokens", 0))
 
+        # Reasoning ("thinking") tokens are billed as output but are NOT in
+        # completion_tokens for Gemini. Verified in litellm 1.63.2
+        # (vertex_and_google_ai_studio_gemini.py, _calculate_usage):
+        #   completion_tokens = usageMetadata.candidatesTokenCount   (no thoughts)
+        #   total_tokens      = usageMetadata.totalTokenCount        (with thoughts)
+        # and thoughtsTokenCount / completion_tokens_details.reasoning_tokens is
+        # never populated. The provider total is therefore the only signal, and
+        # the hidden tokens are what it exceeds prompt + completion by. For
+        # OpenAI-style usage (reasoning already inside completion_tokens) the
+        # total equals prompt + completion and nothing is added, so a future
+        # litellm that folds thoughts into completion_tokens cannot double count.
+        provider_total = _non_negative_int(getattr(usage, "total_tokens", 0))
+        reasoning_tokens = max(0, provider_total - prompt_tokens - completion_tokens)
+        # litellm >= 1.7x (pinned 1.108.4, AICORE-14) folds the thoughts INTO
+        # completion_tokens and reports them in completion_tokens_details, so the
+        # gap above is 0. Split them back out: completion_tokens stays the visible
+        # output and the total and the cost are unchanged.
+        details = getattr(usage, "completion_tokens_details", None)
+        detailed_reasoning = _non_negative_int(getattr(details, "reasoning_tokens", 0))
+        if detailed_reasoning and not reasoning_tokens:
+            reasoning_tokens = min(detailed_reasoning, completion_tokens)
+            completion_tokens -= reasoning_tokens
+
         # Implicit cache tracking: Anthropic-style field first, then the
         # OpenAI-style prompt_tokens_details.cached_tokens LiteLLM maps Gemini to.
         cache_read_tokens = _non_negative_int(getattr(usage, "cache_read_input_tokens", 0))
@@ -650,7 +684,8 @@ class LiteLLMSelectionProvider:
             resolved_model=resolved_model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            total_tokens=prompt_tokens + completion_tokens,
+            reasoning_tokens=reasoning_tokens,
+            total_tokens=prompt_tokens + completion_tokens + reasoning_tokens,
             duration_seconds=round(latency, 3),
             cached=cache_read_tokens > 0,
             cache_read_tokens=cache_read_tokens,

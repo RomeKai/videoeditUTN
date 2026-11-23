@@ -123,6 +123,11 @@ REST_FRAMEWORK = {
 # --- AI CONFIG & FEATURE FLAGS ---
 AI_CORE_V2_ENABLED = env.bool('AI_CORE_V2_ENABLED', default=False)
 
+# LiteLLM reads model capabilities (reasoning support, prices) from its bundled map
+# instead of downloading the latest one on import: the map is pinned with the
+# library version, and importing never depends on the network (AICORE-14).
+os.environ.setdefault('LITELLM_LOCAL_MODEL_COST_MAP', 'True')
+
 # Provider Credentials (obtained exclusively from environment variables)
 GEMINI_API_KEY = env('GEMINI_API_KEY', default=None)
 GROQ_API_KEY = env('GROQ_API_KEY', default=None)
@@ -133,6 +138,15 @@ OPENAI_API_KEY = env('OPENAI_API_KEY', default=None)
 # Hard timeout (seconds) for the Moderation call. The shield fails closed: a timeout blocks the
 # content and the task retries with backoff; SDK-level retries are disabled (Celery owns retries).
 MODERATION_TIMEOUT_SECONDS = env.float('MODERATION_TIMEOUT_SECONDS', default=10.0)
+# ADR-011: the whole text is moderated in blocks of this size (D-M1), with a pinned model
+# (D-M6). Flagged categories in the non-blocking list are only measured; any other flagged
+# category blocks, including ones the API adds later (D-M5, fail-closed).
+MODERATION_MODEL = env('MODERATION_MODEL', default='omni-moderation-latest')
+MODERATION_BLOCK_CHARS = env.int('MODERATION_BLOCK_CHARS', default=10000)
+MODERATION_NON_BLOCKING_CATEGORIES = env.list(
+    'MODERATION_NON_BLOCKING_CATEGORIES',
+    default=['harassment', 'violence', 'self-harm', 'illicit'],
+)
 
 # AI Core V2 Model Configuration
 AI_DEFAULT_LLM_MODEL = env('AI_DEFAULT_LLM_MODEL', default='gemini/gemini-3.8-flash')
@@ -143,6 +157,10 @@ AI_DEFAULT_LLM_MODEL = env('AI_DEFAULT_LLM_MODEL', default='gemini/gemini-3.8-fl
 AI_FALLBACK_LLM_MODEL = env('AI_FALLBACK_LLM_MODEL', default='gemini/gemini-3.5-flash-lite')
 # Hard timeout per LLM call; retries are owned by Celery, not LiteLLM.
 AI_LLM_TIMEOUT_SECONDS = env.float('AI_LLM_TIMEOUT_SECONDS', default=60.0)
+# ADR-012 / AICORE-14: caps the selection model's hidden reasoning (billed as output).
+# minimal | low | medium | high; empty keeps the provider default. Only sent to models
+# LiteLLM knows can reason (see services/ai/llm_options.py).
+AI_LLM_REASONING_EFFORT = env('AI_LLM_REASONING_EFFORT', default='')
 # Transcript cap sized for the smallest context window plausible in the chain (gpt-4o-mini, 128K tokens),
 # so the same cap stays valid if a cross-provider fallback is configured.
 AI_LLM_MAX_TRANSCRIPT_CHARS = env.int('AI_LLM_MAX_TRANSCRIPT_CHARS', default=400000)

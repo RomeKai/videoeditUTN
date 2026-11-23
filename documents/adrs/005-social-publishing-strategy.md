@@ -3,6 +3,7 @@
 **Estado:** `proposed`
 **Fecha:** 2026-09-01
 **Par responsable:** 🚀 Par Producto (Dev 5 + Dev 6)
+**Relacionado:** [ADR-013 — Metadata social con IA](013-ai-social-metadata.md) (caption y hashtags; este ADR queda limitado a autenticación, scheduling y publicación)
 
 ---
 

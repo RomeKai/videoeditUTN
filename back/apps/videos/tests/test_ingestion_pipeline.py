@@ -40,6 +40,8 @@ SELECT = "apps.videos.services.selection_engine.SelectionEngine.select_viral_cli
 UPLOAD = "apps.videos.services.storage_service.CloudflareR2Manager.upload_video"
 PROXY = "apps.videos.utils.ffmpeg_utils.FFmpegManager.generate_web_proxy"
 REDIS_CLIENT = "apps.videos.services.ai.project_lock.get_redis_client"
+# Moderation stage (ADR-011 D-M2): passes by default; tests that exercise it override.
+MODERATE = "apps.core.security.AI_Security_Shield.check_content_safety"
 
 
 def transcription_result():
@@ -87,6 +89,7 @@ class IngestionHarness(CapturedTaskFailures):
         self.mock_upload = self._patch(UPLOAD, return_value="r2_key")
         self.mock_proxy = self._patch(PROXY)
         self._patch(REDIS_CLIENT, return_value=self.redis)
+        self.mock_moderate = self._patch(MODERATE, return_value=True)
         self.mock_render = self._patch("apps.videos.tasks.render_clip_task.delay")
 
         mock_vfc = self._patch("apps.videos.tasks.VideoFileClip", create=True)
@@ -125,7 +128,10 @@ class StageResumeTests(IngestionHarness, TestCase):
         self.assertEqual(project.pipeline_stage, PipelineStage.CLIPS_SELECTED)
         self.assertEqual(
             project.pipeline_stage_status,
-            {"audio_extracted": "completed", "transcribed": "completed", "clips_selected": "completed"},
+            {
+                "audio_extracted": "completed", "transcribed": "completed",
+                "moderated": "completed", "clips_selected": "completed",
+            },
         )
         self.assertEqual(project.transcript_data[0], {"start": 0.0, "end": 1.0, "text": "Hello"})
         self.assertEqual(project.metadata["full_text"], "Hello world")
@@ -152,11 +158,14 @@ class StageResumeTests(IngestionHarness, TestCase):
 
         project.refresh_from_db()
         self.assertTrue(result.successful())
-        # The transcript was already in the DB when selection started, both times.
+        # The transcript was already in the DB (and moderated) when selection
+        # started, both times.
         for transcript, stage in seen_at_selection:
             self.assertTrue(transcript)
-            self.assertEqual(stage, PipelineStage.TRANSCRIBED)
+            self.assertEqual(stage, PipelineStage.MODERATED)
         self.assertEqual(self.mock_transcribe.call_count, 1)
+        # Moderation is not repeated by the selection retry either.
+        self.assertEqual(self.mock_moderate.call_count, 1)
         self.assertEqual(self.mock_select.call_count, 2)
         # Source preparation is not repeated either: original + proxy uploaded once.
         self.assertEqual(self.mock_upload.call_count, 2)

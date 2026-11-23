@@ -69,6 +69,8 @@ El servicio de `docker-compose.yml` se llama `web`. `--output` escribe **dentro 
 
 **Costo por 30 min:** usa la duración del video fuente, no `audio_seconds`. Si falta la duración, la columna queda vacía.
 
+**Tokens de razonamiento:** `reasoning_tokens` (por registro y sumado por proyecto) son los thinking tokens de Gemini que el proveedor cobra como salida y que no están en `completion_tokens`. El costo los cuenta al precio de salida y `total_tokens` es prompt + completion + reasoning.
+
 ---
 
 ## 2. Muestra de 20 videos en español rioplatense
@@ -123,6 +125,33 @@ Se fija y se documenta **antes** de correr la evaluación. Se aplica igual a la 
 
 Registro de la decisión: [fecha, responsable].
 
+### 3.4 Cálculo automático de WER y timestamps
+
+El comando `evaluate_ai_transcription` calcula las dos métricas automáticas del G1 aplicando la normalización de §3.3. Las referencias se guardan en un directorio **fuera del repo**, con esta estructura:
+
+| Archivo | Contenido |
+|---------|-----------|
+| `manifest.csv` | Encabezado `video_id,project_id`. Un video aparece una vez por cada proyecto que lo procesó (V2 y legacy) |
+| `<video_id>.txt` | Transcripción de referencia (§3.1), en UTF-8 |
+| `<video_id>.anchors.csv` | Encabezado `time_seconds,text`: el tiempo de cada ancla (§3.2) y las primeras palabras de la frase |
+
+`video_id` es una etiqueta de la muestra (por ejemplo `v01`), con letras, números, `-` y `_`.
+
+```bash
+docker compose run --rm -T -v /ruta/a/referencias:/refs:ro web python manage.py evaluate_ai_transcription --references /refs --accents keep > pilot_eval.csv
+```
+
+Sin `--output`, el CSV sale por stdout y el resumen por stderr: el archivo queda en el host y el veredicto en la terminal. Con `--output`, igual que en el export (§1.3), la ruta es dentro del contenedor.
+
+- `--accents keep|strip` es obligatorio y tiene que coincidir con la decisión registrada en §3.3.
+- `--window` (5 s por defecto) es cuánto se busca alrededor de cada ancla.
+- El CSV tiene una fila por proyecto y una fila `ALL` por motor (`v2`, `legacy`).
+  - El WER del `ALL` es el de corpus: Σ errores / Σ palabras de referencia.
+  - El error de timestamps es la mediana de todas las anclas del motor.
+- Al final se imprime si cada motor cumple los umbrales del §1.1.
+- Las anclas sin match se informan aparte, no como error. Muchas anclas sin match indican referencias desalineadas o un ASR con muchos errores en los inicios de frase: revisar antes de dar el G1 por bueno.
+- La salida solo tiene ids, códigos de estado y números, nunca texto.
+
 ---
 
 ## 4. Evaluación humana
@@ -155,7 +184,7 @@ La planilla no debe contener títulos ni transcripts del usuario: solo `clip_id`
 | 5 | Medición en vivo y verificación de precios (ver G0) | **G0** |
 | 6 | Activar V2 solo para el usuario interno del piloto: maestro en `True` y allowlist = `[pilot_user_id]` | |
 | 7 | Procesar los 20 videos con V2 y el mismo set con legacy, repartidos en varios días según la capacidad de transcripción (ver 5.4) | |
-| 8 | Calcular WER y timestamps, exportar costo y latencia, completar la evaluación humana | **G1** |
+| 8 | Calcular WER y timestamps (`evaluate_ai_transcription`, §3.4), exportar costo y latencia, completar la evaluación humana | **G1** |
 | 9 | Ejecutar los fallos inducidos (sección 6) | **G2** |
 | 10 | Habilitación gradual y observación (5.3) | **G3** |
 | 11 | Completar el sign-off (sección 9) | |
@@ -173,7 +202,7 @@ La planilla no debe contener títulos ni transcripts del usuario: solo `clip_id`
 
 | Ítem | Qué hacer |
 |------|-----------|
-| Medición en vivo | Una llamada real para confirmar qué devuelve `response.model` con el modelo fijado y si `completion_tokens` incluye los thinking tokens de Gemini. Si no los incluye, el costo está subestimado: verificar contra el usage metadata del proveedor antes de confiar en los costos |
+| Medición en vivo | Una llamada real para confirmar qué devuelve `response.model` con el modelo fijado y que `reasoning_tokens` sea mayor que 0 en la selección con Gemini (los thinking tokens no vienen en `completion_tokens`; se derivan del total del proveedor y se cobran al precio de salida). Si es 0 con un modelo que razona, verificar contra el usage metadata del proveedor antes de confiar en los costos |
 | Precios | Verificar contra las páginas oficiales de Groq y Gemini y comparar con `pricing.py` (`PRICING_VERSION`). Si difieren, corregir por PR antes de medir |
 | Perfil de modelos | El piloto usa los mismos modelos, versiones y tiers que producción ([ADR-012](../adrs/012-model-profiles-and-capacity.md), D-C1). Si no, el go/no-go no es válido |
 | Privacidad | Los proveedores corren en tier pago, con términos verificados que excluyen el uso de los datos para entrenamiento (ADR-012, D-C2). Sin esto no se procesan videos de usuarios |
@@ -384,14 +413,14 @@ Límites conocidos de lo que el piloto mide. Leerlos antes de interpretar los n�
 | b | Los precios de Gemini 3.6, 3.7 y 3.8 Flash se duplican el 2027-01-01. `pricing.py` maneja el período | Las comparaciones de costo a ambos lados de esa fecha no son equivalentes |
 | c | El SDK de Groq reintenta internamente hasta 2 veces. Un request que expiró del lado del cliente pero se completó en el servidor se factura y es invisible | En ese caso poco frecuente, el costo de ASR es una cota inferior |
 | d | Los timeouts y las conexiones cortadas registran costo NULL (desconocido), también en una transcripción con chunks ya cobrados cuyo siguiente chunk expiró | Ese proyecto queda con `cost_complete = False`. Un worker muerto en plena llamada no deja fila alguna (salvedad i) y no aparece ni como NULL |
-| e | `response.model` y `completion_tokens` con el modelo fijado deben verificarse con una llamada real en G0 | Si `completion_tokens` no incluye los thinking tokens de Gemini, el costo está subestimado: verificar contra el usage metadata del proveedor antes de confiar en los costos |
+| e | `response.model` y `completion_tokens` con el modelo fijado deben verificarse con una llamada real en G0 | Los thinking tokens de Gemini no vienen en `completion_tokens`: se capturan como `reasoning_tokens` (total del proveedor menos prompt y completion) y se cobran al precio de salida. Verificar contra el usage metadata del proveedor |
 | f | Los precios de Groq y Gemini deben reverificarse contra las páginas oficiales en G0 (`PRICING_VERSION` de `pricing.py`) | Con precios desactualizados, el criterio de costo no es confiable |
 | g | La moderación de contenido cubre solo los primeros 10.000 caracteres y no cubre el camino de ingesta (ADR-011) | Fuera del alcance de este piloto, pero es un límite conocido |
 | h | La selección legacy no captura el usage del LLM: sus registros llevan costo NULL y todo proyecto legacy tiene `cost_complete = False` | El costo legacy no es comparable con el de V2. Los criterios y el disparador de costo se evalúan solo sobre V2 |
 | i | Los registros son solo de inserción y se escriben después de la llamada. Un worker muerto en medio de una llamada no deja registro | Un cobro de un worker matado es invisible: el costo y los conteos son una cota inferior en ese caso |
 | j | Un fallo de persistencia después de una llamada cobrada deja una fila exitosa y el reintento otra | Es correcto (dos cobros reales), pero se lee como etapa repetida: ver 6.1 |
 | k | Los 429 por límite de capacidad se reintentan con backoff | La latencia p95 sube por capacidad, no por el modelo. Leerla junto con la cantidad de registros con `error_code = AIRateLimitError` del export de nivel `record` |
-| l | Hasta que se corrija, `completion_tokens` no incluye los tokens de razonamiento de Gemini (hallazgo del G0, sección 11) | El costo de selección con Gemini es una cota inferior aunque `cost_complete` sea `True` |
+| l | Los registros anteriores a la migración `0004` (corrida 1 del G0, sección 11) tienen `reasoning_tokens = 0` aunque el modelo haya razonado | El costo de esos registros es una cota inferior aunque `cost_complete` sea `True`; no mezclarlos con las mediciones nuevas |
 
 ## 11. Registro de ejecución
 
@@ -412,3 +441,21 @@ Límites conocidos de lo que el piloto mide. Leerlos antes de interpretar los n�
 2. Corrección de los tokens de razonamiento mergeada (conteo como salida y columna en `AIUsageRecord`).
 3. Repetir la medición con un video de ~25 min y el primario `gemini-3.8-flash`, y verificar el costo por 30 min contra USD 0,04 con los tokens de razonamiento incluidos.
 4. Si el costo supera el umbral, evaluar limitar el razonamiento del modelo y validar la calidad de los clips antes de G1.
+
+### 11.3 Medición del nivel de razonamiento (AICORE-14)
+
+Corresponde al paso 4 de §11.2. Requiere el PR del #66 desplegado.
+
+1. **Chequeo rápido de que el proveedor respeta el límite**, con las keys del entorno:
+
+   ```bash
+   docker compose run --rm -e RUN_LIVE_AI=1 web python manage.py test apps.videos.tests.live.test_live_ai_smoke.LiveReasoningEffortSmokeTest
+   ```
+
+   Imprime los tokens de razonamiento con `low` y con `high` (solo números) y falla si `low` razona más que `high`.
+2. **Corridas:** con el mismo video de ~25 min y el primario `gemini-3.8-flash`, procesar una vez sin el setting (referencia) y una vez con cada nivel `low`, `medium` y `high`. El nivel se cambia con `AI_LLM_REASONING_EFFORT` en el entorno del worker.
+3. **Registro por corrida:**
+   - Costo por 30 min (export nivel `project`).
+   - Tokens de salida de la selección (export nivel `record`).
+   - Revisión humana de los clips según §4.
+4. **Elección:** el nivel más bajo cuyos clips pasan la revisión. Se registra en [ADR-012](../adrs/012-model-profiles-and-capacity.md) por entorno, y se verifica que el costo por 30 min quede por debajo de USD 0,04.
