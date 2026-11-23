@@ -69,7 +69,6 @@ El servicio de `docker-compose.yml` se llama `web`. `--output` escribe **dentro 
 
 **Costo por 30 min:** usa la duración del video fuente, no `audio_seconds`. Si falta la duración, la columna queda vacía.
 
-
 ---
 
 ## 2. Muestra de 20 videos en español rioplatense
