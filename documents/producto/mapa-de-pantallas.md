@@ -1,6 +1,6 @@
 # Mapa de pantallas de OneCreator (MVP)
 
-Este documento lista **todas** las pantallas, estados y diálogos del producto, con una decisión tomada para cada una. Es la base para el diseño (canvas de diseño) y para el frontend. Si algo no está acá, no está decidido: se agrega acá antes de diseñarlo o construirlo.
+Este documento lista **todas** las pantallas, estados y diálogos del producto, con una decisión tomada para cada una. Es la base para el diseño y para el frontend. El diseño de todas las pantallas está en el [canvas de diseño](https://claude.ai/artifact/Qj7y6R7mVSAtHPpNRkWiaC), y el sistema visual (colores, tipografía, componentes) está en [`diseno/`](diseno/README.md). Si algo no está acá, no está decidido: se agrega acá antes de diseñarlo o construirlo.
 
 Cada pantalla tiene:
 
@@ -28,7 +28,7 @@ Leyenda de API: ✅ existe · ⚠️ existe en parte · ❌ falta. Los huecos es
 
 - Estética sobria tipo Vercel: fondo neutro, bordes finos, mucho aire, poco color.
 - **Un solo color de acento** para acciones principales y foco; lo define el sistema visual del canvas. Los colores de estado (verde, ámbar, rojo, azul) se usan solo para estados.
-- **Tipografía:** Geist Sans para texto y Geist Mono para números, tiempos (`00:41`), costos e identificadores.
+- **Tipografía:** Geist Sans para texto, y también para montos, costos, duraciones y fechas, con cifras de ancho fijo. Geist Mono se usa solo para los tiempos de las pantallas de edición (transcripción, línea de tiempo, inicio y fin) y para los atajos de teclado.
 - **Tema:** oscuro por defecto, porque el video se ve mejor sobre fondo oscuro. También hay claro, y la opción **Sistema** está en Perfil. Cada pantalla se diseña en los dos temas.
 - **Íconos:** un solo set de línea, de 16 px y 20 px.
 
@@ -720,6 +720,8 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad:
 | 15 | Tiempos por etapa del pipeline | D1 | P2 |
 | 16 | Notificaciones (modelo y emails) | J2, I2 | P2 |
 | 17 | Descargar todo en .zip | D3 | P2 |
+| 18 | Tiempo estimado del proceso ("Listo para revisar en ≈ 12 min") | C1, D1 | P2 |
+| 19 | Total reservado del workspace con el detalle por proyecto | G1, barra | P1 |
 
 ---
 
@@ -734,3 +736,36 @@ Están tomadas para poder diseñar. Si alguien no está de acuerdo, se cambian a
 5. **Lo que el plan no incluye se muestra bloqueado, no oculto.**
 6. **Al borrar un proyecto no se devuelve lo cobrado.**
 7. **Valores por defecto en el navegador**, sin pantalla propia.
+
+### 9.1 Decisiones que salieron del diseño
+
+Se agregaron en la segunda ronda del canvas, después de una revisión de diseño de las 42 pantallas. Rigen igual que el resto del documento:
+
+1. **Presets en Nuevo proyecto (C1).**
+   - Una fila "Punto de partida" con "Mi última configuración" (la regla de recordar de C1) más Podcast, Gaming, Clase y Vlog. Cada preset define estilo, layout, subtítulos e inteligencia.
+   - Estilo, Subtítulos e Inteligencia quedan plegados bajo "Personalizar", con el valor actual a la vista.
+   - Ninguna opción del spec se quitó: solo se plegó.
+2. **Tiempo estimado.** El resumen de C1 y la cabecera de D1 muestran "Listo para revisar en ≈ X min". Necesita el hueco 18.
+3. **Lista de proyectos (B2).**
+   - Filas de alto fijo (72 px).
+   - El estado va en una sola línea: la etiqueta de la sección 3 más un texto corto ("Hay mucha demanda. Arranca solo.", "Te devolvimos 1.755 tokens"). El texto completo de la sección 3 queda en el tooltip y en la pantalla del proyecto.
+   - "Creado por" muestra solo el avatar.
+4. **Cabecera de proyecto única.**
+   - Resumen, Clips, Transcripción y Actividad usan la misma cabecera: miniatura, título, estado, datos y una sola acción principal. Solo cambia el contenido de la pestaña.
+   - Revisión (D2) y Editor (D4) usan la versión compacta, y el título del editor es el nombre del clip.
+5. **Revisión (D2).**
+   - El puntaje lleva una banda: Excelente, Bueno o Flojo.
+   - "Por qué" muestra 2 o 3 etiquetas cortas sacadas de `ai_reasoning`, más la frase completa. No se inventan sub-puntajes.
+   - Atajos de teclado: `A` incluir, `X` excluir y `↑`/`↓` para moverse, además de `I`, `O` y espacio.
+6. **Clips (D3).** La tarjeta de clip con error y la de "Renderizando" están definidas en el sistema visual; en la pantalla de ejemplo todos los clips están listos.
+7. **Publicar (E1).**
+   - El orden es Clip → Redes → Cuándo → detalle por red.
+   - En la pestaña de TikTok la privacidad va primero.
+   - El chequeo de requisitos queda en una línea cuando todo cumple.
+8. **Miembros (H2).** Una invitación pendiente ocupa un lugar del plan. Con 4 miembros y 1 invitación en el plan Pro (5 lugares), "Invitar" se desactiva y explica por qué.
+9. **Ajustes y Perfil (H, I).** En lugar de cajas apiladas con su propio botón, una columna de filas: título y descripción a la izquierda, control a la derecha. La zona peligrosa queda aparte.
+10. **Uso (G1).** El reservado se muestra dentro de la tarjeta de saldo, con el detalle por proyecto.
+11. **Planes (A6 y G3).**
+    - Misma tarjeta y mismos textos en las dos pantallas.
+    - Una función bloqueada se ve como un candado y su nombre, con el plan que la incluye a la derecha ("Plan Creador").
+    - El acento marca el plan recomendado. En G3, el plan actual lleva el borde fuerte y la etiqueta "Tu plan".
