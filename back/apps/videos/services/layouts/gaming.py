@@ -3,79 +3,83 @@
 os.environ['MEDIAPIPE_DISABLE_GPU'] = '1'
 
 from moviepy import CompositeVideoClip, ColorClip
+from apps.videos.services.layouts.camera import Box, ManualCamera, covers, frame_box, manual_box, place, preset_region
 from apps.videos.services.layouts.interface import BaseLayout
 from apps.videos.services.face_tracker import FaceTracker
-from apps.videos.services.saliency_tracker import GameplaySaliencyDetector
 import logging
 
 logger = logging.getLogger(__name__)
 
+
+def camera_size(frame_w, frame_h, aspect, face_h):
+    """
+    Crop size of the camera pane: 2.2 face heights (45 % of the frame height
+    when the size is unknown), with the pane's aspect, inside the frame.
+    """
+    src_crop_h = int(face_h * 2.2) if face_h > 0 else int(frame_h * 0.45)
+    src_crop_w = int(src_crop_h * aspect)
+    if src_crop_w > frame_w:
+        src_crop_w = frame_w
+        src_crop_h = int(src_crop_w / aspect)
+    if src_crop_h > frame_h:
+        src_crop_h = frame_h
+        src_crop_w = int(src_crop_h * aspect)
+    return src_crop_w, src_crop_h
+
+
+def face_y_offset(face_h, frame_h):
+    """Share of the crop above the face: a small face sits a bit lower."""
+    return 0.40 if face_h / frame_h < 0.15 else 0.35
+
+
+def tracked_box(face_x, face_y, w, h, y_offset, frame_w, frame_h):
+    """The camera crop around a face, inside the frame."""
+    x1 = max(0, min(int(face_x - (w // 2)), frame_w - w))
+    y1 = max(0, min(int(face_y - int(h * y_offset)), frame_h - h))
+    return Box(x1, y1, w, h)
+
+
+def static_box(region, w, h, frame_w, frame_h):
+    """A fixed crop centred on the region (and on the frame height), inside the frame."""
+    return place(region.x1 + region.w // 2, frame_h // 2, w, h, frame_box(frame_w, frame_h))
+
+
 class GamingLayout(BaseLayout):
     """
-    Split-screen layout optimized for gaming content (Camera top, Gameplay bottom).
-    - Intelligent FaceTracking for the camera.
-    - Smart Saliency for the gameplay focus.
+    Split-screen layout for gaming content: camera on top (35 % of the
+    height), gameplay below (65 %).
+
+    Camera pane, by priority (see camera.py):
+    1. Manual camera set (``manual_camera_x/y/zoom`` changed from the
+       defaults): that fixed crop. Faces are not tracked.
+    2. ``camera_selection_position`` picks the region: left half, right
+       half, or the whole frame for ``center``. With face tracking the crop
+       follows the main face found in that region; without it the crop is
+       fixed and centred on the region.
+
+    Gameplay pane: from a wide source, a vertical slice at
+    ``gameplay_position`` (left, center or right).
     """
     def apply(self, clip, camera_pos='top'):
         target_w, target_h = self.target_w, self.target_h
-        
+
         # Reels Proportion: 35% Camera, 65% Gameplay
-        cam_h = int(target_h * 0.35) 
+        cam_h = int(target_h * 0.35)
         game_h = target_h - cam_h
-        
-        # 1. Face Tracking (Camera Layer)
-        path = None
-        if self.use_facetracking:
-            tracker = FaceTracker()
-            path = tracker.generate_path(clip, fps=self.tracking_fps)
-            tracker.close()
-            avg_w, avg_h = path.get_average_size()
-        else:
-            avg_w, avg_h = clip.w // 3, clip.h // 3
 
-        cam_target_aspect = target_w / cam_h
-        
-        face_relative_height = avg_h / clip.h
-        if face_relative_height < 0.15:
-            multiplier = 1.6
-            y_offset = 0.40
-        else:
-            multiplier = 2.0
-            y_offset = 0.35
-            
-        src_crop_h = int(avg_h * 2.2) if avg_h > 0 else int(clip.h * 0.45)
-        src_crop_w = int(src_crop_h * cam_target_aspect)
-        
-        if src_crop_w > clip.w:
-            src_crop_w = clip.w
-            src_crop_h = int(src_crop_w / cam_target_aspect)
-        if src_crop_h > clip.h:
-            src_crop_h = clip.h
-            src_crop_w = int(src_crop_h * cam_target_aspect)
-
-        if self.use_facetracking and path:
-            def get_face_frame(get_frame, t):
-                frame = get_frame(t)
-                face_x, face_y, _, _ = path.get_at(t)
-                x1 = max(0, min(int(face_x - (src_crop_w // 2)), clip.w - src_crop_w))
-                y1 = max(0, min(int(face_y - int(src_crop_h * y_offset)), clip.h - src_crop_h))
-                return frame[y1:y1+src_crop_h, x1:x1+src_crop_w]
-            cam = clip.transform(get_face_frame)
-        else:
-            cam = clip.cropped(x_center=clip.w//2, y_center=clip.h//2, width=src_crop_w, height=src_crop_h)
-
+        # 1. Camera Layer
+        cam = self._camera(clip, target_w / cam_h)
         cam = cam.resized(new_size=(target_w, cam_h))
         cam = cam.with_position(('center', 'top'))
 
-        # 2. Gameplay Tracking (Automation Priority)
+        # 2. Gameplay Layer
         game_target_aspect = target_w / game_h
         source_aspect = clip.w / clip.h
-        
-        # Determine if we should use Saliency or a fixed center
-        # Saliency is only needed when we are taking a narrow vertical slice 
-        # from a wider horizontal source (e.g. Mobile game inside 16:9 stream)
+
+        # A narrow vertical slice is only needed from a wider horizontal
+        # source (e.g. a mobile game inside a 16:9 stream).
         is_narrow_slice_needed = source_aspect > game_target_aspect
-        
+
         if not is_narrow_slice_needed:
             # Case A: Source is already vertical or square. Just fit to width.
             game_crop_w = clip.w
@@ -85,19 +89,13 @@ class GamingLayout(BaseLayout):
             # Case B: Source is horizontal (16:9). We need a vertical slice (9:16).
             game_crop_h = clip.h
             game_crop_w = int(clip.h * game_target_aspect)
-            
-            # --- PRIORITY 1: User Manual Override ---
+
             if self.gameplay_pos == 'left':
                 best_x_center = game_crop_w // 2
             elif self.gameplay_pos == 'right':
                 best_x_center = clip.w - (game_crop_w // 2)
-            elif self.gameplay_pos == 'center':
-                best_x_center = clip.w // 2
             else:
-                # --- PRIORITY 2: Automatic Saliency (Smart Tracking) ---
-                # We analyze the video to see if there is a specific 'slice' with motion
-                saliency_detector = GameplaySaliencyDetector(frame_skip=1.0)
-                best_x_center = saliency_detector.find_best_x_center(clip)
+                best_x_center = clip.w // 2
 
         # Apply the final calculated center
         game = clip.cropped(x_center=best_x_center, y_center=clip.h//2, width=game_crop_w, height=game_crop_h)
@@ -110,5 +108,48 @@ class GamingLayout(BaseLayout):
         
         if clip.audio:
             final_composition = final_composition.with_audio(clip.audio)
-            
+
         return final_composition
+
+    def _camera(self, clip, aspect):
+        """The camera crop of the source (not resized yet)."""
+        manual = ManualCamera.from_coords(self.manual_camera_coords)
+        if manual is not None:
+            box = manual_box(manual, frame_box(clip.w, clip.h), aspect)
+            logger.info("layout.split_camera mode=manual")
+            return _crop(clip, box)
+
+        region = preset_region(self.camera_selection_pos, clip.w, clip.h)
+        path = None
+        if self.use_facetracking:
+            path = self._face_path(clip, region)
+            _, face_h = path.get_average_size()
+        else:
+            face_h = clip.h // 3
+
+        src_crop_w, src_crop_h = camera_size(clip.w, clip.h, aspect, face_h)
+
+        if path is not None:
+            y_offset = face_y_offset(face_h, clip.h)
+
+            def get_face_frame(get_frame, t):
+                frame = get_frame(t)
+                face_x, face_y, _, _ = path.get_at(t)
+                box = tracked_box(
+                    face_x + region.x1, face_y + region.y1, src_crop_w, src_crop_h, y_offset, clip.w, clip.h,
+                )
+                return frame[box.y1:box.y1 + box.h, box.x1:box.x1 + box.w]
+            return clip.transform(get_face_frame)
+        return _crop(clip, static_box(region, src_crop_w, src_crop_h, clip.w, clip.h))
+
+    def _face_path(self, clip, region):
+        """Path of the main face inside the region, in the region's coordinates."""
+        source = clip if covers(region, clip.w, clip.h) else _crop(clip, region)
+        tracker = FaceTracker()
+        path = tracker.generate_path(source, fps=self.tracking_fps)
+        tracker.close()
+        return path
+
+
+def _crop(clip, box):
+    return clip.cropped(x1=box.x1, y1=box.y1, width=box.w, height=box.h)
