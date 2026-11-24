@@ -13,9 +13,10 @@ Este documento cubre cómo se renderiza un clip: el recorte al formato y la reso
 | `get_layout_strategy`, `LAYOUT_REGISTRY` | [services/layouts/\_\_init\_\_.py](../../back/apps/videos/services/layouts/__init__.py) | Elige la clase de layout por `render_layout`. |
 | `BaseLayout` | [layouts/interface.py](../../back/apps/videos/services/layouts/interface.py) | Parámetros comunes, `editing_style` y `tracking_fps`. |
 | `FillLayout`, `FitLayout` | [layouts/standard.py](../../back/apps/videos/services/layouts/standard.py) | Recorte con seguimiento de cara, y letterbox. |
-| `GamingLayout` | [layouts/gaming.py](../../back/apps/videos/services/layouts/gaming.py) | Cámara arriba y gameplay abajo. |
+| `GamingLayout`, `camera_size`, `static_box`, `tracked_box` | [layouts/gaming.py](../../back/apps/videos/services/layouts/gaming.py) | Cámara arriba y gameplay abajo. |
+| `ManualCamera`, `preset_region`, `manual_box`, `fit_size`, `place` | [layouts/camera.py](../../back/apps/videos/services/layouts/camera.py) | Qué región de la fuente muestra la cámara en `split` y `versus`. Python puro. |
 | `BlurredLayout` | [layouts/blur_pip.py](../../back/apps/videos/services/layouts/blur_pip.py) | Fondo desenfocado y primer plano nítido. |
-| `VersusLayout`, `ActiveSpeakerLayout` | [layouts/pro.py](../../back/apps/videos/services/layouts/pro.py) | Dos mitades, y cámara que sigue a quien habla. |
+| `VersusLayout`, `versus_boxes`, `ActiveSpeakerLayout` | [layouts/pro.py](../../back/apps/videos/services/layouts/pro.py) | Dos mitades, y cámara que sigue a quien habla. |
 | `get_face_detector`, `_SharedDetector`, `FaceTracker` | [services/face_tracker.py](../../back/apps/videos/services/face_tracker.py) | Detector MediaPipe compartido por proceso, muestreo del clip, camino de encuadre. |
 | `Detection`, `FaceTrack`, `IoUTracker`, `FaceTracks`, `sampling_fps` | [services/face_tracking.py](../../back/apps/videos/services/face_tracking.py) | Asociación de caras en el tiempo con ids estables y elección de la cara a encuadrar. Python puro. |
 | `EMASmoothing`, `interpolate_gaps`, `TrackingPath` | [services/tracking_utils.py](../../back/apps/videos/services/tracking_utils.py) | Suavizado sin retraso, relleno de huecos e interpolación por frame. |
@@ -68,7 +69,7 @@ sequenceDiagram
 4. **Claim.** `_claim_clip_for_render` hace un compare-and-set `DRAFT`/`FAILED` → `RENDERING` con un `update` filtrado. Solo una entrega gana; la otra termina con `"Clip <id> already claimed"`. Un mensaje re-entregado (`delivery_info['redelivered']`) puede tomar además un clip que quedó en `RENDERING`: su worker murió y nadie más lo terminaría.
 5. **Fuente y tamaño.** `RenderEngine.render_clip` abre el archivo local `project.source_file.path`, lo corta con `subclipped(start_time, end_time)` y calcula el tamaño con `_get_target_resolution(aspect_ratio, metadata['render_resolution'])` (ver [resolución](#flujo-resolución-y-formato-de-salida)).
 6. **Layout.** `get_layout_strategy` recibe `render_layout`, el tamaño, `use_facetracking`, `gameplay_position`, `camera_selection_position`, las coordenadas manuales y `editing_style`, y devuelve una instancia que aplica el encuadre (ver [layouts](#flujo-layouts)).
-7. **Subtítulos** (`add_subtitles`). Con `transcript_data` usa los ítems que caen en el clip (`_slice_segments`) agrupados con `TranscriptionEngine.group_words(..., max_words=subtitle_words_per_segment)`. Sin transcripción guardada, extrae el audio a MP3 y transcribe con `TranscriptionEngine(model_size="tiny", v2_enabled=v2_enabled_for(project))`: con V2 habilitado para el proyecto usa el backend de `TRANSCRIPTION_BACKEND` (Groq por defecto), si no, Whisper local. Esta transcripción no reserva capacidad ni escribe filas de `AIUsageRecord`.
+7. **Subtítulos** (`add_subtitles`). Con `transcript_data` usa los ítems que caen en el clip (`_slice_segments`) agrupados con `TranscriptionEngine.group_words(..., max_words=subtitle_words_per_segment)`. Sin transcripción guardada, extrae el audio a MP3 y transcribe con `TranscriptionEngine(model_size="tiny", v2_enabled=v2_enabled_for(project))`: con V2 habilitado para el proyecto usa el backend de `TRANSCRIPTION_BACKEND` (Groq por defecto), si no, Whisper local. Esta transcripción no reserva capacidad ni escribe filas de `AIUsageRecord`. `subtitle_with_emojis` existe en el modelo, en la API y en `ProjectConfig`, pero el render no lo lee: los emojis no están en el MVP (C1 ofrece tamaño, posición, color y palabras por línea).
 8. **Escritura.** `write_videofile` con `RENDER_CODEC` (`libx264`), `RENDER_AUDIO_CODEC` (`aac`), `RENDER_FPS` (24), `RENDER_PRESET` (`medium`) y `FFMPEG_PARAMS` (`-pix_fmt yuv420p`). Con `remove_silences`, `FFmpegManager.remove_silences_from_video` reemplaza el archivo antes de subirlo.
 9. **Subida.** `CloudflareR2Manager.upload_video` devuelve la clave (`videos/<user_id>/<project_id>/<uuid>.mp4`); el clip queda `COMPLETED` con esa clave. Si había una clave anterior distinta (re-render después de un fallo), `render_clip_task` borra ese objeto de R2.
 10. **Cierre del fan-out.** `finalize_project_render` toma el lock de fila del proyecto y solo actúa si está en `RENDER_DISPATCHED` y ningún clip sigue `DRAFT` o `RENDERING`: con algún clip `FAILED` pasa a `PARTIAL`, si no a `COMPLETED` (etapa y estado). Se llama después de cada clip; solo la llamada que ve terminar al último hace la transición. Registra `pipeline.render_finalized`.
@@ -77,7 +78,7 @@ sequenceDiagram
 
 1. `approve_paper_edit` reserva el costo, guarda `approved_segments` y encola `render_video_segments(project_id)`.
 2. `_resolve_approved_segments` lee la columna `approved_segments` (o `metadata['approved_segments']` en proyectos viejos) y la valida con `validate_approved_segments`. Sin segmentos o con segmentos inválidos levanta `NonRetryableAIError` con código `no_approved_segments` o `invalid_approved_segments`.
-3. Descarga `original_r2_key` de R2 a un directorio temporal, corta cada segmento, los concatena y aplica el mismo `get_layout_strategy` (con `editing_style`, sin coordenadas manuales) y `_get_target_resolution`.
+3. Descarga `original_r2_key` de R2 a un directorio temporal, corta cada segmento, los concatena y aplica el mismo `get_layout_strategy` (con `editing_style` y las mismas opciones de cámara que los clips) y `_get_target_resolution`.
 4. Los subtítulos usan el `text` de cada segmento aprobado con tiempos recalculados sobre el video final.
 5. Escribe con preset `slow`, sube a `<project_id>/final`, guarda `final_export_r2_key`, deja el proyecto `COMPLETED` y crea un `VideoClip` "VIDEO FINAL EDITADO".
 
@@ -87,16 +88,51 @@ sequenceDiagram
 |-----------------|-------|-------|----------|
 | `fill` (también un valor desconocido) | `FillLayout` | Con `use_facetracking` | Recorte al aspecto destino. La x sigue la cara y la y queda centrada. Zoom 1,3 si la cara mide menos del 15 % del alto. |
 | `fit` | `FitLayout` | No | Video completo sobre fondo negro. |
-| `pip` | `FitLayout` | No | Igual que `fit`: no hay layout PiP propio. |
+| `pip` | `FitLayout` | No | Igual que `fit`: no hay layout PiP propio, ni región de cámara. |
 | `blurred` | `BlurredLayout` | Con `use_facetracking` | Fondo desenfocado (sigma 30) y oscurecido; primer plano al ancho, con recorte vertical que sigue la y de la cara. |
-| `split` | `GamingLayout` | Con `use_facetracking` | Cámara arriba (35 % del alto) encuadrada sobre la cara; gameplay abajo (65 %) según `gameplay_position`. |
-| `versus` | `VersusLayout` | No | Mitad izquierda arriba y mitad derecha abajo. |
+| `split` | `GamingLayout` | Con `use_facetracking`, solo en la región elegida y sin cámara manual | Cámara arriba (35 % del alto) según la [cámara](#cámara-región-y-encuadre-manual); gameplay abajo (65 %) según `gameplay_position`. |
+| `versus` | `VersusLayout` | No | Mitad izquierda arriba y mitad derecha abajo, cada una recortada al aspecto de su panel. La cámara manual encuadra las dos. |
 | `active` | `ActiveSpeakerLayout` | Siempre | Sigue a quien habla. Sin caras, o ante cualquier error, recorte centrado. |
 
 - `BaseLayout.tracking_fps` devuelve `sampling_fps(editing_style)`: cada layout que sigue caras muestrea según el estilo de edición (ver la tabla de muestreo más abajo).
-- `ActiveSpeakerLayout` no mira `use_facetracking`: siempre llama a `FaceTracker().track_faces`. Si no hay tracks o el camino queda vacío, usa `_centered`. Cualquier excepción registra `layout.active_speaker_failed` y también cae en `_centered`. El encuadre usa todo el alto de la fuente con el aspecto destino y mueve la x con `path.get_at(t)`; registra `layout.active_speaker`.
-- `camera_selection_position` y `manual_camera_x/y/zoom` llegan a `BaseLayout`, pero hoy ningún layout los lee. `VideoProject.speaker_tracking` tampoco se lee en el render: el seguimiento del hablante depende solo de `render_layout='active'`.
-- En `GamingLayout`, `GameplaySaliencyDetector` solo corre si `gameplay_position` no es `left`, `center` ni `right`; con las opciones del modelo ese caso no se da.
+- `ActiveSpeakerLayout` no mira `use_facetracking`: siempre llama a `FaceTracker().track_faces`, porque sin caras no sabe quién habla. En C1, con el layout "Quien habla" el switch "Seguir caras" se muestra prendido y deshabilitado. Si no hay tracks o el camino queda vacío, usa `_centered`. Cualquier excepción registra `layout.active_speaker_failed` y también cae en `_centered`. El encuadre usa todo el alto de la fuente con el aspecto destino y mueve la x con `path.get_at(t)`; registra `layout.active_speaker`.
+- `VideoProject.speaker_tracking` no se lee en el render: seguir a quien habla es el layout `active`. Por eso, al crear, `speaker_tracking=true` sin `render_layout` ni `layout` en el pedido deja `render_layout='active'` (`VideoProjectSerializer.create`). Prompt-to-Edit hace lo mismo en `ConfigValidator` ([ver 04-prompt-to-edit](04-prompt-to-edit.md#qué-puede-pedir-un-prompt)). Un layout explícito siempre gana.
+- `gameplay_position` elige la franja vertical del gameplay cuando la fuente es más ancha que el panel: `left`, `center` o `right`. Cualquier otro valor es el centro. El análisis de movimiento que elegía la franja sola (`GameplaySaliencyDetector`) se quitó: con las opciones del modelo no había forma de pedirlo.
+
+### Cámara: región y encuadre manual
+
+Solo `split` y `versus` tienen una región de cámara. Los demás layouts (`fill`, `fit`, `pip`, `blurred`, `active`) no leen `camera_selection_position` ni la cámara manual. El render de clips, la vista previa y el paper edit pasan las mismas opciones.
+
+**Cámara manual** (`ManualCamera.from_coords`). Está activa solo si alguno de `manual_camera_x`, `manual_camera_y` o `manual_camera_zoom` cambió de su default (0,5, 0,2 y 1). Con los tres en el default, el layout encuadra como siempre.
+
+- `x` e `y` (de 0 a 1) son el centro del recorte. Un valor fuera de rango se lleva al borde; uno que no es un número cuenta como el default.
+- El zoom va de 1 a `MAX_ZOOM` (4). Zoom 1 es el recorte más grande con el aspecto del panel que entra en la fuente (`fit_size`); zoom 2 es la mitad de ancho y de alto.
+- `manual_box` centra el recorte en (x, y) y lo corre hasta que entra entero en la fuente (o en la mitad, en `versus`).
+
+**`split`** (`GamingLayout._camera`) elige el recorte de la cámara en este orden:
+
+```mermaid
+flowchart TD
+    A["Panel de cámara de split"] --> B{"Cámara manual activa?"}
+    B -- "sí" --> C["manual_box sobre toda la fuente: recorte fijo, sin seguir caras"]
+    B -- "no" --> D["preset_region(camera_selection_position)"]
+    D --> E{"use_facetracking?"}
+    E -- "sí" --> F["FaceTracker.generate_path solo dentro de la región"]
+    F --> G["tracked_box: 2,2 alturas de cara, sigue la cara y queda dentro de la fuente"]
+    E -- "no" --> H["static_box: recorte fijo centrado en la región y en el alto"]
+```
+
+- `preset_region`: `left` es la mitad izquierda, `right` la mitad derecha y `center` (o cualquier otro valor) toda la fuente.
+- Con `use_facetracking`, el detector solo ve la región (`clip.cropped`), así una cara del gameplay no se lleva la cámara. El recorte sigue la cara y puede salir de la región, pero no de la fuente. Sin caras en la región, el camino queda en su centro.
+- Sin seguimiento, el recorte tiene el tamaño de siempre (`camera_size`: 2,2 veces un tercio del alto, con el aspecto del panel) y se centra en la región. Desde una fuente 16:9 a 9:16 ese recorte es más ancho que media fuente, así que `left` y `right` quedan pegados a cada borde.
+- Con `center` y la cámara manual en el default, el panel es el mismo de antes: recorte centrado, o el que sigue la cara principal de todo el cuadro.
+- Con cámara manual, `layout.split_camera mode=manual` queda en el log.
+
+**`versus`** (`versus_boxes`) pone la mitad izquierda de la fuente arriba y la derecha abajo.
+
+- Cada mitad se recorta con el aspecto de su panel, centrada. Antes cada mitad entera se escalaba por el alto y el panel no llenaba el ancho (por ejemplo, 284 de 360 px en 9:16).
+- La cámara manual encuadra las dos mitades igual: `x` e `y` se miden dentro de cada mitad y el recorte no sale de ella. Sirve para acercar las caras o subir el encuadre.
+- `camera_selection_position` y `gameplay_position` no se usan en `versus`: siempre hay dos personas, una por mitad.
 
 ## Flujo: face tracking v2
 
@@ -222,7 +258,7 @@ Parámetros del constructor de `SpeakerTrackingEngine` (sin settings, se ajustan
 - **`VideoProject`** (paper edit): `final_export_r2_key`, `status` (`COMPLETED` o `FAILED`), `pipeline_error_code` y `pipeline_error_at` en los errores de segmentos, y un `VideoClip` nuevo "VIDEO FINAL EDITADO".
 - **R2**: el video de cada clip en `videos/<user_id>/<project_id>/`, el del paper edit en `videos/<user_id>/<project_id>/final/`. Con `USE_R2=False` se copian bajo `MEDIA_ROOT/videos/`.
 - **`AIUsageRecord`**: ninguna fila. El render no reserva capacidad.
-- **Logs**: `face_tracker.mediapipe_unavailable`, `face_tracker.detector_loaded`, `face_tracker.detector_failed`, `face_tracker.detector_unavailable`, `face_tracker.frame_failed`, `face_tracker.all_frames_failed`, `face_tracker.tracked` (muestras, caras, frames fallidos), `face_tracker.no_faces`, `face_tracker.failed`, `speaker.audio_failed`, `speaker.frame_failed`, `speaker.frames_failed`, `speaker.timeline`, `layout.active_speaker`, `layout.active_speaker_failed`, `render.failure_not_recorded`, `pipeline.render_finalized`.
+- **Logs**: `face_tracker.mediapipe_unavailable`, `face_tracker.detector_loaded`, `face_tracker.detector_failed`, `face_tracker.detector_unavailable`, `face_tracker.frame_failed`, `face_tracker.all_frames_failed`, `face_tracker.tracked` (muestras, caras, frames fallidos), `face_tracker.no_faces`, `face_tracker.failed`, `speaker.audio_failed`, `speaker.frame_failed`, `speaker.frames_failed`, `speaker.timeline`, `layout.active_speaker`, `layout.active_speaker_failed`, `layout.split_camera`, `render.failure_not_recorded`, `pipeline.render_finalized`.
 
 ## Configuración
 
@@ -245,4 +281,4 @@ Constantes en código, sin setting: `RENDER_FPS`, `RENDER_CODEC`, `RENDER_AUDIO_
 - PR #93, el layout "Speaker dinámico" sigue a quien habla (CORE-02): https://github.com/RomeKai/videoeditUTN/pull/93
 - PR #94, el formato cuadrado sale cuadrado y el render usa la resolución pedida: https://github.com/RomeKai/videoeditUTN/pull/94
 - [Dockerfile](../../back/Dockerfile) (librerías de sistema de MediaPipe)
-- Tests: [test_render_tasks.py](../../back/apps/videos/tests/test_render_tasks.py), [test_render_video_segments.py](../../back/apps/videos/tests/test_render_video_segments.py), [test_layouts.py](../../back/apps/videos/tests/test_layouts.py), [test_square_and_resolution.py](../../back/apps/videos/tests/test_square_and_resolution.py), [services/test_face_tracking.py](../../back/apps/videos/tests/services/test_face_tracking.py), [services/test_speaker_detection.py](../../back/apps/videos/tests/services/test_speaker_detection.py)
+- Tests: [test_render_tasks.py](../../back/apps/videos/tests/test_render_tasks.py), [test_render_video_segments.py](../../back/apps/videos/tests/test_render_video_segments.py), [test_layouts.py](../../back/apps/videos/tests/test_layouts.py), [test_layout_camera.py](../../back/apps/videos/tests/test_layout_camera.py), [test_render_options.py](../../back/apps/videos/tests/test_render_options.py), [test_square_and_resolution.py](../../back/apps/videos/tests/test_square_and_resolution.py), [services/test_face_tracking.py](../../back/apps/videos/tests/services/test_face_tracking.py), [services/test_speaker_detection.py](../../back/apps/videos/tests/services/test_speaker_detection.py)

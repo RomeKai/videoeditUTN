@@ -339,12 +339,16 @@ Otras respuestas:
      - Layout (Llenar, Ajustar, Fondo desenfocado, Dividido, PiP, Versus, Quien habla). Cada uno con un dibujo esquemático.
      - Brand kit: el marcado como default viene preseleccionado.
   6. **Subtítulos:** activados, tamaño, posición, color, palabras por línea. Se ve una muestra en vivo sobre un fotograma.
+     - La API también acepta `subtitle_with_emojis`, pero no está en el MVP: no se muestra y el render no lo usa.
   7. **Inteligencia:**
-     - Seguir caras.
+     - Seguir caras. Con el layout Quien habla se muestra prendido y deshabilitado: ese layout siempre sigue caras para saber quién habla.
      - Quitar silencios.
      - SEO (+5 tokens, según el plan).
      - "Renderizar sin revisar" (`auto_render_bypass`), apagado por defecto. Al apagarlo, el proyecto se detiene en la revisión.
 - **Opciones avanzadas:** posición del gameplay y cámara manual van en un bloque "Avanzado" cerrado por defecto. Se ve solo con los layouts Dividido o Versus.
+  - **Dividido:** posición del gameplay (izquierda, centro, derecha), lado de la cámara (izquierda, centro = todo el cuadro, derecha) y cámara manual (centro x/y y zoom). La cámara manual reemplaza al lado elegido y a Seguir caras.
+  - **Versus:** solo la cámara manual, que encuadra igual a las dos personas (una por mitad). La posición del gameplay y el lado de la cámara no se muestran.
+  - La cámara manual está apagada mientras tenga sus valores por defecto (x 0,5, y 0,2, zoom 1). El zoom va de 1 a 4.
 - **Resumen (derecha):**
   - Duración, resolución, extras, plan (con marca de agua o sin ella), costo estimado y saldo después.
   - Si no alcanza, el botón cambia a **Comprar tokens**.
@@ -361,6 +365,7 @@ Otras respuestas:
 - **API:**
   - ✅ `POST /api/v1/projects/` (multipart) y `POST /api/v1/projects/from-prompt/`.
   - ✅ el campo `render_resolution` (720p, 1080p o 4K) se cobra y se compara con el plan; sin él, el proyecto se cobra y se renderiza en 720p.
+  - ✅ `speaker_tracking=true` sin layout crea el proyecto con Quien habla (`render_layout=active`).
   - ❌ falta el endpoint de precios para el estimado.
   - ⚠️ los links no pasan por la validación de duración del plan (sí por la de resolución y SEO).
 
