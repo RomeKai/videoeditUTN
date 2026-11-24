@@ -19,14 +19,17 @@ class RenderEngine:
     """
     # Frame height per resolution tier (PricingEngine / SubscriptionPlan values).
     RESOLUTION_HEIGHTS = {'720p': 720, '1080p': 1080, '4K': 2160}
-    DEFAULT_HEIGHT = 1080
+    # A project without render_resolution is priced at 720p (views._pricing_resolution),
+    # so it renders at 720p too: never deliver more than what was charged.
+    DEFAULT_HEIGHT = 720
 
     @staticmethod
     def _get_target_resolution(aspect_ratio_str: str, resolution: str = None):
         """
         Calculates resolution based on aspect ratio, forcing even numbers for H.264.
         ``resolution`` is the project's ``metadata['render_resolution']`` tier
-        (set by Prompt-to-Edit within the plan); without it the height stays 1080.
+        (chosen at creation or set by Prompt-to-Edit, within the plan); without
+        it the height is 720, the tier the project was charged for.
         """
         target_h = RenderEngine.RESOLUTION_HEIGHTS.get(resolution, RenderEngine.DEFAULT_HEIGHT)
         if aspect_ratio_str == '9:16': target_w = int(target_h * (9/16)) 
@@ -108,16 +111,14 @@ class RenderEngine:
                     raw_segments = RenderEngine._slice_segments(existing_transcription, clip_obj.start_time, clip_obj.end_time)
                     segments = TranscriptionEngine.group_words(raw_segments, max_words=max_w)
                 else:
-                    # Fallback transcription
-                    temp_audio_path = os.path.join(temp_dir, f"audio_{clip_obj.id}.mp3")
-                    original_clip.audio.write_audiofile(temp_audio_path, codec='mp3', logger=None)
-                    from apps.videos.services.ai.rollout import v2_enabled_for
-
-                    transcriber = TranscriptionEngine(
-                        model_size="tiny", v2_enabled=v2_enabled_for(project),
+                    # Every pipeline project is transcribed before it has clips.
+                    # Transcribing again here called the provider with no capacity
+                    # reservation and no AIUsageRecord (a cost nobody saw), so a
+                    # clip without a transcript renders without subtitles instead.
+                    logger.warning(
+                        "render.subtitles_skipped clip_id=%s reason=no_transcript", clip_obj.id,
                     )
-                    raw_segments = transcriber.transcribe(temp_audio_path, word_timestamps=True)
-                    segments = TranscriptionEngine.group_words(raw_segments, max_words=max_w)
+                    segments = []
 
                 if segments:
                     final_clip = subtitler.add_subtitles(video_layout_processed, segments)

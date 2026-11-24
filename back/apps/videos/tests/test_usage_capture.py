@@ -231,7 +231,8 @@ class UsageCaptureTests(IngestionHarness, TestCase):
         self.assertEqual(project.pipeline_stage, PipelineStage.CLIPS_SELECTED)
         self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
         self.assertEqual(AIUsageRecord.objects.count(), 0)
-        self.assertEqual(sum("metrics.write_failed" in r.getMessage() for r in logs.records), 2)
+        # Transcription, moderation (ADR-011, one row per check) and selection.
+        self.assertEqual(sum("metrics.write_failed" in r.getMessage() for r in logs.records), 3)
 
     def test_a_metrics_write_failure_does_not_mask_the_provider_error(self):
         self.mock_select.side_effect = AIAuthenticationError("bad key")
@@ -388,7 +389,10 @@ class RecordingOrderTests(IngestionHarness, TransactionTestCase):
         self.run_task(project)
 
         self.assertEqual(observed, {"transcribe": False, "select": False})
-        self.assertEqual(AIUsageRecord.objects.count(), 2)
+        self.assertEqual(
+            sorted(AIUsageRecord.objects.values_list("stage", flat=True)),
+            ["moderation", "selection", "transcription"],
+        )
 
     def test_failure_rows_are_written_outside_any_transaction_too(self):
         self.mock_select.side_effect = AIAuthenticationError("bad key")

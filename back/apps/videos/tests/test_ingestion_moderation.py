@@ -56,6 +56,13 @@ class ModerationStageHarness(IngestionHarness):
         txn.refresh_from_db()
         self.assertEqual(txn.status, Transaction.Status.RESERVED)
 
+    def assert_charged(self, txn):
+        txn.refresh_from_db()
+        self.wallet.refresh_from_db()
+        self.assertEqual(txn.status, Transaction.Status.COMPLETED)
+        self.assertEqual(self.wallet.available_balance, Decimal("90.00"))
+        self.assertEqual(self.wallet.reserved_balance, Decimal("0"))
+
 
 class ModerationStageTests(ModerationStageHarness, TestCase):
     def test_moderation_runs_between_transcription_and_selection(self):
@@ -108,7 +115,8 @@ class ModerationStageTests(ModerationStageHarness, TestCase):
         self.assertEqual(self.mock_moderate.call_count, 2)
         self.assertEqual(project.pipeline_stage, PipelineStage.CLIPS_SELECTED)
         self.mock_transcribe.assert_called_once()  # the retry resumes at moderation
-        self.assert_still_reserved(txn)
+        # Never refunded by the retry; charged once the clips were selected.
+        self.assert_charged(txn)
 
     def test_no_verdict_after_every_retry_fails_and_refunds(self):
         self.mock_moderate.side_effect = ModerationUnavailableError()
@@ -315,3 +323,31 @@ class ResumePointTests(ModerationStageHarness, TestCase):
 
         project = self.project_with({"audio_extracted": "completed", "transcribed": "completed"})
         self.assertEqual(last_completed_stage(project), PipelineStage.TRANSCRIBED)
+
+
+class ModerationUsageRowTests(ModerationStageHarness, TestCase):
+    """Each moderation check leaves a row (free endpoint: cost 0), like every other AI call."""
+
+    def rows(self, project):
+        from apps.videos.models import AIUsageRecord
+
+        return list(AIUsageRecord.objects.filter(project=project, stage="moderation").values_list(
+            "success", "error_code", "estimated_cost_usd", "provider",
+        ))
+
+    def test_a_passed_check_is_recorded(self):
+        from decimal import Decimal as D
+
+        project = self.make_project()
+
+        self.run_task(project)
+
+        self.assertEqual(self.rows(project), [(True, None, D("0E-9"), "openai")])
+
+    def test_a_blocked_check_is_recorded_with_its_error(self):
+        self.mock_moderate.side_effect = UnsafeContentError("blocked")
+        project, _ = self.make_reserved_project()
+
+        self.run_task(project)
+
+        self.assertEqual([row[:2] for row in self.rows(project)], [(False, "UnsafeContentError")])

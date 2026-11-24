@@ -36,8 +36,8 @@ def _pricing_resolution(project):
     """
     The resolution tier PricingEngine checks against the plan. It used to get
     the aspect ratio ('9:16'), which it read as 720p. The tier is the
-    project's render_resolution when Prompt-to-Edit set one, else 720p (the
-    price every project has paid so far).
+    project's render_resolution (chosen at creation or set by Prompt-to-Edit),
+    else 720p, which is also what the render outputs without one.
     """
     from typing import get_args
 
@@ -140,21 +140,32 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
 
         from apps.payments.services.pricing_engine import PricingEngine
         workspace = project.workspace
-        
-        features_requested = {
-            'seo_optimization': project.metadata.get('use_seo', False),
-            'ai_thumbnail': project.metadata.get('use_ai_thumbnail', False),
-        }
 
         try:
+            # Only the render of the approved segments: the paid add-ons (SEO,
+            # thumbnail) were charged with the project at creation (ADR-013).
             final_cost = PricingEngine.calculate_render_cost(
                 duration_seconds=int(math.ceil(total_duration)),
                 resolution=_pricing_resolution(project),
-                features_requested=features_requested,
+                features_requested={},
                 plan=workspace.subscription_plan
             )
         except Exception as e:
             return Response({"error": f"Error en el motor de precios: {str(e)}"}, status=400)
+
+        # Claim the approval before reserving: two concurrent approvals must not
+        # both reserve and render. Only the request that moves the project out of
+        # AWAITING_APPROVAL goes on.
+        claimed = VideoProject.objects.filter(
+            pk=project.pk, status=VideoProject.Status.AWAITING_APPROVAL,
+        ).update(status=VideoProject.Status.RENDERING)
+        if not claimed:
+            return Response({"error": "El proyecto ya se está renderizando."}, status=409)
+
+        def release_claim():
+            VideoProject.objects.filter(
+                pk=project.pk, status=VideoProject.Status.RENDERING,
+            ).update(status=VideoProject.Status.AWAITING_APPROVAL)
 
         try:
             # CentralizaciÃ³n en wallet_service para integridad financiera
@@ -165,14 +176,18 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
                 description=f"Render Final (Paper Edit): {project.title}"
             )
         except (wallet_service.InsufficientFundsError, ValidationError) as e:
+            release_claim()
             return Response({"error": str(e), "required": final_cost}, status=402)
         except Exception as e:
+            release_claim()
             logger.error(f"Error reserving funds: {e}")
             return Response({"error": "Error procesando el pago."}, status=500)
 
         # Single source of truth for the render task: the typed column.
         project.approved_segments = approved_segments
         project.metadata['final_duration'] = total_duration
+        # Charged when the render is delivered, returned if it fails for good.
+        project.metadata['render_reservation_id'] = str(tx.id)
         project.status = VideoProject.Status.RENDERING
         project.save(update_fields=['approved_segments', 'metadata', 'status'])
 
@@ -238,20 +253,32 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
                 return Response({"error": "Error interno al procesar el presupuesto del video."}, status=status.HTTP_400_BAD_REQUEST)
         
         elif project.video_url:
+            if _pricing_resolution(project) != '720p':
+                # The flat link price does not know the duration, so it cannot
+                # price a higher tier; an auto-rendered link would get it free.
+                project.delete()
+                return Response(
+                    {"error": "Los proyectos por link se procesan en 720p. Para 1080p o 4K, subí el archivo."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             cost_in_tokens = Decimal('10.0')
-            if project.metadata.get('use_seo'):
-                # The duration of a URL video is unknown here: only the SEO add-on
-                # is checked against the plan and charged (ADR-013).
-                try:
-                    cost_in_tokens += PricingEngine.calculate_render_cost(
-                        duration_seconds=0,
-                        resolution='720p',
-                        features_requested={'seo_optimization': True},
-                        plan=workspace.subscription_plan,
-                    )
-                except (PlanLimitExceededError, FeatureNotAllowedError) as e:
-                    project.delete()
-                    return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
+            # The duration of a URL video is unknown here: the requested
+            # resolution and the SEO add-on are checked against the plan, and
+            # only the SEO add-on is charged on top of the flat price (ADR-013).
+            use_seo = bool(project.metadata.get('use_seo'))
+            try:
+                add_on = PricingEngine.calculate_render_cost(
+                    duration_seconds=0,
+                    resolution=_pricing_resolution(project),
+                    features_requested={'seo_optimization': use_seo},
+                    plan=workspace.subscription_plan,
+                )
+                if use_seo:
+                    # Without add-ons the engine still returns its 0.01 floor.
+                    cost_in_tokens += add_on
+            except (PlanLimitExceededError, FeatureNotAllowedError) as e:
+                project.delete()
+                return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             # Asegurar que el workspace tenga billetera (autocuraciÃ³n)

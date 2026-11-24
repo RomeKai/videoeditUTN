@@ -89,6 +89,8 @@ sequenceDiagram
     W->>AP: apply_prompt_to_project(can_retry, capacity)
     AP->>DB: lee pte_prompt, metadata.pte y el plan del workspace
     Note over AP: sin pte_prompt o con metadata.pte ya escrito devuelve None
+    AP->>AP: _moderate_prompt, salvo pte_moderated o ModerationOverride
+    Note over AP: bloqueado lanza UnsafeContentError y el proyecto falla con reembolso
     AP->>CAP: reserve(prompt limpio)
     CAP-->>AP: Reservation, o None con la capacidad apagada
     AP->>PP: parse(pte_prompt, metadata.duration)
@@ -110,17 +112,23 @@ sequenceDiagram
 
 1. `_run_ingestion` llama a `apply_prompt_to_project` con el lock del proyecto tomado, después de resolver los casos que no hacen trabajo (terminal, `render_dispatched`, re-despacho de un `failed`) y antes de cualquier etapa. No la llama si el proyecto ya está en `clips_selected`.
 2. `apply_prompt_to_project` lee el proyecto con el plan del workspace. Si no hay `pte_prompt` o ya existe `metadata['pte']`, no hace nada.
-3. **Capacidad:** si `AI_CAPACITY_ENABLED` está activo y el prompt limpio no está vacío, `_PromptParseCapacity.reserve` pide `ceil(caracteres / 4) + AI_CAPACITY_LLM_PROMPT_TOKENS + AI_CAPACITY_LLM_OUTPUT_TOKENS` tokens y un request en cada modelo de `_selection_models(True)`: el primario y el fallback si tiene key. La espera se registra en la etapa que viene (`upcoming`); para un proyecto en `uploaded` es `audio_extracted`. Detalle de los buckets en [07-capacidad-costos-y-operacion](07-capacidad-costos-y-operacion.md).
-4. **Parser:** `PromptParser.parse` usa el camino de llamada de la selección V2 (`LiteLLMSelectionProvider`), sin importar el rollout V2 del proyecto:
+3. **Moderación del prompt (ADR-011 D-M2):** antes de reservar capacidad o llamar al LLM, `_moderate_prompt` pasa el prompt crudo por `AI_Security_Shield.check_content_safety`.
+   - Si lo bloquea, sale `UnsafeContentError` hacia el manejador de la ingesta: el proyecto falla con ese código y se devuelve la reserva, como en la etapa de moderación.
+   - Sin veredicto sale un `ModerationError` (reintentable o no).
+   - Un prompt que pasó queda marcado en `metadata['pte_moderated']`: un reintento del lector o una espera de capacidad no lo vuelven a moderar.
+   - Con un `ModerationOverride` del proyecto no se modera.
+   - Cada chequeo escribe una fila de `AIUsageRecord` con etapa `moderation` y costo 0.
+4. **Capacidad:** si `AI_CAPACITY_ENABLED` está activo y el prompt limpio no está vacío, `_PromptParseCapacity.reserve` pide `ceil(caracteres / 4) + AI_CAPACITY_LLM_PROMPT_TOKENS + AI_CAPACITY_LLM_OUTPUT_TOKENS` tokens y un request en cada modelo de `_selection_models(True)`: el primario y el fallback si tiene key. La espera se registra en la etapa que viene (`upcoming`); para un proyecto en `uploaded` es `audio_extracted`. Detalle de los buckets en [07-capacidad-costos-y-operacion](07-capacidad-costos-y-operacion.md).
+5. **Parser:** `PromptParser.parse` usa el camino de llamada de la selección V2 (`LiteLLMSelectionProvider`), sin importar el rollout V2 del proyecto:
    - Con un prompt limpio vacío devuelve `ProjectConfig()` sin llamar al LLM (`attempts` vacío).
    - El system prompt fija las reglas: llenar solo lo que el pedido pide claramente, usar los valores del schema, no inventar campos de precio o plan. El texto del usuario va aislado con `AI_Security_Shield.isolate_user_input`, después de `VIDEO DURATION`.
    - `response_format` sale del schema de `ProjectConfig`: `json_schema` para OpenAI, `json_object` con `response_schema` para Gemini y `json_object` para el resto.
    - Si el primario falla y `_has_fallback()` es verdadero (otro modelo con key), prueba una vez con el fallback. Cada intento queda en `attempts` o, si falla todo, en `usage_attempts` del error.
    - `lenient_config` valida campo por campo: un valor fuera de las opciones se descarta (ese campo queda en su default) en lugar de invalidar toda la config. Un prompt ambiguo da defaults, no un error.
-5. `settle` ajusta la reserva de capacidad con los tokens reales, y `record_prompt_parse_usage` escribe una fila de `AIUsageRecord` por intento.
-6. `ConfigValidator.validate` reparte lo pedido entre `applied` e `ignored` ([motivos](#por-qué-se-ignora-un-campo)).
-7. `_store` escribe, bajo lock de fila, las columnas aplicadas, las claves de `METADATA_FIELDS` aplicadas y `metadata['pte']`, todo en un solo `UPDATE`.
-8. Las etapas leen la configuración ya aplicada. `_stage_moderate` incluye `selection_criteria` en lo que modera y `_stage_select_clips` pasa `editing_style`, `max_clips` y `selection_criteria` al selector. El render lee las columnas y `metadata['render_resolution']`.
+6. `settle` ajusta la reserva de capacidad con los tokens reales, y `record_prompt_parse_usage` escribe una fila de `AIUsageRecord` por intento.
+7. `ConfigValidator.validate` reparte lo pedido entre `applied` e `ignored` ([motivos](#por-qué-se-ignora-un-campo)).
+8. `_store` escribe, bajo lock de fila, las columnas aplicadas, las claves de `METADATA_FIELDS` aplicadas y `metadata['pte']`, todo en un solo `UPDATE`.
+9. Las etapas leen la configuración ya aplicada. `_stage_moderate` incluye `selection_criteria` en lo que modera y `_stage_select_clips` pasa `editing_style`, `max_clips` y `selection_criteria` al selector. El render lee las columnas y `metadata['render_resolution']`.
 
 ### Por qué se ignora un campo
 
@@ -230,7 +238,7 @@ flowchart TD
 | Re-entrega o re-despacho manual | No se parsea otra vez: `metadata['pte']` ya existe | `apply_prompt_to_project` |
 | Proyecto en `clips_selected` o más adelante | `_run_ingestion` no llama al parser | `_run_ingestion` |
 | El prompt pide un adicional pago o más resolución | Se ignora con `plan` o `cost`. El precio no cambia | `ConfigValidator` |
-| Moderación | El texto de `pte_prompt` no pasa por la moderación antes del parser. Sí se modera el `selection_criteria` que resulte, en `_stage_moderate` | `_moderation_payload` |
+| Moderación | El texto de `pte_prompt` se modera antes del parser. Si se bloquea, el proyecto falla con `UnsafeContentError` y se devuelve la reserva. El `selection_criteria` que resulte se modera además en `_stage_moderate` | `_moderate_prompt`, `_moderation_payload` |
 
 ## Datos que escribe
 

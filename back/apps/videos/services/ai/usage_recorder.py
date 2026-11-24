@@ -169,3 +169,33 @@ def _log_write_failed(project_id, stage: str, exc: BaseException) -> None:
         project_id, stage, type(exc).__name__,
         extra={"project_id": str(project_id), "stage": stage},
     )
+
+
+def record_moderation_usage(project, latency_seconds: float, exc: Optional[BaseException] = None) -> int:
+    """
+    One row per moderation check (ADR-011): the OpenAI moderation endpoint is
+    free, so the cost is a known 0; the row counts the calls, their latency
+    and the error CLASS when the check did not pass. Never raises.
+    """
+    from django.conf import settings
+
+    from apps.core.security import DEFAULT_MODERATION_MODEL
+    from apps.videos.services.ai.rollout import v2_enabled_for
+
+    try:
+        usage = ProviderUsage(
+            provider="openai",
+            model=getattr(settings, "MODERATION_MODEL", DEFAULT_MODERATION_MODEL) or DEFAULT_MODERATION_MODEL,
+            duration_seconds=max(0.0, round(latency_seconds, 3)),
+            estimated_cost_usd=0.0,
+            pricing_version=PRICING_VERSION,
+            error_code=type(exc).__name__ if exc is not None else None,
+        )
+        version = (
+            AIUsageRecord.PipelineVersion.V2 if v2_enabled_for(project)
+            else AIUsageRecord.PipelineVersion.LEGACY
+        )
+    except Exception as build_exc:
+        _log_write_failed(getattr(project, "pk", project), AIUsageRecord.Stage.MODERATION, build_exc)
+        return 0
+    return record_usages(project.pk, AIUsageRecord.Stage.MODERATION, version, [usage])

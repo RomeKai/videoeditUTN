@@ -21,6 +21,7 @@ User = get_user_model()
 URL = "/api/v1/projects/from-prompt/"
 DISPATCH = "apps.videos.views.process_initial_ingestion.delay"
 PARSER = "apps.videos.services.ai.prompt_parser.PromptParser"
+MODERATE = "apps.core.security.AI_Security_Shield.check_content_safety"
 PROMPT = "vertical con fondo borroso, en 4K, cortá los momentos de humor"
 
 
@@ -147,6 +148,10 @@ class ConfigValidatorTests(TestCase):
 
 class ApplyPromptTests(TestCase):
     def setUp(self):
+        # The prompt is moderated before the parser (ADR-011 D-M2); never the real API here.
+        moderate = patch(MODERATE, return_value=True)
+        self.mock_moderate = moderate.start()
+        self.addCleanup(moderate.stop)
         user = User.objects.create_user(username="apply", email="apply@test.com", password="pw")
         self.workspace = Workspace.objects.create(
             name="Apply", owner=user, subscription_plan=plan("Free", max_resolution="720p")
@@ -361,3 +366,96 @@ class ParserCapacityTimeoutTests(CapacityHarness, TestCase):
         self.assertEqual(project.metadata["pte"]["error_code"], "CapacityTimeoutError")
         self.assertIsNone(project.metadata.get("capacity_wait"))
         self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
+
+
+class PromptModerationTests(TestCase):
+    """ADR-011 D-M2: the prompt is moderated before it reaches the parser LLM."""
+
+    def setUp(self):
+        user = User.objects.create_user(username="pmod", email="pmod@test.com", password="pw")
+        self.workspace = Workspace.objects.create(name="PMod", owner=user)
+        self.project = VideoProject.objects.create(
+            workspace=self.workspace, uploaded_by=user, title="P",
+            metadata={"pte_prompt": PROMPT, "pte_explicit": []},
+        )
+
+    def moderation_rows(self):
+        return list(AIUsageRecord.objects.filter(
+            project=self.project, stage=AIUsageRecord.Stage.MODERATION,
+        ).values_list("success", "error_code"))
+
+    def test_a_blocked_prompt_never_reaches_the_parser(self):
+        from apps.core.security import UnsafeContentError
+
+        with patch(MODERATE, side_effect=UnsafeContentError("blocked")) as moderate, \
+                patch(PARSER) as parser_cls:
+            with self.assertRaises(UnsafeContentError):
+                apply_prompt_to_project(self.project.id)
+
+        moderate.assert_called_once_with(PROMPT)
+        parser_cls.return_value.parse.assert_not_called()
+        self.project.refresh_from_db()
+        self.assertNotIn("pte", self.project.metadata)
+        self.assertEqual(self.moderation_rows(), [(False, "UnsafeContentError")])
+
+    def test_no_verdict_is_raised_for_the_task_to_retry(self):
+        from apps.core.security import ModerationUnavailableError
+
+        with patch(MODERATE, side_effect=ModerationUnavailableError()), patch(PARSER) as parser_cls:
+            with self.assertRaises(ModerationUnavailableError):
+                apply_prompt_to_project(self.project.id)
+
+        parser_cls.return_value.parse.assert_not_called()
+
+    def test_a_safe_prompt_is_moderated_once_then_parsed(self):
+        from apps.videos.services.ai.prompt_validator import PromptParseRetry
+
+        with patch(MODERATE, return_value=True) as moderate, patch(PARSER) as parser_cls:
+            parser_cls.return_value.parse.side_effect = [AIServerError("down"), parsed(max_clips=2)]
+            with self.assertRaises(PromptParseRetry):
+                apply_prompt_to_project(self.project.id, can_retry=True)
+            apply_prompt_to_project(self.project.id, can_retry=True)  # the re-queued run
+
+        moderate.assert_called_once_with(PROMPT)
+        self.assertEqual(parser_cls.return_value.parse.call_count, 2)
+        self.project.refresh_from_db()
+        self.assertTrue(self.project.metadata["pte_moderated"])
+        self.assertEqual(self.project.metadata["pte"]["status"], "applied")
+        self.assertEqual(self.moderation_rows(), [(True, None)])
+
+    def test_an_override_lets_the_prompt_through(self):
+        from apps.videos.models import ModerationOverride
+
+        ModerationOverride.objects.create(project=self.project, reason="falso positivo")
+        with patch(MODERATE) as moderate, patch(PARSER) as parser_cls:
+            parser_cls.return_value.parse.return_value = parsed(max_clips=2)
+            apply_prompt_to_project(self.project.id)
+
+        moderate.assert_not_called()
+        parser_cls.return_value.parse.assert_called_once()
+
+
+class PromptModerationIngestionTests(IngestionHarness, TestCase):
+    def test_a_blocked_prompt_fails_the_project_and_refunds_it(self):
+        from apps.core.security import UnsafeContentError
+        from apps.payments.services.wallet_service import reserve_funds
+
+        wallet, _ = Wallet.objects.get_or_create(workspace=self.workspace)
+        Wallet.objects.filter(pk=wallet.pk).update(available_balance=Decimal("100.00"), reserved_balance=0)
+        project = self.make_project(metadata={"pte_prompt": PROMPT, "pte_explicit": []})
+        txn = reserve_funds(wallet.id, Decimal("10.00"))
+        VideoProject.objects.filter(pk=project.pk).update(
+            metadata={**project.metadata, "reservation_id": str(txn.id)}
+        )
+        self.mock_moderate.side_effect = UnsafeContentError("blocked")
+
+        with patch(PARSER) as parser_cls:
+            self.run_task(project)
+
+        parser_cls.return_value.parse.assert_not_called()
+        self.mock_transcribe.assert_not_called()
+        project.refresh_from_db()
+        txn.refresh_from_db()
+        self.assertEqual(project.status, VideoProject.Status.FAILED)
+        self.assertEqual(project.pipeline_error_code, "UnsafeContentError")
+        self.assertEqual(txn.status, Transaction.Status.FAILED)

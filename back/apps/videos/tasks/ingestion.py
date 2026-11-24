@@ -478,9 +478,12 @@ def _stage_moderate(project_id):
             extra={'project_id': str(project_id)},
         )
     else:
+        from apps.videos.services.ai.usage_recorder import record_moderation_usage
+
         try:
             AI_Security_Shield.check_content_safety(_moderation_payload(project))
         except Exception as exc:
+            record_moderation_usage(project, time.monotonic() - started, exc)
             try:
                 _merge_metadata(
                     project_id, _moderation_outcome(type(exc).__name__, started),
@@ -494,6 +497,7 @@ def _stage_moderate(project_id):
                 )
             raise
         outcome = 'passed'
+        latency = time.monotonic() - started
 
     with transaction.atomic():
         _merge_metadata(
@@ -501,6 +505,9 @@ def _stage_moderate(project_id):
             expected_stage=PipelineStage.TRANSCRIBED,
         )
         advance(project_id, PipelineStage.TRANSCRIBED, PipelineStage.MODERATED)
+    if outcome == 'passed':
+        # After the stage is persisted: a metric never blocks the pipeline.
+        record_moderation_usage(project, latency)
 
 
 def _moderation_outcome(outcome, started):
@@ -555,6 +562,53 @@ def _refund_ingestion_reservation(project_id):
     except (PaymentError, DatabaseError, VideoProject.DoesNotExist, ValidationError) as exc:
         logger.error(
             "pipeline.refund_failed project_id=%s error=%s", project_id, type(exc).__name__
+        )
+
+
+def _commit_ingestion_reservation(project_id):
+    """
+    Charges the tokens reserved when the project was created (``metadata
+    ['reservation_id']``) once its AI work is delivered: the clips are
+    selected. Until then they stay reserved, so a failure can still refund
+    them (``_refund_ingestion_reservation``). Idempotent and never raises: an
+    already settled reservation is skipped, and a payment error is logged
+    without stopping the pipeline (the reservation stays for a manual review).
+    """
+    from django.core.exceptions import ValidationError
+
+    # Deferred: wallet_service imports this module at load time.
+    from apps.payments.services.wallet_service import PaymentError, commit_reservation
+
+    reservation_id = None
+    try:
+        reservation_id = (
+            VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
+        ).get('reservation_id')
+        if not reservation_id:
+            logger.warning("pipeline.charge_skipped project_id=%s reason=no_reservation", project_id)
+            return
+        if not Transaction.objects.filter(
+            pk=reservation_id, status=Transaction.Status.RESERVED
+        ).exists():
+            # Already charged, or refunded earlier (a re-dispatched project runs free).
+            logger.info("pipeline.charge_skipped project_id=%s reason=not_reserved", project_id)
+            return
+        commit_reservation(reservation_id)
+        logger.info(
+            "pipeline.charged project_id=%s", project_id, extra={'project_id': str(project_id)}
+        )
+    except PaymentError as exc:
+        # commit_reservation re-checks the status under a row lock: losing that
+        # race to another settle is not a failure.
+        if Transaction.objects.filter(pk=reservation_id).exclude(status=Transaction.Status.RESERVED).exists():
+            logger.info("pipeline.charge_skipped project_id=%s reason=already_settled", project_id)
+        else:
+            logger.error(
+                "pipeline.charge_failed project_id=%s error=%s", project_id, type(exc).__name__
+            )
+    except (DatabaseError, ValidationError) as exc:
+        logger.error(
+            "pipeline.charge_failed project_id=%s error=%s", project_id, type(exc).__name__
         )
 
 
@@ -783,6 +837,8 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
 
     if stage == PipelineStage.RENDER_DISPATCHED:
         renew_lock()
+        # A crash between the dispatch and the charge must not leave it reserved.
+        _commit_ingestion_reservation(project_id)
         return _resume_render_dispatch(project_id)
 
     # Prompt-to-Edit (PTE-01b): parse and apply once, before any stage reads the
@@ -856,6 +912,8 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
 
     if stage == PipelineStage.CLIPS_SELECTED:
         renew_lock()
+        # The clips exist: the ingestion work is delivered and its tokens are charged.
+        _commit_ingestion_reservation(project_id)
         if VideoProject.objects.get(pk=project_id).auto_render_bypass:
             logger.info("⏩ Auto-render bypass active. Dispatching clip renders.")
             with _running_stage(project_id, PipelineStage.RENDER_DISPATCHED, attempt):

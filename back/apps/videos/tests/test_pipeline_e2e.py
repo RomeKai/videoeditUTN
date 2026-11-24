@@ -129,14 +129,15 @@ def test_upload_to_awaiting_approval(api, wallet_factory, video_upload, fake_ai)
     assert clip.status == VideoClip.Status.DRAFT
 
     # Pago: se reservaron tokens por 2s de video (2 * 0.5 = 1.00) y nada más.
-    # El monto usa el multiplicador de 720p: sin render_resolution del prompt, el
-    # tier que se cobra es 720p (ver test_create_prices_with_a_real_resolution).
+    # El monto usa el multiplicador de 720p: sin render_resolution, el tier que
+    # se cobra es 720p (ver test_create_prices_with_a_real_resolution). Con los
+    # clips elegidos el trabajo de la IA está entregado, así que la reserva se cobra.
     txn = Transaction.objects.get(wallet=wallet)
-    assert txn.status == Transaction.Status.RESERVED
+    assert txn.status == Transaction.Status.COMPLETED
     assert txn.amount == Decimal("1.00")
     wallet.refresh_from_db()
     assert wallet.available_balance == Decimal("99.00")
-    assert wallet.reserved_balance == Decimal("1.00")
+    assert wallet.reserved_balance == Decimal("0.00")
 
 
 def test_upload_without_funds_is_rejected_and_nothing_runs(api, wallet_factory, video_upload, fake_ai):
