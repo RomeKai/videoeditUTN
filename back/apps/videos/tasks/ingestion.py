@@ -836,7 +836,7 @@ def _whole_video_render_allowed(project_id):
 AUTO_RENDER_RESERVATION_KEY = 'auto_render_reservation_id'
 
 
-def _reserve_auto_render(project_id):
+def _reserve_auto_render(project_id, resuming=False):
     """
     The selected clips are rendered without the review, so their render is
     reserved here, priced like an approval (``render_cost`` of their seconds),
@@ -845,30 +845,43 @@ def _reserve_auto_render(project_id):
     is replaced by a new one for the clips still to render. Returns False when
     it cannot be paid (not enough tokens, plan limit): the project then waits
     for the review, where the user approves (and pays) what they want.
+
+    Only while ingesting (``resuming``: a re-dispatch at render_dispatched,
+    already rendering): a redelivered ingestion message that finds the user
+    already approved a paper edit, or anything else past the review, does
+    nothing. The clips it pays for are recorded (``auto_render_clip_ids``):
+    only they are settled.
     """
     from apps.payments.models import Wallet
     from apps.payments.services import wallet_service
     from apps.payments.services.pricing_engine import FeatureNotAllowedError, PlanLimitExceededError
     from apps.videos.services.render_pricing import render_cost
 
+    allowed = [VideoProject.Status.UPLOADED, VideoProject.Status.INGESTING]
+    if resuming:
+        allowed.append(VideoProject.Status.RENDERING)
     with transaction.atomic():
         project = VideoProject.objects.select_for_update().get(pk=project_id)
+        if project.status not in allowed:
+            logger.info("pipeline.auto_render_not_ingesting project_id=%s", project_id)
+            return False
         metadata = project.metadata or {}
         linked = metadata.get(AUTO_RENDER_RESERVATION_KEY)
         if linked and Transaction.objects.filter(pk=linked, status=Transaction.Status.RESERVED).exists():
             return True
-        seconds = sum(
-            max(0.0, float(end) - float(start))
-            for start, end in VideoClip.objects.filter(
-                project_id=project_id, status=VideoClip.Status.DRAFT,
-            ).values_list('start_time', 'end_time')
+        clips = list(
+            VideoClip.objects.filter(project_id=project_id, status=VideoClip.Status.DRAFT)
+            .values_list('id', 'start_time', 'end_time')
         )
+        if not clips:
+            return True  # nothing left to render, nothing to pay
+        seconds = sum(max(0.0, float(end) - float(start)) for _id, start, end in clips)
         try:
             cost = render_cost(project, seconds)
             wallet, _ = Wallet.objects.get_or_create(workspace=project.workspace)
             txn = wallet_service.reserve_funds(
                 wallet_id=wallet.id, amount=cost, user=project.uploaded_by,
-                description=f"Render automático: {project.title}",
+                description=f"Render automático: {project.title}"[:255],
             )
         except (wallet_service.InsufficientFundsError, PlanLimitExceededError, FeatureNotAllowedError) as exc:
             reason = 'insufficient_funds' if isinstance(exc, wallet_service.InsufficientFundsError) else 'plan_limit'
@@ -880,6 +893,7 @@ def _reserve_auto_render(project_id):
             **metadata,
             AUTO_RENDER_RESERVATION_KEY: str(txn.id),
             'auto_render_seconds': round(seconds, 3),
+            'auto_render_clip_ids': [str(clip_id) for clip_id, _start, _end in clips],
         }
         project.metadata.pop('auto_render_skipped', None)
         project.save(update_fields=['metadata'])
@@ -897,10 +911,18 @@ def _auto_render_settlement(project):
     - A clip still rendering: ``('wait', 0)``.
     - No clip delivered (completed or published): ``('rollback', 0)``.
     - Otherwise ``('charge', seconds delivered)``: only what was delivered is paid.
+
+    Only the clips the reservation paid for count (``auto_render_clip_ids``).
     """
     if project.pipeline_stage not in (*TERMINAL_STAGES, PipelineStage.FAILED):
         return 'wait', 0.0
-    clips = list(VideoClip.objects.filter(project_id=project.pk).values_list('status', 'start_time', 'end_time'))
+    clips = VideoClip.objects.filter(project_id=project.pk)
+    paid_ids = (project.metadata or {}).get('auto_render_clip_ids')
+    if paid_ids is not None:
+        # Only the clips this reservation paid for: a paper-edit clip, or clips
+        # rendered before (a re-dispatch), are not part of it.
+        clips = clips.filter(pk__in=paid_ids)
+    clips = list(clips.values_list('status', 'start_time', 'end_time'))
     if any(status == VideoClip.Status.RENDERING for status, _start, _end in clips):
         return 'wait', 0.0
     delivered = sum(
@@ -938,17 +960,17 @@ def _settle_auto_render_reservation(project_id):
         PaymentError, commit_partial_reservation, rollback_reservation,
     )
 
-    project = VideoProject.objects.filter(pk=project_id).first()
-    reservation_id = ((project.metadata or {}) if project else {}).get(AUTO_RENDER_RESERVATION_KEY)
-    if not reservation_id:
-        return
-    txn = Transaction.objects.filter(pk=reservation_id, status=Transaction.Status.RESERVED).first()
-    if txn is None:
-        return  # already settled
-    outcome, delivered = _auto_render_settlement(project)
-    if outcome == 'wait':
-        return
     try:
+        project = VideoProject.objects.filter(pk=project_id).first()
+        reservation_id = ((project.metadata or {}) if project else {}).get(AUTO_RENDER_RESERVATION_KEY)
+        if not reservation_id:
+            return
+        txn = Transaction.objects.filter(pk=reservation_id, status=Transaction.Status.RESERVED).first()
+        if txn is None:
+            return  # already settled
+        outcome, delivered = _auto_render_settlement(project)
+        if outcome == 'wait':
+            return
         if outcome == 'rollback':
             rollback_reservation(reservation_id)
             logger.info("pipeline.auto_render_refunded project_id=%s", project_id)
@@ -959,7 +981,10 @@ def _settle_auto_render_reservation(project_id):
                 "pipeline.auto_render_charged project_id=%s whole=%s",
                 project_id, charge >= txn.amount,
             )
-    except (PaymentError, DatabaseError, ValidationError) as exc:
+    except PaymentError:
+        # Another finalize, the failure handler or the sweeper settled it first.
+        logger.info("pipeline.auto_render_settle_skipped project_id=%s reason=already_settled", project_id)
+    except (DatabaseError, ValidationError) as exc:
         logger.error(
             "pipeline.auto_render_settle_failed project_id=%s error=%s", project_id, type(exc).__name__,
         )
@@ -1192,6 +1217,11 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
         else:
             # A crash between the dispatch and the charge must not leave it reserved.
             _commit_ingestion_reservation(project_id)
+            if project.auto_render_bypass:
+                # Re-dispatched after its auto-render reservation was settled (the
+                # project failed): the clips still to render are reserved again.
+                # Without funds the render gate fails them and the project closes.
+                _reserve_auto_render(project_id, resuming=True)
         return _resume_render_dispatch(project_id)
 
     # Prompt-to-Edit (PTE-01b): parse and apply once, before any stage reads the

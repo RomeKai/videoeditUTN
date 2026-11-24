@@ -84,7 +84,8 @@ def commit_partial_reservation(transaction_id, amount: Decimal) -> Transaction:
     clips failed). The transaction keeps the charged amount. ``amount`` at or
     above the reservation commits it whole; zero or less rolls it back.
     """
-    amount = Decimal(amount)
+    # Through str: a float must not become its binary expansion.
+    amount = Decimal(str(amount))
     try:
         txn = Transaction.objects.select_for_update().get(pk=transaction_id)
     except Transaction.DoesNotExist:

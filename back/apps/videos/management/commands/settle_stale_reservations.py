@@ -35,7 +35,8 @@ Safety
     Dry run by default: without ``--apply`` nothing is written. Only
     transactions older than ``--min-age-hours`` (24 by default) are read.
     With ``--apply`` the decision is taken again under the project's row lock
-    and settled with ``wallet_service.commit_reservation`` or
+    and settled with ``wallet_service.commit_reservation``,
+    ``commit_partial_reservation`` (auto-render: the share delivered) or
     ``rollback_reservation``, which lock the transaction and re-check that it
     is still RESERVED: a reservation the pipeline settled meanwhile is skipped.
 

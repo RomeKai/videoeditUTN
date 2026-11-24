@@ -82,7 +82,9 @@ class AutoRenderBillingTests(IngestionHarness, TestCase):
     def test_a_redelivery_reuses_the_reservation(self):
         project = self.run_to_render(self.make_project(auto_render_bypass=True))
         first = project.metadata[KEY]
-        VideoProject.objects.filter(pk=project.pk).update(pipeline_stage=PipelineStage.CLIPS_SELECTED)
+        VideoProject.objects.filter(pk=project.pk).update(
+            pipeline_stage=PipelineStage.CLIPS_SELECTED, status=VideoProject.Status.INGESTING,
+        )
 
         project = self.run_to_render(project)
 
@@ -94,7 +96,10 @@ class AutoRenderBillingTests(IngestionHarness, TestCase):
         rollback_reservation(project.metadata[KEY])
         clips = list(VideoClip.objects.filter(project=project).order_by("start_time"))
         VideoClip.objects.filter(pk=clips[0].pk).update(status=VideoClip.Status.COMPLETED)
-        VideoProject.objects.filter(pk=project.pk).update(pipeline_stage=PipelineStage.CLIPS_SELECTED)
+        # What reopen leaves after a failure before the dispatch.
+        VideoProject.objects.filter(pk=project.pk).update(
+            pipeline_stage=PipelineStage.CLIPS_SELECTED, status=VideoProject.Status.INGESTING,
+        )
 
         project = self.run_to_render(project)
 
@@ -174,6 +179,75 @@ class AutoRenderBillingTests(IngestionHarness, TestCase):
             render_clip_task.apply(args=[str(clip.id)])
 
         render.assert_called_once()
+
+    # Review fixes
+
+    def test_a_redelivery_after_the_user_approved_a_paper_edit_does_nothing(self):
+        Wallet.objects.filter(pk=self.wallet.pk).update(available_balance=Decimal("1.00"))
+        project = self.run_to_render(self.make_project(auto_render_bypass=True))  # skipped: no funds
+        Wallet.objects.filter(pk=self.wallet.pk).update(available_balance=Decimal("100.00"))
+        VideoProject.objects.filter(pk=project.pk).update(status=VideoProject.Status.RENDERING)  # approved
+
+        project = self.run_to_render(project)  # a redelivered ingestion message
+
+        self.mock_render.assert_not_called()
+        self.assertNotIn(KEY, project.metadata)
+        self.assertEqual(project.status, VideoProject.Status.RENDERING)
+        self.assertEqual(project.pipeline_stage, PipelineStage.CLIPS_SELECTED)
+
+    def test_only_the_clips_the_reservation_paid_for_are_settled(self):
+        project = self.run_to_render(self.make_project(auto_render_bypass=True))
+        # A paper-edit clip (or one rendered before) completes; the paid ones fail.
+        VideoClip.objects.create(
+            project=project, title="VIDEO FINAL EDITADO", start_time=0, end_time=15,
+            status=VideoClip.Status.COMPLETED,
+        )
+        VideoClip.objects.filter(project=project, status=VideoClip.Status.DRAFT).update(status=VideoClip.Status.FAILED)
+
+        finalize_project_render(project.id)
+
+        self.assertEqual(self.reservation(project).status, Transaction.Status.FAILED)
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+
+    def test_a_re_dispatch_charges_only_the_clips_it_reserved(self):
+        project = self.run_to_render(self.make_project(auto_render_bypass=True))
+        rollback_reservation(project.metadata[KEY])
+        first, second, third = VideoClip.objects.filter(project=project).order_by("start_time")
+        VideoClip.objects.filter(pk=first.pk).update(status=VideoClip.Status.COMPLETED)
+        VideoProject.objects.filter(pk=project.pk).update(
+            pipeline_stage=PipelineStage.CLIPS_SELECTED, status=VideoProject.Status.INGESTING,
+        )
+        project = self.run_to_render(project)  # reserves 5.00 for the two left
+        VideoClip.objects.filter(pk=second.pk).update(status=VideoClip.Status.COMPLETED)
+        VideoClip.objects.filter(pk=third.pk).update(status=VideoClip.Status.FAILED)
+
+        finalize_project_render(project.id)
+
+        txn = self.reservation(project)
+        self.assertEqual((txn.status, txn.amount), (Transaction.Status.COMPLETED, Decimal("2.50")))
+
+    def test_a_project_re_dispatched_at_render_dispatched_reserves_again_and_renders(self):
+        project = self.run_to_render(self.make_project(auto_render_bypass=True))
+        rollback_reservation(project.metadata[KEY])  # refunded when it failed
+        self.mock_render.reset_mock()
+        # What reopen leaves: render_dispatched, rendering, clips still DRAFT.
+        VideoProject.objects.filter(pk=project.pk).update(
+            pipeline_stage=PipelineStage.RENDER_DISPATCHED, status=VideoProject.Status.RENDERING,
+        )
+
+        project = self.run_to_render(project)
+
+        txn = self.reservation(project)
+        self.assertEqual((txn.status, txn.amount), (Transaction.Status.RESERVED, Decimal("7.50")))
+        self.assertEqual(self.mock_render.call_count, 3)
+
+    def test_a_long_title_does_not_break_the_reservation(self):
+        project = self.make_project(auto_render_bypass=True)
+        VideoProject.objects.filter(pk=project.pk).update(title="t" * 255)
+        project = self.run_to_render(project)
+
+        self.assertEqual(self.reservation(project).status, Transaction.Status.RESERVED)
+        self.assertEqual(project.pipeline_stage, PipelineStage.RENDER_DISPATCHED)
 
     def test_a_clips_project_without_auto_render_reserves_nothing(self):
         project = self.run_to_render(self.make_project())
@@ -323,3 +397,14 @@ class PatchDuringApprovalTests(TestCase):
         metadata = VideoProject.objects.get(pk=self.project.pk).metadata
         self.assertEqual(metadata["written"], "meanwhile")
         self.assertIn("render_reservation_id", metadata)
+
+
+class RenderCostTests(TestCase):
+    def test_float_noise_never_bills_one_more_second(self):
+        from apps.videos.services.render_pricing import render_cost
+
+        user = User.objects.create_user(username="noise", email="noise@test.com", password="pw")
+        project = VideoProject(workspace=Workspace.objects.create(name="Noise", owner=user), metadata={})
+
+        self.assertEqual(render_cost(project, 84.00000000000001), render_cost(project, 84))
+        self.assertEqual(render_cost(project, 84.2), render_cost(project, 85))

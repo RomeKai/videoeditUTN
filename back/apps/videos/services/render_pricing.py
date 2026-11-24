@@ -32,7 +32,9 @@ def render_cost(project, seconds):
     from apps.payments.services.pricing_engine import PricingEngine
 
     return PricingEngine.calculate_render_cost(
-        duration_seconds=int(math.ceil(seconds)),
+        # Rounded first: a float sum of exact seconds (84.00000000000001) must
+        # not bill one more second.
+        duration_seconds=int(math.ceil(round(float(seconds), 3))),
         resolution=pricing_resolution(project),
         features_requested={},
         plan=project.workspace.subscription_plan,

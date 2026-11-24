@@ -155,7 +155,7 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
                 wallet_id=workspace.wallet.id,
                 amount=final_cost,
                 user=request.user,
-                description=f"Render Final (Paper Edit): {project.title}"
+                description=f"Render Final (Paper Edit): {project.title}"[:255]
             )
         except (wallet_service.InsufficientFundsError, ValidationError) as e:
             release_claim()
@@ -281,7 +281,7 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
                 wallet_id=wallet.id,
                 amount=cost_in_tokens,
                 user=user,
-                description=f"Procesamiento: {project.title}"
+                description=f"Procesamiento: {project.title}"[:255]
             )
             
         except (wallet_service.InsufficientFundsError, ValidationError) as e:
