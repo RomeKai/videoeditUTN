@@ -220,7 +220,7 @@ Cada etapa pregunta cuando corre, así que un cambio aplica desde la siguiente e
 | Transcripción (`_stage_transcribe`) | Sí, y se lo pasa a `TranscriptionEngine` | `TRANSCRIPTION_BACKEND` (`groq` por defecto) | Whisper local `base` |
 | Moderación (`_stage_moderate`) | No | Siempre `AI_Security_Shield` | Igual |
 | Selección (`_stage_select_clips`) | Sí | `SelectionEngine.select_viral_clips_detailed` (LiteLLM) | `SelectionEngine.select_viral_clips(..., v2_enabled=False)` |
-| Render por clip (`RenderEngine.render_clip`) | Solo para transcribir los subtítulos de un proyecto sin `transcript_data` | Backend de V2 | Whisper local `tiny` |
+| Render por clip (`RenderEngine.render_clip`) | No: sin `transcript_data` el clip sale sin subtítulos (`render.subtitles_skipped`) y no transcribe | — | — |
 | Prompt-to-Edit (`apply_prompt_to_project`) | No | Siempre LiteLLM, filas `v2` | — |
 | SEO (`process_video_seo`) | No | Siempre LiteLLM, filas `v2` | — |
 

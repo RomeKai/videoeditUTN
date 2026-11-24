@@ -12,7 +12,9 @@ from contextlib import contextmanager
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
+from celery.exceptions import Reject
 from celery.signals import task_prerun
+from django.db import OperationalError
 from django.test import TestCase, override_settings
 
 from apps.payments.models import Transaction, Wallet
@@ -141,6 +143,35 @@ class ClipOwnershipTests(ClaimHarness, TestCase):
         clip.refresh_from_db()
         self.assertEqual(clip.status, VideoClip.Status.RENDERING)
         self.assertEqual(clip.render_claim_token, owner.token)
+
+    def test_a_last_attempt_that_fails_before_the_claim_fails_a_clip_nobody_renders(self):
+        clip = self.make_clip()
+
+        # A database blip before the claim, on every attempt.
+        with patch(ALLOWED, side_effect=OperationalError("gone")), patch(RENDER) as render:
+            result = render_clip_task.apply(args=[str(clip.id)])
+
+        self.assertTrue(result.failed())
+        render.assert_not_called()
+        self.project.refresh_from_db()
+        self.assertEqual(self.clip_row(clip.id).status, VideoClip.Status.FAILED)
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.PARTIAL)  # not open forever
+
+    def test_a_retry_not_queued_before_the_claim_fails_a_clip_nobody_renders(self):
+        clip = self.make_clip()
+
+        def broker_down(*args, **kwargs):
+            raise Reject(RuntimeError("broker down"), requeue=False)
+
+        with patch(ALLOWED, side_effect=OperationalError("gone")), patch(RENDER) as render, \
+                patch.object(render_clip_task, "retry", side_effect=broker_down):
+            result = render_clip_task.apply(args=[str(clip.id)])
+
+        self.assertTrue(result.failed())
+        render.assert_not_called()
+        self.project.refresh_from_db()
+        self.assertEqual(self.clip_row(clip.id).status, VideoClip.Status.FAILED)
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.PARTIAL)
 
     def test_a_copy_that_lost_the_clip_does_not_save_it_and_deletes_its_upload(self):
         clip = self.make_clip()
@@ -349,6 +380,18 @@ class WholeVideoClaimTests(ClaimHarness, TestCase):
         self.assertEqual(clip.status, VideoClip.Status.RENDERING)  # B checks and decides
         self.assertEqual(clip.render_claim_token, tokens["b"])
         self.assertEqual(clip.render_unfinished_starts, 1)
+
+    def test_a_last_attempt_that_fails_before_the_claim_is_refunded(self):
+        with patch(ALLOWED, side_effect=OperationalError("gone")), patch(RENDER) as render:
+            result = render_clip_task.apply(args=[str(self.clip.id)])
+
+        self.assertTrue(result.failed())
+        render.assert_not_called()
+        self.project.refresh_from_db()
+        self.assertEqual(self.clip_row(self.clip.id).status, VideoClip.Status.FAILED)
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.PARTIAL)
+        self.assertEqual(self.txn_status(), Transaction.Status.FAILED)
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
 
     def test_a_queued_copy_of_an_unpayable_project_leaves_a_live_claim_alone(self):
         _claim_clip_for_render(self.clip.id)  # a live delivery is rendering it

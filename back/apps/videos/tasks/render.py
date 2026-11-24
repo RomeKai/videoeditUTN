@@ -128,11 +128,18 @@ class ClipRenderTask(celery_app.Task):
     Marks the clip (and possibly the project) as failed when a render task
     fails for good. Celery calls it only after the last attempt (a retry
     calls ``on_retry``), within the request of the failed delivery, so it
-    reads that delivery's claim (``_held_claim``). Only a delivery that still
-    owns the clip marks it FAILED: one that failed before claiming it, or
-    whose clip a redelivered copy took over, leaves it to its owner. A clip
-    already delivered is never marked failed. The fan-out close always runs:
-    it is harmless while a clip is still DRAFT or RENDERING.
+    reads that delivery's claim (``_held_claim``). It never touches a clip
+    another delivery owns:
+
+    - With a claim, the clip is marked FAILED only while this delivery still
+      owns it; one a redelivered copy took over is left to that copy.
+    - Without one (it failed before claiming, or after handing the claim back
+      for a retry that could not be queued), the clip is marked FAILED only if
+      it is DRAFT with no owner: nobody is rendering it, and otherwise the
+      project would stay open forever. A later message can still claim it.
+
+    A clip already delivered is never marked failed. The fan-out close always
+    runs: it is harmless while a clip is still DRAFT or RENDERING.
     """
 
     def on_failure(self, exc, task_id, args, kwargs, einfo):
@@ -140,7 +147,9 @@ class ClipRenderTask(celery_app.Task):
         token = _held_claim(self.request)
         try:
             clip = VideoClip.objects.get(pk=clip_id)
-            if token is not None and not _fail_owned_clip(clip_id, token):
+            if token is None:
+                _fail_unclaimed_clip(clip_id)
+            elif not _fail_owned_clip(clip_id, token):
                 # Taken over by a redelivered copy that is rendering it: its
                 # outcome decides. This start ended, so it is not a lost worker.
                 logger.warning("render.claim_lost clip_id=%s", clip_id)
@@ -399,7 +408,7 @@ def render_clip_task(self, clip_id):
         return f"Clip {clip_id} rendered successfully"
     except Exception as exc:
         if not _is_retryable_render_error(exc) or self.request.retries >= self.max_retries:
-            raise  # last attempt: on_failure fails the clip if this delivery still owns it
+            raise  # last attempt: on_failure fails the clip if it is ours or DRAFT with no owner
         token = _held_claim(self.request)
         released = False
         if token is not None:
@@ -428,19 +437,12 @@ def render_clip_task(self, clip_id):
         except Reject:
             # The retry could not be queued (broker down): Celery would drop the
             # message without on_failure, leaving the clip DRAFT and the project
-            # open forever. The claim this delivery handed back is failed (if no
-            # one claimed it since) and the original error runs on_failure,
-            # which closes the fan-out.
+            # open forever. The original error runs on_failure instead: this
+            # delivery holds no claim now, so it fails the clip if it is still
+            # DRAFT with no owner, and closes the fan-out.
             logger.error(
                 "render.retry_not_queued clip_id=%s error=%s", clip_id, type(exc).__name__,
             )
-            if released:
-                try:
-                    _fail_unclaimed_clip(clip_id)
-                except DatabaseError as fail_exc:
-                    logger.error(
-                        "render.failure_not_recorded clip_id=%s error=%s", clip_id, type(fail_exc).__name__,
-                    )
             raise exc
 
 
