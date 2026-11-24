@@ -372,7 +372,7 @@ Los eventos tienen nombre estable y llevan ids, códigos y números, nunca texto
 
 ## Operación: reservas de tokens que quedaron RESERVED
 
-El pipeline liquida cada reserva: la de creación (`metadata['reservation_id']`) se cobra cuando hay clips y se devuelve si el proyecto falla sin clips (en un video completo, cuando el video se entrega: ver [02](02-pipeline-de-ingesta.md)); la del render (`metadata['render_reservation_id']`) se cobra cuando el paper edit se entrega y se devuelve si falla del todo. Igual pueden quedar reservas `RESERVED`: las de antes de que existiera el cobro, un cobro o una devolución que falló por un error de base (`pipeline.charge_failed`, `pipeline.refund_failed`, `render.settle_failed`) o un render cuyo worker murió. `settle_stale_reservations` las encuentra y las liquida con las mismas reglas.
+El pipeline liquida cada reserva: la de creación (`metadata['reservation_id']`) se cobra cuando hay clips y se devuelve si el proyecto falla sin clips (en un video completo, cuando el video se entrega: ver [02](02-pipeline-de-ingesta.md)); la del render (`metadata['render_reservation_id']`) se cobra cuando el paper edit se entrega y se devuelve si falla del todo; la del render automático (`metadata['auto_render_reservation_id']`) cobra la parte de los clips entregados. Igual pueden quedar reservas `RESERVED`: las de antes de que existiera el cobro, un cobro o una devolución que falló por un error de base (`pipeline.charge_failed`, `pipeline.refund_failed`, `render.settle_failed`) o un render cuyo worker murió. `settle_stale_reservations` las encuentra y las liquida con las mismas reglas.
 
 ```bash
 # Solo reporta (dry run): no escribe nada
@@ -383,7 +383,7 @@ docker compose exec web python manage.py settle_stale_reservations --apply
 docker compose exec web python manage.py settle_stale_reservations --min-age-hours 72
 ```
 
-Solo mira transacciones `RESERVED` con `created_at` de hace al menos `--min-age-hours`. Para cada una busca el proyecto que la tiene en `metadata['reservation_id']` (creación) o en `metadata['render_reservation_id']` (render). Las filas de video completo usan la misma regla que el pipeline (`_whole_video_settlement`, en `tasks/ingestion.py`), no una copia:
+Solo mira transacciones `RESERVED` con `created_at` de hace al menos `--min-age-hours`. Para cada una busca el proyecto que la tiene en `metadata['reservation_id']` (creación), en `metadata['render_reservation_id']` (render) o en `metadata['auto_render_reservation_id']` (render automático). Las filas de video completo y de render automático usan la misma regla que el pipeline (`_whole_video_settlement` y `_auto_render_settlement`, en `tasks/ingestion.py`), no una copia:
 
 | Reserva | Estado del proyecto | Acción (`reason`) |
 |---------|---------------------|-------------------|
@@ -398,6 +398,9 @@ Solo mira transacciones `RESERVED` con `created_at` de hace al menos `--min-age-
 | Render | Con `final_export_r2_key`, aunque esté `FAILED` (`render_delivered`) | Cobra |
 | Render | `FAILED` (`render_failed`) | Devuelve |
 | Render | Otro estado, por ejemplo `RENDERING` (`render_in_progress`) | Solo reporta |
+| Render automático (`metadata['auto_render_reservation_id']`) | `completed`, `partial` o `failed` con clips `completed` o `published` y ninguno `rendering` (`clips_delivered`) | Cobra la parte de los segundos entregados y devuelve el resto |
+| Render automático | `completed`, `partial` o `failed` sin clips entregados (`nothing_delivered`) | Devuelve |
+| Render automático | Un clip todavía `rendering`, o cualquier otra etapa (`auto_render_in_progress`) | Solo reporta |
 | Sin proyecto (`unlinked`) | — | Solo reporta |
 
 - **Seguridad.** Sin `--apply` no escribe nada. Con `--apply` vuelve a decidir con el lock de fila del proyecto tomado y liquida con `wallet_service.commit_reservation` o `rollback_reservation`, que bloquean la transacción y vuelven a chequear que siga `RESERVED`. Si el pipeline la liquidó mientras tanto, el resultado es `already_settled`; si el proyecto cambió y ahora toca solo reportar, `skipped`.

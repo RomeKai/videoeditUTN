@@ -82,14 +82,16 @@ def finalize_project_render(project_id):
     call after every clip: counting happens under the project row lock, so only
     the call that sees the last clip finish transitions the project.
 
-    A whole-video project (``single_edit``) is paid by its creation reservation,
-    settled here from where the project ended: every call checks it, so it is
+    A whole-video project (``single_edit``) is paid by its creation reservation
+    and an auto-rendered one by its auto-render reservation: both are settled
+    here from where the project ended. Every call checks them, so they are
     settled even if the project left render_dispatched another way.
     """
-    from apps.videos.tasks.ingestion import _settle_whole_video_reservation
+    from apps.videos.tasks.ingestion import _settle_auto_render_reservation, _settle_whole_video_reservation
 
     stage = _close_render_fan_out(project_id)
     _settle_whole_video_reservation(project_id)
+    _settle_auto_render_reservation(project_id)
     return stage
 
 
