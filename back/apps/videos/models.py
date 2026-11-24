@@ -76,7 +76,7 @@ class VideoProject(models.Model):
 
     class AspectRatio(models.TextChoices):
         PORTRAIT_9_16 = '9:16', 'Vertical (TikTok/Reels)'
-        SQUARE_1_1 = '1:Post', 'Cuadrado (Post)'
+        SQUARE_1_1 = '1:1', 'Cuadrado (Post)'
         LANDSCAPE_16_9 = '16:9', 'Horizontal (YouTube)'
 
     class Layout(models.TextChoices):
