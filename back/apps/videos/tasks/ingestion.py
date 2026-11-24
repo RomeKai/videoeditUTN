@@ -170,12 +170,21 @@ def _generate_proxy(project, source_path, user_id):
     from apps.videos.services.storage_service import CloudflareR2Manager
     from apps.videos.utils.ffmpeg_utils import FFmpegManager
 
-    proxy_local_path = os.path.join(os.path.dirname(source_path), f"proxy_{project.id}.mp4")
+    # Unique per run: a redelivered proxy task may overlap a slow one, and two
+    # FFmpeg processes must never write (or clean up) the same file.
+    proxy_local_path = os.path.join(
+        os.path.dirname(source_path), f"proxy_{project.id}_{uuid.uuid4().hex[:8]}.mp4"
+    )
+    started = time.monotonic()
     try:
         FFmpegManager.generate_web_proxy(source_path, proxy_local_path)
         proxy_r2_key = CloudflareR2Manager.upload_video(proxy_local_path, user_id, str(project.id))
         VideoProject.objects.filter(pk=project.id).update(proxy_r2_key=proxy_r2_key)
-        logger.info(f"✅ Proxy uploaded to R2: {proxy_r2_key}")
+        duration_s = round(time.monotonic() - started, 3)
+        logger.info(
+            "pipeline.proxy_completed project_id=%s duration_s=%.3f", project.id, duration_s,
+            extra={'project_id': str(project.id), 'duration_s': duration_s},
+        )
     except Exception as proxy_exc:
         logger.error(
             "⚠️ Proxy generation failed but continuing ingestion project_id=%s error=%s",
@@ -183,6 +192,21 @@ def _generate_proxy(project, source_path, user_id):
         )
     finally:
         FFmpegManager.cleanup_local_file(proxy_local_path)
+
+
+@celery_app.task(name='apps.videos.tasks.generate_proxy_task', ignore_result=True)
+def generate_proxy_task(project_id):
+    """
+    Builds the paper-edit web proxy outside the ingestion run (CORE-04), so the
+    FFmpeg re-encode overlaps transcription instead of preceding it. Optional
+    and idempotent: a project that already has a proxy, or no source, is skipped,
+    and a failure only means the paper edit opens without a preview.
+    """
+    project = VideoProject.objects.select_related('uploaded_by').filter(pk=project_id).first()
+    if project is None or project.proxy_r2_key or not project.source_file:
+        return
+    user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
+    _generate_proxy(project, project.source_file.path, user_id)
 
 
 def _stage_prepare_source(project_id):
@@ -212,7 +236,18 @@ def _stage_prepare_source(project_id):
         VideoProject.objects.filter(pk=project_id).update(original_r2_key=orig_r2_key)
 
     if not project.proxy_r2_key:
-        _generate_proxy(project, source_path, user_id)
+        # CORE-04: the proxy (a full FFmpeg re-encode) runs in its own task, in
+        # parallel with transcription, instead of delaying every later stage.
+        try:
+            generate_proxy_task.delay(str(project_id))
+        except Exception as dispatch_exc:
+            # The proxy is optional and must never fail the stage: if the task
+            # cannot be queued (broker hiccup), build it inline as before.
+            logger.warning(
+                "pipeline.proxy_dispatch_failed project_id=%s error=%s",
+                project_id, type(dispatch_exc).__name__,
+            )
+            _generate_proxy(project, source_path, user_id)
 
     duration, resolution = _probe_video(source_path)
     _merge_metadata(

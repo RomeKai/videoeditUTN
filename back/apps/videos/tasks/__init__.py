@@ -73,6 +73,7 @@ from apps.videos.tasks.ingestion import (  # noqa: F401
     _running_stage,
     _probe_video,
     _generate_proxy,
+    generate_proxy_task,
     _stage_prepare_source,
     _reserve_selection,
     _prompt_capacity_exhausted,
