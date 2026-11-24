@@ -25,7 +25,7 @@ from apps.videos.services.layouts.camera import (
     preset_region,
 )
 from apps.videos.services.layouts.gaming import camera_size, static_box, tracked_box
-from apps.videos.services.layouts.pro import VERSUS_MIN_HEIGHT, pane_size, versus_boxes
+from apps.videos.services.layouts.pro import VERSUS_MIN_HEIGHT, pane_size, versus_boxes, versus_size
 from apps.videos.services.tracking_utils import TrackingPath, TrackingPoint
 
 W, H = 640, 360
@@ -161,6 +161,12 @@ def test_a_wide_versus_pane_keeps_at_least_60_percent_of_the_height(pane_aspect)
     assert boxes[0].h == round(H * VERSUS_MIN_HEIGHT)
 
 
+def test_a_crop_just_under_the_floor_keeps_the_pane_aspect():
+    # 1440x1080 at 9:16 720p: the pane's aspect keeps 638 of 1080 (59 %), within
+    # 3 % of the 648 floor. Applying the floor would leave black slivers.
+    assert versus_size(720, 1080, 406 / 360) == (720, 638)
+
+
 def test_a_crop_narrower_than_its_pane_is_fitted_with_black_around():
     assert pane_size(Box(0, 36, 320, 216), 360, 180) == (267, 180)
     assert pane_size(Box(0, 36, 320, 216), 640, 180) == (267, 180)
@@ -275,6 +281,21 @@ def test_versus_by_default_shows_each_half_from_near_the_top():
 
     assert_shows(top, Box(0, 2, 320, 284))
     assert_shows(bottom, Box(320, 2, 320, 284))
+
+
+@pytest.mark.parametrize("target_w, target_h", [(406, 720), (608, 1080)], ids=["720p", "1080p"])
+def test_versus_panes_from_a_4_3_source_fill_the_width(target_w, target_h):
+    """1440x1080 at 9:16: the crop is just under the floor, and the panes stay full."""
+    from moviepy import ColorClip
+
+    source = ColorClip(size=(1440, 1080), color=(200, 120, 40), duration=1)
+    result = get_layout_strategy("versus", target_w, target_h).apply(source)
+
+    _bg, top, bottom = result.clips
+    assert tuple(top.size) == tuple(bottom.size) == (target_w, target_h // 2)
+    frame = result.get_frame(0)
+    for y in (target_h // 4, 3 * target_h // 4):
+        assert frame[y, :4].all() and frame[y, -4:].all()  # no black column at either edge
 
 
 @pytest.mark.parametrize("target_w, target_h", [(360, 360), (640, 360)], ids=["1:1", "16:9"])

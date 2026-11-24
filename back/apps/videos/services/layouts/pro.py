@@ -10,6 +10,9 @@ logger = logging.getLogger(__name__)
 # A wide pane (1:1, 16:9) would keep a thin strip of each half: never less
 # than this share of its height. The rest of the pane is black.
 VERSUS_MIN_HEIGHT = 0.6
+# A crop with the pane's aspect this close under the floor is kept as is: the
+# floor would only add black slivers (e.g. a 4:3 source at 9:16 keeps 59 %).
+VERSUS_FLOOR_TOLERANCE = 0.03
 # Faces sit in the upper part of the frame: the crop is centred this high.
 VERSUS_CENTER_Y = 0.4
 
@@ -17,11 +20,12 @@ VERSUS_CENTER_Y = 0.4
 def versus_size(half_w, half_h, aspect):
     """
     Crop size in one half: the pane's aspect, but at least VERSUS_MIN_HEIGHT
-    of the half's height (then the crop is narrower than the pane).
+    of the half's height (then the crop is narrower than the pane), unless
+    the pane's aspect is within VERSUS_FLOOR_TOLERANCE of that floor.
     """
     w, h = fit_size(half_w, half_h, aspect)
     min_h = min(half_h, int(round(half_h * VERSUS_MIN_HEIGHT)))
-    if h < min_h:
+    if h < min_h * (1 - VERSUS_FLOOR_TOLERANCE):
         w, h = half_w, min_h
     return w, h
 
