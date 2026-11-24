@@ -116,7 +116,8 @@ class GamingLayout(BaseLayout):
         """The camera crop of the source (not resized yet)."""
         manual = ManualCamera.from_coords(self.manual_camera_coords)
         if manual is not None:
-            # Zoom 1 is the automatic crop: turning the manual camera on only moves it.
+            # Zoom 1 is the automatic crop without face tracking: turning the
+            # manual camera on only moves it (with tracking, the size can change).
             base_w, base_h = camera_size(clip.w, clip.h, aspect, clip.h // 3)
             box = manual_box(manual, frame_box(clip.w, clip.h), base_w, base_h)
             logger.info("layout.split_camera mode=manual")

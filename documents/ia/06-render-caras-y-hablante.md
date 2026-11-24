@@ -106,7 +106,7 @@ Solo `split` y `versus` tienen una región de cámara. Los demás layouts (`fill
 **Cámara manual** (`ManualCamera.from_coords`). Está activa solo si alguno de `manual_camera_x`, `manual_camera_y` o `manual_camera_zoom` cambió de su default (0,5, 0,2 y 1). Con los tres en el default, el layout encuadra como siempre.
 
 - `x` e `y` (de 0 a 1) son el centro del recorte. Un valor fuera de rango se lleva al borde; uno que no es un número cuenta como el default.
-- El zoom va de 1 a `MAX_ZOOM` (4). Zoom 1 es el tamaño del recorte que el layout usa solo (`camera_size` en `split`, `versus_size` en `versus`): prender la cámara manual mueve el encuadre sin alejarlo. Zoom 2 es la mitad de ancho y de alto.
+- El zoom va de 1 a `MAX_ZOOM` (4). Zoom 1 es el tamaño del recorte que el layout usa sin seguir caras (`camera_size` con un tercio del alto en `split`, `versus_size` en `versus`). Sin seguir caras, prender la cámara manual mueve el encuadre sin alejarlo; con seguir caras, el zoom 1 es el del encuadre sin caras, así que puede quedar más abierto o más cerrado que el recorte que seguía la cara. Zoom 2 es la mitad de ancho y de alto.
 - `manual_box` centra el recorte en (x, y) y lo corre hasta que entra entero en la fuente (o en la mitad, en `versus`).
 
 **`split`** (`GamingLayout._camera`) elige el recorte de la cámara en este orden:
@@ -131,6 +131,7 @@ flowchart TD
 **`versus`** (`versus_boxes`) pone la mitad izquierda de la fuente arriba y la derecha abajo.
 
 - `versus_size`: cada mitad se recorta con el aspecto de su panel, pero nunca con menos del 60 % de su alto (`VERSUS_MIN_HEIGHT`). Un panel ancho (1:1, 16:9) dejaría una franja fina y cortaría las cabezas; ahí el recorte conserva el 60 % y `pane_size` lo encaja en el panel con negro a los costados.
+- Si el recorte con el aspecto del panel queda a menos de un 3 % por debajo de ese piso (`VERSUS_FLOOR_TOLERANCE`), se usa tal cual y el panel queda lleno: el piso solo agregaría unas columnas negras. Pasa, por ejemplo, con una fuente 1440 × 1080 en 9:16, que conserva 638 de 1080 (59 %).
 - Sin cámara manual, el recorte va centrado en el ancho de la mitad y a la altura del 40 % (`VERSUS_CENTER_Y`), corrido hasta que entra: las caras suelen estar arriba.
 - Antes cada mitad entera se escalaba por el alto y el panel no llenaba el ancho (por ejemplo, 284 de 360 px en 9:16).
 - La cámara manual encuadra las dos mitades igual: `x` e `y` se miden dentro de cada mitad, el zoom divide el tamaño de `versus_size` y el recorte no sale de la mitad.

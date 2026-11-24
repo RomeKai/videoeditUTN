@@ -348,7 +348,7 @@ Otras respuestas:
 - **Opciones avanzadas:** posición del gameplay y cámara manual van en un bloque "Avanzado" cerrado por defecto. Se ve solo con los layouts Dividido o Versus.
   - **Dividido:** posición del gameplay (izquierda, centro, derecha), lado de la cámara (izquierda, centro = todo el cuadro, derecha) y cámara manual (centro x/y y zoom). La cámara manual reemplaza al lado elegido y a Seguir caras.
   - **Versus:** solo la cámara manual, que encuadra igual a las dos personas (una por mitad). La posición del gameplay y el lado de la cámara no se muestran.
-  - La cámara manual está apagada mientras tenga sus valores por defecto (x 0,5, y 0,2, zoom 1). Zoom 1 es el encuadre automático del layout: prender la cámara manual mueve el encuadre sin alejarlo. El zoom va de 1 a 4.
+  - La cámara manual está apagada mientras tenga sus valores por defecto (x 0,5, y 0,2, zoom 1). Zoom 1 es el encuadre automático sin Seguir caras: sin Seguir caras, prender la cámara manual mueve el encuadre sin alejarlo; con Seguir caras, el zoom 1 es el del encuadre sin caras y puede verse más abierto o más cerrado. El zoom va de 1 a 4.
   - Versus en 1:1 y 16:9: cada mitad conserva al menos el 60 % de su alto y queda negro a los costados del panel. El dibujo esquemático lo muestra así.
 - **Resumen (derecha):**
   - Duración, resolución, extras, plan (con marca de agua o sin ella), costo estimado y saldo después.
