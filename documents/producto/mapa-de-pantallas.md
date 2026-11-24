@@ -225,9 +225,9 @@ Errores al subir el archivo. `InvalidUploadError.code` llega en la respuesta 400
 |---|---|
 | `not_a_video` | "Este archivo no es un video." |
 | `unreadable`, `no_duration`, `no_video_stream` | "No pudimos leer el video. Probá exportarlo de nuevo en MP4." |
-| `too_long` | "El video dura más de lo que permite tu plan (máx. X min)." |
-| `too_large` | "El archivo pesa más de X GB." |
-| `too_small` | "El video es demasiado corto." |
+| `too_long` | "El video dura más de lo que permite tu plan (máx. X min)." El tope del sistema es `AI_UPLOAD_MAX_DURATION_SECONDS` (3 h); el del plan lo controla el precio (403). |
+| `too_large` | "La resolución del video es mayor a 4096 px. Exportalo en 4K o menos y volvé a subirlo." |
+| `too_small` | "La resolución del video es muy baja (mínimo 240 px). Probá con una versión de mejor calidad." |
 
 Otras respuestas:
 
@@ -460,6 +460,23 @@ Otras respuestas:
   - ❌ no hay endpoint de clip: los clips solo se leen dentro del proyecto.
   - ❌ falta volver a renderizar un clip, con su costo.
   - ❌ la vista previa sin render (PTE-03) no existe.
+
+#### D5. Resultado de "Editar el video completo" — `/proyectos/:id/resultado`
+- **Para qué:** ver y usar el video que devuelve un proyecto de tipo "Editar el video completo" (`project_type=single_edit`).
+- **Cómo funciona:**
+  - El usuario sube un video corto (hasta la duración que permite su plan). OneCreator lo edita entero (formato, encuadre, subtítulos, estilo y brand kit) y devuelve **un solo video**.
+  - **No hay revisión:** no hay nada que elegir.
+  - La segunda pestaña del proyecto es **Resultado** en lugar de Clips.
+- **Qué muestra:**
+  - La cabecera de proyecto de siempre.
+  - Un reproductor grande en el formato de salida.
+  - Un panel con duración, formato, resolución, estilo, brand kit y subtítulos.
+- **Acciones:**
+  - **Descargar** (principal).
+  - **Publicar** (panel E1).
+  - **Ajustar recorte** (como D4).
+  - "Volver a renderizar con otro estilo", con su costo (diálogo de confirmar costo).
+- **API:** ❌ el pipeline hoy trata `single_edit` igual que "Sacar clips" (hueco 20).
 
 ### E. Publicar
 
@@ -722,6 +739,9 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad:
 | 17 | Descargar todo en .zip | D3 | P2 |
 | 18 | Tiempo estimado del proceso ("Listo para revisar en ≈ 12 min") | C1, D1 | P2 |
 | 19 | Total reservado del workspace con el detalle por proyecto | G1, barra | P1 |
+| 20 | Pipeline propio para `single_edit`: un solo video de salida, sin revisión | C1, D5 | P1 |
+| 21 | Plantillas de los emails transaccionales y su envío (verificar, recuperar, invitación, listo para revisar, render terminado, fallo con devolución, publicación fallida, saldo bajo) | A2–A5, J2, I2 | P1 |
+| 22 | Tope de peso del archivo al subir: hoy no hay ninguno (los límites de `media_validation` son de duración y resolución) | C1 | P2 |
 
 ---
 
@@ -772,3 +792,27 @@ Se agregaron en la segunda ronda del canvas, después de una revisión de diseñ
     - Misma tarjeta y mismos textos en las dos pantallas.
     - Una función bloqueada se ve como un candado y su nombre, con el plan que la incluye a la derecha ("Plan Creador").
     - El acento marca el plan recomendado. En G3, el plan actual lleva el borde fuerte y la etiqueta "Tu plan".
+
+### 9.2 Pantallas agregadas en la cuarta ronda
+
+Completan los estados y variantes que el mapa mencionaba y no tenían dibujo propio. Todas están en el canvas:
+
+| Código | Pantalla | Qué agrega |
+|---|---|---|
+| B1 paso 1 y paso 3 | Bienvenida | Los otros dos pasos del onboarding |
+| B2 grilla | Proyectos en vista de grilla | La vista alternativa y el menú de una tarjeta abierto (abrir, renombrar, duplicar configuración, borrar) |
+| C1 errores | Errores al crear | Cada error de subida de la sección 4, la subida cortada y el saldo que no alcanza |
+| C1 link | Pegar link | El link reconocido con su duración, y los links que no se pueden bajar o que superan el plan |
+| C1 plan Gratis | Nuevo proyecto con plan Gratis | Los candados del plan, la marca de agua y el costo con 300 tokens |
+| D1 Transcripción | Pestaña Transcripción | Texto completo con búsqueda, los tramos que se volvieron clips y descarga .txt/.srt |
+| D1 Actividad | Pestaña Actividad | Quién hizo qué y los movimientos de tokens del proyecto |
+| D2 sin sugerencias | Revisión sin sugerencias | El caso borde: elegir momentos desde la transcripción |
+| D5 | Resultado del video completo | Ver arriba |
+| E1 Instagram | Publicar en Instagram | La pestaña de Instagram y el texto pasado del límite |
+| E1 varios | Publicar varios clips | Redes compartidas, "uno por día a las 18:00", el texto que todavía se está generando y la revisión del calendario |
+| E2 mes y vacío | Publicaciones | Vista de mes y sin nada programado |
+| F1 vacío | Brand kits | Sin kits |
+| G5 | Resultado de la compra | Compra acreditada y pago rechazado |
+| Rol Editor y Rol Lector | Uso visto por un Editor, Clips visto por un Lector | Cómo se ven los permisos de la tabla 1.7 |
+| M6 a M12 | Teléfono | Clips, editor simplificado, publicaciones, uso, ajustes, brand kits y login |
+| N1 a N8 | Emails | Verificar, recuperar contraseña, invitación, listo para revisar, render terminado, fallo con devolución, publicación fallida y saldo bajo |
