@@ -73,7 +73,7 @@ class RenderEngine:
             gp_pos = getattr(project, 'gameplay_position', 'center')
             cam_sel_pos = getattr(project, 'camera_selection_position', 'center')
             manual_coords = { 'x': project.manual_camera_x, 'y': project.manual_camera_y, 'zoom': project.manual_camera_zoom }
-            layout_strategy = get_layout_strategy(project.render_layout, target_w, target_h, use_facetracking=use_ft, gameplay_pos=gp_pos, camera_selection_pos=cam_sel_pos, manual_camera_coords=manual_coords)
+            layout_strategy = get_layout_strategy(project.render_layout, target_w, target_h, use_facetracking=use_ft, gameplay_pos=gp_pos, camera_selection_pos=cam_sel_pos, manual_camera_coords=manual_coords, editing_style=getattr(project, 'editing_style', None))
             video_layout_processed = layout_strategy.apply(original_clip)
             
             # 3. Subtitle Processing

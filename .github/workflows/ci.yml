@@ -77,6 +77,8 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             ffmpeg \
             libgl1 \
+            libegl1 \
+            libgles2 \
             libglib2.0-0 \
             libmagic1
 

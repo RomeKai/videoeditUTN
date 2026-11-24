@@ -27,7 +27,7 @@ class GamingLayout(BaseLayout):
         path = None
         if self.use_facetracking:
             tracker = FaceTracker()
-            path = tracker.generate_path(clip, fps=2.0)
+            path = tracker.generate_path(clip, fps=self.tracking_fps)
             tracker.close()
             avg_w, avg_h = path.get_average_size()
         else:

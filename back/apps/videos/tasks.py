@@ -725,7 +725,10 @@ def render_video_segments(self, project_id):
                 gp_pos = project.gameplay_position
             
                 from apps.videos.services.layouts import get_layout_strategy
-                layout_strategy = get_layout_strategy(project.render_layout, target_w, target_h, use_facetracking=use_ft, gameplay_pos=gp_pos)
+                layout_strategy = get_layout_strategy(
+                    project.render_layout, target_w, target_h, use_facetracking=use_ft,
+                    gameplay_pos=gp_pos, editing_style=project.editing_style,
+                )
                 video_layout_processed = layout_strategy.apply(edited_clip)
 
                 # Burn Subtitles if requested
