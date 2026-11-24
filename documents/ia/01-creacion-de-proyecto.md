@@ -1,0 +1,298 @@
+# Creación de proyecto
+
+Un proyecto (`VideoProject`) nace en el request de creación de la API y ahí mismo se cobra: se valida la fuente, se calcula el precio con `PricingEngine`, se reservan los tokens en la billetera del workspace y se encola `process_initial_ingestion`. Hay tres formas de crearlo: subiendo un archivo, mandando una `video_url` o con `POST /api/v1/projects/from-prompt/` (cualquiera de las dos anteriores más un prompt). Este documento cubre el request y el ciclo de vida de la reserva de tokens hasta que se devuelve o queda tomada. Lo que pasa después del encolado está en [02-pipeline-de-ingesta](02-pipeline-de-ingesta.md).
+
+## Componentes
+
+| Componente | Archivo | Rol |
+|------------|---------|-----|
+| `VideoProjectViewSet.create` | [views.py](../../back/apps/videos/views.py) | Orquesta la creación: serializer, precio, reserva, `metadata['reservation_id']` y encolado |
+| `VideoProjectViewSet.from_prompt` | [views.py](../../back/apps/videos/views.py) | Valida `prompt` y delega en `create` (ver [04-prompt-to-edit](04-prompt-to-edit.md)) |
+| `VideoProjectViewSet.get_serializer_context` | [views.py](../../back/apps/videos/views.py) | Pasa `pte_prompt` al serializer cuando la creación viene de `from_prompt` |
+| `_pricing_resolution` | [views.py](../../back/apps/videos/views.py) | Tier de resolución que se cobra: `metadata['render_resolution']` si es válido, si no `720p` |
+| `VideoProjectSerializer` | [serializers.py](../../back/apps/videos/serializers.py) | `validate`, `validate_source_file`, `validate_aspect_ratio`, `create`, `update`; campos `selection_criteria` y `use_seo` (solo escritura) |
+| `validate_upload`, `MediaInfo`, `InvalidUploadError` | [services/media_validation.py](../../back/apps/videos/services/media_validation.py) | Comprueba que los bytes sean un video procesable (CORE-05) |
+| `PricingEngine.calculate_render_cost` | [payments/services/pricing_engine.py](../../back/apps/payments/services/pricing_engine.py) | Límites del plan y precio en tokens |
+| `reserve_funds`, `commit_reservation`, `rollback_reservation` | [payments/services/wallet_service.py](../../back/apps/payments/services/wallet_service.py) | Movimientos de la billetera con `select_for_update` |
+| `Wallet`, `Transaction`, `SubscriptionPlan` | [payments/models.py](../../back/apps/payments/models.py) | Saldo, reservas y límites del plan |
+| `_record_pipeline_failure`, `_refund_ingestion_reservation`, `_work_already_done` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Devuelven la reserva cuando la ingesta falla sin entregar clips |
+
+Las tres formas usan la misma vista y el mismo serializer. `validate` exige exactamente una fuente: sin ninguna responde `Debes proporcionar un 'source_file' o una 'video_url'.` y con las dos `No puedes enviar archivo y URL al mismo tiempo.`.
+
+## Flujo: creación con archivo
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cliente
+    participant API as API (VideoProjectViewSet)
+    participant SER as VideoProjectSerializer
+    participant MV as media_validation
+    participant FF as ffprobe
+    participant PE as PricingEngine
+    participant WS as wallet_service
+    participant DB as Base de datos
+    participant Q as Broker (Celery)
+
+    C->>API: POST /api/v1/projects/ (multipart con source_file)
+    API->>SER: is_valid(raise_exception=True)
+    SER->>SER: validate_source_file (extensión y 500 MB)
+    SER->>MV: validate_upload(archivo)
+    MV->>MV: _sniff con libmagic o caja ISO en el byte 4
+    MV->>MV: _has_streaming_manifest en los primeros 5 MB
+    MV->>FF: ffprobe con demuxer forzado y protocol_whitelist file
+    FF-->>MV: JSON de format y streams
+    MV-->>SER: MediaInfo (duración, ancho, alto, mime)
+    SER->>SER: validate (una sola fuente)
+    API->>SER: save(workspace, uploaded_by, status uploaded)
+    SER->>DB: INSERT VideoProject con metadata.source_media
+    API->>PE: calculate_render_cost(duración, 720p, features, plan)
+    alt el plan no lo permite
+        PE-->>API: PlanLimitExceededError o FeatureNotAllowedError
+        API->>DB: borra el proyecto
+        API-->>C: 403
+    else precio calculado
+        API->>WS: reserve_funds(wallet, costo, user)
+        alt saldo insuficiente
+            WS-->>API: InsufficientFundsError
+            API->>DB: borra el proyecto y el archivo
+            API-->>C: 402 con required
+        else reserva hecha
+            WS->>DB: pasa el costo a reserved_balance y crea Transaction RESERVED
+            WS-->>API: Transaction
+            API->>DB: metadata.reservation_id
+            API->>Q: process_initial_ingestion.delay(project.id)
+            API-->>C: 201 con cost_details
+        end
+    end
+```
+
+1. `create` toma el primer workspace del usuario (`user.workspaces.first()`). Sin workspace responde 400.
+2. `validate_source_file` corta primero por extensión (`.mp4`, `.mov`, `.avi`) y por tamaño (500 MB). Después llama a `validate_upload`, que trabaja sobre los bytes y no sobre el nombre ni el header del cliente:
+   - `_sniff` lee los primeros 8 KB con libmagic. Pasan los mime de `_DEMUXER_BY_MIME` (MP4, M4V, QuickTime, 3GPP y AVI), cada uno con su demuxer (`mov` o `avi`). Un `application/octet-stream` pasa como `video/quicktime` si tiene una caja ISO (`ftyp`, `moov`, `mdat`, `free`, `skip`, `wide`, `pnot`) en el byte 4: son archivos reales de cámara que libmagic no reconoce.
+   - `_has_streaming_manifest` rechaza un manifiesto DASH en los primeros 5 MB, o un archivo que empiece como playlist HLS (`#EXTM3U`) o concat (`ffconcat`). ffmpeg elige el demuxer por contenido y con un manifiesto pediría sus URLs desde el servidor.
+   - `_probe` corre `ffprobe` con el demuxer del contenedor forzado (`-f mov` o `-f avi`), `-protocol_whitelist file` y un timeout de 60 s. Si Django tiene el archivo en memoria, se escribe antes a un temporal.
+   - `_describe` toma la pista de video más grande (descarta las `attached_pic`), exige ancho, alto y duración, y compara con los límites `AI_UPLOAD_*`. Devuelve un `MediaInfo`.
+3. Un rechazo es `InvalidUploadError` con un código estático. El serializer lo convierte en un 400 sobre `source_file` con el mensaje fijo de `MESSAGES` (tabla de errores más abajo). Ni el nombre del archivo ni la salida de `ffprobe` llegan al log o a la respuesta.
+4. `create` del serializer guarda el proyecto y escribe en `metadata` lo que vino del pedido (`max_clips`, `selection_criteria`, `subtitle_size`, `use_seo`) y `source_media` (`MediaInfo.as_metadata()`: `duration_s`, `width`, `height`, `mime`). También copia campos crudos del pedido a columnas (`render_layout` o su alias `layout`, posiciones de cámara, subtítulos, `use_facetracking`, `remove_silences`, `auto_render_bypass`). `selection_criteria` se normaliza con `normalize_selection_criteria`.
+5. La vista calcula el precio con la duración de `metadata['source_media']['duration_s']` (truncada a entero). Solo si falta mide de nuevo con MoviePy. Ver [Precio](#precio).
+6. `reserve_funds` bloquea la billetera con `select_for_update`, resta el costo de `available_balance`, lo suma a `reserved_balance` y crea una `Transaction` `SPEND` en `RESERVED` con la descripción `Procesamiento: <título>`. Si el workspace no tiene billetera, la vista la crea antes con `get_or_create` (con saldo 0).
+7. La vista guarda el id de la reserva en `metadata['reservation_id']` antes de encolar: el pipeline lo usa para devolverla ([ciclo de vida](#flujo-ciclo-de-vida-de-la-reserva)).
+8. Encola con `process_initial_ingestion.delay(project.id)`, sin `transaction.on_commit`. Como el proyecto no usa `ATOMIC_REQUESTS`, cada escritura ya está confirmada cuando sale el mensaje.
+9. Responde 201 con los datos del serializer, `cost_details` (`tokens_reserved`, `transaction_id`) y `message`.
+
+`reserve_funds` acepta un `project_id` y, si viene, encola `process_video_pipeline`. Ninguna vista lo pasa, así que la creación encola una sola tarea.
+
+### Precio
+
+`PricingEngine.calculate_render_cost(duration_seconds, resolution, features_requested, plan)`:
+
+1. **Chequeos del plan** (solo si el workspace tiene `subscription_plan`):
+   - `duration_seconds > plan.max_video_duration_seconds` → `PlanLimitExceededError`.
+   - Resolución pedida por encima de `plan.max_resolution` (`720p` < `1080p` < `4K`) → `PlanLimitExceededError`.
+   - `seo_optimization` sin `has_seo_optimization`, o `ai_thumbnail` sin `has_thumbnail_engine` → `FeatureNotAllowedError`.
+2. **Base:** `duración × BASE_COST_PER_SECOND_720P (0,5) × RESOLUTION_MULTIPLIERS` (`720p` 1,0, `1080p` 1,5, `4K` 3,0).
+3. **Adicionales** (`FEATURE_COSTS`, fijos): `seo_optimization` 5, `ai_thumbnail` 15.
+4. **Descuento:** `(base + adicionales) × (1 − plan.base_discount_rate)`. Sin plan, no hay descuento ni límites.
+5. Mínimo 0,01 y redondeo a dos decimales (`ROUND_HALF_UP`).
+
+Ejemplo: un archivo de 600 s con `use_seo=true` en un plan con 20 % de descuento cuesta `(600 × 0,5 × 1,0 + 5) × 0,8 = 244,00` tokens.
+
+Al crear, la resolución siempre es `720p`: `_pricing_resolution` lee `metadata['render_resolution']`, que el pedido no puede escribir (solo Prompt-to-Edit, más tarde). `use_ai_thumbnail` tampoco se puede pedir al crear: el serializer no tiene ese campo y `metadata` es de solo lectura.
+
+## Flujo: creación con URL
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cliente
+    participant API as API (VideoProjectViewSet)
+    participant SER as VideoProjectSerializer
+    participant PE as PricingEngine
+    participant WS as wallet_service
+    participant DB as Base de datos
+    participant Q as Broker (Celery)
+
+    C->>API: POST /api/v1/projects/ (JSON con video_url y use_seo opcional)
+    API->>SER: is_valid(raise_exception=True)
+    SER->>SER: validate (una sola fuente)
+    Note over SER: no hay validate_upload ni medición de duración
+    API->>SER: save(workspace, uploaded_by, status uploaded)
+    SER->>DB: INSERT VideoProject con metadata.use_seo
+    API->>API: costo fijo de 10 tokens
+    opt metadata.use_seo es verdadero
+        API->>PE: calculate_render_cost(0, 720p, seo_optimization, plan)
+        alt el plan no tiene has_seo_optimization
+            PE-->>API: FeatureNotAllowedError
+            API->>DB: borra el proyecto
+            API-->>C: 403
+        else plan con SEO o sin plan
+            PE-->>API: 5 por (1 - base_discount_rate)
+        end
+    end
+    API->>WS: reserve_funds(wallet, costo, user)
+    WS->>DB: Transaction RESERVED
+    API->>DB: metadata.reservation_id
+    API->>Q: process_initial_ingestion.delay(project.id)
+    API-->>C: 201 con cost_details
+    Note over Q: el video se baja después, en _stage_prepare_source
+```
+
+1. La duración de un video por URL no se conoce en el request, así que se cobra una tarifa fija de 10 tokens.
+2. Si el pedido trae `use_seo=true`, se suma el adicional `seo_optimization` calculado con `duration_seconds=0`: solo se chequea el plan para el SEO y se cobra `5 × (1 − base_discount_rate)` (ADR-013). Sin plan, se cobra 5.
+3. La reserva, `reservation_id` y el encolado son iguales al flujo con archivo.
+4. La URL no pasa por `validate_upload` ni por el límite de duración del plan. El serializer declara `video_url` como `CharField`, así que tampoco valida que sea una URL. El archivo se baja con `download_from_youtube` en `_stage_prepare_source` (ver [02-pipeline-de-ingesta](02-pipeline-de-ingesta.md)).
+
+## Flujo: creación desde un prompt
+
+`POST /api/v1/projects/from-prompt/` acepta lo mismo que una creación normal (archivo o `video_url`, y los mismos campos) más `prompt`:
+
+1. `from_prompt` rechaza con 400 un `prompt` ausente o en blanco (`Este campo es obligatorio.`) o más largo que `prompt_max_chars()` (`Máximo N caracteres.`). En los dos casos no se crea el proyecto ni se reserva nada.
+2. Guarda el texto limpio (`clean_prompt`) en `self._pte_prompt` y llama a `create`. `get_serializer_context` lo pasa al serializer como `pte_prompt`, y `create` del serializer lo escribe en `metadata['pte_prompt']` junto con `metadata['pte_explicit']`.
+3. Validación, precio, reserva y encolado son los de la creación con archivo o con URL. El prompt no cambia el precio: se cobra lo mismo que sin prompt.
+4. Si la respuesta es 201, agrega `prompt_config` con `status: "pending"`. El prompt se parsea al empezar la ingesta y el resultado queda en `metadata['pte']`.
+
+El detalle está en [04-prompt-to-edit](04-prompt-to-edit.md).
+
+## Flujo: ciclo de vida de la reserva
+
+`Transaction.Status` tiene `PENDING`, `RESERVED`, `COMPLETED` y `FAILED`. No existe un estado "reembolsado": `rollback_reservation` deja la transacción en `FAILED` (el tipo sigue siendo `SPEND`; `Transaction.Type.REFUND` existe pero no se usa en este flujo). `PENDING` es el default del modelo y `reserve_funds` no lo usa.
+
+```mermaid
+stateDiagram-v2
+    [*] --> RESERVED: reserve_funds al crear
+    RESERVED --> RESERVED: reintentos, esperas de capacidad y re-encolados
+    RESERVED --> FAILED: rollback_reservation tras un fallo final sin clips
+    RESERVED --> COMPLETED: commit_reservation, sin llamadas hoy
+    FAILED --> [*]
+    COMPLETED --> [*]
+    note right of RESERVED
+        Queda así si el proyecto llega a tener clips
+    end note
+```
+
+1. **Mientras el pipeline reintenta,** la reserva sigue en `RESERVED`. Tampoco cambia en una espera de capacidad, un re-encolado por lock ocupado o un reintento del lector de prompts.
+2. **Fallo final sin clips:** `_record_pipeline_failure` llama a `mark_failed`. Si esa llamada fue la que dejó el proyecto en `failed` (`failed_now`), llama a `_refund_ingestion_reservation`, que devuelve la reserva con `rollback_reservation`. Pasa con cualquier causa de fallo final:
+   - contenido bloqueado por la moderación (`UnsafeContentError`) o moderación sin veredicto después de los reintentos (ADR-011 D-M5);
+   - espera de capacidad vencida (`CapacityTimeoutError`, desde `_wait_for_capacity`; ADR-012 D-C4);
+   - un error no reintentable (por ejemplo `AINoSpeechDetectedError`, `AIEmptySelectionError`, `AIInvalidRequestError`, `SoftTimeLimitExceeded`) o un error reintentable que agotó `PIPELINE_MAX_RETRIES`.
+3. **El proyecto ya tiene clips:** la reserva se queda. `_refund_ingestion_reservation` mira si hay algún `VideoClip` (sugerido o renderizado) y en ese caso solo loguea `reason=has_clips`.
+4. **Fallo antes de leer el proyecto:** si el fallo final llega sin etapa conocida (`stage=None`, por ejemplo al tomar el lock de un mensaje re-entregado) y `_work_already_done` dice que el proyecto ya llegó a `clips_selected` o más, no se marca `failed` ni se devuelve nada (`pipeline.fail_skipped reason=work_done`).
+5. **Otro worker movió el proyecto:** `mark_failed` con `expected_stage` no escribe y devuelve `False`. Solo la llamada que falló el proyecto devuelve la reserva.
+6. **Re-despacho manual de un proyecto devuelto:** corre sin reserva. Si vuelve a fallar, `_refund_ingestion_reservation` encuentra la transacción en `FAILED` y loguea `reason=not_reserved`. Si termina bien, no se vuelve a cobrar.
+
+```mermaid
+flowchart TD
+    A["Error en process_initial_ingestion"] --> B{"¿Reintentable y quedan reintentos?"}
+    B -->|sí| R["self.retry, la reserva sigue RESERVED"]
+    B -->|no| C{"¿stage es None y _work_already_done?"}
+    T["_wait_for_capacity supera AI_CAPACITY_MAX_WAIT_SECONDS"] --> D
+    C -->|sí| S["pipeline.fail_skipped, sin reembolso"]
+    C -->|no| D["mark_failed con expected_stage"]
+    D --> E{"¿Esta llamada marcó failed?"}
+    E -->|no| N["Sin reembolso (terminal o lo movió otro worker)"]
+    E -->|sí| F["_refund_ingestion_reservation"]
+    F --> G{"¿Tiene VideoClip?"}
+    G -->|sí| H["refund_skipped reason=has_clips"]
+    G -->|no| I{"¿Hay metadata.reservation_id?"}
+    I -->|no| J["refund_skipped reason=no_reservation"]
+    I -->|sí| K{"¿Transaction en RESERVED?"}
+    K -->|no| L["refund_skipped reason=not_reserved"]
+    K -->|sí| M["rollback_reservation y pipeline.refunded"]
+```
+
+`_refund_ingestion_reservation` es idempotente y nunca lanza: un `PaymentError`, un error de base o un proyecto borrado solo dejan `pipeline.refund_failed`, para no tapar el error original.
+
+**Hueco conocido: `commit_reservation` no se llama en ningún lado.** Fuera de `wallet_service.py`, de su `__init__.py` y de los tests no hay llamadas (verificado con grep). Una reserva que no se devuelve queda en `RESERVED` para siempre y su monto sigue en `reserved_balance`: nunca pasa a `COMPLETED`.
+
+**Segunda reserva en `approve_paper_edit`.** Aprobar el paper edit reserva otra vez con `reserve_funds` (descripción `Render Final (Paper Edit): <título>`). Esa transacción no se guarda en `metadata`, así que `_refund_ingestion_reservation` no la ve y ningún camino la devuelve ni la confirma.
+
+## Errores, reintentos y casos borde
+
+| Situación | Qué pasa | Dónde |
+|-----------|----------|-------|
+| El usuario no tiene workspace | 400 `{"error": "El usuario no tiene un Workspace asignado."}` | `create` |
+| Sin fuente, o archivo y URL juntos | 400 con el mensaje de `validate` | `VideoProjectSerializer.validate` |
+| Extensión distinta de `.mp4`, `.mov`, `.avi` | 400 `Solo se permiten archivos de video (.mp4, .mov, .avi)` | `validate_source_file` |
+| Archivo de más de 500 MB | 400 `El archivo es demasiado grande (MÃ¡x 500MB)` (sic: la `á` está mal codificada en el código) | `validate_source_file` |
+| `not_a_video` | 400 `El archivo no es un video válido. Formatos admitidos: MP4, MOV y AVI.` Lo dispara libmagic o un manifiesto de streaming. Log `upload.rejected code=not_a_video` o `code=streaming_manifest` | `validate_upload` |
+| `unreadable` | 400 `No pudimos leer el video. Probá exportarlo de nuevo en MP4 (H.264).` `ffprobe` falló, tardó más de 60 s o devolvió algo que no es JSON. Log `upload.probe_failed error=<clase>` | `_probe` |
+| `no_video_stream` | 400 `El archivo no tiene una pista de video.` | `_describe` |
+| `no_duration` | 400 `No pudimos determinar la duración del video.` | `_duration` |
+| `too_long` | 400 `El video supera la duración máxima que podemos procesar ({limit}).` Con el default, `3 h 00 min` | `_describe` |
+| `too_large` / `too_small` | 400 con el límite en px de lado (`AI_UPLOAD_MAX_LONG_SIDE_PX` / `AI_UPLOAD_MIN_SHORT_SIDE_PX`) | `_describe` |
+| `aspect_ratio` con `1:Post` | Se acepta y se guarda `1:1` (`LEGACY_ASPECT_RATIOS`) | `validate_aspect_ratio` |
+| `selection_criteria` de más de 300 caracteres | 400 de DRF (`max_length=MAX_SELECTION_CRITERIA_CHARS`) | `VideoProjectSerializer` |
+| Falla `serializer.save` | 500 `Error al guardar proyecto: ...`. Un `max_clips` no numérico falla después del INSERT: la fila queda sin reserva ni ingesta | `create` |
+| Duración o resolución fuera del plan, o adicional que el plan no incluye | 403 con el mensaje de `PlanLimitExceededError` / `FeatureNotAllowedError`. Se borra el proyecto | `create`, `calculate_render_cost` |
+| Otro error al calcular el precio | 400 `Error interno al procesar el presupuesto del video.` Se borra el proyecto. Log `Error calculando costo V3` | `create` |
+| Saldo insuficiente | 402 `{"error": "Insufficient funds. Required: X, Available: Y", "required": <costo>}`. Se borran el proyecto y el archivo | `reserve_funds`, `create` |
+| Otro error al reservar | 500 `Error procesando el pago.` Se borra el proyecto. Log `Error reserving funds on create` | `create` |
+| Rechazo después de guardar (403, 400 de precio, 500 de pago) | Se borra la fila, pero no el archivo en disco. Solo el camino del 402 lo borra (no hay señal `post_delete`) | `create` |
+| Falla `process_initial_ingestion.delay` (broker caído) | La excepción no se captura: el proyecto y su reserva quedan creados sin tarea en la cola | `create` |
+| PATCH que reemplaza el archivo | Pasa por `validate_upload` y reemplaza `metadata['source_media']`. No vuelve a cobrar (hueco anotado en ADR-011 D-M8). `selection_criteria` y `use_seo` se ignoran | `VideoProjectSerializer.update` |
+| `layout` en el pedido | Se copia a `render_layout` sin validar contra las opciones (no es un campo del serializer) | `VideoProjectSerializer.create` |
+| `subtitle_scale_factor` en el pedido | Se convierte a `float` pero no es columna del modelo: no se guarda | `VideoProjectSerializer.create` |
+| Fallo final de la ingesta | Reembolso según el [ciclo de vida](#flujo-ciclo-de-vida-de-la-reserva) | `_record_pipeline_failure` |
+
+## Datos que escribe
+
+**`VideoProject`** (en el request):
+
+- `workspace`, `uploaded_by`, `status=uploaded` y `pipeline_stage` en su default (`uploaded`).
+- `source_file` o `video_url`, y las columnas del pedido.
+- `metadata`:
+  - `source_media`: `duration_s` (3 decimales), `width`, `height` y `mime` medidos por `validate_upload`. Solo con archivo.
+  - `use_seo`: solo si vino en el pedido. Lo leen el precio y, más tarde, la generación de SEO ([05-seo-y-publicacion](05-seo-y-publicacion.md)).
+  - `selection_criteria`: normalizado; solo si no queda vacío.
+  - `max_clips` y `subtitle_size`: copiados del pedido.
+  - `pte_prompt` y `pte_explicit`: solo desde `from_prompt` ([04-prompt-to-edit](04-prompt-to-edit.md)).
+  - `reservation_id`: id de la `Transaction`, escrito después de reservar y antes de encolar.
+
+**Billetera y transacción:**
+
+- `Wallet.available_balance` baja y `Wallet.reserved_balance` sube en el costo.
+- `Transaction`: `transaction_type=SPEND`, `status=RESERVED`, `amount`, `created_by` y `description=Procesamiento: <título>`.
+- Al devolver: `Transaction.status=FAILED`, y el monto vuelve de `reserved_balance` a `available_balance`.
+
+**Respuesta 201:** los campos del serializer (sin `selection_criteria` ni `use_seo`, que son de solo escritura), `cost_details.tokens_reserved`, `cost_details.transaction_id` y `message` (`Video subido. Iniciando ingesta multimodal...`). Desde `from_prompt` se suma `prompt_config`.
+
+**Logs:**
+
+- Validación: `upload.rejected code=<código>` y `upload.probe_failed error=<clase>`.
+- Reembolso: `pipeline.refunded`, `pipeline.refund_skipped reason=has_clips|no_reservation|not_reserved`, `pipeline.refund_failed error=<clase>`, `pipeline.fail_skipped reason=work_done` y `pipeline.mark_failed_skipped`.
+
+## Configuración
+
+| Setting | Default | Efecto |
+|---------|---------|--------|
+| `AI_UPLOAD_MAX_DURATION_SECONDS` | `10800` (3 h) | Duración máxima del archivo subido; si la supera, `too_long` |
+| `AI_UPLOAD_MAX_LONG_SIDE_PX` | `4096` | Lado mayor máximo del video; si lo supera, `too_large` |
+| `AI_UPLOAD_MIN_SHORT_SIDE_PX` | `240` | Lado menor mínimo del video; si no llega, `too_small` |
+| `AI_PROMPT_MAX_CHARS` | `1000` | Largo máximo de `prompt` en `from_prompt` ([04-prompt-to-edit](04-prompt-to-edit.md)) |
+
+Valores fijos en el código (no son settings):
+
+| Constante | Valor | Dónde |
+|-----------|-------|-------|
+| Extensiones y tamaño máximo | `.mp4`, `.mov`, `.avi`; 500 MB | `validate_source_file` |
+| `PROBE_TIMEOUT_SECONDS` | 60 s | `media_validation.py` |
+| `_PROBE_WINDOW_BYTES` | 5 MB | `media_validation.py` |
+| `BASE_COST_PER_SECOND_720P` | 0,5 | `PricingEngine` |
+| `RESOLUTION_MULTIPLIERS` | `720p` 1,0, `1080p` 1,5, `4K` 3,0 | `PricingEngine` |
+| `FEATURE_COSTS` | `seo_optimization` 5, `ai_thumbnail` 15 | `PricingEngine` |
+| Tarifa de un proyecto por URL | 10 tokens | `VideoProjectViewSet.create` |
+
+Límites por plan (`SubscriptionPlan`, asignado en `Workspace.subscription_plan`; sin plan no hay límites ni descuento): `max_video_duration_seconds`, `max_resolution`, `has_seo_optimization`, `has_thumbnail_engine` y `base_discount_rate`.
+
+## Referencias
+
+- [ADR-011, D-M8](../adrs/011-content-moderation.md): validación del archivo subido (CORE-05). D-M5: reembolso cuando la moderación bloquea.
+- [ADR-012, D-C4](../adrs/012-model-profiles-and-capacity.md): espera de capacidad y su vencimiento.
+- [ADR-013](../adrs/013-ai-social-metadata.md): adicional `seo_optimization`, también para proyectos por URL.
+- [Runbook del piloto, sección 6.2](../runbooks/ai-core-pilot-runbook.md): códigos de fallo deterministas y reserva de tokens.
+- Issue #12 (CORE-05): https://github.com/RomeKai/videoeditUTN/issues/12
+- PR #90, validación de que el archivo subido sea un video procesable (CORE-05): https://github.com/RomeKai/videoeditUTN/pull/90
+- PR #88, caption y hashtags al crear la publicación (`use_seo`): https://github.com/RomeKai/videoeditUTN/pull/88
+- PR #94, formato cuadrado (`1:Post` → `1:1`) y resolución pedida (`_pricing_resolution`): https://github.com/RomeKai/videoeditUTN/pull/94
+- PR #95, devolución de tokens ante cualquier fallo final de la ingesta: https://github.com/RomeKai/videoeditUTN/pull/95
