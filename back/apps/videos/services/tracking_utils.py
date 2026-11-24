@@ -35,6 +35,66 @@ class MovingAverageSmoothing(SmoothingStrategy):
             smoothed.append(TrackingPoint(points[i].t, int(avg_x), int(avg_y), int(avg_w), int(avg_h)))
         return smoothed
 
+class EMASmoothing(SmoothingStrategy):
+    """
+    Exponential moving average (CORE-01). ``alpha`` in (0, 1]: lower is smoother.
+    ``bidirectional`` runs it forward and then backward, which cancels the lag a
+    single pass adds (the camera would trail the face). The render has the
+    whole path up front, so the zero-lag version is the default.
+    """
+
+    def __init__(self, alpha: float = 0.35, bidirectional: bool = True):
+        if not 0 < alpha <= 1:
+            raise ValueError("alpha must be in (0, 1]")
+        self.alpha = alpha
+        self.bidirectional = bidirectional
+
+    def _pass(self, values: List[float]) -> List[float]:
+        out = []
+        current = None
+        for value in values:
+            current = value if current is None else self.alpha * value + (1 - self.alpha) * current
+            out.append(current)
+        return out
+
+    def _smooth_series(self, values: List[float]) -> List[float]:
+        forward = self._pass(values)
+        if not self.bidirectional:
+            return forward
+        return list(reversed(self._pass(list(reversed(forward)))))
+
+    def smooth(self, points: List[TrackingPoint]) -> List[TrackingPoint]:
+        if len(points) < 3:
+            return points
+        series = [self._smooth_series([getattr(p, attr) for p in points]) for attr in ("x", "y", "w", "h")]
+        return [
+            TrackingPoint(p.t, int(round(x)), int(round(y)), int(round(w)), int(round(h)))
+            for p, x, y, w, h in zip(points, *series)
+        ]
+
+
+def interpolate_gaps(points: List[TrackingPoint], times: List[float]) -> List[TrackingPoint]:
+    """
+    One point per sampled time between the first and the last detection: the
+    missing ones are linear between their neighbours (CORE-01), instead of
+    holding the last position and then jumping.
+    """
+    if len(points) < 2:
+        return list(points)
+    known_t = [p.t for p in points]
+    start, end = known_t[0], known_t[-1]
+    grid = sorted({t for t in times if start <= t <= end} | set(known_t))
+    columns = {
+        attr: np.interp(grid, known_t, [getattr(p, attr) for p in points])
+        for attr in ("x", "y", "w", "h")
+    }
+    return [
+        TrackingPoint(t, int(round(columns["x"][i])), int(round(columns["y"][i])),
+                      int(round(columns["w"][i])), int(round(columns["h"][i])))
+        for i, t in enumerate(grid)
+    ]
+
+
 class TrackingPath:
     def __init__(self, points: List[TrackingPoint], smoothing_strategy: Optional[SmoothingStrategy] = None):
         self.points = smoothing_strategy.smooth(points) if smoothing_strategy else points

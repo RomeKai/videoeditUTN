@@ -1,7 +1,8 @@
-﻿import numpy as np
-import logging
+﻿import logging
 import os
-import cv2
+import threading
+
+import numpy as np
 
 # Disable GPU for MediaPipe to avoid EGL/OpenGL errors in headless environments
 os.environ['MEDIAPIPE_DISABLE_GPU'] = '1'
@@ -15,92 +16,153 @@ try:
     MEDIAPIPE_TASKS_AVAILABLE = True
 except (ImportError, ModuleNotFoundError):
     MEDIAPIPE_TASKS_AVAILABLE = False
-    logger.warning("âš ï¸ MediaPipe Tasks not found. Face tracking will be disabled.")
+    logger.warning("face_tracker.mediapipe_unavailable: face tracking is disabled")
 
-from apps.videos.services.tracking_utils import TrackingPoint, TrackingPath, MovingAverageSmoothing
+from apps.videos.services.face_tracking import (  # noqa: E402
+    DEFAULT_SAMPLING_FPS,
+    Detection,
+    FaceTracks,
+    IoUTracker,
+)
+from apps.videos.services.tracking_utils import TrackingPath, TrackingPoint  # noqa: E402
+
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'face_detector.tflite')
+
+# One detector per worker process (CORE-01): loading the model for every clip
+# was most of the tracking time. MediaPipe detectors are not thread-safe, so
+# calls to each one are serialised.
+_detectors = {}
+_detectors_lock = threading.Lock()
+
+
+class _SharedDetector:
+    """
+    Detector protocol used by FaceTracker: ``detect(rgb_frame)`` takes a numpy
+    RGB frame and returns MediaPipe's result (``.detections``). Tests pass any
+    object with that method.
+    """
+
+    def __init__(self, detector):
+        self._detector = detector
+        self._lock = threading.Lock()
+
+    def detect(self, frame):
+        # MediaPipe images need libEGL and libGLESv2 even on CPU (Dockerfile).
+        image = mp.Image(
+            image_format=mp.ImageFormat.SRGB,
+            data=np.ascontiguousarray(frame, dtype=np.uint8),
+        )
+        with self._lock:
+            return self._detector.detect(image)
+
+    def close(self):
+        """Shared for the life of the worker: closing one tracker must not close it."""
+
+
+def get_face_detector(min_detection_confidence: float = 0.5):
+    """The process-wide MediaPipe face detector, or None when it is unavailable."""
+    if not MEDIAPIPE_TASKS_AVAILABLE or not os.path.exists(MODEL_PATH):
+        return None
+    key = round(float(min_detection_confidence), 3)
+    with _detectors_lock:
+        if key not in _detectors:
+            try:
+                options = vision.FaceDetectorOptions(
+                    base_options=python.BaseOptions(model_asset_path=MODEL_PATH),
+                    min_detection_confidence=key,
+                )
+                _detectors[key] = _SharedDetector(vision.FaceDetector.create_from_options(options))
+                logger.info("face_tracker.detector_loaded")
+            except Exception as exc:
+                logger.error("face_tracker.detector_failed error=%s", type(exc).__name__)
+                return None
+        return _detectors[key]
+
 
 class FaceTracker:
     """
-    Automated Face Tracking service using MediaPipe Tasks API.
-    Generates a smoothed trajectory path for intelligent cropping.
+    Face tracking for intelligent cropping (CORE-01, Face Tracking v2).
+
+    ``track_faces`` returns every face with a stable id over the clip;
+    ``generate_path`` keeps the previous contract (one smoothed path) and now
+    follows the main face (most present and largest) instead of whichever face
+    scored highest in each frame, which made the crop jump between people.
     """
-    def __init__(self, min_detection_confidence: float = 0.5):
-        self.detector = None
-        if MEDIAPIPE_TASKS_AVAILABLE:
+
+    def __init__(self, min_detection_confidence: float = 0.5, detector=None):
+        self.detector = detector if detector is not None else get_face_detector(min_detection_confidence)
+        if self.detector is None:
+            logger.warning("face_tracker.detector_unavailable")
+
+    # -- detection ---------------------------------------------------------
+
+    def detect(self, frame, t: float):
+        """Every face in one RGB frame, as Detections in pixels."""
+        result = self.detector.detect(frame)
+        detections = []
+        for detection in result.detections or []:
+            box = detection.bounding_box
+            score = detection.categories[0].score if detection.categories else 1.0
+            if box.width > 0 and box.height > 0:
+                detections.append(Detection(
+                    t=t, x=float(box.origin_x), y=float(box.origin_y),
+                    w=float(box.width), h=float(box.height), score=float(score),
+                ))
+        return detections
+
+    def track_faces(self, clip, fps: float = DEFAULT_SAMPLING_FPS, tracker: IoUTracker = None) -> FaceTracks:
+        """Samples the clip at ``fps`` and links the faces into tracks."""
+        tracker = tracker or IoUTracker(max_missed=max(2, int(round(fps * 1.5))))
+        size = tuple(clip.size)
+        if not self.detector:
+            return FaceTracks([], [], size)
+        failures = 0
+        for t in np.arange(0, clip.duration, 1.0 / fps):
+            t = float(t)
             try:
-                # Path to the downloaded model
-                model_path = os.path.join(os.path.dirname(__file__), 'face_detector.tflite')
-                if not os.path.exists(model_path):
-                    logger.warning(f"Face detector model not found at {model_path}")
-                    return
+                detections = self.detect(clip.get_frame(t), t)
+            except Exception as exc:
+                failures += 1
+                logger.warning("face_tracker.frame_failed t=%.2f error=%s", t, type(exc).__name__)
+                detections = []
+            tracker.update(t, detections)
+        tracks = tracker.tracks()
+        if failures and failures == len(tracker.sample_times):
+            # Every frame failed: tracking is broken here (e.g. missing system
+            # libraries), not just a clip without faces.
+            logger.error("face_tracker.all_frames_failed samples=%d", failures)
+        logger.info(
+            "face_tracker.tracked samples=%d faces=%d failed_frames=%d",
+            len(tracker.sample_times), len(tracks), failures,
+        )
+        return FaceTracks(tracks, tracker.sample_times, size)
 
-                base_options = python.BaseOptions(model_asset_path=model_path)
-                options = vision.FaceDetectorOptions(base_options=base_options, min_detection_confidence=min_detection_confidence)
-                self.detector = vision.FaceDetector.create_from_options(options)
-                logger.info("âœ… FaceTracker: MediaPipe Tasks Detector initialized.")
-            except Exception as e:
-                logger.error(f"Failed to initialize MediaPipe FaceDetector: {type(e).__name__}")
+    # -- single path (layouts) ---------------------------------------------
 
-    def generate_path(self, clip, fps: float = 3.0) -> TrackingPath:
-        """
-        Analyzes video clip at specific intervals to map face movement.
-        """
+    @staticmethod
+    def _center_path(width, height) -> TrackingPath:
+        return TrackingPath([TrackingPoint(0, width // 2, height // 2, width // 3, height // 3)])
+
+    def generate_path(self, clip, fps: float = DEFAULT_SAMPLING_FPS) -> TrackingPath:
+        """Smoothed path of the main face; the frame center when there is none."""
         width, height = clip.size
         if not self.detector:
-            logger.warning("FaceTracker: Detector not available, returning center path.")
-            return TrackingPath([TrackingPoint(0, width // 2, height // 2, width // 3, height // 3)])
-        
+            return self._center_path(width, height)
         try:
-            duration = clip.duration
-            times_to_check = np.arange(0, duration, 1.0 / fps)
-            points = []
-            last_valid_point = None
-            
-            detections_count = 0
-
-            for t in times_to_check:
-                try:
-                    frame = clip.get_frame(t)
-                    # MediaPipe Tasks requires Image object
-                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
-                    
-                    detection_result = self.detector.detect(mp_image)
-                    
-                    if detection_result.detections:
-                        detections_count += 1
-                        # Get the best detection
-                        best_detection = max(detection_result.detections, key=lambda d: d.categories[0].score)
-                        bbox = best_detection.bounding_box
-                        
-                        last_valid_point = TrackingPoint(
-                            t,
-                            int(bbox.origin_x + bbox.width / 2),
-                            int(bbox.origin_y + bbox.height / 2),
-                            int(bbox.width),
-                            int(bbox.height)
-                        )
-                    
-                    if last_valid_point:
-                        points.append(TrackingPoint(t, last_valid_point.x, last_valid_point.y, last_valid_point.w, last_valid_point.h))
-                except Exception as e:
-                    logger.warning(f"Error processing frame at t={t}: {type(e).__name__}")
-                    continue
-
-            if not points:
-                logger.warning(f"âš ï¸ FaceTracker: No faces detected in {len(times_to_check)} frames.")
-                points = [TrackingPoint(0, width // 2, height // 2, width // 3, height // 3)]
-            else:
-                logger.info(f"âœ… FaceTracker: {detections_count} successful detections.")
-            
-            return TrackingPath(points, smoothing_strategy=MovingAverageSmoothing(window_size=5))
-        except Exception as e:
-            logger.error(f"Error in FaceTracker generation: {type(e).__name__}")
-            return TrackingPath([TrackingPoint(0, width // 2, height // 2, width // 3, height // 3)])
+            faces = self.track_faces(clip, fps)
+            primary = faces.primary()
+            if primary is None:
+                logger.warning("face_tracker.no_faces samples=%d", len(faces.sample_times))
+                return self._center_path(width, height)
+            return faces.path_for(primary)
+        except Exception as exc:
+            logger.error("face_tracker.failed error=%s", type(exc).__name__)
+            return self._center_path(width, height)
 
     def close(self):
-        """Releases MediaPipe resources."""
-        if self.detector:
+        """Kept for callers; the detector is shared by the worker process."""
+        if self.detector and not isinstance(self.detector, _SharedDetector):
             try:
                 self.detector.close()
-            except: 
+            except Exception:
                 pass

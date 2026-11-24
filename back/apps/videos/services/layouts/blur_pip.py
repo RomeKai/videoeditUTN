@@ -30,7 +30,7 @@ class BlurredLayout(BaseLayout):
         # 1. Trajectory (Optional)
         if self.use_facetracking:
             tracker = FaceTracker()
-            path = tracker.generate_path(clip, fps=2.0)
+            path = tracker.generate_path(clip, fps=self.tracking_fps)
             tracker.close()
 
         # 2. Background Layer (Blurred Background)

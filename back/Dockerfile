@@ -6,7 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# CAMBIO APLICADO: Agregamos librerías gráficas para MediaPipe/OpenCV
+# Librerías gráficas para MediaPipe/OpenCV. MediaPipe crea sus imágenes con
+# EGL/GLES aunque corra en CPU: sin libegl1 y libgles2 cada frame falla (CORE-01).
 RUN apt-get update && apt-get install -y \
     libpq-dev \
     gcc \
@@ -14,6 +15,8 @@ RUN apt-get update && apt-get install -y \
     libmagic1 \
     ffmpeg \
     libgl1 \
+    libegl1 \
+    libgles2 \
     libglib2.0-0 \
     imagemagick \
     fonts-liberation \
