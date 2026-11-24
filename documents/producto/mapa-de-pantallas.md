@@ -1,0 +1,736 @@
+# Mapa de pantallas de OneCreator (MVP)
+
+Este documento lista **todas** las pantallas, estados y diálogos del producto, con una decisión tomada para cada una. Es la base para el diseño (canvas de diseño) y para el frontend. Si algo no está acá, no está decidido: se agrega acá antes de diseñarlo o construirlo.
+
+Cada pantalla tiene:
+
+- **Para qué** sirve y **quién** la usa.
+- **Qué muestra** y **qué se puede hacer**.
+- **Estados**: cargando, vacío, error y los propios de la pantalla.
+- **Móvil**: qué cambia en pantallas chicas.
+- **API**: qué existe hoy en el backend.
+
+Leyenda de API: ✅ existe · ⚠️ existe en parte · ❌ falta. Los huecos están juntos en la [sección 8](#8-huecos-de-backend).
+
+---
+
+## 1. Decisiones globales
+
+### 1.1 Estructura de la app
+
+- **Barra superior, sin barra lateral.** Hay dos filas:
+  - Fila 1: logo, selector de workspace, saldo de tokens, botón **Nuevo proyecto**, notificaciones y avatar.
+  - Fila 2: pestañas **Proyectos · Publicaciones · Brand kits · Uso y facturación · Ajustes**.
+- **Pantallas de detalle** (un proyecto, un clip): llevan un encabezado con migas (`Proyectos / Nombre del proyecto`) y sus propias pestañas debajo.
+- **Ancho:** el contenido se centra con un máximo de 1200 px. Las pantallas de trabajo (revisión y editor) usan todo el ancho.
+
+### 1.2 Estilo visual
+
+- Estética sobria tipo Vercel: fondo neutro, bordes finos, mucho aire, poco color.
+- **Un solo color de acento** para acciones principales y foco; lo define el sistema visual del canvas. Los colores de estado (verde, ámbar, rojo, azul) se usan solo para estados.
+- **Tipografía:** Geist Sans para texto y Geist Mono para números, tiempos (`00:41`), costos e identificadores.
+- **Tema:** oscuro por defecto, porque el video se ve mejor sobre fondo oscuro. También hay claro, y la opción **Sistema** está en Perfil. Cada pantalla se diseña en los dos temas.
+- **Íconos:** un solo set de línea, de 16 px y 20 px.
+
+### 1.3 Idioma y formatos
+
+- Español rioplatense con voseo: "Subí tu video", "Revisá los clips".
+- Fechas: `24 nov 2026, 14:30`, en la zona horaria del navegador. El backend guarda `publish_at` en UTC.
+- Duraciones: `1:05:32` o `0:41`. Tokens: hasta 2 decimales, sin decimales si el valor es entero (`120 tokens`, `12,50 tokens`).
+
+### 1.4 Actualización en vivo
+
+- Las pantallas con algo en curso consultan el backend cada **5 segundos**: un proyecto en ingesta o render, o publicaciones en cola.
+- La consulta se pausa si la pestaña del navegador no está visible y se detiene cuando el estado es final.
+- No hay websockets en el MVP.
+
+### 1.5 Tokens y costos
+
+- El saldo **disponible** (`Wallet.available_balance`) siempre está visible en la barra superior. Al pasar el mouse se ve también el **reservado** (`reserved_balance`).
+- **Toda acción paga muestra el costo antes de confirmarse.** Después de confirmar, el costo queda como "reservado" hasta que termina el trabajo.
+- **Si un trabajo falla, se informa la devolución** en la pantalla del proyecto ("Te devolvimos 120 tokens") y en Movimientos.
+- **Estimación del costo:** se calcula en el navegador con la misma fórmula del backend (`PricingEngine.calculate_render_cost`) y la duración que lee el navegador del archivo. El cobro real lo decide el backend al crear el proyecto. Para no copiar los valores de la fórmula, el frontend los lee de un endpoint de precios (❌, ver sección 8).
+
+### 1.6 Planes
+
+- **Lo que el plan no incluye se ve igual, bloqueado:** con candado, el texto "Disponible en el plan X" y un link a Planes. Nunca se oculta.
+- Qué controla cada campo de `SubscriptionPlan`:
+
+| Campo del plan | Dónde se nota | Qué pasa en la UI |
+|---|---|---|
+| `max_video_duration_seconds` | Nuevo proyecto, al elegir el archivo | Si el video es más largo, se muestra un error antes de subir: "Tu plan acepta videos de hasta 30 min". Hay link a Planes. |
+| `max_resolution` | Selector de resolución | Las opciones por encima del plan aparecen con candado. |
+| `has_watermark` | Resumen de costo, preview de clips | Se muestra la nota "Tu plan agrega marca de agua" con link a Planes. |
+| `allow_scheduling` | Publicar | "Programar" queda con candado; "Publicar ahora" sigue disponible. |
+| `allow_crossposting` | Publicar | Se puede elegir una sola red por publicación; las demás quedan con candado. |
+| `has_seo_optimization` | Nuevo proyecto (SEO) | El interruptor de SEO queda con candado. |
+| `has_thumbnail_engine` | — | Las miniaturas con IA no están en el MVP. |
+| `base_discount_rate` | Planes, resumen de costo | Se muestra "Incluye 10% de descuento en tokens". |
+| `max_members` | Ajustes › Miembros | Al llegar al límite, "Invitar" se desactiva y explica por qué. |
+
+### 1.7 Roles y permisos
+
+Roles del workspace: **Dueño** (`Workspace.owner`) y los de `WorkspaceMember.role`: **Admin**, **Editor** y **Lector**.
+
+| Acción | Dueño | Admin | Editor | Lector |
+|---|:-:|:-:|:-:|:-:|
+| Ver proyectos, clips y publicaciones | ✓ | ✓ | ✓ | ✓ |
+| Descargar clips | ✓ | ✓ | ✓ | ✓ |
+| Crear proyectos (gasta tokens) | ✓ | ✓ | ✓ | — |
+| Revisar, aprobar y renderizar | ✓ | ✓ | ✓ | — |
+| Publicar y programar | ✓ | ✓ | ✓ | — |
+| Borrar proyectos | ✓ | ✓ | solo los propios | — |
+| Crear y editar brand kits | ✓ | ✓ | ✓ | — |
+| Conectar y desconectar redes sociales | ✓ | ✓ | — | — |
+| Invitar, quitar y cambiar roles | ✓ | ✓ | — | — |
+| Ver saldo | ✓ | ✓ | ✓ | ✓ |
+| Comprar tokens, cambiar plan, ver movimientos | ✓ | ✓ | — | — |
+| Renombrar el workspace | ✓ | ✓ | — | — |
+| Borrar o transferir el workspace | ✓ | — | — | — |
+
+- **Cómo se ve:** lo que el rol no permite se muestra deshabilitado, con un tooltip que dice "Pedile acceso a un admin". Los botones no se ocultan, salvo en Ajustes, donde las secciones de admin no aparecen para Editor ni Lector.
+- **API ⚠️:** hoy la API solo controla que el usuario sea miembro del workspace. No aplica roles.
+
+### 1.8 Estados comunes
+
+- **Cargando:** esqueletos con la forma del contenido. Nunca un spinner de pantalla completa.
+- **Vacío:** una frase de qué va acá, una acción principal y nada más.
+- **Error de red:** un banner arriba del contenido que dice "No pudimos conectar" y tiene un botón Reintentar. Lo que ya se ve queda visible.
+- **Mensajes cortos (toasts):** abajo a la derecha, 5 s. Se usan para confirmar acciones ("Clip descargado") y errores puntuales.
+
+### 1.9 Móvil
+
+- Puntos de corte: < 640 px (móvil), 640–1024 px (tablet), > 1024 px (escritorio).
+- En el móvil se puede hacer todo lo que importa fuera del escritorio: ver estados, revisar y aprobar clips, descargar, publicar, ver saldo y subir un video desde el teléfono.
+- **El editor de clip funciona en una versión simplificada** con un aviso: "Para editar con más detalle, usá una computadora".
+- **Barra superior en el móvil:**
+  - Se ven el logo, el saldo y el avatar.
+  - El selector de workspace y las notificaciones pasan al menú del avatar.
+  - Las pestañas quedan en una fila con scroll horizontal.
+  - **Nuevo proyecto** es un botón fijo abajo a la derecha.
+
+### 1.10 Accesibilidad
+
+- Contraste AA en los dos temas.
+- Foco visible en todos los elementos.
+- Todo se puede usar con el teclado.
+- El reproductor tiene atajos: espacio, ← y →, `I` (marcar inicio) y `O` (marcar fin).
+- El menú de comandos abre con ⌘K o Ctrl+K.
+
+### 1.11 Notificaciones
+
+- **Dentro de la app** (campana) y por **email** en estos casos:
+  - El proyecto está listo para revisar.
+  - El render terminó.
+  - El proyecto falló, con la devolución.
+  - Una publicación falló.
+  - El saldo está por debajo de lo que cuesta un video promedio.
+- El usuario puede apagar los emails por tipo en Perfil › Notificaciones.
+- **API ❌:** no hay modelo de notificaciones ni envío de emails.
+
+---
+
+## 2. Mapa del sitio
+
+```mermaid
+flowchart TD
+    subgraph publico["Público"]
+        login["Iniciar sesión"]
+        registro["Crear cuenta"]
+        verificar["Verificar email"]
+        recuperar["Recuperar contraseña"]
+        invitacion["Aceptar invitación"]
+        precios["Precios"]
+    end
+    subgraph app["App (con sesión)"]
+        onboarding["Bienvenida (primera vez)"]
+        proyectos["Proyectos"]
+        nuevo["Nuevo proyecto"]
+        proyecto["Proyecto"]
+        revision["Revisión de clips"]
+        clips["Clips"]
+        editor["Editor de clip"]
+        publicar["Publicar (panel)"]
+        publicaciones["Publicaciones"]
+        brandkits["Brand kits"]
+        brandkit["Editar brand kit"]
+        uso["Uso y facturación"]
+        ajustes["Ajustes del workspace"]
+        perfil["Perfil"]
+    end
+    login --> proyectos
+    registro --> verificar --> onboarding --> nuevo
+    invitacion --> proyectos
+    proyectos --> nuevo --> proyecto
+    proyectos --> proyecto
+    proyecto --> revision --> clips
+    proyecto --> clips --> editor
+    clips --> publicar --> publicaciones
+    brandkits --> brandkit
+    uso --> precios
+```
+
+**Rutas:**
+
+- **Público:** `/login`, `/registro`, `/verificar`, `/recuperar`, `/invitacion/:token`, `/precios`.
+- **Primera vez:** `/bienvenida`.
+- **Proyectos:** `/proyectos`, `/proyectos/nuevo`, `/proyectos/:id`, `/proyectos/:id/revision`, `/proyectos/:id/clips`, `/proyectos/:id/clips/:clipId`.
+- **Resto:** `/publicaciones`, `/brand-kits`, `/brand-kits/:id`, `/uso`, `/ajustes/*`, `/perfil/*`.
+
+---
+
+## 3. Estado del proyecto: qué ve el usuario
+
+El estado visible se arma con tres campos de `VideoProject`:
+
+- `status`.
+- `pipeline_stage`: la **última etapa terminada**.
+- `pipeline_stage_status`: el estado de cada etapa. Puede ser `running`, `completed`, `failed` o `pending_capacity`.
+
+| Condición | Etiqueta | Color | Texto debajo | Acción principal |
+|---|---|---|---|---|
+| `status=uploaded` | En cola | neutro | "Tu video está en la fila para procesarse." | — |
+| `ingesting`, etapa `uploaded` | Preparando el video | azul | "Paso 1 de 4" | — |
+| `ingesting`, etapa `audio_extracted` | Transcribiendo | azul | "Paso 2 de 4" | — |
+| `ingesting`, etapa `transcribed` | Revisando el contenido | azul | "Paso 3 de 4" | — |
+| `ingesting`, etapa `moderated` | Eligiendo los mejores momentos | azul | "Paso 4 de 4" | — |
+| alguna etapa en `pending_capacity` | En espera | ámbar | "Hay mucha demanda. Tu video sigue en la fila y arranca solo; no tenés que hacer nada." | — |
+| `awaiting_approval` | Listo para revisar | acento | "Encontramos N clips." | **Revisar clips** |
+| `rendering` | Renderizando | azul | "3 de 8 clips listos" | — |
+| `completed` | Listo | verde | "N clips listos." | **Ver clips** |
+| `partial` | Listo con errores | ámbar | "N clips listos y M no se pudieron generar." | **Ver clips** |
+| `failed` | Error | rojo | El mensaje que corresponde según la [sección 4](#4-errores-qué-mensaje-ve-el-usuario) y, si hubo devolución, "Te devolvimos X tokens". | **Crear de nuevo** (abre Nuevo proyecto con la misma configuración) |
+
+- La etapa `clips_selected` (despachando el render) se muestra como "Renderizando".
+- **Un proyecto que muestra "Listo para revisar" nunca vuelve atrás.** Los reintentos internos no se le muestran al usuario: si una etapa reintenta, sigue diciendo lo mismo.
+
+---
+
+## 4. Errores: qué mensaje ve el usuario
+
+El pipeline guarda en `pipeline_error_code` el nombre de la excepción. El frontend lo traduce a estos mensajes:
+
+| `pipeline_error_code` | Mensaje |
+|---|---|
+| `UnsafeContentError`, `ModerationBlockedError` | "No podemos procesar este video porque su contenido no cumple nuestras políticas. Si creés que es un error, escribinos." |
+| `CapacityTimeoutError` | "Hay mucha demanda en este momento y no pudimos procesar tu video. Volvé a intentarlo en unos minutos." |
+| `AINoSpeechDetectedError` | "No encontramos voz en el video. OneCreator elige clips a partir de lo que se dice." |
+| `AIEmptySelectionError` | "No encontramos momentos que funcionen como clips. Probá con otro video o cambiá el criterio." |
+| `SoftTimeLimitExceeded` | "El video tardó demasiado en procesarse. Probá con uno más corto." |
+| `ModerationUnavailableError`, `AIAuthenticationError` y cualquier otro | "Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo." |
+
+Errores al subir el archivo. `InvalidUploadError.code` llega en la respuesta 400 y se muestra junto al campo del archivo:
+
+| Código | Mensaje |
+|---|---|
+| `not_a_video` | "Este archivo no es un video." |
+| `unreadable`, `no_duration`, `no_video_stream` | "No pudimos leer el video. Probá exportarlo de nuevo en MP4." |
+| `too_long` | "El video dura más de lo que permite tu plan (máx. X min)." |
+| `too_large` | "El archivo pesa más de X GB." |
+| `too_small` | "El video es demasiado corto." |
+
+Otras respuestas:
+
+- **402 Pago requerido:** abre el diálogo de [saldo insuficiente](#d2-saldo-insuficiente).
+- **403 por plan:** abre el diálogo de [límite del plan](#d3-límite-del-plan).
+
+---
+
+## 5. Pantallas
+
+### A. Acceso (público)
+
+#### A1. Iniciar sesión — `/login`
+- **Para qué:** entrar con email y contraseña.
+- **Qué muestra:** email, contraseña, "¿Olvidaste tu contraseña?" y "Crear cuenta".
+  - El login social (Google) queda fuera del MVP.
+- **Estados:**
+  - Credenciales incorrectas: "El email o la contraseña no coinciden", sin decir cuál de los dos falló.
+  - Cuenta sin verificar: lleva a A3.
+- **Móvil:** igual, en una sola columna.
+- **API:** ✅ `POST /api/token/` y `/api/token/refresh/` (JWT).
+  - El token de acceso se renueva solo.
+  - Si falla la renovación, se abre el diálogo de [sesión vencida](#d9-sesión-vencida).
+
+#### A2. Crear cuenta — `/registro`
+- **Qué pide:** nombre, email, contraseña y un tilde de términos (`terms_accepted_at`).
+- **Después:** pasa a A3.
+- **API:** ❌ no hay endpoint de registro.
+
+#### A3. Verificar email — `/verificar`
+- **Qué muestra:** "Te mandamos un link a tu email", con la opción **Reenviar** (disponible cada 60 s).
+- **Al abrir el link:** la cuenta queda verificada (`is_email_verified`) y entra a la Bienvenida.
+- **API:** ❌.
+
+#### A4. Recuperar contraseña — `/recuperar`
+- **Paso 1:** pedir el email.
+  - Siempre responde "Si el email existe, te mandamos un link", aunque no exista.
+- **Paso 2:** desde el link, elegir una contraseña nueva.
+- **API:** ❌.
+
+#### A5. Aceptar invitación — `/invitacion/:token`
+- **Qué muestra:** "Juan te invitó a *Estudio Norte* como Editor".
+- **Si no tiene cuenta:** crea la cuenta ahí mismo.
+- **Si tiene cuenta:** inicia sesión.
+- **Estados:** invitación vencida o ya usada.
+- **API:** ❌. Existe `WorkspaceMember.status=pending`, pero no hay endpoints.
+
+#### A6. Precios — `/precios`
+- **Para qué:** comparar planes antes y después de registrarse. Es la misma pantalla que Uso › Planes, sin la barra de la app.
+- **Qué muestra:**
+  - Una tarjeta por plan con los campos de la tabla 1.6.
+  - Un ejemplo de costo: "Un video de 30 min a 720p ≈ 900 tokens".
+- **API:** ❌ no hay endpoint que liste planes.
+
+### B. Inicio
+
+#### B1. Bienvenida (primera vez) — `/bienvenida`
+- **Para qué:** dejar todo listo para el primer video en menos de un minuto.
+- **Pasos (se pueden saltear):**
+  1. Nombre del workspace.
+  2. "¿Para qué lo vas a usar?" (podcast, gaming, educación, otro): define el estilo sugerido del primer proyecto.
+  3. Ir a Nuevo proyecto.
+- **Después:** hay una **lista de primeros pasos** en Proyectos, que se puede cerrar:
+  - Subir tu primer video.
+  - Crear tu brand kit.
+  - Conectar una red.
+  - Invitar a alguien.
+  - Al cerrarla o completarla se marca `tour_completed`.
+- **API:** ⚠️ los campos existen en `User`; falta un endpoint para leer y actualizar el perfil (`/me`).
+
+#### B2. Proyectos — `/proyectos`
+- **Para qué:** ver todo lo que pasa en el workspace y entrar a cada proyecto.
+- **Qué muestra:** una **lista** de proyectos (la vista principal), con:
+  - Miniatura, título, estado (sección 3), origen (archivo o link), duración, cantidad de clips, quién lo creó y fecha relativa.
+  - Arriba: buscador, filtro por estado (Todos, En proceso, Para revisar, Listos, Con error) y orden (recientes).
+- **Vista de grilla:** existe como alternativa y se recuerda por usuario en el navegador.
+- **Acciones por fila:** abrir, renombrar, borrar (según rol).
+- **Estados:**
+  - **Vacío:** "Todavía no hay proyectos" con el botón **Subí tu primer video**, más tres ejemplos de qué se puede pedir con IA.
+  - Los proyectos en proceso se actualizan cada 5 s.
+- **Móvil:** tarjetas apiladas; filtros en un menú.
+- **API:**
+  - ✅ `GET /api/v1/projects/`, ordenado por fecha y sin paginación.
+  - ❌ falta paginar (25 por página) y filtrar por estado del lado del servidor.
+
+### C. Crear
+
+#### C1. Nuevo proyecto — `/proyectos/nuevo`
+- **Para qué:** crear un proyecto en una sola pantalla, sin asistente de varios pasos.
+- **Disposición:** la configuración ocupa la columna izquierda. A la derecha hay un **resumen fijo** con el costo estimado y el botón **Crear proyecto**.
+- **Secciones:**
+  1. **Origen** (pestañas):
+     - **Subir archivo:** arrastrar y soltar, o elegir. Valida tipo, tamaño y duración en el navegador antes de subir.
+     - **Pegar link:** YouTube, Vimeo y otros sitios públicos.
+     - **Describir con IA:** un campo de texto ("Sacá 5 clips de 30 s de las partes más graciosas, subtítulos grandes amarillos"), junto con el archivo o el link.
+       - Envía a `from-prompt`. La configuración que entienda la IA se muestra después, en el proyecto.
+  2. **Qué querés hacer:**
+     - **Sacar clips** (`project_type=repurpose`, por defecto).
+     - **Editar el video completo** (`single_edit`).
+  3. **Formato:**
+     - Formato de salida: 9:16 (por defecto), 1:1 o 16:9.
+     - Resolución: 720p por defecto, 1080p y 4K según el plan.
+  4. **Clips** (solo en "Sacar clips"):
+     - Cantidad máxima: 1–20, por defecto 8.
+     - "¿Qué buscás?": criterio opcional, hasta el máximo de caracteres.
+     - Nivel de IA: Rápido o Inteligente.
+  5. **Estilo:**
+     - Estilo de edición, con tarjetas con ejemplo: Dinámico, Minimalista, Vlog, Hormozi.
+     - Layout (Llenar, Ajustar, Fondo desenfocado, Dividido, PiP, Versus, Quien habla). Cada uno con un dibujo esquemático.
+     - Brand kit: el marcado como default viene preseleccionado.
+  6. **Subtítulos:** activados, tamaño, posición, color, palabras por línea. Se ve una muestra en vivo sobre un fotograma.
+  7. **Inteligencia:**
+     - Seguir caras.
+     - Quitar silencios.
+     - SEO (+5 tokens, según el plan).
+     - "Renderizar sin revisar" (`auto_render_bypass`), apagado por defecto. Al apagarlo, el proyecto se detiene en la revisión.
+- **Opciones avanzadas:** posición del gameplay y cámara manual van en un bloque "Avanzado" cerrado por defecto. Se ve solo con los layouts Dividido o Versus.
+- **Resumen (derecha):**
+  - Duración, resolución, extras, plan (con marca de agua o sin ella), costo estimado y saldo después.
+  - Si no alcanza, el botón cambia a **Comprar tokens**.
+- **Subida:**
+  - Al tocar Crear se muestra una barra de progreso con porcentaje, velocidad y **Cancelar**.
+  - Si se cierra la pestaña durante la subida, el navegador pide confirmación.
+  - Al terminar, se abre la pantalla del proyecto.
+- **Recordar:** la última configuración usada se guarda en el navegador y se propone la próxima vez.
+- **Estados:**
+  - Errores del archivo en el campo (sección 4).
+  - 402 abre [saldo insuficiente](#d2-saldo-insuficiente) y 403 abre [límite del plan](#d3-límite-del-plan).
+  - Prompt vacío: "Contanos qué querés".
+- **Móvil:** una columna; el resumen y el botón quedan fijos abajo.
+- **API:**
+  - ✅ `POST /api/v1/projects/` (multipart) y `POST /api/v1/projects/from-prompt/`.
+  - ❌ no hay campo para elegir la resolución (`render_resolution` hoy solo lo escribe Prompt-to-Edit).
+  - ❌ el render sale en 1080 por defecto y se cobra como 720p.
+  - ❌ falta el endpoint de precios para el estimado.
+  - ⚠️ los links no pasan por la validación de duración del plan.
+
+### D. Proyecto
+
+#### D1. Proyecto — `/proyectos/:id`
+- **Para qué:** seguir el proceso y llegar a los resultados.
+- **Encabezado:**
+  - Título (editable), estado y origen.
+  - Duración, creado por, fecha y costo (reservado, cobrado o devuelto).
+  - Acciones: **Revisar clips** o **Ver clips** según el estado, y un menú con Renombrar, Duplicar configuración y Borrar.
+- **Pestañas:**
+  - **Resumen:** una línea de tiempo del proceso, al estilo de un deploy.
+    - Una fila por etapa (Preparar, Transcribir, Revisar contenido, Elegir clips, Renderizar), cada una con su estado, tiempo y duración.
+    - Si está en espera por demanda, se ve en ámbar con el texto de la sección 3.
+    - Debajo, la **configuración aplicada**. Si vino de un prompt, se muestran el prompt, lo que se aplicó y lo que no se pudo aplicar y por qué (`metadata.pte`).
+  - **Clips:** la pantalla D3, embebida.
+  - **Transcripción:** texto completo con marcas de tiempo, buscable y descargable (.txt y .srt).
+  - **Actividad:** quién hizo qué y movimientos de tokens del proyecto.
+- **Estados:**
+  - En proceso, en espera, para revisar, listo, parcial y error (sección 3).
+  - **Error:** en lugar de la línea de tiempo se ve primero una caja roja con el mensaje y la devolución. La línea de tiempo queda debajo, con la etapa que falló marcada.
+- **Móvil:** las pestañas pasan a un selector y la línea de tiempo queda vertical.
+- **API:**
+  - ✅ `GET /api/v1/projects/:id/`, que incluye `pipeline_stage`, `pipeline_stage_status`, `pipeline_error_code` y `metadata`.
+  - ❌ no hay tiempos por etapa.
+  - ❌ no hay vínculo directo entre el proyecto y su transacción.
+  - ❌ falta un estado "devuelto": hoy una devolución deja la transacción en `FAILED`.
+
+#### D2. Revisión de clips — `/proyectos/:id/revision`
+- **Para qué:** elegir y ajustar los clips antes de pagar el render. Es la pantalla más importante del producto.
+- **Disposición (escritorio):** tres zonas.
+  - **Izquierda: lista de clips sugeridos**, ordenada por puntaje. Cada clip muestra:
+    - Título.
+    - Puntaje de viralidad (0–100) con una barra.
+    - Inicio–fin y duración.
+    - Por qué lo eligió la IA (`ai_reasoning`, desplegable).
+    - Un tilde para incluirlo.
+  - **Centro: reproductor** del video original (proxy). Muestra el clip seleccionado con su recorte en el formato elegido y una línea de tiempo con todos los clips marcados.
+  - **Derecha: transcripción** sincronizada.
+    - Al seleccionar palabras se puede **crear un clip nuevo** o **ajustar** el inicio y el fin del clip actual.
+    - Los bordes se ajustan a palabras completas.
+- **Acciones:**
+  - Incluir o excluir clips.
+  - Ajustar bordes arrastrando en la línea de tiempo o con `I` y `O`.
+  - Renombrar.
+  - Agregar un clip desde la transcripción.
+  - **Renderizar N clips**, que abre [confirmar costo](#d1-confirmar-costo).
+- **Barra inferior fija:** "6 clips seleccionados · 4:12 en total · 126 tokens" y el botón **Renderizar**.
+- **Estados:**
+  - Sin sugerencias (no debería pasar: el pipeline falla con `AIEmptySelectionError`). Por las dudas se muestra "Elegí momentos desde la transcripción".
+  - Proyecto que ya no está en revisión: lleva a Clips.
+- **Móvil:**
+  - Reproductor arriba y lista de clips debajo; la transcripción queda en otra pestaña.
+  - Los bordes se ajustan con botones de ±0,5 s.
+- **API:**
+  - ✅ `GET paper-edit-data`: proxy, transcripción, sugerencias y metadata.
+  - ✅ `POST approve-paper-edit`: segmentos aprobados; cobra y responde 402 si no hay saldo.
+  - ⚠️ esa segunda reserva no se liquida nunca (ver la [documentación de IA](../ia/01-creacion-de-proyecto.md)).
+
+#### D3. Clips — `/proyectos/:id/clips`
+- **Para qué:** ver, descargar y publicar los resultados.
+- **Qué muestra:** una grilla de tarjetas verticales. Cada una tiene:
+  - Video con reproducción al pasar el mouse.
+  - Título, duración, puntaje y estado (Renderizando, Listo, Publicado, Error).
+  - Redes donde está publicado o programado.
+- **Acciones por clip:**
+  - **Descargar**.
+  - **Publicar** (abre el panel E1).
+  - **Editar** (D4).
+  - Copiar link.
+  - Borrar.
+- **Acciones generales:** **Descargar todo** (.zip) y **Publicar varios** (selección múltiple).
+- **Estados:**
+  - Renderizando: una tarjeta con esqueleto y "Renderizando…".
+  - Error: una tarjeta roja con **Reintentar**. Reintentar no cobra si el error fue nuestro.
+- **Móvil:** dos columnas; las acciones se abren en una hoja inferior.
+- **API:**
+  - ✅ los clips llegan dentro del proyecto.
+  - ❌ falta un link de descarga firmado por clip: `s3_object_key` no es una URL.
+  - ❌ falta reintentar el render de un clip.
+  - ❌ falta el .zip.
+
+#### D4. Editor de clip — `/proyectos/:id/clips/:clipId`
+- **Decisión del MVP:** el editor cambia **recorte y título** del clip y vuelve a renderizar con la configuración del proyecto.
+  - Cambiar el estilo (layout, subtítulos, brand kit) se hace en el proyecto y aplica a todos sus clips ("Renderizar todo de nuevo", con costo).
+  - El estilo por clip y las capas (texto, imagen, música) quedan para después del MVP. El modelo `ClipLayer` ya existe.
+- **Qué muestra:**
+  - Reproductor del clip en su formato.
+  - Línea de tiempo con forma de onda y bordes arrastrables.
+  - Transcripción del tramo.
+  - Título.
+- **Acciones:** **Guardar y renderizar** (muestra el costo), Descartar cambios y Descargar.
+- **Móvil:** versión simplificada, con el recorte por botones (±0,5 s) y el aviso de la sección 1.9.
+- **API:**
+  - ❌ no hay endpoint de clip: los clips solo se leen dentro del proyecto.
+  - ❌ falta volver a renderizar un clip, con su costo.
+  - ❌ la vista previa sin render (PTE-03) no existe.
+
+### E. Publicar
+
+#### E1. Publicar (panel lateral sobre Clips)
+- **Para qué:** publicar uno o varios clips en una o varias redes, ahora o programado.
+- **Qué muestra:**
+  1. **Redes:** TikTok, Instagram Reels y YouTube Shorts, según las cuentas conectadas.
+     - Una red sin cuenta muestra **Conectar** (abre [conectar red](#d6-conectar-red-social)).
+     - Sin crossposting en el plan, se puede elegir una sola.
+  2. **Texto por red:**
+     - Caption y hashtags, con contador de caracteres según el límite de cada red.
+     - Si el proyecto pidió SEO, vienen precargados (`generated_caption` y `generated_hashtags`), marcados como "Sugerido por IA", y son editables.
+     - Mientras se genera el SEO: esqueleto con "Generando texto…".
+  3. **Cuándo:**
+     - **Ahora** o **Programar** (fecha y hora). Programar requiere `allow_scheduling`.
+     - Se muestra la zona horaria.
+  4. **Requisitos de TikTok (obligatorios, TikTok los audita para publicar directo):**
+     - Nombre de la cuenta destino visible.
+     - Privacidad en un desplegable **sin valor por defecto**, con las opciones que permite la cuenta.
+     - "Permitir comentarios, dúos y stitch" **desmarcados** por defecto, y deshabilitados si la cuenta los tiene apagados.
+     - Divulgación de contenido comercial: "Tu marca" o "Contenido de marca".
+     - El texto "Al publicar, aceptás la confirmación de uso de música de TikTok".
+     - Vista previa del clip.
+     - El botón Publicar queda deshabilitado hasta elegir la privacidad.
+  5. **Chequeo por red:** una lista corta de lo que cumple el clip para cada red (formato 9:16, duración máxima, texto dentro del límite).
+- **Botón:** **Publicar** o **Programar**. Al terminar se ve un toast y el clip muestra la red como "Programado" o "Publicando".
+- **Estados:** cuenta desconectada o vencida (pedir reconectar) y texto por encima del límite.
+- **Móvil:** el panel ocupa toda la pantalla.
+- **API:**
+  - ❌ ningún endpoint crea un `ScheduledPost`: hoy solo se crean desde el admin.
+  - ❌ falta conectar redes (perfil de Ayrshare por workspace).
+  - ❌ falta el beat que despacha los programados.
+  - ✅ cuando el post existe, el SEO se genera solo (señal) y la publicación usa Ayrshare.
+
+#### E2. Publicaciones — `/publicaciones`
+- **Para qué:** ver todo lo publicado y lo que va a salir.
+- **Vistas:**
+  - **Calendario** (semana o mes, por defecto la semana), con cada publicación como una ficha con miniatura, red y hora.
+  - **Lista**, con filtros por estado (Borrador, Programado, En cola, Publicando, Publicado, Error) y por red.
+- **Detalle (panel lateral):**
+  - Clip, red, texto, fecha y estado.
+  - Si falló, el error legible.
+  - Si salió, el link al post.
+  - Acciones: Editar y Reprogramar (solo antes de `QUEUED`), Cancelar, Reintentar (si falló).
+- **Arrastrar en el calendario** para reprogramar.
+- **Estados:** vacío ("Todavía no programaste nada" con el botón **Ir a mis clips**).
+- **Móvil:** solo la lista, agrupada por día.
+- **API:**
+  - ❌ todo: listar, editar, cancelar y reintentar.
+  - ⚠️ `error_log` de la publicación guarda el texto de la excepción; hay que traducirlo a un mensaje legible.
+  - ⚠️ un post puede quedar trabado en `PROCESSING` (ver la [documentación de IA](../ia/05-seo-y-publicacion.md)).
+
+### F. Brand kits
+
+#### F1. Brand kits — `/brand-kits`
+- **Qué muestra:** tarjetas con los colores, el logo y el nombre de cada kit, y una marca "Por defecto".
+- **Acciones:** crear, duplicar, marcar como default y borrar.
+- **Vacío:** "Creá tu brand kit para que todos tus clips salgan con tu marca".
+- **API:** ✅ `GET/POST/PATCH/DELETE /api/v1/brand-kits/`.
+
+#### F2. Editar brand kit — `/brand-kits/:id`
+- **Campos:**
+  - Nombre y descripción.
+  - 3 colores (principal, secundario, acento) con selector y valor hex.
+  - Fuente principal y secundaria (subir .ttf/.otf, con muestra).
+  - Logo de marca de agua (PNG, con posición de muestra).
+  - Intro y outro (video corto, con reproductor).
+  - Marcar como default.
+- **A la derecha:** vista previa de un fotograma de clip con subtítulos y logo usando el kit.
+- **API:**
+  - ✅ los campos existen.
+  - ⚠️ que haya un solo default por workspace no está garantizado en el backend.
+
+### G. Uso y facturación — `/uso`
+
+Solo Dueño y Admin. El resto ve únicamente el saldo, en la barra.
+
+#### G1. Resumen
+- **Tarjetas:**
+  - Saldo disponible, con el botón **Comprar tokens**.
+  - Reservado.
+  - Gastado este mes.
+  - Plan actual, con su renovación y **Cambiar plan**.
+- **Gráfico:** consumo por día del mes, con barras por tipo (proyectos, renders y SEO).
+- **API:** ❌ no hay endpoints de wallet ni de transacciones.
+
+#### G2. Movimientos
+- **Tabla:** fecha, concepto (con link al proyecto), tipo y monto (+ o −, en Geist Mono).
+- **Estados de cada movimiento:**
+
+| `Transaction` | Se muestra como |
+|---|---|
+| `DEPOSIT` + `COMPLETED` | Compra |
+| `SPEND` + `RESERVED` | Reservado |
+| `SPEND` + `COMPLETED` | Cobrado |
+| `REFUND` + `COMPLETED` | Devolución |
+| `SPEND` + `FAILED` | Devuelto (la reserva se liberó) |
+| `PENDING` | Pendiente |
+
+- **Filtros:** por tipo y por mes. Se puede exportar a CSV.
+- **API:** ❌.
+
+#### G3. Planes
+- **Qué muestra:** igual que A6, con el plan actual marcado.
+  - Subir de plan se aplica al momento.
+  - Bajar de plan se aplica al fin del período, con aviso de qué se pierde.
+- **API:** ❌ (PAY-01/02/03 del backlog).
+
+#### G4. Comprar tokens
+- **Qué muestra:** 3 paquetes fijos con el precio en moneda local y un campo de cantidad libre.
+- **Al pagar:** se va al checkout del proveedor de pagos y se vuelve a `/uso?compra=ok`, con un toast y el saldo actualizado.
+- **API:** ❌.
+
+### H. Ajustes del workspace — `/ajustes`
+
+Navegación por secciones a la izquierda dentro de la página; en el móvil, una lista.
+
+#### H1. General
+- Nombre del workspace (Dueño y Admin).
+- **Zona de peligro** (solo el Dueño):
+  - Transferir el workspace.
+  - Borrar el workspace, escribiendo su nombre para confirmar.
+- **API:** ❌ no hay endpoints de workspace.
+
+#### H2. Miembros
+- **Tabla:** nombre, email, rol (editable por el Admin) y estado (Activo, Invitación pendiente).
+- **Acciones:** **Invitar** por email con rol, reenviar la invitación, quitar al miembro.
+- **Contador:** "4 de 5 miembros" según `max_members`.
+- **API:** ❌ (el modelo existe).
+
+#### H3. Redes sociales
+- **Qué muestra:** una fila por red con estado (Conectada como @usuario, Vencida, Sin conectar) y la acción **Conectar**, **Reconectar** o **Desconectar**.
+- **API:** ❌. Hoy existe `Workspace.ayrshare_profile_key`, pero no hay flujo para conectar.
+
+#### H4. Valores por defecto
+- **No existe como pantalla en el MVP.**
+  - El default es el brand kit marcado.
+  - El resto de la configuración se recuerda en el navegador (C1).
+
+### I. Cuenta — `/perfil`
+
+#### I1. Perfil
+- **Campos:** nombre, email (cambiarlo pide verificar de nuevo), contraseña y apariencia (Sistema, Oscuro, Claro).
+- **Salir:** cerrar sesión, o cerrar sesión en todos los dispositivos.
+- **API:** ❌ (`/me`).
+
+#### I2. Notificaciones
+- **Qué muestra:** un interruptor de email por cada tipo de la sección 1.11.
+- **API:** ❌.
+
+### J. Piezas transversales
+
+#### J1. Menú de comandos (⌘K)
+- **Buscar** proyectos por título.
+- **Ir a:** cualquier pestaña.
+- **Acciones:** Nuevo proyecto, Comprar tokens, Cambiar tema, Cambiar de workspace.
+
+#### J2. Notificaciones (campana)
+- Un panel con las últimas 20, con un punto en las no leídas y "Marcar todo como leído".
+- Cada notificación lleva a su proyecto o publicación.
+
+#### J3. Selector de workspace
+- **Qué muestra:** los workspaces del usuario, con su plan y su rol en cada uno, y la opción **Crear workspace**.
+- **Al cambiar:** recarga los datos del workspace elegido.
+- **API:**
+  - ❌ hoy `create` toma "el workspace del usuario" sin elegir cuál.
+  - ❌ falta enviar el workspace activo en cada pedido.
+
+#### J4. Toasts
+- Ver la sección 1.8.
+
+### K. Sistema
+
+- **K1. No encontrado (404):** "Esta página no existe", con un botón a Proyectos.
+- **K2. Sin permiso (403):** "No tenés acceso a esto. Pedile a un admin del workspace."
+- **K3. Error del servidor (500):** "Algo falló de nuestro lado", con un botón Reintentar.
+- **K4. Sin conexión:** un banner fijo, "Sin conexión. Reintentando…", que se va solo.
+- **K5. Mantenimiento:** una página simple con el horario estimado.
+
+---
+
+## 6. Diálogos
+
+#### D1. Confirmar costo
+- **Se abre:** antes de renderizar, de volver a renderizar y de comprar extras.
+- **Qué muestra:** el detalle (base × resolución + extras − descuento), el total, el saldo después y **Confirmar**.
+
+#### D2. Saldo insuficiente
+- **Se abre:** con una respuesta 402, o antes, si el estimado ya no alcanza.
+- **Qué muestra:** "Necesitás 240 tokens y tenés 120", con **Comprar tokens** (G4) y **Cancelar**.
+
+#### D3. Límite del plan
+- **Se abre:** con un 403 de precios.
+- **Qué muestra:** qué límite se pasó (duración, resolución o SEO), qué plan lo permite, **Ver planes** y **Cambiar opciones** (vuelve al formulario con el campo marcado).
+
+#### D4. Borrar proyecto
+- **Qué muestra:** "Se borran el video, los clips y las publicaciones programadas. No se puede deshacer."
+- **Si hay publicaciones programadas:** las lista.
+- **No se devuelve nada de lo ya cobrado.**
+
+#### D5. Contenido bloqueado
+- **Qué es:** el mensaje de moderación de la sección 4, con un link para escribir a soporte.
+- **No se muestra** qué categoría disparó el bloqueo.
+
+#### D6. Conectar red social
+- **Qué muestra:** explica qué permisos pide la red y abre la ventana de la red.
+- **Al volver:** muestra la cuenta conectada.
+
+#### D7. Invitar miembro
+- **Qué pide:** email (uno o varios separados por coma) y rol. Muestra cuántos lugares quedan en el plan.
+
+#### D8. Cambios sin guardar
+- **Se abre:** al salir del editor de clip o de un brand kit con cambios.
+- **Opciones:** **Descartar** o **Seguir editando**.
+
+#### D9. Sesión vencida
+- **Se abre:** cuando no se pudo renovar el token.
+- **Qué hace:** pide la contraseña sin perder la pantalla actual.
+
+---
+
+## 7. Fuera del MVP (decidido)
+
+- Plantillas por nicho (EXTRA-01).
+- Miniaturas con IA (`has_thumbnail_engine`).
+- Estilo por clip y capas en el editor (texto, imagen, música).
+- Vista previa sin render (PTE-03).
+- Métricas de rendimiento de las publicaciones (vistas, likes).
+- Comentarios y colaboración en tiempo real.
+- Login social y SSO.
+- Claves de API para integraciones.
+- App móvil nativa.
+- Landing de marketing (este mapa empieza en Precios y Login).
+- **Herramientas internas** (overrides de moderación, regenerar SEO, re-despachar proyectos): siguen en el admin de Django.
+
+---
+
+## 8. Huecos de backend
+
+Lo que el frontend necesita y hoy no existe, en orden de prioridad:
+
+| # | Qué falta | Pantallas que bloquea | Prioridad |
+|---|---|---|---|
+| 1 | Registro, verificación de email y recuperar contraseña | A2, A3, A4 | P0 |
+| 2 | `GET/PATCH /me` con workspaces, rol en cada uno y workspace activo | Barra, B1, J3, I1 | P0 |
+| 3 | Roles aplicados en la API (tabla 1.7) | Todas | P0 |
+| 4 | Wallet y transacciones (`GET /wallet`, `GET /transactions`), con vínculo al proyecto y estado "devuelto" visible | Barra, D1, G1, G2 | P0 |
+| 5 | Link de descarga firmado por clip | D3, D4 | P0 |
+| 6 | Endpoint de precios (fórmula y planes) para el estimado | C1, A6, G3 | P0 |
+| 7 | Campo `render_resolution` al crear, y alinear el render por defecto con el precio (hoy sale en 1080 y se cobra 720p) | C1 | P0 |
+| 8 | Crear, listar, editar, cancelar y reintentar `ScheduledPost` | E1, E2 | P1 |
+| 9 | Beat que corra `dispatch_scheduled_posts_batch` | E1, E2 | P1 |
+| 10 | Conectar redes por workspace (Ayrshare) | E1, H3 | P1 |
+| 11 | Endpoint de clip: renombrar, recortar, volver a renderizar y reintentar | D3, D4 | P1 |
+| 12 | Planes, checkout y webhooks de pago (PAY-01/02/03) | G3, G4 | P1 |
+| 13 | Invitaciones: crear, reenviar y aceptar | A5, H2 | P1 |
+| 14 | Paginación y filtro por estado en proyectos | B2 | P1 |
+| 15 | Tiempos por etapa del pipeline | D1 | P2 |
+| 16 | Notificaciones (modelo y emails) | J2, I2 | P2 |
+| 17 | Descargar todo en .zip | D3 | P2 |
+
+---
+
+## 9. Decisiones para validar con el equipo
+
+Están tomadas para poder diseñar. Si alguien no está de acuerdo, se cambian acá primero:
+
+1. **Barra superior sin barra lateral.** Hay solo cinco secciones, así que no hace falta más.
+2. **Oscuro por defecto.**
+3. **El editor de clip del MVP solo recorta y renombra.** El estilo se cambia en el proyecto.
+4. **"Renderizar sin revisar" viene apagado**, así el usuario siempre ve los clips antes de pagar el render.
+5. **Lo que el plan no incluye se muestra bloqueado, no oculto.**
+6. **Al borrar un proyecto no se devuelve lo cobrado.**
+7. **Valores por defecto en el navegador**, sin pantalla propia.
