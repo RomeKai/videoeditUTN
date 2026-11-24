@@ -13,6 +13,7 @@ from apps.videos.models import AIUsageRecord, VideoProject
 from apps.videos.services.ai.contracts import AIExecutionResult, ProjectConfig, ProviderUsage
 from apps.videos.services.ai.errors import AIServerError
 from apps.videos.services.ai.prompt_validator import ConfigValidator, apply_prompt_to_project
+from apps.videos.tests.test_capacity_pipeline import CapacityHarness
 from apps.videos.tests.test_ingestion_pipeline import IngestionHarness
 
 User = get_user_model()
@@ -244,3 +245,119 @@ class IngestionIntegrationTests(IngestionHarness, TestCase):
         project.refresh_from_db()
         self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
         self.assertEqual(project.metadata["pte"]["status"], "failed")
+
+
+class TransientParserErrorTests(ApplyPromptTests):
+    """Review of #86: a 429/503 on both models must not lose the user's prompt."""
+
+    def test_a_transient_error_is_raised_while_the_task_can_retry(self):
+        error = AIServerError("down")
+        error.usage_attempts = [ProviderUsage(provider="gemini", model="m", role="primary", error_code="AIServerError")]
+        from apps.videos.services.ai.prompt_validator import PromptParseRetry
+
+        with patch(PARSER) as parser_cls:
+            parser_cls.return_value.parse.side_effect = error
+            with self.assertRaises(PromptParseRetry):
+                apply_prompt_to_project(self.project.pk, can_retry=True)
+
+        self.project.refresh_from_db()
+        self.assertNotIn("pte", self.project.metadata)  # the next attempt parses again
+        self.assertEqual(AIUsageRecord.objects.filter(project=self.project, stage="prompt_parse").count(), 1)
+
+    def test_a_definitive_error_fails_at_once_even_with_retries_left(self):
+        from apps.videos.services.ai.errors import AIAuthenticationError
+
+        with patch(PARSER) as parser_cls:
+            parser_cls.return_value.parse.side_effect = AIAuthenticationError("bad key")
+            outcome = apply_prompt_to_project(self.project.pk, can_retry=True)
+
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["error_code"], "AIAuthenticationError")
+
+
+class TransientParserIngestionTests(IngestionHarness, TestCase):
+    def test_the_ingestion_retries_and_applies_the_prompt(self):
+        project = self.make_project(metadata={"pte_prompt": PROMPT, "pte_explicit": []})
+
+        with patch(PARSER) as parser_cls:
+            parser_cls.return_value.parse.side_effect = [AIServerError("down"), parsed(max_clips=2)]
+            self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertEqual(parser_cls.return_value.parse.call_count, 2)
+        self.assertEqual(project.metadata["pte"]["status"], "applied")
+        self.assertEqual(project.metadata["max_clips"], 2)
+        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
+        self.assertEqual(self.mock_select.call_args.kwargs["max_clips"], 2)
+
+    def test_after_the_last_retry_the_ingestion_goes_on_with_the_defaults(self):
+        from apps.videos.tasks import PTE_PARSE_MAX_RETRIES
+
+        project = self.make_project(metadata={"pte_prompt": PROMPT})
+        with patch(PARSER) as parser_cls:
+            parser_cls.return_value.parse.side_effect = AIServerError("down")
+            self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertEqual(parser_cls.return_value.parse.call_count, PTE_PARSE_MAX_RETRIES + 1)
+        self.assertEqual(project.metadata["pte"]["status"], "failed")
+        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
+
+    def test_parser_retries_never_spend_the_retries_the_stages_need(self):
+        from apps.videos.tests.test_ingestion_pipeline import selection_result
+
+        project = self.make_project(metadata={"pte_prompt": PROMPT})
+        self.mock_select.side_effect = [AIServerError("down")] * 4 + [selection_result()]
+        with patch(PARSER) as parser_cls:
+            parser_cls.return_value.parse.side_effect = AIServerError("down")
+            self.run_task(project)
+
+        project.refresh_from_db()
+        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
+        self.assertEqual(self.mock_select.call_count, 5)
+        self.assertEqual(project.pipeline_attempts, 4)  # only the selection failures count
+
+
+class ParserCapacityTests(CapacityHarness, TestCase):
+    """AICORE-11: the parser's LLM call reserves capacity like every other call."""
+
+    def test_no_room_parks_the_project_before_parsing_and_resumes_later(self):
+        harness = self
+        project = harness.make_project(metadata={"pte_prompt": PROMPT, "pte_explicit": []})
+        harness.store.denials = [30.0]
+
+        with patch(PARSER) as parser_cls:
+            parser_cls.return_value.parse.return_value = parsed(max_clips=2)
+            harness.run_task(project)
+            project.refresh_from_db()
+            parser_cls.return_value.parse.assert_not_called()
+            harness.requeue.assert_called_once()
+            self.assertEqual(project.pipeline_stage_status.get("audio_extracted"), "pending_capacity")
+
+            harness.run_task(project)  # what the re-queued message runs
+
+        project.refresh_from_db()
+        parser_cls.return_value.parse.assert_called_once()
+        self.assertEqual(project.metadata["pte"]["status"], "applied")
+        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
+        parser_reserve = harness.store.reserves[1]
+        self.assertTrue(any("gemini" in key for key in parser_reserve))
+
+
+class ParserCapacityTimeoutTests(CapacityHarness, TestCase):
+    def test_past_the_maximum_wait_the_project_goes_on_with_its_settings(self):
+        from django.test import override_settings
+
+        project = self.make_project(metadata={"pte_prompt": PROMPT, "pte_explicit": []})
+        self.store.denials = [80.0, 80.0]  # only the parser is denied; the stages get room
+
+        with patch(PARSER) as parser_cls, override_settings(AI_CAPACITY_MAX_WAIT_SECONDS=100):
+            self.run_task(project)
+            self.run_task(project)  # the re-queued run: 80 + 80 > 100
+
+        project.refresh_from_db()
+        parser_cls.return_value.parse.assert_not_called()
+        self.assertEqual(project.metadata["pte"]["status"], "failed")
+        self.assertEqual(project.metadata["pte"]["error_code"], "CapacityTimeoutError")
+        self.assertIsNone(project.metadata.get("capacity_wait"))
+        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
