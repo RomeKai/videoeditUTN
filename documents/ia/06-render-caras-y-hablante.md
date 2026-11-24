@@ -16,7 +16,7 @@ Este documento cubre cómo se renderiza un clip: el recorte al formato y la reso
 | `GamingLayout`, `camera_size`, `static_box`, `tracked_box` | [layouts/gaming.py](../../back/apps/videos/services/layouts/gaming.py) | Cámara arriba y gameplay abajo. |
 | `ManualCamera`, `preset_region`, `manual_box`, `fit_size`, `place` | [layouts/camera.py](../../back/apps/videos/services/layouts/camera.py) | Qué región de la fuente muestra la cámara en `split` y `versus`. Python puro. |
 | `BlurredLayout` | [layouts/blur_pip.py](../../back/apps/videos/services/layouts/blur_pip.py) | Fondo desenfocado y primer plano nítido. |
-| `VersusLayout`, `versus_boxes`, `ActiveSpeakerLayout` | [layouts/pro.py](../../back/apps/videos/services/layouts/pro.py) | Dos mitades, y cámara que sigue a quien habla. |
+| `VersusLayout`, `versus_size`, `versus_boxes`, `pane_size`, `ActiveSpeakerLayout` | [layouts/pro.py](../../back/apps/videos/services/layouts/pro.py) | Dos mitades, y cámara que sigue a quien habla. |
 | `get_face_detector`, `_SharedDetector`, `FaceTracker` | [services/face_tracker.py](../../back/apps/videos/services/face_tracker.py) | Detector MediaPipe compartido por proceso, muestreo del clip, camino de encuadre. |
 | `Detection`, `FaceTrack`, `IoUTracker`, `FaceTracks`, `sampling_fps` | [services/face_tracking.py](../../back/apps/videos/services/face_tracking.py) | Asociación de caras en el tiempo con ids estables y elección de la cara a encuadrar. Python puro. |
 | `EMASmoothing`, `interpolate_gaps`, `TrackingPath` | [services/tracking_utils.py](../../back/apps/videos/services/tracking_utils.py) | Suavizado sin retraso, relleno de huecos e interpolación por frame. |
@@ -91,11 +91,11 @@ sequenceDiagram
 | `pip` | `FitLayout` | No | Igual que `fit`: no hay layout PiP propio, ni región de cámara. |
 | `blurred` | `BlurredLayout` | Con `use_facetracking` | Fondo desenfocado (sigma 30) y oscurecido; primer plano al ancho, con recorte vertical que sigue la y de la cara. |
 | `split` | `GamingLayout` | Con `use_facetracking`, solo en la región elegida y sin cámara manual | Cámara arriba (35 % del alto) según la [cámara](#cámara-región-y-encuadre-manual); gameplay abajo (65 %) según `gameplay_position`. |
-| `versus` | `VersusLayout` | No | Mitad izquierda arriba y mitad derecha abajo, cada una recortada al aspecto de su panel. La cámara manual encuadra las dos. |
+| `versus` | `VersusLayout` | No | Mitad izquierda arriba y mitad derecha abajo, cada una recortada al aspecto de su panel con al menos el 60 % de su alto. La cámara manual encuadra las dos. |
 | `active` | `ActiveSpeakerLayout` | Siempre | Sigue a quien habla. Sin caras, o ante cualquier error, recorte centrado. |
 
 - `BaseLayout.tracking_fps` devuelve `sampling_fps(editing_style)`: cada layout que sigue caras muestrea según el estilo de edición (ver la tabla de muestreo más abajo).
-- `ActiveSpeakerLayout` no mira `use_facetracking`: siempre llama a `FaceTracker().track_faces`, porque sin caras no sabe quién habla. En C1, con el layout "Quien habla" el switch "Seguir caras" se muestra prendido y deshabilitado. Si no hay tracks o el camino queda vacío, usa `_centered`. Cualquier excepción registra `layout.active_speaker_failed` y también cae en `_centered`. El encuadre usa todo el alto de la fuente con el aspecto destino y mueve la x con `path.get_at(t)`; registra `layout.active_speaker`.
+- `ActiveSpeakerLayout` no mira `use_facetracking`: siempre llama a `FaceTracker().track_faces`, porque sin caras no sabe quién habla. En C1, con el layout "Quien habla" el switch "Seguir caras" se muestra prendido y deshabilitado. La vista previa (`render_preview`) pasa `static=True` a `compose_clip`: ningún layout sigue caras ni hablante, y `active` usa directamente `_centered`. El render final no cambia. Si no hay tracks o el camino queda vacío, usa `_centered`. Cualquier excepción registra `layout.active_speaker_failed` y también cae en `_centered`. El encuadre usa todo el alto de la fuente con el aspecto destino y mueve la x con `path.get_at(t)`; registra `layout.active_speaker`.
 - `VideoProject.speaker_tracking` no se lee en el render: seguir a quien habla es el layout `active`. Por eso, al crear, `speaker_tracking=true` sin `render_layout` ni `layout` en el pedido deja `render_layout='active'` (`VideoProjectSerializer.create`). Prompt-to-Edit hace lo mismo en `ConfigValidator` ([ver 04-prompt-to-edit](04-prompt-to-edit.md#qué-puede-pedir-un-prompt)). Un layout explícito siempre gana.
 - `gameplay_position` elige la franja vertical del gameplay cuando la fuente es más ancha que el panel: `left`, `center` o `right`. Cualquier otro valor es el centro. El análisis de movimiento que elegía la franja sola (`GameplaySaliencyDetector`) se quitó: con las opciones del modelo no había forma de pedirlo.
 
@@ -106,7 +106,7 @@ Solo `split` y `versus` tienen una región de cámara. Los demás layouts (`fill
 **Cámara manual** (`ManualCamera.from_coords`). Está activa solo si alguno de `manual_camera_x`, `manual_camera_y` o `manual_camera_zoom` cambió de su default (0,5, 0,2 y 1). Con los tres en el default, el layout encuadra como siempre.
 
 - `x` e `y` (de 0 a 1) son el centro del recorte. Un valor fuera de rango se lleva al borde; uno que no es un número cuenta como el default.
-- El zoom va de 1 a `MAX_ZOOM` (4). Zoom 1 es el recorte más grande con el aspecto del panel que entra en la fuente (`fit_size`); zoom 2 es la mitad de ancho y de alto.
+- El zoom va de 1 a `MAX_ZOOM` (4). Zoom 1 es el tamaño del recorte que el layout usa solo (`camera_size` en `split`, `versus_size` en `versus`): prender la cámara manual mueve el encuadre sin alejarlo. Zoom 2 es la mitad de ancho y de alto.
 - `manual_box` centra el recorte en (x, y) y lo corre hasta que entra entero en la fuente (o en la mitad, en `versus`).
 
 **`split`** (`GamingLayout._camera`) elige el recorte de la cámara en este orden:
@@ -114,7 +114,7 @@ Solo `split` y `versus` tienen una región de cámara. Los demás layouts (`fill
 ```mermaid
 flowchart TD
     A["Panel de cámara de split"] --> B{"Cámara manual activa?"}
-    B -- "sí" --> C["manual_box sobre toda la fuente: recorte fijo, sin seguir caras"]
+    B -- "sí" --> C["manual_box: tamaño de camera_size dividido por el zoom, centrado en x e y, sin seguir caras"]
     B -- "no" --> D["preset_region(camera_selection_position)"]
     D --> E{"use_facetracking?"}
     E -- "sí" --> F["FaceTracker.generate_path solo dentro de la región"]
@@ -130,8 +130,16 @@ flowchart TD
 
 **`versus`** (`versus_boxes`) pone la mitad izquierda de la fuente arriba y la derecha abajo.
 
-- Cada mitad se recorta con el aspecto de su panel, centrada. Antes cada mitad entera se escalaba por el alto y el panel no llenaba el ancho (por ejemplo, 284 de 360 px en 9:16).
-- La cámara manual encuadra las dos mitades igual: `x` e `y` se miden dentro de cada mitad y el recorte no sale de ella. Sirve para acercar las caras o subir el encuadre.
+- `versus_size`: cada mitad se recorta con el aspecto de su panel, pero nunca con menos del 60 % de su alto (`VERSUS_MIN_HEIGHT`). Un panel ancho (1:1, 16:9) dejaría una franja fina y cortaría las cabezas; ahí el recorte conserva el 60 % y `pane_size` lo encaja en el panel con negro a los costados.
+- Sin cámara manual, el recorte va centrado en el ancho de la mitad y a la altura del 40 % (`VERSUS_CENTER_Y`), corrido hasta que entra: las caras suelen estar arriba.
+- Antes cada mitad entera se escalaba por el alto y el panel no llenaba el ancho (por ejemplo, 284 de 360 px en 9:16).
+- La cámara manual encuadra las dos mitades igual: `x` e `y` se miden dentro de cada mitad, el zoom divide el tamaño de `versus_size` y el recorte no sale de la mitad.
+
+| Fuente 1920 × 1080, salida 1080p | Recorte de cada mitad (960 de ancho) | Panel |
+|----------------------------------|--------------------------------------|-------|
+| 9:16 (paneles de 608 × 540) | 852 de alto (79 %), desde y = 6 | Lleno |
+| 1:1 (paneles de 1080 × 540) | 648 de alto (60 %), desde y = 108 | 800 × 540, con negro a los costados |
+| 16:9 (paneles de 1920 × 540) | 648 de alto (60 %), desde y = 108 | 800 × 540, con negro a los costados |
 - `camera_selection_position` y `gameplay_position` no se usan en `versus`: siempre hay dos personas, una por mitad.
 
 ## Flujo: face tracking v2
