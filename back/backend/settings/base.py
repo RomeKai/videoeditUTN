@@ -257,6 +257,21 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_WORKER_MAX_TASKS_PER_CHILD = env.int('CELERY_WORKER_MAX_TASKS_PER_CHILD', default=50)
 CELERY_WORKER_MAX_MEMORY_PER_CHILD = env.int('CELERY_WORKER_MAX_MEMORY_PER_CHILD', default=0) or None
 
+# Clip previews (PTE-03): free, temporary, low-resolution renders of a clip.
+# Each one expires PREVIEW_TTL_SECONDS after it is ready; a workspace can have
+# at most PREVIEW_MAX_ACTIVE_PER_WORKSPACE previews pending at the same time
+# (they cost compute but no tokens). Expired ones are deleted by the
+# cleanup_expired_previews task (Celery Beat) and on every new request.
+PREVIEW_HEIGHT = env.int('PREVIEW_HEIGHT', default=360)
+PREVIEW_TTL_SECONDS = env.int('PREVIEW_TTL_SECONDS', default=3600)
+PREVIEW_MAX_ACTIVE_PER_WORKSPACE = env.int('PREVIEW_MAX_ACTIVE_PER_WORKSPACE', default=3)
+CELERY_BEAT_SCHEDULE = {
+    'cleanup-expired-previews': {
+        'task': 'apps.videos.tasks.cleanup_expired_previews',
+        'schedule': 15 * 60,
+    },
+}
+
 # --- AI capacity (AICORE-11, ADR-012 D-C4) ---
 # Token buckets in Valkey reserved before every Groq/LLM call of the ingestion
 # pipeline. Off until the limits of the environment are configured (runbook).

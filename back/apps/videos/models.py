@@ -381,3 +381,42 @@ class ModerationOverride(models.Model):
 
     def __str__(self):
         return f"Override de moderación {self.project_id} ({self.created_at:%Y-%m-%d})"
+
+class ClipPreview(models.Model):
+    """
+    PTE-03: low-resolution, free, temporary render of a clip, so the user sees
+    the layout and subtitles before paying for the final render.
+
+    - Rendered at PREVIEW_HEIGHT (360p) with no face tracking and no silence
+      removal, to stay fast; it never touches the wallet.
+    - It expires PREVIEW_TTL_SECONDS after it is ready: the API stops serving
+      it and ``cleanup_expired_previews`` deletes the row and its file.
+    """
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pendiente'
+        RENDERING = 'rendering', 'Renderizando'
+        READY = 'ready', 'Lista'
+        FAILED = 'failed', 'Error'
+
+    ACTIVE_STATUSES = (Status.PENDING, Status.RENDERING)
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    clip = models.ForeignKey(VideoClip, on_delete=models.CASCADE, related_name='previews')
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='+',
+    )
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    # Local path (USE_R2=False) or R2 object key of the rendered file.
+    storage_key = models.CharField(max_length=1024, blank=True, default='')
+    # Static error class name, never a message (log privacy).
+    error_code = models.CharField(max_length=64, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    ready_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['clip', 'status'])]
+
+    def __str__(self):
+        return f"Preview {self.status} de {self.clip_id}"
