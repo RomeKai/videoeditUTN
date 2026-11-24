@@ -438,7 +438,7 @@ Actualmente hay 6 layouts (`fill`, `fit`, `blurred`, `split`, `versus`, `active`
 | # | Subtarea | Talla | Notas |
 |---|---------|-------|-------|
 | 1 | Implementar `PodcastLayout` (split 50/50 + face tracking por mitad) | L | Depende de CORE-01 multi-face |
-| 2 | Implementar `CinematicLayout` (letterbox 2.35:1 + saliency crop) | M | Puede usar saliency_tracker existente |
+| 2 | Implementar `CinematicLayout` (letterbox 2.35:1 + saliency crop) | M | `saliency_tracker` se quitó en el PR #107 porque nada lo usaba; se puede recuperar del historial de git |
 | 3 | Implementar `PipRealLayout` (PiP con posición configurable) | M | Reemplaza placeholder actual |
 | 4 | Implementar `TrendingLayout` (borde gradiente + texto overlay) | L | Parámetros configurables por proyecto |
 | 5 | Implementar `ReactionLayout` (video original + reacción) | M | Layout YouTube Shorts standard |

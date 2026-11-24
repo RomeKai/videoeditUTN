@@ -25,13 +25,14 @@ Prompt-to-Edit (PTE) convierte un pedido en lenguaje natural ("cortá los moment
 | `editing_style` | `dynamic`, `minimalist`, `vlog`, `hormozi`, `custom` | columna | selección y render |
 | `aspect_ratio` | `9:16`, `1:1`, `16:9` (`1:Post` se lee como `1:1`) | columna | render |
 | `render_layout` | `fill`, `fit`, `blurred`, `split`, `pip`, `versus`, `active` | columna | render |
-| `gameplay_position`, `camera_selection_position` | `left`, `center`, `right` | columna | render |
+| `gameplay_position`, `camera_selection_position` | `left`, `center`, `right` | columna | render (`split`; [06](06-render-caras-y-hablante.md#cámara-región-y-encuadre-manual)) |
 | `use_facetracking`, `remove_silences`, `add_subtitles` | bool | columna | render |
 | `subtitle_color` | `#RRGGBB` (se pasa a mayúsculas) | columna | render |
 | `subtitle_size` | `small`, `medium`, `large` | columna | render |
 | `subtitle_position` | `top`, `center`, `bottom` | columna | render |
 | `subtitle_words_per_segment` | 1 a 10 | columna | render |
-| `speaker_tracking`, `subtitle_with_emojis` | bool | columna | ninguna etapa del backend hoy |
+| `speaker_tracking` | bool | columna | `ConfigValidator`: en `true` y sin layout en el prompt, aplica también `render_layout='active'` |
+| `subtitle_with_emojis` | bool | columna | ninguna etapa: los emojis no están en el MVP |
 | `max_clips` | 1 a `PROJECT_CONFIG_MAX_CLIPS` (20) | `metadata` | selección |
 | `selection_criteria` | texto de hasta 300 caracteres, normalizado | `metadata` | moderación y selección |
 | `render_resolution` | `720p`, `1080p`, `4K` (con plan) | `metadata` | `_pricing_resolution` y render |
@@ -126,7 +127,7 @@ sequenceDiagram
    - Si el primario falla y `_has_fallback()` es verdadero (otro modelo con key), prueba una vez con el fallback. Cada intento queda en `attempts` o, si falla todo, en `usage_attempts` del error.
    - `lenient_config` valida campo por campo: un valor fuera de las opciones se descarta (ese campo queda en su default) en lugar de invalidar toda la config. Un prompt ambiguo da defaults, no un error.
 6. `settle` ajusta la reserva de capacidad con los tokens reales, y `record_prompt_parse_usage` escribe una fila de `AIUsageRecord` por intento.
-7. `ConfigValidator.validate` reparte lo pedido entre `applied` e `ignored` ([motivos](#por-qué-se-ignora-un-campo)).
+7. `ConfigValidator.validate` reparte lo pedido entre `applied` e `ignored` ([motivos](#por-qué-se-ignora-un-campo)). Si aplicó `speaker_tracking=true` y el prompt no pidió layout, `_speaker_layout` agrega `render_layout='active'`, como hace la creación ([06](06-render-caras-y-hablante.md#flujo-layouts)). Si el pedido mandó un layout explícito, ese gana. `render_layout` no va a `ignored`: esa lista solo tiene lo que el prompt pidió y se descartó.
 8. `_store` escribe, bajo lock de fila, las columnas aplicadas, las claves de `METADATA_FIELDS` aplicadas y `metadata['pte']`, todo en un solo `UPDATE`.
 9. Las etapas leen la configuración ya aplicada. `_stage_moderate` incluye `selection_criteria` en lo que modera y `_stage_select_clips` pasa `editing_style`, `max_clips` y `selection_criteria` al selector. El render lee las columnas y `metadata['render_resolution']`.
 
@@ -149,10 +150,15 @@ Ejemplos:
 | `aspect_ratio=16:9` | "vertical" | `aspect_ratio` ignorado por `explicit`: queda `16:9` |
 | `layout=fit` | "con fondo borroso" | `render_layout` ignorado por `explicit` (`layout` es el alias) |
 | Sin campos explícitos | "subtítulos amarillos, 3 clips" | `subtitle_color=#FFFF00` y `max_clips=3` aplicados |
+| Sin campos explícitos | "que la cámara siga a quien habla" | `speaker_tracking=true` y `render_layout=active` aplicados |
+| `layout=split` | "que la cámara siga a quien habla" | `speaker_tracking=true` aplicado; queda `split` y `ignored` no lo lista (el prompt no pidió layout) |
+| `speaker_tracking=true` (la creación eligió `active`) | "con fondo borroso" | `render_layout` ignorado por `explicit`: queda `active` |
 
 ### Campos explícitos
 
-`explicit_config_fields(raw)` devuelve, ordenados, los nombres de `ProjectConfig` que aparecen como clave en el pedido crudo (`initial_data`); `layout` cuenta como `render_layout`. Cuenta la presencia de la clave, no el valor: un `"selection_criteria": ""` es explícito y bloquea el criterio del prompt aunque no se haya guardado nada.
+`explicit_config_fields(raw)` devuelve, ordenados, los nombres de `ProjectConfig` que aparecen como clave en el pedido crudo (`initial_data`); `layout` cuenta como `render_layout`. Cuenta la presencia de la clave, no el valor: un `"selection_criteria": ""` es explícito y bloquea el criterio del prompt aunque no se haya guardado nada. La excepción es `layout`: vacío o `null` no cuenta, igual que en la creación.
+
+Si la creación eligió `render_layout='active'` por un `speaker_tracking=true` explícito, `VideoProjectSerializer.create` suma `render_layout` a `pte_explicit`: ese layout salió del pedido y un layout del prompt no lo reemplaza.
 
 ### Criterio de selección
 

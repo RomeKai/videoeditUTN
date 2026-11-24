@@ -95,3 +95,22 @@ class RenderVideoSegmentsCleanupTests(TestCase):
         self.assertEqual(self.project.status, VideoProject.Status.FAILED)
         self.assertEqual(self._leftover_files(self.tmp_root), [])
         self.assertEqual(self._leftover_files(self.media_root), [])
+
+    def test_the_paper_edit_frames_the_camera_like_the_clips(self):
+        VideoProject.objects.filter(pk=self.project.pk).update(
+            render_layout="split", camera_selection_position="right",
+            manual_camera_x=0.8, manual_camera_y=0.3, manual_camera_zoom=2.0,
+        )
+        layout = MagicMock()
+        layout.apply.return_value.write_videofile.side_effect = RuntimeError("stop after the layout")
+        source = MagicMock()
+        source.__enter__.return_value = source
+
+        with patch(VIDEO_FILE_CLIP, return_value=source), \
+                patch(CONCATENATE, return_value=MagicMock(duration=2)), \
+                patch(LAYOUT, return_value=layout) as get_layout:
+            self._run()
+
+        kwargs = get_layout.call_args.kwargs
+        self.assertEqual(kwargs["camera_selection_pos"], "right")
+        self.assertEqual(kwargs["manual_camera_coords"], {"x": 0.8, "y": 0.3, "zoom": 2.0})

@@ -18,6 +18,9 @@ Decisions:
   reason ``cost``: a prompt never changes what the user pays.
 - **Explicit wins:** a setting the user sent explicitly in the request is
   kept; the parsed value is ignored with reason ``explicit``.
+- **Speaker tracking:** ``speaker_tracking=true`` without a layout in the
+  prompt also sets ``render_layout='active'`` (the layout that follows the
+  speaker), as the creation request does; an explicit layout still wins.
 - **Parser failure:** the project continues with its defaults; ``status`` is
   ``failed`` with a static ``error_code``. Usage rows are recorded either way.
 
@@ -45,6 +48,8 @@ METADATA_FIELDS = frozenset({
 _BASE_RESOLUTION = "720p"
 # Price comparisons only need relative costs; a known duration is not required.
 _PRICE_PROBE_SECONDS = 60
+# The layout that follows the speaker (VideoProject.Layout.ACTIVE).
+SPEAKER_LAYOUT = "active"
 
 
 @dataclass
@@ -75,7 +80,21 @@ class ConfigValidator:
                     outcome.ignored.append({"field": name, "reason": reason})
                     continue
             outcome.applied[name] = value
+        cls._speaker_layout(config, explicit, outcome)
         return outcome
+
+    @staticmethod
+    def _speaker_layout(config: ProjectConfig, explicit: set, outcome: ValidationOutcome) -> None:
+        """
+        Following the speaker is the 'active' layout, as at creation: an
+        applied ``speaker_tracking=true`` without a layout in the prompt sets
+        it. A layout the request sent explicitly still wins; it is not listed
+        in ``ignored``, which only holds what the prompt asked for.
+        """
+        if outcome.applied.get("speaker_tracking") is not True or config.render_layout is not None:
+            return
+        if "render_layout" not in explicit:
+            outcome.applied["render_layout"] = SPEAKER_LAYOUT
 
     @staticmethod
     def _request(name: str, value: Any):
@@ -116,9 +135,13 @@ class ConfigValidator:
 
 
 def explicit_config_fields(raw: Any) -> List[str]:
-    """ProjectConfig fields the request sent explicitly (``layout`` is the alias of ``render_layout``)."""
+    """
+    ProjectConfig fields the request sent explicitly. ``layout`` is the alias
+    of ``render_layout``; an empty one counts as not sent, as at creation.
+    """
     keys = set(getattr(raw, "keys", lambda: [])())
-    if "layout" in keys:
+    layout = raw.get("layout") if "layout" in keys else None
+    if layout is not None and str(layout).strip():
         keys.add("render_layout")
     return sorted(name for name in ProjectConfig.model_fields if name in keys)
 
