@@ -9,7 +9,7 @@
 | `process_initial_ingestion` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Tarea Celery. Toma el lock, corre `_run_ingestion` y decide qué hacer con cada excepción (reintento, re-encolado, espera o fallo final) |
 | `_run_ingestion` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Lee la etapa actual, reabre un proyecto `failed`, parsea el prompt y corre las etapas que faltan en orden |
 | `_running_stage` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Context manager que marca el estado de la etapa (`running`, `failed`, `pending_capacity`) y loguea inicio y fin |
-| `_stage_prepare_source`, `_stage_transcribe`, `_stage_moderate`, `_stage_select_clips`, `_stage_dispatch_render` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Una función por etapa. Cada una persiste su artefacto y avanza en la misma transacción |
+| `_stage_prepare_source`, `_stage_transcribe`, `_stage_moderate`, `_stage_select_clips`, `_stage_dispatch_render` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Una función por etapa. Cada una persiste su artefacto antes de avanzar (transcripción, moderación, selección y despacho lo hacen en la misma transacción que el `advance`) |
 | `_resume_render_dispatch` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Vuelve a encolar los clips `draft` de un proyecto que quedó en `render_dispatched` |
 | `_record_pipeline_failure`, `_refund_ingestion_reservation`, `_work_already_done` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Registro del fallo, fallo final y devolución de la reserva de tokens |
 | `_wait_for_capacity` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Re-encola la tarea cuando no hay capacidad del proveedor, o falla el proyecto si la espera supera el máximo |
@@ -49,7 +49,7 @@ sequenceDiagram
         R->>DB: set_stage_status running (CAS sobre la etapa previa)
         R->>S: corre la etapa
         S->>S: llamada externa sin transacción abierta
-        S->>DB: persiste el artefacto y hace advance en una transacción
+        S->>DB: persiste el artefacto y hace advance (CAS)
         S->>DB: record_usages (AIUsageRecord)
     end
     alt auto_render_bypass
@@ -237,7 +237,7 @@ Correr la tarea dos veces sobre el mismo proyecto es seguro. Las piezas:
 | `AIUsageRecord` solo de inserción | `record_usages` | Ocultar un segundo cobro: una ejecución repetida deja dos filas |
 | Reembolso solo por quien falló el proyecto | `_record_pipeline_failure` | Devolver dos veces o devolver la reserva de un proyecto que otro worker sacó adelante |
 
-**Re-entrega tras un worker muerto.** El mensaje vuelve a la cola (si muere todo el host, recién después de `visibility_timeout`, 4 h por defecto). La nueva entrega encuentra el lock del muerto, se re-encola cada 45 s hasta que el TTL vence y retoma desde la última etapa terminada.
+**Re-entrega tras un worker muerto.** El mensaje vuelve a la cola (si muere todo el host, recién después de `visibility_timeout`, 4 h por defecto). Si la nueva entrega llega antes de que venza el TTL, encuentra el lock del muerto y se re-encola cada 45 s hasta que vence. Después retoma desde la última etapa terminada.
 
 **Límite de tiempo.** El soft limit lanza `SoftTimeLimitExceeded`, que no es reintentable: el proyecto falla con ese código y el lock se libera, en vez de quedar renovado para siempre por un worker colgado. Los proveedores lo re-lanzan sin envolverlo (`is_task_time_limit`), así que nunca dispara un fallback ni un reintento. El hard limit solo mata a un worker que ignoró el soft.
 

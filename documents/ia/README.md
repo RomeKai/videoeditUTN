@@ -34,7 +34,7 @@ flowchart TD
 |------------|---------|-----|
 | API (DRF) | [views.py](../../back/apps/videos/views.py) | `VideoProjectViewSet`: `create`, `from_prompt` (`from-prompt`), `approve_paper_edit` (`approve-paper-edit`) y `paper_edit_data`. Valida la subida, reserva tokens y encola `process_initial_ingestion` o `render_video_segments`. Rutas bajo `api/v1/projects/` |
 | Celery | [celery.py](../../back/backend/celery.py), [settings/base.py](../../back/backend/settings/base.py) | Broker y result backend en `REDIS_URL`. `CELERY_TASK_ROUTES` manda `apps.videos.tasks.render_clip_task` a la cola `render`; el resto va a la cola por defecto de Celery, `celery`. Los workers consumen las dos: `celery -A backend worker -Q celery,render` ([docker-compose.yml](../../docker-compose.yml)) |
-| Postgres | `DATABASE_URL` | `VideoProject` (etapa, estado por etapa, `metadata`), `VideoClip`, `ScheduledPost`, `AIUsageRecord`, `ModerationOverride` y el wallet |
+| Postgres | `DATABASE_URL` (Postgres en `docker-compose.yml`; sin la variable, SQLite) | `VideoProject` (etapa, estado por etapa, `metadata`), `VideoClip`, `ScheduledPost`, `AIUsageRecord`, `ModerationOverride` y el wallet |
 | Valkey / Redis | `REDIS_URL` (servicio `redis`, imagen `valkey/valkey:8-alpine`) | Broker de Celery, lock por proyecto (`lock:pipeline:project:<id>`), lock y resultado pendiente de SEO (`lock:seo:post:<id>`, `seo:pending:<id>`) y buckets de capacidad (`capacity:v1:<modelo>:<recurso>_per_<ventana>`) |
 | Almacenamiento | [storage_service.py](../../back/apps/videos/services/storage_service.py) | `CloudflareR2Manager`: R2 con `USE_R2=True`; con `False`, todo opera sobre el disco local |
 | Groq Whisper | [groq_transcription.py](../../back/apps/videos/services/ai/groq_transcription.py) | Transcripción V2 por chunks con `AI_DEFAULT_TRANSCRIPTION_MODEL` |
@@ -127,7 +127,7 @@ sequenceDiagram
     U->>API: POST projects/id/approve-paper-edit
     API->>VK: encola render_video_segments
     W->>ST: descarga el original
-    W->>W: layout con FaceTracker y SpeakerTrackingEngine, subtítulos
+    W->>W: layout con FaceTracker (y SpeakerTrackingEngine en active), subtítulos
     W->>ST: sube el video final (status completed)
     Note over U,W: se crea un ScheduledPost y la señal encola process_video_seo
     W->>OM: modera título y transcript del clip
