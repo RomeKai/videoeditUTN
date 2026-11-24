@@ -180,6 +180,15 @@ AI_DEFAULT_TRANSCRIPTION_MODEL = env('AI_DEFAULT_TRANSCRIPTION_MODEL', default='
 # There is no automatic fallback between backends (ADR-008): Groq failures are
 # retried by Celery; 'local' loads openai-whisper and is meant for dev/rollback only.
 TRANSCRIPTION_BACKEND = env('TRANSCRIPTION_BACKEND', default='groq')
+
+# Local Whisper (legacy backend) on the worker (CORE-04).
+# TRANSCRIPTION_DEVICE: 'auto' uses CUDA when torch sees a GPU, else CPU; 'cpu' or
+# 'cuda' force it. fp16 inference is enabled only on CUDA.
+TRANSCRIPTION_DEVICE = env('TRANSCRIPTION_DEVICE', default='auto')
+# Load the local Whisper model once per worker process at startup (only when the
+# local backend is active), instead of on the first task that needs it.
+WHISPER_PRELOAD = env.bool('WHISPER_PRELOAD', default=True)
+WHISPER_LOCAL_MODEL_SIZE = env('WHISPER_LOCAL_MODEL_SIZE', default='base')
 # Prompt-to-Edit (PTE-01a): longest request sent to the parser; longer text is cut.
 AI_PROMPT_MAX_CHARS = env.int('AI_PROMPT_MAX_CHARS', default=1000)
 
@@ -240,6 +249,13 @@ CELERY_TASK_ROUTES = {
 # A worker reserves only the task it is running: long ingestion tasks are not
 # hoarded by a worker that cannot start them (AICORE-11).
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
+# Worker recycling (CORE-04). MoviePy/FFmpeg/Whisper leave memory behind that a
+# long-lived pool process never returns, so each child is replaced after
+# MAX_TASKS tasks, or after the task during which it went over MAX_MEMORY
+# (KiB; 0 disables it). Both checks run between tasks, never interrupting one.
+CELERY_WORKER_MAX_TASKS_PER_CHILD = env.int('CELERY_WORKER_MAX_TASKS_PER_CHILD', default=50)
+CELERY_WORKER_MAX_MEMORY_PER_CHILD = env.int('CELERY_WORKER_MAX_MEMORY_PER_CHILD', default=0) or None
 
 # --- AI capacity (AICORE-11, ADR-012 D-C4) ---
 # Token buckets in Valkey reserved before every Groq/LLM call of the ingestion

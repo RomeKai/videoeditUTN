@@ -17,6 +17,13 @@ class FFmpegManager:
     AUDIO_EXTRACT_TIMEOUT_SECONDS = 1800
     PROBE_TIMEOUT_SECONDS = 120
 
+    # Web proxy (CORE-04): it is only a 480p preview for the paper-edit UI, so
+    # encoding speed matters more than compression. 'ultrafast' encodes several
+    # times faster than 'fast' for a somewhat larger file. The proxy runs in its
+    # own task (outside the ingestion time limit), so it gets its own timeout.
+    PROXY_PRESET = 'ultrafast'
+    PROXY_TIMEOUT_SECONDS = 1800
+
     @staticmethod
     def generate_web_proxy(input_path: str, output_path: str) -> str:
         """
@@ -24,7 +31,7 @@ class FFmpegManager:
         
         Parameters:
         - Resolution: max 480p (scaled maintaining aspect ratio).
-        - Video Codec: libx264, profile main, preset fast, crf 28.
+        - Video Codec: libx264, profile main, preset PROXY_PRESET (ultrafast), crf 28.
         - Audio Codec: aac, bitrate 96k.
         - Optimization: -movflags +faststart (for immediate playback).
         """
@@ -39,7 +46,7 @@ class FFmpegManager:
             '-vf', 'scale=-2:480',
             '-vcodec', 'libx264',
             '-profile:v', 'main',
-            '-preset', 'fast',
+            '-preset', FFmpegManager.PROXY_PRESET,
             '-crf', '28',
             '-acodec', 'aac',
             '-b:a', '96k',
@@ -51,9 +58,16 @@ class FFmpegManager:
         
         try:
             # Use subprocess.run with capture_output=True to handle errors better
-            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            result = subprocess.run(
+                command, check=True, capture_output=True, text=True,
+                timeout=FFmpegManager.PROXY_TIMEOUT_SECONDS,
+            )
             logger.info("âœ… [FFMPEG] Proxy generated successfully.")
             return output_path
+        except subprocess.TimeoutExpired as e:
+            # subprocess.run already killed the process.
+            logger.error("[FFMPEG] Proxy generation timed out after %ss", e.timeout)
+            raise RuntimeError(f"FFmpeg proxy generation timed out after {e.timeout}s") from e
         except subprocess.CalledProcessError as e:
             error_msg = e.stderr or "Unknown error"
             logger.error(f"âŒ [FFMPEG] Failed to generate proxy: {error_msg}")
