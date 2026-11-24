@@ -1830,22 +1830,12 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
             project_id, type(record_exc).__name__,
         )
         return
-    # Only the call that failed the project refunds it: a project another worker
-    # moved on, or failed for another reason, keeps its reservation.
-    if failed_now and _refunds_reservation(exc):
+    # A project that ends FAILED gave the user nothing, whatever the reason
+    # (moderation, ADR-011 D-M5; capacity timeout, ADR-012 D-C4; a provider or
+    # pipeline error): the reservation goes back. Only the call that failed the
+    # project refunds it, so a project another worker moved on keeps it.
+    if failed_now:
         _refund_ingestion_reservation(project_id)
-
-
-def _refunds_reservation(exc):
-    """
-    Final failures that give the tokens back: content stopped by moderation
-    (blocked, or no verdict after the retries; ADR-011 D-M4/D-M5) and a
-    capacity wait that ran out (ADR-012 D-C4). In both the user got nothing
-    for the reservation through no failure of the video itself.
-    """
-    from apps.videos.services.ai.capacity import CapacityTimeoutError
-
-    return _is_moderation_failure(exc) or isinstance(exc, CapacityTimeoutError)
 
 
 # acks_late + reject_on_worker_lost: if the worker dies mid-task (OOM during

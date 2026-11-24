@@ -581,7 +581,7 @@ class CapacityTimeoutRefundTests(CapacityHarness, TestCase):
         txn.refresh_from_db()
         self.assertEqual(txn.status, Transaction.Status.FAILED)
 
-    def test_other_final_failures_keep_the_reservation(self):
+    def test_any_final_failure_refunds_the_reservation(self):
         from apps.videos.services.ai.errors import AIAuthenticationError
 
         project, txn = self.make_reserved_project()
@@ -592,6 +592,22 @@ class CapacityTimeoutRefundTests(CapacityHarness, TestCase):
         project.refresh_from_db()
         txn.refresh_from_db()
         self.assertEqual(project.pipeline_stage, PipelineStage.FAILED)
+        self.assertEqual(txn.status, Transaction.Status.FAILED)
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+
+    def test_a_retryable_failure_keeps_the_reservation_while_it_retries(self):
+        from celery.exceptions import Retry
+
+        from apps.videos.services.ai.errors import AIServerError
+        from apps.videos.tasks import process_initial_ingestion
+
+        project, txn = self.make_reserved_project()
+        self.mock_transcribe.side_effect = AIServerError("down")
+
+        with patch.object(process_initial_ingestion, "retry", side_effect=Retry()):
+            self.run_task(project)
+
+        txn.refresh_from_db()
         self.assertEqual(txn.status, Transaction.Status.RESERVED)
 
 

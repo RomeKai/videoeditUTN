@@ -344,6 +344,8 @@ Estos `pipeline_error_code` (y `error_code` del export) marcan un fallo que **no
 
 Los 401/403 siguen como `AIAuthenticationError`; los 408, 409, 425, 429, 5xx, timeouts y cortes de conexión siguen siendo reintentables.
 
+**Reserva de tokens.** Todo proyecto que termina `FAILED` (por cualquiera de estos códigos, por moderación, por capacidad o por agotar los reintentos) devuelve los tokens que reservó al crearse: el usuario no recibió nada. Mientras se reintenta, la reserva se mantiene. Un re-despacho manual posterior corre sin reserva y no se vuelve a cobrar.
+
 ---
 
 ## 7. Rollback
