@@ -21,7 +21,6 @@ from apps.videos.models import ScheduledPost, VideoClip, VideoProject
 from apps.videos.services.ai.errors import NonRetryableAIError
 from apps.videos.services.ai.pipeline_state import PipelineStage
 from apps.videos.tasks import (
-    ClipRenderTask,
     _generate_proxy,
     _record_pipeline_failure,
     _resume_render_dispatch,
@@ -230,7 +229,9 @@ class RenderTaskLogTests(LogPrivacyAssertions, CapturedTaskFailures, TestCase):
             "apps.videos.tasks.render.VideoClip.objects.get", side_effect=DatabaseError(SECRET)
         ):
             with capture_logs() as logs:
-                ClipRenderTask().on_failure(
+                # The registered task, as Celery calls it: on_failure reads the
+                # delivery's claim from its request.
+                render_clip_task.on_failure(
                     RuntimeError(SECRET), "tid", [str(self.clip.id)], {}, None
                 )
 
@@ -239,7 +240,7 @@ class RenderTaskLogTests(LogPrivacyAssertions, CapturedTaskFailures, TestCase):
     def test_orphan_delete_failure_does_not_log_traceback(self):
         VideoClip.objects.filter(pk=self.clip.pk).update(status=VideoClip.Status.DRAFT)
 
-        def completing_render(clip_id):
+        def completing_render(clip_id, claim_token=None):
             VideoClip.objects.filter(pk=clip_id).update(
                 status=VideoClip.Status.COMPLETED, s3_object_key="clips/new.mp4"
             )

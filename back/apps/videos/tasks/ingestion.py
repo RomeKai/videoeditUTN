@@ -838,7 +838,7 @@ def _ensure_whole_video_paid(project_id):
         raise WholeVideoNotPaidError()
 
 
-def _whole_video_render_allowed(project_id):
+def _whole_video_render_allowed(project_id, clip_id=None):
     """
     ``render_clip_task`` asks before claiming the clip (and again after): a
     paid render runs only while the project is at render_dispatched with the
@@ -846,13 +846,21 @@ def _whole_video_render_allowed(project_id):
     of a whole-video edit, or the auto-render reservation of the selected clips
     ("Renderizar sin revisar"). A render message left in the queue after the
     project failed (and was refunded) must not deliver for free.
+
+    With ``clip_id``, an auto-render reservation must also pay for that clip
+    (``auto_render_clip_ids``): a re-dispatch reserves only the clips still
+    DRAFT, so a stale message for one that had failed would render it for free.
     """
     project = VideoProject.objects.filter(pk=project_id).first()
     if project is None:
         return True
     if _is_whole_video(project):
         return project.pipeline_stage == PipelineStage.RENDER_DISPATCHED and _whole_video_is_paid(project_id)
-    auto_render_id = (project.metadata or {}).get(AUTO_RENDER_RESERVATION_KEY)
+    metadata = project.metadata or {}
+    paid_ids = metadata.get('auto_render_clip_ids')
+    if clip_id is not None and paid_ids is not None and str(clip_id) not in {str(paid) for paid in paid_ids}:
+        return False
+    auto_render_id = metadata.get(AUTO_RENDER_RESERVATION_KEY)
     if auto_render_id:
         return project.pipeline_stage == PipelineStage.RENDER_DISPATCHED and Transaction.objects.filter(
             pk=auto_render_id, status=Transaction.Status.RESERVED,

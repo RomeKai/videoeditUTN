@@ -31,7 +31,8 @@ class VideoClipSerializer(serializers.ModelSerializer):
     layers = ClipLayerSerializer(many=True, read_only=True)
     class Meta:
         model = VideoClip
-        fields = '__all__'
+        # The render claim is internal bookkeeping of render_clip_task.
+        exclude = ('render_claim_token', 'render_unfinished_starts')
         read_only_fields = ('id', 'project', 'status', 's3_object_key', 'virality_score', 'ai_reasoning')
 
 class ProjectRenderingError(APIException):

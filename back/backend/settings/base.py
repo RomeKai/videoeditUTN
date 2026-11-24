@@ -254,6 +254,14 @@ RENDER_SEGMENTS_SOFT_TIME_LIMIT = env.int('RENDER_SEGMENTS_SOFT_TIME_LIMIT', def
 RENDER_SEGMENTS_TIME_LIMIT = env.int(
     'RENDER_SEGMENTS_TIME_LIMIT', default=RENDER_SEGMENTS_SOFT_TIME_LIMIT + 300,
 )
+# Most starts of one clip render (render_clip_task) whose delivery never ended,
+# counting the one about to start. A clip that always kills its worker (an OOM
+# in MoviePy) is redelivered by acks_late; past this many it fails instead of
+# coming back forever. A start that ended (delivered, or an error handled with
+# a retry or a final failure) does not count, so transient retries never use
+# it up. At least 2: with 1, a single broker blip (a redelivered copy taking
+# over a live render) would fail a healthy clip.
+RENDER_CLIP_MAX_STARTS = env.int('RENDER_CLIP_MAX_STARTS', default=3)
 # A paper edit whose render reservation is still RESERVED, with no project
 # lock held and no start, approval or re-queue for this long, is stuck:
 # recover_stuck_renders re-queues it, charges it (delivered) or, after losing
