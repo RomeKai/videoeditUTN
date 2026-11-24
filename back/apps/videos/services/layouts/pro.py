@@ -95,9 +95,13 @@ class ActiveSpeakerLayout(BaseLayout):
     Layout 'ActiveSpeaker': the camera follows whoever is talking (CORE-02).
     Faces are tracked (CORE-01), the speaker timeline comes from
     SpeakerTrackingEngine, and the crop cuts to the speaker's face at each
-    turn. Without faces it falls back to the centered crop.
+    turn. Without faces it falls back to the centered crop. It needs the
+    faces, so ``use_facetracking`` does not turn it off; a ``static`` layout
+    (previews) uses the centered crop without tracking.
     """
     def apply(self, clip):
+        if self.static:
+            return self._centered(clip)
         try:
             followed = self._follow_speaker(clip)
         except Exception as exc:
