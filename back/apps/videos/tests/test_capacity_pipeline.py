@@ -595,6 +595,40 @@ class CapacityTimeoutRefundTests(CapacityHarness, TestCase):
         self.assertEqual(txn.status, Transaction.Status.FAILED)
         self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
 
+    def test_a_project_that_already_has_clips_keeps_the_reservation(self):
+        from apps.videos.models import VideoClip
+        from apps.videos.services.ai.errors import AIServerError
+        from apps.videos.tasks import _record_pipeline_failure
+
+        project, txn = self.make_reserved_project()
+        VideoProject.objects.filter(pk=project.pk).update(pipeline_stage=PipelineStage.RENDER_DISPATCHED)
+        VideoClip.objects.create(
+            project=project, title="t", start_time=0, end_time=20, status=VideoClip.Status.COMPLETED,
+        )
+
+        _record_pipeline_failure(
+            project.pk, AIServerError("broker"), 6, final=True, stage=PipelineStage.RENDER_DISPATCHED,
+        )
+
+        project.refresh_from_db()
+        txn.refresh_from_db()
+        self.assertEqual(project.pipeline_stage, PipelineStage.FAILED)
+        self.assertEqual(txn.status, Transaction.Status.RESERVED)
+
+    def test_a_failure_before_reading_a_finished_project_does_not_fail_it(self):
+        from apps.videos.tasks import _record_pipeline_failure
+
+        project, txn = self.make_reserved_project()
+        VideoProject.objects.filter(pk=project.pk).update(pipeline_stage=PipelineStage.CLIPS_SELECTED)
+
+        # stage=None: the run failed taking the lock, before reading the project.
+        _record_pipeline_failure(project.pk, ConnectionError("redis"), 6, final=True, stage=None)
+
+        project.refresh_from_db()
+        txn.refresh_from_db()
+        self.assertEqual(project.pipeline_stage, PipelineStage.CLIPS_SELECTED)
+        self.assertEqual(txn.status, Transaction.Status.RESERVED)
+
     def test_a_retryable_failure_keeps_the_reservation_while_it_retries(self):
         from celery.exceptions import Retry
 
