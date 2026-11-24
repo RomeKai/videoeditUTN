@@ -1,0 +1,125 @@
+.who {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-subtle);
+  min-width: 0;
+}
+.whoMain {
+  flex: 1;
+  min-width: 0;
+}
+.strong {
+  font-weight: 500;
+}
+.planCmp {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.planRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.planRow:last-child {
+  border-bottom: 0;
+}
+.planRow > div {
+  flex: 1;
+  min-width: 0;
+}
+.planFit {
+  background: var(--bg-subtle);
+  border-radius: 0 0 var(--r-md) var(--r-md);
+}
+a.planFit:hover {
+  background: var(--surface-2);
+}
+.sched {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.schedList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  max-height: 200px;
+  overflow-y: auto;
+}
+.schedList li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.schedList li:last-child {
+  border-bottom: 0;
+}
+.schedMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.schedNet {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg-muted);
+}
+.perm {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.perm li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+.perm svg {
+  color: var(--ok);
+}
+.netHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.stepN {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}

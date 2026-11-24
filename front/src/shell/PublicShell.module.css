@@ -1,0 +1,78 @@
+.pub {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-height: 56px;
+  padding: 10px 24px;
+}
+.spacer {
+  flex: 1;
+}
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px 16px 56px;
+  min-width: 0;
+}
+.card {
+  width: 100%;
+  max-width: 400px;
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  margin: auto;
+}
+.cardWide {
+  max-width: 480px;
+}
+.title {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.alt {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--fg-muted);
+  text-align: center;
+}
+.foot {
+  display: flex;
+  justify-content: center;
+  gap: 8px 20px;
+  flex-wrap: wrap;
+  padding: 20px 24px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg-subtle);
+}
+.foot a:hover {
+  color: var(--fg);
+}
+@media (max-width: 639px) {
+  .head {
+    padding: 8px 16px;
+  }
+  .main {
+    padding: 24px 16px 40px;
+  }
+  .card {
+    padding: 20px;
+  }
+}

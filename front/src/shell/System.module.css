@@ -1,0 +1,141 @@
+.screen {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+.top {
+  display: flex;
+  align-items: center;
+  height: 56px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--border);
+}
+.body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 96px 24px 40px;
+  text-align: center;
+}
+.inline {
+  padding: 64px 24px;
+}
+.code {
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--fg-subtle);
+  margin-left: 4px;
+}
+.text {
+  max-width: 340px;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  margin-bottom: 8px;
+}
+.maintBrand {
+  margin-bottom: 28px;
+}
+.sched {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px 40px;
+  margin: 20px 0 0;
+  padding: 16px 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-subtle);
+  text-align: left;
+}
+.sched div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sched dd {
+  margin: 0;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.brandMark {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--fg);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.brandMark::after {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--bg);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.loading {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+.loadingTop {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 56px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--border);
+}
+.loadingBody {
+  width: 100%;
+  max-width: var(--page-max);
+  margin: 0 auto;
+  padding: 32px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.offline {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-banner);
+}
+@media (max-width: 639px) {
+  .top,
+  .loadingTop {
+    padding: 0 16px;
+    height: 52px;
+  }
+  .body {
+    padding-top: 64px;
+  }
+}
