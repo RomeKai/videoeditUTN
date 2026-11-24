@@ -476,6 +476,15 @@ Otras respuestas:
   3. **Cuándo:**
      - **Ahora** o **Programar** (fecha y hora). Programar requiere `allow_scheduling`.
      - Se muestra la zona horaria.
+  4. **Requisitos de TikTok (obligatorios, TikTok los audita para publicar directo):**
+     - Nombre de la cuenta destino visible.
+     - Privacidad en un desplegable **sin valor por defecto**, con las opciones que permite la cuenta.
+     - "Permitir comentarios, dúos y stitch" **desmarcados** por defecto, y deshabilitados si la cuenta los tiene apagados.
+     - Divulgación de contenido comercial: "Tu marca" o "Contenido de marca".
+     - El texto "Al publicar, aceptás la confirmación de uso de música de TikTok".
+     - Vista previa del clip.
+     - El botón Publicar queda deshabilitado hasta elegir la privacidad.
+  5. **Chequeo por red:** una lista corta de lo que cumple el clip para cada red (formato 9:16, duración máxima, texto dentro del límite).
 - **Botón:** **Publicar** o **Programar**. Al terminar se ve un toast y el clip muestra la red como "Programado" o "Publicando".
 - **Estados:** cuenta desconectada o vencida (pedir reconectar) y texto por encima del límite.
 - **Móvil:** el panel ocupa toda la pantalla.
