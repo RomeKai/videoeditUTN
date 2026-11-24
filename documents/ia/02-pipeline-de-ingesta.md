@@ -122,13 +122,21 @@ stateDiagram-v2
 
 ### Editar el video completo (`single_edit`)
 
-Es la pantalla D5. El proyecto pasa por las mismas etapas hasta `moderated`: se transcribe (los subtítulos salen de ahí) y se modera igual. Después cambia esto:
+Es la pantalla D5. `_is_whole_video` decide el camino: `project_type=single_edit` **y** `metadata.priced_duration_s`, que la vista de creación escribe solo para un archivo subido. Un `single_edit` sin ese dato (un link, un proyecto creado antes de este flujo o editado en el admin) nunca se cobró por un render entero, así que sigue el flujo de clips con revisión.
 
-- `_stage_whole_video` crea un solo `VideoClip` de `0` a `metadata.duration`, con el título del proyecto. Si falta la duración, la mide con `_probe_video`. No llama al modelo de selección ni escribe filas de uso.
+El proyecto pasa por las mismas etapas hasta `moderated`. Se transcribe (los subtítulos salen de ahí) y se modera igual, con una diferencia: si no hay habla (`AINoSpeechDetectedError`: música, gameplay, b-roll), `_persist_silent_transcript` guarda `transcript_data=[]`, `metadata.full_text=""` y `metadata.no_speech=true`, y sigue. La moderación revisa entonces solo el título, y el render sale sin subtítulos. En un proyecto de clips, sin habla sigue fallando: no hay de dónde elegir.
+
+Después:
+
+- `_stage_whole_video` crea un solo `VideoClip` de `0` a `metadata.duration` (la duración de MoviePy, la misma con la que corta el render), con el título del proyecto. Si falta, la mide con `_probe_video`. No llama al modelo de selección ni escribe filas de uso.
+- Si la duración es `0` lanza `NonRetryableAIError`. Si supera `priced_duration_s` + 1 s (el archivo se reemplazó con un PATCH después de cobrarlo) lanza `WholeVideoSourceChangedError`. En los dos casos no hay clip, el proyecto falla y se reembolsa.
 - Una re-entrega no crea otro clip: la etapa bloquea el proyecto y solo crea el clip si no hay ninguno.
-- En `clips_selected` se cobra la reserva de creación (`_commit_ingestion_reservation`) y se despacha el render siempre, aunque `auto_render_bypass` esté apagado: no hay nada que revisar.
+- En `clips_selected` se despacha el render siempre, aunque `auto_render_bypass` esté apagado: no hay nada que revisar.
+- **Cobro:** lo que se paga es el render, así que la reserva de creación no se cobra en `clips_selected`. `finalize_project_render` llama a `_settle_whole_video_reservation`: la cobra si el video se entregó (`completed`) y la devuelve si el render falló (`partial`).
+- **Reembolso al fallar:** `_refund_ingestion_reservation` devuelve la reserva aunque exista el clip, salvo que esté `rendering` o `completed`.
+- **Re-despacho:** antes de despachar (también al reanudar en `render_dispatched`), `_ensure_whole_video_paid` exige que la reserva siga `reserved`. Si ya se devolvió, lanza `WholeVideoNotPaidError` y el proyecto falla sin renderizar gratis.
 - El precio de creación ya es el del video entero a su resolución, que es justo lo que se renderiza. No se cobra nada más.
-- Solo se crea con un archivo subido. Por link da 400 (ver [01](01-creacion-de-proyecto.md)).
+- Solo se crea con un archivo subido de hasta `AI_SINGLE_EDIT_MAX_DURATION_SECONDS` (600 s por defecto). Ver [01](01-creacion-de-proyecto.md).
 
 `last_completed_stage` tiene dos ajustes. Si `clips_selected` figura `completed` pero el proyecto no tiene clips, reanuda en `transcribed` para volver a correr la selección. Y si `moderated` no tiene estado pero `clips_selected` sí está `completed` (proyectos anteriores a la etapa de moderación), la saltea (`_predates_moderation`).
 
@@ -208,7 +216,7 @@ sequenceDiagram
 2. `_record_pipeline_failure` corre en **todo** fallo, se reintente o no: suma 1 a `pipeline_attempts` y guarda la clase del error en `pipeline_error_code` (`record_error`). Con `final=True` llama a `mark_failed(expected_stage=stage)`: si el proyecto ya no está en esa etapa (otro worker lo movió), no escribe nada.
 3. `_retry_countdown(retries)` es backoff exponencial con "equal jitter": techo `min(30 × 2^retries, 600)` y espera entre la mitad del techo y el techo. Para los 5 reintentos: 15–30 s, 30–60 s, 60–120 s, 120–240 s y 240–480 s (entre ~8 y ~15 min en total).
 4. Si el fallo final llega antes de leer el proyecto (`stage` es `None`, por ejemplo Redis caído al tomar el lock) y el proyecto ya está en `clips_selected` o más adelante (`_work_already_done`), no se lo marca `failed` (`pipeline.fail_skipped`).
-5. Solo la llamada que efectivamente pasó el proyecto a `failed` (`mark_failed` devuelve `True`) llama a `_refund_ingestion_reservation`. El reembolso exige que el proyecto siga `failed`, que no tenga ningún `VideoClip`, que tenga `metadata.reservation_id` y que esa `Transaction` siga `reserved`. Nunca lanza: un error de pagos se loguea como `pipeline.refund_failed`. El ciclo de la reserva está en [01-creacion-de-proyecto](01-creacion-de-proyecto.md).
+5. Solo la llamada que efectivamente pasó el proyecto a `failed` (`mark_failed` devuelve `True`) llama a `_refund_ingestion_reservation`. El reembolso exige que el proyecto siga `failed`, que no tenga ningún `VideoClip` (en un video completo, ninguno `rendering` ni `completed`), que tenga `metadata.reservation_id` y que esa `Transaction` siga `reserved`. Nunca lanza: un error de pagos se loguea como `pipeline.refund_failed`. El ciclo de la reserva está en [01-creacion-de-proyecto](01-creacion-de-proyecto.md).
 
 ### Los tres contadores
 

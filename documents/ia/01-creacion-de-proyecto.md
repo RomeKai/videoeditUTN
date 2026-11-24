@@ -100,7 +100,12 @@ Ejemplo: un archivo de 600 s con `use_seo=true` en un plan con 20 % de descuento
 
 **Resolución.** El pedido puede mandar `render_resolution` (`720p`, `1080p` o `4K`; un valor distinto da 400). Un proyecto por link solo acepta `720p` (400 con otra), porque su precio fijo no conoce la duración y no puede cobrar un tier mayor. El serializer la guarda en `metadata['render_resolution']`, `_pricing_resolution` la usa para el precio y `calculate_render_cost` la compara con `plan.max_resolution` (403 si la supera). Sin el campo, el proyecto se cobra y se renderiza en `720p` (`RenderEngine.DEFAULT_HEIGHT`). Prompt-to-Edit puede escribirla después solo si no sube el precio (ver [04](04-prompt-to-edit.md)). No se puede cambiar con un PATCH, porque ya se cobró. `use_ai_thumbnail` no se puede pedir al crear: el serializer no tiene ese campo y `metadata` es de solo lectura.
 
-**Tipo de proyecto.** `project_type` es `repurpose` (sacar clips, por defecto) o `single_edit` (editar el video completo, ver [02](02-pipeline-de-ingesta.md)). `single_edit` exige `source_file`: con `video_url` el serializer da 400 en `project_type` antes de crear nada, porque el precio fijo del link no conoce la duración y el video entero se renderizaría sin revisión ni límite del plan. No se puede cambiar con un PATCH: el pipeline y el precio dependen de él.
+**Tipo de proyecto.** `project_type` es `repurpose` (sacar clips, por defecto) o `single_edit` (editar el video completo, ver [02](02-pipeline-de-ingesta.md)). Para `single_edit`, el serializer da 400 en `project_type` antes de crear nada en estos casos:
+
+- Con `video_url`: el precio fijo del link no conoce la duración, y el video entero se renderizaría sin revisión ni límite del plan.
+- Si el archivo dura más de `AI_SINGLE_EDIT_MAX_DURATION_SECONDS` (600 s por defecto; código `too_long`). Un solo render tiene el video entero, con sus subtítulos, así que es para videos cortos.
+
+`project_type` no se puede cambiar con un PATCH: el pipeline y el precio dependen de él. Para cualquier archivo subido, la vista guarda en `metadata.priced_duration_s` los segundos que cobró. Un PATCH que reemplaza el archivo cambia `metadata.source_media`, pero no ese dato, y un video completo nunca renderiza más que eso.
 
 ## Flujo: creación con URL
 

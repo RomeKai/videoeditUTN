@@ -326,7 +326,7 @@ Otras respuestas:
        - Envía a `from-prompt`. La configuración que entienda la IA se muestra después, en el proyecto.
   2. **Qué querés hacer:**
      - **Sacar clips** (`project_type=repurpose`, por defecto).
-     - **Editar el video completo** (`single_edit`). Solo con un archivo subido: si el origen es un link, la opción se muestra deshabilitada con "Para editar el video completo, subí el archivo".
+     - **Editar el video completo** (`single_edit`). Solo con un archivo subido de hasta 10 min. Si el origen es un link, la opción se muestra deshabilitada con "Para editar el video completo, subí el archivo". Si el archivo es más largo, con "Para editar el video completo, el video puede durar hasta 10 min".
   3. **Formato:**
      - Formato de salida: 9:16 (por defecto), 1:1 o 16:9.
      - Resolución: 720p por defecto, 1080p y 4K según el plan.
@@ -361,7 +361,7 @@ Otras respuestas:
 - **API:**
   - ✅ `POST /api/v1/projects/` (multipart) y `POST /api/v1/projects/from-prompt/`.
   - ✅ el campo `render_resolution` (720p, 1080p o 4K) se cobra y se compara con el plan; sin él, el proyecto se cobra y se renderiza en 720p.
-  - ✅ `project_type` (`repurpose` o `single_edit`); `single_edit` solo con archivo (400 con link) y no cambia después de crear.
+  - ✅ `project_type` (`repurpose` o `single_edit`). `single_edit` solo acepta un archivo de hasta 10 min (`AI_SINGLE_EDIT_MAX_DURATION_SECONDS`); con un link o un archivo más largo da 400. No cambia después de crear.
   - ❌ falta el endpoint de precios para el estimado.
   - ⚠️ los links no pasan por la validación de duración del plan (sí por la de resolución y SEO).
 
@@ -477,7 +477,9 @@ Otras respuestas:
   - **Ajustar recorte** (como D4).
   - "Volver a renderizar con otro estilo", con su costo (diálogo de confirmar costo).
 - **API:**
-  - ✅ el pipeline crea un solo clip con el video entero y lo renderiza sin revisión; el resultado es ese clip (`clips[0]`).
+  - ✅ el pipeline crea un solo clip con el video entero y lo renderiza sin revisión. El resultado es ese clip (`clips[0]`).
+  - ✅ se cobra cuando el video se entrega; si el render falla (proyecto `partial`), se devuelve.
+  - ✅ un video sin voz (música, gameplay) se edita igual, sin subtítulos.
   - ✅ solo se crea con archivo: por link, `POST /api/v1/projects/` da 400 en `project_type`.
   - ❌ volver a renderizar con otro estilo (mismo hueco que D4).
 

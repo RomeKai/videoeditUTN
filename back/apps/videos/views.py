@@ -244,6 +244,9 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
                     features_requested=features_requested,
                     plan=workspace.subscription_plan
                 )
+                # What was priced, kept apart from source_media (a PATCH of the
+                # file replaces that): a whole-video edit never renders more.
+                project.metadata = {**(project.metadata or {}), 'priced_duration_s': duration_seconds}
                 
             except (PlanLimitExceededError, FeatureNotAllowedError) as e:
                 project.delete()

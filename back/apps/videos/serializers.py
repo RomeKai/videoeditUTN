@@ -93,6 +93,19 @@ class VideoProjectSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 'project_type': "Para editar el video completo, subí el archivo. Los links sirven para sacar clips.",
             })
+        if not self.instance and data.get('project_type') == VideoProject.Type.SINGLE_EDIT:
+            from django.conf import settings
+
+            from .services.media_validation import _format_duration
+
+            # One clip is the whole video: its subtitles and frames are held by a
+            # single render task, so a whole-video edit is for short videos.
+            limit = getattr(settings, 'AI_SINGLE_EDIT_MAX_DURATION_SECONDS', 600)
+            source_media = getattr(self, '_source_media', None)
+            if source_media is not None and source_media.duration_s > limit:
+                raise serializers.ValidationError({
+                    'project_type': f"Para editar el video completo, el video puede durar hasta {_format_duration(limit)}.",
+                }, code='too_long')
         return data
 
     def validate_aspect_ratio(self, value):

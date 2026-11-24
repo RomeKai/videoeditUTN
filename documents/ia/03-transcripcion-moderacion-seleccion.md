@@ -249,7 +249,7 @@ Con V2 apagado para el proyecto, `_stage_select_clips` llama a `SelectionEngine.
 
 | Situación | Qué pasa | Dónde |
 |-----------|----------|-------|
-| Audio sin habla | `AINoSpeechDetectedError`, sin reintento. Los chunks cobrados se registran igual | `GroqTranscriptionProvider.transcribe`, `_local_to_execution_result` |
+| Audio sin habla | `AINoSpeechDetectedError`, sin reintento. Los chunks cobrados se registran igual. En un video completo no falla: sigue sin transcript ni subtítulos (ver [02](02-pipeline-de-ingesta.md)) | `GroqTranscriptionProvider.transcribe`, `_local_to_execution_result`, `_stage_transcribe` |
 | Falta `GROQ_API_KEY` o el paquete `groq` | `AIAuthenticationError`, sin reintento ni fallback a local | `GroqTranscriptionProvider.__init__` |
 | `TRANSCRIPTION_BACKEND` inválido | `ImproperlyConfigured`, sin reintento | `resolve_backend` |
 | El archivo fuente no existe | `FileNotFoundError`, sin reintento | `TranscriptionEngine._ensure_exists`, `AudioPreprocessor.process` |

@@ -96,6 +96,11 @@ def finalize_project_render(project_id):
         "pipeline.render_finalized project_id=%s stage=%s", project_id, stage,
         extra={'project_id': str(project_id), 'stage': str(stage)},
     )
+    from apps.videos.tasks.ingestion import _is_whole_video, _settle_whole_video_reservation
+
+    if _is_whole_video(project):
+        # Only the call that closed the fan-out gets here, so it settles once.
+        _settle_whole_video_reservation(project_id, delivered=stage == PipelineStage.COMPLETED)
     return stage
 
 
