@@ -158,7 +158,7 @@ flowchart TD
     E["Excepción en la corrida"] --> A{"¿Tipo?"}
     A -->|PromptParseRetry| P["apply_async con parse_retries + 1, countdown 30 s o 90 s"]
     A -->|ProjectLockedError| B{"¿lock_retries menor que 8?"}
-    B -->|sí| B1["apply_async con lock_retries + 1, countdown 45 s"]
+    B -->|sí| B1["apply_async con lock_retries + 1 y el mismo parse_retries, countdown 45 s"]
     B -->|no| SK["pipeline.skipped, el proyecto no cambia"]
     A -->|ProjectLockLostError o PipelineConflictError| SK
     A -->|CapacityUnavailable| W["_wait_for_capacity"]
@@ -207,7 +207,7 @@ sequenceDiagram
 | `lock_retries` | kwarg de la tarea | Re-encolado por `ProjectLockedError` (cada `PIPELINE_LOCK_RETRY_SECONDS` = 45 s) | `PIPELINE_LOCK_MAX_RETRIES` = 8 | `pipeline.skipped`: se asume que un worker vivo tiene el proyecto. No falla ni cobra |
 | `parse_retries` | kwarg de la tarea | Re-encolado por `PromptParseRetry` (30 s y después 90 s, `PTE_PARSE_RETRY_SECONDS`) | `PTE_PARSE_MAX_RETRIES` = 2 | `can_retry=False`: el parser guarda `pte.status=failed` y el proyecto sigue con su configuración |
 
-Los tres son independientes: esperar el lock o reintentar el parser no gasta los reintentos de las etapas. Ojo: el re-encolado por lock no pasa `parse_retries` y el de capacidad no pasa ni `lock_retries` ni `parse_retries`, así que esos vuelven a 0 en el mensaje nuevo. Ocho esperas de 45 s (360 s) superan el TTL del lock (300 s), así que el lock de un worker muerto vence antes de que se agoten. `pipeline_attempts` (en la DB) no es un presupuesto: cuenta fallos registrados y se usa como `attempt` en `AIUsageRecord` y para invalidar esperas de capacidad viejas.
+Los tres son independientes: esperar el lock o reintentar el parser no gasta los reintentos de las etapas. `parse_retries` viaja en todos los re-encolados (lock, capacidad y parser), así que una espera nunca le devuelve reintentos al parser. El re-encolado por capacidad empieza `lock_retries` de nuevo en 0: el lock ya se había tomado. Ocho esperas de 45 s (360 s) superan el TTL del lock (300 s), así que el lock de un worker muerto vence antes de que se agoten. `pipeline_attempts` (en la DB) no es un presupuesto: cuenta fallos registrados y se usa como `attempt` en `AIUsageRecord` y para invalidar esperas de capacidad viejas.
 
 ## Flujo: espera de capacidad
 

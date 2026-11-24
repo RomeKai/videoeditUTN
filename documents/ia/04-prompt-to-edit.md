@@ -223,7 +223,7 @@ flowchart TD
 | Error transitorio con reintentos del parser | `PromptParseRetry` y re-encolado a 30 o 90 s. Se escriben las filas de uso pero no `pte` | `apply_prompt_to_project`, `process_initial_ingestion` |
 | Error transitorio en el último reintento | `status=failed` con `error_code`. La ingesta sigue con los defaults | `apply_prompt_to_project` |
 | Error definitivo | `status=failed` en el primer intento, aunque queden reintentos | `apply_prompt_to_project` |
-| Re-encolado por lock ocupado o por espera de capacidad | Esos re-encolados no pasan `parse_retries`, así que vuelve a 0 y el presupuesto del parser se reinicia | `process_initial_ingestion`, `_wait_for_capacity` |
+| Re-encolado por lock ocupado o por espera de capacidad | Los dos pasan el mismo `parse_retries`: el presupuesto del parser no se reinicia | `process_initial_ingestion`, `_wait_for_capacity` |
 | Sin capacidad | `pending_capacity` en la etapa que viene y re-encolado. No es un intento fallido | `_run_ingestion`, `_wait_for_capacity` |
 | Espera de capacidad vencida | `give_up_prompt` con `CapacityTimeoutError`. El proyecto sigue y no falla | `_prompt_capacity_exhausted` |
 | `SoftTimeLimitExceeded` durante el parseo | Se relanza y el proyecto falla. La reserva de tokens vuelve según [01](01-creacion-de-proyecto.md#flujo-ciclo-de-vida-de-la-reserva) | `PromptParser.parse`, `apply_prompt_to_project` |
