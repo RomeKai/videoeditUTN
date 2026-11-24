@@ -53,10 +53,11 @@ export function useWallet({ enabled = true }: { enabled?: boolean } = {}) {
   });
 }
 
-export function useUsage(month?: string) {
+export function useUsage(month?: string, { enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: keys.billing.usage(month),
     queryFn: ({ signal }) => apiCall(contract.getUsage, { query: { month }, signal }),
+    enabled,
   });
 }
 

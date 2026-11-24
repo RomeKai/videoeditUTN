@@ -7,6 +7,7 @@ export const usersHandlers = [
 
   route(contract.updateMe, ({ db, user, body }) => {
     if (body.email !== undefined && body.email !== user.email) {
+      if (body.current_password === 'incorrecta') throw badRequest({ current_password: ['La contraseña no coincide.'] });
       if (db.users.some((item) => item.id !== user.id && item.email.toLowerCase() === body.email?.toLowerCase())) {
         throw badRequest({ email: ['Ya existe una cuenta con este email.'] });
       }

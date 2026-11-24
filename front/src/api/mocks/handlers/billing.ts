@@ -85,7 +85,8 @@ export const billingHandlers = [
     const days = new Date(year, monthNumber, 0).getDate();
     const byDay = new Map<string, { projects: number; renders: number; seo: number }>();
     for (const transaction of db.transactions) {
-      if (transaction.workspace !== workspace.id || transaction.transaction_type !== 'SPEND' || transaction.status === 'FAILED') continue;
+      // Only what was charged: reservations are not consumption yet and released ones never were.
+      if (transaction.workspace !== workspace.id || transaction.transaction_type !== 'SPEND' || transaction.status !== 'COMPLETED') continue;
       const day = transaction.created_at.slice(0, 10);
       if (!day.startsWith(month)) continue;
       const entry = byDay.get(day) ?? { projects: 0, renders: 0, seo: 0 };
@@ -109,13 +110,18 @@ export const billingHandlers = [
     if (!project && role !== 'owner' && role !== 'admin') throw forbidden();
     const kind = query.get('kind');
     const month = query.get('month');
-    const items = db.transactions
+    const scoped = db.transactions
       .filter((item) => item.workspace === workspace.id)
-      .filter((item) => !kind || item.kind === kind)
       .filter((item) => !month || item.created_at.startsWith(month))
-      .filter((item) => !project || item.project?.id === project)
-      .map(serializeTransaction);
-    return { data: paginate(items, query, contract.listTransactions.path) };
+      .filter((item) => !project || item.project?.id === project);
+    const totals: Record<string, { count: number; amount: number }> = {};
+    for (const item of scoped) {
+      const entry = (totals[item.kind] ??= { count: 0, amount: 0 });
+      entry.count += 1;
+      entry.amount = Math.round((entry.amount + item.amount) * 100) / 100;
+    }
+    const items = scoped.filter((item) => !kind || item.kind === kind).map(serializeTransaction);
+    return { data: { ...paginate(items, query, contract.listTransactions.path), totals } };
   }),
 
   route(contract.exportTransactions, ({ db, workspace, query, require }) => {

@@ -152,6 +152,10 @@ export const TransactionsQuery = PageQuery.extend({
 });
 export type TransactionsQuery = z.infer<typeof TransactionsQuery>;
 
+/** Count and sum of the movements of one kind, for the filter chips and the totals of G2 and G1. */
+export const TransactionKindTotal = z.object({ count: z.number().int().nonnegative(), amount: Decimal });
+export type TransactionKindTotal = z.infer<typeof TransactionKindTotal>;
+
 export const UsageDay = z.object({
   /** YYYY-MM-DD */
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -296,7 +300,13 @@ export const listTransactions = defineEndpoint({
   path: '/api/v1/transactions/',
   summary: 'Movimientos de la billetera, paginados, con filtro por tipo, mes y proyecto.',
   query: TransactionsQuery,
-  response: paginated(Transaction),
+  response: paginated(Transaction).extend({
+    /**
+     * Proposed (gap 4): how many movements and how many tokens per kind, for the same month and
+     * project but ignoring `kind` and the page, so the chips can show every count at once.
+     */
+    totals: z.record(TransactionKind, TransactionKindTotal).optional(),
+  }),
   errors: [{ status: 403, when: 'Solo Dueño y Admin (Editor y Lector ven únicamente el saldo).' }],
   backend: { status: 'proposed', gap: 4, note: 'Modelo: Transaction. Faltan el vínculo al proyecto y el estado "devuelto" (hoy SPEND + FAILED).' },
   screens: ['G2', 'D1f'],

@@ -273,7 +273,7 @@ Actualiza nombre, email, tour, uso elegido en la bienvenida y workspace activo.
 | Sesión | JWT |
 | Pedido | UpdateMeRequest |
 | Respuesta 200 | Me |
-| Errores | **400** Validación por campo (email ya usado). |
+| Errores | **400** Validación por campo (email ya usado, `current_password` incorrecta). |
 | Pantallas | B1, B2, J3, I1 |
 
 #### `POST /api/v1/me/password/`
@@ -607,7 +607,7 @@ Movimientos de la billetera, paginados, con filtro por tipo, mes y proyecto.
 | Nota | Modelo: Transaction. Faltan el vínculo al proyecto y el estado "devuelto" (hoy SPEND + FAILED). |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | TransactionsQuery |
-| Respuesta 200 | { count: number, next: string \\| null, previous: string \\| null, results: Transaction[] } |
+| Respuesta 200 | { count: number, next: string \\| null, previous: string \\| null, results: Transaction[], totals?: { [clave]: TransactionKindTotal } } |
 | Errores | **403** Solo Dueño y Admin (Editor y Lector ven únicamente el saldo). |
 | Pantallas | G2, D1f |
 
@@ -1363,6 +1363,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 |---|---|
 | `name` (opcional) | string |
 | `email` (opcional) | string |
+| `current_password` (opcional) | string |
 | `tour_completed` (opcional) | boolean |
 | `onboarding_use_case` (opcional) | OnboardingUseCase |
 | `active_workspace_id` (opcional) | Id |
@@ -1431,6 +1432,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `subscription_plan` | Id \\| null |
 | `created_at` | IsoDateTime |
 | `role` (opcional) | Role |
+| `admins` (opcional) | { id: Id, name: string, role: Role }[] |
 
 ### `billing.ts`
 
@@ -1558,6 +1560,13 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `category` | "project" \\| "render" \\| "seo" \\| "purchase" \\| "other" |
 
 **TransactionKind:** "purchase" \| "reserved" \| "charged" \| "refund" \| "released" \| "pending"
+
+**TransactionKindTotal**
+
+| Campo | Tipo |
+|---|---|
+| `count` | number |
+| `amount` | Decimal |
 
 **TransactionsQuery**
 

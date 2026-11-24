@@ -47,7 +47,17 @@ export const workspacesHandlers = [
     return { data: serializeWorkspace(db, workspace, user.id) };
   }),
 
-  route(contract.getWorkspace, ({ db, user, params }) => ({ data: serializeWorkspace(db, workspaceFor(db, params.id, user.id).workspace, user.id) })),
+  route(contract.getWorkspace, ({ db, user, params }) => {
+    const { workspace } = workspaceFor(db, params.id, user.id);
+    // Who to ask for access: the owner first, then the admins.
+    const admins = db.members
+      .filter((member) => member.workspace === workspace.id && member.status === 'active' && member.user !== null)
+      .map((member) => ({ member, account: db.users.find((item) => item.id === member.user) }))
+      .filter(({ member, account }) => account && (member.user === workspace.owner || member.role === 'admin'))
+      .map(({ member, account }) => ({ id: member.user as string, name: account?.name ?? member.email, role: member.user === workspace.owner ? ('owner' as const) : ('admin' as const) }))
+      .sort((a, b) => Number(b.role === 'owner') - Number(a.role === 'owner'));
+    return { data: { ...serializeWorkspace(db, workspace, user.id), admins } };
+  }),
 
   route(contract.updateWorkspace, ({ db, user, params, body }) => {
     const { workspace, role } = workspaceFor(db, params.id, user.id);

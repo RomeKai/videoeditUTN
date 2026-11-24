@@ -11,6 +11,11 @@ export const Workspace = z.object({
   created_at: IsoDateTime,
   /** Proposed: role of the current user, so the screen does not need `/me` to decide. */
   role: Role.optional(),
+  /**
+   * Proposed, only in the detail: Dueño and Admins, so a member who cannot open
+   * Miembros knows who to ask for tokens or access (artboard R1).
+   */
+  admins: z.array(z.object({ id: Id, name: z.string(), role: Role })).optional(),
 });
 export type Workspace = z.infer<typeof Workspace>;
 
