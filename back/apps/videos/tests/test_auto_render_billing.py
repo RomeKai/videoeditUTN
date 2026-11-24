@@ -257,6 +257,27 @@ class AutoRenderBillingTests(IngestionHarness, TestCase):
 
         render.assert_called_once()
 
+    def test_a_resumed_re_dispatch_does_not_render_a_failed_clip_it_did_not_reserve(self):
+        project = self.run_to_render(self.make_project(auto_render_bypass=True))
+        rollback_reservation(project.metadata[KEY])  # refunded when it failed
+        first, second, _third = VideoClip.objects.filter(project=project).order_by("start_time")
+        VideoClip.objects.filter(pk=first.pk).update(status=VideoClip.Status.FAILED)
+        # What reopen leaves: render_dispatched and rendering, so it resumes (resuming=True).
+        VideoProject.objects.filter(pk=project.pk).update(
+            pipeline_stage=PipelineStage.RENDER_DISPATCHED, status=VideoProject.Status.RENDERING,
+        )
+        project = self.run_to_render(project)
+        self.assertNotIn(str(first.id), project.metadata["auto_render_clip_ids"])
+
+        with patch("apps.videos.services.render_engine.RenderEngine.render_clip") as render:
+            render_clip_task.apply(args=[str(first.id)])  # a stale message
+        render.assert_not_called()
+        self.assertEqual(VideoClip.objects.get(pk=first.pk).status, VideoClip.Status.FAILED)
+
+        with patch("apps.videos.services.render_engine.RenderEngine.render_clip") as render:
+            render_clip_task.apply(args=[str(second.id)])  # paid by the new reservation
+        render.assert_called_once()
+
     def test_a_project_re_dispatched_at_render_dispatched_reserves_again_and_renders(self):
         project = self.run_to_render(self.make_project(auto_render_bypass=True))
         rollback_reservation(project.metadata[KEY])  # refunded when it failed

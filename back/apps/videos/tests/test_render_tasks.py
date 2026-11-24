@@ -38,8 +38,10 @@ class RenderHarness(CapturedTaskFailures):
 
     @staticmethod
     def completing_render(clip_id, claim_token=None):
+        # Like the engine: COMPLETED is final, so the claim and its start count go.
         VideoClip.objects.filter(pk=clip_id).update(
-            status=VideoClip.Status.COMPLETED, s3_object_key=f"clips/{clip_id}.mp4"
+            status=VideoClip.Status.COMPLETED, s3_object_key=f"clips/{clip_id}.mp4",
+            render_claim_token=None, render_unfinished_starts=0,
         )
         return True
 
@@ -116,8 +118,8 @@ class RenderClipTaskTests(RenderHarness, TestCase):
     def test_claim_moves_a_draft_clip_to_rendering_exactly_once(self):
         clip = self.make_clip()
 
-        self.assertTrue(_claim_clip_for_render(clip.id, redelivered=False))
-        self.assertFalse(_claim_clip_for_render(clip.id, redelivered=False))
+        self.assertTrue(_claim_clip_for_render(clip.id))
+        self.assertFalse(_claim_clip_for_render(clip.id))
 
         clip.refresh_from_db()
         self.assertEqual(clip.status, VideoClip.Status.RENDERING)
@@ -126,7 +128,7 @@ class RenderClipTaskTests(RenderHarness, TestCase):
         clip = self.make_clip(status=VideoClip.Status.RENDERING)
 
         # The worker that claimed it died: acks_late redelivers the message.
-        self.assertTrue(_claim_clip_for_render(clip.id, redelivered=True))
+        self.assertTrue(_claim_clip_for_render(clip.id, takeover=True))
 
     def test_render_task_survives_worker_loss_by_acking_late(self):
         self.assertTrue(render_clip_task.acks_late)

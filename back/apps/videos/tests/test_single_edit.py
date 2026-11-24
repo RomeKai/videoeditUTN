@@ -421,11 +421,11 @@ class SingleEditPipelineTests(IngestionHarness, TestCase):
         real_claim = render_module._claim_clip_for_render
         claims = []
 
-        def claim(clip_id, redelivered=False):
+        def claim(clip_id, **kwargs):
             claims.append(clip_id)
             if len(claims) == 2:
                 rollback_reservation(self.txn.id)  # refunded between the check and the retry's claim
-            return real_claim(clip_id, redelivered=redelivered)
+            return real_claim(clip_id, **kwargs)
 
         with patch("apps.videos.services.render_engine.RenderEngine.render_clip",
                    side_effect=self.transient_r2_error()) as render, \

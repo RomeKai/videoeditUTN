@@ -134,18 +134,21 @@ class ClipRenderTask(celery_app.Task):
     another delivery owns:
 
     - With a claim, the clip is marked FAILED while this delivery still owns
-      it. If not, it is marked FAILED only if it is DRAFT with no owner (the
-      hand back before a retry committed, but its driver raised); one a
-      redelivered copy took over is left to that copy.
+      it. If not, it is left alone (a redelivered copy took it over, or handed
+      it back for its own retry), except when this delivery's own hand back
+      raised (``_RELEASE_RAISED_REQUEST_ATTR``): the update may have committed
+      before the driver failed, so a DRAFT clip with no owner is failed.
     - Without one (it failed before claiming, or after handing the claim back
       for a retry that could not be queued), the clip is marked FAILED only if
       it is DRAFT with no owner: nobody is rendering it, and otherwise the
       project would stay open forever. A later message can still claim it.
-    - A delivery with an unused takeover right (``_takeover_pending``: it was
-      redelivered and failed before claiming) also fails a clip in RENDERING
-      under another token, in the same write that clears that token: the
-      owner whose worker died would never finish it. The trade-off: after a
-      broker blip, a live owner's render is discarded (it can no longer save).
+    - A delivery with an unused takeover right (``TakeoverRight``: it was
+      redelivered and failed before claiming) also fails the clip if it is
+      still RENDERING under the owner it found when the message came back, in
+      the same write that clears that token: that owner's worker may be dead
+      and would never finish it. The trade-off: after a broker blip, that
+      owner's render is discarded even if it was alive (it can no longer
+      save). A clip claimed by anyone since then is left alone.
 
     A clip already delivered is never marked failed. The fan-out close always
     runs: it is harmless while a clip is still DRAFT or RENDERING.
@@ -157,8 +160,12 @@ class ClipRenderTask(celery_app.Task):
         try:
             clip = VideoClip.objects.get(pk=clip_id)
             if token is None:
-                _fail_unclaimed_clip(clip_id, redelivered=_takeover_pending(self.request))
-            elif not _fail_owned_clip(clip_id, token) and not _fail_unclaimed_clip(clip_id):
+                claimed = getattr(self.request, _CLAIMED_REQUEST_ATTR, False)
+                takeover = None if claimed else _resolve_takeover(self.request, clip)
+                _fail_unclaimed_clip(clip_id, takeover=takeover)
+            elif not _fail_owned_clip(clip_id, token) and not (
+                getattr(self.request, _RELEASE_RAISED_REQUEST_ATTR, False) and _fail_unclaimed_clip(clip_id)
+            ):
                 # Taken over by a redelivered copy that is rendering it: its
                 # outcome decides. This start ended, so it is not a lost worker.
                 logger.warning("render.claim_lost clip_id=%s", clip_id)
@@ -177,17 +184,48 @@ class ClipClaim:
     starts: int
 
 
-# Attributes of the task request: the token of the claim this delivery owns,
-# and whether it ever claimed the clip. ClipRenderTask.on_failure runs within
-# the same request.
+# Attributes of the task request (ClipRenderTask.on_failure runs within the
+# same request): the token of the claim this delivery owns, whether it ever
+# claimed the clip, its takeover right once resolved, and whether its own
+# hand back raised (the update may have committed anyway).
 _CLAIM_REQUEST_ATTR = 'render_claim_token'
 _CLAIMED_REQUEST_ATTR = 'render_claimed'
+_TAKEOVER_REQUEST_ATTR = 'render_takeover_right'
+_RELEASE_RAISED_REQUEST_ATTR = 'render_release_raised'
 # Custom message header that carries the takeover right of a redelivered
-# delivery into its retry: a retry is a new message, never "redelivered". A
-# header, not a kwarg: a worker running the previous code ignores unknown
-# headers, while an unknown kwarg would fail the task (TypeError) during a
-# rolling deploy.
+# delivery into its retry: a retry is a new message, never "redelivered". Its
+# value pins the owner the right is for (``TakeoverRight.header_value``), or
+# asks the retry to pin it (``TAKEOVER_OBSERVE``: the delivery could not read
+# the clip). A header, not a kwarg: a worker running the previous code ignores
+# unknown headers, while an unknown kwarg would fail the task (TypeError)
+# during a rolling deploy.
 RENDER_TAKEOVER_HEADER = 'render_takeover'
+TAKEOVER_OBSERVE = 'observe'
+TAKEOVER_UNOWNED = 'unowned'
+
+
+@dataclass(frozen=True)
+class TakeoverRight:
+    """
+    The right of a redelivered message to take the clip over from the owner it
+    found RENDERING when it came back: ``token`` (None: a clip claimed by a
+    worker on the previous code, with no token). Only that owner: a clip
+    claimed by anyone since (its retry, after handing it back) is not its to
+    take.
+    """
+    token: uuid.UUID | None
+
+    def header_value(self):
+        return str(self.token) if self.token else TAKEOVER_UNOWNED
+
+    @classmethod
+    def from_header(cls, value):
+        if value == TAKEOVER_UNOWNED:
+            return cls(None)
+        try:
+            return cls(uuid.UUID(str(value)))
+        except (TypeError, ValueError):
+            return None
 
 
 def _held_claim(request):
@@ -201,23 +239,59 @@ def _hold_claim(request, token):
         setattr(request, _CLAIMED_REQUEST_ATTR, True)
 
 
-def _has_takeover_right(request):
-    """
-    This delivery may take over a clip in RENDERING, whose owner may be dead:
-    the broker redelivered its message (acks_late), or it is the retry of
-    such a delivery that failed before claiming (``RENDER_TAKEOVER_HEADER``).
-    """
-    if (request.delivery_info or {}).get('redelivered'):
-        return True
-    try:
-        return int((request.headers or {}).get(RENDER_TAKEOVER_HEADER) or 0) > 0
-    except (TypeError, ValueError):
-        return False
+def _is_redelivered(request):
+    """The broker delivered this message before and never got its ack (acks_late)."""
+    return bool((request.delivery_info or {}).get('redelivered'))
 
 
-def _takeover_pending(request):
-    """The delivery has the takeover right and has not claimed the clip yet."""
-    return not getattr(request, _CLAIMED_REQUEST_ATTR, False) and _has_takeover_right(request)
+def _resolve_takeover(request, clip):
+    """
+    The ``TakeoverRight`` of this delivery, or None, resolved once and kept on
+    the request. A redelivered message (or a retry asked to observe) pins the
+    owner the clip has at its first read, if it is RENDERING: its worker may
+    be dead. A retry that carries a pin keeps it. Redelivery wins over the
+    header: a retry whose own worker died finds its own claim to take over.
+    """
+    if hasattr(request, _TAKEOVER_REQUEST_ATTR):
+        return getattr(request, _TAKEOVER_REQUEST_ATTR)
+    value = (request.headers or {}).get(RENDER_TAKEOVER_HEADER)
+    if _is_redelivered(request) or value == TAKEOVER_OBSERVE:
+        rendering = clip.status == VideoClip.Status.RENDERING
+        right = TakeoverRight(clip.render_claim_token) if rendering else None
+    else:
+        right = TakeoverRight.from_header(value) if value else None
+    setattr(request, _TAKEOVER_REQUEST_ATTR, right)
+    return right
+
+
+def _retry_takeover_header(request):
+    """
+    The headers of this delivery's retry: its unused takeover right, pinned to
+    the same owner. None once it claimed the clip (the clip is DRAFT when it
+    hands it back). If it never read the clip, the retry pins the owner itself.
+    """
+    if getattr(request, _CLAIMED_REQUEST_ATTR, False):
+        return {}
+    if hasattr(request, _TAKEOVER_REQUEST_ATTR):
+        right = getattr(request, _TAKEOVER_REQUEST_ATTR)
+        return {RENDER_TAKEOVER_HEADER: right.header_value()} if right else {}
+    value = (request.headers or {}).get(RENDER_TAKEOVER_HEADER)
+    if _is_redelivered(request) or value == TAKEOVER_OBSERVE:
+        return {RENDER_TAKEOVER_HEADER: TAKEOVER_OBSERVE}
+    right = TakeoverRight.from_header(value) if value else None
+    return {RENDER_TAKEOVER_HEADER: right.header_value()} if right else {}
+
+
+def _taken_over(takeover):
+    """
+    The RENDERING clip a delivery may take over, as a Q (None: none). ``True``
+    takes any (tests, tools); a ``TakeoverRight`` only the owner it pins.
+    """
+    if takeover is True:
+        return Q(status=VideoClip.Status.RENDERING)
+    if takeover:
+        return Q(status=VideoClip.Status.RENDERING, render_claim_token=takeover.token)
+    return None
 
 
 def _max_clip_starts():
@@ -225,26 +299,28 @@ def _max_clip_starts():
     return max(2, int(getattr(settings, 'RENDER_CLIP_MAX_STARTS', 3)))
 
 
-def _claim_clip_for_render(clip_id, redelivered=False):
+def _claim_clip_for_render(clip_id, takeover=None):
     """
     Compare-and-set DRAFT/FAILED -> RENDERING under the row lock. Only one
     delivery wins; a duplicate finds the clip RENDERING (or COMPLETED) and must
-    skip. A *redelivered* message may also take over a clip in RENDERING: its
-    worker may have died (acks_late) and nothing else would finish it.
+    skip. A redelivered message (``takeover``: its ``TakeoverRight``) may also
+    take over the clip from the owner it found RENDERING when it came back:
+    that worker may have died (acks_late) and nothing else would finish it.
 
     The winner writes a new owner token (``render_claim_token``): a takeover
     replaces the previous owner's, so that copy can no longer write to the
     clip. It also counts a start (``render_unfinished_starts``). Returns the
     ``ClipClaim``, or None when the clip was not claimable.
     """
-    claimable = [VideoClip.Status.DRAFT, VideoClip.Status.FAILED]
-    if redelivered:
-        claimable.append(VideoClip.Status.RENDERING)
+    claimable = Q(status__in=[VideoClip.Status.DRAFT, VideoClip.Status.FAILED])
+    taken_over = _taken_over(takeover)
+    if taken_over is not None:
+        claimable |= taken_over
     token = uuid.uuid4()
     with transaction.atomic():
         before = (
             VideoClip.objects.select_for_update()
-            .filter(pk=clip_id, status__in=claimable)
+            .filter(claimable, pk=clip_id)
             .values_list('render_unfinished_starts', flat=True)
             .first()
         )
@@ -288,17 +364,18 @@ def _fail_owned_clip(clip_id, token):
     ) == 1
 
 
-def _fail_unclaimed_clip(clip_id, redelivered=False):
+def _fail_unclaimed_clip(clip_id, takeover=None):
     """
     Fails a clip that no delivery owns: DRAFT, with no token. A delivery with
-    the takeover right (*redelivered*) also takes over a clip in RENDERING (its
-    worker may have died) and fails it in the same write: the token is
-    cleared, so the copy that held it can no longer save it. Returns whether
-    it failed the clip.
+    a ``TakeoverRight`` also takes over the clip if it is still RENDERING under
+    the owner that right pins (its worker may have died) and fails it in the
+    same write: the token is cleared, so that owner can no longer save it.
+    Returns whether it failed the clip.
     """
     stale = Q(status=VideoClip.Status.DRAFT, render_claim_token__isnull=True)
-    if redelivered:
-        stale |= Q(status=VideoClip.Status.RENDERING)
+    taken_over = _taken_over(takeover)
+    if taken_over is not None:
+        stale |= taken_over
     return VideoClip.objects.filter(stale, pk=clip_id).update(
         status=VideoClip.Status.FAILED, render_claim_token=None, render_unfinished_starts=0,
     ) == 1
@@ -382,19 +459,20 @@ def render_clip_task(self, clip_id):
             finalize_project_render(clip.project_id)
             return f"Clip {clip_id} already rendered"
 
-        takeover = _has_takeover_right(self.request)
+        # The owner this delivery may replace, pinned when the message came back.
+        takeover = _resolve_takeover(self.request, clip)
         from apps.videos.tasks.ingestion import _whole_video_render_allowed
 
         if not _whole_video_render_allowed(clip.project_id, clip_id=clip_id):
             # A paid project (whole video, auto-render) that failed and was
             # refunded while this message waited in the queue, or a clip its
             # reservation does not pay for: nothing is rendered for free.
-            _fail_unclaimed_clip(clip_id, redelivered=takeover)
+            _fail_unclaimed_clip(clip_id, takeover=takeover)
             finalize_project_render(clip.project_id)
             logger.warning("render.skipped_unpaid clip_id=%s project_id=%s", clip_id, clip.project_id)
             return f"Clip {clip_id} not rendered: the project is not payable"
 
-        claim = _claim_clip_for_render(clip_id, redelivered=takeover)
+        claim = _claim_clip_for_render(clip_id, takeover=takeover)
         if not claim:
             logger.info(f"⏭️ [RENDER TASK] Clip {clip_id} is being rendered by another delivery, skipping")
             return f"Clip {clip_id} already claimed"
@@ -455,7 +533,10 @@ def render_clip_task(self, clip_id):
             try:
                 released = _release_clip_claim(clip_id, token)
             except DatabaseError as release_exc:
-                # The retry could not claim a clip left in RENDERING: fail it now.
+                # The retry could not claim a clip left in RENDERING: fail it
+                # now. The update may have committed before the driver failed:
+                # on_failure then fails the DRAFT clip it left.
+                setattr(self.request, _RELEASE_RAISED_REQUEST_ATTR, True)
                 logger.error(
                     "render.release_failed clip_id=%s error=%s", clip_id, type(release_exc).__name__,
                 )
@@ -472,10 +553,11 @@ def render_clip_task(self, clip_id):
             "render.retrying clip_id=%s attempt=%d error=%s",
             clip_id, self.request.retries + 1, type(exc).__name__,
         )
-        # A delivery that failed before using its takeover right passes it on:
-        # otherwise its retry would find the clip RENDERING under a dead
-        # owner's token and skip it for good. One that claimed does not.
-        headers = {RENDER_TAKEOVER_HEADER: 1} if _takeover_pending(self.request) else {}
+        # A delivery that failed before using its takeover right passes it on,
+        # pinned to the same owner: otherwise its retry would find the clip
+        # RENDERING under a dead owner's token and skip it for good. One that
+        # claimed does not.
+        headers = _retry_takeover_header(self.request)
         try:
             raise self.retry(
                 exc=exc, countdown=_retry_countdown(self.request.retries), headers=headers,
@@ -485,8 +567,8 @@ def render_clip_task(self, clip_id):
             # message without on_failure, leaving the clip DRAFT and the project
             # open forever. The original error runs on_failure instead: this
             # delivery holds no claim now, so it fails the clip if it is still
-            # DRAFT with no owner (or, with an unused takeover right, RENDERING
-            # under a dead owner's token), and closes the fan-out.
+            # DRAFT with no owner (or, with an unused takeover right, still
+            # RENDERING under the owner it pins), and closes the fan-out.
             logger.error(
                 "render.retry_not_queued clip_id=%s error=%s", clip_id, type(exc).__name__,
             )

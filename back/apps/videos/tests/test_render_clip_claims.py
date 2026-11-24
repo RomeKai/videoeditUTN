@@ -23,7 +23,7 @@ from apps.videos.models import VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import PipelineStage
 from apps.videos.tasks import _claim_clip_for_render, finalize_project_render, render_clip_task
 from apps.videos.tasks import render as render_module
-from apps.videos.tasks.render import RENDER_CLIP_MAX_RETRIES, RENDER_TAKEOVER_HEADER
+from apps.videos.tasks.render import RENDER_CLIP_MAX_RETRIES, RENDER_TAKEOVER_HEADER, TAKEOVER_OBSERVE
 from apps.videos.tests.test_render_tasks import RenderHarness, transient_r2_error
 
 RENDER = "apps.videos.services.render_engine.RenderEngine.render_clip"
@@ -37,7 +37,7 @@ class WorkerKilled(BaseException):
 
 def take_over(clip_id):
     """The redelivered copy B claims the clip while A still renders it. Returns B's token."""
-    _claim_clip_for_render(clip_id, redelivered=True)
+    _claim_clip_for_render(clip_id, takeover=True)
     return VideoClip.objects.values_list("render_claim_token", flat=True).get(pk=clip_id)
 
 
@@ -108,7 +108,7 @@ class ClipOwnershipTests(ClaimHarness, TestCase):
         clip = self.make_clip()
 
         first = _claim_clip_for_render(clip.id)
-        second = _claim_clip_for_render(clip.id, redelivered=True)
+        second = _claim_clip_for_render(clip.id, takeover=True)
 
         self.assertNotEqual(first.token, second.token)
         clip.refresh_from_db()
@@ -225,6 +225,7 @@ class ClipOwnershipTests(ClaimHarness, TestCase):
 
     def test_the_retry_of_a_redelivered_copy_that_failed_before_the_claim_takes_over(self):
         clip = self.dead_owner_clip()
+        dead_owner = self.clip_row(clip.id).render_claim_token
         answers = []
 
         def blip_then_allowed(project_id, clip_id=None):
@@ -239,8 +240,108 @@ class ClipOwnershipTests(ClaimHarness, TestCase):
             result = redelivered_copy(clip.id)
 
         self.assertTrue(result.successful())
-        self.assertEqual(sent, [{RENDER_TAKEOVER_HEADER: 1}])
+        self.assertEqual(sent, [{RENDER_TAKEOVER_HEADER: str(dead_owner)}])  # pinned to the dead owner
         self.assertEqual(render.call_count, 1)  # the retry took the clip over and rendered it
+        self.project.refresh_from_db()
+        self.assertEqual(self.clip_row(clip.id).status, VideoClip.Status.COMPLETED)
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.COMPLETED)
+
+    def test_the_takeover_right_never_reaches_an_owner_that_claimed_after_the_blip(self):
+        clip = self.make_clip()
+        owner_a = _claim_clip_for_render(clip.id).token  # A is alive: a broker blip redelivers B
+        original_retry = render_clip_task.retry
+        state = {}
+
+        def a_hands_back_and_its_retry_claims(*args, **kwargs):
+            if "a2" not in state:
+                render_module._release_clip_claim(clip.id, owner_a)  # A: transient error
+                state["a2"] = _claim_clip_for_render(clip.id).token  # A's retry claims and renders
+                state["headers"] = kwargs.get("headers")
+            return original_retry(*args, **kwargs)
+
+        # B fails before its claim on every attempt.
+        with patch(ALLOWED, side_effect=OperationalError("gone")), patch(RENDER) as render, \
+                patch.object(render_clip_task, "retry", side_effect=a_hands_back_and_its_retry_claims):
+            result = redelivered_copy(clip.id)
+
+        self.assertTrue(result.failed())
+        render.assert_not_called()
+        self.assertEqual(state["headers"], {RENDER_TAKEOVER_HEADER: str(owner_a)})
+        row = self.clip_row(clip.id)
+        self.project.refresh_from_db()
+        self.assertEqual(row.status, VideoClip.Status.RENDERING)  # A2's live claim survives
+        self.assertEqual(row.render_claim_token, state["a2"])
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.RENDER_DISPATCHED)
+
+    def test_a_redelivered_copy_does_not_take_over_a_clip_claimed_after_it_came_back(self):
+        clip = self.make_clip()
+        owner_a = _claim_clip_for_render(clip.id).token
+
+        owners = []
+
+        def a_hands_back_and_its_retry_claims(project_id, clip_id=None):
+            # Between B's first read of the clip (owner A) and B's claim.
+            render_module._release_clip_claim(clip.id, owner_a)
+            owners.append(_claim_clip_for_render(clip.id).token)
+            return True
+
+        with patch(ALLOWED, side_effect=a_hands_back_and_its_retry_claims), patch(RENDER) as render:
+            result = redelivered_copy(clip.id)
+
+        self.assertTrue(result.successful())  # "already claimed"
+        render.assert_not_called()
+        row = self.clip_row(clip.id)
+        self.assertEqual(row.status, VideoClip.Status.RENDERING)
+        self.assertEqual(row.render_claim_token, owners[0])
+
+    def test_a_redelivered_copy_takes_over_a_clip_claimed_by_a_worker_on_the_previous_code(self):
+        clip = self.make_clip(status=VideoClip.Status.RENDERING)  # claimed with no token, worker died
+
+        with patch(RENDER, side_effect=self.completing_render) as render:
+            result = redelivered_copy(clip.id)
+
+        self.assertTrue(result.successful())
+        render.assert_called_once()
+        self.assertEqual(self.clip_row(clip.id).status, VideoClip.Status.COMPLETED)
+
+    def test_a_redelivered_copy_that_cannot_read_the_clip_lets_its_retry_pin_the_owner(self):
+        clip = self.dead_owner_clip()
+        real_get = VideoClip.objects.get
+        reads = []
+
+        def first_read_fails(*args, **kwargs):
+            reads.append(kwargs)
+            if len(reads) == 1:
+                raise OperationalError("db blip")
+            return real_get(*args, **kwargs)
+
+        sent, recording_retry = self.retry_headers()
+        with patch("apps.videos.tasks.render.VideoClip.objects.get", side_effect=first_read_fails), \
+                recording_retry, patch(RENDER, side_effect=self.completing_render) as render:
+            result = redelivered_copy(clip.id)
+
+        self.assertTrue(result.successful())
+        self.assertEqual(sent, [{RENDER_TAKEOVER_HEADER: TAKEOVER_OBSERVE}])
+        render.assert_called_once()  # the retry pinned the dead owner and took over
+        self.assertEqual(self.clip_row(clip.id).status, VideoClip.Status.COMPLETED)
+
+    def test_a_copy_that_lost_the_clip_never_fails_it_after_the_winner_handed_it_back(self):
+        clip = self.make_clip()
+
+        def a_render(clip_id, claim_token=None):
+            token_b = take_over(clip_id)
+            render_module._release_clip_claim(clip_id, token_b)  # B: transient error, retry pending
+            raise RuntimeError("moviepy exploded")  # A fails for good
+
+        with patch(RENDER, side_effect=a_render):
+            result = render_clip_task.apply(args=[str(clip.id)])
+
+        self.assertTrue(result.failed())
+        self.assertEqual(self.clip_row(clip.id).status, VideoClip.Status.DRAFT)  # left for B's retry
+
+        with patch(RENDER, side_effect=self.completing_render):
+            render_clip_task.apply(args=[str(clip.id)])  # B's retry, a new message
+
         self.project.refresh_from_db()
         self.assertEqual(self.clip_row(clip.id).status, VideoClip.Status.COMPLETED)
         self.assertEqual(self.project.pipeline_stage, PipelineStage.COMPLETED)
