@@ -121,6 +121,10 @@ REST_FRAMEWORK = {
 
 # --- AI CONFIG & FEATURE FLAGS ---
 AI_CORE_V2_ENABLED = env.bool('AI_CORE_V2_ENABLED', default=False)
+# Gradual enablement (AICORE-9): ids of the users (VideoProject.uploaded_by)
+# that get V2 while the master switch is on; empty = everyone. The master
+# switch stays the kill switch.
+AI_CORE_V2_ALLOWLIST = env.list('AI_CORE_V2_ALLOWLIST', default=[])
 
 # LiteLLM reads model capabilities (reasoning support, prices) from its bundled map
 # instead of downloading the latest one on import: the map is pinned with the

@@ -6,9 +6,10 @@ PRIVACY CONTRACT
     and a handful of concrete ``VideoProject`` columns (id, status, stage,
     attempts, creation date). It never reads or emits ``title``,
     ``transcript_data``, ``ai_rationale_log``, prompts, reasoning, user email or
-    user id. The single value taken from ``VideoProject.metadata`` is the
-    numeric ``duration`` key, extracted inside the database (the JSON blob is
-    never loaded into Python).
+    user id. The only values taken from ``VideoProject.metadata`` are the
+    numeric ``duration`` key and the ``selection_reasoning_effort`` level
+    (exported only when it is one of the known levels), both extracted inside
+    the database (the JSON blob is never loaded into Python).
 
 Window
     ``--since`` is inclusive and ``--until`` is EXCLUSIVE, both as dates whose
@@ -42,6 +43,7 @@ from django.db.models.fields.json import KeyTextTransform
 from django.db.models.functions import Cast
 
 from apps.videos.models import AIUsageRecord, VideoProject
+from apps.videos.services.ai.llm_options import REASONING_EFFORTS
 
 CHUNK_SIZE = 2000
 _COST_QUANTUM = Decimal("1E-6")
@@ -86,6 +88,9 @@ PROJECT_COLUMNS: Tuple[str, ...] = (
     "cached_any",
     "total_tokens",
     "reasoning_tokens",
+    # AI_LLM_REASONING_EFFORT the selection ran with (AICORE-14): low, medium,
+    # high, minimal or default; empty if the selection never completed.
+    "reasoning_effort",
     "total_cost_usd",
     "cost_per_30min_usd",
     "cost_complete",
@@ -99,6 +104,7 @@ PROJECT_COLUMNS: Tuple[str, ...] = (
 )
 
 INGESTION_STAGES = (AIUsageRecord.Stage.TRANSCRIPTION, AIUsageRecord.Stage.SELECTION)
+_REASONING_EFFORT_VALUES = frozenset(REASONING_EFFORTS) | {"default"}
 
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 # Bounded (<= 9 integer and <= 6 decimal digits, i.e. up to ~31 years in seconds):
@@ -203,6 +209,7 @@ class Command(BaseCommand):
         # guard keeps non-numeric junk ("abc", null, negatives) from breaking
         # the cast; those rows simply get no duration.
         duration_text = KeyTextTransform("duration", "metadata")
+        effort_text = KeyTextTransform("selection_reasoning_effort", "metadata")
         # Project columns describe the ingestion (transcription + selection);
         # SEO rows (AICORE-17) are reported in their own columns.
         queryset = queryset.annotate(ingestion_records=FilteredRelation(
@@ -213,6 +220,7 @@ class Command(BaseCommand):
         stream = (
             queryset.annotate(
                 _duration_text=duration_text,
+                reasoning_effort_text=effort_text,
                 source_duration=Case(
                     When(_duration_text__regex=_DURATION_REGEX, then=Cast(duration_text, FloatField())),
                     default=None,
@@ -242,7 +250,7 @@ class Command(BaseCommand):
                 "id", "pipeline_stage", "status", "pipeline_attempts", "source_duration",
                 "records_count", "failed_records", "fallback_count", "cached_count",
                 "null_cost_count", "version_count", "version_max", "tokens_sum", "reasoning_sum", "cost_sum",
-                "transcription_latency", "selection_latency",
+                "transcription_latency", "selection_latency", "reasoning_effort_text",
             )
             .iterator(chunk_size=CHUNK_SIZE)
         )
@@ -300,6 +308,11 @@ class Command(BaseCommand):
             "cached_any": row["cached_count"] > 0,
             "total_tokens": row["tokens_sum"],
             "reasoning_tokens": row["reasoning_sum"],
+            # Whitelisted: only a known level ever reaches the export.
+            "reasoning_effort": (
+                row["reasoning_effort_text"]
+                if row["reasoning_effort_text"] in _REASONING_EFFORT_VALUES else None
+            ),
             "total_cost_usd": _plain(total_cost),
             "cost_per_30min_usd": _plain(per_30min),
             "cost_complete": count > 0 and row["null_cost_count"] == 0,

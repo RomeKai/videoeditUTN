@@ -101,7 +101,11 @@ class RenderEngine:
                     # Fallback transcription
                     temp_audio_path = os.path.join(temp_dir, f"audio_{clip_obj.id}.mp3")
                     original_clip.audio.write_audiofile(temp_audio_path, codec='mp3', logger=None)
-                    transcriber = TranscriptionEngine(model_size="tiny") 
+                    from apps.videos.services.ai.rollout import v2_enabled_for
+
+                    transcriber = TranscriptionEngine(
+                        model_size="tiny", v2_enabled=v2_enabled_for(project),
+                    )
                     raw_segments = transcriber.transcribe(temp_audio_path, word_timestamps=True)
                     segments = TranscriptionEngine.group_words(raw_segments, max_words=max_w)
 

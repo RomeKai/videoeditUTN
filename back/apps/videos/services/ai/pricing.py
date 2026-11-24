@@ -197,6 +197,22 @@ def _lookup(table, key: ModelKey, on: Optional[date]):
     return period
 
 
+def has_current_price(model: str, kind: str = "llm", on: Optional[date] = None) -> bool:
+    """
+    True when ``model`` has a price period covering ``on`` (default today, UTC).
+    ``kind`` is ``"llm"`` or ``"asr"``. Never logs: used by the startup check
+    (ADR-012 D-C3), not per call.
+    """
+    if kind == "asr":
+        table, default_provider = ASR_PRICES, _DEFAULT_ASR_PROVIDER
+    else:
+        table, default_provider = LLM_PRICES, _DEFAULT_LLM_PROVIDER
+    periods = table.get(_model_key(model, default_provider))
+    if periods is None:
+        return False
+    return _period_for(periods, on if on is not None else _clock()) is not None
+
+
 def estimate_llm_cost(
     model: str, usage: ProviderUsage, on: Optional[date] = None
 ) -> Optional[Decimal]:
