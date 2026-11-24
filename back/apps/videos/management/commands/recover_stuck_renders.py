@@ -1,7 +1,8 @@
 """
-Finds paper-edit renders left RENDERING with their tokens reserved and, with
-``--apply``, recovers them: re-queued, completed (the export was saved) or
-failed with ``render_stuck`` and the reservation returned.
+Finds paper-edit renders whose render reservation stayed RESERVED and, with
+``--apply``, recovers them: re-queued, charged (delivered but not charged) or,
+after losing their worker too many times, failed with ``render_stuck`` and
+the reservation returned. A render that never starts is only reported.
 
 The rules live in tasks/render_recovery.py, shared with the Celery task that
 CELERY_BEAT_SCHEDULE runs every 15 minutes. Without a beat process, run this
@@ -14,8 +15,9 @@ Safety
     re-queued within RENDER_STUCK_AFTER_SECONDS, is never touched.
 
 Output
-    One line per RENDERING project with a render reservation: ids, counters,
-    idle minutes, the decision and the result. No user text. Ends with a
+    One line per candidate (RENDERING or COMPLETED with its render
+    reservation RESERVED): ids, counters, idle minutes, the decision and the
+    result. No user text. Ends with a
     ``summary`` line, and with an error (exit code 1) if a project could not
     be processed, so that cron notices.
 """
@@ -31,8 +33,8 @@ def _value(row, key):
 
 class Command(BaseCommand):
     help = (
-        "Reports paper-edit renders stuck in RENDERING with their tokens reserved and, "
-        "with --apply, re-queues, completes or fails (refunding) each one."
+        "Reports paper-edit renders whose tokens stayed reserved and, with --apply, "
+        "re-queues, charges or fails (refunding) each one."
     )
 
     def add_arguments(self, parser):
@@ -58,8 +60,9 @@ class Command(BaseCommand):
         errors = totals.get(ERROR, 0)
         self.stdout.write(
             f"summary mode={'apply' if apply else 'dry_run'} candidates={len(rows)} "
-            f"requeue={totals.get('requeue', 0)} deliver={totals.get('deliver', 0)} "
-            f"fail={totals.get('fail', 0)} skip={totals.get('skip', 0)} errors={errors}"
+            f"requeue={totals.get('requeue', 0)} charge={totals.get('charge', 0)} "
+            f"fail={totals.get('fail', 0)} report={totals.get('report', 0)} "
+            f"skip={totals.get('skip', 0)} errors={errors}"
         )
         if errors:
             raise CommandError(f"{errors} project(s) could not be processed.")

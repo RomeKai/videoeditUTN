@@ -317,7 +317,8 @@ Los fallos se inyectan **desde afuera**. No hay código de inyección de fallos 
 | Worker muerto a mitad de etapa | `docker kill` del worker durante la transcripción y, en otra corrida, durante la selección; luego levantarlo | La tarea se reentrega y retoma desde la etapa pendiente. No se repite ninguna etapa ya completada |
 | Key de LLM inválida | Key inválida en **staging** | La selección falla con error no reintentable, sin reintentos, y el proyecto queda en un estado coherente con `pipeline_error_code` |
 | Reinicio de Valkey | Reiniciar el contenedor de Valkey con trabajos en vuelo | Los trabajos se recuperan o fallan de forma controlada, sin duplicar etapas completadas. Un re-encolado (por lock, por el parser del prompt o por capacidad) que no se pudo publicar deja `render.requeue_not_published` o `pipeline.requeue_not_published` y el mismo mensaje vuelve a la cola: no se pierde ni gasta reintentos |
-| Paper edit cortado por el hard time limit | En **staging**, el hard por debajo del soft para que el soft no llegue a actuar (por ejemplo `RENDER_SEGMENTS_SOFT_TIME_LIMIT=3600` y `RENDER_SEGMENTS_TIME_LIMIT=60`) y `RENDER_STUCK_AFTER_SECONDS=300`; reiniciar los workers y aprobar un paper edit que tarde más de 60 s. Después, restaurar los valores | El proyecto queda `RENDERING` con la reserva tomada. Pasado `RENDER_STUCK_AFTER_SECONDS`, `recover_stuck_renders --apply` lo re-encola una vez (`render.recovery_requeued`); si se vuelve a cortar, la próxima corrida lo falla con `render_stuck` y devuelve la reserva. Nunca hay dos renders ni dos cobros |
+| Paper edit cortado por el hard time limit | En **staging**, el hard por debajo del soft para que el soft no llegue a actuar (por ejemplo `RENDER_SEGMENTS_SOFT_TIME_LIMIT=3600` y `RENDER_SEGMENTS_TIME_LIMIT=60`; `RENDER_STUCK_AFTER_SECONDS` queda en su mínimo, 960 s); reiniciar los workers y aprobar un paper edit que tarde más de 60 s. Después, restaurar los valores | El proyecto queda `RENDERING` con la reserva tomada. Pasados 960 s, `recover_stuck_renders --apply` lo re-encola (`render.recovery_requeued`). Cada render cortado suma un inicio perdido: con el tercero, la próxima corrida lo falla con `render_stuck` y devuelve la reserva. Nunca hay dos renders ni dos cobros |
+| Render del paper edit sin worker | En **staging**, frenar los workers de la cola `render`, aprobar un paper edit y esperar más de dos ventanas de `RENDER_STUCK_AFTER_SECONDS` con `recover_stuck_renders --apply` corriendo | Dos re-encolados y después solo `render.recovery_not_started`: el proyecto sigue `RENDERING` con la reserva tomada, nunca `FAILED`. Al levantar el worker se renderiza una vez y se cobra una vez |
 
 ### 6.1 Verificación
 
@@ -355,11 +356,11 @@ docker compose exec web python manage.py settle_stale_reservations            # 
 docker compose exec web python manage.py settle_stale_reservations --apply    # liquida
 ```
 
-**Renders del paper edit trabados.** Un paper edit que quedó `RENDERING` con la reserva tomada y sin worker (hard time limit, re-entrega perdida) lo resuelve `recover_stuck_renders`: lo re-encola una vez, lo completa si la exportación ya estaba guardada, o lo falla con `render_stuck` y devuelve la reserva. Corre cada 15 min con Celery Beat, pero `docker-compose.yml` no levanta beat: en el piloto, correrlo desde cron con `--apply` (o a mano después de un fallo inducido). Reglas y salida en [07 · Operación: renders del paper edit trabados](../ia/07-capacidad-costos-y-operacion.md#operación-renders-del-paper-edit-trabados).
+**Renders del paper edit trabados.** Un paper edit que quedó `RENDERING` con la reserva tomada y sin worker (hard time limit, re-entrega perdida) lo maneja `recover_stuck_renders`: lo re-encola; si perdió su worker más de 2 veces, lo falla con `render_stuck` y devuelve la reserva; si nunca empieza, después de 2 re-encolados solo lo reporta (`render.recovery_not_started`), porque falta un worker de render. También cobra un render entregado que quedó sin cobrar. Corre cada 15 min con Celery Beat, pero `docker-compose.yml` no levanta beat: en el piloto, correrlo desde cron con `--apply` (o a mano después de un fallo inducido). Reglas y salida en [07 · Operación: renders del paper edit trabados](../ia/07-capacidad-costos-y-operacion.md#operación-renders-del-paper-edit-trabados).
 
 ```bash
 docker compose exec web python manage.py recover_stuck_renders            # reporte (dry run)
-docker compose exec web python manage.py recover_stuck_renders --apply    # re-encola, completa o falla
+docker compose exec web python manage.py recover_stuck_renders --apply    # re-encola, cobra o falla
 ```
 
 ---

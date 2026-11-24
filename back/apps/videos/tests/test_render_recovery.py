@@ -140,23 +140,25 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assertEqual(txn.status, Transaction.Status.COMPLETED)
         self.assertEqual(self.balances(), (Decimal("100.00") - txn.amount, Decimal("0")))
 
-    def test_stuck_again_after_the_requeue_cap_it_fails_and_is_refunded(self):
+    def test_a_render_that_keeps_losing_its_worker_fails_past_the_lost_starts_cap_and_is_refunded(self):
         txn = self.approve()
-        self.kill_render()
-        self.age()
-        _, first = self.recover()
-        first.assert_called_once()
-        self.kill_render()  # the re-queued delivery starts and is killed too
-        self.assertEqual(self.metadata()["render_unfinished_starts"], RENDER_SEGMENTS_MAX_REDELIVERIES)
-        self.age()
+        actions = []
+        for _ in range(RENDER_SEGMENTS_MAX_REDELIVERIES + 1):
+            self.kill_render()  # the approval's delivery, then each re-queued one
+            self.age()
+            with self.assertLogs("apps.videos.tasks", level="WARNING") as logs:
+                rows, requeue = self.recover()
+            actions.append((self.row(rows)["action"], self.row(rows)["starts"]))
 
-        with self.assertLogs("apps.videos.tasks", level="WARNING") as logs:
-            rows, requeue = self.recover()
-
-        requeue.assert_not_called()
+        # Re-queued while render_video_segments would still start it (lost
+        # starts up to the cap), failed only past it.
         self.assertEqual(
-            (self.row(rows)["action"], self.row(rows)["reason"]), ("fail", "lost_starts"),
+            actions,
+            [("requeue", n) for n in range(1, RENDER_SEGMENTS_MAX_REDELIVERIES + 1)]
+            + [("fail", RENDER_SEGMENTS_MAX_REDELIVERIES + 1)],
         )
+        requeue.assert_not_called()
+        self.assertEqual(self.row(rows)["reason"], "lost_starts")
         self.project.refresh_from_db()
         txn.refresh_from_db()
         self.assertEqual(self.project.status, VideoProject.Status.FAILED)
@@ -167,17 +169,69 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assertIn(f"render.recovery_failed project_id={self.project.id}", output)
         self.assertNotIn(self.project.title, output)
 
-    def test_requeues_that_never_start_are_capped_too(self):
-        txn = self.approve()  # its message never ran (e.g. the approval's delay failed)
-        self.update_metadata(render_recovery_requeues=RENDER_SEGMENTS_MAX_REDELIVERIES)
+    def test_at_the_lost_starts_cap_it_requeues_a_render_the_task_would_still_run(self):
+        txn = self.approve()
+        self.update_metadata(render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES)
         self.age(reservation_only=True)
 
         rows, requeue = self.recover()
 
-        requeue.assert_not_called()
-        self.assertEqual((self.row(rows)["action"], self.row(rows)["reason"]), ("fail", "requeues"))
+        requeue.assert_called_once()
+        source, processed = _render_mocks()
+        with _patched_render(source, processed, redis=self.redis) as (_, upload):
+            render_video_segments(self.project.id)  # the re-queued message
+
+        upload.assert_called_once()
         txn.refresh_from_db()
-        self.assertEqual(txn.status, Transaction.Status.FAILED)
+        self.assertEqual(txn.status, Transaction.Status.COMPLETED)
+
+    def test_a_render_that_never_starts_is_reported_past_the_requeue_cap_never_failed(self):
+        # Its message waits for a render worker that is down or backlogged.
+        txn = self.approve()
+        actions = []
+        for _ in range(RENDER_SEGMENTS_MAX_REDELIVERIES + 2):
+            self.age()
+            with self.assertLogs("apps.videos.tasks", level="INFO") as logs:
+                rows, _ = self.recover()
+            actions.append((self.row(rows)["action"], self.row(rows)["reason"]))
+
+        self.assertEqual(
+            actions,
+            [("requeue", "no_render_left")] * RENDER_SEGMENTS_MAX_REDELIVERIES
+            + [("report", "never_started")] * 2,
+        )
+        self.assertIn(f"render.recovery_not_started project_id={self.project.id}", "\n".join(logs.output))
+        self.project.refresh_from_db()
+        txn.refresh_from_db()
+        self.assertEqual(self.project.status, VideoProject.Status.RENDERING)
+        self.assertEqual(self.project.pipeline_error_code, "")
+        self.assertEqual(txn.status, Transaction.Status.RESERVED)
+
+        # The worker comes back: the original message renders it.
+        source, processed = _render_mocks()
+        with _patched_render(source, processed, redis=self.redis) as (_, upload):
+            render_video_segments(self.project.id)
+
+        upload.assert_called_once()
+        txn.refresh_from_db()
+        self.assertEqual(txn.status, Transaction.Status.COMPLETED)
+
+    def test_a_start_after_the_last_requeue_resets_the_requeue_count(self):
+        self.approve()
+        requeued_at = timezone.now() - timedelta(seconds=settings.RENDER_STUCK_AFTER_SECONDS + 120)
+        self.update_metadata(
+            render_unfinished_starts=1,
+            render_recovery_requeues=RENDER_SEGMENTS_MAX_REDELIVERIES,
+            render_recovery_requeued_at=requeued_at.isoformat(),
+            render_started_at=(requeued_at + timedelta(seconds=60)).isoformat(),
+        )
+        self.age(reservation_only=True)
+
+        rows, requeue = self.recover()
+
+        requeue.assert_called_once()
+        self.assertEqual(self.row(rows)["requeues"], 0)
+        self.assertEqual(self.metadata()["render_recovery_requeues"], 1)
 
     def test_a_render_that_never_started_is_requeued(self):
         self.approve()  # the approval's delay failed: nothing was ever queued
@@ -188,21 +242,25 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         requeue.assert_called_once_with(args=[str(self.project.id)])
         self.assertEqual(self.row(rows)["starts"], 0)
 
-    def test_a_stuck_project_whose_export_was_saved_is_completed_and_charged_never_refunded(self):
+    def test_a_delivered_render_left_unpaid_is_charged_never_refunded(self):
         txn = self.approve()
         self.kill_render()
-        VideoProject.objects.filter(pk=self.project.pk).update(final_export_r2_key="final/key.mp4")
-        # Past both caps: without the export it would fail and be refunded.
-        self.update_metadata(
-            render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES,
-            render_recovery_requeues=RENDER_SEGMENTS_MAX_REDELIVERIES,
+        # Saved (with COMPLETED), then its worker was killed before charging.
+        VideoProject.objects.filter(pk=self.project.pk).update(
+            status=VideoProject.Status.COMPLETED, final_export_r2_key="final/key.mp4",
         )
+        self.update_metadata(render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES + 1)
         self.age()
 
-        rows, requeue = self.recover()
+        with self.assertLogs("apps.videos.tasks", level="WARNING") as logs:
+            rows, requeue = self.recover()
 
         requeue.assert_not_called()
-        self.assertEqual((self.row(rows)["action"], self.row(rows)["result"]), ("deliver", "delivered"))
+        self.assertEqual(
+            (self.row(rows)["action"], self.row(rows)["reason"], self.row(rows)["result"]),
+            ("charge", "delivered_unpaid", "charged"),
+        )
+        self.assertIn(f"render.recovery_charged project_id={self.project.id}", "\n".join(logs.output))
         self.project.refresh_from_db()
         txn.refresh_from_db()
         self.assertEqual(self.project.status, VideoProject.Status.COMPLETED)
@@ -210,10 +268,37 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assertEqual(txn.status, Transaction.Status.COMPLETED)
         self.assertEqual(self.balances(), (Decimal("100.00") - txn.amount, Decimal("0")))
 
+    def test_a_delivered_render_being_charged_right_now_is_left_alone(self):
+        txn = self.approve()
+        self.kill_render()  # started just now
+        VideoProject.objects.filter(pk=self.project.pk).update(
+            status=VideoProject.Status.COMPLETED, final_export_r2_key="final/key.mp4",
+        )
+        self.age(reservation_only=True)
+
+        rows, _ = self.recover()
+
+        self.assertEqual((self.row(rows)["action"], self.row(rows)["reason"]), ("skip", "recent"))
+        txn.refresh_from_db()
+        self.assertEqual(txn.status, Transaction.Status.RESERVED)
+
+    def test_a_rendering_project_with_an_export_is_never_failed_nor_refunded(self):
+        txn = self.approve()
+        VideoProject.objects.filter(pk=self.project.pk).update(final_export_r2_key="final/key.mp4")
+        self.update_metadata(render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES + 1)
+        self.age(reservation_only=True)
+        metadata = self.metadata()
+
+        rows, requeue = self.recover()
+
+        requeue.assert_not_called()
+        self.assertEqual((self.row(rows)["action"], self.row(rows)["reason"]), ("report", "export_saved"))
+        self.assert_untouched(txn, metadata)
+
     def test_a_project_whose_lock_is_held_is_not_touched(self):
         txn = self.approve()
         self.kill_render()
-        self.update_metadata(render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES)
+        self.update_metadata(render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES + 1)
         self.age()
         self.hold_project_lock()  # a live worker is rendering it
         metadata = self.metadata()
@@ -225,19 +310,33 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
             self.assertEqual((self.row(rows)["action"], self.row(rows)["reason"]), ("skip", "lock_held"))
             self.assert_untouched(txn, metadata)
 
-    def test_a_project_that_started_recently_is_not_touched(self):
+    def test_a_project_that_started_recently_is_not_touched_nor_locked(self):
         txn = self.approve()
         self.kill_render()
-        self.update_metadata(render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES)
+        self.update_metadata(render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES + 1)
         self.age(reservation_only=True)  # approved long ago, but it started just now
         metadata = self.metadata()
+        calls = len(self.redis.lock_calls)
 
         rows, requeue = self.recover()
 
         requeue.assert_not_called()
         self.assertEqual((self.row(rows)["action"], self.row(rows)["reason"]), ("skip", "recent"))
         self.assert_untouched(txn, metadata)
-        self.assertNotIn(f"lock:pipeline:project:{self.project.id}", self.redis.held)
+        # Only the read-only check: the project lock was never taken, so a
+        # render message arriving now does not lose a lock retry to it.
+        self.assertEqual([timeout for _, timeout in self.redis.lock_calls[calls:]], [None])
+
+    def test_a_reported_project_is_not_locked_either(self):
+        self.approve()
+        self.update_metadata(render_recovery_requeues=RENDER_SEGMENTS_MAX_REDELIVERIES)
+        self.age()
+        calls = len(self.redis.lock_calls)
+
+        rows, _ = self.recover()
+
+        self.assertEqual(self.row(rows)["action"], "report")
+        self.assertEqual([timeout for _, timeout in self.redis.lock_calls[calls:]], [None])
 
     def test_a_requeue_the_broker_refuses_changes_nothing(self):
         txn = self.approve()
@@ -255,10 +354,23 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assertIn("render.recovery_error", "\n".join(logs.output))
         self.assertNotIn("broker down", "\n".join(logs.output))
 
-    def test_completed_and_whole_video_projects_are_never_candidates(self):
+    def test_a_completed_project_is_never_failed_or_refunded(self):
         txn = self.approve()
+        # COMPLETED without an export: not a delivery this routine can charge.
         VideoProject.objects.filter(pk=self.project.pk).update(status=VideoProject.Status.COMPLETED)
+        self.update_metadata(render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES + 1)
         self.age(reservation_only=True)
+
+        rows, requeue = self.recover()
+
+        requeue.assert_not_called()
+        self.assertEqual((self.row(rows)["action"], self.row(rows)["reason"]), ("skip", "not_delivered"))
+        self.project.refresh_from_db()
+        txn.refresh_from_db()
+        self.assertEqual(self.project.status, VideoProject.Status.COMPLETED)
+        self.assertEqual(txn.status, Transaction.Status.RESERVED)  # settle_stale_reservations' job
+
+    def test_whole_video_projects_are_never_candidates(self):
         whole_txn = reserve_funds(self.wallet.id, Decimal("5.00"), description="whole video")
         Transaction.objects.filter(pk=whole_txn.pk).update(created_at=timezone.now() - timedelta(days=2))
         whole = VideoProject.objects.create(
@@ -271,13 +383,9 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
 
         self.assertEqual(rows, [])
         requeue.assert_not_called()
-        self.project.refresh_from_db()
         whole.refresh_from_db()
-        txn.refresh_from_db()
         whole_txn.refresh_from_db()
-        self.assertEqual(self.project.status, VideoProject.Status.COMPLETED)
         self.assertEqual(whole.status, VideoProject.Status.RENDERING)
-        self.assertEqual(txn.status, Transaction.Status.RESERVED)  # settle_stale_reservations' job
         self.assertEqual(whole_txn.status, Transaction.Status.RESERVED)
 
 
@@ -341,7 +449,7 @@ class RecoverStuckRendersScheduleTests(StuckRenderHarness, APITestCase):
 
     def test_the_task_applies_the_recovery(self):
         txn = self.approve()
-        self.update_metadata(render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES)
+        self.update_metadata(render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES + 1)
         self.age(reservation_only=True)
 
         recover_stuck_renders()
@@ -351,3 +459,16 @@ class RecoverStuckRendersScheduleTests(StuckRenderHarness, APITestCase):
 
     def test_a_render_is_stuck_only_after_its_hard_time_limit(self):
         self.assertGreater(settings.RENDER_STUCK_AFTER_SECONDS, settings.RENDER_SEGMENTS_TIME_LIMIT)
+
+    def test_the_environment_can_raise_the_threshold_but_never_below_the_hard_limit(self):
+        import runpy
+
+        import backend.settings.base as base
+
+        def stuck_after(**env):
+            with patch.dict("os.environ", {"RENDER_SEGMENTS_TIME_LIMIT": "1000", **env}):
+                return runpy.run_path(base.__file__)["RENDER_STUCK_AFTER_SECONDS"]
+
+        self.assertEqual(stuck_after(), 1900)
+        self.assertEqual(stuck_after(RENDER_STUCK_AFTER_SECONDS="60"), 1900)
+        self.assertEqual(stuck_after(RENDER_STUCK_AFTER_SECONDS="5000"), 5000)

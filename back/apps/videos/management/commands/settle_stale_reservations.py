@@ -23,7 +23,8 @@ Rules (the same the pipeline applies, see tasks/ingestion.py and tasks/render.py
         project failed                                     -> rollback
         anything else (still rendering)                    -> report only
     A render stuck in RENDERING is left to recover_stuck_renders, which
-    re-queues it, or completes or fails it and settles its reservation.
+    re-queues it, fails it (refunded) or only reports it, and which also
+    charges a delivered render left unpaid (the same rule as here).
     Not linked to any project                              -> report only
 
 Safety

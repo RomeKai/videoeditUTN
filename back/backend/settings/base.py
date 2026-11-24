@@ -254,14 +254,15 @@ RENDER_SEGMENTS_SOFT_TIME_LIMIT = env.int('RENDER_SEGMENTS_SOFT_TIME_LIMIT', def
 RENDER_SEGMENTS_TIME_LIMIT = env.int(
     'RENDER_SEGMENTS_TIME_LIMIT', default=RENDER_SEGMENTS_SOFT_TIME_LIMIT + 300,
 )
-# A paper edit still RENDERING, with its render reservation RESERVED and no
-# project lock held, that did not start (nor get approved or re-queued) for
-# this long has no render left: recover_stuck_renders re-queues it or fails it
-# and returns the reservation. Must be greater than RENDER_SEGMENTS_TIME_LIMIT:
-# a render that started less than that ago may still be running, even if its
-# lock lapsed during a Redis blip.
-RENDER_STUCK_AFTER_SECONDS = env.int(
-    'RENDER_STUCK_AFTER_SECONDS', default=RENDER_SEGMENTS_TIME_LIMIT + 15 * 60,
+# A paper edit whose render reservation is still RESERVED, with no project
+# lock held and no start, approval or re-queue for this long, is stuck:
+# recover_stuck_renders re-queues it, charges it (delivered) or, after losing
+# its worker too many times, fails it and returns the reservation. Never below
+# RENDER_SEGMENTS_TIME_LIMIT + 15 min, whatever the environment says: a render
+# that started less than the hard limit ago may still be running, even if its
+# lock lapsed during a Redis blip. The environment can only raise it.
+RENDER_STUCK_AFTER_SECONDS = max(
+    env.int('RENDER_STUCK_AFTER_SECONDS', default=0), RENDER_SEGMENTS_TIME_LIMIT + 15 * 60,
 )
 
 # Heavy MoviePy renders get their own queue so they cannot starve ingestion.
