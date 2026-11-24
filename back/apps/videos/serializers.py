@@ -82,6 +82,17 @@ class VideoProjectSerializer(serializers.ModelSerializer):
             # En cualquier caso, no permitimos ambos
             if file and url:
                 raise serializers.ValidationError("No puedes enviar archivo y URL al mismo tiempo.")
+        if (
+            not self.instance
+            and data.get('project_type') == VideoProject.Type.SINGLE_EDIT
+            and not data.get('source_file')
+        ):
+            # The whole video is rendered with no review. A link has a flat price
+            # that does not know its duration, so it is never checked against the
+            # plan's duration limit nor priced for what is rendered.
+            raise serializers.ValidationError({
+                'project_type': "Para editar el video completo, subí el archivo. Los links sirven para sacar clips.",
+            })
         return data
 
     def validate_aspect_ratio(self, value):
@@ -109,6 +120,9 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         validated_data.pop('selection_criteria', None)
         validated_data.pop('use_seo', None)  # charged at creation only
         validated_data.pop('render_resolution', None)  # priced at creation only
+        # The pipeline and the price depend on it: a link project turned into a
+        # whole-video edit would render it all without paying for it.
+        validated_data.pop('project_type', None)
         instance = super().update(instance, validated_data)
         source_media = getattr(self, '_source_media', None)
         if source_media is not None and 'source_file' in validated_data:

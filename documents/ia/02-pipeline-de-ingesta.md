@@ -1,6 +1,6 @@
 # Pipeline de ingesta
 
-`process_initial_ingestion` lleva un proyecto desde el video subido hasta los clips sugeridos (y, con `auto_render_bypass`, hasta el despacho del render). Corre en Celery apenas se crea el proyecto y cada vez que alguien lo re-despacha. Está armado para sobrevivir a reintentos, re-entregas y workers muertos sin repetir llamadas pagas: cada etapa guarda su resultado antes de avanzar, las transiciones son compare-and-set y un lock en Redis impide que dos workers procesen el mismo proyecto. Este documento cubre la tarea, la máquina de etapas, los reintentos, la espera de capacidad y el fallo final con reembolso. Lo que pasa dentro de cada etapa de IA está en [03-transcripcion-moderacion-seleccion](03-transcripcion-moderacion-seleccion.md).
+`process_initial_ingestion` lleva un proyecto desde el video subido hasta los clips sugeridos (y, con `auto_render_bypass`, hasta el despacho del render). Un proyecto "Editar el video completo" (`project_type=single_edit`) no pasa por la selección: el video entero es su único clip y se renderiza sin revisión. Corre en Celery apenas se crea el proyecto y cada vez que alguien lo re-despacha. Está armado para sobrevivir a reintentos, re-entregas y workers muertos sin repetir llamadas pagas: cada etapa guarda su resultado antes de avanzar, las transiciones son compare-and-set y un lock en Redis impide que dos workers procesen el mismo proyecto. Este documento cubre la tarea, la máquina de etapas, los reintentos, la espera de capacidad y el fallo final con reembolso. Lo que pasa dentro de cada etapa de IA está en [03-transcripcion-moderacion-seleccion](03-transcripcion-moderacion-seleccion.md).
 
 ## Componentes
 
@@ -9,7 +9,7 @@
 | `process_initial_ingestion` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Tarea Celery. Toma el lock, corre `_run_ingestion` y decide qué hacer con cada excepción (reintento, re-encolado, espera o fallo final) |
 | `_run_ingestion` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Lee la etapa actual, reabre un proyecto `failed`, parsea el prompt y corre las etapas que faltan en orden |
 | `_running_stage` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Context manager que marca el estado de la etapa (`running`, `failed`, `pending_capacity`) y loguea inicio y fin |
-| `_stage_prepare_source`, `_stage_transcribe`, `_stage_moderate`, `_stage_select_clips`, `_stage_dispatch_render` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Una función por etapa. Cada una persiste su artefacto antes de avanzar (transcripción, moderación, selección y despacho lo hacen en la misma transacción que el `advance`) |
+| `_stage_prepare_source`, `_stage_transcribe`, `_stage_moderate`, `_stage_select_clips`, `_stage_whole_video`, `_stage_dispatch_render` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Una función por etapa. Cada una persiste su artefacto antes de avanzar (transcripción, moderación, selección y despacho lo hacen en la misma transacción que el `advance`) |
 | `_resume_render_dispatch` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Vuelve a encolar los clips `draft` de un proyecto que quedó en `render_dispatched` |
 | `_record_pipeline_failure`, `_refund_ingestion_reservation`, `_work_already_done` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Registro del fallo, fallo final y devolución de la reserva de tokens |
 | `_wait_for_capacity` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Re-encola la tarea cuando no hay capacidad del proveedor, o falla el proyecto si la espera supera el máximo |
@@ -52,9 +52,9 @@ sequenceDiagram
         S->>DB: persiste el artefacto y hace advance (CAS)
         S->>DB: record_usages (AIUsageRecord)
     end
-    alt auto_render_bypass
+    alt auto_render_bypass o single_edit
         R->>S: _stage_dispatch_render (render_clip_task en on_commit)
-    else sin bypass
+    else repurpose sin bypass
         R->>DB: status awaiting_approval
     end
     R-->>T: Ingestion Success
@@ -70,7 +70,7 @@ sequenceDiagram
 6. Antes de `clips_selected` corre `apply_prompt_to_project` con `can_retry=parse_retries < PTE_PARSE_MAX_RETRIES` y la capacidad del parser reservada bajo la etapa que sigue. Es idempotente: un proyecto sin prompt o ya parseado no se toca. El detalle está en [04-prompt-to-edit](04-prompt-to-edit.md).
 7. `infer_completed_stage` mira los datos persistidos (clips o `transcript_data`) de proyectos creados antes de la máquina de estados. Si están más adelante que `pipeline_stage`, `advance_to` avanza de a una transición hasta ahí, sin rehacer trabajo.
 8. Mientras el proyecto está entre `uploaded` y `moderated`, `status` pasa a `ingesting`. Después corren las etapas en orden. Antes de cada una se llama a `lock.renew()`, que lanza `ProjectLockLostError` si el lock ya no es de este worker.
-9. En `clips_selected`, con `auto_render_bypass` se despacha el render (`_stage_dispatch_render`). Sin bypass, `status` pasa a `awaiting_approval` solo si estaba en `uploaded` o `ingesting`: una re-entrega no pisa una acción posterior del usuario.
+9. En `moderated`, un proyecto `single_edit` corre `_stage_whole_video` en lugar de `_stage_select_clips` (ver abajo). En `clips_selected`, con `auto_render_bypass` o en un proyecto `single_edit` se despacha el render (`_stage_dispatch_render`). Sin bypass, `status` pasa a `awaiting_approval` solo si estaba en `uploaded` o `ingesting`: una re-entrega no pisa una acción posterior del usuario.
 10. El `with project_lock(...)` libera el lock en su `finally`, también cuando hay excepción. Los handlers de la tarea corren con el lock ya liberado.
 
 ## Flujo: máquina de etapas
@@ -83,8 +83,8 @@ stateDiagram-v2
     uploaded --> audio_extracted: _stage_prepare_source
     audio_extracted --> transcribed: _stage_transcribe
     transcribed --> moderated: _stage_moderate
-    moderated --> clips_selected: _stage_select_clips
-    clips_selected --> render_dispatched: _stage_dispatch_render con auto_render_bypass
+    moderated --> clips_selected: _stage_select_clips o _stage_whole_video
+    clips_selected --> render_dispatched: _stage_dispatch_render con auto_render_bypass o single_edit
     render_dispatched --> completed: finalize_project_render sin clips fallidos
     render_dispatched --> partial: finalize_project_render con algún clip fallido
     uploaded --> failed: mark_failed
@@ -102,7 +102,7 @@ stateDiagram-v2
     completed --> [*]
     partial --> [*]
     note right of clips_selected
-        Sin auto_render_bypass el proyecto se queda acá
+        Sin auto_render_bypass (y fuera de single_edit) el proyecto se queda acá
         y VideoProject.status pasa a awaiting_approval
     end note
 ```
@@ -113,11 +113,22 @@ stateDiagram-v2
 | `audio_extracted` → `transcribed` | `_stage_transcribe` | `transcript_data`, `metadata.full_text` y `metadata.transcription_usage`, en la misma transacción que el `advance` |
 | `transcribed` → `moderated` | `_stage_moderate` | `metadata.moderation` |
 | `moderated` → `clips_selected` | `_stage_select_clips` | Filas `VideoClip` en `draft`, `ai_rationale_log`, `metadata.selection_usage` y `metadata.selection_reasoning_effort` |
+| `moderated` → `clips_selected` (`single_edit`) | `_stage_whole_video` | Una fila `VideoClip` en `draft` de `0` a `metadata.duration`, en la misma transacción que el `advance` |
 | `clips_selected` → `render_dispatched` | `_stage_dispatch_render` | `status=rendering`. Los `render_clip_task` se encolan con `transaction.on_commit` |
 | `render_dispatched` → `completed` / `partial` | `finalize_project_render` en [tasks/render.py](../../back/apps/videos/tasks/render.py) | Ver [06-render-caras-y-hablante](06-render-caras-y-hablante.md) |
 | cualquiera → `failed` | `mark_failed`, llamado por `_record_pipeline_failure` con `final=True` | `pipeline_error_code` y `status=failed`. No toca `completed` ni `partial` |
 | `failed` → etapa de `STAGE_ORDER` | `reopen`, en un re-despacho | La etapa que devuelve `last_completed_stage` |
 | varias juntas | `advance_to` (proyectos viejos) | Camina de a una transición hasta lo que devuelve `infer_completed_stage` |
+
+### Editar el video completo (`single_edit`)
+
+Es la pantalla D5. El proyecto pasa por las mismas etapas hasta `moderated`: se transcribe (los subtítulos salen de ahí) y se modera igual. Después cambia esto:
+
+- `_stage_whole_video` crea un solo `VideoClip` de `0` a `metadata.duration`, con el título del proyecto. Si falta la duración, la mide con `_probe_video`. No llama al modelo de selección ni escribe filas de uso.
+- Una re-entrega no crea otro clip: la etapa bloquea el proyecto y solo crea el clip si no hay ninguno.
+- En `clips_selected` se cobra la reserva de creación (`_commit_ingestion_reservation`) y se despacha el render siempre, aunque `auto_render_bypass` esté apagado: no hay nada que revisar.
+- El precio de creación ya es el del video entero a su resolución, que es justo lo que se renderiza. No se cobra nada más.
+- Solo se crea con un archivo subido. Por link da 400 (ver [01](01-creacion-de-proyecto.md)).
 
 `last_completed_stage` tiene dos ajustes. Si `clips_selected` figura `completed` pero el proyecto no tiene clips, reanuda en `transcribed` para volver a correr la selección. Y si `moderated` no tiene estado pero `clips_selected` sí está `completed` (proyectos anteriores a la etapa de moderación), la saltea (`_predates_moderation`).
 

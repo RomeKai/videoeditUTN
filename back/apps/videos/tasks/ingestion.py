@@ -751,6 +751,39 @@ def _stage_select_clips(project_id):
     )
 
 
+def _stage_whole_video(project_id):
+    """
+    "Editar el video completo" (``project_type=single_edit``, screen D5): the
+    whole video is the one clip. No selection LLM and no review: the clip is
+    rendered as soon as it exists (``_run_ingestion``). The project was priced
+    for its full duration at creation, so nothing else is charged here.
+    """
+    project = VideoProject.objects.get(pk=project_id)
+    metadata = project.metadata or {}
+    duration = metadata.get('duration') or (metadata.get('source_media') or {}).get('duration_s')
+    if not duration:
+        duration, resolution = _probe_video(project.source_file.path)
+        _merge_metadata(
+            project_id, {'duration': duration, 'resolution': resolution},
+            expected_stage=PipelineStage.MODERATED,
+        )
+    with transaction.atomic():
+        VideoProject.objects.select_for_update().get(pk=project_id)
+        # Dedupe: a redelivered task reuses the clip of an earlier attempt.
+        if not VideoClip.objects.filter(project_id=project_id).exists():
+            VideoClip.objects.create(
+                project_id=project_id,
+                title=project.title or "Video completo",
+                start_time=0.0,
+                end_time=float(duration),
+                virality_score=0,
+                ai_reasoning="",
+                status=VideoClip.Status.DRAFT,
+            )
+        advance(project_id, PipelineStage.MODERATED, PipelineStage.CLIPS_SELECTED)
+    logger.info("pipeline.whole_video project_id=%s", project_id)
+
+
 def _stage_dispatch_render(project_id, progress=None):
     """
     auto_render_bypass: one render task per clip, queued only AFTER the transition
@@ -906,7 +939,12 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
     if stage == PipelineStage.MODERATED:
         renew_lock()
         with _running_stage(project_id, PipelineStage.CLIPS_SELECTED, attempt):
-            _stage_select_clips(project_id)
+            if VideoProject.objects.filter(
+                pk=project_id, project_type=VideoProject.Type.SINGLE_EDIT,
+            ).exists():
+                _stage_whole_video(project_id)
+            else:
+                _stage_select_clips(project_id)
         stage = PipelineStage.CLIPS_SELECTED
         progress['stage'] = stage
 
@@ -914,7 +952,9 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
         renew_lock()
         # The clips exist: the ingestion work is delivered and its tokens are charged.
         _commit_ingestion_reservation(project_id)
-        if VideoProject.objects.get(pk=project_id).auto_render_bypass:
+        current = VideoProject.objects.get(pk=project_id)
+        # A whole-video edit has nothing to review: it always renders right away.
+        if current.auto_render_bypass or current.project_type == VideoProject.Type.SINGLE_EDIT:
             logger.info("⏩ Auto-render bypass active. Dispatching clip renders.")
             with _running_stage(project_id, PipelineStage.RENDER_DISPATCHED, attempt):
                 _stage_dispatch_render(project_id, progress)

@@ -141,6 +141,8 @@ sequenceDiagram
 
 ## Flujo: selección de clips
 
+Un proyecto `single_edit` no pasa por esta etapa: `_stage_whole_video` crea un solo clip con el video entero (ver [02](02-pipeline-de-ingesta.md)).
+
 ```mermaid
 sequenceDiagram
     participant St as _stage_select_clips

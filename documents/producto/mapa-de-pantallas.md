@@ -326,7 +326,7 @@ Otras respuestas:
        - Envía a `from-prompt`. La configuración que entienda la IA se muestra después, en el proyecto.
   2. **Qué querés hacer:**
      - **Sacar clips** (`project_type=repurpose`, por defecto).
-     - **Editar el video completo** (`single_edit`).
+     - **Editar el video completo** (`single_edit`). Solo con un archivo subido: si el origen es un link, la opción se muestra deshabilitada con "Para editar el video completo, subí el archivo".
   3. **Formato:**
      - Formato de salida: 9:16 (por defecto), 1:1 o 16:9.
      - Resolución: 720p por defecto, 1080p y 4K según el plan.
@@ -361,6 +361,7 @@ Otras respuestas:
 - **API:**
   - ✅ `POST /api/v1/projects/` (multipart) y `POST /api/v1/projects/from-prompt/`.
   - ✅ el campo `render_resolution` (720p, 1080p o 4K) se cobra y se compara con el plan; sin él, el proyecto se cobra y se renderiza en 720p.
+  - ✅ `project_type` (`repurpose` o `single_edit`); `single_edit` solo con archivo (400 con link) y no cambia después de crear.
   - ❌ falta el endpoint de precios para el estimado.
   - ⚠️ los links no pasan por la validación de duración del plan (sí por la de resolución y SEO).
 
@@ -475,7 +476,10 @@ Otras respuestas:
   - **Publicar** (panel E1).
   - **Ajustar recorte** (como D4).
   - "Volver a renderizar con otro estilo", con su costo (diálogo de confirmar costo).
-- **API:** ❌ el pipeline hoy trata `single_edit` igual que "Sacar clips" (hueco 20).
+- **API:**
+  - ✅ el pipeline crea un solo clip con el video entero y lo renderiza sin revisión; el resultado es ese clip (`clips[0]`).
+  - ✅ solo se crea con archivo: por link, `POST /api/v1/projects/` da 400 en `project_type`.
+  - ❌ volver a renderizar con otro estilo (mismo hueco que D4).
 
 ### E. Publicar
 
@@ -738,7 +742,7 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad:
 | 17 | Descargar todo en .zip | D3 | P2 |
 | 18 | Tiempo estimado del proceso ("Listo para revisar en ≈ 12 min") | C1, D1 | P2 |
 | 19 | Total reservado del workspace con el detalle por proyecto | G1, barra | P1 |
-| 20 | Pipeline propio para `single_edit`: un solo video de salida, sin revisión | C1, D5 | P1 |
+| 20 | ~~Pipeline propio para `single_edit`: un solo video de salida, sin revisión~~ Resuelto: el video entero es un solo clip que se renderiza sin revisión; solo con archivo subido | C1, D5 | — |
 | 21 | Plantillas de los emails transaccionales y su envío (verificar, recuperar, invitación, listo para revisar, render terminado, fallo con devolución, publicación fallida, saldo bajo) | A2–A5, J2, I2 | P1 |
 | 22 | Tope de peso del archivo al subir: hoy no hay ninguno (los límites de `media_validation` son de duración y resolución) | C1 | P2 |
 
