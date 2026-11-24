@@ -55,6 +55,7 @@ from apps.videos.services.ai.project_lock import (
 import math
 import time
 import random
+from decimal import ROUND_HALF_UP, Decimal
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from django.utils import timezone
@@ -63,6 +64,7 @@ from django.db.models import F, Q
 from django.core.cache import cache
 from apps.videos.models import VideoProject, VideoClip, ScheduledPost
 from backend.celery import app as celery_app
+from celery.exceptions import Reject
 
 from apps.videos.tasks.shared import (
     PIPELINE_LOCK_MAX_RETRIES,
@@ -79,6 +81,7 @@ from apps.videos.tasks.shared import (
     _llm_usage_by_model,
     _merge_metadata,
     _persist_then_record_usage,
+    _publish_requeue,
     _record_call_failure,
     _retry_countdown,
     _selection_failure_usage,
@@ -335,7 +338,9 @@ def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries, parse_ret
     from apps.videos.services.ai.capacity import CapacityTimeoutError
 
     project = VideoProject.objects.get(pk=project_id)
-    wait = (project.metadata or {}).get('capacity_wait') or {}
+    stored = (project.metadata or {}).get('capacity_wait')
+    previous = dict(stored) if isinstance(stored, dict) else stored
+    wait = stored or {}
     if not _is_current_wait(wait, project, exc.stage):
         wait = {
             'stage': str(exc.stage), 'since': timezone.now().isoformat(), 'planned_s': 0.0,
@@ -367,11 +372,36 @@ def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries, parse_ret
         project_id, exc.stage, countdown, wait['planned_s'],
         extra={'project_id': str(project_id), 'stage': str(exc.stage)},
     )
-    process_initial_ingestion.apply_async(
-        args=[str(project_id)], kwargs={'parse_retries': parse_retries},
-        countdown=countdown, retries=retries,
+    # Not published (broker down): the wait just planned is taken back, so the
+    # redelivery does not count it twice, and this message goes back to the
+    # broker (_publish_requeue).
+    _publish_requeue(
+        process_initial_ingestion,
+        lambda: process_initial_ingestion.apply_async(
+            args=[str(project_id)], kwargs={'parse_retries': parse_retries},
+            countdown=countdown, retries=retries,
+        ),
+        "pipeline.requeue_not_published", project_id, "capacity",
+        undo=lambda: _restore_capacity_wait(project_id, wait, previous),
     )
     return f"Waiting for capacity: {project_id}"
+
+
+def _restore_capacity_wait(project_id, written, previous):
+    """
+    Puts back the capacity wait a re-queue that was not published had
+    planned, unless another delivery changed it since (row lock).
+    """
+    with transaction.atomic():
+        project = VideoProject.objects.select_for_update().get(pk=project_id)
+        metadata = dict(project.metadata or {})
+        if metadata.get('capacity_wait') != written:
+            return
+        if previous is None:
+            metadata.pop('capacity_wait', None)
+        else:
+            metadata['capacity_wait'] = previous
+        VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
 
 
 def _stage_transcribe(project_id):
@@ -810,15 +840,188 @@ def _ensure_whole_video_paid(project_id):
 
 def _whole_video_render_allowed(project_id):
     """
-    ``render_clip_task`` asks before claiming the clip: a whole-video render
-    runs only while the project is at render_dispatched with its reservation
-    still reserved. A render message left in the queue after the project
-    failed (and was refunded) must not deliver the video for free.
+    ``render_clip_task`` asks before claiming the clip (and again after): a
+    paid render runs only while the project is at render_dispatched with the
+    reservation that pays it still reserved. That is the creation reservation
+    of a whole-video edit, or the auto-render reservation of the selected clips
+    ("Renderizar sin revisar"). A render message left in the queue after the
+    project failed (and was refunded) must not deliver for free.
     """
     project = VideoProject.objects.filter(pk=project_id).first()
-    if project is None or not _is_whole_video(project):
+    if project is None:
         return True
-    return project.pipeline_stage == PipelineStage.RENDER_DISPATCHED and _whole_video_is_paid(project_id)
+    if _is_whole_video(project):
+        return project.pipeline_stage == PipelineStage.RENDER_DISPATCHED and _whole_video_is_paid(project_id)
+    auto_render_id = (project.metadata or {}).get(AUTO_RENDER_RESERVATION_KEY)
+    if auto_render_id:
+        return project.pipeline_stage == PipelineStage.RENDER_DISPATCHED and Transaction.objects.filter(
+            pk=auto_render_id, status=Transaction.Status.RESERVED,
+        ).exists()
+    return True
+
+
+# "Renderizar sin revisar" (auto_render_bypass): the render of the selected
+# clips, reserved before they are queued and settled by what was delivered.
+AUTO_RENDER_RESERVATION_KEY = 'auto_render_reservation_id'
+
+
+def _reserve_auto_render(project_id, resuming=False):
+    """
+    The selected clips are rendered without the review, so their render is
+    reserved here, priced like an approval (``render_cost`` of their seconds),
+    before any render is queued. A redelivery reuses a reservation that is
+    still reserved; a settled one (the project failed and is re-dispatched)
+    is replaced by a new one for the clips still to render. Returns False when
+    it cannot be paid (not enough tokens, plan limit): the project then waits
+    for the review, where the user approves (and pays) what they want.
+
+    Only while ingesting (``resuming``: a re-dispatch at render_dispatched,
+    already rendering): a redelivered ingestion message that finds the user
+    already approved a paper edit, or anything else past the review, does
+    nothing. The clips it pays for are recorded (``auto_render_clip_ids``):
+    only they are settled.
+    """
+    from apps.payments.models import Wallet
+    from apps.payments.services import wallet_service
+    from apps.payments.services.pricing_engine import FeatureNotAllowedError, PlanLimitExceededError
+    from apps.videos.services.render_pricing import render_cost
+
+    allowed = [VideoProject.Status.UPLOADED, VideoProject.Status.INGESTING]
+    if resuming:
+        allowed.append(VideoProject.Status.RENDERING)
+    with transaction.atomic():
+        project = VideoProject.objects.select_for_update().get(pk=project_id)
+        if project.status not in allowed:
+            logger.info("pipeline.auto_render_not_ingesting project_id=%s", project_id)
+            return False
+        metadata = project.metadata or {}
+        linked = metadata.get(AUTO_RENDER_RESERVATION_KEY)
+        if linked and Transaction.objects.filter(pk=linked, status=Transaction.Status.RESERVED).exists():
+            return True
+        clips = list(
+            VideoClip.objects.filter(project_id=project_id, status=VideoClip.Status.DRAFT)
+            .values_list('id', 'start_time', 'end_time')
+        )
+        if not clips:
+            return True  # nothing left to render, nothing to pay
+        seconds = sum(max(0.0, float(end) - float(start)) for _id, start, end in clips)
+        try:
+            cost = render_cost(project, seconds)
+            wallet, _ = Wallet.objects.get_or_create(workspace=project.workspace)
+            txn = wallet_service.reserve_funds(
+                wallet_id=wallet.id, amount=cost, user=project.uploaded_by,
+                description=f"Render automático: {project.title}"[:255],
+            )
+        except (wallet_service.InsufficientFundsError, PlanLimitExceededError, FeatureNotAllowedError) as exc:
+            reason = 'insufficient_funds' if isinstance(exc, wallet_service.InsufficientFundsError) else 'plan_limit'
+            if not resuming:
+                # Read by the review screen: the project waits for the user.
+                project.metadata = {**metadata, 'auto_render_skipped': reason}
+                project.save(update_fields=['metadata'])
+            logger.info("pipeline.auto_render_skipped project_id=%s reason=%s", project_id, reason)
+            return False
+        project.metadata = {
+            **metadata,
+            AUTO_RENDER_RESERVATION_KEY: str(txn.id),
+            'auto_render_seconds': round(seconds, 3),
+            'auto_render_clip_ids': [str(clip_id) for clip_id, _start, _end in clips],
+        }
+        project.metadata.pop('auto_render_skipped', None)
+        project.save(update_fields=['metadata'])
+    logger.info("pipeline.auto_render_reserved project_id=%s", project_id)
+    return True
+
+
+def _auto_render_settlement(project):
+    """
+    What the auto-render reservation gets from where the project ended, as
+    ``(outcome, delivered_seconds)``. The one rule for the pipeline and for
+    settle_stale_reservations:
+
+    - Not final yet (any stage but completed, partial or failed): ``('wait', 0)``.
+    - A clip still rendering: ``('wait', 0)``.
+    - No clip delivered (completed or published): ``('rollback', 0)``.
+    - Otherwise ``('charge', seconds delivered)``: only what was delivered is paid.
+
+    Only the clips the reservation paid for count (``auto_render_clip_ids``).
+    """
+    if project.pipeline_stage not in (*TERMINAL_STAGES, PipelineStage.FAILED):
+        return 'wait', 0.0
+    clips = VideoClip.objects.filter(project_id=project.pk)
+    paid_ids = (project.metadata or {}).get('auto_render_clip_ids')
+    if paid_ids is not None:
+        # Only the clips this reservation paid for: a paper-edit clip, or clips
+        # rendered before (a re-dispatch), are not part of it.
+        clips = clips.filter(pk__in=paid_ids)
+    clips = list(clips.values_list('status', 'start_time', 'end_time'))
+    if any(status == VideoClip.Status.RENDERING for status, _start, _end in clips):
+        return 'wait', 0.0
+    delivered = sum(
+        max(0.0, float(end) - float(start))
+        for status, start, end in clips
+        if status in (VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED)
+    )
+    if delivered <= 0:
+        return 'rollback', 0.0
+    return 'charge', delivered
+
+
+def _auto_render_charge(project, txn_amount, delivered_seconds):
+    """The share of the reservation for the seconds delivered (cents, at least 0.01)."""
+    reserved_seconds = float((project.metadata or {}).get('auto_render_seconds') or 0)
+    if reserved_seconds <= 0 or delivered_seconds >= reserved_seconds:
+        return Decimal(txn_amount)
+    share = Decimal(str(delivered_seconds / reserved_seconds))
+    charge = (Decimal(txn_amount) * share).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    return max(charge, Decimal('0.01'))
+
+
+def _settle_auto_render_reservation(project_id):
+    """
+    Settles the auto-render reservation from where the project ended (every
+    ``finalize_project_render`` and the failure handler run it): the clips
+    delivered are charged in proportion to their seconds, the rest is returned;
+    nothing delivered is refunded whole; still rendering or not final waits.
+    Idempotent (only a RESERVED transaction is touched) and never raises.
+    """
+    from django.core.exceptions import ValidationError
+
+    # Deferred: wallet_service imports this module at load time.
+    from apps.payments.services.wallet_service import (
+        PaymentError, commit_partial_reservation, rollback_reservation,
+    )
+
+    try:
+        with transaction.atomic():
+            # Locked: a re-dispatch (reopen) must not slip between reading the
+            # final state and settling from it.
+            project = VideoProject.objects.select_for_update().filter(pk=project_id).first()
+            reservation_id = ((project.metadata or {}) if project else {}).get(AUTO_RENDER_RESERVATION_KEY)
+            if not reservation_id:
+                return
+            txn = Transaction.objects.filter(pk=reservation_id, status=Transaction.Status.RESERVED).first()
+            if txn is None:
+                return  # already settled
+            outcome, delivered = _auto_render_settlement(project)
+            if outcome == 'wait':
+                return
+            if outcome == 'rollback':
+                rollback_reservation(reservation_id)
+                logger.info("pipeline.auto_render_refunded project_id=%s", project_id)
+            else:
+                charge = _auto_render_charge(project, txn.amount, delivered)
+                commit_partial_reservation(reservation_id, charge)
+                logger.info(
+                    "pipeline.auto_render_charged project_id=%s whole=%s",
+                    project_id, charge >= txn.amount,
+                )
+    except PaymentError:
+        # Another finalize, the failure handler or the sweeper settled it first.
+        logger.info("pipeline.auto_render_settle_skipped project_id=%s reason=already_settled", project_id)
+    except (DatabaseError, ValidationError) as exc:
+        logger.error(
+            "pipeline.auto_render_settle_failed project_id=%s error=%s", project_id, type(exc).__name__,
+        )
 
 
 def _whole_video_settlement(project):
@@ -1048,6 +1251,19 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
         else:
             # A crash between the dispatch and the charge must not leave it reserved.
             _commit_ingestion_reservation(project_id)
+            if (project.metadata or {}).get(AUTO_RENDER_RESERVATION_KEY) and not _reserve_auto_render(
+                project_id, resuming=True,
+            ):
+                # Re-dispatched after its auto-render reservation was settled,
+                # and the clips still to render cannot be paid: the project goes
+                # back to failed (with its clips untouched), so it can be
+                # re-dispatched once the workspace has tokens. Projects
+                # dispatched before auto-render was charged have no key and
+                # resume as they started.
+                mark_failed(project_id, expected_stage=PipelineStage.RENDER_DISPATCHED)
+                record_error(project_id, 'AutoRenderNotPaid')
+                logger.warning("pipeline.redispatch_skipped project_id=%s reason=auto_render_unpaid", project_id)
+                return f"Not resumed {project_id}: its auto-render cannot be paid"
         return _resume_render_dispatch(project_id)
 
     # Prompt-to-Edit (PTE-01b): parse and apply once, before any stage reads the
@@ -1132,14 +1348,13 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
             logger.info("pipeline.whole_video_render project_id=%s", project_id)
             with _running_stage(project_id, PipelineStage.RENDER_DISPATCHED, attempt):
                 _stage_dispatch_render(project_id, progress)
-        elif current.auto_render_bypass:
-            # The clips exist: the ingestion work is delivered and its tokens are charged.
-            _commit_ingestion_reservation(project_id)
+        elif current.auto_render_bypass and _reserve_auto_render_after_charge(project_id):
             logger.info("⏩ Auto-render bypass active. Dispatching clip renders.")
             with _running_stage(project_id, PipelineStage.RENDER_DISPATCHED, attempt):
                 _stage_dispatch_render(project_id, progress)
         else:
-            # The clips exist: the ingestion work is delivered and its tokens are charged.
+            # The clips exist: the ingestion work is delivered and its tokens are
+            # charged (already, if an auto-render could not be paid).
             _commit_ingestion_reservation(project_id)
             logger.info("⏳ Ingestion complete. Awaiting user approval.")
             # Guarded: a redelivered task must not undo a later user action.
@@ -1149,6 +1364,16 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
             ).update(status=VideoProject.Status.AWAITING_APPROVAL)
 
     return f"Ingestion Success {project_id}"
+
+
+def _reserve_auto_render_after_charge(project_id):
+    """
+    Auto-render: the clips exist, so the ingestion work is delivered and its
+    tokens are charged; then the render of the clips is reserved. False when
+    it cannot be paid: the project waits for the review instead.
+    """
+    _commit_ingestion_reservation(project_id)
+    return _reserve_auto_render(project_id)
 
 
 def _work_already_done(project_id):
@@ -1190,6 +1415,7 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
     # failed the project refunds it, so a project another worker moved on keeps it.
     if failed_now:
         _refund_ingestion_reservation(project_id)
+        _settle_auto_render_reservation(project_id)
 
 
 # acks_late + reject_on_worker_lost: if the worker dies mid-task (OOM during
@@ -1235,11 +1461,18 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
             "prompt_parse.retrying project_id=%s parse_retry=%d countdown_s=%d",
             project_id, parse_retries + 1, countdown,
         )
-        process_initial_ingestion.apply_async(
-            args=[str(project_id)],
-            kwargs={'lock_retries': lock_retries, 'parse_retries': parse_retries + 1},
-            countdown=countdown,
-            retries=self.request.retries,
+        # Not published (broker down): this message goes back with its own
+        # parse_retries, so the failed parse is tried again without spending
+        # one (_publish_requeue).
+        _publish_requeue(
+            self,
+            lambda: process_initial_ingestion.apply_async(
+                args=[str(project_id)],
+                kwargs={'lock_retries': lock_retries, 'parse_retries': parse_retries + 1},
+                countdown=countdown,
+                retries=self.request.retries,
+            ),
+            "pipeline.requeue_not_published", project_id, "prompt_parse",
         )
         return f"Prompt parse retry queued for {project_id}"
     except ProjectLockedError as exc:
@@ -1250,11 +1483,17 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
                 extra={'project_id': str(project_id), 'attempt': attempt},
             )
             # Re-queued, not self.retry(): the error retry count travels unchanged.
-            process_initial_ingestion.apply_async(
-                args=[str(project_id)],
-                kwargs={'lock_retries': lock_retries + 1, 'parse_retries': parse_retries},
-                countdown=PIPELINE_LOCK_RETRY_SECONDS,
-                retries=self.request.retries,
+            # Not published (broker down): this message goes back to the
+            # broker instead of being acked away (_publish_requeue).
+            _publish_requeue(
+                self,
+                lambda: process_initial_ingestion.apply_async(
+                    args=[str(project_id)],
+                    kwargs={'lock_retries': lock_retries + 1, 'parse_retries': parse_retries},
+                    countdown=PIPELINE_LOCK_RETRY_SECONDS,
+                    retries=self.request.retries,
+                ),
+                "pipeline.requeue_not_published", project_id, "lock",
             )
             return f"Lock busy, re-queued {project_id}"
         # Still held after outlasting the TTL: a live worker owns the project.
@@ -1278,6 +1517,10 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
                 project_id, exc, attempt, progress.get('stage'), self.request.retries,
                 parse_retries,
             )
+        except Reject:
+            # The re-queue was not published: this message goes back to the
+            # broker (_publish_requeue). Not a stage error: nothing to record.
+            raise
         except Exception as wait_exc:
             # Parking failed (e.g. the database): handled like any stage error,
             # never left in pending_capacity with no message in the queue.

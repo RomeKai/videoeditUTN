@@ -200,6 +200,55 @@ class SettleStaleReservationsTests(TestCase):
 
     # -- render reservation --
 
+    # -- auto-render ("Renderizar sin revisar") --
+
+    def auto_render(self, stage, *clip_statuses):
+        txn = self.reserve("7.50")
+        project = self.project(
+            "auto_render_reservation_id", txn, pipeline_stage=stage, auto_render_bypass=True,
+        )
+        VideoProject.objects.filter(pk=project.pk).update(
+            metadata={**project.metadata, "auto_render_seconds": 15.0},
+        )
+        for i, status in enumerate(clip_statuses):
+            VideoClip.objects.create(
+                project=project, title=f"c{i}", start_time=i * 5, end_time=i * 5 + 5, status=status,
+            )
+        return txn
+
+    def test_delivered_auto_rendered_clips_are_charged_for_their_share(self):
+        done, failed = VideoClip.Status.COMPLETED, VideoClip.Status.FAILED
+        txn = self.auto_render(PipelineStage.PARTIAL, done, failed, failed)
+
+        line = self.line_for(self.sweep("--apply"), txn)
+
+        self.assertEqual((line["action"], line["reason"], line["result"]), ("commit", "clips_delivered", "committed"))
+        txn.refresh_from_db()
+        self.assertEqual((txn.status, txn.amount), (Transaction.Status.COMPLETED, Decimal("2.50")))
+        self.assertEqual(self.balances(), (Decimal("97.50"), Decimal("0")))
+
+    def test_an_auto_render_that_delivered_nothing_is_refunded(self):
+        failed = VideoClip.Status.FAILED
+        txn = self.auto_render(PipelineStage.PARTIAL, failed, failed, failed)
+
+        line = self.line_for(self.sweep("--apply"), txn)
+
+        self.assertEqual((line["action"], line["reason"]), ("rollback", "nothing_delivered"))
+        self.assertEqual(self.status(txn), Transaction.Status.FAILED)
+
+    def test_an_auto_render_still_rendering_is_only_reported(self):
+        for stage, clips in (
+            (PipelineStage.RENDER_DISPATCHED, (VideoClip.Status.DRAFT,)),
+            (PipelineStage.FAILED, (VideoClip.Status.RENDERING,)),
+        ):
+            with self.subTest(stage=stage):
+                txn = self.auto_render(stage, *clips)
+
+                line = self.line_for(self.sweep("--apply"), txn)
+
+                self.assertEqual((line["action"], line["reason"]), ("report", "auto_render_in_progress"))
+                self.assertEqual(self.status(txn), Transaction.Status.RESERVED)
+
     def test_a_delivered_render_is_charged(self):
         txn, _ = self.render(status=VideoProject.Status.COMPLETED, final_export_r2_key="final/key.mp4")
 
