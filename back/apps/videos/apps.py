@@ -6,4 +6,4 @@ class VideosConfig(AppConfig):
     label = 'videos'
 
     def ready(self):
-        from . import signals  # noqa: F401  (registers the receivers)
+        from . import checks, signals  # noqa: F401  (registers the checks and receivers)

@@ -246,17 +246,19 @@ class CreateWithSeoTests(TestCase):
 
     def test_upload_with_seo_on_a_plan_without_it_is_rejected_by_the_pricing(self):
         import tempfile
-        from unittest.mock import MagicMock
 
         from django.core.files.uploadedfile import SimpleUploadedFile
         from django.test import override_settings
+
+        from apps.videos.services.media_validation import MediaInfo
 
         plan = SubscriptionPlan.objects.create(
             name="sin-seo", has_seo_optimization=False, max_video_duration_seconds=3600,
         )
         Workspace.objects.filter(members=self.user).update(subscription_plan=plan)
-        clip = MagicMock()
-        clip.__enter__.return_value.duration = 30
+
+        probed = MediaInfo(duration_s=30.0, width=640, height=360, mime="video/mp4")
+
         def upload(title, **extra):
             return self.client.post(reverse("project-list"), {
                 "title": title, **extra,
@@ -264,7 +266,7 @@ class CreateWithSeoTests(TestCase):
             }, format="multipart")
 
         with tempfile.TemporaryDirectory() as media, override_settings(MEDIA_ROOT=media), \
-                patch("moviepy.VideoFileClip", return_value=clip), \
+                patch("apps.videos.services.media_validation.validate_upload", return_value=probed), \
                 patch("apps.videos.views.process_initial_ingestion.delay") as ingest:
             response = upload("Subido", use_seo="true")
             self.assertEqual(response.status_code, 403, response.content[:300])

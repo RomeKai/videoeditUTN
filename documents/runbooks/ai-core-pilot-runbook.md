@@ -182,7 +182,7 @@ La planilla no debe contener títulos ni transcripts del usuario: solo `clip_id`
 | 3 | Smoke del camino legacy de punta a punta (1 video corto) | |
 | 4 | Correr el export y verificar `pipeline_version=legacy` | |
 | 5 | Medición en vivo y verificación de precios (ver G0) | **G0** |
-| 6 | Activar V2 solo para el usuario interno del piloto: maestro en `True` y allowlist = `[pilot_user_id]` | |
+| 6 | Activar V2 solo para el usuario interno del piloto: `AI_CORE_V2_ENABLED=True` y `AI_CORE_V2_ALLOWLIST=<uuid del usuario>` (ids separados por coma; se compara con quien subió el video) y reiniciar los workers | |
 | 7 | Procesar los 20 videos con V2 y el mismo set con legacy, repartidos en varios días según la capacidad de transcripción (ver 5.4) | |
 | 8 | Calcular WER y timestamps (`evaluate_ai_transcription`, §3.4), exportar costo y latencia, completar la evaluación humana | **G1** |
 | 9 | Ejecutar los fallos inducidos (sección 6) | **G2** |
@@ -193,10 +193,23 @@ La planilla no debe contener títulos ni transcripts del usuario: solo `clip_id`
 
 | Gate | Condición de paso | Si falla |
 |------|-------------------|----------|
-| **G0** | La imagen contiene ambos caminos (`python -c "import whisper, torch, groq, litellm"` dentro del contenedor); el smoke legacy está en verde; la medición en vivo y la verificación de precios están hechas (ver abajo) | No se activa V2 |
+| **G0** | La imagen contiene ambos caminos (`python -c "import whisper, torch, groq, litellm"` dentro del contenedor); `python manage.py check` pasa con el `.env` del piloto (ver chequeo de arranque abajo); el smoke legacy está en verde; la medición en vivo y la verificación de precios están hechas (ver abajo) | No se activa V2 |
 | **G1** | Se cumple la tabla de la sección 1.1 (los criterios de costo, solo sobre proyectos V2) | Se para, se documenta y se vuelve a diseño. No se avanza |
 | **G2** | Ninguna etapa completada se repite (sección 6); los proyectos terminan en el estado correcto; los `NonRetryable` no reintentan | Se corrige antes de abrir a usuarios |
 | **G3** | 7 días corridos, 100 o más trabajos V2, ningún disparador de rollback activado y criterios de costo sostenidos | Rollback y reinicio del conteo |
+
+**Chequeo de arranque (ADR-012 D-C3).** `manage.py check` (y por lo tanto `migrate`) falla si la configuración de IA es inválida. No llama a ningún proveedor:
+
+| Código | Qué detecta |
+|--------|-------------|
+| `videos.E001` | Un modelo configurado es un alias móvil (`*-latest`) |
+| `videos.E002` | Un modelo configurado no tiene precio vigente en `pricing.py` (el de transcripción, solo si corre Groq) |
+| `videos.E003` | `TRANSCRIPTION_BACKEND` inválido con V2 activo |
+| `videos.E004` | `AI_LLM_REASONING_EFFORT` inválido |
+| `videos.E005` | Con `AI_CAPACITY_ENABLED`, un modelo que el pipeline reserva no tiene límites válidos en `AI_CAPACITY_LIMITS` (o la variable no es un objeto JSON) |
+| `videos.E006` | `AI_CORE_V2_ALLOWLIST` tiene entradas que no son ids de usuario (UUID): nunca coincidirían con nadie |
+
+Ojo: si la variable `AI_CORE_V2_ALLOWLIST` falta o está mal escrita, la lista queda vacía y V2 corre para todos. Verificarla antes del paso 6 de §5.1.
 
 **Qué incluye G0 además de los checks de imagen:**
 
@@ -212,9 +225,11 @@ La planilla no debe contener títulos ni transcripts del usuario: solo `clip_id`
 
 | Paso | Alcance | Duración mínima |
 |------|---------|-----------------|
-| 1 | Allowlist: equipo interno | 24 h |
-| 2 | Allowlist: cohorte de creadores beta | 48 h |
-| 3 | Allowlist vacía (todos) | Hasta completar 7 días totales y ≥ 100 trabajos V2 |
+| 1 | `AI_CORE_V2_ALLOWLIST`: ids del equipo interno | 24 h |
+| 2 | `AI_CORE_V2_ALLOWLIST`: ids de la cohorte de creadores beta | 48 h |
+| 3 | `AI_CORE_V2_ALLOWLIST` vacía (todos) | Hasta completar 7 días totales y ≥ 100 trabajos V2 |
+
+Cada etapa decide el camino cuando corre, según quien subió el video. Un cambio de la lista o del flag aplica desde la siguiente etapa de un proyecto en curso, y los registros de uso guardan el camino que corrió (`pipeline_version`). `AI_CORE_V2_ENABLED=False` manda todo a legacy aunque la lista tenga ids.
 
 **Monitoreo diario** (export con `--since` del día):
 
@@ -455,6 +470,7 @@ Corresponde al paso 4 de §11.2. Requiere el PR del #66 desplegado.
    Imprime los tokens de razonamiento con `low` y con `high` (solo números) y falla si `low` razona más que `high`.
 2. **Corridas:** con el mismo video de ~25 min y el primario `gemini-3.8-flash`, procesar una vez sin el setting (referencia) y una vez con cada nivel `low`, `medium` y `high`. El nivel se cambia con `AI_LLM_REASONING_EFFORT` en el entorno del worker.
 3. **Registro por corrida:**
+   - Nivel con el que corrió la selección: columna `reasoning_effort` del export nivel `project` (`low`, `medium`, `high`, `minimal` o `default`). Se guarda por proyecto, así que las corridas se distinguen sin anotarlas aparte.
    - Costo por 30 min (export nivel `project`).
    - Tokens de salida de la selección (export nivel `record`).
    - Revisión humana de los clips según §4.

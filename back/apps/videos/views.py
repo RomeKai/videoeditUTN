@@ -193,9 +193,14 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
 
         if project.source_file:
             try:
-                from moviepy import VideoFileClip
-                with VideoFileClip(project.source_file.path) as clip:
-                    duration_seconds = int(clip.duration)
+                source_media = project.metadata.get('source_media') or {}
+                if source_media.get('duration_s'):
+                    # Measured by the upload validation (CORE-05): no second decode.
+                    duration_seconds = int(source_media['duration_s'])
+                else:
+                    from moviepy import VideoFileClip
+                    with VideoFileClip(project.source_file.path) as clip:
+                        duration_seconds = int(clip.duration)
                 
                 features_requested = {
                     'seo_optimization': project.metadata.get('use_seo', False),
