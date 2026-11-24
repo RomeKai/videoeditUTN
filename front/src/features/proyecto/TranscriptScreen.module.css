@@ -1,0 +1,324 @@
+/* D1e · Transcripción. Timecodes are Geist Mono by rule (map 1.2). */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.find {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 340px;
+  max-width: 100%;
+}
+.search {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.search input {
+  padding-right: 64px;
+}
+.kbd,
+.hits {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.hits {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--fg-muted);
+}
+.spacer {
+  flex: 1;
+}
+.tools {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.emptyFind {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.emptyFindTitle {
+  font-weight: 500;
+}
+
+/* Map of the clips over the whole video */
+.map {
+  padding: 16px 24px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mapHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  flex-wrap: wrap;
+}
+.mapTitle {
+  font-size: 14px;
+  font-weight: 600;
+}
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.swatch {
+  width: 12px;
+  height: 8px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.swatchClip {
+  background: var(--accent);
+}
+.swatchWindow {
+  height: 10px;
+  box-shadow: inset 0 0 0 1.5px var(--fg-muted);
+}
+.ruler {
+  position: relative;
+  height: 16px;
+}
+.tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--fg-subtle);
+  white-space: nowrap;
+}
+.tickFirst {
+  transform: none;
+}
+.tickLast {
+  transform: translateX(-100%);
+}
+.overview {
+  position: relative;
+  height: 28px;
+  border-radius: var(--r-sm);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+}
+.marker {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  min-width: 10px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.marker:hover {
+  top: 4px;
+  bottom: 4px;
+}
+.window {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  min-width: 6px;
+  border: 1.5px solid var(--fg-muted);
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+/* Text */
+.text {
+  padding: 8px 0 12px;
+}
+.group {
+  display: grid;
+  grid-template-columns: minmax(0, 720px) minmax(240px, 1fr);
+  gap: 8px 40px;
+  padding: 0 24px;
+  align-items: start;
+  scroll-margin-top: 120px;
+}
+.rows {
+  min-width: 0;
+  padding: 2px 12px;
+  margin: 0 -12px;
+}
+.row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 16px;
+  padding: 7px 0;
+}
+.row > :first-child {
+  line-height: 24px;
+  color: var(--fg-subtle);
+}
+.row p {
+  font-size: 15px;
+  line-height: 24px;
+  color: var(--fg);
+}
+.isClip {
+  margin: 6px 0;
+}
+.isClip .rows {
+  background: var(--accent-soft);
+  border-radius: var(--r-md);
+}
+.isClip .row > :first-child {
+  color: var(--accent-strong);
+}
+.note {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 2px 0 0;
+  min-width: 0;
+}
+.noteBody {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  align-items: flex-start;
+}
+.noteTitle {
+  font-weight: 500;
+  line-height: 20px;
+}
+.noteTitle:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.noteMeta {
+  display: flex;
+  align-items: center;
+  gap: 6px 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--fg-muted);
+}
+.score {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.scoreDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.arrowLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  color: var(--fg);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.arrowLink:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.more {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 24px;
+  border: 0;
+  background: transparent;
+  font-size: 13px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.more:hover {
+  color: var(--fg);
+}
+.more::before,
+.more::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.more span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.hit {
+  background: var(--warn-soft);
+  color: var(--fg);
+  border-radius: 3px;
+  padding: 1px 2px;
+  margin: 0 -2px;
+  box-shadow: inset 0 -1px 0 var(--warn);
+}
+.hitCurrent {
+  background: var(--warn);
+  color: var(--bg);
+  box-shadow: none;
+}
+
+@media (max-width: 900px) {
+  .group {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .note {
+    padding-bottom: 8px;
+  }
+}
+@media (max-width: 639px) {
+  .find {
+    width: 100%;
+  }
+  .toolbar > .spacer {
+    display: none;
+  }
+  .tools {
+    width: 100%;
+  }
+  .tools > * {
+    flex: 1;
+  }
+  .map {
+    padding: 14px 16px 16px;
+  }
+  .group,
+  .more {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .row {
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 12px;
+  }
+}

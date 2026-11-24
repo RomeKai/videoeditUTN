@@ -325,6 +325,8 @@ export interface ProjectSpec {
   workspace?: string;
   discountRate?: number;
   overrides?: Partial<MockProject>;
+  /** Extra `metadata` keys, merged over the built ones (e.g. the auto-render marks). */
+  metadata?: Partial<MockProject['metadata']>;
   costState?: 'reserved' | 'charged' | 'refunded';
   prompt?: { text: string; status: 'applied' | 'failed' };
 }
@@ -415,6 +417,7 @@ export function buildProject(spec: ProjectSpec, now: number, brandKitId: string 
       reservation_id: mid(KIND.transaction, spec.index * 10 + 1),
       ...(spec.prompt ? { pte_prompt: spec.prompt.text, pte_explicit: ['aspect_ratio'] } : {}),
       ...(pte ? { pte } : {}),
+      ...spec.metadata,
     },
     ai_rationale_log: clips.length > 0 ? { suggestions_count: clips.length } : {},
     approved_segments:
@@ -624,7 +627,14 @@ function allStateProjects(discountRate: number): ProjectSpec[] {
     discountRate: d,
   }));
   failures.push({ index: next(), title: 'Falló: error desconocido', status: 'failed', stage: 'uploaded', errorCode: 'RuntimeError', durationSeconds: 800, uploadedBy: USER_IDS.lucia, ageMs: 12 * DAY, discountRate: d });
-  return [...base, ...extra, ...failures];
+  // "Renderizar sin revisar" (map C1): the render reserved, and the two reasons it stops at the review instead.
+  // Added after the rest so the ids of the projects above do not move.
+  const autoRender: ProjectSpec[] = [
+    { index: next(), title: 'Sin revisar: render reservado', status: 'rendering', stage: 'render_dispatched', durationSeconds: 1400, uploadedBy: USER_IDS.lucia, ageMs: 16 * MIN, clips: { count: 5, statuses: ['completed', 'completed', 'rendering'] }, discountRate: d, overrides: { auto_render_bypass: true }, metadata: { auto_render_reservation_id: mid(KIND.transaction, 9100), auto_render_seconds: 172 } },
+    { index: next(), title: 'Sin revisar: no alcanzó el saldo', status: 'awaiting_approval', stage: 'clips_selected', durationSeconds: 1600, uploadedBy: USER_IDS.lucia, ageMs: 3 * HOUR, clips: { count: 6, statuses: ['draft'] }, discountRate: d, overrides: { auto_render_bypass: true }, metadata: { auto_render_skipped: 'insufficient_funds' } },
+    { index: next(), title: 'Sin revisar: el plan no lo permite', status: 'awaiting_approval', stage: 'clips_selected', durationSeconds: 1900, uploadedBy: USER_IDS.carla, ageMs: 4 * HOUR, clips: { count: 4, statuses: ['draft'] }, discountRate: d, overrides: { auto_render_bypass: true }, metadata: { auto_render_skipped: 'plan_limit' } },
+  ];
+  return [...base, ...extra, ...failures, ...autoRender];
 }
 
 function manyProjects(discountRate: number): ProjectSpec[] {
