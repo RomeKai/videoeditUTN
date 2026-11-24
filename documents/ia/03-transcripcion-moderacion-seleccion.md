@@ -60,7 +60,7 @@ sequenceDiagram
 1. `v2_enabled_for(project)` decide el camino del proyecto y `TranscriptionEngine.resolve_backend` lo traduce: sin V2 corre `local`; con V2 corre lo que diga `TRANSCRIPTION_BACKEND` (`groq` por defecto). Un valor inválido lanza `ImproperlyConfigured`. El `pipeline_version` de las filas sale del backend que corre: `v2` con Groq y `legacy` con Whisper local, aunque el proyecto tenga V2.
 2. Con Groq y `AI_CAPACITY_ENABLED`, se reserva `metadata.duration` en `audio_seconds` y un request por ventana de 598 s (`WINDOW_DURATION_SECONDS - OVERLAP_SECONDS`) bajo la clave `groq/<modelo>`.
 3. `GroqTranscriptionProvider` exige `GROQ_API_KEY`: sin key lanza `AIAuthenticationError`, que no se reintenta. No hay fallback a Whisper local (ADR-008): cargarlo en un worker que renderiza es la forma más rápida de un OOM.
-4. Cada chunk va a Groq con el modelo `AI_DEFAULT_TRANSCRIPTION_MODEL`, `response_format="verbose_json"`, granularidad de palabra y de segmento y `language="es"`. El cliente se crea con los valores por defecto del SDK (el código no fija timeout ni `max_retries`; según el comentario de `_usage`, el SDK reintenta hasta 2 veces y esos reintentos no se cuentan).
+4. Cada chunk va a Groq con el modelo `AI_DEFAULT_TRANSCRIPTION_MODEL`, `response_format="verbose_json"`, granularidad de palabra y de segmento y `language="es"`. El cliente se crea con `timeout=AI_TRANSCRIPTION_TIMEOUT_SECONDS` y `max_retries=0`: el SDK no reintenta por su cuenta (por defecto lo hacía hasta 2 veces, volviendo a subir el chunk) y los reintentos son de Celery, como en la moderación y el LLM. Un timeout llega como `APITimeoutError` y se clasifica `AITimeoutError` (reintentable, cobro incierto); un corte de conexión, como `AIConnectionError`.
 5. `_stage_transcribe` guarda en `transcript_data` las **palabras** (`start`, `end`, `text`); solo si no hay palabras guarda los segmentos. Esa lista es la que después usa la selección para anclar los clips.
 
 ### Chunks, uniones y segundos facturados
@@ -295,6 +295,7 @@ Una fila de 0 tokens tiene costo 0, salvo con `AITimeoutError`, `AIConnectionErr
 | `AI_CORE_V2_ENABLED`, `AI_CORE_V2_ALLOWLIST` | `False`, `[]` | Camino V2 o legacy por proyecto ([02](02-pipeline-de-ingesta.md)) |
 | `TRANSCRIPTION_BACKEND` | `groq` | Backend con V2: `groq` o `local` |
 | `AI_DEFAULT_TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Modelo de Groq |
+| `AI_TRANSCRIPTION_TIMEOUT_SECONDS` | 120.0 | Timeout de cada request a Groq (un chunk). httpx lo aplica a cada fase: conexión, subida y espera de la respuesta. Sin reintentos del SDK |
 | `GROQ_API_KEY` | — | Key de Groq; sin ella la transcripción V2 falla sin reintento |
 | `OPENAI_API_KEY` | — | Key de la Moderation API (y del LLM si un modelo es de OpenAI) |
 | `MODERATION_MODEL` | `omni-moderation-latest` | Modelo fijado de moderación |

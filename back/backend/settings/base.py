@@ -175,6 +175,11 @@ AI_CLIP_MAX_SECONDS = env.float('AI_CLIP_MAX_SECONDS', default=60.0)
 AI_CLIP_SNAP_TOLERANCE_SECONDS = env.float('AI_CLIP_SNAP_TOLERANCE_SECONDS', default=1.0)
 AI_CLIP_PAUSE_SECONDS = env.float('AI_CLIP_PAUSE_SECONDS', default=0.5)
 AI_DEFAULT_TRANSCRIPTION_MODEL = env('AI_DEFAULT_TRANSCRIPTION_MODEL', default='whisper-large-v3-turbo')
+# Timeout of each Groq transcription request, i.e. one audio chunk (up to 24 MB
+# of FLAC or a 600 s window). httpx applies it to each phase (connect, upload,
+# wait for the answer). SDK-level retries are disabled: Celery owns retries, and
+# a timeout is a retryable AITimeoutError whose billing is uncertain.
+AI_TRANSCRIPTION_TIMEOUT_SECONDS = env.float('AI_TRANSCRIPTION_TIMEOUT_SECONDS', default=120.0)
 
 # Transcription backend when AI_CORE_V2_ENABLED=True: 'groq' (default) | 'local'.
 # There is no automatic fallback between backends (ADR-008): Groq failures are

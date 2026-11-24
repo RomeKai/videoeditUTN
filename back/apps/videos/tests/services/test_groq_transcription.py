@@ -136,18 +136,102 @@ class TestGroqProviderInitialization(unittest.TestCase):
         mock_settings.GROQ_API_KEY = None
         mock_settings.AI_DEFAULT_TRANSCRIPTION_MODEL = "whisper-large-v3-turbo"
 
+        mock_settings.AI_TRANSCRIPTION_TIMEOUT_SECONDS = 45.0
+
         with patch.object(_groq_stub, "Groq", MagicMock()) as MockGroq:
             provider = GroqTranscriptionProvider(api_key="gsk_test_key")
-            MockGroq.assert_called_once_with(api_key="gsk_test_key")
+            MockGroq.assert_called_once_with(api_key="gsk_test_key", timeout=45.0, max_retries=0)
 
     @patch("apps.videos.services.ai.groq_transcription.settings")
     def test_settings_key_used_when_no_explicit_key(self, mock_settings):
         mock_settings.GROQ_API_KEY = "gsk_from_settings"
         mock_settings.AI_DEFAULT_TRANSCRIPTION_MODEL = "whisper-large-v3-turbo"
 
+        mock_settings.AI_TRANSCRIPTION_TIMEOUT_SECONDS = 45.0
+
         with patch.object(_groq_stub, "Groq", MagicMock()) as MockGroq:
             provider = GroqTranscriptionProvider()
-            MockGroq.assert_called_once_with(api_key="gsk_from_settings")
+            MockGroq.assert_called_once_with(api_key="gsk_from_settings", timeout=45.0, max_retries=0)
+
+
+class TestGroqClientTimeoutAndRetries(unittest.TestCase):
+    """
+    The real SDK client is built with the configured timeout and without its
+    own retries (Celery owns them): a timed-out chunk is sent ONCE and comes
+    back as a retryable AITimeoutError.
+    """
+
+    def _real_groq(self):
+        """The installed groq package, even if this module's stub is registered."""
+        import importlib
+
+        for name in [n for n in sys.modules if n == "groq" or n.startswith("groq.")]:
+            del sys.modules[name]
+        try:
+            return importlib.import_module("groq")
+        except ImportError:
+            self.skipTest("groq is not installed")
+
+    def test_a_timed_out_chunk_is_sent_once_and_is_retryable(self):
+        import tempfile
+
+        import httpx
+        from django.test import override_settings
+
+        with patch.dict(sys.modules):
+            groq = self._real_groq()
+            requests = []
+
+            def timing_out(request):
+                requests.append(request)
+                raise httpx.ReadTimeout("timed out", request=request)
+
+            real_client = groq.Groq
+            http_client = httpx.Client(transport=httpx.MockTransport(timing_out))
+            with override_settings(AI_TRANSCRIPTION_TIMEOUT_SECONDS=33.0), patch.object(
+                groq, "Groq", side_effect=lambda **kw: real_client(http_client=http_client, **kw),
+            ):
+                provider = GroqTranscriptionProvider(api_key="gsk_test_key")
+
+            self.assertEqual(provider._client.max_retries, 0)
+            self.assertEqual(provider._client.timeout, 33.0)
+            with tempfile.NamedTemporaryFile(suffix=".flac") as audio:
+                audio.write(b"fake audio")
+                audio.flush()
+                with self.assertRaises(AITimeoutError) as ctx:
+                    provider.transcribe([_make_chunk(path=audio.name)])
+
+        self.assertEqual(len(requests), 1)
+        self.assertTrue(is_retryable_error(ctx.exception))
+
+    def test_a_dropped_connection_is_sent_once_and_is_retryable(self):
+        import tempfile
+
+        import httpx
+
+        with patch.dict(sys.modules):
+            groq = self._real_groq()
+            requests = []
+
+            def dropping(request):
+                requests.append(request)
+                raise httpx.ConnectError("connection reset", request=request)
+
+            real_client = groq.Groq
+            http_client = httpx.Client(transport=httpx.MockTransport(dropping))
+            with patch.object(
+                groq, "Groq", side_effect=lambda **kw: real_client(http_client=http_client, **kw),
+            ):
+                provider = GroqTranscriptionProvider(api_key="gsk_test_key")
+
+            with tempfile.NamedTemporaryFile(suffix=".flac") as audio:
+                audio.write(b"fake audio")
+                audio.flush()
+                with self.assertRaises(AIConnectionError) as ctx:
+                    provider.transcribe([_make_chunk(path=audio.name)])
+
+        self.assertEqual(len(requests), 1)
+        self.assertTrue(is_retryable_error(ctx.exception))
 
 
 class TestGroqModelConfiguration(unittest.TestCase):

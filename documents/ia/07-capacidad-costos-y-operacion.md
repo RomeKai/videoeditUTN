@@ -298,6 +298,7 @@ Todos los settings de IA de [settings/base.py](../../back/backend/settings/base.
 | `AI_CLIP_SNAP_TOLERANCE_SECONDS` | `1.0` | Tolerancia para ajustar los bordes a palabras |
 | `AI_CLIP_PAUSE_SECONDS` | `0.5` | Pausa mínima entre palabras que cuenta como borde natural |
 | `AI_DEFAULT_TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Modelo de Groq. Su bucket es `groq/<modelo>` |
+| `AI_TRANSCRIPTION_TIMEOUT_SECONDS` | `120.0` | Timeout de cada request a Groq (un chunk de audio). Sin reintentos del SDK: un timeout es `AITimeoutError` y reintenta Celery |
 | `TRANSCRIPTION_BACKEND` | `groq` | Backend con V2: `groq` o `local`. Sin fallback automático entre ellos |
 | `AI_PROMPT_MAX_CHARS` | `1000` | Largo máximo del prompt de Prompt-to-Edit: `from-prompt` rechaza uno más largo y `clean_prompt` corta |
 | `AI_UPLOAD_MAX_DURATION_SECONDS` | `10800` | Duración máxima de una subida |

@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 # Provider identifier used in ProviderUsage
 _PROVIDER_NAME = "groq"
+# Fallback when settings has no AI_TRANSCRIPTION_TIMEOUT_SECONDS (base.py sets it).
+_DEFAULT_TIMEOUT_SECONDS = 120.0
 
 
 def _midpoint(segment: TranscriptionSegment) -> float:
@@ -83,7 +85,16 @@ class GroqTranscriptionProvider:
                 raw_error=exc,
             )
 
-        self._client = Groq(api_key=resolved_key)
+        # One request per chunk, never repeated by the SDK: retries belong to
+        # Celery (the pipeline's backoff), like the moderation and LiteLLM
+        # calls. The SDK default would retry twice on its own, re-uploading the
+        # chunk and possibly billing it again. A timeout raises APITimeoutError,
+        # classified as AITimeoutError (retryable, billing uncertain).
+        self._client = Groq(
+            api_key=resolved_key,
+            timeout=float(getattr(settings, "AI_TRANSCRIPTION_TIMEOUT_SECONDS", _DEFAULT_TIMEOUT_SECONDS)),
+            max_retries=0,
+        )
         self._model = self._get_model()
 
     @staticmethod
@@ -259,10 +270,10 @@ class GroqTranscriptionProvider:
     ) -> ProviderUsage:
         """
         Usage for the chunks billed so far. Counted per chunk that ANSWERED
-        (Groq bills each answered request, minimum length applied). Not counted:
-        retries inside the Groq SDK (default max_retries=2 on connection errors,
-        408/409/429 and 5xx). Those responses carry no charge, except a timed-out
-        request the server may still have completed, which the client cannot see.
+        (Groq bills each answered request, minimum length applied). The SDK
+        never retries on its own (``max_retries=0``): a chunk is sent once per
+        attempt of the stage. A timed-out request the server may still have
+        completed is not counted here; the caller treats its cost as unknown.
         """
         return ProviderUsage(
             provider=_PROVIDER_NAME,
