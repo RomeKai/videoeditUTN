@@ -480,6 +480,7 @@ Otras respuestas:
   - ✅ el pipeline crea un solo clip con el video entero y lo renderiza sin revisión. El resultado es ese clip (`clips[0]`).
   - ✅ se cobra cuando el video se entrega; si el render falla (proyecto `partial`), se devuelve.
   - ✅ un video sin voz (música, gameplay) se edita igual, sin subtítulos.
+  - ✅ el archivo no se puede cambiar después de crear (400) y no hay vista previa (409): el render real sale enseguida.
   - ✅ solo se crea con archivo: por link, `POST /api/v1/projects/` da 400 en `project_type`.
   - ❌ volver a renderizar con otro estilo (mismo hueco que D4).
 

@@ -381,6 +381,14 @@ class ClipPreviewView(APIView):
                 {"error": "El video fuente todavía no está disponible."},
                 status=status.HTTP_409_CONFLICT,
             )
+        from .tasks.ingestion import _is_whole_video
+
+        if _is_whole_video(clip.project):
+            # Its real render is dispatched right away and paid by the project.
+            return Response(
+                {"error": "El video completo se renderiza entero: no tiene vista previa."},
+                status=status.HTTP_409_CONFLICT,
+            )
         try:
             preview, created = request_preview(clip, request.user)
         except PreviewLimitExceeded:

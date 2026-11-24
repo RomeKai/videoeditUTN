@@ -105,7 +105,7 @@ Ejemplo: un archivo de 600 s con `use_seo=true` en un plan con 20 % de descuento
 - Con `video_url`: el precio fijo del link no conoce la duración, y el video entero se renderizaría sin revisión ni límite del plan.
 - Si el archivo dura más de `AI_SINGLE_EDIT_MAX_DURATION_SECONDS` (600 s por defecto; código `too_long`). Un solo render tiene el video entero, con sus subtítulos, así que es para videos cortos.
 
-`project_type` no se puede cambiar con un PATCH: el pipeline y el precio dependen de él. Para cualquier archivo subido, la vista guarda en `metadata.priced_duration_s` los segundos que cobró. Un PATCH que reemplaza el archivo cambia `metadata.source_media`, pero no ese dato, y un video completo nunca renderiza más que eso.
+`project_type` no se puede cambiar con un PATCH: el pipeline y el precio dependen de él. El archivo de un video completo tampoco (400 en `source_file`). Para cualquier archivo subido, la vista guarda en `metadata.priced_duration_s` los segundos que cobró. Un PATCH que reemplaza el archivo de un proyecto de clips cambia `metadata.source_media`, pero no ese dato. Los campos `pipeline_stage`, `pipeline_stage_status`, `pipeline_attempts`, `pipeline_error_code` y `pipeline_error_at` son de solo lectura.
 
 ## Flujo: creación con URL
 

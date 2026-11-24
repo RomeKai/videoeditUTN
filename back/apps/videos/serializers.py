@@ -59,7 +59,11 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         read_only_fields = (
             'id', 'workspace', 'uploaded_by', 'status', 'created_at', 'metadata', 'clips', 
             'original_r2_key', 'proxy_r2_key', 'final_export_r2_key', 
-            'ai_rationale_log', 'transcript_data', 'approved_segments'
+            'ai_rationale_log', 'transcript_data', 'approved_segments',
+            # Written by the pipeline only: the charge of a whole-video edit
+            # depends on where the project ended.
+            'pipeline_stage', 'pipeline_stage_status', 'pipeline_attempts',
+            'pipeline_error_code', 'pipeline_error_at',
         )
 
     def get_proxy_url(self, obj):
@@ -82,6 +86,15 @@ class VideoProjectSerializer(serializers.ModelSerializer):
             # En cualquier caso, no permitimos ambos
             if file and url:
                 raise serializers.ValidationError("No puedes enviar archivo y URL al mismo tiempo.")
+        if (
+            self.instance is not None
+            and self.instance.project_type == VideoProject.Type.SINGLE_EDIT
+            and ('source_file' in data or 'video_url' in data)
+        ):
+            # The whole video was priced at creation and is rendered as is.
+            raise serializers.ValidationError({
+                'source_file': "El video de un proyecto de video completo no se puede cambiar. Creá un proyecto nuevo.",
+            })
         if (
             not self.instance
             and data.get('project_type') == VideoProject.Type.SINGLE_EDIT

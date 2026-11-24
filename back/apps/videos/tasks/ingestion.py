@@ -253,6 +253,9 @@ def _stage_prepare_source(project_id):
             _generate_proxy(project, source_path, user_id)
 
     duration, resolution = _probe_video(source_path)
+    if _is_whole_video(project):
+        # Before transcribing it: a file that is not what was priced costs nothing more.
+        _check_whole_video_source(project, duration)
     _merge_metadata(
         project_id, {'duration': duration, 'resolution': resolution},
         expected_stage=PipelineStage.UPLOADED,
@@ -804,25 +807,54 @@ def _ensure_whole_video_paid(project_id):
         raise WholeVideoNotPaidError()
 
 
-def _settle_whole_video_reservation(project_id, delivered):
+def _whole_video_render_allowed(project_id):
     """
-    Called by ``finalize_project_render`` for a whole-video project: the render
-    is what it pays for, so it is charged when the video is delivered and
-    refunded when the render failed. Idempotent and never raises.
+    ``render_clip_task`` asks before claiming the clip: a whole-video render
+    runs only while the project is at render_dispatched with its reservation
+    still reserved. A render message left in the queue after the project
+    failed (and was refunded) must not deliver the video for free.
     """
-    if delivered:
-        _commit_ingestion_reservation(project_id)
-        return
+    project = VideoProject.objects.filter(pk=project_id).first()
+    if project is None or not _is_whole_video(project):
+        return True
+    reservation_id = (project.metadata or {}).get('reservation_id')
+    return project.pipeline_stage == PipelineStage.RENDER_DISPATCHED and bool(reservation_id) and \
+        Transaction.objects.filter(pk=reservation_id, status=Transaction.Status.RESERVED).exists()
 
+
+def _settle_whole_video_reservation(project_id):
+    """
+    Settles a whole-video project's creation reservation from where the
+    project ended, not from the transition that got it there. Every
+    ``finalize_project_render`` call runs it, so it also settles a project that
+    left render_dispatched another way (marked failed while its clip rendered)
+    or a crash between the transition and the charge.
+
+    - The video was delivered (a clip completed or published): charged.
+    - Still rendering, or the project is not final yet: nothing for now.
+    - Otherwise (the render failed, or the project failed before it): refunded.
+
+    Idempotent (only a RESERVED transaction is touched) and never raises.
+    """
     from django.core.exceptions import ValidationError
 
     # Deferred: wallet_service imports this module at load time.
     from apps.payments.services.wallet_service import PaymentError, rollback_reservation
 
+    project = VideoProject.objects.filter(pk=project_id).first()
+    if project is None or not _is_whole_video(project):
+        return
+    if project.pipeline_stage not in (*TERMINAL_STAGES, PipelineStage.FAILED):
+        return
+    statuses = set(VideoClip.objects.filter(project_id=project_id).values_list('status', flat=True))
+    if statuses & {VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED}:
+        _commit_ingestion_reservation(project_id)
+        return
+    if VideoClip.Status.RENDERING in statuses:
+        return
+
     try:
-        reservation_id = (
-            VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
-        ).get('reservation_id')
+        reservation_id = (project.metadata or {}).get('reservation_id')
         if not reservation_id or not Transaction.objects.filter(
             pk=reservation_id, status=Transaction.Status.RESERVED,
         ).exists():
@@ -836,6 +868,23 @@ def _settle_whole_video_reservation(project_id, delivered):
     except (PaymentError, DatabaseError, ValidationError) as exc:
         logger.error(
             "pipeline.refund_failed project_id=%s error=%s", project_id, type(exc).__name__
+        )
+
+
+def _check_whole_video_source(project, duration):
+    """
+    The whole video is rendered, so it must be the one priced at creation and
+    within the whole-video limit (an admin can turn a long clips project into
+    a single_edit). The price used whole seconds (int): one second of margin
+    for that and for rounding between ffprobe and MoviePy.
+    """
+    if float(duration) > float(project.metadata['priced_duration_s']) + 1:
+        raise WholeVideoSourceChangedError()
+    limit = getattr(settings, 'AI_SINGLE_EDIT_MAX_DURATION_SECONDS', 600)
+    if float(duration) > limit + 1:
+        raise NonRetryableAIError(
+            "The video is longer than a whole-video edit allows.",
+            provider="pipeline", metadata={'code': 'too_long'},
         )
 
 
@@ -859,10 +908,7 @@ def _stage_whole_video(project_id):
     duration = float(duration or 0)
     if duration <= 0:
         raise NonRetryableAIError("The source has no duration to render.", provider="pipeline")
-    # The price used whole seconds (int): one second of margin for that and for
-    # rounding between ffprobe and MoviePy. More means the file was replaced.
-    if duration > float(metadata['priced_duration_s']) + 1:
-        raise WholeVideoSourceChangedError()
+    _check_whole_video_source(project, duration)
     with transaction.atomic():
         VideoProject.objects.select_for_update().get(pk=project_id)
         # Dedupe: a redelivered task reuses the clip of an earlier attempt.
@@ -956,6 +1002,10 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
     progress['stage'] = stage
 
     if stage == PipelineStage.FAILED:
+        if _is_whole_video(project):
+            # Refunded when it failed: nothing is run again (not even a clip
+            # created) unless its reservation is still reserved.
+            _ensure_whole_video_paid(project_id)
         # Manual re-dispatch of a failed project: resume where it stopped.
         stage = last_completed_stage(project)
         reopen(project_id, stage)

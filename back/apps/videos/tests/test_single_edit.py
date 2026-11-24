@@ -21,7 +21,9 @@ from apps.videos.models import AIUsageRecord, VideoClip, VideoProject
 from apps.videos.services.ai.errors import AINoSpeechDetectedError
 from apps.videos.services.ai.pipeline_state import PipelineStage
 from apps.videos.services.media_validation import MediaInfo
-from apps.videos.tasks import _refund_ingestion_reservation, _stage_whole_video, finalize_project_render
+from apps.videos.tasks import (
+    _refund_ingestion_reservation, _stage_whole_video, finalize_project_render, render_clip_task,
+)
 from apps.videos.tests.test_ingestion_pipeline import IngestionHarness
 
 User = get_user_model()
@@ -182,6 +184,79 @@ class SingleEditPipelineTests(IngestionHarness, TestCase):
         txn.refresh_from_db()
         self.assertEqual(txn.status, Transaction.Status.FAILED)
 
+    def finish_render_after_the_project_failed(self, clip_status):
+        project = self.make_whole_video(paid=False)
+        txn = self.reserve(project)
+        clip = VideoClip.objects.create(
+            project=project, title="Pipeline", start_time=0, end_time=10, status=VideoClip.Status.RENDERING,
+        )
+        VideoProject.objects.filter(pk=project.pk).update(pipeline_stage=PipelineStage.FAILED)
+        VideoClip.objects.filter(pk=clip.pk).update(status=clip_status)
+        finalize_project_render(project.id)  # what the render task calls when it ends
+        txn.refresh_from_db()
+        return txn
+
+    def test_a_video_delivered_after_the_project_failed_is_charged(self):
+        self.assertEqual(self.finish_render_after_the_project_failed(VideoClip.Status.COMPLETED).status,
+                         Transaction.Status.COMPLETED)
+
+    def test_a_render_that_fails_after_the_project_failed_is_refunded(self):
+        self.assertEqual(self.finish_render_after_the_project_failed(VideoClip.Status.FAILED).status,
+                         Transaction.Status.FAILED)
+
+    def test_a_crash_between_closing_and_charging_is_charged_on_the_next_delivery(self):
+        project = self.make_whole_video(paid=False)
+        txn = self.reserve(project)
+        clip = VideoClip.objects.create(
+            project=project, title="Pipeline", start_time=0, end_time=10,
+            status=VideoClip.Status.COMPLETED, s3_object_key="clips/done.mp4",
+        )
+        # The worker died after the project was closed, before the charge.
+        VideoProject.objects.filter(pk=project.pk).update(pipeline_stage=PipelineStage.COMPLETED)
+
+        render_clip_task.apply(args=[str(clip.id)])  # the redelivered message
+
+        txn.refresh_from_db()
+        self.assertEqual(txn.status, Transaction.Status.COMPLETED)
+
+    def test_a_queued_render_of_a_refunded_project_is_not_rendered(self):
+        project = self.make_whole_video(paid=False)
+        txn = self.reserve(project)
+        rollback_reservation(txn.id)  # the project failed and was refunded
+        clip = VideoClip.objects.create(project=project, title="Pipeline", start_time=0, end_time=10)
+        VideoProject.objects.filter(pk=project.pk).update(pipeline_stage=PipelineStage.FAILED)
+
+        with patch("apps.videos.services.render_engine.RenderEngine.render_clip") as render:
+            render_clip_task.apply(args=[str(clip.id)])
+
+        render.assert_not_called()
+        clip.refresh_from_db()
+        self.assertEqual(clip.status, VideoClip.Status.FAILED)
+
+    def test_a_paid_whole_video_is_rendered(self):
+        project = self.make_whole_video()
+        clip = VideoClip.objects.create(project=project, title="Pipeline", start_time=0, end_time=10)
+        VideoProject.objects.filter(pk=project.pk).update(pipeline_stage=PipelineStage.RENDER_DISPATCHED)
+
+        with patch("apps.videos.services.render_engine.RenderEngine.render_clip") as render:
+            render_clip_task.apply(args=[str(clip.id)])
+
+        render.assert_called_once()
+
+    def test_a_refunded_project_dispatched_again_runs_nothing(self):
+        # A moderation override (or any re-dispatch) after the refund.
+        project = self.make_whole_video(paid=False)
+        txn = self.reserve(project)
+        rollback_reservation(txn.id)
+        VideoProject.objects.filter(pk=project.pk).update(pipeline_stage=PipelineStage.FAILED)
+
+        self.run_to_render(project)
+
+        self.mock_transcribe.assert_not_called()
+        self.assertFalse(VideoClip.objects.filter(project=project).exists())
+        self.assertEqual(project.pipeline_stage, PipelineStage.FAILED)
+        self.assertEqual(project.pipeline_error_code, "WholeVideoNotPaidError")
+
     def test_a_failed_project_whose_video_is_rendering_keeps_its_reservation(self):
         project = self.make_whole_video(paid=False)
         txn = self.reserve(project)
@@ -204,12 +279,23 @@ class SingleEditPipelineTests(IngestionHarness, TestCase):
 
         self.run_to_render(project)
 
+        self.mock_transcribe.assert_not_called()  # checked before paying for anything else
         self.mock_render.assert_not_called()
         self.assertFalse(VideoClip.objects.filter(project=project).exists())
         self.assertEqual(project.pipeline_stage, PipelineStage.FAILED)
         self.assertEqual(project.pipeline_error_code, "WholeVideoSourceChangedError")
         txn.refresh_from_db()
         self.assertEqual(txn.status, Transaction.Status.FAILED)  # refunded
+
+    @override_settings(AI_SINGLE_EDIT_MAX_DURATION_SECONDS=5)
+    def test_a_long_clips_project_turned_into_a_whole_video_in_the_admin_is_not_rendered(self):
+        project = self.make_whole_video(metadata={"priced_duration_s": 1800})
+
+        self.run_to_render(project)
+
+        self.mock_transcribe.assert_not_called()
+        self.mock_render.assert_not_called()
+        self.assertEqual(project.pipeline_stage, PipelineStage.FAILED)
 
     def test_without_a_stored_duration_the_source_is_measured(self):
         project = self.make_whole_video()
@@ -300,8 +386,21 @@ class SingleEditCreationTests(TestCase):
         self.assertEqual(Transaction.objects.get(pk=project.metadata["reservation_id"]).amount, Decimal("50.00"))
         delay.assert_called_once()
 
-    def test_replacing_the_file_never_changes_the_priced_duration(self):
+    def test_the_file_of_a_whole_video_cannot_be_replaced(self):
         response, _ = self.upload(project_type=SINGLE_EDIT)
+
+        patched, _ = self.send("patch", reverse("project-detail", args=[response.data["id"]]), {
+            "source_file": SimpleUploadedFile("long.mp4", b"0" * 10, content_type="video/mp4"),
+        }, format="multipart", duration=5000.0)
+
+        self.assertEqual(patched.status_code, 400, patched.content[:300])
+        self.assertIn("source_file", patched.data)
+        metadata = VideoProject.objects.get(pk=response.data["id"]).metadata
+        self.assertEqual(metadata["source_media"]["duration_s"], 100.0)
+        self.assertEqual(metadata["priced_duration_s"], 100)
+
+    def test_replacing_the_file_of_a_clips_project_keeps_the_priced_duration(self):
+        response, _ = self.upload()
 
         self.send("patch", reverse("project-detail", args=[response.data["id"]]), {
             "source_file": SimpleUploadedFile("long.mp4", b"0" * 10, content_type="video/mp4"),
@@ -310,6 +409,27 @@ class SingleEditCreationTests(TestCase):
         metadata = VideoProject.objects.get(pk=response.data["id"]).metadata
         self.assertEqual(metadata["source_media"]["duration_s"], 5000.0)
         self.assertEqual(metadata["priced_duration_s"], 100)
+
+    def test_the_pipeline_fields_cannot_be_written(self):
+        response, _ = self.upload(project_type=SINGLE_EDIT)
+
+        self.send("patch", reverse("project-detail", args=[response.data["id"]]), {
+            "pipeline_stage": "failed", "pipeline_error_code": "x", "pipeline_attempts": 9,
+        })
+
+        project = VideoProject.objects.get(pk=response.data["id"])
+        self.assertEqual(project.pipeline_stage, PipelineStage.UPLOADED)
+        self.assertEqual((project.pipeline_error_code, project.pipeline_attempts), ("", 0))
+
+    def test_a_whole_video_has_no_preview(self):
+        response, _ = self.upload(project_type=SINGLE_EDIT)
+        clip = VideoClip.objects.create(project_id=response.data["id"], title="v", start_time=0, end_time=10)
+
+        with patch("apps.videos.tasks.render_clip_preview_task.delay") as delay:
+            preview = self.client.post(f"/api/v1/clips/{clip.id}/preview/")
+
+        self.assertEqual(preview.status_code, 409, preview.content[:300])
+        delay.assert_not_called()
 
     def test_a_whole_video_longer_than_the_limit_is_rejected_before_anything_is_reserved(self):
         response, delay = self.upload(duration=601.0, project_type=SINGLE_EDIT)
