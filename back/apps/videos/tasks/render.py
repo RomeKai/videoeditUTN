@@ -67,7 +67,7 @@ from apps.videos.tasks.shared import (
     PIPELINE_LOCK_RETRY_SECONDS,
     _is_retryable_pipeline_error,
     _is_transient_storage_connection_error,
-    _publish_lock_requeue,
+    _publish_requeue,
     _retry_countdown,
 )
 
@@ -766,8 +766,8 @@ def render_video_segments(self, project_id):
                 "render.lock_busy_retrying project_id=%s lock_retry=%d", project_id, lock_retries + 1,
             )
             # Not published (broker down): this message goes back to the
-            # broker instead of being acked away (_publish_lock_requeue).
-            _publish_lock_requeue(
+            # broker instead of being acked away (_publish_requeue).
+            _publish_requeue(
                 self,
                 lambda: render_video_segments.apply_async(
                     args=[str(project_id)],
@@ -775,7 +775,7 @@ def render_video_segments(self, project_id):
                     countdown=PIPELINE_LOCK_RETRY_SECONDS,
                     retries=self.request.retries,
                 ),
-                "render.requeue_not_published", project_id,
+                "render.requeue_not_published", project_id, "lock",
             )
             return f"Lock busy, re-queued {project_id}"
         # Still held after outlasting the TTL: a live worker is rendering it.

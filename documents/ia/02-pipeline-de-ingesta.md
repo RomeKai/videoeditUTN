@@ -249,7 +249,7 @@ Con `AI_CAPACITY_ENABLED=True`, cada llamada a Groq y al LLM reserva capacidad a
 4. Si no, `_capacity_countdown` calcula la demora (el déficit del bucket, entre 1 s y `AI_CAPACITY_MAX_COUNTDOWN_SECONDS`, más 0–20 % de jitter), la suma a `planned_s` y re-encola la tarea con `apply_async(countdown=..., retries=self.request.retries)`. No es un intento fallido: no toca `pipeline_attempts` ni escribe filas de uso, y el worker queda libre.
 5. Cuando la reserva por fin entra, `_capacity_granted` borra `capacity_wait` y acumula los segundos esperados en `metadata.capacity_waited_s[<etapa>]` (log `pipeline.capacity_granted`).
 6. Para el parser del prompt la regla cambia: si la espera vencería, `_prompt_capacity_exhausted` lo detecta, `give_up_prompt` guarda `pte.status=failed` con `CapacityTimeoutError` y el proyecto sigue sin el prompt, sin fallar.
-7. Si estacionar la tarea falla (por ejemplo, la DB), ese error se trata como cualquier error de etapa: nunca queda un proyecto en `pending_capacity` sin mensaje en la cola.
+7. Si estacionar la tarea falla (por ejemplo, la DB), ese error se trata como cualquier error de etapa: nunca queda un proyecto en `pending_capacity` sin mensaje en la cola. Si lo que falla es publicar el re-encolado (broker caído), `_restore_capacity_wait` devuelve `capacity_wait` a como estaba (salvo que otra entrega lo haya cambiado) y el mismo mensaje vuelve al broker (`_publish_requeue`): la re-entrega planifica esa espera una sola vez y no cuenta un intento fallido.
 
 ## Flujo: re-entregas, idempotencia y re-despacho manual
 
@@ -281,7 +281,7 @@ Correr la tarea dos veces sobre el mismo proyecto es seguro. Las piezas:
 |-----------|----------|-------|
 | Redis caído al tomar el lock | `RetryableAIError` → reintento con backoff. Nunca se procesa sin lock | `project_lock` |
 | Lock tomado por otro worker | Re-encolado con `lock_retries` hasta 8 veces; después `pipeline.skipped` | `process_initial_ingestion` |
-| El re-encolado por lock no se puede publicar (broker caído) | `pipeline.requeue_not_published`, pausa de `LOCK_REQUEUE_NOT_PUBLISHED_PAUSE_SECONDS` (5 s) y `Reject(requeue=True)`: el mismo mensaje vuelve al broker con sus kwargs sin cambios. Con `acks_late`, volver a lanzar el error lo perdería (Celery hace ack de una tarea que falló), y `self.retry` publica otro mensaje que falla igual. Detalle en [06, Paper edit](06-render-caras-y-hablante.md) | `_publish_lock_requeue` |
+| Un re-encolado no se puede publicar (broker caído): por lock, por el parser del prompt o por capacidad | `pipeline.requeue_not_published` con `requeue=lock`, `prompt_parse` o `capacity`, pausa de `REQUEUE_NOT_PUBLISHED_PAUSE_SECONDS` (5 s) y `Reject(requeue=True)`: el mismo mensaje vuelve al broker con sus kwargs sin cambios (`lock_retries`, `parse_retries`, `retries`), así que el re-encolado perdido no gasta nada. En capacidad, además, se devuelve la espera que se había sumado a `planned_s`. Con `acks_late`, volver a lanzar el error lo perdería (Celery hace ack de una tarea que falló), y `self.retry` publica otro mensaje que falla igual y termina en `Reject(requeue=False)`. Detalle en [06, Paper edit](06-render-caras-y-hablante.md) | `_publish_requeue`, `_restore_capacity_wait` |
 | Lock perdido a mitad de la corrida | El heartbeat loguea `pipeline.lock_lost`; el próximo `renew()` lanza `ProjectLockLostError` y la tarea termina con `pipeline.skipped` sin marcar fallo | `ProjectLockHandle.renew` |
 | Error transitorio de Redis al renovar | Solo `pipeline.lock_renew_failed`: el TTL restante cubre unas renovaciones perdidas | `ProjectLockHandle.renew` |
 | Otro worker avanzó el proyecto | `PipelineConflictError` → `pipeline.skipped`. Las filas de uso de la llamada ya cobrada se escriben igual | `advance`, `_persist_then_record_usage` |
@@ -343,7 +343,7 @@ Correr la tarea dos veces sobre el mismo proyecto es seguro. Las piezas:
 | `AI_CAPACITY_MAX_WAIT_SECONDS` | 3600 | Espera máxima por etapa antes de `CapacityTimeoutError` |
 | `AI_CAPACITY_MAX_COUNTDOWN_SECONDS` | 300 | Tope de cada re-encolado por capacidad |
 
-Constantes del código (no son settings): `PIPELINE_MAX_RETRIES` = 5, `PIPELINE_RETRY_BASE_SECONDS` = 30, `PIPELINE_RETRY_CAP_SECONDS` = 600, `PIPELINE_LOCK_RETRY_SECONDS` = 45, `PIPELINE_LOCK_MAX_RETRIES` = 8, `LOCK_REQUEUE_NOT_PUBLISHED_PAUSE_SECONDS` = 5 ([tasks/shared.py](../../back/apps/videos/tasks/shared.py); los del lock los usa también el render del paper edit); `PTE_PARSE_MAX_RETRIES` = 2, `PTE_PARSE_RETRY_SECONDS` = (30, 90) ([tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py)). `CELERY_WORKER_PREFETCH_MULTIPLIER` = 1 en `settings/base.py`.
+Constantes del código (no son settings): `PIPELINE_MAX_RETRIES` = 5, `PIPELINE_RETRY_BASE_SECONDS` = 30, `PIPELINE_RETRY_CAP_SECONDS` = 600, `PIPELINE_LOCK_RETRY_SECONDS` = 45, `PIPELINE_LOCK_MAX_RETRIES` = 8, `REQUEUE_NOT_PUBLISHED_PAUSE_SECONDS` = 5 ([tasks/shared.py](../../back/apps/videos/tasks/shared.py); los del lock los usa también el render del paper edit); `PTE_PARSE_MAX_RETRIES` = 2, `PTE_PARSE_RETRY_SECONDS` = (30, 90) ([tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py)). `CELERY_WORKER_PREFETCH_MULTIPLIER` = 1 en `settings/base.py`.
 
 ## Referencias
 

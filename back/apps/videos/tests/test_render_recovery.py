@@ -1,48 +1,37 @@
 """
-No paper-edit render stays RENDERING with its tokens reserved, and no
-lock-busy re-queue is lost:
+No paper-edit render stays RENDERING with its tokens reserved:
+recover_stuck_renders finds a render that nothing will bring back (a hard
+time limit kill acks its message; a lost redelivery) and re-queues it once,
+fails it with a refund past the caps, or completes and charges it when its
+export was saved. A project whose lock is held, or that started recently, is
+never touched, and the dry run writes nothing.
 
-- recover_stuck_renders finds a render that nothing will bring back (a hard
-  time limit kill acks its message; a lost redelivery) and re-queues it once,
-  fails it with a refund past the caps, or completes and charges it when its
-  export was saved. A project whose lock is held, or that started recently,
-  is never touched, and the dry run writes nothing.
-- A lock-busy re-queue that the broker does not take gives the message back
-  to the broker (reject with requeue) instead of acking it away.
+A re-queue the broker does not take: test_requeue_not_published.py.
 """
 
 from datetime import datetime, timedelta
 from decimal import Decimal
 from io import StringIO
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from django.conf import settings
-from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import TestCase
 from django.utils import timezone
 from kombu.exceptions import OperationalError
 from rest_framework.test import APITestCase
 
 from apps.payments.models import Transaction
 from apps.payments.services.wallet_service import reserve_funds
-from apps.users.models import Workspace
 from apps.videos.models import VideoProject
-from apps.videos.tasks import process_initial_ingestion, render_video_segments
-from apps.videos.tasks.render import RENDER_LOCK_RETRIES_HEADER, RENDER_SEGMENTS_MAX_REDELIVERIES
+from apps.videos.tasks import render_video_segments
+from apps.videos.tasks.render import RENDER_SEGMENTS_MAX_REDELIVERIES
 from apps.videos.tasks.render_recovery import recover_stuck_renders, recover_stuck_renders_now
-from apps.videos.tasks.shared import LOCK_REQUEUE_NOT_PUBLISHED_PAUSE_SECONDS
-from apps.videos.tests.fakes import FakeRedis
-from apps.videos.tests.test_approved_segments_source import (
-    REDIS_CLIENT, _patched_render, _render_mocks,
-)
+from apps.videos.tests.test_approved_segments_source import _patched_render, _render_mocks
 from apps.videos.tests.test_reservation_settlement import RenderReservationHarness
 
-User = get_user_model()
 
 RESOLVE_SEGMENTS = "apps.videos.tasks.render._resolve_approved_segments"
-PAUSE = "apps.videos.tasks.shared.time.sleep"
 
 
 class HardKill(BaseException):
@@ -362,99 +351,3 @@ class RecoverStuckRendersScheduleTests(StuckRenderHarness, APITestCase):
 
     def test_a_render_is_stuck_only_after_its_hard_time_limit(self):
         self.assertGreater(settings.RENDER_STUCK_AFTER_SECONDS, settings.RENDER_SEGMENTS_TIME_LIMIT)
-
-
-class InlinePool:
-    """The worker pool, in-process: runs the traced task and hands the outcome to the request."""
-
-    def apply_async(self, target, args=(), callback=None, **kwargs):
-        callback(target(*args))
-
-
-def run_on_worker(task, message):
-    """Runs one message as a worker does (acks_late) and returns its (ack, reject) callbacks."""
-    from celery.worker.request import Request
-
-    from backend.celery import app
-
-    ack, reject = Mock(name="ack"), Mock(name="reject")
-    Request(message, app=app, task=task, on_ack=ack, on_reject=reject).execute_using_pool(InlinePool())
-    return ack, reject
-
-
-class LockBusyRequeueNotPublishedTests(TestCase):
-    """
-    The lock-busy branch re-queues the message with apply_async. If the broker
-    does not take it, the delivery used to end with that error: acks_late acks
-    a failed task, so the only message of the project was lost. Now the same
-    message goes back to the broker after a short pause.
-    """
-
-    def setUp(self):
-        self.redis = FakeRedis()
-        patcher = patch(REDIS_CLIENT, return_value=self.redis)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        user = User.objects.create_user(username="busy", email="busy@test.com", password="pw")
-        workspace = Workspace.objects.create(name="Busy", owner=user)
-        self.project = VideoProject.objects.create(
-            workspace=workspace, uploaded_by=user, title="Busy lock",
-            status=VideoProject.Status.RENDERING,
-        )
-        lock = self.redis.lock(f"lock:pipeline:project:{self.project.id}", timeout=300)
-        self.assertTrue(lock.acquire(blocking=False))  # a live worker holds the project
-
-    def run_lock_busy(self, task, message):
-        with patch.object(task, "apply_async", side_effect=OperationalError("Error 111 secret-host")), \
-                patch(PAUSE) as pause, \
-                self.assertLogs("apps.videos.tasks", level="WARNING") as logs:
-            ack, reject = run_on_worker(task, message)
-        return ack, reject, pause, "\n".join(logs.output)
-
-    def assert_redelivered(self, ack, reject, pause):
-        ack.assert_not_called()
-        reject.assert_called_once()
-        self.assertIs(reject.call_args.args[2], True)  # requeue
-        pause.assert_called_once_with(LOCK_REQUEUE_NOT_PUBLISHED_PAUSE_SECONDS)
-
-    def test_a_paper_edit_requeue_that_is_not_published_is_redelivered(self):
-        from celery.contrib.testing.mocks import TaskMessage
-
-        message = TaskMessage(
-            render_video_segments.name, args=[str(self.project.id)], **{RENDER_LOCK_RETRIES_HEADER: 2},
-        )
-
-        ack, reject, pause, logs = self.run_lock_busy(render_video_segments, message)
-
-        self.assert_redelivered(ack, reject, pause)
-        self.assertIn(
-            f"render.requeue_not_published project_id={self.project.id} error=OperationalError", logs,
-        )
-        self.assertNotIn("secret-host", logs)
-
-    def test_an_ingestion_requeue_that_is_not_published_is_redelivered(self):
-        from celery.contrib.testing.mocks import TaskMessage
-
-        message = TaskMessage(
-            process_initial_ingestion.name, args=[str(self.project.id)], kwargs={"lock_retries": 2},
-        )
-
-        ack, reject, pause, logs = self.run_lock_busy(process_initial_ingestion, message)
-
-        self.assert_redelivered(ack, reject, pause)
-        self.assertIn(
-            f"pipeline.requeue_not_published project_id={self.project.id} error=OperationalError", logs,
-        )
-        self.assertNotIn("secret-host", logs)
-
-    def test_a_published_requeue_still_acks_the_message(self):
-        from celery.contrib.testing.mocks import TaskMessage
-
-        message = TaskMessage(render_video_segments.name, args=[str(self.project.id)])
-        with patch.object(render_video_segments, "apply_async") as requeue, patch(PAUSE) as pause:
-            ack, reject = run_on_worker(render_video_segments, message)
-
-        requeue.assert_called_once()
-        ack.assert_called_once()
-        reject.assert_not_called()
-        pause.assert_not_called()
