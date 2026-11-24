@@ -129,8 +129,8 @@ def test_upload_to_awaiting_approval(api, wallet_factory, video_upload, fake_ai)
     assert clip.status == VideoClip.Status.DRAFT
 
     # Pago: se reservaron tokens por 2s de video (2 * 0.5 = 1.00) y nada más.
-    # El monto usa el multiplicador base porque la view pasa aspect_ratio como
-    # resolución (ver test_create_prices_with_a_real_resolution).
+    # El monto usa el multiplicador de 720p: sin render_resolution del prompt, el
+    # tier que se cobra es 720p (ver test_create_prices_with_a_real_resolution).
     txn = Transaction.objects.get(wallet=wallet)
     assert txn.status == Transaction.Status.RESERVED
     assert txn.amount == Decimal("1.00")
@@ -196,12 +196,6 @@ def test_failed_ingestion_releases_the_reservation(api, wallet_factory, video_up
     assert wallet.reserved_balance == Decimal("0")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Bug: la view le pasa project.aspect_ratio ('9:16') como resolution al "
-           "PricingEngine, que no la reconoce y cae al multiplicador base sin "
-           "aplicar el límite de resolución del plan.",
-)
 def test_create_prices_with_a_real_resolution(api, wallet_factory, workspace, free_plan,
                                               video_upload, fake_ai):
     from apps.payments.services.pricing_engine import PricingEngine

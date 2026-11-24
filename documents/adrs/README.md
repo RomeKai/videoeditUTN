@@ -21,6 +21,7 @@
 | [011](011-content-moderation.md) | Moderación de contenido: cobertura, política de fallo y resultado | `accepted` | 🧠 Par IA + 🚀 Par Producto |
 | [012](012-model-profiles-and-capacity.md) | Perfiles de modelos por entorno y planificación de capacidad | `proposed` | 🧠 Par IA + ⚙️ Par Engine |
 | [013](013-ai-social-metadata.md) | Generación de metadata social con IA | `accepted` | 🧠 Par IA + 🚀 Par Producto |
+| [014](014-speaker-detection.md) | Detección de quién habla sin pyannote | `accepted` | 🧠 Par IA |
 
 > Los ADR 009 (broker Celery + Valkey) y 010 (PyAV, reemplaza al 003) están reservados por el plan de estabilización y se redactan en una fase posterior.
 

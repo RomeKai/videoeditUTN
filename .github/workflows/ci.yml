@@ -17,7 +17,8 @@ jobs:
   quality:
     name: Quality
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # apt-get on the hosted runner has taken up to ~11 min; 15 left pytest no time.
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:15-alpine

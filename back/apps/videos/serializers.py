@@ -40,6 +40,12 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     # Paid add-on (PricingEngine 'seo_optimization'): captions and hashtags are
     # generated for each ScheduledPost of the project (ADR-013). Creation only.
     use_seo = serializers.BooleanField(required=False, write_only=True)
+    # '1:Post' was the stored value of the square ratio until migration 0009;
+    # clients that still send it get '1:1'.
+    aspect_ratio = serializers.ChoiceField(
+        choices=[*VideoProject.AspectRatio.choices, ('1:Post', 'Cuadrado (Post), valor anterior')],
+        required=False,
+    )
 
     class Meta:
         model = VideoProject
@@ -71,6 +77,11 @@ class VideoProjectSerializer(serializers.ModelSerializer):
             if file and url:
                 raise serializers.ValidationError("No puedes enviar archivo y URL al mismo tiempo.")
         return data
+
+    def validate_aspect_ratio(self, value):
+        from .services.ai.contracts import LEGACY_ASPECT_RATIOS
+
+        return LEGACY_ASPECT_RATIOS.get(value, value)
 
     def validate_source_file(self, value):
         if value:
@@ -120,7 +131,6 @@ class VideoProjectSerializer(serializers.ModelSerializer):
             project.metadata['pte_prompt'] = prompt
             project.metadata['pte_explicit'] = explicit_config_fields(raw)
         if 'subtitle_size' in raw: project.metadata['subtitle_size'] = raw['subtitle_size']
-        if 'aspect_ratio' in raw: project.aspect_ratio = raw['aspect_ratio']
         if 'render_layout' in raw: project.render_layout = raw['render_layout']
         elif 'layout' in raw: project.render_layout = raw['layout']
         
