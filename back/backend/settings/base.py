@@ -241,6 +241,13 @@ CELERY_TASK_ROUTES = {
 # hoarded by a worker that cannot start them (AICORE-11).
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 
+# Worker recycling (CORE-04). MoviePy/FFmpeg/Whisper leave memory behind that a
+# long-lived pool process never returns, so each child is replaced after
+# MAX_TASKS tasks, or after the task during which it went over MAX_MEMORY
+# (KiB; 0 disables it). Both checks run between tasks, never interrupting one.
+CELERY_WORKER_MAX_TASKS_PER_CHILD = env.int('CELERY_WORKER_MAX_TASKS_PER_CHILD', default=50)
+CELERY_WORKER_MAX_MEMORY_PER_CHILD = env.int('CELERY_WORKER_MAX_MEMORY_PER_CHILD', default=0) or None
+
 # --- AI capacity (AICORE-11, ADR-012 D-C4) ---
 # Token buckets in Valkey reserved before every Groq/LLM call of the ingestion
 # pipeline. Off until the limits of the environment are configured (runbook).
