@@ -79,7 +79,19 @@ def finalize_project_render(project_id):
     -> COMPLETED, any failed -> PARTIAL (never COMPLETED with failures). Safe to
     call after every clip: counting happens under the project row lock, so only
     the call that sees the last clip finish transitions the project.
+
+    A whole-video project (``single_edit``) is paid by its creation reservation,
+    settled here from where the project ended: every call checks it, so it is
+    settled even if the project left render_dispatched another way.
     """
+    from apps.videos.tasks.ingestion import _settle_whole_video_reservation
+
+    stage = _close_render_fan_out(project_id)
+    _settle_whole_video_reservation(project_id)
+    return stage
+
+
+def _close_render_fan_out(project_id):
     with transaction.atomic():
         project = VideoProject.objects.select_for_update().get(pk=project_id)
         if project.pipeline_stage != PipelineStage.RENDER_DISPATCHED:
@@ -213,10 +225,31 @@ def render_clip_task(self, clip_id):
             return f"Clip {clip_id} already rendered"
 
         redelivered = bool((self.request.delivery_info or {}).get('redelivered'))
+        from apps.videos.tasks.ingestion import _whole_video_render_allowed
+
+        if not _whole_video_render_allowed(clip.project_id):
+            # A whole-video project that failed (and was refunded) while this
+            # message waited in the queue: the video is not rendered for free.
+            stale = [VideoClip.Status.DRAFT] + ([VideoClip.Status.RENDERING] if redelivered else [])
+            VideoClip.objects.filter(pk=clip_id, status__in=stale).update(status=VideoClip.Status.FAILED)
+            finalize_project_render(clip.project_id)
+            logger.warning("render.skipped_unpaid clip_id=%s project_id=%s", clip_id, clip.project_id)
+            return f"Clip {clip_id} not rendered: the project is not payable"
+
         if not _claim_clip_for_render(clip_id, redelivered=redelivered):
             logger.info(f"⏭️ [RENDER TASK] Clip {clip_id} is being rendered by another delivery, skipping")
             return f"Clip {clip_id} already claimed"
         claimed = True
+        # Checked again after every claim, retries included: the project may
+        # have failed and been refunded between the check and the claim.
+        if not _whole_video_render_allowed(clip.project_id):
+            VideoClip.objects.filter(pk=clip_id, status=VideoClip.Status.RENDERING).update(
+                status=VideoClip.Status.FAILED,
+            )
+            claimed = False
+            finalize_project_render(clip.project_id)
+            logger.warning("render.skipped_unpaid clip_id=%s project_id=%s", clip_id, clip.project_id)
+            return f"Clip {clip_id} not rendered: the project is not payable"
 
         previous_key = clip.s3_object_key
         RenderEngine.render_clip(clip_id)

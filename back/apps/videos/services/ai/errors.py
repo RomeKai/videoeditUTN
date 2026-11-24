@@ -183,6 +183,28 @@ class AINoSpeechDetectedError(AIContractValidationError):
         super().__init__(message, **kwargs)
 
 
+class WholeVideoSourceChangedError(NonRetryableAIError):
+    """
+    "Editar el video completo": the source is longer than the duration priced
+    at creation (the file was replaced afterwards). Rendering it would deliver
+    more than was paid for, so the project fails and is refunded.
+    """
+    def __init__(self, message: str = "The source is longer than the duration priced at creation", **kwargs):
+        kwargs.setdefault('provider', 'pipeline')
+        super().__init__(message, **kwargs)
+
+
+class WholeVideoNotPaidError(NonRetryableAIError):
+    """
+    "Editar el video completo": the creation reservation is no longer reserved
+    (it was refunded when the project failed), so a re-dispatched project would
+    render the whole video for free.
+    """
+    def __init__(self, message: str = "The whole-video render has no reserved payment", **kwargs):
+        kwargs.setdefault('provider', 'pipeline')
+        super().__init__(message, **kwargs)
+
+
 # ==============================================================================
 # HELPER FUNCTIONS
 # ==============================================================================

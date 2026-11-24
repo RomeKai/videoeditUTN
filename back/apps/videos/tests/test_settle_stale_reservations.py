@@ -133,6 +133,71 @@ class SettleStaleReservationsTests(TestCase):
         self.assertEqual((line["action"], line["reason"]), ("report", "in_progress"))
         self.assertEqual(self.status(txn), Transaction.Status.RESERVED)
 
+    # -- creation reservation of a whole video (single_edit) --
+
+    def whole_video(self, stage, *clip_statuses):
+        """A whole-video project: paid by its creation reservation when the video is delivered."""
+        txn = self.reserve()
+        project = VideoProject.objects.create(
+            workspace=self.workspace, uploaded_by=self.user, title=TITLE,
+            project_type=VideoProject.Type.SINGLE_EDIT, pipeline_stage=stage,
+            metadata={"reservation_id": str(txn.id), "priced_duration_s": 30},
+        )
+        for status in clip_statuses:
+            VideoClip.objects.create(project=project, title="video", start_time=0, end_time=30, status=status)
+        return txn
+
+    def test_a_delivered_whole_video_is_charged(self):
+        for status in (VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED):
+            with self.subTest(clip=status):
+                txn = self.whole_video(PipelineStage.COMPLETED, status)
+
+                line = self.line_for(self.sweep("--apply"), txn)
+
+                self.assertEqual((line["action"], line["reason"]), ("commit", "video_delivered"))
+                self.assertEqual(self.status(txn), Transaction.Status.COMPLETED)
+
+    def test_a_whole_video_still_rendering_in_a_final_project_is_only_reported(self):
+        txn = self.whole_video(PipelineStage.FAILED, VideoClip.Status.RENDERING)
+
+        line = self.line_for(self.sweep("--apply"), txn)
+
+        self.assertEqual((line["action"], line["reason"]), ("report", "clip_rendering"))
+        self.assertEqual(self.status(txn), Transaction.Status.RESERVED)
+
+    def test_a_whole_video_whose_render_failed_is_refunded(self):
+        txn = self.whole_video(PipelineStage.PARTIAL, VideoClip.Status.FAILED)
+
+        line = self.line_for(self.sweep("--apply"), txn)
+
+        self.assertEqual((line["action"], line["reason"]), ("rollback", "video_not_delivered"))
+        self.assertEqual(self.status(txn), Transaction.Status.FAILED)
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+
+    def test_a_whole_video_that_failed_before_its_render_is_refunded(self):
+        txn = self.whole_video(PipelineStage.FAILED)
+
+        line = self.line_for(self.sweep("--apply"), txn)
+
+        self.assertEqual((line["action"], line["reason"]), ("rollback", "video_not_delivered"))
+        self.assertEqual(self.status(txn), Transaction.Status.FAILED)
+
+    def test_a_whole_video_not_final_yet_is_only_reported(self):
+        # A clips project at these stages would be charged: a whole video is
+        # charged only once the video is delivered.
+        for stage, clips in (
+            (PipelineStage.RENDER_DISPATCHED, (VideoClip.Status.RENDERING,)),
+            (PipelineStage.RENDER_DISPATCHED, (VideoClip.Status.COMPLETED,)),
+            (PipelineStage.CLIPS_SELECTED, (VideoClip.Status.DRAFT,)),
+        ):
+            with self.subTest(stage=stage, clips=clips):
+                txn = self.whole_video(stage, *clips)
+
+                line = self.line_for(self.sweep("--apply"), txn)
+
+                self.assertEqual((line["action"], line["reason"]), ("report", "not_final"))
+                self.assertEqual(self.status(txn), Transaction.Status.RESERVED)
+
     # -- render reservation --
 
     def test_a_delivered_render_is_charged(self):
@@ -208,7 +273,7 @@ class SettleStaleReservationsTests(TestCase):
         calls = []
 
         def redispatched_after_the_report(kind, values):
-            calls.append(values["pipeline_stage"])
+            calls.append(values.pipeline_stage)
             if len(calls) == 1:
                 # Someone re-dispatches the failed project before it is settled.
                 VideoProject.objects.filter(pk=project.pk).update(

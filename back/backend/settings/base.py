@@ -202,6 +202,9 @@ AI_PROMPT_MAX_CHARS = env.int('AI_PROMPT_MAX_CHARS', default=1000)
 AI_UPLOAD_MAX_DURATION_SECONDS = env.int('AI_UPLOAD_MAX_DURATION_SECONDS', default=10800)
 AI_UPLOAD_MAX_LONG_SIDE_PX = env.int('AI_UPLOAD_MAX_LONG_SIDE_PX', default=4096)
 AI_UPLOAD_MIN_SHORT_SIDE_PX = env.int('AI_UPLOAD_MIN_SHORT_SIDE_PX', default=240)
+# "Editar el video completo" (single_edit): the whole video is one clip rendered
+# by one task, so it is for short videos.
+AI_SINGLE_EDIT_MAX_DURATION_SECONDS = env.int('AI_SINGLE_EDIT_MAX_DURATION_SECONDS', default=600)
 
 # JWT Configuration
 from datetime import timedelta

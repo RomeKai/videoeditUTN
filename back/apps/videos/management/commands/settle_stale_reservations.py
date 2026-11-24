@@ -11,6 +11,13 @@ Rules (the same the pipeline applies, see tasks/ingestion.py and tasks/render.py
         project at clips_selected or later, or with clips  -> commit
         project failed without clips                       -> rollback
         anything else (still ingesting)                    -> report only
+    Creation reservation of a whole-video project (single_edit priced for
+    its whole duration), settled from where it ended, with the pipeline's own
+    rule (ingestion._whole_video_settlement):
+        completed, partial or failed with a clip completed or published -> commit
+        completed, partial or failed with a clip still rendering        -> report only
+        completed, partial or failed otherwise                          -> rollback
+        any other stage (clips_selected, render_dispatched...)          -> report only
     Render reservation, ``metadata['render_reservation_id']``:
         project with final_export_r2_key (delivered)       -> commit
         project failed                                     -> rollback
@@ -40,21 +47,25 @@ from django.utils import timezone
 from apps.payments.models import Transaction
 from apps.videos.models import VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import STAGE_ORDER, TERMINAL_STAGES
+from apps.videos.tasks.ingestion import _is_whole_video, _whole_video_settlement
 
 COMMIT, ROLLBACK, REPORT = "commit", "rollback", "report"
+_WHOLE_VIDEO_ACTIONS = {"commit": COMMIT, "rollback": ROLLBACK, "wait": REPORT}
 
 # The metadata key that links each kind of reservation to its project.
 _LINK_KEYS = (("creation", "reservation_id"), ("render", "render_reservation_id"))
-_PROJECT_FIELDS = ("id", "pipeline_stage", "status", "final_export_r2_key")
+# Only what the rules read. ``metadata`` is read for the rules (whole video),
+# never printed.
+_PROJECT_FIELDS = ("id", "project_type", "pipeline_stage", "status", "final_export_r2_key", "metadata")
 
 
 def _linked_project(transaction_id):
-    """(kind, project values) of the project this reservation belongs to, or (None, None)."""
+    """(kind, project) of the project this reservation belongs to, or (None, None)."""
     for kind, key in _LINK_KEYS:
         project = (
             VideoProject.objects.filter(**{f"metadata__{key}": str(transaction_id)})
             .order_by("created_at")
-            .values(*_PROJECT_FIELDS)
+            .only(*_PROJECT_FIELDS)
             .first()
         )
         if project is not None:
@@ -72,21 +83,25 @@ def _clips_delivered(stage):
 
 
 def decide(kind, project):
-    """(action, reason) for a reservation of ``kind`` linked to ``project`` (a dict of values)."""
+    """(action, reason) for a reservation of ``kind`` linked to ``project`` (a VideoProject)."""
     if project is None:
         return REPORT, "unlinked"
     if kind == "creation":
-        if _clips_delivered(project["pipeline_stage"]):
+        if _is_whole_video(project):
+            # Paid when the video is delivered, never at clips_selected.
+            outcome, reason = _whole_video_settlement(project)
+            return _WHOLE_VIDEO_ACTIONS[outcome], reason
+        if _clips_delivered(project.pipeline_stage):
             return COMMIT, "clips_selected"
-        if VideoClip.objects.filter(project_id=project["id"]).exists():
+        if VideoClip.objects.filter(project_id=project.pk).exists():
             return COMMIT, "has_clips"
-        if project["pipeline_stage"] == VideoProject.PipelineStage.FAILED:
+        if project.pipeline_stage == VideoProject.PipelineStage.FAILED:
             return ROLLBACK, "failed_without_clips"
         return REPORT, "in_progress"
-    if project["final_export_r2_key"]:
+    if project.final_export_r2_key:
         # The export was saved: delivered, even if a late error marked it FAILED.
         return COMMIT, "render_delivered"
-    if project["status"] == VideoProject.Status.FAILED:
+    if project.status == VideoProject.Status.FAILED:
         return ROLLBACK, "render_failed"
     return REPORT, "render_in_progress"
 
@@ -105,7 +120,7 @@ def _settle(transaction_id, kind, project_id):
     with transaction.atomic():
         project = (
             VideoProject.objects.select_for_update().filter(pk=project_id)
-            .values(*_PROJECT_FIELDS).first()
+            .only(*_PROJECT_FIELDS).first()
         )
         action, reason = decide(kind, project)
         if action == REPORT:
@@ -171,7 +186,7 @@ class Command(BaseCommand):
             result = "dry_run" if action != REPORT else "reported"
             if apply and action != REPORT:
                 try:
-                    action, reason, result = _settle(row["id"], kind, project["id"])
+                    action, reason, result = _settle(row["id"], kind, project.pk)
                 except (PaymentError, DatabaseError) as exc:
                     # One failure never stops the sweep; the class name only.
                     errors += 1
@@ -180,9 +195,9 @@ class Command(BaseCommand):
             age_h = (now - row["created_at"]).total_seconds() / 3600
             self.stdout.write(
                 f"transaction={row['id']} amount={row['amount']} age_h={age_h:.1f} "
-                f"kind={kind or '-'} project={project['id'] if project else '-'} "
-                f"stage={project['pipeline_stage'] if project else '-'} "
-                f"status={project['status'] if project else '-'} "
+                f"kind={kind or '-'} project={project.pk if project else '-'} "
+                f"stage={project.pipeline_stage if project else '-'} "
+                f"status={project.status if project else '-'} "
                 f"action={action} reason={reason} result={result}"
             )
 
