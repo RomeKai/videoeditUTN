@@ -1,0 +1,110 @@
+import { expect, test } from '@playwright/test';
+import { EXAMPLE_IDS } from '../src/dev/screens';
+import { expectClean, settle, useScenario, watch } from './helpers';
+
+const REVIEW = `/proyectos/${EXAMPLE_IDS.projectToReview}/revision`;
+const EDITOR = `/proyectos/${EXAMPLE_IDS.projectReady}/clips/${EXAMPLE_IDS.clip}`;
+
+test.describe('Revisión de clips (D2)', () => {
+  test('elegir clips con el teclado, aprobar y quedar renderizando', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    const problems = watch(page);
+    await page.goto(REVIEW);
+    await settle(page);
+    const bar = page.getByRole('region', { name: 'Acciones' });
+    await expect(bar).toContainText('5 clips seleccionados');
+    // X excludes the selected clip and A includes it back.
+    await page.keyboard.press('x');
+    await expect(bar).toContainText('4 clips seleccionados');
+    await page.keyboard.press('a');
+    await expect(bar).toContainText('5 clips seleccionados');
+
+    await page.getByRole('button', { name: 'Renderizar 5 clips' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Renderizar 5 clips' });
+    await expect(dialog).toContainText('Saldo después');
+    await dialog.getByRole('button', { name: 'Renderizar' }).click();
+    await expect(page).toHaveURL(new RegExp(`/proyectos/${EXAMPLE_IDS.projectToReview}/clips$`));
+    await settle(page);
+
+    // The project left the review: going back sends you to its clips.
+    await page.goto(REVIEW);
+    await expect(page).toHaveURL(new RegExp(`/proyectos/${EXAMPLE_IDS.projectToReview}/clips$`));
+    expectClean(problems, REVIEW);
+  });
+
+  test('salir con cambios pregunta antes de perderlos', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    const problems = watch(page);
+    await page.goto(REVIEW);
+    await settle(page);
+    await page.getByRole('checkbox', { name: /Incluir «/ }).first().uncheck();
+    await page.getByRole('navigation', { name: 'Ruta' }).getByRole('link', { name: 'Proyectos' }).click();
+    const dialog = page.getByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Seguir editando' }).click();
+    await expect(page).toHaveURL(new RegExp(`${REVIEW}$`));
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
+
+    // The draft survives a reload; "Descartar" really drops it.
+    await page.reload();
+    await settle(page);
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
+    await page.getByRole('navigation', { name: 'Ruta' }).getByRole('link', { name: 'Proyectos' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Descartar' }).click();
+    await expect(page).toHaveURL(/\/proyectos$/);
+    await settle(page);
+    await page.goto(REVIEW);
+    await settle(page);
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('5 clips seleccionados');
+    expectClean(problems, REVIEW);
+  });
+
+  test('en el teléfono: reproductor arriba, clips y transcripción en pestañas', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await useScenario(page, 'estudio-norte');
+    const problems = watch(page);
+    await page.goto(REVIEW);
+    await settle(page);
+    await page.getByRole('button', { name: 'Ajustar bordes' }).click();
+    const trim = page.getByRole('group', { name: 'Bordes del clip' });
+    const before = await trim.locator('output').first().textContent();
+    await trim.getByRole('button', { name: 'Mover el inicio medio segundo después' }).click();
+    await expect(trim.locator('output').first()).not.toHaveText(before ?? '');
+    await page.getByRole('button', { name: 'Transcripción', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Transcripción' })).toContainText('Mantené apretada una palabra');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    expectClean(problems, REVIEW);
+  });
+});
+
+test.describe('Editor de clip (D4)', () => {
+  test('recortar, ver la vista previa gratis y volver a renderizar', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    const problems = watch(page);
+    await page.goto(EDITOR);
+    await settle(page);
+    await page.getByRole('button', { name: 'Mover el fin 0,5 segundos después' }).click();
+    await expect(page.getByText('Cambios sin guardar', { exact: true })).toBeVisible();
+
+    // The preview shows the saved trim, so asking for it saves first (free).
+    await page.getByRole('button', { name: 'Guardar y ver vista previa' }).click();
+    await expect(page.getByText('Lista. Es gratis y vence en una hora.')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('El recorte guardado todavía no se renderizó');
+
+    await page.getByRole('button', { name: /Volver a renderizar/ }).click();
+    await page.getByRole('dialog', { name: 'Volver a renderizar' }).getByRole('button', { name: 'Renderizar' }).click();
+    await expect(page).toHaveURL(new RegExp(`/proyectos/${EXAMPLE_IDS.projectReady}/clips$`));
+    await settle(page);
+    expectClean(problems, EDITOR);
+  });
+
+  test('un Lector lo ve en modo lectura', async ({ page }) => {
+    await useScenario(page, 'rol-lector');
+    const problems = watch(page);
+    await page.goto(EDITOR);
+    await settle(page);
+    await expect(page.getByText('Estás viendo el clip en modo lectura')).toBeVisible();
+    await expect(page.getByRole('button', { name: /Volver a renderizar/ })).toHaveAttribute('aria-disabled', 'true');
+    expectClean(problems, EDITOR);
+  });
+});

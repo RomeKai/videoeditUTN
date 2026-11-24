@@ -15,6 +15,11 @@ function find(db: MockDb, clipId: string | undefined, workspaceId: string): { pr
   throw notFound();
 }
 
+const RESOLUTION_RANK = { '720p': 1, '1080p': 2, '4K': 3 } as const;
+
+const projectRendering = () =>
+  new MockHttpError(409, { detail: 'El proyecto se está renderizando: esperá a que termine para cambiarlo.', code: 'project_rendering' });
+
 const PREVIEW_TTL_MS = 3600_000;
 const PREVIEW_MAX_ACTIVE = 3;
 
@@ -32,6 +37,8 @@ export const clipsHandlers = [
     const { project, clip } = find(db, params.id, workspace.id);
     const start = body.start_time ?? clip.start_time;
     const end = body.end_time ?? clip.end_time;
+    // Same rule as the project's PATCH (ProjectRenderingError): what the render reads does not change under it.
+    if (project.status === 'rendering' && (start !== clip.start_time || end !== clip.end_time)) throw projectRendering();
     if (end <= start) throw badRequest({ end_time: ['El fin tiene que ser mayor que el inicio.'] });
     if (project.duration_seconds && end > project.duration_seconds + 0.5) throw badRequest({ end_time: ['El recorte se pasa del final del video.'] });
     if (body.title !== undefined) clip.title = body.title;
@@ -58,7 +65,13 @@ export const clipsHandlers = [
     require('clip.edit');
     const { project, clip } = find(db, params.id, workspace.id);
     if (clip.status === 'rendering') throw conflict('El clip ya se está renderizando.');
+    if (project.status === 'rendering') throw projectRendering();
     const plan = planOf(db, workspace.id);
+    const resolution = project.metadata.render_resolution ?? '720p';
+    if (plan && RESOLUTION_RANK[resolution] > RESOLUTION_RANK[plan.max_resolution]) {
+      // PricingEngine refuses a resolution above the plan's (the project was created on a higher plan).
+      throw new MockHttpError(403, { error: `Resolution ${resolution} not allowed in your plan (max ${plan.max_resolution}).`, code: 'resolution' });
+    }
     const cost = priceOf(Math.ceil(clip.end_time - clip.start_time), project.metadata.render_resolution ?? '720p', false, plan?.base_discount_rate ?? 0);
     let transaction;
     try {
