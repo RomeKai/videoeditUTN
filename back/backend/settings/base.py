@@ -259,7 +259,8 @@ RENDER_SEGMENTS_TIME_LIMIT = env.int(
 # in MoviePy) is redelivered by acks_late; past this many it fails instead of
 # coming back forever. A start that ended (delivered, or an error handled with
 # a retry or a final failure) does not count, so transient retries never use
-# it up. At least 1.
+# it up. At least 2: with 1, a single broker blip (a redelivered copy taking
+# over a live render) would fail a healthy clip.
 RENDER_CLIP_MAX_STARTS = env.int('RENDER_CLIP_MAX_STARTS', default=3)
 
 # Heavy MoviePy renders get their own queue so they cannot starve ingestion.

@@ -18,6 +18,6 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name="videoclip",
             name="render_unfinished_starts",
-            field=models.PositiveIntegerField(default=0, editable=False),
+            field=models.PositiveIntegerField(db_default=0, default=0, editable=False),
         ),
     ]

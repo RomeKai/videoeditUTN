@@ -206,8 +206,10 @@ class VideoClip(models.Model):
     render_claim_token = models.UUIDField(null=True, blank=True, editable=False)
     # Render starts whose delivery never ended (its worker died): +1 on each
     # claim, -1 when that delivery ends, 0 when the clip reaches a final
-    # state. Capped by RENDER_CLIP_MAX_STARTS.
-    render_unfinished_starts = models.PositiveIntegerField(default=0, editable=False)
+    # state. Capped by RENDER_CLIP_MAX_STARTS. db_default keeps the default in
+    # the database, so a worker running the previous code (which does not know
+    # the column) can still insert clips between the migration and its restart.
+    render_unfinished_starts = models.PositiveIntegerField(default=0, db_default=0, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

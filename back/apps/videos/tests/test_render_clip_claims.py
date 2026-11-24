@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 from celery.exceptions import Reject
 from celery.signals import task_prerun
-from django.db import OperationalError
+from django.db import OperationalError, connection
 from django.test import TestCase, override_settings
 
 from apps.payments.models import Transaction, Wallet
@@ -22,7 +22,8 @@ from apps.payments.services.wallet_service import reserve_funds
 from apps.videos.models import VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import PipelineStage
 from apps.videos.tasks import _claim_clip_for_render, finalize_project_render, render_clip_task
-from apps.videos.tasks.render import RENDER_CLIP_MAX_RETRIES
+from apps.videos.tasks import render as render_module
+from apps.videos.tasks.render import RENDER_CLIP_MAX_RETRIES, RENDER_TAKEOVER_HEADER
 from apps.videos.tests.test_render_tasks import RenderHarness, transient_r2_error
 
 RENDER = "apps.videos.services.render_engine.RenderEngine.render_clip"
@@ -76,6 +77,24 @@ class ClaimHarness(RenderHarness):
                 patch(f"{ENGINE}.get_layout_strategy", return_value=self.layout), \
                 patch("apps.videos.services.storage_service._get_r2_client", return_value=self.r2):
             yield self.r2
+
+    def dead_owner_clip(self):
+        """A claimed the clip and its worker died: RENDERING under A's token, forever."""
+        clip = self.make_clip()
+        with patch(RENDER, side_effect=WorkerKilled), self.assertRaises(WorkerKilled):
+            render_clip_task.apply(args=[str(clip.id)])
+        return clip
+
+    def retry_headers(self):
+        """Patches render_clip_task.retry to record the headers each retry is queued with."""
+        original_retry = render_clip_task.retry
+        sent = []
+
+        def recording_retry(*args, **kwargs):
+            sent.append(kwargs.get("headers"))
+            return original_retry(*args, **kwargs)
+
+        return sent, patch.object(render_clip_task, "retry", side_effect=recording_retry)
 
     def uploaded_keys(self):
         return [call.args[2] for call in self.r2.upload_file.call_args_list]
@@ -173,6 +192,111 @@ class ClipOwnershipTests(ClaimHarness, TestCase):
         self.assertEqual(self.clip_row(clip.id).status, VideoClip.Status.FAILED)
         self.assertEqual(self.project.pipeline_stage, PipelineStage.PARTIAL)
 
+    def test_a_redelivered_copy_whose_retry_is_not_queued_before_the_claim_fails_a_dead_owners_clip(self):
+        clip = self.dead_owner_clip()
+
+        def broker_down(*args, **kwargs):
+            raise Reject(RuntimeError("broker down"), requeue=False)
+
+        with patch(ALLOWED, side_effect=OperationalError("gone")), patch(RENDER) as render, \
+                patch.object(render_clip_task, "retry", side_effect=broker_down):
+            result = redelivered_copy(clip.id)
+
+        self.assertTrue(result.failed())
+        render.assert_not_called()
+        row = self.clip_row(clip.id)
+        self.project.refresh_from_db()
+        self.assertEqual(row.status, VideoClip.Status.FAILED)
+        self.assertIsNone(row.render_claim_token)  # the dead owner can no longer save it
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.PARTIAL)
+
+    def test_a_redelivered_copy_that_always_fails_before_the_claim_fails_a_dead_owners_clip(self):
+        clip = self.dead_owner_clip()
+
+        # Every attempt fails before the claim: the retries carry the takeover right.
+        with patch(ALLOWED, side_effect=OperationalError("gone")), patch(RENDER) as render:
+            result = redelivered_copy(clip.id)
+
+        self.assertTrue(result.failed())
+        render.assert_not_called()
+        self.project.refresh_from_db()
+        self.assertEqual(self.clip_row(clip.id).status, VideoClip.Status.FAILED)
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.PARTIAL)
+
+    def test_the_retry_of_a_redelivered_copy_that_failed_before_the_claim_takes_over(self):
+        clip = self.dead_owner_clip()
+        answers = []
+
+        def blip_then_allowed(project_id):
+            answers.append(project_id)
+            if len(answers) == 1:
+                raise OperationalError("db blip")  # the redelivered copy's first attempt
+            return True
+
+        sent, recording_retry = self.retry_headers()
+        with patch(ALLOWED, side_effect=blip_then_allowed), recording_retry, \
+                patch(RENDER, side_effect=self.completing_render) as render:
+            result = redelivered_copy(clip.id)
+
+        self.assertTrue(result.successful())
+        self.assertEqual(sent, [{RENDER_TAKEOVER_HEADER: 1}])
+        self.assertEqual(render.call_count, 1)  # the retry took the clip over and rendered it
+        self.project.refresh_from_db()
+        self.assertEqual(self.clip_row(clip.id).status, VideoClip.Status.COMPLETED)
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.COMPLETED)
+
+    def test_the_retry_of_a_delivery_that_claimed_and_handed_back_the_clip_has_no_takeover_right(self):
+        clip = self.dead_owner_clip()
+        calls = []
+
+        def flaky(clip_id, claim_token=None):
+            calls.append(claim_token)
+            if len(calls) == 1:
+                raise transient_r2_error()
+            return self.completing_render(clip_id)
+
+        sent, recording_retry = self.retry_headers()
+        with patch(RENDER, side_effect=flaky), recording_retry:
+            result = redelivered_copy(clip.id)  # it takes over, then hands the claim back
+
+        self.assertTrue(result.successful())
+        self.assertEqual(sent, [{}])
+        self.assertEqual(self.clip_row(clip.id).status, VideoClip.Status.COMPLETED)
+
+    def test_a_hand_back_that_committed_before_its_driver_raised_still_fails_the_clip(self):
+        clip = self.make_clip()
+        real_release = render_module._release_clip_claim
+
+        def release_then_raise(clip_id, token):
+            real_release(clip_id, token)
+            raise OperationalError("connection lost after commit")
+
+        with patch(RENDER, side_effect=OperationalError("x")), \
+                patch.object(render_module, "_release_clip_claim", side_effect=release_then_raise):
+            result = render_clip_task.apply(args=[str(clip.id)])
+
+        self.assertTrue(result.failed())
+        row = self.clip_row(clip.id)
+        self.project.refresh_from_db()
+        self.assertEqual(row.status, VideoClip.Status.FAILED)  # not DRAFT forever
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.PARTIAL)
+
+    def test_a_worker_on_the_previous_code_can_still_insert_clips(self):
+        # Between the migration and the worker restart, the old model does not
+        # know render_unfinished_starts: the database fills its default.
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO videos_videoclip (id, project_id, title, start_time, end_time,"
+                " virality_score, ai_reasoning, status, created_at)"
+                " VALUES (gen_random_uuid(), %s, 'old', 0, 5, 0, '', 'draft', now()) RETURNING id",
+                [self.project.pk],
+            )
+            clip_id = cursor.fetchone()[0]
+
+        row = self.clip_row(clip_id)
+        self.assertEqual(row.render_unfinished_starts, 0)
+        self.assertIsNone(row.render_claim_token)
+
     def test_a_copy_that_lost_the_clip_does_not_save_it_and_deletes_its_upload(self):
         clip = self.make_clip()
         tokens = {}
@@ -252,6 +376,19 @@ class ClipStartCapTests(ClaimHarness, TestCase):
         self.assertEqual(self.project.pipeline_stage, PipelineStage.PARTIAL)
 
     @override_settings(RENDER_CLIP_MAX_STARTS=1)
+    def test_the_cap_is_at_least_two(self):
+        clip = self.make_clip()
+        _claim_clip_for_render(clip.id)  # A renders it; a broker blip redelivers the message
+
+        with patch(RENDER, side_effect=self.completing_render) as render:
+            result = redelivered_copy(clip.id)
+
+        # With a cap of 1 the takeover of a live render would fail a healthy clip.
+        self.assertTrue(result.successful())
+        render.assert_called_once()
+        self.assertEqual(self.clip_row(clip.id).status, VideoClip.Status.COMPLETED)
+
+    @override_settings(RENDER_CLIP_MAX_STARTS=2)
     def test_transient_retries_do_not_use_up_the_cap(self):
         clip = self.make_clip()
         calls = []
@@ -384,6 +521,21 @@ class WholeVideoClaimTests(ClaimHarness, TestCase):
     def test_a_last_attempt_that_fails_before_the_claim_is_refunded(self):
         with patch(ALLOWED, side_effect=OperationalError("gone")), patch(RENDER) as render:
             result = render_clip_task.apply(args=[str(self.clip.id)])
+
+        self.assertTrue(result.failed())
+        render.assert_not_called()
+        self.project.refresh_from_db()
+        self.assertEqual(self.clip_row(self.clip.id).status, VideoClip.Status.FAILED)
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.PARTIAL)
+        self.assertEqual(self.txn_status(), Transaction.Status.FAILED)
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+
+    def test_a_redelivered_copy_that_fails_before_the_claim_refunds_a_dead_owners_video(self):
+        with patch(RENDER, side_effect=WorkerKilled), self.assertRaises(WorkerKilled):
+            render_clip_task.apply(args=[str(self.clip.id)])  # A's worker died
+
+        with patch(ALLOWED, side_effect=RuntimeError("boom")), patch(RENDER) as render:
+            result = redelivered_copy(self.clip.id)
 
         self.assertTrue(result.failed())
         render.assert_not_called()
