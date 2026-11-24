@@ -757,11 +757,14 @@ Se agregaron en la segunda ronda del canvas, después de una revisión de diseñ
    - El puntaje lleva una banda: Excelente, Bueno o Flojo.
    - "Por qué" muestra 2 o 3 etiquetas cortas sacadas de `ai_reasoning`, más la frase completa. No se inventan sub-puntajes.
    - Atajos de teclado: `A` incluir, `X` excluir y `↑`/`↓` para moverse, además de `I`, `O` y espacio.
-6. **Clips (D3).** La tarjeta de clip con error y la de "Renderizando" están definidas en el sistema visual; en la pantalla de ejemplo todos los clips están listos.
+6. **Clips (D3).**
+   - En la pestaña Clips la cabecera no tiene acción principal, porque ya estás en los clips.
+   - "Publicar varios" pasa a ser "Seleccionar". Activa un modo de selección con casillas en las tarjetas y una barra que dice "N seleccionados · Publicar · Descargar · Cancelar".
+   - Los estados "Renderizando" y "Error" ("No se pudo generar. Reintentar no gasta tokens.") se muestran en una sección "Otros estados" de la pantalla y en el sistema visual. La tarjeta de error es neutra: el rojo va solo en el ícono y la etiqueta.
 7. **Publicar (E1).**
    - El orden es Clip → Redes → Cuándo → detalle por red.
    - En la pestaña de TikTok la privacidad va primero.
-   - El chequeo de requisitos queda en una línea cuando todo cumple.
+   - El chequeo de requisitos queda en una línea y cuenta la privacidad de TikTok como requisito: "3 de 4 requisitos · falta elegir quién puede ver el video".
 8. **Miembros (H2).** Una invitación pendiente ocupa un lugar del plan. Con 4 miembros y 1 invitación en el plan Pro (5 lugares), "Invitar" se desactiva y explica por qué.
 9. **Ajustes y Perfil (H, I).** En lugar de cajas apiladas con su propio botón, una columna de filas: título y descripción a la izquierda, control a la derecha. La zona peligrosa queda aparte.
 10. **Uso (G1).** El reservado se muestra dentro de la tarjeta de saldo, con el detalle por proyecto.

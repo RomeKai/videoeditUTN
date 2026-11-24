@@ -3,7 +3,7 @@
 Esta carpeta guarda el sistema visual con el que están dibujadas las 42 pantallas del [canvas de diseño](https://claude.ai/artifact/Qj7y6R7mVSAtHPpNRkWiaC). El canvas tiene una pantalla, "01 · Sistema visual", que muestra cada componente en tema oscuro y claro. Este README resume lo que el frontend necesita para portarlo.
 
 - **Qué es cada pantalla y qué decide:** [`../mapa-de-pantallas.md`](../mapa-de-pantallas.md).
-- **El CSS del kit (v2.1):** [`onecreator-kit.css`](onecreator-kit.css). Es la referencia de valores; no hace falta usarlo tal cual. Todo está bajo la clase raíz `.oc`, y el tema claro se activa con `data-theme="light"`.
+- **El CSS del kit (v2.3):** [`onecreator-kit.css`](onecreator-kit.css). Es la referencia de valores; no hace falta usarlo tal cual. Todo está bajo la clase raíz `.oc`, y el tema claro se activa con `data-theme="light"`.
 
 ## Tokens
 
@@ -27,6 +27,7 @@ Esta carpeta guarda el sistema visual con el que están dibujadas las 42 pantall
 - **Redes.** Un ícono de línea genérico (no el logo de la marca) dentro de un cuadrado (`.net`), siempre junto al nombre de la red.
 - **Avatares.** Las personas son círculos y los workspaces, cuadrados con esquinas redondeadas.
 - **Miniaturas de video.** En el diseño son un marcador de posición: un color por video, una silueta y, en los clips verticales, dos barras de subtítulos.
+- **Botones deshabilitados.** Los botones con relleno deshabilitados usan `--surface-3` y `--fg-subtle`, sin transparencia, para que se lean como deshabilitados también en tema claro.
 - **Nada de** degradados de fondo, emojis, bordes de color a la izquierda ni filas teñidas en forma permanente por su estado.
 
 ## Componentes del kit
@@ -46,3 +47,6 @@ Esta carpeta guarda el sistema visual con el que están dibujadas las 42 pantall
 | `.actionbar` | Barra fija de abajo para acciones con costo o que guardan |
 | `.net` | Marca de red social |
 | `.toast` | Avisos |
+| `.segs` | Progreso por pasos ("Paso 2 de 4"): hecho, en curso, pendiente |
+| `.clip-card`, `.clip-card.sm`, `.score-chip` | Tarjeta de clip con el puntaje sobre la miniatura |
+| `.fchip` | Chip de filtro con etiqueta en plural, cantidad y estado activo |
