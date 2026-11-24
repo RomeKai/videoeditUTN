@@ -122,16 +122,25 @@ def explicit_config_fields(raw: Any) -> List[str]:
     return sorted(name for name in ProjectConfig.model_fields if name in keys)
 
 
+class PromptParseRetry(Exception):
+    """
+    A transient parser error while the parser still has retries of its own:
+    the ingestion task re-queues itself (PTE-01b) without spending the
+    retries its stages need.
+    """
+
+
 def apply_prompt_to_project(project_id, can_retry: bool = False, capacity=None) -> Optional[Dict[str, Any]]:
     """
     Parses ``metadata['pte_prompt']`` once and applies what is allowed. Returns
     the stored outcome, or None for a project created without a prompt or
     already handled (idempotent: a redelivered task does not parse again).
 
-    - A transient provider error (429, 5xx, timeout) is raised while the task
-      can still retry (``can_retry``), so the ingestion retries with backoff
-      and the prompt is not lost. Only a definitive error, or the last
-      attempt, stores ``status=failed`` and goes on with the defaults.
+    - A transient provider error (429, 5xx, timeout) is raised while the
+      parser still has retries of its own (``can_retry``): the ingestion
+      re-queues itself without spending the stages' retries, and the prompt is
+      not lost. A definitive error, or the last parser retry, stores
+      ``status=failed`` and goes on with the defaults.
     - ``capacity`` (AICORE-11) reserves the call before it is made and settles
       it with the real usage; it may raise CapacityUnavailable (the task waits).
     """
@@ -155,8 +164,8 @@ def apply_prompt_to_project(project_id, can_retry: bool = False, capacity=None) 
             raise
         record_prompt_parse_usage(project_id, exc)
         if can_retry and is_retryable_error(exc):
-            logger.warning("prompt_parse.retrying project_id=%s error=%s", project_id, type(exc).__name__)
-            raise
+            logger.warning("prompt_parse.transient project_id=%s error=%s", project_id, type(exc).__name__)
+            raise PromptParseRetry() from exc
         outcome = {"status": "failed", "error_code": type(exc).__name__, "applied": {}, "ignored": []}
         _store(project_id, {}, outcome)
         logger.warning("prompt_parse.failed project_id=%s error=%s", project_id, type(exc).__name__)
@@ -178,6 +187,14 @@ def apply_prompt_to_project(project_id, can_retry: bool = False, capacity=None) 
         "prompt_parse.applied project_id=%s applied=%d ignored=%d",
         project_id, len(validation.applied), len(validation.ignored),
     )
+    return outcome
+
+
+def give_up_prompt(project_id, error_code: str) -> Dict[str, Any]:
+    """The prompt could not be parsed in time: the project keeps its settings."""
+    outcome = {"status": "failed", "error_code": error_code, "applied": {}, "ignored": []}
+    _store(project_id, {}, outcome)
+    logger.warning("prompt_parse.failed project_id=%s error=%s", project_id, error_code)
     return outcome
 
 

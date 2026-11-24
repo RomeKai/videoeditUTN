@@ -839,6 +839,11 @@ PIPELINE_RETRY_CAP_SECONDS = 600
 # worker's lock expire instead of dropping the job.
 PIPELINE_LOCK_RETRY_SECONDS = 45
 PIPELINE_LOCK_MAX_RETRIES = 8
+# Prompt-to-Edit parser (PTE-01b): transient errors re-queue the ingestion with
+# their own counter, so they never spend the retries the stages need. After
+# these, the project goes on with the default settings.
+PTE_PARSE_MAX_RETRIES = 2
+PTE_PARSE_RETRY_SECONDS = (30, 90)
 
 _CLIP_SUGGESTION_FIELDS = {'start', 'end', 'title', 'virality_score', 'reasoning'}
 
@@ -1256,6 +1261,20 @@ def _seo_demand(models, request):
         + settings.AI_CAPACITY_LLM_OUTPUT_TOKENS
     )
     return {model: {'tokens': tokens, 'requests': 1} for model in models}
+
+
+def _prompt_capacity_exhausted(project_id, exc):
+    """True when waiting more for the parser's capacity would pass the maximum wait."""
+    project = VideoProject.objects.get(pk=project_id)
+    wait = (project.metadata or {}).get('capacity_wait') or {}
+    planned = wait.get('planned_s', 0.0) if _is_current_wait(wait, project, exc.stage) else 0.0
+    if planned + exc.wait_seconds <= settings.AI_CAPACITY_MAX_WAIT_SECONDS:
+        return False
+    logger.warning(
+        "prompt_parse.capacity_timeout project_id=%s planned_s=%.1f", project_id, planned,
+    )
+    _merge_metadata(project_id, {'capacity_wait': None})
+    return True
 
 
 class _PromptParseCapacity:
@@ -1754,7 +1773,7 @@ def _resume_render_dispatch(project_id):
     return f"Render re-dispatched for {project_id}: {len(clip_ids)} clips"
 
 
-def _run_ingestion(project_id, attempt, progress=None, lock=None):
+def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=0):
     """
     ``progress['stage']`` always holds the stage this worker believes the project
     is at, so a failure handler can guard its writes by ownership.
@@ -1794,16 +1813,23 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None):
         try:
             apply_prompt_to_project(
                 project_id,
-                # A transient parser error retries the task while retries are left.
-                can_retry=attempt <= process_initial_ingestion.max_retries,
+                # Transient parser errors retry on their own budget (PromptParseRetry).
+                can_retry=parse_retries < PTE_PARSE_MAX_RETRIES,
                 capacity=_PromptParseCapacity(project_id, upcoming),
             )
-        except CapacityUnavailable:
-            try:
-                set_stage_status(project_id, upcoming, StageStatus.PENDING_CAPACITY, expected_stage=stage)
-            except PipelineStateError:
-                logger.warning("pipeline.status_write_skipped project_id=%s stage=%s", project_id, upcoming)
-            raise
+        except CapacityUnavailable as exc:
+            if _prompt_capacity_exhausted(project_id, exc):
+                # The prompt is optional: past the maximum wait the project goes
+                # on with its settings instead of failing.
+                from apps.videos.services.ai.prompt_validator import give_up_prompt
+
+                give_up_prompt(project_id, 'CapacityTimeoutError')
+            else:
+                try:
+                    set_stage_status(project_id, upcoming, StageStatus.PENDING_CAPACITY, expected_stage=stage)
+                except PipelineStateError:
+                    logger.warning("pipeline.status_write_skipped project_id=%s stage=%s", project_id, upcoming)
+                raise
 
     # Rows without recorded state may already hold a transcript or clips.
     inferred = infer_completed_stage(project)
@@ -1916,7 +1942,7 @@ def _refunds_reservation(exc):
     soft_time_limit=getattr(settings, 'PIPELINE_SOFT_TIME_LIMIT', 2 * 3600),
     time_limit=getattr(settings, 'PIPELINE_TIME_LIMIT', 2 * 3600 + 300),
 )
-def process_initial_ingestion(self, project_id, lock_retries=0):
+def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0):
     """
     Multimodal Ingestion Pipeline V2 (Paper Edit V1 + Video Sync), recoverable.
     Retryable errors back off exponentially (TD-04: replaces the fixed 60s
@@ -1925,6 +1951,8 @@ def process_initial_ingestion(self, project_id, lock_retries=0):
     Waiting for a busy project lock has its own counter (``lock_retries``,
     AICORE-18): lock contention never spends the retries meant for errors.
     """
+    from apps.videos.services.ai.prompt_validator import PromptParseRetry
+
     attempt = self.request.retries + 1
     logger.info(
         "pipeline.started project_id=%s attempt=%d", project_id, attempt,
@@ -1933,7 +1961,21 @@ def process_initial_ingestion(self, project_id, lock_retries=0):
     progress = {}
     try:
         with project_lock(project_id) as lock:
-            return _run_ingestion(project_id, attempt, progress, lock)
+            return _run_ingestion(project_id, attempt, progress, lock, parse_retries)
+    except PromptParseRetry:
+        # Re-queued, not self.retry(): the stages keep their whole retry budget.
+        countdown = PTE_PARSE_RETRY_SECONDS[min(parse_retries, len(PTE_PARSE_RETRY_SECONDS) - 1)]
+        logger.warning(
+            "prompt_parse.retrying project_id=%s parse_retry=%d countdown_s=%d",
+            project_id, parse_retries + 1, countdown,
+        )
+        process_initial_ingestion.apply_async(
+            args=[str(project_id)],
+            kwargs={'lock_retries': lock_retries, 'parse_retries': parse_retries + 1},
+            countdown=countdown,
+            retries=self.request.retries,
+        )
+        return f"Prompt parse retry queued for {project_id}"
     except ProjectLockedError as exc:
         if lock_retries < PIPELINE_LOCK_MAX_RETRIES:
             logger.warning(

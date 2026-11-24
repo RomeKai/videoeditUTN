@@ -287,7 +287,7 @@ Recursos admitidos: `audio_seconds`, `tokens` y `requests`, por `minute`, `hour`
 | Selección (LiteLLM) | `456 × minutos de audio + 1.500 + 4.000` tokens y un request, en el primario **y** en el fallback si tiene key | Tokens reales de cada intento. Se devuelve lo del modelo que no se usó. Un timeout o una conexión cortada mantienen la reserva |
 | Selección legacy | Lo mismo, solo en el primario | Sin ajuste: el selector legacy no informa tokens |
 | SEO | `caracteres del título y del transcript del clip / 4 + 1.500 + 4.000` tokens y un request, en el primario y en el fallback | Tokens reales de cada intento, igual que la selección. Si la moderación frena el post antes de llamar al LLM, se devuelve todo |
-| Lector de prompts (Prompt-to-Edit) | `caracteres del prompt / 4 + 1.500 + 4.000` tokens y un request, en el primario y en el fallback, antes de la primera etapa | Tokens reales de cada intento, igual que la selección. Si no hay lugar, la etapa que sigue queda en `pending_capacity` y el prompt se parsea al retomar |
+| Lector de prompts (Prompt-to-Edit) | `caracteres del prompt / 4 + 1.500 + 4.000` tokens y un request, en el primario y en el fallback, antes de la primera etapa | Tokens reales de cada intento, igual que la selección. Si no hay lugar, la etapa que sigue queda en `pending_capacity` y el prompt se parsea al retomar. Si la espera supera el máximo, el proyecto sigue con su configuración (`pte.status=failed`, `CapacityTimeoutError`): el prompt es opcional y no hace fallar el proyecto |
 
 Los coeficientes se configuran con `AI_CAPACITY_LLM_TOKENS_PER_AUDIO_MINUTE`, `AI_CAPACITY_LLM_PROMPT_TOKENS` y `AI_CAPACITY_LLM_OUTPUT_TOKENS`.
 
