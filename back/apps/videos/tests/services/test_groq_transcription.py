@@ -242,6 +242,116 @@ class TestGroqClientTimeoutAndRetries(unittest.TestCase):
         self.assertEqual([c.args[0] for c in sleep.call_args_list], [2.0, 5.0])
         self.assertTrue(is_retryable_error(ctx.exception))
 
+    def _provider_with_transport(self, groq, handler):
+        import httpx
+
+        real_client = groq.Groq
+        http_client = httpx.Client(transport=httpx.MockTransport(handler))
+        with patch.object(
+            groq, "Groq", side_effect=lambda **kw: real_client(http_client=http_client, **kw),
+        ):
+            return GroqTranscriptionProvider(api_key="gsk_test_key")
+
+    def _transcribe(self, provider, chunks=1):
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".flac") as audio:
+            audio.write(b"fake audio")
+            audio.flush()
+            parts = [
+                _make_chunk(index=i, start=i * 600.0, end=(i + 1) * 600.0, path=audio.name)
+                for i in range(chunks)
+            ]
+            with patch(SLEEP) as sleep:
+                try:
+                    return provider.transcribe(parts), None, sleep
+                except Exception as exc:  # returned for the assertions
+                    return None, exc, sleep
+
+    def test_a_connect_timeout_is_retried_in_the_chunk_and_bills_nothing(self):
+        import httpx
+
+        from apps.videos.services.ai.errors import is_billing_uncertain
+
+        with patch.dict(sys.modules):
+            groq = self._real_groq()
+            requests = []
+
+            def connect_timeout_then_answer(request):
+                requests.append(request)
+                if len(requests) in (2, 3):  # chunk 1: connect timeout, then pool timeout
+                    error = httpx.ConnectTimeout if len(requests) == 2 else httpx.PoolTimeout
+                    raise error("could not connect", request=request)
+                return httpx.Response(200, json=_fake_groq_response())
+
+            provider = self._provider_with_transport(groq, connect_timeout_then_answer)
+            result, error, sleep = self._transcribe(provider, chunks=2)
+
+        self.assertIsNone(error)
+        # Chunk 0 once; chunk 1 retried in the provider, not by Celery.
+        self.assertEqual(len(requests), 4)
+        self.assertEqual(sleep.call_count, 2)
+        # Nothing reached Groq on the failed attempts: the cost stays known.
+        self.assertIsNotNone(result.usage.estimated_cost_usd)
+        self.assertEqual(result.usage.audio_seconds, 1200.0)
+
+        from apps.videos.services.ai.errors import AIConnectionNotEstablishedError
+
+        not_sent = AIConnectionNotEstablishedError("x", provider="groq")
+        self.assertTrue(is_retryable_error(not_sent))
+        self.assertFalse(is_billing_uncertain(not_sent))
+
+    def test_a_read_timeout_still_goes_back_to_celery_with_an_unknown_cost(self):
+        import httpx
+
+        with patch.dict(sys.modules):
+            groq = self._real_groq()
+            requests = []
+
+            def answer_then_read_timeout(request):
+                requests.append(request)
+                if len(requests) == 2:
+                    raise httpx.ReadTimeout("slow", request=request)
+                return httpx.Response(200, json=_fake_groq_response())
+
+            provider = self._provider_with_transport(groq, answer_then_read_timeout)
+            _, error, sleep = self._transcribe(provider, chunks=2)
+
+        self.assertIsInstance(error, AITimeoutError)
+        self.assertEqual(len(requests), 2)
+        sleep.assert_not_called()
+        (partial,) = error.usage_attempts
+        self.assertIsNone(partial.estimated_cost_usd)
+
+    def test_an_answer_that_cannot_be_decoded_is_not_retried_and_its_cost_is_unknown(self):
+        import httpx
+
+        from apps.videos.services.ai.errors import AIUnexpectedProviderError, is_billing_uncertain
+
+        with patch.dict(sys.modules):
+            groq = self._real_groq()
+            requests = []
+
+            def answer_then_garbage(request):
+                requests.append(request)
+                if len(requests) == 2:
+                    return httpx.Response(
+                        200, headers={"content-type": "application/json"}, content=b"{not json",
+                    )
+                return httpx.Response(200, json=_fake_groq_response())
+
+            provider = self._provider_with_transport(groq, answer_then_garbage)
+            _, error, sleep = self._transcribe(provider, chunks=2)
+
+        self.assertIsInstance(error, AIUnexpectedProviderError)
+        self.assertEqual(len(requests), 2)  # never re-sent inside the provider
+        sleep.assert_not_called()
+        self.assertTrue(is_retryable_error(error))  # Celery still retries the stage
+        self.assertTrue(is_billing_uncertain(error))
+        (partial,) = error.usage_attempts
+        # Groq answered chunk 1 (and billed it): the total is unknown, not a floor.
+        self.assertIsNone(partial.estimated_cost_usd)
+
 
 SLEEP = "apps.videos.services.ai.groq_transcription.time.sleep"
 

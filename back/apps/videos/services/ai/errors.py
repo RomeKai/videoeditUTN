@@ -96,6 +96,22 @@ class AIConnectionError(RetryableAIError):
         super().__init__(message, **kwargs)
 
 
+class AIConnectionNotEstablishedError(AIConnectionError):
+    """
+    The connection to the provider was never established (connect or pool
+    timeout, connection refused): no request reached it, so nothing was
+    billed (``is_billing_uncertain`` is False).
+    """
+
+
+class AIUnexpectedProviderError(AIServerError):
+    """
+    A provider failure that is no known HTTP status, timeout or connection
+    error, e.g. an answer that could not be decoded. Retryable by the task, but
+    its billing is unknown: the provider may have answered (and billed).
+    """
+
+
 # ==============================================================================
 # NON-RETRYABLE ERRORS (Deterministic failures: auth, invalid input, policy)
 # ==============================================================================
@@ -276,6 +292,13 @@ def is_billing_uncertain(exc: BaseException) -> bool:
     True when a failed call may still have been billed upstream: a client-side
     timeout, a dropped connection or the task's time limit interrupting the
     call say nothing about whether the provider finished the work. Other
-    failures (auth, 429, 5xx, validation) carry no charge.
+    failures (auth, 429, 5xx, validation) carry no charge, and neither does a
+    connection that was never established. An unexpected failure after an
+    answer (AIUnexpectedProviderError) may have been billed.
     """
-    return isinstance(exc, (AITimeoutError, AIConnectionError)) or is_task_time_limit(exc)
+    if isinstance(exc, AIConnectionNotEstablishedError):
+        return False
+    return (
+        isinstance(exc, (AITimeoutError, AIConnectionError, AIUnexpectedProviderError))
+        or is_task_time_limit(exc)
+    )

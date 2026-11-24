@@ -79,7 +79,7 @@ sequenceDiagram
 Cómo se calcula el uso real:
 
 - `_llm_usage_by_model`: parte de `tokens=0` y `requests=0` para cada modelo reservado (lo no usado se devuelve) y suma `total_tokens` y un request por intento. Un intento fallido sin tokens y con costo `None` (facturación desconocida) deja `tokens=None` para ese modelo: se conserva la reserva.
-- `_selection_failure_usage`: si el error no trae intentos y es de facturación incierta (`is_billing_uncertain`: `AITimeoutError`, `AIConnectionError` o el soft time limit de la tarea), devuelve `{}` y se conserva todo. Si no, usa los intentos que trae el error; sin intentos, todo vuelve.
+- `_selection_failure_usage`: si el error no trae intentos y es de facturación incierta (`is_billing_uncertain`: `AITimeoutError`, `AIConnectionError` salvo `AIConnectionNotEstablishedError`, `AIUnexpectedProviderError` o el soft time limit de la tarea), devuelve `{}` y se conserva todo. Si no, usa los intentos que trae el error; sin intentos, todo vuelve.
 - `_audio_usage`: si la transcripción terminó, usa `usage.audio_seconds`. Si falló con facturación incierta, o el intento que trae el error no tiene precio, conserva la reserva. Si falló antes de facturar un chunk, ajusta a 0.
 
 ## Flujo: espera por capacidad (`pending_capacity`)

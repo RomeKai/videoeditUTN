@@ -30,11 +30,13 @@ from apps.videos.services.ai.pricing import PRICING_VERSION, estimate_asr_cost
 from apps.videos.services.ai.errors import (
     AIAuthenticationError,
     AIConnectionError,
+    AIConnectionNotEstablishedError,
     AIContractValidationError,
     AINoSpeechDetectedError,
     AIRateLimitError,
     AIServerError,
     AITimeoutError,
+    AIUnexpectedProviderError,
     is_billing_uncertain,
     is_task_time_limit,
     non_retryable_error_class,
@@ -56,6 +58,16 @@ _CONNECT_TIMEOUT_SECONDS = 5.0
 _CHUNK_EXTRA_ATTEMPTS = 2
 _CHUNK_RETRY_AFTER_CAP_SECONDS = 60.0
 _CHUNK_BACKOFF_SECONDS = (2.0, 5.0)
+
+
+def _connection_not_established(exc: BaseException) -> bool:
+    """The SDK error comes from httpx failing to connect: nothing was sent."""
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - groq depends on httpx
+        return False
+    cause = exc.__cause__ or exc.__context__
+    return isinstance(cause, (httpx.ConnectTimeout, httpx.PoolTimeout, httpx.ConnectError))
 
 
 def _midpoint(segment: TranscriptionSegment) -> float:
@@ -324,15 +336,17 @@ class GroqTranscriptionProvider:
         """
         ``_call_groq_api`` with up to ``_CHUNK_EXTRA_ATTEMPTS`` more attempts for
         this chunk on a 429 (waiting ``retry_after``, at most
-        ``_CHUNK_RETRY_AFTER_CAP_SECONDS``), a 5xx or a connection error (a
-        short backoff). A timeout, a rejection or the last failure propagate.
+        ``_CHUNK_RETRY_AFTER_CAP_SECONDS``), a 5xx answer or a connection error,
+        including a connect or pool timeout (a short backoff). A read timeout,
+        an unexpected failure (AIUnexpectedProviderError: Groq may have
+        answered), a rejection or the last failure propagate.
         """
         attempt = 0
         while True:
             try:
                 return self._call_groq_api(chunk.file_path)
             except (AIRateLimitError, AIServerError, AIConnectionError) as exc:
-                if attempt >= _CHUNK_EXTRA_ATTEMPTS:
+                if isinstance(exc, AIUnexpectedProviderError) or attempt >= _CHUNK_EXTRA_ATTEMPTS:
                     raise
                 if is_billing_uncertain(exc):
                     retry_state["cost_uncertain"] = True
@@ -554,6 +568,17 @@ class GroqTranscriptionProvider:
         status_code = getattr(exc, "status_code", None)
         message = str(exc)
 
+        # The SDK raises APITimeoutError for a connect or pool timeout too, and
+        # APIConnectionError for a refused connection: no request reached
+        # Groq, so it is retried like a connection error and nothing was billed.
+        if _connection_not_established(exc):
+            return AIConnectionNotEstablishedError(
+                message=f"Could not connect to Groq ({type(exc.__cause__ or exc.__context__).__name__})",
+                provider=_PROVIDER_NAME,
+                model=self._model,
+                raw_error=exc,
+            )
+
         # Groq SDK raises specific HTTP-based exceptions
         if status_code in (401, 403):
             return AIAuthenticationError(
@@ -637,9 +662,10 @@ class GroqTranscriptionProvider:
                 raw_error=exc,
             )
 
-        # Fallback: treat as server error (retryable) to be safe
-        return AIServerError(
-            message=f"Unexpected Groq error: {message}",
+        # Fallback (e.g. an answer that could not be decoded): retryable by the
+        # task, never inside the provider, and with an unknown cost.
+        return AIUnexpectedProviderError(
+            message=f"Unexpected Groq error ({type(exc).__name__})",
             status_code=status_code or 500,
             provider=_PROVIDER_NAME,
             model=self._model,
