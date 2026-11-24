@@ -180,6 +180,13 @@ class FaceTracks:
         there instead of keeping an empty frame. Each stretch on one face is
         smoothed on its own and the change between faces is a cut, not a pan.
         """
+        return self.path_following(lambda t: None, smoothing)
+
+    def path_following(self, preferred, smoothing=None) -> TrackingPath:
+        """
+        Like ``framing_path``, but at each sample the face ``preferred(t)``
+        (a track id, e.g. the active speaker) wins when it is on screen.
+        """
         ranked = sorted(self.tracks, key=lambda track: (-track.importance(), track.id))
         spans = {
             track.id: {p.t: p for p in interpolate_gaps(track.points(), self.sample_times)}
@@ -187,6 +194,10 @@ class FaceTracks:
         }
         chosen = []  # (track id, point) per covered sample
         for t in self.sample_times:
+            wanted = preferred(t)
+            if wanted in spans and t in spans[wanted]:
+                chosen.append((wanted, spans[wanted][t]))
+                continue
             for track in ranked:
                 point = spans[track.id].get(t)
                 if point is not None:
