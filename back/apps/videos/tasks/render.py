@@ -60,7 +60,12 @@ from django.core.cache import cache
 from apps.videos.models import VideoProject, VideoClip, ScheduledPost
 from backend.celery import app as celery_app
 
-from apps.videos.tasks.shared import _is_retryable_pipeline_error, _retry_countdown
+from apps.videos.tasks.shared import (
+    PIPELINE_LOCK_MAX_RETRIES,
+    PIPELINE_LOCK_RETRY_SECONDS,
+    _is_retryable_pipeline_error,
+    _retry_countdown,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -315,20 +320,58 @@ def _settle_render_reservation(project_id, charge):
         )
 
 
-@celery_app.task(name='apps.videos.tasks.render_video_segments', bind=True, max_retries=2)
-def render_video_segments(self, project_id):
+# Redeliveries after a lost worker that may start the paper-edit render again.
+# A render that always kills its worker (an OOM on a long 4K edit) would
+# otherwise come back forever with its tokens reserved: past this many, the
+# project fails and the render reservation is returned.
+RENDER_SEGMENTS_MAX_REDELIVERIES = 2
+
+
+def _count_render_redelivery(project_id):
+    """Adds one to ``metadata['render_redeliveries']`` under the row lock and returns it."""
+    with transaction.atomic():
+        project = VideoProject.objects.select_for_update().get(pk=project_id)
+        metadata = dict(project.metadata or {})
+        count = int(metadata.get('render_redeliveries') or 0) + 1
+        metadata['render_redeliveries'] = count
+        VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
+    return count
+
+
+def _render_delivered(project_id):
+    """The paper edit was delivered: COMPLETED with its export saved."""
+    return VideoProject.objects.filter(
+        pk=project_id, status=VideoProject.Status.COMPLETED, final_export_r2_key__gt='',
+    ).exists()
+
+
+def _render_final_edit(project_id, redelivered):
     """
-    Task: High-Quality Non-Linear Rendering (Paper Edit Phase 2)
-    1. Download Original from S3.
-    2. Extract and concatenate approved segments (Float precision).
-    3. Apply Layout & Subtitles.
-    4. S3 Upload & Final Cleanup.
+    The paper-edit render, run while holding the project lock. Raises on
+    error; render_video_segments decides between retrying and failing.
     """
-    logger.info(f"🎬 [FINAL RENDER] Starting for project {project_id}")
     from apps.videos.services.storage_service import CloudflareR2Manager
     from apps.videos.services.render_engine import RenderEngine
     from moviepy import VideoFileClip, concatenate_videoclips
     import tempfile
+
+    if _render_delivered(project_id):
+        # Redelivered after the export was saved: never render or charge again.
+        # A worker lost between saving and charging is charged here, once.
+        logger.info("render.already_delivered project_id=%s", project_id)
+        _settle_render_reservation(project_id, charge=True)
+        return f"Render already delivered for {project_id}"
+
+    if redelivered:
+        redeliveries = _count_render_redelivery(project_id)
+        logger.warning(
+            "render.redelivered project_id=%s redeliveries=%d", project_id, redeliveries,
+        )
+        if redeliveries > RENDER_SEGMENTS_MAX_REDELIVERIES:
+            raise NonRetryableAIError(
+                "The render lost its worker too many times.",
+                provider="render", metadata={'code': 'render_worker_lost'},
+            )
 
     output_path = None
     try:
@@ -424,27 +467,90 @@ def render_video_segments(self, project_id):
                 user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
                 final_s3_key = CloudflareR2Manager.upload_video(output_path, user_id, f"{project.id}/final")
 
-                # 5. FINAL PERSISTENCE
-                project.final_export_r2_key = final_s3_key
-                project.status = VideoProject.Status.COMPLETED
-                project.save()
-
-                # We create a final VideoClip record to represent the full edited video
-                final_clip_obj = VideoClip.objects.create(
-                    project=project,
-                    title="VIDEO FINAL EDITADO",
-                    start_time=0,
-                    end_time=edited_clip.duration,
-                    s3_object_key=final_s3_key,
-                    status=VideoClip.Status.COMPLETED
-                )
+                # 5. FINAL PERSISTENCE: the export and the clip row that shows it
+                # are saved together, so a redelivery that finds the project
+                # delivered (and skips it) leaves nothing half done.
+                with transaction.atomic():
+                    VideoProject.objects.filter(pk=project_id).update(
+                        final_export_r2_key=final_s3_key, status=VideoProject.Status.COMPLETED,
+                    )
+                    VideoClip.objects.create(
+                        project=project,
+                        title="VIDEO FINAL EDITADO",
+                        start_time=0,
+                        end_time=edited_clip.duration,
+                        s3_object_key=final_s3_key,
+                        status=VideoClip.Status.COMPLETED
+                    )
 
                 logger.info(f"✅ [FINAL RENDER] Success for project {project_id}")
                 _settle_render_reservation(project_id, charge=True)
                 return f"Render Success: {final_s3_key}"
+    finally:
+        # The rendered output is written under MEDIA_ROOT, outside the temporary
+        # directory, so it is removed explicitly on every exit path.
+        if output_path and os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except OSError as cleanup_exc:
+                logger.warning(
+                    "render.cleanup_failed project_id=%s error=%s",
+                    project_id, type(cleanup_exc).__name__,
+                )
 
+
+# acks_late + reject_on_worker_lost, like the ingestion: a worker killed
+# mid-render (OOM in MoviePy) gets the message back instead of leaving the
+# project RENDERING with its tokens reserved. Safe on redelivery because:
+# - the project lock (renewed by a heartbeat) keeps a second delivery off a
+#   render that is still running. The render has no time limit, so it can
+#   outlast the broker's visibility timeout and be redelivered while alive;
+# - a project already COMPLETED with final_export_r2_key is not rendered or
+#   charged again (_render_final_edit);
+# - redeliveries are capped (RENDER_SEGMENTS_MAX_REDELIVERIES), so a render
+#   that always kills its worker fails and is refunded.
+@celery_app.task(name='apps.videos.tasks.render_video_segments',
+    bind=True,
+    max_retries=2,
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
+def render_video_segments(self, project_id, lock_retries=0, redelivered=False):
+    """
+    Task: High-Quality Non-Linear Rendering (Paper Edit Phase 2)
+    1. Download Original from S3.
+    2. Extract and concatenate approved segments (Float precision).
+    3. Apply Layout & Subtitles.
+    4. S3 Upload & Final Cleanup.
+
+    ``lock_retries`` counts the re-queues while the project lock is busy (its
+    own budget, like the ingestion's). ``redelivered`` keeps the broker's flag
+    across those re-queues: a dead worker's lock lasts until its TTL, so the
+    redelivery that found it must still count as one.
+    """
+    logger.info(f"🎬 [FINAL RENDER] Starting for project {project_id}")
+    redelivered = redelivered or bool((self.request.delivery_info or {}).get('redelivered'))
+    try:
+        with project_lock(project_id):
+            return _render_final_edit(project_id, redelivered)
+    except ProjectLockedError:
+        if lock_retries < PIPELINE_LOCK_MAX_RETRIES:
+            logger.warning(
+                "render.lock_busy_retrying project_id=%s lock_retry=%d", project_id, lock_retries + 1,
+            )
+            render_video_segments.apply_async(
+                args=[str(project_id)],
+                kwargs={'lock_retries': lock_retries + 1, 'redelivered': redelivered},
+                countdown=PIPELINE_LOCK_RETRY_SECONDS,
+                retries=self.request.retries,
+            )
+            return f"Lock busy, re-queued {project_id}"
+        # Still held after outlasting the TTL: a live worker is rendering it.
+        logger.warning("render.skipped project_id=%s reason=lock_busy", project_id)
+        return f"Skipped {project_id}: lock busy"
     except NonRetryableAIError as e:
-        # Deterministic failure (bad or missing segments): retrying cannot fix it.
+        # Deterministic failure (bad or missing segments, a worker lost too
+        # many times): retrying cannot fix it.
         logger.error(f"❌ [FINAL RENDER ERROR] project {project_id}: {e.message}")
         VideoProject.objects.filter(pk=project_id).update(status=VideoProject.Status.FAILED)
         record_error(project_id, e.metadata.get('code', 'render_failed'))
@@ -454,19 +560,19 @@ def render_video_segments(self, project_id):
         logger.error(
             "❌ [FINAL RENDER ERROR] project_id=%s error=%s", project_id, type(e).__name__
         )
-        if 'project' in locals():
-            project.status = VideoProject.Status.FAILED
-            project.save()
+        if _render_delivered(project_id):
+            # Failed after the export was saved (e.g. closing MoviePy): the
+            # render was delivered, so it is charged and never retried.
+            _settle_render_reservation(project_id, charge=True)
+            return f"Render delivered for {project_id}"
+        VideoProject.objects.filter(pk=project_id).update(status=VideoProject.Status.FAILED)
         if self.request.retries >= self.max_retries:
             # Out of retries: nothing was delivered, so the render is not charged.
             _settle_render_reservation(project_id, charge=False)
             raise
-        raise self.retry(exc=e, countdown=60)
-    finally:
-        # The rendered output is written under MEDIA_ROOT, outside the temporary
-        # directory, so it is removed explicitly on every exit path.
-        if output_path and os.path.exists(output_path):
-            os.remove(output_path)
+        # A retry is a new delivery of the render, not a redelivery after a
+        # lost worker: it starts with a fresh lock budget and no redelivery flag.
+        raise self.retry(exc=e, countdown=60, kwargs={})
 
 
 # --- Clip previews (PTE-03) ---------------------------------------------------

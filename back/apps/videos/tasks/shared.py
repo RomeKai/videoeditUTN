@@ -107,6 +107,13 @@ class PostConfigurationError(Exception):
 PIPELINE_MAX_RETRIES = 5
 PIPELINE_RETRY_BASE_SECONDS = 30
 PIPELINE_RETRY_CAP_SECONDS = 600
+# A redelivered task that finds the project lock held either collided with a live
+# worker or with the leftover lock of a dead one. Retrying shortly, for longer
+# than the lock TTL (project_lock.DEFAULT_LOCK_TTL_SECONDS), lets the dead
+# worker's lock expire instead of dropping the job. Used by the ingestion and
+# by the paper-edit render.
+PIPELINE_LOCK_RETRY_SECONDS = 45
+PIPELINE_LOCK_MAX_RETRIES = 8
 
 
 # --- Transient infrastructure errors -----------------------------------------

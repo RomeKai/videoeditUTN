@@ -80,10 +80,15 @@ sequenceDiagram
 ### Paper edit (`render_video_segments`)
 
 1. `approve_paper_edit` reserva el costo, guarda `approved_segments` y encola `render_video_segments(project_id)`.
-2. `_resolve_approved_segments` lee la columna `approved_segments` (o `metadata['approved_segments']` en proyectos viejos) y la valida con `validate_approved_segments`. Sin segmentos o con segmentos inválidos levanta `NonRetryableAIError` con código `no_approved_segments` o `invalid_approved_segments`.
-3. Descarga `original_r2_key` de R2 a un directorio temporal, corta cada segmento, los concatena y aplica el mismo `get_layout_strategy` (con `editing_style`, sin coordenadas manuales) y `_get_target_resolution`.
-4. Los subtítulos usan el `text` de cada segmento aprobado con tiempos recalculados sobre el video final.
-5. Escribe con preset `slow`, sube a `<project_id>/final`, guarda `final_export_r2_key`, deja el proyecto `COMPLETED` y crea un `VideoClip` "VIDEO FINAL EDITADO".
+2. **Entrega segura.** La tarea usa `acks_late=True` y `reject_on_worker_lost=True`, como la ingesta: si el worker muere a mitad del render, el mensaje vuelve a la cola en lugar de dejar el proyecto en `RENDERING` con la reserva tomada. El render corre dentro de `_render_final_edit` con el lock del proyecto (`project_lock`, renovado por heartbeat). Una re-entrega es segura por tres cosas:
+   - **Lock.** El render no tiene time limit y puede durar más que `CELERY_VISIBILITY_TIMEOUT`: Redis re-entrega entonces un mensaje cuyo worker sigue vivo. Esa entrega encuentra el lock tomado y se re-encola cada `PIPELINE_LOCK_RETRY_SECONDS` (45 s) hasta `PIPELINE_LOCK_MAX_RETRIES` (8) veces (`render.lock_busy_retrying`); después termina sin tocar el proyecto (`render.skipped`). Ese margen supera el TTL del lock, así que el lock de un worker muerto vence antes. El re-encolado conserva la marca de re-entrega (`redelivered`).
+   - **Ya entregado.** Un proyecto `COMPLETED` con `final_export_r2_key` no se vuelve a renderizar: solo se liquida la reserva del render (`render.already_delivered`), un no-op si ya se cobró.
+   - **Tope de re-entregas.** Cada re-entrega que llega a renderizar suma uno en `metadata['render_redeliveries']` (`render.redelivered`). Pasado `RENDER_SEGMENTS_MAX_REDELIVERIES` (2), el proyecto falla con `render_worker_lost` y se devuelve la reserva: un render que siempre mata a su worker (un OOM) no vuelve para siempre.
+3. `_resolve_approved_segments` lee la columna `approved_segments` (o `metadata['approved_segments']` en proyectos viejos) y la valida con `validate_approved_segments`. Sin segmentos o con segmentos inválidos levanta `NonRetryableAIError` con código `no_approved_segments` o `invalid_approved_segments`.
+4. Descarga `original_r2_key` de R2 a un directorio temporal, corta cada segmento, los concatena y aplica el mismo `get_layout_strategy` (con `editing_style`, sin coordenadas manuales) y `_get_target_resolution`.
+5. Los subtítulos usan el `text` de cada segmento aprobado con tiempos recalculados sobre el video final.
+6. Escribe con preset `slow` y sube a `<project_id>/final`. En una sola transacción guarda `final_export_r2_key`, deja el proyecto `COMPLETED` y crea un `VideoClip` "VIDEO FINAL EDITADO": una re-entrega nunca encuentra la mitad.
+7. Un reintento (`self.retry`) es una entrega nueva: no hereda `lock_retries` ni la marca de re-entrega.
 
 ## Flujo: layouts
 
@@ -218,30 +223,35 @@ Parámetros del constructor de `SpeakerTrackingEngine` (sin settings, se ajustan
 | Cualquier error del layout `active` | `layout.active_speaker_failed` y recorte centrado. | `ActiveSpeakerLayout.apply` |
 | Subtítulos sin `transcript_data` | El clip sale sin subtítulos y se loguea `render.subtitles_skipped`. No se vuelve a transcribir: esa llamada iba al proveedor sin capacidad ni filas de uso. Todo proyecto del pipeline se transcribe antes de tener clips. | `RenderEngine.render_clip` |
 | Paper edit sin segmentos o con segmentos inválidos | Proyecto `FAILED`, `pipeline_error_code` `no_approved_segments` o `invalid_approved_segments`, sin reintento. | `render_video_segments` |
-| Otro error del paper edit | Proyecto `FAILED` y `self.retry` a 60 s, hasta `max_retries=2`. En el último intento se devuelve la reserva del render. | `render_video_segments` |
+| Otro error del paper edit | Proyecto `FAILED` y `self.retry` a 60 s, hasta `max_retries=2`. En el último intento se devuelve la reserva del render. Si el error llega después de guardar la exportación (por ejemplo, al cerrar MoviePy), el render cuenta como entregado: se cobra y no se reintenta. | `render_video_segments` |
+| Worker muerto a mitad del paper edit | El broker re-entrega el mensaje y el render empieza de nuevo. Si el lock del muerto sigue vivo, se re-encola hasta que vence. | `render_video_segments` |
+| Re-entrega de un paper edit que sigue corriendo (más largo que `CELERY_VISIBILITY_TIMEOUT`) | Encuentra el lock tomado, se re-encola hasta `PIPELINE_LOCK_MAX_RETRIES` veces y termina sin tocar el proyecto. Nunca hay dos renders a la vez. | `render_video_segments` |
+| Re-entrega de un paper edit ya entregado | No renderiza ni cobra de nuevo; solo liquida la reserva si seguía `RESERVED`. | `_render_final_edit` |
+| Paper edit que pierde el worker más de `RENDER_SEGMENTS_MAX_REDELIVERIES` veces | Proyecto `FAILED` con `pipeline_error_code` `render_worker_lost` y reserva devuelta. | `_render_final_edit` |
 | Paper edit entregado | Se cobra la reserva del render (`metadata['render_reservation_id']`, `render.charged`). Un fallo sin arreglo la devuelve (`render.refunded`). | `_settle_render_reservation` |
 
 ## Datos que escribe
 
 - **`VideoClip`**: `status` (`DRAFT` → `RENDERING` → `COMPLETED`; de vuelta a `DRAFT` antes de un reintento; `FAILED` vía `on_failure` después del último intento) y `s3_object_key`.
 - **`VideoProject`** (fan-out): `pipeline_stage` `RENDER_DISPATCHED` → `COMPLETED` o `PARTIAL`, y `status` igual.
-- **`VideoProject`** (paper edit): `final_export_r2_key`, `status` (`COMPLETED` o `FAILED`), `pipeline_error_code` y `pipeline_error_at` en los errores de segmentos, y un `VideoClip` nuevo "VIDEO FINAL EDITADO".
+- **`VideoProject`** (paper edit): `final_export_r2_key`, `status` (`COMPLETED` o `FAILED`), `pipeline_error_code` y `pipeline_error_at` en los errores de segmentos y en `render_worker_lost`, `metadata['render_redeliveries']` (re-entregas que llegaron a renderizar) y un `VideoClip` nuevo "VIDEO FINAL EDITADO".
 - **R2**: el video de cada clip en `videos/<user_id>/<project_id>/`, el del paper edit en `videos/<user_id>/<project_id>/final/`. Con `USE_R2=False` se copian bajo `MEDIA_ROOT/videos/`.
 - **`AIUsageRecord`**: ninguna fila. El render no reserva capacidad.
-- **Logs**: `face_tracker.mediapipe_unavailable`, `face_tracker.detector_loaded`, `face_tracker.detector_failed`, `face_tracker.detector_unavailable`, `face_tracker.frame_failed`, `face_tracker.all_frames_failed`, `face_tracker.tracked` (muestras, caras, frames fallidos), `face_tracker.no_faces`, `face_tracker.failed`, `speaker.audio_failed`, `speaker.frame_failed`, `speaker.frames_failed`, `speaker.timeline`, `layout.active_speaker`, `layout.active_speaker_failed`, `render.retrying` (clip, intento y clase del error), `render.release_failed`, `render.failure_not_recorded`, `pipeline.render_finalized`.
+- **Logs**: `face_tracker.mediapipe_unavailable`, `face_tracker.detector_loaded`, `face_tracker.detector_failed`, `face_tracker.detector_unavailable`, `face_tracker.frame_failed`, `face_tracker.all_frames_failed`, `face_tracker.tracked` (muestras, caras, frames fallidos), `face_tracker.no_faces`, `face_tracker.failed`, `speaker.audio_failed`, `speaker.frame_failed`, `speaker.frames_failed`, `speaker.timeline`, `layout.active_speaker`, `layout.active_speaker_failed`, `render.retrying` (clip, intento y clase del error), `render.release_failed`, `render.failure_not_recorded`, `pipeline.render_finalized`; del paper edit, `render.already_delivered`, `render.redelivered` (con el total), `render.lock_busy_retrying`, `render.skipped`, `render.cleanup_failed`, `render.charged`, `render.refunded` y `render.settle_skipped`.
 
 ## Configuración
 
 | Setting | Default | Efecto |
 |---------|---------|--------|
 | `CELERY_TASK_ROUTES` | `render_clip_task` y `render_video_segments` → cola `render` | Separa los renders de la ingesta. El worker tiene que consumir `-Q celery,render`. |
-| `CELERY_VISIBILITY_TIMEOUT` | `14400` (4 h) | Cuándo Redis re-entrega un render sin ack (worker muerto). |
+| `CELERY_VISIBILITY_TIMEOUT` | `14400` (4 h) | Cuándo Redis re-entrega un render sin ack (todo el host muerto). Un paper edit más largo que esto se re-entrega con su worker vivo: el lock del proyecto evita el segundo render. |
+| `PIPELINE_LOCK_TTL` | `300` | TTL del lock del proyecto que toma el paper edit, renovado por heartbeat: cuánto espera la re-entrega de un worker muerto. |
 | `TRANSCRIPTION_BACKEND` | `'groq'` | Backend de esa transcripción cuando V2 está habilitado. |
 | `FONTS_DIR` | `<BASE_DIR>/assets/fonts` | Fuente `Montserrat-Bold.ttf` de los subtítulos. |
 | `MEDIA_ROOT` | `<BASE_DIR>/media` | Archivos temporales del render. |
 | `USE_R2` | `False` | Sin R2, `upload_video` copia el archivo bajo `MEDIA_ROOT` y devuelve esa ruta como clave. |
 
-Constantes en código, sin setting: `RENDER_CLIP_MAX_RETRIES` (`tasks/render.py`); `RENDER_FPS`, `RENDER_CODEC`, `RENDER_AUDIO_CODEC`, `RENDER_PRESET` y `FFMPEG_PARAMS` (`utils/moviepy_utils.py`); `RESOLUTION_HEIGHTS` y `DEFAULT_HEIGHT` (`RenderEngine`); `SAMPLING_FPS` y los parámetros de `IoUTracker` (`face_tracking.py`); `EMASmoothing(alpha=0.35)`; los parámetros de `SpeakerTrackingEngine`. Los módulos de tracking fijan `MEDIAPIPE_DISABLE_GPU=1` al importarse.
+Constantes en código, sin setting: `RENDER_CLIP_MAX_RETRIES` y `RENDER_SEGMENTS_MAX_REDELIVERIES` (`tasks/render.py`); `PIPELINE_LOCK_RETRY_SECONDS` y `PIPELINE_LOCK_MAX_RETRIES` (`tasks/shared.py`); `RENDER_FPS`, `RENDER_CODEC`, `RENDER_AUDIO_CODEC`, `RENDER_PRESET` y `FFMPEG_PARAMS` (`utils/moviepy_utils.py`); `RESOLUTION_HEIGHTS` y `DEFAULT_HEIGHT` (`RenderEngine`); `SAMPLING_FPS` y los parámetros de `IoUTracker` (`face_tracking.py`); `EMASmoothing(alpha=0.35)`; los parámetros de `SpeakerTrackingEngine`. Los módulos de tracking fijan `MEDIAPIPE_DISABLE_GPU=1` al importarse.
 
 ## Referencias
 

@@ -62,6 +62,8 @@ from apps.videos.models import VideoProject, VideoClip, ScheduledPost
 from backend.celery import app as celery_app
 
 from apps.videos.tasks.shared import (
+    PIPELINE_LOCK_MAX_RETRIES,
+    PIPELINE_LOCK_RETRY_SECONDS,
     PIPELINE_MAX_RETRIES,
     _audio_usage,
     _capacity_countdown,
@@ -87,12 +89,6 @@ from apps.videos.tasks.render import (
 )
 
 logger = logging.getLogger(__name__)
-# A redelivered task that finds the project lock held either collided with a live
-# worker or with the leftover lock of a dead one. Retrying shortly, for longer
-# than the lock TTL (project_lock.DEFAULT_LOCK_TTL_SECONDS), lets the dead
-# worker's lock expire instead of dropping the job.
-PIPELINE_LOCK_RETRY_SECONDS = 45
-PIPELINE_LOCK_MAX_RETRIES = 8
 # Prompt-to-Edit parser (PTE-01b): transient errors re-queue the ingestion with
 # their own counter, so they never spend the retries the stages need. After
 # these, the project goes on with the default settings.
