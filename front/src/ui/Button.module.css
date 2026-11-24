@@ -1,0 +1,111 @@
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+.sm {
+  height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+.lg {
+  height: 44px;
+  padding: 0 18px;
+  font-size: 15px;
+}
+.block {
+  display: flex;
+  width: 100%;
+}
+.primary {
+  background: var(--primary);
+  color: var(--primary-fg);
+}
+.primary:hover {
+  background: var(--primary-hover);
+}
+.accent {
+  background: var(--accent-fill);
+  color: var(--accent-fg);
+}
+.secondary {
+  background: var(--bg);
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+.secondary:hover {
+  background: var(--surface-2);
+}
+.ghost {
+  background: transparent;
+  color: var(--fg-muted);
+}
+.ghost:hover {
+  background: var(--neutral-soft);
+  color: var(--fg);
+}
+.danger {
+  background: var(--err-fill);
+  color: #fff;
+}
+.disabled,
+.btn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+/* Disabled filled buttons read as disabled in both themes: no opacity, neutral fill. */
+.primary.disabled,
+.primary[disabled],
+.accent.disabled,
+.accent[disabled] {
+  background: var(--surface-3);
+  color: var(--fg-subtle);
+  opacity: 1;
+}
+.loading {
+  cursor: progress;
+}
+
+.iconBtn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-sm);
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  flex: none;
+}
+.iconBtn:hover {
+  background: var(--neutral-soft);
+  color: var(--fg);
+}
+.iconBtn.iconSm {
+  width: 24px;
+  height: 24px;
+}
+.iconBtn.iconLg {
+  width: 44px;
+  height: 44px;
+}
+.iconBtn.disabled,
+.iconBtn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

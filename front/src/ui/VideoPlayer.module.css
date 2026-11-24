@@ -1,0 +1,82 @@
+.player {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.stage {
+  position: relative;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: #000;
+  box-shadow: inset 0 0 0 1px var(--thumb-edge);
+  margin: 0 auto;
+  width: 100%;
+}
+.r16x9 {
+  aspect-ratio: 16 / 9;
+}
+.r9x16 {
+  aspect-ratio: 9 / 16;
+  max-height: 70vh;
+  width: auto;
+}
+.r1x1 {
+  aspect-ratio: 1 / 1;
+  max-height: 70vh;
+  width: auto;
+}
+.video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+.placeholder {
+  position: absolute;
+  inset: 0;
+}
+.placeholder > span {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+}
+.bigPlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: #fff;
+}
+.bigPlay > span {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+}
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.seek {
+  flex: 1;
+  min-width: 0;
+}
+.time {
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}

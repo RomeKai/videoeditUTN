@@ -1,0 +1,220 @@
+/* Empty state, skeleton, progress, step segments, callouts and fixed banners. */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 24px;
+  text-align: center;
+}
+.emptyIcon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  margin-bottom: 4px;
+}
+.emptyText {
+  max-width: 420px;
+}
+.emptyAction {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.skel {
+  display: block;
+  border-radius: var(--r-sm);
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  animation: oc-shimmer 1.6s linear infinite;
+}
+.skelLines {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.skelRow {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.skelRow:last-child {
+  border-bottom: 0;
+}
+
+.progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+  min-width: 40px;
+}
+.progress > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--fg);
+  transition: width 0.3s;
+}
+.progress.accent > span {
+  background: var(--accent);
+}
+.progress.info > span {
+  background: var(--info);
+}
+.progressRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.progressRow .progress {
+  flex: 1;
+}
+
+/* Step progress segments (Paso N de 4): done = muted, running = info, pending = surface-3. */
+.segs {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+.segs > span {
+  width: 14px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-3);
+}
+.segs > .done {
+  background: var(--fg-muted);
+}
+.segs > .run {
+  background: var(--info);
+}
+.segsWide {
+  display: flex;
+  width: 100%;
+}
+.segsWide > span {
+  flex: 1;
+  width: auto;
+}
+
+.callout {
+  display: flex;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  min-width: 0;
+}
+.callout.warn {
+  border-color: color-mix(in srgb, var(--warn) 35%, transparent);
+  background: var(--warn-soft);
+}
+.callout.err {
+  border-color: color-mix(in srgb, var(--err) 35%, transparent);
+  background: var(--err-soft);
+}
+.callout.info {
+  border-color: color-mix(in srgb, var(--info) 35%, transparent);
+  background: var(--info-soft);
+}
+.calloutIcon {
+  display: grid;
+  padding-top: 2px;
+  flex: none;
+  color: var(--fg-muted);
+}
+.calloutIcon.info {
+  color: var(--info);
+}
+.calloutIcon.warn {
+  color: var(--warn);
+}
+.calloutIcon.err {
+  color: var(--err);
+}
+.calloutIcon.ok {
+  color: var(--ok);
+}
+.calloutBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.calloutTitle {
+  font-weight: 500;
+}
+.calloutText {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--fg-muted);
+}
+.calloutLine {
+  align-items: center;
+}
+.calloutLine .calloutIcon {
+  padding-top: 0;
+}
+.calloutAction {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fixedBanner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 8px 16px;
+  background: var(--warn-soft);
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: center;
+}
+.fixedBanner > svg {
+  color: var(--warn);
+  flex: none;
+}
+.fixedBanner.infoBanner {
+  background: var(--info-soft);
+  border-bottom-color: color-mix(in srgb, var(--info) 35%, transparent);
+}
+.fixedBanner.infoBanner > svg {
+  color: var(--info);
+}
+.pulse {
+  display: inline-flex;
+  gap: 3px;
+}
+.pulse i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+}
+.pulse i:nth-child(2) {
+  opacity: 0.6;
+}
+.pulse i:nth-child(3) {
+  opacity: 0.3;
+}

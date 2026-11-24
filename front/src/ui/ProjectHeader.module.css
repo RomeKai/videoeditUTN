@@ -1,0 +1,76 @@
+/* Project header: the same on every project tab. .compact on work screens (review, clip editor). */
+.wrap {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 20px;
+  align-items: start;
+  margin: 12px 0 24px;
+}
+.thumb {
+  width: 160px;
+}
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.title > h1 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.status {
+  font-size: 14px;
+  color: var(--fg-muted);
+}
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.meta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.compact {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  margin: 8px 0 16px;
+}
+.compact .thumb {
+  display: none;
+}
+@media (max-width: 860px) {
+  .head {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .thumb {
+    width: 120px;
+  }
+  .actions {
+    flex-wrap: wrap;
+  }
+}

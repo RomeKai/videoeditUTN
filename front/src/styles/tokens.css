@@ -1,0 +1,96 @@
+/* OneCreator kit v2.3 tokens (documents/producto/diseno/onecreator-kit.css). Dark is the default theme. */
+:root,
+[data-theme='dark'] {
+  --bg: #0a0a0b;
+  --bg-subtle: #0f0f11;
+  --surface: #141416;
+  --surface-2: #1b1b1e;
+  --surface-3: #232327;
+  --border: #26262b;
+  --border-strong: #36363c;
+  --fg: #ededf0;
+  --fg-muted: #a1a1aa;
+  --fg-subtle: #8c8c96;
+  --primary: #ededf0;
+  --primary-fg: #0a0a0b;
+  --primary-hover: #ffffff;
+  --accent: #8b7bff;
+  --accent-strong: #a497ff;
+  --accent-soft: rgba(139, 123, 255, 0.14);
+  --accent-fg: #ffffff;
+  --accent-fill: #6c58f0;
+  --ok: #3fcf8e;
+  --ok-soft: rgba(63, 207, 142, 0.12);
+  --warn: #f5a524;
+  --warn-soft: rgba(245, 165, 36, 0.12);
+  --err: #ff6369;
+  --err-soft: rgba(255, 99, 105, 0.12);
+  --err-fill: #d93036;
+  --info: #52a8ff;
+  --info-soft: rgba(82, 168, 255, 0.12);
+  --neutral-soft: rgba(255, 255, 255, 0.06);
+  --thumb-bg: #17171b;
+  --thumb-edge: rgba(255, 255, 255, 0.08);
+  --av-lf: #5b4bd6;
+  --av-ms: #2b6cb0;
+  --av-cr: #a13d63;
+  --av-dp: #8a6a1f;
+  --av-ws: #2f6f5e;
+  --shadow-pop: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 8px 24px -6px rgba(0, 0, 0, 0.6),
+    0 24px 48px -12px rgba(0, 0, 0, 0.5);
+  --overlay: rgba(0, 0, 0, 0.6);
+  --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-pill: 999px;
+  --font: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+  --z-sticky: 5;
+  --z-topbar: 20;
+  --z-pop: 40;
+  --z-overlay: 50;
+  --z-toast: 60;
+  --z-banner: 70;
+  --page-max: 1200px;
+  color-scheme: dark;
+}
+
+[data-theme='light'] {
+  --bg: #ffffff;
+  --bg-subtle: #fafafa;
+  --surface: #ffffff;
+  --surface-2: #f4f4f5;
+  --surface-3: #ebebee;
+  --border: #e6e6e9;
+  --border-strong: #d2d2d8;
+  --fg: #111113;
+  --fg-muted: #5b5b66;
+  --fg-subtle: #696972;
+  --primary: #111113;
+  --primary-fg: #ffffff;
+  --primary-hover: #2a2a2e;
+  --accent: #6447f5;
+  --accent-strong: #5134e0;
+  --accent-soft: rgba(100, 71, 245, 0.09);
+  --accent-fg: #ffffff;
+  --accent-fill: #6447f5;
+  --ok: #12733a;
+  --ok-soft: rgba(21, 128, 61, 0.09);
+  --warn: #a34a06;
+  --warn-soft: rgba(180, 83, 9, 0.09);
+  --err: #c8281c;
+  --err-soft: rgba(217, 45, 32, 0.08);
+  --err-fill: #d92d20;
+  --info: #1d64d8;
+  --info-soft: rgba(29, 100, 216, 0.08);
+  --neutral-soft: rgba(0, 0, 0, 0.05);
+  --thumb-bg: #1c1c21;
+  --thumb-edge: rgba(0, 0, 0, 0.18);
+  --shadow-pop: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 8px 24px -6px rgba(0, 0, 0, 0.12),
+    0 24px 48px -12px rgba(0, 0, 0, 0.12);
+  --overlay: rgba(17, 17, 19, 0.32);
+  color-scheme: light;
+}
