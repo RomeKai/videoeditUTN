@@ -30,6 +30,9 @@ Rules (the same the pipeline applies, see tasks/ingestion.py and tasks/render.py
         completed, partial or failed, nothing delivered    -> rollback
         a clip still rendering, or any other stage         -> report only
     Not linked to any project                              -> report only
+    A render stuck in RENDERING is left to recover_stuck_renders, which
+    re-queues it, fails it (refunded) or only reports it, and which also
+    charges a delivered render left unpaid (the same rule as here).
 
 Safety
     Dry run by default: without ``--apply`` nothing is written. Only

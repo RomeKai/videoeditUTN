@@ -64,6 +64,7 @@ from django.db.models import F, Q
 from django.core.cache import cache
 from apps.videos.models import VideoProject, VideoClip, ScheduledPost
 from backend.celery import app as celery_app
+from celery.exceptions import Reject
 
 from apps.videos.tasks.shared import (
     PIPELINE_LOCK_MAX_RETRIES,
@@ -80,6 +81,7 @@ from apps.videos.tasks.shared import (
     _llm_usage_by_model,
     _merge_metadata,
     _persist_then_record_usage,
+    _publish_requeue,
     _record_call_failure,
     _retry_countdown,
     _selection_failure_usage,
@@ -336,7 +338,9 @@ def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries, parse_ret
     from apps.videos.services.ai.capacity import CapacityTimeoutError
 
     project = VideoProject.objects.get(pk=project_id)
-    wait = (project.metadata or {}).get('capacity_wait') or {}
+    stored = (project.metadata or {}).get('capacity_wait')
+    previous = dict(stored) if isinstance(stored, dict) else stored
+    wait = stored or {}
     if not _is_current_wait(wait, project, exc.stage):
         wait = {
             'stage': str(exc.stage), 'since': timezone.now().isoformat(), 'planned_s': 0.0,
@@ -368,11 +372,36 @@ def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries, parse_ret
         project_id, exc.stage, countdown, wait['planned_s'],
         extra={'project_id': str(project_id), 'stage': str(exc.stage)},
     )
-    process_initial_ingestion.apply_async(
-        args=[str(project_id)], kwargs={'parse_retries': parse_retries},
-        countdown=countdown, retries=retries,
+    # Not published (broker down): the wait just planned is taken back, so the
+    # redelivery does not count it twice, and this message goes back to the
+    # broker (_publish_requeue).
+    _publish_requeue(
+        process_initial_ingestion,
+        lambda: process_initial_ingestion.apply_async(
+            args=[str(project_id)], kwargs={'parse_retries': parse_retries},
+            countdown=countdown, retries=retries,
+        ),
+        "pipeline.requeue_not_published", project_id, "capacity",
+        undo=lambda: _restore_capacity_wait(project_id, wait, previous),
     )
     return f"Waiting for capacity: {project_id}"
+
+
+def _restore_capacity_wait(project_id, written, previous):
+    """
+    Puts back the capacity wait a re-queue that was not published had
+    planned, unless another delivery changed it since (row lock).
+    """
+    with transaction.atomic():
+        project = VideoProject.objects.select_for_update().get(pk=project_id)
+        metadata = dict(project.metadata or {})
+        if metadata.get('capacity_wait') != written:
+            return
+        if previous is None:
+            metadata.pop('capacity_wait', None)
+        else:
+            metadata['capacity_wait'] = previous
+        VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
 
 
 def _stage_transcribe(project_id):
@@ -1440,11 +1469,18 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
             "prompt_parse.retrying project_id=%s parse_retry=%d countdown_s=%d",
             project_id, parse_retries + 1, countdown,
         )
-        process_initial_ingestion.apply_async(
-            args=[str(project_id)],
-            kwargs={'lock_retries': lock_retries, 'parse_retries': parse_retries + 1},
-            countdown=countdown,
-            retries=self.request.retries,
+        # Not published (broker down): this message goes back with its own
+        # parse_retries, so the failed parse is tried again without spending
+        # one (_publish_requeue).
+        _publish_requeue(
+            self,
+            lambda: process_initial_ingestion.apply_async(
+                args=[str(project_id)],
+                kwargs={'lock_retries': lock_retries, 'parse_retries': parse_retries + 1},
+                countdown=countdown,
+                retries=self.request.retries,
+            ),
+            "pipeline.requeue_not_published", project_id, "prompt_parse",
         )
         return f"Prompt parse retry queued for {project_id}"
     except ProjectLockedError as exc:
@@ -1455,11 +1491,17 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
                 extra={'project_id': str(project_id), 'attempt': attempt},
             )
             # Re-queued, not self.retry(): the error retry count travels unchanged.
-            process_initial_ingestion.apply_async(
-                args=[str(project_id)],
-                kwargs={'lock_retries': lock_retries + 1, 'parse_retries': parse_retries},
-                countdown=PIPELINE_LOCK_RETRY_SECONDS,
-                retries=self.request.retries,
+            # Not published (broker down): this message goes back to the
+            # broker instead of being acked away (_publish_requeue).
+            _publish_requeue(
+                self,
+                lambda: process_initial_ingestion.apply_async(
+                    args=[str(project_id)],
+                    kwargs={'lock_retries': lock_retries + 1, 'parse_retries': parse_retries},
+                    countdown=PIPELINE_LOCK_RETRY_SECONDS,
+                    retries=self.request.retries,
+                ),
+                "pipeline.requeue_not_published", project_id, "lock",
             )
             return f"Lock busy, re-queued {project_id}"
         # Still held after outlasting the TTL: a live worker owns the project.
@@ -1483,6 +1525,10 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
                 project_id, exc, attempt, progress.get('stage'), self.request.retries,
                 parse_retries,
             )
+        except Reject:
+            # The re-queue was not published: this message goes back to the
+            # broker (_publish_requeue). Not a stage error: nothing to record.
+            raise
         except Exception as wait_exc:
             # Parking failed (e.g. the database): handled like any stage error,
             # never left in pending_capacity with no message in the queue.

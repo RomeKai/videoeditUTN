@@ -54,6 +54,10 @@ class FakeLock:
                 raise redis.exceptions.LockNotOwnedError("not owner")
             del self._store.held[self.name]
 
+    def locked(self):
+        with self._store.guard:
+            return self.name in self._store.held
+
 
 class FakeRedis:
     """Minimal ``Redis.lock`` implementation shared across lock instances."""
@@ -90,4 +94,7 @@ class DownRedis:
         return self
 
     def acquire(self, *args, **kwargs):
+        raise redis.exceptions.ConnectionError("redis is down")
+
+    def locked(self):
         raise redis.exceptions.ConnectionError("redis is down")
