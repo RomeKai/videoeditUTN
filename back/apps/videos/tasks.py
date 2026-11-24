@@ -1258,6 +1258,43 @@ def _seo_demand(models, request):
     return {model: {'tokens': tokens, 'requests': 1} for model in models}
 
 
+class _PromptParseCapacity:
+    """
+    Capacity for the Prompt-to-Edit parser call (AICORE-11, PTE-01b): the
+    prompt and the parser's fixed prompt and output, on the primary and the
+    fallback with a key, settled with the real usage like the selection.
+    """
+
+    def __init__(self, project_id, stage):
+        self.project_id = project_id
+        self.stage = stage
+        self.gate = _capacity_gate()
+        self.models = []
+
+    def reserve(self, prompt):
+        if self.gate is None:
+            return None
+        self.models = _selection_models(True)
+        tokens = (
+            math.ceil(len(prompt) / 4)
+            + settings.AI_CAPACITY_LLM_PROMPT_TOKENS
+            + settings.AI_CAPACITY_LLM_OUTPUT_TOKENS
+        )
+        reservation = self.gate.reserve(
+            {model: {'tokens': tokens, 'requests': 1} for model in self.models}, stage=self.stage,
+        )
+        _capacity_granted(self.project_id, self.stage)
+        return reservation
+
+    def settle(self, reservation, result=None, exc=None):
+        if self.gate is None or reservation is None:
+            return
+        if exc is not None:
+            self.gate.settle(reservation, _selection_failure_usage(self.models, exc))
+        else:
+            self.gate.settle(reservation, _llm_usage_by_model(self.models, result.attempts or [result.usage]))
+
+
 def _release_seo_capacity(gate, reservation):
     """Moderation stopped the post before the LLM call: the reservation goes back."""
     if gate is not None and reservation is not None:
@@ -1751,7 +1788,22 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None):
     if stage != PipelineStage.CLIPS_SELECTED:
         from apps.videos.services.ai.prompt_validator import apply_prompt_to_project
 
-        apply_prompt_to_project(project_id)
+        # The parser's LLM call waits for capacity under the stage about to run.
+        upcoming = STAGE_ORDER[min(STAGE_ORDER.index(stage) + 1, len(STAGE_ORDER) - 1)] \
+            if stage in STAGE_ORDER else stage
+        try:
+            apply_prompt_to_project(
+                project_id,
+                # A transient parser error retries the task while retries are left.
+                can_retry=attempt <= process_initial_ingestion.max_retries,
+                capacity=_PromptParseCapacity(project_id, upcoming),
+            )
+        except CapacityUnavailable:
+            try:
+                set_stage_status(project_id, upcoming, StageStatus.PENDING_CAPACITY, expected_stage=stage)
+            except PipelineStateError:
+                logger.warning("pipeline.status_write_skipped project_id=%s stage=%s", project_id, upcoming)
+            raise
 
     # Rows without recorded state may already hold a transcript or clips.
     inferred = infer_completed_stage(project)

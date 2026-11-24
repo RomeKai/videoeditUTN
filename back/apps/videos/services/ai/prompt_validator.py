@@ -122,15 +122,22 @@ def explicit_config_fields(raw: Any) -> List[str]:
     return sorted(name for name in ProjectConfig.model_fields if name in keys)
 
 
-def apply_prompt_to_project(project_id) -> Optional[Dict[str, Any]]:
+def apply_prompt_to_project(project_id, can_retry: bool = False, capacity=None) -> Optional[Dict[str, Any]]:
     """
     Parses ``metadata['pte_prompt']`` once and applies what is allowed. Returns
     the stored outcome, or None for a project created without a prompt or
     already handled (idempotent: a redelivered task does not parse again).
+
+    - A transient provider error (429, 5xx, timeout) is raised while the task
+      can still retry (``can_retry``), so the ingestion retries with backoff
+      and the prompt is not lost. Only a definitive error, or the last
+      attempt, stores ``status=failed`` and goes on with the defaults.
+    - ``capacity`` (AICORE-11) reserves the call before it is made and settles
+      it with the real usage; it may raise CapacityUnavailable (the task waits).
     """
     from apps.videos.models import VideoProject
-    from apps.videos.services.ai.errors import is_task_time_limit
-    from apps.videos.services.ai.prompt_parser import PromptParser, record_prompt_parse_usage
+    from apps.videos.services.ai.errors import is_retryable_error, is_task_time_limit
+    from apps.videos.services.ai.prompt_parser import PromptParser, clean_prompt, record_prompt_parse_usage
 
     project = VideoProject.objects.select_related("workspace__subscription_plan").get(pk=project_id)
     metadata = project.metadata or {}
@@ -138,17 +145,25 @@ def apply_prompt_to_project(project_id) -> Optional[Dict[str, Any]]:
     if prompt is None or metadata.get("pte"):
         return None
 
+    reservation = capacity.reserve(clean_prompt(prompt)) if capacity is not None and clean_prompt(prompt) else None
     try:
         result = PromptParser().parse(prompt, metadata.get("duration"))
     except Exception as exc:
+        if capacity is not None:
+            capacity.settle(reservation, exc=exc)
         if is_task_time_limit(exc):
             raise
         record_prompt_parse_usage(project_id, exc)
+        if can_retry and is_retryable_error(exc):
+            logger.warning("prompt_parse.retrying project_id=%s error=%s", project_id, type(exc).__name__)
+            raise
         outcome = {"status": "failed", "error_code": type(exc).__name__, "applied": {}, "ignored": []}
         _store(project_id, {}, outcome)
         logger.warning("prompt_parse.failed project_id=%s error=%s", project_id, type(exc).__name__)
         return outcome
 
+    if capacity is not None:
+        capacity.settle(reservation, result=result)
     record_prompt_parse_usage(project_id, result)
     validation = ConfigValidator.validate(
         result.data, project.workspace.subscription_plan, metadata.get("pte_explicit") or (),
