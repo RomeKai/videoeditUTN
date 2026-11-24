@@ -32,6 +32,21 @@ class BrandKitViewSet(viewsets.ModelViewSet):
             raise ValidationError("No tienes un Workspace para crear BrandKits.")
         serializer.save(workspace=workspace)
 
+def _pricing_resolution(project):
+    """
+    The resolution tier PricingEngine checks against the plan. It used to get
+    the aspect ratio ('9:16'), which it read as 720p. The tier is the
+    project's render_resolution when Prompt-to-Edit set one, else 720p (the
+    price every project has paid so far).
+    """
+    from typing import get_args
+
+    from apps.videos.services.ai.contracts import RenderResolutionValue
+
+    requested = (project.metadata or {}).get('render_resolution')
+    return requested if requested in get_args(RenderResolutionValue) else '720p'
+
+
 class VideoProjectViewSet(viewsets.ModelViewSet):
     serializer_class = VideoProjectSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -134,7 +149,7 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
         try:
             final_cost = PricingEngine.calculate_render_cost(
                 duration_seconds=int(math.ceil(total_duration)),
-                resolution=project.aspect_ratio,
+                resolution=_pricing_resolution(project),
                 features_requested=features_requested,
                 plan=workspace.subscription_plan
             )
@@ -209,7 +224,7 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
 
                 cost_in_tokens = PricingEngine.calculate_render_cost(
                     duration_seconds=duration_seconds,
-                    resolution=project.aspect_ratio,
+                    resolution=_pricing_resolution(project),
                     features_requested=features_requested,
                     plan=workspace.subscription_plan
                 )

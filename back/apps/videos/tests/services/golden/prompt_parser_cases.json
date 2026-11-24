@@ -95,10 +95,20 @@
   "name": "cuadrado",
   "prompt": "cuadrado para un post de Instagram",
   "llm": {
+   "aspect_ratio": "1:1"
+  },
+  "expected": {
+   "aspect_ratio": "1:1"
+  }
+ },
+ {
+  "name": "cuadrado_valor_anterior",
+  "prompt": "formato cuadrado",
+  "llm": {
    "aspect_ratio": "1:Post"
   },
   "expected": {
-   "aspect_ratio": "1:Post"
+   "aspect_ratio": "1:1"
   }
  },
  {
