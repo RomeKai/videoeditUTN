@@ -1,0 +1,588 @@
+/* Ajustes del workspace (H1–H3) and Cuenta (I1, I2). Values come from the artboards. */
+.link {
+  color: var(--fg);
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 3px;
+}
+.link:hover {
+  text-decoration-color: var(--fg);
+}
+.headRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.headRow > :last-child {
+  min-width: 0;
+  flex: 1;
+}
+.headRow header {
+  margin-bottom: 0;
+}
+.headAvatar {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+/* Section layout: side navigation and a 720 px column */
+.split {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 720px);
+  gap: 48px;
+  align-items: start;
+}
+.side {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sideItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  color: var(--fg-muted);
+  font-size: 14px;
+  white-space: nowrap;
+}
+.sideItem:hover {
+  background: var(--neutral-soft);
+  color: var(--fg);
+}
+.sideItem[aria-current='page'] {
+  background: var(--surface-2);
+  color: var(--fg);
+  font-weight: 500;
+}
+.sideText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.sideSummary,
+.chev {
+  display: none;
+}
+.content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+}
+
+/* Rows */
+.group {
+  display: flex;
+  flex-direction: column;
+}
+.head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.headPlain {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.headText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 280px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 32px;
+  flex-wrap: wrap;
+  min-height: 64px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.rowTight {
+  min-height: 56px;
+  padding: 9px 0;
+  flex-wrap: nowrap;
+}
+.rowTight .label {
+  flex: 1 1 0;
+}
+.label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.label > :first-child {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+}
+.desc {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--fg-muted);
+}
+.control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+.control input:not([type='checkbox']):not([type='radio']),
+.control select {
+  width: 280px;
+  max-width: 100%;
+}
+.value {
+  font-size: 14px;
+  color: var(--fg-muted);
+  margin-right: 8px;
+  overflow-wrap: anywhere;
+}
+.save {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  padding-top: 16px;
+  flex-wrap: wrap;
+}
+.note {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--fg-muted);
+  padding-top: 12px;
+}
+.item {
+  border-bottom: 1px solid var(--border);
+}
+.item > .row {
+  border-bottom: 0;
+}
+.sub {
+  margin-bottom: 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-subtle);
+}
+.sub input {
+  width: 100%;
+}
+.subActions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.subFull {
+  grid-column: 1 / -1;
+}
+.dangerTitle {
+  color: var(--err);
+}
+.dangerBox {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  margin-top: 16px;
+}
+.dangerBox .row {
+  padding: 16px 20px;
+}
+.dangerBox .row:last-child {
+  border-bottom: 0;
+}
+.dangerLine {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--err) 45%, var(--border-strong));
+  color: var(--err);
+}
+.dangerLine:hover {
+  background: var(--err-soft);
+}
+
+/* H2 · members */
+.mem {
+  margin-top: 16px;
+}
+.table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 14px;
+}
+.table th {
+  height: 40px;
+  padding: 0 16px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-subtle);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  background: var(--bg-subtle);
+}
+.table th:first-child {
+  border-top-left-radius: var(--r-md);
+}
+.table th:last-child {
+  border-top-right-radius: var(--r-md);
+}
+.table td {
+  height: 60px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.table tr:last-child td {
+  border-bottom: 0;
+}
+.who {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.whoText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.whoText > :first-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  min-width: 0;
+}
+.whoText > :last-child {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--fg-muted);
+}
+.ellip {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pendingAvatar {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px dashed var(--border-strong);
+  color: var(--fg-subtle);
+}
+.roleBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  margin-left: -8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  color: inherit;
+  cursor: pointer;
+}
+.roleBtn svg {
+  color: var(--fg-subtle);
+}
+.roleBtn:hover {
+  background: var(--neutral-soft);
+}
+.roleFixed {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.lock {
+  display: inline-flex;
+  color: var(--fg-subtle);
+}
+.acts {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.roles {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+.roles > div {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 18px;
+}
+.roles dt {
+  font-weight: 500;
+}
+.roles dd {
+  margin: 0;
+  color: var(--fg-muted);
+}
+.mems {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.memItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.memWho {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.memName {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  min-width: 0;
+}
+.memMail {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--fg-muted);
+}
+.memState {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.memCtl {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+
+/* D7 · invite */
+.seats {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-subtle);
+}
+.seatsTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.pips {
+  display: inline-flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.pips i {
+  width: 14px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+}
+.pips i.pipOn {
+  background: var(--fg-muted);
+}
+.pips i.pipNew {
+  background: var(--accent);
+}
+
+/* H3 · networks */
+.netId {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.netId .label {
+  flex: 1;
+}
+.netState {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.netBadge {
+  margin-right: 8px;
+}
+
+/* I2 */
+.swHit {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 36px;
+  margin-right: -6px;
+  flex: none;
+}
+
+@media (max-width: 860px) {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+  .side {
+    flex-direction: row;
+    overflow-x: auto;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+/* M10: on a phone the sections are a list; the open one shows its content right below its row. */
+@media (max-width: 639px) {
+  .split {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+  .side {
+    display: contents;
+  }
+  .sideItem {
+    height: auto;
+    min-height: 64px;
+    gap: 12px;
+    padding: 10px 12px 10px 16px;
+    margin-top: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    color: var(--fg);
+    white-space: normal;
+  }
+  .sideItem:first-child {
+    margin-top: 0;
+  }
+  .sideItem > svg:first-child {
+    color: var(--fg-muted);
+    flex: none;
+  }
+  .sideItem[aria-current='page'] {
+    background: var(--surface);
+    font-weight: 400;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+  .sideTitle {
+    font-size: 15px;
+    line-height: 20px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .sideSummary {
+    display: block;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--fg-muted);
+  }
+  .chev {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    flex: none;
+    color: var(--fg-subtle);
+    transition: transform 0.15s;
+  }
+  .sideItem[aria-current='page'] .chev {
+    transform: rotate(180deg);
+  }
+  .content {
+    gap: 24px;
+    padding: 4px 16px 16px;
+    border: 1px solid var(--border);
+    border-top: 0;
+    border-radius: 0 0 var(--r-md) var(--r-md);
+    background: var(--surface);
+  }
+  .head {
+    padding-top: 12px;
+  }
+  .control,
+  .control input:not([type='checkbox']):not([type='radio']),
+  .control select {
+    width: 100%;
+  }
+  .control {
+    justify-content: flex-start;
+  }
+  .rowTight .control {
+    width: auto;
+  }
+  .dangerBox {
+    background: transparent;
+  }
+  .dangerBox .row {
+    padding: 14px 16px;
+  }
+  .netState {
+    justify-content: flex-start;
+    width: 100%;
+    padding-left: 44px;
+  }
+  .roles > div {
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 12px;
+  }
+  .save {
+    justify-content: space-between;
+  }
+}
+.pendingEmail {
+  margin-bottom: 16px;
+}
+@media (max-width: 639px) {
+  .split {
+    align-items: stretch;
+  }
+}
