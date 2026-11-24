@@ -9,6 +9,7 @@ from apps.videos.services.ai.project_lock import (
     ProjectLockedError,
     ProjectLockLostError,
     project_lock,
+    project_lock_held,
 )
 from apps.videos.tests.fakes import DownRedis, FakeRedis
 
@@ -67,6 +68,24 @@ class ProjectLockTests(SimpleTestCase):
 
         from_url.assert_called_once()
         self.assertEqual(from_url.call_args.args[0], "redis://example:6379/5")
+
+
+class ProjectLockHeldTests(SimpleTestCase):
+    """Read-only check used by the dry run of recover_stuck_renders."""
+
+    def test_tells_whether_the_project_is_held_without_taking_the_lock(self):
+        client = FakeRedis()
+
+        self.assertFalse(project_lock_held("p1", client=client))
+        with project_lock("p1", client=client, heartbeat=False):
+            self.assertTrue(project_lock_held("p1", client=client))
+            self.assertFalse(project_lock_held("p2", client=client))
+        self.assertFalse(project_lock_held("p1", client=client))
+        self.assertEqual(client.held, {})
+
+    def test_unreachable_redis_raises_a_retryable_error(self):
+        with self.assertRaises(RetryableAIError):
+            project_lock_held("p1", client=DownRedis())
 
 
 class ProjectLockRenewalTests(SimpleTestCase):

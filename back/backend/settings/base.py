@@ -247,12 +247,21 @@ PIPELINE_SOFT_TIME_LIMIT = env.int('PIPELINE_SOFT_TIME_LIMIT', default=2 * 3600)
 PIPELINE_TIME_LIMIT = env.int('PIPELINE_TIME_LIMIT', default=PIPELINE_SOFT_TIME_LIMIT + 300)
 # Ceiling for one paper-edit render (render_video_segments). The soft limit is a
 # final failure: the project fails and its render reservation is returned. The
-# hard limit only kills a worker that ignored it (no refund then: the project
-# stays RENDERING until settle_stale_reservations reports it). Both must stay
-# below CELERY_VISIBILITY_TIMEOUT.
+# hard limit only kills a worker that ignored it: Celery acks that message, so
+# nothing redelivers it and recover_stuck_renders picks the project up. Both
+# must stay below CELERY_VISIBILITY_TIMEOUT.
 RENDER_SEGMENTS_SOFT_TIME_LIMIT = env.int('RENDER_SEGMENTS_SOFT_TIME_LIMIT', default=3 * 3600)
 RENDER_SEGMENTS_TIME_LIMIT = env.int(
     'RENDER_SEGMENTS_TIME_LIMIT', default=RENDER_SEGMENTS_SOFT_TIME_LIMIT + 300,
+)
+# A paper edit still RENDERING, with its render reservation RESERVED and no
+# project lock held, that did not start (nor get approved or re-queued) for
+# this long has no render left: recover_stuck_renders re-queues it or fails it
+# and returns the reservation. Must be greater than RENDER_SEGMENTS_TIME_LIMIT:
+# a render that started less than that ago may still be running, even if its
+# lock lapsed during a Redis blip.
+RENDER_STUCK_AFTER_SECONDS = env.int(
+    'RENDER_STUCK_AFTER_SECONDS', default=RENDER_SEGMENTS_TIME_LIMIT + 15 * 60,
 )
 
 # Heavy MoviePy renders get their own queue so they cannot starve ingestion.
@@ -285,6 +294,13 @@ PREVIEW_MAX_ACTIVE_PER_WORKSPACE = env.int('PREVIEW_MAX_ACTIVE_PER_WORKSPACE', d
 CELERY_BEAT_SCHEDULE = {
     'cleanup-expired-previews': {
         'task': 'apps.videos.tasks.cleanup_expired_previews',
+        'schedule': 15 * 60,
+    },
+    # Paper edits left RENDERING with their tokens reserved (a hard time limit,
+    # a lost redelivery). Without a beat process, the same routine runs from
+    # cron: manage.py recover_stuck_renders --apply.
+    'recover-stuck-renders': {
+        'task': 'apps.videos.tasks.recover_stuck_renders',
         'schedule': 15 * 60,
     },
 }

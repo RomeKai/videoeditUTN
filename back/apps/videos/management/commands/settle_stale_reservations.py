@@ -22,6 +22,8 @@ Rules (the same the pipeline applies, see tasks/ingestion.py and tasks/render.py
         project with final_export_r2_key (delivered)       -> commit
         project failed                                     -> rollback
         anything else (still rendering)                    -> report only
+    A render stuck in RENDERING is left to recover_stuck_renders, which
+    re-queues it, or completes or fails it and settles its reservation.
     Not linked to any project                              -> report only
 
 Safety

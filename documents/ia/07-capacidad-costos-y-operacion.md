@@ -20,6 +20,7 @@ Este documento cubre lo transversal del core de IA: el control de capacidad prop
 | Export del piloto | [export_ai_pilot_metrics.py](../../back/apps/videos/management/commands/export_ai_pilot_metrics.py) | CSV o JSONL por registro o por proyecto |
 | Evaluación de transcripción | [evaluate_ai_transcription.py](../../back/apps/videos/management/commands/evaluate_ai_transcription.py) | WER y error de timestamps contra referencias humanas |
 | Barrido de reservas | [settle_stale_reservations.py](../../back/apps/videos/management/commands/settle_stale_reservations.py) | Reporta las reservas de tokens que quedaron `RESERVED` y, con `--apply`, las cobra o las devuelve según el estado del proyecto |
+| Renders trabados | [tasks/render_recovery.py](../../back/apps/videos/tasks/render_recovery.py), [recover_stuck_renders.py](../../back/apps/videos/management/commands/recover_stuck_renders.py) | `recover_stuck_renders` (Celery Beat) y el comando del mismo nombre: re-encolan, completan o fallan con reembolso los paper edits que quedaron `RENDERING` con la reserva tomada |
 
 ## Flujo: reserva y ajuste de capacidad
 
@@ -276,7 +277,7 @@ Pasos de la habilitación gradual y del rollback: [runbook §5.3](../runbooks/ai
 | `AIUsageRecord` | Todas las columnas | `stage`, `pipeline_version`, `attempt`, `role`, `provider`, `model`, `resolved_model`, `success`, `error_code`, tokens, `audio_seconds`, `latency_seconds`, `cached`, `estimated_cost_usd`, `pricing_version`, `created_at`. `project` sin constraint en la base: borrar un proyecto no borra sus filas |
 | `ScheduledPost.error_log` | `capacity_timeout` | Espera vencida en SEO |
 | `Transaction` | `created_at` | Cuándo se hizo la reserva (migración `payments.0003`). Las filas anteriores a la migración tienen la hora en que corrió. La usa `settle_stale_reservations` |
-| `Transaction` | `status` | `settle_stale_reservations --apply`: `COMPLETED` (cobrada) o `FAILED` (devuelta), por `commit_reservation` y `rollback_reservation` |
+| `Transaction` | `status` | `settle_stale_reservations --apply`: `COMPLETED` (cobrada) o `FAILED` (devuelta), por `commit_reservation` y `rollback_reservation`. `recover_stuck_renders` liquida la reserva del render de la misma forma |
 
 ## Configuración
 
@@ -313,7 +314,9 @@ Todos los settings de IA de [settings/base.py](../../back/backend/settings/base.
 | `PIPELINE_SOFT_TIME_LIMIT` | `7200` | Soft time limit de `process_initial_ingestion`: falla con `SoftTimeLimitExceeded` y libera el lock |
 | `PIPELINE_TIME_LIMIT` | `PIPELINE_SOFT_TIME_LIMIT + 300` | Hard time limit: mata al worker que ignoró el soft |
 | `RENDER_SEGMENTS_SOFT_TIME_LIMIT` | `10800` | Soft time limit de `render_video_segments` (paper edit): el proyecto falla y se devuelve la reserva del render |
-| `RENDER_SEGMENTS_TIME_LIMIT` | `RENDER_SEGMENTS_SOFT_TIME_LIMIT + 300` | Hard time limit del paper edit. Sin reembolso automático: queda para `settle_stale_reservations`. Menor que el `visibility_timeout` |
+| `RENDER_SEGMENTS_TIME_LIMIT` | `RENDER_SEGMENTS_SOFT_TIME_LIMIT + 300` | Hard time limit del paper edit. Celery hace ack de ese mensaje: el proyecto lo levanta `recover_stuck_renders`. Menor que el `visibility_timeout` |
+| `RENDER_STUCK_AFTER_SECONDS` | `RENDER_SEGMENTS_TIME_LIMIT + 900` | Tiempo sin inicio, aprobación ni re-encolado tras el cual `recover_stuck_renders` da por trabado un paper edit. Tiene que ser mayor que `RENDER_SEGMENTS_TIME_LIMIT` |
+| `CELERY_BEAT_SCHEDULE` | `cleanup-expired-previews` y `recover-stuck-renders`, cada 15 min | Fijo en código. Solo corre si hay un proceso `celery beat`; `docker-compose.yml` no lo levanta (ver [renders trabados](#operación-renders-del-paper-edit-trabados)) |
 | `CELERY_TASK_ROUTES` | `render_clip_task` y `render_video_segments` a la cola `render` | Fijo en código. El resto va a la cola `celery` |
 | `CELERY_WORKER_PREFETCH_MULTIPLIER` | `1` | Fijo en código. Un worker solo reserva la tarea que corre |
 | `AI_CAPACITY_ENABLED` | `False` | Prende los buckets de capacidad |
@@ -334,7 +337,7 @@ Los eventos tienen nombre estable y llevan ids, códigos y números, nunca texto
 
 | Prefijo | Eventos principales | Dónde |
 |---------|---------------------|-------|
-| `pipeline.` | `started`, `stage_started`, `stage_completed`, `stage_failed`, `advanced`, `failed` (con `final` y la clase del error), `skipped`, `lock_busy_retrying` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py), [pipeline_state.py](../../back/apps/videos/services/ai/pipeline_state.py) |
+| `pipeline.` | `started`, `stage_started`, `stage_completed`, `stage_failed`, `advanced`, `failed` (con `final` y la clase del error), `skipped`, `lock_busy_retrying`, `requeue_not_published` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py), [pipeline_state.py](../../back/apps/videos/services/ai/pipeline_state.py) |
 | `pipeline.` (capacidad) | `pending_capacity` (`stage`, `countdown_s`, `planned_s`), `capacity_granted` (`waited_s`), `capacity_timeout` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py), [tasks/shared.py](../../back/apps/videos/tasks/shared.py) |
 | `pipeline.` (lock y estado) | `lock_lost`, `lock_renew_failed`, `lock_not_owned`, `lock_release_failed`, `status_write_skipped`, `status_write_failed`, `mark_failed_skipped`, `fail_skipped`, `failure_not_recorded` | [project_lock.py](../../back/apps/videos/services/ai/project_lock.py), [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) |
 | `pipeline.` (reserva de tokens) | `refunded`, `refund_skipped` (`has_clips`, `no_reservation`, `not_reserved`), `refund_failed` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) |
@@ -349,7 +352,7 @@ Los eventos tienen nombre estable y llevan ids, códigos y números, nunca texto
 | `upload.` | `rejected` (`code`), `probe_failed` | [media_validation.py](../../back/apps/videos/services/media_validation.py) |
 | `face_tracker.` | `mediapipe_unavailable`, `detector_unavailable`, `detector_failed`, `tracked`, `no_faces`, `failed`, `all_frames_failed` | [face_tracker.py](../../back/apps/videos/services/face_tracker.py) |
 | `speaker.` / `layout.` | `speaker.timeline`, `speaker.audio_failed`, `speaker.frames_failed`, `layout.active_speaker`, `layout.active_speaker_failed` | [speaker_engine.py](../../back/apps/videos/services/speaker_engine.py), [layouts/pro.py](../../back/apps/videos/services/layouts/pro.py) |
-| `render.` | `dispatch_failed`, `retrying`, `release_failed`, `retry_not_queued`, `failure_not_recorded`; del paper edit, `already_delivered`, `restarted`, `lock_busy_retrying`, `skipped`, `not_persisted`, `lock_lost`, `orphan_not_deleted`, `start_not_closed`, `cleanup_failed`, `charged`, `refunded`, `settle_skipped`, `settle_failed`. También `pipeline.render_redispatched` y `pipeline.render_finalized` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py), [tasks/render.py](../../back/apps/videos/tasks/render.py) |
+| `render.` | `dispatch_failed`, `retrying`, `release_failed`, `retry_not_queued`, `failure_not_recorded`; del paper edit, `already_delivered`, `restarted`, `lock_busy_retrying`, `requeue_not_published`, `skipped`, `not_persisted`, `lock_lost`, `orphan_not_deleted`, `start_not_closed`, `cleanup_failed`, `charged`, `refunded`, `settle_skipped`, `settle_failed`; de los renders trabados, `recovery_requeued`, `recovery_delivered`, `recovery_failed`, `recovery_error`, `recovery_done`. También `pipeline.render_redispatched` y `pipeline.render_finalized` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py), [tasks/render.py](../../back/apps/videos/tasks/render.py), [tasks/render_recovery.py](../../back/apps/videos/tasks/render_recovery.py) |
 
 ### Qué mirar si...
 
@@ -365,12 +368,13 @@ Los eventos tienen nombre estable y llevan ids, códigos y números, nunca texto
 | Un bucket parece no recuperarse | `capacity.settle_failed` (el ajuste no se aplicó) o una demanda mayor que el bucket que lo dejó negativo. Revisar la clave `capacity:v1:...` en Valkey |
 | Post `FAILED` por SEO | `error_log`: `capacity_timeout`, `content_blocked`, `generated_content_blocked`, `seo_no_clip_transcript`, un código `moderation_*`, `seo_generation_failed:<clase>` o `seo_failed:<clase>`. Ver [05](05-seo-y-publicacion.md) |
 | Los renders por clip no avanzan | Que algún worker consuma la cola `render` (`-Q celery,render`) |
+| Un paper edit lleva horas en `RENDERING` | Correr `recover_stuck_renders` en modo reporte (ver [abajo](#operación-renders-del-paper-edit-trabados)). Buscar `render.recovery_` y, si hubo un corte del broker, `render.requeue_not_published` |
 | Saldo reservado que no baja, o una reserva `RESERVED` de un proyecto que ya terminó | Correr `settle_stale_reservations` en modo reporte (ver [abajo](#operación-reservas-de-tokens-que-quedaron-reserved)). Buscar también `pipeline.charge_failed`, `pipeline.refund_failed` y `render.settle_failed` |
 | El layout no sigue caras | `face_tracker.mediapipe_unavailable`, `face_tracker.detector_unavailable` o `face_tracker.no_faces`: el recorte vuelve al centro. Ver [06](06-render-caras-y-hablante.md) |
 
 ## Operación: reservas de tokens que quedaron RESERVED
 
-El pipeline liquida cada reserva: la de creación (`metadata['reservation_id']`) se cobra cuando hay clips y se devuelve si el proyecto falla sin clips (en un video completo, cuando el video se entrega: ver [02](02-pipeline-de-ingesta.md)); la del render (`metadata['render_reservation_id']`) se cobra cuando el paper edit se entrega y se devuelve si falla del todo. Igual pueden quedar reservas `RESERVED`: las de antes de que existiera el cobro, un cobro o una devolución que falló por un error de base (`pipeline.charge_failed`, `pipeline.refund_failed`, `render.settle_failed`) o un render cuyo worker murió. `settle_stale_reservations` las encuentra y las liquida con las mismas reglas.
+El pipeline liquida cada reserva: la de creación (`metadata['reservation_id']`) se cobra cuando hay clips y se devuelve si el proyecto falla sin clips (en un video completo, cuando el video se entrega: ver [02](02-pipeline-de-ingesta.md)); la del render (`metadata['render_reservation_id']`) se cobra cuando el paper edit se entrega y se devuelve si falla del todo. Igual pueden quedar reservas `RESERVED`: las de antes de que existiera el cobro y las de un cobro o una devolución que falló por un error de base (`pipeline.charge_failed`, `pipeline.refund_failed`, `render.settle_failed`), o un render entregado cuyo worker murió antes de cobrar sin que nada lo re-entregara. `settle_stale_reservations` las encuentra y las liquida con las mismas reglas. Un paper edit que quedó `RENDERING` sin worker no es de este barrido: lo resuelve `recover_stuck_renders` ([abajo](#operación-renders-del-paper-edit-trabados)).
 
 ```bash
 # Solo reporta (dry run): no escribe nada
@@ -395,14 +399,34 @@ Solo mira transacciones `RESERVED` con `created_at` de hace al menos `--min-age-
 | Creación de un video completo | Cualquier otra etapa, incluidas `clips_selected` y `render_dispatched` (`not_final`) | Solo reporta |
 | Render | Con `final_export_r2_key`, aunque esté `FAILED` (`render_delivered`) | Cobra |
 | Render | `FAILED` (`render_failed`) | Devuelve |
-| Render | Otro estado, por ejemplo `RENDERING` (`render_in_progress`) | Solo reporta |
+| Render | Otro estado, por ejemplo `RENDERING` (`render_in_progress`) | Solo reporta. Si está trabado, lo resuelve `recover_stuck_renders` |
 | Sin proyecto (`unlinked`) | — | Solo reporta |
 
 - **Seguridad.** Sin `--apply` no escribe nada. Con `--apply` vuelve a decidir con el lock de fila del proyecto tomado y liquida con `wallet_service.commit_reservation` o `rollback_reservation`, que bloquean la transacción y vuelven a chequear que siga `RESERVED`. Si el pipeline la liquidó mientras tanto, el resultado es `already_settled`; si el proyecto cambió y ahora toca solo reportar, `skipped`.
 - **Antigüedad.** El mínimo de 24 h deja afuera reservas de proyectos que siguen trabajando, por ejemplo un render que espera su reintento. Las transacciones anteriores a la migración `payments.0003` tienen como `created_at` la hora de la migración: el barrido las toma un `--min-age-hours` después del deploy.
 - **Salida.** Una línea por transacción, sin texto del usuario (ni la descripción de la transacción, que lleva el título del proyecto): `transaction`, `amount`, `age_h`, `kind` (`creation`, `render` o `-`), `project`, `stage`, `status`, `action` (`commit`, `rollback` o `report`), `reason` y `result` (`dry_run`, `reported`, `committed`, `rolled_back`, `already_settled`, `skipped` o `error=<clase>`). Al final, una línea `summary` con los totales.
 - **Errores.** Un error de pago o de base en una transacción se informa en su línea y el barrido sigue. Si hubo alguno, el comando termina con error (código 1) para que un cron lo note.
-- **Lo que queda en reporte** se resuelve a mano: un render que sigue `RENDERING` sin worker (por ejemplo, después del hard time limit) se re-encola (`render_video_segments`) o se marca `FAILED` para que el próximo barrido devuelva la reserva; una reserva sin proyecto se revisa con el workspace dueño de la billetera.
+- **Lo que queda en reporte.** Un render que sigue `RENDERING` sin worker lo resuelve `recover_stuck_renders`: no hace falta tocarlo a mano. Una reserva sin proyecto se revisa con el workspace dueño de la billetera.
+
+## Operación: renders del paper edit trabados
+
+Un paper edit puede quedar `RENDERING` con la reserva del render tomada y ningún mensaje que lo traiga de vuelta: el hard time limit (`RENDER_SEGMENTS_TIME_LIMIT`, Celery hace ack de ese mensaje), una re-entrega perdida después de un corte del broker, o un `delay` de la aprobación que falló. `recover_stuck_renders` los encuentra y decide con las reglas de [06, Paper edit](06-render-caras-y-hablante.md): re-encola una vez, completa y cobra si la exportación ya estaba guardada, o falla con `render_stuck` y devuelve la reserva.
+
+**Cómo corre.** La tarea `recover_stuck_renders` está en `CELERY_BEAT_SCHEDULE` cada 15 min, pero `docker-compose.yml` no levanta un proceso beat. Donde no haya beat, correr el comando desde cron con `--apply`. Los dos pueden convivir: cada proyecto se vuelve a decidir con su lock.
+
+```bash
+# Solo reporta (dry run): no escribe nada ni toma locks
+docker compose exec web python manage.py recover_stuck_renders
+# Re-encola, completa o falla lo trabado
+docker compose exec web python manage.py recover_stuck_renders --apply
+# Cron sin beat, cada 15 min
+*/15 * * * * cd /ruta/al/repo && docker compose exec -T web python manage.py recover_stuck_renders --apply
+```
+
+- **Candidatos.** Proyectos `RENDERING` con `metadata['render_reservation_id']`. No toca uno con el lock tomado (`lock_held`), ni uno que empezó, se aprobó o se re-encoló hace menos de `RENDER_STUCK_AFTER_SECONDS` (`recent`), ni un video completo (`whole_video`).
+- **Seguridad.** Con `--apply` toma el lock del proyecto y el lock de fila y vuelve a decidir. Re-encola dentro de la transacción: si el broker no acepta el mensaje, no queda anotado y la próxima corrida lo intenta de nuevo. Nunca devuelve la reserva de un render cuya exportación se guardó, y un proyecto `COMPLETED` nunca es candidato.
+- **Salida.** Una línea por candidato, sin texto del usuario: `project`, `unfinished_starts`, `requeues`, `idle_min` (minutos desde el último inicio, aprobación o re-encolado), `action` (`requeue`, `deliver`, `fail`, `skip` o `error`), `reason` (`no_render_left`, `export_saved`, `lost_starts`, `requeues`, `lock_held`, `recent`, `reservation_settled`, `whole_video`, `no_reservation` o `gone`) y `result` (`dry_run`, `requeued`, `delivered`, `failed`, `skipped` o `error=<clase>`). Al final, una línea `summary` con los totales. La tarea de beat loguea lo mismo como `render.recovery_done`.
+- **Errores.** Un error en un proyecto se informa en su línea (`render.recovery_error`, con la clase) y la corrida sigue. Si hubo alguno, el comando termina con error (código 1) para que un cron lo note.
 
 ## Referencias
 

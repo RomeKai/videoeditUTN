@@ -281,6 +281,7 @@ Correr la tarea dos veces sobre el mismo proyecto es seguro. Las piezas:
 |-----------|----------|-------|
 | Redis caído al tomar el lock | `RetryableAIError` → reintento con backoff. Nunca se procesa sin lock | `project_lock` |
 | Lock tomado por otro worker | Re-encolado con `lock_retries` hasta 8 veces; después `pipeline.skipped` | `process_initial_ingestion` |
+| El re-encolado por lock no se puede publicar (broker caído) | `pipeline.requeue_not_published`, pausa de `LOCK_REQUEUE_NOT_PUBLISHED_PAUSE_SECONDS` (5 s) y `Reject(requeue=True)`: el mismo mensaje vuelve al broker con sus kwargs sin cambios. Con `acks_late`, volver a lanzar el error lo perdería (Celery hace ack de una tarea que falló), y `self.retry` publica otro mensaje que falla igual. Detalle en [06, Paper edit](06-render-caras-y-hablante.md) | `_publish_lock_requeue` |
 | Lock perdido a mitad de la corrida | El heartbeat loguea `pipeline.lock_lost`; el próximo `renew()` lanza `ProjectLockLostError` y la tarea termina con `pipeline.skipped` sin marcar fallo | `ProjectLockHandle.renew` |
 | Error transitorio de Redis al renovar | Solo `pipeline.lock_renew_failed`: el TTL restante cubre unas renovaciones perdidas | `ProjectLockHandle.renew` |
 | Otro worker avanzó el proyecto | `PipelineConflictError` → `pipeline.skipped`. Las filas de uso de la llamada ya cobrada se escriben igual | `advance`, `_persist_then_record_usage` |
@@ -325,7 +326,7 @@ Correr la tarea dos veces sobre el mismo proyecto es seguro. Las piezas:
 
 **`AIUsageRecord`**: filas de `transcription` y `selection` (y `prompt_parse`, ver [04](04-prompt-to-edit.md)). La columna `attempt` es el `pipeline_attempts` del momento: 0 en la primera corrida. Detalle en [03](03-transcripcion-moderacion-seleccion.md#datos-que-escribe) y costos en [07](07-capacidad-costos-y-operacion.md).
 
-**Logs** (sin texto del usuario): `pipeline.started`, `pipeline.stage_started`, `pipeline.stage_completed`, `pipeline.stage_failed`, `pipeline.advanced`, `pipeline.failed`, `pipeline.fail_skipped`, `pipeline.mark_failed_skipped`, `pipeline.failure_not_recorded`, `pipeline.status_write_skipped`, `pipeline.status_write_failed`, `pipeline.refunded`, `pipeline.refund_skipped` (`reason=has_clips`, `no_reservation` o `not_reserved`), `pipeline.refund_failed`, `pipeline.lock_busy_retrying`, `pipeline.skipped`, `pipeline.lock_lost`, `pipeline.lock_renew_failed`, `pipeline.lock_not_owned`, `pipeline.lock_release_failed`, `pipeline.pending_capacity`, `pipeline.capacity_granted`, `pipeline.capacity_timeout`, `pipeline.render_redispatched`, `render.dispatch_failed`, `prompt_parse.retrying` y `prompt_parse.capacity_timeout`.
+**Logs** (sin texto del usuario): `pipeline.started`, `pipeline.stage_started`, `pipeline.stage_completed`, `pipeline.stage_failed`, `pipeline.advanced`, `pipeline.failed`, `pipeline.fail_skipped`, `pipeline.mark_failed_skipped`, `pipeline.failure_not_recorded`, `pipeline.status_write_skipped`, `pipeline.status_write_failed`, `pipeline.refunded`, `pipeline.refund_skipped` (`reason=has_clips`, `no_reservation` o `not_reserved`), `pipeline.refund_failed`, `pipeline.lock_busy_retrying`, `pipeline.requeue_not_published`, `pipeline.skipped`, `pipeline.lock_lost`, `pipeline.lock_renew_failed`, `pipeline.lock_not_owned`, `pipeline.lock_release_failed`, `pipeline.pending_capacity`, `pipeline.capacity_granted`, `pipeline.capacity_timeout`, `pipeline.render_redispatched`, `render.dispatch_failed`, `prompt_parse.retrying` y `prompt_parse.capacity_timeout`.
 
 ## Configuración
 
@@ -342,7 +343,7 @@ Correr la tarea dos veces sobre el mismo proyecto es seguro. Las piezas:
 | `AI_CAPACITY_MAX_WAIT_SECONDS` | 3600 | Espera máxima por etapa antes de `CapacityTimeoutError` |
 | `AI_CAPACITY_MAX_COUNTDOWN_SECONDS` | 300 | Tope de cada re-encolado por capacidad |
 
-Constantes del código (no son settings): `PIPELINE_MAX_RETRIES` = 5, `PIPELINE_RETRY_BASE_SECONDS` = 30, `PIPELINE_RETRY_CAP_SECONDS` = 600, `PIPELINE_LOCK_RETRY_SECONDS` = 45, `PIPELINE_LOCK_MAX_RETRIES` = 8 ([tasks/shared.py](../../back/apps/videos/tasks/shared.py); los dos del lock los usa también el render del paper edit); `PTE_PARSE_MAX_RETRIES` = 2, `PTE_PARSE_RETRY_SECONDS` = (30, 90) ([tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py)). `CELERY_WORKER_PREFETCH_MULTIPLIER` = 1 en `settings/base.py`.
+Constantes del código (no son settings): `PIPELINE_MAX_RETRIES` = 5, `PIPELINE_RETRY_BASE_SECONDS` = 30, `PIPELINE_RETRY_CAP_SECONDS` = 600, `PIPELINE_LOCK_RETRY_SECONDS` = 45, `PIPELINE_LOCK_MAX_RETRIES` = 8, `LOCK_REQUEUE_NOT_PUBLISHED_PAUSE_SECONDS` = 5 ([tasks/shared.py](../../back/apps/videos/tasks/shared.py); los del lock los usa también el render del paper edit); `PTE_PARSE_MAX_RETRIES` = 2, `PTE_PARSE_RETRY_SECONDS` = (30, 90) ([tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py)). `CELERY_WORKER_PREFETCH_MULTIPLIER` = 1 en `settings/base.py`.
 
 ## Referencias
 

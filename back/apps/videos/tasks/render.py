@@ -67,6 +67,7 @@ from apps.videos.tasks.shared import (
     PIPELINE_LOCK_RETRY_SECONDS,
     _is_retryable_pipeline_error,
     _is_transient_storage_connection_error,
+    _publish_lock_requeue,
     _retry_countdown,
 )
 
@@ -395,13 +396,17 @@ def _bump_unfinished_starts(project_id, delta):
     Adds ``delta`` to ``metadata['render_unfinished_starts']`` under the row
     lock and returns the value it had before: +1 when a render starts, -1 when
     that start ends (delivered or with a handled error). What is left are the
-    starts whose worker died.
+    starts whose worker died. A start also records when it happened
+    (``metadata['render_started_at']``): recover_stuck_renders leaves alone a
+    project that started within RENDER_STUCK_AFTER_SECONDS.
     """
     with transaction.atomic():
         project = VideoProject.objects.select_for_update().get(pk=project_id)
         metadata = dict(project.metadata or {})
         before = int(metadata.get('render_unfinished_starts') or 0)
         metadata['render_unfinished_starts'] = max(0, before + delta)
+        if delta > 0:
+            metadata['render_started_at'] = timezone.now().isoformat()
         VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
     return before
 
@@ -721,7 +726,10 @@ def _handle_render_error(task, project_id, exc, attempt):
 # - starts that never finished are capped (RENDER_SEGMENTS_MAX_REDELIVERIES),
 #   so a render that always kills its worker fails and is refunded.
 # The soft time limit (RENDER_SEGMENTS_SOFT_TIME_LIMIT) is a final failure with
-# refund; both limits stay below CELERY_VISIBILITY_TIMEOUT.
+# refund; both limits stay below CELERY_VISIBILITY_TIMEOUT. A worker killed by
+# the hard limit gets no redelivery (Celery acks it), and neither does a lost
+# redelivery: recover_stuck_renders (render_recovery.py) re-queues or fails
+# those projects.
 @celery_app.task(name='apps.videos.tasks.render_video_segments',
     bind=True,
     max_retries=2,
@@ -757,11 +765,17 @@ def render_video_segments(self, project_id):
             logger.warning(
                 "render.lock_busy_retrying project_id=%s lock_retry=%d", project_id, lock_retries + 1,
             )
-            render_video_segments.apply_async(
-                args=[str(project_id)],
-                headers={RENDER_LOCK_RETRIES_HEADER: lock_retries + 1},
-                countdown=PIPELINE_LOCK_RETRY_SECONDS,
-                retries=self.request.retries,
+            # Not published (broker down): this message goes back to the
+            # broker instead of being acked away (_publish_lock_requeue).
+            _publish_lock_requeue(
+                self,
+                lambda: render_video_segments.apply_async(
+                    args=[str(project_id)],
+                    headers={RENDER_LOCK_RETRIES_HEADER: lock_retries + 1},
+                    countdown=PIPELINE_LOCK_RETRY_SECONDS,
+                    retries=self.request.retries,
+                ),
+                "render.requeue_not_published", project_id,
             )
             return f"Lock busy, re-queued {project_id}"
         # Still held after outlasting the TTL: a live worker is rendering it.

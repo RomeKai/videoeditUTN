@@ -79,6 +79,7 @@ from apps.videos.tasks.shared import (
     _llm_usage_by_model,
     _merge_metadata,
     _persist_then_record_usage,
+    _publish_lock_requeue,
     _record_call_failure,
     _retry_countdown,
     _selection_failure_usage,
@@ -1250,11 +1251,17 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
                 extra={'project_id': str(project_id), 'attempt': attempt},
             )
             # Re-queued, not self.retry(): the error retry count travels unchanged.
-            process_initial_ingestion.apply_async(
-                args=[str(project_id)],
-                kwargs={'lock_retries': lock_retries + 1, 'parse_retries': parse_retries},
-                countdown=PIPELINE_LOCK_RETRY_SECONDS,
-                retries=self.request.retries,
+            # Not published (broker down): this message goes back to the
+            # broker instead of being acked away (_publish_lock_requeue).
+            _publish_lock_requeue(
+                self,
+                lambda: process_initial_ingestion.apply_async(
+                    args=[str(project_id)],
+                    kwargs={'lock_retries': lock_retries + 1, 'parse_retries': parse_retries},
+                    countdown=PIPELINE_LOCK_RETRY_SECONDS,
+                    retries=self.request.retries,
+                ),
+                "pipeline.requeue_not_published", project_id,
             )
             return f"Lock busy, re-queued {project_id}"
         # Still held after outlasting the TTL: a live worker owns the project.
