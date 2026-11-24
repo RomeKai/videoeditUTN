@@ -19,6 +19,7 @@ from apps.videos.models import VideoProject
 from apps.videos.services.ai.errors import NonRetryableAIError
 from apps.videos.services.segments import InvalidSegmentsError, validate_approved_segments
 from apps.videos.tasks import render_video_segments
+from apps.videos.tests.fakes import FakeRedis
 
 User = get_user_model()
 
@@ -29,6 +30,7 @@ CONCATENATE = "moviepy.concatenate_videoclips"
 LAYOUT = "apps.videos.services.layouts.get_layout_strategy"
 RESERVE = "apps.videos.views.wallet_service.reserve_funds"
 DELAY = "apps.videos.tasks.render_video_segments.delay"
+REDIS_CLIENT = "apps.videos.services.ai.project_lock.get_redis_client"
 
 SEGMENT_BOUNDS_MESSAGE = (
     "Los segmentos aprobados son inválidos: cada segmento debe tener "
@@ -160,13 +162,14 @@ def _render_mocks():
 
 
 @contextmanager
-def _patched_render(source, processed):
-    """Patches R2, MoviePy and the layout so the task runs without real media."""
+def _patched_render(source, processed, redis=None):
+    """Patches R2, MoviePy, the layout and the project lock's Redis so the task runs without real media."""
     client = MagicMock()
     client.download_file.side_effect = _fake_download
     media_root = tempfile.mkdtemp()
     try:
         with ExitStack() as stack:
+            stack.enter_context(patch(REDIS_CLIENT, return_value=redis or FakeRedis()))
             stack.enter_context(patch(GET_CLIENT, return_value=client))
             stack.enter_context(patch(VIDEO_FILE_CLIP, return_value=source))
             stack.enter_context(patch(CONCATENATE, return_value=MagicMock(duration=4.5)))

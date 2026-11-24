@@ -139,6 +139,7 @@ Después:
 - **Cobro:** lo que se paga es el render, así que la reserva de creación no se cobra en `clips_selected`. Cada llamada a `finalize_project_render` corre `_settle_whole_video_reservation`, que decide por cómo terminó el proyecto y no por la transición. Así también liquida un proyecto que salió de `render_dispatched` por otro camino (marcado `failed` mientras renderizaba) o un worker que murió entre cerrar y cobrar.
   - Con el proyecto en `completed`, `partial` o `failed`: si un clip quedó `completed` o `published`, la cobra. Si sigue `rendering`, espera. Si no, la devuelve.
   - Antes de eso no toca nada.
+  - La regla vive en `_whole_video_settlement` y la usa también `settle_stale_reservations` para las reservas de video completo que quedaron `RESERVED` ([07](07-capacidad-costos-y-operacion.md#operación-reservas-de-tokens-que-quedaron-reserved)).
 - **Reembolso al fallar:** `_refund_ingestion_reservation` devuelve la reserva aunque exista el clip, salvo que esté `rendering` o `completed`.
 - **Re-despacho:** la reserva tiene que seguir `reserved` (`_whole_video_is_paid`).
   - Al re-despachar un proyecto `failed` ya devuelto, no se reabre ni corre nada (`pipeline.redispatch_skipped`), y el proyecto conserva el código del error por el que falló. Así un override de moderación no crea un clip en un proyecto devuelto: hay que crear uno nuevo.
@@ -222,7 +223,7 @@ sequenceDiagram
     end
 ```
 
-1. `_is_retryable_pipeline_error` decide. Un `AIError` respeta su `is_retryable`. Fuera de eso reintentan: `TimeoutError` y `ConnectionError`; una `ModerationError` con `retryable=True`; `OperationalError` e `InterfaceError` de Django; `ClientError` de R2 con HTTP 5xx, 408, 429 o un código de `_TRANSIENT_S3_ERROR_CODES`; cualquier `BotoCoreError`; un `DownloadError` de yt-dlp sin ninguna marca de `_PERMANENT_DOWNLOAD_MARKERS`; errores del broker o de Redis; y un `OSError` que no sea de `_DETERMINISTIC_OS_ERRORS`. Todo lo demás es final, incluidos `UnsafeContentError`, `ImproperlyConfigured`, `ValueError` y `SoftTimeLimitExceeded`.
+1. `_is_retryable_pipeline_error` decide. Un `AIError` respeta su `is_retryable`. Fuera de eso reintentan: `TimeoutError` y `ConnectionError`; una `ModerationError` con `retryable=True`; `OperationalError` e `InterfaceError` de Django; `ClientError` de R2 con HTTP 5xx, 408, 429 o un código de `_TRANSIENT_S3_ERROR_CODES`; un `S3UploadFailedError` de boto3 (lo que lanza `upload_file`), salvo que envuelva un `ClientError` que no reintenta (por ejemplo, `AccessDenied`); cualquier `BotoCoreError`; un `DownloadError` de yt-dlp sin ninguna marca de `_PERMANENT_DOWNLOAD_MARKERS`; errores del broker o de Redis; y un `OSError` que no sea de `_DETERMINISTIC_OS_ERRORS`. Todo lo demás es final, incluidos `UnsafeContentError`, `ImproperlyConfigured`, `ValueError` y `SoftTimeLimitExceeded`.
 2. `_record_pipeline_failure` corre en **todo** fallo, se reintente o no: suma 1 a `pipeline_attempts` y guarda la clase del error en `pipeline_error_code` (`record_error`). Con `final=True` llama a `mark_failed(expected_stage=stage)`: si el proyecto ya no está en esa etapa (otro worker lo movió), no escribe nada.
 3. `_retry_countdown(retries)` es backoff exponencial con "equal jitter": techo `min(30 × 2^retries, 600)` y espera entre la mitad del techo y el techo. Para los 5 reintentos: 15–30 s, 30–60 s, 60–120 s, 120–240 s y 240–480 s (entre ~8 y ~15 min en total).
 4. Si el fallo final llega antes de leer el proyecto (`stage` es `None`, por ejemplo Redis caído al tomar el lock) y el proyecto ya está en `clips_selected` o más adelante (`_work_already_done`), no se lo marca `failed` (`pipeline.fail_skipped`).
@@ -341,7 +342,7 @@ Correr la tarea dos veces sobre el mismo proyecto es seguro. Las piezas:
 | `AI_CAPACITY_MAX_WAIT_SECONDS` | 3600 | Espera máxima por etapa antes de `CapacityTimeoutError` |
 | `AI_CAPACITY_MAX_COUNTDOWN_SECONDS` | 300 | Tope de cada re-encolado por capacidad |
 
-Constantes del código (no son settings): `PIPELINE_MAX_RETRIES` = 5, `PIPELINE_RETRY_BASE_SECONDS` = 30, `PIPELINE_RETRY_CAP_SECONDS` = 600 ([tasks/shared.py](../../back/apps/videos/tasks/shared.py)); `PIPELINE_LOCK_RETRY_SECONDS` = 45, `PIPELINE_LOCK_MAX_RETRIES` = 8, `PTE_PARSE_MAX_RETRIES` = 2, `PTE_PARSE_RETRY_SECONDS` = (30, 90) ([tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py)). `CELERY_WORKER_PREFETCH_MULTIPLIER` = 1 en `settings/base.py`.
+Constantes del código (no son settings): `PIPELINE_MAX_RETRIES` = 5, `PIPELINE_RETRY_BASE_SECONDS` = 30, `PIPELINE_RETRY_CAP_SECONDS` = 600, `PIPELINE_LOCK_RETRY_SECONDS` = 45, `PIPELINE_LOCK_MAX_RETRIES` = 8 ([tasks/shared.py](../../back/apps/videos/tasks/shared.py); los dos del lock los usa también el render del paper edit); `PTE_PARSE_MAX_RETRIES` = 2, `PTE_PARSE_RETRY_SECONDS` = (30, 90) ([tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py)). `CELERY_WORKER_PREFETCH_MULTIPLIER` = 1 en `settings/base.py`.
 
 ## Referencias
 

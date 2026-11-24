@@ -20,6 +20,8 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch, mock_open
 
+import httpx
+
 # Ensure back root is on sys.path
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACK_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "..", "..", "..", ".."))
@@ -136,18 +138,320 @@ class TestGroqProviderInitialization(unittest.TestCase):
         mock_settings.GROQ_API_KEY = None
         mock_settings.AI_DEFAULT_TRANSCRIPTION_MODEL = "whisper-large-v3-turbo"
 
+        mock_settings.AI_TRANSCRIPTION_TIMEOUT_SECONDS = 45.0
+
         with patch.object(_groq_stub, "Groq", MagicMock()) as MockGroq:
             provider = GroqTranscriptionProvider(api_key="gsk_test_key")
-            MockGroq.assert_called_once_with(api_key="gsk_test_key")
+            MockGroq.assert_called_once_with(
+                api_key="gsk_test_key", timeout=httpx.Timeout(45.0, connect=5.0), max_retries=0,
+            )
 
     @patch("apps.videos.services.ai.groq_transcription.settings")
     def test_settings_key_used_when_no_explicit_key(self, mock_settings):
         mock_settings.GROQ_API_KEY = "gsk_from_settings"
         mock_settings.AI_DEFAULT_TRANSCRIPTION_MODEL = "whisper-large-v3-turbo"
 
+        mock_settings.AI_TRANSCRIPTION_TIMEOUT_SECONDS = 45.0
+
         with patch.object(_groq_stub, "Groq", MagicMock()) as MockGroq:
             provider = GroqTranscriptionProvider()
-            MockGroq.assert_called_once_with(api_key="gsk_from_settings")
+            MockGroq.assert_called_once_with(
+                api_key="gsk_from_settings", timeout=httpx.Timeout(45.0, connect=5.0), max_retries=0,
+            )
+
+
+class TestGroqClientTimeoutAndRetries(unittest.TestCase):
+    """
+    The real SDK client is built with the configured timeout and without its
+    own retries (Celery owns them): a timed-out chunk is sent ONCE and comes
+    back as a retryable AITimeoutError.
+    """
+
+    def _real_groq(self):
+        """The installed groq package, even if this module's stub is registered."""
+        import importlib
+
+        for name in [n for n in sys.modules if n == "groq" or n.startswith("groq.")]:
+            del sys.modules[name]
+        try:
+            return importlib.import_module("groq")
+        except ImportError:
+            self.skipTest("groq is not installed")
+
+    def test_a_timed_out_chunk_is_sent_once_and_is_retryable(self):
+        import tempfile
+
+        import httpx
+        from django.test import override_settings
+
+        with patch.dict(sys.modules):
+            groq = self._real_groq()
+            requests = []
+
+            def timing_out(request):
+                requests.append(request)
+                raise httpx.ReadTimeout("timed out", request=request)
+
+            real_client = groq.Groq
+            http_client = httpx.Client(transport=httpx.MockTransport(timing_out))
+            with override_settings(AI_TRANSCRIPTION_TIMEOUT_SECONDS=33.0), patch.object(
+                groq, "Groq", side_effect=lambda **kw: real_client(http_client=http_client, **kw),
+            ):
+                provider = GroqTranscriptionProvider(api_key="gsk_test_key")
+
+            self.assertEqual(provider._client.max_retries, 0)
+            # The long timeout is for the upload and the answer; connecting stays short.
+            self.assertEqual(provider._client.timeout, httpx.Timeout(33.0, connect=5.0))
+            with tempfile.NamedTemporaryFile(suffix=".flac") as audio:
+                audio.write(b"fake audio")
+                audio.flush()
+                with self.assertRaises(AITimeoutError) as ctx:
+                    provider.transcribe([_make_chunk(path=audio.name)])
+
+        self.assertEqual(len(requests), 1)
+        self.assertTrue(is_retryable_error(ctx.exception))
+
+    def test_a_dropped_connection_is_retried_twice_then_left_to_celery(self):
+        import tempfile
+
+        import httpx
+
+        with patch.dict(sys.modules):
+            groq = self._real_groq()
+            requests = []
+
+            def dropping(request):
+                requests.append(request)
+                raise httpx.ConnectError("connection reset", request=request)
+
+            real_client = groq.Groq
+            http_client = httpx.Client(transport=httpx.MockTransport(dropping))
+            with patch.object(
+                groq, "Groq", side_effect=lambda **kw: real_client(http_client=http_client, **kw),
+            ):
+                provider = GroqTranscriptionProvider(api_key="gsk_test_key")
+
+            with tempfile.NamedTemporaryFile(suffix=".flac") as audio:
+                audio.write(b"fake audio")
+                audio.flush()
+                with patch(SLEEP) as sleep, self.assertRaises(AIConnectionError) as ctx:
+                    provider.transcribe([_make_chunk(path=audio.name)])
+
+        # Never the SDK's own retries: the provider's two, with a short backoff.
+        self.assertEqual(len(requests), 3)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [2.0, 5.0])
+        self.assertTrue(is_retryable_error(ctx.exception))
+
+    def _provider_with_transport(self, groq, handler):
+        import httpx
+
+        real_client = groq.Groq
+        http_client = httpx.Client(transport=httpx.MockTransport(handler))
+        with patch.object(
+            groq, "Groq", side_effect=lambda **kw: real_client(http_client=http_client, **kw),
+        ):
+            return GroqTranscriptionProvider(api_key="gsk_test_key")
+
+    def _transcribe(self, provider, chunks=1):
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".flac") as audio:
+            audio.write(b"fake audio")
+            audio.flush()
+            parts = [
+                _make_chunk(index=i, start=i * 600.0, end=(i + 1) * 600.0, path=audio.name)
+                for i in range(chunks)
+            ]
+            with patch(SLEEP) as sleep:
+                try:
+                    return provider.transcribe(parts), None, sleep
+                except Exception as exc:  # returned for the assertions
+                    return None, exc, sleep
+
+    def test_a_connect_timeout_is_retried_in_the_chunk_and_bills_nothing(self):
+        import httpx
+
+        from apps.videos.services.ai.errors import is_billing_uncertain
+
+        with patch.dict(sys.modules):
+            groq = self._real_groq()
+            requests = []
+
+            def connect_timeout_then_answer(request):
+                requests.append(request)
+                if len(requests) in (2, 3):  # chunk 1: connect timeout, then pool timeout
+                    error = httpx.ConnectTimeout if len(requests) == 2 else httpx.PoolTimeout
+                    raise error("could not connect", request=request)
+                return httpx.Response(200, json=_fake_groq_response())
+
+            provider = self._provider_with_transport(groq, connect_timeout_then_answer)
+            result, error, sleep = self._transcribe(provider, chunks=2)
+
+        self.assertIsNone(error)
+        # Chunk 0 once; chunk 1 retried in the provider, not by Celery.
+        self.assertEqual(len(requests), 4)
+        self.assertEqual(sleep.call_count, 2)
+        # Nothing reached Groq on the failed attempts: the cost stays known.
+        self.assertIsNotNone(result.usage.estimated_cost_usd)
+        self.assertEqual(result.usage.audio_seconds, 1200.0)
+
+        from apps.videos.services.ai.errors import AIConnectionNotEstablishedError
+
+        not_sent = AIConnectionNotEstablishedError("x", provider="groq")
+        self.assertTrue(is_retryable_error(not_sent))
+        self.assertFalse(is_billing_uncertain(not_sent))
+
+    def test_a_read_timeout_still_goes_back_to_celery_with_an_unknown_cost(self):
+        import httpx
+
+        with patch.dict(sys.modules):
+            groq = self._real_groq()
+            requests = []
+
+            def answer_then_read_timeout(request):
+                requests.append(request)
+                if len(requests) == 2:
+                    raise httpx.ReadTimeout("slow", request=request)
+                return httpx.Response(200, json=_fake_groq_response())
+
+            provider = self._provider_with_transport(groq, answer_then_read_timeout)
+            _, error, sleep = self._transcribe(provider, chunks=2)
+
+        self.assertIsInstance(error, AITimeoutError)
+        self.assertEqual(len(requests), 2)
+        sleep.assert_not_called()
+        (partial,) = error.usage_attempts
+        self.assertIsNone(partial.estimated_cost_usd)
+
+    def test_an_answer_that_cannot_be_decoded_is_not_retried_and_its_cost_is_unknown(self):
+        import httpx
+
+        from apps.videos.services.ai.errors import AIUnexpectedProviderError, is_billing_uncertain
+
+        with patch.dict(sys.modules):
+            groq = self._real_groq()
+            requests = []
+
+            def answer_then_garbage(request):
+                requests.append(request)
+                if len(requests) == 2:
+                    return httpx.Response(
+                        200, headers={"content-type": "application/json"}, content=b"{not json",
+                    )
+                return httpx.Response(200, json=_fake_groq_response())
+
+            provider = self._provider_with_transport(groq, answer_then_garbage)
+            _, error, sleep = self._transcribe(provider, chunks=2)
+
+        self.assertIsInstance(error, AIUnexpectedProviderError)
+        self.assertEqual(len(requests), 2)  # never re-sent inside the provider
+        sleep.assert_not_called()
+        self.assertTrue(is_retryable_error(error))  # Celery still retries the stage
+        self.assertTrue(is_billing_uncertain(error))
+        (partial,) = error.usage_attempts
+        # Groq answered chunk 1 (and billed it): the total is unknown, not a floor.
+        self.assertIsNone(partial.estimated_cost_usd)
+
+
+SLEEP = "apps.videos.services.ai.groq_transcription.time.sleep"
+
+
+def _status_exc(status_code, retry_after=None, name="APIStatusError"):
+    exc = type(name, (Exception,), {})(f"HTTP {status_code}")
+    exc.status_code = status_code
+    exc.response = MagicMock()
+    exc.response.headers = {"retry-after": str(retry_after)} if retry_after is not None else {}
+    return exc
+
+
+def _answer(text="hola"):
+    response = MagicMock()
+    response.model_dump.return_value = _fake_groq_response(
+        text=text, words=[{"word": text, "start": 0.0, "end": 0.5}],
+        segments=[{"start": 0.0, "end": 0.5, "text": text, "words": []}],
+    )
+    return response
+
+
+class TestChunkRetries(unittest.TestCase):
+    """
+    One transient error on a chunk is retried inside the provider, so a Celery
+    retry does not send (and pay for) the chunks already transcribed again.
+    Only 429, 5xx and connection errors; never a timeout.
+    """
+
+    def transcribe(self, *side_effects, chunks=2):
+        client = MagicMock()
+        client.audio.transcriptions.create.side_effect = list(side_effects)
+        provider = _build_provider_with_mock_client(client)
+        parts = [_make_chunk(index=i, start=i * 600.0, end=(i + 1) * 600.0) for i in range(chunks)]
+        with patch("builtins.open", mock_open(read_data=b"audio")), patch(SLEEP) as sleep:
+            try:
+                return provider.transcribe(parts), client, sleep, None
+            except Exception as exc:  # returned for the assertions
+                return None, client, sleep, exc
+
+    def test_a_rate_limited_chunk_is_retried_without_resending_the_previous_ones(self):
+        result, client, sleep, error = self.transcribe(
+            _answer("uno"), _status_exc(429, retry_after=7), _answer("dos"),
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(client.audio.transcriptions.create.call_count, 3)  # chunk 0 once
+        sleep.assert_called_once_with(7.0)
+        # A 429 bills nothing: the cost is still the two answered chunks.
+        self.assertEqual(result.usage.audio_seconds, 1200.0)
+        self.assertIsNotNone(result.usage.estimated_cost_usd)
+
+    def test_retry_after_is_capped(self):
+        _, _, sleep, error = self.transcribe(_status_exc(429, retry_after=600), _answer(), chunks=1)
+
+        self.assertIsNone(error)
+        sleep.assert_called_once_with(60.0)
+
+    def test_a_server_error_waits_a_short_backoff(self):
+        _, _, sleep, error = self.transcribe(_status_exc(503), _answer(), chunks=1)
+
+        self.assertIsNone(error)
+        sleep.assert_called_once_with(2.0)
+
+    def test_a_timeout_is_never_retried_inside_the_provider(self):
+        timeout = type("APITimeoutError", (Exception,), {})("Request timed out.")
+        _, client, sleep, error = self.transcribe(_answer(), timeout)
+
+        self.assertIsInstance(error, AITimeoutError)
+        self.assertEqual(client.audio.transcriptions.create.call_count, 2)
+        sleep.assert_not_called()
+
+    def test_a_chunk_that_keeps_failing_gives_up_after_two_more_attempts(self):
+        _, client, sleep, error = self.transcribe(
+            _answer(), _status_exc(500), _status_exc(502), _status_exc(503),
+        )
+
+        self.assertIsInstance(error, AIServerError)
+        self.assertEqual(client.audio.transcriptions.create.call_count, 4)
+        self.assertEqual(sleep.call_count, 2)
+        # Only chunk 0 answered: it is the billed usage the error carries.
+        (usage,) = error.usage_attempts
+        self.assertEqual(usage.audio_seconds, 600.0)
+        self.assertIsNotNone(usage.estimated_cost_usd)
+
+    def test_a_retried_connection_error_makes_the_cost_unknown(self):
+        result, client, _, error = self.transcribe(ConnectionError("reset"), _answer(), chunks=1)
+
+        self.assertIsNone(error)
+        self.assertEqual(client.audio.transcriptions.create.call_count, 2)
+        # The dropped request may have been billed: unknown, never a false floor.
+        self.assertIsNone(result.usage.estimated_cost_usd)
+        self.assertEqual(result.usage.audio_seconds, 600.0)
+
+    def test_a_rejected_chunk_is_not_retried(self):
+        _, client, sleep, error = self.transcribe(_status_exc(400), chunks=1)
+
+        self.assertIsNotNone(error)
+        self.assertFalse(is_retryable_error(error))
+        self.assertEqual(client.audio.transcriptions.create.call_count, 1)
+        sleep.assert_not_called()
 
 
 class TestGroqModelConfiguration(unittest.TestCase):

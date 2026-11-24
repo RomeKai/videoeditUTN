@@ -217,6 +217,7 @@ class RenderTaskLogTests(LogPrivacyAssertions, CapturedTaskFailures, TestCase):
             "apps.videos.services.storage_service.CloudflareR2Manager.get_client",
             return_value=client,
         ), patch("moviepy.VideoFileClip", side_effect=RuntimeError(f"{SECRET} {TEXT_MARKER}")), \
+                patch("apps.videos.services.ai.project_lock.get_redis_client", return_value=FakeRedis()), \
                 override_settings(MEDIA_ROOT=tmp):
             with capture_logs() as logs:
                 with self.assertRaises(Exception):

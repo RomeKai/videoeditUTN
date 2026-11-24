@@ -8,6 +8,7 @@ from apps.users.models import Workspace
 from apps.videos.models import ScheduledPost, VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import PipelineStage
 from apps.videos.tasks import _claim_clip_for_render, render_clip_task, upload_to_social_network
+from apps.videos.tasks.render import RENDER_CLIP_MAX_RETRIES, _is_retryable_render_error
 from apps.videos.tests.fakes import CapturedTaskFailures
 from backend.celery import app as celery_app
 
@@ -179,6 +180,312 @@ class RenderClipTaskTests(RenderHarness, TestCase):
         self.assertEqual(
             router.route({}, "apps.videos.tasks.process_initial_ingestion")["queue"].name, "celery"
         )
+
+
+def transient_r2_error():
+    from botocore.exceptions import ClientError
+
+    return ClientError(
+        {"Error": {"Code": "SlowDown"}, "ResponseMetadata": {"HTTPStatusCode": 503}}, "PutObject",
+    )
+
+
+class RenderClipRetryTests(RenderHarness, TestCase):
+    """
+    A clip render retries transient errors with backoff and fails at once on
+    deterministic ones. The clip reaches FAILED only after its last attempt,
+    and a retry never renders a clip twice nor closes the project early.
+    """
+
+    def clip_status(self, clip_id):
+        return VideoClip.objects.values_list("status", flat=True).get(pk=clip_id)
+
+    def test_a_transient_error_is_retried_and_the_clip_is_delivered(self):
+        clip = self.make_clip()
+        seen = []
+
+        def flaky(clip_id):
+            seen.append(self.clip_status(clip_id))
+            if len(seen) == 1:
+                raise transient_r2_error()
+            return self.completing_render(clip_id)
+
+        with patch(RENDER, side_effect=flaky):
+            result = render_clip_task.apply(args=[str(clip.id)])
+
+        self.assertTrue(result.successful())
+        # The retry claimed the clip again like any delivery.
+        self.assertEqual(seen, [VideoClip.Status.RENDERING, VideoClip.Status.RENDERING])
+        clip.refresh_from_db()
+        self.project.refresh_from_db()
+        self.assertEqual(clip.status, VideoClip.Status.COMPLETED)
+        self.assertEqual(self.project.status, VideoProject.Status.COMPLETED)
+
+    def test_the_clip_fails_only_after_its_last_attempt(self):
+        clip = self.make_clip()
+        seen = []
+
+        def always_transient(clip_id):
+            seen.append(self.clip_status(clip_id))
+            raise transient_r2_error()
+
+        with patch(RENDER, side_effect=always_transient):
+            result = render_clip_task.apply(args=[str(clip.id)])
+
+        self.assertTrue(result.failed())
+        self.assertEqual(len(seen), RENDER_CLIP_MAX_RETRIES + 1)
+        self.assertNotIn(VideoClip.Status.FAILED, seen)
+        clip.refresh_from_db()
+        self.project.refresh_from_db()
+        self.assertEqual(clip.status, VideoClip.Status.FAILED)
+        self.assertEqual(self.project.status, VideoProject.Status.PARTIAL)
+
+    def test_a_deterministic_error_fails_at_once(self):
+        errors = (
+            RuntimeError("moviepy exploded"),
+            # MoviePy reports an unreadable source as a plain OSError.
+            OSError("MoviePy error: failed to read the first frame"),
+            FileNotFoundError("source.mp4"),
+        )
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                clip = self.make_clip()
+                with patch(RENDER, side_effect=error) as render:
+                    result = render_clip_task.apply(args=[str(clip.id)])
+
+                self.assertTrue(result.failed())
+                self.assertEqual(render.call_count, 1)
+                self.assertEqual(self.clip_status(clip.id), VideoClip.Status.FAILED)
+
+    def test_connection_and_database_errors_are_transient(self):
+        from django.db import OperationalError
+
+        for error in (ConnectionResetError("reset"), TimeoutError("timed out"), OperationalError("gone")):
+            with self.subTest(error=type(error).__name__):
+                self.assertTrue(_is_retryable_render_error(error))
+
+    def test_the_project_waits_for_a_clip_that_will_be_retried(self):
+        done, flaky_clip = self.make_clip(), self.make_clip()
+        with patch(RENDER, side_effect=self.completing_render):
+            render_clip_task.apply(args=[str(done.id)])
+        stages = []
+
+        def flaky(clip_id):
+            stages.append(
+                VideoProject.objects.values_list("pipeline_stage", flat=True).get(pk=self.project.pk)
+            )
+            if len(stages) == 1:
+                raise transient_r2_error()
+            return self.completing_render(clip_id)
+
+        with patch(RENDER, side_effect=flaky):
+            render_clip_task.apply(args=[str(flaky_clip.id)])
+
+        # Not closed (PARTIAL) while the second clip waited for its retry.
+        self.assertEqual(stages, [PipelineStage.RENDER_DISPATCHED, PipelineStage.RENDER_DISPATCHED])
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.COMPLETED)
+
+    def test_a_retry_never_renders_a_clip_another_delivery_claimed(self):
+        clip = self.make_clip()
+        original_retry = render_clip_task.retry
+
+        def another_delivery_claims_it(*args, **kwargs):
+            # During the backoff a duplicate delivery claims the handed-back clip.
+            self.assertTrue(_claim_clip_for_render(clip.id))
+            return original_retry(*args, **kwargs)
+
+        with patch(RENDER, side_effect=transient_r2_error()) as render, \
+                patch.object(render_clip_task, "retry", side_effect=another_delivery_claims_it):
+            result = render_clip_task.apply(args=[str(clip.id)])
+
+        self.assertTrue(result.successful())
+        self.assertEqual(render.call_count, 1)  # the retry found it claimed and skipped
+        self.assertEqual(self.clip_status(clip.id), VideoClip.Status.RENDERING)
+
+    def test_a_database_blip_while_closing_the_fan_out_does_not_render_again(self):
+        from django.db import OperationalError
+
+        from apps.videos.tasks.render import finalize_project_render as real_finalize
+
+        clip = self.make_clip()
+        calls = []
+
+        def finalize_once_failing(project_id):
+            calls.append(project_id)
+            if len(calls) == 1:
+                raise OperationalError("connection lost")
+            return real_finalize(project_id)
+
+        with patch(RENDER, side_effect=self.completing_render) as render, \
+                patch("apps.videos.tasks.render.finalize_project_render", side_effect=finalize_once_failing):
+            result = render_clip_task.apply(args=[str(clip.id)])
+
+        self.assertTrue(result.successful())
+        self.assertEqual(render.call_count, 1)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, VideoProject.Status.COMPLETED)
+
+    def test_the_engine_leaves_a_failed_clip_to_the_task_that_claimed_it(self):
+        from apps.videos.services.render_engine import RenderEngine
+
+        clip = self.make_clip(status=VideoClip.Status.RENDERING)  # claimed by the task
+
+        with self.assertRaises(ValueError):  # the project has no source file
+            RenderEngine.render_clip(clip.id)
+
+        # Not DRAFT: a duplicate delivery cannot take it before the task decides.
+        self.assertEqual(self.clip_status(clip.id), VideoClip.Status.RENDERING)
+
+    def test_a_delivered_clip_is_never_marked_failed(self):
+        clip = self.make_clip()
+
+        with patch(RENDER, side_effect=self.completing_render), patch(
+            "apps.videos.tasks.render.finalize_project_render", side_effect=[RuntimeError("x"), None],
+        ):
+            result = render_clip_task.apply(args=[str(clip.id)])
+
+        self.assertTrue(result.failed())
+        self.assertEqual(self.clip_status(clip.id), VideoClip.Status.COMPLETED)
+
+
+def _upload_failed(code, status):
+    """S3UploadFailedError as boto3's upload_file raises it: inside its ``except ClientError``."""
+    from boto3.exceptions import S3UploadFailedError
+    from botocore.exceptions import ClientError
+
+    try:
+        raise ClientError(
+            {"Error": {"Code": code}, "ResponseMetadata": {"HTTPStatusCode": status}}, "PutObject",
+        )
+    except ClientError as exc:
+        try:
+            raise S3UploadFailedError(f"Failed to upload clip.mp4 to bucket/key: {exc}")
+        except S3UploadFailedError as wrapped:
+            return wrapped
+
+
+class StorageErrorClassificationTests(TestCase):
+    """R2 transport errors and failed uploads are transient for renders and for the pipeline."""
+
+    def transport_errors(self):
+        import botocore.exceptions as b
+
+        return {
+            "ReadTimeoutError": b.ReadTimeoutError(endpoint_url="https://r2"),
+            "ConnectTimeoutError": b.ConnectTimeoutError(endpoint_url="https://r2"),
+            "EndpointConnectionError": b.EndpointConnectionError(endpoint_url="https://r2"),
+            "ConnectionClosedError": b.ConnectionClosedError(endpoint_url="https://r2"),
+            "SSLError": b.SSLError(endpoint_url="https://r2", error="eof"),
+            "ProxyConnectionError": b.ProxyConnectionError(proxy_url="https://proxy"),
+        }
+
+    def test_botocore_transport_errors_retry_although_they_are_oserrors(self):
+        for name, error in self.transport_errors().items():
+            with self.subTest(error=name):
+                self.assertTrue(_is_retryable_render_error(error))
+
+    def test_a_failed_upload_retries_unless_r2_rejected_it(self):
+        from boto3.exceptions import S3UploadFailedError
+
+        from apps.videos.tasks import _is_retryable_pipeline_error
+
+        cases = {
+            "SlowDown 503": (_upload_failed("SlowDown", 503), True),
+            "InternalError 500": (_upload_failed("InternalError", 500), True),
+            "no detail": (S3UploadFailedError("Failed to upload x to b/k"), True),
+            "AccessDenied 403": (_upload_failed("AccessDenied", 403), False),
+            "NoSuchBucket 404": (_upload_failed("NoSuchBucket", 404), False),
+        }
+        for name, (error, retryable) in cases.items():
+            with self.subTest(error=name):
+                # The ingestion uploads to R2 too: same answer for both.
+                self.assertEqual(_is_retryable_render_error(error), retryable)
+                self.assertEqual(_is_retryable_pipeline_error(error), retryable)
+
+
+class RenderClipUploadRetryTests(RenderHarness, TestCase):
+    """The real engine runs (MoviePy mocked) and the R2 client's upload_file fails."""
+
+    ENGINE = "apps.videos.services.render_engine"
+
+    def setUp(self):
+        super().setUp()
+        import tempfile
+
+        media = tempfile.TemporaryDirectory()
+        self.addCleanup(media.cleanup)
+        self.media = media.name
+        VideoProject.objects.filter(pk=self.project.pk).update(source_file="videos/raw/source.mp4")
+
+    def render(self, clip, *upload_outcomes):
+        from unittest.mock import MagicMock
+
+        from django.test import override_settings
+
+        client = MagicMock()
+        client.upload_file.side_effect = list(upload_outcomes)
+        layout = MagicMock()
+        layout.apply.return_value = MagicMock()
+        with override_settings(MEDIA_ROOT=self.media, USE_R2=True, CLOUDFLARE_R2_BUCKET_NAME="bucket"), \
+                patch(f"{self.ENGINE}.VideoFileClip"), \
+                patch(f"{self.ENGINE}.get_layout_strategy", return_value=layout), \
+                patch("apps.videos.services.storage_service._get_r2_client", return_value=client):
+            result = render_clip_task.apply(args=[str(clip.id)])
+        return result, client
+
+    def test_a_throttled_upload_is_retried_and_the_clip_delivered(self):
+        clip = self.make_clip()
+
+        result, client = self.render(clip, _upload_failed("SlowDown", 503), None)
+
+        self.assertTrue(result.successful())
+        self.assertEqual(client.upload_file.call_count, 2)
+        clip.refresh_from_db()
+        self.assertEqual(clip.status, VideoClip.Status.COMPLETED)
+        self.assertTrue(clip.s3_object_key.startswith("videos/"))
+
+    def test_a_read_timeout_on_the_upload_is_retried(self):
+        import botocore.exceptions as b
+
+        clip = self.make_clip()
+
+        result, client = self.render(clip, b.ReadTimeoutError(endpoint_url="https://r2"), None)
+
+        self.assertTrue(result.successful())
+        self.assertEqual(client.upload_file.call_count, 2)
+        self.assertEqual(VideoClip.objects.get(pk=clip.pk).status, VideoClip.Status.COMPLETED)
+
+    def test_an_upload_r2_rejects_fails_the_clip_at_once(self):
+        clip = self.make_clip()
+
+        result, client = self.render(clip, _upload_failed("AccessDenied", 403))
+
+        self.assertTrue(result.failed())
+        self.assertEqual(client.upload_file.call_count, 1)
+        self.assertEqual(VideoClip.objects.get(pk=clip.pk).status, VideoClip.Status.FAILED)
+
+
+class RenderClipRetryNotQueuedTests(RenderHarness, TestCase):
+    def test_a_retry_that_cannot_be_queued_fails_the_clip_and_closes_the_project(self):
+        from celery.exceptions import Reject
+
+        clip = self.make_clip()
+
+        def broker_down(*args, **kwargs):
+            # What Task.retry raises when publishing the retry fails.
+            raise Reject(RuntimeError("broker down"), requeue=False)
+
+        with patch(RENDER, side_effect=transient_r2_error()), \
+                patch.object(render_clip_task, "retry", side_effect=broker_down):
+            result = render_clip_task.apply(args=[str(clip.id)])
+
+        self.assertTrue(result.failed())
+        clip.refresh_from_db()
+        self.project.refresh_from_db()
+        # Not left DRAFT with no message to render it: on_failure ran.
+        self.assertEqual(clip.status, VideoClip.Status.FAILED)
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.PARTIAL)
 
 
 class RenderNoTransactionTests(RenderHarness, TransactionTestCase):

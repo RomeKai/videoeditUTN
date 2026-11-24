@@ -65,6 +65,8 @@ from apps.videos.models import VideoProject, VideoClip, ScheduledPost
 from backend.celery import app as celery_app
 
 from apps.videos.tasks.shared import (
+    PIPELINE_LOCK_MAX_RETRIES,
+    PIPELINE_LOCK_RETRY_SECONDS,
     PIPELINE_MAX_RETRIES,
     _audio_usage,
     _capacity_countdown,
@@ -90,12 +92,6 @@ from apps.videos.tasks.render import (
 )
 
 logger = logging.getLogger(__name__)
-# A redelivered task that finds the project lock held either collided with a live
-# worker or with the leftover lock of a dead one. Retrying shortly, for longer
-# than the lock TTL (project_lock.DEFAULT_LOCK_TTL_SECONDS), lets the dead
-# worker's lock expire instead of dropping the job.
-PIPELINE_LOCK_RETRY_SECONDS = 45
-PIPELINE_LOCK_MAX_RETRIES = 8
 # Prompt-to-Edit parser (PTE-01b): transient errors re-queue the ingestion with
 # their own counter, so they never spend the retries the stages need. After
 # these, the project goes on with the default settings.
@@ -825,6 +821,30 @@ def _whole_video_render_allowed(project_id):
     return project.pipeline_stage == PipelineStage.RENDER_DISPATCHED and _whole_video_is_paid(project_id)
 
 
+def _whole_video_settlement(project):
+    """
+    What a whole-video project's creation reservation gets from where the
+    project ended, as ``(outcome, reason)``. The one rule for the pipeline
+    (``_settle_whole_video_reservation``) and for settle_stale_reservations:
+
+    - Not final yet (any stage but completed, partial or failed, including
+      clips_selected and render_dispatched): ``('wait', 'not_final')``.
+    - A clip completed or published (the video was delivered):
+      ``('commit', 'video_delivered')``.
+    - A clip still rendering: ``('wait', 'clip_rendering')``.
+    - Otherwise (the render failed, or the project failed before it):
+      ``('rollback', 'video_not_delivered')``.
+    """
+    if project.pipeline_stage not in (*TERMINAL_STAGES, PipelineStage.FAILED):
+        return 'wait', 'not_final'
+    statuses = set(VideoClip.objects.filter(project_id=project.pk).values_list('status', flat=True))
+    if statuses & {VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED}:
+        return 'commit', 'video_delivered'
+    if VideoClip.Status.RENDERING in statuses:
+        return 'wait', 'clip_rendering'
+    return 'rollback', 'video_not_delivered'
+
+
 def _settle_whole_video_reservation(project_id):
     """
     Settles a whole-video project's creation reservation from where the
@@ -851,11 +871,11 @@ def _settle_whole_video_reservation(project_id):
         return
     if not _whole_video_is_paid(project_id):
         return  # already settled
-    statuses = set(VideoClip.objects.filter(project_id=project_id).values_list('status', flat=True))
-    if statuses & {VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED}:
+    outcome, _reason = _whole_video_settlement(project)
+    if outcome == 'commit':
         _commit_ingestion_reservation(project_id)
         return
-    if VideoClip.Status.RENDERING in statuses:
+    if outcome == 'wait':
         return
 
     try:

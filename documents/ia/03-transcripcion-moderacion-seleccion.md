@@ -60,7 +60,9 @@ sequenceDiagram
 1. `v2_enabled_for(project)` decide el camino del proyecto y `TranscriptionEngine.resolve_backend` lo traduce: sin V2 corre `local`; con V2 corre lo que diga `TRANSCRIPTION_BACKEND` (`groq` por defecto). Un valor inválido lanza `ImproperlyConfigured`. El `pipeline_version` de las filas sale del backend que corre: `v2` con Groq y `legacy` con Whisper local, aunque el proyecto tenga V2.
 2. Con Groq y `AI_CAPACITY_ENABLED`, se reserva `metadata.duration` en `audio_seconds` y un request por ventana de 598 s (`WINDOW_DURATION_SECONDS - OVERLAP_SECONDS`) bajo la clave `groq/<modelo>`.
 3. `GroqTranscriptionProvider` exige `GROQ_API_KEY`: sin key lanza `AIAuthenticationError`, que no se reintenta. No hay fallback a Whisper local (ADR-008): cargarlo en un worker que renderiza es la forma más rápida de un OOM.
-4. Cada chunk va a Groq con el modelo `AI_DEFAULT_TRANSCRIPTION_MODEL`, `response_format="verbose_json"`, granularidad de palabra y de segmento y `language="es"`. El cliente se crea con los valores por defecto del SDK (el código no fija timeout ni `max_retries`; según el comentario de `_usage`, el SDK reintenta hasta 2 veces y esos reintentos no se cuentan).
+4. Cada chunk va a Groq con el modelo `AI_DEFAULT_TRANSCRIPTION_MODEL`, `response_format="verbose_json"`, granularidad de palabra y de segmento y `language="es"`. El cliente se crea con `timeout=httpx.Timeout(AI_TRANSCRIPTION_TIMEOUT_SECONDS, connect=5)` y `max_retries=0`. El SDK no reintenta por su cuenta: también reintentaría un timeout, volviendo a subir un chunk que Groq pudo haber cobrado, y sus intentos no se ven en las filas de uso ni en la capacidad. Un timeout llega como `APITimeoutError` y se clasifica `AITimeoutError` (reintentable por Celery, cobro incierto).
+   - **Reintentos por chunk.** `_send_chunk` reintenta un mismo chunk hasta 2 veces más (`_CHUNK_EXTRA_ATTEMPTS`) ante un 429 (espera `retry_after`, como mucho 60 s), una respuesta 5xx o un error de conexión (espera 2 s y después 5 s), y registra `transcription.chunk_retry`. Un timeout al conectar o al esperar una conexión libre (`httpx.ConnectTimeout`, `httpx.PoolTimeout`), igual que una conexión rechazada (`httpx.ConnectError`), es `AIConnectionNotEstablishedError`: se reintenta en el chunk. Nunca ante un timeout de lectura, un rechazo 4xx o un error inesperado (`AIUnexpectedProviderError`, por ejemplo una respuesta que no se puede decodificar). Sin esto, un error pasajero en el chunk k hacía fallar toda la transcripción y el reintento de Celery volvía a mandar y a pagar los chunks 0 a k-1.
+   - Un 429, un 5xx o una conexión que nunca se estableció no cobran, así que no cambian el uso. Un error de conexión reintentado después de mandar el pedido pudo haber cobrado: desde ahí el costo de la transcripción queda `None` (desconocido), como después de un timeout. Un error inesperado después de una respuesta también deja el costo en `None`: Groq pudo haber respondido y cobrado.
 5. `_stage_transcribe` guarda en `transcript_data` las **palabras** (`start`, `end`, `text`); solo si no hay palabras guarda los segmentos. Esa lista es la que después usa la selección para anclar los clips.
 
 ### Chunks, uniones y segundos facturados
@@ -70,16 +72,18 @@ sequenceDiagram
 - **Uniones.** En el solapamiento los dos chunks transcriben lo mismo. El corte es el punto medio del solapamiento: del chunk anterior quedan las palabras que empiezan antes y del nuevo las que empiezan después. Si la última palabra que quedó del anterior termina dentro del solapamiento, el nuevo chunk retoma desde ese final (`resume_at`), para no perder una palabra que los dos timearon distinto. Los segmentos se cortan por su punto medio. Con más de un chunk, `full_text` es la unión de las palabras deduplicadas, no de los textos crudos.
 - **Silencio.** Un chunk sin texto ni palabras se saltea (`transcription.chunk_without_speech`) y no se deduplica contra él. Si ningún chunk tiene habla, `AINoSpeechDetectedError` (no reintentable): nunca se seleccionan clips sobre un transcript vacío.
 - **Facturación.** Un chunk cuenta como cobrado apenas Groq responde, antes de parsearlo. El costo es la suma de `estimate_asr_cost` por chunk, que aplica el mínimo facturable por request de la tabla de precios (ver [07](07-capacidad-costos-y-operacion.md)). `audio_seconds` es la suma de la duración de cada chunk enviado, así que los 2 s de cada solapamiento cuentan dos veces. Un chunk sin precio deja el costo en `None`.
-- **Fallo a mitad.** Si algo falla después de cobrar al menos un chunk, el provider cuelga del error original un `usage_attempts` con lo cobrado y lo re-lanza sin cambiar su tipo. Si el fallo fue un timeout o un corte de conexión, el costo queda `None` (`is_billing_uncertain`).
+- **Fallo a mitad.** Si algo falla después de cobrar al menos un chunk, el provider cuelga del error original un `usage_attempts` con lo cobrado y lo re-lanza sin cambiar su tipo. Si el fallo fue un timeout de lectura, un corte de conexión o un error inesperado, o si antes se reintentó un chunk después de un corte de conexión, el costo queda `None` (`is_billing_uncertain`). Una conexión que nunca se estableció no lo cambia.
 
 | Error de Groq | Clase | ¿Reintenta? |
 |---------------|-------|-------------|
 | 401, 403 | `AIAuthenticationError` | No |
-| 429 | `AIRateLimitError` (guarda `retry_after`, que el pipeline no usa: aplica su propio backoff) | Sí |
+| 429 | `AIRateLimitError` (guarda `retry_after`: lo usa el reintento del chunk; el pipeline aplica su propio backoff) | Sí: hasta 2 veces el mismo chunk, después Celery |
 | Otro 4xx salvo 408, 409, 425 | `AIInvalidRequestError`, `AIQuotaExceededError` (402) o `AIContentFilterError` | No |
-| 5xx o error desconocido | `AIServerError` | Sí |
-| Timeout | `AITimeoutError` | Sí |
-| Conexión u `OSError` | `AIConnectionError` | Sí |
+| 5xx | `AIServerError` | Sí: hasta 2 veces el mismo chunk, después Celery |
+| Error desconocido (por ejemplo, una respuesta 200 que no se puede decodificar) | `AIUnexpectedProviderError` (cobro incierto) | Sí, solo Celery |
+| Timeout de lectura | `AITimeoutError` | Sí, solo Celery (el chunk pudo haberse cobrado) |
+| Timeout al conectar o esperando el pool, conexión rechazada | `AIConnectionNotEstablishedError` (no cobra) | Sí: hasta 2 veces el mismo chunk, después Celery |
+| Conexión u `OSError` | `AIConnectionError` | Sí: hasta 2 veces el mismo chunk, después Celery |
 | Respuesta que no se puede parsear | `AIContractValidationError` | No |
 | `SoftTimeLimitExceeded` | Se re-lanza sin envolver | No |
 
@@ -286,9 +290,9 @@ Con V2 apagado para el proyecto, `_stage_select_clips` llama a `SelectionEngine.
 | Selección legacy | `selection` | `legacy` | 1, con costo `None`: la llamada se pagó pero no informa tokens | 1: costo `None` si respondió y la salida no se pudo usar (JSON inválido o sin clips); en otro caso, una fila de 0 tokens |
 | Parser del prompt | `prompt_parse` | — | Ver [04](04-prompt-to-edit.md) | — |
 
-Una fila de 0 tokens tiene costo 0, salvo con `AITimeoutError`, `AIConnectionError` o `SoftTimeLimitExceeded`: ahí el cobro es incierto (`is_billing_uncertain`) y el costo queda `None`. Una ejecución repetida (re-entrega o pérdida del proyecto) deja dos filas con el mismo `attempt`: son dos cobros reales.
+Una fila de 0 tokens tiene costo 0, salvo con `AITimeoutError`, `AIConnectionError` (menos `AIConnectionNotEstablishedError`), `AIUnexpectedProviderError` o `SoftTimeLimitExceeded`: ahí el cobro es incierto (`is_billing_uncertain`) y el costo queda `None`. Una ejecución repetida (re-entrega o pérdida del proyecto) deja dos filas con el mismo `attempt`: son dos cobros reales.
 
-**Logs** (sin texto del usuario): `transcription.started`, `transcription.completed`, `transcription.chunk_without_speech`, `transcription.usage_not_attached`, `transcription.local_model_loading`; `moderation.passed`, `moderation.blocked` (con las categorías), `moderation.failed`, `pipeline.moderation_overridden`, `pipeline.moderation_outcome_not_recorded`; `selection.started`, `selection.completed`, `selection.primary_failed`, `selection.fallback_failed`, `selection.no_fallback`, `selection.schema_unsupported`, `selection.ungrounded_transcript`, `selection.duration_inferred_from_transcript`, `selection.clips_sanitized`, `selection.legacy_call`, `selection.legacy_failed`, `llm.reasoning_effort_skipped` y `transcript_formatter.truncated`.
+**Logs** (sin texto del usuario): `transcription.started`, `transcription.completed`, `transcription.chunk_without_speech`, `transcription.chunk_retry`, `transcription.usage_not_attached`, `transcription.local_model_loading`; `moderation.passed`, `moderation.blocked` (con las categorías), `moderation.failed`, `pipeline.moderation_overridden`, `pipeline.moderation_outcome_not_recorded`; `selection.started`, `selection.completed`, `selection.primary_failed`, `selection.fallback_failed`, `selection.no_fallback`, `selection.schema_unsupported`, `selection.ungrounded_transcript`, `selection.duration_inferred_from_transcript`, `selection.clips_sanitized`, `selection.legacy_call`, `selection.legacy_failed`, `llm.reasoning_effort_skipped` y `transcript_formatter.truncated`.
 
 ## Configuración
 
@@ -297,6 +301,7 @@ Una fila de 0 tokens tiene costo 0, salvo con `AITimeoutError`, `AIConnectionErr
 | `AI_CORE_V2_ENABLED`, `AI_CORE_V2_ALLOWLIST` | `False`, `[]` | Camino V2 o legacy por proyecto ([02](02-pipeline-de-ingesta.md)) |
 | `TRANSCRIPTION_BACKEND` | `groq` | Backend con V2: `groq` o `local` |
 | `AI_DEFAULT_TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Modelo de Groq |
+| `AI_TRANSCRIPTION_TIMEOUT_SECONDS` | 120.0 | Timeout de cada request a Groq (un chunk): subida y espera de la respuesta. Conectar tiene su propio timeout de 5 s. Sin reintentos del SDK; el provider reintenta el chunk ante 429, 5xx o conexión |
 | `GROQ_API_KEY` | — | Key de Groq; sin ella la transcripción V2 falla sin reintento |
 | `OPENAI_API_KEY` | — | Key de la Moderation API (y del LLM si un modelo es de OpenAI) |
 | `MODERATION_MODEL` | `omni-moderation-latest` | Modelo fijado de moderación |

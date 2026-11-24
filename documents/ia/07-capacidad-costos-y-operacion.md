@@ -19,6 +19,7 @@ Este documento cubre lo transversal del core de IA: el control de capacidad prop
 | Chequeo de arranque | [checks.py](../../back/apps/videos/checks.py) | `check_ai_configuration`: `videos.E001` a `videos.E006` |
 | Export del piloto | [export_ai_pilot_metrics.py](../../back/apps/videos/management/commands/export_ai_pilot_metrics.py) | CSV o JSONL por registro o por proyecto |
 | Evaluación de transcripción | [evaluate_ai_transcription.py](../../back/apps/videos/management/commands/evaluate_ai_transcription.py) | WER y error de timestamps contra referencias humanas |
+| Barrido de reservas | [settle_stale_reservations.py](../../back/apps/videos/management/commands/settle_stale_reservations.py) | Reporta las reservas de tokens que quedaron `RESERVED` y, con `--apply`, las cobra o las devuelve según el estado del proyecto |
 
 ## Flujo: reserva y ajuste de capacidad
 
@@ -78,7 +79,7 @@ sequenceDiagram
 Cómo se calcula el uso real:
 
 - `_llm_usage_by_model`: parte de `tokens=0` y `requests=0` para cada modelo reservado (lo no usado se devuelve) y suma `total_tokens` y un request por intento. Un intento fallido sin tokens y con costo `None` (facturación desconocida) deja `tokens=None` para ese modelo: se conserva la reserva.
-- `_selection_failure_usage`: si el error no trae intentos y es de facturación incierta (`is_billing_uncertain`: `AITimeoutError`, `AIConnectionError` o el soft time limit de la tarea), devuelve `{}` y se conserva todo. Si no, usa los intentos que trae el error; sin intentos, todo vuelve.
+- `_selection_failure_usage`: si el error no trae intentos y es de facturación incierta (`is_billing_uncertain`: `AITimeoutError`, `AIConnectionError` salvo `AIConnectionNotEstablishedError`, `AIUnexpectedProviderError` o el soft time limit de la tarea), devuelve `{}` y se conserva todo. Si no, usa los intentos que trae el error; sin intentos, todo vuelve.
 - `_audio_usage`: si la transcripción terminó, usa `usage.audio_seconds`. Si falló con facturación incierta, o el intento que trae el error no tiene precio, conserva la reserva. Si falló antes de facturar un chunk, ajusta a 0.
 
 ## Flujo: espera por capacidad (`pending_capacity`)
@@ -274,6 +275,8 @@ Pasos de la habilitación gradual y del rollback: [runbook §5.3](../runbooks/ai
 | `VideoProject` | `pipeline_error_code` | `CapacityTimeoutError` si venció la espera |
 | `AIUsageRecord` | Todas las columnas | `stage`, `pipeline_version`, `attempt`, `role`, `provider`, `model`, `resolved_model`, `success`, `error_code`, tokens, `audio_seconds`, `latency_seconds`, `cached`, `estimated_cost_usd`, `pricing_version`, `created_at`. `project` sin constraint en la base: borrar un proyecto no borra sus filas |
 | `ScheduledPost.error_log` | `capacity_timeout` | Espera vencida en SEO |
+| `Transaction` | `created_at` | Cuándo se hizo la reserva (migración `payments.0003`). Las filas anteriores a la migración tienen la hora en que corrió. La usa `settle_stale_reservations` |
+| `Transaction` | `status` | `settle_stale_reservations --apply`: `COMPLETED` (cobrada) o `FAILED` (devuelta), por `commit_reservation` y `rollback_reservation` |
 
 ## Configuración
 
@@ -298,6 +301,7 @@ Todos los settings de IA de [settings/base.py](../../back/backend/settings/base.
 | `AI_CLIP_SNAP_TOLERANCE_SECONDS` | `1.0` | Tolerancia para ajustar los bordes a palabras |
 | `AI_CLIP_PAUSE_SECONDS` | `0.5` | Pausa mínima entre palabras que cuenta como borde natural |
 | `AI_DEFAULT_TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Modelo de Groq. Su bucket es `groq/<modelo>` |
+| `AI_TRANSCRIPTION_TIMEOUT_SECONDS` | `120.0` | Timeout de cada request a Groq (un chunk de audio); conectar tiene 5 s. Sin reintentos del SDK: el provider reintenta el chunk ante 429, 5xx o conexión, y un timeout es `AITimeoutError` y reintenta Celery |
 | `TRANSCRIPTION_BACKEND` | `groq` | Backend con V2: `groq` o `local`. Sin fallback automático entre ellos |
 | `AI_PROMPT_MAX_CHARS` | `1000` | Largo máximo del prompt de Prompt-to-Edit: `from-prompt` rechaza uno más largo y `clean_prompt` corta |
 | `AI_UPLOAD_MAX_DURATION_SECONDS` | `10800` | Duración máxima de una subida |
@@ -308,6 +312,8 @@ Todos los settings de IA de [settings/base.py](../../back/backend/settings/base.
 | `CELERY_BROKER_TRANSPORT_OPTIONS['visibility_timeout']` (variable `CELERY_VISIBILITY_TIMEOUT`) | `14400` | Tiempo tras el cual Redis reentrega una tarea sin ack. Mayor que el lock y que la etapa más larga |
 | `PIPELINE_SOFT_TIME_LIMIT` | `7200` | Soft time limit de `process_initial_ingestion`: falla con `SoftTimeLimitExceeded` y libera el lock |
 | `PIPELINE_TIME_LIMIT` | `PIPELINE_SOFT_TIME_LIMIT + 300` | Hard time limit: mata al worker que ignoró el soft |
+| `RENDER_SEGMENTS_SOFT_TIME_LIMIT` | `10800` | Soft time limit de `render_video_segments` (paper edit): el proyecto falla y se devuelve la reserva del render |
+| `RENDER_SEGMENTS_TIME_LIMIT` | `RENDER_SEGMENTS_SOFT_TIME_LIMIT + 300` | Hard time limit del paper edit. Sin reembolso automático: queda para `settle_stale_reservations`. Menor que el `visibility_timeout` |
 | `CELERY_TASK_ROUTES` | `render_clip_task` y `render_video_segments` a la cola `render` | Fijo en código. El resto va a la cola `celery` |
 | `CELERY_WORKER_PREFETCH_MULTIPLIER` | `1` | Fijo en código. Un worker solo reserva la tarea que corre |
 | `AI_CAPACITY_ENABLED` | `False` | Prende los buckets de capacidad |
@@ -334,7 +340,7 @@ Los eventos tienen nombre estable y llevan ids, códigos y números, nunca texto
 | `pipeline.` (reserva de tokens) | `refunded`, `refund_skipped` (`has_clips`, `no_reservation`, `not_reserved`), `refund_failed` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) |
 | `capacity.` | `settle_failed` | [capacity.py](../../back/apps/videos/services/ai/capacity.py) |
 | `metrics.` / `pricing.` | `metrics.write_failed`, `pricing.unknown_model`, `pricing.no_price_for_date` | [usage_recorder.py](../../back/apps/videos/services/ai/usage_recorder.py), [pricing.py](../../back/apps/videos/services/ai/pricing.py) |
-| `transcription.` | `started`, `completed`, `chunk_without_speech`, `usage_not_attached`, `local_model_loading` | [transcription_engine.py](../../back/apps/videos/services/transcription_engine.py), [groq_transcription.py](../../back/apps/videos/services/ai/groq_transcription.py) |
+| `transcription.` | `started`, `completed`, `chunk_without_speech`, `chunk_retry`, `usage_not_attached`, `local_model_loading` | [transcription_engine.py](../../back/apps/videos/services/transcription_engine.py), [groq_transcription.py](../../back/apps/videos/services/ai/groq_transcription.py) |
 | `moderation.` | `passed`, `blocked` (categorías), `failed`. También `pipeline.moderation_overridden` | [security.py](../../back/apps/core/security.py) |
 | `selection.` | `started`, `completed`, `primary_failed`, `fallback_failed`, `no_fallback`, `clips_sanitized`, `schema_unsupported`, `legacy_call`, `legacy_failed` | [litellm_selection.py](../../back/apps/videos/services/ai/litellm_selection.py), [selection_engine.py](../../back/apps/videos/services/selection_engine.py) |
 | `llm.` | `reasoning_effort_skipped` | [llm_options.py](../../back/apps/videos/services/ai/llm_options.py) |
@@ -343,7 +349,7 @@ Los eventos tienen nombre estable y llevan ids, códigos y números, nunca texto
 | `upload.` | `rejected` (`code`), `probe_failed` | [media_validation.py](../../back/apps/videos/services/media_validation.py) |
 | `face_tracker.` | `mediapipe_unavailable`, `detector_unavailable`, `detector_failed`, `tracked`, `no_faces`, `failed`, `all_frames_failed` | [face_tracker.py](../../back/apps/videos/services/face_tracker.py) |
 | `speaker.` / `layout.` | `speaker.timeline`, `speaker.audio_failed`, `speaker.frames_failed`, `layout.active_speaker`, `layout.active_speaker_failed` | [speaker_engine.py](../../back/apps/videos/services/speaker_engine.py), [layouts/pro.py](../../back/apps/videos/services/layouts/pro.py) |
-| `render.` | `dispatch_failed`, `failure_not_recorded`. También `pipeline.render_redispatched` y `pipeline.render_finalized` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py), [tasks/render.py](../../back/apps/videos/tasks/render.py) |
+| `render.` | `dispatch_failed`, `retrying`, `release_failed`, `retry_not_queued`, `failure_not_recorded`; del paper edit, `already_delivered`, `restarted`, `lock_busy_retrying`, `skipped`, `not_persisted`, `lock_lost`, `orphan_not_deleted`, `start_not_closed`, `cleanup_failed`, `charged`, `refunded`, `settle_skipped`, `settle_failed`. También `pipeline.render_redispatched` y `pipeline.render_finalized` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py), [tasks/render.py](../../back/apps/videos/tasks/render.py) |
 
 ### Qué mirar si...
 
@@ -359,7 +365,44 @@ Los eventos tienen nombre estable y llevan ids, códigos y números, nunca texto
 | Un bucket parece no recuperarse | `capacity.settle_failed` (el ajuste no se aplicó) o una demanda mayor que el bucket que lo dejó negativo. Revisar la clave `capacity:v1:...` en Valkey |
 | Post `FAILED` por SEO | `error_log`: `capacity_timeout`, `content_blocked`, `generated_content_blocked`, `seo_no_clip_transcript`, un código `moderation_*`, `seo_generation_failed:<clase>` o `seo_failed:<clase>`. Ver [05](05-seo-y-publicacion.md) |
 | Los renders por clip no avanzan | Que algún worker consuma la cola `render` (`-Q celery,render`) |
+| Saldo reservado que no baja, o una reserva `RESERVED` de un proyecto que ya terminó | Correr `settle_stale_reservations` en modo reporte (ver [abajo](#operación-reservas-de-tokens-que-quedaron-reserved)). Buscar también `pipeline.charge_failed`, `pipeline.refund_failed` y `render.settle_failed` |
 | El layout no sigue caras | `face_tracker.mediapipe_unavailable`, `face_tracker.detector_unavailable` o `face_tracker.no_faces`: el recorte vuelve al centro. Ver [06](06-render-caras-y-hablante.md) |
+
+## Operación: reservas de tokens que quedaron RESERVED
+
+El pipeline liquida cada reserva: la de creación (`metadata['reservation_id']`) se cobra cuando hay clips y se devuelve si el proyecto falla sin clips (en un video completo, cuando el video se entrega: ver [02](02-pipeline-de-ingesta.md)); la del render (`metadata['render_reservation_id']`) se cobra cuando el paper edit se entrega y se devuelve si falla del todo. Igual pueden quedar reservas `RESERVED`: las de antes de que existiera el cobro, un cobro o una devolución que falló por un error de base (`pipeline.charge_failed`, `pipeline.refund_failed`, `render.settle_failed`) o un render cuyo worker murió. `settle_stale_reservations` las encuentra y las liquida con las mismas reglas.
+
+```bash
+# Solo reporta (dry run): no escribe nada
+docker compose exec web python manage.py settle_stale_reservations
+# Liquida las que tienen una regla
+docker compose exec web python manage.py settle_stale_reservations --apply
+# Otra antigüedad mínima (24 h por defecto)
+docker compose exec web python manage.py settle_stale_reservations --min-age-hours 72
+```
+
+Solo mira transacciones `RESERVED` con `created_at` de hace al menos `--min-age-hours`. Para cada una busca el proyecto que la tiene en `metadata['reservation_id']` (creación) o en `metadata['render_reservation_id']` (render). Las filas de video completo usan la misma regla que el pipeline (`_whole_video_settlement`, en `tasks/ingestion.py`), no una copia:
+
+| Reserva | Estado del proyecto | Acción (`reason`) |
+|---------|---------------------|-------------------|
+| Creación | `clips_selected` o una etapa posterior (`clips_selected`) | Cobra (`commit`) |
+| Creación | Con clips, aunque esté `failed` (`has_clips`) | Cobra |
+| Creación | `failed` sin clips (`failed_without_clips`) | Devuelve (`rollback`) |
+| Creación | Otra etapa (`in_progress`) | Solo reporta |
+| Creación de un video completo (`single_edit` con `priced_duration_s`) | `completed`, `partial` o `failed` con un clip `completed` o `published` (`video_delivered`) | Cobra |
+| Creación de un video completo | `completed`, `partial` o `failed` con un clip todavía `rendering` (`clip_rendering`) | Solo reporta |
+| Creación de un video completo | `completed`, `partial` o `failed` sin eso: el render falló o el proyecto falló antes (`video_not_delivered`) | Devuelve |
+| Creación de un video completo | Cualquier otra etapa, incluidas `clips_selected` y `render_dispatched` (`not_final`) | Solo reporta |
+| Render | Con `final_export_r2_key`, aunque esté `FAILED` (`render_delivered`) | Cobra |
+| Render | `FAILED` (`render_failed`) | Devuelve |
+| Render | Otro estado, por ejemplo `RENDERING` (`render_in_progress`) | Solo reporta |
+| Sin proyecto (`unlinked`) | — | Solo reporta |
+
+- **Seguridad.** Sin `--apply` no escribe nada. Con `--apply` vuelve a decidir con el lock de fila del proyecto tomado y liquida con `wallet_service.commit_reservation` o `rollback_reservation`, que bloquean la transacción y vuelven a chequear que siga `RESERVED`. Si el pipeline la liquidó mientras tanto, el resultado es `already_settled`; si el proyecto cambió y ahora toca solo reportar, `skipped`.
+- **Antigüedad.** El mínimo de 24 h deja afuera reservas de proyectos que siguen trabajando, por ejemplo un render que espera su reintento. Las transacciones anteriores a la migración `payments.0003` tienen como `created_at` la hora de la migración: el barrido las toma un `--min-age-hours` después del deploy.
+- **Salida.** Una línea por transacción, sin texto del usuario (ni la descripción de la transacción, que lleva el título del proyecto): `transaction`, `amount`, `age_h`, `kind` (`creation`, `render` o `-`), `project`, `stage`, `status`, `action` (`commit`, `rollback` o `report`), `reason` y `result` (`dry_run`, `reported`, `committed`, `rolled_back`, `already_settled`, `skipped` o `error=<clase>`). Al final, una línea `summary` con los totales.
+- **Errores.** Un error de pago o de base en una transacción se informa en su línea y el barrido sigue. Si hubo alguno, el comando termina con error (código 1) para que un cron lo note.
+- **Lo que queda en reporte** se resuelve a mano: un render que sigue `RENDERING` sin worker (por ejemplo, después del hard time limit) se re-encola (`render_video_segments`) o se marca `FAILED` para que el próximo barrido devuelva la reserva; una reserva sin proyecto se revisa con el workspace dueño de la billetera.
 
 ## Referencias
 

@@ -13,10 +13,12 @@ from django.test import TestCase, override_settings
 from apps.users.models import Workspace
 from apps.videos.models import VideoProject
 from apps.videos.tasks import render_video_segments
+from apps.videos.tests.fakes import FakeRedis
 
 User = get_user_model()
 
 GET_CLIENT = "apps.videos.services.storage_service.CloudflareR2Manager.get_client"
+REDIS_CLIENT = "apps.videos.services.ai.project_lock.get_redis_client"
 VIDEO_FILE_CLIP = "moviepy.VideoFileClip"
 CONCATENATE = "moviepy.concatenate_videoclips"
 LAYOUT = "apps.videos.services.layouts.get_layout_strategy"
@@ -51,6 +53,10 @@ class RenderVideoSegmentsCleanupTests(TestCase):
         patcher = patch(GET_CLIENT, return_value=client)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The render holds the project lock (acks_late): never a real Redis here.
+        redis_patcher = patch(REDIS_CLIENT, return_value=FakeRedis())
+        redis_patcher.start()
+        self.addCleanup(redis_patcher.stop)
 
         # Route every tempfile created by the task into an isolated directory.
         tempdir_patcher = patch.object(tempfile, "tempdir", self.tmp_root)
@@ -92,7 +98,8 @@ class RenderVideoSegmentsCleanupTests(TestCase):
         # Guard against a vacuous pass: the export must actually have started.
         processed.write_videofile.assert_called_once()
         self.project.refresh_from_db()
-        self.assertEqual(self.project.status, VideoProject.Status.FAILED)
+        # A retry is pending: the project stays RENDERING until the last attempt.
+        self.assertEqual(self.project.status, VideoProject.Status.RENDERING)
         self.assertEqual(self._leftover_files(self.tmp_root), [])
         self.assertEqual(self._leftover_files(self.media_root), [])
 

@@ -208,9 +208,10 @@ flowchart TD
 
 **Reserva del render en `approve_paper_edit`.** Aprobar el paper edit primero toma el proyecto con un `UPDATE` condicional (`awaiting_approval` → `rendering`). Si otra aprobación ya lo tomó, responde 409 sin reservar ni encolar; si después no hay saldo (402) o falla el pago, lo devuelve a `awaiting_approval`. Después reserva el costo del render de los segmentos aprobados, sin adicionales porque SEO y miniatura se cobraron al crear (ADR-013), con `reserve_funds` (descripción `Render Final (Paper Edit): <título>`), y guarda el id en `metadata['render_reservation_id']`. `render_video_segments` la liquida con `_settle_render_reservation`:
 
-- **Render entregado:** `commit_reservation` (log `render.charged`).
-- **Fallo que no se arregla reintentando** (`NonRetryableAIError`, por ejemplo segmentos inválidos): `rollback_reservation` (`render.refunded`).
-- **Otro error:** mientras quedan reintentos la reserva sigue `RESERVED`. En el último intento se devuelve y la excepción se propaga.
+- **Render entregado:** `commit_reservation` (log `render.charged`). Una re-entrega que encuentra el proyecto ya entregado no vuelve a renderizar: solo liquida, y si el worker murió entre guardar la exportación y cobrar, cobra ahí, una vez.
+- **Fallo que no se arregla reintentando** (`NonRetryableAIError`, por ejemplo segmentos inválidos o un render que perdió el worker más de `RENDER_SEGMENTS_MAX_REDELIVERIES` veces, o el soft time limit): `rollback_reservation` (`render.refunded`).
+- **Otro error:** mientras quedan reintentos la reserva sigue `RESERVED` y el proyecto `RENDERING`. En el último intento se devuelve y la excepción se propaga. Una copia del mensaje que llega después ya no renderiza: solo lo hace sobre un proyecto `RENDERING` con la reserva todavía `RESERVED`.
+- Una reserva que quedó `RESERVED` de todos modos (por ejemplo, de antes de que existiera el cobro) la liquida `settle_stale_reservations` ([07](07-capacidad-costos-y-operacion.md#operación-reservas-de-tokens-que-quedaron-reserved)).
 
 ## Errores, reintentos y casos borde
 

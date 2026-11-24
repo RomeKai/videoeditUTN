@@ -359,6 +359,84 @@ class SingleEditPipelineTests(IngestionHarness, TestCase):
         self.assertEqual(project.pipeline_stage, PipelineStage.FAILED)
         self.assertEqual(project.pipeline_error_code, "AINoSpeechDetectedError")
 
+    # Clip render retries (render_clip_task) and the whole-video reservation
+
+    def dispatched_whole_video(self):
+        project = self.make_whole_video()
+        clip = VideoClip.objects.create(project=project, title="Pipeline", start_time=0, end_time=10)
+        VideoProject.objects.filter(pk=project.pk).update(pipeline_stage=PipelineStage.RENDER_DISPATCHED)
+        return project, clip
+
+    @staticmethod
+    def transient_r2_error():
+        from botocore.exceptions import ClientError
+
+        return ClientError(
+            {"Error": {"Code": "SlowDown"}, "ResponseMetadata": {"HTTPStatusCode": 503}}, "PutObject",
+        )
+
+    def test_a_render_that_fails_for_good_after_its_retries_is_refunded(self):
+        from apps.videos.tasks.render import RENDER_CLIP_MAX_RETRIES
+
+        project, clip = self.dispatched_whole_video()
+        reserved_during_attempts = []
+
+        def always_transient(clip_id):
+            self.txn.refresh_from_db()
+            reserved_during_attempts.append(self.txn.status)
+            raise self.transient_r2_error()
+
+        with patch("apps.videos.services.render_engine.RenderEngine.render_clip", side_effect=always_transient):
+            render_clip_task.apply(args=[str(clip.id)])
+
+        # Kept while a retry could still deliver it; returned after the last one.
+        self.assertEqual(reserved_during_attempts, [Transaction.Status.RESERVED] * (RENDER_CLIP_MAX_RETRIES + 1))
+        project.refresh_from_db()
+        self.txn.refresh_from_db()
+        self.assertEqual(project.pipeline_stage, PipelineStage.PARTIAL)
+        self.assertEqual(self.txn.status, Transaction.Status.FAILED)
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+
+    def test_a_retry_does_not_render_a_whole_video_refunded_during_its_backoff(self):
+        project, clip = self.dispatched_whole_video()
+        original_retry = render_clip_task.retry
+
+        def refunded_meanwhile(*args, **kwargs):
+            rollback_reservation(self.txn.id)  # the project failed and was refunded
+            return original_retry(*args, **kwargs)
+
+        with patch("apps.videos.services.render_engine.RenderEngine.render_clip",
+                   side_effect=self.transient_r2_error()) as render, \
+                patch.object(render_clip_task, "retry", side_effect=refunded_meanwhile):
+            render_clip_task.apply(args=[str(clip.id)])
+
+        render.assert_called_once()
+        clip.refresh_from_db()
+        self.assertEqual(clip.status, VideoClip.Status.FAILED)
+
+    def test_a_retry_checks_the_payment_again_after_claiming_the_clip(self):
+        from apps.videos.tasks import render as render_module
+
+        project, clip = self.dispatched_whole_video()
+        real_claim = render_module._claim_clip_for_render
+        claims = []
+
+        def claim(clip_id, redelivered=False):
+            claims.append(clip_id)
+            if len(claims) == 2:
+                rollback_reservation(self.txn.id)  # refunded between the check and the retry's claim
+            return real_claim(clip_id, redelivered=redelivered)
+
+        with patch("apps.videos.services.render_engine.RenderEngine.render_clip",
+                   side_effect=self.transient_r2_error()) as render, \
+                patch.object(render_module, "_claim_clip_for_render", side_effect=claim):
+            render_clip_task.apply(args=[str(clip.id)])
+
+        self.assertEqual(len(claims), 2)
+        render.assert_called_once()  # the retry claimed it, then found it unpaid
+        clip.refresh_from_db()
+        self.assertEqual(clip.status, VideoClip.Status.FAILED)
+
 
 @override_settings(AI_SINGLE_EDIT_MAX_DURATION_SECONDS=600)
 class SingleEditCreationTests(TestCase):
