@@ -404,3 +404,24 @@ def render_video_segments(self, project_id):
         # directory, so it is removed explicitly on every exit path.
         if output_path and os.path.exists(output_path):
             os.remove(output_path)
+
+
+# --- Clip previews (PTE-03) ---------------------------------------------------
+
+@celery_app.task(name='apps.videos.tasks.render_clip_preview_task', ignore_result=True)
+def render_clip_preview_task(preview_id):
+    """
+    Renders a free 360p preview of a clip (PTE-03). Never retried: a failed
+    preview is stored as ``failed`` and the user can ask for a new one.
+    """
+    from apps.videos.services.clip_preview import render_preview
+
+    render_preview(preview_id)
+
+
+@celery_app.task(name='apps.videos.tasks.cleanup_expired_previews', ignore_result=True)
+def cleanup_expired_previews():
+    """Deletes expired previews and their files (CELERY_BEAT_SCHEDULE, every 15 min)."""
+    from apps.videos.services.clip_preview import cleanup_expired_previews_now
+
+    return cleanup_expired_previews_now()
