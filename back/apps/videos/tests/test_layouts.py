@@ -73,3 +73,31 @@ def test_split_layers_fill_the_full_width(target_w, target_h, synthetic_clip):
     _bg, game, cam = result.clips
     assert tuple(game.size) == (target_w, target_h - cam_h)
     assert tuple(cam.size) == (target_w, cam_h)
+
+
+def test_strong_blur_matches_a_direct_gaussian_blur():
+    """El desenfoque por reducción se ve igual que el directo (diferencia media < 2 niveles)."""
+    import cv2
+    import numpy as np
+
+    from apps.videos.services.layouts.blur_pip import apply_gaussian_blur
+
+    yy, xx = np.mgrid[0:360, 0:640]
+    image = np.dstack([(xx * 255 // 639), (yy * 255 // 359), ((xx + yy) % 256)]).astype(np.uint8)
+
+    fast = apply_gaussian_blur(image, sigma=30)
+    direct = cv2.GaussianBlur(image, (0, 0), sigmaX=30, sigmaY=30)
+
+    assert fast.shape == image.shape and fast.dtype == np.uint8
+    assert np.abs(fast.astype(int) - direct.astype(int)).mean() < 2
+
+
+def test_weak_blur_or_tiny_frames_use_the_direct_blur():
+    import cv2
+    import numpy as np
+
+    from apps.videos.services.layouts.blur_pip import apply_gaussian_blur
+
+    image = np.random.default_rng(0).integers(0, 255, (20, 20, 3), dtype=np.uint8)
+    expected = cv2.GaussianBlur(image, (0, 0), sigmaX=30, sigmaY=30)
+    assert np.array_equal(apply_gaussian_blur(image, sigma=30), expected)
