@@ -1,10 +1,11 @@
 import type { Metadata } from 'next';
-import { ScreenPlaceholder } from '@/dev/ScreenPlaceholder';
-import { SCREENS } from '@/dev/screens';
+import { one, type SearchParams } from '@/features/acceso/params';
+import { RegisterScreen } from '@/features/acceso/RegisterScreen';
 
 export const metadata: Metadata = { title: 'Crear cuenta' };
 
-// A2 · Crear cuenta: pantalla pendiente. El dominio dueño reemplaza este archivo (ver front/ROUTES.md).
-export default function Page() {
-  return <ScreenPlaceholder {...SCREENS.A2} page={false} />;
+// A2 · Crear cuenta.
+export default async function Page({ searchParams }: { searchParams: SearchParams }) {
+  const params = await searchParams;
+  return <RegisterScreen email={one(params.email)} />;
 }

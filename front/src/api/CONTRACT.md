@@ -144,7 +144,7 @@ Inicia sesión con email y contraseña; devuelve el par JWT.
 | Sesión | Pública |
 | Pedido | LoginRequest |
 | Respuesta 200 | TokenPair |
-| Errores | **401** Credenciales incorrectas. La UI muestra "El email o la contraseña no coinciden", sin decir cuál.<br>**403** Propuesto: `code: "email_not_verified"` cuando la cuenta no verificó el email. La UI lleva a A3. |
+| Errores | **401** Credenciales incorrectas. La UI muestra "El email o la contraseña no coinciden", sin decir cuál.<br>**403** Propuesto: `code: "email_not_verified"` cuando la cuenta no verificó el email. La UI lleva a A3.<br>**429** Demasiados intentos seguidos (throttle de DRF). La UI pide esperar y no borra lo escrito. |
 | Pantallas | A1, D9 |
 
 #### `POST /api/token/refresh/`
@@ -491,7 +491,7 @@ Acepta la invitación. Sin cuenta: la crea con `name` y `password`. Con cuenta: 
 |---|---|
 | Id | `workspaces.acceptInvitation` |
 | Backend | ❌ falta (propuesto) · hueco 13 |
-| Sesión | Pública |
+| Sesión | Pública (manda el token si hay sesión) |
 | Pedido | { name?: string, password?: string, terms_accepted?: boolean } |
 | Respuesta 200 | { workspace_id: Id, tokens: TokenPair \\| null } |
 | Errores | **400** Faltan `name` o `password` para crear la cuenta.<br>**401** El email ya tiene cuenta y no hay sesión: la UI pide iniciar sesión.<br>**410** Invitación vencida o ya usada. |

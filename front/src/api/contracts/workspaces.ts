@@ -248,7 +248,8 @@ export const acceptInvitation = defineEndpoint({
     /** Present when the account was created here: the session starts right away. */
     tokens: TokenPair.nullable(),
   }),
-  auth: false,
+  // Optional: the token travels when there is a session (an existing account accepts with it) and is not needed to create the account.
+  auth: 'optional',
   workspaceScoped: false,
   errors: [
     { status: 400, when: 'Faltan `name` o `password` para crear la cuenta.' },
