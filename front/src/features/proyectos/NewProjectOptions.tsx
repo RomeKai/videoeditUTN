@@ -222,8 +222,8 @@ export function FormatSection({
                       title={
                         <span className={cx('num', styles.rcTop)}>
                           <Icon name="lock" size={12} />
-                          {resolution}
-                          <span className="sr-only">, disponible en el plan {lockedBy.plan ?? 'superior'}</span>
+                          <span aria-hidden="true">{resolution}</span>
+                          <span className="sr-only">{`${resolution}, disponible en el plan ${lockedBy.plan ?? 'superior'}`}</span>
                         </span>
                       }
                       description={<span aria-hidden="true">Plan {lockedBy.plan ?? 'superior'}</span>}

@@ -566,9 +566,10 @@ export function NewProjectScreen() {
         </Banner>
       ) : null}
       {pricingQuery.isError ? <LoadError className={styles.topBanner} error={pricingQuery.error} onRetry={() => void pricingQuery.refetch()} fullPageForMissing={false} /> : null}
-      {sourceId && sourceProject.isError ? (
-        <Banner className={styles.topBanner} tone="warn" title="No pudimos traer la configuración de ese proyecto">
-          Seguís con tu última configuración.
+      {/* A project that does not exist or cannot be read is ignored: the form opens as usual. */}
+      {sourceData ? (
+        <Banner className={styles.topBanner} tone="info" live="status">
+          Configuración copiada de <span className={styles.strong}>{sourceData.title}</span>. Elegí el video de nuevo: el origen no se copia.
         </Banner>
       ) : null}
       <div className={styles.grid}>

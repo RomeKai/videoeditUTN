@@ -194,7 +194,7 @@ test.describe('C1 · Nuevo proyecto', () => {
     await expect(summary(page).getByText('Entre 810 y 2.430')).toBeVisible();
     await prompt.fill('');
     await summary(page).getByRole('button', { name: 'Crear proyecto' }).click();
-    await expect(page.getByRole('alert')).toHaveText('Contanos qué querés');
+    await expect(page.getByRole('region', { name: 'Origen' }).getByRole('alert')).toHaveText('Contanos qué querés');
     await prompt.fill('Sacá los 3 mejores consejos, en vertical');
     await summary(page).getByRole('button', { name: 'Crear proyecto' }).click();
     await expect(page).toHaveURL(PROJECT_URL);
