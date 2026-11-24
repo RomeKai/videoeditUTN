@@ -51,7 +51,8 @@ class GamingLayout(BaseLayout):
 
     Camera pane, by priority (see camera.py):
     1. Manual camera set (``manual_camera_x/y/zoom`` changed from the
-       defaults): that fixed crop. Faces are not tracked.
+       defaults): a fixed crop of the automatic size (``camera_size``)
+       divided by the zoom, centred on (x, y). Faces are not tracked.
     2. ``camera_selection_position`` picks the region: left half, right
        half, or the whole frame for ``center``. With face tracking the crop
        follows the main face found in that region; without it the crop is
@@ -115,7 +116,9 @@ class GamingLayout(BaseLayout):
         """The camera crop of the source (not resized yet)."""
         manual = ManualCamera.from_coords(self.manual_camera_coords)
         if manual is not None:
-            box = manual_box(manual, frame_box(clip.w, clip.h), aspect)
+            # Zoom 1 is the automatic crop: turning the manual camera on only moves it.
+            base_w, base_h = camera_size(clip.w, clip.h, aspect, clip.h // 3)
+            box = manual_box(manual, frame_box(clip.w, clip.h), base_w, base_h)
             logger.info("layout.split_camera mode=manual")
             return _crop(clip, box)
 

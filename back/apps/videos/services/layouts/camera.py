@@ -9,8 +9,9 @@ with the boxes they return, and the tests check the boxes without a video.
 - The manual camera (``manual_camera_x``, ``manual_camera_y``,
   ``manual_camera_zoom``) is used only when the project changed it from the
   model defaults (``ManualCamera.from_coords``). Then x and y (0 to 1) are the
-  centre of the crop and the zoom divides the largest box with the pane's
-  aspect that fits (``manual_box``); the box is moved back inside the frame.
+  centre of the crop and the zoom divides the size of the crop the layout
+  would use by itself (``manual_box``): turning the manual camera on moves
+  the frame without zooming out. The box is moved back inside the frame.
 """
 
 import math
@@ -22,8 +23,8 @@ from typing import Any, Mapping, NamedTuple, Optional, Tuple
 DEFAULT_X = 0.5
 DEFAULT_Y = 0.2
 DEFAULT_ZOOM = 1.0
-# Zoom 1 is the largest box with the pane's aspect; beyond 4 the crop of a
-# 720p source is a few dozen pixels wide.
+# Zoom 1 is the layout's own crop size; beyond 4 the crop of a 720p source is
+# a few dozen pixels wide.
 MAX_ZOOM = 4.0
 
 
@@ -91,10 +92,12 @@ def frame_box(frame_w: int, frame_h: int) -> Box:
     return Box(0, 0, int(frame_w), int(frame_h))
 
 
-def manual_box(camera: ManualCamera, area: Box, aspect: float) -> Box:
-    """The manual crop inside ``area``: centre (x, y) of the area, largest box / zoom."""
-    w, h = fit_size(area.w, area.h, aspect)
-    w, h = max(1, int(w / camera.zoom)), max(1, int(h / camera.zoom))
+def manual_box(camera: ManualCamera, area: Box, base_w: int, base_h: int) -> Box:
+    """
+    The manual crop inside ``area``: centred on (x, y) of the area, with the
+    layout's own crop size (``base_w x base_h``) divided by the zoom.
+    """
+    w, h = max(1, int(base_w / camera.zoom)), max(1, int(base_h / camera.zoom))
     return place(area.x1 + camera.x * area.w, area.y1 + camera.y * area.h, w, h, area)
 
 
