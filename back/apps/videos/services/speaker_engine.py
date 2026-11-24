@@ -47,7 +47,12 @@ def speech_activity(clip, hop: float = 0.05, sample_rate: int = 16000) -> Option
     if audio is None:
         return None
     try:
-        samples = np.asarray(audio.to_soundarray(fps=sample_rate), dtype=np.float32)
+        # One-second reads: MoviePy's file reader returns wrong samples for
+        # longer reads at a resampled rate (it repeated one sample for the
+        # whole clip), so the default buffer is not safe here.
+        samples = np.asarray(
+            audio.to_soundarray(fps=sample_rate, buffersize=int(sample_rate)), dtype=np.float32,
+        )
     except Exception as exc:
         logger.warning("speaker.audio_failed error=%s", type(exc).__name__)
         return None
@@ -76,17 +81,25 @@ def mouth_activity(frame_a, frame_b, box) -> float:
     """
     Mouth change between two frames for the face ``box`` = (center x, center y,
     width, height), net of the change in the upper face (head movement, light).
+    Only the face's own pixels are converted (a whole 1080p frame per face and
+    sample made this the slowest step).
     """
     cx, cy, w, h = box
     if w <= 0 or h <= 0:
         return 0.0
-    x1, y1 = cx - w / 2, cy - h / 2
+    height, width = frame_a.shape[:2]
+    x1, y1 = max(0, int(cx - w / 2)), max(0, int(cy - h / 2))
+    x2, y2 = min(width, int(cx + w / 2)), min(height, int(cy + h / 2))
+    if x2 <= x1 or y2 <= y1:
+        return 0.0
+    # Offsets of the clamped crop inside the full face box.
+    ox, oy = x1 - (cx - w / 2), y1 - (cy - h / 2)
     diff = np.abs(
-        np.asarray(frame_a, dtype=np.float32).mean(axis=2)
-        - np.asarray(frame_b, dtype=np.float32).mean(axis=2)
+        np.asarray(frame_a[y1:y2, x1:x2], dtype=np.float32).mean(axis=2)
+        - np.asarray(frame_b[y1:y2, x1:x2], dtype=np.float32).mean(axis=2)
     )
-    mouth = _region(diff, x1, y1, w, h, 0.62, 0.95)
-    upper = _region(diff, x1, y1, w, h, 0.10, 0.45)
+    mouth = _region(diff, -ox, -oy, w, h, 0.62, 0.95)
+    upper = _region(diff, -ox, -oy, w, h, 0.10, 0.45)
     if mouth is None or upper is None:
         return 0.0
     return max(0.0, float(mouth.mean()) - float(upper.mean()))
@@ -142,12 +155,18 @@ class SpeakerTrackingEngine:
 
     # -- measurement ---------------------------------------------------------
 
-    def activity(self, clip, faces) -> Dict[int, List[Tuple[float, float]]]:
-        """Mouth activity samples ``(t, score)`` per face id."""
+    def activity(self, clip, faces, speech: Optional[SpeechActivity] = None) -> Dict[int, List[Tuple[float, float]]]:
+        """
+        Mouth activity samples ``(t, score)`` per face id. Samples without
+        speech around them are skipped: they could never take the camera.
+        """
         scores: Dict[int, List[Tuple[float, float]]] = {track.id: [] for track in faces.tracks}
         last_t = max(0.0, clip.duration - self.pair_gap - 1e-3)
+        failures = 0
         for t in np.arange(0, last_t, 1.0 / self.sample_rate):
             t = float(t)
+            if speech is not None and speech.fraction(t, t + self.pair_gap + 0.05) == 0:
+                continue
             boxes = {track.id: _box_at(track, t) for track in faces.tracks}
             boxes = {face_id: box for face_id, box in boxes.items() if box is not None}
             if not boxes:
@@ -155,10 +174,14 @@ class SpeakerTrackingEngine:
             try:
                 frame_a, frame_b = clip.get_frame(t), clip.get_frame(t + self.pair_gap)
             except Exception as exc:
-                logger.warning("speaker.frame_failed t=%.2f error=%s", t, type(exc).__name__)
+                failures += 1
+                if failures <= 3:
+                    logger.warning("speaker.frame_failed t=%.2f error=%s", t, type(exc).__name__)
                 continue
             for face_id, box in boxes.items():
                 scores[face_id].append((t, mouth_activity(frame_a, frame_b, box)))
+        if failures > 3:
+            logger.warning("speaker.frames_failed count=%d", failures)
         return scores
 
     # -- decision ------------------------------------------------------------
@@ -173,8 +196,11 @@ class SpeakerTrackingEngine:
             return [(0.0, duration, primary.id)]
         if speech is None:
             speech = speech_activity(clip)
+        if speech is not None and not speech.speaking.any():
+            # Nobody talks in the clip: no evidence to move the camera.
+            return [(0.0, duration, primary.id)]
         if activity is None:
-            activity = self.activity(clip, faces)
+            activity = self.activity(clip, faces, speech)
         labels = self._label_windows(duration, faces, speech, activity, primary.id)
         timeline = self._merge_short(self._merge_same(labels))
         logger.info("speaker.timeline faces=%d segments=%d", len(faces.tracks), len(timeline))
@@ -197,8 +223,11 @@ class SpeakerTrackingEngine:
                 current_visible = current in scores
                 if not current_visible:
                     # The current speaker left the frame: whoever is on screen and
-                    # moving their mouth (or simply the most important face) takes it.
-                    current = leader if talking else self._most_important(faces, scores)
+                    # clearly moving their mouth takes it, else the most important face.
+                    current = (
+                        leader if talking and scores[leader] >= self.min_activity
+                        else self._most_important(faces, scores)
+                    )
                 elif talking and leader != current and scores[leader] >= self.min_activity \
                         and scores[leader] >= self.switch_margin * scores[current]:
                     current = leader
@@ -221,20 +250,28 @@ class SpeakerTrackingEngine:
         return merged
 
     def _merge_short(self, segments):
-        """A turn shorter than ``min_segment`` goes to the previous speaker (or the next one)."""
-        changed = True
-        while changed and len(segments) > 1:
-            changed = False
-            for i, (start, end, face_id) in enumerate(segments):
-                if end - start >= self.min_segment:
-                    continue
-                neighbour = i - 1 if i > 0 else i + 1
-                n_start, n_end, n_id = segments[neighbour]
-                segments[neighbour] = (min(start, n_start), max(end, n_end), n_id)
-                del segments[i]
-                segments = self._merge_same(segments)
-                changed = True
+        """
+        A turn shorter than ``min_segment`` is absorbed by its longer neighbour.
+        Turns between two others go first and the shortest first, so two short
+        turns at the edge never add up to one that passes the minimum.
+        """
+        segments = list(segments)
+        while len(segments) > 1:
+            short = [i for i, (s, e, _) in enumerate(segments) if e - s < self.min_segment]
+            if not short:
                 break
+            middle = [i for i in short if 0 < i < len(segments) - 1]
+            i = min(middle or short, key=lambda k: (segments[k][1] - segments[k][0], k))
+            if 0 < i < len(segments) - 1:
+                before, after = segments[i - 1], segments[i + 1]
+                neighbour = i - 1 if before[1] - before[0] >= after[1] - after[0] else i + 1
+            else:
+                neighbour = 1 if i == 0 else i - 1
+            start, end, _ = segments[i]
+            n_start, n_end, n_id = segments[neighbour]
+            segments[neighbour] = (min(start, n_start), max(end, n_end), n_id)
+            del segments[i]
+            segments = self._merge_same(segments)
         return segments
 
     # -- previous API ----------------------------------------------------------

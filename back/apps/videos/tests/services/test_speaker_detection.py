@@ -213,3 +213,80 @@ class EndToEndTests(SimpleTestCase):
             tracker.return_value.track_faces.return_value = FaceTracks([], [], (W, H))
             output = get_layout_strategy("active", 180, 320).apply(clip)
         self.assertEqual(output.size, (180, 320))
+
+
+class RealFileTests(SimpleTestCase):
+    """Review of CORE-02: the audio of a real file, not only a synthetic AudioClip."""
+
+    def test_speech_is_found_in_a_real_video_file(self):
+        import subprocess
+        import tempfile
+
+        from conftest import _ffmpeg_exe
+        from moviepy import VideoFileClip
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = f"{folder}/talk.mp4"
+            subprocess.run([
+                _ffmpeg_exe(), "-y", "-loglevel", "error",
+                "-f", "lavfi", "-i", "testsrc=duration=20:size=320x180:rate=10",
+                "-f", "lavfi", "-i", "sine=frequency=300:duration=20:sample_rate=44100",
+                "-af", "volume='if(lt(t,10),0.002,0.8)':eval=frame",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", path,
+            ], check=True)
+            with VideoFileClip(path) as clip:
+                speech = speech_activity(clip.subclipped(2, 18))
+
+        self.assertLess(speech.fraction(0.5, 7.5), 0.1)   # source 2-10 s: quiet
+        self.assertGreater(speech.fraction(8.5, 15.5), 0.9)  # source 10-18 s: loud
+
+
+class ReviewRegressionTests(SimpleTestCase):
+    def timeline(self, talker_by_time):
+        return SpeakerTrackingEngine().timeline(
+            clip_stub(), faces_of(track(A), track(B)), speech=all_speech(), activity=activity(talker_by_time),
+        )
+
+    def test_a_short_turn_at_the_start_does_not_cut(self):
+        self.assertEqual([f for _, _, f in self.timeline(lambda t: B if 1 <= t < 2 else A)], [A])
+
+    def test_a_short_turn_at_the_end_does_not_cut(self):
+        self.assertEqual([f for _, _, f in self.timeline(lambda t: B if t >= 9 else A)], [A])
+
+    def test_a_clip_without_speech_never_measures_mouths(self):
+        engine = SpeakerTrackingEngine()
+        silent = SpeechActivity(0.05, np.zeros(200, dtype=bool))
+        with patch.object(engine, "activity") as measure:
+            timeline = engine.timeline(clip_stub(), faces_of(track(A), track(B)), speech=silent)
+        measure.assert_not_called()
+        self.assertEqual(timeline, [(0.0, DURATION, A)])
+
+    def test_mouths_are_only_measured_while_someone_speaks(self):
+        speaking = np.zeros(200, dtype=bool)
+        speaking[100:] = True  # speech only in the second half
+        clip = talking_clip()
+        faces = faces_of(track(A), track(B))
+        engine = SpeakerTrackingEngine()
+        with patch.object(clip, "get_frame", wraps=clip.get_frame) as get_frame:
+            engine.activity(clip, faces, SpeechActivity(0.05, speaking))
+        self.assertTrue(all(call.args[0] >= 4.9 for call in get_frame.call_args_list))
+
+    def test_a_face_box_partly_outside_the_frame_is_measured_on_its_visible_part(self):
+        a = np.full((H, W, 3), 120, dtype=np.uint8)
+        b = a.copy()
+        b[300:350, 0:40] = 250  # mouth of a face cut by the left edge
+        self.assertGreater(mouth_activity(a, b, (10, 250, 120, 120)), 5)
+        self.assertEqual(mouth_activity(a, b, (-500, 250, 120, 120)), 0.0)
+
+    def test_a_faint_mouth_does_not_take_the_camera_when_the_speaker_leaves(self):
+        engine = SpeakerTrackingEngine()
+        faces = faces_of(track(A, end=4.0), track(B), )
+        acts = activity(lambda t: A, loud=20.0, quiet=0.2)  # B barely moves
+        acts[A] = [(t, s) for t, s in acts[A] if t <= 4.0]
+        big_c = FaceTrack(id=2, detections=[
+            Detection(t=float(t), x=500, y=100, w=200, h=200) for t in np.arange(0, DURATION + 1e-9, 0.5)
+        ])
+        acts[2] = [(t, 0.1) for t, _ in acts[B]]
+        faces = faces_of(track(A, end=4.0), track(B), big_c)
+        timeline = engine.timeline(clip_stub(), faces, speech=all_speech(), activity=acts)
+        self.assertEqual(speaker_at(timeline)(8.0), 2)  # the most important face, not the faint mouth
