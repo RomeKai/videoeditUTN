@@ -123,6 +123,40 @@ class PrimaryAndPathTests(SimpleTestCase):
         self.assertEqual([p.t for p in raw], times)
         self.assertEqual([p.x for p in raw], [100, 100, 200, 300, 400, 400])
 
+    def framing(self, frames):
+        tracker = run(frames, max_missed=3)
+        return FaceTracks(tracker.tracks(), tracker.sample_times, (1920, 1080)).framing_path()
+
+    def test_a_jump_cut_moves_the_camera_to_where_the_person_is_now(self):
+        frames = [[face(i / FPS, 400 if i < 10 else 1500, size=150)] for i in range(20)]
+
+        path = self.framing(frames)
+
+        self.assertEqual(path.get_at(2.0)[0], 400)
+        self.assertEqual(path.get_at(4.5)[0], 400)  # no pan before the cut
+        self.assertEqual(path.get_at(5.0)[0], 1500)
+        self.assertEqual(path.get_at(9.5)[0], 1500)
+
+    def test_a_multicam_podcast_frames_whoever_is_on_screen(self):
+        # Host 0-3 s, guest 3-6.5 s, host again 6.5-10 s (one camera per person).
+        frames = []
+        for i in range(20):
+            t = i / FPS
+            frames.append([face(t, 600, size=200)] if t < 3 or t >= 6.5 else [face(t, 1400, size=200)])
+
+        path = self.framing(frames)
+
+        for t, expected in ((1.0, 600), (4.0, 1400), (6.0, 1400), (8.0, 600), (9.5, 600)):
+            self.assertEqual(path.get_at(t)[0], expected, t)
+
+    def test_with_both_on_screen_the_main_face_keeps_the_camera(self):
+        frames = [[face(i / FPS, 600, size=200)] + ([face(i / FPS, 1400, size=120)] if i >= 5 else [])
+                  for i in range(20)]
+
+        path = self.framing(frames)
+
+        self.assertEqual({x for x in path.xs}, {600})
+
     def test_no_faces_means_no_primary(self):
         self.assertIsNone(FaceTracks([], [], (10, 10)).primary())
 
@@ -150,6 +184,17 @@ class EMASmoothingTests(SimpleTestCase):
         self.assertGreater(lag_one, 15)
         self.assertLess(lag_two, 2)
 
+    def test_the_ends_of_a_steady_pan_stay_on_the_face(self):
+        xs = list(range(0, 400, 10))
+        smoothed = [p.x for p in EMASmoothing(alpha=0.3).smooth(self.points(xs))]
+        self.assertLessEqual(abs(smoothed[0] - xs[0]), 2)
+        self.assertLessEqual(abs(smoothed[-1] - xs[-1]), 2)
+
+    def test_short_paths_are_padded_safely(self):
+        for n in (3, 4, 5):
+            smoothed = EMASmoothing(alpha=0.1).smooth(self.points([100] * n))
+            self.assertEqual([p.x for p in smoothed], [100] * n)
+
     def test_alpha_is_validated(self):
         with self.assertRaises(ValueError):
             EMASmoothing(alpha=0)
@@ -170,7 +215,7 @@ class SamplingTests(SimpleTestCase):
 
         clip = ColorClip(size=(320, 180), color=(0, 0, 0), duration=1)
         path = TrackingPath([TrackingPoint(0, 160, 90, 40, 40)])
-        for style, expected in (("dynamic", 4.0), ("minimalist", 1.5), (None, 2.0)):
+        for style, expected in (("dynamic", 3.0), ("minimalist", 1.5), (None, 2.0)):
             with self.subTest(style=style), \
                     patch("apps.videos.services.layouts.standard.FaceTracker") as tracker_class:
                 tracker_class.return_value.generate_path.return_value = path
@@ -244,11 +289,25 @@ class FaceTrackerTests(SimpleTestCase):
             def detect(self, frame):
                 raise OSError("libGLESv2.so.2: cannot open shared object file")
 
-        with self.assertLogs("apps.videos.services.face_tracker", level="ERROR") as logs:
-            path = FaceTracker(detector=Broken()).generate_path(self.clip(), fps=2.0)
+        with self.assertLogs("apps.videos.services.face_tracker", level="WARNING") as logs:
+            path = FaceTracker(detector=Broken()).generate_path(self.clip(), fps=4.0)
         self.assertTrue(any("face_tracker.all_frames_failed" in line for line in logs.output))
+        # 16 failed frames: three warnings and the summary, not one line per frame.
+        self.assertEqual(sum("face_tracker.frame_failed" in line for line in logs.output), 3)
         self.assertFalse(any("libGLES" in line for line in logs.output))
         self.assertEqual(path.get_at(1.0)[:2], (320, 180))
+
+    def test_a_failed_detector_load_is_not_retried_for_every_clip(self):
+        from apps.videos.services import face_tracker as module
+
+        if not module.MEDIAPIPE_TASKS_AVAILABLE:
+            self.skipTest("MediaPipe is not available here")
+        key = 0.123
+        self.addCleanup(module._detectors.pop, key, None)
+        with patch.object(module.vision.FaceDetector, "create_from_options", side_effect=RuntimeError("x")) as create:
+            self.assertIsNone(module.get_face_detector(key))
+            self.assertIsNone(module.get_face_detector(key))
+        create.assert_called_once()
 
     def test_the_detector_is_loaded_once_per_process(self):
         from apps.videos.services.face_tracker import FaceTracker, get_face_detector

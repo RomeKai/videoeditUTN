@@ -60,7 +60,11 @@ class _SharedDetector:
 
 
 def get_face_detector(min_detection_confidence: float = 0.5):
-    """The process-wide MediaPipe face detector, or None when it is unavailable."""
+    """
+    The process-wide MediaPipe face detector, or None when it is unavailable.
+    A failed load is remembered too: it is logged once per process, not retried
+    for every clip.
+    """
     if not MEDIAPIPE_TASKS_AVAILABLE or not os.path.exists(MODEL_PATH):
         return None
     key = round(float(min_detection_confidence), 3)
@@ -75,7 +79,7 @@ def get_face_detector(min_detection_confidence: float = 0.5):
                 logger.info("face_tracker.detector_loaded")
             except Exception as exc:
                 logger.error("face_tracker.detector_failed error=%s", type(exc).__name__)
-                return None
+                _detectors[key] = None
         return _detectors[key]
 
 
@@ -84,9 +88,10 @@ class FaceTracker:
     Face tracking for intelligent cropping (CORE-01, Face Tracking v2).
 
     ``track_faces`` returns every face with a stable id over the clip;
-    ``generate_path`` keeps the previous contract (one smoothed path) and now
-    follows the main face (most present and largest) instead of whichever face
-    scored highest in each frame, which made the crop jump between people.
+    ``generate_path`` keeps the previous contract (one smoothed path): it stays
+    on the main face (most present and largest) while it is on screen and cuts
+    to the face that is there otherwise, instead of jumping to whichever face
+    scored highest in each frame.
     """
 
     def __init__(self, min_detection_confidence: float = 0.5, detector=None):
@@ -123,7 +128,8 @@ class FaceTracker:
                 detections = self.detect(clip.get_frame(t), t)
             except Exception as exc:
                 failures += 1
-                logger.warning("face_tracker.frame_failed t=%.2f error=%s", t, type(exc).__name__)
+                if failures <= 3:  # the rest are counted in the summary below
+                    logger.warning("face_tracker.frame_failed t=%.2f error=%s", t, type(exc).__name__)
                 detections = []
             tracker.update(t, detections)
         tracks = tracker.tracks()
@@ -150,11 +156,10 @@ class FaceTracker:
             return self._center_path(width, height)
         try:
             faces = self.track_faces(clip, fps)
-            primary = faces.primary()
-            if primary is None:
+            if faces.primary() is None:
                 logger.warning("face_tracker.no_faces samples=%d", len(faces.sample_times))
                 return self._center_path(width, height)
-            return faces.path_for(primary)
+            return faces.framing_path()
         except Exception as exc:
             logger.error("face_tracker.failed error=%s", type(exc).__name__)
             return self._center_path(width, height)

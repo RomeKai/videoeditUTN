@@ -172,11 +172,56 @@ class FaceTracks:
     def path_for(self, track: FaceTrack, smoothing=None) -> TrackingPath:
         return track.path(self.sample_times, smoothing)
 
+    def framing_path(self, smoothing=None) -> TrackingPath:
+        """
+        One camera path for the whole clip: at each sample, the most important
+        face on screen (its span, short gaps included). The primary face wins
+        whenever it is there; a cut to another shot or person moves the camera
+        there instead of keeping an empty frame. Each stretch on one face is
+        smoothed on its own and the change between faces is a cut, not a pan.
+        """
+        ranked = sorted(self.tracks, key=lambda track: (-track.importance(), track.id))
+        spans = {
+            track.id: {p.t: p for p in interpolate_gaps(track.points(), self.sample_times)}
+            for track in ranked
+        }
+        chosen = []  # (track id, point) per covered sample
+        for t in self.sample_times:
+            for track in ranked:
+                point = spans[track.id].get(t)
+                if point is not None:
+                    chosen.append((track.id, point))
+                    break
+        if not chosen:
+            return TrackingPath([])
+
+        smoothing = smoothing or EMASmoothing()
+        stretches, current = [], [chosen[0]]
+        for item in chosen[1:]:
+            if item[0] == current[-1][0]:
+                current.append(item)
+            else:
+                stretches.append(current)
+                current = [item]
+        stretches.append(current)
+
+        points: List[TrackingPoint] = []
+        for stretch in stretches:
+            smoothed = smoothing.smooth([point for _, point in stretch])
+            if points:
+                # Hold the previous face until just before this one: a cut.
+                last = points[-1]
+                cut_t = smoothed[0].t - 1e-3
+                if cut_t > last.t:
+                    points.append(TrackingPoint(cut_t, last.x, last.y, last.w, last.h))
+            points.extend(smoothed)
+        return TrackingPath(points)
+
 
 # Faces move faster in dynamic edits than in a podcast; sampling more often
 # costs detector time per clip (CORE-01: adaptive sampling by editing style).
 SAMPLING_FPS = {
-    "dynamic": 4.0,
+    "dynamic": 3.0,
     "hormozi": 3.0,
     "vlog": 2.0,
     "custom": 2.0,

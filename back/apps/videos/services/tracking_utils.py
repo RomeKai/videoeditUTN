@@ -58,10 +58,17 @@ class EMASmoothing(SmoothingStrategy):
         return out
 
     def _smooth_series(self, values: List[float]) -> List[float]:
-        forward = self._pass(values)
         if not self.bidirectional:
-            return forward
-        return list(reversed(self._pass(list(reversed(forward)))))
+            return self._pass(values)
+        # Odd reflection at both ends keeps a steady pan straight there; without
+        # it the first and last points are pulled toward the inside of the path.
+        pad = min(len(values) - 1, int(np.ceil(3 / self.alpha)))
+        head = [2 * values[0] - v for v in reversed(values[1:pad + 1])]
+        tail = [2 * values[-1] - v for v in reversed(values[-pad - 1:-1])]
+        padded = head + list(values) + tail
+        forward = self._pass(padded)
+        both = list(reversed(self._pass(list(reversed(forward)))))
+        return both[len(head):len(head) + len(values)]
 
     def smooth(self, points: List[TrackingPoint]) -> List[TrackingPoint]:
         if len(points) < 3:
