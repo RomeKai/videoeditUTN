@@ -55,6 +55,72 @@ class RenderEngine:
         return clip_segments
 
     @staticmethod
+    def compose_clip(project, clip_obj, source_path, target_w, target_h, use_facetracking=False,
+                     source_height=None):
+        """
+        Builds the clip in memory, without writing it: the segment of the source,
+        the project's layout at ``target_w`` x ``target_h`` and its subtitles.
+        Shared by the final render and the preview (PTE-03). Returns
+        ``(original_clip, final_clip)``; the caller closes both.
+
+        ``source_height`` makes FFmpeg decode the source already scaled to that
+        height, so the layout works on small frames (the preview uses it: at
+        1080p the layout and blur cost several times the whole preview budget).
+        """
+        # 1. Load Video (MoviePy 2.0 syntax)
+        decode_size = (None, int(source_height)) if source_height else None
+        original_clip = VideoFileClip(source_path, target_resolution=decode_size).subclipped(
+            clip_obj.start_time, clip_obj.end_time,
+        )
+        try:
+            # 2. Apply Layout Strategy (GoF Strategy Pattern)
+            gp_pos = getattr(project, 'gameplay_position', 'center')
+            cam_sel_pos = getattr(project, 'camera_selection_position', 'center')
+            manual_coords = { 'x': project.manual_camera_x, 'y': project.manual_camera_y, 'zoom': project.manual_camera_zoom }
+            layout_strategy = get_layout_strategy(project.render_layout, target_w, target_h, use_facetracking=use_facetracking, gameplay_pos=gp_pos, camera_selection_pos=cam_sel_pos, manual_camera_coords=manual_coords, editing_style=getattr(project, 'editing_style', None))
+            video_layout_processed = layout_strategy.apply(original_clip)
+
+            # 3. Subtitle Processing
+            if not getattr(project, 'add_subtitles', True):
+                return original_clip, video_layout_processed
+
+            existing_transcription = project.transcript_data
+
+            # Configuration mapping from project defaults
+            size_map = {"small": 0.04, "medium": 0.06, "large": 0.09}
+            pos_map = {"top": 0.20, "center": 0.50, "bottom": 0.85}
+
+            config = StyleConfig(
+                font_path=os.path.join(settings.FONTS_DIR, 'Montserrat-Bold.ttf'),
+                font_size_percent=size_map.get(project.subtitle_size, 0.06),
+                primary_color=project.subtitle_color,
+                y_position_percent=pos_map.get(project.subtitle_position, 0.85)
+            )
+
+            subtitler = SubtitleEngine(style_config=config)
+            max_w = project.subtitle_words_per_segment
+
+            if existing_transcription:
+                raw_segments = RenderEngine._slice_segments(existing_transcription, clip_obj.start_time, clip_obj.end_time)
+                segments = TranscriptionEngine.group_words(raw_segments, max_words=max_w)
+            else:
+                # Every pipeline project is transcribed before it has clips.
+                # Transcribing again here called the provider with no capacity
+                # reservation and no AIUsageRecord (a cost nobody saw), so a
+                # clip without a transcript renders without subtitles instead.
+                logger.warning(
+                    "render.subtitles_skipped clip_id=%s reason=no_transcript", clip_obj.id,
+                )
+                segments = []
+
+            if segments:
+                return original_clip, subtitler.add_subtitles(video_layout_processed, segments)
+            return original_clip, video_layout_processed
+        except Exception:
+            original_clip.close()
+            raise
+
+    @staticmethod
     def render_clip(clip_id):
         """
         Full rendering pipeline for a single VideoClip.
@@ -75,57 +141,14 @@ class RenderEngine:
             os.makedirs(temp_dir, exist_ok=True)
             output_path = os.path.join(temp_dir, filename)
 
-            # 1. Load Video (MoviePy 2.0 syntax)
-            original_clip = VideoFileClip(original_path).subclipped(clip_obj.start_time, clip_obj.end_time)
-            
-            # 2. Apply Layout Strategy (GoF Strategy Pattern)
+            # 1-3. Load the segment, apply the layout and burn the subtitles
             target_w, target_h = RenderEngine._get_target_resolution(
                 project.aspect_ratio, (project.metadata or {}).get('render_resolution'),
             )
-            use_ft = getattr(project, 'use_facetracking', False)
-            gp_pos = getattr(project, 'gameplay_position', 'center')
-            cam_sel_pos = getattr(project, 'camera_selection_position', 'center')
-            manual_coords = { 'x': project.manual_camera_x, 'y': project.manual_camera_y, 'zoom': project.manual_camera_zoom }
-            layout_strategy = get_layout_strategy(project.render_layout, target_w, target_h, use_facetracking=use_ft, gameplay_pos=gp_pos, camera_selection_pos=cam_sel_pos, manual_camera_coords=manual_coords, editing_style=getattr(project, 'editing_style', None))
-            video_layout_processed = layout_strategy.apply(original_clip)
-            
-            # 3. Subtitle Processing
-            if getattr(project, 'add_subtitles', True):
-                existing_transcription = project.transcript_data
-                
-                # Configuration mapping from project defaults
-                size_map = {"small": 0.04, "medium": 0.06, "large": 0.09}
-                pos_map = {"top": 0.20, "center": 0.50, "bottom": 0.85}
-                
-                config = StyleConfig(
-                    font_path=os.path.join(settings.FONTS_DIR, 'Montserrat-Bold.ttf'),
-                    font_size_percent=size_map.get(project.subtitle_size, 0.06),
-                    primary_color=project.subtitle_color,
-                    y_position_percent=pos_map.get(project.subtitle_position, 0.85)
-                )
-                
-                subtitler = SubtitleEngine(style_config=config)
-                max_w = project.subtitle_words_per_segment
-
-                if existing_transcription:
-                    raw_segments = RenderEngine._slice_segments(existing_transcription, clip_obj.start_time, clip_obj.end_time)
-                    segments = TranscriptionEngine.group_words(raw_segments, max_words=max_w)
-                else:
-                    # Every pipeline project is transcribed before it has clips.
-                    # Transcribing again here called the provider with no capacity
-                    # reservation and no AIUsageRecord (a cost nobody saw), so a
-                    # clip without a transcript renders without subtitles instead.
-                    logger.warning(
-                        "render.subtitles_skipped clip_id=%s reason=no_transcript", clip_obj.id,
-                    )
-                    segments = []
-
-                if segments:
-                    final_clip = subtitler.add_subtitles(video_layout_processed, segments)
-                else:
-                    final_clip = video_layout_processed
-            else:
-                final_clip = video_layout_processed
+            original_clip, final_clip = RenderEngine.compose_clip(
+                project, clip_obj, original_path, target_w, target_h,
+                use_facetracking=getattr(project, 'use_facetracking', False),
+            )
 
             # 4. Physical Rendering
             final_clip.write_videofile(

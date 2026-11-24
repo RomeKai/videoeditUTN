@@ -41,6 +41,8 @@ from apps.videos.tasks.render import (  # noqa: F401
     render_clip_task,
     _resolve_approved_segments,
     render_video_segments,
+    render_clip_preview_task,
+    cleanup_expired_previews,
 )
 from apps.videos.tasks.social import (  # noqa: F401
     dispatch_scheduled_posts_batch,

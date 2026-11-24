@@ -12,10 +12,28 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# A strong blur is computed on a frame this many times smaller and scaled
+# back: same look for a heavily blurred background, a fraction of the cost.
+_BLUR_DOWNSCALE = 4
+
+
 def apply_gaussian_blur(image, sigma=30):
-    """Effect function to apply blur using OpenCV."""
-    # OpenCV GaussianBlur kernel size must be odd and positive, or (0,0) to use sigma
-    return cv2.GaussianBlur(image, (0, 0), sigmaX=sigma, sigmaY=sigma)
+    """
+    Effect function to apply blur using OpenCV.
+
+    A sigma of 30 means a ~180 px kernel: ~0.25 s per frame even on a 360p frame.
+    For strong blurs the frame is shrunk by _BLUR_DOWNSCALE, blurred with the
+    proportional sigma and scaled back (INTER_AREA down, INTER_LINEAR up), which
+    looks the same for a background and is an order of magnitude faster.
+    """
+    h, w = image.shape[:2]
+    factor = _BLUR_DOWNSCALE
+    if sigma < 2 * factor or min(h, w) < 8 * factor:
+        # OpenCV GaussianBlur kernel size must be odd and positive, or (0,0) to use sigma
+        return cv2.GaussianBlur(image, (0, 0), sigmaX=sigma, sigmaY=sigma)
+    small = cv2.resize(image, (w // factor, h // factor), interpolation=cv2.INTER_AREA)
+    small = cv2.GaussianBlur(small, (0, 0), sigmaX=sigma / factor, sigmaY=sigma / factor)
+    return cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
 
 class BlurredLayout(BaseLayout):
     """

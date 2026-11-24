@@ -5,6 +5,7 @@ from decimal import Decimal
 from rest_framework import viewsets, permissions, parsers, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
+from rest_framework.views import APIView
 from django.core.exceptions import ValidationError
 
 # Modelos y Serializers de Videos
@@ -323,3 +324,76 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
 
         return Response(response_data, status=status.HTTP_201_CREATED)
 
+
+class ClipPreviewView(APIView):
+    """
+    PTE-03: free, temporary 360p preview of a clip.
+
+    - ``POST /api/v1/clips/{id}/preview/`` queues a preview (202), or returns the
+      one already in progress for the clip (200). It never reserves tokens.
+      429 when the workspace already has PREVIEW_MAX_ACTIVE_PER_WORKSPACE
+      previews in progress; 409 when the project has no source video yet.
+    - ``GET`` returns the newest preview that has not expired, with a temporary
+      URL once it is ready; 404 when there is none.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_clip(self, request, clip_id):
+        from django.shortcuts import get_object_or_404
+
+        from .models import VideoClip
+
+        return get_object_or_404(
+            VideoClip.objects.select_related('project'),
+            pk=clip_id, project__workspace__members=request.user,
+        )
+
+    @staticmethod
+    def _payload(preview):
+        from django.conf import settings as django_settings
+
+        from .services.clip_preview import preview_url
+
+        return {
+            "preview_id": preview.id,
+            "clip_id": preview.clip_id,
+            "status": preview.status,
+            "url": preview_url(preview),
+            "expires_at": preview.expires_at,
+            "error_code": preview.error_code or None,
+            "cost_tokens": 0,
+            "simplified": {
+                "height": getattr(django_settings, 'PREVIEW_HEIGHT', 360),
+                "face_tracking": False,
+                "silence_removal": False,
+            },
+        }
+
+    def post(self, request, clip_id):
+        from .services.clip_preview import PreviewLimitExceeded, request_preview
+
+        clip = self._get_clip(request, clip_id)
+        if not clip.project.source_file:
+            return Response(
+                {"error": "El video fuente todavía no está disponible."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            preview, created = request_preview(clip, request.user)
+        except PreviewLimitExceeded:
+            return Response(
+                {"error": "Ya hay vistas previas en proceso en este espacio. Probá en unos segundos."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        return Response(
+            self._payload(preview),
+            status=status.HTTP_202_ACCEPTED if created else status.HTTP_200_OK,
+        )
+
+    def get(self, request, clip_id):
+        from .services.clip_preview import current_preview
+
+        preview = current_preview(self._get_clip(request, clip_id))
+        if preview is None:
+            return Response({"error": "No hay vista previa vigente."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(self._payload(preview))
