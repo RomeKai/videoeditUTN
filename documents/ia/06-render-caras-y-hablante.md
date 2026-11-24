@@ -97,7 +97,7 @@ sequenceDiagram
    - Si la exportación ya se guardó (por ejemplo, falló al cerrar MoviePy), el render cuenta como entregado: se cobra y no se reintenta.
    - Si quedan reintentos, `self.retry` a 60 s y el proyecto **sigue `RENDERING`**, con la reserva tomada. El reintento es una entrega nueva: no hereda el header del lock (`headers={}`).
    - En el último intento, con un `NonRetryableAIError`, con el soft time limit, o si el reintento no se pudo encolar (`Reject`, `render.retry_not_queued`): `_fail_render` lo marca `FAILED` (nunca sobre un proyecto `COMPLETED`), guarda el código en `pipeline_error_code` y devuelve la reserva si no hubo entrega.
-   - Si el lock se perdió, no toca el proyecto: otra copia puede tenerlo. Reintenta si puede; si no, queda para `settle_stale_reservations`.
+   - Si el lock se perdió y quedan reintentos, reintenta sin tocar el proyecto: otra copia puede tenerlo. En el último intento falla igual (`_fail_render`, `render.lock_lost`): si no, el proyecto quedaría `RENDERING` con la reserva tomada. Es seguro aunque otra copia lo tenga, porque `_fail_render` nunca toca un proyecto `COMPLETED` y una entrega solo se guarda sobre uno `RENDERING`.
    - Si no pudo tomar el lock (Redis caído), nada corrió: reintenta o, en el último intento, falla igual. `_fail_render` es seguro sin el lock, porque una entrega solo se guarda sobre un proyecto `RENDERING`.
 8. **Límite de tiempo.** `RENDER_SEGMENTS_SOFT_TIME_LIMIT` (3 h) lanza `SoftTimeLimitExceeded`: fallo final con reembolso, sin reintento. `RENDER_SEGMENTS_TIME_LIMIT` (soft + 300 s) mata al worker que lo ignoró; ahí no hay reembolso automático y el proyecto queda `RENDERING` hasta que `settle_stale_reservations` lo reporta. Los dos quedan por debajo de `CELERY_VISIBILITY_TIMEOUT`.
 
@@ -286,7 +286,7 @@ Parámetros del constructor de `SpeakerTrackingEngine` (sin settings, se ajustan
 | Re-entrega de un paper edit que sigue corriendo | Encuentra el lock tomado, se re-encola hasta `PIPELINE_LOCK_MAX_RETRIES` veces y termina sin tocar el proyecto. Nunca hay dos renders a la vez. | `render_video_segments` |
 | Copia de un paper edit que ya falló o cuya reserva ya se liquidó | No renderiza (`render.skipped`). | `_render_final_edit` |
 | Re-entrega de un paper edit ya entregado | No renderiza ni cobra de nuevo; solo liquida la reserva si seguía `RESERVED`. | `_render_final_edit` |
-| Copia que perdió el lock, o proyecto que dejó de estar `RENDERING`, antes de guardar | No guarda la exportación y borra lo que subió. | `_render_final_edit` |
+| Copia que perdió el lock, o proyecto que dejó de estar `RENDERING`, antes de guardar | No guarda la exportación y borra lo que subió. Con el lock perdido reintenta; en el último intento, `FAILED` y reserva devuelta. | `_render_final_edit`, `_handle_render_error` |
 | Paper edit cuyo worker murió más de `RENDER_SEGMENTS_MAX_REDELIVERIES` veces | Proyecto `FAILED` con `pipeline_error_code` `render_worker_lost` y reserva devuelta. | `_render_final_edit` |
 | Paper edit entregado | Se cobra la reserva del render (`metadata['render_reservation_id']`, `render.charged`). Un fallo sin arreglo la devuelve (`render.refunded`). | `_settle_render_reservation` |
 

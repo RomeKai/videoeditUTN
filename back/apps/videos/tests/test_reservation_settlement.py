@@ -615,6 +615,43 @@ class PaperEditDuplicateCopyTests(RenderReservationHarness, APITestCase):
         self.assertEqual(txn.status, Transaction.Status.RESERVED)
 
 
+    def test_the_last_attempt_that_lost_its_lock_fails_and_refunds_the_render(self):
+        import threading
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+
+        from apps.videos.services.ai.project_lock import ProjectLockLostError
+
+        txn = self.approve()
+        handle = SimpleNamespace(lost=threading.Event())
+
+        @contextmanager
+        def lock_that_gets_lost(project_id):
+            yield handle
+
+        def upload_then_lose_the_lock(*args, **kwargs):
+            handle.lost.set()
+            return "final/lost.mp4"
+
+        source, processed = _render_mocks()
+        with _patched_render(source, processed, redis=self.redis) as (_, upload), \
+                patch("apps.videos.tasks.render.project_lock", side_effect=lock_that_gets_lost), \
+                patch(DELETE_OBJECT) as delete:
+            upload.side_effect = upload_then_lose_the_lock
+            with self.assertRaises(ProjectLockLostError):
+                self.run_last_attempt()
+
+        self.project.refresh_from_db()
+        txn.refresh_from_db()
+        # Not left RENDERING with its tokens reserved after its last attempt.
+        self.assertEqual(self.project.status, VideoProject.Status.FAILED)
+        self.assertEqual(self.project.pipeline_error_code, "ProjectLockLostError")
+        self.assertFalse(self.project.final_export_r2_key)
+        delete.assert_called_once_with("final/lost.mp4")
+        self.assertEqual(txn.status, Transaction.Status.FAILED)
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+
+
 class PaperEditTimeLimitTests(RenderReservationHarness, APITestCase):
     def test_the_render_has_soft_and_hard_limits_below_the_visibility_timeout(self):
         from django.conf import settings

@@ -697,10 +697,12 @@ def _handle_render_error(task, project_id, exc, attempt):
                 "render.retry_not_queued project_id=%s error=%s", project_id, type(exc).__name__,
             )
     if isinstance(exc, ProjectLockLostError):
-        # Another copy may own the project now: it settles it, or the sweeper
-        # (settle_stale_reservations) reports it.
+        # The last attempt lost its lock: fail it anyway, or the project would
+        # stay RENDERING with its tokens reserved. Safe even if another copy
+        # owns it now: _fail_render never touches a COMPLETED project, and a
+        # delivery is only saved over a RENDERING one, so that copy cannot
+        # deliver after this.
         logger.warning("render.lock_lost project_id=%s", project_id)
-        raise exc
     # Out of retries, or the task's time limit: nothing was delivered.
     _fail_render(project_id, type(exc).__name__)
     raise exc
