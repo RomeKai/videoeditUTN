@@ -1,4 +1,6 @@
+from django.db import transaction
 from rest_framework import serializers
+from rest_framework.exceptions import APIException
 from .models import VideoProject, VideoClip, ClipLayer, BrandKit
 from .services.ai.selection_criteria import (
     MAX_SELECTION_CRITERIA_CHARS,
@@ -31,6 +33,12 @@ class VideoClipSerializer(serializers.ModelSerializer):
         model = VideoClip
         fields = '__all__'
         read_only_fields = ('id', 'project', 'status', 's3_object_key', 'virality_score', 'ai_reasoning')
+
+class ProjectRenderingError(APIException):
+    status_code = 409
+    default_detail = "El proyecto se está renderizando: esperá a que termine para cambiarlo."
+    default_code = 'project_rendering'
+
 
 class VideoProjectSerializer(serializers.ModelSerializer):
     clips = VideoClipSerializer(many=True, read_only=True)
@@ -174,13 +182,26 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         # The pipeline and the price depend on it: a link project turned into a
         # whole-video edit would render it all without paying for it.
         validated_data.pop('project_type', None)
-        instance = super().update(instance, validated_data)
-        source_media = getattr(self, '_source_media', None)
-        if source_media is not None and 'source_file' in validated_data:
-            # A replaced file: never keep what was measured for the previous one.
-            instance.metadata = {**(instance.metadata or {}), 'source_media': source_media.as_metadata()}
-            instance.save(update_fields=['metadata'])
-        return instance
+        with transaction.atomic():
+            # The row as it is now, locked: an approval or the pipeline may have
+            # written it since this request read it. Saving the stale instance
+            # whole put the project back to awaiting_approval and dropped the
+            # link to the render reservation the approval had just made.
+            locked = VideoProject.objects.select_for_update().get(pk=instance.pk)
+            if locked.status == VideoProject.Status.RENDERING and set(validated_data) - {'title'}:
+                # What the render reads must not change under it.
+                raise ProjectRenderingError()
+            for attr, value in validated_data.items():
+                setattr(locked, attr, value)
+            fields = list(validated_data)
+            source_media = getattr(self, '_source_media', None)
+            if source_media is not None and 'source_file' in validated_data:
+                # A replaced file: never keep what was measured for the previous one.
+                locked.metadata = {**(locked.metadata or {}), 'source_media': source_media.as_metadata()}
+                fields.append('metadata')
+            if fields:
+                locked.save(update_fields=fields)
+        return locked
 
     def create(self, validated_data):
         criteria = normalize_selection_criteria(validated_data.pop('selection_criteria', None))
