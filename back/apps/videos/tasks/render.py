@@ -7,6 +7,7 @@ import os
 import uuid
 import logging
 from celery import shared_task
+from celery.exceptions import Reject
 from django.conf import settings
 from django.core.files import File
 from apps.videos.models import AIUsageRecord, VideoProject, VideoClip
@@ -64,6 +65,7 @@ from apps.videos.tasks.shared import (
     PIPELINE_LOCK_MAX_RETRIES,
     PIPELINE_LOCK_RETRY_SECONDS,
     _is_retryable_pipeline_error,
+    _is_transient_storage_connection_error,
     _retry_countdown,
 )
 
@@ -163,8 +165,12 @@ def _is_retryable_render_error(exc):
     The pipeline's transient errors (``_is_retryable_pipeline_error``) minus
     its generic OSError rule: MoviePy and FFmpeg report an unreadable source or
     a failed encode as a plain OSError, and rendering again cannot fix it.
-    Connection and timeout errors (OSError subclasses) still retry.
+    Connection and timeout errors (OSError subclasses) still retry, and so do
+    botocore's transport errors with R2 (ReadTimeoutError, SSLError... also
+    subclass OSError) and a throttled or failed upload (S3UploadFailedError).
     """
+    if _is_transient_storage_connection_error(exc):
+        return True
     if isinstance(exc, OSError) and not isinstance(exc, (ConnectionError, TimeoutError)):
         return False
     return _is_retryable_pipeline_error(exc)
@@ -244,7 +250,16 @@ def render_clip_task(self, clip_id):
             "render.retrying clip_id=%s attempt=%d error=%s",
             clip_id, self.request.retries + 1, type(exc).__name__,
         )
-        raise self.retry(exc=exc, countdown=_retry_countdown(self.request.retries))
+        try:
+            raise self.retry(exc=exc, countdown=_retry_countdown(self.request.retries))
+        except Reject:
+            # The retry could not be queued (broker down): Celery would drop the
+            # message without on_failure, leaving the clip DRAFT and the project
+            # open forever. Failing with the original error runs on_failure.
+            logger.error(
+                "render.retry_not_queued clip_id=%s error=%s", clip_id, type(exc).__name__,
+            )
+            raise exc
 
 def _resolve_approved_segments(project):
     """

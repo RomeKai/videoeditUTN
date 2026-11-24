@@ -158,13 +158,9 @@ def _is_retryable_pipeline_error(exc):
     except ImportError:  # pragma: no cover - boto3 is a hard dependency
         BotoCoreError = ClientError = ()
     if ClientError and isinstance(exc, ClientError):
-        error = exc.response.get('Error', {})
-        http_status = exc.response.get('ResponseMetadata', {}).get('HTTPStatusCode', 0) or 0
-        return (
-            http_status >= 500
-            or http_status in (408, 429)
-            or error.get('Code') in _TRANSIENT_S3_ERROR_CODES
-        )
+        return _is_transient_client_error(exc)
+    if _is_upload_failed_error(exc):
+        return _is_transient_upload_failure(exc)
     if BotoCoreError and isinstance(exc, BotoCoreError):
         # Endpoint/connection/read-timeout failures; config errors are rare and bounded by max_retries.
         return True
@@ -190,6 +186,54 @@ def _is_retryable_pipeline_error(exc):
         return not isinstance(exc, _DETERMINISTIC_OS_ERRORS)
 
     return False
+
+
+def _is_transient_client_error(exc):
+    """An R2/S3 ClientError worth retrying: 5xx, 408, 429 or a throttling code."""
+    error = exc.response.get('Error', {})
+    http_status = exc.response.get('ResponseMetadata', {}).get('HTTPStatusCode', 0) or 0
+    return (
+        http_status >= 500
+        or http_status in (408, 429)
+        or error.get('Code') in _TRANSIENT_S3_ERROR_CODES
+    )
+
+
+def _is_upload_failed_error(exc):
+    try:
+        from boto3.exceptions import S3UploadFailedError
+    except ImportError:  # pragma: no cover - boto3 is a hard dependency
+        return False
+    return isinstance(exc, S3UploadFailedError)
+
+
+def _is_transient_upload_failure(exc):
+    """
+    boto3's ``upload_file`` turns every ClientError (throttling, 5xx) into an
+    S3UploadFailedError raised inside its ``except``, so the original error is
+    its ``__context__``: a deterministic 4xx (AccessDenied, NoSuchBucket) is
+    not retried. Without that detail it retries, bounded by max_retries.
+    """
+    from botocore.exceptions import ClientError
+
+    inner = exc.__cause__ or exc.__context__
+    if isinstance(inner, ClientError):
+        return _is_transient_client_error(inner)
+    return True
+
+
+def _is_transient_storage_connection_error(exc):
+    """
+    botocore's connection and transport failures talking to R2: endpoint
+    unreachable, connection closed, read or connect timeout, TLS or proxy
+    errors. Several of them also subclass OSError (through requests), so a
+    caller that treats a plain OSError as deterministic must check this first.
+    """
+    try:
+        from botocore.exceptions import ConnectionError as BotoConnectionError, HTTPClientError
+    except ImportError:  # pragma: no cover - boto3 is a hard dependency
+        return False
+    return isinstance(exc, (BotoConnectionError, HTTPClientError))
 
 
 def _retry_countdown(retries):
