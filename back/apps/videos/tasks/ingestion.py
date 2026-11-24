@@ -112,6 +112,9 @@ def _running_stage(project_id, stage, attempt):
         "pipeline.stage_started project_id=%s stage=%s attempt=%d", project_id, stage, attempt,
         extra={'project_id': str(project_id), 'stage': str(stage), 'attempt': attempt},
     )
+    # CORE-04: wall-clock time of each stage, logged on completion and failure
+    # so a benchmark (or a dashboard, INFRA-02) can be built from the logs alone.
+    started = time.monotonic()
     try:
         yield
     except PipelineStateError:
@@ -127,9 +130,14 @@ def _running_stage(project_id, stage, attempt):
             logger.warning("pipeline.status_write_skipped project_id=%s stage=%s", project_id, stage)
         raise
     except Exception:
+        duration_s = round(time.monotonic() - started, 3)
         logger.error(
-            "pipeline.stage_failed project_id=%s stage=%s attempt=%d", project_id, stage, attempt,
-            extra={'project_id': str(project_id), 'stage': str(stage), 'attempt': attempt},
+            "pipeline.stage_failed project_id=%s stage=%s attempt=%d duration_s=%.3f",
+            project_id, stage, attempt, duration_s,
+            extra={
+                'project_id': str(project_id), 'stage': str(stage), 'attempt': attempt,
+                'duration_s': duration_s,
+            },
         )
         try:
             set_stage_status(project_id, stage, StageStatus.FAILED, expected_stage=owner_stage)
@@ -141,9 +149,14 @@ def _running_stage(project_id, stage, attempt):
                 project_id, stage, type(status_exc).__name__,
             )
         raise
+    duration_s = round(time.monotonic() - started, 3)
     logger.info(
-        "pipeline.stage_completed project_id=%s stage=%s attempt=%d", project_id, stage, attempt,
-        extra={'project_id': str(project_id), 'stage': str(stage), 'attempt': attempt},
+        "pipeline.stage_completed project_id=%s stage=%s attempt=%d duration_s=%.3f",
+        project_id, stage, attempt, duration_s,
+        extra={
+            'project_id': str(project_id), 'stage': str(stage), 'attempt': attempt,
+            'duration_s': duration_s,
+        },
     )
 
 
