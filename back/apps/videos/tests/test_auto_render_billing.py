@@ -241,6 +241,42 @@ class AutoRenderBillingTests(IngestionHarness, TestCase):
         self.assertEqual((txn.status, txn.amount), (Transaction.Status.RESERVED, Decimal("7.50")))
         self.assertEqual(self.mock_render.call_count, 3)
 
+    def test_a_re_dispatch_that_cannot_be_paid_goes_back_to_failed_untouched(self):
+        project = self.run_to_render(self.make_project(auto_render_bypass=True))
+        rollback_reservation(project.metadata[KEY])
+        Wallet.objects.filter(pk=self.wallet.pk).update(available_balance=Decimal("1.00"))
+        self.mock_render.reset_mock()
+        reopened = dict(pipeline_stage=PipelineStage.RENDER_DISPATCHED, status=VideoProject.Status.RENDERING)
+        VideoProject.objects.filter(pk=project.pk).update(**reopened)
+
+        project = self.run_to_render(project)
+
+        self.mock_render.assert_not_called()
+        self.assertEqual(project.pipeline_stage, PipelineStage.FAILED)
+        self.assertEqual(project.pipeline_error_code, "AutoRenderNotPaid")
+        self.assertNotIn("auto_render_skipped", project.metadata)  # not a review notice
+        self.assertEqual(VideoClip.objects.filter(project=project, status=VideoClip.Status.DRAFT).count(), 3)
+
+        # Once the workspace has tokens, a re-dispatch renders them.
+        Wallet.objects.filter(pk=self.wallet.pk).update(available_balance=Decimal("100.00"))
+        VideoProject.objects.filter(pk=project.pk).update(**reopened)
+        project = self.run_to_render(project)
+        self.assertEqual(self.mock_render.call_count, 3)
+        self.assertEqual(self.reservation(project).status, Transaction.Status.RESERVED)
+
+    def test_a_project_dispatched_before_auto_render_was_charged_resumes_as_it_started(self):
+        project = self.make_project(auto_render_bypass=True)
+        for i in range(2):
+            VideoClip.objects.create(project=project, title=f"c{i}", start_time=i * 5, end_time=i * 5 + 5)
+        VideoProject.objects.filter(pk=project.pk).update(
+            pipeline_stage=PipelineStage.RENDER_DISPATCHED, status=VideoProject.Status.RENDERING,
+        )
+
+        project = self.run_to_render(project)
+
+        self.assertNotIn(KEY, project.metadata)
+        self.assertEqual(self.mock_render.call_count, 2)
+
     def test_a_long_title_does_not_break_the_reservation(self):
         project = self.make_project(auto_render_bypass=True)
         VideoProject.objects.filter(pk=project.pk).update(title="t" * 255)

@@ -885,8 +885,10 @@ def _reserve_auto_render(project_id, resuming=False):
             )
         except (wallet_service.InsufficientFundsError, PlanLimitExceededError, FeatureNotAllowedError) as exc:
             reason = 'insufficient_funds' if isinstance(exc, wallet_service.InsufficientFundsError) else 'plan_limit'
-            project.metadata = {**metadata, 'auto_render_skipped': reason}
-            project.save(update_fields=['metadata'])
+            if not resuming:
+                # Read by the review screen: the project waits for the user.
+                project.metadata = {**metadata, 'auto_render_skipped': reason}
+                project.save(update_fields=['metadata'])
             logger.info("pipeline.auto_render_skipped project_id=%s reason=%s", project_id, reason)
             return False
         project.metadata = {
@@ -961,26 +963,29 @@ def _settle_auto_render_reservation(project_id):
     )
 
     try:
-        project = VideoProject.objects.filter(pk=project_id).first()
-        reservation_id = ((project.metadata or {}) if project else {}).get(AUTO_RENDER_RESERVATION_KEY)
-        if not reservation_id:
-            return
-        txn = Transaction.objects.filter(pk=reservation_id, status=Transaction.Status.RESERVED).first()
-        if txn is None:
-            return  # already settled
-        outcome, delivered = _auto_render_settlement(project)
-        if outcome == 'wait':
-            return
-        if outcome == 'rollback':
-            rollback_reservation(reservation_id)
-            logger.info("pipeline.auto_render_refunded project_id=%s", project_id)
-        else:
-            charge = _auto_render_charge(project, txn.amount, delivered)
-            commit_partial_reservation(reservation_id, charge)
-            logger.info(
-                "pipeline.auto_render_charged project_id=%s whole=%s",
-                project_id, charge >= txn.amount,
-            )
+        with transaction.atomic():
+            # Locked: a re-dispatch (reopen) must not slip between reading the
+            # final state and settling from it.
+            project = VideoProject.objects.select_for_update().filter(pk=project_id).first()
+            reservation_id = ((project.metadata or {}) if project else {}).get(AUTO_RENDER_RESERVATION_KEY)
+            if not reservation_id:
+                return
+            txn = Transaction.objects.filter(pk=reservation_id, status=Transaction.Status.RESERVED).first()
+            if txn is None:
+                return  # already settled
+            outcome, delivered = _auto_render_settlement(project)
+            if outcome == 'wait':
+                return
+            if outcome == 'rollback':
+                rollback_reservation(reservation_id)
+                logger.info("pipeline.auto_render_refunded project_id=%s", project_id)
+            else:
+                charge = _auto_render_charge(project, txn.amount, delivered)
+                commit_partial_reservation(reservation_id, charge)
+                logger.info(
+                    "pipeline.auto_render_charged project_id=%s whole=%s",
+                    project_id, charge >= txn.amount,
+                )
     except PaymentError:
         # Another finalize, the failure handler or the sweeper settled it first.
         logger.info("pipeline.auto_render_settle_skipped project_id=%s reason=already_settled", project_id)
@@ -1217,11 +1222,19 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
         else:
             # A crash between the dispatch and the charge must not leave it reserved.
             _commit_ingestion_reservation(project_id)
-            if project.auto_render_bypass:
-                # Re-dispatched after its auto-render reservation was settled (the
-                # project failed): the clips still to render are reserved again.
-                # Without funds the render gate fails them and the project closes.
-                _reserve_auto_render(project_id, resuming=True)
+            if (project.metadata or {}).get(AUTO_RENDER_RESERVATION_KEY) and not _reserve_auto_render(
+                project_id, resuming=True,
+            ):
+                # Re-dispatched after its auto-render reservation was settled,
+                # and the clips still to render cannot be paid: the project goes
+                # back to failed (with its clips untouched), so it can be
+                # re-dispatched once the workspace has tokens. Projects
+                # dispatched before auto-render was charged have no key and
+                # resume as they started.
+                mark_failed(project_id, expected_stage=PipelineStage.RENDER_DISPATCHED)
+                record_error(project_id, 'AutoRenderNotPaid')
+                logger.warning("pipeline.redispatch_skipped project_id=%s reason=auto_render_unpaid", project_id)
+                return f"Not resumed {project_id}: its auto-render cannot be paid"
         return _resume_render_dispatch(project_id)
 
     # Prompt-to-Edit (PTE-01b): parse and apply once, before any stage reads the
