@@ -1489,9 +1489,11 @@ def _is_moderation_failure(exc):
 def _refund_ingestion_reservation(project_id):
     """
     Returns the tokens reserved when the project was created (``metadata
-    ['reservation_id']``, set by the create view) if the project ended FAILED.
-    Idempotent and never raises: a missing or already settled reservation is
-    only logged, and payment errors never mask the original failure.
+    ['reservation_id']``, set by the create view) if the project ended FAILED
+    without delivering anything: a project that already has clips (suggested,
+    rendered or both) keeps its reservation. Idempotent and never raises: a
+    missing or already settled reservation is only logged, and payment errors
+    never mask the original failure.
     """
     from django.core.exceptions import ValidationError
 
@@ -1501,6 +1503,9 @@ def _refund_ingestion_reservation(project_id):
     try:
         project = VideoProject.objects.get(pk=project_id)
         if project.pipeline_stage != PipelineStage.FAILED:
+            return
+        if VideoClip.objects.filter(project_id=project_id).exists():
+            logger.info("pipeline.refund_skipped project_id=%s reason=has_clips", project_id)
             return
         reservation_id = (project.metadata or {}).get('reservation_id')
         if not reservation_id:
@@ -1812,6 +1817,14 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None):
     return f"Ingestion Success {project_id}"
 
 
+def _work_already_done(project_id):
+    """The project reached clips_selected (or later): its main work is delivered."""
+    current = VideoProject.objects.filter(pk=project_id).values_list('pipeline_stage', flat=True).first()
+    if current in TERMINAL_STAGES:
+        return True
+    return current in STAGE_ORDER and STAGE_ORDER.index(current) >= STAGE_ORDER.index(PipelineStage.CLIPS_SELECTED)
+
+
 def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
     logger.error(
         "pipeline.failed project_id=%s attempt=%d final=%s error=%s",
@@ -1824,7 +1837,12 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
             pipeline_attempts=F('pipeline_attempts') + 1
         )
         record_error(project_id, type(exc).__name__)
-        if final:
+        if final and stage is None and _work_already_done(project_id):
+            # Failed before this run read the project (e.g. taking the lock of a
+            # redelivered message): a project that already has its clips is not
+            # failed because of it.
+            logger.warning("pipeline.fail_skipped project_id=%s reason=work_done", project_id)
+        elif final:
             failed_now = mark_failed(project_id, expected_stage=stage)
     except (DatabaseError, VideoProject.DoesNotExist) as record_exc:
         logger.error(
@@ -1832,22 +1850,12 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
             project_id, type(record_exc).__name__,
         )
         return
-    # Only the call that failed the project refunds it: a project another worker
-    # moved on, or failed for another reason, keeps its reservation.
-    if failed_now and _refunds_reservation(exc):
+    # A project that ends FAILED without clips gave the user nothing, whatever
+    # the reason (moderation, ADR-011 D-M5; capacity timeout, ADR-012 D-C4; a
+    # provider or pipeline error): the reservation goes back. Only the call that
+    # failed the project refunds it, so a project another worker moved on keeps it.
+    if failed_now:
         _refund_ingestion_reservation(project_id)
-
-
-def _refunds_reservation(exc):
-    """
-    Final failures that give the tokens back: content stopped by moderation
-    (blocked, or no verdict after the retries; ADR-011 D-M4/D-M5) and a
-    capacity wait that ran out (ADR-012 D-C4). In both the user got nothing
-    for the reservation through no failure of the video itself.
-    """
-    from apps.videos.services.ai.capacity import CapacityTimeoutError
-
-    return _is_moderation_failure(exc) or isinstance(exc, CapacityTimeoutError)
 
 
 # acks_late + reject_on_worker_lost: if the worker dies mid-task (OOM during

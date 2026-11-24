@@ -173,11 +173,6 @@ def test_local_proxy_file_survives_ingestion(api, wallet_factory, video_upload, 
     assert os.path.exists(project.proxy_r2_key)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Bug: ningún código productivo llama a rollback_reservation; si la "
-           "ingesta falla, los tokens quedan reservados para siempre.",
-)
 def test_failed_ingestion_releases_the_reservation(api, wallet_factory, video_upload, fake_ai, settings):
     # La falla de la tarea no debe propagarse al request de upload
     settings.CELERY_TASK_EAGER_PROPAGATES = False
