@@ -22,6 +22,13 @@ Rules (the same the pipeline applies, see tasks/ingestion.py and tasks/render.py
         project with final_export_r2_key (delivered)       -> commit
         project failed                                     -> rollback
         anything else (still rendering)                    -> report only
+    Auto-render reservation, ``metadata['auto_render_reservation_id']``
+    ("Renderizar sin revisar"), with the pipeline's own rule
+    (ingestion._auto_render_settlement):
+        completed, partial or failed with clips delivered  -> commit the share
+                                                              of their seconds
+        completed, partial or failed, nothing delivered    -> rollback
+        a clip still rendering, or any other stage         -> report only
     Not linked to any project                              -> report only
 
 Safety
@@ -47,13 +54,20 @@ from django.utils import timezone
 from apps.payments.models import Transaction
 from apps.videos.models import VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import STAGE_ORDER, TERMINAL_STAGES
-from apps.videos.tasks.ingestion import _is_whole_video, _whole_video_settlement
+from apps.videos.tasks.ingestion import (
+    AUTO_RENDER_RESERVATION_KEY, _auto_render_charge, _auto_render_settlement,
+    _is_whole_video, _whole_video_settlement,
+)
 
 COMMIT, ROLLBACK, REPORT = "commit", "rollback", "report"
 _WHOLE_VIDEO_ACTIONS = {"commit": COMMIT, "rollback": ROLLBACK, "wait": REPORT}
 
 # The metadata key that links each kind of reservation to its project.
-_LINK_KEYS = (("creation", "reservation_id"), ("render", "render_reservation_id"))
+_LINK_KEYS = (
+    ("creation", "reservation_id"),
+    ("render", "render_reservation_id"),
+    ("auto_render", AUTO_RENDER_RESERVATION_KEY),
+)
 # Only what the rules read. ``metadata`` is read for the rules (whole video),
 # never printed.
 _PROJECT_FIELDS = ("id", "project_type", "pipeline_stage", "status", "final_export_r2_key", "metadata")
@@ -98,6 +112,13 @@ def decide(kind, project):
         if project.pipeline_stage == VideoProject.PipelineStage.FAILED:
             return ROLLBACK, "failed_without_clips"
         return REPORT, "in_progress"
+    if kind == "auto_render":
+        outcome, _delivered = _auto_render_settlement(project)
+        if outcome == "charge":
+            return COMMIT, "clips_delivered"
+        if outcome == "rollback":
+            return ROLLBACK, "nothing_delivered"
+        return REPORT, "auto_render_in_progress"
     if project.final_export_r2_key:
         # The export was saved: delivered, even if a late error marked it FAILED.
         return COMMIT, "render_delivered"
@@ -114,7 +135,7 @@ def _settle(transaction_id, kind, project_id):
     or ``already_settled`` (the pipeline settled it first).
     """
     from apps.payments.services.wallet_service import (
-        PaymentError, commit_reservation, rollback_reservation,
+        PaymentError, commit_partial_reservation, commit_reservation, rollback_reservation,
     )
 
     with transaction.atomic():
@@ -127,7 +148,14 @@ def _settle(transaction_id, kind, project_id):
             return action, reason, "skipped"
         try:
             with transaction.atomic():
-                if action == COMMIT:
+                if action == COMMIT and kind == "auto_render":
+                    # Only the share of the seconds delivered, as the pipeline does.
+                    _outcome, delivered = _auto_render_settlement(project)
+                    amount = Transaction.objects.values_list("amount", flat=True).get(pk=transaction_id)
+                    commit_partial_reservation(
+                        transaction_id, _auto_render_charge(project, amount, delivered),
+                    )
+                elif action == COMMIT:
                     commit_reservation(transaction_id)
                 else:
                     rollback_reservation(transaction_id)

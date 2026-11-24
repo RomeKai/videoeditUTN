@@ -1,5 +1,4 @@
 import os
-import math
 import logging
 from decimal import Decimal
 from rest_framework import viewsets, permissions, parsers, status
@@ -7,6 +6,7 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.views import APIView
 from django.core.exceptions import ValidationError
+from django.db import transaction
 
 # Modelos y Serializers de Videos
 from .models import VideoProject, BrandKit
@@ -33,19 +33,7 @@ class BrandKitViewSet(viewsets.ModelViewSet):
             raise ValidationError("No tienes un Workspace para crear BrandKits.")
         serializer.save(workspace=workspace)
 
-def _pricing_resolution(project):
-    """
-    The resolution tier PricingEngine checks against the plan. It used to get
-    the aspect ratio ('9:16'), which it read as 720p. The tier is the
-    project's render_resolution (chosen at creation or set by Prompt-to-Edit),
-    else 720p, which is also what the render outputs without one.
-    """
-    from typing import get_args
-
-    from apps.videos.services.ai.contracts import RenderResolutionValue
-
-    requested = (project.metadata or {}).get('render_resolution')
-    return requested if requested in get_args(RenderResolutionValue) else '720p'
+from .services.render_pricing import pricing_resolution as _pricing_resolution  # noqa: E402
 
 
 class VideoProjectViewSet(viewsets.ModelViewSet):
@@ -139,18 +127,11 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
 
         total_duration = sum(seg["end"] - seg["start"] for seg in approved_segments)
 
-        from apps.payments.services.pricing_engine import PricingEngine
+        from .services.render_pricing import render_cost
         workspace = project.workspace
 
         try:
-            # Only the render of the approved segments: the paid add-ons (SEO,
-            # thumbnail) were charged with the project at creation (ADR-013).
-            final_cost = PricingEngine.calculate_render_cost(
-                duration_seconds=int(math.ceil(total_duration)),
-                resolution=_pricing_resolution(project),
-                features_requested={},
-                plan=workspace.subscription_plan
-            )
+            final_cost = render_cost(project, total_duration)
         except Exception as e:
             return Response({"error": f"Error en el motor de precios: {str(e)}"}, status=400)
 
@@ -184,13 +165,20 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
             logger.error(f"Error reserving funds: {e}")
             return Response({"error": "Error procesando el pago."}, status=500)
 
-        # Single source of truth for the render task: the typed column.
-        project.approved_segments = approved_segments
-        project.metadata['final_duration'] = total_duration
-        # Charged when the render is delivered, returned if it fails for good.
-        project.metadata['render_reservation_id'] = str(tx.id)
-        project.status = VideoProject.Status.RENDERING
-        project.save(update_fields=['approved_segments', 'metadata', 'status'])
+        with transaction.atomic():
+            # Merged into the row as it is now: the metadata read at the start of
+            # this request may be stale (a PATCH or the pipeline wrote since).
+            project = VideoProject.objects.select_for_update().get(pk=project.pk)
+            # Single source of truth for the render task: the typed column.
+            project.approved_segments = approved_segments
+            project.metadata = {
+                **(project.metadata or {}),
+                'final_duration': total_duration,
+                # Charged when the render is delivered, returned if it fails for good.
+                'render_reservation_id': str(tx.id),
+            }
+            project.status = VideoProject.Status.RENDERING
+            project.save(update_fields=['approved_segments', 'metadata', 'status'])
 
         from .tasks import render_video_segments
         render_video_segments.delay(project.id)

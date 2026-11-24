@@ -70,7 +70,7 @@ sequenceDiagram
 6. Antes de `clips_selected` corre `apply_prompt_to_project` con `can_retry=parse_retries < PTE_PARSE_MAX_RETRIES` y la capacidad del parser reservada bajo la etapa que sigue. Es idempotente: un proyecto sin prompt o ya parseado no se toca. El detalle está en [04-prompt-to-edit](04-prompt-to-edit.md).
 7. `infer_completed_stage` mira los datos persistidos (clips o `transcript_data`) de proyectos creados antes de la máquina de estados. Si están más adelante que `pipeline_stage`, `advance_to` avanza de a una transición hasta ahí, sin rehacer trabajo.
 8. Mientras el proyecto está entre `uploaded` y `moderated`, `status` pasa a `ingesting`. Después corren las etapas en orden. Antes de cada una se llama a `lock.renew()`, que lanza `ProjectLockLostError` si el lock ya no es de este worker.
-9. En `moderated`, un proyecto `single_edit` corre `_stage_whole_video` en lugar de `_stage_select_clips` (ver abajo). En `clips_selected`, con `auto_render_bypass` o en un proyecto `single_edit` se despacha el render (`_stage_dispatch_render`). Sin bypass, `status` pasa a `awaiting_approval` solo si estaba en `uploaded` o `ingesting`: una re-entrega no pisa una acción posterior del usuario.
+9. En `moderated`, un proyecto `single_edit` corre `_stage_whole_video` en lugar de `_stage_select_clips` (ver abajo). En `clips_selected`, con `auto_render_bypass` o en un proyecto `single_edit` se despacha el render (`_stage_dispatch_render`). Con `auto_render_bypass`, antes de despachar se cobra la reserva de creación y se reserva el render de los clips (ver "Renderizar sin revisar" abajo); si no se puede pagar, el proyecto queda esperando la revisión como si el bypass estuviera apagado. Sin bypass, `status` pasa a `awaiting_approval` solo si estaba en `uploaded` o `ingesting`: una re-entrega no pisa una acción posterior del usuario.
 10. El `with project_lock(...)` libera el lock en su `finally`, también cuando hay excepción. Los handlers de la tarea corren con el lock ya liberado.
 
 ## Flujo: máquina de etapas
@@ -150,6 +150,18 @@ Después:
 - Solo se crea con un archivo subido de hasta `AI_SINGLE_EDIT_MAX_DURATION_SECONDS` (600 s por defecto). Ver [01](01-creacion-de-proyecto.md).
 
 `last_completed_stage` tiene dos ajustes. Si `clips_selected` figura `completed` pero el proyecto no tiene clips, reanuda en `transcribed` para volver a correr la selección. Y si `moderated` no tiene estado pero `clips_selected` sí está `completed` (proyectos anteriores a la etapa de moderación), la saltea (`_predates_moderation`).
+
+### Renderizar sin revisar (`auto_render_bypass`)
+
+Es la opción "Renderizar sin revisar" de C1. Los clips elegidos se renderizan sin pasar por la revisión, así que su render se paga igual que una aprobación:
+
+- **Reserva:** en `clips_selected`, después de cobrar la reserva de creación (el trabajo de IA ya está entregado), `_reserve_auto_render` reserva el render de los clips `draft` con el mismo precio que `approve-paper-edit` (`render_cost`, en `services/render_pricing.py`, sobre la suma de sus segundos). Guarda `metadata['auto_render_reservation_id']` y `metadata['auto_render_seconds']` en la misma transacción que la reserva, y recién después se despacha el render.
+- **Sin saldo o sobre el límite del plan:** no despacha nada. Guarda `metadata['auto_render_skipped']` (`insufficient_funds` o `plan_limit`) y el proyecto pasa a `awaiting_approval`: el usuario revisa y aprueba (y paga) lo que quiera.
+- **Re-entregas:** una reserva que sigue `reserved` se reusa. Si ya se liquidó (el proyecto falló y se re-despacha), se reserva de nuevo solo lo que falta renderizar.
+- **Cobro:** `_settle_auto_render_reservation` corre en cada `finalize_project_render` y cuando el pipeline marca el proyecto `failed`, y decide por cómo terminó (`_auto_render_settlement`):
+  - con el proyecto en `completed`, `partial` o `failed` y ningún clip `rendering`: se cobra la parte de los segundos entregados (clips `completed` o `published`) y se devuelve el resto (`commit_partial_reservation`). Si no se entregó nada, se devuelve todo;
+  - antes de eso, o con un clip todavía `rendering`, espera.
+- **Mensajes de render en la cola:** `render_clip_task` no renderiza un clip de un proyecto con render automático si el proyecto ya no está en `render_dispatched` o esa reserva ya no está `reserved` (`_whole_video_render_allowed`, que cubre los dos casos pagos).
 
 ### Estado por etapa (`pipeline_stage_status`)
 
