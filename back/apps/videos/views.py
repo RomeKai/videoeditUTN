@@ -244,6 +244,9 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
                     features_requested=features_requested,
                     plan=workspace.subscription_plan
                 )
+                # What was priced, kept apart from source_media (a PATCH of the
+                # file replaces that): a whole-video edit never renders more.
+                project.metadata = {**(project.metadata or {}), 'priced_duration_s': duration_seconds}
                 
             except (PlanLimitExceededError, FeatureNotAllowedError) as e:
                 project.delete()
@@ -376,6 +379,14 @@ class ClipPreviewView(APIView):
         if not clip.project.source_file:
             return Response(
                 {"error": "El video fuente todavía no está disponible."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        from .tasks.ingestion import _is_whole_video
+
+        if _is_whole_video(clip.project):
+            # Its real render is dispatched right away and paid by the project.
+            return Response(
+                {"error": "El video completo se renderiza entero: no tiene vista previa."},
                 status=status.HTTP_409_CONFLICT,
             )
         try:

@@ -67,7 +67,11 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         read_only_fields = (
             'id', 'workspace', 'uploaded_by', 'status', 'created_at', 'metadata', 'clips', 
             'original_r2_key', 'proxy_r2_key', 'final_export_r2_key', 
-            'ai_rationale_log', 'transcript_data', 'approved_segments'
+            'ai_rationale_log', 'transcript_data', 'approved_segments',
+            # Written by the pipeline only: the charge of a whole-video edit
+            # depends on where the project ended.
+            'pipeline_stage', 'pipeline_stage_status', 'pipeline_attempts',
+            'pipeline_error_code', 'pipeline_error_at',
         )
 
     def get_proxy_url(self, obj):
@@ -90,6 +94,39 @@ class VideoProjectSerializer(serializers.ModelSerializer):
             # En cualquier caso, no permitimos ambos
             if file and url:
                 raise serializers.ValidationError("No puedes enviar archivo y URL al mismo tiempo.")
+        if (
+            self.instance is not None
+            and self.instance.project_type == VideoProject.Type.SINGLE_EDIT
+            and ('source_file' in data or 'video_url' in data)
+        ):
+            # The whole video was priced at creation and is rendered as is.
+            raise serializers.ValidationError({
+                'source_file': "El video de un proyecto de video completo no se puede cambiar. Creá un proyecto nuevo.",
+            })
+        if (
+            not self.instance
+            and data.get('project_type') == VideoProject.Type.SINGLE_EDIT
+            and not data.get('source_file')
+        ):
+            # The whole video is rendered with no review. A link has a flat price
+            # that does not know its duration, so it is never checked against the
+            # plan's duration limit nor priced for what is rendered.
+            raise serializers.ValidationError({
+                'project_type': "Para editar el video completo, subí el archivo. Los links sirven para sacar clips.",
+            })
+        if not self.instance and data.get('project_type') == VideoProject.Type.SINGLE_EDIT:
+            from django.conf import settings
+
+            from .services.media_validation import _format_duration
+
+            # One clip is the whole video: its subtitles and frames are held by a
+            # single render task, so a whole-video edit is for short videos.
+            limit = getattr(settings, 'AI_SINGLE_EDIT_MAX_DURATION_SECONDS', 600)
+            source_media = getattr(self, '_source_media', None)
+            if source_media is not None and source_media.duration_s > limit:
+                raise serializers.ValidationError({
+                    'project_type': f"Para editar el video completo, el video puede durar hasta {_format_duration(limit)}.",
+                }, code='too_long')
         if not self.instance:
             self._layout_alias = self._validate_layout_alias(self.initial_data)
         return data
@@ -134,6 +171,9 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         validated_data.pop('selection_criteria', None)
         validated_data.pop('use_seo', None)  # charged at creation only
         validated_data.pop('render_resolution', None)  # priced at creation only
+        # The pipeline and the price depend on it: a link project turned into a
+        # whole-video edit would render it all without paying for it.
+        validated_data.pop('project_type', None)
         instance = super().update(instance, validated_data)
         source_media = getattr(self, '_source_media', None)
         if source_media is not None and 'source_file' in validated_data:
