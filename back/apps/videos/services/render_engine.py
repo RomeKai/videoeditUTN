@@ -193,9 +193,8 @@ class RenderEngine:
 
         except Exception as e:
             logger.error(f"âŒ Render Engine failed for clip {clip_id}: {type(e).__name__}")
-            if clip_obj:
-                clip_obj.status = VideoClip.Status.DRAFT
-                clip_obj.save()
+            # The clip stays RENDERING: render_clip_task holds the claim and
+            # decides (hand it back for a retry, or FAILED via on_failure).
             raise e
             
         finally:

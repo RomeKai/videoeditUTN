@@ -59,6 +59,7 @@ sequenceDiagram
         RE->>DB: s3_object_key y COMPLETED
         T->>R2: delete_object de la clave anterior si cambió
         T->>DB: finalize_project_render
+        Note over T,DB: error transitorio con intentos pendientes: _release_clip_claim (RENDERING a DRAFT) y self.retry con backoff
     end
 ```
 
@@ -72,6 +73,9 @@ sequenceDiagram
 8. **Escritura.** `write_videofile` con `RENDER_CODEC` (`libx264`), `RENDER_AUDIO_CODEC` (`aac`), `RENDER_FPS` (24), `RENDER_PRESET` (`medium`) y `FFMPEG_PARAMS` (`-pix_fmt yuv420p`). Con `remove_silences`, `FFmpegManager.remove_silences_from_video` reemplaza el archivo antes de subirlo.
 9. **Subida.** `CloudflareR2Manager.upload_video` devuelve la clave (`videos/<user_id>/<project_id>/<uuid>.mp4`); el clip queda `COMPLETED` con esa clave. Si había una clave anterior distinta (re-render después de un fallo), `render_clip_task` borra ese objeto de R2.
 10. **Cierre del fan-out.** `finalize_project_render` toma el lock de fila del proyecto y solo actúa si está en `RENDER_DISPATCHED` y ningún clip sigue `DRAFT` o `RENDERING`: con algún clip `FAILED` pasa a `PARTIAL`, si no a `COMPLETED` (etapa y estado). Se llama después de cada clip; solo la llamada que ve terminar al último hace la transición. Registra `pipeline.render_finalized`.
+11. **Reintentos.** Si algo falla, `RenderEngine.render_clip` deja el clip en `RENDERING`: la tarea tiene el claim y decide. Un error transitorio (`_is_retryable_render_error`) con intentos pendientes devuelve el claim (`_release_clip_claim`, `RENDERING` → `DRAFT`), registra `render.retrying` y llama a `self.retry` con el backoff del pipeline (`_retry_countdown`), hasta `RENDER_CLIP_MAX_RETRIES` (2) reintentos. El reintento toma el clip con el mismo CAS que cualquier entrega: si otra entrega lo tomó durante la espera, el reintento termina con `already claimed` y nadie lo renderiza dos veces. Mientras espera, el clip está `DRAFT`, así que `finalize_project_render` no cierra el proyecto. Un error determinista, o el último intento, propaga la excepción y `ClipRenderTask.on_failure` marca el clip `FAILED`.
+   - Transitorio es lo mismo que en la ingesta (`_is_retryable_pipeline_error`: errores de IA reintentables, timeout y conexión, base de datos, R2 con 5xx, 408, 429 o `SlowDown`, broker), salvo un `OSError` genérico: así reporta MoviePy un archivo que no puede leer o un encode que falla, y renderizar de nuevo no lo arregla.
+   - Un fallo al cerrar el fan-out después de subir el clip también reintenta: el reintento encuentra el clip `COMPLETED` y solo llama a `finalize_project_render`.
 
 ### Paper edit (`render_video_segments`)
 
@@ -199,7 +203,9 @@ Parámetros del constructor de `SpeakerTrackingEngine` (sin settings, se ajustan
 | Dos entregas del mismo clip | La que pierde el CAS termina con `already claimed` sin renderizar. | `_claim_clip_for_render` |
 | Worker muerto a mitad del render | El broker re-entrega el mensaje (`acks_late`, `reject_on_worker_lost`) y la re-entrega puede tomar el clip en `RENDERING`. Tarda lo que `CELERY_VISIBILITY_TIMEOUT`. | `render_clip_task` |
 | Clip ya `COMPLETED` | No-op y `finalize_project_render`. | `render_clip_task` |
-| Error dentro de `RenderEngine.render_clip` | El clip vuelve a `DRAFT` y la excepción se propaga. La tarea no reintenta: `ClipRenderTask.on_failure` lo marca `FAILED` y llama a `finalize_project_render` (el proyecto puede terminar `PARTIAL`). | `render_clip`, `ClipRenderTask` |
+| Error transitorio en el render de un clip | El clip vuelve a `DRAFT` y la tarea reintenta con backoff (`render.retrying`), hasta `RENDER_CLIP_MAX_RETRIES`. El proyecto no se cierra mientras tanto. | `render_clip_task` |
+| Error determinista, o el último intento | La excepción se propaga y `ClipRenderTask.on_failure` marca el clip `FAILED` y llama a `finalize_project_render` (el proyecto puede terminar `PARTIAL`). Un clip ya `COMPLETED` o `PUBLISHED` no se marca `FAILED`. | `render_clip_task`, `ClipRenderTask` |
+| No se puede devolver el claim antes de reintentar | `render.release_failed` y el clip falla en ese intento: el reintento no podría tomarlo. | `render_clip_task` |
 | `on_failure` no puede escribir en la base | Log `render.failure_not_recorded`. | `ClipRenderTask` |
 | Re-render con clave nueva | Se borra el objeto anterior de R2; si falla, se loguea y sigue. | `render_clip_task` |
 | Proyecto fuera de `RENDER_DISPATCHED` o transición en conflicto | `finalize_project_render` no hace nada. | `finalize_project_render` |
@@ -217,12 +223,12 @@ Parámetros del constructor de `SpeakerTrackingEngine` (sin settings, se ajustan
 
 ## Datos que escribe
 
-- **`VideoClip`**: `status` (`DRAFT` → `RENDERING` → `COMPLETED`, o `FAILED` vía `on_failure`) y `s3_object_key`.
+- **`VideoClip`**: `status` (`DRAFT` → `RENDERING` → `COMPLETED`; de vuelta a `DRAFT` antes de un reintento; `FAILED` vía `on_failure` después del último intento) y `s3_object_key`.
 - **`VideoProject`** (fan-out): `pipeline_stage` `RENDER_DISPATCHED` → `COMPLETED` o `PARTIAL`, y `status` igual.
 - **`VideoProject`** (paper edit): `final_export_r2_key`, `status` (`COMPLETED` o `FAILED`), `pipeline_error_code` y `pipeline_error_at` en los errores de segmentos, y un `VideoClip` nuevo "VIDEO FINAL EDITADO".
 - **R2**: el video de cada clip en `videos/<user_id>/<project_id>/`, el del paper edit en `videos/<user_id>/<project_id>/final/`. Con `USE_R2=False` se copian bajo `MEDIA_ROOT/videos/`.
 - **`AIUsageRecord`**: ninguna fila. El render no reserva capacidad.
-- **Logs**: `face_tracker.mediapipe_unavailable`, `face_tracker.detector_loaded`, `face_tracker.detector_failed`, `face_tracker.detector_unavailable`, `face_tracker.frame_failed`, `face_tracker.all_frames_failed`, `face_tracker.tracked` (muestras, caras, frames fallidos), `face_tracker.no_faces`, `face_tracker.failed`, `speaker.audio_failed`, `speaker.frame_failed`, `speaker.frames_failed`, `speaker.timeline`, `layout.active_speaker`, `layout.active_speaker_failed`, `render.failure_not_recorded`, `pipeline.render_finalized`.
+- **Logs**: `face_tracker.mediapipe_unavailable`, `face_tracker.detector_loaded`, `face_tracker.detector_failed`, `face_tracker.detector_unavailable`, `face_tracker.frame_failed`, `face_tracker.all_frames_failed`, `face_tracker.tracked` (muestras, caras, frames fallidos), `face_tracker.no_faces`, `face_tracker.failed`, `speaker.audio_failed`, `speaker.frame_failed`, `speaker.frames_failed`, `speaker.timeline`, `layout.active_speaker`, `layout.active_speaker_failed`, `render.retrying` (clip, intento y clase del error), `render.release_failed`, `render.failure_not_recorded`, `pipeline.render_finalized`.
 
 ## Configuración
 
@@ -235,7 +241,7 @@ Parámetros del constructor de `SpeakerTrackingEngine` (sin settings, se ajustan
 | `MEDIA_ROOT` | `<BASE_DIR>/media` | Archivos temporales del render. |
 | `USE_R2` | `False` | Sin R2, `upload_video` copia el archivo bajo `MEDIA_ROOT` y devuelve esa ruta como clave. |
 
-Constantes en código, sin setting: `RENDER_FPS`, `RENDER_CODEC`, `RENDER_AUDIO_CODEC`, `RENDER_PRESET` y `FFMPEG_PARAMS` (`utils/moviepy_utils.py`); `RESOLUTION_HEIGHTS` y `DEFAULT_HEIGHT` (`RenderEngine`); `SAMPLING_FPS` y los parámetros de `IoUTracker` (`face_tracking.py`); `EMASmoothing(alpha=0.35)`; los parámetros de `SpeakerTrackingEngine`. Los módulos de tracking fijan `MEDIAPIPE_DISABLE_GPU=1` al importarse.
+Constantes en código, sin setting: `RENDER_CLIP_MAX_RETRIES` (`tasks/render.py`); `RENDER_FPS`, `RENDER_CODEC`, `RENDER_AUDIO_CODEC`, `RENDER_PRESET` y `FFMPEG_PARAMS` (`utils/moviepy_utils.py`); `RESOLUTION_HEIGHTS` y `DEFAULT_HEIGHT` (`RenderEngine`); `SAMPLING_FPS` y los parámetros de `IoUTracker` (`face_tracking.py`); `EMASmoothing(alpha=0.35)`; los parámetros de `SpeakerTrackingEngine`. Los módulos de tracking fijan `MEDIAPIPE_DISABLE_GPU=1` al importarse.
 
 ## Referencias
 

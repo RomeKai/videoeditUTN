@@ -60,6 +60,8 @@ from django.core.cache import cache
 from apps.videos.models import VideoProject, VideoClip, ScheduledPost
 from backend.celery import app as celery_app
 
+from apps.videos.tasks.shared import _is_retryable_pipeline_error, _retry_countdown
+
 
 logger = logging.getLogger(__name__)
 
@@ -100,13 +102,19 @@ def finalize_project_render(project_id):
 
 
 class ClipRenderTask(celery_app.Task):
-    """Marks the clip (and possibly the project) as failed when a render task fails for good."""
+    """
+    Marks the clip (and possibly the project) as failed when a render task
+    fails for good. Celery calls it only after the last attempt (a retry
+    calls ``on_retry``), and a clip already delivered is never marked failed.
+    """
 
     def on_failure(self, exc, task_id, args, kwargs, einfo):
         clip_id = args[0] if args else kwargs.get('clip_id')
         try:
             clip = VideoClip.objects.get(pk=clip_id)
-            VideoClip.objects.filter(pk=clip_id).update(status=VideoClip.Status.FAILED)
+            VideoClip.objects.filter(pk=clip_id).exclude(
+                status__in=[VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED],
+            ).update(status=VideoClip.Status.FAILED)
             finalize_project_render(clip.project_id)
         except (DatabaseError, VideoClip.DoesNotExist) as record_exc:
             logger.error(
@@ -129,6 +137,34 @@ def _claim_clip_for_render(clip_id, redelivered=False):
     ) == 1
 
 
+def _release_clip_claim(clip_id):
+    """
+    RENDERING -> DRAFT, so the retry of this task can claim the clip again. Only
+    the delivery holding the claim calls it: RenderEngine leaves a failed clip
+    in RENDERING, so nothing else can have claimed it in between.
+    """
+    VideoClip.objects.filter(pk=clip_id, status=VideoClip.Status.RENDERING).update(
+        status=VideoClip.Status.DRAFT
+    )
+
+
+# Transient errors (R2 throttling, a dropped connection, a database blip) retry
+# with the pipeline's backoff; anything else fails the clip at once.
+RENDER_CLIP_MAX_RETRIES = 2
+
+
+def _is_retryable_render_error(exc):
+    """
+    The pipeline's transient errors (``_is_retryable_pipeline_error``) minus
+    its generic OSError rule: MoviePy and FFmpeg report an unreadable source or
+    a failed encode as a plain OSError, and rendering again cannot fix it.
+    Connection and timeout errors (OSError subclasses) still retry.
+    """
+    if isinstance(exc, OSError) and not isinstance(exc, (ConnectionError, TimeoutError)):
+        return False
+    return _is_retryable_pipeline_error(exc)
+
+
 # acks_late + reject_on_worker_lost: a worker killed mid-render (OOM in MoviePy)
 # gets the message redelivered instead of losing the clip. Safe because the clip
 # is claimed with a CAS and a COMPLETED clip is a no-op.
@@ -137,6 +173,7 @@ def _claim_clip_for_render(clip_id, redelivered=False):
     base=ClipRenderTask,
     acks_late=True,
     reject_on_worker_lost=True,
+    max_retries=RENDER_CLIP_MAX_RETRIES,
 )
 def render_clip_task(self, clip_id):
     """
@@ -145,38 +182,64 @@ def render_clip_task(self, clip_id):
     is reported as FAILURE, never as a SUCCESS string); on_failure records them.
     Idempotent: re-running a rendered clip is a no-op, and duplicate deliveries
     of the same clip render only once.
+
+    A transient error retries with backoff: the claim is handed back (DRAFT)
+    first, so the retry claims the clip like any delivery and a duplicate never
+    renders it twice. A DRAFT clip keeps the project open: finalize_project_render
+    waits for it. Only the last attempt reaches on_failure (clip FAILED).
     """
     logger.info(f"🎬 [RENDER TASK START] Rendering Clip {clip_id}")
     from apps.videos.services.render_engine import RenderEngine
     from apps.videos.services.storage_service import CloudflareR2Manager
 
-    clip = VideoClip.objects.get(pk=clip_id)
-    if clip.status == VideoClip.Status.COMPLETED and clip.s3_object_key:
-        logger.info(f"⏭️ [RENDER TASK] Clip {clip_id} already rendered, skipping")
+    claimed = False
+    try:
+        clip = VideoClip.objects.get(pk=clip_id)
+        if clip.status == VideoClip.Status.COMPLETED and clip.s3_object_key:
+            logger.info(f"⏭️ [RENDER TASK] Clip {clip_id} already rendered, skipping")
+            finalize_project_render(clip.project_id)
+            return f"Clip {clip_id} already rendered"
+
+        redelivered = bool((self.request.delivery_info or {}).get('redelivered'))
+        if not _claim_clip_for_render(clip_id, redelivered=redelivered):
+            logger.info(f"⏭️ [RENDER TASK] Clip {clip_id} is being rendered by another delivery, skipping")
+            return f"Clip {clip_id} already claimed"
+        claimed = True
+
+        previous_key = clip.s3_object_key
+        RenderEngine.render_clip(clip_id)
+        claimed = False  # the clip is COMPLETED: nothing left to hand back
+
+        new_key = VideoClip.objects.values_list('s3_object_key', flat=True).get(pk=clip_id)
+        if previous_key and previous_key != new_key:
+            # Re-render after a failure: do not leave the old upload orphaned in R2.
+            try:
+                CloudflareR2Manager.delete_object(previous_key)
+            except Exception as delete_exc:
+                logger.error(
+                    "⚠️ [RENDER TASK] Could not delete orphan R2 object for clip %s error=%s",
+                    clip_id, type(delete_exc).__name__,
+                )
+
         finalize_project_render(clip.project_id)
-        return f"Clip {clip_id} already rendered"
-
-    redelivered = bool((self.request.delivery_info or {}).get('redelivered'))
-    if not _claim_clip_for_render(clip_id, redelivered=redelivered):
-        logger.info(f"⏭️ [RENDER TASK] Clip {clip_id} is being rendered by another delivery, skipping")
-        return f"Clip {clip_id} already claimed"
-
-    previous_key = clip.s3_object_key
-    RenderEngine.render_clip(clip_id)
-
-    new_key = VideoClip.objects.values_list('s3_object_key', flat=True).get(pk=clip_id)
-    if previous_key and previous_key != new_key:
-        # Re-render after a failure: do not leave the old upload orphaned in R2.
-        try:
-            CloudflareR2Manager.delete_object(previous_key)
-        except Exception as delete_exc:
-            logger.error(
-                "⚠️ [RENDER TASK] Could not delete orphan R2 object for clip %s error=%s",
-                clip_id, type(delete_exc).__name__,
-            )
-
-    finalize_project_render(clip.project_id)
-    return f"Clip {clip_id} rendered successfully"
+        return f"Clip {clip_id} rendered successfully"
+    except Exception as exc:
+        if not _is_retryable_render_error(exc) or self.request.retries >= self.max_retries:
+            raise  # last attempt: on_failure marks the clip FAILED
+        if claimed:
+            try:
+                _release_clip_claim(clip_id)
+            except DatabaseError as release_exc:
+                # The retry could not claim a clip left in RENDERING: fail it now.
+                logger.error(
+                    "render.release_failed clip_id=%s error=%s", clip_id, type(release_exc).__name__,
+                )
+                raise exc
+        logger.warning(
+            "render.retrying clip_id=%s attempt=%d error=%s",
+            clip_id, self.request.retries + 1, type(exc).__name__,
+        )
+        raise self.retry(exc=exc, countdown=_retry_countdown(self.request.retries))
 
 def _resolve_approved_segments(project):
     """
