@@ -152,6 +152,15 @@ class SerializerTests(TestCase):
             username="crit", email="crit@test.com", password="pw"
         )
         self.workspace = Workspace.objects.create(name="Crit", owner=self.user)
+        # The upload validation (CORE-05) has its own tests; these bytes are not a video.
+        from apps.videos.services.media_validation import MediaInfo
+
+        patcher = patch(
+            "apps.videos.services.media_validation.validate_upload",
+            return_value=MediaInfo(duration_s=10.0, width=640, height=360, mime="video/mp4"),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def serializer(self, **data):
         from apps.videos.serializers import VideoProjectSerializer

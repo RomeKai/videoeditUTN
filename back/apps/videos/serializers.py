@@ -78,13 +78,26 @@ class VideoProjectSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("Solo se permiten archivos de video (.mp4, .mov, .avi)")
             if value.size > 500 * 1024 * 1024:
                 raise serializers.ValidationError("El archivo es demasiado grande (MÃ¡x 500MB)")
+            # CORE-05: the bytes must be a video the pipeline can process.
+            from .services.media_validation import InvalidUploadError, validate_upload
+
+            try:
+                self._source_media = validate_upload(value)
+            except InvalidUploadError as exc:
+                raise serializers.ValidationError(exc.message, code=exc.code)
         return value
 
     def update(self, instance, validated_data):
         # The criterion only applies when the project is created (ingestion starts then).
         validated_data.pop('selection_criteria', None)
         validated_data.pop('use_seo', None)  # charged at creation only
-        return super().update(instance, validated_data)
+        instance = super().update(instance, validated_data)
+        source_media = getattr(self, '_source_media', None)
+        if source_media is not None and 'source_file' in validated_data:
+            # A replaced file: never keep what was measured for the previous one.
+            instance.metadata = {**(instance.metadata or {}), 'source_media': source_media.as_metadata()}
+            instance.save(update_fields=['metadata'])
+        return instance
 
     def create(self, validated_data):
         criteria = normalize_selection_criteria(validated_data.pop('selection_criteria', None))
@@ -142,6 +155,9 @@ class VideoProjectSerializer(serializers.ModelSerializer):
 
         # Read by the pricing right after this save, then by the SEO dispatch.
         if use_seo is not None: project.metadata['use_seo'] = use_seo
+        # What the upload validation measured (CORE-05): the pricing reads the duration.
+        source_media = getattr(self, '_source_media', None)
+        if source_media is not None: project.metadata['source_media'] = source_media.as_metadata()
 
         project.save()
         return project
