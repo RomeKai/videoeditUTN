@@ -36,8 +36,8 @@ def _pricing_resolution(project):
     """
     The resolution tier PricingEngine checks against the plan. It used to get
     the aspect ratio ('9:16'), which it read as 720p. The tier is the
-    project's render_resolution when Prompt-to-Edit set one, else 720p (the
-    price every project has paid so far).
+    project's render_resolution (chosen at creation or set by Prompt-to-Edit),
+    else 720p, which is also what the render outputs without one.
     """
     from typing import get_args
 
@@ -173,6 +173,8 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
         # Single source of truth for the render task: the typed column.
         project.approved_segments = approved_segments
         project.metadata['final_duration'] = total_duration
+        # Charged when the render is delivered, returned if it fails for good.
+        project.metadata['render_reservation_id'] = str(tx.id)
         project.status = VideoProject.Status.RENDERING
         project.save(update_fields=['approved_segments', 'metadata', 'status'])
 
@@ -239,19 +241,23 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
         
         elif project.video_url:
             cost_in_tokens = Decimal('10.0')
-            if project.metadata.get('use_seo'):
-                # The duration of a URL video is unknown here: only the SEO add-on
-                # is checked against the plan and charged (ADR-013).
-                try:
-                    cost_in_tokens += PricingEngine.calculate_render_cost(
-                        duration_seconds=0,
-                        resolution='720p',
-                        features_requested={'seo_optimization': True},
-                        plan=workspace.subscription_plan,
-                    )
-                except (PlanLimitExceededError, FeatureNotAllowedError) as e:
-                    project.delete()
-                    return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
+            # The duration of a URL video is unknown here: the requested
+            # resolution and the SEO add-on are checked against the plan, and
+            # only the SEO add-on is charged on top of the flat price (ADR-013).
+            use_seo = bool(project.metadata.get('use_seo'))
+            try:
+                add_on = PricingEngine.calculate_render_cost(
+                    duration_seconds=0,
+                    resolution=_pricing_resolution(project),
+                    features_requested={'seo_optimization': use_seo},
+                    plan=workspace.subscription_plan,
+                )
+                if use_seo:
+                    # Without add-ons the engine still returns its 0.01 floor.
+                    cost_in_tokens += add_on
+            except (PlanLimitExceededError, FeatureNotAllowedError) as e:
+                project.delete()
+                return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             # Asegurar que el workspace tenga billetera (autocuraciÃ³n)

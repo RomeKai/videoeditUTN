@@ -40,6 +40,12 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     # Paid add-on (PricingEngine 'seo_optimization'): captions and hashtags are
     # generated for each ScheduledPost of the project (ADR-013). Creation only.
     use_seo = serializers.BooleanField(required=False, write_only=True)
+    # Output height tier. Priced at creation (PricingEngine resolution multiplier)
+    # and checked against the plan's max_resolution; it cannot change afterwards.
+    # Without it the project renders and is charged at 720p.
+    render_resolution = serializers.ChoiceField(
+        choices=['720p', '1080p', '4K'], required=False, write_only=True,
+    )
     # '1:Post' was the stored value of the square ratio until migration 0009;
     # clients that still send it get '1:1'.
     aspect_ratio = serializers.ChoiceField(
@@ -102,6 +108,7 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         # The criterion only applies when the project is created (ingestion starts then).
         validated_data.pop('selection_criteria', None)
         validated_data.pop('use_seo', None)  # charged at creation only
+        validated_data.pop('render_resolution', None)  # priced at creation only
         instance = super().update(instance, validated_data)
         source_media = getattr(self, '_source_media', None)
         if source_media is not None and 'source_file' in validated_data:
@@ -113,6 +120,7 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         criteria = normalize_selection_criteria(validated_data.pop('selection_criteria', None))
         use_seo = validated_data.pop('use_seo', None)
+        render_resolution = validated_data.pop('render_resolution', None)
         # Creamos el proyecto normal
         project = super().create(validated_data)
         
@@ -122,6 +130,7 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         
         if 'max_clips' in raw: project.metadata['max_clips'] = int(raw['max_clips'])
         if criteria: project.metadata['selection_criteria'] = criteria
+        if render_resolution: project.metadata['render_resolution'] = render_resolution
         # Prompt-to-Edit (PTE-01b): parsed at the start of ingestion; what the
         # request sets explicitly wins over the parsed config.
         prompt = self.context.get('pte_prompt')

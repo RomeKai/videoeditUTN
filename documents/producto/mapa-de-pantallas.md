@@ -360,10 +360,9 @@ Otras respuestas:
 - **Móvil:** una columna; el resumen y el botón quedan fijos abajo.
 - **API:**
   - ✅ `POST /api/v1/projects/` (multipart) y `POST /api/v1/projects/from-prompt/`.
-  - ❌ no hay campo para elegir la resolución (`render_resolution` hoy solo lo escribe Prompt-to-Edit).
-  - ❌ el render sale en 1080 por defecto y se cobra como 720p.
+  - ✅ el campo `render_resolution` (720p, 1080p o 4K) se cobra y se compara con el plan; sin él, el proyecto se cobra y se renderiza en 720p.
   - ❌ falta el endpoint de precios para el estimado.
-  - ⚠️ los links no pasan por la validación de duración del plan.
+  - ⚠️ los links no pasan por la validación de duración del plan (sí por la de resolución y SEO).
 
 ### D. Proyecto
 
@@ -726,7 +725,7 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad:
 | 4 | Wallet y transacciones (`GET /wallet`, `GET /transactions`), con vínculo al proyecto y estado "devuelto" visible | Barra, D1, G1, G2 | P0 |
 | 5 | Link de descarga firmado por clip | D3, D4 | P0 |
 | 6 | Endpoint de precios (fórmula y planes) para el estimado | C1, A6, G3 | P0 |
-| 7 | Campo `render_resolution` al crear, y alinear el render por defecto con el precio (hoy sale en 1080 y se cobra 720p) | C1 | P0 |
+| 7 | ~~Campo `render_resolution` al crear, y alinear el render por defecto con el precio~~ Resuelto: se elige al crear y el render por defecto es 720p, como el precio | C1 | — |
 | 8 | Crear, listar, editar, cancelar y reintentar `ScheduledPost` | E1, E2 | P1 |
 | 9 | Beat que corra `dispatch_scheduled_posts_batch` | E1, E2 | P1 |
 | 10 | Conectar redes por workspace (Ayrshare) | E1, H3 | P1 |

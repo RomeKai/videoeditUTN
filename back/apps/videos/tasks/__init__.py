@@ -84,6 +84,7 @@ from apps.videos.tasks.ingestion import (  # noqa: F401
     _moderation_outcome,
     _is_moderation_failure,
     _refund_ingestion_reservation,
+    _commit_ingestion_reservation,
     _stage_select_clips,
     _stage_dispatch_render,
     _resume_render_dispatch,

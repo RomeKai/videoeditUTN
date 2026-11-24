@@ -202,6 +202,43 @@ def _resolve_approved_segments(project):
         ) from None
 
 
+def _settle_render_reservation(project_id, charge):
+    """
+    Settles the tokens reserved when the paper edit was approved (``metadata
+    ['render_reservation_id']``): charged when the render is delivered,
+    returned when it fails for good. Idempotent and never raises: a missing or
+    already settled reservation is skipped, and a payment error is only logged
+    so it never masks the render's own outcome.
+    """
+    from django.core.exceptions import ValidationError
+    from django.db import DatabaseError
+
+    # Deferred: wallet_service imports the tasks package at load time.
+    from apps.payments.services.wallet_service import (
+        PaymentError, commit_reservation, rollback_reservation,
+    )
+
+    try:
+        reservation_id = (
+            VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
+        ).get('render_reservation_id')
+        if not reservation_id or not Transaction.objects.filter(
+            pk=reservation_id, status=Transaction.Status.RESERVED
+        ).exists():
+            return
+        if charge:
+            commit_reservation(reservation_id)
+            logger.info("render.charged project_id=%s", project_id)
+        else:
+            rollback_reservation(reservation_id)
+            logger.info("render.refunded project_id=%s", project_id)
+    except (PaymentError, DatabaseError, ValidationError) as exc:
+        logger.error(
+            "render.settle_failed project_id=%s charge=%s error=%s",
+            project_id, charge, type(exc).__name__,
+        )
+
+
 @celery_app.task(name='apps.videos.tasks.render_video_segments', bind=True, max_retries=2)
 def render_video_segments(self, project_id):
     """
@@ -327,6 +364,7 @@ def render_video_segments(self, project_id):
                 )
 
                 logger.info(f"✅ [FINAL RENDER] Success for project {project_id}")
+                _settle_render_reservation(project_id, charge=True)
                 return f"Render Success: {final_s3_key}"
 
     except NonRetryableAIError as e:
@@ -334,6 +372,7 @@ def render_video_segments(self, project_id):
         logger.error(f"❌ [FINAL RENDER ERROR] project {project_id}: {e.message}")
         VideoProject.objects.filter(pk=project_id).update(status=VideoProject.Status.FAILED)
         record_error(project_id, e.metadata.get('code', 'render_failed'))
+        _settle_render_reservation(project_id, charge=False)
         raise
     except Exception as e:
         logger.error(
@@ -342,6 +381,10 @@ def render_video_segments(self, project_id):
         if 'project' in locals():
             project.status = VideoProject.Status.FAILED
             project.save()
+        if self.request.retries >= self.max_retries:
+            # Out of retries: nothing was delivered, so the render is not charged.
+            _settle_render_reservation(project_id, charge=False)
+            raise
         raise self.retry(exc=e, countdown=60)
     finally:
         # The rendered output is written under MEDIA_ROOT, outside the temporary

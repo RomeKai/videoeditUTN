@@ -1,6 +1,6 @@
 # Render, caras y hablante
 
-Este documento cubre cómo se renderiza un clip: el recorte al formato y la resolución pedidos, el layout, el seguimiento de caras (face tracking v2, CORE-01) y la detección de quién habla para el layout `active` (CORE-02, [ADR-014](../adrs/014-speaker-detection.md)). El render de clips corre en la cola `render` cuando la ingesta termina con `auto_render_bypass` ([ver 02-pipeline-de-ingesta](02-pipeline-de-ingesta.md)). El render del paper edit (`render_video_segments`) corre cuando el usuario aprueba los segmentos con `approve-paper-edit`. El stack (MoviePy 2 + FFmpeg) está decidido en [ADR-003](../adrs/003-rendering-stack.md). Ninguna de estas etapas llama a un proveedor de IA externo salvo la transcripción de respaldo de subtítulos.
+Este documento cubre cómo se renderiza un clip: el recorte al formato y la resolución pedidos, el layout, el seguimiento de caras (face tracking v2, CORE-01) y la detección de quién habla para el layout `active` (CORE-02, [ADR-014](../adrs/014-speaker-detection.md)). El render de clips corre en la cola `render` cuando la ingesta termina con `auto_render_bypass` ([ver 02-pipeline-de-ingesta](02-pipeline-de-ingesta.md)). El render del paper edit (`render_video_segments`) corre cuando el usuario aprueba los segmentos con `approve-paper-edit`. El stack (MoviePy 2 + FFmpeg) está decidido en [ADR-003](../adrs/003-rendering-stack.md). Ninguna de estas etapas llama a un proveedor de IA externo: los subtítulos salen de la transcripción que ya hizo la ingesta.
 
 ## Componentes
 
@@ -184,11 +184,11 @@ Parámetros del constructor de `SpeakerTrackingEngine` (sin settings, se ajustan
 
 | `render_resolution` | 9:16 | 1:1 | 16:9 |
 |---------------------|------|-----|------|
-| `720p` | 406 × 720 | 720 × 720 | 1280 × 720 |
-| `1080p`, ausente o desconocido (`DEFAULT_HEIGHT`) | 608 × 1080 | 1080 × 1080 | 1920 × 1080 |
+| `720p`, ausente o desconocido (`DEFAULT_HEIGHT`) | 406 × 720 | 720 × 720 | 1280 × 720 |
+| `1080p` | 608 × 1080 | 1080 × 1080 | 1920 × 1080 |
 | `4K` | 1216 × 2160 | 2160 × 2160 | 3840 × 2160 |
 
-- Hoy solo Prompt-to-Edit escribe `metadata['render_resolution']`, y `ConfigValidator` descarta un tier que el plan no permite o que sube el precio respecto de 720p ([ver 04-prompt-to-edit](04-prompt-to-edit.md)). El precio (al crear y al aprobar el paper edit) usa `720p` cuando la clave falta (`_pricing_resolution`, [ver 01-creacion-de-proyecto](01-creacion-de-proyecto.md)), mientras que el render sin la clave sale a 1080.
+- `metadata['render_resolution']` lo escribe el pedido de creación (campo `render_resolution`, cobrado y comparado con el plan) o Prompt-to-Edit, cuyo `ConfigValidator` descarta un tier que el plan no permite o que sube el precio ([ver 04-prompt-to-edit](04-prompt-to-edit.md)). Sin la clave, el precio (`_pricing_resolution`, [ver 01-creacion-de-proyecto](01-creacion-de-proyecto.md)) y el render usan `720p`: nunca se entrega más de lo que se cobró.
 - **Formato cuadrado.** Hasta la migración `0009_square_aspect_ratio` el cuadrado se guardaba como `'1:Post'`, pero el render solo conoce `'1:1'`: cualquier otro valor cae en 9:16, así que los proyectos cuadrados salían verticales. La migración convierte las filas a `'1:1'`. El serializer sigue aceptando `'1:Post'` y lo guarda como `'1:1'` (`validate_aspect_ratio` con `LEGACY_ASPECT_RATIOS`), y `ProjectConfig` hace lo mismo con lo que devuelve el parser de Prompt-to-Edit.
 - `FillLayout` y `ActiveSpeakerLayout` terminan con `resized(new_size=(target_w, target_h))`: con ancho y alto por separado MoviePy 2 podía dar un ancho impar.
 
@@ -210,9 +210,10 @@ Parámetros del constructor de `SpeakerTrackingEngine` (sin settings, se ajustan
 | Layout `active` con una sola cara, o con audio sin voz | Un único turno con la cara principal. | `SpeakerTrackingEngine.timeline` |
 | Falla la lectura de frames para la boca | Se saltea la muestra; `speaker.frame_failed` (3 primeras) y, si fueron más de 3, `speaker.frames_failed` con el total. | `SpeakerTrackingEngine.activity` |
 | Cualquier error del layout `active` | `layout.active_speaker_failed` y recorte centrado. | `ActiveSpeakerLayout.apply` |
-| Subtítulos sin `transcript_data` | Transcripción de respaldo; sin capacidad ni filas de uso. Si falla, falla el render del clip. | `RenderEngine.render_clip` |
+| Subtítulos sin `transcript_data` | El clip sale sin subtítulos y se loguea `render.subtitles_skipped`. No se vuelve a transcribir: esa llamada iba al proveedor sin capacidad ni filas de uso. Todo proyecto del pipeline se transcribe antes de tener clips. | `RenderEngine.render_clip` |
 | Paper edit sin segmentos o con segmentos inválidos | Proyecto `FAILED`, `pipeline_error_code` `no_approved_segments` o `invalid_approved_segments`, sin reintento. | `render_video_segments` |
-| Otro error del paper edit | Proyecto `FAILED` y `self.retry` a 60 s, hasta `max_retries=2`. | `render_video_segments` |
+| Otro error del paper edit | Proyecto `FAILED` y `self.retry` a 60 s, hasta `max_retries=2`. En el último intento se devuelve la reserva del render. | `render_video_segments` |
+| Paper edit entregado | Se cobra la reserva del render (`metadata['render_reservation_id']`, `render.charged`). Un fallo sin arreglo la devuelve (`render.refunded`). | `_settle_render_reservation` |
 
 ## Datos que escribe
 
@@ -229,7 +230,6 @@ Parámetros del constructor de `SpeakerTrackingEngine` (sin settings, se ajustan
 |---------|---------|--------|
 | `CELERY_TASK_ROUTES` | `render_clip_task` y `render_video_segments` → cola `render` | Separa los renders de la ingesta. El worker tiene que consumir `-Q celery,render`. |
 | `CELERY_VISIBILITY_TIMEOUT` | `14400` (4 h) | Cuándo Redis re-entrega un render sin ack (worker muerto). |
-| `AI_CORE_V2_ENABLED`, `AI_CORE_V2_ALLOWLIST` | `False`, `[]` | Deciden con `v2_enabled_for` el backend de la transcripción de respaldo de subtítulos. |
 | `TRANSCRIPTION_BACKEND` | `'groq'` | Backend de esa transcripción cuando V2 está habilitado. |
 | `FONTS_DIR` | `<BASE_DIR>/assets/fonts` | Fuente `Montserrat-Bold.ttf` de los subtítulos. |
 | `MEDIA_ROOT` | `<BASE_DIR>/media` | Archivos temporales del render. |

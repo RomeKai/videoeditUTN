@@ -25,6 +25,7 @@ Nothing the user or the model wrote is logged.
 """
 
 import logging
+import time
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Optional
@@ -154,6 +155,10 @@ def apply_prompt_to_project(project_id, can_retry: bool = False, capacity=None) 
     if prompt is None or metadata.get("pte"):
         return None
 
+    # ADR-011 D-M2: the prompt is the user's own text and reaches the parser
+    # LLM, so it is moderated before that call, not only by the later stage.
+    _moderate_prompt(project, prompt)
+
     reservation = capacity.reserve(clean_prompt(prompt)) if capacity is not None and clean_prompt(prompt) else None
     try:
         result = PromptParser().parse(prompt, metadata.get("duration"))
@@ -188,6 +193,45 @@ def apply_prompt_to_project(project_id, can_retry: bool = False, capacity=None) 
         project_id, len(validation.applied), len(validation.ignored),
     )
     return outcome
+
+
+def _moderate_prompt(project, prompt: str) -> None:
+    """
+    Moderates the raw prompt once per project, before the parser sees it.
+
+    - Blocked content raises UnsafeContentError and a missing verdict raises a
+      ModerationError: both reach the ingestion handler like the moderation
+      stage's (the project fails and is refunded once no retry is left).
+    - A passed check is remembered (``metadata['pte_moderated']``), so a
+      parser retry or a capacity wait does not moderate it again.
+    - A ModerationOverride lets it through, as in the moderation stage.
+    - Only the outcome class and latency are logged and recorded, never text.
+    """
+    from apps.core.security import AI_Security_Shield
+    from apps.videos.models import ModerationOverride, VideoProject
+    from apps.videos.services.ai.usage_recorder import record_moderation_usage
+
+    if (project.metadata or {}).get("pte_moderated"):
+        return
+    if ModerationOverride.objects.filter(project_id=project.pk).exists():
+        logger.warning("prompt_parse.moderation_overridden project_id=%s", project.pk)
+        return
+    started = time.monotonic()
+    try:
+        AI_Security_Shield.check_content_safety(prompt)
+    except Exception as exc:
+        record_moderation_usage(project, time.monotonic() - started, exc)
+        logger.warning(
+            "prompt_parse.moderation_failed project_id=%s error=%s", project.pk, type(exc).__name__,
+        )
+        raise
+    latency = time.monotonic() - started
+    with transaction.atomic():
+        locked = VideoProject.objects.select_for_update().get(pk=project.pk)
+        metadata = dict(locked.metadata or {})
+        metadata["pte_moderated"] = True
+        VideoProject.objects.filter(pk=project.pk).update(metadata=metadata)
+    record_moderation_usage(project, latency)
 
 
 def give_up_prompt(project_id, error_code: str) -> Dict[str, Any]:

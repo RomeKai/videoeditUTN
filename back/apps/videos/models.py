@@ -298,6 +298,7 @@ class AIUsageRecord(models.Model):
         TRANSCRIPTION = 'transcription', 'Transcription'
         SELECTION = 'selection', 'Selection'
         SEO = 'seo', 'Social metadata'
+        MODERATION = 'moderation', 'Content moderation'
 
     class PipelineVersion(models.TextChoices):
         LEGACY = 'legacy', 'Legacy'

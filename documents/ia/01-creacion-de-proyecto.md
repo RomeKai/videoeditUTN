@@ -46,7 +46,7 @@ sequenceDiagram
     SER->>SER: validate (una sola fuente)
     API->>SER: save(workspace, uploaded_by, status uploaded)
     SER->>DB: INSERT VideoProject con metadata.source_media
-    API->>PE: calculate_render_cost(duración, 720p, features, plan)
+    API->>PE: calculate_render_cost(duración, resolución pedida o 720p, features, plan)
     alt el plan no lo permite
         PE-->>API: PlanLimitExceededError o FeatureNotAllowedError
         API->>DB: borra el proyecto
@@ -98,7 +98,7 @@ sequenceDiagram
 
 Ejemplo: un archivo de 600 s con `use_seo=true` en un plan con 20 % de descuento cuesta `(600 × 0,5 × 1,0 + 5) × 0,8 = 244,00` tokens.
 
-Al crear, la resolución siempre es `720p`: `_pricing_resolution` lee `metadata['render_resolution']`, que el pedido no puede escribir (solo Prompt-to-Edit, más tarde). `use_ai_thumbnail` tampoco se puede pedir al crear: el serializer no tiene ese campo y `metadata` es de solo lectura.
+**Resolución.** El pedido puede mandar `render_resolution` (`720p`, `1080p` o `4K`; un valor distinto da 400). El serializer la guarda en `metadata['render_resolution']`, `_pricing_resolution` la usa para el precio y `calculate_render_cost` la compara con `plan.max_resolution` (403 si la supera). Sin el campo, el proyecto se cobra y se renderiza en `720p` (`RenderEngine.DEFAULT_HEIGHT`). Prompt-to-Edit puede escribirla después solo si no sube el precio (ver [04](04-prompt-to-edit.md)). No se puede cambiar con un PATCH, porque ya se cobró. `use_ai_thumbnail` no se puede pedir al crear: el serializer no tiene ese campo y `metadata` es de solo lectura.
 
 ## Flujo: creación con URL
 
@@ -120,15 +120,14 @@ sequenceDiagram
     API->>SER: save(workspace, uploaded_by, status uploaded)
     SER->>DB: INSERT VideoProject con metadata.use_seo
     API->>API: costo fijo de 10 tokens
-    opt metadata.use_seo es verdadero
-        API->>PE: calculate_render_cost(0, 720p, seo_optimization, plan)
-        alt el plan no tiene has_seo_optimization
-            PE-->>API: FeatureNotAllowedError
-            API->>DB: borra el proyecto
-            API-->>C: 403
-        else plan con SEO o sin plan
-            PE-->>API: 5 por (1 - base_discount_rate)
-        end
+    API->>PE: calculate_render_cost(0, resolución pedida o 720p, seo_optimization, plan)
+    alt resolución o SEO fuera del plan
+        PE-->>API: PlanLimitExceededError o FeatureNotAllowedError
+        API->>DB: borra el proyecto
+        API-->>C: 403
+    else dentro del plan
+        PE-->>API: con SEO, 5 por (1 - base_discount_rate)
+        Note over API: se suma solo si pidió SEO (sin adicionales el motor devuelve su piso de 0,01)
     end
     API->>WS: reserve_funds(wallet, costo, user)
     WS->>DB: Transaction RESERVED
@@ -163,12 +162,9 @@ stateDiagram-v2
     [*] --> RESERVED: reserve_funds al crear
     RESERVED --> RESERVED: reintentos, esperas de capacidad y re-encolados
     RESERVED --> FAILED: rollback_reservation tras un fallo final sin clips
-    RESERVED --> COMPLETED: commit_reservation, sin llamadas hoy
+    RESERVED --> COMPLETED: commit_reservation al elegir los clips
     FAILED --> [*]
     COMPLETED --> [*]
-    note right of RESERVED
-        Queda así si el proyecto llega a tener clips
-    end note
 ```
 
 1. **Mientras el pipeline reintenta,** la reserva sigue en `RESERVED`. Tampoco cambia en una espera de capacidad, un re-encolado por lock ocupado o un reintento del lector de prompts.
@@ -176,7 +172,7 @@ stateDiagram-v2
    - contenido bloqueado por la moderación (`UnsafeContentError`) o moderación sin veredicto después de los reintentos (ADR-011 D-M5);
    - espera de capacidad vencida (`CapacityTimeoutError`, desde `_wait_for_capacity`; ADR-012 D-C4);
    - un error no reintentable (por ejemplo `AINoSpeechDetectedError`, `AIEmptySelectionError`, `AIInvalidRequestError`, `SoftTimeLimitExceeded`) o un error reintentable que agotó `PIPELINE_MAX_RETRIES`.
-3. **El proyecto ya tiene clips:** la reserva se queda. `_refund_ingestion_reservation` mira si hay algún `VideoClip` (sugerido o renderizado) y en ese caso solo loguea `reason=has_clips`.
+3. **Clips elegidos: se cobra.** Cuando el pipeline llega a `clips_selected`, `_commit_ingestion_reservation` pasa la reserva a `COMPLETED` con `commit_reservation` (log `pipeline.charged`). También corre al retomar un proyecto en `render_dispatched`, por si un worker murió entre el despacho y el cobro. Es idempotente y nunca lanza: una reserva ya liquidada se saltea, y un `PaymentError` solo deja `pipeline.charge_failed` sin frenar el pipeline. Por eso un proyecto con clips nunca se devuelve: `_refund_ingestion_reservation` también mira si hay algún `VideoClip` y en ese caso loguea `reason=has_clips`.
 4. **Fallo antes de leer el proyecto:** si el fallo final llega sin etapa conocida (`stage=None`, por ejemplo al tomar el lock de un mensaje re-entregado) y `_work_already_done` dice que el proyecto ya llegó a `clips_selected` o más, no se marca `failed` ni se devuelve nada (`pipeline.fail_skipped reason=work_done`).
 5. **Otro worker movió el proyecto:** `mark_failed` con `expected_stage` no escribe y devuelve `False`. Solo la llamada que falló el proyecto devuelve la reserva.
 6. **Re-despacho manual de un proyecto devuelto:** corre sin reserva. Si vuelve a fallar, `_refund_ingestion_reservation` encuentra la transacción en `FAILED` y loguea `reason=not_reserved`. Si termina bien, no se vuelve a cobrar.
@@ -203,9 +199,11 @@ flowchart TD
 
 `_refund_ingestion_reservation` es idempotente y nunca lanza: un `PaymentError`, un error de base o un proyecto borrado solo dejan `pipeline.refund_failed`, para no tapar el error original.
 
-**Hueco conocido: `commit_reservation` no se llama en ningún lado.** Fuera de `wallet_service.py`, de su `__init__.py` y de los tests no hay llamadas (verificado con grep). Una reserva que no se devuelve queda en `RESERVED` para siempre y su monto sigue en `reserved_balance`: nunca pasa a `COMPLETED`.
+**Reserva del render en `approve_paper_edit`.** Aprobar el paper edit reserva el costo del render con `reserve_funds` (descripción `Render Final (Paper Edit): <título>`) y guarda el id en `metadata['render_reservation_id']`. `render_video_segments` la liquida con `_settle_render_reservation`:
 
-**Segunda reserva en `approve_paper_edit`.** Aprobar el paper edit reserva otra vez con `reserve_funds` (descripción `Render Final (Paper Edit): <título>`). Esa transacción no se guarda en `metadata`, así que `_refund_ingestion_reservation` no la ve y ningún camino la devuelve ni la confirma.
+- **Render entregado:** `commit_reservation` (log `render.charged`).
+- **Fallo que no se arregla reintentando** (`NonRetryableAIError`, por ejemplo segmentos inválidos): `rollback_reservation` (`render.refunded`).
+- **Otro error:** mientras quedan reintentos la reserva sigue `RESERVED`. En el último intento se devuelve y la excepción se propaga.
 
 ## Errores, reintentos y casos borde
 

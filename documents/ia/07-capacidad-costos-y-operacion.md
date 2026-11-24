@@ -22,7 +22,7 @@ Este documento cubre lo transversal del core de IA: el control de capacidad prop
 
 ## Flujo: reserva y ajuste de capacidad
 
-Con `AI_CAPACITY_ENABLED=True`, cada llamada a Groq (transcripción) o al LLM (selección, lector de prompts, SEO) reserva en los buckets de su modelo antes de salir. Con `False`, `_capacity_gate` devuelve `None` y no se reserva nada. La moderación (OpenAI) no pasa por los buckets.
+Con `AI_CAPACITY_ENABLED=True`, cada llamada a Groq (transcripción) o al LLM (selección, lector de prompts, SEO) reserva en los buckets de su modelo antes de salir. Con `False`, `_capacity_gate` devuelve `None` y no se reserva nada. La moderación (OpenAI) no pasa por los buckets: el endpoint es gratis y un 429 es un `ModerationError` reintentable.
 
 ```mermaid
 sequenceDiagram
@@ -155,7 +155,7 @@ sequenceDiagram
 | `prompt_parse` | `record_prompt_parse_usage` ([prompt_parser.py](../../back/apps/videos/services/ai/prompt_parser.py)) | Siempre `v2` | Ver [04](04-prompt-to-edit.md) |
 | `seo` | `_generate_social_metadata` ([tasks/social.py](../../back/apps/videos/tasks/social.py)) | Siempre `v2` | Ver [05](05-seo-y-publicacion.md) |
 
-La moderación no escribe filas: su resultado y latencia quedan en `metadata['moderation']` (ver [03](03-transcripcion-moderacion-seleccion.md)).
+La moderación escribe una fila por chequeo con etapa `moderation` (`record_moderation_usage`): proveedor `openai`, modelo `MODERATION_MODEL`, costo conocido 0 (el endpoint es gratis), latencia y la clase del error si no pasó. Hay dos chequeos posibles por proyecto: el del prompt de Prompt-to-Edit, antes del lector, y el de la etapa de moderación. Su resultado y latencia también quedan en `metadata['moderation']` (ver [03](03-transcripcion-moderacion-seleccion.md)).
 
 ### Precios
 
@@ -223,7 +223,7 @@ Cada etapa pregunta cuando corre, así que un cambio aplica desde la siguiente e
 | Prompt-to-Edit (`apply_prompt_to_project`) | No | Siempre LiteLLM, filas `v2` | — |
 | SEO (`process_video_seo`) | No | Siempre LiteLLM, filas `v2` | — |
 
-Con V2 y `TRANSCRIPTION_BACKEND=local`, la transcripción corre Whisper local y sus filas salen `legacy`: la versión se fija por el backend que corrió. La transcripción de respaldo del render no reserva capacidad ni escribe `AIUsageRecord`.
+Con V2 y `TRANSCRIPTION_BACKEND=local`, la transcripción corre Whisper local y sus filas salen `legacy`: la versión se fija por el backend que corrió.
 
 Pasos de la habilitación gradual y del rollback: [runbook §5.3](../runbooks/ai-core-pilot-runbook.md#53-habilitación-gradual-después-de-g2) y [§7](../runbooks/ai-core-pilot-runbook.md#7-rollback).
 
