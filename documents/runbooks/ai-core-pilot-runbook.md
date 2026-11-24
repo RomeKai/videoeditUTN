@@ -347,6 +347,13 @@ Los 401/403 siguen como `AIAuthenticationError`; los 408, 409, 425, 429, 5xx, ti
 
 **Reserva de tokens.** Todo proyecto que termina `FAILED` sin clips (por cualquiera de estos códigos, por moderación, por capacidad o por agotar los reintentos) devuelve los tokens que reservó al crearse: el usuario no recibió nada. Un proyecto que ya tiene clips (sugeridos o renderizados) conserva la reserva. Mientras se reintenta, la reserva se mantiene. Un re-despacho manual posterior corre sin reserva y no se vuelve a cobrar.
 
+**Reservas que quedaron `RESERVED`.** Al cerrar el piloto, y después de cualquier fallo inducido, correr el barrido en modo reporte y, si las acciones son las esperadas, con `--apply`. Las reglas, la salida y lo que queda para resolver a mano están en [07 · Operación: reservas de tokens que quedaron RESERVED](../ia/07-capacidad-costos-y-operacion.md#operación-reservas-de-tokens-que-quedaron-reserved).
+
+```bash
+docker compose exec web python manage.py settle_stale_reservations            # reporte (dry run)
+docker compose exec web python manage.py settle_stale_reservations --apply    # liquida
+```
+
 ---
 
 ## 7. Rollback

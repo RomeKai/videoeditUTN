@@ -204,6 +204,7 @@ flowchart TD
 - **Render entregado:** `commit_reservation` (log `render.charged`). Una re-entrega que encuentra el proyecto ya entregado no vuelve a renderizar: solo liquida, y si el worker murió entre guardar la exportación y cobrar, cobra ahí, una vez.
 - **Fallo que no se arregla reintentando** (`NonRetryableAIError`, por ejemplo segmentos inválidos o un render que perdió el worker más de `RENDER_SEGMENTS_MAX_REDELIVERIES` veces): `rollback_reservation` (`render.refunded`).
 - **Otro error:** mientras quedan reintentos la reserva sigue `RESERVED`. En el último intento se devuelve y la excepción se propaga.
+- Una reserva que quedó `RESERVED` de todos modos (por ejemplo, de antes de que existiera el cobro) la liquida `settle_stale_reservations` ([07](07-capacidad-costos-y-operacion.md#operación-reservas-de-tokens-que-quedaron-reserved)).
 
 ## Errores, reintentos y casos borde
 

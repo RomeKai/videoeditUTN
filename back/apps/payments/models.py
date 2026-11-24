@@ -95,3 +95,7 @@ class Transaction(models.Model):
         default=Status.PENDING
     )
     description = models.CharField(max_length=255, blank=True)
+    # When the reservation was made: settle_stale_reservations only settles
+    # reservations older than its --min-age-hours. Rows from before the column
+    # existed carry the time of migration 0003.
+    created_at = models.DateTimeField(auto_now_add=True)

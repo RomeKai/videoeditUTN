@@ -19,6 +19,7 @@ Este documento cubre lo transversal del core de IA: el control de capacidad prop
 | Chequeo de arranque | [checks.py](../../back/apps/videos/checks.py) | `check_ai_configuration`: `videos.E001` a `videos.E006` |
 | Export del piloto | [export_ai_pilot_metrics.py](../../back/apps/videos/management/commands/export_ai_pilot_metrics.py) | CSV o JSONL por registro o por proyecto |
 | Evaluación de transcripción | [evaluate_ai_transcription.py](../../back/apps/videos/management/commands/evaluate_ai_transcription.py) | WER y error de timestamps contra referencias humanas |
+| Barrido de reservas | [settle_stale_reservations.py](../../back/apps/videos/management/commands/settle_stale_reservations.py) | Reporta las reservas de tokens que quedaron `RESERVED` y, con `--apply`, las cobra o las devuelve según el estado del proyecto |
 
 ## Flujo: reserva y ajuste de capacidad
 
@@ -274,6 +275,8 @@ Pasos de la habilitación gradual y del rollback: [runbook §5.3](../runbooks/ai
 | `VideoProject` | `pipeline_error_code` | `CapacityTimeoutError` si venció la espera |
 | `AIUsageRecord` | Todas las columnas | `stage`, `pipeline_version`, `attempt`, `role`, `provider`, `model`, `resolved_model`, `success`, `error_code`, tokens, `audio_seconds`, `latency_seconds`, `cached`, `estimated_cost_usd`, `pricing_version`, `created_at`. `project` sin constraint en la base: borrar un proyecto no borra sus filas |
 | `ScheduledPost.error_log` | `capacity_timeout` | Espera vencida en SEO |
+| `Transaction` | `created_at` | Cuándo se hizo la reserva (migración `payments.0003`). Las filas anteriores a la migración tienen la hora en que corrió. La usa `settle_stale_reservations` |
+| `Transaction` | `status` | `settle_stale_reservations --apply`: `COMPLETED` (cobrada) o `FAILED` (devuelta), por `commit_reservation` y `rollback_reservation` |
 
 ## Configuración
 
@@ -359,7 +362,40 @@ Los eventos tienen nombre estable y llevan ids, códigos y números, nunca texto
 | Un bucket parece no recuperarse | `capacity.settle_failed` (el ajuste no se aplicó) o una demanda mayor que el bucket que lo dejó negativo. Revisar la clave `capacity:v1:...` en Valkey |
 | Post `FAILED` por SEO | `error_log`: `capacity_timeout`, `content_blocked`, `generated_content_blocked`, `seo_no_clip_transcript`, un código `moderation_*`, `seo_generation_failed:<clase>` o `seo_failed:<clase>`. Ver [05](05-seo-y-publicacion.md) |
 | Los renders por clip no avanzan | Que algún worker consuma la cola `render` (`-Q celery,render`) |
+| Saldo reservado que no baja, o una reserva `RESERVED` de un proyecto que ya terminó | Correr `settle_stale_reservations` en modo reporte (ver [abajo](#operación-reservas-de-tokens-que-quedaron-reserved)). Buscar también `pipeline.charge_failed`, `pipeline.refund_failed` y `render.settle_failed` |
 | El layout no sigue caras | `face_tracker.mediapipe_unavailable`, `face_tracker.detector_unavailable` o `face_tracker.no_faces`: el recorte vuelve al centro. Ver [06](06-render-caras-y-hablante.md) |
+
+## Operación: reservas de tokens que quedaron RESERVED
+
+El pipeline liquida cada reserva: la de creación (`metadata['reservation_id']`) se cobra cuando hay clips y se devuelve si el proyecto falla sin clips; la del render (`metadata['render_reservation_id']`) se cobra cuando el paper edit se entrega y se devuelve si falla del todo. Igual pueden quedar reservas `RESERVED`: las de antes de que existiera el cobro, un cobro o una devolución que falló por un error de base (`pipeline.charge_failed`, `pipeline.refund_failed`, `render.settle_failed`) o un render cuyo worker murió. `settle_stale_reservations` las encuentra y las liquida con las mismas reglas.
+
+```bash
+# Solo reporta (dry run): no escribe nada
+docker compose exec web python manage.py settle_stale_reservations
+# Liquida las que tienen una regla
+docker compose exec web python manage.py settle_stale_reservations --apply
+# Otra antigüedad mínima (24 h por defecto)
+docker compose exec web python manage.py settle_stale_reservations --min-age-hours 72
+```
+
+Solo mira transacciones `RESERVED` con `created_at` de hace al menos `--min-age-hours`. Para cada una busca el proyecto que la tiene en `metadata['reservation_id']` (creación) o en `metadata['render_reservation_id']` (render):
+
+| Reserva | Estado del proyecto | Acción (`reason`) |
+|---------|---------------------|-------------------|
+| Creación | `clips_selected` o una etapa posterior (`clips_selected`) | Cobra (`commit`) |
+| Creación | Con clips, aunque esté `failed` (`has_clips`) | Cobra |
+| Creación | `failed` sin clips (`failed_without_clips`) | Devuelve (`rollback`) |
+| Creación | Otra etapa (`in_progress`) | Solo reporta |
+| Render | `COMPLETED` con `final_export_r2_key` (`render_delivered`) | Cobra |
+| Render | `FAILED` (`render_failed`) | Devuelve |
+| Render | Otro estado, por ejemplo `RENDERING` (`render_in_progress`) | Solo reporta |
+| Sin proyecto (`unlinked`) | — | Solo reporta |
+
+- **Seguridad.** Sin `--apply` no escribe nada. Con `--apply` vuelve a decidir con el lock de fila del proyecto tomado y liquida con `wallet_service.commit_reservation` o `rollback_reservation`, que bloquean la transacción y vuelven a chequear que siga `RESERVED`. Si el pipeline la liquidó mientras tanto, el resultado es `already_settled`; si el proyecto cambió y ahora toca solo reportar, `skipped`.
+- **Antigüedad.** El mínimo de 24 h deja afuera reservas de proyectos que siguen trabajando, por ejemplo un render que espera su reintento (queda `FAILED` mientras tanto). Las transacciones anteriores a la migración `payments.0003` tienen como `created_at` la hora de la migración: el barrido las toma un `--min-age-hours` después del deploy.
+- **Salida.** Una línea por transacción, sin texto del usuario (ni la descripción de la transacción, que lleva el título del proyecto): `transaction`, `amount`, `age_h`, `kind` (`creation`, `render` o `-`), `project`, `stage`, `status`, `action` (`commit`, `rollback` o `report`), `reason` y `result` (`dry_run`, `reported`, `committed`, `rolled_back`, `already_settled`, `skipped` o `error=<clase>`). Al final, una línea `summary` con los totales.
+- **Errores.** Un error de pago o de base en una transacción se informa en su línea y el barrido sigue. Si hubo alguno, el comando termina con error (código 1) para que un cron lo note.
+- **Lo que queda en reporte** se resuelve a mano: un render que sigue `RENDERING` sin worker se re-encola (`render_video_segments`) o se marca `FAILED` para que el próximo barrido devuelva la reserva; una reserva sin proyecto se revisa con el workspace dueño de la billetera.
 
 ## Referencias
 
