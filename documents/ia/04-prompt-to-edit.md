@@ -93,7 +93,7 @@ sequenceDiagram
     Note over AP: bloqueado lanza UnsafeContentError y el proyecto falla con reembolso
     AP->>CAP: reserve(prompt limpio)
     CAP-->>AP: Reservation, o None con la capacidad apagada
-    AP->>PP: parse(pte_prompt, metadata.duration)
+    AP->>PP: parse(pte_prompt, known_video_duration(metadata))
     PP->>LLM: modelo primario con isolate_user_input y el schema de ProjectConfig
     opt falla el primario y hay fallback con key
         PP->>LLM: modelo fallback
@@ -121,7 +121,8 @@ sequenceDiagram
 4. **Capacidad:** si `AI_CAPACITY_ENABLED` está activo y el prompt limpio no está vacío, `_PromptParseCapacity.reserve` pide `ceil(caracteres / 4) + AI_CAPACITY_LLM_PROMPT_TOKENS + AI_CAPACITY_LLM_OUTPUT_TOKENS` tokens y un request en cada modelo de `_selection_models(True)`: el primario y el fallback si tiene key. La espera se registra en la etapa que viene (`upcoming`); para un proyecto en `uploaded` es `audio_extracted`. Detalle de los buckets en [07-capacidad-costos-y-operacion](07-capacidad-costos-y-operacion.md).
 5. **Parser:** `PromptParser.parse` usa el camino de llamada de la selección V2 (`LiteLLMSelectionProvider`), sin importar el rollout V2 del proyecto:
    - Con un prompt limpio vacío devuelve `ProjectConfig()` sin llamar al LLM (`attempts` vacío).
-   - El system prompt fija las reglas: llenar solo lo que el pedido pide claramente, usar los valores del schema, no inventar campos de precio o plan. El texto del usuario va aislado con `AI_Security_Shield.isolate_user_input`, después de `VIDEO DURATION`.
+   - La duración del video sale de `known_video_duration`: en una subida, la que midió la validación (`metadata['source_media']['duration_s']`); si no, `metadata['duration']` cuando una etapa ya la escribió. En un proyecto por link es `None`: el video todavía no se bajó.
+   - El system prompt fija las reglas: llenar solo lo que el pedido pide claramente, usar los valores del schema, no inventar campos de precio o plan. El texto del usuario va aislado con `AI_Security_Shield.isolate_user_input`, después de `VIDEO DURATION` (los segundos o `unknown`).
    - `response_format` sale del schema de `ProjectConfig`: `json_schema` para OpenAI, `json_object` con `response_schema` para Gemini y `json_object` para el resto.
    - Si el primario falla y `_has_fallback()` es verdadero (otro modelo con key), prueba una vez con el fallback. Cada intento queda en `attempts` o, si falla todo, en `usage_attempts` del error.
    - `lenient_config` valida campo por campo: un valor fuera de las opciones se descarta (ese campo queda en su default) en lugar de invalidar toda la config. Un prompt ambiguo da defaults, no un error.
@@ -227,7 +228,7 @@ flowchart TD
 | La respuesta no es JSON o no es un objeto | `AIContractValidationError` (no reintentable) con el uso del intento. Pasa al fallback si hay; si no, `status=failed` | `_parse_config`, `lenient_config` |
 | Un campo con un valor fuera del schema | Se descarta solo ese campo. Log `prompt_parse.fields_dropped count=N` | `lenient_config` |
 | `max_clips` más grande de lo que entra en el video | Se baja a `duración // 15` (mínimo 1), si la duración se conoce | `lenient_config` |
-| Duración desconocida al parsear | En un proyecto nuevo el parser corre antes de `_stage_prepare_source`, que es quien escribe `metadata['duration']`. Recibe `None`, el prompt dice `VIDEO DURATION: unknown` y el tope de `max_clips` por duración no se aplica (queda el de 20) | `apply_prompt_to_project` |
+| Duración desconocida al parsear | El parser corre antes de `_stage_prepare_source`, que es quien escribe `metadata['duration']`. Una subida usa la duración medida al validarla (`metadata['source_media']['duration_s']`). Un proyecto por link recibe `None`: el prompt dice `VIDEO DURATION: unknown` y el tope de `max_clips` por duración no se aplica (queda el de 20) | `known_video_duration`, `apply_prompt_to_project` |
 | Error transitorio con reintentos del parser | `PromptParseRetry` y re-encolado a 30 o 90 s. Se escriben las filas de uso pero no `pte` | `apply_prompt_to_project`, `process_initial_ingestion` |
 | Error transitorio en el último reintento | `status=failed` con `error_code`. La ingesta sigue con los defaults | `apply_prompt_to_project` |
 | Error definitivo | `status=failed` en el primer intento, aunque queden reintentos | `apply_prompt_to_project` |

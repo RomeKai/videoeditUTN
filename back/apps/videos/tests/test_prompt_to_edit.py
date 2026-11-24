@@ -221,6 +221,78 @@ class ApplyPromptTests(TestCase):
         parse.assert_not_called()
 
 
+class PromptDurationTests(TestCase):
+    """
+    The parser gets the video length when it is known: an upload's measured
+    duration (written by the upload validation), never a key nothing writes.
+    """
+
+    def setUp(self):
+        moderate = patch(MODERATE, return_value=True)
+        moderate.start()
+        self.addCleanup(moderate.stop)
+        user = User.objects.create_user(username="dur", email="dur@test.com", password="pw")
+        self.workspace = Workspace.objects.create(
+            name="Duration", owner=user, subscription_plan=plan("Free", max_resolution="720p")
+        )
+        self.user = user
+
+    def make_project(self, **metadata):
+        return VideoProject.objects.create(
+            workspace=self.workspace, uploaded_by=self.user, title="P",
+            metadata={"pte_prompt": PROMPT, **metadata},
+        )
+
+    def test_an_upload_gives_the_parser_its_measured_duration(self):
+        project = self.make_project(
+            source_media={"duration_s": 95.4, "width": 1920, "height": 1080, "mime": "video/mp4"},
+        )
+        with patch(PARSER) as parser_cls:
+            parser_cls.return_value.parse.return_value = parsed(max_clips=2)
+            apply_prompt_to_project(project.pk)
+
+        parser_cls.return_value.parse.assert_called_once_with(PROMPT, 95.4)
+
+    def test_a_link_project_gives_the_parser_no_duration(self):
+        project = self.make_project()  # a link: nothing measured before the download
+        with patch(PARSER) as parser_cls:
+            parser_cls.return_value.parse.return_value = parsed(max_clips=2)
+            apply_prompt_to_project(project.pk)
+
+        parser_cls.return_value.parse.assert_called_once_with(PROMPT, None)
+
+    def test_max_clips_is_capped_by_the_length_of_the_upload(self):
+        from django.test import override_settings
+
+        from apps.videos.tests.services.test_prompt_parser import FakeLiteLLM, answer
+
+        project = self.make_project(source_media={"duration_s": 40.0})
+        fake = FakeLiteLLM(answer({"max_clips": 8}))
+        with patch.dict("sys.modules", {"litellm": fake}), override_settings(
+            AI_DEFAULT_LLM_MODEL="gemini/gemini-3.8-flash", AI_FALLBACK_LLM_MODEL="gemini/gemini-3.8-flash",
+            GEMINI_API_KEY="gemini-key",
+        ):
+            outcome = apply_prompt_to_project(project.pk)
+
+        # 40 s hold at most two clips of 15 s; the model asked for eight.
+        self.assertEqual(outcome["applied"]["max_clips"], 2)
+        self.assertIn("VIDEO DURATION: 40 seconds", fake.calls[0]["messages"][1]["content"])
+
+    def test_only_a_usable_duration_counts(self):
+        from apps.videos.services.ai.prompt_validator import known_video_duration
+
+        self.assertEqual(known_video_duration({"source_media": {"duration_s": 12}}), 12.0)
+        self.assertEqual(known_video_duration({"duration": 30.5}), 30.5)
+        for metadata in (
+            {}, {"source_media": None}, {"source_media": {"duration_s": 0}},
+            {"source_media": {"duration_s": -3}}, {"source_media": {"duration_s": "95"}},
+            {"source_media": {"duration_s": True}}, {"source_media": {"duration_s": float("nan")}},
+            {"source_media": {"duration_s": float("inf")}},
+        ):
+            with self.subTest(metadata=metadata):
+                self.assertIsNone(known_video_duration(metadata))
+
+
 class IngestionIntegrationTests(IngestionHarness, TestCase):
     def test_the_config_is_applied_before_selection_and_render_reuse_it(self):
         project = self.make_project(metadata={"pte_prompt": PROMPT, "pte_explicit": []})

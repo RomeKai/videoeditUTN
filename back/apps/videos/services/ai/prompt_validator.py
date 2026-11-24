@@ -25,6 +25,7 @@ Nothing the user or the model wrote is logged.
 """
 
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -123,6 +124,26 @@ def explicit_config_fields(raw: Any) -> List[str]:
     return sorted(name for name in ProjectConfig.model_fields if name in keys)
 
 
+def known_video_duration(metadata: Dict[str, Any]) -> Optional[float]:
+    """
+    Seconds of the source video when they are already known, else None. The
+    parser runs before any stage, so the probe (``metadata['duration']``) is
+    not there yet: an upload has the duration its validation measured
+    (``metadata['source_media']['duration_s']``); a link project has none
+    until it is downloaded. The parser uses it to tell the model the length
+    and to cap ``max_clips``.
+    """
+    source_media = metadata.get("source_media")
+    candidates = (
+        source_media.get("duration_s") if isinstance(source_media, dict) else None,
+        metadata.get("duration"),
+    )
+    for value in candidates:
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0:
+            return float(value)
+    return None
+
+
 class PromptParseRetry(Exception):
     """
     A transient parser error while the parser still has retries of its own:
@@ -161,7 +182,7 @@ def apply_prompt_to_project(project_id, can_retry: bool = False, capacity=None) 
 
     reservation = capacity.reserve(clean_prompt(prompt)) if capacity is not None and clean_prompt(prompt) else None
     try:
-        result = PromptParser().parse(prompt, metadata.get("duration"))
+        result = PromptParser().parse(prompt, known_video_duration(metadata))
     except Exception as exc:
         if capacity is not None:
             capacity.settle(reservation, exc=exc)
