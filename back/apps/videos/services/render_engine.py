@@ -17,10 +17,18 @@ class RenderEngine:
     Core engine responsible for physical video rendering and assembly.
     Handles layout application, subtitle burning, and cloud-native S3 lifecycle.
     """
+    # Frame height per resolution tier (PricingEngine / SubscriptionPlan values).
+    RESOLUTION_HEIGHTS = {'720p': 720, '1080p': 1080, '4K': 2160}
+    DEFAULT_HEIGHT = 1080
+
     @staticmethod
-    def _get_target_resolution(aspect_ratio_str: str):
-        """Calculates resolution based on aspect ratio, forcing even numbers for H.264."""
-        target_h = 1080  
+    def _get_target_resolution(aspect_ratio_str: str, resolution: str = None):
+        """
+        Calculates resolution based on aspect ratio, forcing even numbers for H.264.
+        ``resolution`` is the project's ``metadata['render_resolution']`` tier
+        (set by Prompt-to-Edit within the plan); without it the height stays 1080.
+        """
+        target_h = RenderEngine.RESOLUTION_HEIGHTS.get(resolution, RenderEngine.DEFAULT_HEIGHT)
         if aspect_ratio_str == '9:16': target_w = int(target_h * (9/16)) 
         elif aspect_ratio_str == '1:1': target_w = target_h 
         elif aspect_ratio_str == '16:9': target_w = int(target_h * (16/9)) 
@@ -68,7 +76,9 @@ class RenderEngine:
             original_clip = VideoFileClip(original_path).subclipped(clip_obj.start_time, clip_obj.end_time)
             
             # 2. Apply Layout Strategy (GoF Strategy Pattern)
-            target_w, target_h = RenderEngine._get_target_resolution(project.aspect_ratio)
+            target_w, target_h = RenderEngine._get_target_resolution(
+                project.aspect_ratio, (project.metadata or {}).get('render_resolution'),
+            )
             use_ft = getattr(project, 'use_facetracking', False)
             gp_pos = getattr(project, 'gameplay_position', 'center')
             cam_sel_pos = getattr(project, 'camera_selection_position', 'center')

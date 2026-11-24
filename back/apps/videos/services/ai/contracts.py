@@ -132,10 +132,12 @@ class ClipSelectionResult(BaseModel):
 # 2b. PROMPT-TO-EDIT CONTRACTS (PTE-01a, #72)
 # ==============================================================================
 
-# Same values as the VideoProject choices (a test keeps them in sync). Note the
-# model stores the square ratio as '1:Post'.
+# Same values as the VideoProject choices (a test keeps them in sync). The
+# square ratio was stored as '1:Post' until migration 0009; that spelling is
+# still accepted and read as '1:1'.
 EditingStyleValue = Literal["dynamic", "minimalist", "vlog", "hormozi", "custom"]
-AspectRatioValue = Literal["9:16", "1:Post", "16:9"]
+AspectRatioValue = Literal["9:16", "1:1", "16:9"]
+LEGACY_ASPECT_RATIOS = {"1:Post": "1:1"}
 LayoutValue = Literal["fill", "fit", "blurred", "split", "pip", "versus", "active"]
 PositionValue = Literal["left", "center", "right"]
 SubtitleSizeValue = Literal["small", "medium", "large"]
@@ -182,6 +184,11 @@ class ProjectConfig(BaseModel):
     render_resolution: Optional[RenderResolutionValue] = None
     use_seo: Optional[bool] = None
     use_ai_thumbnail: Optional[bool] = None
+
+    @field_validator("aspect_ratio", mode="before")
+    @classmethod
+    def _legacy_square(cls, value: Any) -> Any:
+        return LEGACY_ASPECT_RATIOS.get(value, value) if isinstance(value, str) else value
 
     @field_validator("subtitle_color", mode="before")
     @classmethod

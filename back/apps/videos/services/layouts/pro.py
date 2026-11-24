@@ -43,13 +43,49 @@ class VersusLayout(BaseLayout):
 
 class ActiveSpeakerLayout(BaseLayout):
     """
-    Layout 'ActiveSpeaker': Automatically switches focus to whoever is talking.
+    Layout 'ActiveSpeaker': the camera follows whoever is talking (CORE-02).
+    Faces are tracked (CORE-01), the speaker timeline comes from
+    SpeakerTrackingEngine, and the crop cuts to the speaker's face at each
+    turn. Without faces it falls back to the centered crop.
     """
     def apply(self, clip):
+        try:
+            followed = self._follow_speaker(clip)
+        except Exception as exc:
+            logger.error("layout.active_speaker_failed error=%s", type(exc).__name__)
+            followed = None
+        return followed if followed is not None else self._centered(clip)
+
+    def _follow_speaker(self, clip):
+        from apps.videos.services.speaker_engine import SpeakerTrackingEngine, speaker_at
+
+        faces = FaceTracker().track_faces(clip, fps=self.tracking_fps)
+        if not faces.tracks:
+            return None
+        timeline = SpeakerTrackingEngine().timeline(clip, faces)
+        path = faces.path_following(speaker_at(timeline))
+        if not path.points:
+            return None
+
+        aspect = self.target_w / self.target_h
+        crop_h = clip.h
+        crop_w = int(crop_h * aspect)
+        if crop_w > clip.w:
+            crop_w = clip.w
+            crop_h = int(crop_w / aspect)
+
+        def speaker_frame(get_frame, t):
+            frame = get_frame(t)
+            face_x, _, _, _ = path.get_at(t)
+            x1 = max(0, min(int(face_x - crop_w // 2), clip.w - crop_w))
+            y1 = (clip.h - crop_h) // 2
+            return frame[y1:y1 + crop_h, x1:x1 + crop_w]
+
+        logger.info("layout.active_speaker segments=%d faces=%d", len(timeline), len(faces.tracks))
+        return clip.transform(speaker_frame).resized(new_size=(self.target_w, self.target_h))
+
+    def _centered(self, clip):
         target_w, target_h = self.target_w, self.target_h
-        
-        # Default behavior: Just center fit if no tracking is provided
-        # In a future update, this will use SpeakerTrackingEngine
         main = clip.resized(height=target_h)
         if main.w < target_w:
             main = clip.resized(width=target_w)

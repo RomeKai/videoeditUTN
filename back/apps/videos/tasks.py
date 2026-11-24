@@ -720,7 +720,9 @@ def render_video_segments(self, project_id):
                 edited_clip = concatenate_videoclips(subclips)
             
                 # 3. APPLY LAYOUT & SUBTITLES (Reuse RenderEngine Logic)
-                target_w, target_h = RenderEngine._get_target_resolution(project.aspect_ratio)
+                target_w, target_h = RenderEngine._get_target_resolution(
+                    project.aspect_ratio, (project.metadata or {}).get('render_resolution'),
+                )
                 use_ft = project.use_facetracking
                 gp_pos = project.gameplay_position
             
