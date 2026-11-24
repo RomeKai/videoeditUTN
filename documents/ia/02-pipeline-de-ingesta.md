@@ -165,7 +165,7 @@ Es la opción "Renderizar sin revisar" de C1. Los clips elegidos se renderizan s
 - **Cobro:** `_settle_auto_render_reservation` corre en cada `finalize_project_render` y cuando el pipeline marca el proyecto `failed`, y decide por cómo terminó (`_auto_render_settlement`):
   - con el proyecto en `completed`, `partial` o `failed` y ningún clip pagado `rendering`: se cobra la parte de los segundos entregados (clips de `auto_render_clip_ids` en `completed` o `published`) y se devuelve el resto (`commit_partial_reservation`). Si no se entregó nada, se devuelve todo. Un clip de paper edit o uno renderizado antes no cuenta;
   - antes de eso, o con un clip todavía `rendering`, espera.
-- **Mensajes de render en la cola:** `render_clip_task` no renderiza un clip de un proyecto con render automático si el proyecto ya no está en `render_dispatched` o esa reserva ya no está `reserved` (`_whole_video_render_allowed`, que cubre los dos casos pagos).
+- **Mensajes de render en la cola:** `render_clip_task` no renderiza un clip de un proyecto con render automático si el proyecto ya no está en `render_dispatched` o esa reserva ya no está `reserved` (`_whole_video_render_allowed`, que cubre los dos casos pagos). Tampoco uno que esa reserva no paga: la tarea le pasa el id del clip y tiene que estar en `auto_render_clip_ids`. Un re-despacho reserva solo los clips `draft`, así que un mensaje viejo de un clip que había fallado lo encuentra fuera de la lista, no lo renderiza y el clip sigue `failed`.
 
 ### Estado por etapa (`pipeline_stage_status`)
 

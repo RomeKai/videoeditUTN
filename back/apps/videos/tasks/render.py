@@ -385,9 +385,10 @@ def render_clip_task(self, clip_id):
         takeover = _has_takeover_right(self.request)
         from apps.videos.tasks.ingestion import _whole_video_render_allowed
 
-        if not _whole_video_render_allowed(clip.project_id):
-            # A whole-video project that failed (and was refunded) while this
-            # message waited in the queue: the video is not rendered for free.
+        if not _whole_video_render_allowed(clip.project_id, clip_id=clip_id):
+            # A paid project (whole video, auto-render) that failed and was
+            # refunded while this message waited in the queue, or a clip its
+            # reservation does not pay for: nothing is rendered for free.
             _fail_unclaimed_clip(clip_id, redelivered=takeover)
             finalize_project_render(clip.project_id)
             logger.warning("render.skipped_unpaid clip_id=%s project_id=%s", clip_id, clip.project_id)
@@ -401,7 +402,7 @@ def render_clip_task(self, clip_id):
         _hold_claim(self.request, claim.token)
         # Checked again after every claim, retries included: the project may
         # have failed and been refunded between the check and the claim.
-        if not _whole_video_render_allowed(clip.project_id):
+        if not _whole_video_render_allowed(clip.project_id, clip_id=clip_id):
             if not _fail_owned_clip(clip_id, claim.token):
                 _end_unfinished_start(clip_id)  # taken over meanwhile: left to that copy
             _hold_claim(self.request, None)

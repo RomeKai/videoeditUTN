@@ -227,7 +227,7 @@ class ClipOwnershipTests(ClaimHarness, TestCase):
         clip = self.dead_owner_clip()
         answers = []
 
-        def blip_then_allowed(project_id):
+        def blip_then_allowed(project_id, clip_id=None):
             answers.append(project_id)
             if len(answers) == 1:
                 raise OperationalError("db blip")  # the redelivered copy's first attempt
@@ -502,7 +502,7 @@ class WholeVideoClaimTests(ClaimHarness, TestCase):
         tokens = {}
         answers = []
 
-        def allowed(project_id):
+        def allowed(project_id, clip_id=None):
             answers.append(project_id)
             if len(answers) == 1:
                 return True

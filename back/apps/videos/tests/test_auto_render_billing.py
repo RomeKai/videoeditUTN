@@ -226,6 +226,37 @@ class AutoRenderBillingTests(IngestionHarness, TestCase):
         txn = self.reservation(project)
         self.assertEqual((txn.status, txn.amount), (Transaction.Status.COMPLETED, Decimal("2.50")))
 
+    def re_dispatched_after_a_failed_clip(self):
+        """The first clip failed, the project was refunded and re-dispatched: the new reservation pays the other two."""
+        project = self.run_to_render(self.make_project(auto_render_bypass=True))
+        rollback_reservation(project.metadata[KEY])
+        first, second, third = VideoClip.objects.filter(project=project).order_by("start_time")
+        VideoClip.objects.filter(pk=first.pk).update(status=VideoClip.Status.FAILED)
+        VideoProject.objects.filter(pk=project.pk).update(
+            pipeline_stage=PipelineStage.CLIPS_SELECTED, status=VideoProject.Status.INGESTING,
+        )
+        project = self.run_to_render(project)
+        self.assertEqual(sorted(project.metadata["auto_render_clip_ids"]), sorted([str(second.id), str(third.id)]))
+        return project, first, second
+
+    def test_a_stale_message_for_a_failed_clip_the_reservation_does_not_pay_for_is_not_rendered(self):
+        project, first, _second = self.re_dispatched_after_a_failed_clip()
+
+        with patch("apps.videos.services.render_engine.RenderEngine.render_clip") as render:
+            render_clip_task.apply(args=[str(first.id)])  # a duplicate left from the first dispatch
+
+        render.assert_not_called()
+        self.assertEqual(VideoClip.objects.get(pk=first.pk).status, VideoClip.Status.FAILED)
+        self.assertEqual(self.reservation(project).status, Transaction.Status.RESERVED)
+
+    def test_a_clip_the_re_dispatch_paid_for_is_still_rendered(self):
+        _project, _first, second = self.re_dispatched_after_a_failed_clip()
+
+        with patch("apps.videos.services.render_engine.RenderEngine.render_clip") as render:
+            render_clip_task.apply(args=[str(second.id)])
+
+        render.assert_called_once()
+
     def test_a_project_re_dispatched_at_render_dispatched_reserves_again_and_renders(self):
         project = self.run_to_render(self.make_project(auto_render_bypass=True))
         rollback_reservation(project.metadata[KEY])  # refunded when it failed
