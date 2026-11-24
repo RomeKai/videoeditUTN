@@ -552,7 +552,12 @@ def _render_final_edit(project_id, lock, attempt):
                 from apps.videos.services.layouts import get_layout_strategy
                 layout_strategy = get_layout_strategy(
                     project.render_layout, target_w, target_h, use_facetracking=use_ft,
-                    gameplay_pos=gp_pos, editing_style=project.editing_style,
+                    gameplay_pos=gp_pos, camera_selection_pos=project.camera_selection_position,
+                    manual_camera_coords={
+                        'x': project.manual_camera_x, 'y': project.manual_camera_y,
+                        'zoom': project.manual_camera_zoom,
+                    },
+                    editing_style=project.editing_style,
                 )
                 video_layout_processed = layout_strategy.apply(edited_clip)
 

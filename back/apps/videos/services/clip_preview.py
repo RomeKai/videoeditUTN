@@ -5,7 +5,8 @@ The user sees the clip with the project's layout and subtitles before paying
 for the final render. To stay fast and cheap it is simplified:
 
 - Height PREVIEW_HEIGHT (360p), same aspect ratio as the final render.
-- No face tracking and no silence removal (the static layout crop is used).
+- No face or speaker tracking and no silence removal (the static layout crop
+  is used; the 'active' layout gives its centered crop).
 - The source is decoded at the preview height, at 15 fps, encoded with 'ultrafast'.
 
 It never touches the wallet and calls no AI provider. A preview expires
@@ -148,7 +149,8 @@ def render_preview(preview_id) -> Optional[ClipPreview]:
         # (crop, blur, composition) on small frames: the main cost at 1080p.
         original_clip, final_clip = RenderEngine.compose_clip(
             project, clip_obj, project.source_file.path, target_w, target_h,
-            use_facetracking=False, source_height=_decode_height(project, target_w, target_h),
+            use_facetracking=False, static=True,
+            source_height=_decode_height(project, target_w, target_h),
         )
         final_clip.write_videofile(
             output_path,

@@ -81,11 +81,11 @@ Rutas relativas a `back/apps/videos/` salvo indicación.
 | [services/media_validation.py](../../back/apps/videos/services/media_validation.py) | `validate_upload`: tipo real con libmagic, ffprobe y límites `AI_UPLOAD_*` |
 | [services/render_engine.py](../../back/apps/videos/services/render_engine.py) | `RenderEngine.render_clip`: layout, subtítulos, export y subida de un clip |
 | [services/layouts/](../../back/apps/videos/services/layouts/__init__.py) | `get_layout_strategy` y `LAYOUT_REGISTRY`: `fill`, `fit`, `blurred`, `split`, `pip`, `versus`, `active` |
+| [services/layouts/camera.py](../../back/apps/videos/services/layouts/camera.py) | `ManualCamera`, `preset_region` y `manual_box`: qué región de la fuente muestra la cámara en `split` y `versus`. Funciones puras |
 | [services/face_tracker.py](../../back/apps/videos/services/face_tracker.py) | `FaceTracker`: detección con MediaPipe, `track_faces` y `generate_path` |
 | [services/face_tracking.py](../../back/apps/videos/services/face_tracking.py) | `IoUTracker` y `FaceTracks`: une detecciones en tracks con id estable. `sampling_fps` por estilo |
 | [services/tracking_utils.py](../../back/apps/videos/services/tracking_utils.py) | `TrackingPoint`, `TrackingPath`, suavizado (`MovingAverageSmoothing`, `EMASmoothing`) e `interpolate_gaps` |
 | [services/speaker_engine.py](../../back/apps/videos/services/speaker_engine.py) | `SpeakerTrackingEngine`: quién habla, con energía del audio y movimiento de boca, sin pyannote |
-| [services/saliency_tracker.py](../../back/apps/videos/services/saliency_tracker.py) | `GameplaySaliencyDetector`: zona de juego por movimiento, para el layout `split` |
 | [signals.py](../../back/apps/videos/signals.py) | `generate_seo_for_new_post` (post_save de `ScheduledPost`), `queue_post_seo`, `seo_requested` |
 | [checks.py](../../back/apps/videos/checks.py) | `check_ai_configuration`: chequeo de arranque `videos.E001` a `videos.E006` |
 | [management/commands/export_ai_pilot_metrics.py](../../back/apps/videos/management/commands/export_ai_pilot_metrics.py) | Export de métricas del piloto en CSV o JSONL, sin texto del usuario |

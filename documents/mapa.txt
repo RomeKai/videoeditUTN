@@ -46,7 +46,6 @@ back/apps/videos/services/layouts/standard.py
 back/apps/videos/services/layouts/__init__.py
 back/apps/videos/services/render_engine.py
 back/apps/videos/services/s3_service.py
-back/apps/videos/services/saliency_tracker.py
 back/apps/videos/services/selection_engine.py
 back/apps/videos/services/seo_engine.py
 back/apps/videos/services/speaker_engine.py

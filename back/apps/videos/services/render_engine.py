@@ -56,7 +56,7 @@ class RenderEngine:
 
     @staticmethod
     def compose_clip(project, clip_obj, source_path, target_w, target_h, use_facetracking=False,
-                     source_height=None):
+                     source_height=None, static=False):
         """
         Builds the clip in memory, without writing it: the segment of the source,
         the project's layout at ``target_w`` x ``target_h`` and its subtitles.
@@ -66,6 +66,8 @@ class RenderEngine:
         ``source_height`` makes FFmpeg decode the source already scaled to that
         height, so the layout works on small frames (the preview uses it: at
         1080p the layout and blur cost several times the whole preview budget).
+        ``static`` skips every face and speaker tracking, also in the 'active'
+        layout (the preview uses it).
         """
         # 1. Load Video (MoviePy 2.0 syntax)
         decode_size = (None, int(source_height)) if source_height else None
@@ -77,7 +79,7 @@ class RenderEngine:
             gp_pos = getattr(project, 'gameplay_position', 'center')
             cam_sel_pos = getattr(project, 'camera_selection_position', 'center')
             manual_coords = { 'x': project.manual_camera_x, 'y': project.manual_camera_y, 'zoom': project.manual_camera_zoom }
-            layout_strategy = get_layout_strategy(project.render_layout, target_w, target_h, use_facetracking=use_facetracking, gameplay_pos=gp_pos, camera_selection_pos=cam_sel_pos, manual_camera_coords=manual_coords, editing_style=getattr(project, 'editing_style', None))
+            layout_strategy = get_layout_strategy(project.render_layout, target_w, target_h, use_facetracking=use_facetracking, gameplay_pos=gp_pos, camera_selection_pos=cam_sel_pos, manual_camera_coords=manual_coords, editing_style=getattr(project, 'editing_style', None), static=static)
             video_layout_processed = layout_strategy.apply(original_clip)
 
             # 3. Subtitle Processing

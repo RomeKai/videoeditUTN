@@ -154,6 +154,32 @@ def test_a_failed_render_is_stored_and_never_raises(clip):
     assert result.storage_key == ""
 
 
+def test_a_preview_of_an_active_project_does_not_track(clip):
+    """The 'active' layout tracks faces even without use_facetracking; a preview never does."""
+    VideoProject.objects.filter(pk=clip.project_id).update(render_layout="active")
+    preview = make_preview(clip, status=ClipPreview.Status.PENDING)
+
+    with patch("apps.videos.services.layouts.pro.FaceTracker") as tracker:
+        result = svc.render_preview(preview.id)
+
+    assert result.status == ClipPreview.Status.READY, result.error_code
+    tracker.assert_not_called()
+
+
+def test_the_final_render_of_an_active_project_still_tracks(clip):
+    from apps.videos.services.render_engine import RenderEngine
+
+    project = VideoProject.objects.get(pk=clip.project_id)
+    project.render_layout = "active"
+    with patch("apps.videos.services.layouts.pro.FaceTracker") as tracker:
+        tracker.return_value.track_faces.return_value.tracks = []
+        original, final = RenderEngine.compose_clip(project, clip, project.source_file.path, 204, 360)
+        final.close()
+        original.close()
+
+    tracker.return_value.track_faces.assert_called_once()
+
+
 def test_a_preview_is_rendered_only_once(clip):
     preview = make_preview(clip, status=ClipPreview.Status.PENDING)
     with patch("apps.videos.services.render_engine.RenderEngine.compose_clip",

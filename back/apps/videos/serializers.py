@@ -5,6 +5,14 @@ from .services.ai.selection_criteria import (
     normalize_selection_criteria,
 )
 
+# What a raw boolean of the creation request may be to mean true (the same
+# strings DRF's BooleanField takes, 'on' included).
+_RAW_TRUE = {'true', '1', 't', 'y', 'yes', 'on'}
+
+
+def _raw_bool(value):
+    return str(value).strip().lower() in _RAW_TRUE
+
 class BrandKitSerializer(serializers.ModelSerializer):
     class Meta:
         model = BrandKit
@@ -119,7 +127,24 @@ class VideoProjectSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     'project_type': f"Para editar el video completo, el video puede durar hasta {_format_duration(limit)}.",
                 }, code='too_long')
+        if not self.instance:
+            self._layout_alias = self._validate_layout_alias(self.initial_data)
         return data
+
+    @staticmethod
+    def _validate_layout_alias(raw):
+        """
+        ``layout`` is a raw alias of ``render_layout`` (not a serializer field).
+        Empty (blank or null) counts as not sent; anything else must be a layout.
+        """
+        value = raw.get('layout') if hasattr(raw, 'get') else None
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if not isinstance(value, str) or value not in VideoProject.Layout.values:
+            raise serializers.ValidationError(
+                {'layout': f"Layout inválido. Opciones: {', '.join(VideoProject.Layout.values)}."}
+            )
+        return value
 
     def validate_aspect_ratio(self, value):
         from .services.ai.contracts import LEGACY_ASPECT_RATIOS
@@ -180,8 +205,9 @@ class VideoProjectSerializer(serializers.ModelSerializer):
             project.metadata['pte_prompt'] = prompt
             project.metadata['pte_explicit'] = explicit_config_fields(raw)
         if 'subtitle_size' in raw: project.metadata['subtitle_size'] = raw['subtitle_size']
+        layout_alias = getattr(self, '_layout_alias', None)
         if 'render_layout' in raw: project.render_layout = raw['render_layout']
-        elif 'layout' in raw: project.render_layout = raw['layout']
+        elif layout_alias: project.render_layout = layout_alias
         
         # New Layout Controls
         if 'gameplay_position' in raw: project.gameplay_position = raw['gameplay_position']
@@ -189,16 +215,22 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         if ('manual_camera_x' in raw): project.manual_camera_x = float(raw['manual_camera_x'])
         if ('manual_camera_y' in raw): project.manual_camera_y = float(raw['manual_camera_y'])
         if ('manual_camera_zoom' in raw): project.manual_camera_zoom = float(raw['manual_camera_zoom'])
-        if 'speaker_tracking' in raw: 
-            project.speaker_tracking = str(raw['speaker_tracking']).lower() in ['true', '1', 't', 'y', 'yes']
-        
+        if 'speaker_tracking' in raw:
+            project.speaker_tracking = _raw_bool(raw['speaker_tracking'])
+        # Following the speaker is the 'active' layout: without a layout of
+        # its own, a project that asks for it gets that layout.
+        if project.speaker_tracking and 'render_layout' not in raw and not layout_alias:
+            project.render_layout = VideoProject.Layout.ACTIVE
+            # That layout came from the request: a prompt layout must not replace it.
+            if 'pte_explicit' in project.metadata:
+                project.metadata['pte_explicit'] = sorted({*project.metadata['pte_explicit'], 'render_layout'})
+
         if 'auto_render_bypass' in raw:
-            project.auto_render_bypass = str(raw['auto_render_bypass']).lower() in ['true', '1', 't', 'y', 'yes']
+            project.auto_render_bypass = _raw_bool(raw['auto_render_bypass'])
 
         # Subtitle Controls
         if 'add_subtitles' in raw:
-            val = raw['add_subtitles']
-            project.add_subtitles = str(val).lower() in ['true', '1', 't', 'y', 'yes']
+            project.add_subtitles = _raw_bool(raw['add_subtitles'])
         
         if 'subtitle_color' in raw: project.subtitle_color = raw['subtitle_color']
         if 'subtitle_scale_factor' in raw: project.subtitle_scale_factor = float(raw['subtitle_scale_factor'])
@@ -206,11 +238,10 @@ class VideoProjectSerializer(serializers.ModelSerializer):
             
         # Face Tracking injection
         if 'use_facetracking' in raw:
-            val = raw['use_facetracking']
-            project.use_facetracking = str(val).lower() in ['true', '1', 't', 'y', 'yes']
+            project.use_facetracking = _raw_bool(raw['use_facetracking'])
 
         if 'remove_silences' in raw:
-            project.remove_silences = str(raw['remove_silences']).lower() in ['true', '1', 't', 'y', 'yes']
+            project.remove_silences = _raw_bool(raw['remove_silences'])
 
         # Read by the pricing right after this save, then by the SEO dispatch.
         if use_seo is not None: project.metadata['use_seo'] = use_seo

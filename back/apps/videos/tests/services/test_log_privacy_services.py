@@ -165,19 +165,3 @@ class ServiceLogTests(LogPrivacyAssertions, SimpleTestCase):
             tracker.generate_path(clip)
 
         self.assert_clean(logs)
-
-    def test_saliency_error_does_not_log_message(self):
-        from apps.videos.services.saliency_tracker import GameplaySaliencyDetector
-
-        class BrokenClip:
-            w = 100
-
-            @property
-            def size(self):
-                raise RuntimeError(SECRET)
-
-        detector = GameplaySaliencyDetector()
-        with capture_logs() as logs:
-            detector.find_best_x_center(BrokenClip())
-
-        self.assert_clean(logs)
