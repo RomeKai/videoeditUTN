@@ -378,7 +378,8 @@ def _stage_transcribe(project_id):
     from apps.videos.services.ai.rollout import v2_enabled_for
 
     project = VideoProject.objects.get(pk=project_id)
-    model_size = "base"
+    # Same size the worker preloads (WHISPER_PRELOAD), so the cached model is reused.
+    model_size = getattr(settings, 'WHISPER_LOCAL_MODEL_SIZE', 'base')
     # Per-project rollout (AICORE-9): decided once here and handed to the engine,
     # so the backend below is the one that runs.
     v2_enabled = v2_enabled_for(project)

@@ -180,6 +180,15 @@ AI_DEFAULT_TRANSCRIPTION_MODEL = env('AI_DEFAULT_TRANSCRIPTION_MODEL', default='
 # There is no automatic fallback between backends (ADR-008): Groq failures are
 # retried by Celery; 'local' loads openai-whisper and is meant for dev/rollback only.
 TRANSCRIPTION_BACKEND = env('TRANSCRIPTION_BACKEND', default='groq')
+
+# Local Whisper (legacy backend) on the worker (CORE-04).
+# TRANSCRIPTION_DEVICE: 'auto' uses CUDA when torch sees a GPU, else CPU; 'cpu' or
+# 'cuda' force it. fp16 inference is enabled only on CUDA.
+TRANSCRIPTION_DEVICE = env('TRANSCRIPTION_DEVICE', default='auto')
+# Load the local Whisper model once per worker process at startup (only when the
+# local backend is active), instead of on the first task that needs it.
+WHISPER_PRELOAD = env.bool('WHISPER_PRELOAD', default=True)
+WHISPER_LOCAL_MODEL_SIZE = env('WHISPER_LOCAL_MODEL_SIZE', default='base')
 # Prompt-to-Edit (PTE-01a): longest request sent to the parser; longer text is cut.
 AI_PROMPT_MAX_CHARS = env.int('AI_PROMPT_MAX_CHARS', default=1000)
 

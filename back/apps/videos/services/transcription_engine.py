@@ -20,9 +20,10 @@ clients are imported at module load time.
 
 import logging
 import os
+import threading
 import time
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -38,6 +39,85 @@ logger = logging.getLogger(__name__)
 class TranscriptionBackend(str, Enum):
     GROQ = "groq"
     LOCAL = "local"
+
+
+# ----------------------------------------------------------------------
+# Local Whisper model cache (CORE-04)
+# ----------------------------------------------------------------------
+# One model per (size, device) per worker process. Loading takes seconds to
+# minutes and up to ~3 GB, so it must not happen once per task. Worker
+# recycling (CELERY_WORKER_MAX_TASKS_PER_CHILD) bounds how long a process keeps it.
+_LOCAL_MODELS: Dict[Tuple[str, str], Any] = {}
+_LOCAL_MODELS_LOCK = threading.Lock()
+
+
+def resolve_local_device() -> str:
+    """
+    Device for local Whisper from ``TRANSCRIPTION_DEVICE``: 'auto' (default) picks
+    CUDA when torch sees a GPU, else CPU; 'cpu' / 'cuda' force it. A forced
+    'cuda' without a GPU falls back to CPU with a warning instead of crashing.
+    Apple MPS is not used: openai-whisper is unreliable on it.
+    """
+    requested = str(getattr(settings, "TRANSCRIPTION_DEVICE", "auto") or "auto").strip().lower()
+    if requested == "cpu":
+        return "cpu"
+    if requested not in ("auto", "cuda"):
+        raise ImproperlyConfigured(
+            f"TRANSCRIPTION_DEVICE must be 'auto', 'cpu' or 'cuda', got {requested!r}"
+        )
+
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda"
+    if requested == "cuda":
+        logger.warning("transcription.cuda_unavailable falling back to cpu")
+    return "cpu"
+
+
+def load_local_model(model_size: str) -> Tuple[Any, str]:
+    """Returns ``(model, device)``, loading the model only once per process."""
+    device = resolve_local_device()
+    key = (model_size, device)
+    model = _LOCAL_MODELS.get(key)
+    if model is not None:
+        return model, device
+    with _LOCAL_MODELS_LOCK:
+        model = _LOCAL_MODELS.get(key)
+        if model is None:
+            import whisper
+
+            started = time.monotonic()
+            model = whisper.load_model(model_size, device=device)
+            _LOCAL_MODELS[key] = model
+            logger.info(
+                "transcription.local_model_loaded size=%s device=%s duration_s=%.3f",
+                model_size,
+                device,
+                time.monotonic() - started,
+                extra={"model_size": model_size, "device": device},
+            )
+    return model, device
+
+
+def preload_local_model() -> bool:
+    """
+    Loads the local Whisper model at worker process start (``worker_process_init``)
+    when ``WHISPER_PRELOAD`` is on and the local backend is the active one.
+    Never raises: a failed preload only means the first task loads the model.
+    Returns True when a model was loaded or was already cached.
+    """
+    if not getattr(settings, "WHISPER_PRELOAD", True):
+        return False
+    try:
+        if TranscriptionEngine.resolve_backend() is not TranscriptionBackend.LOCAL:
+            return False
+        size = getattr(settings, "WHISPER_LOCAL_MODEL_SIZE", "base")
+        load_local_model(size)
+        return True
+    except Exception as exc:  # pragma: no cover - logged, never fatal for the worker
+        logger.warning("transcription.preload_failed error=%s", type(exc).__name__)
+        return False
 
 
 class TranscriptionEngine:
@@ -69,6 +149,7 @@ class TranscriptionEngine:
         """
         self.model_size = model_size
         self._model = None
+        self._device: Optional[str] = None
         self._groq_provider_factory = groq_provider_factory
         self._preprocessor_factory = preprocessor_factory
         self._v2_enabled = v2_enabled
@@ -213,22 +294,13 @@ class TranscriptionEngine:
     @property
     def model(self):
         """
-        Lazy-loads the local Whisper model (~75 MB to ~3 GB). whisper/torch are
-        imported here, never at module import, so the Groq path and the web
-        container do not pay their memory cost.
+        Local Whisper model (~75 MB to ~3 GB), shared by every engine of the
+        worker process (``load_local_model``). whisper/torch are imported there,
+        never at module import, so the Groq path and the web container do not
+        pay their memory cost.
         """
         if self._model is None:
-            import torch
-            import whisper
-
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            logger.info(
-                "transcription.local_model_loading size=%s device=%s",
-                self.model_size,
-                device,
-                extra={"model_size": self.model_size, "device": device},
-            )
-            self._model = whisper.load_model(self.model_size, device=device)
+            self._model, self._device = load_local_model(self.model_size)
         return self._model
 
     def _transcribe_local_raw(self, audio_path: str, word_timestamps: bool) -> Dict[str, Any]:
@@ -237,8 +309,11 @@ class TranscriptionEngine:
             self.model_size,
             extra={"backend": TranscriptionBackend.LOCAL.value, "model_size": self.model_size},
         )
-        # fp16=False is required for CPU inference; on CUDA it only costs some speed.
-        return self.model.transcribe(audio_path, fp16=False, word_timestamps=word_timestamps)
+        model = self.model
+        # fp16 halves GPU inference time; on CPU it is unsupported (Whisper would
+        # warn and fall back to fp32), so it is only requested on CUDA.
+        fp16 = self._device == "cuda"
+        return model.transcribe(audio_path, fp16=fp16, word_timestamps=word_timestamps)
 
     def _local_to_execution_result(
         self, raw: Dict[str, Any], latency: float
