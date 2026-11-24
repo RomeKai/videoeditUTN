@@ -149,9 +149,13 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         if ('manual_camera_x' in raw): project.manual_camera_x = float(raw['manual_camera_x'])
         if ('manual_camera_y' in raw): project.manual_camera_y = float(raw['manual_camera_y'])
         if ('manual_camera_zoom' in raw): project.manual_camera_zoom = float(raw['manual_camera_zoom'])
-        if 'speaker_tracking' in raw: 
+        if 'speaker_tracking' in raw:
             project.speaker_tracking = str(raw['speaker_tracking']).lower() in ['true', '1', 't', 'y', 'yes']
-        
+        # Following the speaker is the 'active' layout: without a layout of
+        # its own, a project that asks for it gets that layout.
+        if project.speaker_tracking and 'render_layout' not in raw and 'layout' not in raw:
+            project.render_layout = VideoProject.Layout.ACTIVE
+
         if 'auto_render_bypass' in raw:
             project.auto_render_bypass = str(raw['auto_render_bypass']).lower() in ['true', '1', 't', 'y', 'yes']
 
