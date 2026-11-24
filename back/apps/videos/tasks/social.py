@@ -119,11 +119,15 @@ def upload_to_social_network(self, post_id):
     3. Ayrshare delegation with User Profile Key.
     4. Exponential Backoff on failure.
     """
-    from apps.integrations.ayrshare_api import AyrshareClient, AyrshareAPIError
+    from apps.integrations.ayrshare_api import (
+        AyrshareAPIError, AyrshareClient, AyrshareOutcomeUnknownError,
+    )
     from apps.videos.services.storage_service import CloudflareR2Manager
 
     lock_id = f"lock_post_publish_{post_id}"
-    if not cache.add(lock_id, "locked", 300):
+    # Outlives the slowest Ayrshare call (read timeout) plus the rest of the task,
+    # so a second delivery cannot start while the first one is still sending.
+    if not cache.add(lock_id, "locked", AyrshareClient.TIMEOUT_SECONDS[1] + 300):
         logger.warning(f"🔒 [WORKER] Aborting post {post_id}: Already running.")
         return "Locked"
 
@@ -214,6 +218,15 @@ def upload_to_social_network(self, post_id):
 
         # Backoff: 60s, 120s, 240s... (TD-04: replaces the fixed 60s countdown)
         raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+
+    except AyrshareOutcomeUnknownError as exc:
+        # Never retried: the post may already be public. A person checks and retries.
+        logger.error("⚠️ [WORKER] Ayrshare outcome unknown for post %s", post_id)
+        ScheduledPost.objects.filter(id=post_id).update(
+            status=ScheduledPost.Status.FAILED,
+            error_log=str(exc),
+        )
+        raise
 
     except PostConfigurationError:
         # Already persisted as FAILED above; deterministic, so never retried.

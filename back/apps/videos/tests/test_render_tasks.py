@@ -245,6 +245,40 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
         self.assertEqual(self.post.retry_count, upload_to_social_network.max_retries + 1)
         self.assertIn("Failed after 4 attempts", self.post.error_log)
 
+    def test_a_read_timeout_is_never_retried(self):
+        # The request was sent: retrying could publish the clip twice.
+        import requests
+
+        with patch(
+            "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
+            return_value="https://r2/clip.mp4",
+        ), patch(
+            "apps.integrations.ayrshare_api.requests.post",
+            side_effect=requests.exceptions.ReadTimeout("read timed out"),
+        ) as post:
+            result = upload_to_social_network.apply(args=[str(self.post.id)])
+
+        self.post.refresh_from_db()
+        self.assertTrue(result.failed())
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
+        self.assertIn("may have been published", self.post.error_log)
+
+    def test_a_connect_timeout_is_retried(self):
+        # Nothing reached Ayrshare: safe to send again.
+        import requests
+
+        with patch(
+            "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
+            return_value="https://r2/clip.mp4",
+        ), patch(
+            "apps.integrations.ayrshare_api.requests.post",
+            side_effect=requests.exceptions.ConnectTimeout("connect timed out"),
+        ) as post:
+            upload_to_social_network.apply(args=[str(self.post.id)])
+
+        self.assertEqual(post.call_count, upload_to_social_network.max_retries + 1)
+
     def test_ayrshare_requests_have_a_timeout(self):
         from apps.integrations.ayrshare_api import AyrshareClient
 

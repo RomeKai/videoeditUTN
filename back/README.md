@@ -66,7 +66,7 @@ To launch the complete system, utilize three separate terminal sessions:
 
 2. **Celery Worker (Video Processing):**
    ```bash
-   celery -A backend worker --loglevel=info -P solo
+   celery -A backend worker --loglevel=info -P solo -Q celery,render
    ```
 
 3. **Infrastructure Services (Docker):**

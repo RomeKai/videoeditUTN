@@ -204,7 +204,7 @@ Todos son estáticos: nunca llevan texto del proveedor, del usuario ni del model
 | Workspace sin `ayrshare_profile_key` | `FAILED` con `Error: Ayrshare Profile Key not configured in workspace.` y `PostConfigurationError`, sin reintento. | `upload_to_social_network` |
 | Clip sin `s3_object_key` u otro error inesperado | `FAILED` con `Critical: <mensaje>` y la excepción se relanza. | `upload_to_social_network` |
 | `AyrshareAPIError` | `retry_count` + 1, `error_log` `Retry N: <mensaje>`, reintento a 60, 120 y 240 s (`max_retries=3`). Al agotarse, el post pasa a `FAILED` con `error_log` `Failed after N attempts: <mensaje>` y la excepción se propaga. | `upload_to_social_network` |
-| Ayrshare no responde | `requests.post` usa `timeout=AyrshareClient.TIMEOUT_SECONDS` (10 s para conectar, 120 s para leer). Un corte o timeout es `AyrshareAPIError` y se reintenta como arriba. | `AyrshareClient.send_post` |
+| Ayrshare no responde | `requests.post` usa `timeout=AyrshareClient.TIMEOUT_SECONDS` (10 s para conectar, 300 s para leer). Si no conecta, es `AyrshareAPIError` y se reintenta como arriba. Si conectó pero no contestó a tiempo (`ReadTimeout`), es `AyrshareOutcomeUnknownError`: el post queda `FAILED` sin reintento automático, porque pudo haberse publicado y reintentar lo duplicaría. El lock del post dura el timeout de lectura más 300 s. | `AyrshareClient.send_post`, `upload_to_social_network` |
 
 ## Datos que escribe
 

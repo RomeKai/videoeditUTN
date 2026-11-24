@@ -9,6 +9,14 @@ class AyrshareAPIError(Exception):
     """Exception raised when the Ayrshare API returns an error."""
     pass
 
+
+class AyrshareOutcomeUnknownError(Exception):
+    """
+    The request reached Ayrshare but no answer came back in time: the post may
+    or may not have gone out. Not an AyrshareAPIError on purpose, so it is never
+    retried automatically (a retry could publish the same clip twice).
+    """
+
 class AyrshareClient:
     """
     Official API Client for Ayrshare.
@@ -18,8 +26,9 @@ class AyrshareClient:
     BASE_URL = "https://app.ayrshare.com/api"
     # (connect, read) seconds. Ayrshare fetches the video from our URL inside
     # the request, so the read limit is generous; without one a stalled
-    # connection held the worker forever.
-    TIMEOUT_SECONDS = (10, 120)
+    # connection held the worker forever. A connect timeout sent nothing and is
+    # retried; a read timeout is AyrshareOutcomeUnknownError.
+    TIMEOUT_SECONDS = (10, 300)
 
     @classmethod
     def get_headers(cls):
@@ -64,6 +73,12 @@ class AyrshareClient:
             logger.info(f"✅ [AYRSHARE] Success! External ID: {result.get('id')}")
             return result
 
+        except requests.exceptions.ReadTimeout as e:
+            logger.error("❌ [AYRSHARE] No answer in time: %s", type(e).__name__)
+            raise AyrshareOutcomeUnknownError(
+                "Ayrshare did not answer in time; the post may have been published. "
+                "Check the network before publishing it again."
+            ) from e
         except requests.exceptions.RequestException as e:
             logger.error(f"❌ [AYRSHARE] Connection Error: {e}")
             raise AyrshareAPIError(f"Connection failed: {e}")
