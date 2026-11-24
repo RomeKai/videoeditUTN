@@ -180,6 +180,15 @@ class SelectionAttemptsTests(unittest.TestCase):
 
 
 class TranscriptionPartialUsageTests(unittest.TestCase):
+    # A failing chunk is tried three times by the provider (two retries for a
+    # 5xx or a connection error): the failures below repeat for every attempt.
+    ATTEMPTS = 3
+
+    def setUp(self):
+        sleep = patch("apps.videos.services.ai.groq_transcription.time.sleep")
+        sleep.start()
+        self.addCleanup(sleep.stop)
+
     def _provider(self, side_effect):
         client = MagicMock()
         client.audio.transcriptions.create.side_effect = side_effect
@@ -200,7 +209,7 @@ class TranscriptionPartialUsageTests(unittest.TestCase):
 
     def test_failure_after_billed_chunks_attaches_their_cost_and_audio(self):
         provider = self._provider(
-            [self._response(_fake_groq_response()), AIServerError("down")]
+            [self._response(_fake_groq_response())] + [AIServerError("down")] * self.ATTEMPTS
         )
 
         with patch("builtins.open", mock_open(read_data=b"audio")):
@@ -220,7 +229,7 @@ class TranscriptionPartialUsageTests(unittest.TestCase):
         self.assertGreaterEqual(partial.duration_seconds, 0.0)
 
     def test_first_chunk_failing_has_nothing_billed_to_attach(self):
-        provider = self._provider([AIServerError("down")])
+        provider = self._provider([AIServerError("down")] * self.ATTEMPTS)
 
         with patch("builtins.open", mock_open(read_data=b"audio")):
             with self.assertRaises(AIServerError) as ctx:
@@ -256,7 +265,9 @@ class TranscriptionPartialUsageTests(unittest.TestCase):
             (APIConnectionError("reset"), AIConnectionError),
         ):
             with self.subTest(error=expected.__name__):
-                provider = self._provider([self._response(_fake_groq_response()), sdk_error])
+                provider = self._provider(
+                    [self._response(_fake_groq_response())] + [sdk_error] * self.ATTEMPTS
+                )
 
                 with patch("builtins.open", mock_open(read_data=b"audio")):
                     with self.assertRaises(expected) as ctx:
