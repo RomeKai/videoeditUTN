@@ -91,7 +91,13 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         # The criterion only applies when the project is created (ingestion starts then).
         validated_data.pop('selection_criteria', None)
         validated_data.pop('use_seo', None)  # charged at creation only
-        return super().update(instance, validated_data)
+        instance = super().update(instance, validated_data)
+        source_media = getattr(self, '_source_media', None)
+        if source_media is not None and 'source_file' in validated_data:
+            # A replaced file: never keep what was measured for the previous one.
+            instance.metadata = {**(instance.metadata or {}), 'source_media': source_media.as_metadata()}
+            instance.save(update_fields=['metadata'])
+        return instance
 
     def create(self, validated_data):
         criteria = normalize_selection_criteria(validated_data.pop('selection_criteria', None))

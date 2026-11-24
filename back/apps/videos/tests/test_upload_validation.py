@@ -153,3 +153,131 @@ class TestCreateEndpoint:
         txn = Transaction.objects.get(pk=project.metadata["reservation_id"])
         assert txn.amount == Decimal("1.00")  # 2 s x 0.5 tokens, no plan
         ingest.assert_called_once()
+
+
+# -- review regressions -------------------------------------------------------
+
+@pytest.fixture
+def http_probe():
+    """A local HTTP server that records every request (an SSRF would hit it)."""
+    import http.server
+    import socketserver
+    import threading
+
+    hits = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append(self.path)
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield server.server_address[1], hits
+    server.shutdown()
+    server.server_close()
+
+
+def dash_manifest(port):
+    # "<!--" + "wide" at offset 4: libmagic says video/quicktime, ffmpeg says DASH.
+    return (
+        '<!--wide--><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" '
+        'mediaPresentationDuration="PT10S" minBufferTime="PT1S" '
+        'profiles="urn:mpeg:dash:profile:isoff-on-demand:2011"><Period>'
+        '<AdaptationSet mimeType="video/mp4"><Representation id="1" bandwidth="1000" '
+        'width="640" height="360" codecs="avc1.4d401e">'
+        f'<BaseURL>http://127.0.0.1:{port}/internal</BaseURL><SegmentBase indexRange="0-100"/>'
+        '</Representation></AdaptationSet></Period></MPD>'
+    ).encode()
+
+
+class TestReviewRegressions:
+    def test_a_dash_manifest_disguised_as_video_is_rejected_without_any_request(self, http_probe):
+        import time
+
+        port, hits = http_probe
+        assert code_of(SimpleUploadedFile("video.mp4", dash_manifest(port))) == "not_a_video"
+        time.sleep(0.2)
+        assert hits == []
+
+    def test_a_manifest_hidden_after_a_real_video_header_is_rejected(self, synthetic_video_path, http_probe):
+        port, hits = http_probe
+        data = open(synthetic_video_path, "rb").read()
+        # Defense in depth: the manifest text is refused even inside an otherwise real
+        # video, since the pipeline's own ffmpeg calls pick their demuxer by content.
+        polyglot = data[:64] + dash_manifest(port).lower() + data[64:]
+        assert code_of(SimpleUploadedFile("video.mp4", polyglot)) == "not_a_video"
+        assert hits == []
+
+    def test_ffprobe_runs_with_the_container_demuxer_local_files_only_and_a_timeout(self, synthetic_video_path):
+        real_run = subprocess.run
+        calls = []
+
+        def spy(args, **kwargs):
+            calls.append((list(args), kwargs))
+            return real_run(args, **kwargs)
+
+        with patch("subprocess.run", side_effect=spy):
+            validate_upload(upload_of(synthetic_video_path))
+        args, kwargs = calls[0]
+        assert args[args.index("-f") + 1] == "mov"
+        assert args[args.index("-protocol_whitelist") + 1] == "file"
+        assert kwargs["timeout"] == 60
+
+    @pytest.mark.parametrize("brand", [b"CAEP", b"3gp5", b"MQT "])
+    def test_real_camera_brands_are_accepted(self, synthetic_video_path, brand):
+        data = bytearray(open(synthetic_video_path, "rb").read())
+        assert data[4:8] == b"ftyp"
+        data[8:12] = brand  # major brand
+        info = validate_upload(SimpleUploadedFile("camera.mp4", bytes(data)))
+        assert (info.width, info.height) == (640, 360)
+
+    def test_a_mov_that_starts_with_a_free_box_is_accepted(self, synthetic_video_path):
+        data = open(synthetic_video_path, "rb").read()
+        free_box = (16).to_bytes(4, "big") + b"free" + b"\x00" * 8
+        info = validate_upload(SimpleUploadedFile("camera.mov", free_box + data))
+        assert info.width == 640
+
+    def test_the_main_picture_is_measured_not_a_small_first_track(self, media_dir, synthetic_video_path):
+        path = media_dir / "two_tracks.mp4"
+        _ffmpeg(
+            "-f", "lavfi", "-i", "testsrc=duration=1:size=160x120:rate=10",
+            "-i", str(synthetic_video_path),
+            "-map", "0:v", "-map", "1:v", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-shortest", str(path),
+        )
+        info = validate_upload(upload_of(path))
+        assert (info.width, info.height) == (640, 360)
+
+
+@pytest.mark.django_db
+class TestReplaceSourceFile(TestCreateEndpoint):
+    def test_replacing_the_file_replaces_what_was_measured(self, api, synthetic_video_path, media_dir):
+        response, _ = self.post(api, upload_of(synthetic_video_path))
+        assert response.status_code == 201
+        other = media_dir / "other.mp4"
+        _ffmpeg(
+            "-f", "lavfi", "-i", "testsrc=duration=3:size=426x240:rate=10",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(other),
+        )
+
+        patched = api.patch(
+            reverse("project-detail", args=[response.data["id"]]),
+            {"source_file": upload_of(other)}, format="multipart",
+        )
+
+        assert patched.status_code == 200, patched.content[:300]
+        media = VideoProject.objects.get(pk=response.data["id"]).metadata["source_media"]
+        assert (media["width"], media["height"]) == (426, 240)
+        assert media["duration_s"] == pytest.approx(3.0, abs=0.2)
+
+    def test_replacing_with_a_fake_video_is_rejected(self, api, synthetic_video_path):
+        response, _ = self.post(api, upload_of(synthetic_video_path))
+        patched = api.patch(
+            reverse("project-detail", args=[response.data["id"]]),
+            {"source_file": SimpleUploadedFile("v.mp4", b"nope" * 100)}, format="multipart",
+        )
+        assert patched.status_code == 400

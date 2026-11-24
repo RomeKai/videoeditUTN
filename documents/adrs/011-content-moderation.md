@@ -123,13 +123,17 @@ Medir, sin guardar texto: tasa de contenido marcado, tasa de errores de la API p
 
 **Validación del upload (implementada).** Antes de guardar o cobrar un proyecto subido como archivo, `media_validation.validate_upload` comprueba que los bytes sean realmente un video procesable:
 
-- El tipo se detecta con libmagic sobre el contenido. El nombre y el header del cliente no cuentan. Solo pasan MP4, MOV y AVI.
-- `ffprobe` (con un timeout de 60 s) tiene que encontrar una pista de video, una duración y un tamaño. La duración y el tamaño deben quedar dentro de los límites del pipeline:
+- El tipo se detecta con libmagic sobre el contenido. El nombre y el header del cliente no cuentan. Pasan MP4, MOV, AVI y 3GPP. También pasan los archivos de cámara que libmagic no reconoce (marca `CAEP` de Canon, MOV que empiezan con una caja `free` o `wide`) si tienen una caja ISO/QuickTime en el byte 4.
+- **Playlists disfrazadas.** ffmpeg elige el demuxer por contenido: un manifiesto DASH dentro de un archivo que libmagic llama `video/quicktime` hacía que `ffprobe` pidiera las URLs del manifiesto desde el servidor (SSRF). Por eso:
+  - Se rechaza cualquier archivo cuya ventana de probe (5 MB) contenga un manifiesto DASH, o que empiece como playlist HLS o concat. Esto también protege a las llamadas de ffmpeg y MoviePy del pipeline, que detectan el formato solas.
+  - `ffprobe` corre con el demuxer del contenedor forzado (`-f mov` o `-f avi`) y `-protocol_whitelist file`. La whitelist sola no alcanza: el demuxer DASH de ffmpeg 6.1 igual hace el pedido HTTP.
+- `ffprobe` (con un timeout de 60 s) tiene que encontrar una pista de video (se mide la más grande, no la primera), una duración y un tamaño. La duración y el tamaño deben quedar dentro de los límites del pipeline:
   - `AI_UPLOAD_MAX_DURATION_SECONDS`: 3 h por defecto.
   - `AI_UPLOAD_MAX_LONG_SIDE_PX`: 4096 por defecto.
   - `AI_UPLOAD_MIN_SHORT_SIDE_PX`: 240 por defecto.
 - Los límites del plan (duración y resolución del render) siguen en `PricingEngine`. Ahora `PricingEngine` usa la duración medida acá y ya no decodifica el video otra vez con MoviePy.
 - Un rechazo devuelve 400 con un mensaje fijo y deja un log con un código estático. Ni el nombre del archivo ni la salida de `ffprobe` llegan al log ni a la respuesta.
+- Reemplazar el archivo con un PATCH pasa por la misma validación y actualiza `source_media`. Un PATCH no vuelve a cobrar: ese hueco ya existía y queda anotado para el par de producto.
 
 **Registro de auditoría con prompt y respuesta (descartado).** El backlog original pedía un `AIAuditLog` que guardara el prompt, la respuesta y los tiempos de cada llamada. No se implementa, porque choca con la regla de privacidad de este ADR y de ADR-012: no se persiste texto del usuario ni salidas crudas del modelo. La auditoría queda cubierta sin texto por:
 
