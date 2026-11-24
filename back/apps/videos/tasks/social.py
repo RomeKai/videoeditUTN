@@ -198,9 +198,18 @@ def upload_to_social_network(self, post_id):
         # Resilience: Exponential Backoff for 3rd party instability
         logger.error("⚠️ [WORKER] Ayrshare API Error: %s", type(exc).__name__)
         # Updated by id: `post` may not be bound if the failure happened before the fetch.
+        attempts = self.request.retries + 1
+        if self.request.retries >= self.max_retries:
+            # Out of retries: FAILED, never left in PROCESSING with no task behind it.
+            ScheduledPost.objects.filter(id=post_id).update(
+                status=ScheduledPost.Status.FAILED,
+                retry_count=F('retry_count') + 1,
+                error_log=f"Failed after {attempts} attempts: {str(exc)}",
+            )
+            raise
         ScheduledPost.objects.filter(id=post_id).update(
             retry_count=F('retry_count') + 1,
-            error_log=f"Retry {self.request.retries + 1}: {str(exc)}",
+            error_log=f"Retry {attempts}: {str(exc)}",
         )
 
         # Backoff: 60s, 120s, 240s... (TD-04: replaces the fixed 60s countdown)

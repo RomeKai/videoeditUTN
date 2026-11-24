@@ -227,7 +227,7 @@ Parámetros del constructor de `SpeakerTrackingEngine` (sin settings, se ajustan
 
 | Setting | Default | Efecto |
 |---------|---------|--------|
-| `CELERY_TASK_ROUTES` | `render_clip_task` → cola `render` | Separa los renders de la ingesta. El worker tiene que consumir `-Q celery,render`. |
+| `CELERY_TASK_ROUTES` | `render_clip_task` y `render_video_segments` → cola `render` | Separa los renders de la ingesta. El worker tiene que consumir `-Q celery,render`. |
 | `CELERY_VISIBILITY_TIMEOUT` | `14400` (4 h) | Cuándo Redis re-entrega un render sin ack (worker muerto). |
 | `AI_CORE_V2_ENABLED`, `AI_CORE_V2_ALLOWLIST` | `False`, `[]` | Deciden con `v2_enabled_for` el backend de la transcripción de respaldo de subtítulos. |
 | `TRANSCRIPTION_BACKEND` | `'groq'` | Backend de esa transcripción cuando V2 está habilitado. |

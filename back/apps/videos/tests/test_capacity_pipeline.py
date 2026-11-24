@@ -673,6 +673,18 @@ class CapacityReviewRegressionTests(CapacityHarness, TestCase):
         self.assertEqual(self.mock_select.call_count, 1)
         self.assertEqual(self.requeue.call_args.kwargs["retries"], 1)
 
+    def test_the_prompt_parse_count_survives_a_capacity_wait(self):
+        # Without it, every capacity wait gave the parser a fresh retry budget.
+        project = self.make_project()
+        self.store.denials = [30.0]
+
+        from apps.videos.tasks import process_initial_ingestion
+
+        process_initial_ingestion.apply(args=[str(project.id)], kwargs={"parse_retries": 2})
+
+        self.requeue.assert_called_once()
+        self.assertEqual(self.requeue.call_args.kwargs["kwargs"], {"parse_retries": 2})
+
     def test_an_error_while_parking_is_retried_not_left_pending(self):
         project = self.make_project()
         self.store.denials = [5.0]

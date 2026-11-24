@@ -253,7 +253,7 @@ Pasos de la habilitación gradual y del rollback: [runbook §5.3](../runbooks/ai
 | Espera vencida en la ingesta | `CapacityTimeoutError` como fallo final y reembolso de tokens si no hay clips. Una cuota diaria agotada vence enseguida | `_wait_for_capacity` |
 | Espera vencida en el lector de prompts | El proyecto sigue con su configuración: `metadata['pte']` queda con `status='failed'` y `error_code='CapacityTimeoutError'` | `_run_ingestion` |
 | Espera vencida en SEO | Post `FAILED` con `error_log='capacity_timeout'` | `_seo_wait_for_capacity` |
-| Re-encolado por capacidad | Conserva el contador de Celery (`retries`). No pasa `lock_retries` ni `parse_retries`, que vuelven a 0 | `_wait_for_capacity` |
+| Re-encolado por capacidad | Conserva el contador de Celery (`retries`) y `parse_retries`. `lock_retries` vuelve a 0 porque el lock ya se había tomado | `_wait_for_capacity` |
 | Espera vieja tras un re-despacho manual | `_is_current_wait` la descarta y empieza otra | [tasks/shared.py](../../back/apps/videos/tasks/shared.py) |
 | Timeout o conexión cortada | Costo `NULL` en la fila y la reserva de capacidad se conserva: pudo haberse cobrado | `failure_usage`, `_selection_failure_usage`, `_audio_usage` |
 | Falla escribir un `AIUsageRecord` | `metrics.write_failed` con el nombre de la clase. La etapa sigue | `record_usages` |
@@ -307,7 +307,7 @@ Todos los settings de IA de [settings/base.py](../../back/backend/settings/base.
 | `CELERY_BROKER_TRANSPORT_OPTIONS['visibility_timeout']` (variable `CELERY_VISIBILITY_TIMEOUT`) | `14400` | Tiempo tras el cual Redis reentrega una tarea sin ack. Mayor que el lock y que la etapa más larga |
 | `PIPELINE_SOFT_TIME_LIMIT` | `7200` | Soft time limit de `process_initial_ingestion`: falla con `SoftTimeLimitExceeded` y libera el lock |
 | `PIPELINE_TIME_LIMIT` | `PIPELINE_SOFT_TIME_LIMIT + 300` | Hard time limit: mata al worker que ignoró el soft |
-| `CELERY_TASK_ROUTES` | `render_clip_task` a la cola `render` | Fijo en código. El resto va a la cola `celery` |
+| `CELERY_TASK_ROUTES` | `render_clip_task` y `render_video_segments` a la cola `render` | Fijo en código. El resto va a la cola `celery` |
 | `CELERY_WORKER_PREFETCH_MULTIPLIER` | `1` | Fijo en código. Un worker solo reserva la tarea que corre |
 | `AI_CAPACITY_ENABLED` | `False` | Prende los buckets de capacidad |
 | `AI_CAPACITY_LIMITS` | `{}` | JSON `{"<modelo>": {"<recurso>_per_<ventana>": límite}}`, por debajo del límite del proveedor |

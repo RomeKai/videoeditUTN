@@ -531,8 +531,20 @@ class ConcurrencyTests(IngestionHarness, TestCase):
         call = requeue.call_args.kwargs
         self.assertEqual(call["countdown"], PIPELINE_LOCK_RETRY_SECONDS)
         self.assertLessEqual(PIPELINE_LOCK_RETRY_SECONDS, 60)
-        self.assertEqual(call["kwargs"], {"lock_retries": 3})
+        self.assertEqual(call["kwargs"], {"lock_retries": 3, "parse_retries": 0})
         self.assertEqual(call["retries"], 3)  # the error budget is not touched
+
+    def test_lock_retries_keep_the_prompt_parse_count(self):
+        # A busy lock must not refill the parser's own retry budget.
+        project = self.make_project()
+        self.redis.lock(f"lock:pipeline:project:{project.id}").acquire()
+
+        with patch.object(process_initial_ingestion, "apply_async") as requeue:
+            process_initial_ingestion.apply(
+                args=[str(project.id)], kwargs={"lock_retries": 0, "parse_retries": 2}
+            )
+
+        self.assertEqual(requeue.call_args.kwargs["kwargs"], {"lock_retries": 1, "parse_retries": 2})
 
     def test_lock_contention_does_not_spend_the_error_retries(self):
         # Before AICORE-18, 3 busy-lock deliveries left only 2 of the 5 error

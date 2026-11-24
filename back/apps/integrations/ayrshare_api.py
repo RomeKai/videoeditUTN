@@ -16,6 +16,10 @@ class AyrshareClient:
     """
     
     BASE_URL = "https://app.ayrshare.com/api"
+    # (connect, read) seconds. Ayrshare fetches the video from our URL inside
+    # the request, so the read limit is generous; without one a stalled
+    # connection held the worker forever.
+    TIMEOUT_SECONDS = (10, 120)
 
     @classmethod
     def get_headers(cls):
@@ -46,7 +50,9 @@ class AyrshareClient:
         
         try:
             logger.info(f"📤 [AYRSHARE] Sending post to platforms: {platforms}...")
-            response = requests.post(endpoint, json=payload, headers=cls.get_headers())
+            response = requests.post(
+                endpoint, json=payload, headers=cls.get_headers(), timeout=cls.TIMEOUT_SECONDS
+            )
             
             # Handle HTTP Errors
             if response.status_code >= 400:

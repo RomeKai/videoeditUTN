@@ -29,7 +29,7 @@ stateDiagram-v2
     QUEUED --> FAILED : sin ayrshare_profile_key
     PROCESSING --> PROCESSING : AyrshareAPIError con backoff
     PROCESSING --> PUBLISHED : Ayrshare responde OK
-    PROCESSING --> FAILED : error crítico
+    PROCESSING --> FAILED : error crítico o reintentos agotados
     DRAFT --> FAILED : fallo SEO sin caption previo
     SCHEDULED --> FAILED : fallo SEO sin caption previo
     QUEUED --> FAILED : fallo SEO sin caption previo
@@ -203,8 +203,8 @@ Todos son estáticos: nunca llevan texto del proveedor, del usuario ni del model
 | Post con `publish_at` ya pasado | Queda fuera de la ventana `[ahora, ahora + 1 h]` y no se despacha. | `dispatch_scheduled_posts_batch` |
 | Workspace sin `ayrshare_profile_key` | `FAILED` con `Error: Ayrshare Profile Key not configured in workspace.` y `PostConfigurationError`, sin reintento. | `upload_to_social_network` |
 | Clip sin `s3_object_key` u otro error inesperado | `FAILED` con `Critical: <mensaje>` y la excepción se relanza. | `upload_to_social_network` |
-| `AyrshareAPIError` | `retry_count` + 1, `error_log` `Retry N: <mensaje>`, reintento a 60, 120 y 240 s (`max_retries=3`). Al agotarse, la excepción se propaga y el post queda en `PROCESSING`: el handler no lo pasa a `FAILED`. | `upload_to_social_network` |
-| Ayrshare no responde | `requests.post` se llama sin `timeout`: la tarea espera hasta que la conexión se corte. | `AyrshareClient.send_post` |
+| `AyrshareAPIError` | `retry_count` + 1, `error_log` `Retry N: <mensaje>`, reintento a 60, 120 y 240 s (`max_retries=3`). Al agotarse, el post pasa a `FAILED` con `error_log` `Failed after N attempts: <mensaje>` y la excepción se propaga. | `upload_to_social_network` |
+| Ayrshare no responde | `requests.post` usa `timeout=AyrshareClient.TIMEOUT_SECONDS` (10 s para conectar, 120 s para leer). Un corte o timeout es `AyrshareAPIError` y se reintenta como arriba. | `AyrshareClient.send_post` |
 
 ## Datos que escribe
 

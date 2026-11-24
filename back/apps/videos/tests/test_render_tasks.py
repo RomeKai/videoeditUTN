@@ -174,6 +174,9 @@ class RenderClipTaskTests(RenderHarness, TestCase):
             router.route({}, "apps.videos.tasks.render_clip_task")["queue"].name, "render"
         )
         self.assertEqual(
+            router.route({}, "apps.videos.tasks.render_video_segments")["queue"].name, "render"
+        )
+        self.assertEqual(
             router.route({}, "apps.videos.tasks.process_initial_ingestion")["queue"].name, "celery"
         )
 
@@ -221,6 +224,36 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
         self.assertTrue(result.failed())
         self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
         self.assertIn("r2 down", self.post.error_log)
+
+    def test_ayrshare_errors_until_out_of_retries_fail_the_post(self):
+        # Before, the last retry re-raised and the post stayed in PROCESSING forever.
+        from apps.integrations.ayrshare_api import AyrshareAPIError
+
+        with patch(
+            "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
+            return_value="https://r2/clip.mp4",
+        ), patch(
+            "apps.integrations.ayrshare_api.AyrshareClient.send_post",
+            side_effect=AyrshareAPIError("Ayrshare error: rate limited"),
+        ) as send:
+            result = upload_to_social_network.apply(args=[str(self.post.id)])
+
+        self.post.refresh_from_db()
+        self.assertTrue(result.failed())
+        self.assertEqual(send.call_count, upload_to_social_network.max_retries + 1)
+        self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
+        self.assertEqual(self.post.retry_count, upload_to_social_network.max_retries + 1)
+        self.assertIn("Failed after 4 attempts", self.post.error_log)
+
+    def test_ayrshare_requests_have_a_timeout(self):
+        from apps.integrations.ayrshare_api import AyrshareClient
+
+        with patch("apps.integrations.ayrshare_api.requests.post") as post:
+            post.return_value.status_code = 200
+            post.return_value.json.return_value = {"id": "x"}
+            AyrshareClient.send_post("key", "https://r2/clip.mp4", "caption", ["tiktok"])
+
+        self.assertEqual(post.call_args.kwargs["timeout"], AyrshareClient.TIMEOUT_SECONDS)
 
     def test_missing_post_raises_the_real_error_not_unbound_local(self):
         result = upload_to_social_network.apply(

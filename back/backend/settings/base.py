@@ -233,6 +233,8 @@ PIPELINE_TIME_LIMIT = env.int('PIPELINE_TIME_LIMIT', default=PIPELINE_SOFT_TIME_
 # Workers must consume both queues: `celery -A backend worker -Q celery,render`.
 CELERY_TASK_ROUTES = {
     'apps.videos.tasks.render_clip_task': {'queue': 'render'},
+    # The paper-edit render is as heavy as a clip render (MoviePy, face tracking).
+    'apps.videos.tasks.render_video_segments': {'queue': 'render'},
 }
 
 # A worker reserves only the task it is running: long ingestion tasks are not

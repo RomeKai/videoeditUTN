@@ -270,7 +270,7 @@ class _PromptParseCapacity:
             self.gate.settle(reservation, _llm_usage_by_model(self.models, result.attempts or [result.usage]))
 
 
-def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries):
+def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries, parse_retries=0):
     """
     Re-queues the ingestion after the capacity wait instead of blocking the
     worker. Not a failed attempt: pipeline_attempts and the usage rows are not
@@ -279,7 +279,8 @@ def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries):
 
     The Celery retry count travels with the re-queued message, so a provider
     call that keeps failing still runs out of retries (PIPELINE_MAX_RETRIES)
-    even when capacity waits sit between its attempts.
+    even when capacity waits sit between its attempts. So does the prompt
+    parser's own count (``parse_retries``): a capacity wait never refills it.
     """
     from apps.videos.services.ai.capacity import CapacityTimeoutError
 
@@ -317,7 +318,8 @@ def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries):
         extra={'project_id': str(project_id), 'stage': str(exc.stage)},
     )
     process_initial_ingestion.apply_async(
-        args=[str(project_id)], countdown=countdown, retries=retries
+        args=[str(project_id)], kwargs={'parse_retries': parse_retries},
+        countdown=countdown, retries=retries,
     )
     return f"Waiting for capacity: {project_id}"
 
@@ -921,7 +923,7 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
             # Re-queued, not self.retry(): the error retry count travels unchanged.
             process_initial_ingestion.apply_async(
                 args=[str(project_id)],
-                kwargs={'lock_retries': lock_retries + 1},
+                kwargs={'lock_retries': lock_retries + 1, 'parse_retries': parse_retries},
                 countdown=PIPELINE_LOCK_RETRY_SECONDS,
                 retries=self.request.retries,
             )
@@ -944,7 +946,8 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
         # The lock is already released here: the re-queued task can take it.
         try:
             return _wait_for_capacity(
-                project_id, exc, attempt, progress.get('stage'), self.request.retries
+                project_id, exc, attempt, progress.get('stage'), self.request.retries,
+                parse_retries,
             )
         except Exception as wait_exc:
             # Parking failed (e.g. the database): handled like any stage error,
