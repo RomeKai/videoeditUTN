@@ -311,6 +311,8 @@ Todos los settings de IA de [settings/base.py](../../back/backend/settings/base.
 | `CELERY_BROKER_TRANSPORT_OPTIONS['visibility_timeout']` (variable `CELERY_VISIBILITY_TIMEOUT`) | `14400` | Tiempo tras el cual Redis reentrega una tarea sin ack. Mayor que el lock y que la etapa más larga |
 | `PIPELINE_SOFT_TIME_LIMIT` | `7200` | Soft time limit de `process_initial_ingestion`: falla con `SoftTimeLimitExceeded` y libera el lock |
 | `PIPELINE_TIME_LIMIT` | `PIPELINE_SOFT_TIME_LIMIT + 300` | Hard time limit: mata al worker que ignoró el soft |
+| `RENDER_SEGMENTS_SOFT_TIME_LIMIT` | `10800` | Soft time limit de `render_video_segments` (paper edit): el proyecto falla y se devuelve la reserva del render |
+| `RENDER_SEGMENTS_TIME_LIMIT` | `RENDER_SEGMENTS_SOFT_TIME_LIMIT + 300` | Hard time limit del paper edit. Sin reembolso automático: queda para `settle_stale_reservations`. Menor que el `visibility_timeout` |
 | `CELERY_TASK_ROUTES` | `render_clip_task` y `render_video_segments` a la cola `render` | Fijo en código. El resto va a la cola `celery` |
 | `CELERY_WORKER_PREFETCH_MULTIPLIER` | `1` | Fijo en código. Un worker solo reserva la tarea que corre |
 | `AI_CAPACITY_ENABLED` | `False` | Prende los buckets de capacidad |
@@ -346,7 +348,7 @@ Los eventos tienen nombre estable y llevan ids, códigos y números, nunca texto
 | `upload.` | `rejected` (`code`), `probe_failed` | [media_validation.py](../../back/apps/videos/services/media_validation.py) |
 | `face_tracker.` | `mediapipe_unavailable`, `detector_unavailable`, `detector_failed`, `tracked`, `no_faces`, `failed`, `all_frames_failed` | [face_tracker.py](../../back/apps/videos/services/face_tracker.py) |
 | `speaker.` / `layout.` | `speaker.timeline`, `speaker.audio_failed`, `speaker.frames_failed`, `layout.active_speaker`, `layout.active_speaker_failed` | [speaker_engine.py](../../back/apps/videos/services/speaker_engine.py), [layouts/pro.py](../../back/apps/videos/services/layouts/pro.py) |
-| `render.` | `dispatch_failed`, `retrying`, `release_failed`, `failure_not_recorded`; del paper edit, `already_delivered`, `redelivered`, `lock_busy_retrying`, `skipped`, `cleanup_failed`, `charged`, `refunded`, `settle_skipped`, `settle_failed`. También `pipeline.render_redispatched` y `pipeline.render_finalized` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py), [tasks/render.py](../../back/apps/videos/tasks/render.py) |
+| `render.` | `dispatch_failed`, `retrying`, `release_failed`, `retry_not_queued`, `failure_not_recorded`; del paper edit, `already_delivered`, `restarted`, `lock_busy_retrying`, `skipped`, `not_persisted`, `lock_lost`, `orphan_not_deleted`, `start_not_closed`, `cleanup_failed`, `charged`, `refunded`, `settle_skipped`, `settle_failed`. También `pipeline.render_redispatched` y `pipeline.render_finalized` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py), [tasks/render.py](../../back/apps/videos/tasks/render.py) |
 
 ### Qué mirar si...
 
@@ -386,7 +388,7 @@ Solo mira transacciones `RESERVED` con `created_at` de hace al menos `--min-age-
 | Creación | Con clips, aunque esté `failed` (`has_clips`) | Cobra |
 | Creación | `failed` sin clips (`failed_without_clips`) | Devuelve (`rollback`) |
 | Creación | Otra etapa (`in_progress`) | Solo reporta |
-| Render | `COMPLETED` con `final_export_r2_key` (`render_delivered`) | Cobra |
+| Render | Con `final_export_r2_key`, aunque esté `FAILED` (`render_delivered`) | Cobra |
 | Render | `FAILED` (`render_failed`) | Devuelve |
 | Render | Otro estado, por ejemplo `RENDERING` (`render_in_progress`) | Solo reporta |
 | Sin proyecto (`unlinked`) | — | Solo reporta |
@@ -395,7 +397,7 @@ Solo mira transacciones `RESERVED` con `created_at` de hace al menos `--min-age-
 - **Antigüedad.** El mínimo de 24 h deja afuera reservas de proyectos que siguen trabajando, por ejemplo un render que espera su reintento (queda `FAILED` mientras tanto). Las transacciones anteriores a la migración `payments.0003` tienen como `created_at` la hora de la migración: el barrido las toma un `--min-age-hours` después del deploy.
 - **Salida.** Una línea por transacción, sin texto del usuario (ni la descripción de la transacción, que lleva el título del proyecto): `transaction`, `amount`, `age_h`, `kind` (`creation`, `render` o `-`), `project`, `stage`, `status`, `action` (`commit`, `rollback` o `report`), `reason` y `result` (`dry_run`, `reported`, `committed`, `rolled_back`, `already_settled`, `skipped` o `error=<clase>`). Al final, una línea `summary` con los totales.
 - **Errores.** Un error de pago o de base en una transacción se informa en su línea y el barrido sigue. Si hubo alguno, el comando termina con error (código 1) para que un cron lo note.
-- **Lo que queda en reporte** se resuelve a mano: un render que sigue `RENDERING` sin worker se re-encola (`render_video_segments`) o se marca `FAILED` para que el próximo barrido devuelva la reserva; una reserva sin proyecto se revisa con el workspace dueño de la billetera.
+- **Lo que queda en reporte** se resuelve a mano: un render que sigue `RENDERING` sin worker (por ejemplo, después del hard time limit) se re-encola (`render_video_segments`) o se marca `FAILED` para que el próximo barrido devuelva la reserva; una reserva sin proyecto se revisa con el workspace dueño de la billetera.
 
 ## Referencias
 

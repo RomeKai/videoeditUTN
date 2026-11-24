@@ -12,7 +12,7 @@ Rules (the same the pipeline applies, see tasks/ingestion.py and tasks/render.py
         project failed without clips                       -> rollback
         anything else (still ingesting)                    -> report only
     Render reservation, ``metadata['render_reservation_id']``:
-        project completed with final_export_r2_key         -> commit
+        project with final_export_r2_key (delivered)       -> commit
         project failed                                     -> rollback
         anything else (still rendering)                    -> report only
     Not linked to any project                              -> report only
@@ -83,7 +83,8 @@ def decide(kind, project):
         if project["pipeline_stage"] == VideoProject.PipelineStage.FAILED:
             return ROLLBACK, "failed_without_clips"
         return REPORT, "in_progress"
-    if project["status"] == VideoProject.Status.COMPLETED and project["final_export_r2_key"]:
+    if project["final_export_r2_key"]:
+        # The export was saved: delivered, even if a late error marked it FAILED.
         return COMMIT, "render_delivered"
     if project["status"] == VideoProject.Status.FAILED:
         return ROLLBACK, "render_failed"

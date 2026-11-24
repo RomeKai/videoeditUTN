@@ -242,6 +242,15 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
 # Both must stay below CELERY_VISIBILITY_TIMEOUT.
 PIPELINE_SOFT_TIME_LIMIT = env.int('PIPELINE_SOFT_TIME_LIMIT', default=2 * 3600)
 PIPELINE_TIME_LIMIT = env.int('PIPELINE_TIME_LIMIT', default=PIPELINE_SOFT_TIME_LIMIT + 300)
+# Ceiling for one paper-edit render (render_video_segments). The soft limit is a
+# final failure: the project fails and its render reservation is returned. The
+# hard limit only kills a worker that ignored it (no refund then: the project
+# stays RENDERING until settle_stale_reservations reports it). Both must stay
+# below CELERY_VISIBILITY_TIMEOUT.
+RENDER_SEGMENTS_SOFT_TIME_LIMIT = env.int('RENDER_SEGMENTS_SOFT_TIME_LIMIT', default=3 * 3600)
+RENDER_SEGMENTS_TIME_LIMIT = env.int(
+    'RENDER_SEGMENTS_TIME_LIMIT', default=RENDER_SEGMENTS_SOFT_TIME_LIMIT + 300,
+)
 
 # Heavy MoviePy renders get their own queue so they cannot starve ingestion.
 # Workers must consume both queues: `celery -A backend worker -Q celery,render`.

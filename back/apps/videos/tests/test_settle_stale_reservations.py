@@ -143,6 +143,14 @@ class SettleStaleReservationsTests(TestCase):
         self.assertEqual((line["kind"], line["action"]), ("render", "commit"))
         self.assertEqual(self.status(txn), Transaction.Status.COMPLETED)
 
+    def test_a_render_with_its_export_saved_is_charged_even_if_marked_failed(self):
+        txn, _ = self.render(status=VideoProject.Status.FAILED, final_export_r2_key="final/key.mp4")
+
+        line = self.line_for(self.sweep("--apply"), txn)
+
+        self.assertEqual((line["action"], line["reason"]), ("commit", "render_delivered"))
+        self.assertEqual(self.status(txn), Transaction.Status.COMPLETED)
+
     def test_a_completed_project_without_its_export_is_not_charged_for_the_render(self):
         txn, _ = self.render(status=VideoProject.Status.COMPLETED)
 

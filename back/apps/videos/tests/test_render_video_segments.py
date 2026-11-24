@@ -98,6 +98,7 @@ class RenderVideoSegmentsCleanupTests(TestCase):
         # Guard against a vacuous pass: the export must actually have started.
         processed.write_videofile.assert_called_once()
         self.project.refresh_from_db()
-        self.assertEqual(self.project.status, VideoProject.Status.FAILED)
+        # A retry is pending: the project stays RENDERING until the last attempt.
+        self.assertEqual(self.project.status, VideoProject.Status.RENDERING)
         self.assertEqual(self._leftover_files(self.tmp_root), [])
         self.assertEqual(self._leftover_files(self.media_root), [])

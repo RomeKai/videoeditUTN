@@ -25,6 +25,7 @@ from apps.videos.services.ai.errors import (
     AIError,
     NonRetryableAIError,
     is_retryable_error,
+    is_task_time_limit,
 )
 from apps.videos.services.ai.pipeline_state import (
     STAGE_ORDER,
@@ -335,22 +336,53 @@ def _settle_render_reservation(project_id, charge):
         )
 
 
-# Redeliveries after a lost worker that may start the paper-edit render again.
-# A render that always kills its worker (an OOM on a long 4K edit) would
-# otherwise come back forever with its tokens reserved: past this many, the
-# project fails and the render reservation is returned.
+# Starts of the paper-edit render that never finished (their worker died) and
+# that may still be followed by another one. A render that always kills its
+# worker (an OOM on a long 4K edit) would otherwise come back forever with its
+# tokens reserved: past this many, the project fails and the render
+# reservation is returned. Only starts count, never a redelivery that did not
+# reach the render (a broker blip, a warm shutdown, a busy lock).
 RENDER_SEGMENTS_MAX_REDELIVERIES = 2
+# Custom message header with the lock-busy re-queues so far. A header, not a
+# kwarg: a worker running the previous code ignores unknown headers, while an
+# unknown kwarg would fail the task (TypeError) during a rolling deploy.
+RENDER_LOCK_RETRIES_HEADER = 'render_lock_retries'
 
 
-def _count_render_redelivery(project_id):
-    """Adds one to ``metadata['render_redeliveries']`` under the row lock and returns it."""
+def _render_lock_retries(request):
+    """Lock-busy re-queues so far, from the message header (0 when absent)."""
+    try:
+        return max(0, int((request.headers or {}).get(RENDER_LOCK_RETRIES_HEADER) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _bump_unfinished_starts(project_id, delta):
+    """
+    Adds ``delta`` to ``metadata['render_unfinished_starts']`` under the row
+    lock and returns the value it had before: +1 when a render starts, -1 when
+    that start ends (delivered or with a handled error). What is left are the
+    starts whose worker died.
+    """
     with transaction.atomic():
         project = VideoProject.objects.select_for_update().get(pk=project_id)
         metadata = dict(project.metadata or {})
-        count = int(metadata.get('render_redeliveries') or 0) + 1
-        metadata['render_redeliveries'] = count
+        before = int(metadata.get('render_unfinished_starts') or 0)
+        metadata['render_unfinished_starts'] = max(0, before + delta)
         VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
-    return count
+    return before
+
+
+def _close_start(project_id, attempt):
+    """This delivery's start ended (delivered or a handled error): it is not a lost worker."""
+    if not attempt.get('started'):
+        return
+    attempt['started'] = False
+    try:
+        _bump_unfinished_starts(project_id, -1)
+    except DatabaseError as exc:
+        # Left counted as a lost start: conservative, never blocks the outcome.
+        logger.error("render.start_not_closed project_id=%s error=%s", project_id, type(exc).__name__)
 
 
 def _render_delivered(project_id):
@@ -360,10 +392,56 @@ def _render_delivered(project_id):
     ).exists()
 
 
-def _render_final_edit(project_id, redelivered):
+def _render_reservation_open(project):
+    """The render reservation is still RESERVED, or there is none to protect."""
+    from django.core.exceptions import ValidationError
+
+    reservation_id = (project.metadata or {}).get('render_reservation_id')
+    if not reservation_id:
+        return True
+    try:
+        return Transaction.objects.filter(
+            pk=reservation_id, status=Transaction.Status.RESERVED,
+        ).exists()
+    except ValidationError:
+        # Not a transaction id: no reservation of ours can be at stake.
+        return True
+
+
+def _fail_render(project_id, code):
+    """
+    Final failure of the paper edit: FAILED (never over a delivered render),
+    the error code and the render reservation returned. Race-free even without
+    the lock, because a delivery is only saved over a RENDERING project: once
+    FAILED, no other copy can deliver it, and one that delivered first keeps
+    its charge.
+    """
+    VideoProject.objects.filter(pk=project_id).exclude(
+        status=VideoProject.Status.COMPLETED,
+    ).update(status=VideoProject.Status.FAILED)
+    if _render_delivered(project_id):
+        return
+    record_error(project_id, code)
+    _settle_render_reservation(project_id, charge=False)
+
+
+def _discard_upload(project_id, key):
+    """Deletes an export that will not be saved, so it is not left orphaned in R2."""
+    from apps.videos.services.storage_service import CloudflareR2Manager
+
+    try:
+        CloudflareR2Manager.delete_object(key)
+    except Exception as exc:
+        logger.warning(
+            "render.orphan_not_deleted project_id=%s error=%s", project_id, type(exc).__name__,
+        )
+
+
+def _render_final_edit(project_id, lock, attempt):
     """
     The paper-edit render, run while holding the project lock. Raises on
-    error; render_video_segments decides between retrying and failing.
+    error; render_video_segments handles it under the same lock.
+    ``attempt['started']`` tells the handler that this delivery counted a start.
     """
     from apps.videos.services.storage_service import CloudflareR2Manager
     from apps.videos.services.render_engine import RenderEngine
@@ -377,20 +455,32 @@ def _render_final_edit(project_id, redelivered):
         _settle_render_reservation(project_id, charge=True)
         return f"Render already delivered for {project_id}"
 
-    if redelivered:
-        redeliveries = _count_render_redelivery(project_id)
+    project = VideoProject.objects.get(pk=project_id)
+    if project.status != VideoProject.Status.RENDERING:
+        # A copy of a render that already failed for good: rendering it now
+        # would deliver it for free.
+        logger.warning("render.skipped project_id=%s reason=not_rendering", project_id)
+        return f"Skipped {project_id}: not rendering"
+    if not _render_reservation_open(project):
+        logger.warning("render.skipped project_id=%s reason=reservation_settled", project_id)
+        return f"Skipped {project_id}: reservation settled"
+
+    lost_starts = _bump_unfinished_starts(project_id, +1)
+    attempt['started'] = True
+    if lost_starts:
         logger.warning(
-            "render.redelivered project_id=%s redeliveries=%d", project_id, redeliveries,
+            "render.restarted project_id=%s lost_starts=%d", project_id, lost_starts,
         )
-        if redeliveries > RENDER_SEGMENTS_MAX_REDELIVERIES:
-            raise NonRetryableAIError(
-                "The render lost its worker too many times.",
-                provider="render", metadata={'code': 'render_worker_lost'},
-            )
+    if lost_starts > RENDER_SEGMENTS_MAX_REDELIVERIES:
+        raise NonRetryableAIError(
+            "The render lost its worker too many times.",
+            provider="render", metadata={'code': 'render_worker_lost'},
+        )
 
     output_path = None
+    final_s3_key = None
+    persisted = 0
     try:
-        project = VideoProject.objects.get(id=project_id)
         approved_segments = _resolve_approved_segments(project)
 
         # 1. DOWNLOAD ORIGINAL FROM R2 (Temporary)
@@ -482,25 +572,31 @@ def _render_final_edit(project_id, redelivered):
                 user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
                 final_s3_key = CloudflareR2Manager.upload_video(output_path, user_id, f"{project.id}/final")
 
-                # 5. FINAL PERSISTENCE: the export and the clip row that shows it
-                # are saved together, so a redelivery that finds the project
-                # delivered (and skips it) leaves nothing half done.
+                # 5. FINAL PERSISTENCE, only while this delivery still owns the
+                # project: the export and the clip row that shows it are saved
+                # together, over a project that is still RENDERING with no
+                # export, so a copy that lost the lock (or a project failed
+                # meanwhile) never delivers twice or for free.
+                if lock.lost.is_set():
+                    _discard_upload(project_id, final_s3_key)
+                    raise ProjectLockLostError(f"Lock for project {project_id} was lost before saving")
                 with transaction.atomic():
-                    VideoProject.objects.filter(pk=project_id).update(
+                    persisted = VideoProject.objects.filter(
+                        pk=project_id, status=VideoProject.Status.RENDERING,
+                    ).filter(
+                        Q(final_export_r2_key__isnull=True) | Q(final_export_r2_key=''),
+                    ).update(
                         final_export_r2_key=final_s3_key, status=VideoProject.Status.COMPLETED,
                     )
-                    VideoClip.objects.create(
-                        project=project,
-                        title="VIDEO FINAL EDITADO",
-                        start_time=0,
-                        end_time=edited_clip.duration,
-                        s3_object_key=final_s3_key,
-                        status=VideoClip.Status.COMPLETED
-                    )
-
-                logger.info(f"✅ [FINAL RENDER] Success for project {project_id}")
-                _settle_render_reservation(project_id, charge=True)
-                return f"Render Success: {final_s3_key}"
+                    if persisted == 1:
+                        VideoClip.objects.create(
+                            project=project,
+                            title="VIDEO FINAL EDITADO",
+                            start_time=0,
+                            end_time=edited_clip.duration,
+                            s3_object_key=final_s3_key,
+                            status=VideoClip.Status.COMPLETED
+                        )
     finally:
         # The rendered output is written under MEDIA_ROOT, outside the temporary
         # directory, so it is removed explicitly on every exit path.
@@ -513,24 +609,88 @@ def _render_final_edit(project_id, redelivered):
                     project_id, type(cleanup_exc).__name__,
                 )
 
+    # Charged only once MoviePy and the temporary files are closed: an error
+    # while closing them reaches the handler, which sees the delivery and charges.
+    _close_start(project_id, attempt)
+    if persisted == 1:
+        logger.info(f"✅ [FINAL RENDER] Success for project {project_id}")
+        _settle_render_reservation(project_id, charge=True)
+        return f"Render Success: {final_s3_key}"
+    _discard_upload(project_id, final_s3_key)
+    if _render_delivered(project_id):
+        logger.info("render.already_delivered project_id=%s", project_id)
+        _settle_render_reservation(project_id, charge=True)
+        return f"Render already delivered for {project_id}"
+    logger.warning("render.not_persisted project_id=%s", project_id)
+    return f"Render not saved for {project_id}: the project is no longer rendering"
+
+
+def _handle_render_error(task, project_id, exc, attempt):
+    """
+    What a failed paper-edit delivery does, under the project lock when it has
+    it: deliver (the export was already saved), retry, or fail for good. The
+    project stays RENDERING while a retry is pending; only the final failure
+    marks it FAILED and returns the reservation.
+    """
+    _close_start(project_id, attempt)
+    if isinstance(exc, NonRetryableAIError):
+        # Deterministic failure (bad or missing segments, a worker lost too
+        # many times): retrying cannot fix it.
+        logger.error(f"❌ [FINAL RENDER ERROR] project {project_id}: {exc.message}")
+        _fail_render(project_id, exc.metadata.get('code', 'render_failed'))
+        raise exc
+    logger.error(
+        "❌ [FINAL RENDER ERROR] project_id=%s error=%s", project_id, type(exc).__name__
+    )
+    if _render_delivered(project_id):
+        # Failed after the export was saved (e.g. closing MoviePy): the
+        # render was delivered, so it is charged and never retried.
+        _settle_render_reservation(project_id, charge=True)
+        return f"Render delivered for {project_id}"
+    if not is_task_time_limit(exc) and task.request.retries < task.max_retries:
+        try:
+            # A retry is a new delivery of the render: a fresh lock budget
+            # (the header is dropped) and the project stays RENDERING.
+            raise task.retry(exc=exc, countdown=60, headers={})
+        except Reject:
+            # Not queued (broker down): the message would be dropped with the
+            # project RENDERING and its tokens reserved. Fail it for good.
+            logger.error(
+                "render.retry_not_queued project_id=%s error=%s", project_id, type(exc).__name__,
+            )
+    if isinstance(exc, ProjectLockLostError):
+        # Another copy may own the project now: it settles it, or the sweeper
+        # (settle_stale_reservations) reports it.
+        logger.warning("render.lock_lost project_id=%s", project_id)
+        raise exc
+    # Out of retries, or the task's time limit: nothing was delivered.
+    _fail_render(project_id, type(exc).__name__)
+    raise exc
+
 
 # acks_late + reject_on_worker_lost, like the ingestion: a worker killed
 # mid-render (OOM in MoviePy) gets the message back instead of leaving the
 # project RENDERING with its tokens reserved. Safe on redelivery because:
-# - the project lock (renewed by a heartbeat) keeps a second delivery off a
-#   render that is still running. The render has no time limit, so it can
-#   outlast the broker's visibility timeout and be redelivered while alive;
-# - a project already COMPLETED with final_export_r2_key is not rendered or
-#   charged again (_render_final_edit);
-# - redeliveries are capped (RENDER_SEGMENTS_MAX_REDELIVERIES), so a render
-#   that always kills its worker fails and is refunded.
+# - the project lock (renewed by a heartbeat) keeps a second copy off a render
+#   that is still running: a message can come back while its worker is alive
+#   (it waited for its countdown or in the worker's prefetch, so the time
+#   limit alone does not keep it under the broker's visibility timeout);
+# - a copy only renders a project that is RENDERING with its reservation
+#   still RESERVED, and only saves over a project that is still RENDERING
+#   with no export; a delivered project is only settled (_render_final_edit);
+# - starts that never finished are capped (RENDER_SEGMENTS_MAX_REDELIVERIES),
+#   so a render that always kills its worker fails and is refunded.
+# The soft time limit (RENDER_SEGMENTS_SOFT_TIME_LIMIT) is a final failure with
+# refund; both limits stay below CELERY_VISIBILITY_TIMEOUT.
 @celery_app.task(name='apps.videos.tasks.render_video_segments',
     bind=True,
     max_retries=2,
     acks_late=True,
     reject_on_worker_lost=True,
+    soft_time_limit=getattr(settings, 'RENDER_SEGMENTS_SOFT_TIME_LIMIT', 3 * 3600),
+    time_limit=getattr(settings, 'RENDER_SEGMENTS_TIME_LIMIT', 3 * 3600 + 300),
 )
-def render_video_segments(self, project_id, lock_retries=0, redelivered=False):
+def render_video_segments(self, project_id):
     """
     Task: High-Quality Non-Linear Rendering (Paper Edit Phase 2)
     1. Download Original from S3.
@@ -538,16 +698,20 @@ def render_video_segments(self, project_id, lock_retries=0, redelivered=False):
     3. Apply Layout & Subtitles.
     4. S3 Upload & Final Cleanup.
 
-    ``lock_retries`` counts the re-queues while the project lock is busy (its
-    own budget, like the ingestion's). ``redelivered`` keeps the broker's flag
-    across those re-queues: a dead worker's lock lasts until its TTL, so the
-    redelivery that found it must still count as one.
+    A busy project lock re-queues the task with its own budget, carried in
+    the ``render_lock_retries`` message header (RENDER_LOCK_RETRIES_HEADER).
     """
     logger.info(f"🎬 [FINAL RENDER] Starting for project {project_id}")
-    redelivered = redelivered or bool((self.request.delivery_info or {}).get('redelivered'))
+    lock_retries = _render_lock_retries(self.request)
+    attempt = {'started': False}
+    in_lock = False
     try:
-        with project_lock(project_id):
-            return _render_final_edit(project_id, redelivered)
+        with project_lock(project_id) as lock:
+            in_lock = True
+            try:
+                return _render_final_edit(project_id, lock, attempt)
+            except Exception as exc:
+                return _handle_render_error(self, project_id, exc, attempt)
     except ProjectLockedError:
         if lock_retries < PIPELINE_LOCK_MAX_RETRIES:
             logger.warning(
@@ -555,7 +719,7 @@ def render_video_segments(self, project_id, lock_retries=0, redelivered=False):
             )
             render_video_segments.apply_async(
                 args=[str(project_id)],
-                kwargs={'lock_retries': lock_retries + 1, 'redelivered': redelivered},
+                headers={RENDER_LOCK_RETRIES_HEADER: lock_retries + 1},
                 countdown=PIPELINE_LOCK_RETRY_SECONDS,
                 retries=self.request.retries,
             )
@@ -563,31 +727,11 @@ def render_video_segments(self, project_id, lock_retries=0, redelivered=False):
         # Still held after outlasting the TTL: a live worker is rendering it.
         logger.warning("render.skipped project_id=%s reason=lock_busy", project_id)
         return f"Skipped {project_id}: lock busy"
-    except NonRetryableAIError as e:
-        # Deterministic failure (bad or missing segments, a worker lost too
-        # many times): retrying cannot fix it.
-        logger.error(f"❌ [FINAL RENDER ERROR] project {project_id}: {e.message}")
-        VideoProject.objects.filter(pk=project_id).update(status=VideoProject.Status.FAILED)
-        record_error(project_id, e.metadata.get('code', 'render_failed'))
-        _settle_render_reservation(project_id, charge=False)
-        raise
-    except Exception as e:
-        logger.error(
-            "❌ [FINAL RENDER ERROR] project_id=%s error=%s", project_id, type(e).__name__
-        )
-        if _render_delivered(project_id):
-            # Failed after the export was saved (e.g. closing MoviePy): the
-            # render was delivered, so it is charged and never retried.
-            _settle_render_reservation(project_id, charge=True)
-            return f"Render delivered for {project_id}"
-        VideoProject.objects.filter(pk=project_id).update(status=VideoProject.Status.FAILED)
-        if self.request.retries >= self.max_retries:
-            # Out of retries: nothing was delivered, so the render is not charged.
-            _settle_render_reservation(project_id, charge=False)
-            raise
-        # A retry is a new delivery of the render, not a redelivery after a
-        # lost worker: it starts with a fresh lock budget and no redelivery flag.
-        raise self.retry(exc=e, countdown=60, kwargs={})
+    except Exception as exc:
+        if in_lock:
+            raise  # already handled under the lock (a retry, or the final error)
+        # The lock could not be taken (e.g. Redis down): nothing ran yet.
+        return _handle_render_error(self, project_id, exc, attempt)
 
 
 # --- Clip previews (PTE-03) ---------------------------------------------------
