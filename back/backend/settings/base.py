@@ -254,6 +254,13 @@ RENDER_SEGMENTS_SOFT_TIME_LIMIT = env.int('RENDER_SEGMENTS_SOFT_TIME_LIMIT', def
 RENDER_SEGMENTS_TIME_LIMIT = env.int(
     'RENDER_SEGMENTS_TIME_LIMIT', default=RENDER_SEGMENTS_SOFT_TIME_LIMIT + 300,
 )
+# Most starts of one clip render (render_clip_task) whose delivery never ended,
+# counting the one about to start. A clip that always kills its worker (an OOM
+# in MoviePy) is redelivered by acks_late; past this many it fails instead of
+# coming back forever. A start that ended (delivered, or an error handled with
+# a retry or a final failure) does not count, so transient retries never use
+# it up. At least 1.
+RENDER_CLIP_MAX_STARTS = env.int('RENDER_CLIP_MAX_STARTS', default=3)
 
 # Heavy MoviePy renders get their own queue so they cannot starve ingestion.
 # Workers must consume both queues: `celery -A backend worker -Q celery,render`.

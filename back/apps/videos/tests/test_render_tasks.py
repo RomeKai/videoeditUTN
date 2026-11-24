@@ -37,7 +37,7 @@ class RenderHarness(CapturedTaskFailures):
         )
 
     @staticmethod
-    def completing_render(clip_id):
+    def completing_render(clip_id, claim_token=None):
         VideoClip.objects.filter(pk=clip_id).update(
             status=VideoClip.Status.COMPLETED, s3_object_key=f"clips/{clip_id}.mp4"
         )
@@ -91,7 +91,7 @@ class RenderClipTaskTests(RenderHarness, TestCase):
         clip = self.make_clip()
         nested_results = []
 
-        def render_with_duplicate_delivery(clip_id):
+        def render_with_duplicate_delivery(clip_id, claim_token=None):
             # The same message is delivered again while the first one is rendering.
             nested_results.append(render_clip_task.apply(args=[str(clip_id)]))
             return self.completing_render(clip_id)
@@ -146,7 +146,7 @@ class RenderClipTaskTests(RenderHarness, TestCase):
     def test_one_failed_clip_makes_the_project_partial_never_completed(self):
         clips = [self.make_clip() for _ in range(3)]
 
-        def flaky_render(clip_id):
+        def flaky_render(clip_id, claim_token=None):
             if str(clip_id) == str(clips[1].id):
                 raise RuntimeError("bad clip")
             return self.completing_render(clip_id)
@@ -204,7 +204,7 @@ class RenderClipRetryTests(RenderHarness, TestCase):
         clip = self.make_clip()
         seen = []
 
-        def flaky(clip_id):
+        def flaky(clip_id, claim_token=None):
             seen.append(self.clip_status(clip_id))
             if len(seen) == 1:
                 raise transient_r2_error()
@@ -225,7 +225,7 @@ class RenderClipRetryTests(RenderHarness, TestCase):
         clip = self.make_clip()
         seen = []
 
-        def always_transient(clip_id):
+        def always_transient(clip_id, claim_token=None):
             seen.append(self.clip_status(clip_id))
             raise transient_r2_error()
 
@@ -270,7 +270,7 @@ class RenderClipRetryTests(RenderHarness, TestCase):
             render_clip_task.apply(args=[str(done.id)])
         stages = []
 
-        def flaky(clip_id):
+        def flaky(clip_id, claim_token=None):
             stages.append(
                 VideoProject.objects.values_list("pipeline_stage", flat=True).get(pk=self.project.pk)
             )
@@ -493,7 +493,7 @@ class RenderNoTransactionTests(RenderHarness, TransactionTestCase):
         clip = self.make_clip()
         observed = []
 
-        def probe(clip_id):
+        def probe(clip_id, claim_token=None):
             observed.append(connection.in_atomic_block)
             return self.completing_render(clip_id)
 

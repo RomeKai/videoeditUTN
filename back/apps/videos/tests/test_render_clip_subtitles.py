@@ -29,7 +29,10 @@ class RenderClipSubtitleSourceTests(TestCase):
             workspace=workspace, uploaded_by=user, title="Subs",
             source_file="videos/raw/source.mp4", add_subtitles=True, transcript_data=None,
         )
-        self.clip = VideoClip.objects.create(project=self.project, title="c", start_time=0, end_time=5)
+        # RENDERING, as render_clip_task's claim leaves it: the engine only saves over a claimed clip.
+        self.clip = VideoClip.objects.create(
+            project=self.project, title="c", start_time=0, end_time=5, status=VideoClip.Status.RENDERING,
+        )
 
     def render(self):
         rendered = MagicMock()

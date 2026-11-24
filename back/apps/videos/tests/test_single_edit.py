@@ -381,7 +381,7 @@ class SingleEditPipelineTests(IngestionHarness, TestCase):
         project, clip = self.dispatched_whole_video()
         reserved_during_attempts = []
 
-        def always_transient(clip_id):
+        def always_transient(clip_id, claim_token=None):
             self.txn.refresh_from_db()
             reserved_during_attempts.append(self.txn.status)
             raise self.transient_r2_error()
