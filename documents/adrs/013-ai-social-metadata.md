@@ -198,5 +198,5 @@ Issue #69 (AICORE-17):
 
 - [Código: SEOOptimizationService](../../back/apps/videos/services/seo_engine.py)
 - [Código: ScheduledPost](../../back/apps/videos/models.py)
-- [Código: process_video_seo](../../back/apps/videos/tasks.py)
+- [Código: process_video_seo](../../back/apps/videos/tasks/social.py)
 - [Runbook del piloto](../runbooks/ai-core-pilot-runbook.md)

@@ -93,7 +93,7 @@ class IngestionHarness(CapturedTaskFailures):
         self.mock_moderate = self._patch(MODERATE, return_value=True)
         self.mock_render = self._patch("apps.videos.tasks.render_clip_task.delay")
 
-        mock_vfc = self._patch("apps.videos.tasks.VideoFileClip", create=True)
+        mock_vfc = self._patch("apps.videos.tasks.ingestion.VideoFileClip", create=True)
         instance = MagicMock(duration=10.0, size=[1920, 1080])
         instance.__enter__.return_value = instance
         mock_vfc.return_value = instance

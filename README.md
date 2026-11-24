@@ -307,7 +307,11 @@ videoeditUTN/
 │       │   │   ├── face_tracker.py           # MediaPipe face detection
 │       │   │   ├── subtitle_engine.py        # Dynamic subtitle generation
 │       │   │   └── layouts/                  # Layout strategies (fill, split, PiP)
-│       │   ├── tasks.py                      # Celery task orchestration
+│       │   ├── tasks/                        # Celery tasks (names stay apps.videos.tasks.<name>)
+│       │   │   ├── ingestion.py              # Ingestion pipeline + Prompt-to-Edit parsing
+│       │   │   ├── render.py                 # Clip render and paper-edit render
+│       │   │   ├── social.py                 # Publishing and AI social metadata (SEO)
+│       │   │   └── shared.py                 # Retry policy, metadata, usage, AI capacity
 │       │   └── utils/
 │       │       └── ffmpeg_utils.py           # Proxy generation, codec ops
 │       ├── payments/                # Wallet, Transaction, SubscriptionPlan

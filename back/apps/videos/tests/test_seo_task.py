@@ -396,7 +396,7 @@ class ReviewRegressionTests(SeoTaskHarness, TestCase):
             )
             yield True
 
-        with patch("apps.videos.tasks._seo_post_lock", lock_after_another_run_finished):
+        with patch("apps.videos.tasks.social._seo_post_lock", lock_after_another_run_finished):
             result = self.run_task()
 
         self.assertEqual(result, "SEO Already Generated")

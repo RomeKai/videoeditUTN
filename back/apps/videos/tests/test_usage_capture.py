@@ -361,7 +361,7 @@ class RecordingOrderTests(IngestionHarness, TransactionTestCase):
             )
             return real(project_id, stage, version, usages, attempt=attempt)
 
-        with patch("apps.videos.tasks.record_usages", side_effect=spy):
+        with patch("apps.videos.tasks.shared.record_usages", side_effect=spy):
             self.run_task(project)
 
         self.assertEqual(
@@ -400,7 +400,7 @@ class RecordingOrderTests(IngestionHarness, TransactionTestCase):
             observed.append((stage, connection.in_atomic_block))
             return real(project_id, stage, version, usages, attempt=attempt)
 
-        with patch("apps.videos.tasks.record_usages", side_effect=spy):
+        with patch("apps.videos.tasks.shared.record_usages", side_effect=spy):
             self.run_task(project)
 
         self.assertEqual(observed, [("transcription", False), ("selection", False)])

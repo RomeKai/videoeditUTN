@@ -71,7 +71,7 @@ class IngestionV2Tests(TestCase):
     @patch('apps.videos.services.transcription_engine.TranscriptionEngine.transcribe_detailed')
     @patch('apps.videos.services.selection_engine.SelectionEngine.select_viral_clips_detailed')
     @patch('apps.videos.utils.ffmpeg_utils.FFmpegManager.generate_web_proxy')
-    @patch('apps.videos.tasks.VideoFileClip', create=True)
+    @patch('apps.videos.tasks.ingestion.VideoFileClip', create=True)
     def test_process_initial_ingestion_task(self, mock_vfc, mock_proxy, mock_select, mock_transcribe, mock_upload, _mock_redis, _mock_moderate):
         """Test the full Celery task pipeline."""
         # Setup mocks

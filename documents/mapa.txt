@@ -55,7 +55,11 @@ back/apps/videos/services/subtitle_engine.py
 back/apps/videos/services/tracking_utils.py
 back/apps/videos/services/transcription_engine.py
 back/apps/videos/services/__init__.py
-back/apps/videos/tasks.py
+back/apps/videos/tasks/__init__.py
+back/apps/videos/tasks/ingestion.py
+back/apps/videos/tasks/render.py
+back/apps/videos/tasks/shared.py
+back/apps/videos/tasks/social.py
 back/apps/videos/tests/test_api.py
 back/apps/videos/tests/test_ingestion_v2.py
 back/apps/videos/tests/__init__.py
