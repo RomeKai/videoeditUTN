@@ -28,19 +28,29 @@ What it does, deciding again under the project lock and the row lock
     RENDER_SEGMENTS_MAX_REDELIVERIES (the rule
     render_video_segments applies at its start)    -> fail: _fail_render with
                                                       render_stuck, reservation returned
-    RENDERING, fewer re-queues in a row that never
-    started than RENDER_SEGMENTS_MAX_REDELIVERIES  -> re-queue render_video_segments
-    RENDERING past that cap                         -> report only (never_started)
+    RENDERING, RENDER_RECOVERY_MAX_REQUEUES
+    re-queues by this routine already               -> report only (requeue_total_cap)
+    RENDERING, idle for its backoff window          -> re-queue render_video_segments
+    RENDERING, idle, but within that window         -> report only (never_started)
     A RENDERING project with an export saved (it cannot happen: the export
     is saved together with COMPLETED) is only reported, never failed.
 
-    A re-queue is recorded (``render_recovery_requeues`` and the time), so the
-    project is not re-queued again before that message could start; a start
-    after the last re-queue resets the count. A render that never starts is
-    never failed: its message may only be waiting for a render worker (down
-    or backlogged), and a FAILED paper edit cannot be rendered again. It is
-    reported (``render.recovery_not_started``) until it starts. Only renders
-    that started and lost their worker too many times fail and are refunded.
+    A re-queue is recorded (``render_recovery_requeues``, the re-queues in a
+    row that never started, ``render_recovery_requeues_total`` and the time),
+    so the project is not re-queued again before that message could start.
+    Each re-queue in a row that never started doubles the idle window, up to
+    RENDER_RECOVERY_MAX_BACKOFF_SECONDS; a start resets it. A render that
+    never starts is never failed: its message may only be waiting for a
+    render worker (down or backlogged), and a FAILED paper edit cannot be
+    rendered again. If every copy of the message is gone (the broker lost
+    them), the next re-queue brings it back. Only renders that started and
+    lost their worker too many times fail and are refunded.
+
+    The total cap bounds a loop the lost-starts cap does not see: a re-queued
+    start that ends in a handled error (so it closes its start) and whose
+    retry message is lost resets the re-queues in a row every time. Past
+    RENDER_RECOVERY_MAX_REQUEUES re-queues the project is only reported, so an
+    operator decides; it is never failed nor refunded by this routine.
 
 Safety
     The re-queued delivery renders only a project that is RENDERING with its
@@ -84,6 +94,15 @@ logger = logging.getLogger(__name__)
 
 CHARGE, REQUEUE, FAIL, REPORT, SKIP, ERROR = "charge", "requeue", "fail", "report", "skip", "error"
 STUCK_CODE = "render_stuck"
+# The idle window of a render that never started doubles with each re-queue
+# in a row, up to this (24 h), or RENDER_STUCK_AFTER_SECONDS if that is longer.
+RENDER_RECOVERY_MAX_BACKOFF_SECONDS = 24 * 3600
+# Re-queues this routine makes for one project, ever. Renders that start and
+# lose their worker need at most RENDER_SEGMENTS_MAX_REDELIVERIES re-queues
+# before the lost-starts cap fails them; twice that, plus six backoff steps for
+# a message that never starts (the window reaches 24 h at the fourth try:
+# about eight days of tries with the default threshold). Past it: report only.
+RENDER_RECOVERY_MAX_REQUEUES = 2 * RENDER_SEGMENTS_MAX_REDELIVERIES + 6
 # Actions that write: only these take the locks.
 _ACTS = (CHARGE, REQUEUE, FAIL)
 _RESULTS = {
@@ -134,8 +153,20 @@ def _snapshot(project, reservation, now):
     return {
         'starts': _count(metadata, 'render_unfinished_starts'),
         'requeues': requeues,
+        'requeues_total': _count(metadata, 'render_recovery_requeues_total'),
         'idle_s': (now - max(times)).total_seconds() if times else None,
     }
+
+
+def backoff_window(stuck_after, requeues):
+    """
+    Idle seconds before the next re-queue of a render that was re-queued
+    ``requeues`` times in a row without starting: RENDER_STUCK_AFTER_SECONDS,
+    doubled with each of them, up to RENDER_RECOVERY_MAX_BACKOFF_SECONDS.
+    """
+    base = stuck_after.total_seconds()
+    ceiling = max(base, RENDER_RECOVERY_MAX_BACKOFF_SECONDS)
+    return min(base * (2 ** min(requeues, 32)), ceiling)
 
 
 def decide(project, reservation, snapshot, stuck_after):
@@ -163,9 +194,14 @@ def decide(project, reservation, snapshot, stuck_after):
     if snapshot['starts'] > RENDER_SEGMENTS_MAX_REDELIVERIES:
         # The same rule render_video_segments applies when it starts.
         return FAIL, "lost_starts"
-    if snapshot['requeues'] < RENDER_SEGMENTS_MAX_REDELIVERIES:
+    if snapshot['requeues_total'] >= RENDER_RECOVERY_MAX_REQUEUES:
+        return REPORT, "requeue_total_cap"
+    if snapshot['requeues'] == 0:
         return REQUEUE, "no_render_left"
-    return REPORT, "never_started"
+    if snapshot['idle_s'] is not None and snapshot['idle_s'] < backoff_window(stuck_after, snapshot['requeues']):
+        # Re-queued and never started: waiting out its backoff window.
+        return REPORT, "never_started"
+    return REQUEUE, "never_started"
 
 
 def _preview(project_id, stuck_after):
@@ -191,7 +227,7 @@ def _recover(project_id, stuck_after):
         with transaction.atomic():
             project = VideoProject.objects.select_for_update().filter(pk=project_id).first()
             if project is None:
-                return SKIP, "gone", None
+                return SKIP, "gone", None, "skipped"
             reservation = _reservation(project)
             now = timezone.now()
             snapshot = _snapshot(project, reservation, now)
@@ -199,6 +235,7 @@ def _recover(project_id, stuck_after):
             if action == REQUEUE:
                 metadata = dict(project.metadata or {})
                 metadata['render_recovery_requeues'] = snapshot['requeues'] + 1
+                metadata['render_recovery_requeues_total'] = snapshot['requeues_total'] + 1
                 metadata['render_recovery_requeued_at'] = now.isoformat()
                 VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
                 # Published inside the transaction: if the broker refuses it,
@@ -209,16 +246,26 @@ def _recover(project_id, stuck_after):
                 render_video_segments.apply_async(args=[str(project_id)])
         # Settled once the row lock is released (the wallet takes its own
         # locks), still under the project lock.
-        if action == CHARGE:
-            _settle_render_reservation(project_id, charge=True)
+        result = _RESULTS[action]
+        if action == CHARGE and not _settle_render_reservation(project_id, charge=True):
+            # Not charged by this call: settled meanwhile, or the wallet
+            # failed (render.settle_failed). The result says which.
+            settled = Transaction.objects.filter(
+                pk=(project.metadata or {}).get('render_reservation_id'),
+            ).exclude(status=Transaction.Status.RESERVED).exists()
+            action, result = (SKIP, "already_settled") if settled else (ERROR, "error=settle_failed")
+            if action == ERROR:
+                logger.error("render.recovery_error project_id=%s error=settle_failed", project_id)
         elif action == FAIL:
             _fail_render(project_id, STUCK_CODE)
     if action in _ACTS:
         logger.warning(
-            "render.recovery_%s project_id=%s reason=%s unfinished_starts=%d requeues=%d",
+            "render.recovery_%s project_id=%s reason=%s unfinished_starts=%d requeues=%d "
+            "requeues_total=%d",
             _RESULTS[action], project_id, reason, snapshot['starts'], snapshot['requeues'],
+            snapshot['requeues_total'],
         )
-    return action, reason, snapshot
+    return action, reason, snapshot, result
 
 
 def _candidates():
@@ -252,8 +299,7 @@ def recover_stuck_renders_now(apply=False):
         try:
             action, reason, snapshot = _preview(project_id, stuck_after)
             if apply and action in _ACTS:
-                action, reason, snapshot = _recover(project_id, stuck_after)
-                result = _RESULTS[action]
+                action, reason, snapshot, result = _recover(project_id, stuck_after)
             elif action in _ACTS:
                 result = "dry_run"
             else:
@@ -268,9 +314,10 @@ def recover_stuck_renders_now(apply=False):
             )
         if action == REPORT:
             logger.warning(
-                "render.recovery_%s project_id=%s unfinished_starts=%d requeues=%d",
-                "not_started" if reason == "never_started" else "reported", project_id,
-                snapshot['starts'], snapshot['requeues'],
+                "render.recovery_%s project_id=%s reason=%s unfinished_starts=%d requeues=%d "
+                "requeues_total=%d",
+                "not_started" if reason == "never_started" else "reported", project_id, reason,
+                snapshot['starts'], snapshot['requeues'], snapshot['requeues_total'],
             )
         rows.append({
             'project': project_id, 'action': action, 'reason': reason, 'result': result,

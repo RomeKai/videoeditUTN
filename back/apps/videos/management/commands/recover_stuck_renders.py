@@ -2,7 +2,8 @@
 Finds paper-edit renders whose render reservation stayed RESERVED and, with
 ``--apply``, recovers them: re-queued, charged (delivered but not charged) or,
 after losing their worker too many times, failed with ``render_stuck`` and
-the reservation returned. A render that never starts is only reported.
+the reservation returned. A render that never starts is re-queued with a
+backoff and never failed; past the total of re-queues it is only reported.
 
 The rules live in tasks/render_recovery.py, shared with the Celery task that
 CELERY_BEAT_SCHEDULE runs every 15 minutes. Without a beat process, run this

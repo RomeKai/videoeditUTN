@@ -26,7 +26,12 @@ from apps.payments.services.wallet_service import reserve_funds
 from apps.videos.models import VideoProject
 from apps.videos.tasks import render_video_segments
 from apps.videos.tasks.render import RENDER_SEGMENTS_MAX_REDELIVERIES
-from apps.videos.tasks.render_recovery import recover_stuck_renders, recover_stuck_renders_now
+from apps.videos.tasks.render_recovery import (
+    RENDER_RECOVERY_MAX_REQUEUES,
+    backoff_window,
+    recover_stuck_renders,
+    recover_stuck_renders_now,
+)
 from apps.videos.tests.test_approved_segments_source import _patched_render, _render_mocks
 from apps.videos.tests.test_reservation_settlement import RenderReservationHarness
 
@@ -49,9 +54,11 @@ class StuckRenderHarness(RenderReservationHarness):
         self.project.refresh_from_db()
         return self.project.metadata
 
-    def age(self, reservation_only=False):
-        """Moves what the recovery reads back past RENDER_STUCK_AFTER_SECONDS."""
-        past = timezone.now() - timedelta(seconds=settings.RENDER_STUCK_AFTER_SECONDS + 60)
+    def age(self, reservation_only=False, seconds=None):
+        """Moves what the recovery reads back past RENDER_STUCK_AFTER_SECONDS (or ``seconds``)."""
+        if seconds is None:
+            seconds = settings.RENDER_STUCK_AFTER_SECONDS + 60
+        past = timezone.now() - timedelta(seconds=seconds)
         metadata = dict(self.metadata())
         if not reservation_only:
             for key in ("render_started_at", "render_recovery_requeued_at"):
@@ -185,21 +192,34 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         txn.refresh_from_db()
         self.assertEqual(txn.status, Transaction.Status.COMPLETED)
 
-    def test_a_render_that_never_starts_is_reported_past_the_requeue_cap_never_failed(self):
-        # Its message waits for a render worker that is down or backlogged.
+    def test_a_render_that_never_starts_keeps_being_requeued_with_backoff_never_failed(self):
+        # Its message waits for a render worker that is down, or it was lost
+        # with the broker: re-queued again and again, further apart each time.
         txn = self.approve()
-        actions = []
-        for _ in range(RENDER_SEGMENTS_MAX_REDELIVERIES + 2):
-            self.age()
-            with self.assertLogs("apps.videos.tasks", level="INFO") as logs:
-                rows, _ = self.recover()
-            actions.append((self.row(rows)["action"], self.row(rows)["reason"]))
+        stuck_after = timedelta(seconds=settings.RENDER_STUCK_AFTER_SECONDS)
+        steps = []
+        for in_a_row in range(5):
+            window = backoff_window(stuck_after, in_a_row)
+            self.age(seconds=window - 60)  # not yet: only reported (or recent)
+            rows, early = self.recover()
+            self.age(seconds=window + 60)
+            with self.assertLogs("apps.videos.tasks", level="WARNING") as logs:
+                rows, requeue = self.recover()
+            steps.append((early.call_count, requeue.call_count, self.row(rows)["requeues"]))
+            if in_a_row:
+                self.assertIn(
+                    f"render.recovery_requeued project_id={self.project.id} reason=never_started",
+                    "\n".join(logs.output),
+                )
 
-        self.assertEqual(
-            actions,
-            [("requeue", "no_render_left")] * RENDER_SEGMENTS_MAX_REDELIVERIES
-            + [("report", "never_started")] * 2,
-        )
+        self.assertEqual(steps, [(0, 1, n) for n in range(5)])
+        self.assertEqual(self.metadata()["render_recovery_requeues_total"], 5)
+        # Waiting out the window is reported on every run.
+        self.age(seconds=settings.RENDER_STUCK_AFTER_SECONDS + 60)
+        with self.assertLogs("apps.videos.tasks", level="WARNING") as logs:
+            rows, requeue = self.recover()
+        requeue.assert_not_called()
+        self.assertEqual((self.row(rows)["action"], self.row(rows)["reason"]), ("report", "never_started"))
         self.assertIn(f"render.recovery_not_started project_id={self.project.id}", "\n".join(logs.output))
         self.project.refresh_from_db()
         txn.refresh_from_db()
@@ -207,14 +227,57 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assertEqual(self.project.pipeline_error_code, "")
         self.assertEqual(txn.status, Transaction.Status.RESERVED)
 
-        # The worker comes back: the original message renders it.
+        # A worker comes back: one copy renders it, once.
         source, processed = _render_mocks()
         with _patched_render(source, processed, redis=self.redis) as (_, upload):
             render_video_segments(self.project.id)
+            render_video_segments(self.project.id)  # a duplicate copy
 
         upload.assert_called_once()
         txn.refresh_from_db()
         self.assertEqual(txn.status, Transaction.Status.COMPLETED)
+
+    def test_the_backoff_window_doubles_up_to_a_day(self):
+        hour = timedelta(hours=1)
+
+        self.assertEqual(
+            [backoff_window(hour, n) / 3600 for n in range(7)], [1, 2, 4, 8, 16, 24, 24],
+        )
+        self.assertEqual(backoff_window(timedelta(hours=30), 3), 30 * 3600)  # never below the threshold
+
+    def test_requeues_whose_starts_end_and_get_lost_stop_at_the_total_cap(self):
+        """
+        Each re-queued start ends in a handled error (its start is closed) and
+        its retry message is lost: the lost-starts cap never sees it.
+        """
+        from celery.exceptions import Retry
+
+        txn = self.approve()
+        actions = []
+        for _ in range(RENDER_RECOVERY_MAX_REQUEUES + 2):
+            with patch(RESOLVE_SEGMENTS, side_effect=ConnectionError("r2")), \
+                    patch.object(render_video_segments, "retry", side_effect=Retry()), \
+                    self.assertRaises(Retry):
+                render_video_segments(self.project.id)  # its retry is then lost
+            self.age()
+            with self.assertLogs("apps.videos.tasks", level="WARNING") as logs:
+                rows, _ = self.recover()
+            actions.append((self.row(rows)["action"], self.row(rows)["reason"]))
+
+        self.assertEqual(
+            actions,
+            [("requeue", "no_render_left")] * RENDER_RECOVERY_MAX_REQUEUES
+            + [("report", "requeue_total_cap")] * 2,
+        )
+        self.assertIn(
+            f"render.recovery_reported project_id={self.project.id} reason=requeue_total_cap",
+            "\n".join(logs.output),
+        )
+        self.project.refresh_from_db()
+        txn.refresh_from_db()
+        # Never failed nor refunded by the routine: an operator decides.
+        self.assertEqual(self.project.status, VideoProject.Status.RENDERING)
+        self.assertEqual(txn.status, Transaction.Status.RESERVED)
 
     def test_a_start_after_the_last_requeue_resets_the_requeue_count(self):
         self.approve()
@@ -267,6 +330,50 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assertEqual(self.project.pipeline_error_code, "")
         self.assertEqual(txn.status, Transaction.Status.COMPLETED)
         self.assertEqual(self.balances(), (Decimal("100.00") - txn.amount, Decimal("0")))
+
+    def test_a_charge_that_fails_is_reported_as_an_error_not_as_charged(self):
+        from django.db import DatabaseError
+
+        txn = self.approve()
+        VideoProject.objects.filter(pk=self.project.pk).update(
+            status=VideoProject.Status.COMPLETED, final_export_r2_key="final/key.mp4",
+        )
+        self.age(reservation_only=True)
+
+        with patch(
+            "apps.payments.services.wallet_service.commit_reservation", side_effect=DatabaseError("x"),
+        ), self.assertLogs("apps.videos.tasks", level="WARNING") as logs:
+            rows, _ = self.recover()
+
+        self.assertEqual(
+            (self.row(rows)["action"], self.row(rows)["result"]), ("error", "error=settle_failed"),
+        )
+        output = "\n".join(logs.output)
+        self.assertNotIn("render.recovery_charged", output)
+        self.assertIn(f"render.recovery_error project_id={self.project.id} error=settle_failed", output)
+        txn.refresh_from_db()
+        self.assertEqual(txn.status, Transaction.Status.RESERVED)
+
+    def test_a_charge_settled_meanwhile_is_reported_as_already_settled(self):
+        from apps.payments.services.wallet_service import commit_reservation
+        from apps.videos.tasks import render_recovery
+
+        txn = self.approve()
+        VideoProject.objects.filter(pk=self.project.pk).update(
+            status=VideoProject.Status.COMPLETED, final_export_r2_key="final/key.mp4",
+        )
+        self.age(reservation_only=True)
+
+        def settled_elsewhere(project_id, charge):
+            commit_reservation(txn.id)  # e.g. settle_stale_reservations got there first
+            return False
+
+        with patch.object(render_recovery, "_settle_render_reservation", side_effect=settled_elsewhere):
+            rows, _ = self.recover()
+
+        self.assertEqual(
+            (self.row(rows)["action"], self.row(rows)["result"]), ("skip", "already_settled"),
+        )
 
     def test_a_delivered_render_being_charged_right_now_is_left_alone(self):
         txn = self.approve()

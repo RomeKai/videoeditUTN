@@ -328,7 +328,8 @@ def _settle_render_reservation(project_id, charge):
     ['render_reservation_id']``): charged when the render is delivered,
     returned when it fails for good. Idempotent and never raises: a missing or
     already settled reservation is skipped, and a payment error is only logged
-    so it never masks the render's own outcome.
+    so it never masks the render's own outcome. Returns True only when this
+    call charged (or returned) the reservation.
     """
     from django.core.exceptions import ValidationError
     from django.db import DatabaseError
@@ -347,13 +348,14 @@ def _settle_render_reservation(project_id, charge):
             pk=reservation_id, status=Transaction.Status.RESERVED
         ).exists():
             logger.info("render.settle_skipped project_id=%s reason=not_reserved", project_id)
-            return
+            return False
         if charge:
             commit_reservation(reservation_id)
             logger.info("render.charged project_id=%s", project_id)
         else:
             rollback_reservation(reservation_id)
             logger.info("render.refunded project_id=%s", project_id)
+        return True
     except PaymentError as exc:
         # Lost the race to another settle (the status is re-checked under a lock).
         if reservation_id and Transaction.objects.filter(pk=reservation_id).exclude(
@@ -370,6 +372,7 @@ def _settle_render_reservation(project_id, charge):
             "render.settle_failed project_id=%s charge=%s error=%s",
             project_id, charge, type(exc).__name__,
         )
+    return False
 
 
 # Starts of the paper-edit render that never finished (their worker died) and
