@@ -176,3 +176,46 @@ class RenderReservationTests(APITestCase):
 
         txn.refresh_from_db()
         self.assertEqual(txn.status, Transaction.Status.RESERVED)
+
+    def test_the_approval_charges_the_render_only_not_the_add_ons_again(self):
+        # SEO was charged with the project at creation (ADR-013).
+        VideoProject.objects.filter(pk=self.project.pk).update(metadata={"use_seo": True})
+
+        txn = self.approve()
+
+        seconds = sum(seg["end"] - seg["start"] for seg in SEGMENTS)
+        from math import ceil
+
+        self.assertEqual(txn.amount, (Decimal(ceil(seconds)) * Decimal("0.5")).quantize(Decimal("0.01")))
+
+    def test_a_concurrent_approval_cannot_reserve_or_render_twice(self):
+        from apps.videos.services.segments import validate_approved_segments as real_validate
+
+        def another_request_wins(segments):
+            # The other approval claimed the project between this one's checks.
+            VideoProject.objects.filter(pk=self.project.pk).update(status=VideoProject.Status.RENDERING)
+            return real_validate(segments)
+
+        with patch("apps.videos.views.validate_approved_segments", side_effect=another_request_wins), \
+                patch(DELAY) as delay:
+            response = self.client.post(
+                reverse("project-approve-paper-edit", args=[self.project.id]),
+                {"approved_segments": SEGMENTS}, format="json",
+            )
+
+        self.assertEqual(response.status_code, 409, response.content[:300])
+        delay.assert_not_called()
+        self.assertFalse(Transaction.objects.filter(wallet=self.wallet).exists())
+
+    def test_an_approval_without_funds_gives_the_project_back(self):
+        Wallet.objects.filter(pk=self.wallet.pk).update(available_balance=Decimal("0"))
+        with patch(DELAY) as delay:
+            response = self.client.post(
+                reverse("project-approve-paper-edit", args=[self.project.id]),
+                {"approved_segments": SEGMENTS}, format="json",
+            )
+
+        self.assertEqual(response.status_code, 402, response.content[:300])
+        delay.assert_not_called()
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, VideoProject.Status.AWAITING_APPROVAL)

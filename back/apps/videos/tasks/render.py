@@ -218,6 +218,7 @@ def _settle_render_reservation(project_id, charge):
         PaymentError, commit_reservation, rollback_reservation,
     )
 
+    reservation_id = None
     try:
         reservation_id = (
             VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
@@ -225,6 +226,7 @@ def _settle_render_reservation(project_id, charge):
         if not reservation_id or not Transaction.objects.filter(
             pk=reservation_id, status=Transaction.Status.RESERVED
         ).exists():
+            logger.info("render.settle_skipped project_id=%s reason=not_reserved", project_id)
             return
         if charge:
             commit_reservation(reservation_id)
@@ -232,7 +234,18 @@ def _settle_render_reservation(project_id, charge):
         else:
             rollback_reservation(reservation_id)
             logger.info("render.refunded project_id=%s", project_id)
-    except (PaymentError, DatabaseError, ValidationError) as exc:
+    except PaymentError as exc:
+        # Lost the race to another settle (the status is re-checked under a lock).
+        if reservation_id and Transaction.objects.filter(pk=reservation_id).exclude(
+            status=Transaction.Status.RESERVED
+        ).exists():
+            logger.info("render.settle_skipped project_id=%s reason=already_settled", project_id)
+        else:
+            logger.error(
+                "render.settle_failed project_id=%s charge=%s error=%s",
+                project_id, charge, type(exc).__name__,
+            )
+    except (DatabaseError, ValidationError) as exc:
         logger.error(
             "render.settle_failed project_id=%s charge=%s error=%s",
             project_id, charge, type(exc).__name__,

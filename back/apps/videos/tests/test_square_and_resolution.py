@@ -164,19 +164,34 @@ class ChosenResolutionTests(TestCase):
     def test_an_unknown_resolution_is_a_validation_error(self):
         self.assertEqual(self.upload(render_resolution="8K").status_code, 400)
 
-    def test_a_link_project_cannot_ask_for_more_than_its_plan(self):
-        Workspace.objects.filter(pk=self.workspace.pk).update(subscription_plan=self.plan_720)
+    def test_a_link_project_stays_at_720p(self):
+        # The flat link price does not know the duration: a higher tier could not
+        # be priced, and an auto-rendered link would have rendered it for free.
         with patch("apps.videos.views.process_initial_ingestion.delay"):
             rejected = self.client.post(reverse("project-list"), {
-                "title": "Link 4K", "video_url": "https://www.youtube.com/watch?v=x", "render_resolution": "4K",
+                "title": "Link 1080", "video_url": "https://www.youtube.com/watch?v=x",
+                "render_resolution": "1080p", "auto_render_bypass": "true",
             }, format="json")
             accepted = self.client.post(reverse("project-list"), {
                 "title": "Link 720", "video_url": "https://www.youtube.com/watch?v=x",
             }, format="json")
 
-        self.assertEqual(rejected.status_code, 403, rejected.content[:300])
+        self.assertEqual(rejected.status_code, 400, rejected.content[:300])
+        self.assertFalse(VideoProject.objects.filter(title="Link 1080").exists())
         self.assertEqual(accepted.status_code, 201, accepted.content[:300])
         self.assertEqual(self.reserved(accepted), Decimal("10.00"))  # the flat link price, no 0,01 floor
+
+    def test_a_link_project_with_seo_on_a_plan_without_it_is_still_rejected(self):
+        from apps.payments.models import SubscriptionPlan
+
+        no_seo = SubscriptionPlan.objects.create(name="Sin SEO", has_seo_optimization=False, max_video_duration_seconds=3600)
+        Workspace.objects.filter(pk=self.workspace.pk).update(subscription_plan=no_seo)
+        with patch("apps.videos.views.process_initial_ingestion.delay"):
+            response = self.client.post(reverse("project-list"), {
+                "title": "Link SEO", "video_url": "https://www.youtube.com/watch?v=x", "use_seo": True,
+            }, format="json")
+
+        self.assertEqual(response.status_code, 403, response.content[:300])
 
     def test_the_resolution_cannot_change_after_creation(self):
         response = self.upload()

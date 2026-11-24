@@ -98,7 +98,7 @@ sequenceDiagram
 
 Ejemplo: un archivo de 600 s con `use_seo=true` en un plan con 20 % de descuento cuesta `(600 × 0,5 × 1,0 + 5) × 0,8 = 244,00` tokens.
 
-**Resolución.** El pedido puede mandar `render_resolution` (`720p`, `1080p` o `4K`; un valor distinto da 400). El serializer la guarda en `metadata['render_resolution']`, `_pricing_resolution` la usa para el precio y `calculate_render_cost` la compara con `plan.max_resolution` (403 si la supera). Sin el campo, el proyecto se cobra y se renderiza en `720p` (`RenderEngine.DEFAULT_HEIGHT`). Prompt-to-Edit puede escribirla después solo si no sube el precio (ver [04](04-prompt-to-edit.md)). No se puede cambiar con un PATCH, porque ya se cobró. `use_ai_thumbnail` no se puede pedir al crear: el serializer no tiene ese campo y `metadata` es de solo lectura.
+**Resolución.** El pedido puede mandar `render_resolution` (`720p`, `1080p` o `4K`; un valor distinto da 400). Un proyecto por link solo acepta `720p` (400 con otra), porque su precio fijo no conoce la duración y no puede cobrar un tier mayor. El serializer la guarda en `metadata['render_resolution']`, `_pricing_resolution` la usa para el precio y `calculate_render_cost` la compara con `plan.max_resolution` (403 si la supera). Sin el campo, el proyecto se cobra y se renderiza en `720p` (`RenderEngine.DEFAULT_HEIGHT`). Prompt-to-Edit puede escribirla después solo si no sube el precio (ver [04](04-prompt-to-edit.md)). No se puede cambiar con un PATCH, porque ya se cobró. `use_ai_thumbnail` no se puede pedir al crear: el serializer no tiene ese campo y `metadata` es de solo lectura.
 
 ## Flujo: creación con URL
 
@@ -199,7 +199,7 @@ flowchart TD
 
 `_refund_ingestion_reservation` es idempotente y nunca lanza: un `PaymentError`, un error de base o un proyecto borrado solo dejan `pipeline.refund_failed`, para no tapar el error original.
 
-**Reserva del render en `approve_paper_edit`.** Aprobar el paper edit reserva el costo del render con `reserve_funds` (descripción `Render Final (Paper Edit): <título>`) y guarda el id en `metadata['render_reservation_id']`. `render_video_segments` la liquida con `_settle_render_reservation`:
+**Reserva del render en `approve_paper_edit`.** Aprobar el paper edit primero toma el proyecto con un `UPDATE` condicional (`awaiting_approval` → `rendering`). Si otra aprobación ya lo tomó, responde 409 sin reservar ni encolar; si después no hay saldo (402) o falla el pago, lo devuelve a `awaiting_approval`. Después reserva el costo del render de los segmentos aprobados, sin adicionales porque SEO y miniatura se cobraron al crear (ADR-013), con `reserve_funds` (descripción `Render Final (Paper Edit): <título>`), y guarda el id en `metadata['render_reservation_id']`. `render_video_segments` la liquida con `_settle_render_reservation`:
 
 - **Render entregado:** `commit_reservation` (log `render.charged`).
 - **Fallo que no se arregla reintentando** (`NonRetryableAIError`, por ejemplo segmentos inválidos): `rollback_reservation` (`render.refunded`).

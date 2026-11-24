@@ -530,6 +530,7 @@ def _commit_ingestion_reservation(project_id):
     # Deferred: wallet_service imports this module at load time.
     from apps.payments.services.wallet_service import PaymentError, commit_reservation
 
+    reservation_id = None
     try:
         reservation_id = (
             VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
@@ -540,12 +541,23 @@ def _commit_ingestion_reservation(project_id):
         if not Transaction.objects.filter(
             pk=reservation_id, status=Transaction.Status.RESERVED
         ).exists():
+            # Already charged, or refunded earlier (a re-dispatched project runs free).
+            logger.info("pipeline.charge_skipped project_id=%s reason=not_reserved", project_id)
             return
         commit_reservation(reservation_id)
         logger.info(
             "pipeline.charged project_id=%s", project_id, extra={'project_id': str(project_id)}
         )
-    except (PaymentError, DatabaseError, ValidationError) as exc:
+    except PaymentError as exc:
+        # commit_reservation re-checks the status under a row lock: losing that
+        # race to another settle is not a failure.
+        if Transaction.objects.filter(pk=reservation_id).exclude(status=Transaction.Status.RESERVED).exists():
+            logger.info("pipeline.charge_skipped project_id=%s reason=already_settled", project_id)
+        else:
+            logger.error(
+                "pipeline.charge_failed project_id=%s error=%s", project_id, type(exc).__name__
+            )
+    except (DatabaseError, ValidationError) as exc:
         logger.error(
             "pipeline.charge_failed project_id=%s error=%s", project_id, type(exc).__name__
         )

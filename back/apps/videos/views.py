@@ -140,21 +140,32 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
 
         from apps.payments.services.pricing_engine import PricingEngine
         workspace = project.workspace
-        
-        features_requested = {
-            'seo_optimization': project.metadata.get('use_seo', False),
-            'ai_thumbnail': project.metadata.get('use_ai_thumbnail', False),
-        }
 
         try:
+            # Only the render of the approved segments: the paid add-ons (SEO,
+            # thumbnail) were charged with the project at creation (ADR-013).
             final_cost = PricingEngine.calculate_render_cost(
                 duration_seconds=int(math.ceil(total_duration)),
                 resolution=_pricing_resolution(project),
-                features_requested=features_requested,
+                features_requested={},
                 plan=workspace.subscription_plan
             )
         except Exception as e:
             return Response({"error": f"Error en el motor de precios: {str(e)}"}, status=400)
+
+        # Claim the approval before reserving: two concurrent approvals must not
+        # both reserve and render. Only the request that moves the project out of
+        # AWAITING_APPROVAL goes on.
+        claimed = VideoProject.objects.filter(
+            pk=project.pk, status=VideoProject.Status.AWAITING_APPROVAL,
+        ).update(status=VideoProject.Status.RENDERING)
+        if not claimed:
+            return Response({"error": "El proyecto ya se está renderizando."}, status=409)
+
+        def release_claim():
+            VideoProject.objects.filter(
+                pk=project.pk, status=VideoProject.Status.RENDERING,
+            ).update(status=VideoProject.Status.AWAITING_APPROVAL)
 
         try:
             # CentralizaciÃ³n en wallet_service para integridad financiera
@@ -165,8 +176,10 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
                 description=f"Render Final (Paper Edit): {project.title}"
             )
         except (wallet_service.InsufficientFundsError, ValidationError) as e:
+            release_claim()
             return Response({"error": str(e), "required": final_cost}, status=402)
         except Exception as e:
+            release_claim()
             logger.error(f"Error reserving funds: {e}")
             return Response({"error": "Error procesando el pago."}, status=500)
 
@@ -240,6 +253,14 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
                 return Response({"error": "Error interno al procesar el presupuesto del video."}, status=status.HTTP_400_BAD_REQUEST)
         
         elif project.video_url:
+            if _pricing_resolution(project) != '720p':
+                # The flat link price does not know the duration, so it cannot
+                # price a higher tier; an auto-rendered link would get it free.
+                project.delete()
+                return Response(
+                    {"error": "Los proyectos por link se procesan en 720p. Para 1080p o 4K, subí el archivo."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             cost_in_tokens = Decimal('10.0')
             # The duration of a URL video is unknown here: the requested
             # resolution and the SEO add-on are checked against the plan, and
