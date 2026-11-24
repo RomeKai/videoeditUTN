@@ -120,7 +120,7 @@ class PipelineFailureLogTests(LogPrivacyAssertions, IngestionHarness, TestCase):
         project = self.make_secret_project(video_url=f"https://example.test/{TEXT_MARKER}")
         VideoProject.objects.filter(pk=project.pk).update(source_file="")
 
-        with patch("apps.videos.tasks.download_from_youtube", side_effect=RuntimeError(SECRET)):
+        with patch("apps.videos.tasks.ingestion.download_from_youtube", side_effect=RuntimeError(SECRET)):
             with capture_logs() as logs:
                 result = self.run_task(project)
 
@@ -132,7 +132,7 @@ class PipelineFailureLogTests(LogPrivacyAssertions, IngestionHarness, TestCase):
 
         project = self.make_secret_project()
         with patch(
-            "apps.videos.tasks._run_ingestion", side_effect=PipelineConflictError(SECRET)
+            "apps.videos.tasks.ingestion._run_ingestion", side_effect=PipelineConflictError(SECRET)
         ):
             with capture_logs() as logs:
                 self.run_task(project)
@@ -141,7 +141,7 @@ class PipelineFailureLogTests(LogPrivacyAssertions, IngestionHarness, TestCase):
 
     def test_failure_recording_error_does_not_log_traceback(self):
         project = self.make_secret_project()
-        with patch("apps.videos.tasks.record_error", side_effect=DatabaseError(SECRET)):
+        with patch("apps.videos.tasks.ingestion.record_error", side_effect=DatabaseError(SECRET)):
             with capture_logs() as logs:
                 _record_pipeline_failure(str(project.id), RuntimeError(SECRET), 1, final=False)
 
@@ -157,7 +157,7 @@ class PipelineFailureLogTests(LogPrivacyAssertions, IngestionHarness, TestCase):
             if calls["n"] > 1:
                 raise DatabaseError(SECRET)
 
-        with patch("apps.videos.tasks.set_stage_status", side_effect=flaky_status):
+        with patch("apps.videos.tasks.ingestion.set_stage_status", side_effect=flaky_status):
             with capture_logs() as logs:
                 self.run_task(project)
 
@@ -226,7 +226,7 @@ class RenderTaskLogTests(LogPrivacyAssertions, CapturedTaskFailures, TestCase):
 
     def test_on_failure_recording_error_does_not_log_traceback(self):
         with patch(
-            "apps.videos.tasks.VideoClip.objects.get", side_effect=DatabaseError(SECRET)
+            "apps.videos.tasks.render.VideoClip.objects.get", side_effect=DatabaseError(SECRET)
         ):
             with capture_logs() as logs:
                 ClipRenderTask().on_failure(

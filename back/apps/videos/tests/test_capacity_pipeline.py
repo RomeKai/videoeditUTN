@@ -678,7 +678,7 @@ class CapacityReviewRegressionTests(CapacityHarness, TestCase):
         self.store.denials = [5.0]
 
         with patch(
-            "apps.videos.tasks._wait_for_capacity", side_effect=OperationalError("db down")
+            "apps.videos.tasks.ingestion._wait_for_capacity", side_effect=OperationalError("db down")
         ):
             result = self.run_task(project)  # the Celery retry runs once the store grants
 
