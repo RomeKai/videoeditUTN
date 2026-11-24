@@ -792,18 +792,23 @@ def _is_whole_video(project):
     )
 
 
+def _whole_video_is_paid(project_id):
+    """The creation reservation that pays a whole-video render is still RESERVED."""
+    reservation_id = (
+        VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
+    ).get('reservation_id')
+    return bool(reservation_id) and Transaction.objects.filter(
+        pk=reservation_id, status=Transaction.Status.RESERVED,
+    ).exists()
+
+
 def _ensure_whole_video_paid(project_id):
     """
     A whole-video render is paid by the creation reservation, charged only when
     the render is delivered (``_settle_whole_video_reservation``). If it was
     refunded (the project failed before), a re-dispatch must not render for free.
     """
-    reservation_id = (
-        VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
-    ).get('reservation_id')
-    if not reservation_id or not Transaction.objects.filter(
-        pk=reservation_id, status=Transaction.Status.RESERVED,
-    ).exists():
+    if not _whole_video_is_paid(project_id):
         raise WholeVideoNotPaidError()
 
 
@@ -817,9 +822,7 @@ def _whole_video_render_allowed(project_id):
     project = VideoProject.objects.filter(pk=project_id).first()
     if project is None or not _is_whole_video(project):
         return True
-    reservation_id = (project.metadata or {}).get('reservation_id')
-    return project.pipeline_stage == PipelineStage.RENDER_DISPATCHED and bool(reservation_id) and \
-        Transaction.objects.filter(pk=reservation_id, status=Transaction.Status.RESERVED).exists()
+    return project.pipeline_stage == PipelineStage.RENDER_DISPATCHED and _whole_video_is_paid(project_id)
 
 
 def _settle_whole_video_reservation(project_id):
@@ -846,6 +849,8 @@ def _settle_whole_video_reservation(project_id):
         return
     if project.pipeline_stage not in (*TERMINAL_STAGES, PipelineStage.FAILED):
         return
+    if not _whole_video_is_paid(project_id):
+        return  # already settled
     statuses = set(VideoClip.objects.filter(project_id=project_id).values_list('status', flat=True))
     if statuses & {VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED}:
         _commit_ingestion_reservation(project_id)
@@ -1002,10 +1007,11 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
     progress['stage'] = stage
 
     if stage == PipelineStage.FAILED:
-        if _is_whole_video(project):
+        if _is_whole_video(project) and not _whole_video_is_paid(project_id):
             # Refunded when it failed: nothing is run again (not even a clip
-            # created) unless its reservation is still reserved.
-            _ensure_whole_video_paid(project_id)
+            # created), and the reason it failed stays as it was.
+            logger.warning("pipeline.redispatch_skipped project_id=%s reason=refunded", project_id)
+            return f"Not resumed {project_id}: its whole-video payment was refunded"
         # Manual re-dispatch of a failed project: resume where it stopped.
         stage = last_completed_stage(project)
         reopen(project_id, stage)

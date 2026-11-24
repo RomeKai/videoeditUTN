@@ -183,6 +183,14 @@ def render_clip_task(self, clip_id):
     if not _claim_clip_for_render(clip_id, redelivered=redelivered):
         logger.info(f"⏭️ [RENDER TASK] Clip {clip_id} is being rendered by another delivery, skipping")
         return f"Clip {clip_id} already claimed"
+    if not _whole_video_render_allowed(clip.project_id):
+        # The project failed and was refunded between the check and the claim.
+        VideoClip.objects.filter(pk=clip_id, status=VideoClip.Status.RENDERING).update(
+            status=VideoClip.Status.FAILED,
+        )
+        finalize_project_render(clip.project_id)
+        logger.warning("render.skipped_unpaid clip_id=%s project_id=%s", clip_id, clip.project_id)
+        return f"Clip {clip_id} not rendered: the project is not payable"
 
     previous_key = clip.s3_object_key
     RenderEngine.render_clip(clip_id)

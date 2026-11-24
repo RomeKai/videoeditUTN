@@ -233,6 +233,19 @@ class SingleEditPipelineTests(IngestionHarness, TestCase):
         clip.refresh_from_db()
         self.assertEqual(clip.status, VideoClip.Status.FAILED)
 
+    def test_a_project_refunded_between_the_check_and_the_claim_is_not_rendered(self):
+        project = self.make_whole_video()
+        clip = VideoClip.objects.create(project=project, title="Pipeline", start_time=0, end_time=10)
+        VideoProject.objects.filter(pk=project.pk).update(pipeline_stage=PipelineStage.RENDER_DISPATCHED)
+
+        with patch("apps.videos.tasks.ingestion._whole_video_render_allowed", side_effect=[True, False]), \
+                patch("apps.videos.services.render_engine.RenderEngine.render_clip") as render:
+            render_clip_task.apply(args=[str(clip.id)])
+
+        render.assert_not_called()
+        clip.refresh_from_db()
+        self.assertEqual(clip.status, VideoClip.Status.FAILED)
+
     def test_a_paid_whole_video_is_rendered(self):
         project = self.make_whole_video()
         clip = VideoClip.objects.create(project=project, title="Pipeline", start_time=0, end_time=10)
@@ -248,14 +261,16 @@ class SingleEditPipelineTests(IngestionHarness, TestCase):
         project = self.make_whole_video(paid=False)
         txn = self.reserve(project)
         rollback_reservation(txn.id)
-        VideoProject.objects.filter(pk=project.pk).update(pipeline_stage=PipelineStage.FAILED)
+        VideoProject.objects.filter(pk=project.pk).update(
+            pipeline_stage=PipelineStage.FAILED, pipeline_error_code="UnsafeContentError",
+        )
 
         self.run_to_render(project)
 
         self.mock_transcribe.assert_not_called()
         self.assertFalse(VideoClip.objects.filter(project=project).exists())
         self.assertEqual(project.pipeline_stage, PipelineStage.FAILED)
-        self.assertEqual(project.pipeline_error_code, "WholeVideoNotPaidError")
+        self.assertEqual(project.pipeline_error_code, "UnsafeContentError")  # why it failed stays
 
     def test_a_failed_project_whose_video_is_rendering_keeps_its_reservation(self):
         project = self.make_whole_video(paid=False)

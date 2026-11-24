@@ -140,11 +140,10 @@ Después:
   - Con el proyecto en `completed`, `partial` o `failed`: si un clip quedó `completed` o `published`, la cobra. Si sigue `rendering`, espera. Si no, la devuelve.
   - Antes de eso no toca nada.
 - **Reembolso al fallar:** `_refund_ingestion_reservation` devuelve la reserva aunque exista el clip, salvo que esté `rendering` o `completed`.
-- **Re-despacho:** `_ensure_whole_video_paid` exige que la reserva siga `reserved`. Si ya se devolvió, lanza `WholeVideoNotPaidError` y no corre nada. Se chequea:
-  - al re-despachar un proyecto `failed`, antes de reabrirlo (así un override de moderación no crea un clip en un proyecto ya devuelto: hay que crear uno nuevo);
-  - antes de despachar el render;
-  - al reanudar en `render_dispatched`.
-- **Mensajes de render que quedaron en la cola:** antes de reclamar el clip, `render_clip_task` pregunta `_whole_video_render_allowed`: el proyecto tiene que estar en `render_dispatched` y la reserva seguir `reserved`. Si no, marca el clip `failed`, llama a `finalize_project_render` y no renderiza (`render.skipped_unpaid`).
+- **Re-despacho:** la reserva tiene que seguir `reserved` (`_whole_video_is_paid`).
+  - Al re-despachar un proyecto `failed` ya devuelto, no se reabre ni corre nada (`pipeline.redispatch_skipped`), y el proyecto conserva el código del error por el que falló. Así un override de moderación no crea un clip en un proyecto devuelto: hay que crear uno nuevo.
+  - Antes de despachar el render y al reanudar en `render_dispatched`, `_ensure_whole_video_paid` lanza `WholeVideoNotPaidError` si ya no está reservada.
+- **Mensajes de render que quedaron en la cola:** `render_clip_task` pregunta `_whole_video_render_allowed` antes de reclamar el clip y otra vez apenas lo reclama: el proyecto tiene que estar en `render_dispatched` y la reserva seguir `reserved`. Si no, marca el clip `failed`, llama a `finalize_project_render` y no renderiza (`render.skipped_unpaid`).
 - **API:** el archivo de un video completo no se puede cambiar con un PATCH (400 en `source_file`). No tiene vista previa (409): su render real se despacha enseguida. Los campos `pipeline_*` son de solo lectura para cualquier proyecto.
 - El precio de creación ya es el del video entero a su resolución, que es justo lo que se renderiza. No se cobra nada más.
 - Solo se crea con un archivo subido de hasta `AI_SINGLE_EDIT_MAX_DURATION_SECONDS` (600 s por defecto). Ver [01](01-creacion-de-proyecto.md).
