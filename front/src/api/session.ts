@@ -45,6 +45,8 @@ export function getTokens(): TokenPair | null {
 
 export function setTokens(tokens: TokenPair | null): void {
   memoryTokens = tokens;
+  // New tokens end the "expired" state; dropping them ends it too (there is nothing left to expire).
+  expired = false;
   const store = storage();
   if (store) {
     if (tokens) store.setItem(AUTH_STORAGE_KEY, JSON.stringify(tokens));
@@ -68,7 +70,9 @@ export function setActiveWorkspaceId(id: string | null): void {
   emit();
 }
 
+/** Signs out locally: tokens and the active workspace (it belongs to that user). */
 export function clearSession(): void {
+  setActiveWorkspaceId(null);
   setTokens(null);
 }
 
@@ -87,6 +91,7 @@ export function subscribeSession(listener: Listener): () => void {
 
 type ExpiredListener = () => void;
 const expiredListeners = new Set<ExpiredListener>();
+let expired = false;
 
 /** Fired when the refresh token is rejected: opens the "Sesión vencida" dialog (D9). */
 export function onSessionExpired(listener: ExpiredListener): () => void {
@@ -94,11 +99,50 @@ export function onSessionExpired(listener: ExpiredListener): () => void {
   return () => expiredListeners.delete(listener);
 }
 
+/**
+ * The session could not be renewed. From here on authenticated calls fail at
+ * once (no more requests with a dead token) until new tokens are stored.
+ */
 export function notifySessionExpired(): void {
+  expired = true;
   for (const listener of expiredListeners) listener();
+}
+
+export function isSessionExpired(): boolean {
+  return expired;
+}
+
+type MaintenanceListener = (active: boolean) => void;
+const maintenanceListeners = new Set<MaintenanceListener>();
+
+/** Fired when the API answers 503 (true) and when it answers normally again (false): page K5. */
+export function onMaintenance(listener: MaintenanceListener): () => void {
+  maintenanceListeners.add(listener);
+  return () => maintenanceListeners.delete(listener);
+}
+
+export function notifyMaintenance(active: boolean): void {
+  for (const listener of maintenanceListeners) listener(active);
+}
+
+/** Seconds until a JWT expires, or null when the token is not a readable JWT (the mock tokens are not). */
+export function secondsUntilExpiry(token: string, now: number = Date.now()): number | null {
+  const payload = token.split('.')[1];
+  if (!payload) return null;
+  try {
+    const json = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as { exp?: unknown };
+    return typeof json.exp === 'number' ? json.exp - now / 1000 : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Stable snapshot for useSyncExternalStore: the access token, or null without a session. */
 export function getAccessSnapshot(): string | null {
   return getTokens()?.access ?? null;
+}
+
+/** Stable snapshot of the active workspace id for useSyncExternalStore. */
+export function getWorkspaceSnapshot(): string | null {
+  return getActiveWorkspaceId();
 }
