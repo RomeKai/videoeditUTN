@@ -4,11 +4,10 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { RenderResolution } from '@/api/contracts/common';
 import type { PaperEditData, Project } from '@/api/contracts/projects';
-import { ApiError } from '@/api/errors';
 import { useApprovePaperEdit, usePaperEditData, usePricing, useProject, useWallet } from '@/api/hooks';
 import { ConfirmCostDialog, UnsavedChangesDialog, useBillingDialogs } from '@/dialogs';
 import { cx } from '@/lib/cx';
-import { errorMessage } from '@/lib/error-messages';
+import { approveErrorKind, autoRenderSkippedMessage, errorMessage } from '@/lib/error-messages';
 import { formatDuration, formatNumber, formatPercent, formatTimecode, formatTokens } from '@/lib/format';
 import { useIsMobile } from '@/lib/hooks';
 import { NO_ACCESS_REASON } from '@/lib/permissions';
@@ -25,6 +24,7 @@ import {
   Icon,
   IconButton,
   Input,
+  isPlaceholderSource,
   Kbd,
   Page,
   Popover,
@@ -45,7 +45,7 @@ import { clearDraft, draftReducer, includedTotals, isDirty, restoreDraft, saveDr
 import { clamp, rulerTicks } from './lib/time';
 import { buildRows, captionAt, snapEnd, snapStart, stepEdge, titleFromText, wordIndexAt, type Word } from './lib/transcript';
 import styles from './review.module.css';
-import { playableUrl, useFreePreview } from './useFreePreview';
+import { useFreePreview } from './useFreePreview';
 import { useUnsavedGuard } from './useUnsavedGuard';
 
 type View = 'crop' | 'original';
@@ -346,16 +346,22 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
           guard.leaveNow(`/proyectos/${projectId}/clips`);
         },
         onError: (error) => {
-          if (billing.handleError(error, { concept: 'Costo del render' })) {
-            // 402 opens "Saldo insuficiente" and a plan 403 "Límite del plan"; the selection stays as it is.
-            setConfirming(false);
-          } else if (error instanceof ApiError && error.isConflict) {
+          // Today the backend answers 400 `{ error }` for a review that was already approved and for a
+          // plan limit; 409 only when two approvals race. approveErrorKind() tells them apart.
+          const kind = approveErrorKind(error);
+          if (kind?.kind === 'not_awaiting_approval') {
             setConfirming(false);
             clearDraft(projectId);
-            toast.show('Este proyecto ya se está renderizando. Te llevamos a los clips.', { tone: 'info' });
+            toast.show(kind.message, { tone: 'info' });
             guard.leaveNow(`/proyectos/${projectId}/clips`);
+          } else if (kind?.kind === 'insufficient_funds' && billing.handleError(error, { concept: 'Costo del render' })) {
+            // 402 opens "Saldo insuficiente"; the selection stays as it is.
+            setConfirming(false);
+          } else if (kind?.kind === 'plan_limit') {
+            setConfirming(false);
+            billing.showPlanLimit({ kind: kind.limit ?? 'unknown', detail: kind.message });
           } else {
-            setApproveError(errorMessage(error, 'No pudimos empezar el render. Probá de nuevo.'));
+            setApproveError(kind?.message ?? errorMessage(error, 'No pudimos empezar el render. Probá de nuevo.'));
           }
         },
       },
@@ -391,6 +397,8 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
     />
   );
 
+  // "Renderizar sin revisar" was on but could not be paid: the project waits here instead.
+  const skipped = autoRenderSkippedMessage(data.metadata.auto_render_skipped);
   const noSuggestions = data.ai_suggestions.length === 0;
   const empty = draft.clips.length === 0;
   const statusText = noSuggestions
@@ -503,7 +511,7 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
         <VideoPlayer
           ref={player}
           label={`Reproductor: ${data.title}`}
-          src={playableUrl(data.proxy_url)}
+          src={data.proxy_url}
           seed={projectId}
           ratio="16:9"
           duration={total}
@@ -564,8 +572,8 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
           {preview.state === 'ready' ? (
             <span className="t-small muted" role="status">
               <Icon name="check-circle" size={14} /> Vista previa lista en 360p, sin seguimiento de caras ni corte de silencios.{' '}
-              {playableUrl(preview.preview?.url) ? (
-                <a className="lnk" href={playableUrl(preview.preview?.url) ?? undefined} target="_blank" rel="noopener noreferrer">
+              {preview.preview?.url && !isPlaceholderSource(preview.preview.url) ? (
+                <a className="lnk" href={preview.preview.url} target="_blank" rel="noopener noreferrer">
                   Abrirla
                 </a>
               ) : null}
@@ -799,6 +807,11 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
           actions={isMobile ? undefined : <ShortcutsButton open={keysOpen} onOpenChange={setKeysOpen} />}
         />
         {loadError ? <LoadError error={loadError} onRetry={onRetry} fullPageForMissing={false} className={styles.banner} /> : null}
+        {skipped ? (
+          <Banner tone="warn" className={styles.banner} title={skipped.title}>
+            {skipped.text}
+          </Banner>
+        ) : null}
         {canEdit ? null : (
           <Banner tone="info" className={styles.banner} title="Estás viendo la revisión en modo lectura">
             Podés reproducir los clips y leer la transcripción. Para elegir clips y renderizar, pedile acceso a un admin.

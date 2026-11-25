@@ -44,7 +44,7 @@ import { describeStyle } from './lib/style';
 import { clamp, formatEdge, MIN_CLIP_SECONDS } from './lib/time';
 import { buildRows, snapEnd, snapStart, stepEdge, type Word } from './lib/transcript';
 import styles from './editor.module.css';
-import { playableUrl, useFreePreview } from './useFreePreview';
+import { useFreePreview } from './useFreePreview';
 import { useUnsavedGuard } from './useUnsavedGuard';
 
 export const PROJECT_RENDERING_MESSAGE = 'El proyecto se está renderizando: esperá a que termine para cambiarlo.';
@@ -394,7 +394,8 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
       </p>
     ) : null;
 
-  const src = showingPreview ? playableUrl(preview.preview?.url) : playableUrl(clip.preview_url);
+  // Mock media (`mock:` URLs) has no file behind it: the shared player shows its placeholder for those.
+  const src = showingPreview ? preview.preview?.url : clip.preview_url;
 
   return (
     <>

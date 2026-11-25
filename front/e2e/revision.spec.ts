@@ -42,17 +42,20 @@ test.describe('Revisión de clips (D2)', () => {
     const dialog = page.getByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
     await expect(dialog).toBeVisible();
     await dialog.getByRole('button', { name: 'Seguir editando' }).click();
+    expectClean(problems, 'seguir editando');
     await expect(page).toHaveURL(new RegExp(`${REVIEW}$`));
     await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
 
     // The draft survives a reload; "Descartar" really drops it.
     await page.reload();
     await settle(page);
+    expectClean(problems, 'recarga');
     await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
     await page.getByRole('navigation', { name: 'Ruta' }).getByRole('link', { name: 'Proyectos' }).click();
     await page.getByRole('alertdialog').getByRole('button', { name: 'Descartar' }).click();
     await expect(page).toHaveURL(/\/proyectos$/);
     await settle(page);
+    expectClean(problems, 'descartar');
     await page.goto(REVIEW);
     await settle(page);
     await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('5 clips seleccionados');
@@ -104,6 +107,9 @@ test.describe('Editor de clip (D4)', () => {
     await page.goto(EDITOR);
     await settle(page);
     await expect(page.getByText('Estás viendo el clip en modo lectura')).toBeVisible();
+    // The 9:16 stage keeps its shape inside the narrow player card.
+    const stage = await page.getByRole('group', { name: /^Reproductor:/ }).boundingBox();
+    expect(stage?.height ?? 0).toBeGreaterThan(300);
     await expect(page.getByRole('button', { name: /Volver a renderizar/ })).toHaveAttribute('aria-disabled', 'true');
     expectClean(problems, EDITOR);
   });

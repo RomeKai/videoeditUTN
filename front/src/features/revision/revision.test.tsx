@@ -1,11 +1,13 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { configure, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { http, HttpResponse } from 'msw';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiCall } from '@/api/client';
 import * as clips from '@/api/contracts/clips';
 import { ApiError } from '@/api/errors';
 import { mid, KIND } from '@/api/mocks/db';
 import { server } from '@/api/mocks/server';
+import { PLAN_IDS } from '@/api/mocks/seed';
 import { loadDb } from '@/api/mocks/state';
 import { ClipEditorScreen, PROJECT_RENDERING_MESSAGE } from './ClipEditorScreen';
 import { ReviewScreen } from './ReviewScreen';
@@ -28,6 +30,7 @@ const clipOf = (project: number, n: number) => mid(KIND.clip, project * 100 + n)
 
 // The review renders an hour of transcript word by word: jsdom needs more than the default 5 s when the whole suite runs.
 vi.setConfig({ testTimeout: 40_000 });
+configure({ asyncUtilTimeout: 10_000 });
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => {
@@ -113,7 +116,7 @@ describe('D2 · Revisión de clips', () => {
     expect(project(REVIEW)?.clips).toHaveLength(5);
   });
 
-  it('si otra persona ya lo aprobó (409) avisa y lleva a Clips', async () => {
+  it('si otra persona ya lo aprobó (hoy un 400) avisa y lleva a Clips', async () => {
     const user = userEvent.setup();
     renderScreen(<ReviewScreen projectId={REVIEW} />);
     await user.click(await screen.findByRole('button', { name: 'Renderizar 5 clips' }));
@@ -123,8 +126,46 @@ describe('D2 · Revisión de clips', () => {
       if (target) target.status = 'rendering';
     });
     await user.click(within(dialog).getByRole('button', { name: 'Renderizar' }));
-    expect(await screen.findByText(/ya se está renderizando/)).toBeInTheDocument();
+    expect(await screen.findByText('Este proyecto ya se aprobó. Te llevamos a los clips.')).toBeInTheDocument();
     await waitFor(() => expect(router.push).toHaveBeenCalledWith(`/proyectos/${REVIEW}/clips`));
+  });
+
+  it('la carrera de dos aprobaciones (409) va por el mismo camino', async () => {
+    server.use(http.post('*/api/v1/projects/:id/approve-paper-edit/', () => HttpResponse.json({ error: 'El proyecto ya se está renderizando.' }, { status: 409 })));
+    const user = userEvent.setup();
+    renderScreen(<ReviewScreen projectId={REVIEW} />);
+    await user.click(await screen.findByRole('button', { name: 'Renderizar 5 clips' }));
+    await user.click(within(await screen.findByRole('dialog', { name: 'Renderizar 5 clips' })).getByRole('button', { name: 'Renderizar' }));
+    await waitFor(() => expect(router.push).toHaveBeenCalledWith(`/proyectos/${REVIEW}/clips`));
+  });
+
+  it('un límite del plan al aprobar (400 del motor de precios) abre «Límite del plan» en español', async () => {
+    const user = userEvent.setup();
+    renderScreen(<ReviewScreen projectId={REVIEW} />);
+    await user.click(await screen.findByRole('button', { name: 'Renderizar 5 clips' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Renderizar 5 clips' });
+    // The plan changed after the cost was shown: the backend refuses with its English pricing message.
+    editDb((db) => {
+      const target = db.projects.find((item) => item.id === REVIEW);
+      if (target) target.metadata = { ...target.metadata, render_resolution: '1080p' };
+      for (const workspace of db.workspaces) workspace.subscription_plan = PLAN_IDS.free;
+    });
+    await user.click(within(dialog).getByRole('button', { name: 'Renderizar' }));
+    const limit = await screen.findByRole('alertdialog', { name: 'Tu plan no incluye esta resolución' });
+    expect(limit).toHaveTextContent('Tu plan no permite renderizar estos clips. Sacá alguno o cambiá de plan.');
+    expect(limit).not.toHaveTextContent(/motor de precios|does not support/);
+    expect(router.push).not.toHaveBeenCalled();
+    expect(project(REVIEW)?.status).toBe('awaiting_approval');
+  });
+
+  it.each([
+    [30, 'No alcanzó el saldo para renderizar sin revisar'],
+    [31, 'Tu plan no permite renderizar estos clips sin revisar'],
+  ])('avisa cuando «Renderizar sin revisar» no se pudo pagar (proyecto %i)', async (index, title) => {
+    signIn('todos-los-estados');
+    renderScreen(<ReviewScreen projectId={mid(KIND.project, index)} />);
+    expect(await screen.findByText(title)).toBeInTheDocument();
+    expect(screen.getByText('Revisá y aprobá los clips que quieras.')).toBeInTheDocument();
   });
 
   it('con saldo bajo abre «No te alcanza el saldo» antes de confirmar', async () => {

@@ -17,16 +17,6 @@ export interface FreePreview {
   request: () => void;
 }
 
-/** Media the browser can really load. The mocks answer with a reserved `.invalid` host: there is no file behind it. */
-export function playableUrl(url: string | null | undefined): string | null {
-  if (!url) return null;
-  try {
-    return new URL(url, 'http://localhost').hostname.endsWith('.invalid') ? null : url;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * PTE-03: free 360p preview of a clip as it is saved. It is asked for on
  * demand and then polled every 5 s until it is ready or failed; nothing is

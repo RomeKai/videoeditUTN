@@ -34,11 +34,6 @@
   width: 270px;
   max-width: 100%;
 }
-/* The shared player centers its stage with auto margins, which collapses it inside a column: give it the full width. */
-.player > div:first-child {
-  width: 100%;
-  max-height: none;
-}
 .vchip {
   position: absolute;
   left: 8px;
