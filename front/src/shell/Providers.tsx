@@ -14,6 +14,7 @@ import { LeaveGuardProvider } from './leaveGuard';
 import { MaintenanceGate } from './MaintenanceGate';
 import { OfflineBanner } from './OfflineBanner';
 import { SessionProvider } from './session';
+import { WorkspaceElsewhereBanner } from './WorkspaceElsewhereBanner';
 
 // Only loaded in mock mode, and only in the browser.
 const MockPanel = dynamic(() => import('@/dev/MockPanel').then((module) => module.MockPanel), { ssr: false });
@@ -66,15 +67,17 @@ export function Providers({ children }: { children: ReactNode }) {
       <QueryClientProvider client={queryClient}>
         <ToastProvider>
           <MockGate>
-            <SessionProvider>
-              <LeaveGuardProvider>
+            {/* Outside the session: switching workspace goes through the guard. */}
+            <LeaveGuardProvider>
+              <SessionProvider>
                 <BillingDialogsProvider>
                   <OfflineBanner />
+                  <WorkspaceElsewhereBanner />
                   <MaintenanceGate>{children}</MaintenanceGate>
                   <SessionExpiredDialog />
                 </BillingDialogsProvider>
-              </LeaveGuardProvider>
-            </SessionProvider>
+              </SessionProvider>
+            </LeaveGuardProvider>
           </MockGate>
         </ToastProvider>
       </QueryClientProvider>

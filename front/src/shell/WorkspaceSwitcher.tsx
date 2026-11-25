@@ -20,7 +20,6 @@ import { useSession } from './session';
 /** The rows of the workspace list: shared by the desktop popover and the phone's account menu. */
 export function WorkspaceList({ onDone, onCreate }: { onDone: () => void; onCreate: () => void }) {
   const { me, workspace, switchWorkspace } = useSession();
-  const navigation = useGuardedNavigation();
   const toast = useToast();
   return (
     <>
@@ -37,15 +36,11 @@ export function WorkspaceList({ onDone, onCreate }: { onDone: () => void; onCrea
             onClick={() => {
               onDone();
               if (current) return;
-              // Asks first when the screen has unsaved changes: after the switch the screen is gone, and they with it.
-              navigation.confirm(() =>
-                switchWorkspace(item.id).then((current) => {
-                  // The person already picked another one: that switch speaks for itself.
-                  if (!current) return;
-                  toast.success(`Ahora estás en ${item.name}`);
-                  navigation.push('/proyectos');
-                }),
-              );
+              // It asks first when the screen has unsaved changes, and lands on Proyectos.
+              void switchWorkspace(item.id).then((switched) => {
+                // The person stayed, or already picked another one: that switch speaks for itself.
+                if (switched) toast.success(`Ahora estás en ${item.name}`);
+              });
             }}
           >
             <Avatar name={item.name} kind="workspace" seed={item.id} />
@@ -99,9 +94,8 @@ export function CreateWorkspaceDialog({ open, onClose }: { open: boolean; onClos
     navigation.confirm(() =>
       create.mutateAsync(name.trim()).then(async (workspace) => {
         close();
-        await switchWorkspace(workspace.id);
         toast.success(`Creaste ${workspace.name}`);
-        navigation.push('/proyectos');
+        await switchWorkspace(workspace.id);
       }),
     );
   };

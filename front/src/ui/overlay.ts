@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
 
 const FOCUSABLE = [
   'a[href]',
@@ -87,7 +87,9 @@ export function useModalLayer<T extends HTMLElement>(
   const dismissableRef = useRef(dismissable);
   dismissableRef.current = dismissable;
 
-  useEffect(() => {
+  // Layout, not passive: the layer listens from the first frame it is on screen. As a passive effect
+  // there was a moment where the dialog was visible and an Escape (or a Tab) went past it.
+  useLayoutEffect(() => {
     if (!open) return;
     const node = ref.current;
     if (!node) return;

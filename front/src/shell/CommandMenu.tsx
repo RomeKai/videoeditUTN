@@ -11,6 +11,7 @@ import { useIsClient } from '@/ui/Dialog';
 import { Icon, type IconName } from '@/ui/Icon';
 import { Kbd } from '@/ui/Kbd';
 import { useModalLayer } from '@/ui/overlay';
+import { useToast } from '@/ui/Toast';
 import styles from './AppShell.module.css';
 import { useGuardedNavigation } from './leaveGuard';
 import { MAIN_NAV } from './nav';
@@ -46,6 +47,7 @@ export function CommandMenu({ open, onClose }: { open: boolean; onClose: () => v
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(0);
   const navigation = useGuardedNavigation();
+  const toast = useToast();
   const { toggle: toggleTheme } = useTheme();
   const { me, workspace, switchWorkspace } = useSession();
   const { can } = usePermissions();
@@ -110,13 +112,16 @@ export function CommandMenu({ open, onClose }: { open: boolean; onClose: () => v
         icon: 'selector' as const,
         run: () => {
           onClose();
-          // With unsaved changes on screen, the switch waits for the answer: switching first would lose them without asking.
-          navigation.confirm(() => switchWorkspace(item.id).then(() => navigation.push('/proyectos')));
+          // It asks first when the screen has unsaved changes, and lands on Proyectos.
+          void switchWorkspace(item.id).then((switched) => {
+            // The person stayed, or picked another one meanwhile: nothing to announce.
+            if (switched) toast.success(`Ahora estás en ${item.name}`);
+          });
         },
       }))
       .filter((item) => matches(item.label) || matches('Cambiar de workspace'));
     return [...found, ...sections, ...actions, ...others];
-  }, [can, me?.workspaces, onClose, projects.data?.results, query, navigation, search, switchWorkspace, toggleTheme, workspace?.id]);
+  }, [can, me?.workspaces, onClose, projects.data?.results, query, navigation, search, toast, switchWorkspace, toggleTheme, workspace?.id]);
 
   useEffect(() => {
     setSelected((index) => Math.min(index, Math.max(0, commands.length - 1)));

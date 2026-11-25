@@ -201,7 +201,7 @@ function EnterWorkspace({ id, name }: { id: string; name: string }) {
   const enter = async () => {
     setBusy(true);
     try {
-      await switchWorkspace(id);
+      await switchWorkspace(id, { to: null });
     } catch {
       // The app opens on the workspace it had: the switcher is one click away.
     }
@@ -226,7 +226,7 @@ function useJoin(invitation: InvitationPreview) {
     // The switch stores the workspace at once and then saves it in the profile. Joined is joined: if that
     // request fails or never answers, the app opens anyway instead of leaving this card busy forever.
     await Promise.race([
-      switchWorkspace(workspaceId).catch(() => undefined),
+      switchWorkspace(workspaceId, { to: null }).catch(() => undefined),
       new Promise<void>((resolve) => window.setTimeout(resolve, joinOptions.switchTimeoutMs)),
     ]);
     toast.success(`Ya sos parte de ${invitation.workspace_name}`);

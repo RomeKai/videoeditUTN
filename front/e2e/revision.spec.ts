@@ -44,6 +44,9 @@ test.describe('Revisión de clips (D2)', () => {
   test('salir con cambios pregunta antes de perderlos', async ({ page }) => {
     await useScenario(page, 'estudio-norte');
     const problems = watch(page);
+    // Coming from Proyectos: Back has somewhere to go (a tab that starts on the review gets no extra entry).
+    await page.goto('/proyectos');
+    await settle(page);
     await page.goto(REVIEW);
     await settle(page);
     await page.getByRole('checkbox', { name: /Incluir «/ }).first().uncheck();
@@ -76,6 +79,55 @@ test.describe('Revisión de clips (D2)', () => {
     await settle(page);
     await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('5 clips seleccionados');
     expectClean(problems, REVIEW);
+  });
+
+  test('recargar con cambios y después Atrás → Descartar sale de la revisión', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    await page.goto('/proyectos');
+    await settle(page);
+    await page.goto(REVIEW);
+    await settle(page);
+    await page.getByRole('checkbox', { name: /Incluir «/ }).first().uncheck();
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
+    // The reload lands on the extra history entry the guard had added: it is taken again, not doubled.
+    await page.reload();
+    await settle(page);
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
+    await page.goBack();
+    const dialog = page.getByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Descartar' }).click();
+    await expect(page).toHaveURL(/\/proyectos$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Proyectos' })).toBeVisible();
+  });
+
+  test('ir a comprar tokens y volver, y después Atrás → Descartar sale de la revisión de una vez', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    await page.goto('/proyectos');
+    await settle(page);
+    await page.goto(REVIEW);
+    await settle(page);
+    await page.getByRole('checkbox', { name: /Incluir «/ }).first().uncheck();
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
+    // The command menu's "Comprar tokens" never asks: the selection is kept.
+    await page.keyboard.press('Control+k');
+    await page.getByRole('combobox', { name: 'Buscar o ejecutar un comando' }).fill('Comprar tokens');
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(/\/uso\/comprar/);
+    await settle(page);
+    // One Back returns to the review, with the selection.
+    await page.goBack();
+    await expect(page).toHaveURL(new RegExp(`${REVIEW}$`));
+    await settle(page);
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
+    // The next Back asks, and "Descartar" leaves: not the same screen again, not one more Back to go.
+    await page.goBack();
+    const dialog = page.getByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
+    await expect(dialog).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`${REVIEW}$`));
+    await dialog.getByRole('button', { name: 'Descartar' }).click();
+    await expect(page).toHaveURL(/\/proyectos$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Proyectos' })).toBeVisible();
   });
 
   test('en el teléfono: reproductor arriba, clips y transcripción en pestañas', async ({ page }) => {

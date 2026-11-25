@@ -77,11 +77,11 @@ export function AppProviders({ client, children }: { client: QueryClient; childr
     <ThemeProvider>
       <QueryClientProvider client={client}>
         <ToastProvider>
-          <SessionProvider>
-            <LeaveGuardProvider>
+          <LeaveGuardProvider>
+            <SessionProvider>
               <BillingDialogsProvider>{children}</BillingDialogsProvider>
-            </LeaveGuardProvider>
-          </SessionProvider>
+            </SessionProvider>
+          </LeaveGuardProvider>
         </ToastProvider>
       </QueryClientProvider>
     </ThemeProvider>

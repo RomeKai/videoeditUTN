@@ -1,16 +1,26 @@
 'use client';
 
 import { useQueryClient } from '@tanstack/react-query';
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
 import type { Plan } from '@/api/contracts/billing';
 import type { Role } from '@/api/contracts/common';
 import type { Me, WorkspaceSummary } from '@/api/contracts/users';
-import { useActiveWorkspaceId, useMe, useSessionPresence, useSubscription, useUpdateMe } from '@/api/hooks';
+import { isScopedTo, isUnscoped, useActiveWorkspaceId, useMe, useSessionPresence, useSubscription, useUpdateMe } from '@/api/hooks';
 import { SessionExpiredError } from '@/api/errors';
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '@/api/session';
+import { useGuardedNavigation } from './leaveGuard';
 import { can as canDo, NO_ACCESS_REASON, type Action, type PermissionContext } from '@/lib/permissions';
 
 export type SessionStatus = 'loading' | 'authenticated' | 'anonymous' | 'error';
+
+export interface SwitchOptions {
+  /** Where the person lands. Null: the caller navigates (or the screen works in any workspace). Default `/proyectos`. */
+  to?: string | null;
+}
+
+/** How long a switch waits to be on its destination before changing the workspace anyway. */
+const ARRIVAL_TIMEOUT_MS = 5000;
 
 export interface SessionValue {
   /** loading: not known yet (hydration), or there are tokens but `/me` has not answered. Never redirect on it. error: `/me` failed (network or server). */
@@ -20,12 +30,14 @@ export interface SessionValue {
   workspace: WorkspaceSummary | null;
   role: Role | null;
   /**
-   * Changes the active workspace and reloads every workspace-scoped query (J3).
-   * The UI follows at once, also when `/me` comes back unchanged. Use it too after
-   * accepting an invitation or creating a workspace (the id may not be in `me` yet).
-   * Resolves to false when a newer switch took over meanwhile: this one changed nothing.
+   * Changes the active workspace (J3). It asks first when the screen has unsaved changes, takes
+   * the person to `to` (Proyectos unless told otherwise) and changes the workspace on arrival, so
+   * no screen is left asking for its data in a workspace that does not have it. The UI follows at
+   * once, also when `/me` comes back unchanged. Use it too after accepting an invitation or
+   * creating a workspace (the id may not be in `me` yet).
+   * Resolves to false when nothing changed: the person chose to stay, or a newer switch took over.
    */
-  switchWorkspace: (workspaceId: string) => Promise<boolean>;
+  switchWorkspace: (workspaceId: string, options?: SwitchOptions) => Promise<boolean>;
   /** Error of `/me` (network or server), so the shell can offer to retry. */
   error: unknown;
   refetch: () => void;
@@ -61,28 +73,87 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [workspace]);
 
   const { mutateAsync: saveMe } = updateMe;
+  const navigation = useGuardedNavigation();
+  const router = useRouter();
+  const pathname = usePathname();
+  const pathRef = useRef(pathname);
+  /** Switches waiting to be on their destination: each one changes the workspace as it gets there. */
+  const arrivals = useRef(new Set<{ path: string; arrive: () => void }>());
+  // Layout, not passive: the workspace changes in the same frame the destination appears, before its
+  // queries start. The screen never asks for (or paints) the previous workspace's data.
+  useLayoutEffect(() => {
+    pathRef.current = pathname;
+    for (const waiting of [...arrivals.current]) {
+      if (waiting.path !== pathname) continue;
+      arrivals.current.delete(waiting);
+      waiting.arrive();
+    }
+  }, [pathname]);
+  const workspaceIds = useRef<string[]>([]);
+  workspaceIds.current = me?.workspaces.map((item) => item.id) ?? [];
+
   // One number per switch: only the latest one writes when its request ends.
   const switchGeneration = useRef(0);
   const switchWorkspace = useCallback(
-    async (workspaceId: string) => {
+    async (workspaceId: string, { to = '/proyectos' }: SwitchOptions = {}) => {
+      // With unsaved changes on screen the person is asked first: after the switch that screen is gone.
+      if (!(await navigation.request())) return false;
       const generation = ++switchGeneration.current;
       const latest = () => generation === switchGeneration.current;
-      setActiveWorkspaceId(workspaceId);
+      const previous = getActiveWorkspaceId();
+      const apply = () => {
+        if (!latest()) return;
+        // What the cache has of the new workspace is from an earlier visit: it is read again on arrival.
+        void queryClient.invalidateQueries({ predicate: isScopedTo(workspaceId), refetchType: 'none' });
+        setActiveWorkspaceId(workspaceId);
+      };
+
+      // The screen goes first. Changing the workspace under a detail screen makes it ask for its
+      // record in the new workspace, which answers 404: the person would see "Esta página no existe"
+      // on the way out.
+      const destination = to === null ? null : new URL(to, window.location.href).pathname;
+      if (to !== null && destination !== pathRef.current) {
+        await new Promise<void>((resolve) => {
+          const waiting = {
+            path: destination as string,
+            arrive: () => {
+              window.clearTimeout(timer);
+              apply();
+              resolve();
+            },
+          };
+          // A navigation that never lands (something else took over) must not leave the switch undone.
+          const timer = window.setTimeout(() => {
+            arrivals.current.delete(waiting);
+            waiting.arrive();
+          }, ARRIVAL_TIMEOUT_MS);
+          arrivals.current.add(waiting);
+          router.push(to);
+        });
+      } else {
+        apply();
+      }
+      if (!latest()) return false;
+
       try {
         await saveMe({ active_workspace_id: workspaceId });
-      } finally {
-        // An answer that comes after a newer switch must not take the person back to this workspace.
-        if (latest()) {
-          // Again: while the workspace was not in `/me` yet (just created, invitation just accepted)
-          // the effect above put the previous one back.
-          setActiveWorkspaceId(workspaceId);
-          // Everything on screen belongs to the previous workspace.
-          await queryClient.invalidateQueries();
-        }
+      } catch {
+        // The switch already happened for this browser: every request says its workspace in
+        // X-Workspace-Id. Only the "last workspace" kept in the profile is not up to date.
       }
+      // An answer that comes after a newer switch must not take the person back to this workspace.
+      if (!latest()) return false;
+      // Again: while the workspace was not in `/me` yet (just created, invitation just accepted)
+      // the effect above put the previous one back.
+      setActiveWorkspaceId(workspaceId);
+      // Nothing on screen reads the previous workspace any more: its entries go, so coming back reads it fresh.
+      if (previous && previous !== workspaceId) queryClient.removeQueries({ predicate: isScopedTo(previous) });
+      // What belongs to no workspace (the session, with the list of workspaces and the balance of each)
+      // is read again. The new workspace's own queries started when the id changed: not twice.
+      await queryClient.invalidateQueries({ predicate: isUnscoped([...workspaceIds.current, workspaceId, ...(previous ? [previous] : [])]) });
       return latest();
     },
-    [queryClient, saveMe],
+    [navigation, queryClient, router, saveMe],
   );
 
   const value = useMemo<SessionValue>(() => {
