@@ -234,3 +234,15 @@ describe('transcripción', () => {
     expect(transcriptToSrt(words)).toBe('1\n00:00:00,400 --> 00:00:01,300\nHoy arrancamos.\n\n2\n00:00:02,500 --> 00:00:03,400\nVamos bien.\n');
   });
 });
+
+describe('layout raíz', () => {
+  it('no toma valores de módulos de cliente (el script del tema viaja como texto)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
+    // A value from a "use client" module makes <head> wait for the layout's JS: hydration error #418.
+    expect(read('./theme-script.ts')).not.toMatch(/^\s*['"]use client['"]/m);
+    const layout = read('../app/layout.tsx');
+    expect(layout).toMatch(/import \{ THEME_INIT_SCRIPT \} from '@\/lib\/theme-script'/);
+    expect(layout).not.toMatch(/^import .* from '@\/lib\/theme'/m);
+  });
+});
