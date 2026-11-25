@@ -1,7 +1,7 @@
 'use client';
 
 import { useQueryClient } from '@tanstack/react-query';
-import { createContext, useCallback, useContext, useEffect, useMemo, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import type { Plan } from '@/api/contracts/billing';
 import type { Role } from '@/api/contracts/common';
 import type { Me, WorkspaceSummary } from '@/api/contracts/users';
@@ -23,8 +23,9 @@ export interface SessionValue {
    * Changes the active workspace and reloads every workspace-scoped query (J3).
    * The UI follows at once, also when `/me` comes back unchanged. Use it too after
    * accepting an invitation or creating a workspace (the id may not be in `me` yet).
+   * Resolves to false when a newer switch took over meanwhile: this one changed nothing.
    */
-  switchWorkspace: (workspaceId: string) => Promise<void>;
+  switchWorkspace: (workspaceId: string) => Promise<boolean>;
   /** Error of `/me` (network or server), so the shell can offer to retry. */
   error: unknown;
   refetch: () => void;
@@ -60,18 +61,26 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [workspace]);
 
   const { mutateAsync: saveMe } = updateMe;
+  // One number per switch: only the latest one writes when its request ends.
+  const switchGeneration = useRef(0);
   const switchWorkspace = useCallback(
     async (workspaceId: string) => {
+      const generation = ++switchGeneration.current;
+      const latest = () => generation === switchGeneration.current;
       setActiveWorkspaceId(workspaceId);
       try {
         await saveMe({ active_workspace_id: workspaceId });
       } finally {
-        // Again: while the workspace was not in `/me` yet (just created, invitation just accepted)
-        // the effect above put the previous one back.
-        setActiveWorkspaceId(workspaceId);
-        // Everything on screen belongs to the previous workspace.
-        await queryClient.invalidateQueries();
+        // An answer that comes after a newer switch must not take the person back to this workspace.
+        if (latest()) {
+          // Again: while the workspace was not in `/me` yet (just created, invitation just accepted)
+          // the effect above put the previous one back.
+          setActiveWorkspaceId(workspaceId);
+          // Everything on screen belongs to the previous workspace.
+          await queryClient.invalidateQueries();
+        }
       }
+      return latest();
     },
     [queryClient, saveMe],
   );

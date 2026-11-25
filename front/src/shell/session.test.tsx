@@ -7,7 +7,7 @@ import { renderToString } from 'react-dom/server';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { API_URL, WORKSPACE_HEADER } from '@/api/config';
 import { useScopedQuery, useWallet } from '@/api/hooks';
-import { AUTH_STORAGE_KEY, clearSession, isSessionExpired, setActiveWorkspaceId, setTokens } from '@/api/session';
+import { AUTH_STORAGE_KEY, clearSession, getActiveWorkspaceId, isSessionExpired, setActiveWorkspaceId, setTokens } from '@/api/session';
 import { SessionProvider, useSession, type SessionStatus } from './session';
 
 const WS = 'a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b';
@@ -34,7 +34,7 @@ afterEach(() => {
 afterAll(() => server.close());
 
 const seen: SessionStatus[] = [];
-let switchTo: (id: string) => Promise<void> = async () => undefined;
+let switchTo: (id: string) => Promise<boolean> = async () => false;
 function Probe() {
   const { status, workspace, switchWorkspace } = useSession();
   switchTo = switchWorkspace;
@@ -126,6 +126,63 @@ describe('sesión al hidratar', () => {
     await act(() => switchTo(NEW));
     expect(await screen.findByText('authenticated:Invitado:7')).toBeInTheDocument();
     expect(walletHeaders.at(-1)).toBe(NEW);
+  });
+
+  it('dos cambios seguidos: la respuesta tardía del primero no devuelve al workspace anterior', async () => {
+    const OTHER = 'c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b';
+    const THIRD = 'e3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b';
+    const three = {
+      ...me,
+      workspaces: [
+        ...me.workspaces,
+        { id: OTHER, name: 'Cliente', role: 'editor', plan: null, available_balance: '7.00' },
+        { id: THIRD, name: 'Personal', role: 'owner', plan: null, available_balance: '7.00' },
+      ],
+    };
+    /** The first PATCH hangs until the test lets it answer. */
+    let answerFirst: () => void = () => undefined;
+    const firstHeld = new Promise<void>((resolve) => (answerFirst = resolve));
+    const walletHeaders: Array<string | null> = [];
+    server.use(
+      http.get(`${API_URL}/api/v1/me/`, () => HttpResponse.json(three)),
+      http.patch(`${API_URL}/api/v1/me/`, async ({ request }) => {
+        const body = (await request.json()) as { active_workspace_id: string };
+        if (body.active_workspace_id === OTHER) await firstHeld;
+        return HttpResponse.json({ ...three, active_workspace_id: body.active_workspace_id });
+      }),
+      http.get(`${API_URL}/api/v1/wallet/`, ({ request }) => {
+        const id = request.headers.get(WORKSPACE_HEADER);
+        walletHeaders.push(id);
+        return HttpResponse.json({ ...wallet, available_balance: id === WS ? '100.0000000000' : '7.0000000000' });
+      }),
+    );
+    setTokens({ access: 'a', refresh: 'r' });
+    render(app());
+    expect(await screen.findByText('authenticated:Estudio:100')).toBeInTheDocument();
+
+    let first: Promise<boolean> = Promise.resolve(true);
+    act(() => void (first = switchTo(OTHER)));
+    let second = false;
+    await act(async () => {
+      second = await switchTo(THIRD);
+    });
+    expect(second).toBe(true);
+    expect(await screen.findByText('authenticated:Personal:7')).toBeInTheDocument();
+
+    // The slow answer of the first switch arrives now.
+    const requestsBefore = walletHeaders.length;
+    let firstWasCurrent = true;
+    await act(async () => {
+      answerFirst();
+      firstWasCurrent = await first;
+    });
+    expect(firstWasCurrent).toBe(false);
+    await act(() => new Promise((resolve) => setTimeout(resolve, 30)));
+    expect(screen.getByText('authenticated:Personal:7')).toBeInTheDocument();
+    expect(getActiveWorkspaceId()).toBe(THIRD);
+    // And it does not reload the screen either: the newer switch already did.
+    expect(walletHeaders.length).toBe(requestsBefore);
+    expect(walletHeaders.at(-1)).toBe(THIRD);
   });
 
   it('si la sesión venció antes de que `/me` respondiera, queda cargando (con «Sesión vencida» encima), no en error', async () => {
