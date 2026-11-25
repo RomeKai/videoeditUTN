@@ -1,10 +1,14 @@
 import type { Metadata } from 'next';
-import { ScreenPlaceholder } from '@/dev/ScreenPlaceholder';
-import { SCREENS } from '@/dev/screens';
+import { Suspense } from 'react';
+import { PublicacionesScreen } from '@/features/publicar/PublicacionesScreen';
 
 export const metadata: Metadata = { title: 'Publicaciones' };
 
-// E2 · Publicaciones: pantalla pendiente. El dominio dueño reemplaza este archivo (ver front/ROUTES.md).
+// E2 · Publicaciones. The view, the filters and the open detail live in the URL (useSearchParams needs the boundary).
 export default function Page() {
-  return <ScreenPlaceholder {...SCREENS.E2} />;
+  return (
+    <Suspense fallback={null}>
+      <PublicacionesScreen />
+    </Suspense>
+  );
 }
