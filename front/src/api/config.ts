@@ -25,5 +25,11 @@ export const SLOW_REQUEST_TIMEOUT_MS = 180_000;
 /** An upload that sends nothing for this long is stalled: it is cut, as a network error. */
 export const UPLOAD_STALL_TIMEOUT_MS = 60_000;
 
+/**
+ * Header of a write that must not be done twice (proposed, for publishing): the client sends one
+ * key per submit and repeats it when it retries; the server answers a known key with the first result.
+ */
+export const IDEMPOTENCY_HEADER = 'Idempotency-Key';
+
 /** Screens with something in progress poll every 5 s (map 1.4). */
 export const POLL_INTERVAL_MS = 5000;

@@ -273,6 +273,34 @@ test.describe('E1 · Publicar y E2 · Publicaciones', () => {
     await expect(drafts(page)).toContainText('1');
   });
 
+  test('cambiar de workspace con el panel abierto: el panel se va, su borrador se descarta en su workspace y Proyectos carga el otro', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    const problems = watch(page);
+    // A link that opens the panel over Proyectos: the switch lands on this same page, without the panel.
+    await page.goto(`/proyectos?publicar=${CLIP}`);
+    const panel = page.getByRole('dialog', { name: 'Publicar clip' });
+    await expect(panel.getByText('Sugerido por IA')).toBeVisible({ timeout: 15_000 });
+    expect(await page.evaluate(() => window.localStorage.getItem('oc.publicar.borradores'))).not.toBeNull();
+    const cancelled: Array<string | null> = [];
+    page.on('request', (request) => {
+      if (/\/scheduled-posts\/[^/]+\/cancel\/$/.test(new URL(request.url()).pathname)) cancelled.push(request.headers()['x-workspace-id'] ?? null);
+    });
+    const before = await page.evaluate(() => window.localStorage.getItem('oc.workspace'));
+
+    await page.keyboard.press('Control+k');
+    await page.getByRole('combobox', { name: 'Buscar o ejecutar un comando' }).fill('Cambiar a');
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('button', { name: /Cambiar de workspace/ })).not.toHaveAccessibleName(/Actual: Estudio Norte/);
+    await expect(page).toHaveURL(/\/proyectos$/);
+    await expect(panel).toBeHidden();
+    await expect(page.getByText('No encontramos el clip')).toHaveCount(0);
+    await settle(page);
+    // The draft was cancelled where it lives, so nothing is left behind (and nothing answered 404).
+    expect(cancelled).toEqual([before]);
+    await expect.poll(() => page.evaluate(() => window.localStorage.getItem('oc.publicar.borradores'))).toBeNull();
+    expectClean(problems, 'cambio de workspace con el panel abierto');
+  });
+
   test('los borradores no se dibujan en el calendario, y «Programar» abre el panel con su red', async ({ page }) => {
     await useScenario(page, 'estudio-norte');
     const problems = watch(page);

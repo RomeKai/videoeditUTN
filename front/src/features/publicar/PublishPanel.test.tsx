@@ -273,6 +273,28 @@ describe('E1 · Publicar · borradores de ayuda', () => {
     await waitFor(() => expect(rememberedDrafts()).toEqual([]));
   });
 
+  it('si el workspace activo cambia mientras el panel se cierra, el borrador se descarta en el suyo', async () => {
+    const { unmount } = await openPanel();
+    await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toHaveLength(1));
+    const [draft] = postsOf(CLIPS.first, 'DRAFT');
+    const asked: Array<string | null> = [];
+    server.use(
+      http.post(`${API}/scheduled-posts/:id/cancel/`, ({ request }) => {
+        asked.push(request.headers.get('X-Workspace-Id'));
+        return undefined;
+      }),
+    );
+    // The switch: the id changes in the same frame the panel goes away, before its cleanup runs.
+    const other = db().workspaces.find((workspace) => workspace.id !== draft?.workspace);
+    setActiveWorkspaceId(other?.id ?? null);
+    unmount();
+    await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toEqual([]));
+    // Not with the new workspace's header: there the API does not know the draft, and it would stay behind.
+    expect(asked).toEqual([draft?.workspace]);
+    await waitFor(() => expect(rememberedDrafts()).toEqual([]));
+    setActiveWorkspaceId(draft?.workspace ?? null);
+  });
+
   it('el que vuelve después de irse se cancela al llegar', async () => {
     let release: () => void = () => undefined;
     const held = new Promise<void>((resolve) => (release = resolve));
@@ -519,6 +541,37 @@ describe('E1 · Publicar · borradores de ayuda', () => {
 });
 
 describe('E1 · Publicar · envío parcial', () => {
+  it('si publicar queda sin respuesta y la persona aprieta de nuevo, sale con la misma clave: no se publica dos veces', async () => {
+    const keys: Array<string | null> = [];
+    let lose = true;
+    server.use(
+      http.post(`${API}/scheduled-posts/`, async ({ request }) => {
+        // No helper draft for this pair: the publication is created by the submit itself.
+        if (((await request.clone().json()) as { draft?: boolean }).draft) return HttpResponse.json({ detail: 'sin borradores' }, { status: 500 });
+        keys.push(request.headers.get('Idempotency-Key'));
+        if (!lose) return undefined;
+        lose = false;
+        // The server did it (the same request, answered by the mocked API); the answer never reached the browser.
+        await fetch(request.clone());
+        return HttpResponse.error();
+      }),
+    );
+    const { panel, onClose } = await openPanel([CLIPS.first], undefined, ['INSTAGRAM_REELS']);
+    fireEvent.change(await within(panel).findByLabelText('Caption'), { target: { value: 'Una sola vez' } });
+    fireEvent.click(publishButton());
+    await within(panel).findByRole('alert');
+    expect(onClose).not.toHaveBeenCalled();
+    expect(outOf(CLIPS.first, 'INSTAGRAM_REELS')).toHaveLength(1);
+    // The primary button, whatever it is called after a failure.
+    fireEvent.click(within(screen.getByRole('region', { name: 'Acciones' })).getAllByRole('button').at(-1) as HTMLElement);
+    await waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 10_000 });
+    // First try, the server's own copy of it, and the retry: one key for all.
+    expect(keys.length).toBeGreaterThanOrEqual(2);
+    expect(keys[0]).toBeTruthy();
+    expect(new Set(keys).size).toBe(1);
+    expect(outOf(CLIPS.first, 'INSTAGRAM_REELS')).toHaveLength(1);
+  });
+
   it('una red sale y la otra falla: lo dice red por red, no reenvía la que salió y cerrar no la cancela', async () => {
     const { panel, onClose } = await openPanel();
     await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toHaveLength(1));

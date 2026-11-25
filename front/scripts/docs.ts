@@ -113,7 +113,7 @@ function endpointSection(endpoint: AnyEndpoint): string {
   lines.push(`| Id | \`${endpoint.id}\` |`);
   lines.push(`| Backend | ${STATUS_LABEL[endpoint.backend.status]}${gaps(endpoint)}${endpoint.backend.source ? ` · \`${cell(endpoint.backend.source)}\`` : ''} |`);
   if (endpoint.backend.note) lines.push(`| Nota | ${cell(endpoint.backend.note)} |`);
-  lines.push(`| Sesión | ${endpoint.auth === false ? 'Pública' : endpoint.auth === 'optional' ? 'Pública (manda el token si hay sesión)' : 'JWT'}${endpoint.workspaceScoped === false ? '' : ' · `X-Workspace-Id`'} |`);
+  lines.push(`| Sesión | ${endpoint.auth === false ? 'Pública' : endpoint.auth === 'optional' ? 'Pública (manda el token si hay sesión)' : 'JWT'}${endpoint.workspaceScoped === false ? '' : ' · `X-Workspace-Id`'}${endpoint.idempotencyKey ? ' · `Idempotency-Key` (una por envío; se repite al reintentar)' : ''} |`);
   if (endpoint.query) lines.push(`| Query | ${cell(describe(endpoint.query))} |`);
   if (endpoint.request) lines.push(`| Pedido${endpoint.bodyType === 'multipart' ? ' (multipart)' : ''} | ${cell(describe(endpoint.request))} |`);
   const responseType = endpoint.responseType === 'text' ? 'texto (CSV)' : cell(describe(endpoint.response));

@@ -155,6 +155,8 @@ export interface MockFlags {
 }
 
 export interface MockDb {
+  /** Answers of the writes that came with an `Idempotency-Key`, by workspace, endpoint and key. */
+  idempotency?: Record<string, { status: number; data: unknown }>;
   version: number;
   scenario: string;
   /** Epoch ms of the seed: seeded dates are relative to it. */

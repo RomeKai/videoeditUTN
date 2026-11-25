@@ -302,6 +302,30 @@ describe('mocks', () => {
     await expect(apiCall(projects.deleteProject, { params: { id: own.id } })).resolves.toBeUndefined();
   });
 
+  it('publicar con la misma `Idempotency-Key` no publica dos veces: responde lo que creó el primer pedido', async () => {
+    const clip = (await apiCall(projects.listProjects, { query: { status_group: 'ready' } })).results.flatMap((project) => project.clips).find((item) => item.status === 'completed');
+    if (!clip) throw new Error('falta un clip listo');
+    const count = () => loadDb().posts.filter((post) => post.video_clip === clip.id && post.platform === 'INSTAGRAM_REELS').length;
+    const before = count();
+    const body = { video_clip: clip.id, platform: 'INSTAGRAM_REELS' as const, caption: 'Una sola vez' };
+    const first = await apiCall(social.createPost, { body, idempotencyKey: 'envio-1' });
+    // The answer was lost and the person pressed again: same submit, same key.
+    const again = await apiCall(social.createPost, { body, idempotencyKey: 'envio-1' });
+    expect(again.id).toBe(first.id);
+    expect(count()).toBe(before + 1);
+    // Another submit is another publication.
+    const other = await apiCall(social.createPost, { body, idempotencyKey: 'envio-2' });
+    expect(other.id).not.toBe(first.id);
+    expect(count()).toBe(before + 2);
+    // The batch takes it too.
+    const batch = await apiCall(social.createPostsBulk, { body: { posts: [body] }, idempotencyKey: 'lote-1' });
+    const batchAgain = await apiCall(social.createPostsBulk, { body: { posts: [body] }, idempotencyKey: 'lote-1' });
+    expect(batchAgain.posts.map((post) => post.id)).toEqual(batch.posts.map((post) => post.id));
+    expect(count()).toBe(before + 3);
+    expect(social.createPost.idempotencyKey).toBe(true);
+    expect(social.createPostsBulk.idempotencyKey).toBe(true);
+  });
+
   it('publica un clip, la publicación sale, y una reprogramación tardía responde 409', async () => {
     const ready = (await apiCall(projects.listProjects, { query: { status_group: 'ready' } })).results.find((project) => project.project_type === 'repurpose' && project.status === 'completed');
     const clip = ready?.clips.find((item) => item.status === 'completed');

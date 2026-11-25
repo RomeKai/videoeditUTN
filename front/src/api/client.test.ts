@@ -123,6 +123,24 @@ describe('apiCall', () => {
     expect(new URL(request.url).searchParams.get('expand')).toBe('true');
   });
 
+  it('una llamada puede decir su propio workspace (para limpiar lo de la pantalla que se deja) y su clave de idempotencia', async () => {
+    setTokens({ access: 'acceso-1', refresh: 'refresh-1' });
+    setActiveWorkspaceId('ws-nuevo');
+    const seen: Array<{ workspace: string | null; key: string | null }> = [];
+    server.use(
+      http.post(`${API_URL}/api/v1/things/`, ({ request }) => {
+        seen.push({ workspace: request.headers.get(WORKSPACE_HEADER), key: request.headers.get('Idempotency-Key') });
+        return HttpResponse.json({ id: 1, name: 'x' }, { status: 201 });
+      }),
+    );
+    await apiCall(createThing, { body: { name: 'x' } });
+    await apiCall(createThing, { body: { name: 'x' }, workspaceId: 'ws-anterior', idempotencyKey: 'envio-1' });
+    expect(seen).toEqual([
+      { workspace: 'ws-nuevo', key: null },
+      { workspace: 'ws-anterior', key: 'envio-1' },
+    ]);
+  });
+
   it('no manda credenciales a un endpoint público', async () => {
     setTokens({ access: 'acceso-1', refresh: 'refresh-1' });
     setActiveWorkspaceId('ws-1');

@@ -130,10 +130,12 @@ export function usePostActions() {
     () => ({
       list: (query: contract.PostsQuery, signal?: AbortSignal) => apiCall(contract.listPosts, { query, signal }),
       get: (id: string) => apiCall(contract.getPost, { params: { id } }),
-      create: (body: contract.CreatePostInput) => apiCall(contract.createPost, { body }),
-      createBulk: (posts: contract.CreatePostInput[]) => apiCall(contract.createPostsBulk, { body: { posts } }).then((data) => data.posts),
+      /** `idempotencyKey`: one per submit of the person, the same when that submit is retried (it must not publish twice). */
+      create: (body: contract.CreatePostInput, idempotencyKey?: string) => apiCall(contract.createPost, { body, idempotencyKey }),
+      createBulk: (posts: contract.CreatePostInput[], idempotencyKey?: string) => apiCall(contract.createPostsBulk, { body: { posts }, idempotencyKey }).then((data) => data.posts),
       update: ({ id, ...body }: contract.UpdatePostRequest & { id: string }) => apiCall(contract.updatePost, { params: { id }, body }),
-      discard: (id: string) => apiCall(contract.cancelPost, { params: { id } }),
+      /** `workspaceId`: the draft's own workspace, for a panel that is closing while the active one changes. */
+      discard: (id: string, workspaceId?: string) => apiCall(contract.cancelPost, { params: { id }, workspaceId }),
       regenerate: (id: string) => apiCall(contract.regeneratePostSeo, { params: { id } }),
       invalidate: () =>
         Promise.all([

@@ -1,7 +1,7 @@
 import { delay, http, HttpResponse, type HttpHandler } from 'msw';
 import type { ZodTypeAny } from 'zod';
 import { can, type Action, type PermissionContext } from '@/lib/permissions';
-import { API_URL, WORKSPACE_HEADER } from '../config';
+import { API_URL, IDEMPOTENCY_HEADER, WORKSPACE_HEADER } from '../config';
 import type { Role } from '../contracts/common';
 import type { AnyEndpoint, RequestBody, ResponseOf } from '../endpoint';
 import type { MockDb, MockUser, MockWorkspace } from './db';
@@ -173,7 +173,17 @@ export function route<E extends AnyEndpoint>(endpoint: E, resolver: Resolver<E>)
         },
       };
 
+      // A write that takes `Idempotency-Key`: a key already seen (in this workspace) is answered with what
+      // the first request did, and nothing is done again.
+      const idempotencyKey = endpoint.idempotencyKey ? request.headers.get(IDEMPOTENCY_HEADER) : null;
+      const remembered = idempotencyKey ? `${scoped?.workspace.id ?? '-'}:${endpoint.id}:${idempotencyKey}` : null;
+      const before = remembered ? db.idempotency?.[remembered] : undefined;
+      if (before) return HttpResponse.json(before.data as Record<string, unknown>, { status: before.status });
+
       const result = await resolver(context);
+      if (remembered && result.data !== undefined) {
+        db.idempotency = { ...db.idempotency, [remembered]: { status: result.status ?? endpoint.successStatus ?? 200, data: result.data } };
+      }
       saveDb(db);
       if (result.data === undefined) return new HttpResponse(null, { status: result.status ?? 204 });
       if (result.raw) {

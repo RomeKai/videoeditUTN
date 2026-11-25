@@ -197,12 +197,13 @@ export const createPost = defineEndpoint({
   request: CreatePostInput,
   response: ScheduledPost,
   successStatus: 201,
+  idempotencyKey: true,
   errors: planErrors,
   backend: {
     status: 'proposed',
     gap: [8, 9],
     note:
-      'Al crear el post, la señal existente genera el SEO y la publicación usa Ayrshare. Reglas propuestas: (1) una publicación en cola sin texto propio espera a que termine la generación con IA antes de salir (hoy saldría con el caption de reserva); (2) si la generación falla en un borrador, sigue en `DRAFT` con `seo_status: "failed"` (hoy `_fail_seo_post` lo pasa a `FAILED`); (3) un borrador creado con `draft: true` que nadie programa ni publica en N horas (sugerido: 24) se borra solo: el panel E1 los descarta al cerrarse, pero una pestaña que se cierra de golpe puede dejar alguno.',
+      'Crear solo encola: la respuesta sale apenas el post queda guardado (`QUEUED` o `SCHEDULED`) y la publicación en la red la hace el worker después, así que el pedido entra en el tiempo de espera normal. Acepta `Idempotency-Key`: el cliente manda una clave por envío y la repite si reintenta (por ejemplo, después de un pedido que venció); el backend guarda la respuesta por clave y workspace al menos 24 h y la devuelve tal cual, sin crear ni publicar de nuevo. Al crear el post, la señal existente genera el SEO y la publicación usa Ayrshare. Reglas propuestas: (1) una publicación en cola sin texto propio espera a que termine la generación con IA antes de salir (hoy saldría con el caption de reserva); (2) si la generación falla en un borrador, sigue en `DRAFT` con `seo_status: "failed"` (hoy `_fail_seo_post` lo pasa a `FAILED`); (3) un borrador creado con `draft: true` que nadie programa ni publica en N horas (sugerido: 24) se borra solo: el panel E1 los descarta al cerrarse, pero una pestaña que se cierra de golpe puede dejar alguno.',
   },
   screens: ['E1'],
 });
@@ -216,7 +217,8 @@ export const createPostsBulk = defineEndpoint({
   response: z.object({ posts: z.array(ScheduledPost) }),
   successStatus: 201,
   errors: planErrors,
-  backend: { status: 'proposed', gap: 8 },
+  idempotencyKey: true,
+  backend: { status: 'proposed', gap: 8, note: 'Hasta 60 publicaciones. Igual que `createPost`: solo encola (ninguna red se llama dentro del pedido) y acepta `Idempotency-Key`, con la misma regla: una clave repetida devuelve las publicaciones que creó el primer pedido.' },
   screens: ['E1c'],
 });
 

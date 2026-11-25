@@ -89,7 +89,7 @@ function useDraftSweeper(openClipIds: string[]): void {
           if (!isStillOrphan(entry, open.current)) continue;
           // Only a draft nobody touched is thrown away: one that went out, or that a person edited, is theirs.
           if (isUntouchedDraft(post)) {
-            await actions.discard(entry.id);
+            await actions.discard(entry.id, entry.workspace);
             discarded += 1;
           }
           forgetDraft(entry.id);

@@ -1,5 +1,5 @@
 import type { ZodTypeAny } from 'zod';
-import { API_URL, REQUEST_TIMEOUT_MS, UPLOAD_STALL_TIMEOUT_MS, WORKSPACE_HEADER } from './config';
+import { API_URL, IDEMPOTENCY_HEADER, REQUEST_TIMEOUT_MS, UPLOAD_STALL_TIMEOUT_MS, WORKSPACE_HEADER } from './config';
 import { buildPath, buildQuery, type AnyEndpoint, type ParamsOf, type QueryOf, type RequestBody, type ResponseOf } from './endpoint';
 import { ApiError, ContractError, NetworkError, RequestTimeoutError, SessionExpiredError, UploadStalledError } from './errors';
 import {
@@ -21,6 +21,16 @@ export interface CallOptions<E extends AnyEndpoint> {
   onUploadProgress?: (loaded: number, total: number) => void;
   /** Overrides the endpoint's timeout for this call (ms, or `false` for none). */
   timeoutMs?: number | false;
+  /**
+   * The workspace this call is about, when it is not (or may no longer be) the active one: cleaning
+   * up after a screen that is being left while the workspace changes. Default: the active workspace.
+   */
+  workspaceId?: string;
+  /**
+   * `Idempotency-Key` for a write that must not happen twice (publishing): one per submit, the same
+   * on every retry of it. The server answers a repeated key with what the first request did.
+   */
+  idempotencyKey?: string;
 }
 
 type Args<E extends AnyEndpoint> =
@@ -261,8 +271,9 @@ export async function apiCall<E extends AnyEndpoint>(endpoint: E, ...args: Args<
     }
   }
 
-  const workspaceId = endpoint.workspaceScoped === false ? null : getActiveWorkspaceId();
+  const workspaceId = endpoint.workspaceScoped === false ? null : (options.workspaceId ?? getActiveWorkspaceId());
   if (sendsToken && workspaceId) headers[WORKSPACE_HEADER] = workspaceId;
+  if (options.idempotencyKey) headers[IDEMPOTENCY_HEADER] = options.idempotencyKey;
 
   const url = `${API_URL}${buildPath(endpoint.path, options.params as Record<string, string> | undefined)}${buildQuery(query)}`;
 
