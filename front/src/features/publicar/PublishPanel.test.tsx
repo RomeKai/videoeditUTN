@@ -4,6 +4,7 @@ import { http, HttpResponse } from 'msw';
 import { server } from '@/api/mocks/server';
 import { tick } from '@/api/mocks/sim';
 import { applyScenario, saveDb } from '@/api/mocks/state';
+import { setActiveWorkspaceId } from '@/api/session';
 import { PublishPanel } from './PublishPanel';
 import { PublishPanelMount, parseNetworkParam, parsePublishParam, publishHref } from './PublishPanelMount';
 import { RECENT_DRAFT_MS, STALE_DRAFT_MS, findOrphanDrafts, holdDraft, isRemembered, orphanDrafts, releaseDraft, rememberedDrafts, touchDrafts } from './draftRegistry';
@@ -191,10 +192,12 @@ describe('E1 · Publicar', () => {
     expect(within(order).getAllByRole('listitem')[0]).toHaveTextContent(secondTitle);
 
     fireEvent.change(within(panel).getByLabelText('Quién puede ver estos videos'), { target: { value: 'PUBLIC_TO_EVERYONE' } });
+    // What was scheduled before: the seed has posts at "now + N days", which fall at 18:00 too when the test runs at that hour.
+    const before = new Set(db().posts.filter((post) => post.status === 'SCHEDULED').map((post) => post.id));
     fireEvent.click(publishButton('Programar'));
     await waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 20_000 });
 
-    const created = [CLIPS.first, CLIPS.second, CLIPS.third].map((clipId) => db().posts.filter((post) => post.video_clip === clipId && post.status === 'SCHEDULED' && new Date(post.publish_at).getHours() === 18 && new Date(post.publish_at).getTime() > start.getTime() - 86_400_000));
+    const created = [CLIPS.first, CLIPS.second, CLIPS.third].map((clipId) => db().posts.filter((post) => post.video_clip === clipId && post.status === 'SCHEDULED' && !before.has(post.id) && new Date(post.publish_at).getHours() === 18 && new Date(post.publish_at).getTime() > start.getTime() - 86_400_000));
     expect(created.map((posts) => posts.length)).toEqual([2, 2, 2]);
     const days = created.map((posts) => dayKey(new Date(posts[0]?.publish_at ?? 0)));
     expect(new Set(days).size).toBe(3);
@@ -417,6 +420,50 @@ describe('E1 · Publicar · borradores de ayuda', () => {
     holdDraft({ id: mine.id, clip: mine.video_clip, workspace: mine.workspace });
     expect(rememberedDrafts().find((entry) => entry.id === mine.id)?.at).toBeGreaterThan(0);
     releaseDraft(mine.id);
+  });
+
+  it('si una pestaña duplicada también lo tiene abierto, soltarlo acá no le saca sus dos minutos', async () => {
+    const shared = leftover();
+    // Both tabs hold it: this page and a duplicate of it.
+    holdDraft({ id: shared.id, clip: shared.video_clip, workspace: shared.workspace });
+    const stored = rememberedDrafts();
+    window.localStorage.setItem('oc.publicar.borradores', JSON.stringify(stored.map((entry) => (entry.id === shared.id ? { ...entry, holders: [...(entry.holders ?? []), 'otra-pestaña'] } : entry))));
+    // This page's panel closes.
+    releaseDraft(shared.id);
+    const entry = rememberedDrafts().find((item) => item.id === shared.id);
+    expect(entry?.at).toBeGreaterThan(0);
+    expect(entry?.holders).toEqual(['otra-pestaña']);
+    // The other tab does not answer in time: the draft is still kept, as any recently used one.
+    expect((await findOrphanDrafts(shared.workspace, [])).orphans).toEqual([]);
+  });
+
+  it('el barrido no toca (ni olvida) un borrador si el workspace cambió mientras corría: el 404 sería del otro workspace', async () => {
+    const theirs = leftover();
+    let reading: () => void = () => undefined;
+    const read = new Promise<void>((resolve) => (reading = resolve));
+    let answer: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (answer = resolve));
+    const asked: Array<string | null> = [];
+    server.use(
+      http.get('http://localhost:8000/api/v1/scheduled-posts/:id/', async ({ params, request }) => {
+        if (params.id !== theirs.id) return;
+        asked.push(request.headers.get('X-Workspace-Id'));
+        reading();
+        await held;
+      }),
+    );
+    renderScreen(<PublishPanelMount />, { keep: true });
+    await read;
+    expect(asked).toEqual([theirs.workspace]);
+    // The person switches workspace while the sweeper waits for the server.
+    const other = db().workspaces.find((workspace) => workspace.id !== theirs.workspace);
+    setActiveWorkspaceId(other?.id ?? null);
+    answer();
+    await pause(500);
+    // Not discarded with the wrong workspace, and still remembered for the next visit to its own.
+    expect(exists(theirs.id)).toBe(true);
+    expect(isRemembered(theirs.id)).toBe(true);
+    expect(asked).toEqual([theirs.workspace]);
   });
 
   it('otra instancia de la app (una pestaña duplicada) no descarta el borrador de un panel abierto', async () => {

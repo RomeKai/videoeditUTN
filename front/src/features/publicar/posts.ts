@@ -171,7 +171,6 @@ export function textOrigin(post: Pick<ScheduledPost, 'caption' | 'generated_capt
 
 /* ── Publications ────────────────────────────────────────────────────────── */
 
-/** Text and date can change only before the post is queued. */
 const sameTags = (a: string[], b: string[]): boolean => {
   const clean = (tags: string[]) => tags.map((tag) => tag.replace(/^#/, '').trim()).filter(Boolean);
   const [left, right] = [clean(a), clean(b)];
@@ -190,6 +189,7 @@ export function isUntouchedDraft(post: Pick<ScheduledPost, 'status' | 'caption' 
   return post.tiktok === null;
 }
 
+/** Text and date can change only before the post is queued. */
 export const isEditable = (status: PostStatus): boolean => status === 'DRAFT' || status === 'SCHEDULED';
 /** A post that has not gone out yet can be cancelled. */
 export const isCancellable = (status: PostStatus): boolean => status === 'DRAFT' || status === 'SCHEDULED' || status === 'QUEUED' || status === 'FAILED';

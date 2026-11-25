@@ -86,11 +86,6 @@ function wordIndexOf(node: Node | null): number | null {
 }
 
 /**
- * Transcript in sync with the player. Selecting words opens the actions to
- * make a clip or move a border of the current one; borders always land on
- * whole words because the selection is turned into word indexes.
- */
-/**
  * Space on a word. The selection is always one run of words (it becomes a clip, or one of its
  * edges), so toggling keeps it in one piece: a word next to the run joins it, a word at its edge
  * leaves it, one in the middle ends the run before it, and a word away from it starts a new run.
@@ -108,6 +103,11 @@ export function toggleWord(selection: { from: number; to: number } | null, index
   return { from: index, to: index };
 }
 
+/**
+ * Transcript in sync with the player. Selecting words opens the actions to
+ * make a clip or move a border of the current one; borders always land on
+ * whole words because the selection is turned into word indexes.
+ */
 export function TranscriptPanel({
   words,
   rows,

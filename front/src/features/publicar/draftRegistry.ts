@@ -19,8 +19,10 @@ export interface DraftEntry {
   id: string;
   clip: string;
   workspace: string;
-  /** Last time a panel said it was using it. 0: its panel let go of it. */
+  /** Last time a panel said it was using it. 0: every panel that had it let go of it. */
   at: number;
+  /** The pages whose panel has it (a duplicated tab shows the same draft). */
+  holders?: string[];
 }
 
 const KEY = 'oc.publicar.borradores';
@@ -59,6 +61,8 @@ function write(entries: DraftEntry[]): void {
 
 /** Drafts that a panel of this page is using right now. */
 const held = new Set<string>();
+/** This page, among the holders of an entry. */
+const PAGE = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 type Message = { type: 'ask'; nonce: string; ids: string[] } | { type: 'held'; nonce: string; ids: string[] };
 let answering: BroadcastChannel | null | undefined;
@@ -83,18 +87,25 @@ function answer(): void {
 export function holdDraft(entry: Omit<DraftEntry, 'at'>, now = Date.now()): void {
   answer();
   held.add(entry.id);
-  write([...read().filter((item) => item.id !== entry.id), { ...entry, at: now }]);
+  const entries = read();
+  const others = entries.find((item) => item.id === entry.id)?.holders?.filter((page) => page !== PAGE) ?? [];
+  write([...entries.filter((item) => item.id !== entry.id), { ...entry, at: now, holders: [...others, PAGE] }]);
 }
 
 /**
  * The panel no longer uses it, but it may still exist on the server (the discard failed): it stays
  * remembered, with no "last used" time. Its panel said it is done, so the next sweep can take it
- * without waiting the two minutes a draft that may still be on screen is given.
+ * without waiting the two minutes a draft that may still be on screen is given. Unless the panel
+ * of another page holds it too.
  */
 export function releaseDraft(id: string): void {
   held.delete(id);
   const entries = read();
-  if (entries.some((item) => item.id === id && item.at !== 0)) write(entries.map((item) => (item.id === id ? { ...item, at: 0 } : item)));
+  const entry = entries.find((item) => item.id === id);
+  if (!entry) return;
+  const holders = (entry.holders ?? []).filter((page) => page !== PAGE);
+  // Another page still has it on screen (a duplicated tab): its time stays, and with it the two minutes.
+  write(entries.map((item) => (item.id === id ? { ...item, holders, at: holders.length > 0 ? item.at : 0 } : item)));
 }
 
 /** The draft is gone, went out, or became the person's own: nothing to clean up. */
