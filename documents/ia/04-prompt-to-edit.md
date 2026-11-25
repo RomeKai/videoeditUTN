@@ -157,7 +157,7 @@ Ejemplos:
 
 ### Campos explícitos
 
-`explicit_config_fields(raw)` devuelve, ordenados, los nombres de `ProjectConfig` que aparecen como clave en el pedido crudo (`initial_data`); `layout` cuenta como `render_layout`. Cuenta la presencia de la clave, no el valor: un `"selection_criteria": ""` es explícito y bloquea el criterio del prompt aunque no se haya guardado nada. La excepción es `layout`: vacío o `null` no cuenta, igual que en la creación.
+`explicit_config_fields(raw)` devuelve, ordenados, los nombres de `ProjectConfig` que aparecen como clave en el pedido crudo (`initial_data`); `layout` cuenta como `render_layout`. Cuenta la presencia de la clave, no el valor: un `"selection_criteria": ""` es explícito y bloquea el criterio del prompt aunque no se haya guardado nada. Las excepciones son `layout` (vacío o `null` no cuenta, igual que en la creación) y los booleanos y enteros de `ProjectConfig`: uno vacío, como `"add_subtitles": ""` o `"max_clips": ""`, no cuenta, porque la creación lo trata como no enviado y deja el default.
 
 Si la creación eligió `render_layout='active'` por un `speaker_tracking=true` explícito, `VideoProjectSerializer.create` suma `render_layout` a `pte_explicit`: ese layout salió del pedido y un layout del prompt no lo reemplaza.
 

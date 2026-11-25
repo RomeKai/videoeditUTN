@@ -1,4 +1,6 @@
-from django.db import transaction
+import math
+
+from django.db import models, transaction
 from rest_framework import serializers
 from rest_framework.fields import empty
 from rest_framework.exceptions import APIException
@@ -16,7 +18,61 @@ _RAW_TRUE = {'true', '1', 't', 'y', 'yes', 'on'}
 def _raw_bool(value):
     return str(value).strip().lower() in _RAW_TRUE
 
+
+def _raw_bool_sent(raw, name):
+    """Whether the creation request sent a raw boolean: an empty one (a form field left blank) was not."""
+    return name in raw and str(raw[name]).strip() != ''
+
+
+# Raw numeric fields of the creation request that are not serializer fields.
+# The column ones (manual_camera_x, subtitle_words_per_segment...) are parsed
+# by DRF like any other field.
+_RAW_NUMBERS = {'max_clips': int, 'subtitle_scale_factor': float}
+
+
+def _raw_number(raw, name, cast):
+    """
+    A raw numeric field of the creation request: None when it was not sent or
+    is empty (a form field left blank); a 400 on the field when it is not a
+    finite number.
+    """
+    value = raw.get(name) if hasattr(raw, 'get') else None
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    error = serializers.ValidationError({
+        name: ["Tiene que ser un número entero." if cast is int else "Tiene que ser un número."],
+    })
+    if isinstance(value, bool):
+        raise error
+    try:
+        number = cast(value.strip() if isinstance(value, str) else value)
+    except (TypeError, ValueError, OverflowError):
+        raise error
+    if not math.isfinite(number):
+        raise error
+    return number
+
+
+class _NotSentBooleanField(serializers.BooleanField):
+    """A boolean that a multipart form leaving it out did not send (DRF reads it as false)."""
+
+    default_empty_html = empty
+
+
+# A multipart form that leaves a boolean out reads as false in DRF (an
+# unchecked checkbox): a PUT without the field turned it off, and a new object
+# never got a default of true. With _NotSentBooleanField for every model
+# boolean, missing means not sent: a new object takes the model default and an
+# update keeps what it had.
+_NOT_SENT_BOOLEANS = {
+    **serializers.ModelSerializer.serializer_field_mapping,
+    models.BooleanField: _NotSentBooleanField,
+}
+
+
 class BrandKitSerializer(serializers.ModelSerializer):
+    serializer_field_mapping = _NOT_SENT_BOOLEANS
+
     class Meta:
         model = BrandKit
         fields = '__all__'
@@ -42,13 +98,12 @@ class ProjectRenderingError(APIException):
     default_code = 'project_rendering'
 
 
-class _NotSentBooleanField(serializers.BooleanField):
-    """A boolean that a multipart form leaving it out did not send (DRF reads it as false)."""
-
-    default_empty_html = empty
-
-
 class VideoProjectSerializer(serializers.ModelSerializer):
+    # Booleans left out are not sent (_NOT_SENT_BOOLEANS): a project created
+    # without add_subtitles gets subtitles, and from-prompt can leave one out
+    # so the prompt decides (it only counts as explicit when sent).
+    serializer_field_mapping = _NOT_SENT_BOOLEANS
+
     clips = VideoClipSerializer(many=True, read_only=True)
     brand_kit_name = serializers.CharField(source='brand_kit.name', read_only=True)
     proxy_url = serializers.SerializerMethodField()
@@ -64,15 +119,6 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     # Paid add-on (PricingEngine 'seo_optimization'): captions and hashtags are
     # generated for each ScheduledPost of the project (ADR-013). Creation only.
     use_seo = serializers.BooleanField(required=False, write_only=True)
-    # A multipart form that leaves a boolean out reads as false in DRF (an
-    # unchecked checkbox), so the model default never applied and a project
-    # created without the field came out without subtitles. Missing now means
-    # not sent: a new project takes the model default (true), an update keeps
-    # what it had, and from-prompt can leave it out so the prompt decides (it
-    # only counts as explicit when sent).
-    add_subtitles = _NotSentBooleanField(
-        required=False, help_text=VideoProject._meta.get_field('add_subtitles').help_text,
-    )
     # Output height tier. Priced at creation (PricingEngine resolution multiplier)
     # and checked against the plan's max_resolution; it cannot change afterwards.
     # Without it the project renders and is charged at 720p.
@@ -163,6 +209,9 @@ class VideoProjectSerializer(serializers.ModelSerializer):
                 }, code='too_long')
         if not self.instance:
             self._layout_alias = self._validate_layout_alias(self.initial_data)
+            self._raw_numbers = {
+                name: _raw_number(self.initial_data, name, cast) for name, cast in _RAW_NUMBERS.items()
+            }
         return data
 
     @staticmethod
@@ -230,6 +279,12 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         return locked
 
     def create(self, validated_data):
+        # One transaction: a failure after the INSERT leaves no project behind
+        # (the view reserves tokens only after this returns).
+        with transaction.atomic():
+            return self._create(validated_data)
+
+    def _create(self, validated_data):
         criteria = normalize_selection_criteria(validated_data.pop('selection_criteria', None))
         use_seo = validated_data.pop('use_seo', None)
         render_resolution = validated_data.pop('render_resolution', None)
@@ -238,9 +293,10 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         
         # INYECCIÓN DINÁMICA: Atrapamos los campos crudos del CURL
         raw = self.initial_data
+        raw_numbers = getattr(self, '_raw_numbers', {})
         project.metadata = project.metadata or {}
         
-        if 'max_clips' in raw: project.metadata['max_clips'] = int(raw['max_clips'])
+        if raw_numbers.get('max_clips') is not None: project.metadata['max_clips'] = raw_numbers['max_clips']
         if criteria: project.metadata['selection_criteria'] = criteria
         if render_resolution: project.metadata['render_resolution'] = render_resolution
         # Prompt-to-Edit (PTE-01b): parsed at the start of ingestion; what the
@@ -259,10 +315,9 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         # New Layout Controls
         if 'gameplay_position' in raw: project.gameplay_position = raw['gameplay_position']
         if ('camera_selection_position' in raw): project.camera_selection_position = raw['camera_selection_position']
-        if ('manual_camera_x' in raw): project.manual_camera_x = float(raw['manual_camera_x'])
-        if ('manual_camera_y' in raw): project.manual_camera_y = float(raw['manual_camera_y'])
-        if ('manual_camera_zoom' in raw): project.manual_camera_zoom = float(raw['manual_camera_zoom'])
-        if 'speaker_tracking' in raw:
+        # manual_camera_x, manual_camera_y and manual_camera_zoom come parsed by
+        # DRF (validated_data); an empty one in a form is not sent.
+        if _raw_bool_sent(raw, 'speaker_tracking'):
             project.speaker_tracking = _raw_bool(raw['speaker_tracking'])
         # Following the speaker is the 'active' layout: without a layout of
         # its own, a project that asks for it gets that layout.
@@ -272,22 +327,23 @@ class VideoProjectSerializer(serializers.ModelSerializer):
             if 'pte_explicit' in project.metadata:
                 project.metadata['pte_explicit'] = sorted({*project.metadata['pte_explicit'], 'render_layout'})
 
-        if 'auto_render_bypass' in raw:
+        if _raw_bool_sent(raw, 'auto_render_bypass'):
             project.auto_render_bypass = _raw_bool(raw['auto_render_bypass'])
 
         # Subtitle Controls
-        if 'add_subtitles' in raw:
+        if _raw_bool_sent(raw, 'add_subtitles'):
             project.add_subtitles = _raw_bool(raw['add_subtitles'])
         
         if 'subtitle_color' in raw: project.subtitle_color = raw['subtitle_color']
-        if 'subtitle_scale_factor' in raw: project.subtitle_scale_factor = float(raw['subtitle_scale_factor'])
-        if 'subtitle_words_per_segment' in raw: project.subtitle_words_per_segment = int(raw['subtitle_words_per_segment'])
+        if raw_numbers.get('subtitle_scale_factor') is not None:
+            project.subtitle_scale_factor = raw_numbers['subtitle_scale_factor']
+        # subtitle_words_per_segment comes parsed by DRF, like the camera.
             
         # Face Tracking injection
-        if 'use_facetracking' in raw:
+        if _raw_bool_sent(raw, 'use_facetracking'):
             project.use_facetracking = _raw_bool(raw['use_facetracking'])
 
-        if 'remove_silences' in raw:
+        if _raw_bool_sent(raw, 'remove_silences'):
             project.remove_silences = _raw_bool(raw['remove_silences'])
 
         # Read by the pricing right after this save, then by the SEO dispatch.
