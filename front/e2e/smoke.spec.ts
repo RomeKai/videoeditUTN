@@ -20,6 +20,27 @@ test.describe('Smoke en modo mock', () => {
     });
   }
 
+  test('el ícono de la app viene del mismo origen: favicon, SVG e ícono de Apple', async ({ page, baseURL }) => {
+    await useScenario(page, 'sin-sesion');
+    const problems = watch(page);
+    await page.goto('/login');
+    await settle(page);
+    const icons = await page.locator('link[rel="icon"], link[rel="apple-touch-icon"]').evaluateAll((links) => links.map((link) => ({ rel: link.getAttribute('rel'), href: (link as HTMLLinkElement).href })));
+    expect(icons.map((icon) => icon.rel).sort()).toEqual(['apple-touch-icon', 'icon', 'icon']);
+    for (const icon of icons) {
+      // Bundled with the app: nothing is fetched from another host.
+      expect(new URL(icon.href).origin).toBe(new URL(baseURL ?? '').origin);
+      const response = await page.request.get(icon.href);
+      expect(response.status(), icon.href).toBe(200);
+      expect(response.headers()['content-type'], icon.href).toMatch(/^image\//);
+    }
+    // What a browser asks for on its own, whatever the page says.
+    const favicon = await page.request.get('/favicon.ico');
+    expect(favicon.status()).toBe(200);
+    expect(favicon.headers()['content-type']).toMatch(/^image\//);
+    expectClean(problems, 'íconos');
+  });
+
   test('el kit muestra todos los componentes en los dos temas', async ({ page }) => {
     await useScenario(page, 'estudio-norte');
     const problems = watch(page);
