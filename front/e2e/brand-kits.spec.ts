@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { expectClean, settle, useScenario, watch } from './helpers';
 
 test.describe('F1 · Brand kits y F2 · Editar brand kit', () => {
@@ -208,6 +208,22 @@ test.describe('F1 · Brand kits y F2 · Editar brand kit', () => {
     await expect(page.getByLabel(/Descripción/)).toHaveValue('Cambio sin guardar');
     await expect(page.getByRole('button', { name: /Cambiar de workspace/ })).toHaveAccessibleName(/Actual: Estudio Norte/);
 
+    // The other tab comes back to Estudio Norte, and leaves again: this one never moves, and the banner follows.
+    await other.getByRole('button', { name: /Cambiar de workspace/ }).click();
+    await other.getByRole('menuitemradio', { name: /Estudio Norte/ }).click();
+    await expect(other.getByRole('button', { name: /Cambiar de workspace/ })).toHaveAccessibleName(/Actual: Estudio Norte/);
+    await settle(other);
+    await expect(banner).toHaveCount(0);
+    await expect(page.getByRole('heading', { level: 1, name: 'Estudio Norte' })).toBeVisible();
+    await expect(page.getByLabel(/Descripción/)).toHaveValue('Cambio sin guardar');
+    await expect(page.getByRole('button', { name: /Cambiar de workspace/ })).toHaveAccessibleName(/Actual: Estudio Norte/);
+    await expect(page.getByText('Esta página no existe')).toHaveCount(0);
+    await other.getByRole('button', { name: /Cambiar de workspace/ }).click();
+    await other.getByRole('menuitemradio').and(other.locator('[aria-checked="false"]')).first().click();
+    await expect(other.getByRole('button', { name: /Cambiar de workspace/ })).not.toHaveAccessibleName(/Actual: Estudio Norte/);
+    await expect(banner).toBeVisible();
+    await expect(page.getByLabel(/Descripción/)).toHaveValue('Cambio sin guardar');
+
     // Going there is the person's call, and it asks like any other way out.
     await page.getByRole('button', { name: /^Cambiar a / }).click();
     const dialog = page.getByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
@@ -219,6 +235,72 @@ test.describe('F1 · Brand kits y F2 · Editar brand kit', () => {
     await expect(page).toHaveURL(/\/proyectos$/);
     await expect(page.getByRole('button', { name: /Cambiar de workspace/ })).not.toHaveAccessibleName(/Actual: Estudio Norte/);
     await expect(banner).toHaveCount(0);
+  });
+
+  /** The session can no longer be renewed, and the next request finds out: «Tu sesión venció» opens over the editor. */
+  const expireSession = async (page: Page) => {
+    await page.evaluate(() => {
+      const db = JSON.parse(window.localStorage.getItem('oc.mock.db') as string) as { flags: { sessionExpired: boolean } };
+      db.flags.sessionExpired = true;
+      window.localStorage.setItem('oc.mock.db', JSON.stringify(db));
+      const auth = JSON.parse(window.localStorage.getItem('oc.auth') as string) as { access: string };
+      auth.access = 'mock-access.nadie.x';
+      window.localStorage.setItem('oc.auth', JSON.stringify(auth));
+    });
+    await page.getByRole('button', { name: /Notificaciones/ }).click();
+    const expired = page.getByRole('dialog', { name: 'Tu sesión venció' });
+    await expect(expired).toBeVisible({ timeout: 10_000 });
+    return expired;
+  };
+  const editKit = async (page: Page) => {
+    await page.goto('/brand-kits');
+    await settle(page);
+    await page.getByRole('link', { name: 'Estudio Norte', exact: true }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Estudio Norte' })).toBeVisible();
+    await page.getByLabel(/Descripción/).fill('Cambio sin guardar');
+    await expect(page.getByRole('region', { name: 'Acciones' })).toBeVisible();
+  };
+
+  for (const [name, action, destination] of [
+    ['«Cerrar sesión»', (dialog: Locator) => dialog.getByRole('button', { name: 'Cerrar sesión' }), /\/login(\?|$)/],
+    ['«¿Olvidaste tu contraseña?»', (dialog: Locator) => dialog.getByRole('button', { name: '¿Olvidaste tu contraseña?' }), /\/recuperar$/],
+  ] as const) {
+    test(`sesión vencida con cambios sin guardar: ${name} pregunta primero y después sale de verdad`, async ({ page }) => {
+      await useScenario(page, 'estudio-norte');
+      await editKit(page);
+      const expired = await expireSession(page);
+      await action(expired).click();
+      // Signing out drops the editor: asked first, and nothing is signed out until the answer.
+      const unsaved = page.getByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
+      await expect(unsaved).toBeVisible();
+      expect(await page.evaluate(() => window.localStorage.getItem('oc.auth'))).not.toBeNull();
+      await unsaved.getByRole('button', { name: 'Seguir editando' }).click();
+      await expect(expired).toBeVisible();
+      await expect(page.getByLabel(/Descripción/)).toHaveValue('Cambio sin guardar');
+
+      await action(expired).click();
+      await unsaved.getByRole('button', { name: 'Descartar' }).click();
+      // Out, on a page that renders: not stuck on «Cargando OneCreator».
+      await expect(page).toHaveURL(destination);
+      await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+      await expect(page.getByRole('status', { name: 'Cargando OneCreator' })).toHaveCount(0);
+      // (Not checked on the recovery page: it is a full page load, and the mocks sign the scenario's user in again on every load.)
+      if (name === '«Cerrar sesión»') expect(await page.evaluate(() => window.localStorage.getItem('oc.auth'))).toBeNull();
+    });
+  }
+
+  test('cerrar sesión en otra pestaña con cambios sin guardar acá: esta termina en el login, no cargando para siempre', async ({ context, page }) => {
+    await useScenario(page, 'estudio-norte');
+    await editKit(page);
+    const other = await context.newPage();
+    await other.goto('/proyectos');
+    await settle(other);
+    await other.getByRole('button', { name: 'Tu cuenta' }).click();
+    await other.getByRole('menuitem', { name: /Cerrar sesión/ }).click();
+    await expect(other).toHaveURL(/\/login/);
+    await page.bringToFront();
+    await expect(page).toHaveURL(/\/login/, { timeout: 15_000 });
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   });
 
   test('una pestaña que abre directo en el editor: sin Atrás que atajar, los links siguen preguntando', async ({ context, page }) => {

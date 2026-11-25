@@ -2,7 +2,7 @@
 
 import { usePathname, useRouter } from 'next/navigation';
 import { setWorkspaceHold } from '@/api/session';
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 
 /**
  * The shell's leave guard (D8 · Cambios sin guardar).
@@ -109,14 +109,20 @@ export class LeaveGuard {
 
   /* ── Screens ─────────────────────────────────────────────────────────── */
 
-  register(entry: GuardEntry): () => void {
+  /**
+   * The function it returns takes the screen out. `unmounted`: the screen is gone from the page,
+   * not clean again. Then the extra history entry is left alone: whatever unmounted it (a
+   * navigation already under way, the session ending) is taking the person somewhere, and a step
+   * back now would cancel that and leave them on a screen that no longer renders.
+   */
+  register(entry: GuardEntry): (unmounted?: boolean) => void {
     this.guards.add(entry);
-    this.holdWorkspace();
+    this.changed();
     this.arm();
-    return () => {
+    return (unmounted = false) => {
       if (!this.drop(entry)) return;
       // Not right away: an effect that runs again registers in the same commit, and the entry stays.
-      queueMicrotask(() => this.afterDrop());
+      queueMicrotask(() => void this.afterDrop(unmounted));
     };
   }
 
@@ -136,23 +142,36 @@ export class LeaveGuard {
       this.asker = null;
       entry.setAsking(false);
     }
-    this.holdWorkspace();
+    this.changed();
     return true;
   }
 
-  private afterDrop(): Promise<void> {
+  private afterDrop(unmounted = false): Promise<void> {
     if (this.guards.size === 0) {
       // Nobody is left to lose anything, and nobody to answer: the held navigation is dropped with the question.
       this.cancelPending();
-      return this.disarm();
+      if (!unmounted) return this.disarm();
+      // The entry stays in the history. If the person comes back to it with changes, it is taken again.
+      this.armed = null;
+      return this.settled();
     }
     if (this.pending && !this.asker) this.openQuestion();
     return this.settled();
   }
 
-  /** While a screen has changes this tab keeps its workspace, whatever another tab switches to. */
-  private holdWorkspace(): void {
+  private readonly watchers = new Set<() => void>();
+
+  /** Tells when `active` changes. */
+  subscribe = (watcher: () => void): (() => void) => {
+    this.watchers.add(watcher);
+    return () => this.watchers.delete(watcher);
+  };
+
+  /** The set of screens with changes changed. */
+  private changed(): void {
+    // While a screen has changes this tab keeps its workspace, whatever another tab switches to.
     setWorkspaceHold(this.guards.size > 0);
+    for (const watcher of this.watchers) watcher();
   }
 
   /* ── Navigations ─────────────────────────────────────────────────────── */
@@ -241,7 +260,7 @@ export class LeaveGuard {
       guard.onDiscard();
       guard.bypassed();
     }
-    this.holdWorkspace();
+    this.changed();
     if (target.kind === 'back') return this.leaveByHistory(guards);
     // The extra entry goes first, so Back from the next screen returns here once, not twice.
     void this.disarm().then(() =>
@@ -261,11 +280,25 @@ export class LeaveGuard {
     );
   };
 
-  /** Follows a held link the way its component would have: clicking it again, now that nothing holds it. */
+  /** The link whose click is being replayed for its own handler (see `follow`). */
+  private replaying: HTMLAnchorElement | null = null;
+
+  /**
+   * Follows a held link, now that the person answered. The click was stopped before it reached the
+   * link's own handler (nothing of it may happen before the answer), so it is replayed for that
+   * handler alone (the menu or drawer the link lives in closes) and the navigation is a plain push.
+   * A link that needs `replace` or no scroll would say so in a data attribute; none does today.
+   */
   private follow(target: { href: string; anchor?: HTMLAnchorElement }): void {
-    // Its own handler may have taken it off the page meanwhile (a menu that closes on click): then it is a plain push.
-    if (target.anchor?.isConnected) target.anchor.click();
-    else this.router?.push(target.href);
+    if (target.anchor?.isConnected) {
+      this.replaying = target.anchor;
+      try {
+        target.anchor.click();
+      } finally {
+        this.replaying = null;
+      }
+    }
+    this.router?.push(target.href);
   }
 
   /**
@@ -399,6 +432,11 @@ export class LeaveGuard {
   };
 
   private readonly onClick = (event: MouseEvent): void => {
+    if (this.replaying && event.target instanceof Node && this.replaying.contains(event.target)) {
+      // The replay of a held click: its handlers run, the link itself does not navigate (the guard pushes).
+      event.preventDefault();
+      return;
+    }
     if (this.guards.size === 0 && !this.pop) return;
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const anchor = (event.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
@@ -409,9 +447,10 @@ export class LeaveGuard {
     const held = this.holds(href);
     // Nothing to ask, and the history is settled: the link goes on as usual.
     if (!held && !this.pop) return;
-    // Only the navigation is stopped (next/link leaves a prevented click alone). The click still
-    // reaches the link's own handler: the menu or the drawer it lives in closes as on any click.
+    // Stopped whole: the link's own handler (closing its menu, or anything else it does) must not
+    // run before the person answers. It gets its click when the link is followed.
     event.preventDefault();
+    event.stopPropagation();
     if (held) this.ask({ kind: 'href', href, anchor });
     else this.go(() => this.follow({ href, anchor }));
   };
@@ -458,6 +497,18 @@ export interface GuardedNavigation {
   confirm: (run: LeaveAction) => void;
   /** Asks to leave the screen: true when the way is clear, false when the person chose to stay. */
   request: () => Promise<boolean>;
+}
+
+const noSubscription = () => () => undefined;
+
+/** Whether some screen has unsaved changes right now. False outside the provider. */
+export function useHasUnsavedChanges(): boolean {
+  const guard = useContext(LeaveGuardContext);
+  return useSyncExternalStore(
+    guard?.subscribe ?? noSubscription,
+    () => guard?.active ?? false,
+    () => false,
+  );
 }
 
 /** How the shell navigates from code. Outside the provider (a component rendered alone) it is the plain router. */
@@ -528,9 +579,18 @@ export function useLeaveGuard(dirty: boolean, { allow, onDiscard }: LeaveGuardOp
     },
   }));
 
+  // Declared before the registration, so on the way out its cleanup runs first and the one below knows.
+  const unmounting = useRef(false);
+  useEffect(() => {
+    unmounting.current = false;
+    return () => {
+      unmounting.current = true;
+    };
+  }, []);
   useEffect(() => {
     if (!dirty || bypass.current) return;
-    return guard.register(entry);
+    const unregister = guard.register(entry);
+    return () => unregister(unmounting.current);
   }, [dirty, entry, guard, pathname, epoch]);
 
   const release = useCallback(() => {

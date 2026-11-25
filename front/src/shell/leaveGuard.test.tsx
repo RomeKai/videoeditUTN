@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useActiveWorkspaceId } from '@/api/hooks';
 import { UnsavedChangesDialog } from '@/dialogs';
 import { getActiveWorkspaceId, getDeferredWorkspaceId, setActiveWorkspaceId, WORKSPACE_STORAGE_KEY } from '@/api/session';
-import { LeaveGuardProvider, LEAVE_SAFETY_MS, POP_SAFETY_MS, useGuardedNavigation, useLeaveGuard, type LeaveGuardOptions, type ScreenLeaveGuard } from './leaveGuard';
+import { LeaveGuardProvider, LEAVE_SAFETY_MS, POP_SAFETY_MS, useGuardedNavigation, useHasUnsavedChanges, useLeaveGuard, type LeaveGuardOptions, type ScreenLeaveGuard } from './leaveGuard';
 
 /** One router for the whole app, as in the real one. Nobody may replace its methods. */
 const router = vi.hoisted(() => {
@@ -113,12 +113,7 @@ describe('guarda de salida · registro', () => {
 
   it('con cambios: una entrada de más para la misma página y aviso del navegador al cerrar o recargar', async () => {
     const pushState = vi.spyOn(window.history, 'pushState');
-    const screenNo = (key: number) => (
-      <LeaveGuardProvider>
-        <Editor key={key} dirty />
-      </LeaveGuardProvider>
-    );
-    const view = render(screenNo(1));
+    const view = render(app(true));
     expect(pushState).toHaveBeenCalledTimes(1);
     expect(window.location.pathname).toBe('/brand-kits/x');
     expect(fireEvent(window, new Event('beforeunload', { cancelable: true }))).toBe(false);
@@ -141,19 +136,19 @@ describe('guarda de salida · registro', () => {
 });
 
 describe('guarda de salida · links de la app', () => {
-  it('un link pregunta; «Seguir editando» se queda y «Descartar» quita la entrada y recién después lo sigue', async () => {
+  it('un link pregunta sin que corra nada suyo; «Descartar» quita la entrada, le da su click y recién después navega', async () => {
     render(app(true));
     fireEvent.click(screen.getByRole('link', { name: 'Publicaciones' }));
     expect(await dialog()).toHaveTextContent('los cambios de «Estudio Norte»');
-    // Only the navigation is held: the link's own handler ran (the menu it lives in closes).
-    expect(linkClicked).toHaveBeenCalledTimes(1);
-    expect(followed).not.toHaveBeenCalled();
+    // Nothing of the link happened yet: not the navigation, not its own handler (it could close a menu, or sign out).
+    expect(linkClicked).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Seguir editando' }));
     await noDialog();
-    expect(followed).not.toHaveBeenCalled();
+    expect(linkClicked).not.toHaveBeenCalled();
+    expect(router.push).not.toHaveBeenCalled();
     expect(discarded).not.toHaveBeenCalled();
 
-    followed.mockImplementation(() => void order.push('link'));
+    linkClicked.mockImplementation(() => void order.push('handler'));
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => {
       order.push('back');
       setTimeout(() => window.dispatchEvent(new PopStateEvent('popstate')), 5);
@@ -163,16 +158,16 @@ describe('guarda de salida · links de la app', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Descartar' }));
     expect(discarded).toHaveBeenCalledTimes(1);
     expect(back).toHaveBeenCalledTimes(1);
-    expect(followed).not.toHaveBeenCalled();
-    // The link itself is clicked again, so it navigates as its component says (its `replace`, its `scroll`).
-    await waitFor(() => expect(followed).toHaveBeenCalledTimes(1));
-    expect(order).toEqual(['back', 'link']);
     expect(router.push).not.toHaveBeenCalled();
+    await waitFor(() => expect(router.push).toHaveBeenCalledWith('/publicaciones'));
+    // The link's handler ran once, now; the link itself did not navigate (the guard pushed).
+    expect(order).toEqual(['back', 'handler', 'push /publicaciones']);
+    expect(followed).not.toHaveBeenCalled();
     // Let go: the tab closes without the browser's prompt.
     expect(fireEvent(window, new Event('beforeunload', { cancelable: true }))).toBe(true);
   });
 
-  it('si el link ya no está en la página (su menú se cerró al tocarlo), «Descartar» navega igual', async () => {
+  it('el menú donde vive el link no se cierra hasta que la persona contesta', async () => {
     function Menu() {
       const [open, setOpen] = useState(true);
       return open ? (
@@ -184,10 +179,11 @@ describe('guarda de salida · links de la app', () => {
     render(app(true, undefined, <Menu />));
     fireEvent.click(screen.getByRole('link', { name: 'Perfil' }));
     await dialog();
-    // The menu closed, as on any click.
-    expect(screen.queryByRole('link', { name: 'Perfil' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Perfil' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Descartar' }));
     await waitFor(() => expect(router.push).toHaveBeenCalledWith('/perfil'));
+    // And then it closes, as on any click.
+    expect(screen.queryByRole('link', { name: 'Perfil' })).not.toBeInTheDocument();
   });
 
   it('un link a la misma página, o uno que la pantalla permite, no pregunta', async () => {
@@ -289,12 +285,7 @@ describe('guarda de salida · navegaciones del shell', () => {
   });
 
   it('si la única pantalla con cambios se va con la pregunta abierta, no queda nada colgado', async () => {
-    const screenNo = (key: number) => (
-      <LeaveGuardProvider>
-        <Editor key={key} dirty />
-      </LeaveGuardProvider>
-    );
-    const view = render(screenNo(1));
+    const view = render(app(true));
     let answer: boolean | 'pendiente' = 'pendiente';
     act(() => void shell.request().then((value) => (answer = value)));
     await dialog();
@@ -339,14 +330,32 @@ describe('guarda de salida · otra pestaña cambia de workspace', () => {
     expect(getDeferredWorkspaceId()).toBeNull();
   });
 
-  it('si la otra pestaña vuelve al workspace de esta, no queda nada pendiente', () => {
+  it('si la otra pestaña va y vuelve al workspace de esta, esta sigue en el suyo y no queda nada pendiente', () => {
     setActiveWorkspaceId('ws-1');
-    render(app(true, undefined, <Workspace />));
+    // As in the app: many components read the workspace at once (the bar, every scoped query…).
+    render(
+      app(
+        true,
+        undefined,
+        <>
+          <Workspace />
+          <Workspace />
+          <Workspace />
+        </>,
+      ),
+    );
     otherTabSwitches('ws-1', 'ws-2');
     expect(getDeferredWorkspaceId()).toBe('ws-2');
-    otherTabSwitches('ws-2', 'ws-1');
-    expect(getDeferredWorkspaceId()).toBeNull();
     expect(getActiveWorkspaceId()).toBe('ws-1');
+    otherTabSwitches('ws-2', 'ws-1');
+    // One change of the other tab is handled once, however many are listening: the tab does not end up on ws-2.
+    expect(getActiveWorkspaceId()).toBe('ws-1');
+    expect(getDeferredWorkspaceId()).toBeNull();
+    expect(screen.getAllByText('workspace: ws-1')).toHaveLength(3);
+    // And again, to a third one.
+    otherTabSwitches('ws-1', 'ws-3');
+    expect(getActiveWorkspaceId()).toBe('ws-1');
+    expect(getDeferredWorkspaceId()).toBe('ws-3');
   });
 });
 
@@ -373,6 +382,42 @@ describe('guarda de salida · Atrás', () => {
     await waitFor(() => expect(window.location.pathname).toBe('/brand-kits'));
     // The router did not navigate: the browser did.
     expect(router.push).not.toHaveBeenCalled();
+  });
+});
+
+describe('guarda de salida · la pantalla desaparece', () => {
+  it('si la pantalla se desmonta (la sesión terminó, algo ya la está sacando), no da un paso atrás: cancelaría lo que la saca', async () => {
+    const back = vi.spyOn(window.history, 'back');
+    const view = render(
+      <LeaveGuardProvider>
+        <Editor dirty />
+      </LeaveGuardProvider>,
+    );
+    // Gone from the page, on the same URL (the session loader takes its place while the redirect is on its way).
+    view.rerender(<LeaveGuardProvider>{null}</LeaveGuardProvider>);
+    await historySettles();
+    expect(back).not.toHaveBeenCalled();
+    expect(fireEvent(window, new Event('beforeunload', { cancelable: true }))).toBe(true);
+  });
+
+  it('si en cambio queda limpia sin irse, la entrada de más sí se quita', async () => {
+    const back = vi.spyOn(window.history, 'back');
+    const view = render(app(true));
+    view.rerender(app(false));
+    await historySettles();
+    expect(back).toHaveBeenCalledTimes(1);
+  });
+
+  it('`useHasUnsavedChanges` sigue a las pantallas con cambios', async () => {
+    function Probe() {
+      return <p>{useHasUnsavedChanges() ? 'hay cambios' : 'sin cambios'}</p>;
+    }
+    const view = render(app(false, undefined, <Probe />));
+    expect(screen.getByText('sin cambios')).toBeInTheDocument();
+    view.rerender(app(true, undefined, <Probe />));
+    expect(await screen.findByText('hay cambios')).toBeInTheDocument();
+    view.rerender(app(false, undefined, <Probe />));
+    expect(await screen.findByText('sin cambios')).toBeInTheDocument();
   });
 });
 
@@ -415,7 +460,7 @@ describe('guarda de salida · Atrás con entradas de antes', () => {
     expect(fireEvent(window, new Event('beforeunload', { cancelable: true }))).toBe(false);
     fireEvent.click(screen.getByRole('link', { name: 'Publicaciones' }));
     await dialog();
-    expect(followed).not.toHaveBeenCalled();
+    expect(router.push).not.toHaveBeenCalled();
   });
 
   it('si «Descartar» no tiene a dónde volver, la pantalla sigue ahí y vuelve a estar protegida', async () => {
@@ -470,12 +515,7 @@ describe('guarda de salida · la entrada de más del historial', () => {
 
   it('un link que se toca mientras la entrada se está yendo espera a que el historial quede quieto', async () => {
     vi.useFakeTimers();
-    const screenNo = (key: number) => (
-      <LeaveGuardProvider>
-        <Editor key={key} dirty />
-      </LeaveGuardProvider>
-    );
-    const view = render(screenNo(1));
+    const view = render(app(true));
     vi.spyOn(window.history, 'back').mockImplementation(() => {
       order.push('back');
       setTimeout(() => window.dispatchEvent(new PopStateEvent('popstate')), 800);
@@ -484,11 +524,12 @@ describe('guarda de salida · la entrada de más del historial', () => {
     await act(() => vi.advanceTimersByTimeAsync(10));
     expect(order).toEqual(['back']);
     // Stopped here and followed by the guard afterwards: a navigation before the step back ends would be undone by it.
-    followed.mockImplementation(() => void order.push('link'));
     fireEvent.click(screen.getByRole('link', { name: 'Publicaciones' }));
-    expect(followed).not.toHaveBeenCalled();
+    expect(linkClicked).not.toHaveBeenCalled();
+    expect(router.push).not.toHaveBeenCalled();
     await act(() => vi.advanceTimersByTimeAsync(800));
-    expect(order).toEqual(['back', 'link']);
+    expect(order).toEqual(['back', 'push /publicaciones']);
+    expect(linkClicked).toHaveBeenCalledTimes(1);
   });
 
   it('si el aviso del navegador no llega nunca, la app no queda trabada; y si llega tarde, deshace el paso atrás de más', async () => {

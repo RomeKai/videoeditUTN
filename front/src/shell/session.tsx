@@ -111,8 +111,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       // The screen goes first. Changing the workspace under a detail screen makes it ask for its
       // record in the new workspace, which answers 404: the person would see "Esta página no existe"
       // on the way out.
-      const destination = to === null ? null : new URL(to, window.location.href).pathname;
-      if (to !== null && destination !== pathRef.current) {
+      const target = to === null ? null : new URL(to, window.location.href);
+      const destination = target?.pathname ?? null;
+      if (to !== null && target !== null && destination === pathRef.current && target.search !== window.location.search) {
+        // Same page, other query (`/proyectos?publicar=<clip>`): what the query opened belongs to the
+        // previous workspace too. The URL changes when the router commits, with that panel already closed.
+        router.push(to);
+        const deadline = Date.now() + ARRIVAL_TIMEOUT_MS;
+        while (window.location.search !== target.search && Date.now() < deadline) await new Promise((resolve) => window.setTimeout(resolve, 16));
+        apply();
+      } else if (to !== null && destination !== pathRef.current) {
         await new Promise<void>((resolve) => {
           const waiting = {
             path: destination as string,

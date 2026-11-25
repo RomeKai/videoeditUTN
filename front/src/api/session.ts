@@ -105,25 +105,44 @@ export function clearSession(): void {
   setTokens(null);
 }
 
+/**
+ * What another tab did to the session. One listener for the whole page, however many subscribers
+ * there are: it updates this tab's state once and then tells them. (One listener per subscriber
+ * would run the hold logic once each, each on what the one before left: the second would undo the first.)
+ */
+function onStorage(event: StorageEvent): void {
+  if (event.key !== AUTH_STORAGE_KEY && event.key !== WORKSPACE_STORAGE_KEY) return;
+  // Another tab signed in again (or out): this tab's "expired" state is over too.
+  if (event.key === AUTH_STORAGE_KEY) expired = false;
+  if (event.key === WORKSPACE_STORAGE_KEY) {
+    // The other tab came back to this one's workspace: nothing is deferred any more.
+    if (heldWorkspace !== null && event.newValue === heldWorkspace) heldWorkspace = null;
+    // Another tab switched. With unsaved changes here, this tab stays where it was.
+    else if (holding && heldWorkspace === null && event.oldValue && event.newValue && event.newValue !== event.oldValue) heldWorkspace = event.oldValue;
+  }
+  emit();
+}
+let listening = false;
+
 /** Subscribes to token and workspace changes (also from other tabs). */
 export function subscribeSession(listener: Listener): () => void {
   listeners.add(listener);
-  const onStorage = (event: StorageEvent) => {
-    // Another tab signed in again (or out): this tab's "expired" state is over too.
-    if (event.key === AUTH_STORAGE_KEY) expired = false;
-    if (event.key === WORKSPACE_STORAGE_KEY) {
-      // Another tab switched. With unsaved changes here, this tab stays where it was.
-      if (holding && heldWorkspace === null && event.oldValue && event.newValue && event.newValue !== event.oldValue) heldWorkspace = event.oldValue;
-      // The other tab came back to this one's workspace: nothing is deferred any more.
-      else if (heldWorkspace !== null && event.newValue === heldWorkspace) heldWorkspace = null;
-    }
-    if (event.key === AUTH_STORAGE_KEY || event.key === WORKSPACE_STORAGE_KEY) listener();
-  };
-  if (typeof window !== 'undefined') window.addEventListener('storage', onStorage);
+  if (!listening && typeof window !== 'undefined') {
+    window.addEventListener('storage', onStorage);
+    listening = true;
+  }
   return () => {
     listeners.delete(listener);
-    if (typeof window !== 'undefined') window.removeEventListener('storage', onStorage);
+    if (listeners.size === 0 && listening) {
+      window.removeEventListener('storage', onStorage);
+      listening = false;
+    }
   };
+}
+
+/** Whether this tab is staying on a workspace of its own (see `setWorkspaceHold`). */
+export function isWorkspaceHeld(): boolean {
+  return heldWorkspace !== null;
 }
 
 type ExpiredListener = () => void;

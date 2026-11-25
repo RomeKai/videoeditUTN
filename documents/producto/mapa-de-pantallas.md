@@ -654,7 +654,7 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 #### J3. Selector de workspace
 - **Qué muestra:** los workspaces del usuario, con su plan y su rol en cada uno, y la opción **Crear workspace**.
 - **Al cambiar:** lleva a Proyectos y carga los datos del workspace elegido, con el aviso "Ahora estás en {workspace}". Si la pantalla tiene cambios sin guardar, primero pregunta (D8).
-- **Con otra pestaña:** el workspace activo es uno por navegador. Si la persona cambia de workspace en otra pestaña mientras esta tiene cambios sin guardar, esta pestaña se queda en su workspace y muestra un aviso fijo: "Cambiaste a {workspace} en otra pestaña. Esta sigue en {workspace} para no perder tus cambios.", con la acción **Cambiar a {workspace}**. Sin cambios sin guardar, la pestaña sigue a la otra.
+- **Con otra pestaña:** el workspace activo es uno por navegador. Si la persona cambia de workspace en otra pestaña mientras esta tiene cambios sin guardar, esta pestaña se queda en su workspace y muestra un aviso fijo: "Cambiaste a {workspace} en otra pestaña. Esta sigue en {workspace} para no perder tus cambios.", con la acción **Cambiar a {workspace}**. Una vez guardados o descartados los cambios, el aviso queda sin el motivo ("…Esta sigue en {workspace}.") hasta que la persona cambie. Si mientras tanto ese workspace se borró o la sacaron de él, la pestaña pasa a otro y avisa: "Ya no tenés acceso a {workspace}: esta pestaña pasó a {workspace}. Lo que no habías guardado no se puede guardar." Sin cambios sin guardar, la pestaña sigue a la otra.
 - **API:** la app manda el workspace activo en cada pedido (`X-Workspace-Id`) y la API lo respeta: listas, creación y permisos son los de ese workspace.
 
 #### J4. Toasts

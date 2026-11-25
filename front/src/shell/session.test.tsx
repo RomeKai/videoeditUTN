@@ -40,6 +40,7 @@ afterEach(() => {
   cleanup();
   nav.state.pathname = '/proyectos';
   nav.state.pushed = [];
+  window.history.replaceState(null, '', '/');
   server.resetHandlers();
   clearSession();
 });
@@ -315,6 +316,24 @@ describe('sesión al hidratar', () => {
       act(arrive);
       await waitFor(() => expect(switched).toBe(true));
       expect(await screen.findByText('authenticated:Cliente:7')).toBeInTheDocument();
+    });
+
+    it('en la misma página pero con otra query (`/proyectos?publicar=…`) también navega antes de cambiar: lo que abrió la query era del otro workspace', async () => {
+      mockApi();
+      window.history.replaceState(null, '', '/proyectos?publicar=00000008-0000-4000-8000-0000000001f5');
+      setTokens({ access: 'a', refresh: 'r' });
+      render(app());
+      expect(await screen.findByText('authenticated:Estudio:100')).toBeInTheDocument();
+      let switched: boolean | 'pendiente' = 'pendiente';
+      act(() => void switchTo(OTHER).then((value) => (switched = value)));
+      await waitFor(() => expect(nav.state.pushed).toEqual(['/proyectos']));
+      // The panel is still there: the workspace does not change under it.
+      await act(() => new Promise((resolve) => setTimeout(resolve, 60)));
+      expect(getActiveWorkspaceId()).toBe(WS);
+      // The router commits the URL without the query (the panel is gone with it).
+      window.history.replaceState(null, '', '/proyectos');
+      await waitFor(() => expect(getActiveWorkspaceId()).toBe(OTHER));
+      await waitFor(() => expect(switched).toBe(true));
     });
 
     it('`to: null` cambia sin navegar (lo hace quien llama)', async () => {
