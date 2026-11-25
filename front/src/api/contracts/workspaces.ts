@@ -248,11 +248,12 @@ export const acceptInvitation = defineEndpoint({
     /** Present when the account was created here: the session starts right away. */
     tokens: TokenPair.nullable(),
   }),
-  auth: false,
+  // Optional: the token travels when there is a session (an existing account accepts with it) and is not needed to create the account.
+  auth: 'optional',
   workspaceScoped: false,
   errors: [
     { status: 400, when: 'Faltan `name` o `password` para crear la cuenta.' },
-    { status: 401, when: 'El email ya tiene cuenta y no hay sesión: la UI pide iniciar sesión.' },
+    { status: 401, when: 'El email ya tiene cuenta y no hay sesión: la UI pide iniciar sesión. Con sesión, el cliente manda el token (y lo renueva si hace falta).' },
     { status: 410, when: 'Invitación vencida o ya usada.' },
   ],
   backend: { status: 'proposed', gap: 13 },
