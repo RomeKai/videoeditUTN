@@ -38,7 +38,9 @@ from apps.videos.services.ai.pipeline_state import PipelineStage
 from apps.videos.services.render_pricing import render_cost
 from apps.videos.services.segments import validate_approved_segments
 from apps.videos.tasks import finalize_project_render, render_clip_task, render_video_segments
-from apps.videos.tasks.ingestion import RENDER_REDISPATCH_SECONDS, _run_ingestion, _whole_video_render_allowed
+from apps.videos.tasks.ingestion import (
+    RENDER_REDISPATCH_SECONDS, _reserve_auto_render, _run_ingestion, _whole_video_render_allowed,
+)
 from apps.videos.tasks.render import RENDER_TAKEOVER_HEADER
 from apps.videos.tasks.render_recovery import RENDER_RECOVERY_MAX_REQUEUES, recover_stuck_renders_now
 from apps.videos.tests.fakes import CapturedTaskFailures, FakeRedis
@@ -889,21 +891,87 @@ class LeftoverAutoRenderTests(IngestionHarness, TestCase):
     def stale_auto_id(self, project):
         return Transaction.objects.filter(wallet=self.wallet, status=Transaction.Status.FAILED).earliest("created_at").pk
 
-    def test_an_auto_render_still_reserved_refuses_the_approval(self):
-        project = self.in_review_with_a_settled_auto_render()
-        open_auto = reserve_funds(self.wallet.id, Decimal("7.50"))
-        VideoProject.objects.filter(pk=project.pk).update(metadata={**project.metadata, AUTO_KEY: str(open_auto.pk)})
+    def reserved_and_never_dispatched(self):
+        """
+        The auto-render was reserved, its dispatch did not happen (a retry, a
+        dead worker) and the user turned the bypass off meanwhile: the project
+        is back in the review with that reservation still RESERVED.
+        """
+        project = self.run_to_render(self.make_project())  # to the review
+        VideoProject.objects.filter(pk=project.pk).update(
+            auto_render_bypass=True, status=VideoProject.Status.INGESTING,
+        )
+        self.assertTrue(_reserve_auto_render(project.id))  # the dispatch never came
+        response = self.api.patch(
+            reverse("project-detail", args=[project.id]), {"auto_render_bypass": False}, format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        VideoProject.objects.filter(pk=project.pk).update(status=VideoProject.Status.AWAITING_APPROVAL)
+        project.refresh_from_db()
+        auto = Transaction.objects.get(pk=project.metadata[AUTO_KEY])
+        self.assertEqual((auto.status, auto.amount), (Transaction.Status.RESERVED, Decimal("7.50")))
+        self.assertEqual(project.pipeline_stage, PipelineStage.CLIPS_SELECTED)
+        return project, auto
+
+    def test_an_auto_render_reserved_and_never_dispatched_is_refunded_by_the_approval(self):
+        project, auto = self.reserved_and_never_dispatched()
 
         response = self.approve(project)
 
-        self.assertEqual(response.status_code, 409, response.content[:300])
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        auto.refresh_from_db()
+        self.assertEqual(auto.status, Transaction.Status.FAILED)
+        self.assertNotIn(AUTO_KEY, project.metadata)
+        self.render_all(project)
+        self.assertEqual(project.pipeline_stage, PipelineStage.COMPLETED)
+        # One charge: the approval's 10 s. The auto-render went back whole.
+        self.assertEqual(Transaction.objects.get(pk=project.metadata["render_reservation_id"]).amount, Decimal("5.00"))
+        self.assertEqual(self.balances(), (Decimal("95.00"), Decimal("0")))
+
+    def test_an_approval_that_fails_keeps_the_auto_render_as_it_was(self):
+        # Refunded in the approval's transaction: an approval that is not
+        # written gives nothing back twice and loses nothing.
+        project, auto = self.reserved_and_never_dispatched()
+
+        with patch("apps.videos.tasks.ingestion._mark_render_dispatched", side_effect=RuntimeError("x")), \
+                self.assertRaises(RuntimeError):
+            self.approve(project)
+
+        auto.refresh_from_db()
+        self.assertEqual(auto.status, Transaction.Status.RESERVED)
         project.refresh_from_db()
-        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
-        self.assertEqual(VideoClip.objects.filter(project=project, status=VideoClip.Status.DRAFT).count(), 3)
-        open_auto.refresh_from_db()
-        self.assertEqual(open_auto.status, Transaction.Status.RESERVED)
-        # Only the auto-render stays reserved: the approval's reservation went back.
+        self.assertEqual(project.metadata[AUTO_KEY], str(auto.pk))
         self.assertEqual(self.balances(), (Decimal("92.50"), Decimal("7.50")))
+
+    def test_the_ingestion_returns_it_when_it_finds_the_project_waiting_for_the_review(self):
+        project, auto = self.reserved_and_never_dispatched()
+
+        project = self.run_to_render(project)  # the retry, or an admin re-dispatch
+
+        auto.refresh_from_db()
+        self.assertEqual(auto.status, Transaction.Status.FAILED)
+        self.assertNotIn(AUTO_KEY, project.metadata)
+        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
+        self.mock_render.assert_not_called()
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+
+    def test_the_stale_sweep_returns_it_if_nobody_approves(self):
+        project, auto = self.reserved_and_never_dispatched()
+        Transaction.objects.filter(pk=auto.pk).update(created_at=timezone.now() - timedelta(hours=48))
+
+        out = StringIO()
+        call_command("settle_stale_reservations", "--apply", stdout=out)
+
+        line = next(item for item in out.getvalue().splitlines() if f"transaction={auto.pk} " in item)
+        self.assertIn("kind=auto_render", line)
+        self.assertIn("action=rollback reason=not_dispatched result=rolled_back", line)
+        auto.refresh_from_db()
+        self.assertEqual(auto.status, Transaction.Status.FAILED)
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+        # And the review can still be approved, charged once.
+        self.assertEqual(self.approve(project).status_code, 200)
+        self.render_all(project)
+        self.assertEqual(self.balances(), (Decimal("95.00"), Decimal("0")))
 
     def test_an_auto_render_whose_messages_were_lost_is_recovered_by_its_clips(self):
         project = self.run_to_render(self.make_project(auto_render_bypass=True))  # messages never ran

@@ -25,6 +25,8 @@ Rules (the same the pipeline applies, see tasks/ingestion.py and tasks/render.py
         completed, partial or failed with clips delivered  -> commit the share
                                                               of their seconds
         completed, partial or failed, nothing delivered    -> rollback
+        an auto-render still at clips_selected (reserved,
+        never dispatched)                                  -> rollback
         a clip still rendering, or any other stage         -> report only
     Render reservation of an approval from before (one export of every
     segment, no ``render_clip_ids``):
@@ -124,6 +126,10 @@ def decide(kind, project):
         if project.pipeline_stage == VideoProject.PipelineStage.FAILED:
             return ROLLBACK, "failed_without_clips"
         return REPORT, "in_progress"
+    if kind == "auto_render" and project.pipeline_stage == VideoProject.PipelineStage.CLIPS_SELECTED:
+        # Reserved and never dispatched (the dispatch moves the project to
+        # render_dispatched before queueing): it pays for nothing.
+        return ROLLBACK, "not_dispatched"
     paid = _paid_clip_render(kind, project)
     if paid is not None:
         outcome, _delivered = _clip_render_settlement(project, paid)

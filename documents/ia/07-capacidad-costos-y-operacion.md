@@ -409,6 +409,7 @@ Solo mira transacciones `RESERVED` con `created_at` de hace al menos `--min-age-
 | Render de una aprobación de antes | Otro estado, por ejemplo `RENDERING` (`render_in_progress`) | Solo reporta. Si está trabado, lo resuelve `recover_stuck_renders` |
 | Render automático (`metadata['auto_render_reservation_id']`) | `completed`, `partial` o `failed` con clips `completed` o `published` y ninguno `rendering` (`clips_delivered`) | Cobra la parte de los segundos entregados y devuelve el resto |
 | Render automático | `completed`, `partial` o `failed` sin clips entregados (`nothing_delivered`) | Devuelve |
+| Render automático | `clips_selected`: se reservó y nunca se despachó, porque el despacho pasa el proyecto a `render_dispatched` antes de encolar (`not_dispatched`) | Devuelve |
 | Render automático | Un clip todavía `rendering`, o cualquier otra etapa (`auto_render_in_progress`) | Solo reporta |
 | Sin proyecto (`unlinked`) | — | Solo reporta |
 

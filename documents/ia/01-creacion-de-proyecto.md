@@ -211,7 +211,8 @@ flowchart TD
 - **Clips entregados:** `finalize_project_render` cobra la parte de los segundos de los clips `completed` o `published` y devuelve el resto (`commit_partial_reservation`, log `render.charged`).
 - **Nada entregado:** se devuelve toda (`render.refunded`).
 - **Un clip todavía `rendering`:** espera.
-- **Si la aprobación no se puede guardar después de reservar** (el proyecto dejó la revisión mientras tanto, o tiene un render automático todavía reservado): la reserva se devuelve en la misma respuesta (`render.approval_failed`). Un error después de guardarla no la devuelve.
+- **Si la aprobación no se puede guardar después de reservar** (el proyecto dejó la revisión mientras tanto): la reserva se devuelve en la misma respuesta (`render.approval_failed`). Un error después de guardarla no la devuelve.
+- **Un render automático reservado y nunca despachado** (el usuario apagó "Renderizar sin revisar" antes de su despacho): la aprobación lo devuelve en su misma transacción, así se cobra una sola vez ([02](02-pipeline-de-ingesta.md#aprobación-de-la-revisión-approve-paper-edit)).
 - **Un clip que no se encoló o cuyo worker murió:** lo vuelve a encolar un re-despacho que la aprobación pide sola o, si tampoco entra, `recover_stuck_renders`; la reserva espera a esos clips ([07](07-capacidad-costos-y-operacion.md#operación-renders-trabados)).
 - Una reserva que quedó `RESERVED` de todos modos (por ejemplo, un cobro que falló por un error de base) la liquida `settle_stale_reservations` ([07](07-capacidad-costos-y-operacion.md#operación-reservas-de-tokens-que-quedaron-reserved)) con la misma regla.
 

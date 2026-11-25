@@ -1478,6 +1478,15 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
             # The clips exist: the ingestion work is delivered and its tokens are
             # charged (already, if an auto-render could not be paid).
             _commit_ingestion_reservation(project_id)
+            # An auto-render reserved by an earlier run that never dispatched
+            # (the bypass was turned off since) pays for nothing: returned.
+            try:
+                _refund_undispatched_auto_render(project_id)
+            except DatabaseError as exc:
+                # settle_stale_reservations returns it later (not_dispatched).
+                logger.error(
+                    "pipeline.auto_render_refund_failed project_id=%s error=%s", project_id, type(exc).__name__,
+                )
             logger.info("⏳ Ingestion complete. Awaiting user approval.")
             # Guarded: a redelivered task must not undo a later user action.
             VideoProject.objects.filter(
@@ -1486,6 +1495,40 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
             ).update(status=VideoProject.Status.AWAITING_APPROVAL)
 
     return f"Ingestion Success {project_id}"
+
+
+def _refund_undispatched_auto_render(project_id):
+    """
+    Returns an auto-render reservation that is still RESERVED while the project
+    is at clips_selected, and drops its keys. Nothing can have been queued for
+    it: the dispatch moves the project to render_dispatched before queueing.
+    It happens when the auto-render was reserved, the dispatch did not happen
+    (a retry, a dead worker) and the user turned the bypass off meanwhile: the
+    project waits for the review, and the approval pays for what is approved.
+    Under the row lock; returns whether it refunded. A reservation another
+    settle returned meanwhile is not an error; a database error propagates.
+    """
+    # Deferred: wallet_service imports this module at load time.
+    from apps.payments.services.wallet_service import PaymentError, rollback_reservation
+
+    with transaction.atomic():
+        project = VideoProject.objects.select_for_update().get(pk=project_id)
+        metadata = dict(project.metadata or {})
+        reservation_id = metadata.get(AUTO_RENDER.reservation_key)
+        if project.pipeline_stage != PipelineStage.CLIPS_SELECTED or not reservation_id:
+            return False
+        if not Transaction.objects.filter(pk=reservation_id, status=Transaction.Status.RESERVED).exists():
+            return False  # already settled: its keys are dropped by the approval
+        try:
+            rollback_reservation(reservation_id)
+        except PaymentError:
+            if Transaction.objects.filter(pk=reservation_id, status=Transaction.Status.RESERVED).exists():
+                raise
+        for key in (AUTO_RENDER.reservation_key, AUTO_RENDER.clip_ids_key, AUTO_RENDER.seconds_key):
+            metadata.pop(key, None)
+        VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
+    logger.info("pipeline.auto_render_refunded project_id=%s reason=not_dispatched", project_id)
+    return True
 
 
 def _reserve_auto_render_after_charge(project_id):
