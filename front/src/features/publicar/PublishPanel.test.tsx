@@ -6,7 +6,7 @@ import { tick } from '@/api/mocks/sim';
 import { applyScenario, saveDb } from '@/api/mocks/state';
 import { PublishPanel } from './PublishPanel';
 import { PublishPanelMount, parseNetworkParam, parsePublishParam, publishHref } from './PublishPanelMount';
-import { STALE_DRAFT_MS, holdDraft, isRemembered, orphanDrafts, releaseDraft, rememberedDrafts, touchDrafts } from './draftRegistry';
+import { RECENT_DRAFT_MS, STALE_DRAFT_MS, findOrphanDrafts, holdDraft, isRemembered, orphanDrafts, releaseDraft, rememberedDrafts, touchDrafts } from './draftRegistry';
 import { dayKey } from './posts';
 import { CLIPS, db, idle, renderScreen } from './testing';
 
@@ -290,15 +290,18 @@ describe('E1 · Publicar · borradores de ayuda', () => {
   });
 
   /** A helper draft that a reload left behind: remembered in the browser, with no panel using it. */
-  const leftover = (change: (post: ReturnType<typeof db>['posts'][number]) => void = () => undefined) => {
+  const leftover = (change: (post: ReturnType<typeof db>['posts'][number]) => void = () => undefined, age = RECENT_DRAFT_MS + 1000) => {
     applyDefault();
     const data = db();
     const post = data.posts.find((item) => item.status === 'SCHEDULED');
     if (!post) throw new Error('falta una publicación de ejemplo');
     post.status = 'DRAFT';
+    // As the panel creates them: no options chosen yet.
+    post.tiktok = null;
     change(post);
     saveDb(data);
-    holdDraft({ id: post.id, clip: post.video_clip, workspace: post.workspace });
+    // Its panel is long gone: nothing refreshed the entry for more than the two minutes a live one is given.
+    holdDraft({ id: post.id, clip: post.video_clip, workspace: post.workspace }, Date.now() - age);
     releaseDraft(post.id);
     return post;
   };
@@ -327,6 +330,73 @@ describe('E1 · Publicar · borradores de ayuda', () => {
     await waitFor(() => expect(isRemembered(edited.id)).toBe(false));
     await pause(300);
     expect(exists(edited.id)).toBe(true);
+  });
+
+  it.each([
+    ['los hashtags', (post: ReturnType<typeof db>['posts'][number]) => void (post.hashtags = ['mendoza', 'vinos'])],
+    ['las opciones de TikTok', (post: ReturnType<typeof db>['posts'][number]) => void (post.tiktok = { privacy_level: 'PUBLIC_TO_EVERYONE', allow_comment: true, allow_duet: false, allow_stitch: false, brand_organic: false, branded_content: false })],
+  ])('si la persona solo tocó %s (el texto quedó igual), tampoco se descarta', async (_what, change) => {
+    const edited = leftover((post) => {
+      post.caption = post.generated_caption ?? '';
+      change(post);
+    });
+    renderScreen(<PublishPanelMount />, { keep: true });
+    await waitFor(() => expect(isRemembered(edited.id)).toBe(false));
+    await pause(300);
+    expect(exists(edited.id)).toBe(true);
+  });
+
+  it('si nadie responde pero el borrador se usó hace menos de dos minutos, se queda: una pestaña lenta o en segundo plano no lo pierde', async () => {
+    // Its panel refreshed the entry a minute ago, and its tab does not answer in time.
+    const theirs = leftover(undefined, 60_000);
+    const found = await findOrphanDrafts(theirs.workspace, []);
+    expect(found.orphans).toEqual([]);
+    // It is looked at again when the two minutes are up.
+    const entry = rememberedDrafts().find((item) => item.id === theirs.id);
+    expect(found.retryAt).toBe((entry?.at ?? 0) + RECENT_DRAFT_MS + 1);
+    expect((await orphanDrafts(theirs.workspace, [], Date.now() + 61_000)).map((item) => item.id)).toEqual([theirs.id]);
+
+    // The sweeper leaves it alone now…
+    renderScreen(<PublishPanelMount />, { keep: true });
+    await pause(700);
+    expect(exists(theirs.id)).toBe(true);
+    expect(isRemembered(theirs.id)).toBe(true);
+  });
+
+  it('el barrido vuelve a pasar cuando se cumplen los dos minutos y descarta lo que nadie reclamó', async () => {
+    const theirs = leftover(undefined, RECENT_DRAFT_MS - 400);
+    renderScreen(<PublishPanelMount />, { keep: true });
+    await pause(350);
+    expect(exists(theirs.id)).toBe(true);
+    // The second pass comes at least a second later.
+    await waitFor(() => expect(exists(theirs.id)).toBe(false), { timeout: 4000 });
+    expect(isRemembered(theirs.id)).toBe(false);
+  });
+
+  it('si un panel toma el borrador mientras el barrido lo estaba leyendo, no se descarta', async () => {
+    const theirs = leftover();
+    let reading: () => void = () => undefined;
+    const read = new Promise<void>((resolve) => (reading = resolve));
+    let answer: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (answer = resolve));
+    server.use(
+      // Holds the answer and then lets the mocked API give it (a handler that returns nothing passes the request on).
+      http.get('http://localhost:8000/api/v1/scheduled-posts/:id/', async ({ params }) => {
+        if (params.id !== theirs.id) return;
+        reading();
+        await held;
+      }),
+    );
+    renderScreen(<PublishPanelMount />, { keep: true });
+    // The sweeper already decided it was an orphan and is waiting for the server…
+    await read;
+    // …when the panel of that clip (this page's or another tab's) takes it back.
+    holdDraft({ id: theirs.id, clip: theirs.video_clip, workspace: theirs.workspace });
+    answer();
+    await pause(400);
+    expect(exists(theirs.id)).toBe(true);
+    expect(isRemembered(theirs.id)).toBe(true);
+    releaseDraft(theirs.id);
   });
 
   it('otra instancia de la app (una pestaña duplicada) no descarta el borrador de un panel abierto', async () => {

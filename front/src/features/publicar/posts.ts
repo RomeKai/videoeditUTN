@@ -172,6 +172,24 @@ export function textOrigin(post: Pick<ScheduledPost, 'caption' | 'generated_capt
 /* ── Publications ────────────────────────────────────────────────────────── */
 
 /** Text and date can change only before the post is queued. */
+const sameTags = (a: string[], b: string[]): boolean => {
+  const clean = (tags: string[]) => tags.map((tag) => tag.replace(/^#/, '').trim()).filter(Boolean);
+  const [left, right] = [clean(a), clean(b)];
+  return left.length === right.length && left.every((tag, index) => tag === right[index]);
+};
+
+/**
+ * A helper draft exactly as the panel (and the AI) left it: still a draft, and nothing a person can
+ * edit was edited. Text and hashtags are the suggestion or empty, and no TikTok options were chosen.
+ * Anything else was written by someone and is theirs: it is never thrown away as a leftover.
+ */
+export function isUntouchedDraft(post: Pick<ScheduledPost, 'status' | 'caption' | 'generated_caption' | 'hashtags' | 'generated_hashtags' | 'tiktok'>): boolean {
+  if (post.status !== 'DRAFT') return false;
+  if (post.caption && post.caption !== post.generated_caption) return false;
+  if (post.hashtags.length > 0 && !sameTags(post.hashtags, post.generated_hashtags ?? [])) return false;
+  return post.tiktok === null;
+}
+
 export const isEditable = (status: PostStatus): boolean => status === 'DRAFT' || status === 'SCHEDULED';
 /** A post that has not gone out yet can be cancelled. */
 export const isCancellable = (status: PostStatus): boolean => status === 'DRAFT' || status === 'SCHEDULED' || status === 'QUEUED' || status === 'FAILED';

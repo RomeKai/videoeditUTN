@@ -9,7 +9,9 @@
  * still shows would lose the person's text:
  * - panels of this page hold their drafts in `held`;
  * - panels of other tabs answer for theirs over a BroadcastChannel;
- * - where there is no BroadcastChannel, an open panel keeps the entry's time fresh and only stale entries go.
+ * - an open panel keeps the entry's time fresh. A tab that is slow or in the background may not
+ *   answer in time, so an entry refreshed in the last two minutes is in use whatever the answers
+ *   say; and where there is no BroadcastChannel, only entries nobody refreshed for an hour go.
  */
 export interface DraftEntry {
   id: string;
@@ -27,6 +29,12 @@ export const STALE_DRAFT_MS = 60 * 60_000;
 export const TOUCH_DRAFTS_MS = 60_000;
 /** How long other tabs get to answer. */
 const ANSWER_MS = 300;
+/**
+ * An entry refreshed this recently is in use even when no tab answered: a background tab runs its
+ * timers late (browsers hold them to one a minute) and may take longer than `ANSWER_MS` to reply.
+ * Two refresh periods, so one late refresh is not enough to lose a draft.
+ */
+export const RECENT_DRAFT_MS = 2 * TOUCH_DRAFTS_MS;
 
 function read(): DraftEntry[] {
   try {
@@ -99,6 +107,17 @@ export const rememberedDrafts = (): DraftEntry[] => read();
 export const isRemembered = (id: string): boolean => read().some((item) => item.id === id);
 export const isHeld = (id: string): boolean => held.has(id);
 
+/**
+ * Whether the draft is still nobody's, asked again right before discarding it: a panel of this
+ * page did not take it, no panel of its clip opened here, it is still remembered, and no tab
+ * refreshed its entry since it was listed as an orphan (taking a draft back writes the entry again).
+ */
+export function isStillOrphan(entry: DraftEntry, openClipIds: string[]): boolean {
+  if (held.has(entry.id) || openClipIds.includes(entry.clip)) return false;
+  const current = read().find((item) => item.id === entry.id);
+  return current !== undefined && current.at <= entry.at;
+}
+
 /** Ids that a panel in another tab says it is using. Null when other tabs cannot be asked. */
 function heldElsewhere(ids: string[]): Promise<Set<string> | null> {
   if (typeof BroadcastChannel === 'undefined') return Promise.resolve(null);
@@ -118,17 +137,39 @@ function heldElsewhere(ids: string[]): Promise<Set<string> | null> {
   });
 }
 
+export interface OrphanSearch {
+  /** Drafts nobody is using: they can be discarded. */
+  orphans: DraftEntry[];
+  /** When to look again: some entries were only kept for being recent. Null when there is nothing to wait for. */
+  retryAt: number | null;
+}
+
 /**
  * Remembered drafts of the workspace that no panel is using: not held in this
- * page, not of a clip whose panel is open here, and not claimed by another tab
- * (or, when other tabs cannot be asked, not refreshed for an hour).
+ * page, not of a clip whose panel is open here, not claimed by another tab and
+ * not refreshed in the last two minutes (or, when other tabs cannot be asked,
+ * not refreshed for an hour).
  */
-export async function orphanDrafts(workspaceId: string, openClipIds: string[], now = Date.now()): Promise<DraftEntry[]> {
+export async function findOrphanDrafts(workspaceId: string, openClipIds: string[], now = Date.now()): Promise<OrphanSearch> {
   const candidates = read().filter((item) => item.workspace === workspaceId && !held.has(item.id) && !openClipIds.includes(item.clip));
-  if (candidates.length === 0) return [];
+  if (candidates.length === 0) return { orphans: [], retryAt: null };
   const elsewhere = await heldElsewhere(candidates.map((item) => item.id));
-  // A panel of this page may have taken one back while the others answered.
-  const free = candidates.filter((item) => !held.has(item.id) && isRemembered(item.id));
-  if (elsewhere) return free.filter((item) => !elsewhere.has(item.id));
-  return free.filter((item) => now - item.at > STALE_DRAFT_MS);
+  // A panel of this page may have taken one back while the others answered; another tab's may have refreshed its own.
+  const current = new Map(read().map((item) => [item.id, item]));
+  const free = candidates.flatMap((item) => {
+    const entry = current.get(item.id);
+    return entry && !held.has(item.id) ? [entry] : [];
+  });
+  if (!elsewhere) return { orphans: free.filter((item) => now - item.at > STALE_DRAFT_MS), retryAt: null };
+  const unclaimed = free.filter((item) => !elsewhere.has(item.id));
+  const recent = unclaimed.filter((item) => now - item.at <= RECENT_DRAFT_MS);
+  return {
+    orphans: unclaimed.filter((item) => now - item.at > RECENT_DRAFT_MS),
+    retryAt: recent.length > 0 ? Math.min(...recent.map((item) => item.at)) + RECENT_DRAFT_MS + 1 : null,
+  };
+}
+
+/** The orphans of `findOrphanDrafts`. */
+export async function orphanDrafts(workspaceId: string, openClipIds: string[], now = Date.now()): Promise<DraftEntry[]> {
+  return (await findOrphanDrafts(workspaceId, openClipIds, now)).orphans;
 }

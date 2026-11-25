@@ -6,8 +6,8 @@ import type { Platform } from '@/api/contracts/common';
 import { ApiError } from '@/api/errors';
 import { useActiveWorkspaceId, usePostActions } from '@/api/hooks';
 import { PublishPanel } from './PublishPanel';
-import { forgetDraft, isHeld, orphanDrafts } from './draftRegistry';
-import { PLATFORMS } from './posts';
+import { findOrphanDrafts, forgetDraft, isStillOrphan } from './draftRegistry';
+import { PLATFORMS, isUntouchedDraft } from './posts';
 
 /** Query parameter that opens the panel: `?publicar=<clipId>[,<clipId>…]` (front/ROUTES.md). */
 export const PUBLISH_PARAM = 'publicar';
@@ -66,18 +66,24 @@ function useDraftSweeper(openClipIds: string[]): void {
   useEffect(() => {
     if (!workspaceId) return;
     let cancelled = false;
+    let again: number | undefined;
     const sweep = async () => {
-      const orphans = await orphanDrafts(workspaceId, open.current);
-      if (cancelled || orphans.length === 0) return;
+      const { orphans, retryAt } = await findOrphanDrafts(workspaceId, open.current);
+      if (cancelled) return;
+      // Some were kept only because a panel used them a moment ago (a reload, a tab that is slow to
+      // answer): if nobody claims them by then, they go in the next pass.
+      if (retryAt !== null) again = window.setTimeout(() => void sweep(), Math.max(1000, retryAt - Date.now()));
       let discarded = 0;
       for (const entry of orphans) {
         // A panel may have taken it back while this was running.
-        if (isHeld(entry.id) || open.current.includes(entry.clip)) continue;
+        if (!isStillOrphan(entry, open.current)) continue;
         try {
           const post = await actions.get(entry.id);
-          // Only a draft nobody touched is thrown away: one that went out, or whose text a person wrote, is theirs.
-          const untouched = post.status === 'DRAFT' && (!post.caption || post.caption === post.generated_caption);
-          if (untouched) {
+          if (cancelled) return;
+          // Asked again after the wait, right before throwing it away: the panel of its clip may have just opened.
+          if (!isStillOrphan(entry, open.current)) continue;
+          // Only a draft nobody touched is thrown away: one that went out, or that a person edited, is theirs.
+          if (isUntouchedDraft(post)) {
             await actions.discard(entry.id);
             discarded += 1;
           }
@@ -92,6 +98,7 @@ function useDraftSweeper(openClipIds: string[]): void {
     void sweep();
     return () => {
       cancelled = true;
+      window.clearTimeout(again);
     };
   }, [actions, workspaceId]);
 }
