@@ -20,8 +20,8 @@ from rest_framework import serializers
 from rest_framework.test import APIClient
 
 from apps.payments.models import Wallet
-from apps.videos.models import VideoProject
-from apps.videos.serializers import VideoProjectSerializer, _NotSentBooleanField
+from apps.videos.models import BrandKit, VideoProject
+from apps.videos.serializers import BrandKitSerializer, VideoProjectSerializer, _NotSentBooleanField
 from apps.videos.services.ai.prompt_validator import explicit_config_fields
 from apps.videos.services.media_validation import MediaInfo
 
@@ -112,12 +112,47 @@ class MultipartBooleansTests(TestCase):
         )
 
 
+class BrandKitBooleansTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="kits", email="kits@test.com", password="pw")
+        self.kit = BrandKit.objects.create(workspace=self.user.owned_workspaces.get(), name="Kit")
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_an_update_without_is_default_keeps_what_the_kit_had(self):
+        url = reverse("brandkit-detail", args=[self.kit.pk])
+        for had in (True, False):
+            for method, fmt in (("put", "multipart"), ("put", "json"), ("patch", "multipart")):
+                with self.subTest(had=had, method=method, format=fmt):
+                    BrandKit.objects.filter(pk=self.kit.pk).update(is_default=had)
+                    response = getattr(self.client, method)(url, {"name": "Otro nombre"}, format=fmt)
+                    self.assertEqual(response.status_code, 200, response.content[:300])
+                    self.kit.refresh_from_db()
+                    self.assertEqual(self.kit.is_default, had)
+
+    def test_a_multipart_put_that_sends_it_still_changes_it(self):
+        url = reverse("brandkit-detail", args=[self.kit.pk])
+        for value in (True, False):
+            with self.subTest(value=value):
+                BrandKit.objects.filter(pk=self.kit.pk).update(is_default=not value)
+                response = self.client.put(url, {"name": "Kit", "is_default": str(value).lower()}, format="multipart")
+                self.assertEqual(response.status_code, 200, response.content[:300])
+                self.kit.refresh_from_db()
+                self.assertEqual(self.kit.is_default, value)
+
+    def test_a_multipart_kit_without_it_is_not_the_default(self):
+        response = self.client.post(reverse("brandkit-list"), {"name": "Nuevo"}, format="multipart")
+        self.assertEqual(response.status_code, 201, response.content[:300])
+        self.assertFalse(BrandKit.objects.get(pk=response.data["id"]).is_default)
+
+
 class NotSentBooleanFieldsTests(SimpleTestCase):
     def test_every_model_boolean_of_the_serializer_is_not_sent_when_left_out(self):
         fields = VideoProjectSerializer().fields
         for name in MODEL_BOOLEANS:
             with self.subTest(name):
                 self.assertIsInstance(fields[name], _NotSentBooleanField)
+        self.assertIsInstance(BrandKitSerializer().fields["is_default"], _NotSentBooleanField)
         # use_seo is not a column: it is read at creation only and an update drops it.
         self.assertEqual(
             sorted(name for name, field in fields.items()
@@ -125,10 +160,11 @@ class NotSentBooleanFieldsTests(SimpleTestCase):
             ["use_seo"],
         )
 
-    def test_an_empty_boolean_is_not_an_explicit_field(self):
+    def test_an_empty_boolean_or_integer_is_not_an_explicit_field(self):
         raw = {
             "add_subtitles": "", "speaker_tracking": "  ", "use_seo": "", "use_ai_thumbnail": None,
+            "max_clips": "", "subtitle_words_per_segment": " ",
             "remove_silences": "false", "selection_criteria": "",
         }
-        # A blank text still counts (documented in 04-prompt-to-edit): only the booleans change.
+        # A blank text still counts (documented in 04-prompt-to-edit): only booleans and integers change.
         self.assertEqual(explicit_config_fields(raw), ["remove_silences", "selection_criteria"])

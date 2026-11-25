@@ -135,9 +135,11 @@ class ConfigValidator:
         return None
 
 
-# The ProjectConfig booleans: an empty one (a form field left blank) is not sent.
-_BOOLEAN_FIELDS = frozenset(
-    name for name, info in ProjectConfig.model_fields.items() if info.annotation == Optional[bool]
+# The ProjectConfig booleans and integers: an empty one (a form field left
+# blank) is not sent, as at creation.
+_BLANK_NOT_SENT = frozenset(
+    name for name, info in ProjectConfig.model_fields.items()
+    if info.annotation in (Optional[bool], Optional[int])
 )
 
 
@@ -149,13 +151,13 @@ def explicit_config_fields(raw: Any) -> List[str]:
     """
     ProjectConfig fields the request sent explicitly. ``layout`` is the alias
     of ``render_layout``; an empty one counts as not sent, as at creation. So
-    does an empty boolean: the creation keeps the model default for it.
+    does an empty boolean or integer: the creation keeps the default for it.
     """
     keys = set(getattr(raw, "keys", lambda: [])())
     layout = raw.get("layout") if "layout" in keys else None
     if layout is not None and str(layout).strip():
         keys.add("render_layout")
-    keys -= {name for name in _BOOLEAN_FIELDS & keys if _blank(raw.get(name))}
+    keys -= {name for name in _BLANK_NOT_SENT & keys if _blank(raw.get(name))}
     return sorted(name for name in ProjectConfig.model_fields if name in keys)
 
 
