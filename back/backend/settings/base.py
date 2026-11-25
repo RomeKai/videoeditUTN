@@ -225,6 +225,53 @@ SIMPLE_JWT = {
     'BLACKLIST_AFTER_ROTATION': True,
 }
 
+# --- LOGGING (INFRA-02) ---
+# LOG_FORMAT 'json' writes one JSON object per line (apps.core.structured_logging),
+# for a log platform to index; 'text' keeps the readable console format for
+# development. LOG_SERVICE tags every line (web, worker, beat).
+LOG_FORMAT = env('LOG_FORMAT', default='text' if DEBUG else 'json')
+LOG_LEVEL = env('LOG_LEVEL', default='INFO')
+LOG_SERVICE = env('LOG_SERVICE', default='')
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'filters': {
+        'celery_task': {'()': 'apps.core.structured_logging.CeleryTaskContextFilter'},
+    },
+    'formatters': {
+        'json': {
+            '()': 'apps.core.structured_logging.JsonFormatter',
+            'service': LOG_SERVICE,
+        },
+        'text': {
+            'format': '%(asctime)s %(levelname)s %(name)s %(message)s',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'json' if LOG_FORMAT == 'json' else 'text',
+            'filters': ['celery_task'],
+        },
+    },
+    'root': {'handlers': ['console'], 'level': LOG_LEVEL},
+    'loggers': {
+        # Django logs every request at INFO through django.server/django.request;
+        # WARNING keeps the 4xx/5xx and drops the noise.
+        'django': {'level': 'WARNING'},
+        'celery': {'level': LOG_LEVEL},
+    },
+}
+# Celery must not replace the root handlers with its own text format.
+CELERY_WORKER_HIJACK_ROOT_LOGGER = False
+
+# Alert when a Celery task fails this many times in a row (apps.core.task_alerts):
+# CRITICAL log alert.task_failing and an email to ADMINS. 0 disables it.
+TASK_FAILURE_ALERT_THRESHOLD = env.int('TASK_FAILURE_ALERT_THRESHOLD', default=3)
+# ADMIN_EMAILS: comma-separated addresses that receive the alerts.
+ADMINS = [(email, email) for email in env.list('ADMIN_EMAILS', default=[])]
+SERVER_EMAIL = env('SERVER_EMAIL', default='alertas@onecreator.local')
+
 # --- CELERY CONFIG ---
 if 'REDIS_URL' in os.environ:
     CELERY_BROKER_URL = env('REDIS_URL')

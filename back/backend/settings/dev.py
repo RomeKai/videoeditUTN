@@ -18,3 +18,7 @@ EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 # INSTALLED_APPS += ["debug_toolbar"]
 # MIDDLEWARE += ["debug_toolbar.middleware.DebugToolbarMiddleware"]
 # INTERNAL_IPS = ["127.0.0.1", "localhost"]
+# --- LOGGING (INFRA-02) ---
+# Readable console in development unless LOG_FORMAT asks for JSON explicitly.
+LOG_FORMAT = env('LOG_FORMAT', default='text')
+LOGGING['handlers']['console']['formatter'] = 'json' if LOG_FORMAT == 'json' else 'text'
