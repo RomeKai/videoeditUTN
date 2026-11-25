@@ -157,6 +157,29 @@ def _running_stage(project_id, stage, attempt):
             'duration_s': duration_s,
         },
     )
+    _record_stage_duration(project_id, stage, duration_s)
+
+
+def _record_stage_duration(project_id, stage, duration_s):
+    """
+    INFRA-02: keeps the last successful duration of each stage in
+    ``metadata['stage_durations']`` so the pipeline metrics (p50/p95 per stage)
+    are computed from the database, not only from the logs. A metric must never
+    break the pipeline: any database error is logged and swallowed.
+    """
+    try:
+        with transaction.atomic():
+            project = VideoProject.objects.select_for_update().only('metadata').get(pk=project_id)
+            metadata = dict(project.metadata or {})
+            durations = dict(metadata.get('stage_durations') or {})
+            durations[str(stage)] = duration_s
+            metadata['stage_durations'] = durations
+            VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
+    except Exception as exc:  # a metric must never fail a stage
+        logger.warning(
+            "pipeline.stage_duration_not_saved project_id=%s stage=%s error=%s",
+            project_id, stage, type(exc).__name__,
+        )
 
 
 def _probe_video(source_path):
@@ -184,6 +207,7 @@ def _generate_proxy(project, source_path, user_id):
             "pipeline.proxy_completed project_id=%s duration_s=%.3f", project.id, duration_s,
             extra={'project_id': str(project.id), 'duration_s': duration_s},
         )
+        _record_stage_duration(project.id, 'proxy', duration_s)
     except Exception as proxy_exc:
         logger.error(
             "⚠️ Proxy generation failed but continuing ingestion project_id=%s error=%s",
