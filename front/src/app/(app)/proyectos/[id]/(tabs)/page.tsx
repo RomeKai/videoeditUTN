@@ -1,11 +1,9 @@
 import type { Metadata } from 'next';
-import { ScreenPlaceholder } from '@/dev/ScreenPlaceholder';
-import { SCREENS } from '@/dev/screens';
+import { SummaryScreen } from '@/features/proyecto/SummaryScreen';
 
 export const metadata: Metadata = { title: 'Proyecto' };
 
-// D1 · Proyecto: pantalla pendiente. El dominio dueño reemplaza este archivo (ver front/ROUTES.md).
-export default async function Page({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
-  return <ScreenPlaceholder {...SCREENS.D1} params={{ id }} />;
+// D1 · Proyecto › Resumen. The header and the tabs come from the layout.
+export default function Page() {
+  return <SummaryScreen />;
 }
