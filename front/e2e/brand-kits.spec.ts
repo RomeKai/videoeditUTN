@@ -12,7 +12,7 @@ test.describe('F1 · Brand kits y F2 · Editar brand kit', () => {
     await page.getByRole('button', { name: /Nuevo brand kit/ }).click();
     await expect(page).toHaveURL(/\/brand-kits\/nuevo$/);
     await page.getByLabel('Nombre').fill('Podcast Vender');
-    await page.getByLabel('Palabra activa').fill('#3DD6C4');
+    await page.getByLabel('Palabra activa', { exact: true }).fill('#3DD6C4');
     await page.getByLabel('Logo de marca de agua').setInputFiles({ name: 'logo-podcast.png', mimeType: 'image/png', buffer: Buffer.from('png') });
     await expect(page.getByText('logo-podcast.png')).toBeVisible();
     await page.getByRole('radio', { name: 'Arriba a la derecha' }).click();
