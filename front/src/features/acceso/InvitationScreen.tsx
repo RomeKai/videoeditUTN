@@ -4,8 +4,10 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useRef, useState, type FormEvent, type ReactNode } from 'react';
 import type { InvitationPreview } from '@/api/contracts/workspaces';
+import { useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '@/api/errors';
 import { useAcceptInvitation, useInvitation, useLogout } from '@/api/hooks';
+import { clearSession } from '@/api/session';
 import { errorMessage, fieldError } from '@/lib/error-messages';
 import { ROLE_LABEL } from '@/lib/permissions';
 import { LoadError } from '@/shell/LoadError';
@@ -31,6 +33,7 @@ export function InvitationScreen({ token }: { token: string }) {
   // Accepting changes what this screen is made of (the invitation becomes "used", a session appears).
   // While the user is on the way to the app the card stays as it was, instead of flashing its other states.
   const [joining, setJoining] = useState<{ data: InvitationPreview; mode: Mode } | null>(null);
+  const [sessionLost, setSessionLost] = useState(false);
   const loginHref = `/login?siguiente=${encodeURIComponent(`/invitacion/${token}`)}`;
 
   if (!joining && invitation.isPending) {
@@ -112,7 +115,7 @@ export function InvitationScreen({ token }: { token: string }) {
         : data.has_account
           ? 'login'
           : 'create');
-  const flow = { token, invitation: data, loginHref, onJoining: (active: boolean) => setJoining(active ? { data, mode } : null) };
+  const flow = { token, invitation: data, loginHref, onJoining: (active: boolean) => setJoining(active ? { data, mode } : null), onSessionLost: () => setSessionLost(true) };
 
   let body: ReactNode;
   let footer: ReactNode = null;
@@ -163,6 +166,11 @@ export function InvitationScreen({ token }: { token: string }) {
       </div>
       <p className="t-small muted">{ROLE_SUMMARY[data.role]}</p>
       <hr className="divider" />
+      {sessionLost && mode !== 'accept' ? (
+        <Banner tone="warn" title="Tu sesión se cerró">
+          Iniciá sesión de nuevo para aceptar la invitación.
+        </Banner>
+      ) : null}
       {body}
       {footer ? (
         <>
@@ -206,17 +214,21 @@ function EnterWorkspace({ id, name }: { id: string; name: string }) {
   );
 }
 
+/** How long to wait for the workspace switch before opening the app anyway. An object so tests can shorten it. */
+export const joinOptions = { switchTimeoutMs: 8000 };
+
 /** After accepting: the app opens on the workspace the user has just joined. */
 function useJoin(invitation: InvitationPreview) {
   const router = useRouter();
   const toast = useToast();
   const { switchWorkspace } = useSession();
   return async (workspaceId: string) => {
-    try {
-      await switchWorkspace(workspaceId);
-    } catch {
-      // Joined anyway: the workspace is in the switcher.
-    }
+    // The switch stores the workspace at once and then saves it in the profile. Joined is joined: if that
+    // request fails or never answers, the app opens anyway instead of leaving this card busy forever.
+    await Promise.race([
+      switchWorkspace(workspaceId).catch(() => undefined),
+      new Promise<void>((resolve) => window.setTimeout(resolve, joinOptions.switchTimeoutMs)),
+    ]);
     toast.success(`Ya sos parte de ${invitation.workspace_name}`);
     router.replace(HOME);
   };
@@ -262,9 +274,12 @@ interface FlowProps {
   loginHref: string;
   /** Tells the screen to keep this card while the app opens (and to let go if accepting fails). */
   onJoining: (active: boolean) => void;
+  /** The session turned out to be dead and was closed: the screen explains it next to "Iniciar sesión". */
+  onSessionLost: () => void;
 }
 
-function AcceptAsMember({ token, invitation, loginHref, onJoining }: FlowProps) {
+function AcceptAsMember({ token, invitation, loginHref, onJoining, onSessionLost }: FlowProps) {
+  const queryClient = useQueryClient();
   const { me } = useSession();
   const accept = useAcceptInvitation(token);
   const invitationQuery = useInvitation(token);
@@ -285,7 +300,16 @@ function AcceptAsMember({ token, invitation, loginHref, onJoining }: FlowProps) 
     } catch (error) {
       onJoining(false);
       setBusy(false);
-      if (error instanceof ApiError && error.status === 410) void invitationQuery.refetch();
+      if (!(error instanceof ApiError)) return;
+      if (error.status === 410) void invitationQuery.refetch();
+      if (error.status === 401) {
+        // The client already renewed the token and tried again before giving this answer, so the
+        // session is dead. Its tokens must not stay: the login would see "a session" and bounce
+        // straight back here. Closed, the card offers to sign in again.
+        clearSession();
+        queryClient.clear();
+        onSessionLost();
+      }
     }
   };
   return (
@@ -328,7 +352,7 @@ function OtherAccount({ invitation }: { invitation: InvitationPreview }) {
   );
 }
 
-function CreateAccount({ token, invitation, loginHref, onJoining }: FlowProps) {
+function CreateAccount({ token, invitation, loginHref, onJoining }: Omit<FlowProps, 'onSessionLost'>) {
   const accept = useAcceptInvitation(token);
   const invitationQuery = useInvitation(token);
   const join = useJoin(invitation);

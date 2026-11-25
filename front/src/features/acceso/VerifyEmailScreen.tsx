@@ -32,13 +32,26 @@ export function VerifyEmailScreen({ email, token, fromLogin = false, next }: Ver
   useEffect(() => {
     if (!token || started.current) return;
     started.current = true;
-    // Back to the page that was asked for (kept while waiting for the email), or into the welcome.
-    verifyToken(token, { onSuccess: () => router.replace(safeNext(next) ?? takeNext() ?? '/bienvenida') });
-  }, [next, router, token, verifyToken]);
+    verifyToken(token);
+  }, [token, verifyToken]);
+
+  // Verified: back to the page that was asked for (kept while waiting for the email), or into the welcome.
+  // The remembered page is only for the account it was stored for, so this waits to know who signed in;
+  // if the profile does not load, the link's own email is the only clue.
+  const verified = verify.isSuccess;
+  const verifiedEmail = me?.email ?? (status === 'error' ? (email ?? '') : null);
+  const left = useRef(false);
+  useEffect(() => {
+    if (!verified || verifiedEmail === null || left.current) return;
+    left.current = true;
+    // Always taken, so it never outlives this verification, even when the link carries its own destination.
+    const remembered = takeNext(verifiedEmail);
+    router.replace(safeNext(next) ?? remembered ?? '/bienvenida');
+  }, [next, router, verified, verifiedEmail]);
 
   useEffect(() => {
-    if (!token) rememberNext(next);
-  }, [next, token]);
+    if (!token) rememberNext(next, email);
+  }, [email, next, token]);
 
   // Without a link to check, a verified account that is already signed in has nothing to do here.
   useEffect(() => {
