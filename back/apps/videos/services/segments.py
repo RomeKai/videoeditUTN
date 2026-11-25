@@ -6,7 +6,8 @@ from typing import Any, Dict, List
 class InvalidSegmentsError(ValueError):
     """
     The approved segments do not have the expected shape. Messages are static (no user
-    text). ``kind`` is ``"timestamps"`` for non-numeric/non-finite times, else ``"shape"``.
+    text). ``kind`` is ``"timestamps"`` for non-numeric/non-finite times, ``"too_long"``
+    for a segment longer than ``check_segment_lengths`` allows, else ``"shape"``.
     """
 
     def __init__(self, message: str, kind: str = "shape"):
@@ -25,6 +26,30 @@ def _as_time(value: Any) -> float:
     if not math.isfinite(number):
         raise InvalidSegmentsError("Segment timestamps must be finite.", kind="timestamps")
     return number
+
+
+def max_render_segment_seconds() -> float:
+    """
+    The longest segment a clip render finishes within its soft time limit:
+    RENDER_CLIP_SOFT_TIME_LIMIT over the worst render seconds per second of
+    clip (RENDER_CLIP_SECONDS_PER_SECOND, never below 1).
+    """
+    from django.conf import settings
+
+    soft_limit = float(getattr(settings, 'RENDER_CLIP_SOFT_TIME_LIMIT', 2 * 3600))
+    per_second = max(1.0, float(getattr(settings, 'RENDER_CLIP_SECONDS_PER_SECOND', 4.0)))
+    return soft_limit / per_second
+
+
+def check_segment_lengths(segments: List[Dict[str, Any]], max_seconds: float) -> None:
+    """
+    Raises ``InvalidSegmentsError`` (``kind="too_long"``) if a validated
+    segment is longer than ``max_seconds``. The approval checks it: each
+    segment renders as one clip. The paper edit of before does not.
+    """
+    for seg in segments:
+        if seg["end"] - seg["start"] > max_seconds:
+            raise InvalidSegmentsError("Segment longer than a clip render allows.", kind="too_long")
 
 
 def validate_approved_segments(raw: Any) -> List[Dict[str, Any]]:

@@ -58,8 +58,9 @@ What it does, deciding again under the project lock and the row lock
     The total cap bounds a loop the lost-starts cap does not see: a re-queued
     start that ends in a handled error (so it closes its start) and whose
     retry message is lost resets the re-queues in a row every time. Past
-    RENDER_RECOVERY_MAX_REQUEUES re-queues the project is only reported, so an
-    operator decides; it is never failed nor refunded by this routine.
+    RENDER_RECOVERY_MAX_REQUEUES re-queues a paper edit is only reported, so
+    an operator decides; it is never failed nor refunded by this routine (a
+    clip-by-clip render is settled instead, see below).
 
 Safety
     The re-queued delivery renders only a project that is RENDERING with its
@@ -71,19 +72,33 @@ Safety
 
 Clip by clip
     A clip whose message was lost (the approval's ``delay`` failed and so did
-    the resume it queued, a broker that lost its queue) stays DRAFT, and one
+    the resume it queued, or that resume ran out of retries; a broker that
+    lost its queue) stays DRAFT, and one
     whose worker died after a lost redelivery stays RENDERING under a dead
     owner: either way the project never closes and its reservation is never
     settled. Once nothing happened for RENDER_STUCK_AFTER_SECONDS (no clip
     render started, ``metadata['render_clip_started_at']``, since the
     reservation, nor since a re-queue of this routine), the clips that
-    reservation pays for are re-queued: DRAFT ones as they are, RENDERING ones
-    with a takeover right pinned to their current owner (the
+    reservation pays for are re-queued. A clip render has no heartbeat, and
+    needs none: every claim records its start before rendering, and the task's
+    hard time limit (RENDER_CLIP_TIME_LIMIT) is shorter than that threshold,
+    so a clip still RENDERING by then has a dead owner. DRAFT ones go as they
+    are, RENDERING ones with a takeover right pinned to their current owner (the
     ``render_takeover`` header), so a dead owner's clip is taken over and one
     that keeps killing its worker fails at RENDER_CLIP_MAX_STARTS. The same
-    backoff and total cap as the paper edits apply. With every paid clip final
-    and the fan-out still open (a close that failed), it is closed, which
-    settles the reservation.
+    backoff as the paper edits applies. With every paid clip final and the
+    fan-out still open (a close that failed), it is closed, which settles the
+    reservation.
+
+    Past the total cap (RENDER_RECOVERY_MAX_REQUEUES) a clip-by-clip render is
+    not left reserved forever, as a paper edit is: once the backoff window of
+    its last re-queue is over too, the clips it pays for that never started
+    (DRAFT, or RENDERING under the dead owner the snapshot saw) fail, the
+    project records ``render_stuck`` and the fan-out closes. That close
+    settles the reservation by the usual rule: the share delivered is
+    charged, the rest returned. A clip claimed meanwhile is left to its owner.
+    A re-queue that the broker accepts clears the error code of the dispatch
+    that could not queue it.
 
 Runs every 15 minutes from CELERY_BEAT_SCHEDULE (task recover_stuck_renders)
 and from ``manage.py recover_stuck_renders``. Logs and output carry ids,
@@ -102,7 +117,7 @@ from django.utils.dateparse import parse_datetime
 
 from apps.payments.models import Transaction
 from apps.videos.models import VideoClip, VideoProject
-from apps.videos.services.ai.pipeline_state import PipelineStage
+from apps.videos.services.ai.pipeline_state import PipelineStage, record_error
 from apps.videos.services.ai.project_lock import (
     ProjectLockedError,
     project_lock,
@@ -116,6 +131,7 @@ from apps.videos.tasks.render import (
     RENDER_TAKEOVER_HEADER,
     TakeoverRight,
     _fail_render,
+    _fail_unclaimed_clip,
     _settle_render_reservation,
     finalize_project_render,
     render_clip_task,
@@ -403,12 +419,18 @@ def decide_clips(project, paid_renders, snapshot, stuck_after):
     if not snapshot['drafts'] and not snapshot['rendering']:
         # Every paid clip is final but the fan-out stayed open (its close failed).
         return CLOSE, "fan_out_open"
+    if (
+        snapshot['requeues'] and snapshot['idle_s'] is not None
+        and snapshot['idle_s'] < backoff_window(stuck_after, snapshot['requeues'])
+    ):
+        # Re-queued and never started: its last message may still start.
+        return REPORT, "never_started"
     if snapshot['requeues_total'] >= RENDER_RECOVERY_MAX_REQUEUES:
-        return REPORT, "requeue_total_cap"
+        # Given up: the clips that never started fail and the reservation is
+        # settled by what was delivered, never left reserved forever.
+        return FAIL, "requeue_total_cap"
     if snapshot['requeues'] == 0:
         return REQUEUE, "clips_left"
-    if snapshot['idle_s'] is not None and snapshot['idle_s'] < backoff_window(stuck_after, snapshot['requeues']):
-        return REPORT, "never_started"
     return REQUEUE, "never_started"
 
 
@@ -448,6 +470,20 @@ def _requeue_clips(project_id, drafts, rendering):
         raise failure
 
 
+def _fail_stuck_clips(drafts, rendering):
+    """
+    Fails the clips the recovery gave up on: DRAFT ones with no owner, and
+    RENDERING ones still under the owner the snapshot saw (dead: nothing
+    started for longer than a render can live). Each write is conditional
+    (``_fail_unclaimed_clip``), so a clip claimed since is left to its owner.
+    Returns how many it failed.
+    """
+    failed = sum(_fail_unclaimed_clip(clip_id) for clip_id in drafts)
+    return failed + sum(
+        _fail_unclaimed_clip(clip_id, takeover=TakeoverRight(token)) for clip_id, token in rendering
+    )
+
+
 def _recover_clips(project_id, stuck_after):
     """Decides again and acts under the project lock and the row lock, like ``_recover``."""
     with project_lock(project_id, heartbeat=False):
@@ -464,12 +500,19 @@ def _recover_clips(project_id, stuck_after):
                 metadata['render_recovery_requeues'] = snapshot['requeues'] + 1
                 metadata['render_recovery_requeues_total'] = snapshot['requeues_total'] + 1
                 metadata['render_recovery_requeued_at'] = now.isoformat()
-                VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
+                # The error of the dispatch that could not queue the clips
+                # goes with a re-queue that could.
+                VideoProject.objects.filter(pk=project_id).update(
+                    metadata=metadata, pipeline_error_code="", pipeline_error_at=None,
+                )
                 # Inside the transaction: if the broker refuses a message, the
                 # record rolls back and the next run tries again. A duplicate
                 # message is harmless (the clip claim is a compare-and-set).
                 _requeue_clips(project_id, snapshot['drafts'], snapshot['rendering'])
-        if action == CLOSE:
+            elif action == FAIL:
+                _fail_stuck_clips(snapshot['drafts'], snapshot['rendering'])
+                record_error(project_id, STUCK_CODE)
+        if action in (CLOSE, FAIL):
             # Its own row lock, and the settle of the reservation, outside ours.
             finalize_project_render(project_id)
     if action in _ACTS:

@@ -208,6 +208,22 @@ def test_a_preview_whose_row_went_while_it_rendered_leaves_no_file(clip):
     assert stored and not os.path.exists(stored[0])
 
 
+def test_a_preview_deleted_right_after_its_claim_renders_nothing_and_never_raises(clip):
+    # Its clip was left out of an approval (or moved) just after the claim.
+    preview = make_preview(clip, status=ClipPreview.Status.PENDING)
+    real_select_related = ClipPreview.objects.select_related
+
+    def row_gone(*args, **kwargs):
+        ClipPreview.objects.filter(pk=preview.pk).delete()
+        return real_select_related(*args, **kwargs)
+
+    with patch.object(ClipPreview.objects, "select_related", side_effect=row_gone), \
+            patch("apps.videos.services.render_engine.RenderEngine.compose_clip") as compose:
+        assert svc.render_preview(preview.id) is None
+
+    compose.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Vencimiento y limpieza
 # ---------------------------------------------------------------------------
