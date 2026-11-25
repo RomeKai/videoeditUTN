@@ -37,6 +37,14 @@ function popLayer(token: symbol): void {
 
 const isTopLayer = (token: symbol): boolean => stack[stack.length - 1] === token;
 
+/**
+ * The modal layers only (dialogs and drawers), bottom to top. The focus trap
+ * follows this stack, not the shared one: a tooltip, menu or popover that
+ * opens inside a dialog is a layer for Escape, but Tab must stay in the dialog.
+ */
+const modals: symbol[] = [];
+const isTopModal = (token: symbol): boolean => modals[modals.length - 1] === token;
+
 let lockCount = 0;
 let previousOverflow = '';
 
@@ -84,6 +92,7 @@ export function useModalLayer<T extends HTMLElement>(
     const node = ref.current;
     if (!node) return;
     const token = pushLayer();
+    modals.push(token);
     lockScroll();
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
@@ -92,15 +101,16 @@ export function useModalLayer<T extends HTMLElement>(
     initial.focus({ preventScroll: true });
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isTopLayer(token)) return;
       if (event.key === 'Escape') {
-        if (dismissableRef.current) {
+        // Escape belongs to the top layer of any kind: an open menu or tooltip takes it first.
+        if (isTopLayer(token) && dismissableRef.current) {
           event.stopPropagation();
           onCloseRef.current();
         }
         return;
       }
-      if (event.key !== 'Tab') return;
+      // Tab stays in the top dialog, whatever it has open inside.
+      if (event.key !== 'Tab' || !isTopModal(token)) return;
       const items = focusableElements(node);
       if (items.length === 0) {
         event.preventDefault();
@@ -119,7 +129,7 @@ export function useModalLayer<T extends HTMLElement>(
       }
     };
     const onFocusIn = (event: FocusEvent) => {
-      if (!isTopLayer(token)) return;
+      if (!isTopModal(token)) return;
       if (event.target instanceof Node && !node.contains(event.target)) {
         (focusableElements(node)[0] ?? node).focus({ preventScroll: true });
       }
@@ -130,6 +140,8 @@ export function useModalLayer<T extends HTMLElement>(
       document.removeEventListener('keydown', onKeyDown, true);
       document.removeEventListener('focusin', onFocusIn);
       popLayer(token);
+      const index = modals.indexOf(token);
+      if (index >= 0) modals.splice(index, 1);
       unlockScroll();
       if (opener && document.contains(opener)) opener.focus({ preventScroll: true });
     };
