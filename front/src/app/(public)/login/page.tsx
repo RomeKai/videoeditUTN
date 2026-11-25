@@ -1,10 +1,11 @@
 import type { Metadata } from 'next';
-import { ScreenPlaceholder } from '@/dev/ScreenPlaceholder';
-import { SCREENS } from '@/dev/screens';
+import { LoginScreen } from '@/features/acceso/LoginScreen';
+import { one, type SearchParams } from '@/features/acceso/params';
 
 export const metadata: Metadata = { title: 'Iniciar sesión' };
 
-// A1 · Iniciar sesión: pantalla pendiente. El dominio dueño reemplaza este archivo (ver front/ROUTES.md).
-export default function Page() {
-  return <ScreenPlaceholder {...SCREENS.A1} page={false} />;
+// A1 · Iniciar sesión. `?siguiente=` is the page to open after signing in.
+export default async function Page({ searchParams }: { searchParams: SearchParams }) {
+  const params = await searchParams;
+  return <LoginScreen next={one(params.siguiente)} email={one(params.email)} />;
 }
