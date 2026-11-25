@@ -6,7 +6,7 @@ import type { Platform } from '@/api/contracts/common';
 import { ApiError } from '@/api/errors';
 import { useActiveWorkspaceId, usePostActions } from '@/api/hooks';
 import { PublishPanel } from './PublishPanel';
-import { forgetDraft, orphanDrafts } from './draftRegistry';
+import { forgetDraft, isHeld, orphanDrafts } from './draftRegistry';
 import { PLATFORMS } from './posts';
 
 /** Query parameter that opens the panel: `?publicar=<clipId>[,<clipId>…]` (front/ROUTES.md). */
@@ -65,19 +65,34 @@ function useDraftSweeper(openClipIds: string[]): void {
   open.current = openClipIds;
   useEffect(() => {
     if (!workspaceId) return;
-    const orphans = orphanDrafts(workspaceId, open.current);
-    if (orphans.length === 0) return;
-    void Promise.all(
-      orphans.map((entry) =>
-        actions.discard(entry.id).then(
-          () => forgetDraft(entry.id),
-          // Gone already, or it went out: either way it is not a helper draft any more.
-          (error: unknown) => {
-            if (error instanceof ApiError && (error.status === 404 || error.status === 409)) forgetDraft(entry.id);
-          },
-        ),
-      ),
-    ).then(() => actions.invalidate());
+    let cancelled = false;
+    const sweep = async () => {
+      const orphans = await orphanDrafts(workspaceId, open.current);
+      if (cancelled || orphans.length === 0) return;
+      let discarded = 0;
+      for (const entry of orphans) {
+        // A panel may have taken it back while this was running.
+        if (isHeld(entry.id) || open.current.includes(entry.clip)) continue;
+        try {
+          const post = await actions.get(entry.id);
+          // Only a draft nobody touched is thrown away: one that went out, or whose text a person wrote, is theirs.
+          const untouched = post.status === 'DRAFT' && (!post.caption || post.caption === post.generated_caption);
+          if (untouched) {
+            await actions.discard(entry.id);
+            discarded += 1;
+          }
+          forgetDraft(entry.id);
+        } catch (error) {
+          // Gone already: nothing to clean up. Anything else is tried again next time.
+          if (error instanceof ApiError && (error.status === 404 || error.status === 409)) forgetDraft(entry.id);
+        }
+      }
+      if (discarded > 0) void actions.invalidate();
+    };
+    void sweep();
+    return () => {
+      cancelled = true;
+    };
   }, [actions, workspaceId]);
 }
 

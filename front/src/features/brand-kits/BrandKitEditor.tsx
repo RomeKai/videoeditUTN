@@ -412,8 +412,8 @@ function EditorForm({ kit }: { kit: BrandKit | null }) {
       create.mutate({ ...input, name: draft.name.trim() }, {
         onSuccess: (created) => {
           toast.success(`Se creó «${created.name}»`);
-          guard.allowNext();
-          router.replace(`/brand-kits/${created.id}`);
+          // The extra history entry of the unsaved changes goes first: the new kit takes the place of `nuevo`.
+          void guard.release().then(() => router.replace(`/brand-kits/${created.id}`));
         },
         onError,
       });
@@ -752,8 +752,7 @@ function EditorForm({ kit }: { kit: BrandKit | null }) {
           remove.mutate(kit.id, {
             onSuccess: () => {
               toast.success(`Se borró «${kit.name}»`);
-              guard.allowNext();
-              router.replace('/brand-kits');
+              void guard.release().then(() => router.replace('/brand-kits'));
             },
           });
         }}

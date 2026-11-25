@@ -64,7 +64,7 @@ export const listBrandKits = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views.py · BrandKitViewSet.list + BrandKitSerializer',
-    note: 'Propuesto, todavía no existe: `watermark_position` (esquina de la marca de agua, F2). Mientras la respuesta no lo traiga, la UI no muestra el selector de esquina y el logo va abajo a la derecha.',
+    note: 'Hueco: hoy la vista ignora `X-Workspace-Id` y devuelve los kits de todos los workspaces del usuario; debería filtrar por el workspace activo (como projects.list). Mientras tanto la UI filtra por `workspace` antes de tocar el default de otro kit. Propuesto, todavía no existe: `watermark_position` (esquina de la marca de agua, F2). Mientras la respuesta no lo traiga, la UI no muestra el selector de esquina y el logo va abajo a la derecha.',
   },
   screens: ['F1', 'C1', 'B2', 'D5'],
 });

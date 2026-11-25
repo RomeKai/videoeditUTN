@@ -4,6 +4,7 @@ import { http, HttpResponse } from 'msw';
 import { server } from '@/api/mocks/server';
 import { applyScenario } from '@/api/mocks/state';
 import { PublicacionesScreen } from './PublicacionesScreen';
+import { holdDraft, isRemembered, releaseDraft } from './draftRegistry';
 import { dayKey } from './posts';
 import { db, idle, renderScreen } from './testing';
 
@@ -86,6 +87,30 @@ describe('E2 · Publicaciones · lista', () => {
     fireEvent.click(await screen.findByRole('button', { name: `Programar «${draft?.clip.title}» en Instagram` }));
     await waitFor(() => expect(nav.get()).toContain(`publicar=${draft?.video_clip}`));
     expect(nav.get()).toContain('red=INSTAGRAM_REELS');
+  });
+
+  it('un borrador que dejó un panel y la persona elige o edita desde acá deja de ser descartable', async () => {
+    applyScenario('estudio-norte');
+    const draft = postWith('DRAFT');
+    if (!draft) throw new Error('falta el borrador');
+    await open();
+    await table();
+    const remember = () => {
+      holdDraft({ id: draft.id, clip: draft.video_clip, workspace: draft.workspace });
+      releaseDraft(draft.id);
+    };
+    remember();
+    fireEvent.click(await screen.findByRole('button', { name: `Programar «${draft.clip.title}» en Instagram` }));
+    expect(isRemembered(draft.id)).toBe(false);
+
+    remember();
+    nav.set(`vista=lista&detalle=${draft.id}`);
+    const detail = await screen.findByRole('dialog', { name: 'Detalle de la publicación' });
+    fireEvent.click(await within(detail).findByRole('button', { name: /Editar/ }));
+    fireEvent.change(await within(detail).findByLabelText('Caption'), { target: { value: 'Lo escribí yo' } });
+    fireEvent.click(within(detail).getByRole('button', { name: 'Guardar' }));
+    expect(await screen.findByText('Cambios guardados')).toBeInTheDocument();
+    expect(isRemembered(draft.id)).toBe(false);
   });
 
   it('avisa de la publicación que falló, con un motivo legible', async () => {

@@ -12,9 +12,13 @@ import { ToastProvider } from '@/ui/Toast';
  * session and billing dialogs) against the mocked API of a scenario. The test
  * file starts the MSW server (`server` from '@/api/mocks/server').
  */
-export function renderScreen(ui: ReactElement, { scenario = 'estudio-norte' }: { scenario?: string } = {}): RenderResult & { client: QueryClient } {
+export function renderScreen(
+  ui: ReactElement,
+  { scenario = 'estudio-norte', keep = false }: { scenario?: string; keep?: boolean } = {},
+): RenderResult & { client: QueryClient } {
   // Seeds the scenario and signs in the user it starts with (Lucía, or the role of the scenario).
-  applyScenario(scenario);
+  // `keep`: a second app over the data another render already has (another tab of the same browser).
+  if (!keep) applyScenario(scenario);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 15_000 }, mutations: { retry: false } } });
   const result = render(
     <QueryClientProvider client={client}>

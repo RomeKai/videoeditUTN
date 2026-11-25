@@ -15,7 +15,7 @@ export interface PostActions {
   reconnect: (platform: Platform) => void;
   /** Opens the publish panel for the clip (a draft becomes a publication there). */
   /** Opens the publish panel for the clip; with a network, only that one comes ticked. */
-  publish: (clipId: string, platform?: Platform) => void;
+  publish: (clipId: string, platform?: Platform, draftId?: string) => void;
   /** Props that disable an action the role cannot do, with its reason. */
   publishGate: { disabledReason?: string };
   connectGate: { disabledReason?: string };
@@ -62,7 +62,7 @@ export function RowAction({ post, accounts, actions, touch = false }: { post: Sc
   }
   if (post.status === 'DRAFT') {
     return (
-      <Button size={size} iconLeft="calendar" aria-label={`Programar «${post.clip.title}» en ${network}`} onClick={() => actions.publish(post.video_clip, post.platform)} {...actions.publishGate}>
+      <Button size={size} iconLeft="calendar" aria-label={`Programar «${post.clip.title}» en ${network}`} onClick={() => actions.publish(post.video_clip, post.platform, post.id)} {...actions.publishGate}>
         Programar
       </Button>
     );

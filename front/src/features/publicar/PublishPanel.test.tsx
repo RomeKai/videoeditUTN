@@ -6,7 +6,7 @@ import { tick } from '@/api/mocks/sim';
 import { applyScenario, saveDb } from '@/api/mocks/state';
 import { PublishPanel } from './PublishPanel';
 import { PublishPanelMount, parseNetworkParam, parsePublishParam, publishHref } from './PublishPanelMount';
-import { FOREIGN_DRAFT_TTL_MS, orphanDrafts, rememberDraft, rememberedDrafts, tabId } from './draftRegistry';
+import { STALE_DRAFT_MS, holdDraft, isRemembered, orphanDrafts, releaseDraft, rememberedDrafts, touchDrafts } from './draftRegistry';
 import { dayKey } from './posts';
 import { CLIPS, db, idle, renderScreen } from './testing';
 
@@ -289,32 +289,95 @@ describe('E1 · Publicar · borradores de ayuda', () => {
     expect(postsOf(CLIPS.first, 'DRAFT')).toEqual([]);
   });
 
-  it('lo que quedó de una recarga o de otro workspace se descarta la próxima vez que se abre la app', async () => {
+  /** A helper draft that a reload left behind: remembered in the browser, with no panel using it. */
+  const leftover = (change: (post: ReturnType<typeof db>['posts'][number]) => void = () => undefined) => {
     applyDefault();
     const data = db();
-    const seedDraft = data.posts.find((post) => post.status === 'DRAFT');
-    const mine = data.posts.find((post) => post.status === 'SCHEDULED');
-    if (!seedDraft || !mine) throw new Error('faltan publicaciones de ejemplo');
-    // A helper draft that a reload left behind: remembered by this tab, with no panel open.
-    mine.status = 'DRAFT';
+    const post = data.posts.find((item) => item.status === 'SCHEDULED');
+    if (!post) throw new Error('falta una publicación de ejemplo');
+    post.status = 'DRAFT';
+    change(post);
     saveDb(data);
-    rememberDraft({ id: mine.id, clip: mine.video_clip, workspace: mine.workspace });
-    expect(orphanDrafts(mine.workspace, []).map((entry) => entry.id)).toEqual([mine.id]);
-    // The panel of that clip open again keeps it; another tab's draft waits an hour.
-    expect(orphanDrafts(mine.workspace, [mine.video_clip])).toEqual([]);
-    expect(orphanDrafts('otro-workspace', [])).toEqual([]);
-    window.sessionStorage.setItem('oc.publicar.pestana', 'otra-pestana');
-    expect(orphanDrafts(mine.workspace, [])).toEqual([]);
-    expect(orphanDrafts(mine.workspace, [], Date.now() + FOREIGN_DRAFT_TTL_MS + 1).map((entry) => entry.id)).toEqual([mine.id]);
-    window.sessionStorage.removeItem('oc.publicar.pestana');
-    rememberDraft({ id: mine.id, clip: mine.video_clip, workspace: mine.workspace });
-    expect(tabId()).not.toBe('otra-pestana');
+    holdDraft({ id: post.id, clip: post.video_clip, workspace: post.workspace });
+    releaseDraft(post.id);
+    return post;
+  };
+  const exists = (id: string) => db().posts.some((post) => post.id === id);
 
-    renderScreen(<PublishPanelMount />);
-    await waitFor(() => expect(db().posts.some((post) => post.id === mine.id)).toBe(false));
+  it('lo que quedó de una recarga o de otro workspace se descarta la próxima vez que se abre la app', async () => {
+    const mine = leftover();
+    const seedDraft = db().posts.find((post) => post.status === 'DRAFT' && post.id !== mine.id);
+    expect((await orphanDrafts(mine.workspace, [])).map((entry) => entry.id)).toEqual([mine.id]);
+    // The panel of that clip open again keeps it; in another workspace it is not touched.
+    expect(await orphanDrafts(mine.workspace, [mine.video_clip])).toEqual([]);
+    expect(await orphanDrafts('otro-workspace', [])).toEqual([]);
+
+    renderScreen(<PublishPanelMount />, { keep: true });
+    await waitFor(() => expect(exists(mine.id)).toBe(false));
     await waitFor(() => expect(rememberedDrafts()).toEqual([]));
     // A draft the user made on purpose is nobody's helper: it stays.
-    expect(db().posts.some((post) => post.id === seedDraft.id)).toBe(true);
+    expect(exists(seedDraft?.id ?? '')).toBe(true);
+  });
+
+  it('un borrador que quedó y la persona después editó no se descarta: pasa a ser suyo', async () => {
+    const edited = leftover((post) => {
+      post.caption = 'Lo edité a mano en Publicaciones, me lo quedo';
+    });
+    renderScreen(<PublishPanelMount />, { keep: true });
+    await waitFor(() => expect(isRemembered(edited.id)).toBe(false));
+    await pause(300);
+    expect(exists(edited.id)).toBe(true);
+  });
+
+  it('otra instancia de la app (una pestaña duplicada) no descarta el borrador de un panel abierto', async () => {
+    await openPanel();
+    await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toHaveLength(1));
+    const [live] = postsOf(CLIPS.first, 'DRAFT');
+    // A second app with the same storage and no panel of its own.
+    renderScreen(<PublishPanelMount />, { keep: true });
+    await pause(900);
+    expect(exists(live?.id ?? '')).toBe(true);
+    expect(isRemembered(live?.id ?? '')).toBe(true);
+  });
+
+  it('el panel de otra pestaña responde por sus borradores', async () => {
+    const theirs = leftover();
+    // The other tab: it holds the draft and answers when asked.
+    const other = new BroadcastChannel('oc.publicar.borradores');
+    other.onmessage = (event: MessageEvent<{ type: string; nonce: string; ids: string[] }>) => {
+      if (event.data.type === 'ask') other.postMessage({ type: 'held', nonce: event.data.nonce, ids: event.data.ids });
+    };
+    expect(await orphanDrafts(theirs.workspace, [])).toEqual([]);
+    other.close();
+    expect((await orphanDrafts(theirs.workspace, [])).map((entry) => entry.id)).toEqual([theirs.id]);
+  });
+
+  it('sin forma de preguntarle a otras pestañas, solo se descarta lo que nadie usa hace una hora; un panel abierto lo mantiene al día', async () => {
+    const theirs = leftover();
+    vi.stubGlobal('BroadcastChannel', undefined);
+    try {
+      const later = Date.now() + STALE_DRAFT_MS + 1;
+      expect(await orphanDrafts(theirs.workspace, [])).toEqual([]);
+      expect((await orphanDrafts(theirs.workspace, [], later)).map((entry) => entry.id)).toEqual([theirs.id]);
+      // The panel that has it open refreshes it every minute, however long it stays open.
+      touchDrafts([theirs.id], later);
+      expect(await orphanDrafts(theirs.workspace, [], later + 1000)).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('si la página vuelve de la caché de atrás/adelante, el panel pide de nuevo sus borradores', async () => {
+    await openPanel();
+    await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toHaveLength(1));
+    const [first] = postsOf(CLIPS.first, 'DRAFT');
+    // Leaving the page (also into the back/forward cache) discards them.
+    fireEvent(window, new Event('pagehide'));
+    await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toEqual([]));
+    // Restored with the panel still on screen.
+    fireEvent(window, Object.assign(new Event('pageshow'), { persisted: true }));
+    await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toHaveLength(1));
+    expect(postsOf(CLIPS.first, 'DRAFT')[0]?.id).not.toBe(first?.id);
   });
 });
 
@@ -402,6 +465,30 @@ describe('E1 · Publicar · envío parcial', () => {
     // Nothing was created to replace it, and it was not deleted.
     expect(db().posts.filter((post) => post.video_clip === CLIPS.first && post.platform === 'TIKTOK' && post.id === draft.id)).toHaveLength(1);
     expect(outOf(CLIPS.first, 'TIKTOK').filter((post) => post.id !== draft.id)).toEqual([]);
+  });
+});
+
+describe('E1 · Publicar · borrador que dejó de serlo', () => {
+  it('un borrador que el backend pasó a error (falló su texto con IA) no cuenta como publicado', async () => {
+    const { panel, onClose } = await openPanel([CLIPS.first], undefined, ['TIKTOK']);
+    await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toHaveLength(1));
+    // What `_fail_seo_post` does today: the draft becomes FAILED.
+    const data = db();
+    const draft = data.posts.find((post) => post.video_clip === CLIPS.first && post.status === 'DRAFT');
+    if (!draft) throw new Error('falta el borrador');
+    draft.status = 'FAILED';
+    saveDb(data);
+    fireEvent.change(within(panel).getByLabelText('Quién puede ver este video'), { target: { value: 'SELF_ONLY' } });
+    fireEvent.click(publishButton());
+    expect(await within(panel).findByRole('alert')).toHaveTextContent('No pudimos publicar en TikTok');
+    expect(onClose).not.toHaveBeenCalled();
+    expect(outOf(CLIPS.first, 'TIKTOK').filter((post) => post.status !== 'FAILED')).toEqual([]);
+
+    // The next attempt creates the publication instead of insisting on the draft.
+    await waitFor(() => expect(publishButton()).toBeEnabled());
+    fireEvent.click(publishButton());
+    await waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 20_000 });
+    expect(outOf(CLIPS.first, 'TIKTOK').filter((post) => post.status === 'QUEUED')).toHaveLength(1);
   });
 });
 

@@ -3,37 +3,30 @@
  * browser until they are discarded or published. The panel discards them when
  * it closes; this list is for the exits it cannot clean up after (a reload, a
  * closed tab, a workspace switch): the next time the app is open in that
- * workspace, `orphanDrafts()` says which ones nobody is using and they are discarded.
+ * workspace, the ones nobody is using are discarded.
+ *
+ * "Nobody is using" is checked three ways, because discarding a draft a panel
+ * still shows would lose the person's text:
+ * - panels of this page hold their drafts in `held`;
+ * - panels of other tabs answer for theirs over a BroadcastChannel;
+ * - where there is no BroadcastChannel, an open panel keeps the entry's time fresh and only stale entries go.
  */
 export interface DraftEntry {
   id: string;
   clip: string;
   workspace: string;
-  /** The browser tab that created it. */
-  tab: string;
+  /** Last time a panel said it was using it. */
   at: number;
 }
 
 const KEY = 'oc.publicar.borradores';
-const TAB_KEY = 'oc.publicar.pestana';
-/** Another tab may still have its panel open: its drafts are left alone for this long. */
-export const FOREIGN_DRAFT_TTL_MS = 60 * 60_000;
-
-let memoryTab: string | null = null;
-
-/** Identity of this browser tab: survives a reload, differs between tabs. */
-export function tabId(): string {
-  try {
-    const stored = window.sessionStorage.getItem(TAB_KEY);
-    if (stored) return stored;
-    const fresh = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-    window.sessionStorage.setItem(TAB_KEY, fresh);
-    return fresh;
-  } catch {
-    memoryTab ??= `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-    return memoryTab;
-  }
-}
+const CHANNEL = 'oc.publicar.borradores';
+/** Without a channel to ask: an entry no panel refreshed for this long is nobody's. */
+export const STALE_DRAFT_MS = 60 * 60_000;
+/** How often an open panel refreshes its entries. */
+export const TOUCH_DRAFTS_MS = 60_000;
+/** How long other tabs get to answer. */
+const ANSWER_MS = 300;
 
 function read(): DraftEntry[] {
   try {
@@ -54,32 +47,88 @@ function write(entries: DraftEntry[]): void {
   }
 }
 
-export function rememberDraft(entry: Omit<DraftEntry, 'tab' | 'at'>, now = Date.now()): void {
-  write([...read().filter((item) => item.id !== entry.id), { ...entry, tab: tabId(), at: now }]);
+/** Drafts that a panel of this page is using right now. */
+const held = new Set<string>();
+
+type Message = { type: 'ask'; nonce: string; ids: string[] } | { type: 'held'; nonce: string; ids: string[] };
+let answering: BroadcastChannel | null | undefined;
+
+/** Starts answering other tabs that ask whether a draft is in use here. */
+function answer(): void {
+  if (answering !== undefined) return;
+  if (typeof BroadcastChannel === 'undefined') {
+    answering = null;
+    return;
+  }
+  answering = new BroadcastChannel(CHANNEL);
+  answering.onmessage = (event: MessageEvent<Message>) => {
+    const message = event.data;
+    if (message?.type !== 'ask') return;
+    const mine = message.ids.filter((id) => held.has(id));
+    if (mine.length > 0) answering?.postMessage({ type: 'held', nonce: message.nonce, ids: mine } satisfies Message);
+  };
 }
 
+/** The panel created (or took back) the draft: it is in use until `releaseDraft`. */
+export function holdDraft(entry: Omit<DraftEntry, 'at'>, now = Date.now()): void {
+  answer();
+  held.add(entry.id);
+  write([...read().filter((item) => item.id !== entry.id), { ...entry, at: now }]);
+}
+
+/** The panel no longer uses it, but it may still exist on the server (the discard failed): it stays remembered. */
+export function releaseDraft(id: string): void {
+  held.delete(id);
+}
+
+/** The draft is gone, went out, or became the person's own: nothing to clean up. */
 export function forgetDraft(id: string): void {
+  held.delete(id);
   const entries = read();
   if (entries.some((item) => item.id === id)) write(entries.filter((item) => item.id !== id));
 }
 
-export const rememberedDrafts = (): DraftEntry[] => read();
+/** An open panel says its drafts are still in use. */
+export function touchDrafts(ids: string[], now = Date.now()): void {
+  if (ids.length === 0) return;
+  const entries = read();
+  if (entries.some((item) => ids.includes(item.id))) write(entries.map((item) => (ids.includes(item.id) ? { ...item, at: now } : item)));
+}
 
-/** True when this tab created the draft (and has not discarded or published it yet). */
-export function isOwnDraft(id: string): boolean {
-  const tab = tabId();
-  return read().some((item) => item.id === id && item.tab === tab);
+export const rememberedDrafts = (): DraftEntry[] => read();
+export const isRemembered = (id: string): boolean => read().some((item) => item.id === id);
+export const isHeld = (id: string): boolean => held.has(id);
+
+/** Ids that a panel in another tab says it is using. Null when other tabs cannot be asked. */
+function heldElsewhere(ids: string[]): Promise<Set<string> | null> {
+  if (typeof BroadcastChannel === 'undefined') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const found = new Set<string>();
+    const channel = new BroadcastChannel(CHANNEL);
+    channel.onmessage = (event: MessageEvent<Message>) => {
+      const message = event.data;
+      if (message?.type === 'held' && message.nonce === nonce) for (const id of message.ids) found.add(id);
+    };
+    channel.postMessage({ type: 'ask', nonce, ids } satisfies Message);
+    setTimeout(() => {
+      channel.close();
+      resolve(found);
+    }, ANSWER_MS);
+  });
 }
 
 /**
- * Drafts of the workspace that nobody is using: the ones of this tab whose clip
- * is not in the open panel, and the ones of other tabs that are over an hour old.
+ * Remembered drafts of the workspace that no panel is using: not held in this
+ * page, not of a clip whose panel is open here, and not claimed by another tab
+ * (or, when other tabs cannot be asked, not refreshed for an hour).
  */
-export function orphanDrafts(workspaceId: string, openClipIds: string[], now = Date.now()): DraftEntry[] {
-  const tab = tabId();
-  return read().filter((item) => {
-    if (item.workspace !== workspaceId) return false;
-    if (item.tab === tab) return !openClipIds.includes(item.clip);
-    return now - item.at > FOREIGN_DRAFT_TTL_MS;
-  });
+export async function orphanDrafts(workspaceId: string, openClipIds: string[], now = Date.now()): Promise<DraftEntry[]> {
+  const candidates = read().filter((item) => item.workspace === workspaceId && !held.has(item.id) && !openClipIds.includes(item.clip));
+  if (candidates.length === 0) return [];
+  const elsewhere = await heldElsewhere(candidates.map((item) => item.id));
+  // A panel of this page may have taken one back while the others answered.
+  const free = candidates.filter((item) => !held.has(item.id) && isRemembered(item.id));
+  if (elsewhere) return free.filter((item) => !elsewhere.has(item.id));
+  return free.filter((item) => now - item.at > STALE_DRAFT_MS);
 }

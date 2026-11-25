@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiCall } from '../client';
 import * as contract from '../contracts/brandkits';
 import { keys } from '../query';
+import { getActiveWorkspaceId } from '../session';
 import { scopedKey, useScopedQuery } from './scope';
 
 export function useBrandKits() {
@@ -22,11 +23,17 @@ export function useBrandKit(id: string | null | undefined) {
  * Only one default kit per workspace (map F2). The backend does not enforce it yet, so after
  * marking one the others that still say default are unmarked from here. With a backend that
  * already does it (or the mocks) the fresh list has no other default and nothing is sent.
+ *
+ * Only kits of the active workspace: today's `BrandKitViewSet` ignores `X-Workspace-Id` and lists
+ * the kits of every workspace of the user, and each workspace keeps its own default.
  */
-async function demoteOtherDefaults(keepId: string): Promise<void> {
+export async function demoteOtherDefaults(keepId: string): Promise<void> {
+  const workspaceId = getActiveWorkspaceId();
+  if (!workspaceId) return;
   const kits = await apiCall(contract.listBrandKits, {});
   for (const kit of kits) {
-    if (kit.is_default && kit.id !== keepId) await apiCall(contract.updateBrandKit, { params: { id: kit.id }, body: { is_default: false } });
+    if (kit.workspace !== workspaceId || !kit.is_default || kit.id === keepId) continue;
+    await apiCall(contract.updateBrandKit, { params: { id: kit.id }, body: { is_default: false } });
   }
 }
 

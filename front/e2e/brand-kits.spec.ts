@@ -121,6 +121,38 @@ test.describe('F1 · Brand kits y F2 · Editar brand kit', () => {
     expectClean(problems, 'atrás con cambios');
   });
 
+  test('después de crear o de descartar, Atrás vuelve una sola vez y a donde corresponde', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    const problems = watch(page);
+    await page.goto('/brand-kits');
+    await settle(page);
+    await page.getByRole('button', { name: 'Nuevo brand kit' }).first().click();
+    await expect(page).toHaveURL(/\/brand-kits\/nuevo$/);
+    await page.getByLabel('Nombre').fill('Kit de prueba');
+    await page.getByRole('button', { name: 'Crear brand kit' }).click();
+    await expect(page).toHaveURL(/\/brand-kits\/[0-9a-f-]{36}$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Kit de prueba' })).toBeVisible();
+    // The new kit took the place of `nuevo`: Back is the list, not an empty form.
+    await page.goBack();
+    await expect(page).toHaveURL(/\/brand-kits$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Brand kits' })).toBeVisible();
+
+    await page.getByRole('link', { name: 'Estudio Norte', exact: true }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Estudio Norte' })).toBeVisible();
+    await page.getByLabel(/Descripción/).fill('Otra descripción');
+    await expect(page.getByRole('region', { name: 'Acciones' })).toBeVisible();
+    await page.getByRole('navigation', { name: 'Secciones', exact: true }).getByRole('link', { name: 'Publicaciones' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Descartar' }).click();
+    await expect(page).toHaveURL(/\/publicaciones$/);
+    // One press goes back to the kit, a second one to the list.
+    await page.goBack();
+    await expect(page).toHaveURL(/\/brand-kits\/[0-9a-f-]{36}$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Estudio Norte' })).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(/\/brand-kits$/);
+    expectClean(problems, 'historial');
+  });
+
   test('sin kits, y en el teléfono', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await useScenario(page, 'workspace-vacio');

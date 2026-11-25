@@ -26,6 +26,8 @@ const menuItem = async (kit: string, item: string) => {
   fireEvent.click(within(await card(kit)).getByRole('button', { name: `Acciones de ${kit}` }));
   return within(await screen.findByRole('menu', { name: `Acciones de ${kit}` })).getByRole('menuitem', { name: item });
 };
+const FOREIGN_KIT = '00000009-0000-4000-8000-0000000000ff';
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const kits = () => db().brandKits.filter((kit) => kit.workspace === db().workspaces[0]?.id);
 
 describe('F1 · Brand kits', () => {
@@ -72,7 +74,8 @@ describe('F1 · Brand kits', () => {
       }),
       // Today's backend: after marking another kit, the old default still says default.
       http.get('http://localhost:8000/api/v1/brand-kits/', () => {
-        const list = kits();
+        // It also ignores X-Workspace-Id: the default kit of another workspace of the user comes in the same list.
+        const list = [...kits(), { ...(kits()[0] as object), id: FOREIGN_KIT, workspace: '00000002-0000-4000-8000-0000000000ff', name: 'De otro workspace', is_default: true }];
         if (stale && patched.length === 1) return HttpResponse.json(list.map((kit) => (kit.name === 'Estudio Norte' ? { ...kit, is_default: true } : kit)));
         return HttpResponse.json(list);
       }),
@@ -80,8 +83,10 @@ describe('F1 · Brand kits', () => {
     await open();
     const [first, second] = [kits().find((kit) => kit.name === 'Estudio Norte'), kits().find((kit) => kit.name === 'Gaming nocturno')];
     fireEvent.click(await menuItem('Gaming nocturno', 'Usar por defecto'));
-    // One PATCH marks the new default, the next one unmarks the old one.
+    // One PATCH marks the new default, the next one unmarks the old one. The other workspace's default is not touched.
     await waitFor(() => expect(patched).toEqual([second?.id, first?.id]));
+    await pause(300);
+    expect(patched).not.toContain(FOREIGN_KIT);
     stale = false;
     await waitFor(async () => expect(within(await card('Gaming nocturno')).getByText('Por defecto')).toBeInTheDocument());
     expect(within(await card('Estudio Norte')).queryByText('Por defecto')).not.toBeInTheDocument();

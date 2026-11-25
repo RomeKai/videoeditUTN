@@ -10,6 +10,7 @@ import { ApiError } from '@/api/errors';
 import { useQueryClient } from '@tanstack/react-query';
 import { useCancelPost, usePost, usePostActions, usePosts, useRetryPost, useSocialAccounts } from '@/api/hooks';
 import { keys } from '@/api/query';
+import { forgetDraft } from './draftRegistry';
 import { ConfirmDialog, ConnectNetworkDialog, useBillingDialogs } from '@/dialogs';
 import { errorMessage } from '@/lib/error-messages';
 import { useIsMobile, useMediaQuery } from '@/lib/hooks';
@@ -186,7 +187,9 @@ export function PublicacionesScreen() {
     },
     askCancel: setCancelling,
     reconnect: setConnecting,
-    publish: (clipId, network) => {
+    publish: (clipId, network, draftId) => {
+      // Chosen from the list: the draft is the person's, so the panel that opens uses it but never discards it.
+      if (draftId) forgetDraft(draftId);
       setMode('view');
       setParams({ publicar: clipId, red: network ?? null, detalle: null });
     },

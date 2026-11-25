@@ -191,7 +191,8 @@ describe('F2 · Editar brand kit', () => {
     const dialog = await screen.findByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
     expect(router.original).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole('button', { name: /Descartar/ }));
-    expect(router.original).toHaveBeenCalledWith('/proyectos', undefined);
+    // The extra history entry goes first, then the navigation.
+    await waitFor(() => expect(router.original).toHaveBeenCalledWith('/proyectos', undefined));
   });
 
   it('sin `watermark_position` en la respuesta (el backend de hoy) no hay selector de esquina ni se manda el campo', async () => {

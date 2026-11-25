@@ -11,6 +11,7 @@ import { formatDateTime, formatNumber, formatTimeZone } from '@/lib/format';
 import { Badge, Banner, Button, Field, Input, NETWORKS, NetworkChip, Num, Skeleton, Textarea, VideoThumb, cx, useToast } from '@/ui';
 import { StatusBadge } from './PostBits';
 import type { PostActions } from './PostList';
+import { forgetDraft } from './draftRegistry';
 import styles from './Publicaciones.module.css';
 import {
   NETWORK_NOUN,
@@ -70,6 +71,8 @@ function EditForm({ post, account, onDone }: { post: ScheduledPost; account?: So
       { id: post.id, caption, hashtags, ...(moved && at ? { publish_at: at.toISOString() } : {}) },
       {
         onSuccess: (saved) => {
+          // Edited by hand: if it was a helper draft a panel left behind, it is the person's now and nobody discards it.
+          forgetDraft(post.id);
           toast.success(moved ? `Reprogramada para el ${shortDayTime(saved.publish_at)}` : 'Cambios guardados');
           onDone();
         },
@@ -304,7 +307,7 @@ export function PostDetail({ post, siblings = [], accounts, actions, mode, onMod
               </Button>
             ) : null}
             {post.status === 'DRAFT' ? (
-              <Button variant="primary" iconLeft="send" onClick={() => actions.publish(post.video_clip, post.platform)} {...actions.publishGate}>
+              <Button variant="primary" iconLeft="send" onClick={() => actions.publish(post.video_clip, post.platform, post.id)} {...actions.publishGate}>
                 Publicar o programar
               </Button>
             ) : null}

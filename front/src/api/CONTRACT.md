@@ -992,7 +992,7 @@ Brand kits del workspace.
 |---|---|
 | Id | `brandKits.list` |
 | Backend | ✅ existe · `back/apps/videos/views.py · BrandKitViewSet.list + BrandKitSerializer` |
-| Nota | Propuesto, todavía no existe: `watermark_position` (esquina de la marca de agua, F2). Mientras la respuesta no lo traiga, la UI no muestra el selector de esquina y el logo va abajo a la derecha. |
+| Nota | Hueco: hoy la vista ignora `X-Workspace-Id` y devuelve los kits de todos los workspaces del usuario; debería filtrar por el workspace activo (como projects.list). Mientras tanto la UI filtra por `workspace` antes de tocar el default de otro kit. Propuesto, todavía no existe: `watermark_position` (esquina de la marca de agua, F2). Mientras la respuesta no lo traiga, la UI no muestra el selector de esquina y el logo va abajo a la derecha. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | BrandKit[] |
 | Pantallas | F1, C1, B2, D5 |

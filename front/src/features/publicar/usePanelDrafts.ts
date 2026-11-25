@@ -1,12 +1,12 @@
 'use client';
 
 import { useQueries, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Platform } from '@/api/contracts/common';
 import type { PostsQuery, ScheduledPost } from '@/api/contracts/social';
 import { seoPending, useActiveWorkspaceId, usePostActions } from '@/api/hooks';
 import { keys } from '@/api/query';
-import { forgetDraft, isOwnDraft, rememberDraft } from './draftRegistry';
+import { TOUCH_DRAFTS_MS, forgetDraft, holdDraft, isRemembered, releaseDraft, touchDrafts } from './draftRegistry';
 import { pairKey, type PairKey } from './publish';
 
 /** While a draft waits for its AI text the panel asks again this often. */
@@ -75,6 +75,8 @@ export function usePanelDrafts({ clipIds, wanted, enabled }: { clipIds: string[]
   const mine = useRef(new Map<string, string>());
   const closed = useRef(false);
   const queue = useRef<Promise<void>>(Promise.resolve());
+  /** Counts the times the page came back from the back/forward cache: the drafts start over. */
+  const [revived, setRevived] = useState(0);
 
   const read = useCallback(
     (clipId: string, platform: Platform): ScheduledPost | undefined =>
@@ -110,12 +112,14 @@ export function usePanelDrafts({ clipIds, wanted, enabled }: { clipIds: string[]
   );
 
   const discardOne = useCallback(
-    (id: string) =>
-      actions.discard(id).then(
+    (id: string) => {
+      releaseDraft(id);
+      return actions.discard(id).then(
         () => forgetDraft(id),
         // It stays remembered: the next visit to this workspace discards it.
         () => undefined,
-      ),
+      );
+    },
     [actions],
   );
   const discardAll = useCallback((): Promise<void> => {
@@ -130,15 +134,19 @@ export function usePanelDrafts({ clipIds, wanted, enabled }: { clipIds: string[]
     return queue.current;
   }, [actions, discardOne]);
 
-  // Drafts of this tab that survived a reload are this panel's again.
+  // Helper drafts that survived a reload are this panel's again.
   const listed = queries.map((query) => query.data?.results.map((post) => post.id).join(',') ?? '').join('|');
   useEffect(() => {
     for (const query of queries) {
-      for (const post of query.data?.results ?? []) if (isOwnDraft(post.id)) mine.current.set(post.id, post.video_clip);
+      for (const post of query.data?.results ?? []) {
+        if (!workspaceId || closed.current || mine.current.has(post.id) || !isRemembered(post.id)) continue;
+        mine.current.set(post.id, post.video_clip);
+        holdDraft({ id: post.id, clip: post.video_clip, workspace: workspaceId });
+      }
     }
     // `listed` changes when the lists do.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listed]);
+  }, [listed, workspaceId]);
 
   const wantedKey = wanted.map((pair) => pairKey(pair.clipId, pair.platform)).join(',');
   useEffect(() => {
@@ -158,7 +166,7 @@ export function usePanelDrafts({ clipIds, wanted, enabled }: { clipIds: string[]
           // Without a draft there is no suggestion: the user writes the text.
           return;
         }
-        rememberDraft({ id: post.id, clip: clipId, workspace: workspaceId });
+        holdDraft({ id: post.id, clip: clipId, workspace: workspaceId });
         // It came back after the panel closed: nobody is going to use it.
         if (closed.current) return discardOne(post.id);
         mine.current.set(post.id, clipId);
@@ -167,7 +175,7 @@ export function usePanelDrafts({ clipIds, wanted, enabled }: { clipIds: string[]
     }
     // `wantedKey` stands for `wanted`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, loaded, workspaceId, wantedKey, actions, discardOne, put, read]);
+  }, [enabled, loaded, workspaceId, wantedKey, revived, actions, discardOne, put, read]);
 
   // Any way out of the panel (Back, another screen, a different selection, the tab going away) discards the drafts.
   const discardRef = useRef(discardAll);
@@ -175,12 +183,26 @@ export function usePanelDrafts({ clipIds, wanted, enabled }: { clipIds: string[]
   useEffect(() => {
     closed.current = false;
     const onPageHide = () => void discardRef.current();
+    // `pagehide` also fires when the page goes into the back/forward cache. If it comes back, the panel
+    // is on screen again with its drafts discarded: it opens up again and asks for the ones it shows.
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      closed.current = false;
+      requested.current.clear();
+      void queryClient.invalidateQueries({ queryKey: keys.social.posts });
+      setRevived((count) => count + 1);
+    };
+    // While the panel is open its drafts are in use, however long that is.
+    const touching = window.setInterval(() => touchDrafts([...mine.current.keys()]), TOUCH_DRAFTS_MS);
     window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('pageshow', onPageShow);
     return () => {
+      window.clearInterval(touching);
       window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('pageshow', onPageShow);
       void discardRef.current();
     };
-  }, []);
+  }, [queryClient]);
 
   return useMemo(
     () => ({

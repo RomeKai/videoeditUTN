@@ -62,6 +62,8 @@ import { usePanelClips } from './usePanelClips';
 import { usePanelDrafts, type PanelPair } from './usePanelDrafts';
 
 const EMPTY_TEXT: TextValue = { caption: '', hashtags: [] };
+/** Statuses of a publication that is on its way out or already out. */
+const WENT_OUT = new Set<ScheduledPost['status']>(['SCHEDULED', 'QUEUED', 'PROCESSING', 'PUBLISHED']);
 const ACCOUNT_BADGE = {
   connected: { label: 'Conectada', tone: 'ok' },
   expired: { label: 'Vencida', tone: 'warn' },
@@ -302,10 +304,14 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
         // The draft changed under the panel (published from another tab, or deleted): ask what it is now.
         try {
           const current = await actions.get(draft.id);
-          if (current.status === 'DRAFT') fail(clipId, platform, error);
-          else {
+          if (WENT_OUT.has(current.status)) {
             out[pairKey(clipId, platform)] = current;
             drafts.markSent(draft);
+          } else {
+            // Still a draft, or a draft whose AI text failed and the backend marked FAILED: it did not go out.
+            // One that is no longer a draft cannot be sent with PATCH: the next attempt creates the publication.
+            if (current.status !== 'DRAFT') drafts.drop(draft);
+            fail(clipId, platform, error);
           }
         } catch {
           // It no longer exists: the next attempt creates the publication from scratch.
