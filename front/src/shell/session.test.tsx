@@ -1,13 +1,13 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider, keepPreviousData } from '@tanstack/react-query';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { hydrateRoot } from 'react-dom/client';
 import { renderToString } from 'react-dom/server';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { API_URL, WORKSPACE_HEADER } from '@/api/config';
-import { useWallet } from '@/api/hooks';
-import { AUTH_STORAGE_KEY, clearSession, setTokens } from '@/api/session';
+import { useScopedQuery, useWallet } from '@/api/hooks';
+import { AUTH_STORAGE_KEY, clearSession, isSessionExpired, setActiveWorkspaceId, setTokens } from '@/api/session';
 import { SessionProvider, useSession, type SessionStatus } from './session';
 
 const WS = 'a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b';
@@ -26,6 +26,8 @@ const wallet = { id: WS, workspace: WS, available_balance: '100.0000000000', res
 const server = setupServer();
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => {
+  // Unmount first: a mounted tree would refetch against handlers that are gone.
+  cleanup();
   server.resetHandlers();
   clearSession();
 });
@@ -124,5 +126,43 @@ describe('sesión al hidratar', () => {
     await act(() => switchTo(NEW));
     expect(await screen.findByText('authenticated:Invitado:7')).toBeInTheDocument();
     expect(walletHeaders.at(-1)).toBe(NEW);
+  });
+
+  it('si la sesión venció antes de que `/me` respondiera, queda cargando (con «Sesión vencida» encima), no en error', async () => {
+    server.use(
+      http.get(`${API_URL}/api/v1/me/`, () => HttpResponse.json({ detail: 'Token is invalid or expired' }, { status: 401 })),
+      http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ detail: 'Token is invalid or expired' }, { status: 401 })),
+    );
+    setTokens({ access: 'a', refresh: 'r' });
+    seen.length = 0;
+    render(app());
+    await vi.waitFor(() => expect(isSessionExpired()).toBe(true));
+    await act(async () => undefined);
+    expect(screen.getByText('loading:-:sin saldo')).toBeInTheDocument();
+    expect(seen).not.toContain('error');
+  });
+
+  it('una lista con keepPreviousData no muestra las filas del workspace anterior después de cambiar', async () => {
+    setActiveWorkspaceId('ws-a');
+    let resolveB: (value: string[]) => void = () => undefined;
+    function List() {
+      const query = useScopedQuery({
+        queryKey: ['projects', 'list', { page: 1 }],
+        queryFn: ({ queryKey }) => (queryKey.at(-1) === 'ws-a' ? Promise.resolve(['Proyecto de A']) : new Promise<string[]>((resolve) => (resolveB = resolve))),
+        placeholderData: keepPreviousData,
+      });
+      return <p>{query.data?.join(',') ?? 'cargando'}</p>;
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <List />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText('Proyecto de A')).toBeInTheDocument();
+    act(() => setActiveWorkspaceId('ws-b'));
+    expect(screen.getByText('cargando')).toBeInTheDocument();
+    await act(async () => resolveB(['Proyecto de B']));
+    expect(await screen.findByText('Proyecto de B')).toBeInTheDocument();
   });
 });
