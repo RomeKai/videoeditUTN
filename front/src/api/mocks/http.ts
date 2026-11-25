@@ -21,6 +21,11 @@ export class MockHttpError extends Error {
 export const notFound = (detail = 'No encontrado.') => new MockHttpError(404, { detail });
 export const badRequest = (body: Record<string, unknown>) => new MockHttpError(400, body);
 export const conflict = (error: string, code?: string) => new MockHttpError(409, code ? { error, code } : { error });
+const ROLE_DENIED = {
+  viewer: 'Con el rol Lector podés ver, pero no crear ni cambiar nada. Pedile acceso a un admin.',
+  admins: 'Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin.',
+  editorDelete: 'Como Editor solo podés borrar los proyectos que subiste vos.',
+};
 export const forbidden = (detail = 'No tenés permiso para hacer esto.') => new MockHttpError(403, { detail, code: 'permission_denied' });
 
 export interface MockContext<E extends AnyEndpoint> {
@@ -162,7 +167,9 @@ export function route<E extends AnyEndpoint>(endpoint: E, resolver: Resolver<E>)
           return scoped.role;
         },
         require(action, permissionContext = {}) {
-          if (!scoped || !can(scoped.role, action, { userId: maybeUser?.id, ...permissionContext })) throw forbidden();
+          if (scoped && can(scoped.role, action, { userId: maybeUser?.id, ...permissionContext })) return;
+          // The sentences of the backend (back/apps/core/permissions.py · DENIED).
+          throw forbidden(scoped?.role === 'viewer' ? ROLE_DENIED.viewer : scoped?.role === 'editor' && action === 'project.delete' ? ROLE_DENIED.editorDelete : ROLE_DENIED.admins);
         },
       };
 

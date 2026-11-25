@@ -24,8 +24,9 @@ export function useBrandKit(id: string | null | undefined) {
  * marking one the others that still say default are unmarked from here. With a backend that
  * already does it (or the mocks) the fresh list has no other default and nothing is sent.
  *
- * Only kits of the active workspace: today's `BrandKitViewSet` ignores `X-Workspace-Id` and lists
- * the kits of every workspace of the user, and each workspace keeps its own default.
+ * Only kits of the active workspace. The backend scopes the list by `X-Workspace-Id` since PR #125,
+ * so the comparison below is defensive: each workspace keeps its own default, and a kit of another
+ * one must never be demoted, whatever the list brings.
  */
 export async function demoteOtherDefaults(keepId: string): Promise<void> {
   const workspaceId = getActiveWorkspaceId();

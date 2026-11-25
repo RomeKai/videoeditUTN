@@ -17,8 +17,9 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 
 - **Base:** `NEXT_PUBLIC_API_URL` (por defecto `http://localhost:8000`). Las rutas llevan la barra final de DRF.
 - **Sesión:** `Authorization: Bearer <access>` con el JWT de `POST /api/token/`. Ante un 401 el cliente renueva una vez con `POST /api/token/refresh/` (el backend rota el refresh) y repite el pedido; si la renovación falla, abre el diálogo de sesión vencida.
-- **Tiempo de espera:** un pedido sin respuesta completa en 30 s (`REQUEST_TIMEOUT_MS`) se corta y falla como error de red (`NetworkError`, con el mismo reintento y el mismo mensaje). Un endpoint puede definir otro con `timeoutMs`. En una subida multipart el reloj arranca cuando el archivo terminó de salir.
-- **Workspace activo (propuesto, huecos 2 y J3):** el cliente manda `X-Workspace-Id` en cada pedido con sesión. Hoy el backend usa `user.workspaces.first()`.
+- **Tiempo de espera:** un pedido sin respuesta completa en 30 s (`REQUEST_TIMEOUT_MS`) se corta y falla como error de red (`NetworkError`, con el mismo reintento y el mismo mensaje). Los que siguen trabajando en el servidor después de recibir el pedido esperan 180 s (`timeoutMs`): crear un proyecto (valida el video, lo mueve al storage, calcula el precio y reserva), guardar o duplicar un brand kit, armar el .zip y exportar los movimientos. En una subida multipart el reloj arranca cuando el archivo terminó de salir; mientras sube, se corta si pasa un minuto sin avanzar. Un pedido que cambia algo (todo lo que no es `GET`) y vence **puede haberse hecho**: `NetworkError.outcomeUnknown` lo marca, la UI dice «Puede que se haya hecho igual: revisá antes de probar de nuevo» en lugar de «No pudimos conectar», y vuelve a leer los datos.
+- **Workspace activo:** el cliente manda `X-Workspace-Id` en cada pedido con sesión, y el backend lo respeta (PR #125): las listas traen solo lo de ese workspace, y un id mal formado, inexistente o de un workspace donde el usuario no es miembro **activo** (una invitación pendiente no cuenta) responde 404 «No encontramos ese espacio de trabajo.». Sin el header usa el workspace más antiguo del usuario. Al cambiar de workspace el cliente primero sale de la pantalla y recién después cambia el id, para que ninguna pida su dato en el workspace equivocado.
+- **Roles:** el backend aplica la tabla 1.7 del mapa (PR #125). El Lector solo lee; el Editor crea y edita, y borra solo los proyectos que subió; redes, miembros, plan y nombre del workspace son del Dueño y los Admin. Un rol que no alcanza recibe 403 `{ detail }` con una frase en español («Con el rol Lector podés ver, pero no crear ni cambiar nada. Pedile acceso a un admin.»), sin `code`: la UI la muestra tal cual y nunca la confunde con un límite del plan (D3), que se reconoce por su `code` o por el texto de `PricingEngine`.
 - **JSON en snake_case**, como el backend. Ids UUID. Fechas ISO 8601 en UTC.
 - **Decimales:** un `DecimalField` de un serializer llega como string (`"4860.0000000000"`); un `Decimal` que la vista pone directo en la respuesta (`tokens_reserved`, `final_cost`, `required`) llega como número, porque el encoder de DRF lo pasa a float. El esquema `Decimal` acepta los dos y entrega un número.
 - **Colores:** el backend los guarda como texto libre de hasta 7 caracteres. Los pedidos mandan siempre `#RRGGBB` (`HexColor`); las respuestas aceptan cualquier texto (`ColorValue`) y la UI los normaliza con `normalizeHex()`.
@@ -48,7 +49,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | 11 | Los links no pasan por la validación de duración del plan. | `POST /projects/probe-link/` (propuesto) reconoce el link y responde 403 si supera el plan. |
 | 12 | `error_log` de una publicación guarda el texto de la excepción. | `error_message` legible y `error_code`; `error_log` no se muestra. |
 | 13 | `approve-paper-edit` responde 400 `{ error }` para un proyecto que ya no está en revisión («…no está en espera de aprobación. Estado actual: rendering») y para un límite del plan («Error en el motor de precios: …»). El 409 solo sale en la carrera de dos aprobaciones. | Propuesto: 409 con `code: "not_awaiting_approval"` y 403 con `code` (`duration`, `resolution`). Mientras tanto `approveErrorKind()` los reconoce por el texto: el primero avisa y lleva a Clips, el segundo abre el diálogo de límite del plan. |
-| 14 | CORS no admite el header `X-Workspace-Id`: con `django-cors-headers` el preflight lo rechaza. | `CORS_ALLOW_HEADERS = (*default_headers, "x-workspace-id")` en los settings, y leer el header en las vistas en lugar de `user.workspaces.first()`. |
+| 14 | Resuelto en el backend (PR #125): CORS admite `X-Workspace-Id` y las vistas leen el workspace activo de ese header, con los roles aplicados. | Nada pendiente. |
 | 15 | `LANGUAGE_CODE = "en-us"`: los errores propios de DRF llegan en inglés («This field is required.», «You do not have permission to perform this action.»). | `LANGUAGE_CODE = "es"` (o `es-ar`). Mientras tanto la UI traduce los conocidos y no muestra texto en inglés. |
 | 16 | El 409 de `PATCH /projects/{id}/` mientras se renderiza trae solo `{ detail }`: el código `project_rendering` de la excepción no llega al cuerpo. | `{ detail, code }`. El frontend solo manda `title`, que siempre se puede cambiar. |
 | 17 | Un 403 de permisos de DRF (`PermissionDenied`) tampoco trae código. | `code: "permission_denied"`. El frontend trata como límite del plan solo los 403 con un código de plan o con un mensaje de `PricingEngine`; el resto es un 403 de rol. |
@@ -710,7 +711,7 @@ Proyectos del workspace, del más nuevo al más viejo.
 |---|---|
 | Id | `projects.list` |
 | Backend | ⚠️ existe en parte · hueco 14 · `back/apps/videos/views.py · VideoProjectViewSet.list + VideoProjectSerializer` |
-| Nota | Hoy devuelve un array sin paginar y sin filtros, con los proyectos de todos los workspaces del usuario: no lee `X-Workspace-Id` y debería acotar por ese header (mientras tanto B2 filtra por `workspace` en el navegador). Propuesto: paginación de 25, `status_group`, `search`, `status_counts` y los campos extra del proyecto. |
+| Nota | Hoy devuelve un array sin paginar y sin filtros. Desde el PR #125 lee `X-Workspace-Id` y trae solo los proyectos del workspace activo (404 si el usuario no es miembro activo); B2 igual filtra por `workspace` en el navegador, como defensa. Propuesto: paginación de 25, `status_group`, `search`, `status_counts` y los campos extra del proyecto. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | ProjectsQuery |
 | Respuesta 200 | ProjectsResponse |
@@ -724,7 +725,7 @@ Crea un proyecto desde un archivo (multipart) o un link, reserva los tokens y ar
 |---|---|
 | Id | `projects.create` |
 | Backend | ✅ existe · `back/apps/videos/views.py · VideoProjectViewSet.create + VideoProjectSerializer.create/validate` |
-| Nota | El código de InvalidUploadError no llega en el cuerpo (DRF solo manda el mensaje); el 403 trae un texto en inglés sin código. El workspace es `user.workspaces.first()`: no lee el workspace activo (J3). |
+| Nota | El código de InvalidUploadError no llega en el cuerpo (DRF solo manda el mensaje); el 403 trae un texto en inglés sin código. Desde el PR #125 el proyecto se crea en el workspace de `X-Workspace-Id` y se aplica el rol (el Lector recibe 403 `{ detail }` en español). |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido (multipart) | CreateProjectRequest |
 | Respuesta 201 | CreateProjectResponse |
@@ -814,7 +815,7 @@ Aprueba los segmentos elegidos, reserva el costo del render y lo despacha.
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | ApprovePaperEditRequest |
 | Respuesta 200 | ApprovePaperEditResponse |
-| Errores | **400** Tres casos, todos `{ error }` (se distinguen con `approveErrorKind()` de `src/lib/error-messages.ts`): el proyecto ya no está en revisión ("El proyecto no está en espera de aprobación. Estado actual: rendering"): la UI avisa y lleva a Clips; el plan no permite la duración o la resolución ("Error en el motor de precios: …"): la UI abre D3; segmentos inválidos.<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**409** Solo en la carrera de dos aprobaciones simultáneas: `{ error }`. La UI lleva a Clips. |
+| Errores | **400** Tres casos, todos `{ error }` (se distinguen con `approveErrorKind()` de `src/lib/error-messages.ts`): el proyecto ya no está en revisión ("El proyecto no está en espera de aprobación. Estado actual: rendering"): la UI avisa y lleva a Clips; el plan no permite la duración o la resolución ("Error en el motor de precios: …"): la UI abre D3; segmentos inválidos. De estos últimos, uno más largo que el límite del render (PR #124: "…cada segmento puede durar hasta 1800 segundos. Dividí los más largos en varios.") se muestra con la frase del servidor; el resto, con un mensaje genérico.<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**409** Solo en la carrera de dos aprobaciones simultáneas: `{ error }`. La UI lleva a Clips. |
 | Pantallas | D2 |
 
 #### `POST /api/v1/projects/:id/redispatch/`
@@ -996,7 +997,7 @@ Brand kits del workspace.
 |---|---|
 | Id | `brandKits.list` |
 | Backend | ✅ existe · `back/apps/videos/views.py · BrandKitViewSet.list + BrandKitSerializer` |
-| Nota | Hueco: hoy la vista ignora `X-Workspace-Id` y devuelve los kits de todos los workspaces del usuario; debería filtrar por el workspace activo (como projects.list). Mientras tanto la UI filtra por `workspace` antes de tocar el default de otro kit. Propuesto, todavía no existe: `watermark_position` (esquina de la marca de agua, F2). Mientras la respuesta no lo traiga, la UI no muestra el selector de esquina y el logo va abajo a la derecha. |
+| Nota | Desde el PR #125 la vista lee `X-Workspace-Id` y devuelve solo los kits del workspace activo (404 si el usuario no es miembro activo de ese workspace). La UI igual compara `workspace` antes de tocar el default de otro kit: es una defensa que no cuesta nada. Propuesto, todavía no existe: `watermark_position` (esquina de la marca de agua, F2). Mientras la respuesta no lo traiga, la UI no muestra el selector de esquina y el logo va abajo a la derecha. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | BrandKit[] |
 | Pantallas | F1, C1, B2, D5 |
@@ -1009,7 +1010,7 @@ Crea un brand kit (multipart por las fuentes, el logo y los videos).
 |---|---|
 | Id | `brandKits.create` |
 | Backend | ✅ existe · `back/apps/videos/views.py · BrandKitViewSet.create/perform_create` |
-| Nota | Usa `user.workspaces.first()` en lugar del workspace activo (J3). |
+| Nota | Desde el PR #125 lo crea en el workspace de `X-Workspace-Id`, y aplica el rol: el Lector recibe 403 `{ detail }` en español. Sin ningún workspace responde 400. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido (multipart) | BrandKitInput |
 | Respuesta 201 | BrandKit |

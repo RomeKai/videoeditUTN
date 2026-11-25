@@ -330,6 +330,10 @@ export const projectsHandlers = [
     if (project.status !== 'awaiting_approval') {
       throw badRequest({ error: `El proyecto no está en espera de aprobación. Estado actual: ${project.status}` });
     }
+    // PR #124: a segment the render could not finish within its time limit is rejected (1800 s by default).
+    if (body.approved_segments.some((segment) => segment.end - segment.start > 1800)) {
+      throw badRequest({ error: 'Los segmentos aprobados son inválidos: cada segmento puede durar hasta 1800 segundos. Dividí los más largos en varios.' });
+    }
     const total = body.approved_segments.reduce((sum, segment) => sum + (segment.end - segment.start), 0);
     const plan = planOf(db, workspace.id);
     const seconds = Math.ceil(Math.round(total * 1000) / 1000);

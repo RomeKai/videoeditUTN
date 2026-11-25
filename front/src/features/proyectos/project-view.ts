@@ -121,6 +121,8 @@ export interface ListPage {
  */
 export function applyListQuery(projects: ReadonlyArray<Project>, query: ListQuery): ListPage {
   const term = query.term.toLowerCase();
+  // The backend scopes the list by `X-Workspace-Id` (PR #125). Kept as a cheap defence: a project of
+  // another workspace must never show up here, whatever the list brings.
   const own = query.workspaceId ? projects.filter((project) => project.workspace === query.workspaceId) : projects;
   const matching = term ? own.filter((project) => project.title.toLowerCase().includes(term)) : [...own];
   const counts: Record<ProjectStatusGroup, number> = { all: matching.length, in_progress: 0, to_review: 0, ready: 0, failed: 0 };
