@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**79 endpoints:** 14 existen hoy en el backend, 3 existen en parte y 62 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**80 endpoints:** 14 existen hoy en el backend, 3 existen en parte y 63 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -115,12 +115,13 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | POST | `/api/v1/social-accounts/connect/` | Devuelve la URL de la red (vía Ayrshare) para autorizar la cuenta en una ventana aparte. | ❌ falta (propuesto) · hueco 10 | D6, H3, E1 |
 | DELETE | `/api/v1/social-accounts/:platform/` | Desconecta la cuenta de una red. Las publicaciones programadas en esa red quedan en error. | ❌ falta (propuesto) · hueco 10 | H3 |
 | GET | `/api/v1/scheduled-posts/` | Publicaciones del workspace, ordenadas por `publish_at`, con filtros por estado, red, rango y clip. | ❌ falta (propuesto) · hueco 8 | E2, D3, D4 (diálogo) |
-| POST | `/api/v1/scheduled-posts/` | Publica ahora o programa un clip en una red. | ❌ falta (propuesto) · hueco 8, 9 | E1 |
+| POST | `/api/v1/scheduled-posts/` | Publica ahora o programa un clip en una red. Con `draft: true` crea un borrador, que dispara la generación del texto con IA. | ❌ falta (propuesto) · hueco 8, 9 | E1 |
 | POST | `/api/v1/scheduled-posts/bulk/` | Crea varias publicaciones juntas (varios clips, varias redes). Todo o nada. | ❌ falta (propuesto) · hueco 8 | E1c |
 | GET | `/api/v1/scheduled-posts/:id/` | Detalle de una publicación. Se consulta cada 5 s mientras está en cola o publicando. | ❌ falta (propuesto) · hueco 8 | E2, E1 |
-| PATCH | `/api/v1/scheduled-posts/:id/` | Edita el texto o reprograma. Solo antes de `QUEUED`. | ❌ falta (propuesto) · hueco 8 | E2 |
+| PATCH | `/api/v1/scheduled-posts/:id/` | Edita el texto, reprograma, o publica un borrador (`publish_at`: fecha para programar, `null` para publicar ahora). Solo antes de `QUEUED`. | ❌ falta (propuesto) · hueco 8 | E2 |
 | POST | `/api/v1/scheduled-posts/:id/cancel/` | Cancela una publicación que todavía no salió. La borra. | ❌ falta (propuesto) · hueco 8 | E2 |
 | POST | `/api/v1/scheduled-posts/:id/retry/` | Reintenta una publicación que falló (también una trabada en `PROCESSING`). | ❌ falta (propuesto) · hueco 8 | E2 |
+| POST | `/api/v1/scheduled-posts/:id/regenerate-seo/` | Vuelve a generar el caption y los hashtags con IA. Responde con `seo_status: "pending"`; el texto anterior se conserva hasta que llega el nuevo. | ❌ falta (propuesto) · hueco 8 | E1 |
 | GET | `/api/v1/notifications/` | Las últimas 20 notificaciones del usuario en el workspace y cuántas están sin leer. | ❌ falta (propuesto) · hueco 16 | J2, Barra |
 | POST | `/api/v1/notifications/:id/read/` | Marca una notificación como leída. | ❌ falta (propuesto) · hueco 16 | J2 |
 | POST | `/api/v1/notifications/read-all/` | Marca todas como leídas. | ❌ falta (propuesto) · hueco 16 | J2 |
@@ -1017,7 +1018,7 @@ Edita un brand kit. Con `is_default: true` pasa a ser el default del workspace.
 | Backend | ⚠️ existe en parte · `back/apps/videos/views.py · BrandKitViewSet.partial_update` |
 | Nota | El backend no garantiza un solo default por workspace: al marcar uno debería desmarcar el resto (mapa F2). |
 | Sesión | JWT · `X-Workspace-Id` |
-| Pedido (multipart) | { name?: string, description?: string, primary_color?: HexColor, secondary_color?: HexColor, accent_color?: HexColor, primary_font?: unknown \\| "", secondary_font?: unknown \\| "", watermark_logo?: unknown \\| "", intro_video?: unknown \\| "", outro_video?: unknown \\| "", is_default?: boolean } |
+| Pedido (multipart) | { name?: string, description?: string, primary_color?: HexColor, secondary_color?: HexColor, accent_color?: HexColor, primary_font?: unknown \\| "", secondary_font?: unknown \\| "", watermark_logo?: unknown \\| "", intro_video?: unknown \\| "", outro_video?: unknown \\| "", is_default?: boolean, watermark_position?: WatermarkPosition } |
 | Respuesta 200 | BrandKit |
 | Errores | **400** Validación por campo.<br>**403** El rol no puede crear ni editar brand kits (Lector). |
 | Pantallas | F1, F2 |
@@ -1109,7 +1110,7 @@ Publicaciones del workspace, ordenadas por `publish_at`, con filtros por estado,
 
 #### `POST /api/v1/scheduled-posts/`
 
-Publica ahora o programa un clip en una red.
+Publica ahora o programa un clip en una red. Con `draft: true` crea un borrador, que dispara la generación del texto con IA.
 
 | | |
 |---|---|
@@ -1151,7 +1152,7 @@ Detalle de una publicación. Se consulta cada 5 s mientras está en cola o publi
 
 #### `PATCH /api/v1/scheduled-posts/:id/`
 
-Edita el texto o reprograma. Solo antes de `QUEUED`.
+Edita el texto, reprograma, o publica un borrador (`publish_at`: fecha para programar, `null` para publicar ahora). Solo antes de `QUEUED`.
 
 | | |
 |---|---|
@@ -1160,7 +1161,7 @@ Edita el texto o reprograma. Solo antes de `QUEUED`.
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | UpdatePostRequest |
 | Respuesta 200 | ScheduledPost |
-| Errores | **400** Texto por encima del límite o fecha en el pasado.<br>**409** La publicación ya está en cola, publicando o publicada: no se puede editar. |
+| Errores | **400** Texto por encima del límite, fecha en el pasado, o falta `tiktok.privacy_level` al publicar un borrador de TikTok.<br>**403** El plan no permite programar (`code: "scheduling"`), o el rol no publica.<br>**409** La publicación ya está en cola, publicando o publicada: no se puede editar. |
 | Pantallas | E2 |
 
 #### `POST /api/v1/scheduled-posts/:id/cancel/`
@@ -1188,6 +1189,20 @@ Reintenta una publicación que falló (también una trabada en `PROCESSING`).
 | Respuesta 200 | ScheduledPost |
 | Errores | **409** La publicación no está en error. |
 | Pantallas | E2 |
+
+#### `POST /api/v1/scheduled-posts/:id/regenerate-seo/`
+
+Vuelve a generar el caption y los hashtags con IA. Responde con `seo_status: "pending"`; el texto anterior se conserva hasta que llega el nuevo.
+
+| | |
+|---|---|
+| Id | `social.regeneratePostSeo` |
+| Backend | ❌ falta (propuesto) · hueco 8 |
+| Nota | Hoy solo existe como acción del admin: ScheduledPostAdmin.regenerate_ai_metadata → queue_post_seo(post_id, regenerate=True). |
+| Sesión | JWT · `X-Workspace-Id` |
+| Respuesta 202 | ScheduledPost |
+| Errores | **403** El proyecto no pidió SEO o el plan no lo incluye (`code: "seo"`), o el rol no publica.<br>**409** La publicación ya se está publicando o ya se publicó: su texto no cambia. |
+| Pantallas | E1 |
 
 ### Notificaciones
 
@@ -2079,6 +2094,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `outro_video` | string \\| null |
 | `is_default` | boolean |
 | `created_at` | IsoDateTime |
+| `watermark_position` (opcional) | WatermarkPosition |
 
 **BrandKitInput**
 
@@ -2095,6 +2111,9 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `intro_video` (opcional) | unknown \\| "" |
 | `outro_video` (opcional) | unknown \\| "" |
 | `is_default` (opcional) | boolean |
+| `watermark_position` (opcional) | WatermarkPosition |
+
+**WatermarkPosition:** "top_left" \| "top_right" \| "bottom_left" \| "bottom_right"
 
 ### `social.ts`
 
@@ -2108,6 +2127,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `caption` (opcional) | string |
 | `hashtags` (opcional) | string[] |
 | `tiktok` (opcional) | TikTokOptions |
+| `draft` (opcional) | boolean |
 
 **PostsQuery**
 
@@ -2176,7 +2196,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 
 | Campo | Tipo |
 |---|---|
-| `publish_at` (opcional) | IsoDateTime |
+| `publish_at` (opcional) | IsoDateTime \\| null |
 | `caption` (opcional) | string |
 | `hashtags` (opcional) | string[] |
 | `tiktok` (opcional) | TikTokOptions |

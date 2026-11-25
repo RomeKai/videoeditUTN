@@ -34,9 +34,14 @@ export function useCreateBrandKit() {
 /** Also used for "marcar como default": `{ is_default: true }`. */
 export function useUpdateBrandKit(id: string) {
   const invalidate = useInvalidateBrandKits();
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: Partial<contract.BrandKitInput>) => apiCall(contract.updateBrandKit, { params: { id }, body }),
-    onSuccess: invalidate,
+    onSuccess: (saved) => {
+      // The editor compares its draft with this copy: it must be the saved one right away, not after the refetch.
+      queryClient.setQueryData(keys.brandKits.detail(id), saved);
+      return invalidate();
+    },
   });
 }
 

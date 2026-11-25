@@ -2,6 +2,9 @@ import { z } from 'zod';
 import { defineEndpoint } from '../endpoint';
 import { HexColor, Id, IsoDateTime, NoContent } from './common';
 
+export const WatermarkPosition = z.enum(['top_left', 'top_right', 'bottom_left', 'bottom_right']);
+export type WatermarkPosition = z.infer<typeof WatermarkPosition>;
+
 /** BrandKitSerializer (fields = '__all__'). File fields arrive as URLs. */
 export const BrandKit = z.object({
   id: Id,
@@ -19,6 +22,8 @@ export const BrandKit = z.object({
   outro_video: z.string().nullable(),
   is_default: z.boolean(),
   created_at: IsoDateTime,
+  /** Proposed (map F2, "con posición de muestra"): corner of the frame where the watermark goes. Absent today: the UI assumes bottom right. */
+  watermark_position: WatermarkPosition.optional(),
 });
 export type BrandKit = z.infer<typeof BrandKit>;
 
@@ -42,6 +47,8 @@ export const BrandKitInput = z.object({
   intro_video: z.union([Upload, z.literal('')]).optional(),
   outro_video: z.union([Upload, z.literal('')]).optional(),
   is_default: z.boolean().optional(),
+  /** Proposed: see BrandKit.watermark_position. */
+  watermark_position: WatermarkPosition.optional(),
 });
 export type BrandKitInput = z.infer<typeof BrandKitInput>;
 

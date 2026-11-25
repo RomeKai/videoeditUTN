@@ -334,6 +334,13 @@ function tickClips(db: MockDb, project: MockProject, now: number): void {
   }
 }
 
+/** What the SEO generation "writes": the first text, and the ones "Regenerar" rotates through. */
+const SEO_VARIANTS: Array<{ caption: (title: string) => string; hashtags: string[] }> = [
+  { caption: (title) => `Lo mejor de «${title}», en menos de un minuto.`, hashtags: ['clips', 'onecreator', 'viral'] },
+  { caption: (title) => `${title}: lo que nadie te cuenta, sin vueltas.`, hashtags: ['clips', 'tips', 'aprender', 'parati'] },
+  { caption: (title) => `Guardá este video. «${title}» te va a servir más de una vez.`, hashtags: ['clips', 'guardalo', 'consejos'] },
+];
+
 function tickPosts(db: MockDb, now: number): void {
   for (const post of db.posts) {
     // The beat: a scheduled post whose time arrived goes to the queue.
@@ -345,10 +352,16 @@ function tickPosts(db: MockDb, now: number): void {
     const elapsed = now - post._sim.startedAt;
     if (post.seo_status === 'pending' && elapsed > 2_000) {
       post.seo_status = 'ready';
-      post.generated_caption = `Lo mejor de «${post.clip.title}», en menos de un minuto.`;
-      post.generated_hashtags = ['clips', 'onecreator', 'viral'];
-      if (!post.caption) post.caption = post.generated_caption;
-      if (post.hashtags.length === 0) post.hashtags = post.generated_hashtags;
+      const regen = post._sim.regen ?? 0;
+      let index = regen % SEO_VARIANTS.length;
+      // A regeneration never brings back the text that is already there.
+      if (regen > 0 && SEO_VARIANTS[index]?.caption(post.clip.title) === post.generated_caption) index = (index + 1) % SEO_VARIANTS.length || 1;
+      const variant = SEO_VARIANTS[index] as (typeof SEO_VARIANTS)[number];
+      post.generated_caption = variant.caption(post.clip.title);
+      post.generated_hashtags = variant.hashtags;
+      // A regeneration replaces the text; the first generation only fills what is empty.
+      if (!post.caption || regen > 0) post.caption = post.generated_caption;
+      if (post.hashtags.length === 0 || regen > 0) post.hashtags = post.generated_hashtags;
     }
     if (post.status !== 'QUEUED' && post.status !== 'PROCESSING') {
       if (post.seo_status !== 'pending') delete post._sim;

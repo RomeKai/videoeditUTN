@@ -31,14 +31,16 @@ export function useDisconnectSocialAccount() {
   });
 }
 
-/** E2: polls every 5 s while any publication of the page is queued or publishing. */
+/** E2 and E1: polls every 5 s while any publication of the page is queued, publishing or waiting for its AI text. */
 export function usePosts(query: contract.PostsQuery = {}, { enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: keys.social.postList(query),
     queryFn: ({ signal }) => apiCall(contract.listPosts, { query, signal }),
     placeholderData: keepPreviousData,
     enabled,
-    ...pollWhile<{ results: contract.ScheduledPost[] }>((page) => Boolean(page?.results.some((post) => IN_FLIGHT.has(post.status)))),
+    ...pollWhile<{ results: contract.ScheduledPost[] }>((page) =>
+      Boolean(page?.results.some((post) => IN_FLIGHT.has(post.status) || post.seo_status === 'pending')),
+    ),
   });
 }
 
@@ -76,7 +78,7 @@ export function useCreatePostsBulk() {
   });
 }
 
-/** Edit text or reschedule (also the calendar drag). Only before QUEUED: 409 otherwise. */
+/** Edit text, reschedule (also the calendar drag) or publish a draft (`publish_at`: date or null for now). Only before QUEUED: 409 otherwise. */
 export function useUpdatePost() {
   const invalidate = useInvalidatePosts();
   return useMutation({
@@ -93,4 +95,10 @@ export function useCancelPost() {
 export function useRetryPost() {
   const invalidate = useInvalidatePosts();
   return useMutation({ mutationFn: (id: string) => apiCall(contract.retryPost, { params: { id } }), onSuccess: invalidate });
+}
+
+/** E1 · "Regenerar": asks the AI for a new caption and hashtags; the post comes back with `seo_status: 'pending'`. */
+export function useRegeneratePostSeo() {
+  const invalidate = useInvalidatePosts();
+  return useMutation({ mutationFn: (id: string) => apiCall(contract.regeneratePostSeo, { params: { id } }), onSuccess: invalidate });
 }
