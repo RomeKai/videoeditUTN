@@ -18,17 +18,21 @@ Rules (the same the pipeline applies, see tasks/ingestion.py and tasks/render.py
         completed, partial or failed with a clip still rendering        -> report only
         completed, partial or failed otherwise                          -> rollback
         any other stage (clips_selected, render_dispatched...)          -> report only
-    Render reservation, ``metadata['render_reservation_id']``:
-        project with final_export_r2_key (delivered)       -> commit
-        project failed                                     -> rollback
-        anything else (still rendering)                    -> report only
-    Auto-render reservation, ``metadata['auto_render_reservation_id']``
-    ("Renderizar sin revisar"), with the pipeline's own rule
-    (ingestion._auto_render_settlement):
+    Render reservation of an approval, ``metadata['render_reservation_id']``,
+    approved clip by clip (``render_clip_ids``), and auto-render reservation,
+    ``metadata['auto_render_reservation_id']`` ("Renderizar sin revisar"),
+    with the pipeline's own rule (ingestion._clip_render_settlement):
         completed, partial or failed with clips delivered  -> commit the share
                                                               of their seconds
         completed, partial or failed, nothing delivered    -> rollback
+        an auto-render still at clips_selected (reserved,
+        never dispatched)                                  -> rollback
         a clip still rendering, or any other stage         -> report only
+    Render reservation of an approval from before (one export of every
+    segment, no ``render_clip_ids``):
+        project with final_export_r2_key (delivered)       -> commit
+        project failed                                     -> rollback
+        anything else (still rendering)                    -> report only
     Not linked to any project                              -> report only
     A render stuck in RENDERING is left to recover_stuck_renders, which
     re-queues it, fails it (refunded) or only reports it, and which also
@@ -39,7 +43,7 @@ Safety
     transactions older than ``--min-age-hours`` (24 by default) are read.
     With ``--apply`` the decision is taken again under the project's row lock
     and settled with ``wallet_service.commit_reservation``,
-    ``commit_partial_reservation`` (auto-render: the share delivered) or
+    ``commit_partial_reservation`` (clip by clip: the share delivered) or
     ``rollback_reservation``, which lock the transaction and re-check that it
     is still RESERVED: a reservation the pipeline settled meanwhile is skipped.
 
@@ -59,8 +63,8 @@ from apps.payments.models import Transaction
 from apps.videos.models import VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import STAGE_ORDER, TERMINAL_STAGES
 from apps.videos.tasks.ingestion import (
-    AUTO_RENDER_RESERVATION_KEY, _auto_render_charge, _auto_render_settlement,
-    _is_whole_video, _whole_video_settlement,
+    APPROVED_RENDER, AUTO_RENDER, AUTO_RENDER_RESERVATION_KEY, _clip_render_charge,
+    _clip_render_settlement, _is_whole_video, _paid_clip_renders, _whole_video_settlement,
 )
 
 COMMIT, ROLLBACK, REPORT = "commit", "rollback", "report"
@@ -100,6 +104,12 @@ def _clips_delivered(stage):
     )
 
 
+def _paid_clip_render(kind, project):
+    """The clip-by-clip render a reservation of ``kind`` pays for (auto-render or approval), or None."""
+    paid = {"auto_render": AUTO_RENDER, "render": APPROVED_RENDER}.get(kind)
+    return paid if paid in _paid_clip_renders(project.metadata or {}) else None
+
+
 def decide(kind, project):
     """(action, reason) for a reservation of ``kind`` linked to ``project`` (a VideoProject)."""
     if project is None:
@@ -116,13 +126,18 @@ def decide(kind, project):
         if project.pipeline_stage == VideoProject.PipelineStage.FAILED:
             return ROLLBACK, "failed_without_clips"
         return REPORT, "in_progress"
-    if kind == "auto_render":
-        outcome, _delivered = _auto_render_settlement(project)
+    if kind == "auto_render" and project.pipeline_stage == VideoProject.PipelineStage.CLIPS_SELECTED:
+        # Reserved and never dispatched (the dispatch moves the project to
+        # render_dispatched before queueing): it pays for nothing.
+        return ROLLBACK, "not_dispatched"
+    paid = _paid_clip_render(kind, project)
+    if paid is not None:
+        outcome, _delivered = _clip_render_settlement(project, paid)
         if outcome == "charge":
             return COMMIT, "clips_delivered"
         if outcome == "rollback":
             return ROLLBACK, "nothing_delivered"
-        return REPORT, "auto_render_in_progress"
+        return REPORT, f"{kind}_in_progress"
     if project.final_export_r2_key:
         # The export was saved: delivered, even if a late error marked it FAILED.
         return COMMIT, "render_delivered"
@@ -152,12 +167,13 @@ def _settle(transaction_id, kind, project_id):
             return action, reason, "skipped"
         try:
             with transaction.atomic():
-                if action == COMMIT and kind == "auto_render":
+                paid = _paid_clip_render(kind, project)
+                if action == COMMIT and paid is not None:
                     # Only the share of the seconds delivered, as the pipeline does.
-                    _outcome, delivered = _auto_render_settlement(project)
+                    _outcome, delivered = _clip_render_settlement(project, paid)
                     amount = Transaction.objects.values_list("amount", flat=True).get(pk=transaction_id)
                     commit_partial_reservation(
-                        transaction_id, _auto_render_charge(project, amount, delivered),
+                        transaction_id, _clip_render_charge(project, amount, delivered, paid),
                     )
                 elif action == COMMIT:
                     commit_reservation(transaction_id)

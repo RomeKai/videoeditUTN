@@ -189,6 +189,25 @@ def test_a_preview_is_rendered_only_once(clip):
     compose.assert_called_once()
 
 
+def test_a_preview_whose_row_went_while_it_rendered_leaves_no_file(clip):
+    # Its clip was left out of an approval (the draft and its previews are
+    # deleted) while the preview rendered.
+    preview = make_preview(clip, status=ClipPreview.Status.PENDING)
+    real_store = svc._store
+    stored = []
+
+    def store_then_lose_the_row(path, row):
+        key = real_store(path, row)
+        stored.append(key)
+        ClipPreview.objects.filter(pk=row.pk).delete()
+        return key
+
+    with patch.object(svc, "_store", side_effect=store_then_lose_the_row):
+        assert svc.render_preview(preview.id) is None
+
+    assert stored and not os.path.exists(stored[0])
+
+
 # ---------------------------------------------------------------------------
 # Vencimiento y limpieza
 # ---------------------------------------------------------------------------
