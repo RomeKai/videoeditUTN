@@ -64,7 +64,7 @@ export const clipsHandlers = [
     try {
       transaction = reserveFunds(db, { workspace: workspace.id, amount: cost, userId: user.id, description: `Render de clip: ${clip.title}`, project: { id: project.id, title: project.title }, category: 'render' }, now);
     } catch (error) {
-      if (error instanceof InsufficientFunds) throw new MockHttpError(402, { error: 'Saldo insuficiente para reservar los tokens.', required: dec(error.required) });
+      if (error instanceof InsufficientFunds) throw new MockHttpError(402, { error: 'Saldo insuficiente para reservar los tokens.', required: error.required });
       throw error;
     }
     clip.status = 'rendering';

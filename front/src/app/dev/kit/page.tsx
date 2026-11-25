@@ -1093,6 +1093,15 @@ export default function KitPage() {
         <Duo>
           <VideoPlayer label="Reproductor de muestra" seed="player" ratio="16:9" duration={95} />
         </Duo>
+        {/* Vertical, inside parents that do not stretch it: the frame keeps its own size. */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-start', marginTop: 24 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: '1 1 240px' }}>
+            <VideoPlayer label="Reproductor vertical centrado" seed="vertical" ratio="9:16" duration={31} />
+          </div>
+          <div style={{ display: 'inline-flex' }}>
+            <VideoPlayer label="Reproductor vertical en una caja ajustada" seed="vertical-2" ratio="9:16" duration={31} />
+          </div>
+        </div>
       </Section>
 
       <Section id="sistema" n="13" title="Sistema" note="Una frase, una acción y nada más.">

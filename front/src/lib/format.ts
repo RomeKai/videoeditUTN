@@ -196,3 +196,14 @@ export function initials(name: string): string {
 export function plural(count: number, singular: string, pluralForm: string): string {
   return `${formatNumber(count, 0)} ${count === 1 ? singular : pluralForm}`;
 }
+
+/**
+ * "#fff" → "#FFFFFF". Colors come back from the backend as free text; a color
+ * input needs #RRGGBB. Anything that is not a hex color gives the fallback.
+ */
+export function normalizeHex(value: string | null | undefined, fallback = '#FFFFFF'): string {
+  const text = (value ?? '').trim();
+  const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(text);
+  if (short) return `#${short[1]}${short[1]}${short[2]}${short[2]}${short[3]}${short[3]}`.toUpperCase();
+  return /^#[0-9a-f]{6}$/i.test(text) ? text.toUpperCase() : fallback;
+}

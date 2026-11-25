@@ -9,8 +9,8 @@ const project = (hex: string) => `/proyectos/00000007-0000-4000-8000-${hex.padSt
 const STATES = {
   processing: project('1'),
   waiting: project('19'),
-  failedNoSpeech: project('22'),
-  noBalance: project('29'),
+  failedNoSpeech: project('25'),
+  noBalance: project('1e'),
   singleRendering: project('1c'),
 };
 

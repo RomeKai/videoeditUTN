@@ -29,9 +29,10 @@ export function MockPanel() {
 
   return (
     <>
+      {/* Collapsed to its icon and kept above the height of <ActionBar>, so it never covers the screen's own controls. */}
       <button type="button" className={styles.fab} aria-expanded={open} aria-controls="mock-panel" onClick={() => setOpen((value) => !value)}>
         <Icon name="beaker" size={14} />
-        Mocks{scenario ? `: ${scenario}` : ''}
+        <span className={styles.fabLabel}>Mocks{scenario ? `: ${scenario}` : ''}</span>
       </button>
       {open ? (
         <section className={styles.panel} id="mock-panel" aria-label="Datos de prueba">

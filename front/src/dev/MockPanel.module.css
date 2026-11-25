@@ -1,13 +1,14 @@
 .fab {
   position: fixed;
-  left: 16px;
-  bottom: 16px;
+  left: 8px;
+  /* Above a sticky <ActionBar> (64 px and up) and the phone's safe area. */
+  bottom: calc(88px + env(safe-area-inset-bottom, 0px));
   z-index: var(--z-toast);
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 10px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0 6px;
   border-radius: var(--r-pill);
   border: 1px dashed var(--border-strong);
   background: var(--surface);
@@ -16,18 +17,35 @@
   font-weight: 500;
   cursor: pointer;
   box-shadow: var(--shadow-pop);
+  opacity: 0.7;
 }
-.fab:hover {
+.fab:hover,
+.fab:focus-visible,
+.fab[aria-expanded='true'] {
   color: var(--fg);
+  opacity: 1;
+}
+/* The label is always there for assistive tech; it only takes room while the button is in use. */
+.fabLabel {
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.fab:hover .fabLabel,
+.fab:focus-visible .fabLabel,
+.fab[aria-expanded='true'] .fabLabel {
+  max-width: 280px;
+  margin-left: 6px;
+  margin-right: 4px;
 }
 .panel {
   position: fixed;
-  left: 16px;
-  bottom: 56px;
+  left: 8px;
+  bottom: calc(124px + env(safe-area-inset-bottom, 0px));
   z-index: var(--z-toast);
   width: 360px;
-  max-width: calc(100vw - 32px);
-  max-height: min(70vh, 560px);
+  max-width: calc(100vw - 16px);
+  max-height: min(70vh, 560px, calc(100vh - 140px));
   display: flex;
   flex-direction: column;
   background: var(--surface);

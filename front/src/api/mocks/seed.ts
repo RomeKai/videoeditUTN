@@ -329,6 +329,9 @@ export interface ProjectSpec {
   metadata?: Partial<MockProject['metadata']>;
   costState?: 'reserved' | 'charged' | 'refunded';
   prompt?: { text: string; status: 'applied' | 'failed' };
+  /** "Renderizar sin revisar" could not be paid: the project waits in the review. */
+  autoRenderSkipped?: 'insufficient_funds' | 'plan_limit';
+  noSpeech?: boolean;
 }
 
 const USER_NAMES: Record<string, string> = {
@@ -348,7 +351,11 @@ export function buildProject(spec: ProjectSpec, now: number, brandKitId: string 
   const amount = source === 'link' ? PRICING.link_flat_cost : priceOf(spec.durationSeconds, resolution, Boolean(spec.useSeo), discount);
   const transcribed = ['transcribed', 'moderated', 'clips_selected', 'render_dispatched', 'completed', 'partial'].includes(spec.stage) &&
     !(spec.status === 'failed' && spec.errorCode === 'AINoSpeechDetectedError');
-  const clips = spec.clips ? buildClips(id, spec.index, spec.durationSeconds, spec.clips, createdAt + 8 * MIN) : [];
+  let clips = spec.clips ? buildClips(id, spec.index, spec.durationSeconds, spec.clips, createdAt + 8 * MIN) : [];
+  if (spec.projectType === 'single_edit') {
+    // The whole video is one clip: it spans the source, has the project's title and no score.
+    clips = clips.slice(0, 1).map((clip) => ({ ...clip, title: spec.title, start_time: 0, end_time: spec.durationSeconds, virality_score: 0, ai_reasoning: '' }));
+  }
   const costState = spec.costState ?? (spec.status === 'failed' ? 'refunded' : spec.status === 'completed' || spec.status === 'partial' ? 'charged' : 'reserved');
   const timings: MockProject['stage_timings'] = {};
   const doneIndex = INGEST_ORDER.indexOf(spec.stage) === -1 ? INGEST_ORDER.length - 1 : INGEST_ORDER.indexOf(spec.stage);
@@ -417,6 +424,8 @@ export function buildProject(spec: ProjectSpec, now: number, brandKitId: string 
       reservation_id: mid(KIND.transaction, spec.index * 10 + 1),
       ...(spec.prompt ? { pte_prompt: spec.prompt.text, pte_explicit: ['aspect_ratio'] } : {}),
       ...(pte ? { pte } : {}),
+      ...(spec.autoRenderSkipped ? { auto_render_skipped: spec.autoRenderSkipped } : {}),
+      ...(spec.noSpeech ? { no_speech: true, full_text: '' } : {}),
       ...spec.metadata,
     },
     ai_rationale_log: clips.length > 0 ? { suggestions_count: clips.length } : {},
@@ -613,26 +622,29 @@ function allStateProjects(discountRate: number): ProjectSpec[] {
     { index: next(), title: 'Revisión sin sugerencias', status: 'awaiting_approval', stage: 'clips_selected', durationSeconds: 1500, uploadedBy: USER_IDS.lucia, ageMs: 2 * HOUR, clips: { count: 0, statuses: [] }, discountRate: d },
     { index: next(), title: 'Video completo renderizando', status: 'rendering', stage: 'render_dispatched', durationSeconds: 380, uploadedBy: USER_IDS.carla, ageMs: 6 * MIN, projectType: 'single_edit', clips: { count: 1, statuses: ['rendering'] }, discountRate: d },
     { index: next(), title: 'Video completo que no se pudo generar', status: 'partial', stage: 'partial', durationSeconds: 410, uploadedBy: USER_IDS.carla, ageMs: 2 * DAY, projectType: 'single_edit', clips: { count: 1, statuses: ['failed'] }, discountRate: d, costState: 'refunded' },
+    { index: next(), title: 'Sin revisar: no alcanzó el saldo', status: 'awaiting_approval', stage: 'clips_selected', durationSeconds: 1900, uploadedBy: USER_IDS.lucia, ageMs: 50 * MIN, clips: { count: 6, statuses: ['draft'] }, discountRate: d, overrides: { auto_render_bypass: true }, autoRenderSkipped: 'insufficient_funds' },
+    { index: next(), title: 'Sin revisar: el plan no lo permite', status: 'awaiting_approval', stage: 'clips_selected', durationSeconds: 2000, uploadedBy: USER_IDS.martin, ageMs: 70 * MIN, clips: { count: 5, statuses: ['draft'] }, discountRate: d, overrides: { auto_render_bypass: true }, autoRenderSkipped: 'plan_limit' },
+    { index: next(), title: 'Video sin voz, editado sin subtítulos', status: 'completed', stage: 'completed', durationSeconds: 300, uploadedBy: USER_IDS.carla, ageMs: 9 * DAY, projectType: 'single_edit', clips: { count: 1, statuses: ['completed'] }, discountRate: d, noSpeech: true },
     { index: next(), title: 'Prompt que no se pudo interpretar', status: 'awaiting_approval', stage: 'clips_selected', durationSeconds: 1700, uploadedBy: USER_IDS.martin, ageMs: 5 * HOUR, clips: { count: 4, statuses: ['draft'] }, discountRate: d, prompt: { text: 'Hacé algo que se vea bien', status: 'failed' } },
   ];
   const failures: ProjectSpec[] = KNOWN_PIPELINE_ERROR_CODES.map((code, position) => ({
     index: next(),
     title: `Falló: ${code}`,
     status: 'failed',
-    stage: code === 'AIEmptySelectionError' ? 'moderated' : code.includes('Moderation') || code === 'UnsafeContentError' ? 'transcribed' : 'audio_extracted',
+    stage: code === 'AutoRenderNotPaid' ? 'render_dispatched' : code === 'AIEmptySelectionError' ? 'moderated' : code.includes('Moderation') || code === 'UnsafeContentError' ? 'transcribed' : 'audio_extracted',
     errorCode: code,
+    // Re-dispatched without tokens for what was left: the clips stay as they were and nothing new was charged.
+    ...(code === 'AutoRenderNotPaid' ? { clips: { count: 4, statuses: ['completed', 'draft'] as Array<'completed' | 'draft'> }, costState: 'charged' as const, overrides: { auto_render_bypass: true } } : {}),
     durationSeconds: 1200 + position * 300,
     uploadedBy: USER_IDS.lucia,
     ageMs: (2 + position) * DAY,
     discountRate: d,
   }));
   failures.push({ index: next(), title: 'Falló: error desconocido', status: 'failed', stage: 'uploaded', errorCode: 'RuntimeError', durationSeconds: 800, uploadedBy: USER_IDS.lucia, ageMs: 12 * DAY, discountRate: d });
-  // "Renderizar sin revisar" (map C1): the render reserved, and the two reasons it stops at the review instead.
-  // Added after the rest so the ids of the projects above do not move.
+  // "Renderizar sin revisar" (map C1) with the render already reserved. The two reasons it stops at the
+  // review instead are above. Added after the rest so the ids of the projects above do not move.
   const autoRender: ProjectSpec[] = [
     { index: next(), title: 'Sin revisar: render reservado', status: 'rendering', stage: 'render_dispatched', durationSeconds: 1400, uploadedBy: USER_IDS.lucia, ageMs: 16 * MIN, clips: { count: 5, statuses: ['completed', 'completed', 'rendering'] }, discountRate: d, overrides: { auto_render_bypass: true }, metadata: { auto_render_reservation_id: mid(KIND.transaction, 9100), auto_render_seconds: 172 } },
-    { index: next(), title: 'Sin revisar: no alcanzó el saldo', status: 'awaiting_approval', stage: 'clips_selected', durationSeconds: 1600, uploadedBy: USER_IDS.lucia, ageMs: 3 * HOUR, clips: { count: 6, statuses: ['draft'] }, discountRate: d, overrides: { auto_render_bypass: true }, metadata: { auto_render_skipped: 'insufficient_funds' } },
-    { index: next(), title: 'Sin revisar: el plan no lo permite', status: 'awaiting_approval', stage: 'clips_selected', durationSeconds: 1900, uploadedBy: USER_IDS.carla, ageMs: 4 * HOUR, clips: { count: 4, statuses: ['draft'] }, discountRate: d, overrides: { auto_render_bypass: true }, metadata: { auto_render_skipped: 'plan_limit' } },
   ];
   return [...base, ...extra, ...failures, ...autoRender];
 }

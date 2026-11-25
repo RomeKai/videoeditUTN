@@ -2,6 +2,7 @@ import type { Plan, Pricing } from '@/api/contracts/billing';
 import type { Platform } from '@/api/contracts/common';
 import type { ActivityItem, Clip, Project, StageStatus } from '@/api/contracts/projects';
 import { groupTranscript, type TranscriptLine } from '@/lib/download';
+import { autoRenderSkippedMessage } from '@/lib/error-messages';
 import { formatDuration, formatMinutes, formatNumber, formatRelative, formatTime, formatTokens, plural } from '@/lib/format';
 import { estimateCost, type CostEstimate } from '@/lib/pricing';
 import { countClips, describeProjectStatus, LABELS, type ProjectStatusView, type StatusTone } from '@/lib/project-status';
@@ -354,13 +355,8 @@ export type AutoRenderNotice =
  */
 export function autoRenderNotice(project: Pick<Project, 'status' | 'metadata' | 'auto_render_bypass' | 'project_type' | 'pipeline_stage'>): AutoRenderNotice | null {
   const skipped = project.metadata.auto_render_skipped;
-  if (project.status === 'awaiting_approval' && (skipped === 'insufficient_funds' || skipped === 'plan_limit')) {
-    return {
-      kind: skipped,
-      title: skipped === 'insufficient_funds' ? 'No alcanzó el saldo para renderizar sin revisar' : 'Tu plan no permite renderizar estos clips sin revisar',
-      text: 'Revisá y aprobá los clips que quieras.',
-    };
-  }
+  const stopped = project.status === 'awaiting_approval' ? autoRenderSkippedMessage(skipped) : null;
+  if (stopped && skipped) return { kind: skipped, ...stopped };
   const rendering = project.status === 'rendering' || (project.status === 'ingesting' && ['clips_selected', 'render_dispatched'].includes(project.pipeline_stage));
   if (rendering && project.project_type === 'repurpose' && project.metadata.auto_render_reservation_id) {
     return {

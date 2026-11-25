@@ -23,6 +23,7 @@ import {
   NetworkChip,
   StatusDot,
   VideoThumb,
+  isPlaceholderSource,
   useToast,
   type FilterOption,
   type MenuItem,
@@ -183,7 +184,7 @@ function ClipTile({ clip, project, actions, display, touch, selecting, picked, o
         corner={corner}
         overlay={
           <>
-            {hovering && clip.preview_url && !selecting ? (
+            {hovering && clip.preview_url && !isPlaceholderSource(clip.preview_url) && !selecting ? (
               <video className={styles.hoverVideo} src={clip.preview_url} muted loop autoPlay playsInline aria-hidden="true" />
             ) : null}
             {tray}

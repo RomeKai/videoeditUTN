@@ -138,10 +138,6 @@ button.onDark:hover {
 .previewStage > [role='group'] {
   width: 240px;
 }
-.previewStage > [role='group'] > div:first-child {
-  width: 100%;
-  max-height: none;
-}
 .previewWait {
   display: inline-flex;
   flex-direction: column;

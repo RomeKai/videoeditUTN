@@ -35,6 +35,7 @@ export const login = defineEndpoint({
   errors: [
     { status: 401, when: 'Credenciales incorrectas. La UI muestra "El email o la contraseña no coinciden", sin decir cuál.' },
     { status: 403, when: 'Propuesto: `code: "email_not_verified"` cuando la cuenta no verificó el email. La UI lleva a A3.' },
+    { status: 429, when: 'Demasiados intentos seguidos (throttle de DRF). La UI pide esperar y no borra lo escrito.' },
   ],
   backend: {
     status: 'exists',

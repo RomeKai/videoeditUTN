@@ -28,11 +28,6 @@
   width: 360px;
   max-width: 100%;
 }
-/* The shared player's vertical stage sizes itself from a height it does not have here: give it the column's width. */
-.player > div:first-child {
-  width: 100%;
-  max-height: none;
-}
 .pending {
   width: 360px;
   max-width: 100%;

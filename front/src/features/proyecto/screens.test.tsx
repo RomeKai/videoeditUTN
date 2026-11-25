@@ -422,6 +422,11 @@ describe('D5 · Resultado del video completo', () => {
     expect(await screen.findByText('No te alcanza el saldo')).toBeInTheDocument();
   });
 
+  it('un video sin voz se edita igual y avisa que salió sin subtítulos', async () => {
+    open('Video sin voz', 'resultado');
+    expect(await screen.findByText('No encontramos voz en el video: se editó igual, sin subtítulos.')).toBeInTheDocument();
+  });
+
   it('mientras renderiza: sin vista previa y sin acciones todavía', async () => {
     open('Video completo renderizando', 'resultado');
     expect(await screen.findByText('Estamos editando tu video…')).toBeInTheDocument();

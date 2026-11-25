@@ -29,8 +29,37 @@ test.describe('Smoke en modo mock', () => {
     await expect(page.getByRole('heading', { name: 'Kit de componentes' })).toBeVisible();
     await expect(page.locator('[data-theme="dark"]').first()).toBeVisible();
     await expect(page.locator('[data-theme="light"]').first()).toBeVisible();
+    // The vertical player keeps its frame when the parent does not stretch it.
+    for (const name of [/Reproductor vertical centrado/, /Reproductor vertical en una caja ajustada/]) {
+      for (const player of await page.getByRole('group', { name }).all()) {
+        const frame = await player.locator('div').first().boundingBox();
+        expect(frame?.width ?? 0, String(name)).toBeGreaterThan(150);
+        expect((frame?.height ?? 0) / (frame?.width ?? 1), String(name)).toBeCloseTo(16 / 9, 1);
+      }
+    }
     expectClean(problems, '/dev/kit');
   });
+
+  // A full reload goes through hydration and the start of the mock worker again: neither may fail.
+  for (const path of ['/proyectos', '/mantenimiento', '/uso/comprar/resultado']) {
+    test(`recargar ${path} no deja errores de consola ni pedidos sin simular`, async ({ page }) => {
+      await useScenario(page, 'estudio-norte');
+      const problems = watch(page);
+      await page.goto(path);
+      await settle(page);
+      // Quick reloads first (the mock worker used to unregister itself between two of them)…
+      for (let round = 0; round < 6; round += 1) await page.reload({ waitUntil: 'load' });
+      // …then slow ones, each waiting for the screen.
+      for (let round = 0; round < 2; round += 1) {
+        await page.reload();
+        await settle(page);
+        await expect(page.locator('h1').first()).toBeVisible();
+      }
+      // The browser checks the worker for updates about a second after the load: a failure shows up then.
+      await page.waitForTimeout(1500);
+      expectClean(problems, `${path} recargada`);
+    });
+  }
 
   test('una ruta que no existe muestra el 404 (K1)', async ({ page }) => {
     await useScenario(page, 'estudio-norte');
@@ -102,6 +131,14 @@ test.describe('Smoke en modo mock', () => {
     const menu = page.getByRole('menu', { name: 'Cuenta y workspace' });
     await expect(menu.getByRole('menuitemradio', { name: /Estudio Norte/ })).toBeVisible();
     await expect(menu.getByRole('menuitem', { name: /Notificaciones/ })).toBeVisible();
+    // The arrow keys walk the items, like any menu.
+    await page.keyboard.press('Home');
+    const first = await menu.locator(':focus').textContent();
+    await page.keyboard.press('ArrowDown');
+    await expect(menu.locator(':focus')).toHaveAttribute('role', /^menuitem/);
+    expect(await menu.locator(':focus').textContent()).not.toBe(first);
+    await page.keyboard.press('ArrowUp');
+    expect(await menu.locator(':focus').textContent()).toBe(first);
     expectClean(problems, 'la barra en el teléfono');
   });
 

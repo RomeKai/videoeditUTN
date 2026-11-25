@@ -104,7 +104,7 @@ export function ResultScreen({ projectId }: { projectId: string }) {
   const resolution = project.metadata.render_resolution ?? '720p';
   const pixels = RESOLUTION_PIXELS[resolution]?.[project.aspect_ratio];
   const swatches = kit.data ? [kit.data.primary_color, kit.data.secondary_color, kit.data.accent_color].filter((color): color is string => Boolean(color)) : [];
-  const noVoice = display.ready && project.add_subtitles && project.transcript_data !== null && project.transcript_data.length === 0;
+  const noVoice = display.ready && project.add_subtitles && (project.metadata.no_speech === true || (project.transcript_data !== null && project.transcript_data.length === 0));
   const notReady = display.ready ? undefined : display.group === 'failed' ? 'El video no se pudo generar' : 'Disponible cuando el video esté listo';
   const allowed = (action: 'post.publish' | 'clip.edit' | 'project.review') => gate(action).disabledReason;
 
