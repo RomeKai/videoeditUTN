@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { LayoutDiagram } from './LayoutDiagram';
 import { FilePicker, type FileState } from './NewProjectOrigin';
 import { SummaryCard, type SummaryProps } from './NewProjectSummary';
-import { renderScreen } from './test-utils';
+import { renderScreen } from '@/testing';
 
 const MB = 1024 * 1024;
 

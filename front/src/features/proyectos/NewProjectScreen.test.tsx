@@ -5,7 +5,7 @@ import { server } from '@/api/mocks/server';
 import { USER_IDS } from '@/api/mocks/seed';
 import { NewProjectScreen } from './NewProjectScreen';
 import { DEFAULT_CONFIG, saveLastConfig } from './new-project-config';
-import { allowSlowScreens, renderScreen, startScenario } from './test-utils';
+import { allowSlowScreens, renderScreen, startScenario } from '@/testing';
 
 allowSlowScreens();
 
