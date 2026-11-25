@@ -207,8 +207,10 @@ describe('mocks', () => {
     expect(rendering.metadata.auto_render_skipped).toBeUndefined();
 
     signIn('saldo-bajo');
-    // 120 tokens pay the link (10) but not the render of the clips.
-    const poor = await apiCall(projects.createProject, { body: { video_url: 'https://youtu.be/abc', auto_render_bypass: true, max_clips: 8 } });
+    // 120 tokens pay the link (10) but not the render of the clips. Twenty clips, so that is true whatever
+    // clips the mock suggests: it seeds them from the clock, and with 8 they were short enough to be paid
+    // with the 110 tokens left about once in 70 runs (the project then went on to render).
+    const poor = await apiCall(projects.createProject, { body: { video_url: 'https://youtu.be/abc', auto_render_bypass: true, max_clips: 20 } });
     advance(SIM.queueMs + SIM.stageMs * 5);
     const waiting = await apiCall(projects.getProject, { params: { id: poor.id } });
     expect(waiting.status).toBe('awaiting_approval');

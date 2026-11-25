@@ -25,6 +25,14 @@ function check(schema: ZodTypeAny, value: unknown, what: string): void {
   }
 }
 
+/**
+ * Each scenario is all CPU: the whole database goes through zod, transcripts included. The biggest
+ * one («muchos-proyectos», 60 projects, 3 MB of JSON) takes about 0.7 s on a free machine, and
+ * several times that when the other test files compete for the cores: more than vitest's default
+ * 5 s. Nothing waits on timers or shared state here, so the limit is what gives.
+ */
+const SCENARIO_TIMEOUT_MS = 30_000;
+
 describe('fixtures: cada escenario cumple los esquemas del contrato', () => {
   it.each(SCENARIOS.map((scenario) => [scenario.id, scenario] as const))('%s', (_id, scenario) => {
     const db = seedDb({ scenario: scenario.id, ...scenario.options }, NOW);
@@ -45,10 +53,10 @@ describe('fixtures: cada escenario cumple los esquemas del contrato', () => {
     for (const member of db.members) check(Member, serializeMember(db, member), `miembro ${member.email}`);
     for (const transaction of db.transactions) check(Transaction, serializeTransaction(transaction), `movimiento ${transaction.description}`);
     for (const project of db.projects) {
-      check(Project, serializeProject(db, project, { full: true }), `proyecto ${project.title}`);
+      const detail = serializeProject(db, project, { full: true });
+      check(Project, detail, `proyecto ${project.title}`);
       check(Project, serializeProject(db, project, { full: false }), `proyecto en lista ${project.title}`);
       for (const clip of project.clips) check(Clip, serializeClip(db, clip), `clip ${clip.title}`);
-      const detail = serializeProject(db, project, { full: true });
       check(
         PaperEditData,
         { project_id: project.id, title: project.title, status: project.status, proxy_url: null, transcript: detail.transcript_data, ai_suggestions: detail.clips, metadata: project.metadata },
@@ -84,7 +92,7 @@ describe('fixtures: cada escenario cumple los esquemas del contrato', () => {
       { preview_id: db.plans[0]?.id, clip_id: db.plans[0]?.id, status: 'ready', url: 'mock://previews/p.mp4', expires_at: new Date(NOW).toISOString(), error_code: null, cost_tokens: 0, simplified: { height: 360, face_tracking: false, silence_removal: false } },
       'preview',
     );
-  });
+  }, SCENARIO_TIMEOUT_MS);
 });
 
 describe('fixtures: cubren los estados que describe el mapa', () => {
