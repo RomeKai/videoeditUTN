@@ -228,7 +228,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
             onEnded={() => setPlaying(false)}
             onError={() => {
               setPlaying(false);
-              setFailedSrc(src);
+              // The link kept from the first render may have expired: a newer signature of the same file is tried once.
+              if (srcProp && srcProp !== stableSrc) setStableSrc(srcProp);
+              else setFailedSrc(src);
             }}
           />
         ) : (

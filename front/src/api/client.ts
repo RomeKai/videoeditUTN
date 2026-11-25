@@ -8,7 +8,6 @@ import {
   isSessionExpired,
   notifyMaintenance,
   notifySessionExpired,
-  secondsUntilExpiry,
   setTokens,
 } from './session';
 
@@ -89,9 +88,6 @@ export function refreshAccessToken(): Promise<string> {
   });
   return refreshing;
 }
-
-/** An upload must not die halfway with a 401: renew first when the token has less than this left. */
-const UPLOAD_MIN_TOKEN_SECONDS = 120;
 
 async function readBody(response: Response, type: 'json' | 'text' | 'blob'): Promise<unknown> {
   if (response.status === 204 || response.status === 205) return undefined;
@@ -211,8 +207,13 @@ export async function apiCall<E extends AnyEndpoint>(endpoint: E, ...args: Args<
 
   let sent = sendsToken ? getTokens()?.access : undefined;
   if (sent && (endpoint.bodyType === 'multipart' || options.onUploadProgress)) {
-    const left = secondsUntilExpiry(sent);
-    if (left !== null && left < UPLOAD_MIN_TOKEN_SECONDS) sent = await renew();
+    // An upload can take longer than the token lives and must not die halfway with a 401:
+    // it always starts with a fresh one. If the renewal fails for a passing reason, it goes with what there is.
+    try {
+      sent = await renew();
+    } catch (error) {
+      if (error instanceof SessionExpiredError) throw error;
+    }
   }
   let response = await attempt(sent);
 

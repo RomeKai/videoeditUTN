@@ -6,6 +6,7 @@ import type { Plan } from '@/api/contracts/billing';
 import type { Role } from '@/api/contracts/common';
 import type { Me, WorkspaceSummary } from '@/api/contracts/users';
 import { useActiveWorkspaceId, useMe, useSessionPresence, useSubscription, useUpdateMe } from '@/api/hooks';
+import { SessionExpiredError } from '@/api/errors';
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '@/api/session';
 import { can as canDo, NO_ACCESS_REASON, type Action, type PermissionContext } from '@/lib/permissions';
 
@@ -77,7 +78,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<SessionValue>(() => {
     const status: SessionStatus =
-      hasSession === undefined ? 'loading' : !hasSession ? 'anonymous' : me ? 'authenticated' : meQuery.isError ? 'error' : 'loading';
+      hasSession === undefined
+        ? 'loading'
+        : !hasSession
+          ? 'anonymous'
+          : me
+            ? 'authenticated'
+            : // The session expired before `/me` ever answered: the "Sesión vencida" dialog is up, not a server failure.
+              meQuery.isError && !(meQuery.error instanceof SessionExpiredError)
+              ? 'error'
+              : 'loading';
     return {
       status,
       // A stored session that turned out to be someone else's cache is never shown as signed in.

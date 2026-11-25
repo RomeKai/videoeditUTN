@@ -389,7 +389,13 @@ describe('VideoPlayer', () => {
     rerender(<VideoPlayer label="Reproductor" src="https://r2.example/clips/vencido.mp4" duration={30} />);
     const video = container.querySelector('video');
     expect(video).not.toBeNull();
+    // The parent already has a newer signature of the same file: it is tried before giving up.
+    rerender(<VideoPlayer label="Reproductor" src="https://r2.example/clips/vencido.mp4?firma=2" duration={30} />);
+    expect(container.querySelector('video')).toHaveAttribute('src', 'https://r2.example/clips/vencido.mp4');
     if (video) fireEvent.error(video);
+    expect(container.querySelector('video')).toHaveAttribute('src', 'https://r2.example/clips/vencido.mp4?firma=2');
+    const retried = container.querySelector('video');
+    if (retried) fireEvent.error(retried);
     expect(container.querySelector('video')).toBeNull();
     expect(screen.getByRole('slider', { name: 'Posición' })).toBeInTheDocument();
   });
