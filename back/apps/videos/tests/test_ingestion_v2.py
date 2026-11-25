@@ -129,6 +129,8 @@ class PaperEditAPITests(APITestCase):
         self.workspace = Workspace.objects.create(name="Test Workspace API", owner=self.user)
         self.workspace.members.add(self.user)
         self.client.force_authenticate(user=self.user)
+        # A second workspace of the user, not their default one: named like the web app does.
+        self.client.credentials(HTTP_X_WORKSPACE_ID=str(self.workspace.pk))
         
         self.project = VideoProject.objects.create(
             workspace=self.workspace,

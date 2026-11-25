@@ -107,6 +107,8 @@ class ApprovePaperEditStoresColumnTests(APITestCase):
         self.workspace = Workspace.objects.create(name="Approve WS", owner=self.user)
         self.workspace.members.add(self.user)
         self.client.force_authenticate(user=self.user)
+        # A second workspace of the user, not their default one: named like the web app does.
+        self.client.credentials(HTTP_X_WORKSPACE_ID=str(self.workspace.pk))
         self.project = VideoProject.objects.create(
             workspace=self.workspace,
             uploaded_by=self.user,

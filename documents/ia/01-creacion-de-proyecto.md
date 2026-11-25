@@ -7,6 +7,7 @@ Un proyecto (`VideoProject`) nace en el request de creación de la API y ahí mi
 | Componente | Archivo | Rol |
 |------------|---------|-----|
 | `VideoProjectViewSet.create` | [views.py](../../back/apps/videos/views.py) | Orquesta la creación: serializer, precio, reserva, `metadata['reservation_id']` y encolado |
+| `resolve_active_workspace`, `WorkspaceRolePermission` | [core/workspace.py](../../back/apps/core/workspace.py), [core/permissions.py](../../back/apps/core/permissions.py) | Workspace activo del request (`X-Workspace-Id`) y rol que el usuario tiene ahí ([ver abajo](#workspace-activo-y-roles)) |
 | `VideoProjectViewSet.from_prompt` | [views.py](../../back/apps/videos/views.py) | Valida `prompt` y delega en `create` (ver [04-prompt-to-edit](04-prompt-to-edit.md)) |
 | `VideoProjectViewSet.get_serializer_context` | [views.py](../../back/apps/videos/views.py) | Pasa `pte_prompt` al serializer cuando la creación viene de `from_prompt` |
 | `_pricing_resolution` | [views.py](../../back/apps/videos/views.py) | Tier de resolución que se cobra: `metadata['render_resolution']` si es válido, si no `720p` |
@@ -18,6 +19,31 @@ Un proyecto (`VideoProject`) nace en el request de creación de la API y ahí mi
 | `_record_pipeline_failure`, `_refund_ingestion_reservation`, `_work_already_done` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Devuelven la reserva cuando la ingesta falla sin entregar clips |
 
 Las tres formas usan la misma vista y el mismo serializer. `validate` exige exactamente una fuente: sin ninguna responde `Debes proporcionar un 'source_file' o una 'video_url'.` y con las dos `No puedes enviar archivo y URL al mismo tiempo.`.
+
+## Workspace activo y roles
+
+Cada request de proyectos, brand kits y vistas previas trabaja en un solo workspace, el activo. Lo resuelve `resolve_active_workspace` y queda guardado en el request:
+
+- **Con el header `X-Workspace-Id`** (el frontend lo manda en cada pedido): ese workspace, si el usuario es su dueño (`Workspace.owner`) o tiene un `WorkspaceMember` en `active`. Una invitación `pending` no cuenta. Un id mal formado, un workspace que no existe, uno ajeno y una invitación pendiente reciben la misma respuesta: 404 `{"detail": "No encontramos ese espacio de trabajo."}`. Así no se pueden adivinar workspaces.
+- **Sin el header** (o vacío): el workspace más viejo del que el usuario es dueño y, si no tiene, su membresía `active` más vieja. Es para los clientes que no son el frontend (scripts, curl). Antes era `user.workspaces.first()`, que contaba invitaciones pendientes y dependía del orden de los UUID.
+
+El proyecto o el brand kit nuevo se guarda en ese workspace, su billetera es la que reserva y cobra, y las listas, el detalle y las acciones solo ven sus objetos: un proyecto de otro workspace es 404 aunque el usuario sea miembro de los dos. El `brand_kit` de un proyecto tiene que ser del mismo workspace (si no, 400). `CORS_ALLOW_HEADERS` suma `x-workspace-id`: sin eso el navegador corta el preflight.
+
+`WorkspaceRolePermission` decide con el rol del usuario en ese workspace. El dueño siempre es Dueño, aunque tenga además una fila en `WorkspaceMember`. `ROLE_MATRIX` copia la tabla 1.7 del [mapa de pantallas](../producto/mapa-de-pantallas.md#17-roles-y-permisos) y `MATRIX` de `front/src/lib/permissions.ts`. Lo que hoy tiene endpoint:
+
+| Acción | Endpoint | Dueño | Admin | Editor | Lector |
+|--------|----------|:-:|:-:|:-:|:-:|
+| Ver proyectos, revisión y brand kits | `GET`, `paper-edit-data` | ✓ | ✓ | ✓ | ✓ |
+| Pedir y ver la vista previa gratis | `clips/<id>/preview/` | ✓ | ✓ | ✓ | ✓ |
+| Crear proyectos (gasta tokens) | `POST projects/`, `from-prompt` | ✓ | ✓ | ✓ | — |
+| Editar proyectos | `PATCH` y `PUT projects/<id>/` | ✓ | ✓ | ✓ | — |
+| Aprobar y renderizar | `approve-paper-edit` | ✓ | ✓ | ✓ | — |
+| Borrar proyectos | `DELETE projects/<id>/` | ✓ | ✓ | solo los que subió | — |
+| Crear, editar y borrar brand kits | `brand-kits/` | ✓ | ✓ | ✓ | — |
+
+Una escritura que la vista no asigna a una acción (`workspace_actions`) queda para Dueño y Admin. Un método que la vista no tiene responde 405 para cualquier rol. Lo que el rol no permite responde 403 con un `detail` en castellano, por ejemplo `Con el rol Lector podés ver, pero no crear ni cambiar nada. Pedile acceso a un admin.`. No hay endpoints de invitación: una invitación pasa a `active` desde el admin de Django.
+
+El esquema OpenAPI declara el header en cada operación de una vista con `WorkspaceRolePermission` (`WorkspaceAutoSchema`, en [core/schema.py](../../back/apps/core/schema.py)).
 
 ## Flujo: creación con archivo
 
@@ -67,7 +93,7 @@ sequenceDiagram
     end
 ```
 
-1. `create` toma el primer workspace del usuario (`user.workspaces.first()`). Sin workspace responde 400.
+1. `create` usa el [workspace activo](#workspace-activo-y-roles). Sin workspace responde 400.
 2. `validate_source_file` corta primero por extensión (`.mp4`, `.mov`, `.avi`) y por tamaño (500 MB). Después llama a `validate_upload`, que trabaja sobre los bytes y no sobre el nombre ni el header del cliente:
    - `_sniff` lee los primeros 8 KB con libmagic. Pasan los mime de `_DEMUXER_BY_MIME` (MP4, M4V, QuickTime, 3GPP y AVI), cada uno con su demuxer (`mov` o `avi`). Un `application/octet-stream` pasa como `video/quicktime` si tiene una caja ISO (`ftyp`, `moov`, `mdat`, `free`, `skip`, `wide`, `pnot`) en el byte 4: son archivos reales de cámara que libmagic no reconoce.
    - `_has_streaming_manifest` rechaza un manifiesto DASH en los primeros 5 MB, o un archivo que empiece como playlist HLS (`#EXTM3U`) o concat (`ffconcat`). ffmpeg elige el demuxer por contenido y con un manifiesto pediría sus URLs desde el servidor.
@@ -222,7 +248,10 @@ Una aprobación anterior a los clips por segmento (sin `render_clip_ids`, todav�
 
 | Situación | Qué pasa | Dónde |
 |-----------|----------|-------|
-| El usuario no tiene workspace | 400 `{"error": "El usuario no tiene un Workspace asignado."}` | `create` |
+| `X-Workspace-Id` mal formado, de un workspace que no existe, ajeno o con la invitación pendiente | 404 `{"detail": "No encontramos ese espacio de trabajo."}`. No se guarda ni se reserva nada | `resolve_active_workspace` |
+| Sin header, sin workspace propio y sin membresía activa | 400 `{"error": "El usuario no tiene un Workspace asignado."}`, también al crear un brand kit | `create`, `BrandKitViewSet.perform_create` |
+| El rol no puede crear (Lector) | 403 `{"detail": "Con el rol Lector podés ver, pero no crear ni cambiar nada. Pedile acceso a un admin."}`. No se guarda ni se reserva nada | `WorkspaceRolePermission` |
+| `brand_kit` de otro workspace | 400 en `brand_kit` | `VideoProjectSerializer.get_fields` |
 | Sin fuente, o archivo y URL juntos | 400 con el mensaje de `validate` | `VideoProjectSerializer.validate` |
 | Extensión distinta de `.mp4`, `.mov`, `.avi` | 400 `Solo se permiten archivos de video (.mp4, .mov, .avi)` | `validate_source_file` |
 | Archivo de más de 500 MB | 400 `El archivo es demasiado grande (MÃ¡x 500MB)` (sic: la `á` está mal codificada en el código) | `validate_source_file` |

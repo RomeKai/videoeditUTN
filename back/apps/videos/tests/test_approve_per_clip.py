@@ -82,6 +82,8 @@ class ApprovalHarness:
         self.workspace.members.add(self.user)
         self.wallet = fund_wallet(self.workspace, "100.00")
         self.client.force_authenticate(user=self.user)
+        # A second workspace of the user, not their default one: named like the web app does.
+        self.client.credentials(HTTP_X_WORKSPACE_ID=str(self.workspace.pk))
         # Where the ingestion leaves a project for the review: its clips selected.
         self.project = VideoProject.objects.create(
             workspace=self.workspace, uploaded_by=self.user, title="Revisión",
@@ -1062,6 +1064,7 @@ class LeftoverAutoRenderTests(IngestionHarness, TestCase):
         self.workspace.members.add(self.user)
         self.api = APIClient()
         self.api.force_authenticate(user=self.user)
+        self.api.credentials(HTTP_X_WORKSPACE_ID=str(self.workspace.pk))
 
     def run_to_render(self, project):
         with self.captureOnCommitCallbacks(execute=True):
