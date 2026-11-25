@@ -114,6 +114,60 @@ PIPELINE_RETRY_CAP_SECONDS = 600
 # by the paper-edit render.
 PIPELINE_LOCK_RETRY_SECONDS = 45
 PIPELINE_LOCK_MAX_RETRIES = 8
+# Pause before a delivery whose re-queue could not be published goes back to
+# the broker (_publish_requeue).
+REQUEUE_NOT_PUBLISHED_PAUSE_SECONDS = 5
+
+
+def _publish_requeue(task, publish, event, project_id, kind, undo=None):
+    """
+    Publishes a re-queue of the running delivery (``publish``, a callable):
+    the lock was busy (``kind='lock'``), the prompt parser asked for another
+    try (``'prompt_parse'``) or capacity is short (``'capacity'``). If the
+    broker does not take it, this delivery must not end: the task acks late,
+    and Celery acks a task that raised too (task_acks_on_failure_or_timeout),
+    so the only message the project has would be lost. The options:
+
+    - re-raise the error: acked as a failure, the message is lost;
+    - ``self.retry``: publishes a new message as well, so it fails the same
+      way, and Celery then raises ``Reject(requeue=False)``: dropped;
+    - ``Reject(requeue=True)``: the broker gets this same message back (a
+      Redis restore, at the end of the queue). If Redis cannot take even
+      that, the message stays unacked and returns after the visibility
+      timeout. Nothing is lost either way.
+
+    So it pauses REQUEUE_NOT_PUBLISHED_PAUSE_SECONDS, so that a broker that
+    keeps failing gets one try every few seconds instead of a hot loop, and
+    rejects with requeue. The message comes back unchanged, with the counters
+    it carries (lock, parser and error retries): the re-queue that was not
+    published spent none of them. ``undo`` reverts what the caller wrote for
+    that re-queue (the capacity wait it planned), so the redelivery does not
+    count it twice; a failing undo is only logged. In eager mode there is no
+    broker, so an error here is the inline task's own and is raised as is.
+    """
+    from celery.exceptions import Reject
+
+    try:
+        publish()
+    except Exception as exc:
+        if getattr(task.request, 'is_eager', False):
+            raise
+        logger.error(
+            "%s project_id=%s requeue=%s error=%s", event, project_id, kind, type(exc).__name__,
+            extra={'project_id': str(project_id)},
+        )
+        if undo is not None:
+            try:
+                undo()
+            except Exception as undo_exc:
+                logger.error(
+                    "%s project_id=%s requeue=%s undo_failed=%s",
+                    event, project_id, kind, type(undo_exc).__name__,
+                    extra={'project_id': str(project_id)},
+                )
+        time.sleep(REQUEUE_NOT_PUBLISHED_PAUSE_SECONDS)
+        # The class name only: the broker's message stays out of the task logs.
+        raise Reject(type(exc).__name__, requeue=True) from None
 
 
 # --- Transient infrastructure errors -----------------------------------------

@@ -1,15 +1,16 @@
 'use client';
 
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiCall } from '../client';
 import type { Platform } from '../contracts/common';
 import * as contract from '../contracts/social';
 import { keys, pollWhile } from '../query';
+import { useScopedQuery } from './scope';
 
 const IN_FLIGHT = new Set(['QUEUED', 'PROCESSING']);
 
 export function useSocialAccounts() {
-  return useQuery({ queryKey: keys.social.accounts, queryFn: ({ signal }) => apiCall(contract.listSocialAccounts, { signal }) });
+  return useScopedQuery({ queryKey: keys.social.accounts, queryFn: ({ signal }) => apiCall(contract.listSocialAccounts, { signal }) });
 }
 
 /** D6: returns the network's authorization URL; the dialog opens it in a new window and refetches accounts on return. */
@@ -33,7 +34,7 @@ export function useDisconnectSocialAccount() {
 
 /** E2: polls every 5 s while any publication of the page is queued or publishing. */
 export function usePosts(query: contract.PostsQuery = {}, { enabled = true }: { enabled?: boolean } = {}) {
-  return useQuery({
+  return useScopedQuery({
     queryKey: keys.social.postList(query),
     queryFn: ({ signal }) => apiCall(contract.listPosts, { query, signal }),
     placeholderData: keepPreviousData,
@@ -43,7 +44,7 @@ export function usePosts(query: contract.PostsQuery = {}, { enabled = true }: { 
 }
 
 export function usePost(id: string | null | undefined) {
-  return useQuery({
+  return useScopedQuery({
     queryKey: keys.social.post(id ?? ''),
     queryFn: ({ signal }) => apiCall(contract.getPost, { params: { id: id ?? '' }, signal }),
     enabled: Boolean(id),

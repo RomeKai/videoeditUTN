@@ -71,7 +71,8 @@ function own(db: MockDb, id: string | undefined, workspaceId: string): MockProje
 
 function payment(error: unknown): never {
   if (error instanceof InsufficientFunds) {
-    throw new MockHttpError(402, { error: 'Saldo insuficiente para reservar los tokens.', required: dec(error.required) });
+    // A Decimal put straight in a Response: DRF's encoder sends it as a number.
+    throw new MockHttpError(402, { error: 'Saldo insuficiente para reservar los tokens.', required: error.required });
   }
   throw error;
 }
@@ -172,7 +173,8 @@ function createProject(context: Parameters<Parameters<typeof route<typeof contra
     manual_camera_y: number('manual_camera_y', 0.2),
     manual_camera_zoom: number('manual_camera_zoom', 1),
     speaker_tracking: speakerTracking,
-    add_subtitles: bool('add_subtitles', true),
+    // Like DRF with a multipart form: a boolean that is not sent is false, whatever the model's default.
+    add_subtitles: bool('add_subtitles', false),
     subtitle_color: get('subtitle_color') ?? '#FFFF00',
     subtitle_with_emojis: false,
     subtitle_words_per_segment: number('subtitle_words_per_segment', 3),
@@ -217,7 +219,7 @@ function createProject(context: Parameters<Parameters<typeof route<typeof contra
   addActivity(db, project, 'tokens_reserved', 'Reserva por el procesamiento', now, { actorId: user.id, amount: -cost });
   return {
     ...serializeProject(db, project, { full: true }),
-    cost_details: { tokens_reserved: dec(cost), transaction_id: transaction.id },
+    cost_details: { tokens_reserved: cost, transaction_id: transaction.id },
     message: 'Video subido. Iniciando ingesta multimodal...',
   };
 }
@@ -317,13 +319,22 @@ export const projectsHandlers = [
   route(contract.approvePaperEdit, ({ db, workspace, params, body, user, now, require }) => {
     require('project.review');
     const project = own(db, params.id, workspace.id);
-    if (project.status === 'rendering') throw conflict('El proyecto ya se está renderizando.');
+    // As the backend today: any status other than awaiting_approval is a 400 (409 is only the race of two approvals).
     if (project.status !== 'awaiting_approval') {
       throw badRequest({ error: `El proyecto no está en espera de aprobación. Estado actual: ${project.status}` });
     }
     const total = body.approved_segments.reduce((sum, segment) => sum + (segment.end - segment.start), 0);
     const plan = planOf(db, workspace.id);
-    const cost = priceOf(Math.ceil(total), project.metadata.render_resolution ?? '720p', false, plan?.base_discount_rate ?? 0);
+    const seconds = Math.ceil(Math.round(total * 1000) / 1000);
+    // PricingEngine's plan check surfaces as a 400 of the view, not as a 403.
+    if (plan && seconds > plan.max_video_duration_seconds) {
+      throw badRequest({ error: `Error en el motor de precios: ['Video duration (${seconds}s) exceeds your plan limit (${plan.max_video_duration_seconds}s).']` });
+    }
+    const resolution = project.metadata.render_resolution ?? '720p';
+    if (plan && RANK[resolution] > RANK[plan.max_resolution]) {
+      throw badRequest({ error: `Error en el motor de precios: ["Your plan '${plan.name}' does not support ${resolution} rendering."]` });
+    }
+    const cost = priceOf(seconds, resolution, false, plan?.base_discount_rate ?? 0);
     let transaction;
     try {
       transaction = reserveFunds(db, { workspace: workspace.id, amount: cost, userId: user.id, description: `Render Final (Paper Edit): ${project.title}`, project: { id: project.id, title: project.title }, category: 'render' }, now);
@@ -354,6 +365,7 @@ export const projectsHandlers = [
     });
     project.approved_segments = body.approved_segments.map((segment) => ({ start: segment.start, end: segment.end, ...(segment.text ? { text: segment.text } : {}) }));
     project.metadata = { ...project.metadata, final_duration: total, render_reservation_id: transaction.id };
+    delete project.metadata.auto_render_skipped;
     project.status = 'rendering';
     project.pipeline_stage = 'render_dispatched';
     project._reservations.push(transaction.id);
@@ -361,7 +373,7 @@ export const projectsHandlers = [
     addActivity(db, project, 'review_approved', `Aprobó ${project.clips.length} clips para renderizar`, now, { actorId: user.id });
     addActivity(db, project, 'tokens_reserved', 'Reserva por el render', now, { actorId: user.id, amount: -cost });
     return {
-      data: { message: 'Edición aprobada. Iniciando renderizado de alta calidad...', project_id: project.id, final_cost: dec(cost), transaction_id: transaction.id },
+      data: { message: 'Edición aprobada. Iniciando renderizado de alta calidad...', project_id: project.id, final_cost: cost, transaction_id: transaction.id },
     };
   }),
 

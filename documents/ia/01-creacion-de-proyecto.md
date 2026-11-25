@@ -237,6 +237,7 @@ flowchart TD
 | Rechazo después de guardar (403, 400 de precio, 500 de pago) | Se borra la fila, pero no el archivo en disco. Solo el camino del 402 lo borra (no hay señal `post_delete`) | `create` |
 | Falla `process_initial_ingestion.delay` (broker caído) | La excepción no se captura: el proyecto y su reserva quedan creados sin tarea en la cola | `create` |
 | PATCH que reemplaza el archivo | Pasa por `validate_upload` y reemplaza `metadata['source_media']`. No vuelve a cobrar (hueco anotado en ADR-011 D-M8). `selection_criteria` y `use_seo` se ignoran | `VideoProjectSerializer.update` |
+| PATCH mientras se renderiza | 409 (`project_rendering`) salvo que cambie solo `title`: lo que el render lee no cambia debajo de él. Un PATCH bloquea la fila y guarda solo sus propios campos, así nunca pisa el `status`, la `metadata` ni los segmentos que escribió una aprobación que corrió al mismo tiempo | `VideoProjectSerializer.update` |
 | `layout` en el pedido | No es un campo del serializer. Vacío o `null` cuenta como no enviado. Cualquier otro valor tiene que ser una opción de `VideoProject.Layout`: si no, 400 en `layout` antes de guardar o reservar nada (`_validate_layout_alias`) | `VideoProjectSerializer.validate` |
 | `subtitle_scale_factor` en el pedido | Se convierte a `float` pero no es columna del modelo: no se guarda | `VideoProjectSerializer.create` |
 | Fallo final de la ingesta | Reembolso según el [ciclo de vida](#flujo-ciclo-de-vida-de-la-reserva) | `_record_pipeline_failure` |

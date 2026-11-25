@@ -3,6 +3,7 @@
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+  width: 100%;
 }
 .stage {
   position: relative;
@@ -16,15 +17,18 @@
 .r16x9 {
   aspect-ratio: 16 / 9;
 }
+/* Vertical and square frames carry their own size: 70 % of the viewport tall at most, and never wider than the
+   parent. The width is a length, not `auto` or a percentage, so the frame keeps its size wherever it is placed:
+   a parent that does not stretch it (a centered column, a shrink-to-fit box) used to collapse it to zero. */
 .r9x16 {
   aspect-ratio: 9 / 16;
-  max-height: 70vh;
-  width: auto;
+  width: calc(70vh * 9 / 16);
+  max-width: 100%;
 }
 .r1x1 {
   aspect-ratio: 1 / 1;
-  max-height: 70vh;
-  width: auto;
+  width: 70vh;
+  max-width: 100%;
 }
 .video {
   position: absolute;

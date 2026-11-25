@@ -19,7 +19,12 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 - **Sesión:** `Authorization: Bearer <access>` con el JWT de `POST /api/token/`. Ante un 401 el cliente renueva una vez con `POST /api/token/refresh/` (el backend rota el refresh) y repite el pedido; si la renovación falla, abre el diálogo de sesión vencida.
 - **Workspace activo (propuesto, huecos 2 y J3):** el cliente manda `X-Workspace-Id` en cada pedido con sesión. Hoy el backend usa `user.workspaces.first()`.
 - **JSON en snake_case**, como el backend. Ids UUID. Fechas ISO 8601 en UTC.
-- **Decimales:** DRF los manda como string (`"117.00"`, `"4860.0000000000"`). El esquema `Decimal` acepta string o número y entrega un número.
+- **Decimales:** un `DecimalField` de un serializer llega como string (`"4860.0000000000"`); un `Decimal` que la vista pone directo en la respuesta (`tokens_reserved`, `final_cost`, `required`) llega como número, porque el encoder de DRF lo pasa a float. El esquema `Decimal` acepta los dos y entrega un número.
+- **Colores:** el backend los guarda como texto libre de hasta 7 caracteres. Los pedidos mandan siempre `#RRGGBB` (`HexColor`); las respuestas aceptan cualquier texto (`ColorValue`) y la UI los normaliza con `normalizeHex()`.
+- **Booleanos en multipart:** DRF lee como `false` un booleano que no viene en un formulario multipart, sin mirar el default del modelo. Por eso `add_subtitles` se manda siempre al crear (por defecto `true`). Efecto en `from-prompt`: al venir en el pedido cuenta como explícito (`pte_explicit`), así que un prompt no puede apagar los subtítulos; se apagan con el interruptor.
+- **Idioma:** el backend responde con `LANGUAGE_CODE = "en-us"`, así que los mensajes propios de DRF llegan en inglés. La UI no los muestra tal cual: `errorMessage()`, `fieldError()` y `translateFieldError()` (`src/lib/error-messages.ts`) traducen los conocidos y caen a un texto genérico en español.
+- **Descargas:** los links firmados son de otro origen, y ahí el navegador ignora el atributo `download`. Para que el archivo se guarde en lugar de reproducirse, R2 tiene que firmar con `ResponseContentDisposition=attachment; filename="…"`. `downloadUrl()` abre esos links en una pestaña nueva para no reemplazar la app.
+- **503:** cualquier respuesta 503 muestra la página de mantenimiento (K5) hasta que la API vuelve a responder.
 - **Listas paginadas (propuesto, hueco 14):** `{ count, next, previous, results }` con `page` y `page_size` (25 por defecto), como `PageNumberPagination`.
 - **Errores:** validación de DRF `{ "campo": ["mensaje"] }`; vistas propias `{ "error": "mensaje", "required"?: "117.00" }`; permisos y 404 `{ "detail": "mensaje" }`. Propuesto: sumar `code` legible por máquina (`duration`, `resolution`, `seo`, `scheduling`, `crossposting`, `seats_exceeded`, `email_not_verified`, `account_not_connected`, `permission_denied`) y, en los errores de campo, ítems `{ "message", "code" }`.
 - **402** siempre abre el diálogo de saldo insuficiente y **403 de precios** el de límite del plan.
@@ -41,6 +46,14 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | 10 | `BrandKit.is_default` no es único por workspace. | Al marcar uno, el backend desmarca el resto. |
 | 11 | Los links no pasan por la validación de duración del plan. | `POST /projects/probe-link/` (propuesto) reconoce el link y responde 403 si supera el plan. |
 | 12 | `error_log` de una publicación guarda el texto de la excepción. | `error_message` legible y `error_code`; `error_log` no se muestra. |
+| 13 | `approve-paper-edit` responde 400 `{ error }` para un proyecto que ya no está en revisión («…no está en espera de aprobación. Estado actual: rendering») y para un límite del plan («Error en el motor de precios: …»). El 409 solo sale en la carrera de dos aprobaciones. | Propuesto: 409 con `code: "not_awaiting_approval"` y 403 con `code` (`duration`, `resolution`). Mientras tanto `approveErrorKind()` los reconoce por el texto: el primero avisa y lleva a Clips, el segundo abre el diálogo de límite del plan. |
+| 14 | CORS no admite el header `X-Workspace-Id`: con `django-cors-headers` el preflight lo rechaza. | `CORS_ALLOW_HEADERS = (*default_headers, "x-workspace-id")` en los settings, y leer el header en las vistas en lugar de `user.workspaces.first()`. |
+| 15 | `LANGUAGE_CODE = "en-us"`: los errores propios de DRF llegan en inglés («This field is required.», «You do not have permission to perform this action.»). | `LANGUAGE_CODE = "es"` (o `es-ar`). Mientras tanto la UI traduce los conocidos y no muestra texto en inglés. |
+| 16 | El 409 de `PATCH /projects/{id}/` mientras se renderiza trae solo `{ detail }`: el código `project_rendering` de la excepción no llega al cuerpo. | `{ detail, code }`. El frontend solo manda `title`, que siempre se puede cambiar. |
+| 17 | Un 403 de permisos de DRF (`PermissionDenied`) tampoco trae código. | `code: "permission_denied"`. El frontend trata como límite del plan solo los 403 con un código de plan o con un mensaje de `PricingEngine`; el resto es un 403 de rol. |
+| 18 | En un formulario multipart, un booleano que no se manda es `false` (no el default del modelo): crear sin `add_subtitles` deja el proyecto sin subtítulos. | El frontend lo manda siempre. Conviene que el serializer declare `add_subtitles = BooleanField(default=True)`. |
+| 19 | Los links de descarga firmados no fuerzan la descarga. | Firmar con `ResponseContentDisposition=attachment` (ver Convenciones). |
+| 20 | «Renderizar sin revisar» que no se puede pagar deja `metadata.auto_render_skipped` (`insufficient_funds` o `plan_limit`) y el proyecto en revisión; al re-despachar sin saldo falla con `AutoRenderNotPaid`. | Está en el contrato (`ProjectMetadata`, `KNOWN_PIPELINE_ERROR_CODES`). Falta sumar el mensaje de `AutoRenderNotPaid` a la sección 4 del mapa. |
 
 ## Resumen
 
@@ -494,7 +507,7 @@ Acepta la invitación. Sin cuenta: la crea con `name` y `password`. Con cuenta: 
 | Sesión | Pública (manda el token si hay sesión) |
 | Pedido | { name?: string, password?: string, terms_accepted?: boolean } |
 | Respuesta 200 | { workspace_id: Id, tokens: TokenPair \\| null } |
-| Errores | **400** Faltan `name` o `password` para crear la cuenta.<br>**401** El email ya tiene cuenta y no hay sesión: la UI pide iniciar sesión.<br>**410** Invitación vencida o ya usada. |
+| Errores | **400** Faltan `name` o `password` para crear la cuenta.<br>**401** El email ya tiene cuenta y no hay sesión: la UI pide iniciar sesión. Con sesión, el cliente manda el token (y lo renueva si hace falta).<br>**410** Invitación vencida o ya usada. |
 | Pantallas | A5 |
 
 ### Planes, billetera, movimientos, compras y precios
@@ -748,12 +761,12 @@ Renombra el proyecto.
 | | |
 |---|---|
 | Id | `projects.update` |
-| Backend | ✅ existe · `back/apps/videos/views.py · VideoProjectViewSet.partial_update (ModelViewSet)` |
-| Nota | El PATCH acepta más campos del serializer; el frontend solo manda `title`. |
+| Backend | ✅ existe · `back/apps/videos/views.py · VideoProjectViewSet.partial_update (ModelViewSet) + VideoProjectSerializer.update` |
+| Nota | El PATCH acepta más campos del serializer; el frontend solo manda `title`, así que no debería ver el 409. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | UpdateProjectRequest |
 | Respuesta 200 | Project |
-| Errores | **400** Título vacío.<br>**403** El rol no puede editar (Lector). |
+| Errores | **400** Título vacío.<br>**403** El rol no puede editar (Lector).<br>**409** El proyecto se está renderizando y el pedido cambia algo más que `title` (ProjectRenderingError). El cuerpo trae solo `{ detail }`; el código `project_rendering` no llega. Renombrar siempre se puede. |
 | Pantallas | B2, D1 |
 
 #### `DELETE /api/v1/projects/:id/`
@@ -791,10 +804,11 @@ Aprueba los segmentos elegidos, reserva el costo del render y lo despacha.
 |---|---|
 | Id | `projects.approvePaperEdit` |
 | Backend | ✅ existe · `back/apps/videos/views.py · VideoProjectViewSet.approve_paper_edit` |
+| Nota | Propuesto: 409 con `code: "not_awaiting_approval"` para un proyecto que ya no está en revisión y 403 con `code` para el límite del plan, en lugar de los 400 de hoy. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | ApprovePaperEditRequest |
 | Respuesta 200 | ApprovePaperEditResponse |
-| Errores | **400** El proyecto no está en revisión, o los segmentos son inválidos: `{ error }`.<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**409** Otro pedido ya lo aprobó: `{ error }`. La UI lleva a Clips. |
+| Errores | **400** Tres casos, todos `{ error }` (se distinguen con `approveErrorKind()` de `src/lib/error-messages.ts`): el proyecto ya no está en revisión ("El proyecto no está en espera de aprobación. Estado actual: rendering"): la UI avisa y lleva a Clips; el plan no permite la duración o la resolución ("Error en el motor de precios: …"): la UI abre D3; segmentos inválidos.<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**409** Solo en la carrera de dos aprobaciones simultáneas: `{ error }`. La UI lleva a Clips. |
 | Pantallas | D2 |
 
 #### `POST /api/v1/projects/:id/redispatch/`
@@ -1251,6 +1265,8 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 ## Esquemas
 
 ### `common.ts`
+
+**ColorValue:** string
 
 **Decimal:** number \| string
 
@@ -1715,7 +1731,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `manual_camera_zoom` | number |
 | `speaker_tracking` | boolean |
 | `add_subtitles` | boolean |
-| `subtitle_color` | HexColor |
+| `subtitle_color` | ColorValue |
 | `subtitle_with_emojis` | boolean |
 | `subtitle_words_per_segment` | number |
 | `subtitle_size` | SubtitleSize |
@@ -1805,7 +1821,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `manual_camera_zoom` | number |
 | `speaker_tracking` | boolean |
 | `add_subtitles` | boolean |
-| `subtitle_color` | HexColor |
+| `subtitle_color` | ColorValue |
 | `subtitle_with_emojis` | boolean |
 | `subtitle_words_per_segment` | number |
 | `subtitle_size` | SubtitleSize |
@@ -1906,7 +1922,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `manual_camera_zoom` | number |
 | `speaker_tracking` | boolean |
 | `add_subtitles` | boolean |
-| `subtitle_color` | HexColor |
+| `subtitle_color` | ColorValue |
 | `subtitle_with_emojis` | boolean |
 | `subtitle_words_per_segment` | number |
 | `subtitle_size` | SubtitleSize |
@@ -1961,6 +1977,11 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `pte_prompt` (opcional) | string |
 | `pte_explicit` (opcional) | string[] |
 | `pte` (opcional) | PteResult |
+| `no_speech` (opcional) | boolean |
+| `auto_render_skipped` (opcional) | "insufficient_funds" \\| "plan_limit" |
+| `auto_render_reservation_id` (opcional) | string |
+| `auto_render_seconds` (opcional) | number |
+| `auto_render_clip_ids` (opcional) | string[] |
 
 **ProjectsQuery**
 
@@ -2071,9 +2092,9 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `description` | string |
 | `primary_font` | string \\| null |
 | `secondary_font` | string \\| null |
-| `primary_color` | HexColor |
-| `secondary_color` | HexColor |
-| `accent_color` | HexColor |
+| `primary_color` | ColorValue |
+| `secondary_color` | ColorValue |
+| `accent_color` | ColorValue |
 | `watermark_logo` | string \\| null |
 | `intro_video` | string \\| null |
 | `outro_video` | string \\| null |

@@ -98,3 +98,7 @@ from apps.videos.tasks.ingestion import (  # noqa: F401
     process_initial_ingestion,
     process_video_pipeline,
 )
+from apps.videos.tasks.render_recovery import (  # noqa: F401
+    recover_stuck_renders,
+    recover_stuck_renders_now,
+)

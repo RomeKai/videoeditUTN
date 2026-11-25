@@ -77,6 +77,40 @@ def commit_reservation(transaction_id) -> Transaction:
     return txn
 
 @transaction.atomic
+def commit_partial_reservation(transaction_id, amount: Decimal) -> Transaction:
+    """
+    Charges only ``amount`` of a reservation and returns the rest to the
+    available balance: the work was delivered in part (e.g. some auto-rendered
+    clips failed). The transaction keeps the charged amount. ``amount`` at or
+    above the reservation commits it whole; zero or less rolls it back.
+    """
+    # Through str: a float must not become its binary expansion.
+    amount = Decimal(str(amount))
+    try:
+        txn = Transaction.objects.select_for_update().get(pk=transaction_id)
+    except Transaction.DoesNotExist:
+        raise PaymentError(f"Transaction with id {transaction_id} does not exist.")
+
+    if txn.status != Transaction.Status.RESERVED:
+        raise PaymentError(f"Cannot commit transaction in status {txn.status}")
+    if amount >= txn.amount:
+        return commit_reservation(transaction_id)
+    if amount <= 0:
+        return rollback_reservation(transaction_id)
+
+    wallet = Wallet.objects.select_for_update().get(pk=txn.wallet_id)
+    released = txn.amount - amount
+    wallet.reserved_balance -= txn.amount
+    wallet.available_balance += released
+    wallet.save()
+
+    txn.amount = amount
+    txn.status = Transaction.Status.COMPLETED
+    txn.save()
+
+    return txn
+
+@transaction.atomic
 def rollback_reservation(transaction_id) -> Transaction:
     """
     Reverts a reservation in case of error (e.g., rendering failure).

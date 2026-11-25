@@ -253,7 +253,7 @@ export const acceptInvitation = defineEndpoint({
   workspaceScoped: false,
   errors: [
     { status: 400, when: 'Faltan `name` o `password` para crear la cuenta.' },
-    { status: 401, when: 'El email ya tiene cuenta y no hay sesión: la UI pide iniciar sesión.' },
+    { status: 401, when: 'El email ya tiene cuenta y no hay sesión: la UI pide iniciar sesión. Con sesión, el cliente manda el token (y lo renueva si hace falta).' },
     { status: 410, when: 'Invitación vencida o ya usada.' },
   ],
   backend: { status: 'proposed', gap: 13 },

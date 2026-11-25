@@ -17,8 +17,26 @@ export function focusableElements(container: HTMLElement): HTMLElement[] {
   );
 }
 
-/** Open modal layers, bottom to top. Escape and the focus trap only act on the top one. */
+/**
+ * Every open layer, bottom to top: dialogs, drawers, menus, popovers and
+ * tooltips share this one stack, so Escape only acts on the top one (a menu
+ * open inside a dialog closes first; the dialog needs a second Escape).
+ */
 const stack: symbol[] = [];
+
+function pushLayer(): symbol {
+  const token = Symbol('layer');
+  stack.push(token);
+  return token;
+}
+
+function popLayer(token: symbol): void {
+  const index = stack.indexOf(token);
+  if (index >= 0) stack.splice(index, 1);
+}
+
+const isTopLayer = (token: symbol): boolean => stack[stack.length - 1] === token;
+
 let lockCount = 0;
 let previousOverflow = '';
 
@@ -36,6 +54,11 @@ function unlockScroll() {
 }
 
 export interface ModalLayerOptions {
+  /**
+   * Whether the layer is on screen. Pass false until the element is really
+   * mounted (portals render after hydration), so a dialog that is open on the
+   * first render still gets its focus, Escape and scroll lock.
+   */
   open: boolean;
   onClose: () => void;
   /** Escape and backdrop close the layer. False for flows that must be answered (session expired). */
@@ -60,8 +83,7 @@ export function useModalLayer<T extends HTMLElement>(
     if (!open) return;
     const node = ref.current;
     if (!node) return;
-    const token = Symbol('layer');
-    stack.push(token);
+    const token = pushLayer();
     lockScroll();
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
@@ -70,7 +92,7 @@ export function useModalLayer<T extends HTMLElement>(
     initial.focus({ preventScroll: true });
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (stack[stack.length - 1] !== token) return;
+      if (!isTopLayer(token)) return;
       if (event.key === 'Escape') {
         if (dismissableRef.current) {
           event.stopPropagation();
@@ -97,7 +119,7 @@ export function useModalLayer<T extends HTMLElement>(
       }
     };
     const onFocusIn = (event: FocusEvent) => {
-      if (stack[stack.length - 1] !== token) return;
+      if (!isTopLayer(token)) return;
       if (event.target instanceof Node && !node.contains(event.target)) {
         (focusableElements(node)[0] ?? node).focus({ preventScroll: true });
       }
@@ -107,8 +129,7 @@ export function useModalLayer<T extends HTMLElement>(
     return () => {
       document.removeEventListener('keydown', onKeyDown, true);
       document.removeEventListener('focusin', onFocusIn);
-      const index = stack.indexOf(token);
-      if (index >= 0) stack.splice(index, 1);
+      popLayer(token);
       unlockScroll();
       if (opener && document.contains(opener)) opener.focus({ preventScroll: true });
     };
@@ -117,7 +138,11 @@ export function useModalLayer<T extends HTMLElement>(
   return ref;
 }
 
-/** Closes a popover or menu on outside pointer-down and on Escape. */
+/**
+ * Closes a popover, menu or tooltip on outside pointer-down and on Escape.
+ * While open it is a layer of the shared stack: Escape reaches it only when it
+ * is the top one, and it keeps the event from the layers below.
+ */
 export function useDismiss(
   open: boolean,
   refs: Array<RefObject<HTMLElement | null>>,
@@ -129,6 +154,7 @@ export function useDismiss(
   refsRef.current = refs;
   useEffect(() => {
     if (!open) return;
+    const token = pushLayer();
     const onPointerDown = (event: PointerEvent | MouseEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
@@ -136,16 +162,18 @@ export function useDismiss(
       onDismissRef.current('outside');
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.stopPropagation();
-        onDismissRef.current('escape');
-      }
+      if (event.key !== 'Escape' || !isTopLayer(token)) return;
+      // Capture phase + stop: the dialog underneath must not see this Escape.
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      onDismissRef.current('escape');
     };
     document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keydown', onKeyDown, true);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('keydown', onKeyDown, true);
+      popLayer(token);
     };
   }, [open]);
 }

@@ -9,6 +9,7 @@ const config = [
     ignores: [
       '.next/**',
       '.next-e2e/**',
+      '.next-e2e-real/**',
       'node_modules/**',
       'public/mockServiceWorker.js',
       'playwright-report/**',
