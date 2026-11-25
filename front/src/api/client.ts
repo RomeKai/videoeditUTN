@@ -1,7 +1,7 @@
 import type { ZodTypeAny } from 'zod';
-import { API_URL, REQUEST_TIMEOUT_MS, WORKSPACE_HEADER } from './config';
+import { API_URL, REQUEST_TIMEOUT_MS, UPLOAD_STALL_TIMEOUT_MS, WORKSPACE_HEADER } from './config';
 import { buildPath, buildQuery, type AnyEndpoint, type ParamsOf, type QueryOf, type RequestBody, type ResponseOf } from './endpoint';
-import { ApiError, ContractError, NetworkError, RequestTimeoutError, SessionExpiredError } from './errors';
+import { ApiError, ContractError, NetworkError, RequestTimeoutError, SessionExpiredError, UploadStalledError } from './errors';
 import {
   getActiveWorkspaceId,
   getTokens,
@@ -75,7 +75,7 @@ export function refreshAccessToken(): Promise<string> {
         { timeoutMs: REQUEST_TIMEOUT_MS },
       );
     } catch (cause) {
-      throw new NetworkError('auth.refresh', cause);
+      throw new NetworkError('auth.refresh', cause, 'POST');
     }
     if (response.status === 503) notifyMaintenance(true);
     if (!response.ok) {
@@ -138,12 +138,24 @@ function aborted(signal: AbortSignal): Promise<never> {
  *
  * A multipart body goes by XMLHttpRequest, which says when the upload ends: the clock only starts
  * there, so a big file on a slow connection is never cut short. (fetch cannot tell, nor report
- * progress: the creation form needs percentage and speed, map C1.)
+ * progress: the creation form needs percentage and speed, map C1.) While it uploads, what is
+ * watched is that it keeps moving: `UPLOAD_STALL_TIMEOUT_MS` without sending anything cuts it
+ * (UploadStalledError).
  */
 async function send(prepared: Prepared, { signal, onUploadProgress, timeoutMs }: SendOptions): Promise<Response> {
   const controller = new AbortController();
   let timedOut = false;
+  let stalled = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Called when the upload starts and every time it moves: the next sign of life is due within the stall limit. */
+  const stillUploading = () => {
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => {
+      stalled = true;
+      controller.abort();
+    }, UPLOAD_STALL_TIMEOUT_MS);
+  };
   const startClock = () => {
     if (timeoutMs === false || timer !== undefined) return;
     timer = setTimeout(() => {
@@ -156,7 +168,12 @@ async function send(prepared: Prepared, { signal, onUploadProgress, timeoutMs }:
   else signal?.addEventListener('abort', onAbort);
   const isUpload = onUploadProgress !== undefined || (typeof FormData !== 'undefined' && prepared.body instanceof FormData);
   try {
-    if (isUpload && typeof XMLHttpRequest !== 'undefined') return await sendXhr(prepared, controller.signal, onUploadProgress, startClock);
+    if (isUpload && typeof XMLHttpRequest !== 'undefined') {
+      return await sendXhr(prepared, controller.signal, onUploadProgress, stillUploading, () => {
+        clearTimeout(stallTimer);
+        startClock();
+      });
+    }
     startClock();
     const response = await fetch(prepared.url, { method: prepared.method, headers: prepared.headers, body: prepared.body, signal: controller.signal });
     // Headers are not the whole answer: a body that stalls halfway is a request that hangs too.
@@ -165,21 +182,31 @@ async function send(prepared: Prepared, { signal, onUploadProgress, timeoutMs }:
     return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
   } catch (cause) {
     if (timedOut && timeoutMs !== false) throw new RequestTimeoutError(timeoutMs);
+    if (stalled) throw new UploadStalledError(UPLOAD_STALL_TIMEOUT_MS);
     throw cause;
   } finally {
     clearTimeout(timer);
+    clearTimeout(stallTimer);
     signal?.removeEventListener('abort', onAbort);
   }
 }
 
-function sendXhr(prepared: Prepared, signal: AbortSignal, onUploadProgress: SendOptions['onUploadProgress'], onUploaded: () => void): Promise<Response> {
+function sendXhr(
+  prepared: Prepared,
+  signal: AbortSignal,
+  onUploadProgress: SendOptions['onUploadProgress'],
+  onUploading: () => void,
+  onUploaded: () => void,
+): Promise<Response> {
   return new Promise<Response>((resolve, reject) => {
     if (signal.aborted) return reject(new DOMException('Aborted', 'AbortError'));
     const xhr = new XMLHttpRequest();
     xhr.open(prepared.method, prepared.url);
     for (const [name, value] of Object.entries(prepared.headers)) xhr.setRequestHeader(name, value);
     xhr.responseType = 'text';
+    xhr.upload.onloadstart = onUploading;
     xhr.upload.onprogress = (event) => {
+      onUploading();
       if (event.lengthComputable) onUploadProgress?.(event.loaded, event.total);
     };
     // The body is out: from here on it is a request waiting for its answer, like any other.
@@ -249,7 +276,7 @@ export async function apiCall<E extends AnyEndpoint>(endpoint: E, ...args: Args<
     } catch (cause) {
       // Cancelled by the caller: not an error of the network. (A timeout is, and comes as RequestTimeoutError.)
       if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
-      throw new NetworkError(endpoint.id, cause);
+      throw new NetworkError(endpoint.id, cause, endpoint.method);
     }
   };
 

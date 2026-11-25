@@ -1,6 +1,6 @@
-import { QueryClient } from '@tanstack/react-query';
+import { MutationCache, QueryClient } from '@tanstack/react-query';
 import { POLL_INTERVAL_MS } from './config';
-import { ApiError, ContractError, NetworkError, SessionExpiredError } from './errors';
+import { ApiError, ContractError, NetworkError, SessionExpiredError, isOutcomeUnknown } from './errors';
 
 /** Retry only what can get better by itself: no answer from the network, or a 5xx. Once. */
 export function shouldRetry(failureCount: number, error: unknown): boolean {
@@ -11,7 +11,14 @@ export function shouldRetry(failureCount: number, error: unknown): boolean {
 }
 
 export function createQueryClient(): QueryClient {
-  return new QueryClient({
+  const client: QueryClient = new QueryClient({
+    mutationCache: new MutationCache({
+      // A write whose answer never came may have been done: everything on screen is read again, so
+      // the person sees what really happened (the project that was created, the balance) before retrying.
+      onError: (error) => {
+        if (isOutcomeUnknown(error)) void client.invalidateQueries();
+      },
+    }),
     defaultOptions: {
       queries: {
         staleTime: 15_000,
@@ -21,6 +28,7 @@ export function createQueryClient(): QueryClient {
       mutations: { retry: false },
     },
   });
+  return client;
 }
 
 /**

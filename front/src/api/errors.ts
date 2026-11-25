@@ -136,11 +136,42 @@ export class RequestTimeoutError extends Error {
 export class NetworkError extends Error {
   readonly name = 'NetworkError';
   readonly endpointId: string;
-  constructor(endpointId: string, cause?: unknown) {
+  /** HTTP method of the request, when it is known. */
+  readonly method: string | undefined;
+  constructor(endpointId: string, cause?: unknown, method?: string) {
     super('No pudimos conectar');
     this.endpointId = endpointId;
     this.cause = cause;
+    this.method = method;
   }
+
+  /** The request went out whole and the answer did not come in time. */
+  get timedOut(): boolean {
+    return this.cause instanceof RequestTimeoutError;
+  }
+
+  /**
+   * A write that timed out: the server may have done it (created the project, reserved the
+   * tokens) and only the answer was lost. The UI must not say "it failed, try again": it says it
+   * may have been done, and reads again what it could have changed. A GET changes nothing, and a
+   * request that never got out (offline, connection refused, stalled upload) did not arrive whole.
+   */
+  get outcomeUnknown(): boolean {
+    return this.timedOut && this.method !== undefined && this.method !== 'GET';
+  }
+}
+
+/** `cause` of the NetworkError of an upload that stopped sending. */
+export class UploadStalledError extends Error {
+  readonly name = 'UploadStalledError';
+  constructor(stallMs: number) {
+    super(`La subida no avanzó en ${stallMs} ms`);
+  }
+}
+
+/** Whether the error is a write whose answer never came: it may have been done (see `NetworkError.outcomeUnknown`). */
+export function isOutcomeUnknown(error: unknown): error is NetworkError {
+  return error instanceof NetworkError && error.outcomeUnknown;
 }
 
 /** The answer (or the request) does not match the contract's zod schema. */

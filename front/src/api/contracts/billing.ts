@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SLOW_REQUEST_TIMEOUT_MS } from '../config';
 import { defineEndpoint } from '../endpoint';
 import { Decimal, Id, IsoDateTime, PageQuery, RenderResolution, UserRef, paginated } from './common';
 
@@ -345,6 +346,8 @@ export const exportTransactions = defineEndpoint({
   id: 'billing.exportTransactions',
   method: 'GET',
   path: '/api/v1/transactions/export/',
+  // The whole history is written out while the request waits.
+  timeoutMs: SLOW_REQUEST_TIMEOUT_MS,
   summary: 'Los mismos movimientos en CSV. El monto lleva el signo de lo que le hizo al saldo: negativo lo reservado y lo cobrado, positivo lo comprado y lo devuelto.',
   query: TransactionsQuery.omit({ page: true, page_size: true }),
   response: z.string(),

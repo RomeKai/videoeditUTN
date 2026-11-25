@@ -1,13 +1,17 @@
+import { MutationObserver } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { apiCall, toFormData } from './client';
 import { errorMessage } from '@/lib/error-messages';
-import { API_URL, REQUEST_TIMEOUT_MS, WORKSPACE_HEADER } from './config';
+import { API_URL, REQUEST_TIMEOUT_MS, SLOW_REQUEST_TIMEOUT_MS, UPLOAD_STALL_TIMEOUT_MS, WORKSPACE_HEADER } from './config';
+import { exportTransactions } from './contracts/billing';
+import { createBrandKit, duplicateBrandKit, updateBrandKit } from './contracts/brandkits';
+import { createProject, createProjectFromPrompt, downloadAllClips } from './contracts/projects';
 import { defineEndpoint } from './endpoint';
-import { ApiError, ContractError, NetworkError, RequestTimeoutError, SessionExpiredError } from './errors';
-import { shouldRetry } from './query';
+import { ApiError, ContractError, NetworkError, RequestTimeoutError, SessionExpiredError, UploadStalledError, isOutcomeUnknown } from './errors';
+import { createQueryClient, shouldRetry } from './query';
 import { AUTH_STORAGE_KEY, clearSession, getActiveWorkspaceId, getTokens, isSessionExpired, onMaintenance, onSessionExpired, setActiveWorkspaceId, setTokens, subscribeSession } from './session';
 
 const Thing = z.object({ id: z.number(), name: z.string() });
@@ -349,7 +353,7 @@ describe('tiempo de espera', () => {
     /** A browser that uploads as slowly as the test says. */
     const sent: FakeXhr[] = [];
     class FakeXhr {
-      upload: { onprogress?: (event: unknown) => void; onload?: () => void } = {};
+      upload: { onprogress?: (event: unknown) => void; onload?: () => void; onloadstart?: () => void } = {};
       status = 0;
       responseText = '';
       responseType = '';
@@ -394,6 +398,109 @@ describe('tiempo de espera', () => {
     await vi.waitFor(() => expect(settled).toBeInstanceOf(NetworkError));
     expect(xhr.aborted).toBe(true);
     expect((settled as NetworkError).cause).toBeInstanceOf(RequestTimeoutError);
+  });
+});
+
+describe('un pedido que cambia algo y se queda sin respuesta', () => {
+  const hang = () => new Promise<never>(() => undefined);
+
+  it('crear un proyecto espera lo que el servidor puede tardar después de la subida, no los 30 s', () => {
+    // ffprobe (hasta 60 s), mover el video al storage, calcular el precio y reservar.
+    expect(createProject.timeoutMs).toBe(SLOW_REQUEST_TIMEOUT_MS);
+    expect(createProjectFromPrompt.timeoutMs).toBe(SLOW_REQUEST_TIMEOUT_MS);
+    expect(SLOW_REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(180_000);
+    // The other requests that wait on work done in the request itself.
+    for (const endpoint of [createBrandKit, updateBrandKit, duplicateBrandKit, downloadAllClips, exportTransactions]) {
+      expect(endpoint.timeoutMs, endpoint.id).toBeGreaterThan(REQUEST_TIMEOUT_MS);
+    }
+  });
+
+  it('un POST que vence no es «no pudimos conectar»: puede que se haya hecho, y se distingue de un error de red común', async () => {
+    setTokens({ access: 'acceso-1', refresh: 'refresh-1' });
+    server.use(http.post(`${API_URL}/api/v1/things/`, hang), http.get(`${API_URL}/api/v1/things/:id/`, hang));
+    const write = (await apiCall(createThing, { body: { name: 'x' }, timeoutMs: 20 }).catch((reason: unknown) => reason)) as NetworkError;
+    expect(write).toBeInstanceOf(NetworkError);
+    expect(write.timedOut).toBe(true);
+    expect(write.outcomeUnknown).toBe(true);
+    expect(isOutcomeUnknown(write)).toBe(true);
+    expect(errorMessage(write)).toBe('No recibimos la respuesta. Puede que se haya hecho igual: revisá antes de probar de nuevo.');
+
+    // A read that times out changed nothing.
+    const read = (await apiCall(getThing, { params: { id: '1' }, timeoutMs: 20 }).catch((reason: unknown) => reason)) as NetworkError;
+    expect(read.timedOut).toBe(true);
+    expect(read.outcomeUnknown).toBe(false);
+    expect(errorMessage(read)).toBe('No pudimos conectar');
+
+    // A write that never got to the server did not happen.
+    server.use(http.post(`${API_URL}/api/v1/things/`, () => HttpResponse.error()));
+    const refused = (await apiCall(createThing, { body: { name: 'x' } }).catch((reason: unknown) => reason)) as NetworkError;
+    expect(refused.outcomeUnknown).toBe(false);
+    expect(errorMessage(refused)).toBe('No pudimos conectar');
+  });
+
+  it('cuando una acción queda sin respuesta, la app vuelve a leer lo que pudo haber cambiado', async () => {
+    const client = createQueryClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const run = (error: unknown) =>
+      new MutationObserver(client, { mutationFn: () => Promise.reject(error) }).mutate().catch(() => undefined);
+    await run(new NetworkError('projects.create', new TypeError('Failed to fetch'), 'POST'));
+    expect(invalidate).not.toHaveBeenCalled();
+    await run(new NetworkError('projects.create', new RequestTimeoutError(180_000), 'POST'));
+    expect(invalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it('una subida que deja de avanzar se corta al minuto, como error de red común (el archivo no llegó entero)', async () => {
+    setTokens({ access: jwt(3600, 'vigente'), refresh: 'refresh-1' });
+    server.use(http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ access: jwt(3600, 'nuevo'), refresh: 'refresh-2' })));
+    const sent: StalledXhr[] = [];
+    class StalledXhr {
+      upload: { onprogress?: (event: unknown) => void; onload?: () => void; onloadstart?: () => void } = {};
+      status = 0;
+      responseText = '';
+      responseType = '';
+      onload?: () => void;
+      onerror?: () => void;
+      onabort?: () => void;
+      aborted = false;
+      open() {}
+      setRequestHeader() {}
+      getResponseHeader() {
+        return 'application/json';
+      }
+      send() {
+        sent.push(this);
+        this.upload.onloadstart?.();
+      }
+      abort() {
+        this.aborted = true;
+        this.onabort?.();
+      }
+    }
+    vi.stubGlobal('XMLHttpRequest', StalledXhr);
+    try {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      let settled: unknown = 'pendiente';
+      void apiCall(uploadThing, { body: { title: 'x' }, onUploadProgress: () => undefined }).catch((reason: unknown) => (settled = reason));
+      await vi.waitFor(() => expect(sent).toHaveLength(1));
+      const xhr = sent[0] as StalledXhr;
+      // Slow but moving: five minutes of it are fine.
+      for (let minute = 0; minute < 6; minute += 1) {
+        await vi.advanceTimersByTimeAsync(UPLOAD_STALL_TIMEOUT_MS - 1000);
+        xhr.upload.onprogress?.({ lengthComputable: true, loaded: minute + 1, total: 100 });
+      }
+      expect(settled).toBe('pendiente');
+      // Then nothing at all for a minute.
+      await vi.advanceTimersByTimeAsync(UPLOAD_STALL_TIMEOUT_MS + 10);
+      vi.useRealTimers();
+      await vi.waitFor(() => expect(settled).toBeInstanceOf(NetworkError));
+      expect(xhr.aborted).toBe(true);
+      const error = settled as NetworkError;
+      expect(error.cause).toBeInstanceOf(UploadStalledError);
+      expect(error.outcomeUnknown).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 });
 
