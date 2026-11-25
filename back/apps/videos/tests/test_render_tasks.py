@@ -37,9 +37,11 @@ class RenderHarness(CapturedTaskFailures):
         )
 
     @staticmethod
-    def completing_render(clip_id):
+    def completing_render(clip_id, claim_token=None):
+        # Like the engine: COMPLETED is final, so the claim and its start count go.
         VideoClip.objects.filter(pk=clip_id).update(
-            status=VideoClip.Status.COMPLETED, s3_object_key=f"clips/{clip_id}.mp4"
+            status=VideoClip.Status.COMPLETED, s3_object_key=f"clips/{clip_id}.mp4",
+            render_claim_token=None, render_unfinished_starts=0,
         )
         return True
 
@@ -91,7 +93,7 @@ class RenderClipTaskTests(RenderHarness, TestCase):
         clip = self.make_clip()
         nested_results = []
 
-        def render_with_duplicate_delivery(clip_id):
+        def render_with_duplicate_delivery(clip_id, claim_token=None):
             # The same message is delivered again while the first one is rendering.
             nested_results.append(render_clip_task.apply(args=[str(clip_id)]))
             return self.completing_render(clip_id)
@@ -116,8 +118,8 @@ class RenderClipTaskTests(RenderHarness, TestCase):
     def test_claim_moves_a_draft_clip_to_rendering_exactly_once(self):
         clip = self.make_clip()
 
-        self.assertTrue(_claim_clip_for_render(clip.id, redelivered=False))
-        self.assertFalse(_claim_clip_for_render(clip.id, redelivered=False))
+        self.assertTrue(_claim_clip_for_render(clip.id))
+        self.assertFalse(_claim_clip_for_render(clip.id))
 
         clip.refresh_from_db()
         self.assertEqual(clip.status, VideoClip.Status.RENDERING)
@@ -126,7 +128,7 @@ class RenderClipTaskTests(RenderHarness, TestCase):
         clip = self.make_clip(status=VideoClip.Status.RENDERING)
 
         # The worker that claimed it died: acks_late redelivers the message.
-        self.assertTrue(_claim_clip_for_render(clip.id, redelivered=True))
+        self.assertTrue(_claim_clip_for_render(clip.id, takeover=True))
 
     def test_render_task_survives_worker_loss_by_acking_late(self):
         self.assertTrue(render_clip_task.acks_late)
@@ -146,7 +148,7 @@ class RenderClipTaskTests(RenderHarness, TestCase):
     def test_one_failed_clip_makes_the_project_partial_never_completed(self):
         clips = [self.make_clip() for _ in range(3)]
 
-        def flaky_render(clip_id):
+        def flaky_render(clip_id, claim_token=None):
             if str(clip_id) == str(clips[1].id):
                 raise RuntimeError("bad clip")
             return self.completing_render(clip_id)
@@ -204,7 +206,7 @@ class RenderClipRetryTests(RenderHarness, TestCase):
         clip = self.make_clip()
         seen = []
 
-        def flaky(clip_id):
+        def flaky(clip_id, claim_token=None):
             seen.append(self.clip_status(clip_id))
             if len(seen) == 1:
                 raise transient_r2_error()
@@ -225,7 +227,7 @@ class RenderClipRetryTests(RenderHarness, TestCase):
         clip = self.make_clip()
         seen = []
 
-        def always_transient(clip_id):
+        def always_transient(clip_id, claim_token=None):
             seen.append(self.clip_status(clip_id))
             raise transient_r2_error()
 
@@ -270,7 +272,7 @@ class RenderClipRetryTests(RenderHarness, TestCase):
             render_clip_task.apply(args=[str(done.id)])
         stages = []
 
-        def flaky(clip_id):
+        def flaky(clip_id, claim_token=None):
             stages.append(
                 VideoProject.objects.values_list("pipeline_stage", flat=True).get(pk=self.project.pk)
             )
@@ -493,7 +495,7 @@ class RenderNoTransactionTests(RenderHarness, TransactionTestCase):
         clip = self.make_clip()
         observed = []
 
-        def probe(clip_id):
+        def probe(clip_id, claim_token=None):
             observed.append(connection.in_atomic_block)
             return self.completing_render(clip_id)
 
