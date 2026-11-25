@@ -163,10 +163,15 @@ def render_preview(preview_id) -> Optional[ClipPreview]:
         )
         key = _store(output_path, preview)
         now = timezone.now()
-        ClipPreview.objects.filter(pk=preview.pk).update(
+        stored = ClipPreview.objects.filter(pk=preview.pk).update(
             status=ClipPreview.Status.READY, storage_key=key,
             ready_at=now, expires_at=now + _ttl(),
         )
+        if not stored:
+            # The row went meanwhile (its clip was left out of an approval, or
+            # it expired): its file must not stay behind.
+            delete_preview_files([(preview.pk, key)])
+            return None
         logger.info("preview.ready clip_id=%s preview_id=%s", clip_obj.pk, preview.pk)
     except Exception as exc:
         ClipPreview.objects.filter(pk=preview.pk).update(
@@ -219,6 +224,21 @@ def preview_url(preview: ClipPreview) -> Optional[str]:
     return CloudflareR2Manager.generate_presigned_url(
         preview.storage_key, expiration_seconds=max(60, remaining),
     )
+
+
+def delete_preview_files(previews) -> None:
+    """
+    Deletes the files of previews whose rows are gone, as ``(preview_id, key)``
+    pairs: their clip was deleted (left out of an approval). Best effort: a
+    file that cannot be deleted is logged and left.
+    """
+    from apps.videos.services.storage_service import CloudflareR2Manager
+
+    for preview_id, key in previews:
+        try:
+            CloudflareR2Manager.delete_object(key)
+        except Exception as exc:
+            logger.warning("preview.cleanup_failed preview_id=%s error=%s", preview_id, type(exc).__name__)
 
 
 def cleanup_expired_previews_now(limit: Optional[int] = None) -> int:

@@ -107,7 +107,8 @@ export type MockProject = Omit<Project, 'clips' | 'transcript_data'> & {
   _reservations: string[];
 };
 
-export type MockPost = ScheduledPost & { workspace: string; _sim?: { startedAt: number; fails?: boolean } };
+/** `regen`: how many times the AI text was regenerated (E1 · Regenerar); the new text replaces the current one. */
+export type MockPost = ScheduledPost & { workspace: string; _sim?: { startedAt: number; fails?: boolean; regen?: number } };
 
 export type MockNotification = Notification & { workspace: string; user: string };
 
@@ -180,6 +181,6 @@ export interface MockDb {
   resendAt: Record<string, number>;
 }
 
-export const DB_VERSION = 9;
+export const DB_VERSION = 10;
 
 export const PLATFORMS: Platform[] = ['TIKTOK', 'INSTAGRAM_REELS', 'YOUTUBE_SHORTS'];

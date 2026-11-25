@@ -3,8 +3,10 @@ Reserved tokens are settled (they used to stay reserved forever):
 
 - The creation reservation is charged once the AI work is delivered (the
   clips are selected) and still refunded when the project fails before that.
-- The render reservation taken by approve-paper-edit is charged when the
-  render is delivered and returned when it fails for good.
+- The render reservation of an approval made before the review rendered
+  clip by clip (still in flight at deploy, ``approve_legacy``) is charged when
+  render_video_segments delivers it and returned when it fails for good. An
+  approval now is settled by its clips: test_approve_per_clip.py.
 """
 
 from decimal import Decimal
@@ -23,8 +25,10 @@ from apps.videos.services.ai.pipeline_state import PipelineStage
 from apps.videos.tasks import _commit_ingestion_reservation, render_video_segments
 from apps.videos.tasks.render import RENDER_LOCK_RETRIES_HEADER, RENDER_SEGMENTS_MAX_REDELIVERIES
 from apps.videos.tests.fakes import FakeRedis
+from apps.videos.services.render_pricing import render_cost
+from apps.videos.services.segments import validate_approved_segments
 from apps.videos.tests.test_approved_segments_source import (
-    DELAY, REDIS_CLIENT, SEGMENTS, _patched_render, _render_mocks,
+    CLIP_DELAY, REDIS_CLIENT, SEGMENTS, _patched_render, _render_mocks,
 )
 from apps.videos.tests.test_ingestion_moderation import ModerationStageHarness
 
@@ -114,7 +118,8 @@ class RenderReservationHarness:
         )
 
     def approve(self):
-        with patch(DELAY):
+        """An approval through the view: its clips render one by one (test_approve_per_clip.py)."""
+        with patch(CLIP_DELAY):
             response = self.client.post(
                 reverse("project-approve-paper-edit", args=[self.project.id]),
                 {"approved_segments": SEGMENTS}, format="json",
@@ -122,6 +127,28 @@ class RenderReservationHarness:
         self.assertEqual(response.status_code, 200, response.content[:300])
         self.project.refresh_from_db()
         return Transaction.objects.get(pk=self.project.metadata["render_reservation_id"])
+
+    def approve_legacy(self):
+        """
+        An approval made before the review rendered clip by clip, still in
+        flight at deploy: what the view wrote then (the segments and the
+        render reservation, no clip ids). render_video_segments renders it.
+        """
+        segments = validate_approved_segments(SEGMENTS)
+        seconds = sum(seg["end"] - seg["start"] for seg in segments)
+        txn = reserve_funds(
+            self.wallet.id, render_cost(self.project, seconds), user=self.user,
+            description="Render Final (Paper Edit): legacy",
+        )
+        VideoProject.objects.filter(pk=self.project.pk).update(
+            approved_segments=segments, status=VideoProject.Status.RENDERING,
+            metadata={
+                **(self.project.metadata or {}),
+                "final_duration": seconds, "render_reservation_id": str(txn.id),
+            },
+        )
+        self.project.refresh_from_db()
+        return txn
 
     def balances(self):
         self.wallet.refresh_from_db()
@@ -136,7 +163,7 @@ class RenderReservationTests(RenderReservationHarness, APITestCase):
         self.assertEqual(self.balances(), (Decimal("100.00") - txn.amount, txn.amount))
 
     def test_a_delivered_render_is_charged(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         source, processed = _render_mocks()
 
         with _patched_render(source, processed):
@@ -147,7 +174,7 @@ class RenderReservationTests(RenderReservationHarness, APITestCase):
         self.assertEqual(self.balances(), (Decimal("100.00") - txn.amount, Decimal("0")))
 
     def test_a_render_that_cannot_work_is_refunded(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
 
         with patch(
             "apps.videos.tasks.render._resolve_approved_segments",
@@ -160,7 +187,7 @@ class RenderReservationTests(RenderReservationHarness, APITestCase):
         self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
 
     def test_a_failing_render_keeps_the_reservation_until_its_last_retry(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
 
         render_video_segments.push_request(retries=render_video_segments.max_retries)
         try:
@@ -178,7 +205,7 @@ class RenderReservationTests(RenderReservationHarness, APITestCase):
     def test_a_retry_in_progress_keeps_the_reservation(self):
         from celery.exceptions import Retry
 
-        txn = self.approve()
+        txn = self.approve_legacy()
         with patch("moviepy.VideoFileClip", side_effect=RuntimeError("corrupt")), \
                 patch("apps.videos.services.storage_service.CloudflareR2Manager.get_client"), \
                 patch.object(render_video_segments, "retry", side_effect=Retry()):
@@ -208,7 +235,7 @@ class RenderReservationTests(RenderReservationHarness, APITestCase):
             return real_validate(segments)
 
         with patch("apps.videos.views.validate_approved_segments", side_effect=another_request_wins), \
-                patch(DELAY) as delay:
+                patch(CLIP_DELAY) as delay, self.captureOnCommitCallbacks(execute=True):
             response = self.client.post(
                 reverse("project-approve-paper-edit", args=[self.project.id]),
                 {"approved_segments": SEGMENTS}, format="json",
@@ -220,7 +247,7 @@ class RenderReservationTests(RenderReservationHarness, APITestCase):
 
     def test_an_approval_without_funds_gives_the_project_back(self):
         Wallet.objects.filter(pk=self.wallet.pk).update(available_balance=Decimal("0"))
-        with patch(DELAY) as delay:
+        with patch(CLIP_DELAY) as delay, self.captureOnCommitCallbacks(execute=True):
             response = self.client.post(
                 reverse("project-approve-paper-edit", args=[self.project.id]),
                 {"approved_segments": SEGMENTS}, format="json",
@@ -274,7 +301,7 @@ class PaperEditRedeliveryTests(RenderReservationHarness, APITestCase):
         self.assertTrue(render_video_segments.reject_on_worker_lost)
 
     def test_a_redelivery_after_the_delivery_neither_renders_nor_charges_again(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         source, processed = _render_mocks()
         with _patched_render(source, processed, redis=self.redis) as (client, upload):
             render_video_segments(self.project.id)
@@ -289,7 +316,7 @@ class PaperEditRedeliveryTests(RenderReservationHarness, APITestCase):
         self.assertEqual(self.final_clips(), 1)
 
     def test_a_worker_lost_between_saving_and_charging_is_charged_once(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         VideoProject.objects.filter(pk=self.project.pk).update(
             status=VideoProject.Status.COMPLETED, final_export_r2_key="final/key.mp4",
         )
@@ -304,7 +331,7 @@ class PaperEditRedeliveryTests(RenderReservationHarness, APITestCase):
         self.assertEqual(self.balances(), (Decimal("100.00") - txn.amount, Decimal("0")))
 
     def test_a_redelivery_renders_a_project_whose_worker_died_mid_render(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         self.set_unfinished_starts(1)  # the first start never finished: its worker died
         source, processed = _render_mocks()
         with _patched_render(source, processed, redis=self.redis) as (_, upload):
@@ -319,7 +346,7 @@ class PaperEditRedeliveryTests(RenderReservationHarness, APITestCase):
         self.assertEqual(self.unfinished_starts(), 1)  # only the lost one stays counted
 
     def test_a_render_that_keeps_losing_its_worker_fails_and_is_refunded(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         self.set_unfinished_starts(RENDER_SEGMENTS_MAX_REDELIVERIES + 1)
         source, processed = _render_mocks()
         with _patched_render(source, processed, redis=self.redis) as (client, _):
@@ -341,7 +368,7 @@ class PaperEditRedeliveryTests(RenderReservationHarness, APITestCase):
         """
         from celery.exceptions import Retry
 
-        txn = self.approve()
+        txn = self.approve_legacy()
         for _ in range(RENDER_SEGMENTS_MAX_REDELIVERIES + 1):
             with patch("moviepy.VideoFileClip", side_effect=RuntimeError("transient")), \
                     patch("apps.videos.services.storage_service.CloudflareR2Manager.get_client"), \
@@ -361,7 +388,7 @@ class PaperEditRedeliveryTests(RenderReservationHarness, APITestCase):
     def test_a_delivery_never_renders_while_another_one_holds_the_project(self):
         from apps.videos.tasks import PIPELINE_LOCK_RETRY_SECONDS
 
-        txn = self.approve()
+        txn = self.approve_legacy()
         self.hold_project_lock()  # e.g. a copy redelivered while its worker is alive
         source, processed = _render_mocks()
         with _patched_render(source, processed, redis=self.redis) as (client, _), \
@@ -384,7 +411,7 @@ class PaperEditRedeliveryTests(RenderReservationHarness, APITestCase):
     def test_past_its_lock_retries_a_delivery_gives_up_without_touching_the_project(self):
         from apps.videos.tasks import PIPELINE_LOCK_MAX_RETRIES
 
-        txn = self.approve()
+        txn = self.approve_legacy()
         self.hold_project_lock()
         source, processed = _render_mocks()
         with _patched_render(source, processed, redis=self.redis) as (client, _), \
@@ -401,7 +428,7 @@ class PaperEditRedeliveryTests(RenderReservationHarness, APITestCase):
     def test_a_retry_starts_as_a_new_delivery_and_the_project_keeps_rendering(self):
         from celery.exceptions import Retry
 
-        txn = self.approve()
+        txn = self.approve_legacy()
         with patch("moviepy.VideoFileClip", side_effect=RuntimeError("corrupt")), \
                 patch("apps.videos.services.storage_service.CloudflareR2Manager.get_client"), \
                 patch.object(render_video_segments, "retry", side_effect=Retry()) as retry:
@@ -420,7 +447,7 @@ class PaperEditRedeliveryTests(RenderReservationHarness, APITestCase):
         from celery.exceptions import Retry
         from django.db import DatabaseError
 
-        txn = self.approve()
+        txn = self.approve_legacy()
         source, processed = _render_mocks()
         with _patched_render(source, processed, redis=self.redis), \
                 patch.object(VideoClip.objects, "create", side_effect=DatabaseError("x")), \
@@ -438,7 +465,7 @@ class PaperEditRedeliveryTests(RenderReservationHarness, APITestCase):
     def test_an_error_after_the_export_was_saved_is_charged_by_the_handler(self):
         from apps.videos.tasks import render as render_module
 
-        txn = self.approve()
+        txn = self.approve_legacy()
         source, processed = _render_mocks()
         events = []
 
@@ -484,7 +511,7 @@ class PaperEditDuplicateCopyTests(RenderReservationHarness, APITestCase):
             render_video_segments.pop_request()
 
     def test_a_copy_queued_behind_a_final_failure_does_not_render_for_free(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         # Copy A: its last attempt fails -> FAILED and refunded.
         with patch("moviepy.VideoFileClip", side_effect=RuntimeError("A fails")), \
                 patch("apps.videos.services.storage_service.CloudflareR2Manager.get_client"):
@@ -507,7 +534,7 @@ class PaperEditDuplicateCopyTests(RenderReservationHarness, APITestCase):
     def test_a_copy_does_not_start_once_its_reservation_was_settled(self):
         from apps.payments.services.wallet_service import rollback_reservation
 
-        txn = self.approve()
+        txn = self.approve_legacy()
         rollback_reservation(txn.id)  # e.g. refunded by settle_stale_reservations
         source, processed = _render_mocks()
         with _patched_render(source, processed, redis=self.redis) as (client, _):
@@ -520,7 +547,7 @@ class PaperEditDuplicateCopyTests(RenderReservationHarness, APITestCase):
     def test_the_final_failure_is_recorded_while_holding_the_lock(self):
         from apps.videos.tasks import render as render_module
 
-        self.approve()
+        self.approve_legacy()
         lock_key = f"lock:pipeline:project:{self.project.id}"
         held = []
         real_fail = render_module._fail_render
@@ -542,7 +569,7 @@ class PaperEditDuplicateCopyTests(RenderReservationHarness, APITestCase):
         from apps.payments.services.wallet_service import commit_reservation
         from apps.videos.tasks.render import _fail_render
 
-        txn = self.approve()
+        txn = self.approve_legacy()
         VideoProject.objects.filter(pk=self.project.pk).update(
             status=VideoProject.Status.COMPLETED, final_export_r2_key="final/b.mp4",
         )
@@ -557,7 +584,7 @@ class PaperEditDuplicateCopyTests(RenderReservationHarness, APITestCase):
         self.assertEqual(txn.status, Transaction.Status.COMPLETED)
 
     def test_an_export_is_not_saved_over_a_project_that_stopped_rendering(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
 
         def another_copy_fails_it(*args, **kwargs):
             # A copy that could not take the lock failed the project meanwhile.
@@ -587,7 +614,7 @@ class PaperEditDuplicateCopyTests(RenderReservationHarness, APITestCase):
 
         from celery.exceptions import Retry
 
-        txn = self.approve()
+        txn = self.approve_legacy()
         handle = SimpleNamespace(lost=threading.Event())
 
         @contextmanager
@@ -622,7 +649,7 @@ class PaperEditDuplicateCopyTests(RenderReservationHarness, APITestCase):
 
         from apps.videos.services.ai.project_lock import ProjectLockLostError
 
-        txn = self.approve()
+        txn = self.approve_legacy()
         handle = SimpleNamespace(lost=threading.Event())
 
         @contextmanager
@@ -666,7 +693,7 @@ class PaperEditTimeLimitTests(RenderReservationHarness, APITestCase):
     def test_the_soft_limit_fails_the_render_for_good_and_refunds_it(self):
         from celery.exceptions import SoftTimeLimitExceeded
 
-        txn = self.approve()
+        txn = self.approve_legacy()
         source, processed = _render_mocks()
         processed.write_videofile.side_effect = SoftTimeLimitExceeded()
         with _patched_render(source, processed, redis=self.redis), \
@@ -687,7 +714,7 @@ class PaperEditRetryNotQueuedTests(RenderReservationHarness, APITestCase):
     def test_a_retry_that_cannot_be_queued_fails_and_refunds_the_render(self):
         from celery.exceptions import Reject
 
-        txn = self.approve()
+        txn = self.approve_legacy()
 
         def broker_down(*args, **kwargs):
             raise Reject(RuntimeError("broker down"), requeue=False)
@@ -716,7 +743,7 @@ class PaperEditLockHeaderOnTheWorkerTests(RenderReservationHarness, APITestCase)
 
         from backend.celery import app
 
-        self.approve()
+        self.approve_legacy()
         lock = self.redis.lock(f"lock:pipeline:project:{self.project.id}", timeout=300)
         self.assertTrue(lock.acquire(blocking=False))
         message = TaskMessage(

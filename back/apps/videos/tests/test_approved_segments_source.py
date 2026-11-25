@@ -1,7 +1,9 @@
 """
-The paper-edit approval must hand its segments to the final render through ONE
-source of truth: the ``VideoProject.approved_segments`` column. Projects approved
-before that fix only have ``metadata['approved_segments']`` and must still render.
+The paper-edit approval stores its segments in ONE source of truth: the
+``VideoProject.approved_segments`` column, which the render of an approval made
+before the review rendered clip by clip (render_video_segments) reads. Projects
+approved before that fix only have ``metadata['approved_segments']`` and must
+still render.
 """
 import shutil
 import tempfile
@@ -30,6 +32,8 @@ CONCATENATE = "moviepy.concatenate_videoclips"
 LAYOUT = "apps.videos.services.layouts.get_layout_strategy"
 RESERVE = "apps.videos.views.wallet_service.reserve_funds"
 DELAY = "apps.videos.tasks.render_video_segments.delay"
+# What an approval queues now: one render per approved clip.
+CLIP_DELAY = "apps.videos.tasks.render.render_clip_task.delay"
 REDIS_CLIENT = "apps.videos.services.ai.project_lock.get_redis_client"
 
 SEGMENT_BOUNDS_MESSAGE = (
@@ -98,9 +102,11 @@ class ApprovePaperEditStoresColumnTests(APITestCase):
         self.url = reverse("project-approve-paper-edit", args=[self.project.id])
 
     def _approve(self, segments):
-        with patch(DELAY) as delay, patch(RESERVE) as reserve:
+        with patch(CLIP_DELAY) as delay, patch(RESERVE) as reserve, patch(DELAY) as whole_edit, \
+                self.captureOnCommitCallbacks(execute=True):
             reserve.return_value = MagicMock(id=1)
             res = self.client.post(self.url, {"approved_segments": segments}, format="json")
+        whole_edit.assert_not_called()  # one clip per segment, never one export of all of them
         return res, delay, reserve
 
     def test_approval_populates_the_column(self):
@@ -111,7 +117,7 @@ class ApprovePaperEditStoresColumnTests(APITestCase):
         self.assertEqual(self.project.approved_segments, SEGMENTS)
         self.assertEqual(self.project.status, VideoProject.Status.RENDERING)
         self.assertEqual(self.project.metadata["final_duration"], 4.5)
-        delay.assert_called_once_with(self.project.id)
+        self.assertEqual(delay.call_count, len(SEGMENTS))
 
     def test_invalid_segments_are_rejected_before_charging_with_spanish_message(self):
         cases = [
@@ -134,20 +140,18 @@ class ApprovePaperEditStoresColumnTests(APITestCase):
                 self.assertEqual(self.project.status, VideoProject.Status.AWAITING_APPROVAL)
                 self.assertIsNone(self.project.approved_segments)
 
-    def test_task_renders_a_project_approved_through_the_view(self):
+    def test_the_task_never_renders_a_project_approved_clip_by_clip(self):
         self._approve(SEGMENTS)
         source, processed = _render_mocks()
 
-        with _patched_render(source, processed) as (_, upload):
-            render_video_segments(self.project.id)
+        with _patched_render(source, processed) as (client, upload):
+            render_video_segments(self.project.id)  # a stray message
 
+        client.download_file.assert_not_called()
+        upload.assert_not_called()
         self.project.refresh_from_db()
-        self.assertEqual(self.project.status, VideoProject.Status.COMPLETED)
-        self.assertEqual(self.project.final_export_r2_key, "final/key.mp4")
-        upload.assert_called_once()
-        self.assertEqual(
-            [c.args for c in source.subclipped.call_args_list], [(0.0, 2.0), (5.0, 7.5)]
-        )
+        self.assertEqual(self.project.status, VideoProject.Status.RENDERING)
+        self.assertFalse(self.project.final_export_r2_key)
 
 
 def _render_mocks():

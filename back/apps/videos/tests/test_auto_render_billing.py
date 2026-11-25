@@ -475,7 +475,7 @@ class PatchDuringApprovalTests(TestCase):
             return real_validate(segments)
 
         with patch("apps.videos.views.validate_approved_segments", side_effect=the_pipeline_writes), \
-                patch("apps.videos.tasks.render_video_segments.delay"):
+                patch("apps.videos.tasks.render.render_clip_task.delay"):
             response = self.client.post(
                 reverse("project-approve-paper-edit", args=[self.project.pk]),
                 {"approved_segments": [{"start": 0, "end": 5, "text": "hola"}]}, format="json",

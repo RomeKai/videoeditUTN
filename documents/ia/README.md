@@ -32,7 +32,7 @@ flowchart TD
 
 | Componente | Archivo | Rol |
 |------------|---------|-----|
-| API (DRF) | [views.py](../../back/apps/videos/views.py) | `VideoProjectViewSet`: `create`, `from_prompt` (`from-prompt`), `approve_paper_edit` (`approve-paper-edit`) y `paper_edit_data`. Valida la subida, reserva tokens y encola `process_initial_ingestion` o `render_video_segments`. Rutas bajo `api/v1/projects/` |
+| API (DRF) | [views.py](../../back/apps/videos/views.py) | `VideoProjectViewSet`: `create`, `from_prompt` (`from-prompt`), `approve_paper_edit` (`approve-paper-edit`) y `paper_edit_data`. Valida la subida, reserva tokens y encola `process_initial_ingestion`, o, al aprobar, un `render_clip_task` por segmento aprobado. Rutas bajo `api/v1/projects/` |
 | Celery | [celery.py](../../back/backend/celery.py), [settings/base.py](../../back/backend/settings/base.py) | Broker y result backend en `REDIS_URL`. `CELERY_TASK_ROUTES` manda `apps.videos.tasks.render_clip_task` y `apps.videos.tasks.render_video_segments` a la cola `render`; el resto va a la cola por defecto de Celery, `celery`. Los workers consumen las dos: `celery -A backend worker -Q celery,render` ([docker-compose.yml](../../docker-compose.yml)) |
 | Postgres | `DATABASE_URL` (Postgres en `docker-compose.yml`; sin la variable, SQLite) | `VideoProject` (etapa, estado por etapa, `metadata`), `VideoClip`, `ScheduledPost`, `AIUsageRecord`, `ModerationOverride` y el wallet |
 | Valkey / Redis | `REDIS_URL` (servicio `redis`, imagen `valkey/valkey:8-alpine`) | Broker de Celery, lock por proyecto (`lock:pipeline:project:<id>`), lock y resultado pendiente de SEO (`lock:seo:post:<id>`, `seo:pending:<id>`) y buckets de capacidad (`capacity:v1:<modelo>:<recurso>_per_<ventana>`) |
@@ -53,7 +53,7 @@ Rutas relativas a `back/apps/videos/` salvo indicación.
 | [tasks/\_\_init\_\_.py](../../back/apps/videos/tasks/__init__.py) | Reexporta las tareas. Cada una conserva su nombre registrado `apps.videos.tasks.<nombre>` |
 | [tasks/shared.py](../../back/apps/videos/tasks/shared.py) | Helpers compartidos: descarga con yt-dlp, política de reintentos (`_is_retryable_pipeline_error`, `_retry_countdown`), `_merge_metadata`, filas de uso y helpers de capacidad |
 | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | `process_initial_ingestion`: lock, Prompt-to-Edit, etapas, espera de capacidad, fallo final y reembolso |
-| [tasks/render.py](../../back/apps/videos/tasks/render.py) | `render_clip_task` (cola `render`), `render_video_segments` (paper edit) y `finalize_project_render` |
+| [tasks/render.py](../../back/apps/videos/tasks/render.py) | `render_clip_task` (cola `render`), `finalize_project_render` y `render_video_segments` (paper edit de antes, en una sola exportación) |
 | [tasks/social.py](../../back/apps/videos/tasks/social.py) | `process_video_seo`, `dispatch_scheduled_posts_batch` y `upload_to_social_network` |
 | [services/ai/\_\_init\_\_.py](../../back/apps/videos/services/ai/__init__.py) | Paquete del core: contratos y errores compartidos |
 | [services/ai/audio_preprocessor.py](../../back/apps/videos/services/ai/audio_preprocessor.py) | `AudioPreprocessor`: FLAC 16 kHz mono y ventanas de 600 s con 2 s de solapamiento |
@@ -125,10 +125,9 @@ sequenceDiagram
     W->>LLM: selecciona clips, primario y fallback (clips_selected)
     W-->>U: clips DRAFT, proyecto en awaiting_approval
     U->>API: POST projects/id/approve-paper-edit
-    API->>VK: encola render_video_segments
-    W->>ST: descarga el original
-    W->>W: layout con FaceTracker (y SpeakerTrackingEngine en active), subtítulos
-    W->>ST: sube el video final (status completed)
+    API->>VK: un clip por segmento y un render_clip_task por clip
+    W->>W: recorte, layout con FaceTracker (y SpeakerTrackingEngine en active), subtítulos
+    W->>ST: sube cada clip (status completed o partial)
     Note over U,W: se crea un ScheduledPost y la señal encola process_video_seo
     W->>OM: modera título y transcript del clip
     W->>LLM: caption y hashtags del post
@@ -140,7 +139,7 @@ sequenceDiagram
 2. `process_initial_ingestion` toma el lock del proyecto y recorre las etapas. Cada etapa persiste su resultado antes de avanzar, así un reintento retoma donde quedó y no repite llamadas pagas. Ver [02](02-pipeline-de-ingesta.md).
 3. Si el proyecto se creó con `from-prompt`, el prompt se parsea al empezar la ingesta, no en el request. Ver [04](04-prompt-to-edit.md).
 4. Transcripción, moderación y selección están en [03](03-transcripcion-moderacion-seleccion.md). Antes de cada llamada a Groq o al LLM se reserva capacidad (paso 7 y 10 del diagrama) si `AI_CAPACITY_ENABLED=True`. Ver [07](07-capacidad-costos-y-operacion.md).
-5. Al aprobar, la API reserva el costo del render y encola `render_video_segments`, que aplica el layout del proyecto (seguimiento de caras, hablante activo) y sube el resultado. Ver [06](06-render-caras-y-hablante.md).
+5. Al aprobar, la API reserva el costo del render y convierte cada segmento aprobado en un clip: actualiza el clip sugerido que nombra, crea los nuevos y borra los sugeridos que no se aprobaron. Encola un `render_clip_task` por clip, que aplica el layout del proyecto (seguimiento de caras, hablante activo) y sube el resultado; la reserva se cobra por los segundos entregados. Ver [02](02-pipeline-de-ingesta.md#aprobación-de-la-revisión-approve-paper-edit) y [06](06-render-caras-y-hablante.md).
 6. La API no expone un endpoint para crear `ScheduledPost`: hoy se crean desde el admin de Django. Al crearse, `generate_seo_for_new_post` encola `process_video_seo` si el proyecto pidió SEO (`metadata['use_seo']`) y el plan lo incluye. La publicación corre en `upload_to_social_network`. Ver [05](05-seo-y-publicacion.md).
 
 ## Errores, reintentos y casos borde
@@ -199,7 +198,7 @@ Los interruptores principales. La referencia completa está en [07](07-capacidad
 | `AIUsageRecord` | Una fila por intento de llamada a un proveedor, insert-only, con tokens, latencia y costo estimado |
 | Allowlist | `AI_CORE_V2_ALLOWLIST`: ids de `VideoProject.uploaded_by` que reciben V2 |
 | PTE (Prompt-to-Edit) | Crear un proyecto con un prompt en lenguaje natural que se traduce a la configuración del proyecto |
-| Paper edit | Revisión de los clips sugeridos y aprobación de segmentos (`approve-paper-edit`), que dispara `render_video_segments` |
+| Paper edit | Revisión de los clips sugeridos y aprobación de segmentos (`approve-paper-edit`): cada segmento aprobado es un clip que se renderiza con `render_clip_task`. Las aprobaciones de antes se renderizaban con `render_video_segments` en una sola exportación |
 | `auto_render_bypass` | El proyecto salta la aprobación y renderiza cada clip apenas termina la selección |
 | Primario / fallback | `AI_DEFAULT_LLM_MODEL` y `AI_FALLBACK_LLM_MODEL`. El fallback se intenta una vez si falla el primario. `role` en `AIUsageRecord` |
 | Re-despacho | Volver a encolar `process_initial_ingestion` para un proyecto `failed`: retoma desde la última etapa completada |

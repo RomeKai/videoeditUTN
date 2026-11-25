@@ -1,6 +1,7 @@
 'use client';
 
 import { keepPreviousData, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import { apiCall } from '../client';
 import type { Platform } from '../contracts/common';
 import * as contract from '../contracts/social';
@@ -8,6 +9,20 @@ import { keys, pollWhile } from '../query';
 import { useScopedQuery } from './scope';
 
 const IN_FLIGHT = new Set(['QUEUED', 'PROCESSING']);
+
+/** How long a publication is polled for its AI text. After that the UI stops waiting and the user writes it. */
+export const SEO_WAIT_MS = 120_000;
+
+/**
+ * The AI text of the post is still expected: `pending`, and asked for less than two minutes ago
+ * (the creation, or the last change, which is what "Regenerar" touches). A generation that never
+ * answers must not keep a screen polling forever.
+ */
+export function seoPending(post: Pick<contract.ScheduledPost, 'seo_status' | 'created_at' | 'updated_at'>, now = Date.now()): boolean {
+  if (post.seo_status !== 'pending') return false;
+  const since = Math.max(Date.parse(post.created_at) || 0, Date.parse(post.updated_at) || 0);
+  return now - since < SEO_WAIT_MS;
+}
 
 export function useSocialAccounts() {
   return useScopedQuery({ queryKey: keys.social.accounts, queryFn: ({ signal }) => apiCall(contract.listSocialAccounts, { signal }) });
@@ -32,14 +47,16 @@ export function useDisconnectSocialAccount() {
   });
 }
 
-/** E2: polls every 5 s while any publication of the page is queued or publishing. */
+/** E2 and E1: polls every 5 s while any publication of the page is queued, publishing or waiting for its AI text (at most two minutes each). */
 export function usePosts(query: contract.PostsQuery = {}, { enabled = true }: { enabled?: boolean } = {}) {
   return useScopedQuery({
     queryKey: keys.social.postList(query),
     queryFn: ({ signal }) => apiCall(contract.listPosts, { query, signal }),
     placeholderData: keepPreviousData,
     enabled,
-    ...pollWhile<{ results: contract.ScheduledPost[] }>((page) => Boolean(page?.results.some((post) => IN_FLIGHT.has(post.status)))),
+    ...pollWhile<{ results: contract.ScheduledPost[] }>((page) =>
+      Boolean(page?.results.some((post) => IN_FLIGHT.has(post.status) || seoPending(post))),
+    ),
   });
 }
 
@@ -48,7 +65,7 @@ export function usePost(id: string | null | undefined) {
     queryKey: keys.social.post(id ?? ''),
     queryFn: ({ signal }) => apiCall(contract.getPost, { params: { id: id ?? '' }, signal }),
     enabled: Boolean(id),
-    ...pollWhile<contract.ScheduledPost>((post) => Boolean(post && (IN_FLIGHT.has(post.status) || post.seo_status === 'pending'))),
+    ...pollWhile<contract.ScheduledPost>((post) => Boolean(post && (IN_FLIGHT.has(post.status) || seoPending(post)))),
   });
 }
 
@@ -77,7 +94,7 @@ export function useCreatePostsBulk() {
   });
 }
 
-/** Edit text or reschedule (also the calendar drag). Only before QUEUED: 409 otherwise. */
+/** Edit text, reschedule (also the calendar drag) or publish a draft (`publish_at`: date or null for now). Only before QUEUED: 409 otherwise. */
 export function useUpdatePost() {
   const invalidate = useInvalidatePosts();
   return useMutation({
@@ -94,4 +111,37 @@ export function useCancelPost() {
 export function useRetryPost() {
   const invalidate = useInvalidatePosts();
   return useMutation({ mutationFn: (id: string) => apiCall(contract.retryPost, { params: { id } }), onSuccess: invalidate });
+}
+
+/** E1 · "Regenerar": asks the AI for a new caption and hashtags; the post comes back with `seo_status: 'pending'`. */
+export function useRegeneratePostSeo() {
+  const invalidate = useInvalidatePosts();
+  return useMutation({ mutationFn: (id: string) => apiCall(contract.regeneratePostSeo, { params: { id } }), onSuccess: invalidate });
+}
+
+/**
+ * E1: the calls of the publish panel without the cache invalidation of the mutations above.
+ * The panel creates and discards helper drafts one by one and sends a batch of publications:
+ * refetching every list after each call would be a storm, so it calls `invalidate()` once at the end.
+ */
+export function usePostActions() {
+  const queryClient = useQueryClient();
+  return useMemo(
+    () => ({
+      list: (query: contract.PostsQuery, signal?: AbortSignal) => apiCall(contract.listPosts, { query, signal }),
+      get: (id: string) => apiCall(contract.getPost, { params: { id } }),
+      create: (body: contract.CreatePostInput) => apiCall(contract.createPost, { body }),
+      createBulk: (posts: contract.CreatePostInput[]) => apiCall(contract.createPostsBulk, { body: { posts } }).then((data) => data.posts),
+      update: ({ id, ...body }: contract.UpdatePostRequest & { id: string }) => apiCall(contract.updatePost, { params: { id }, body }),
+      discard: (id: string) => apiCall(contract.cancelPost, { params: { id } }),
+      regenerate: (id: string) => apiCall(contract.regeneratePostSeo, { params: { id } }),
+      invalidate: () =>
+        Promise.all([
+          queryClient.invalidateQueries({ queryKey: keys.social.posts }),
+          queryClient.invalidateQueries({ queryKey: keys.projects.all }),
+          queryClient.invalidateQueries({ queryKey: keys.clips.all }),
+        ]),
+    }),
+    [queryClient],
+  );
 }

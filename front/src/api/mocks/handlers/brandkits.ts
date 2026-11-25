@@ -52,6 +52,12 @@ function apply(kit: BrandKit, form: FormData, { partial }: { partial: boolean })
     if (field === 'watermark_logo' && !/\.png$/i.test(file.name)) throw badRequest({ [field]: ['Subí una imagen PNG.'] });
     kit[field] = `/media/${FILE_DIR[field]}/${file.name}`;
   }
+  const position = form.get('watermark_position');
+  if (typeof position === 'string') {
+    const parsed = contract.WatermarkPosition.safeParse(position);
+    if (!parsed.success) throw badRequest({ watermark_position: ['Elegí una esquina válida.'] });
+    kit.watermark_position = parsed.data;
+  }
   const isDefault = form.get('is_default');
   if (typeof isDefault === 'string') kit.is_default = ['true', '1', 'on'].includes(isDefault.toLowerCase());
 }

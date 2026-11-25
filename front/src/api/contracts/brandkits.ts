@@ -2,6 +2,9 @@ import { z } from 'zod';
 import { defineEndpoint } from '../endpoint';
 import { ColorValue, HexColor, Id, IsoDateTime, NoContent } from './common';
 
+export const WatermarkPosition = z.enum(['top_left', 'top_right', 'bottom_left', 'bottom_right']);
+export type WatermarkPosition = z.infer<typeof WatermarkPosition>;
+
 /** BrandKitSerializer (fields = '__all__'). File fields arrive as URLs. */
 export const BrandKit = z.object({
   id: Id,
@@ -19,6 +22,8 @@ export const BrandKit = z.object({
   outro_video: z.string().nullable(),
   is_default: z.boolean(),
   created_at: IsoDateTime,
+  /** Proposed (map F2, "con posición de muestra"): corner of the frame where the watermark goes. Absent today: the UI assumes bottom right. */
+  watermark_position: WatermarkPosition.optional(),
 });
 export type BrandKit = z.infer<typeof BrandKit>;
 
@@ -42,6 +47,8 @@ export const BrandKitInput = z.object({
   intro_video: z.union([Upload, z.literal('')]).optional(),
   outro_video: z.union([Upload, z.literal('')]).optional(),
   is_default: z.boolean().optional(),
+  /** Proposed: see BrandKit.watermark_position. */
+  watermark_position: WatermarkPosition.optional(),
 });
 export type BrandKitInput = z.infer<typeof BrandKitInput>;
 
@@ -54,7 +61,11 @@ export const listBrandKits = defineEndpoint({
   summary: 'Brand kits del workspace.',
   response: z.array(BrandKit),
   errors: [],
-  backend: { status: 'exists', source: 'back/apps/videos/views.py · BrandKitViewSet.list + BrandKitSerializer' },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/videos/views.py · BrandKitViewSet.list + BrandKitSerializer',
+    note: 'Hueco: hoy la vista ignora `X-Workspace-Id` y devuelve los kits de todos los workspaces del usuario; debería filtrar por el workspace activo (como projects.list). Mientras tanto la UI filtra por `workspace` antes de tocar el default de otro kit. Propuesto, todavía no existe: `watermark_position` (esquina de la marca de agua, F2). Mientras la respuesta no lo traiga, la UI no muestra el selector de esquina y el logo va abajo a la derecha.',
+  },
   screens: ['F1', 'C1', 'B2', 'D5'],
 });
 
