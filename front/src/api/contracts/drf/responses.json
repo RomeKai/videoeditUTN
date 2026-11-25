@@ -1184,7 +1184,7 @@
     }
   },
   "approve_response": {
-    "message": "Edición aprobada. Iniciando renderizado de alta calidad...",
+    "message": "EdiciÃ³n aprobada. Iniciando renderizado de alta calidad...",
     "project_id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
     "final_cost": 29.25,
     "transaction_id": "2d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2"
@@ -1351,7 +1351,7 @@
     "approve_400_not_awaiting": {
       "status": 400,
       "body": {
-        "error": "El proyecto no está en espera de aprobación. Estado actual: rendering"
+        "error": "El proyecto no estÃ¡ en espera de aprobaciÃ³n. Estado actual: rendering"
       }
     },
     "approve_400_pricing": {

@@ -2,7 +2,8 @@ import type { Metadata, Viewport } from 'next';
 import { GeistMono } from 'geist/font/mono';
 import { GeistSans } from 'geist/font/sans';
 import type { ReactNode } from 'react';
-import { THEME_INIT_SCRIPT } from '@/lib/theme';
+// Not from '@/lib/theme': that one is a client module (see theme-script.ts).
+import { THEME_INIT_SCRIPT } from '@/lib/theme-script';
 import { Providers } from '@/shell/Providers';
 import '@/styles/tokens.css';
 import '@/styles/base.css';

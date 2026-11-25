@@ -20,7 +20,7 @@ class BrandKit(models.Model):
     secondary_color = models.CharField(max_length=7, default="#000000")
     accent_color = models.CharField(max_length=7, default="#FFFF00")
 
-    # Assets GrÃ¡ficos
+    # Assets Gráficos
     watermark_logo = models.ImageField(upload_to='assets/logos/', null=True, blank=True)
     intro_video = models.FileField(upload_to='assets/videos/', null=True, blank=True)
     outro_video = models.FileField(upload_to='assets/videos/', null=True, blank=True)
@@ -34,13 +34,13 @@ class BrandKit(models.Model):
 
 # --- 2. PROYECTO (Core) ---
 class VideoProject(models.Model):
-    # --- Enums de ConfiguraciÃ³n ---
+    # --- Enums de Configuración ---
     class Type(models.TextChoices):
         REPURPOSE = 'repurpose', 'Viralizar (Largo -> Cortos)'
-        SINGLE_EDIT = 'single_edit', 'EdiciÃ³n (Clip -> Clip)'
+        SINGLE_EDIT = 'single_edit', 'Edición (Clip -> Clip)'
 
     class EditingStyle(models.TextChoices):
-        DYNAMIC = 'dynamic', 'DinÃ¡mico / Gaming'
+        DYNAMIC = 'dynamic', 'Dinámico / Gaming'
         MINIMALIST = 'minimalist', 'Minimalista / Podcast'
         VLOG = 'vlog', 'Vlog / Lifestyle'
         HORMOZI = 'hormozi', 'Estilo Hormozi'
@@ -49,7 +49,7 @@ class VideoProject(models.Model):
     class Status(models.TextChoices):
         UPLOADED = 'uploaded', 'Subido'
         INGESTING = 'ingesting', 'Ingesta / Analizando IA'
-        AWAITING_APPROVAL = 'awaiting_approval', 'Esperando AprobaciÃ³n'
+        AWAITING_APPROVAL = 'awaiting_approval', 'Esperando Aprobación'
         RENDERING = 'rendering', 'Renderizando'
         COMPLETED = 'completed', 'Completado'
         PARTIAL = 'partial', 'Completado con errores'
@@ -71,7 +71,7 @@ class VideoProject(models.Model):
         FAILED = 'failed', 'Error'
 
     class IntelligenceLevel(models.TextChoices):
-        FAST = 'fast', 'RÃ¡pido (GPT-4o-mini)'
+        FAST = 'fast', 'Rápido (GPT-4o-mini)'
         SMART = 'smart', 'Inteligente (GPT-4o)'
 
     class AspectRatio(models.TextChoices):
@@ -86,7 +86,7 @@ class VideoProject(models.Model):
         SPLIT = 'split', 'Split Screen (Gaming)'
         PIP = 'pip', 'Picture in Picture'
         VERSUS = 'versus', 'Versus (2 Personas)'
-        ACTIVE = 'active', 'Speaker DinÃ¡mico'
+        ACTIVE = 'active', 'Speaker Dinámico'
 
     class CameraSelectionPosition(models.TextChoices):
         LEFT = 'left', 'Izquierda'
@@ -110,14 +110,14 @@ class VideoProject(models.Model):
     proxy_r2_key = models.CharField(max_length=1024, blank=True, null=True, verbose_name="Proxy R2 Key")
     final_export_r2_key = models.CharField(max_length=1024, blank=True, null=True, verbose_name="Final Export R2 Key")
 
-    # ConfiguraciÃ³n General
+    # Configuración General
     project_type = models.CharField(max_length=20, choices=Type.choices, default=Type.REPURPOSE)
     editing_style = models.CharField(max_length=20, choices=EditingStyle.choices, default=EditingStyle.DYNAMIC)
     intelligence_level = models.CharField(max_length=10, choices=IntelligenceLevel.choices, default=IntelligenceLevel.FAST)
-    auto_render_bypass = models.BooleanField(default=False, help_text="Si es True, salta el paso de aprobaciÃ³n y renderiza directo.")
+    auto_render_bypass = models.BooleanField(default=False, help_text="Si es True, salta el paso de aprobación y renderiza directo.")
     brand_kit = models.ForeignKey(BrandKit, on_delete=models.SET_NULL, null=True, blank=True)
     
-    # ConfiguraciÃ³n de Renderizado
+    # Configuración de Renderizado
     aspect_ratio = models.CharField(max_length=10, choices=AspectRatio.choices, default=AspectRatio.PORTRAIT_9_16)
     render_layout = models.CharField(max_length=10, choices=Layout.choices, default=Layout.FILL)
     gameplay_position = models.CharField(max_length=10, choices=GameplayPosition.choices, default=GameplayPosition.CENTER)
@@ -128,9 +128,9 @@ class VideoProject(models.Model):
     manual_camera_zoom = models.FloatField(default=1.0)
     speaker_tracking = models.BooleanField(default=False)
     
-    # SubtÃ­tulos Pro
+    # Subtítulos Pro
     class SubtitleSize(models.TextChoices):
-        SMALL = 'small', 'PequeÃ±o'
+        SMALL = 'small', 'Pequeño'
         MEDIUM = 'medium', 'Mediano'
         LARGE = 'large', 'Grande'
 
@@ -139,18 +139,18 @@ class VideoProject(models.Model):
         CENTER = 'center', 'Centro'
         BOTTOM = 'bottom', 'Abajo'
 
-    add_subtitles = models.BooleanField(default=True, help_text="Â¿Deseas agregar subtÃ­tulos automÃ¡ticos?")
+    add_subtitles = models.BooleanField(default=True, help_text="¿Deseas agregar subtítulos automáticos?")
     subtitle_color = models.CharField(max_length=7, default="#FFFF00", help_text="Color hexadecimal")
-    subtitle_with_emojis = models.BooleanField(default=False, help_text="Â¿Agregar emojis automÃ¡ticos?")
-    subtitle_words_per_segment = models.IntegerField(default=3, help_text="MÃ¡ximo de palabras")
+    subtitle_with_emojis = models.BooleanField(default=False, help_text="¿Agregar emojis automáticos?")
+    subtitle_words_per_segment = models.IntegerField(default=3, help_text="Máximo de palabras")
     subtitle_size = models.CharField(max_length=10, choices=SubtitleSize.choices, default=SubtitleSize.MEDIUM)
     subtitle_position = models.CharField(max_length=10, choices=SubtitlePosition.choices, default=SubtitlePosition.BOTTOM)
 
     # Opciones de IA en Renderizado
-    use_facetracking = models.BooleanField(default=False, help_text="Â¿Deseas que la cÃ¡mara siga automÃ¡ticamente el rostro?")
+    use_facetracking = models.BooleanField(default=False, help_text="¿Deseas que la cámara siga automáticamente el rostro?")
     remove_silences = models.BooleanField(default=False, help_text='¿Deseas eliminar los silencios automáticamente para hacer el video más dinámico?')
 
-    # Archivos Fuente (Opcional si ya estÃ¡ en R2)
+    # Archivos Fuente (Opcional si ya está en R2)
     source_file = models.FileField(upload_to='videos/raw/%Y/%m/', null=True, blank=True)
     video_url = models.URLField(max_length=500, null=True, blank=True, help_text="URL de YouTube/Vimeo si no se sube archivo")
     
@@ -219,10 +219,10 @@ class VideoClip(models.Model):
 # --- 4. CAPA / OVERLAY ---
 class ClipLayer(models.Model):
     class LayerType(models.TextChoices):
-        TEXT = 'text', 'Texto / SubtÃ­tulo'
+        TEXT = 'text', 'Texto / Subtítulo'
         IMAGE = 'image', 'Imagen / Logo'
         VIDEO = 'video', 'Video Overlay'
-        AUDIO = 'audio', 'Audio / MÃºsica'
+        AUDIO = 'audio', 'Audio / Música'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     clip = models.ForeignKey(VideoClip, on_delete=models.CASCADE, related_name='layers')

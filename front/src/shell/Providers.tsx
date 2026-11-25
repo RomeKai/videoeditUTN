@@ -21,7 +21,19 @@ const MockPanel = dynamic(() => import('@/dev/MockPanel').then((module) => modul
 function MockGate({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(!API_MOCKS);
   useEffect(() => {
-    if (!API_MOCKS) return;
+    if (!API_MOCKS) {
+      // A browser that once ran this origin with mocks keeps the MSW worker registered: it goes away here.
+      void navigator.serviceWorker
+        ?.getRegistrations()
+        .then((registrations) => {
+          for (const registration of registrations) {
+            const script = (registration.active ?? registration.waiting ?? registration.installing)?.scriptURL ?? '';
+            if (script.split('?')[0]?.endsWith('/mockServiceWorker.js')) void registration.unregister();
+          }
+        })
+        .catch(() => undefined);
+      return;
+    }
     let cancelled = false;
     void import('@/api/mocks/browser')
       .then((module) => module.startMocks())

@@ -80,6 +80,8 @@ export function clearSession(): void {
 export function subscribeSession(listener: Listener): () => void {
   listeners.add(listener);
   const onStorage = (event: StorageEvent) => {
+    // Another tab signed in again (or out): this tab's "expired" state is over too.
+    if (event.key === AUTH_STORAGE_KEY) expired = false;
     if (event.key === AUTH_STORAGE_KEY || event.key === WORKSPACE_STORAGE_KEY) listener();
   };
   if (typeof window !== 'undefined') window.addEventListener('storage', onStorage);
@@ -123,18 +125,6 @@ export function onMaintenance(listener: MaintenanceListener): () => void {
 
 export function notifyMaintenance(active: boolean): void {
   for (const listener of maintenanceListeners) listener(active);
-}
-
-/** Seconds until a JWT expires, or null when the token is not a readable JWT (the mock tokens are not). */
-export function secondsUntilExpiry(token: string, now: number = Date.now()): number | null {
-  const payload = token.split('.')[1];
-  if (!payload) return null;
-  try {
-    const json = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as { exp?: unknown };
-    return typeof json.exp === 'number' ? json.exp - now / 1000 : null;
-  } catch {
-    return null;
-  }
 }
 
 /** Stable snapshot for useSyncExternalStore: the access token, or null without a session. */
