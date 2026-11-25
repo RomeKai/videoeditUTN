@@ -17,10 +17,14 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.test import override_settings
 from django.urls import reverse
-from rest_framework.test import APITestCase
+from drf_spectacular.generators import SchemaGenerator
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.test import APIRequestFactory, APITestCase, force_authenticate
+from rest_framework.views import APIView
 
-from apps.core.permissions import DENIED, EDITOR_DELETE_DENIED, MAKERS
-from apps.core.workspace import NOT_FOUND_DETAIL
+from apps.core.permissions import ADMINS, DENIED, EDITOR_DELETE_DENIED, MAKERS, WorkspaceRolePermission
+from apps.core.workspace import NOT_FOUND_DETAIL, WORKSPACE_HEADER
 from apps.payments.models import Transaction, Wallet
 from apps.users.models import Workspace, WorkspaceMember
 from apps.videos.models import BrandKit, ClipPreview, VideoClip, VideoProject
@@ -186,6 +190,28 @@ class HeaderPicksTheWorkspaceTests(ActiveWorkspaceHarness):
         self.assertEqual(self.create(self.team, brand_kit=str(theirs.pk)).status_code, 201)
 
 
+    def test_an_update_cannot_use_a_brand_kit_of_another_workspace(self):
+        project = project_in(self.home, self.alice, "Mío")
+        theirs = BrandKit.objects.create(workspace=self.team, name="Del equipo")
+        mine = BrandKit.objects.create(workspace=self.home, name="Mío")
+        own = header(self.home)
+        url = detail(project)
+        for method, fmt in (("patch", "json"), ("put", "json"), ("put", "multipart")):
+            with self.subTest(method=method, format=fmt):
+                response = getattr(self.client, method)(
+                    url, {"title": "Mío", "brand_kit": str(theirs.pk)}, format=fmt, **own,
+                )
+                self.assertEqual(response.status_code, 400, response.content[:300])
+                self.assertIn("brand_kit", response.data)
+                project.refresh_from_db()
+                self.assertIsNone(project.brand_kit_id)
+
+        response = self.client.patch(url, {"brand_kit": str(mine.pk)}, format="json", **own)
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        project.refresh_from_db()
+        self.assertEqual(project.brand_kit, mine)
+
+
 class ListsFollowTheHeaderTests(ActiveWorkspaceHarness):
     def setUp(self):
         super().setUp()
@@ -251,6 +277,22 @@ class ObjectsOfAnotherWorkspaceTests(ActiveWorkspaceHarness):
         self.assertEqual(self.client.get(detail(self.project), **own).status_code, 200)
         self.assertEqual(self.client.get(paper_edit(self.project), **own).status_code, 200)
         self.assertEqual(self.approve(self.project, self.home).status_code, 200)
+
+
+class ApprovalChargesTheProjectWorkspaceTests(ActiveWorkspaceHarness):
+    def test_the_approval_is_reserved_in_the_wallet_of_the_project_workspace(self):
+        """Alice's default workspace is her own; the team's project is paid by the team."""
+        join(self.team, self.alice, EDITOR)
+        project = in_review(self.team, self.boss)
+
+        response = self.approve(project, self.team)
+
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        cost = Decimal(str(response.data["final_cost"]))
+        self.assertGreater(cost, 0)
+        self.assertEqual(balances(self.team), (Decimal("100") - cost, cost))
+        self.assertEqual(Transaction.objects.get(pk=response.data["transaction_id"]).wallet.workspace, self.team)
+        self.assertEqual(balances(self.home), (Decimal("100"), Decimal("0")))
 
 
 class PendingInvitationTests(ActiveWorkspaceHarness):
@@ -406,6 +448,69 @@ class EditorTests(ActiveWorkspaceHarness):
         self.assertEqual(self.client.delete(detail(alices), **header(self.team)).status_code, 204)
 
 
+    def test_a_project_nobody_uploaded_is_deleted_by_an_admin_or_the_owner_only(self):
+        orphans = [project_in(self.team, None, f"Sin autor {n}") for n in range(2)]
+
+        refused = self.client.delete(detail(orphans[0]), **header(self.team))
+        self.assertEqual(refused.status_code, 403)
+        self.assertEqual(refused.data, {"detail": EDITOR_DELETE_DENIED})
+
+        WorkspaceMember.objects.filter(workspace=self.team, user=self.alice).update(role=ADMIN)
+        self.assertEqual(self.client.delete(detail(orphans[0]), **header(self.team)).status_code, 204)
+        self.client.force_authenticate(user=self.boss)
+        self.assertEqual(self.client.delete(detail(orphans[1]), **header(self.team)).status_code, 204)
+
+
+class MethodNotAllowedTests(ActiveWorkspaceHarness):
+    def test_a_method_the_view_does_not_have_is_405_for_every_role(self):
+        project = project_in(self.team, self.boss, "Del equipo")
+        clip = VideoClip.objects.create(project=project, title="Clip", start_time=0, end_time=5)
+        membership = join(self.team, self.alice, VIEWER)
+        for role in (VIEWER, EDITOR, ADMIN):
+            membership.role = role
+            membership.save(update_fields=["role"])
+            for name, response in (
+                ("patch preview", self.client.patch(preview(clip), {}, format="json", **header(self.team))),
+                ("put list", self.client.put(PROJECTS, {}, format="json", **header(self.team))),
+                ("post paper-edit-data", self.client.post(paper_edit(project), {}, format="json", **header(self.team))),
+            ):
+                with self.subTest(role=role, request=name):
+                    self.assertEqual(response.status_code, 405, response.content[:300])
+
+
+class _UnmappedView(APIView):
+    """A scoped view that maps none of its methods to an action."""
+
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
+
+    def get(self, request):
+        return Response({"ok": True})
+
+    def post(self, request):
+        return Response({"ok": True})
+
+
+class UnmappedWriteTests(ActiveWorkspaceHarness):
+    def call(self, method, user):
+        request = getattr(APIRequestFactory(), method)("/", **header(self.team))
+        force_authenticate(request, user=user)
+        return _UnmappedView.as_view()(request)
+
+    def test_an_unmapped_write_is_for_the_owner_and_admins_only(self):
+        members = {role: make_user(f"m-{role}") for role in (ADMIN, EDITOR, VIEWER)}
+        for role, user in members.items():
+            join(self.team, user, role)
+        expected = {self.boss: 200, members[ADMIN]: 200, members[EDITOR]: 403, members[VIEWER]: 403}
+        for user, status_code in expected.items():
+            with self.subTest(user=user.username):
+                response = self.call("post", user)
+                self.assertEqual(response.status_code, status_code)
+                if status_code == 403:
+                    self.assertEqual(response.data, {"detail": DENIED[ADMINS]})
+                # A read left out of the map is for every role.
+                self.assertEqual(self.call("get", user).status_code, 200)
+
+
 class WithoutTheHeaderTests(ActiveWorkspaceHarness):
     def test_the_default_is_the_workspace_the_user_owns(self):
         lowest = team(self.boss, "Primero por id", pk=LOWEST_ID)
@@ -450,6 +555,34 @@ class WithoutTheHeaderTests(ActiveWorkspaceHarness):
         response = self.create()
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data, {"error": "El usuario no tiene un Workspace asignado."})
+
+
+    def test_without_any_workspace_creating_a_brand_kit_is_400(self):
+        self.home.delete()
+        join(self.team, self.alice, EDITOR, status=PENDING)
+
+        response = self.client.post(BRAND_KITS, {"name": "Kit"}, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data, {"error": "El usuario no tiene un Workspace asignado."})
+        self.assertFalse(BrandKit.objects.exists())
+
+
+class SchemaDeclaresTheHeaderTests(APITestCase):
+    def test_the_scoped_operations_declare_x_workspace_id(self):
+        paths = SchemaGenerator().get_schema(request=None, public=True)["paths"]
+
+        def headers(path, method):
+            return [p["name"] for p in paths[path][method].get("parameters", []) if p["in"] == "header"]
+
+        for path, method in (
+            ("/api/v1/projects/", "get"), ("/api/v1/projects/", "post"), ("/api/v1/projects/{id}/", "patch"),
+            ("/api/v1/projects/{id}/approve-paper-edit/", "post"), ("/api/v1/brand-kits/", "post"),
+            ("/api/v1/clips/{clip_id}/preview/", "post"),
+        ):
+            with self.subTest(path=path, method=method):
+                self.assertEqual(headers(path, method), [WORKSPACE_HEADER])
+        self.assertEqual(headers("/api/token/", "post"), [])
 
 
 class CorsAllowsTheHeaderTests(APITestCase):

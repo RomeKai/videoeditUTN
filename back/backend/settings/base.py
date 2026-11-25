@@ -122,7 +122,8 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ),
     'DEFAULT_PAGINATION_CLASS': None,
-    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    # drf-spectacular's AutoSchema, plus the X-Workspace-Id header on scoped views.
+    'DEFAULT_SCHEMA_CLASS': 'apps.core.schema.WorkspaceAutoSchema',
 }
 
 # --- AI CONFIG & FEATURE FLAGS ---

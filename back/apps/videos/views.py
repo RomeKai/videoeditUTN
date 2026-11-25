@@ -2,7 +2,7 @@ import os
 import logging
 import uuid
 from decimal import Decimal
-from rest_framework import viewsets, permissions, parsers, status
+from rest_framework import exceptions, viewsets, permissions, parsers, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.views import APIView
@@ -22,6 +22,9 @@ from apps.payments.models import Transaction
 from apps.payments.services import wallet_service
 
 logger = logging.getLogger(__name__)
+
+# Without the header, no workspace of their own and no active membership.
+NO_WORKSPACE_ERROR = "El usuario no tiene un Workspace asignado."
 
 
 def _active_workspace(request):
@@ -63,7 +66,8 @@ class BrandKitViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         workspace = self.active_workspace
         if not workspace:
-            raise ValidationError("No tienes un Workspace para crear BrandKits.")
+            # The same 400 as creating a project.
+            raise exceptions.ValidationError({"error": NO_WORKSPACE_ERROR})
         serializer.save(workspace=workspace)
 
 from .services.render_pricing import pricing_resolution as _pricing_resolution  # noqa: E402
@@ -266,7 +270,7 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         workspace = self.active_workspace
 
         if not workspace:
-            return Response({"error": "El usuario no tiene un Workspace asignado."}, status=400)
+            return Response({"error": NO_WORKSPACE_ERROR}, status=400)
 
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)

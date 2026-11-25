@@ -58,7 +58,8 @@ class WorkspaceRolePermission(permissions.BasePermission):
     A view maps its requests to ROLE_MATRIX actions with ``workspace_actions``:
     keys are viewset actions (``create``, ``approve_paper_edit``...) or, for a
     plain APIView, HTTP methods. A safe method left out is a read (every role);
-    a write left out is for the owner and admins only.
+    a write left out is for the owner and admins only. A method the view has no
+    handler for is let through, so DRF answers 405 and not 403.
     """
 
     message = DENIED[MAKERS]
@@ -71,10 +72,17 @@ class WorkspaceRolePermission(permissions.BasePermission):
             return action
         return 'project.view' if request.method in permissions.SAFE_METHODS else _UNMAPPED_WRITE
 
+    @staticmethod
+    def _handled(request, view):
+        method = request.method.lower()
+        return method in view.http_method_names and hasattr(view, method)
+
     def has_permission(self, request, view):
         active = resolve_active_workspace(request)
         if active is None:
             # No workspace at all: the querysets are empty and creating answers 400.
+            return True
+        if not self._handled(request, view):
             return True
         allowed = ROLE_MATRIX[self.required_action(request, view)]
         if active.role in allowed:

@@ -41,7 +41,9 @@ El proyecto o el brand kit nuevo se guarda en ese workspace, su billetera es la 
 | Borrar proyectos | `DELETE projects/<id>/` | ✓ | ✓ | solo los que subió | — |
 | Crear, editar y borrar brand kits | `brand-kits/` | ✓ | ✓ | ✓ | — |
 
-Una escritura que la vista no asigna a una acción (`workspace_actions`) queda para Dueño y Admin. Lo que el rol no permite responde 403 con un `detail` en castellano, por ejemplo `Con el rol Lector podés ver, pero no crear ni cambiar nada. Pedile acceso a un admin.`. No hay endpoints de invitación: una invitación pasa a `active` desde el admin de Django.
+Una escritura que la vista no asigna a una acción (`workspace_actions`) queda para Dueño y Admin. Un método que la vista no tiene responde 405 para cualquier rol. Lo que el rol no permite responde 403 con un `detail` en castellano, por ejemplo `Con el rol Lector podés ver, pero no crear ni cambiar nada. Pedile acceso a un admin.`. No hay endpoints de invitación: una invitación pasa a `active` desde el admin de Django.
+
+El esquema OpenAPI declara el header en cada operación de una vista con `WorkspaceRolePermission` (`WorkspaceAutoSchema`, en [core/schema.py](../../back/apps/core/schema.py)).
 
 ## Flujo: creación con archivo
 
@@ -247,7 +249,7 @@ Una aprobación anterior a los clips por segmento (sin `render_clip_ids`, todav�
 | Situación | Qué pasa | Dónde |
 |-----------|----------|-------|
 | `X-Workspace-Id` mal formado, de un workspace que no existe, ajeno o con la invitación pendiente | 404 `{"detail": "No encontramos ese espacio de trabajo."}`. No se guarda ni se reserva nada | `resolve_active_workspace` |
-| Sin header, sin workspace propio y sin membresía activa | 400 `{"error": "El usuario no tiene un Workspace asignado."}` | `create` |
+| Sin header, sin workspace propio y sin membresía activa | 400 `{"error": "El usuario no tiene un Workspace asignado."}`, también al crear un brand kit | `create`, `BrandKitViewSet.perform_create` |
 | El rol no puede crear (Lector) | 403 `{"detail": "Con el rol Lector podés ver, pero no crear ni cambiar nada. Pedile acceso a un admin."}`. No se guarda ni se reserva nada | `WorkspaceRolePermission` |
 | `brand_kit` de otro workspace | 400 en `brand_kit` | `VideoProjectSerializer.get_fields` |
 | Sin fuente, o archivo y URL juntos | 400 con el mensaje de `validate` | `VideoProjectSerializer.validate` |
