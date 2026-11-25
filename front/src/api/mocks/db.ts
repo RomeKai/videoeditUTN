@@ -122,6 +122,7 @@ export type MockSocialAccount = SocialAccount & { workspace: string };
 export interface MockInvitation {
   token: string;
   member: string | null;
+  workspace_id: string;
   workspace_name: string;
   inviter_name: string;
   role: MemberRole;
@@ -169,6 +170,6 @@ export interface MockDb {
   resendAt: Record<string, number>;
 }
 
-export const DB_VERSION = 5;
+export const DB_VERSION = 7;
 
 export const PLATFORMS: Platform[] = ['TIKTOK', 'INSTAGRAM_REELS', 'YOUTUBE_SHORTS'];

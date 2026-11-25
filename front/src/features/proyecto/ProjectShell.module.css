@@ -1,0 +1,135 @@
+/* Project layout: header extras and the sub-tabs (artboards D1*, M2). */
+.link {
+  color: var(--fg);
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 3px;
+}
+.link:hover {
+  text-decoration-color: var(--fg);
+}
+.rename {
+  margin: 0 -6px;
+}
+button.menuButton {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border-strong);
+}
+.mobileSegs {
+  margin-top: 10px;
+}
+.errorTitle {
+  margin-bottom: 16px;
+}
+.staleError {
+  margin-bottom: 16px;
+}
+
+.tabs {
+  display: flex;
+  gap: 24px;
+  height: 40px;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+.tabs > span {
+  display: flex;
+}
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+  color: var(--fg-muted);
+  font-size: 14px;
+  white-space: nowrap;
+}
+.tab:hover {
+  color: var(--fg);
+}
+.tab[aria-current='page'] {
+  color: var(--fg);
+}
+.tab[aria-current='page']::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--fg);
+}
+.tab[aria-disabled='true'],
+.tab[aria-disabled='true']:hover {
+  color: var(--fg-subtle);
+  cursor: not-allowed;
+}
+.tabCount {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--neutral-soft);
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.skelHead {
+  display: flex;
+  gap: 20px;
+  margin: 16px 0 24px;
+}
+.skelBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+.skelContent {
+  margin-top: 24px;
+}
+
+/* Phones: the tabs become a full-width selector (map D1 › Móvil). */
+@media (max-width: 639px) {
+  .tabs {
+    gap: 0;
+    height: 44px;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--bg-subtle);
+    margin-bottom: 16px;
+  }
+  .tabs > * {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .tab {
+    flex: 1 1 auto;
+    justify-content: center;
+    padding: 0 6px;
+    font-size: 13px;
+    border-radius: var(--r-sm);
+  }
+  .tab[aria-current='page'] {
+    background: var(--surface);
+    box-shadow: 0 0 0 1px var(--border);
+    font-weight: 500;
+  }
+  .tab[aria-current='page']::after {
+    display: none;
+  }
+  .tabCount {
+    display: none;
+  }
+  .skelThumb {
+    display: none;
+  }
+}

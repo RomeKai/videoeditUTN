@@ -325,6 +325,8 @@ export interface ProjectSpec {
   workspace?: string;
   discountRate?: number;
   overrides?: Partial<MockProject>;
+  /** Extra `metadata` keys, merged over the built ones (e.g. the auto-render marks). */
+  metadata?: Partial<MockProject['metadata']>;
   costState?: 'reserved' | 'charged' | 'refunded';
   prompt?: { text: string; status: 'applied' | 'failed' };
   /** "Renderizar sin revisar" could not be paid: the project waits in the review. */
@@ -424,6 +426,7 @@ export function buildProject(spec: ProjectSpec, now: number, brandKitId: string 
       ...(pte ? { pte } : {}),
       ...(spec.autoRenderSkipped ? { auto_render_skipped: spec.autoRenderSkipped } : {}),
       ...(spec.noSpeech ? { no_speech: true, full_text: '' } : {}),
+      ...spec.metadata,
     },
     ai_rationale_log: clips.length > 0 ? { suggestions_count: clips.length } : {},
     approved_segments:
@@ -638,7 +641,12 @@ function allStateProjects(discountRate: number): ProjectSpec[] {
     discountRate: d,
   }));
   failures.push({ index: next(), title: 'Falló: error desconocido', status: 'failed', stage: 'uploaded', errorCode: 'RuntimeError', durationSeconds: 800, uploadedBy: USER_IDS.lucia, ageMs: 12 * DAY, discountRate: d });
-  return [...base, ...extra, ...failures];
+  // "Renderizar sin revisar" (map C1) with the render already reserved. The two reasons it stops at the
+  // review instead are above. Added after the rest so the ids of the projects above do not move.
+  const autoRender: ProjectSpec[] = [
+    { index: next(), title: 'Sin revisar: render reservado', status: 'rendering', stage: 'render_dispatched', durationSeconds: 1400, uploadedBy: USER_IDS.lucia, ageMs: 16 * MIN, clips: { count: 5, statuses: ['completed', 'completed', 'rendering'] }, discountRate: d, overrides: { auto_render_bypass: true }, metadata: { auto_render_reservation_id: mid(KIND.transaction, 9100), auto_render_seconds: 172 } },
+  ];
+  return [...base, ...extra, ...failures, ...autoRender];
 }
 
 function manyProjects(discountRate: number): ProjectSpec[] {
@@ -725,6 +733,27 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
 
   const walletId = mid(KIND.wallet, 1);
   const transactions: MockTransaction[] = projects.map((project, position) => transactionFor(project, specs[position]?.index ?? position, walletId));
+  // "Renderizar sin revisar" with the render under way: its own reservation, still open.
+  for (const project of projects) {
+    const reservationId = project.metadata.auto_render_reservation_id;
+    if (!reservationId || project.status !== 'rendering') continue;
+    transactions.push({
+      id: reservationId,
+      workspace: project.workspace,
+      wallet: walletId,
+      created_by: project.uploaded_by,
+      amount: priceOf(Math.ceil(project.metadata.auto_render_seconds ?? 60), project.metadata.render_resolution ?? '720p', false, discount),
+      transaction_type: 'SPEND',
+      status: 'RESERVED',
+      description: `Render sin revisar: ${project.title}`,
+      created_at: project.created_at,
+      kind: 'reserved',
+      created_by_detail: project.uploaded_by_detail ?? null,
+      project: { id: project.id, title: project.title },
+      category: 'render',
+    });
+    project._reservations.push(reservationId);
+  }
   // Purchases and a visible refund, so Movimientos shows every kind of row.
   const purchase = (n: number, tokens: number, ageMs: number): MockTransaction => ({
     id: mid(KIND.transaction, 9000 + n),
@@ -920,10 +949,10 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
     purchases: [],
     previews: [],
     invitations: [
-      { token: 'valida', member: null, workspace_name: 'Estudio Norte', inviter_name: 'Lucía Fernández', role: 'editor', email: 'juan@estudionorte.com', status: 'pending', has_account: false },
-      { token: 'con-cuenta', member: null, workspace_name: 'Estudio Norte', inviter_name: 'Lucía Fernández', role: 'admin', email: 'sofia@ejemplo.com', status: 'pending', has_account: true },
-      { token: 'vencida', member: null, workspace_name: 'Estudio Norte', inviter_name: 'Lucía Fernández', role: 'editor', email: 'juan@estudionorte.com', status: 'expired', has_account: false },
-      { token: 'usada', member: null, workspace_name: 'Estudio Norte', inviter_name: 'Lucía Fernández', role: 'viewer', email: 'juan@estudionorte.com', status: 'used', has_account: true },
+      { token: 'valida', member: null, workspace_id: WORKSPACE_IDS.estudio, workspace_name: 'Estudio Norte', inviter_name: 'Lucía Fernández', role: 'editor', email: 'juan@estudionorte.com', status: 'pending', has_account: false },
+      { token: 'con-cuenta', member: null, workspace_id: WORKSPACE_IDS.estudio, workspace_name: 'Estudio Norte', inviter_name: 'Lucía Fernández', role: 'admin', email: 'sofia@ejemplo.com', status: 'pending', has_account: true },
+      { token: 'vencida', member: null, workspace_id: WORKSPACE_IDS.estudio, workspace_name: 'Estudio Norte', inviter_name: 'Lucía Fernández', role: 'editor', email: 'juan@estudionorte.com', status: 'expired', has_account: false },
+      { token: 'usada', member: null, workspace_id: WORKSPACE_IDS.estudio, workspace_name: 'Estudio Norte', inviter_name: 'Lucía Fernández', role: 'viewer', email: 'juan@estudionorte.com', status: 'used', has_account: true },
     ],
     flags: { sessionExpired: false, maintenance: false, serverDown: false, rejectPayments: false, unverifiedLogin: false, ...options.flags },
     resendAt: {},
