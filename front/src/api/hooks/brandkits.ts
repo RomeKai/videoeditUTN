@@ -18,6 +18,18 @@ export function useBrandKit(id: string | null | undefined) {
   });
 }
 
+/**
+ * Only one default kit per workspace (map F2). The backend does not enforce it yet, so after
+ * marking one the others that still say default are unmarked from here. With a backend that
+ * already does it (or the mocks) the fresh list has no other default and nothing is sent.
+ */
+async function demoteOtherDefaults(keepId: string): Promise<void> {
+  const kits = await apiCall(contract.listBrandKits, {});
+  for (const kit of kits) {
+    if (kit.is_default && kit.id !== keepId) await apiCall(contract.updateBrandKit, { params: { id: kit.id }, body: { is_default: false } });
+  }
+}
+
 function useInvalidateBrandKits() {
   const queryClient = useQueryClient();
   return () =>
@@ -27,7 +39,11 @@ function useInvalidateBrandKits() {
 export function useCreateBrandKit() {
   const invalidate = useInvalidateBrandKits();
   return useMutation({
-    mutationFn: (body: contract.BrandKitInput) => apiCall(contract.createBrandKit, { body }),
+    mutationFn: async (body: contract.BrandKitInput) => {
+      const created = await apiCall(contract.createBrandKit, { body });
+      if (body.is_default) await demoteOtherDefaults(created.id);
+      return created;
+    },
     onSuccess: invalidate,
   });
 }
@@ -37,7 +53,11 @@ export function useUpdateBrandKit(id: string) {
   const invalidate = useInvalidateBrandKits();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: Partial<contract.BrandKitInput>) => apiCall(contract.updateBrandKit, { params: { id }, body }),
+    mutationFn: async (body: Partial<contract.BrandKitInput>) => {
+      const saved = await apiCall(contract.updateBrandKit, { params: { id }, body });
+      if (body.is_default) await demoteOtherDefaults(id);
+      return saved;
+    },
     onSuccess: (saved) => {
       // The editor compares its draft with this copy: it must be the saved one right away, not after the refetch.
       queryClient.setQueryData(scopedKey(keys.brandKits.detail(id)), saved);
@@ -50,7 +70,11 @@ export function useUpdateBrandKit(id: string) {
 export function useSetDefaultBrandKit() {
   const invalidate = useInvalidateBrandKits();
   return useMutation({
-    mutationFn: (id: string) => apiCall(contract.updateBrandKit, { params: { id }, body: { is_default: true } }),
+    mutationFn: async (id: string) => {
+      const saved = await apiCall(contract.updateBrandKit, { params: { id }, body: { is_default: true } });
+      await demoteOtherDefaults(id);
+      return saved;
+    },
     onSuccess: invalidate,
   });
 }

@@ -7,7 +7,9 @@ import type { Platform } from '@/api/contracts/common';
 import type { PostStatus } from '@/api/contracts/projects';
 import type { PostsQuery, ScheduledPost } from '@/api/contracts/social';
 import { ApiError } from '@/api/errors';
-import { useCancelPost, usePost, usePosts, useRetryPost, useSocialAccounts, useUpdatePost } from '@/api/hooks';
+import { useQueryClient } from '@tanstack/react-query';
+import { useCancelPost, usePost, usePostActions, usePosts, useRetryPost, useSocialAccounts } from '@/api/hooks';
+import { keys } from '@/api/query';
 import { ConfirmDialog, ConnectNetworkDialog, useBillingDialogs } from '@/dialogs';
 import { errorMessage } from '@/lib/error-messages';
 import { useIsMobile, useMediaQuery } from '@/lib/hooks';
@@ -145,8 +147,10 @@ export function PublicacionesScreen() {
   );
 
   /* ── Actions ───────────────────────────────────────────────────────────── */
-  const update = useUpdatePost();
+  const queryClient = useQueryClient();
+  const postActions = usePostActions();
   const retry = useRetryPost();
+  const [moving, setMoving] = useState(false);
   const cancel = useCancelPost();
   const [mode, setMode] = useState<'view' | 'edit'>('view');
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -182,27 +186,49 @@ export function PublicacionesScreen() {
     },
     askCancel: setCancelling,
     reconnect: setConnecting,
-    publish: (clipId) => {
+    publish: (clipId, network) => {
       setMode('view');
-      setParams({ publicar: clipId, detalle: null });
+      setParams({ publicar: clipId, red: network ?? null, detalle: null });
     },
     publishGate: gate('post.publish'),
     connectGate: gate('social.manage'),
     busyId,
   };
 
-  const move = (group: PostGroup, to: Date) => {
-    // One after the other: a card can hold the same clip in several networks.
-    void group.posts
-      .reduce((chain, post) => chain.then(() => update.mutateAsync({ id: post.id, publish_at: to.toISOString() })), Promise.resolve<unknown>(undefined))
-      .then(() => toast.success(`«${group.title}» pasó al ${shortDayTime(to)}`))
-      .catch((error: unknown) => {
-        if (billing.handleError(error)) return;
+  const move = async (group: PostGroup, to: Date) => {
+    if (moving) return;
+    setMoving(true);
+    const ids = new Set(group.posts.map((post) => post.id));
+    const publishAt = to.toISOString();
+    // The card moves right away: every cached list and detail shows the new date, and the old ones are kept to undo it.
+    await queryClient.cancelQueries({ queryKey: keys.social.posts });
+    const before = queryClient.getQueriesData<unknown>({ queryKey: keys.social.posts });
+    const moved = (post: ScheduledPost): ScheduledPost => (ids.has(post.id) ? { ...post, publish_at: publishAt } : post);
+    queryClient.setQueriesData<unknown>({ queryKey: keys.social.posts }, (data: unknown) => {
+      if (!data || typeof data !== 'object') return data;
+      if ('results' in data && Array.isArray(data.results)) return { ...data, results: (data.results as ScheduledPost[]).map(moved) };
+      return 'id' in data && 'publish_at' in data ? moved(data as ScheduledPost) : data;
+    });
+    try {
+      // One after the other: a card can hold the same clip in several networks.
+      for (const post of group.posts) await postActions.update({ id: post.id, publish_at: publishAt });
+      toast.success(`«${group.title}» pasó al ${shortDayTime(to)}`);
+    } catch (error) {
+      for (const [key, data] of before) queryClient.setQueryData(key, data);
+      if (!billing.handleError(error)) {
         const field = error instanceof ApiError ? error.fieldErrors.publish_at?.[0] : undefined;
         toast.error(field ?? errorMessage(error, 'No pudimos reprogramar la publicación.'));
-      });
+      }
+    } finally {
+      setMoving(false);
+      // Whatever happened, the server has the last word.
+      void postActions.invalidate();
+    }
   };
-  const onMove = actions.publishGate.disabledReason ? undefined : move;
+  // No second drag while the first one is being saved.
+  const onMove = actions.publishGate.disabledReason || moving ? undefined : (group: PostGroup, to: Date) => void move(group, to);
+  // Drafts have no date yet: they live in the list, not in the calendars.
+  const dated = useMemo(() => posts.filter((post) => post.status !== 'DRAFT'), [posts]);
 
   const shift = (direction: -1 | 1) => {
     const next = view === 'mes' ? addMonths(startOfMonth(anchor), direction) : addDays(startOfWeek(anchor), direction * 7);
@@ -325,13 +351,22 @@ export function PublicacionesScreen() {
           <Skeleton height={view === 'mes' ? 660 : 520} radius={8} />
         </div>
       );
+  } else if (view !== 'lista' && status === 'DRAFT') {
+    body = (
+      <Card className={styles.noResults}>
+        <p className="muted">Los borradores todavía no tienen fecha, por eso no están en el calendario.</p>
+        <Button size="sm" onClick={() => setParams({ vista: 'lista' })}>
+          Ver los borradores en la lista
+        </Button>
+      </Card>
+    );
   } else if (view === 'semana') {
-    body = <WeekCalendar monday={startOfWeek(anchor)} posts={posts} now={now} selectedId={detailId} onOpen={(post) => actions.open(post)} onMove={onMove} />;
+    body = <WeekCalendar monday={startOfWeek(anchor)} posts={dated} now={now} selectedId={detailId} onOpen={(post) => actions.open(post)} onMove={onMove} />;
   } else if (view === 'mes') {
     body = (
       <MonthCalendar
         month={anchor}
-        posts={posts}
+        posts={dated}
         now={now}
         selectedId={detailId}
         onOpen={(post) => actions.open(post)}

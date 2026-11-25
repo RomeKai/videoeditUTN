@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useState, type FormEvent } from 'react';
 import { ApiError } from '@/api/errors';
 import type { ScheduledPost, SocialAccount } from '@/api/contracts/social';
-import { useUpdatePost } from '@/api/hooks';
+import { seoPending, useUpdatePost } from '@/api/hooks';
 import { useBillingDialogs } from '@/dialogs';
 import { errorMessage } from '@/lib/error-messages';
 import { formatDateTime, formatNumber, formatTimeZone } from '@/lib/format';
@@ -103,7 +103,7 @@ function EditForm({ post, account, onDone }: { post: ScheduledPost; account?: So
             </Field>
           </div>
           <p className="t-label subtle" style={{ marginTop: 6 }}>
-            Zona horaria: {timeZoneLabel()}, la de tu navegador.
+            Zona horaria: {timeZoneLabel(fromInputs(day, time) ?? new Date(post.publish_at))}, la de tu navegador.
           </p>
         </div>
       ) : null}
@@ -248,7 +248,7 @@ export function PostDetail({ post, siblings = [], accounts, actions, mode, onMod
             <div className={styles.dtext}>
               <div className={styles.dtextHead}>
                 <span className="t-label">Texto</span>
-                {post.seo_status === 'pending' ? (
+                {seoPending(post) ? (
                   <Badge tone="outline" size="sm" icon="sparkles">
                     Generando texto…
                   </Badge>
@@ -264,7 +264,7 @@ export function PostDetail({ post, siblings = [], accounts, actions, mode, onMod
               </div>
               {post.caption ? (
                 <p className={styles.dcaption}>{post.caption}</p>
-              ) : post.seo_status === 'pending' ? (
+              ) : seoPending(post) ? (
                 <div aria-busy="true" aria-label="Generando texto">
                   <Skeleton width="92%" height={10} />
                   <Skeleton width="64%" height={10} style={{ marginTop: 6 }} />
@@ -304,7 +304,7 @@ export function PostDetail({ post, siblings = [], accounts, actions, mode, onMod
               </Button>
             ) : null}
             {post.status === 'DRAFT' ? (
-              <Button variant="primary" iconLeft="send" onClick={() => actions.publish(post.video_clip)} {...actions.publishGate}>
+              <Button variant="primary" iconLeft="send" onClick={() => actions.publish(post.video_clip, post.platform)} {...actions.publishGate}>
                 Publicar o programar
               </Button>
             ) : null}

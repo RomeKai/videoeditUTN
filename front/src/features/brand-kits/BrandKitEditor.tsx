@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import type { BrandKit } from '@/api/contracts/brandkits';
 import { ApiError } from '@/api/errors';
-import { useBrandKit, useCreateBrandKit, useDeleteBrandKit, useUpdateBrandKit } from '@/api/hooks';
+import { useBrandKit, useBrandKits, useCreateBrandKit, useDeleteBrandKit, useUpdateBrandKit } from '@/api/hooks';
 import { ConfirmDialog, UnsavedChangesDialog } from '@/dialogs';
 import { errorMessage } from '@/lib/error-messages';
 import { formatBytes, formatDuration } from '@/lib/format';
@@ -52,7 +52,8 @@ import {
   isHex,
   kitColor,
   loadableUrl,
-  normalizeHex,
+  typedHex,
+  withTypedColors,
   validateDraft,
   validateFile,
   type ColorField,
@@ -157,7 +158,7 @@ function ColorInput({
           maxLength={7}
           disabled={disabled}
           onChange={(event) => onChange(event.target.value)}
-          onBlur={(event) => onChange(normalizeHex(event.target.value))}
+          onBlur={(event) => onChange(typedHex(event.target.value))}
         />
       </div>
     </Field>
@@ -295,6 +296,7 @@ function EditorForm({ kit }: { kit: BrandKit | null }) {
   const { can, reason, role } = usePermissions();
   const { plan } = usePlan();
   const create = useCreateBrandKit();
+  const kits = useBrandKits();
   const update = useUpdateBrandKit(kit?.id ?? '');
   const remove = useDeleteBrandKit();
   const source: KitSource = kit ?? EMPTY_KIT;
@@ -316,6 +318,8 @@ function EditorForm({ kit }: { kit: BrandKit | null }) {
   const safeLabelId = useId();
   const posLabelId = useId();
 
+  // `watermark_position` is proposed: the picker shows only when the API answers with it (for a new kit, when the other kits have it).
+  const hasPosition = kit ? kit.watermark_position !== undefined : Boolean(kits.data?.some((item) => item.watermark_position !== undefined));
   const parts = useMemo(() => changedParts(source, draft), [source, draft]);
   const dirty = parts.length > 0;
   const saving = create.isPending || update.isPending;
@@ -378,11 +382,14 @@ function EditorForm({ kit }: { kit: BrandKit | null }) {
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
     if (locked || saving) return;
-    const found = validateDraft(draft);
+    // Enter in a hex field submits without leaving it: what was typed is normalised here too.
+    const typed = withTypedColors(draft);
+    setDraft(typed);
+    const found = validateDraft(typed);
     setErrors(found);
     setServerError(null);
     if (Object.values(found).some(Boolean)) return;
-    const input = buildInput(source, draft, { create: isNew });
+    const input = buildInput(source, typed, { create: isNew, position: hasPosition });
     const onError = (error: unknown) => {
       if (error instanceof ApiError && error.status === 400) {
         const fields = error.fieldErrors;
@@ -569,6 +576,8 @@ function EditorForm({ kit }: { kit: BrandKit | null }) {
                     </span>
                   ) : null}
                 </div>
+                {/* Proposed field: without it in the response there is nothing to choose, the logo goes bottom right. */}
+                {hasPosition ? (
                 <div className={styles.logoPos}>
                   <span className={styles.rowLabel} id={posLabelId}>
                     Posición
@@ -595,6 +604,7 @@ function EditorForm({ kit }: { kit: BrandKit | null }) {
                     </span>
                   </div>
                 </div>
+                ) : null}
               </div>
             </Card>
 

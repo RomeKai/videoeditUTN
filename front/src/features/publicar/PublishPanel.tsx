@@ -1,19 +1,10 @@
 'use client';
 
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useId, useMemo, useRef, useState } from 'react';
 import type { Platform } from '@/api/contracts/common';
 import type { ScheduledPost, TikTokPrivacy } from '@/api/contracts/social';
 import { ApiError } from '@/api/errors';
-import {
-  useCancelPost,
-  useCreatePost,
-  useCreatePostsBulk,
-  usePlans,
-  usePosts,
-  useRegeneratePostSeo,
-  useSocialAccounts,
-  useUpdatePost,
-} from '@/api/hooks';
+import { seoPending, usePlans, usePostActions, usePosts, useSocialAccounts } from '@/api/hooks';
 import { ConnectNetworkDialog, useBillingDialogs } from '@/dialogs';
 import { errorMessage } from '@/lib/error-messages';
 import { formatDateTime, formatDuration, formatNumber, formatTime, plural } from '@/lib/format';
@@ -53,11 +44,13 @@ import {
   checkNetwork,
   findClashes,
   joinNetworks,
+  outcomeSummary,
   pairKey,
   scheduleFor,
   scheduleSummary,
   tiktokOptions,
   type NetworkCheck,
+  type PairFailure,
   type PairKey,
   type PanelClip,
   type SpreadMode,
@@ -66,6 +59,7 @@ import {
   type WhenMode,
 } from './publish';
 import { usePanelClips } from './usePanelClips';
+import { usePanelDrafts, type PanelPair } from './usePanelDrafts';
 
 const EMPTY_TEXT: TextValue = { caption: '', hashtags: [] };
 const ACCOUNT_BADGE = {
@@ -74,10 +68,13 @@ const ACCOUNT_BADGE = {
   disconnected: { label: 'Sin conectar', tone: 'neutral' },
 } as const;
 const TIKTOK_MUSIC_URL = 'https://www.tiktok.com/legal/page/global/music-usage-confirmation/es';
+const TIKTOK_BRANDED_URL = 'https://www.tiktok.com/legal/page/global/bc-policy/es';
 
 export interface PublishPanelProps {
   /** Clips to publish, in the order they were chosen. */
   clipIds: string[];
+  /** Networks ticked when the panel opens (the ones connected, by default). */
+  platforms?: Platform[];
   onClose: () => void;
 }
 
@@ -86,7 +83,7 @@ export interface PublishPanelProps {
  * scheduled. Opens over the screen that asked for it (`?publicar=<clipId>[,…]`).
  * Order of the panel (map 9.1.7): clip → networks → when → text and options per network.
  */
-export function PublishPanel({ clipIds, onClose }: PublishPanelProps) {
+export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: PublishPanelProps) {
   const uid = useId();
   const toast = useToast();
   const billing = useBillingDialogs();
@@ -97,13 +94,7 @@ export function PublishPanel({ clipIds, onClose }: PublishPanelProps) {
   const plans = usePlans();
   const accountsQuery = useSocialAccounts();
   const panel = usePanelClips(clipIds);
-  const draftsQuery = usePosts({ status: 'DRAFT', page_size: 100 });
-  const scheduledQuery = usePosts({ status: 'SCHEDULED', page_size: 100 });
-  const createPost = useCreatePost();
-  const createBulk = useCreatePostsBulk();
-  const updatePost = useUpdatePost();
-  const cancelPost = useCancelPost();
-  const regenerate = useRegeneratePostSeo();
+  const actions = usePostActions();
 
   const mayPublish = can('post.publish');
   // While the plan loads nothing is shown as locked.
@@ -114,7 +105,7 @@ export function PublishPanel({ clipIds, onClose }: PublishPanelProps) {
   const many = clipIds.length > 1;
 
   /* ── State ─────────────────────────────────────────────────────────────── */
-  const [picked, setPicked] = useState<Platform[] | null>(null);
+  const [picked, setPicked] = useState<Platform[] | null>(initialPlatforms?.length ? initialPlatforms : null);
   const [when, setWhen] = useState<WhenMode>('now');
   const [day, setDay] = useState(() => dayKey(addDays(new Date(), 1)));
   const [time, setTime] = useState('18:00');
@@ -127,18 +118,14 @@ export function PublishPanel({ clipIds, onClose }: PublishPanelProps) {
   const [editingClip, setEditingClip] = useState<string | null>(null);
   const [connecting, setConnecting] = useState<Platform | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [localDrafts, setLocalDrafts] = useState<Record<PairKey, ScheduledPost>>({});
+  /** Pairs that already went out, with the post the server returned: a retry never sends them again. */
+  const [sent, setSent] = useState<Record<PairKey, ScheduledPost>>({});
+  const sentRef = useRef<Record<PairKey, ScheduledPost>>({});
+  /** Pairs of the last attempt that did not go out, with the reason. */
+  const [failures, setFailures] = useState<PairFailure[]>([]);
   const [regenerating, setRegenerating] = useState<Set<PairKey>>(() => new Set());
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
-  /** Drafts this panel asked for, so it never asks twice, and the ones it created, to discard them if nothing is published. */
-  const requested = useRef(new Set<PairKey>());
-  const created = useRef(new Set<string>());
-  const published = useRef(false);
-  const queue = useRef<Promise<unknown>>(Promise.resolve());
-  /** Same drafts as `localDrafts`, readable right after the queue settles (a submit must not miss one). */
-  const draftsRef = useRef<Record<PairKey, ScheduledPost>>({});
 
   /* ── Derived ───────────────────────────────────────────────────────────── */
   const connected = useMemo(() => PLATFORMS.filter((platform) => accountOf(accounts, platform)?.status === 'connected'), [accounts]);
@@ -162,11 +149,15 @@ export function PublishPanel({ clipIds, onClose }: PublishPanelProps) {
   const dates = useMemo(() => scheduleFor(order, when, start, many ? spread : 'together'), [order, when, start, many, spread]);
   const inPast = when === 'later' && start !== null && start.getTime() <= Date.now() + 60_000;
 
-  const drafts = draftsQuery.data?.results;
-  const draftOf = (clipId: string, platform: Platform): ScheduledPost | undefined =>
-    drafts?.find((post) => post.video_clip === clipId && post.platform === platform && post.status === 'DRAFT') ??
-    localDrafts[pairKey(clipId, platform)] ??
-    draftsRef.current[pairKey(clipId, platform)];
+  /* ── AI text: creating the publication as a draft is what generates it ─── */
+  // Only for what is on screen: the clips of the network tab that is open. The rest get their text when they are published.
+  const wantsSeo = mayPublish && !planInfo.isLoading && planInfo.allows('seo');
+  const wanted = useMemo<PanelPair[]>(
+    () => (tab ? clips.filter((clip) => clip.seo && clip.ready).map((clip) => ({ clipId: clip.id, platform: tab })) : []),
+    [clips, tab],
+  );
+  const drafts = usePanelDrafts({ clipIds, wanted, enabled: wantsSeo && !submitting });
+  const { draftOf } = drafts;
   const textOf = (clipId: string, platform: Platform): TextValue => {
     const own = texts[pairKey(clipId, platform)];
     if (own) return own;
@@ -176,7 +167,7 @@ export function PublishPanel({ clipIds, onClose }: PublishPanelProps) {
   const isGenerating = (clipId: string, platform: Platform): boolean => {
     const key = pairKey(clipId, platform);
     const draft = draftOf(clipId, platform);
-    if (texts[key] || !draft || draft.seo_status !== 'pending') return false;
+    if (texts[key] || !draft || !seoPending(draft)) return false;
     return !draft.caption || regenerating.has(key);
   };
   const originOf = (clipId: string, platform: Platform): TextOrigin => {
@@ -189,50 +180,31 @@ export function PublishPanel({ clipIds, onClose }: PublishPanelProps) {
   const checks = selected.map((platform) => checkNetwork({ platform, account: accountOf(accounts, platform), clips, textOf: (clipId) => textOf(clipId, platform), tiktok }));
   const checkOf = (platform: Platform): NetworkCheck | undefined => checks.find((check) => check.platform === platform);
   const failing = checks.find((check) => !check.ok);
-  const scheduled = scheduledQuery.data?.results;
-  const clashes = useMemo(() => findClashes(dates, selected, scheduled ?? [], clipIds), [dates, selected, scheduled, clipIds]);
-  const total = clips.length * selected.length;
+  // Only what is already scheduled around the chosen dates: a workspace can have more than a page of publications.
+  const range = useMemo(() => {
+    const times = [...dates.values()].filter((date): date is Date => Boolean(date)).map((date) => Math.floor(date.getTime() / 60_000) * 60_000);
+    if (times.length === 0) return null;
+    return { from: new Date(Math.min(...times)).toISOString(), to: new Date(Math.max(...times) + 59_999).toISOString() };
+  }, [dates]);
+  const scheduledQuery = usePosts({ status: 'SCHEDULED', page_size: 100, ...(range ?? {}) }, { enabled: range !== null });
+  const scheduled = range ? scheduledQuery.data?.results : undefined;
+  const clashes = useMemo(() => findClashes(dates, selected, scheduled ?? []), [dates, selected, scheduled]);
+  const pending = useMemo<PanelPair[]>(
+    () => order.flatMap((clipId) => selected.map((platform) => ({ clipId, platform }))).filter((pair) => !sent[pairKey(pair.clipId, pair.platform)]),
+    [order, selected, sent],
+  );
+  const sentCount = Object.keys(sent).length;
+  const total = pending.length;
 
-  /* ── AI text: creating the publication as a draft is what generates it ─── */
-  const wantsSeo = mayPublish && !planInfo.isLoading && planInfo.allows('seo');
-  const draftsLoaded = draftsQuery.isSuccess && !draftsQuery.isPlaceholderData;
-  const { mutateAsync: createDraft } = createPost;
-  const selectedKey = selected.join(',');
-  const clipsKey = clips.map((clip) => `${clip.id}:${clip.seo && clip.ready ? 1 : 0}`).join(',');
-  useEffect(() => {
-    if (!wantsSeo || !draftsLoaded) return;
-    for (const clip of clips) {
-      if (!clip.seo || !clip.ready) continue;
-      for (const platform of selected) {
-        const key = pairKey(clip.id, platform);
-        if (requested.current.has(key) || draftOf(clip.id, platform)) continue;
-        requested.current.add(key);
-        // One at a time: each draft is a write, and they are not urgent.
-        queue.current = queue.current
-          .then(() => createDraft({ video_clip: clip.id, platform, draft: true }))
-          .then((post) => {
-            created.current.add(post.id);
-            draftsRef.current[key] = post;
-            setLocalDrafts((current) => ({ ...current, [key]: post }));
-          })
-          // Without a draft there is no suggestion: the user writes the text.
-          .catch(() => undefined);
-      }
-    }
-    // `draftOf` reads the drafts already listed: re-running when the selection or the clips change is enough.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wantsSeo, draftsLoaded, selectedKey, clipsKey, createDraft]);
-
-  const { mutateAsync: discardDraft } = cancelPost;
   /* ── Close ─────────────────────────────────────────────────────────────── */
   const close = () => {
     if (submitting) return;
-    // Drafts this panel created only to get the AI text are not left behind.
-    if (!published.current) {
-      const ids = [...created.current];
-      queue.current = ids.reduce((chain, id) => chain.then(() => discardDraft(id)).catch(() => undefined), queue.current);
+    // Drafts this panel created only to get the AI text are not left behind. The ones that went out are not drafts any more.
+    void drafts.discardAll().then(() => actions.invalidate());
+    if (sentCount > 0) {
+      const done = outcomeSummary({ platforms: PLATFORMS, clips, sent: Object.keys(sent) as PairKey[], failures: [], when });
+      toast.success(done.title, { action: { label: 'Ver', href: '/publicaciones' } });
     }
-    created.current.clear();
     onClose();
   };
 
@@ -263,65 +235,127 @@ export function PublishPanel({ clipIds, onClose }: PublishPanelProps) {
   const canSubmit = ready && !blocker && mayPublish;
 
   /* ── Submit ────────────────────────────────────────────────────────────── */
+  const reasonOf = (error: unknown): string => {
+    if (error instanceof ApiError && error.code === 'account_not_connected') {
+      return errorMessage(error, 'La cuenta de la red no está conectada. Reconectala para publicar.');
+    }
+    if (error instanceof ApiError && error.status === 400) {
+      return Object.values(error.fieldErrors)[0]?.[0] ?? errorMessage(error, 'Revisá los datos y probá de nuevo.');
+    }
+    if (error instanceof ApiError && error.status === 403) return roleReason;
+    return errorMessage(error, 'Probá de nuevo.');
+  };
+
   const submit = async () => {
     if (!canSubmit || submitting) return;
     setSubmitting(true);
-    setSubmitError(null);
+    setFailures([]);
     // Drafts still being created must exist before deciding what is new and what is a draft.
-    await queue.current;
+    await drafts.whenIdle();
+    // Only what did not go out yet: a retry after a partial failure never sends a publication twice.
+    const pairs = order.flatMap((clipId) => selected.map((platform) => ({ clipId, platform }))).filter((pair) => !sentRef.current[pairKey(pair.clipId, pair.platform)]);
     const { creates, updates } = buildSubmission({
-      order,
-      platforms: selected,
+      pairs,
       dates,
       textOf,
-      waitingText: isGenerating,
-      draftOf,
+      hasText: (clipId, platform) => Boolean(texts[pairKey(clipId, platform)]) || (Boolean(drafts.read(clipId, platform)) && !isGenerating(clipId, platform)),
+      draftOf: drafts.read,
       tiktok: tiktokOptions(tiktok, accountOf(accounts, 'TIKTOK')),
     });
-    try {
-      // New publications first: the batch is all or nothing, so a plan or account error changes nothing.
-      const first = creates[0];
-      if (creates.length === 1 && first) await createPost.mutateAsync(first);
-      else if (creates.length > 1) await createBulk.mutateAsync(creates);
-      for (const item of updates) await updatePost.mutateAsync(item);
-      published.current = true;
-      // Drafts of a network that was unticked afterwards are not part of what went out.
-      const used = new Set(updates.map((item) => item.id));
-      const unused = [...created.current].filter((id) => !used.has(id));
-      queue.current = unused.reduce((chain, id) => chain.then(() => discardDraft(id)).catch(() => undefined), queue.current);
-      const networks = joinNetworks(selected);
-      const firstClip = clips[0];
-      const message =
-        when === 'now'
-          ? many
-            ? `Se están publicando ${clips.length} clips en ${networks}`
-            : `«${firstClip?.title}» se está publicando en ${networks}`
-          : many
-            ? `${total} publicaciones programadas en ${networks}`
-            : `«${firstClip?.title}» quedó programado para el ${formatDateTime(start as Date)}`;
-      toast.success(message, { action: { label: 'Ver', href: '/publicaciones' } });
-      created.current.clear();
-      onClose();
-    } catch (error) {
-      if (billing.handleError(error)) return;
-      if (error instanceof ApiError && error.code === 'account_not_connected') {
-        void accountsQuery.refetch();
-        setSubmitError(errorMessage(error, 'La cuenta de la red no está conectada. Reconectala para publicar.'));
-      } else if (error instanceof ApiError && error.status === 400) {
-        const first = Object.values(error.fieldErrors)[0]?.[0];
-        setSubmitError(first ?? errorMessage(error, 'No pudimos publicar. Revisá los datos y probá de nuevo.'));
-      } else if (error instanceof ApiError && error.status === 403) {
-        setSubmitError(roleReason);
-      } else setSubmitError(errorMessage(error, 'No pudimos publicar. Probá de nuevo.'));
-    } finally {
-      setSubmitting(false);
+    const out: Record<PairKey, ScheduledPost> = {};
+    const failed: PairFailure[] = [];
+    let billed = false;
+    let accountGone = false;
+    const fail = (clipId: string, platform: Platform, error: unknown) => {
+      if (error instanceof ApiError && error.code === 'account_not_connected') accountGone = true;
+      failed.push({ clipId, platform, message: reasonOf(error) });
+    };
+
+    // New publications first: the batch is all or nothing, so a plan or account error there changes nothing.
+    if (creates.length > 0) {
+      try {
+        const first = creates[0];
+        const posts = creates.length === 1 && first ? [await actions.create(first)] : await actions.createBulk(creates);
+        for (const post of posts) out[pairKey(post.video_clip, post.platform)] = post;
+      } catch (error) {
+        if (billing.handleError(error)) billed = true;
+        else for (const item of creates) fail(item.video_clip, item.platform, error);
+      }
     }
+    // Then each draft, one by one: the ones that go out are recorded even if a later one fails.
+    for (const item of billed ? [] : updates) {
+      const { clipId, platform, draft, request } = item;
+      try {
+        const post = await actions.update(request);
+        out[pairKey(clipId, platform)] = post;
+        drafts.markSent(draft);
+      } catch (error) {
+        if (billing.handleError(error)) {
+          billed = true;
+          break;
+        }
+        const stale = error instanceof ApiError && (error.status === 404 || (error.status === 409 && error.code !== 'account_not_connected'));
+        if (!stale) {
+          fail(clipId, platform, error);
+          continue;
+        }
+        // The draft changed under the panel (published from another tab, or deleted): ask what it is now.
+        try {
+          const current = await actions.get(draft.id);
+          if (current.status === 'DRAFT') fail(clipId, platform, error);
+          else {
+            out[pairKey(clipId, platform)] = current;
+            drafts.markSent(draft);
+          }
+        } catch {
+          // It no longer exists: the next attempt creates the publication from scratch.
+          drafts.drop(draft);
+          fail(clipId, platform, error);
+        }
+      }
+    }
+
+    const went = Object.keys(out).length;
+    if (went > 0) {
+      sentRef.current = { ...sentRef.current, ...out };
+      setSent(sentRef.current);
+      void actions.invalidate();
+    }
+    if (accountGone) void accountsQuery.refetch();
+    setSubmitting(false);
+    if (billed || failed.length > 0 || went < pairs.length) {
+      setFailures(failed);
+      return;
+    }
+
+    const count = Object.keys(sentRef.current).length;
+    // What went out, which after a partial failure can be less than what is ticked now.
+    const networks = joinNetworks(PLATFORMS.filter((platform) => clips.some((clip) => sentRef.current[pairKey(clip.id, platform)])));
+    const firstClip = clips[0];
+    const message =
+      when === 'now'
+        ? many
+          ? `Se están publicando ${clips.length} clips en ${networks}`
+          : `«${firstClip?.title}» se está publicando en ${networks}`
+        : many
+          ? `${count} publicaciones programadas en ${networks}`
+          : `«${firstClip?.title}» quedó programado para el ${formatDateTime(start as Date)}`;
+    toast.success(message, { action: { label: 'Ver', href: '/publicaciones' } });
+    // Drafts of a network that was unticked afterwards are not part of what went out.
+    void drafts.discardAll().then(() => actions.invalidate());
+    onClose();
   };
 
   const onRegenerate = (clipId: string, platform: Platform) => {
     const draft = draftOf(clipId, platform);
     if (!draft) return;
     const key = pairKey(clipId, platform);
+    const stop = () =>
+      setRegenerating((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
     setRegenerating((current) => new Set(current).add(key));
     // The new text replaces what is in the box, including what the user typed.
     setTexts((current) => {
@@ -329,17 +363,13 @@ export function PublishPanel({ clipIds, onClose }: PublishPanelProps) {
       delete next[key];
       return next;
     });
-    regenerate.mutate(draft.id, {
-      onSuccess: (post) => setLocalDrafts((current) => ({ ...current, [key]: post })),
-      onError: (error) => {
-        setRegenerating((current) => {
-          const next = new Set(current);
-          next.delete(key);
-          return next;
-        });
+    actions.regenerate(draft.id).then(
+      (post) => drafts.put(post),
+      (error: unknown) => {
+        stop();
         if (!billing.handleError(error)) toast.error(errorMessage(error, 'No pudimos generar el texto de nuevo.'));
       },
-    });
+    );
   };
   const regenerateFor = (clip: PanelClip, platform: Platform) =>
     clip.seo && allows('seo') && mayPublish && draftOf(clip.id, platform) ? () => onRegenerate(clip.id, platform) : undefined;
@@ -362,7 +392,10 @@ export function PublishPanel({ clipIds, onClose }: PublishPanelProps) {
   const projectTitles = [...new Set(clips.map((clip) => clip.projectTitle))];
   const resolutions = [...new Set(clips.map((clip) => clip.resolution).filter(Boolean))];
   const previewClip = clips[Math.min(previewIndex, Math.max(0, clips.length - 1))];
-  const publishLabel = when === 'now' ? 'Publicar' : 'Programar';
+  // After a partial failure with nothing left to send (the failed network was unticked or disconnected) the button only closes.
+  const publishLabel = sentCount > 0 && pending.length === 0 ? 'Listo' : when === 'now' ? 'Publicar' : 'Programar';
+  const brandedOn = tiktok.disclose && tiktok.brandedContent;
+  const outcome = failures.length > 0 ? outcomeSummary({ platforms: PLATFORMS, clips, sent: Object.keys(sent) as PairKey[], failures, when }) : null;
   const whenSummary = when === 'now' ? 'ahora' : many ? scheduleSummary([...dates.values()]) : start ? formatDateTime(start) : 'elegí la fecha';
   const summary = many ? (
     <>
@@ -379,6 +412,14 @@ export function PublishPanel({ clipIds, onClose }: PublishPanelProps) {
       {selected.includes('TIKTOK') ? (
         <p className={styles.legal}>
           Al publicar, aceptás la{' '}
+          {brandedOn ? (
+            <>
+              <a className="lnk" href={TIKTOK_BRANDED_URL} target="_blank" rel="noopener noreferrer">
+                política de contenido de marca
+              </a>{' '}
+              y la{' '}
+            </>
+          ) : null}
           <a className="lnk" href={TIKTOK_MUSIC_URL} target="_blank" rel="noopener noreferrer">
             confirmación de uso de música de TikTok
           </a>
@@ -455,7 +496,11 @@ export function PublishPanel({ clipIds, onClose }: PublishPanelProps) {
               required
               value={tiktok.privacy}
               placeholder="Elegí una opción"
-              options={privacyOptions.map((option) => ({ value: option, label: PRIVACY_LABEL[option] }))}
+              options={privacyOptions.map((option) => ({
+                value: option,
+                label: option === 'SELF_ONLY' && brandedOn ? `${PRIVACY_LABEL[option]} (no disponible con contenido de marca)` : PRIVACY_LABEL[option],
+                disabled: option === 'SELF_ONLY' && brandedOn,
+              }))}
               onChange={(event) => setTiktok((current) => ({ ...current, privacy: event.target.value as TikTokPrivacy }))}
             />
           </Field>
@@ -660,8 +705,13 @@ export function PublishPanel({ clipIds, onClose }: PublishPanelProps) {
                   />
                   <Checkbox
                     label="Contenido de marca"
-                    description={`Promocionás a un tercero. ${many ? 'Los videos se etiquetan' : 'El video se etiqueta'} como «Colaboración pagada».`}
+                    description={
+                      tiktok.privacy === 'SELF_ONLY' && !tiktok.brandedContent
+                        ? 'No se puede con la privacidad «Solo yo»: TikTok pide que el contenido de marca sea visible para otros.'
+                        : `Promocionás a un tercero. ${many ? 'Los videos se etiquetan' : 'El video se etiqueta'} como «Colaboración pagada».`
+                    }
                     checked={tiktok.brandedContent}
+                    disabled={tiktok.privacy === 'SELF_ONLY' && !tiktok.brandedContent}
                     onChange={(event) => setTiktok((current) => ({ ...current, brandedContent: event.target.checked }))}
                   />
                 </div>
@@ -800,7 +850,7 @@ export function PublishPanel({ clipIds, onClose }: PublishPanelProps) {
                         <Checkbox
                           className={cx(styles.netPick, !usable && styles.netPickOff)}
                           checked={on}
-                          disabled={!usable}
+                          disabled={!usable || submitting || clips.some((clip) => Boolean(sent[pairKey(clip.id, platform)]))}
                           aria-label={usable ? `Publicar en ${name}` : `${name}: ${status === 'expired' ? 'reconectá' : 'conectá'} la cuenta para elegirla`}
                           onChange={(event) => togglePlatform(platform, event.target.checked)}
                           label={
@@ -1054,20 +1104,32 @@ export function PublishPanel({ clipIds, onClose }: PublishPanelProps) {
                 </section>
               ) : null}
 
-              {clashes.length > 0 || submitError ? (
+              {clashes.length > 0 || outcome ? (
                 <div className={styles.sec}>
                   {clashes.map((clash) => (
-                    <p key={`${clash.platform}${clash.at.getTime()}`} className={styles.clash}>
+                    <p key={`${clash.platform}${clash.at.getTime()}${clash.sameClip ? 'same' : ''}`} className={styles.clash}>
                       <Icon name="warning" size={14} />
                       <span>
-                        El <Num>{shortDay(clash.at)} a las {formatTime(clash.at)}</Num> ya sale «{clash.title}» en {NETWORK_NOUN[clash.platform]}: van a salir dos publicaciones a la misma hora.{' '}
+                        {clash.sameClip ? (
+                          <>
+                            «{clash.title}» ya está programado en {NETWORK_NOUN[clash.platform]} el <Num>{shortDay(clash.at)} a las {formatTime(clash.at)}</Num>: saldría dos veces.{' '}
+                          </>
+                        ) : (
+                          <>
+                            El <Num>{shortDay(clash.at)} a las {formatTime(clash.at)}</Num> ya sale «{clash.title}» en {NETWORK_NOUN[clash.platform]}: van a salir dos publicaciones a la misma hora.{' '}
+                          </>
+                        )}
                         <button type="button" className={styles.linkBtn} onClick={() => focusField(ids.date)}>
                           Cambiar la hora
                         </button>
                       </span>
                     </p>
                   ))}
-                  {submitError ? <Banner tone="err" live="alert" title={submitError} /> : null}
+                  {outcome ? (
+                    <Banner tone={outcome.partial ? 'warn' : 'err'} live="alert" title={outcome.title}>
+                      {outcome.detail}
+                    </Banner>
+                  ) : null}
                 </div>
               ) : null}
             </>

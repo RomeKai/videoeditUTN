@@ -1,5 +1,5 @@
 import type { BrandKit, BrandKitInput, WatermarkPosition } from '@/api/contracts/brandkits';
-import { normalizeHex as savedHex } from '@/lib/format';
+import { normalizeHex } from '@/lib/format';
 
 export type FileField = 'primary_font' | 'secondary_font' | 'watermark_logo' | 'intro_video' | 'outro_video';
 export type ColorField = 'primary_color' | 'secondary_color' | 'accent_color';
@@ -47,12 +47,20 @@ export function validateFile(field: FileField, file: { name: string; size: numbe
 const HEX = /^#[0-9a-fA-F]{6}$/;
 export const isHex = (value: string): boolean => HEX.test(value);
 
-/** "#f2c" → "#FF22CC", "F2C94C" → "#F2C94C"; anything else comes back trimmed and uppercased. */
-export function normalizeHex(value: string): string {
-  let text = value.trim().toUpperCase();
-  if (text && !text.startsWith('#')) text = `#${text}`;
-  if (/^#[0-9A-F]{3}$/.test(text)) text = `#${[...text.slice(1)].map((char) => char + char).join('')}`;
-  return text;
+/**
+ * What the user typed in a hex field, as the form keeps it: "#f2c" → "#FF22CC", "F2C94C" → "#F2C94C"
+ * (the app's `normalizeHex`, forgiving a missing "#"). Anything else comes back trimmed and uppercased, for the field to flag it.
+ */
+export function typedHex(value: string): string {
+  const text = value.trim().toUpperCase();
+  if (!text) return text;
+  const withHash = text.startsWith('#') ? text : `#${text}`;
+  return normalizeHex(withHash, '') || withHash;
+}
+
+/** The three colors of a draft as they are sent: what was typed, normalised. */
+export function withTypedColors(draft: KitDraft): KitDraft {
+  return { ...draft, primary_color: typedHex(draft.primary_color), secondary_color: typedHex(draft.secondary_color), accent_color: typedHex(draft.accent_color) };
 }
 
 /** Last segment of a path or URL, without the query: "/media/assets/fonts/Inter-Bold.ttf" → "Inter-Bold.ttf". */
@@ -121,7 +129,7 @@ export type KitSource = typeof EMPTY_KIT;
  * (`red`, `#fff`, lower case); the inputs and the request only take `#RRGGBB`.
  */
 export function kitColor(kit: KitSource, field: ColorField): string {
-  return savedHex(kit[field], EMPTY_KIT[field]);
+  return normalizeHex(kit[field], EMPTY_KIT[field]);
 }
 
 export function draftFrom(kit: KitSource): KitDraft {
@@ -197,7 +205,7 @@ export function validateDraft(draft: KitDraft): KitErrors {
 }
 
 /** Body for POST (everything) or PATCH (only what changed). Files: a File replaces, '' clears. */
-export function buildInput(kit: KitSource, draft: KitDraft, { create }: { create: boolean }): Partial<BrandKitInput> {
+export function buildInput(kit: KitSource, draft: KitDraft, { create, position = true }: { create: boolean; position?: boolean }): Partial<BrandKitInput> {
   const input: Partial<BrandKitInput> = {};
   const name = draft.name.trim();
   if (create || name !== kit.name) input.name = name;
@@ -210,7 +218,8 @@ export function buildInput(kit: KitSource, draft: KitDraft, { create }: { create
     if (change instanceof File) input[field] = change;
     else if (change === null && kit[field]) input[field] = '';
   }
-  if (create || draft.watermark_position !== (kit.watermark_position ?? DEFAULT_POSITION)) input.watermark_position = draft.watermark_position;
+  // `position: false`: the backend does not have the field yet, so it is not sent.
+  if (position && (create || draft.watermark_position !== (kit.watermark_position ?? DEFAULT_POSITION))) input.watermark_position = draft.watermark_position;
   if (create ? draft.is_default : draft.is_default !== kit.is_default) input.is_default = draft.is_default;
   return input;
 }

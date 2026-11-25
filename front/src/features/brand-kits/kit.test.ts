@@ -9,7 +9,7 @@ import {
   fileName,
   fontLabel,
   loadableUrl,
-  normalizeHex,
+  typedHex,
   validateDraft,
   validateFile,
   type KitSource,
@@ -31,9 +31,9 @@ const file = (name: string, size = 1000) => ({ name, size });
 
 describe('colores', () => {
   it('normaliza lo que se escribe a un hex de 6 dígitos en mayúsculas', () => {
-    expect(normalizeHex('f2c94c')).toBe('#F2C94C');
-    expect(normalizeHex(' #f2c ')).toBe('#FF22CC');
-    expect(normalizeHex('#F2C94C')).toBe('#F2C94C');
+    expect(typedHex('f2c94c')).toBe('#F2C94C');
+    expect(typedHex(' #f2c ')).toBe('#FF22CC');
+    expect(typedHex('#F2C94C')).toBe('#F2C94C');
   });
 
   it('un color que no es hex marca su campo', () => {

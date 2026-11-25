@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { EXAMPLE_IDS } from '../src/dev/screens';
 import { expectClean, settle, useScenario, watch } from './helpers';
 
@@ -187,5 +187,107 @@ test.describe('E1 · Publicar y E2 · Publicaciones', () => {
     await panel.getByRole('button', { name: /Reconectar TikTok/ }).click();
     await expect(page.getByRole('dialog', { name: 'Conectar TikTok' })).toBeVisible();
     expectClean(problems, 'cuenta vencida');
+  });
+  const THREE = [CLIP, '00000008-0000-4000-8000-0000000001f6', SECOND_CLIP];
+  /** Client-side navigation, as a screen does when it opens the panel: a new history entry without reloading. */
+  const push = (page: Page, url: string) => page.evaluate((to) => (window as unknown as { next: { router: { push: (href: string) => void } } }).next.router.push(to), url);
+  const drafts = (page: Page) => page.getByRole('button', { name: /Borradores/ });
+
+  test('cerrar un panel de varios clips apenas abre no deja borradores', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    const problems = watch(page);
+    await page.goto(`/publicaciones?vista=lista&publicar=${THREE.join(',')}`);
+    const panel = page.getByRole('dialog', { name: 'Publicar 3 clips' });
+    await expect(panel.getByRole('heading', { name: 'Redes' })).toBeVisible();
+    // The helper drafts are still being created, one by one.
+    await panel.getByRole('button', { name: 'Cancelar' }).click();
+    await expect(panel).toBeHidden();
+    await page.waitForTimeout(2500);
+    await page.reload();
+    await settle(page);
+    await expect(drafts(page)).toContainText('1');
+    await expect(page.getByRole('button', { name: /^Todas/ })).toContainText('8');
+    expectClean(problems, 'cerrar enseguida');
+  });
+
+  test('irse con Atrás descarta los borradores, y cerrar un panel abierto desde una pantalla no deja una entrada de más', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    const problems = watch(page);
+    await page.goto('/brand-kits');
+    await settle(page);
+    await push(page, '/publicaciones?vista=lista');
+    await expect(page.getByRole('heading', { level: 1, name: 'Publicaciones' })).toBeVisible();
+    await settle(page);
+    await push(page, `/publicaciones?vista=lista&publicar=${CLIP}`);
+    const panel = page.getByRole('dialog', { name: 'Publicar clip' });
+    await expect(panel.getByText('Sugerido por IA')).toBeVisible({ timeout: 15_000 });
+
+    // Back: the panel goes away without its own close().
+    await page.goBack();
+    await expect(panel).toBeHidden();
+    await expect(page).toHaveURL(/\/publicaciones\?vista=lista$/);
+    await page.waitForTimeout(1500);
+    await page.reload();
+    await settle(page);
+    await expect(drafts(page)).toContainText('1');
+
+    // Opened by a push and closed with its button: Back then leaves Publicaciones, it does not show it twice.
+    await push(page, '/publicaciones?vista=lista&detalle=');
+    await push(page, `/publicaciones?vista=lista&publicar=${CLIP}`);
+    await expect(panel.getByRole('heading', { name: 'Redes' })).toBeVisible();
+    await panel.getByRole('button', { name: 'Cancelar' }).click();
+    await expect(panel).toBeHidden();
+    await expect(page).toHaveURL(/\/publicaciones\?vista=lista&detalle=$/);
+    await page.goBack();
+    await expect(page).toHaveURL(/\/publicaciones\?vista=lista$/);
+    expectClean(problems, 'atrás');
+  });
+
+  test('recargar o salir de la página con el panel abierto: lo que quede se descarta al volver', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    await page.goto('/publicaciones?vista=lista');
+    await settle(page);
+    await expect(drafts(page)).toContainText('1');
+    // A full page load with the panel, and a full page load away from it: no unmount to clean up in.
+    await page.goto(`/publicaciones?vista=lista&publicar=${CLIP}`);
+    const panel = page.getByRole('dialog', { name: 'Publicar clip' });
+    await expect(panel.getByText('Sugerido por IA')).toBeVisible({ timeout: 15_000 });
+    await page.goto('/publicaciones?vista=lista');
+    await settle(page);
+    await page.waitForTimeout(1500);
+    await page.reload();
+    await settle(page);
+    await expect(drafts(page)).toContainText('1');
+
+    // Reloading with the panel open keeps working with the same draft, and closing discards it.
+    await page.goto(`/publicaciones?vista=lista&publicar=${CLIP}`);
+    await expect(panel.getByText('Sugerido por IA')).toBeVisible({ timeout: 15_000 });
+    await page.reload();
+    await expect(panel.getByText('Sugerido por IA')).toBeVisible({ timeout: 15_000 });
+    await panel.getByRole('button', { name: 'Cancelar' }).click();
+    await expect(panel).toBeHidden();
+    await page.waitForTimeout(1500);
+    await page.reload();
+    await settle(page);
+    await expect(drafts(page)).toContainText('1');
+  });
+
+  test('los borradores no se dibujan en el calendario, y «Programar» abre el panel con su red', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    const problems = watch(page);
+    await page.goto('/publicaciones?vista=mes');
+    await settle(page);
+    await expect(page.getByRole('grid').getByRole('button', { name: /Programado/ }).first()).toBeVisible();
+    await expect(page.getByRole('grid').getByRole('button', { name: /Borrador/ })).toHaveCount(0);
+    await page.getByRole('group', { name: 'Vista' }).getByRole('button', { name: 'Lista' }).click();
+    await page.getByRole('button', { name: /^Programar «.*» en Instagram$/ }).click();
+    const panel = page.getByRole('dialog', { name: 'Publicar clip' });
+    await expect(panel.getByRole('checkbox', { name: 'Publicar en Instagram Reels' })).toBeChecked();
+    await expect(panel.getByRole('checkbox', { name: 'Publicar en TikTok' })).not.toBeChecked();
+    await panel.getByRole('button', { name: 'Cancelar' }).click();
+    await expect(page).toHaveURL(/\/publicaciones\?vista=lista$/);
+    // The user's own draft is not a helper draft: it is still there.
+    await expect(drafts(page)).toContainText('1');
+    expectClean(problems, 'borradores');
   });
 });

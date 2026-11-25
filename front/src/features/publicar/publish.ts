@@ -179,13 +179,15 @@ export function checkNetwork({ platform, account, clips, textOf, tiktok }: Check
       severe: false,
     });
     if (tiktok.disclose) {
+      // TikTok does not accept branded content that only its author can see.
+      const privateBranded = tiktok.brandedContent && tiktok.privacy === 'SELF_ONLY';
       requirements.push({
         key: 'disclosure',
-        ok: tiktok.brandOrganic || tiktok.brandedContent,
+        ok: (tiktok.brandOrganic || tiktok.brandedContent) && !privateBranded,
         met: 'contenido comercial declarado',
-        missing: 'falta elegir «Tu marca» o «Contenido de marca»',
-        action: 'Elegí «Tu marca» o «Contenido de marca» en TikTok',
-        severe: false,
+        missing: privateBranded ? 'el contenido de marca no puede ser «Solo yo»' : 'falta elegir «Tu marca» o «Contenido de marca»',
+        action: privateBranded ? 'El contenido de marca no puede ser «Solo yo»: cambiá la privacidad de TikTok' : 'Elegí «Tu marca» o «Contenido de marca» en TikTok',
+        severe: privateBranded,
       });
     }
   }
@@ -196,39 +198,98 @@ export function checkNetwork({ platform, account, clips, textOf, tiktok }: Check
 
 /* ── What gets sent ──────────────────────────────────────────────────────── */
 
+export interface Pair {
+  clipId: string;
+  platform: Platform;
+}
+
 export interface Submission {
   /** Publications with no draft: created (in bulk when there are several). */
   creates: CreatePostInput[];
-  /** Drafts that already exist: published or scheduled with PATCH. */
-  updates: Array<UpdatePostRequest & { id: string }>;
+  /** Drafts that already exist: published or scheduled with PATCH, one by one. */
+  updates: Array<Pair & { draft: ScheduledPost; request: UpdatePostRequest & { id: string } }>;
 }
 
 export interface SubmissionInput {
-  order: string[];
-  platforms: Platform[];
+  /** What is left to send: every clip in every chosen network, minus what already went out. */
+  pairs: Pair[];
   dates: Map<string, Date | null>;
   textOf: (clipId: string, platform: Platform) => TextValue;
-  /** True while the AI text of the pair has not arrived and the user wrote nothing: the text is left to the backend. */
-  waitingText: (clipId: string, platform: Platform) => boolean;
+  /** False while the pair has no text of its own (nobody wrote one and the AI one has not arrived): it is left to the backend. */
+  hasText: (clipId: string, platform: Platform) => boolean;
   draftOf: (clipId: string, platform: Platform) => ScheduledPost | undefined;
   tiktok: TikTokOptions | undefined;
 }
 
-export function buildSubmission({ order, platforms, dates, textOf, waitingText, draftOf, tiktok }: SubmissionInput): Submission {
+export function buildSubmission({ pairs, dates, textOf, hasText, draftOf, tiktok }: SubmissionInput): Submission {
   const creates: CreatePostInput[] = [];
   const updates: Submission['updates'] = [];
-  for (const clipId of order) {
+  for (const { clipId, platform } of pairs) {
     const date = dates.get(clipId) ?? null;
     const publishAt = date ? date.toISOString() : null;
-    for (const platform of platforms) {
-      const text = waitingText(clipId, platform) ? {} : { caption: textOf(clipId, platform).caption, hashtags: textOf(clipId, platform).hashtags };
-      const extra = platform === 'TIKTOK' && tiktok ? { tiktok } : {};
-      const draft = draftOf(clipId, platform);
-      if (draft) updates.push({ id: draft.id, publish_at: publishAt, ...text, ...extra });
-      else creates.push({ video_clip: clipId, platform, publish_at: publishAt, ...text, ...extra });
-    }
+    const text = hasText(clipId, platform) ? { caption: textOf(clipId, platform).caption, hashtags: textOf(clipId, platform).hashtags } : {};
+    const extra = platform === 'TIKTOK' && tiktok ? { tiktok } : {};
+    const draft = draftOf(clipId, platform);
+    if (draft) updates.push({ clipId, platform, draft, request: { id: draft.id, publish_at: publishAt, ...text, ...extra } });
+    else creates.push({ video_clip: clipId, platform, publish_at: publishAt, ...text, ...extra });
   }
   return { creates, updates };
+}
+
+/* ── What happened ───────────────────────────────────────────────────────── */
+
+export interface PairFailure extends Pair {
+  /** Readable reason, as the API gave it. */
+  message: string;
+}
+
+export interface Outcome {
+  title: string;
+  detail: string;
+  /** Something went out and something did not. */
+  partial: boolean;
+}
+
+/**
+ * The result of a publish attempt, network by network: "Salió en TikTok; Instagram falló".
+ * `sent` holds everything that went out since the panel opened, `failures` what the last attempt left behind.
+ */
+export function outcomeSummary({
+  platforms,
+  clips,
+  sent,
+  failures,
+  when,
+}: {
+  platforms: Platform[];
+  clips: Array<Pick<PanelClip, 'id'>>;
+  sent: PairKey[];
+  failures: PairFailure[];
+  when: WhenMode;
+}): Outcome {
+  const many = clips.length > 1;
+  const sentOf = (platform: Platform) => clips.filter((clip) => sent.includes(pairKey(clip.id, platform))).length;
+  const went = platforms.filter((platform) => sentOf(platform) > 0);
+  const failed = platforms.filter((platform) => failures.some((item) => item.platform === platform));
+  const reasons = failed.map((platform) => {
+    const own = failures.filter((item) => item.platform === platform);
+    const count = many ? ` (${formatNumber(own.length)} de ${formatNumber(clips.length)} clips)` : '';
+    return `${NETWORK_NOUN[platform]}${count}: ${own[0]?.message ?? ''}`;
+  });
+  const done = when === 'now' ? (many ? 'Salieron' : 'Salió') : many ? 'Quedaron programados' : 'Quedó programado';
+  const wentText = went
+    .map((platform) => (many ? `${NETWORK_NOUN[platform]} (${formatNumber(sentOf(platform))} de ${formatNumber(clips.length)})` : NETWORK_NOUN[platform]))
+    .join(', ');
+  if (failed.length === 0) return { title: `${done} en ${wentText}`, detail: '', partial: false };
+  const failedText = `${joinNetworks(failed)} ${failed.length > 1 ? 'fallaron' : 'falló'}`;
+  if (went.length === 0) {
+    return { title: `No pudimos ${when === 'now' ? 'publicar' : 'programar'} en ${joinNetworks(failed)}`, detail: reasons.join(' '), partial: false };
+  }
+  return {
+    title: `${done} en ${wentText}; ${failedText}`,
+    detail: `${reasons.join(' ')} Lo que ya salió no se vuelve a enviar: corregí y probá de nuevo solo lo que falta.`,
+    partial: true,
+  };
 }
 
 /* ── Calendar clashes ────────────────────────────────────────────────────── */
@@ -238,19 +299,22 @@ export interface Clash {
   platform: Platform;
   /** Title of the publication that is already scheduled at that time. */
   title: string;
+  /** It is the same clip: it would go out twice. */
+  sameClip: boolean;
 }
 
-/** Scheduled publications of the workspace that go out in the same network at the same minute as one of the new ones. */
-export function findClashes(dates: Map<string, Date | null>, platforms: Platform[], scheduled: ScheduledPost[], clipIds: string[]): Clash[] {
+/** Scheduled publications of the workspace that go out in the same network at the same minute as one of the new ones (the same clip included). */
+export function findClashes(dates: Map<string, Date | null>, platforms: Platform[], scheduled: ScheduledPost[]): Clash[] {
   const clashes: Clash[] = [];
-  for (const [, date] of dates) {
+  for (const [clipId, date] of dates) {
     if (!date) continue;
     const minute = Math.floor(date.getTime() / 60_000);
     for (const post of scheduled) {
-      if (post.status !== 'SCHEDULED' || !platforms.includes(post.platform) || clipIds.includes(post.video_clip)) continue;
+      if (post.status !== 'SCHEDULED' || !platforms.includes(post.platform)) continue;
       if (Math.floor(new Date(post.publish_at).getTime() / 60_000) !== minute) continue;
-      if (clashes.some((clash) => clash.platform === post.platform && clash.at.getTime() === date.getTime())) continue;
-      clashes.push({ at: date, platform: post.platform, title: post.clip.title });
+      const sameClip = post.video_clip === clipId;
+      if (clashes.some((clash) => clash.platform === post.platform && clash.at.getTime() === date.getTime() && clash.sameClip === sameClip)) continue;
+      clashes.push({ at: date, platform: post.platform, title: post.clip.title, sameClip });
     }
   }
   return clashes;

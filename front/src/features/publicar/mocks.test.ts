@@ -125,7 +125,11 @@ describe('contrato de brand kits: posición del logo', () => {
 
   it('la posición se guarda con el resto del kit y la del backend de hoy (ausente) es válida', async () => {
     const before = await apiCall(brandKits.getBrandKit, { params: { id: EXAMPLE_IDS.brandKit } });
-    expect(before.watermark_position).toBeUndefined();
+    // The mock answers as the proposed backend would; today's backend leaves the field out, and the schema takes that too.
+    expect(before.watermark_position).toBe('bottom_right');
+    const { watermark_position: _absent, ...today } = before;
+    void _absent;
+    expect(brandKits.BrandKit.safeParse(today).success).toBe(true);
     const saved = await apiCall(brandKits.updateBrandKit, { params: { id: EXAMPLE_IDS.brandKit }, body: { watermark_position: 'top_left', accent_color: '#3dd6c4' } });
     expect(saved.watermark_position).toBe('top_left');
     expect(saved.accent_color).toBe('#3DD6C4');

@@ -70,7 +70,11 @@ export const ScheduledPost = z.object({
   /** What will be published. Starts as the AI suggestion when the project asked for SEO. */
   caption: z.string(),
   hashtags: z.array(z.string()),
-  /** pending: the AI text is still being generated ("Generando texto…"). none: the project has no SEO. */
+  /**
+   * pending: the AI text is still being generated ("Generando texto…"). none: the project has no SEO.
+   * failed: the generation failed. Proposed rule: a `DRAFT` stays `DRAFT` with `seo_status: 'failed'`
+   * and the user writes the text (today `_fail_seo_post` moves the post to `FAILED`).
+   */
   seo_status: z.enum(['none', 'pending', 'ready', 'failed']),
   clip: z.object({
     id: Id,
@@ -194,7 +198,12 @@ export const createPost = defineEndpoint({
   response: ScheduledPost,
   successStatus: 201,
   errors: planErrors,
-  backend: { status: 'proposed', gap: [8, 9], note: 'Al crear el post, la señal existente genera el SEO y la publicación usa Ayrshare.' },
+  backend: {
+    status: 'proposed',
+    gap: [8, 9],
+    note:
+      'Al crear el post, la señal existente genera el SEO y la publicación usa Ayrshare. Reglas propuestas: (1) una publicación en cola sin texto propio espera a que termine la generación con IA antes de salir (hoy saldría con el caption de reserva); (2) si la generación falla en un borrador, sigue en `DRAFT` con `seo_status: "failed"` (hoy `_fail_seo_post` lo pasa a `FAILED`); (3) un borrador creado con `draft: true` que nadie programa ni publica en N horas (sugerido: 24) se borra solo: el panel E1 los descarta al cerrarse, pero una pestaña que se cierra de golpe puede dejar alguno.',
+  },
   screens: ['E1'],
 });
 

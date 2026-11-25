@@ -87,9 +87,12 @@ describe('fechas del calendario', () => {
 });
 
 describe('texto', () => {
-  it('los hashtags cuentan para el límite, con su # y un espacio', () => {
+  it('cuenta lo que publica el backend: el caption, una línea en blanco y los hashtags con su #', () => {
     expect(textLength('hola', [])).toBe(4);
-    expect(textLength('hola', ['uno', 'dos'])).toBe(4 + 5 + 5);
+    // compose_caption(): "hola\n\n#uno #dos"
+    expect(textLength('hola', ['uno', 'dos'])).toBe('hola\n\n#uno #dos'.length);
+    expect(textLength('', ['uno'])).toBe('\n\n#uno'.length);
+    expect(textLength('hola', ['', 'uno'])).toBe('hola\n\n#uno'.length);
   });
 
   it('los hashtags se limpian: sin #, sin símbolos y sin repetidos', () => {

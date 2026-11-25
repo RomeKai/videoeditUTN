@@ -61,7 +61,11 @@ export const listBrandKits = defineEndpoint({
   summary: 'Brand kits del workspace.',
   response: z.array(BrandKit),
   errors: [],
-  backend: { status: 'exists', source: 'back/apps/videos/views.py · BrandKitViewSet.list + BrandKitSerializer' },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/videos/views.py · BrandKitViewSet.list + BrandKitSerializer',
+    note: 'Propuesto, todavía no existe: `watermark_position` (esquina de la marca de agua, F2). Mientras la respuesta no lo traiga, la UI no muestra el selector de esquina y el logo va abajo a la derecha.',
+  },
   screens: ['F1', 'C1', 'B2', 'D5'],
 });
 

@@ -12,11 +12,12 @@ import { usePermissions } from '@/shell/session';
 import { Badge, Button, Card, DropdownMenu, Icon, IconButton, Page, PageHead, Skeleton, Tooltip, thumbHue, useToast, type MenuItem } from '@/ui';
 import styles from './BrandKits.module.css';
 import { KitPreview, LogoMark } from './KitPreview';
-import { fileName, fontLabel } from './kit';
+import { fileName, fontLabel, kitColor } from './kit';
 
 const INTRO = 'Colores, fuentes y logo para tus clips. El kit por defecto se aplica a los proyectos nuevos; podés elegir otro al crear cada proyecto.';
 
-const colorsOf = (kit: BrandKit) => ({ text: kit.primary_color, background: kit.secondary_color, accent: kit.accent_color });
+// The response carries whatever the backend stored: normalised before it reaches the CSS.
+const colorsOf = (kit: BrandKit) => ({ text: kitColor(kit, 'primary_color'), background: kitColor(kit, 'secondary_color'), accent: kitColor(kit, 'accent_color') });
 
 function KitCard({ kit, onDelete }: { kit: BrandKit; onDelete: (kit: BrandKit) => void }) {
   const toast = useToast();
@@ -78,11 +79,11 @@ function KitCard({ kit, onDelete }: { kit: BrandKit; onDelete: (kit: BrandKit) =
           <span
             className={styles.sws}
             role="img"
-            aria-label={`Colores: Texto ${kit.primary_color}, Fondo ${kit.secondary_color}, Palabra activa ${kit.accent_color}`}
+            aria-label={`Colores: Texto ${colors.text}, Fondo ${colors.background}, Palabra activa ${colors.accent}`}
           >
-            <span style={{ background: kit.primary_color }} title={`Texto: ${kit.primary_color}`} />
-            <span style={{ background: kit.secondary_color }} title={`Fondo: ${kit.secondary_color}`} />
-            <span style={{ background: kit.accent_color }} title={`Palabra activa: ${kit.accent_color}`} />
+            <span style={{ background: colors.text }} title={`Texto: ${colors.text}`} />
+            <span style={{ background: colors.background }} title={`Fondo: ${colors.background}`} />
+            <span style={{ background: colors.accent }} title={`Palabra activa: ${colors.accent}`} />
           </span>
           {kit.is_default ? <Badge tone="outline">Por defecto</Badge> : null}
         </div>

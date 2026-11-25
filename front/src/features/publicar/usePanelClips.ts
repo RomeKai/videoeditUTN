@@ -5,6 +5,7 @@ import { useMemo } from 'react';
 import { apiCall } from '@/api/client';
 import { getClip } from '@/api/contracts/clips';
 import { getProject } from '@/api/contracts/projects';
+import { useActiveWorkspaceId } from '@/api/hooks';
 import { keys } from '@/api/query';
 import { clipDuration, type PanelClip } from './publish';
 
@@ -23,10 +24,13 @@ export interface PanelClipsResult {
  * endpoints and cache keys through `useQueries`.
  */
 export function usePanelClips(clipIds: string[]): PanelClipsResult {
+  // Same keys as `useClip` and `useProject`: scoped to the workspace, and nothing is asked until it is known.
+  const workspaceId = useActiveWorkspaceId();
   const clipQueries = useQueries({
     queries: clipIds.map((id) => ({
-      queryKey: keys.clips.detail(id),
+      queryKey: [...keys.clips.detail(id), workspaceId] as const,
       queryFn: ({ signal }: { signal: AbortSignal }) => apiCall(getClip, { params: { id }, signal }),
+      enabled: Boolean(workspaceId),
     })),
   });
   const projectIds = useMemo(() => {
@@ -38,8 +42,9 @@ export function usePanelClips(clipIds: string[]): PanelClipsResult {
   }, [clipQueries.map((query) => query.data?.project ?? '').join(',')]);
   const projectQueries = useQueries({
     queries: projectIds.map((id) => ({
-      queryKey: keys.projects.detail(id),
+      queryKey: [...keys.projects.detail(id), workspaceId] as const,
       queryFn: ({ signal }: { signal: AbortSignal }) => apiCall(getProject, { params: { id }, signal }),
+      enabled: Boolean(workspaceId),
     })),
   });
 

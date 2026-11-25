@@ -1,5 +1,6 @@
 import { cleanup, configure, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { http, HttpResponse } from 'msw';
 import { server } from '@/api/mocks/server';
 import { db, idle, renderScreen } from '../publicar/testing';
 import { BrandKitsScreen } from './BrandKitsScreen';
@@ -59,6 +60,42 @@ describe('F1 · Brand kits', () => {
     expect(kits().filter((kit) => kit.is_default).map((kit) => kit.name)).toEqual(['Gaming nocturno']);
     // The kit that already is the default cannot be chosen again.
     expect(await menuItem('Gaming nocturno', 'Usar por defecto')).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('con un backend que no desmarca el default anterior, se desmarca desde acá', async () => {
+    const patched: string[] = [];
+    let stale = true;
+    server.use(
+      http.patch('http://localhost:8000/api/v1/brand-kits/:id/', ({ params }) => {
+        patched.push(String(params.id));
+        return undefined;
+      }),
+      // Today's backend: after marking another kit, the old default still says default.
+      http.get('http://localhost:8000/api/v1/brand-kits/', () => {
+        const list = kits();
+        if (stale && patched.length === 1) return HttpResponse.json(list.map((kit) => (kit.name === 'Estudio Norte' ? { ...kit, is_default: true } : kit)));
+        return HttpResponse.json(list);
+      }),
+    );
+    await open();
+    const [first, second] = [kits().find((kit) => kit.name === 'Estudio Norte'), kits().find((kit) => kit.name === 'Gaming nocturno')];
+    fireEvent.click(await menuItem('Gaming nocturno', 'Usar por defecto'));
+    // One PATCH marks the new default, the next one unmarks the old one.
+    await waitFor(() => expect(patched).toEqual([second?.id, first?.id]));
+    stale = false;
+    await waitFor(async () => expect(within(await card('Gaming nocturno')).getByText('Por defecto')).toBeInTheDocument());
+    expect(within(await card('Estudio Norte')).queryByText('Por defecto')).not.toBeInTheDocument();
+  });
+
+  it('un color guardado como texto libre no rompe la tarjeta: se normaliza antes de pintarlo', async () => {
+    server.use(
+      http.get('http://localhost:8000/api/v1/brand-kits/', () =>
+        HttpResponse.json(kits().map((kit, index) => (index === 0 ? { ...kit, primary_color: '#abc', accent_color: 'javascript:alert(1)' } : kit))),
+      ),
+    );
+    await open();
+    const swatches = within(await card('Estudio Norte')).getByRole('img', { name: /Colores:/ });
+    expect(swatches).toHaveAccessibleName('Colores: Texto #AABBCC, Fondo #111113, Palabra activa #FFFF00');
   });
 
   it('borrar pide confirmación y avisa qué pasa con los proyectos', async () => {

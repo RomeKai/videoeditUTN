@@ -137,9 +137,14 @@ export function timeZoneLabel(at: Date = new Date()): string {
 
 /* ── Text ────────────────────────────────────────────────────────────────── */
 
-/** Characters that count against the network's limit: the caption plus each hashtag with its "#" and a space. */
+/**
+ * Characters that count against the network's limit: what the backend publishes
+ * (`compose_caption`), the caption, a blank line and the hashtags as "#a #b".
+ */
 export function textLength(caption: string, hashtags: string[]): number {
-  return caption.length + hashtags.reduce((sum, tag) => sum + tag.length + 2, 0);
+  const tags = hashtags.filter(Boolean);
+  if (tags.length === 0) return caption.length;
+  return caption.length + 2 + tags.reduce((sum, tag) => sum + tag.length + 1, 0) + (tags.length - 1);
 }
 
 /** "#Mendoza, vlog  #mendoza" → ["Mendoza", "vlog"]: no "#", only letters, digits and "_", no repeats. */

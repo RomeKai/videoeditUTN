@@ -990,6 +990,7 @@ Brand kits del workspace.
 |---|---|
 | Id | `brandKits.list` |
 | Backend | ✅ existe · `back/apps/videos/views.py · BrandKitViewSet.list + BrandKitSerializer` |
+| Nota | Propuesto, todavía no existe: `watermark_position` (esquina de la marca de agua, F2). Mientras la respuesta no lo traiga, la UI no muestra el selector de esquina y el logo va abajo a la derecha. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | BrandKit[] |
 | Pantallas | F1, C1, B2, D5 |
@@ -1130,7 +1131,7 @@ Publica ahora o programa un clip en una red. Con `draft: true` crea un borrador,
 |---|---|
 | Id | `social.createPost` |
 | Backend | ❌ falta (propuesto) · hueco 8, 9 |
-| Nota | Al crear el post, la señal existente genera el SEO y la publicación usa Ayrshare. |
+| Nota | Al crear el post, la señal existente genera el SEO y la publicación usa Ayrshare. Reglas propuestas: (1) una publicación en cola sin texto propio espera a que termine la generación con IA antes de salir (hoy saldría con el caption de reserva); (2) si la generación falla en un borrador, sigue en `DRAFT` con `seo_status: "failed"` (hoy `_fail_seo_post` lo pasa a `FAILED`); (3) un borrador creado con `draft: true` que nadie programa ni publica en N horas (sugerido: 24) se borra solo: el panel E1 los descarta al cerrarse, pero una pestaña que se cierra de golpe puede dejar alguno. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | CreatePostInput |
 | Respuesta 201 | ScheduledPost |

@@ -18,7 +18,9 @@ function ownPost(db: MockDb, id: string | undefined, workspaceId: string): MockP
 function checkText(db: MockDb, workspaceId: string, platform: Platform, caption: string, hashtags: string[]): void {
   const account = db.socialAccounts.find((item) => item.workspace === workspaceId && item.platform === platform);
   const limit = account?.limits.caption_max_chars ?? 2200;
-  const length = caption.length + hashtags.reduce((sum, tag) => sum + tag.length + 2, 0);
+  // compose_caption(): the caption, a blank line and "#a #b".
+  const tags = hashtags.filter(Boolean);
+  const length = tags.length === 0 ? caption.length : caption.length + 2 + tags.reduce((sum, tag) => sum + tag.length + 1, 0) + (tags.length - 1);
   if (length > limit) throw badRequest({ caption: [`El texto supera el límite de ${NETWORK_NAME[platform]} (${limit} caracteres).`] });
   if (account && hashtags.length > account.limits.hashtags_max) throw badRequest({ hashtags: [`${NETWORK_NAME[platform]} acepta hasta ${account.limits.hashtags_max} hashtags.`] });
 }

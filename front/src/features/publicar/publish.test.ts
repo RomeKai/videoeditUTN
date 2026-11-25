@@ -6,6 +6,7 @@ import {
   checkNetwork,
   findClashes,
   joinNetworks,
+  outcomeSummary,
   scheduleFor,
   scheduleSummary,
   tiktokOptions,
@@ -61,9 +62,9 @@ describe('requisitos por red', () => {
     const long = text('x'.repeat(2300), ['mendoza']);
     const check = checkNetwork({ platform: 'INSTAGRAM_REELS', account: account('INSTAGRAM_REELS'), clips: [clip('a')], textOf: () => long, tiktok: EMPTY_TIKTOK });
     expect(`${check.passed} de ${check.total}`).toBe('3 de 4');
-    expect(check.overBy).toBe(2300 + 'mendoza'.length + 2 - 2200);
+    expect(check.overBy).toBe(2300 + 'mendoza'.length + 3 - 2200);
     expect(check.failing?.missing).toBe('el texto se pasa del límite');
-    expect(check.failing?.action).toBe('Acortá el texto de Instagram: sobran 109');
+    expect(check.failing?.action).toBe('Acortá el texto de Instagram: sobran 110');
     expect(check.failing?.severe).toBe(true);
   });
 
@@ -108,20 +109,31 @@ describe('cuándo', () => {
   it('avisa cuando ya hay otra publicación programada a esa hora en la misma red', () => {
     const other = { id: 'x', video_clip: 'otro', platform: 'INSTAGRAM_REELS', status: 'SCHEDULED', publish_at: new Date(2026, 10, 26, 18, 0).toISOString(), clip: { title: 'Subimos a 3.000 metros en una hora' } } as ScheduledPost;
     const dates = scheduleFor(['a', 'b'], 'later', start, 'daily');
-    const clashes = findClashes(dates, ['TIKTOK', 'INSTAGRAM_REELS'], [other], ['a', 'b']);
+    const clashes = findClashes(dates, ['TIKTOK', 'INSTAGRAM_REELS'], [other]);
     expect(clashes).toHaveLength(1);
-    expect(clashes[0]?.title).toBe('Subimos a 3.000 metros en una hora');
-    expect(findClashes(dates, ['TIKTOK'], [other], ['a', 'b'])).toEqual([]);
-    // The same clip already scheduled is not a clash with itself.
-    expect(findClashes(dates, ['INSTAGRAM_REELS'], [{ ...other, video_clip: 'b' }], ['a', 'b'])).toEqual([]);
+    expect(clashes[0]).toMatchObject({ title: 'Subimos a 3.000 metros en una hora', sameClip: false });
+    expect(findClashes(dates, ['TIKTOK'], [other])).toEqual([]);
+  });
+
+  it('el mismo clip ya programado en esa red y a esa hora también avisa: saldría dos veces', () => {
+    const same = { id: 'x', video_clip: 'b', platform: 'INSTAGRAM_REELS', status: 'SCHEDULED', publish_at: new Date(2026, 10, 26, 18, 0, 40).toISOString(), clip: { title: 'Clip b' } } as ScheduledPost;
+    const dates = scheduleFor(['a', 'b'], 'later', start, 'daily');
+    expect(findClashes(dates, ['INSTAGRAM_REELS'], [same])).toEqual([expect.objectContaining({ platform: 'INSTAGRAM_REELS', sameClip: true })]);
+    // Another minute, or a publication that is not scheduled any more, is not a clash.
+    expect(findClashes(dates, ['INSTAGRAM_REELS'], [{ ...same, publish_at: new Date(2026, 10, 26, 18, 1).toISOString() }])).toEqual([]);
+    expect(findClashes(dates, ['INSTAGRAM_REELS'], [{ ...same, status: 'PUBLISHED' }])).toEqual([]);
   });
 });
 
 describe('lo que se envía', () => {
   const draft = { id: 'draft-1', video_clip: 'a', platform: 'INSTAGRAM_REELS' } as ScheduledPost;
+  const all = [
+    { clipId: 'a', platform: 'TIKTOK' },
+    { clipId: 'a', platform: 'INSTAGRAM_REELS' },
+    { clipId: 'b', platform: 'TIKTOK' },
+    { clipId: 'b', platform: 'INSTAGRAM_REELS' },
+  ] as const;
   const base = {
-    order: ['a', 'b'],
-    platforms: ['TIKTOK', 'INSTAGRAM_REELS'] as const,
     textOf: () => text('Hola', ['uno']),
     tiktok: tiktokOptions({ ...EMPTY_TIKTOK, privacy: 'SELF_ONLY' }, account('TIKTOK')),
   };
@@ -129,29 +141,94 @@ describe('lo que se envía', () => {
   it('los borradores se publican con PATCH y el resto se crea; ahora va con publish_at null', () => {
     const { creates, updates } = buildSubmission({
       ...base,
-      platforms: [...base.platforms],
+      pairs: [...all],
       dates: scheduleFor(['a', 'b'], 'now', null, 'together'),
-      waitingText: () => false,
+      hasText: () => true,
       draftOf: (clipId, platform) => (clipId === 'a' && platform === 'INSTAGRAM_REELS' ? draft : undefined),
     });
-    expect(updates).toEqual([{ id: 'draft-1', publish_at: null, caption: 'Hola', hashtags: ['uno'] }]);
+    expect(updates).toEqual([{ clipId: 'a', platform: 'INSTAGRAM_REELS', draft, request: { id: 'draft-1', publish_at: null, caption: 'Hola', hashtags: ['uno'] } }]);
     expect(creates.map((item) => `${item.video_clip}/${item.platform}`)).toEqual(['a/TIKTOK', 'b/TIKTOK', 'b/INSTAGRAM_REELS']);
     expect(creates[0]?.tiktok?.privacy_level).toBe('SELF_ONLY');
     expect(creates[2]?.tiktok).toBeUndefined();
     expect(creates.every((item) => item.publish_at === null)).toBe(true);
   });
 
-  it('si el texto de la IA todavía no llegó, no se manda texto: lo completa el backend', () => {
-    const start = new Date(2026, 10, 25, 18, 0);
-    const { updates } = buildSubmission({
+  it('solo se envía lo que falta: un par que ya salió no vuelve a aparecer', () => {
+    const { creates, updates } = buildSubmission({
       ...base,
-      order: ['a'],
-      platforms: ['INSTAGRAM_REELS'],
-      dates: scheduleFor(['a'], 'later', start, 'together'),
-      waitingText: () => true,
+      // a/TikTok and b/* already went out in the first attempt.
+      pairs: [{ clipId: 'a', platform: 'INSTAGRAM_REELS' }],
+      dates: scheduleFor(['a', 'b'], 'now', null, 'together'),
+      hasText: () => true,
       draftOf: () => draft,
     });
-    expect(updates).toEqual([{ id: 'draft-1', publish_at: start.toISOString() }]);
+    expect(creates).toEqual([]);
+    expect(updates.map((item) => item.request.id)).toEqual(['draft-1']);
+  });
+
+  it('si el texto de la IA todavía no llegó, no se manda texto: lo completa el backend', () => {
+    const start = new Date(2026, 10, 25, 18, 0);
+    const { updates, creates } = buildSubmission({
+      ...base,
+      pairs: [
+        { clipId: 'a', platform: 'INSTAGRAM_REELS' },
+        { clipId: 'b', platform: 'INSTAGRAM_REELS' },
+      ],
+      dates: scheduleFor(['a', 'b'], 'later', start, 'together'),
+      hasText: () => false,
+      draftOf: (clipId) => (clipId === 'a' ? draft : undefined),
+    });
+    expect(updates[0]?.request).toEqual({ id: 'draft-1', publish_at: start.toISOString() });
+    expect(creates).toEqual([{ video_clip: 'b', platform: 'INSTAGRAM_REELS', publish_at: start.toISOString() }]);
+  });
+});
+
+describe('qué pasó con cada red', () => {
+  const one = [{ id: 'a' }];
+  const two = [{ id: 'a' }, { id: 'b' }];
+  const all = ['TIKTOK', 'INSTAGRAM_REELS', 'YOUTUBE_SHORTS'] as const;
+
+  it('una salió y otra no: lo dice red por red y aclara que no se reenvía', () => {
+    const result = outcomeSummary({
+      platforms: [...all],
+      clips: one,
+      sent: ['a|TIKTOK'],
+      failures: [{ clipId: 'a', platform: 'INSTAGRAM_REELS', message: 'La cuenta de Instagram Reels está vencida. Reconectala para publicar.' }],
+      when: 'now',
+    });
+    expect(result.partial).toBe(true);
+    expect(result.title).toBe('Salió en TikTok; Instagram falló');
+    expect(result.detail).toMatch(/^Instagram: La cuenta de Instagram Reels está vencida/);
+    expect(result.detail).toMatch(/no se vuelve a enviar/);
+  });
+
+  it('nada salió: es un error, con el motivo', () => {
+    const result = outcomeSummary({ platforms: [...all], clips: one, sent: [], failures: [{ clipId: 'a', platform: 'TIKTOK', message: 'Probá de nuevo.' }], when: 'later' });
+    expect(result).toEqual({ title: 'No pudimos programar en TikTok', detail: 'TikTok: Probá de nuevo.', partial: false });
+  });
+
+  it('varios clips: cuenta cuántos salieron y cuántos no en cada red', () => {
+    const result = outcomeSummary({
+      platforms: [...all],
+      clips: two,
+      sent: ['a|TIKTOK', 'b|TIKTOK', 'a|INSTAGRAM_REELS'],
+      failures: [{ clipId: 'b', platform: 'INSTAGRAM_REELS', message: 'boom' }],
+      when: 'later',
+    });
+    expect(result.title).toBe('Quedaron programados en TikTok (2 de 2), Instagram (1 de 2); Instagram falló');
+    expect(result.detail).toMatch(/^Instagram \(1 de 2 clips\): boom/);
+  });
+});
+
+describe('TikTok · contenido de marca', () => {
+  it('no puede ser «Solo yo»', () => {
+    const input = { platform: 'TIKTOK' as const, account: account('TIKTOK'), clips: [clip('a')], textOf: () => text('Hola') };
+    const blocked = checkNetwork({ ...input, tiktok: { ...EMPTY_TIKTOK, privacy: 'SELF_ONLY', disclose: true, brandedContent: true } });
+    expect(blocked.ok).toBe(false);
+    expect(blocked.failing?.action).toMatch(/no puede ser «Solo yo»/);
+    expect(checkNetwork({ ...input, tiktok: { ...EMPTY_TIKTOK, privacy: 'PUBLIC_TO_EVERYONE', disclose: true, brandedContent: true } }).ok).toBe(true);
+    // "Tu marca" alone can be private.
+    expect(checkNetwork({ ...input, tiktok: { ...EMPTY_TIKTOK, privacy: 'SELF_ONLY', disclose: true, brandOrganic: true } }).ok).toBe(true);
   });
 });
 

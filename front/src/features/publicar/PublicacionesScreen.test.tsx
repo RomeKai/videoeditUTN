@@ -1,5 +1,6 @@
 import { cleanup, configure, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { http, HttpResponse } from 'msw';
 import { server } from '@/api/mocks/server';
 import { applyScenario } from '@/api/mocks/state';
 import { PublicacionesScreen } from './PublicacionesScreen';
@@ -75,6 +76,16 @@ describe('E2 · Publicaciones · lista', () => {
     // Counters of the filters come from the API.
     expect(screen.getByRole('button', { name: /Programados/ })).toHaveTextContent('2');
     expect(screen.getByRole('button', { name: /Con error/ })).toHaveTextContent('1');
+  });
+
+  it('«Programar» en un borrador abre el panel con esa red sola', async () => {
+    applyScenario('estudio-norte');
+    const draft = postWith('DRAFT');
+    await open();
+    await table();
+    fireEvent.click(await screen.findByRole('button', { name: `Programar «${draft?.clip.title}» en Instagram` }));
+    await waitFor(() => expect(nav.get()).toContain(`publicar=${draft?.video_clip}`));
+    expect(nav.get()).toContain('red=INSTAGRAM_REELS');
   });
 
   it('avisa de la publicación que falló, con un motivo legible', async () => {
@@ -227,6 +238,56 @@ describe('E2 · Publicaciones · calendario', () => {
     const moved = new Date(db().posts.find((post) => post.id === scheduled?.id)?.publish_at ?? 0);
     const expected = new Date(at.getTime() + step * 3_600_000);
     expect([dayKey(moved), moved.getHours(), moved.getMinutes()]).toEqual([dayKey(expected), expected.getHours(), expected.getMinutes()]);
+  });
+
+  it('la ficha se mueve al soltarla, no se puede arrastrar otra mientras se guarda, y vuelve a su lugar si falla', async () => {
+    applyScenario('estudio-norte');
+    const scheduled = postWith('SCHEDULED');
+    const at = new Date(scheduled?.publish_at ?? 0);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    server.use(
+      http.patch('http://localhost:8000/api/v1/scheduled-posts/:id/', async () => {
+        await held;
+        return HttpResponse.json({ detail: 'boom' }, { status: 500 });
+      }),
+    );
+    await open(`fecha=${dayKey(at)}`);
+    const saved = db().posts.find((post) => post.id === scheduled?.id)?.publish_at;
+    const grid = await screen.findByRole('grid', { name: /Publicaciones de la semana/ });
+    const name = new RegExp(`${scheduled?.clip.title}\\. TikTok: Programado`);
+    const card = await within(grid).findByRole('button', { name });
+    const cells = within(grid).getAllByRole('gridcell');
+    const from = cells.indexOf(card.closest('[role="gridcell"]') as HTMLElement);
+    const step = cells[from + 7] ? 1 : -1;
+    const target = cells[from + 7 * step] as HTMLElement;
+    const dataTransfer = { setData: vi.fn(), effectAllowed: '', dropEffect: '' };
+    fireEvent.dragStart(card, { dataTransfer });
+    fireEvent.dragOver(target, { dataTransfer });
+    fireEvent.drop(target, { dataTransfer });
+
+    // Before the server answers: the card is already in its new cell, and nothing can be dragged.
+    await waitFor(() => expect(within(target).getByRole('button', { name })).toBeInTheDocument());
+    expect(within(target).getByRole('button', { name })).toHaveAttribute('draggable', 'false');
+
+    release();
+    expect(await screen.findByText('No pudimos reprogramar la publicación.')).toBeInTheDocument();
+    await waitFor(() => expect(within(cells[from] as HTMLElement).getByRole('button', { name })).toHaveAttribute('draggable', 'true'));
+    expect(db().posts.find((post) => post.id === scheduled?.id)?.publish_at).toBe(saved);
+  });
+
+  it('los borradores no tienen fecha: no aparecen en el calendario', async () => {
+    applyScenario('estudio-norte');
+    const draft = postWith('DRAFT');
+    await open(`vista=mes&fecha=${dayKey(new Date(draft?.publish_at ?? 0))}`);
+    const grid = await screen.findByRole('grid', { name: /Publicaciones de / });
+    await within(grid).findAllByRole('button', { name: /Programado|Publicado|Error/ });
+    expect(within(grid).queryByRole('button', { name: /Borrador/ })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Borradores/ }));
+    expect(await screen.findByText(/Los borradores todavía no tienen fecha/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Ver los borradores en la lista' }));
+    await waitFor(() => expect(nav.get()).toMatch(/vista=lista/));
   });
 
   it('el mes muestra las fichas en su día y vuelve a la semana de ese día', async () => {

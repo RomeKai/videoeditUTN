@@ -1,6 +1,8 @@
 import { cleanup, configure, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { http, HttpResponse } from 'msw';
 import { server } from '@/api/mocks/server';
+import { loadDb } from '@/api/mocks/state';
 import { EXAMPLE_IDS } from '@/dev/screens';
 import { idle, renderScreen } from '../publicar/testing';
 import { BrandKitEditor } from './BrandKitEditor';
@@ -21,8 +23,24 @@ vi.mock('@/api/hooks', async (original) => ({
   useCreateBrandKit: () => ({ mutate: writes.create, isPending: false }),
 }));
 
+/** One router for the whole app, as in the real one: the unsaved-changes guard watches its `push`. */
+const router = vi.hoisted(() => {
+  const push = vi.fn();
+  return { original: push, object: { push, replace: vi.fn(), back: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() } };
+});
+vi.mock('next/navigation', () => ({
+  useRouter: () => router.object,
+  usePathname: () => '/brand-kits/x',
+  useSearchParams: () => new URLSearchParams(),
+  useParams: () => ({}),
+  redirect: vi.fn(),
+  notFound: vi.fn(),
+}));
+
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 beforeEach(() => {
+  router.original.mockReset();
+  router.object.push = router.original;
   writes.update.mockReset();
   writes.create.mockReset();
 });
@@ -123,6 +141,74 @@ describe('F2 · Editar brand kit', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Seguir editando' }));
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
     expect(within(form).getByLabelText(/Descripción/)).toHaveValue('Otra descripción');
+  });
+
+  it('Enter en un campo de color guarda el hex ya normalizado', async () => {
+    const form = await open();
+    const input = within(form).getByLabelText('Palabra activa');
+    // No blur: the form is submitted from inside the field.
+    fireEvent.change(input, { target: { value: '3dd' } });
+    fireEvent.submit(form);
+    expect(writes.update).toHaveBeenCalledTimes(1);
+    expect(writes.update.mock.calls[0]?.[0]).toEqual({ accent_color: '#33DDDD' });
+    expect(input).toHaveValue('#33DDDD');
+  });
+
+  it('el botón Atrás del navegador también pregunta', async () => {
+    const pushState = vi.spyOn(window.history, 'pushState');
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
+    const form = await open();
+    expect(pushState).not.toHaveBeenCalled();
+    fireEvent.change(within(form).getByLabelText(/Descripción/), { target: { value: 'Otra descripción' } });
+    // With changes there is one more history entry for this same page: Back lands on it instead of leaving.
+    await waitFor(() => expect(pushState).toHaveBeenCalledTimes(1));
+    fireEvent.popState(window);
+    const dialog = await screen.findByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Seguir editando' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    // Staying puts the entry back, so the next Back asks again.
+    expect(pushState).toHaveBeenCalledTimes(2);
+    expect(within(form).getByLabelText(/Descripción/)).toHaveValue('Otra descripción');
+
+    fireEvent.popState(window);
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: /Descartar/ }));
+    expect(back).toHaveBeenCalledTimes(1);
+    pushState.mockRestore();
+    back.mockRestore();
+  });
+
+  it('una navegación desde el menú de comandos, las notificaciones o el selector de workspace también pregunta', async () => {
+    const form = await open();
+    // Without changes the router is untouched.
+    router.object.push('/uso');
+    expect(router.original).toHaveBeenLastCalledWith('/uso');
+    router.original.mockClear();
+
+    fireEvent.change(within(form).getByLabelText(/Descripción/), { target: { value: 'Otra descripción' } });
+    await waitFor(() => expect(router.object.push).not.toBe(router.original));
+    // What the shell does: `router.push()` from code, with no link to intercept.
+    router.object.push('/proyectos');
+    const dialog = await screen.findByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
+    expect(router.original).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: /Descartar/ }));
+    expect(router.original).toHaveBeenCalledWith('/proyectos', undefined);
+  });
+
+  it('sin `watermark_position` en la respuesta (el backend de hoy) no hay selector de esquina ni se manda el campo', async () => {
+    server.use(
+      http.get('http://localhost:8000/api/v1/brand-kits/:id/', ({ params }) => {
+        const { watermark_position: _absent, ...today } = loadDb().brandKits.find((kit) => kit.id === params.id) ?? {};
+        void _absent;
+        return HttpResponse.json(today);
+      }),
+    );
+    const form = await open();
+    expect(within(form).getByText('estudio-norte.png')).toBeInTheDocument();
+    expect(within(form).queryByRole('radiogroup')).not.toBeInTheDocument();
+    expect(screen.getByText(/el logo abajo a la derecha/)).toBeInTheDocument();
+    fireEvent.change(within(form).getByLabelText('Nombre'), { target: { value: 'Otro nombre' } });
+    fireEvent.click(within(saveBar() as HTMLElement).getByRole('button', { name: 'Guardar' }));
+    expect(writes.update.mock.calls[0]?.[0]).toEqual({ name: 'Otro nombre' });
   });
 
   it('`nuevo` crea un kit con todos sus datos', async () => {
