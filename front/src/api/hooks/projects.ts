@@ -18,13 +18,25 @@ export function useProjects(query: contract.ProjectsQuery = {}, { enabled = true
   });
 }
 
-/** D1 and its tabs: polls every 5 s until the project reaches a final state. */
-export function useProject(id: string | null | undefined) {
+export interface UseProjectOptions {
+  /** False stops fetching and polling (the project was just deleted). Default true. */
+  enabled?: boolean;
+  /**
+   * Extra reason to keep polling after the project's own state is final: a clip
+   * retried or re-rendered on a finished project leaves the project `completed`
+   * or `partial` while that clip is `rendering`.
+   */
+  pollWhile?: (project: contract.Project) => boolean;
+}
+
+/** D1 and its tabs: polls every 5 s until the project reaches a final state (or while `options.pollWhile` says so). */
+export function useProject(id: string | null | undefined, options: UseProjectOptions = {}) {
+  const { enabled = true, pollWhile: alsoWhile } = options;
   return useScopedQuery({
     queryKey: keys.projects.detail(id ?? ''),
     queryFn: ({ signal }) => apiCall(contract.getProject, { params: { id: id ?? '' }, signal }),
-    enabled: Boolean(id),
-    ...pollWhile<contract.Project>((project) => Boolean(project && describeProjectStatus(project).inProgress)),
+    enabled: Boolean(id) && enabled,
+    ...pollWhile<contract.Project>((project) => Boolean(project && (describeProjectStatus(project).inProgress || alsoWhile?.(project)))),
   });
 }
 
