@@ -122,7 +122,17 @@ export class ApiError extends Error {
   }
 }
 
-/** The request never got an answer (offline, DNS, CORS, aborted by the network). */
+/** `cause` of the NetworkError of a request that waited longer than its timeout. */
+export class RequestTimeoutError extends Error {
+  readonly name = 'RequestTimeoutError';
+  readonly timeoutMs: number;
+  constructor(timeoutMs: number) {
+    super(`Sin respuesta en ${timeoutMs} ms`);
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/** The request never got an answer (offline, DNS, CORS, aborted by the network, or it timed out). */
 export class NetworkError extends Error {
   readonly name = 'NetworkError';
   readonly endpointId: string;

@@ -69,6 +69,12 @@ export interface EndpointDef<
   auth?: boolean | 'optional';
   /** False for endpoints that are not scoped to a workspace (no X-Workspace-Id). Default true. */
   workspaceScoped?: boolean;
+  /**
+   * How long to wait for the answer, in ms, when the default (`REQUEST_TIMEOUT_MS`) does not fit:
+   * more for an endpoint that answers slowly on purpose, `false` for none. The time a multipart
+   * body takes to upload never counts.
+   */
+  timeoutMs?: number | false;
   errors: EndpointError[];
   backend: EndpointBackend;
   /** Screen codes of the map that use it (A1, D2, J3…). */

@@ -1,7 +1,7 @@
 import type { ZodTypeAny } from 'zod';
-import { API_URL, WORKSPACE_HEADER } from './config';
+import { API_URL, REQUEST_TIMEOUT_MS, WORKSPACE_HEADER } from './config';
 import { buildPath, buildQuery, type AnyEndpoint, type ParamsOf, type QueryOf, type RequestBody, type ResponseOf } from './endpoint';
-import { ApiError, ContractError, NetworkError, SessionExpiredError } from './errors';
+import { ApiError, ContractError, NetworkError, RequestTimeoutError, SessionExpiredError } from './errors';
 import {
   getActiveWorkspaceId,
   getTokens,
@@ -19,6 +19,8 @@ export interface CallOptions<E extends AnyEndpoint> {
   signal?: AbortSignal;
   /** Upload progress (multipart only): bytes sent and total. Uses XMLHttpRequest under the hood. */
   onUploadProgress?: (loaded: number, total: number) => void;
+  /** Overrides the endpoint's timeout for this call (ms, or `false` for none). */
+  timeoutMs?: number | false;
 }
 
 type Args<E extends AnyEndpoint> =
@@ -63,11 +65,15 @@ export function refreshAccessToken(): Promise<string> {
     if (!tokens) throw new SessionExpiredError();
     let response: Response;
     try {
-      response = await fetch(`${API_URL}${REFRESH_PATH}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ refresh: tokens.refresh }),
-      });
+      response = await send(
+        {
+          url: `${API_URL}${REFRESH_PATH}`,
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({ refresh: tokens.refresh }),
+        },
+        { timeoutMs: REQUEST_TIMEOUT_MS },
+      );
     } catch (cause) {
       throw new NetworkError('auth.refresh', cause);
     }
@@ -109,29 +115,85 @@ interface Prepared {
   body: BodyInit | undefined;
 }
 
-function send(prepared: Prepared, signal: AbortSignal | undefined, onUploadProgress: CallOptions<AnyEndpoint>['onUploadProgress']): Promise<Response> {
-  if (!onUploadProgress || typeof XMLHttpRequest === 'undefined') {
-    return fetch(prepared.url, { method: prepared.method, headers: prepared.headers, body: prepared.body, signal });
+interface SendOptions {
+  signal?: AbortSignal;
+  onUploadProgress?: CallOptions<AnyEndpoint>['onUploadProgress'];
+  timeoutMs: number | false;
+}
+
+const NO_BODY_STATUS = [204, 205, 304];
+
+/** Rejects, as fetch does, when the signal aborts. */
+function aborted(signal: AbortSignal): Promise<never> {
+  return new Promise((_resolve, reject) => {
+    const fail = () => reject(new DOMException('Aborted', 'AbortError'));
+    if (signal.aborted) fail();
+    else signal.addEventListener('abort', fail, { once: true });
+  });
+}
+
+/**
+ * Sends the request and waits for the whole answer, body included, for at most `timeoutMs`.
+ * Past that it is aborted and fails with RequestTimeoutError (a network error for the caller).
+ *
+ * A multipart body goes by XMLHttpRequest, which says when the upload ends: the clock only starts
+ * there, so a big file on a slow connection is never cut short. (fetch cannot tell, nor report
+ * progress: the creation form needs percentage and speed, map C1.)
+ */
+async function send(prepared: Prepared, { signal, onUploadProgress, timeoutMs }: SendOptions): Promise<Response> {
+  const controller = new AbortController();
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const startClock = () => {
+    if (timeoutMs === false || timer !== undefined) return;
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  };
+  const onAbort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener('abort', onAbort);
+  const isUpload = onUploadProgress !== undefined || (typeof FormData !== 'undefined' && prepared.body instanceof FormData);
+  try {
+    if (isUpload && typeof XMLHttpRequest !== 'undefined') return await sendXhr(prepared, controller.signal, onUploadProgress, startClock);
+    startClock();
+    const response = await fetch(prepared.url, { method: prepared.method, headers: prepared.headers, body: prepared.body, signal: controller.signal });
+    // Headers are not the whole answer: a body that stalls halfway is a request that hangs too.
+    // (Raced with the abort: not every body reader gives up when its request is aborted.)
+    const body = NO_BODY_STATUS.includes(response.status) ? null : await Promise.race([response.arrayBuffer(), aborted(controller.signal)]);
+    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  } catch (cause) {
+    if (timedOut && timeoutMs !== false) throw new RequestTimeoutError(timeoutMs);
+    throw cause;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
   }
-  // fetch cannot report upload progress: the creation form needs percentage and speed (map C1).
+}
+
+function sendXhr(prepared: Prepared, signal: AbortSignal, onUploadProgress: SendOptions['onUploadProgress'], onUploaded: () => void): Promise<Response> {
   return new Promise<Response>((resolve, reject) => {
+    if (signal.aborted) return reject(new DOMException('Aborted', 'AbortError'));
     const xhr = new XMLHttpRequest();
     xhr.open(prepared.method, prepared.url);
     for (const [name, value] of Object.entries(prepared.headers)) xhr.setRequestHeader(name, value);
     xhr.responseType = 'text';
     xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) onUploadProgress(event.loaded, event.total);
+      if (event.lengthComputable) onUploadProgress?.(event.loaded, event.total);
     };
+    // The body is out: from here on it is a request waiting for its answer, like any other.
+    xhr.upload.onload = onUploaded;
     xhr.onload = () =>
       resolve(
-        new Response([204, 205, 304].includes(xhr.status) ? null : (xhr.responseText as string), {
+        new Response(NO_BODY_STATUS.includes(xhr.status) ? null : (xhr.responseText as string), {
           status: xhr.status,
           headers: { 'Content-Type': xhr.getResponseHeader('Content-Type') ?? 'application/json' },
         }),
       );
     xhr.onerror = () => reject(new TypeError('Network request failed'));
     xhr.onabort = () => reject(new DOMException('Aborted', 'AbortError'));
-    signal?.addEventListener('abort', () => xhr.abort());
+    signal.addEventListener('abort', () => xhr.abort());
     xhr.send(prepared.body as XMLHttpRequestBodyInit | undefined);
   });
 }
@@ -141,7 +203,8 @@ function send(prepared: Prepared, signal: AbortSignal | undefined, onUploadProgr
  * - validates query and body against their zod schemas,
  * - adds `Authorization: Bearer <access>` and the active workspace header,
  * - on 401 refreshes the token once and repeats the request,
- * - throws ApiError for non-2xx, NetworkError when there is no answer,
+ * - throws ApiError for non-2xx, NetworkError when there is no answer (or none within the timeout:
+ *   `REQUEST_TIMEOUT_MS`, or the endpoint's `timeoutMs`),
  * - parses the answer with the endpoint's schema (ContractError if it does not match).
  * Screens never call it directly: they use the hooks in `src/api/hooks`.
  */
@@ -176,12 +239,15 @@ export async function apiCall<E extends AnyEndpoint>(endpoint: E, ...args: Args<
 
   const url = `${API_URL}${buildPath(endpoint.path, options.params as Record<string, string> | undefined)}${buildQuery(query)}`;
 
+  const timeoutMs = options.timeoutMs ?? endpoint.timeoutMs ?? REQUEST_TIMEOUT_MS;
+
   const attempt = async (accessToken: string | undefined): Promise<Response> => {
     const requestHeaders = { ...headers };
     if (accessToken) requestHeaders.Authorization = `Bearer ${accessToken}`;
     try {
-      return await send({ url, method: endpoint.method, headers: requestHeaders, body }, options.signal, options.onUploadProgress);
+      return await send({ url, method: endpoint.method, headers: requestHeaders, body }, { signal: options.signal, onUploadProgress: options.onUploadProgress, timeoutMs });
     } catch (cause) {
+      // Cancelled by the caller: not an error of the network. (A timeout is, and comes as RequestTimeoutError.)
       if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
       throw new NetworkError(endpoint.id, cause);
     }
