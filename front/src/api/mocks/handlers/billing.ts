@@ -1,6 +1,6 @@
 import * as contract from '../../contracts/billing';
-import { newId } from '../db';
-import { badRequest, dec, forbidden, MockHttpError, notFound, paginate, route } from '../http';
+import { newId, workspaceDay } from '../db';
+import { badRequest, conflict, dec, forbidden, MockHttpError, notFound, paginate, route } from '../http';
 import { priceOf, PRICING, TOKEN_PACKAGES } from '../seed';
 import { planOf, serializeSubscription, serializeTransaction, serializeWallet } from '../serialize';
 import { SIM, walletOf } from '../sim';
@@ -57,13 +57,45 @@ export const billingHandlers = [
 
   route(contract.getSubscription, ({ db, workspace }) => ({ data: serializeSubscription(db, workspace) })),
 
-  route(contract.changePlan, ({ db, workspace, body, now, require }) => {
+  route(contract.changePlan, ({ db, workspace, body, now, require, request }) => {
     require('billing.manage');
     const target = db.plans.find((plan) => plan.id === body.plan_id && plan.is_active);
     if (!target) throw notFound('El plan no existe.');
     const current = planOf(db, workspace.id);
-    if (current?.id === target.id) throw badRequest({ plan_id: ['Ya es tu plan actual.'] });
+    if (current?.id === target.id) {
+      // Choosing the current plan again cancels a scheduled change.
+      if (!workspace.pending_plan) throw badRequest({ plan_id: ['Ya es tu plan actual.'] });
+      workspace.pending_plan = null;
+      return { data: { applied: 'now', checkout_url: null, subscription: serializeSubscription(db, workspace) } };
+    }
     const upgrade = !current || target.sort_order > current.sort_order;
+    if (!upgrade) {
+      const seatsUsed = db.members.filter((member) => member.workspace === workspace.id).length;
+      if (seatsUsed > target.max_members) {
+        throw conflict(`Ocupás ${seatsUsed} lugares y el plan ${target.name} tiene ${target.max_members}. Quitá miembros o invitaciones antes de bajar.`, 'seats_exceeded');
+      }
+    }
+    if (upgrade && db.flags.planCheckout) {
+      // The upgrade needs a payment: nothing changes until the provider confirms it.
+      const id = newId();
+      const returnUrl = body.return_url ?? `${new URL(request.url).origin}/uso/planes`;
+      const checkoutUrl = `${new URL(returnUrl).origin}/dev/checkout?compra=${id}&volver=${encodeURIComponent(returnUrl)}`;
+      db.purchases.push({
+        id,
+        workspace: workspace.id,
+        status: 'pending',
+        tokens: 0,
+        amount_usd: target.price_usd_monthly,
+        plan_id: target.id,
+        checkout_url: checkoutUrl,
+        failure_reason: null,
+        created_at: new Date(now).toISOString(),
+        balance_after: null,
+        _settleAt: null,
+        _reject: db.flags.rejectPayments,
+      });
+      return { data: { applied: 'now', checkout_url: checkoutUrl, subscription: serializeSubscription(db, workspace) } };
+    }
     if (upgrade) {
       // Upgrades apply right away.
       workspace.subscription_plan = target.id;
@@ -80,13 +112,14 @@ export const billingHandlers = [
 
   route(contract.getUsage, ({ db, workspace, query, now, require }) => {
     require('billing.manage');
-    const month = query.get('month') ?? new Date(now).toISOString().slice(0, 7);
+    const month = query.get('month') ?? workspaceDay(now).slice(0, 7);
     const [year, monthNumber] = month.split('-').map(Number) as [number, number];
     const days = new Date(year, monthNumber, 0).getDate();
     const byDay = new Map<string, { projects: number; renders: number; seo: number }>();
     for (const transaction of db.transactions) {
-      if (transaction.workspace !== workspace.id || transaction.transaction_type !== 'SPEND' || transaction.status === 'FAILED') continue;
-      const day = transaction.created_at.slice(0, 10);
+      // Only what was charged: reservations are not consumption yet and released ones never were.
+      if (transaction.workspace !== workspace.id || transaction.transaction_type !== 'SPEND' || transaction.status !== 'COMPLETED') continue;
+      const day = workspaceDay(transaction.created_at);
       if (!day.startsWith(month)) continue;
       const entry = byDay.get(day) ?? { projects: 0, renders: 0, seo: 0 };
       if (transaction.category === 'render') entry.renders += transaction.amount;
@@ -109,13 +142,18 @@ export const billingHandlers = [
     if (!project && role !== 'owner' && role !== 'admin') throw forbidden();
     const kind = query.get('kind');
     const month = query.get('month');
-    const items = db.transactions
+    const scoped = db.transactions
       .filter((item) => item.workspace === workspace.id)
-      .filter((item) => !kind || item.kind === kind)
-      .filter((item) => !month || item.created_at.startsWith(month))
-      .filter((item) => !project || item.project?.id === project)
-      .map(serializeTransaction);
-    return { data: paginate(items, query, contract.listTransactions.path) };
+      .filter((item) => !month || workspaceDay(item.created_at).startsWith(month))
+      .filter((item) => !project || item.project?.id === project);
+    const totals: Record<string, { count: number; amount: number }> = {};
+    for (const item of scoped) {
+      const entry = (totals[item.kind] ??= { count: 0, amount: 0 });
+      entry.count += 1;
+      entry.amount = Math.round((entry.amount + item.amount) * 100) / 100;
+    }
+    const items = scoped.filter((item) => !kind || item.kind === kind).map(serializeTransaction);
+    return { data: { ...paginate(items, query, contract.listTransactions.path), totals } };
   }),
 
   route(contract.exportTransactions, ({ db, workspace, query, require }) => {
@@ -125,8 +163,9 @@ export const billingHandlers = [
     const rows = db.transactions
       .filter((item) => item.workspace === workspace.id)
       .filter((item) => !kind || item.kind === kind)
-      .filter((item) => !month || item.created_at.startsWith(month))
-      .map((item) => [item.created_at, `"${item.description.replace(/"/g, '""')}"`, item.kind, (item.transaction_type === 'SPEND' ? -item.amount : item.amount).toFixed(2)].join(','));
+      .filter((item) => !month || workspaceDay(item.created_at).startsWith(month))
+      // Same sign as the screen: what left the balance is negative, what came (back) to it is positive.
+      .map((item) => [item.created_at, `"${item.description.replace(/"/g, '""')}"`, item.kind, (item.kind === 'reserved' || item.kind === 'charged' ? -item.amount : item.amount).toFixed(2)].join(','));
     return { data: ['fecha,concepto,tipo,monto', ...rows].join('\n'), raw: true };
   }),
 

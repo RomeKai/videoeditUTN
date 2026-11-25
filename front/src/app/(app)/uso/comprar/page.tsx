@@ -1,10 +1,14 @@
 import type { Metadata } from 'next';
-import { ScreenPlaceholder } from '@/dev/ScreenPlaceholder';
-import { SCREENS } from '@/dev/screens';
+import { Suspense } from 'react';
+import { BuyTokensScreen } from '@/features/uso/BuyTokensScreen';
 
 export const metadata: Metadata = { title: 'Comprar tokens' };
 
-// G4 · Comprar tokens: pantalla pendiente. El dominio dueño reemplaza este archivo (ver front/ROUTES.md).
+/** G4 · Uso › Comprar tokens. */
 export default function Page() {
-  return <ScreenPlaceholder {...SCREENS.G4} page={false} headingLevel={2} />;
+  return (
+    <Suspense>
+      <BuyTokensScreen />
+    </Suspense>
+  );
 }
