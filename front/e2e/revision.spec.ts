@@ -23,12 +23,15 @@ test.describe('Revisión de clips (D2)', () => {
     const dialog = page.getByRole('dialog', { name: 'Renderizar 5 clips' });
     await expect(dialog).toContainText('Saldo después');
     await dialog.getByRole('button', { name: 'Renderizar' }).click();
-    await expect(page).toHaveURL(new RegExp(`/proyectos/${EXAMPLE_IDS.projectToReview}/clips$`));
-    await settle(page);
+    await expect(page).toHaveURL(new RegExp(`/proyectos/${EXAMPLE_IDS.projectToReview}/clips$`), { timeout: 20_000 });
+    // Clips shows its cards as busy while they render, so the page never "settles" here: wait for its heading.
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    await page.waitForLoadState('networkidle');
 
     // The project left the review: going back sends you to its clips.
     await page.goto(REVIEW);
-    await expect(page).toHaveURL(new RegExp(`/proyectos/${EXAMPLE_IDS.projectToReview}/clips$`));
+    await expect(page).toHaveURL(new RegExp(`/proyectos/${EXAMPLE_IDS.projectToReview}/clips$`), { timeout: 20_000 });
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
     expectClean(problems, REVIEW);
   });
 
@@ -96,8 +99,10 @@ test.describe('Editor de clip (D4)', () => {
 
     await page.getByRole('button', { name: /Volver a renderizar/ }).click();
     await page.getByRole('dialog', { name: 'Volver a renderizar' }).getByRole('button', { name: 'Renderizar' }).click();
-    await expect(page).toHaveURL(new RegExp(`/proyectos/${EXAMPLE_IDS.projectReady}/clips$`));
-    await settle(page);
+    await expect(page).toHaveURL(new RegExp(`/proyectos/${EXAMPLE_IDS.projectReady}/clips$`), { timeout: 20_000 });
+    // The clip is rendering again: Clips keeps its card busy until it ends.
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    await page.waitForLoadState('networkidle');
     expectClean(problems, EDITOR);
   });
 
