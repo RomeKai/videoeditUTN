@@ -707,7 +707,7 @@ Proyectos del workspace, del más nuevo al más viejo.
 |---|---|
 | Id | `projects.list` |
 | Backend | ⚠️ existe en parte · hueco 14 · `back/apps/videos/views.py · VideoProjectViewSet.list + VideoProjectSerializer` |
-| Nota | Hoy devuelve un array sin paginar y sin filtros. Propuesto: paginación de 25, `status_group`, `search`, `status_counts` y los campos extra del proyecto. |
+| Nota | Hoy devuelve un array sin paginar y sin filtros, con los proyectos de todos los workspaces del usuario: no lee `X-Workspace-Id` y debería acotar por ese header (mientras tanto B2 filtra por `workspace` en el navegador). Propuesto: paginación de 25, `status_group`, `search`, `status_counts` y los campos extra del proyecto. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | ProjectsQuery |
 | Respuesta 200 | ProjectsResponse |
@@ -736,7 +736,7 @@ Igual que crear, más `prompt`: la IA arma la configuración al iniciar la inges
 |---|---|
 | Id | `projects.createFromPrompt` |
 | Backend | ✅ existe · `back/apps/videos/views.py · VideoProjectViewSet.from_prompt` |
-| Nota | `add_subtitles` es opcional: si no viaja vale true (el serializer pasa a `BooleanField(required=False, default=True)`), y el texto puede apagar los subtítulos. Si viaja, cuenta como elegido a mano y le gana al texto. |
+| Nota | `add_subtitles` es opcional y «no enviado» es un caso propio (`_NotSentBooleanField`, PR #121): al crear queda en true y al editar no cambia. Así el texto puede apagar los subtítulos; si el campo viaja, cuenta como elegido a mano y le gana al texto. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido (multipart) | CreateFromPromptRequest |
 | Respuesta 201 | CreateFromPromptResponse |

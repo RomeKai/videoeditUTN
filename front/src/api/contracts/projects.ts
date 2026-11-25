@@ -329,7 +329,7 @@ const CreateProjectFields = z.object({
   manual_camera_y: z.number().min(0).max(1).optional(),
   manual_camera_zoom: z.number().min(1).max(4).optional(),
   speaker_tracking: z.boolean().optional(),
-  /** Left out means true (the serializer declares `BooleanField(required=False, default=True)`). */
+  /** "Not sent" is its own case in the serializer (`_NotSentBooleanField`): true on create, unchanged on update. */
   add_subtitles: z.boolean().optional(),
   subtitle_color: HexColor.optional(),
   subtitle_words_per_segment: z.number().int().min(1).optional(),
@@ -491,7 +491,7 @@ export const listProjects = defineEndpoint({
     status: 'partial',
     source: 'back/apps/videos/views.py · VideoProjectViewSet.list + VideoProjectSerializer',
     gap: 14,
-    note: 'Hoy devuelve un array sin paginar y sin filtros. Propuesto: paginación de 25, `status_group`, `search`, `status_counts` y los campos extra del proyecto.',
+    note: 'Hoy devuelve un array sin paginar y sin filtros, con los proyectos de todos los workspaces del usuario: no lee `X-Workspace-Id` y debería acotar por ese header (mientras tanto B2 filtra por `workspace` en el navegador). Propuesto: paginación de 25, `status_group`, `search`, `status_counts` y los campos extra del proyecto.',
   },
   screens: ['B2', 'J1', 'B1'],
 });
@@ -536,7 +536,7 @@ export const createProjectFromPrompt = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views.py · VideoProjectViewSet.from_prompt',
-    note: '`add_subtitles` es opcional: si no viaja vale true (el serializer pasa a `BooleanField(required=False, default=True)`), y el texto puede apagar los subtítulos. Si viaja, cuenta como elegido a mano y le gana al texto.',
+    note: '`add_subtitles` es opcional y «no enviado» es un caso propio (`_NotSentBooleanField`, PR #121): al crear queda en true y al editar no cambia. Así el texto puede apagar los subtítulos; si el campo viaja, cuenta como elegido a mano y le gana al texto.',
   },
   screens: ['C1'],
 });

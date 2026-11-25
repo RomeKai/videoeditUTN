@@ -54,7 +54,8 @@ export function ProjectsScreen() {
 
   // The page belongs to one search in one workspace: a new search or another workspace starts on the first
   // page in the same render, so no request ever asks for a page of the previous list.
-  const scope = `${workspace?.id ?? ''}|${term}`;
+  const workspaceId = workspace?.id ?? null;
+  const scope = `${workspaceId ?? ''}|${term}`;
   const askedPage = paging.scope === scope ? paging.page : 1;
   const setPage = (next: number) => setPaging({ scope, page: Math.max(1, next) });
 
@@ -68,8 +69,8 @@ export function ProjectsScreen() {
   const data = query.data;
   // Today's backend answers one array and ignores the query: filter, search, order and pages happen here.
   const local = useMemo(
-    () => (data && !data.paginated ? applyListQuery(data.results, { group, term, ordering, page: askedPage, pageSize: DEFAULT_PAGE_SIZE }) : null),
-    [data, group, term, ordering, askedPage],
+    () => (data && !data.paginated ? applyListQuery(data.results, { group, term, ordering, page: askedPage, pageSize: DEFAULT_PAGE_SIZE, workspaceId }) : null),
+    [data, group, term, ordering, askedPage, workspaceId],
   );
   const projects = local?.results ?? data?.results ?? [];
   const counts = local?.counts ?? data?.status_counts;

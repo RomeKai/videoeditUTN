@@ -82,6 +82,36 @@ describe('B2 contra el backend de hoy (un array sin paginar, que ignora la consu
     await waitFor(() => expect(titles()).toEqual(sorted.slice(0, 25)));
   });
 
+  it('muestra y cuenta solo los proyectos del workspace activo, aunque el backend mande los de todos', async () => {
+    startScenario('estudio-norte');
+    const db = loadDb();
+    const active = db.users.find((item) => item.id === db.sessionUserId)?.active_workspace_id;
+    const own = db.projects.filter((project) => project.workspace === active);
+    const other = db.workspaces.find((workspace) => workspace.id !== active);
+    if (!active || !other || own.length === 0) throw new Error('El escenario no tiene dos workspaces');
+    // What the real list view answers: this user's projects in every workspace, whatever X-Workspace-Id says.
+    const foreign = own.slice(0, 3).map((project, index) => ({
+      ...(serializeProject(db, project, { full: false }) as Project),
+      id: `00000000-0000-4000-8000-00000000f00${index}`,
+      workspace: other.id,
+      title: `De otro workspace ${index + 1}`,
+    }));
+    const all = [...foreign, ...(own.map((project) => serializeProject(db, project, { full: false })) as Project[])];
+    server.use(http.get(`${API_URL}/api/v1/projects/`, () => HttpResponse.json(all)));
+    const user = userEvent.setup();
+    renderScreen(<ProjectsScreen />);
+    await screen.findByText(new RegExp(`1–${own.length} de ${own.length} proyectos`));
+    expect(rows()).toHaveLength(own.length);
+    expect(titles().some((title) => title.startsWith('De otro workspace'))).toBe(false);
+    const filters = screen.getByRole('group', { name: 'Filtrar por estado' });
+    expect(within(filters).getByRole('button', { name: /Todos/ })).toHaveTextContent(`Todos${own.length}`);
+    const counts = applyListQuery(all, { group: 'all', term: '', ordering: '-created_at', page: 1, pageSize: 25, workspaceId: active }).counts;
+    expect(counts.in_progress + counts.to_review + counts.ready + counts.failed).toBe(own.length);
+
+    await user.type(screen.getByRole('searchbox', { name: 'Buscar proyectos por título' }), 'otro workspace');
+    expect(await screen.findByText('Ningún proyecto coincide con «otro workspace»')).toBeInTheDocument();
+  });
+
   it('sin proyectos muestra el estado vacío', async () => {
     startScenario('muchos-proyectos');
     server.use(http.get(`${API_URL}/api/v1/projects/`, () => HttpResponse.json([])));
@@ -170,8 +200,6 @@ describe('B2 · vacío', () => {
     const db = loadDb();
     const user = db.users.find((item) => item.id === db.sessionUserId);
     if (!user) throw new Error('El escenario no tiene usuario');
-    user.tour_completed = false;
-    saveDb(db);
     const pointer = userEvent.setup();
     renderScreen(<ProjectsScreen />);
     const steps = await screen.findByRole('complementary', { name: 'Primeros pasos' });
@@ -179,6 +207,17 @@ describe('B2 · vacío', () => {
     await pointer.click(within(steps).getByRole('button', { name: 'Cerrar la lista de primeros pasos' }));
     await waitFor(() => expect(loadDb().users.find((item) => item.id === user.id)?.tour_completed).toBe(true));
     expect(screen.queryByRole('complementary', { name: 'Primeros pasos' })).not.toBeInTheDocument();
+  });
+
+  it('con el recorrido ya terminado en el servidor, «Primeros pasos» no aparece en ningún navegador', async () => {
+    // Martín (rol Admin) terminó el recorrido; nothing is stored in this browser.
+    startScenario('rol-admin');
+    server.use(http.get(`${API_URL}/api/v1/projects/`, () => HttpResponse.json({ count: 0, next: null, previous: null, results: [] })));
+    renderScreen(<ProjectsScreen />);
+    await screen.findByRole('heading', { name: 'Todavía no hay proyectos' });
+    expect(screen.getAllByRole('link', { name: /«/ })).toHaveLength(3);
+    expect(screen.queryByRole('complementary', { name: 'Primeros pasos' })).not.toBeInTheDocument();
+    expect(window.localStorage.getItem('oc.proyectos.primeros-pasos.oculto')).toBeNull();
   });
 
   it('rol Lector: los pedidos de ejemplo se ven, deshabilitados', async () => {

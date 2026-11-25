@@ -676,7 +676,9 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
   const isNew = as === 'nuevo';
 
   const users: MockUser[] = [
-    user(USER_IDS.lucia, 'Lucía Fernández', 'lucia@estudionorte.com', { active_workspace_id: WORKSPACE_IDS.estudio }),
+    // Lucía has not finished the first-time tour: B2 shows «Primeros pasos» for her until she closes or completes it.
+    // The other members have (scenarios rol-admin, rol-editor and rol-lector), so for them it stays hidden.
+    user(USER_IDS.lucia, 'Lucía Fernández', 'lucia@estudionorte.com', { active_workspace_id: WORKSPACE_IDS.estudio, tour_completed: false }),
     user(USER_IDS.martin, 'Martín Sosa', 'martin@estudionorte.com', { active_workspace_id: WORKSPACE_IDS.estudio, onboarding_use_case: 'gaming' }),
     user(USER_IDS.carla, 'Carla Ruiz', 'carla@estudionorte.com', { active_workspace_id: WORKSPACE_IDS.estudio }),
     user(USER_IDS.diego, 'Diego Paz', 'diego@clientes.com', { active_workspace_id: WORKSPACE_IDS.estudio, onboarding_use_case: 'other' }),

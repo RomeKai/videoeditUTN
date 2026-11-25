@@ -242,6 +242,11 @@ describe('C1 · errores al crear', () => {
     expect(criteria.closest('div')).toContainElement(alert);
     await user.type(criteria, ' concretos');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+    // DRF answers in English when the request has no Spanish locale.
+    await user.click(create());
+    act(() => fake.options[1]?.onError?.(new ApiError(400, 'projects.create', { selection_criteria: ['Ensure this field has no more than 300 characters.'] })));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Usá hasta 300 caracteres.');
   });
 
   it('403 de SEO con IA: «Cambiar opciones» marca el interruptor de SEO', async () => {
@@ -302,7 +307,17 @@ describe('C1 · salir durante la subida', () => {
     expect(screen.getByRole('status', { name: 'Subiendo el video' })).toBeInTheDocument();
 
     await user.click(screen.getByRole('link', { name: 'Proyectos' }));
-    expect(await screen.findByRole('alertdialog', { name: '¿Salir y cancelar la subida?' })).toBeInTheDocument();
+    const again = await screen.findByRole('alertdialog', { name: '¿Salir y cancelar la subida?' });
+    expect(within(again).getByText(/la subida se cancela y el proyecto no se crea/)).toBeInTheDocument();
+    await user.click(within(again).getByRole('button', { name: 'Seguir subiendo' }));
+
+    // Once the whole video was sent the project may already exist: the dialog stops promising it will not.
+    act(() => fake.calls[0]?.onUploadProgress?.(64, 64));
+    await user.click(screen.getByRole('link', { name: 'Proyectos' }));
+    const sent = await screen.findByRole('alertdialog', { name: '¿Salir sin esperar al proyecto?' });
+    expect(within(sent).getByText(/puede que ya exista: revisá tus proyectos/)).toBeInTheDocument();
+    expect(within(sent).queryByText(/el proyecto no se crea/)).not.toBeInTheDocument();
+    expect(within(sent).getByRole('button', { name: 'Esperar acá' })).toBeInTheDocument();
   });
 });
 

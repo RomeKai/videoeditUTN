@@ -133,6 +133,13 @@ function createProject(context: Parameters<Parameters<typeof route<typeof contra
   const rate = plan?.base_discount_rate ?? 0;
   const cost = upload ? priceOf(duration, resolution, useSeo, rate) : PRICING.link_flat_cost + (useSeo ? priceOf(0, '720p', true, rate) : 0);
 
+  // Like DRF: the serializer validates every field before the view reserves anything, so a 400 never leaves a reservation.
+  const criteriaText = form.get('selection_criteria');
+  if (typeof criteriaText === 'string' && criteriaText.length > PRICING.selection_criteria_max_chars) {
+    // DRF's max_length message.
+    throw badRequest({ selection_criteria: [`Asegúrese de que este campo no tenga más de ${PRICING.selection_criteria_max_chars} caracteres.`] });
+  }
+
   const id = newId();
   const title = get('title') ?? 'Nuevo Proyecto';
   let transaction;
@@ -150,10 +157,6 @@ function createProject(context: Parameters<Parameters<typeof route<typeof contra
   const bool = (key: string, fallback: boolean) => (form.get(key) === null ? fallback : truthy(form.get(key)));
   const maxClips = get('max_clips');
   const criteria = get('selection_criteria');
-  if (criteria && criteria.length > PRICING.selection_criteria_max_chars) {
-    // DRF's max_length message.
-    throw badRequest({ selection_criteria: [`Asegúrese de que este campo no tenga más de ${PRICING.selection_criteria_max_chars} caracteres.`] });
-  }
 
   const project: MockProject = {
     id,
@@ -177,7 +180,7 @@ function createProject(context: Parameters<Parameters<typeof route<typeof contra
     manual_camera_y: number('manual_camera_y', 0.2),
     manual_camera_zoom: number('manual_camera_zoom', 1),
     speaker_tracking: speakerTracking,
-    // Like DRF with a multipart form: a boolean that is not sent is false, whatever the model's default.
+    // Not sent means true on create (the serializer's `_NotSentBooleanField`): only a value that travels turns subtitles off.
     add_subtitles: bool('add_subtitles', true),
     subtitle_color: get('subtitle_color') ?? '#FFFF00',
     subtitle_with_emojis: false,

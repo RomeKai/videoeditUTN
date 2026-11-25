@@ -97,6 +97,11 @@ export interface ListQuery {
   /** 1-based. */
   page: number;
   pageSize: number;
+  /**
+   * Active workspace. The backend's list brings the projects of every workspace the user belongs to (it does
+   * not read X-Workspace-Id yet), so the rows and the counts keep only this one's.
+   */
+  workspaceId?: string | null;
 }
 
 export interface ListPage {
@@ -116,7 +121,8 @@ export interface ListPage {
  */
 export function applyListQuery(projects: ReadonlyArray<Project>, query: ListQuery): ListPage {
   const term = query.term.toLowerCase();
-  const matching = term ? projects.filter((project) => project.title.toLowerCase().includes(term)) : [...projects];
+  const own = query.workspaceId ? projects.filter((project) => project.workspace === query.workspaceId) : projects;
+  const matching = term ? own.filter((project) => project.title.toLowerCase().includes(term)) : [...own];
   const counts: Record<ProjectStatusGroup, number> = { all: matching.length, in_progress: 0, to_review: 0, ready: 0, failed: 0 };
   const groups = new Map<string, ProjectStatusGroup>();
   for (const project of matching) {

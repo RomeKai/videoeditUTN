@@ -486,7 +486,7 @@ export function NewProjectScreen() {
             const code = uploadErrorCode(error);
             if (typeError) setSubmitError(typeError);
             else if (promptIssue) setPromptError(/obligatorio|blank|required/i.test(promptIssue) ? 'Contanos qué querés' : promptIssue);
-            else if (criteriaIssue) setCriteriaError(/m[aá]s de \d+ caracteres|max_length|at most/i.test(criteriaIssue) ? `Usá hasta ${maxCriteria} caracteres.` : criteriaIssue);
+            else if (criteriaIssue) setCriteriaError(/m[aá]s de \d+ caracteres|no more than \d+ characters|max_length|at most/i.test(criteriaIssue) ? `Usá hasta ${maxCriteria} caracteres.` : criteriaIssue);
             else if (linkIssue) setLink((current) => ({ ...current, status: 'error', probe: undefined, error: { message: linkIssue } }));
             else if (code && uploading) setFileState((current) => (current ? { ...current, problem: { code } } : current));
             else setSubmitError(errorMessage(error, 'No pudimos crear el proyecto. Probá de nuevo.'));
@@ -503,6 +503,8 @@ export function NewProjectScreen() {
   // Leaving through a link of the app (the bar, the breadcrumbs) while the video uploads asks first: the
   // browser's own confirmation only covers closing or reloading the tab.
   const uploadingNow = create.isPending && upload !== null;
+  /** The whole body left the browser: the server may already be creating the project. */
+  const uploadDelivered = upload !== null && upload.total > 0 && upload.loaded >= upload.total;
   useEffect(() => {
     if (!uploadingNow) return;
     const onClick = (event: MouseEvent) => {
@@ -796,10 +798,14 @@ export function NewProjectScreen() {
           if (target) router.push(target);
         }}
         tone="danger"
-        title="¿Salir y cancelar la subida?"
-        description="El video todavía se está subiendo. Si salís ahora, la subida se cancela y el proyecto no se crea."
-        confirmLabel="Salir y cancelar"
-        cancelLabel="Seguir subiendo"
+        title={uploadDelivered ? '¿Salir sin esperar al proyecto?' : '¿Salir y cancelar la subida?'}
+        description={
+          uploadDelivered
+            ? 'El video ya está subido y el proyecto se está creando. Si salís ahora puede que ya exista: revisá tus proyectos antes de crearlo de nuevo.'
+            : 'El video todavía se está subiendo. Si salís ahora, la subida se cancela y el proyecto no se crea.'
+        }
+        confirmLabel={uploadDelivered ? 'Salir' : 'Salir y cancelar'}
+        cancelLabel={uploadDelivered ? 'Esperar acá' : 'Seguir subiendo'}
       />
     </Page>
   );

@@ -184,6 +184,17 @@ describe('mocks', () => {
     expect(prompted.metadata.pte_explicit ?? []).not.toContain('add_subtitles');
   });
 
+  it('un 400 de validación no deja una reserva: se valida antes de reservar, como DRF', async () => {
+    const before = await apiCall(billing.getWallet);
+    const error = await fail(apiCall(projects.createProject, { body: { video_url: 'https://youtu.be/abc', selection_criteria: 'x'.repeat(301) } }));
+    expect(error.status).toBe(400);
+    expect(error.fieldErrors.selection_criteria?.[0]).toMatch(/más de 300 caracteres/);
+    const after = await apiCall(billing.getWallet);
+    expect(after.available_balance).toBe(before.available_balance);
+    expect(after.reserved_balance).toBe(before.reserved_balance);
+    expect(after.reservations).toHaveLength(before.reservations.length);
+  });
+
   it('renderizar sin revisar: reserva el render; sin saldo o fuera del plan queda en revisión con el motivo', async () => {
     const upload = (name: string, extra: Record<string, unknown> = {}) =>
       apiCall(projects.createProject, { body: { source_file: new File(['x'], name, { type: 'video/mp4' }), auto_render_bypass: true, max_clips: 3, ...extra } });

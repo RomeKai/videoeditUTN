@@ -42,10 +42,12 @@ function FirstSteps() {
   useEffect(() => {
     if (allDone && tourPending) updateMe({ tour_completed: true });
   }, [allDone, tourPending, updateMe]);
-  if (!me || hidden === me.id) return null;
+  // The server's word wins: once the tour is done the list is gone in every browser. The local mark only covers
+  // the moment between closing it and the answer.
+  if (!me || me.tour_completed || hidden === me.id) return null;
   const close = () => {
     setHidden(me.id);
-    if (!me.tour_completed) updateMe({ tour_completed: true });
+    updateMe({ tour_completed: true });
   };
 
   const done = me.onboarding;
