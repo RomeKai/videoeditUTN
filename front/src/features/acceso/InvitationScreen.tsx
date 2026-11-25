@@ -5,8 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useRef, useState, type FormEvent, type ReactNode } from 'react';
 import type { InvitationPreview } from '@/api/contracts/workspaces';
 import { useQueryClient } from '@tanstack/react-query';
-import { refreshAccessToken } from '@/api/client';
-import { ApiError, SessionExpiredError } from '@/api/errors';
+import { ApiError } from '@/api/errors';
 import { useAcceptInvitation, useInvitation, useLogout } from '@/api/hooks';
 import { clearSession } from '@/api/session';
 import { errorMessage, fieldError } from '@/lib/error-messages';
@@ -295,25 +294,17 @@ function AcceptAsMember({ token, invitation, loginHref, onJoining, onSessionLost
     if (busy) return;
     setBusy(true);
     onJoining(true);
-    const unauthorized = (error: unknown) => error instanceof ApiError && error.status === 401;
     try {
-      let result;
-      try {
-        result = await accept.mutateAsync({});
-      } catch (error) {
-        if (!unauthorized(error)) throw error;
-        // This endpoint also works without a session, so the client does not renew the token for it:
-        // an access token that merely aged out is renewed here and the invitation accepted again.
-        await refreshAccessToken();
-        result = await accept.mutateAsync({});
-      }
+      const result = await accept.mutateAsync({});
       await join(result.workspace_id);
     } catch (error) {
       onJoining(false);
       setBusy(false);
-      if (error instanceof ApiError && error.status === 410) void invitationQuery.refetch();
-      if (unauthorized(error) || error instanceof SessionExpiredError) {
-        // The session is dead. Its tokens must not stay: the login would see "a session" and bounce
+      if (!(error instanceof ApiError)) return;
+      if (error.status === 410) void invitationQuery.refetch();
+      if (error.status === 401) {
+        // The client already renewed the token and tried again before giving this answer, so the
+        // session is dead. Its tokens must not stay: the login would see "a session" and bounce
         // straight back here. Closed, the card offers to sign in again.
         clearSession();
         queryClient.clear();

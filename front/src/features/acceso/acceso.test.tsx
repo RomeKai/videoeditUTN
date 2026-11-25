@@ -616,6 +616,21 @@ describe('A5 · Aceptar invitación', () => {
     expect(nav.replace).not.toHaveBeenCalled();
   });
 
+  it('si renovar el token falla por algo pasajero, muestra el error y se puede volver a intentar', async () => {
+    scenario('usuario-nuevo');
+    const user = userEvent.setup();
+    // The access token aged out and the refresh endpoint is down for a moment: the session is not known to be dead.
+    server.use(http.post(ACCEPT, unauthorized, { once: true }), http.post('http://localhost:8000/api/token/refresh/', () => HttpResponse.json({ detail: 'boom' }, { status: 500 }), { once: true }));
+    show(<InvitationScreen token="con-cuenta" />);
+    await user.click(await screen.findByRole('button', { name: 'Aceptar invitación' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Algo falló de nuestro lado. Probá de nuevo en un momento.');
+    expect(screen.queryByText('Tu sesión se cerró')).not.toBeInTheDocument();
+    expect(getTokens()).not.toBeNull();
+    // Not a dead end: the same button works once the server is back.
+    await user.click(screen.getByRole('button', { name: 'Aceptar invitación' }));
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/proyectos'));
+  });
+
   it('si el servidor sigue rechazando la sesión aunque se renueve, también la cierra', async () => {
     scenario('usuario-nuevo');
     const user = userEvent.setup();
