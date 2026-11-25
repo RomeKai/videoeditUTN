@@ -37,6 +37,15 @@ export function publishHref(pathname: string, clipIds: string[], search?: string
   return `${pathname}?${params.toString().replace(/%2C/gi, ',')}`;
 }
 
+/**
+ * Where the tab is in its history: the entry's index where the browser tells (Navigation API),
+ * or the number of entries. It only grows when a navigation adds an entry.
+ */
+function historyPosition(): number {
+  const index = (window as { navigation?: { currentEntry?: { index?: number } | null } }).navigation?.currentEntry?.index;
+  return typeof index === 'number' && index >= 0 ? index : window.history.length;
+}
+
 /** Networks of `?red=`: only valid ones, without repeats. */
 export function parseNetworkParam(value: string | null | undefined): Platform[] {
   if (!value) return [];
@@ -83,17 +92,24 @@ function Mount() {
   useDraftSweeper(clipIds);
 
   // A screen that opens the panel pushes the parameter: closing goes back to that entry instead of
-  // leaving a second copy of the screen in the history. A link that arrives with the parameter has nothing to go back to.
+  // leaving a second copy of the screen in the history. A link that arrives with the parameter, or a
+  // screen that replaces its URL to open it, has no entry to go back to.
   const isOpen = clipIds.length > 0;
-  const first = useRef(true);
+  const before = useRef<number | null>(null);
+  const wasOpen = useRef(false);
   const pushed = useRef(false);
   useEffect(() => {
-    if (first.current) first.current = false;
-    else pushed.current = isOpen;
-  }, [isOpen]);
+    if (!isOpen) {
+      before.current = historyPosition();
+      pushed.current = false;
+    } else if (!wasOpen.current) {
+      pushed.current = before.current !== null && historyPosition() > before.current;
+    }
+    wasOpen.current = isOpen;
+  });
 
   const close = useCallback(() => {
-    if (pushed.current && window.history.length > 1) {
+    if (pushed.current) {
       pushed.current = false;
       router.back();
       return;

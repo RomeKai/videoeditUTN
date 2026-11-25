@@ -2,6 +2,12 @@ import { expect, test } from '@playwright/test';
 import { expectClean, settle, useScenario, watch } from './helpers';
 
 test.describe('F1 · Brand kits y F2 · Editar brand kit', () => {
+  // The app's icon is /icon.svg. With unsaved changes the editor adds a history entry, and Chromium then
+  // sometimes asks for /favicon.ico on its own: that 404 is the browser's, not something the screen requested.
+  test.beforeEach(async ({ page }) => {
+    await page.route('**/favicon.ico', (route) => route.fulfill({ status: 204 }));
+  });
+
   test('crear un kit, editarlo, usarlo por defecto y borrarlo', async ({ page }) => {
     await useScenario(page, 'estudio-norte');
     const problems = watch(page);

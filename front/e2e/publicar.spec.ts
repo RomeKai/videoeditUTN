@@ -232,12 +232,13 @@ test.describe('E1 · Publicar y E2 · Publicaciones', () => {
     await expect(drafts(page)).toContainText('1');
 
     // Opened by a push and closed with its button: Back then leaves Publicaciones, it does not show it twice.
-    await push(page, '/publicaciones?vista=lista&detalle=');
-    await push(page, `/publicaciones?vista=lista&publicar=${CLIP}`);
+    await push(page, '/publicaciones?vista=mes');
+    await expect(page.getByRole('grid')).toBeVisible();
+    await push(page, `/publicaciones?vista=mes&publicar=${CLIP}`);
     await expect(panel.getByRole('heading', { name: 'Redes' })).toBeVisible();
     await panel.getByRole('button', { name: 'Cancelar' }).click();
     await expect(panel).toBeHidden();
-    await expect(page).toHaveURL(/\/publicaciones\?vista=lista&detalle=$/);
+    await expect(page).toHaveURL(/\/publicaciones\?vista=mes$/);
     await page.goBack();
     await expect(page).toHaveURL(/\/publicaciones\?vista=lista$/);
     expectClean(problems, 'atrás');
