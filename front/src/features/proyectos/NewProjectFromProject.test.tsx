@@ -4,7 +4,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { server } from '@/api/mocks/server';
 import { loadDb, saveDb } from '@/api/mocks/state';
 import { NewProjectScreen } from './NewProjectScreen';
-import { renderScreen, startScenario } from './test-utils';
+import { allowSlowScreens, renderScreen, startScenario } from './test-utils';
+
+allowSlowScreens();
 
 const location = vi.hoisted(() => ({ search: '' }));
 vi.mock('next/navigation', () => ({

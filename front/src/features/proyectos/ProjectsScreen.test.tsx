@@ -3,7 +3,9 @@ import userEvent from '@testing-library/user-event';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { server } from '@/api/mocks/server';
 import { ProjectsScreen } from './ProjectsScreen';
-import { renderScreen, startScenario } from './test-utils';
+import { allowSlowScreens, renderScreen, startScenario } from './test-utils';
+
+allowSlowScreens();
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => server.resetHandlers());

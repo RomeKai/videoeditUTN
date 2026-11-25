@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render } from '@testing-library/react';
+import { configure, render } from '@testing-library/react';
 import type { ReactElement } from 'react';
+import { vi } from 'vitest';
 import { applyScenario } from '@/api/mocks/state';
 import { BillingDialogsProvider } from '@/dialogs/BillingDialogs';
 import { SessionProvider } from '@/shell/session';
@@ -23,4 +24,13 @@ export function renderScreen(ui: ReactElement) {
       </ToastProvider>
     </QueryClientProvider>,
   );
+}
+
+/**
+ * Screen tests click through whole flows against MSW. On a busy machine (CI, many
+ * suites at once) the defaults of 5 s per test and 1 s per query are too tight.
+ */
+export function allowSlowScreens(): void {
+  vi.setConfig({ testTimeout: 30_000 });
+  configure({ asyncUtilTimeout: 5_000 });
 }
