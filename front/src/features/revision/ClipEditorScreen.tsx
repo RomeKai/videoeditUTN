@@ -17,6 +17,7 @@ import { useIsMobile } from '@/lib/hooks';
 import { NO_ACCESS_REASON } from '@/lib/permissions';
 import { estimateCost, planAllowsResolution } from '@/lib/pricing';
 import { CLIP_STATUS } from '@/lib/project-status';
+import { useLeaveGuard } from '@/shell/leaveGuard';
 import { LoadError } from '@/shell/LoadError';
 import { usePermissions, usePlan, useSession } from '@/shell/session';
 import { NotFoundMessage } from '@/shell/SystemPage';
@@ -48,7 +49,6 @@ import { billedSeconds as billed, clamp, formatEdge, MIN_CLIP_SECONDS } from './
 import { buildRows, snapEnd, snapStart, stepEdge, type Word } from './lib/transcript';
 import styles from './editor.module.css';
 import { useFreePreview } from './useFreePreview';
-import { useUnsavedGuard } from './useUnsavedGuard';
 
 export const PROJECT_RENDERING_MESSAGE = 'El proyecto se está renderizando: esperá a que termine para cambiarlo.';
 
@@ -202,7 +202,7 @@ function Editor({ userId, clip, project, loadError }: { userId: string; clip: Cl
   const lockReason = !canEdit ? NO_ACCESS_REASON : clipRendering ? 'Este clip se está renderizando' : projectRendering ? PROJECT_RENDERING_MESSAGE : undefined;
 
   // Buying tokens or changing plan keeps the work (the draft is stored); any other link asks first.
-  const guard = useUnsavedGuard(dirty, {
+  const guard = useLeaveGuard(dirty, {
     allow: (href) => href.startsWith('/uso/comprar') || href.startsWith('/uso/planes'),
     onDiscard: dropDraft,
   });

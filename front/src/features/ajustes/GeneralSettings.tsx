@@ -162,7 +162,7 @@ export function GeneralSettings() {
         toast.success(`Borraste ${saved}.`);
         // The hook already dropped the deleted workspace's queries. Move to another workspace first
         // (that reloads everything for it); with none left, `/me` alone leads to the empty state.
-        if (next) await switchWorkspace(next.id).catch(() => undefined);
+        if (next) await switchWorkspace(next.id, { to: null }).catch(() => undefined);
         else await queryClient.invalidateQueries({ queryKey: keys.me });
         router.replace('/proyectos');
       },

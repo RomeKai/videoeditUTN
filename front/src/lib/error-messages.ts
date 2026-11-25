@@ -162,6 +162,9 @@ export type ApproveErrorKind =
  * motor de precios: …"); 409 only when two approvals race. The proposed 409 and
  * 403 with a `code` are recognised too.
  */
+/** "Los segmentos aprobados son inválidos: cada segmento puede durar hasta 1800 segundos. Dividí los más largos en varios." */
+const SEGMENT_TOO_LONG = /cada segmento puede durar hasta \d+ segundos/i;
+
 export function approveErrorKind(error: unknown): { kind: ApproveErrorKind; message: string; limit?: PlanLimitKind } | null {
   if (!(error instanceof ApiError)) return null;
   const text = error.message;
@@ -173,7 +176,11 @@ export function approveErrorKind(error: unknown): { kind: ApproveErrorKind; mess
     const limit = error.isPlanLimit ? planLimitKind(error) : limitFromText(text);
     return { kind: 'plan_limit', message: 'Tu plan no permite renderizar estos clips. Sacá alguno o cambiá de plan.', limit };
   }
-  if (error.status === 400) return { kind: 'invalid_segments', message: 'No pudimos aprobar estos clips. Revisá los recortes y probá de nuevo.' };
+  if (error.status === 400) {
+    // The one case where the server's sentence says what to do (PR #124): a segment over the render's limit.
+    const tooLong = SEGMENT_TOO_LONG.test(text);
+    return { kind: 'invalid_segments', message: tooLong ? repairEncoding(text) : 'No pudimos aprobar estos clips. Revisá los recortes y probá de nuevo.' };
+  }
   return null;
 }
 
@@ -218,15 +225,23 @@ export function fieldError(error: unknown, field: string): string | undefined {
   return message ? translateFieldError(message) : undefined;
 }
 
+/** The sentences of a role 403 (back/apps/core/permissions.py · DENIED and EDITOR_DELETE_DENIED). */
+const ROLE_DENIED = /^(Con el rol \S+ podés ver|Solo el dueño|Como Editor solo podés)/;
+
+/** For a write that timed out (`NetworkError.outcomeUnknown`). The data it could have changed is read again by the query client. */
+export const OUTCOME_UNKNOWN_MESSAGE = 'No recibimos la respuesta. Puede que se haya hecho igual: revisá antes de probar de nuevo.';
+
 /** A sentence for any error, for toasts and inline banners. Never leaks raw backend text for 5xx, nor untranslated English. */
 export function errorMessage(error: unknown, fallback = 'Algo falló de nuestro lado. Probá de nuevo.'): string {
-  if (error instanceof NetworkError) return 'No pudimos conectar';
+  // A write that got no answer may have been done: "try again" would be the wrong advice.
+  if (error instanceof NetworkError) return error.outcomeUnknown ? OUTCOME_UNKNOWN_MESSAGE : 'No pudimos conectar';
   if (error instanceof ApiError) {
     if (error.status >= 500) return fallback;
     if (error.status === 402) return 'No te alcanza el saldo';
     if (error.isPlanLimit) return 'Tu plan no incluye esto.';
     if (error.status === 401) return 'El email o la contraseña no coinciden';
-    if (error.status === 403) return 'No tenés acceso a esto. Pedile a un admin del workspace.';
+    // The backend says which role is missing, in Spanish (`WorkspaceRolePermission`): that sentence is the message.
+    if (error.status === 403) return ROLE_DENIED.test(error.message) ? repairEncoding(error.message) : 'No tenés acceso a esto. Pedile a un admin del workspace.';
     if (error.status === 404) return 'No encontramos lo que buscabas.';
     if (error.status === 429) return isSpanish(error.message) ? error.message : 'Demasiados intentos. Probá en unos segundos.';
     const first = Object.values(error.fieldErrors)[0]?.[0];

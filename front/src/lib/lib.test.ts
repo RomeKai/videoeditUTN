@@ -3,7 +3,7 @@ import type { Pricing } from '@/api/contracts/billing';
 import type { Project } from '@/api/contracts/projects';
 import { ApiError, NetworkError } from '@/api/errors';
 import { transcriptToSrt, transcriptToTxt } from './download';
-import { errorMessage, isModerationError, pipelineErrorMessage, planLimitKind, uploadErrorCode, uploadErrorMessage } from './error-messages';
+import { approveErrorKind, errorMessage, isModerationError, pipelineErrorMessage, planLimitKind, uploadErrorCode, uploadErrorMessage } from './error-messages';
 import { formatBytes, formatDateTime, formatDuration, formatMinutes, formatNumber, formatPercent, formatRelative, formatTimecode, formatTokens, formatUsd, initials, plural } from './format';
 import { can } from './permissions';
 import { estimateCost, firstPlanWith, planAllowsResolution, secondsForTokens } from './pricing';
@@ -219,6 +219,16 @@ describe('mensajes de error (sección 4 del mapa)', () => {
     expect(errorMessage(new ApiError(500, 'x', { detail: 'Traceback (most recent call last)…' }))).toBe('Algo falló de nuestro lado. Probá de nuevo.');
     expect(errorMessage(new ApiError(403, 'x', { detail: 'No', code: 'permission_denied' }))).toBe('No tenés acceso a esto. Pedile a un admin del workspace.');
     expect(errorMessage(new ApiError(400, 'x', { error: 'El proyecto ya se está renderizando.' }))).toBe('El proyecto ya se está renderizando.');
+    // A role 403 of the backend carries its own sentence, and it is never a plan limit (dialog D3).
+    const lector = new ApiError(403, 'projects.create', { detail: 'Con el rol Lector podés ver, pero no crear ni cambiar nada. Pedile acceso a un admin.' });
+    expect(lector.isPlanLimit).toBe(false);
+    expect(errorMessage(lector)).toBe('Con el rol Lector podés ver, pero no crear ni cambiar nada. Pedile acceso a un admin.');
+    expect(errorMessage(new ApiError(403, 'projects.delete', { detail: 'Como Editor solo podés borrar los proyectos que subiste vos.' }))).toBe('Como Editor solo podés borrar los proyectos que subiste vos.');
+    expect(errorMessage(new ApiError(403, 'x', { detail: 'Solo el dueño del espacio puede hacer esto.' }))).toBe('Solo el dueño del espacio puede hacer esto.');
+    // Approving a segment over the render's limit: the server's sentence says what to do.
+    const tooLong = 'Los segmentos aprobados son inválidos: cada segmento puede durar hasta 1800 segundos. Dividí los más largos en varios.';
+    expect(approveErrorKind(new ApiError(400, 'projects.approvePaperEdit', { error: tooLong }))).toEqual({ kind: 'invalid_segments', message: tooLong });
+    expect(approveErrorKind(new ApiError(400, 'projects.approvePaperEdit', { error: 'Los segmentos aprobados son inválidos: cada segmento debe tener inicio y fin.' }))?.message).toBe('No pudimos aprobar estos clips. Revisá los recortes y probá de nuevo.');
   });
 });
 

@@ -89,7 +89,7 @@ Roles del workspace: **Dueño** (`Workspace.owner`) y los de `WorkspaceMember.ro
 | Borrar o transferir el workspace | ✓ | — | — | — |
 
 - **Cómo se ve:** lo que el rol no permite se muestra deshabilitado, con un tooltip que dice "Pedile acceso a un admin". Los botones no se ocultan, salvo en Ajustes, donde las secciones de admin no aparecen para Editor ni Lector.
-- **API ⚠️:** hoy la API solo controla que el usuario sea miembro del workspace. No aplica roles.
+- **API:** la API aplica esta tabla sobre el workspace activo, que viaja en el header `X-Workspace-Id` (solo cuentan el dueño y los miembros activos; una invitación pendiente no da acceso). A quien no le alcanza el rol le responde 403 con una frase en español, que la app muestra tal cual: "Con el rol Lector podés ver, pero no crear ni cambiar nada. Pedile acceso a un admin.", "Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin.", "Solo el dueño del espacio puede hacer esto." y "Como Editor solo podés borrar los proyectos que subiste vos.". Nunca abre el diálogo de límite del plan (D3).
 
 ### 1.8 Estados comunes
 
@@ -653,10 +653,9 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 
 #### J3. Selector de workspace
 - **Qué muestra:** los workspaces del usuario, con su plan y su rol en cada uno, y la opción **Crear workspace**.
-- **Al cambiar:** recarga los datos del workspace elegido.
-- **API:**
-  - ❌ hoy `create` toma "el workspace del usuario" sin elegir cuál.
-  - ❌ falta enviar el workspace activo en cada pedido.
+- **Al cambiar:** lleva a Proyectos y carga los datos del workspace elegido, con el aviso "Ahora estás en {workspace}". Si la pantalla tiene cambios sin guardar, primero pregunta (D8).
+- **Con otra pestaña:** el workspace activo es uno por navegador. Si la persona cambia de workspace en otra pestaña mientras esta tiene cambios sin guardar, esta pestaña se queda en su workspace y muestra un aviso fijo: "Cambiaste a {workspace} en otra pestaña. Esta sigue en {workspace} para no perder tus cambios.", con la acción **Cambiar a {workspace}**. Una vez guardados o descartados los cambios, el aviso queda sin el motivo ("…Esta sigue en {workspace}.") hasta que la persona cambie. Si mientras tanto ese workspace se borró o la sacaron de él, la pestaña pasa a otro y avisa: "Ya no tenés acceso a {workspace}: esta pestaña pasó a {workspace}. Lo que no habías guardado no se puede guardar." Sin cambios sin guardar, la pestaña sigue a la otra.
+- **API:** la app manda el workspace activo en cada pedido (`X-Workspace-Id`) y la API lo respeta: listas, creación y permisos son los de ese workspace.
 
 #### J4. Toasts
 - Ver la sección 1.8.
@@ -735,7 +734,7 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad:
 |---|---|---|---|
 | 1 | Registro, verificación de email y recuperar contraseña | A2, A3, A4 | P0 |
 | 2 | `GET/PATCH /me` con workspaces, rol en cada uno y workspace activo | Barra, B1, J3, I1 | P0 |
-| 3 | Roles aplicados en la API (tabla 1.7) | Todas | P0 |
+| 3 | ~~Roles aplicados en la API (tabla 1.7)~~ Resuelto: la API aplica los roles sobre el workspace de `X-Workspace-Id` y responde 403 con el motivo | Todas | — |
 | 4 | Wallet y transacciones (`GET /wallet`, `GET /transactions`), con vínculo al proyecto y estado "devuelto" visible | Barra, D1, G1, G2 | P0 |
 | 5 | Link de descarga firmado por clip | D3, D4 | P0 |
 | 6 | Endpoint de precios (fórmula y planes) para el estimado | C1, A6, G3 | P0 |

@@ -8,7 +8,7 @@ import * as contract from '@/api/contracts/projects';
 import { ApiError, NetworkError } from '@/api/errors';
 import { server } from '@/api/mocks/server';
 import { NewProjectScreen } from './NewProjectScreen';
-import { allowSlowScreens, renderScreen, startScenario } from './test-utils';
+import { allowSlowScreens, renderScreen, startScenario } from '@/testing';
 
 interface Call {
   body: Record<string, unknown>;

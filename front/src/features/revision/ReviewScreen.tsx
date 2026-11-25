@@ -1,7 +1,6 @@
 'use client';
 
 import { useQueryClient } from '@tanstack/react-query';
-import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { RenderResolution } from '@/api/contracts/common';
 import type { PaperEditData, Project } from '@/api/contracts/projects';
@@ -14,6 +13,7 @@ import { formatDuration, formatMinutes, formatNumber, formatPercent, formatTimec
 import { useIsMobile } from '@/lib/hooks';
 import { NO_ACCESS_REASON } from '@/lib/permissions';
 import { estimateCost, planAllowsResolution } from '@/lib/pricing';
+import { useLeaveGuard } from '@/shell/leaveGuard';
 import { LoadError } from '@/shell/LoadError';
 import { usePermissions, usePlan, useSession } from '@/shell/session';
 import {
@@ -48,9 +48,11 @@ import { billedSeconds as billed, clamp, rulerTicks } from './lib/time';
 import { buildRows, captionAt, snapEnd, snapStart, stepEdge, titleFromText, wordIndexAt, type Word } from './lib/transcript';
 import styles from './review.module.css';
 import { useFreePreview } from './useFreePreview';
-import { useUnsavedGuard } from './useUnsavedGuard';
 
 type View = 'crop' | 'original';
+
+/** Why "Renderizar" waits while the review is being fetched again. */
+const REFRESHING_REASON = 'Actualizando la revisión…';
 
 const SHORTCUTS: Array<{ keys: string[]; label: string }> = [
   { keys: ['espacio'], label: 'Reproducir o pausar' },
@@ -60,6 +62,8 @@ const SHORTCUTS: Array<{ keys: string[]; label: string }> = [
   { keys: ['I', 'O'], label: 'Marcar inicio y fin' },
   { keys: ['←', '→'], label: 'Mover el cursor' },
   { keys: ['⇧', '←', '→'], label: 'En el texto: seleccionar palabras' },
+  { keys: ['espacio'], label: 'En el texto: marcar o desmarcar la palabra' },
+  { keys: ['↵'], label: 'En el texto: ir a esa palabra en el video' },
 ];
 
 function ShortcutsButton({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
@@ -173,7 +177,6 @@ interface ReviewProps {
 }
 
 function Review({ projectId, userId, data, refreshing, loadError, onRetry }: ReviewProps) {
-  const router = useRouter();
   const toast = useToast();
   const isMobile = useIsMobile();
   const { can, gate } = usePermissions();
@@ -228,16 +231,18 @@ function Review({ projectId, userId, data, refreshing, loadError, onRetry }: Rev
 
   /* A project that left the review goes to its clips (or to its summary when it has none yet). */
   const destination = data.status === 'rendering' || data.status === 'completed' || data.status === 'partial' ? `/proyectos/${projectId}/clips` : `/proyectos/${projectId}`;
-  const guard = useUnsavedGuard(dirty && inReview, {
+  const guard = useLeaveGuard(dirty && inReview, {
     allow: (href) => href.startsWith('/uso/comprar') || href.startsWith('/uso/planes'),
     onDiscard: () => clearDraft(scope),
   });
+  const { leaveNow } = guard;
   useEffect(() => {
     if (!inReview) {
       clearDraft(scope);
-      router.replace(destination);
+      // Through the guard: it takes its history entry away first, so the replace lands on the review's own entry.
+      leaveNow(destination, { replace: true });
     }
-  }, [destination, inReview, scope, router]);
+  }, [destination, inReview, scope, leaveNow]);
 
   /* The stretch of video the detail lanes show: follows the selection, and re-fits after an edit that is not a drag. */
   const [detail, setDetail] = useState<TimeWindow>(() => (selected ? windowAround(selected.start, selected.end, total) : { from: 0, to: total }));
@@ -967,10 +972,11 @@ function Review({ projectId, userId, data, refreshing, loadError, onRetry }: Rev
         <Button
           variant="accent"
           size="lg"
-          disabled={totals.count === 0 || !estimate || refreshing}
+          disabled={totals.count === 0 || !estimate}
+          // While the review is fetched again the clips on screen may be about to change: the button waits, and says so.
+          disabledReason={gate('project.review').disabledReason ?? (refreshing && totals.count > 0 && estimate ? REFRESHING_REASON : '')}
           aria-label={totals.count > 0 ? `Renderizar ${totals.count === 1 ? '1 clip' : `${totals.count} clips`}` : 'Renderizar'}
           onClick={askToRender}
-          {...gate('project.review')}
         >
           {isMobile || totals.count === 0 ? 'Renderizar' : `Renderizar ${totals.count === 1 ? '1 clip' : `${totals.count} clips`}`}
         </Button>

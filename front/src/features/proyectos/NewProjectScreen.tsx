@@ -474,7 +474,9 @@ export function NewProjectScreen() {
           if (billing.handleError(error, { concept: 'Costo del proyecto', onChangeOptions: () => openPlanField(planLimitKind(error)) })) return;
           if (error instanceof NetworkError) {
             refresh();
-            if (uploading) setCut({ loaded: sent, percent: size > 0 ? Math.min(100, Math.floor((sent / size) * 100)) : 0, delivered });
+            // The video got there whole and the answer did not come in time: the project may exist (and the tokens be reserved).
+            const arrived = delivered || error.outcomeUnknown;
+            if (uploading) setCut({ loaded: sent, percent: arrived ? 100 : size > 0 ? Math.min(100, Math.floor((sent / size) * 100)) : 0, delivered: arrived });
             else setSubmitError('No pudimos conectar. Puede que el proyecto se haya creado: revisá tus proyectos antes de probar de nuevo.');
             return;
           }

@@ -123,6 +123,8 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
   /** Pairs that already went out, with the post the server returned: a retry never sends them again. */
   const [sent, setSent] = useState<Record<PairKey, ScheduledPost>>({});
   const sentRef = useRef<Record<PairKey, ScheduledPost>>({});
+  /** The `Idempotency-Key` of the batch being created, kept until it goes through. */
+  const createKey = useRef<{ signature: string; key: string } | null>(null);
   /** Pairs of the last attempt that did not go out, with the reason. */
   const [failures, setFailures] = useState<PairFailure[]>([]);
   const [regenerating, setRegenerating] = useState<Set<PairKey>>(() => new Set());
@@ -277,7 +279,13 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
     if (creates.length > 0) {
       try {
         const first = creates[0];
-        const posts = creates.length === 1 && first ? [await actions.create(first)] : await actions.createBulk(creates);
+        // One key for this exact batch: if the answer is lost (a timeout) and the person presses again,
+        // the same key goes out and the server answers with what it already created, instead of publishing twice.
+        const signature = JSON.stringify(creates);
+        if (createKey.current?.signature !== signature) createKey.current = { signature, key: crypto.randomUUID() };
+        const { key } = createKey.current;
+        const posts = creates.length === 1 && first ? [await actions.create(first, key)] : await actions.createBulk(creates, key);
+        createKey.current = null;
         for (const post of posts) out[pairKey(post.video_clip, post.platform)] = post;
       } catch (error) {
         if (billing.handleError(error)) billed = true;

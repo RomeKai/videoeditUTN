@@ -13,6 +13,7 @@ import { keys } from '@/api/query';
 import { loadDb } from '@/api/mocks/state';
 import { ClipEditorScreen, PROJECT_RENDERING_MESSAGE } from './ClipEditorScreen';
 import { ReviewScreen } from './ReviewScreen';
+import { toggleWord } from './components/TranscriptPanel';
 import { formatEdge } from './lib/time';
 import { appQueryClient, editDb, renderScreen, signIn } from './test-utils';
 
@@ -271,6 +272,106 @@ describe('D2 · Revisión de clips', () => {
       await screen.findByRole('region', { name: 'Clips sugeridos' });
       await waitFor(() => expect(bar()).toHaveTextContent('5 clips seleccionados'));
     });
+  });
+
+  it('en el texto, Espacio marca o desmarca la palabra y Enter va a esa palabra en el video (como en una lista)', async () => {
+    const user = userEvent.setup();
+    renderScreen(<ReviewScreen projectId={REVIEW} />);
+    const text = await screen.findByRole('group', { name: /^Texto de la transcripción/ });
+    expect(text).toHaveAccessibleName(/con Espacio marcás o desmarcás la palabra y con Enter vas a esa palabra en el video/);
+    const selected = () => Array.from(text.querySelectorAll('[role="option"][aria-selected="true"]')).map((word) => Number(word.getAttribute('data-w')));
+    /** Where the player is, as its seek bar says it. */
+    const video = { get currentTime() { return screen.getAllByRole('slider').map((slider) => slider.getAttribute('aria-valuetext')).join('|'); } };
+    const word = (index: number) => text.querySelector(`[data-w="${index}"]`) as HTMLElement;
+
+    word(10).focus();
+    const before = video.currentTime;
+    // Space selects the word and leaves the video where it was.
+    await user.keyboard(' ');
+    expect(selected()).toEqual([10]);
+    expect(video.currentTime).toBe(before);
+    expect(await screen.findByRole('group', { name: 'Acciones para la selección' })).toBeInTheDocument();
+    // The next word joins the run; Space on it again takes it out.
+    await user.keyboard('{ArrowRight}');
+    expect(selected()).toEqual([]);
+    await user.keyboard(' ');
+    expect(selected()).toEqual([11]);
+    await user.keyboard('{Shift>}{ArrowRight}{ArrowRight}{/Shift}');
+    expect(selected()).toEqual([11, 12, 13]);
+    expect(document.activeElement).toHaveAttribute('data-w', '13');
+    await user.keyboard(' ');
+    expect(selected()).toEqual([11, 12]);
+    await user.keyboard(' ');
+    expect(selected()).toEqual([11, 12, 13]);
+
+    // Enter goes to the word in the video and does not touch the selection.
+    await user.keyboard('{Enter}');
+    expect(selected()).toEqual([11, 12, 13]);
+    await waitFor(() => expect(video.currentTime).not.toBe(before));
+
+    // Unselecting down to nothing closes the actions.
+    word(11).focus();
+    await user.keyboard(' ');
+    expect(selected()).toEqual([12, 13]);
+    word(12).focus();
+    await user.keyboard(' ');
+    word(13).focus();
+    await user.keyboard(' ');
+    expect(selected()).toEqual([]);
+    expect(screen.queryByRole('group', { name: 'Acciones para la selección' })).not.toBeInTheDocument();
+  });
+
+  it('toggleWord mantiene la selección en un solo tramo', () => {
+    expect(toggleWord(null, 4)).toEqual({ from: 4, to: 4 });
+    expect(toggleWord({ from: 4, to: 4 }, 4)).toBeNull();
+    // Next to the run: it joins. Away from it: a new run.
+    expect(toggleWord({ from: 4, to: 6 }, 7)).toEqual({ from: 4, to: 7 });
+    expect(toggleWord({ from: 4, to: 6 }, 3)).toEqual({ from: 3, to: 6 });
+    expect(toggleWord({ from: 4, to: 6 }, 20)).toEqual({ from: 20, to: 20 });
+    // At an edge: it leaves. In the middle: the run ends before it.
+    expect(toggleWord({ from: 4, to: 6 }, 4)).toEqual({ from: 5, to: 6 });
+    expect(toggleWord({ from: 4, to: 6 }, 6)).toEqual({ from: 4, to: 5 });
+    expect(toggleWord({ from: 4, to: 8 }, 6)).toEqual({ from: 4, to: 5 });
+  });
+
+  it('el panel de atajos cuenta qué hacen Espacio y Enter en el texto', async () => {
+    const user = userEvent.setup();
+    renderScreen(<ReviewScreen projectId={REVIEW} />);
+    await user.click(await screen.findByRole('button', { name: 'Atajos de teclado' }));
+    const keys = (label: string) => Array.from(screen.getByText(label).parentElement?.querySelectorAll('kbd') ?? []).map((key) => key.textContent);
+    expect(keys('En el texto: marcar o desmarcar la palabra')).toEqual(['espacio']);
+    expect(keys('En el texto: ir a esa palabra en el video')).toEqual(['↵']);
+    expect(keys('Reproducir o pausar')).toEqual(['espacio']);
+  });
+
+  it('mientras la revisión se actualiza, «Renderizar» espera y dice por qué', async () => {
+    const user = userEvent.setup();
+    const view = renderScreen(<ReviewScreen projectId={REVIEW} />, appQueryClient());
+    const button = await screen.findByRole('button', { name: 'Renderizar 5 clips' });
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(button).not.toHaveAttribute('aria-disabled');
+
+    // The refetch takes its time (a slow network; the client gives up on it after 30 s).
+    let answer: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (answer = resolve));
+    server.use(
+      http.get('http://localhost:8000/api/v1/projects/:id/paper-edit-data/', async () => {
+        await held;
+      }),
+    );
+    void view.queryClient.invalidateQueries({ queryKey: keys.projects.paperEdit(REVIEW) });
+    await waitFor(() => expect(button).toHaveAttribute('aria-disabled', 'true'));
+    // The reason is one hover (or one Tab) away, and clicking does nothing meanwhile.
+    await user.hover(button);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Actualizando la revisión…');
+    expect(button).toHaveAccessibleDescription('Actualizando la revisión…');
+    await user.click(button);
+    expect(screen.queryByRole('dialog', { name: 'Renderizar 5 clips' })).not.toBeInTheDocument();
+
+    answer();
+    await waitFor(() => expect(button).not.toHaveAttribute('aria-disabled'));
+    await user.click(button);
+    expect(await screen.findByRole('dialog', { name: 'Renderizar 5 clips' })).toBeInTheDocument();
   });
 
   it('la selección se anuncia y las palabras dicen si están seleccionadas', async () => {

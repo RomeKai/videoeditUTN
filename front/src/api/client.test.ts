@@ -1,11 +1,17 @@
+import { MutationObserver } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { apiCall, toFormData } from './client';
-import { API_URL, WORKSPACE_HEADER } from './config';
+import { errorMessage } from '@/lib/error-messages';
+import { API_URL, REQUEST_TIMEOUT_MS, SLOW_REQUEST_TIMEOUT_MS, UPLOAD_STALL_TIMEOUT_MS, WORKSPACE_HEADER } from './config';
+import { exportTransactions } from './contracts/billing';
+import { createBrandKit, duplicateBrandKit, updateBrandKit } from './contracts/brandkits';
+import { createProject, createProjectFromPrompt, downloadAllClips } from './contracts/projects';
 import { defineEndpoint } from './endpoint';
-import { ApiError, ContractError, NetworkError, SessionExpiredError } from './errors';
+import { ApiError, ContractError, NetworkError, RequestTimeoutError, SessionExpiredError, UploadStalledError, isOutcomeUnknown } from './errors';
+import { createQueryClient, shouldRetry } from './query';
 import { AUTH_STORAGE_KEY, clearSession, getActiveWorkspaceId, getTokens, isSessionExpired, onMaintenance, onSessionExpired, setActiveWorkspaceId, setTokens, subscribeSession } from './session';
 
 const Thing = z.object({ id: z.number(), name: z.string() });
@@ -115,6 +121,24 @@ describe('apiCall', () => {
     expect(request.headers.get('Authorization')).toBe('Bearer acceso-1');
     expect(request.headers.get(WORKSPACE_HEADER)).toBe('ws-1');
     expect(new URL(request.url).searchParams.get('expand')).toBe('true');
+  });
+
+  it('una llamada puede decir su propio workspace (para limpiar lo de la pantalla que se deja) y su clave de idempotencia', async () => {
+    setTokens({ access: 'acceso-1', refresh: 'refresh-1' });
+    setActiveWorkspaceId('ws-nuevo');
+    const seen: Array<{ workspace: string | null; key: string | null }> = [];
+    server.use(
+      http.post(`${API_URL}/api/v1/things/`, ({ request }) => {
+        seen.push({ workspace: request.headers.get(WORKSPACE_HEADER), key: request.headers.get('Idempotency-Key') });
+        return HttpResponse.json({ id: 1, name: 'x' }, { status: 201 });
+      }),
+    );
+    await apiCall(createThing, { body: { name: 'x' } });
+    await apiCall(createThing, { body: { name: 'x' }, workspaceId: 'ws-anterior', idempotencyKey: 'envio-1' });
+    expect(seen).toEqual([
+      { workspace: 'ws-nuevo', key: null },
+      { workspace: 'ws-anterior', key: 'envio-1' },
+    ]);
   });
 
   it('no manda credenciales a un endpoint público', async () => {
@@ -233,6 +257,268 @@ describe('apiCall', () => {
     setTokens({ access: 'acceso-1', refresh: 'refresh-1' });
     server.use(http.get(`${API_URL}/api/v1/things/:id/`, () => HttpResponse.error()));
     await expect(apiCall(getThing, { params: { id: '1' } })).rejects.toBeInstanceOf(NetworkError);
+  });
+});
+
+describe('tiempo de espera', () => {
+  /** An answer that never comes, until the test ends. */
+  const hang = () => new Promise<never>(() => undefined);
+  const slowThing = defineEndpoint({ ...getThing, id: 'test.slowThing', path: '/api/v1/slow/:id/', timeoutMs: 25 });
+  const patientThing = defineEndpoint({ ...getThing, id: 'test.patientThing', path: '/api/v1/patient/:id/', timeoutMs: false });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('un pedido que queda colgado termina como error de red a los 30 s, y se reintenta como cualquier otro', async () => {
+    expect(REQUEST_TIMEOUT_MS).toBe(30_000);
+    setTokens({ access: 'acceso-1', refresh: 'refresh-1' });
+    server.use(http.get(`${API_URL}/api/v1/things/:id/`, hang));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let settled: unknown = 'pendiente';
+    void apiCall(getThing, { params: { id: '1' } }).catch((reason: unknown) => (settled = reason));
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS - 100);
+    expect(settled).toBe('pendiente');
+    await vi.advanceTimersByTimeAsync(200);
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(settled).toBeInstanceOf(NetworkError));
+    const error = settled as NetworkError;
+    expect(error.endpointId).toBe('test.thing');
+    expect(error.cause).toBeInstanceOf(RequestTimeoutError);
+    // Same treatment as "no answer from the network": one retry for a query, the same message on screen.
+    expect(shouldRetry(0, error)).toBe(true);
+    expect(errorMessage(error)).toBe(errorMessage(new NetworkError('test.thing')));
+  });
+
+  it('un endpoint puede pedir otro tiempo, o ninguno; y una llamada puede cambiarlo', async () => {
+    setTokens({ access: 'acceso-1', refresh: 'refresh-1' });
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    server.use(
+      http.get(`${API_URL}/api/v1/slow/:id/`, hang),
+      http.get(`${API_URL}/api/v1/things/:id/`, hang),
+      http.get(`${API_URL}/api/v1/patient/:id/`, async () => {
+        await held;
+        return HttpResponse.json({ id: 1, name: 'tarde pero llega' });
+      }),
+    );
+    const slow = (await apiCall(slowThing, { params: { id: '1' } }).catch((reason: unknown) => reason)) as NetworkError;
+    expect(slow).toBeInstanceOf(NetworkError);
+    expect((slow.cause as RequestTimeoutError).timeoutMs).toBe(25);
+
+    const perCall = (await apiCall(getThing, { params: { id: '1' }, timeoutMs: 20 }).catch((reason: unknown) => reason)) as NetworkError;
+    expect((perCall.cause as RequestTimeoutError).timeoutMs).toBe(20);
+
+    const patient = apiCall(patientThing, { params: { id: '1' } });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    release();
+    await expect(patient).resolves.toEqual({ id: 1, name: 'tarde pero llega' });
+  });
+
+  it('una respuesta que empieza y se queda a mitad del cuerpo también vence', async () => {
+    setTokens({ access: 'acceso-1', refresh: 'refresh-1' });
+    server.use(
+      http.get(
+        `${API_URL}/api/v1/slow/:id/`,
+        () =>
+          new HttpResponse(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode('{"id": 1, '));
+              },
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          ),
+      ),
+    );
+    const error = (await apiCall(slowThing, { params: { id: '1' } }).catch((reason: unknown) => reason)) as NetworkError;
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(error.cause).toBeInstanceOf(RequestTimeoutError);
+  });
+
+  it('cancelar desde la pantalla sigue siendo una cancelación, no un error de red', async () => {
+    setTokens({ access: 'acceso-1', refresh: 'refresh-1' });
+    server.use(http.get(`${API_URL}/api/v1/things/:id/`, hang));
+    const controller = new AbortController();
+    const call = apiCall(getThing, { params: { id: '1' }, signal: controller.signal }).catch((reason: unknown) => reason);
+    setTimeout(() => controller.abort(), 10);
+    const error = (await call) as DOMException;
+    expect(error).not.toBeInstanceOf(NetworkError);
+    expect(error.name).toBe('AbortError');
+  });
+
+  it('si la renovación del token queda colgada, el pedido no espera para siempre', async () => {
+    setTokens({ access: 'acceso-1', refresh: 'refresh-1' });
+    server.use(
+      http.get(`${API_URL}/api/v1/things/:id/`, () => HttpResponse.json({ detail: 'vencido' }, { status: 401 })),
+      http.post(`${API_URL}/api/token/refresh/`, hang),
+    );
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let settled: unknown = 'pendiente';
+    void apiCall(getThing, { params: { id: '1' } }).catch((reason: unknown) => (settled = reason));
+    await vi.waitFor(() => expect(vi.getTimerCount()).toBeGreaterThan(0));
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 100);
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(settled).toBeInstanceOf(NetworkError));
+    // A passing problem: the session is still there.
+    expect(isSessionExpired()).toBe(false);
+  });
+
+  it('en una subida el reloj arranca recién cuando el archivo terminó de salir', async () => {
+    setTokens({ access: jwt(3600, 'vigente'), refresh: 'refresh-1' });
+    server.use(http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ access: jwt(3600, 'nuevo'), refresh: 'refresh-2' })));
+    /** A browser that uploads as slowly as the test says. */
+    const sent: FakeXhr[] = [];
+    class FakeXhr {
+      upload: { onprogress?: (event: unknown) => void; onload?: () => void; onloadstart?: () => void } = {};
+      status = 0;
+      responseText = '';
+      responseType = '';
+      onload?: () => void;
+      onerror?: () => void;
+      onabort?: () => void;
+      aborted = false;
+      open() {}
+      setRequestHeader() {}
+      getResponseHeader() {
+        return 'application/json';
+      }
+      send() {
+        sent.push(this);
+      }
+      abort() {
+        this.aborted = true;
+        this.onabort?.();
+      }
+    }
+    vi.stubGlobal('XMLHttpRequest', FakeXhr);
+    const progress = vi.fn();
+    let settled: unknown = 'pendiente';
+    void apiCall(uploadThing, { body: { title: 'x' }, onUploadProgress: progress, timeoutMs: 1000 }).catch((reason: unknown) => (settled = reason));
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    const xhr = sent[0] as FakeXhr;
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    // Ten times the timeout uploading: nothing cuts it.
+    xhr.upload.onprogress?.({ lengthComputable: true, loaded: 10, total: 100 });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(progress).toHaveBeenCalledWith(10, 100);
+    expect(settled).toBe('pendiente');
+    expect(xhr.aborted).toBe(false);
+
+    // The file is out, and the server never answers.
+    xhr.upload.onload?.();
+    await vi.advanceTimersByTimeAsync(900);
+    expect(settled).toBe('pendiente');
+    await vi.advanceTimersByTimeAsync(200);
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(settled).toBeInstanceOf(NetworkError));
+    expect(xhr.aborted).toBe(true);
+    expect((settled as NetworkError).cause).toBeInstanceOf(RequestTimeoutError);
+  });
+});
+
+describe('un pedido que cambia algo y se queda sin respuesta', () => {
+  const hang = () => new Promise<never>(() => undefined);
+
+  it('crear un proyecto espera lo que el servidor puede tardar después de la subida, no los 30 s', () => {
+    // ffprobe (hasta 60 s), mover el video al storage, calcular el precio y reservar.
+    expect(createProject.timeoutMs).toBe(SLOW_REQUEST_TIMEOUT_MS);
+    expect(createProjectFromPrompt.timeoutMs).toBe(SLOW_REQUEST_TIMEOUT_MS);
+    expect(SLOW_REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(180_000);
+    // The other requests that wait on work done in the request itself.
+    for (const endpoint of [createBrandKit, updateBrandKit, duplicateBrandKit, downloadAllClips, exportTransactions]) {
+      expect(endpoint.timeoutMs, endpoint.id).toBeGreaterThan(REQUEST_TIMEOUT_MS);
+    }
+  });
+
+  it('un POST que vence no es «no pudimos conectar»: puede que se haya hecho, y se distingue de un error de red común', async () => {
+    setTokens({ access: 'acceso-1', refresh: 'refresh-1' });
+    server.use(http.post(`${API_URL}/api/v1/things/`, hang), http.get(`${API_URL}/api/v1/things/:id/`, hang));
+    const write = (await apiCall(createThing, { body: { name: 'x' }, timeoutMs: 20 }).catch((reason: unknown) => reason)) as NetworkError;
+    expect(write).toBeInstanceOf(NetworkError);
+    expect(write.timedOut).toBe(true);
+    expect(write.outcomeUnknown).toBe(true);
+    expect(isOutcomeUnknown(write)).toBe(true);
+    expect(errorMessage(write)).toBe('No recibimos la respuesta. Puede que se haya hecho igual: revisá antes de probar de nuevo.');
+
+    // A read that times out changed nothing.
+    const read = (await apiCall(getThing, { params: { id: '1' }, timeoutMs: 20 }).catch((reason: unknown) => reason)) as NetworkError;
+    expect(read.timedOut).toBe(true);
+    expect(read.outcomeUnknown).toBe(false);
+    expect(errorMessage(read)).toBe('No pudimos conectar');
+
+    // A write that never got to the server did not happen.
+    server.use(http.post(`${API_URL}/api/v1/things/`, () => HttpResponse.error()));
+    const refused = (await apiCall(createThing, { body: { name: 'x' } }).catch((reason: unknown) => reason)) as NetworkError;
+    expect(refused.outcomeUnknown).toBe(false);
+    expect(errorMessage(refused)).toBe('No pudimos conectar');
+  });
+
+  it('cuando una acción queda sin respuesta, la app vuelve a leer lo que pudo haber cambiado', async () => {
+    const client = createQueryClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const run = (error: unknown) =>
+      new MutationObserver(client, { mutationFn: () => Promise.reject(error) }).mutate().catch(() => undefined);
+    await run(new NetworkError('projects.create', new TypeError('Failed to fetch'), 'POST'));
+    expect(invalidate).not.toHaveBeenCalled();
+    await run(new NetworkError('projects.create', new RequestTimeoutError(180_000), 'POST'));
+    expect(invalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it('una subida que deja de avanzar se corta al minuto, como error de red común (el archivo no llegó entero)', async () => {
+    setTokens({ access: jwt(3600, 'vigente'), refresh: 'refresh-1' });
+    server.use(http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ access: jwt(3600, 'nuevo'), refresh: 'refresh-2' })));
+    const sent: StalledXhr[] = [];
+    class StalledXhr {
+      upload: { onprogress?: (event: unknown) => void; onload?: () => void; onloadstart?: () => void } = {};
+      status = 0;
+      responseText = '';
+      responseType = '';
+      onload?: () => void;
+      onerror?: () => void;
+      onabort?: () => void;
+      aborted = false;
+      open() {}
+      setRequestHeader() {}
+      getResponseHeader() {
+        return 'application/json';
+      }
+      send() {
+        sent.push(this);
+        this.upload.onloadstart?.();
+      }
+      abort() {
+        this.aborted = true;
+        this.onabort?.();
+      }
+    }
+    vi.stubGlobal('XMLHttpRequest', StalledXhr);
+    try {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      let settled: unknown = 'pendiente';
+      void apiCall(uploadThing, { body: { title: 'x' }, onUploadProgress: () => undefined }).catch((reason: unknown) => (settled = reason));
+      await vi.waitFor(() => expect(sent).toHaveLength(1));
+      const xhr = sent[0] as StalledXhr;
+      // Slow but moving: five minutes of it are fine.
+      for (let minute = 0; minute < 6; minute += 1) {
+        await vi.advanceTimersByTimeAsync(UPLOAD_STALL_TIMEOUT_MS - 1000);
+        xhr.upload.onprogress?.({ lengthComputable: true, loaded: minute + 1, total: 100 });
+      }
+      expect(settled).toBe('pendiente');
+      // Then nothing at all for a minute.
+      await vi.advanceTimersByTimeAsync(UPLOAD_STALL_TIMEOUT_MS + 10);
+      vi.useRealTimers();
+      await vi.waitFor(() => expect(settled).toBeInstanceOf(NetworkError));
+      expect(xhr.aborted).toBe(true);
+      const error = settled as NetworkError;
+      expect(error.cause).toBeInstanceOf(UploadStalledError);
+      expect(error.outcomeUnknown).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 });
 

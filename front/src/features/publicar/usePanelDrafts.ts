@@ -70,9 +70,9 @@ export function usePanelDrafts({ clipIds, wanted, enabled }: { clipIds: string[]
   });
   const loaded = Boolean(workspaceId) && queries.every((query) => query.isFetchedAfterMount);
 
-  /** Pairs already asked for, so none is asked twice; drafts this panel may discard (id → clip). */
+  /** Pairs already asked for, so none is asked twice; drafts this panel may discard (id → clip and workspace). */
   const requested = useRef(new Set<PairKey>());
-  const mine = useRef(new Map<string, string>());
+  const mine = useRef(new Map<string, { clip: string; workspace: string }>());
   const closed = useRef(false);
   const queue = useRef<Promise<void>>(Promise.resolve());
   /** Counts the times the page came back from the back/forward cache: the drafts start over. */
@@ -112,9 +112,11 @@ export function usePanelDrafts({ clipIds, wanted, enabled }: { clipIds: string[]
   );
 
   const discardOne = useCallback(
-    (id: string) => {
+    // In the draft's own workspace: the panel may be closing because the active one just changed, and
+    // there the API does not know this draft (404), which would leave it behind.
+    (id: string, draftWorkspace: string) => {
       releaseDraft(id);
-      return actions.discard(id).then(
+      return actions.discard(id, draftWorkspace).then(
         () => forgetDraft(id),
         // It stays remembered: the next visit to this workspace discards it.
         () => undefined,
@@ -124,10 +126,11 @@ export function usePanelDrafts({ clipIds, wanted, enabled }: { clipIds: string[]
   );
   const discardAll = useCallback((): Promise<void> => {
     closed.current = true;
-    const ids = [...mine.current.keys()];
+    const own = [...mine.current.entries()];
+    const ids = own.map(([id]) => id);
     mine.current.clear();
     queue.current = queue.current
-      .then(() => Promise.all(ids.map(discardOne)))
+      .then(() => Promise.all(own.map(([id, draft]) => discardOne(id, draft.workspace))))
       // Once, when they are all gone: a screen underneath may have listed them meanwhile.
       .then(() => (ids.length > 0 ? actions.invalidate() : undefined))
       .then(() => undefined);
@@ -140,7 +143,7 @@ export function usePanelDrafts({ clipIds, wanted, enabled }: { clipIds: string[]
     for (const query of queries) {
       for (const post of query.data?.results ?? []) {
         if (!workspaceId || closed.current || mine.current.has(post.id) || !isRemembered(post.id)) continue;
-        mine.current.set(post.id, post.video_clip);
+        mine.current.set(post.id, { clip: post.video_clip, workspace: workspaceId });
         holdDraft({ id: post.id, clip: post.video_clip, workspace: workspaceId });
       }
     }
@@ -168,8 +171,8 @@ export function usePanelDrafts({ clipIds, wanted, enabled }: { clipIds: string[]
         }
         holdDraft({ id: post.id, clip: clipId, workspace: workspaceId });
         // It came back after the panel closed: nobody is going to use it.
-        if (closed.current) return discardOne(post.id);
-        mine.current.set(post.id, clipId);
+        if (closed.current) return discardOne(post.id, workspaceId);
+        mine.current.set(post.id, { clip: clipId, workspace: workspaceId });
         put(post);
       });
     }

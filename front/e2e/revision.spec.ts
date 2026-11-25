@@ -1,9 +1,15 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { EXAMPLE_IDS } from '../src/dev/screens';
 import { expectClean, settle, useScenario, watch } from './helpers';
 
 const REVIEW = `/proyectos/${EXAMPLE_IDS.projectToReview}/revision`;
 const EDITOR = `/proyectos/${EXAMPLE_IDS.projectReady}/clips/${EXAMPLE_IDS.clip}`;
+
+/** The project's Clips tab is the screen on display: its tab is the current one, under the project's own heading. */
+async function expectClipsTab(page: Page): Promise<void> {
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Secciones del proyecto' }).getByRole('link', { name: /^Clips/ })).toHaveAttribute('aria-current', 'page');
+}
 
 test.describe('Revisión de clips (D2)', () => {
   test('elegir clips con el teclado, aprobar y quedar renderizando', async ({ page }) => {
@@ -24,20 +30,23 @@ test.describe('Revisión de clips (D2)', () => {
     await expect(dialog).toContainText('Saldo después');
     await dialog.getByRole('button', { name: 'Renderizar' }).click();
     await expect(page).toHaveURL(new RegExp(`/proyectos/${EXAMPLE_IDS.projectToReview}/clips$`), { timeout: 20_000 });
-    // Clips shows its cards as busy while they render, so the page never "settles" here: wait for its heading.
-    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    // Clips shows its cards as busy while they render, so the page never "settles" here: wait for its tab.
+    await expectClipsTab(page);
     await page.waitForLoadState('networkidle');
 
     // The project left the review: going back sends you to its clips.
     await page.goto(REVIEW);
     await expect(page).toHaveURL(new RegExp(`/proyectos/${EXAMPLE_IDS.projectToReview}/clips$`), { timeout: 20_000 });
-    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    await expectClipsTab(page);
     expectClean(problems, REVIEW);
   });
 
   test('salir con cambios pregunta antes de perderlos', async ({ page }) => {
     await useScenario(page, 'estudio-norte');
     const problems = watch(page);
+    // Coming from Proyectos: Back has somewhere to go (a tab that starts on the review gets no extra entry).
+    await page.goto('/proyectos');
+    await settle(page);
     await page.goto(REVIEW);
     await settle(page);
     await page.getByRole('checkbox', { name: /Incluir «/ }).first().uncheck();
@@ -47,6 +56,13 @@ test.describe('Revisión de clips (D2)', () => {
     await dialog.getByRole('button', { name: 'Seguir editando' }).click();
     expectClean(problems, 'seguir editando');
     await expect(page).toHaveURL(new RegExp(`${REVIEW}$`));
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
+
+    // Back asks too (the shell's guard), and staying keeps the selection.
+    await page.goBack();
+    await expect(dialog).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`${REVIEW}$`));
+    await dialog.getByRole('button', { name: 'Seguir editando' }).click();
     await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
 
     // The draft survives a reload; "Descartar" really drops it.
@@ -63,6 +79,55 @@ test.describe('Revisión de clips (D2)', () => {
     await settle(page);
     await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('5 clips seleccionados');
     expectClean(problems, REVIEW);
+  });
+
+  test('recargar con cambios y después Atrás → Descartar sale de la revisión', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    await page.goto('/proyectos');
+    await settle(page);
+    await page.goto(REVIEW);
+    await settle(page);
+    await page.getByRole('checkbox', { name: /Incluir «/ }).first().uncheck();
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
+    // The reload lands on the extra history entry the guard had added: it is taken again, not doubled.
+    await page.reload();
+    await settle(page);
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
+    await page.goBack();
+    const dialog = page.getByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Descartar' }).click();
+    await expect(page).toHaveURL(/\/proyectos$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Proyectos' })).toBeVisible();
+  });
+
+  test('ir a comprar tokens y volver, y después Atrás → Descartar sale de la revisión de una vez', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    await page.goto('/proyectos');
+    await settle(page);
+    await page.goto(REVIEW);
+    await settle(page);
+    await page.getByRole('checkbox', { name: /Incluir «/ }).first().uncheck();
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
+    // The command menu's "Comprar tokens" never asks: the selection is kept.
+    await page.keyboard.press('Control+k');
+    await page.getByRole('combobox', { name: 'Buscar o ejecutar un comando' }).fill('Comprar tokens');
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(/\/uso\/comprar/);
+    await settle(page);
+    // One Back returns to the review, with the selection.
+    await page.goBack();
+    await expect(page).toHaveURL(new RegExp(`${REVIEW}$`));
+    await settle(page);
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
+    // The next Back asks, and "Descartar" leaves: not the same screen again, not one more Back to go.
+    await page.goBack();
+    const dialog = page.getByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
+    await expect(dialog).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`${REVIEW}$`));
+    await dialog.getByRole('button', { name: 'Descartar' }).click();
+    await expect(page).toHaveURL(/\/proyectos$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Proyectos' })).toBeVisible();
   });
 
   test('en el teléfono: reproductor arriba, clips y transcripción en pestañas', async ({ page }) => {
@@ -101,7 +166,7 @@ test.describe('Editor de clip (D4)', () => {
     await page.getByRole('dialog', { name: 'Volver a renderizar' }).getByRole('button', { name: 'Renderizar' }).click();
     await expect(page).toHaveURL(new RegExp(`/proyectos/${EXAMPLE_IDS.projectReady}/clips$`), { timeout: 20_000 });
     // The clip is rendering again: Clips keeps its card busy until it ends.
-    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    await expectClipsTab(page);
     await page.waitForLoadState('networkidle');
     expectClean(problems, EDITOR);
   });

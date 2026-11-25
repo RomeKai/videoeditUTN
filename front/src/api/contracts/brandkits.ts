@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SLOW_REQUEST_TIMEOUT_MS } from '../config';
 import { defineEndpoint } from '../endpoint';
 import { ColorValue, HexColor, Id, IsoDateTime, NoContent } from './common';
 
@@ -64,7 +65,7 @@ export const listBrandKits = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views.py · BrandKitViewSet.list + BrandKitSerializer',
-    note: 'Hueco: hoy la vista ignora `X-Workspace-Id` y devuelve los kits de todos los workspaces del usuario; debería filtrar por el workspace activo (como projects.list). Mientras tanto la UI filtra por `workspace` antes de tocar el default de otro kit. Propuesto, todavía no existe: `watermark_position` (esquina de la marca de agua, F2). Mientras la respuesta no lo traiga, la UI no muestra el selector de esquina y el logo va abajo a la derecha.',
+    note: 'Desde el PR #125 la vista lee `X-Workspace-Id` y devuelve solo los kits del workspace activo (404 si el usuario no es miembro activo de ese workspace). La UI igual compara `workspace` antes de tocar el default de otro kit: es una defensa que no cuesta nada. Propuesto, todavía no existe: `watermark_position` (esquina de la marca de agua, F2). Mientras la respuesta no lo traiga, la UI no muestra el selector de esquina y el logo va abajo a la derecha.',
   },
   screens: ['F1', 'C1', 'B2', 'D5'],
 });
@@ -73,6 +74,8 @@ export const createBrandKit = defineEndpoint({
   id: 'brandKits.create',
   method: 'POST',
   path: '/api/v1/brand-kits/',
+  // Fonts, logo and videos are stored (or copied) while the request waits.
+  timeoutMs: SLOW_REQUEST_TIMEOUT_MS,
   summary: 'Crea un brand kit (multipart por las fuentes, el logo y los videos).',
   request: BrandKitInput,
   bodyType: 'multipart',
@@ -82,7 +85,7 @@ export const createBrandKit = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views.py · BrandKitViewSet.create/perform_create',
-    note: 'Usa `user.workspaces.first()` en lugar del workspace activo (J3).',
+    note: 'Desde el PR #125 lo crea en el workspace de `X-Workspace-Id`, y aplica el rol: el Lector recibe 403 `{ detail }` en español. Sin ningún workspace responde 400.',
   },
   screens: ['F1', 'F2'],
 });
@@ -102,6 +105,8 @@ export const updateBrandKit = defineEndpoint({
   id: 'brandKits.update',
   method: 'PATCH',
   path: '/api/v1/brand-kits/:id/',
+  // Fonts, logo and videos are stored (or copied) while the request waits.
+  timeoutMs: SLOW_REQUEST_TIMEOUT_MS,
   summary: 'Edita un brand kit. Con `is_default: true` pasa a ser el default del workspace.',
   request: BrandKitInput.partial(),
   bodyType: 'multipart',
@@ -131,6 +136,8 @@ export const duplicateBrandKit = defineEndpoint({
   id: 'brandKits.duplicate',
   method: 'POST',
   path: '/api/v1/brand-kits/:id/duplicate/',
+  // Fonts, logo and videos are stored (or copied) while the request waits.
+  timeoutMs: SLOW_REQUEST_TIMEOUT_MS,
   summary: 'Copia un brand kit con sus archivos ("Copia de …"). La copia nunca es default.',
   response: BrandKit,
   successStatus: 201,

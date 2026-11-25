@@ -4,10 +4,11 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
 import type { Platform } from '@/api/contracts/common';
 import { ApiError } from '@/api/errors';
+import { getActiveWorkspaceId } from '@/api/session';
 import { useActiveWorkspaceId, usePostActions } from '@/api/hooks';
 import { PublishPanel } from './PublishPanel';
-import { forgetDraft, isHeld, orphanDrafts } from './draftRegistry';
-import { PLATFORMS } from './posts';
+import { findOrphanDrafts, forgetDraft, isStillOrphan } from './draftRegistry';
+import { PLATFORMS, isUntouchedDraft } from './posts';
 
 /** Query parameter that opens the panel: `?publicar=<clipId>[,<clipId>…]` (front/ROUTES.md). */
 export const PUBLISH_PARAM = 'publicar';
@@ -66,24 +67,35 @@ function useDraftSweeper(openClipIds: string[]): void {
   useEffect(() => {
     if (!workspaceId) return;
     let cancelled = false;
+    let again: number | undefined;
     const sweep = async () => {
-      const orphans = await orphanDrafts(workspaceId, open.current);
-      if (cancelled || orphans.length === 0) return;
+      const { orphans, retryAt } = await findOrphanDrafts(workspaceId, open.current);
+      if (cancelled) return;
+      // Some were kept only because a panel used them a moment ago (a reload, a tab that is slow to
+      // answer): if nobody claims them by then, they go in the next pass.
+      if (retryAt !== null) again = window.setTimeout(() => void sweep(), Math.max(1000, retryAt - Date.now()));
       let discarded = 0;
       for (const entry of orphans) {
         // A panel may have taken it back while this was running.
-        if (isHeld(entry.id) || open.current.includes(entry.clip)) continue;
+        if (!isStillOrphan(entry, open.current)) continue;
+        // The requests carry the active workspace, and the API only knows a draft in its own: after a
+        // switch the answer would be a 404 that says nothing about the draft. It stays for its workspace's next sweep.
+        const elsewhere = () => cancelled || getActiveWorkspaceId() !== entry.workspace;
+        if (elsewhere()) return;
         try {
           const post = await actions.get(entry.id);
-          // Only a draft nobody touched is thrown away: one that went out, or whose text a person wrote, is theirs.
-          const untouched = post.status === 'DRAFT' && (!post.caption || post.caption === post.generated_caption);
-          if (untouched) {
-            await actions.discard(entry.id);
+          if (elsewhere()) return;
+          // Asked again after the wait, right before throwing it away: the panel of its clip may have just opened.
+          if (!isStillOrphan(entry, open.current)) continue;
+          // Only a draft nobody touched is thrown away: one that went out, or that a person edited, is theirs.
+          if (isUntouchedDraft(post)) {
+            await actions.discard(entry.id, entry.workspace);
             discarded += 1;
           }
           forgetDraft(entry.id);
         } catch (error) {
-          // Gone already: nothing to clean up. Anything else is tried again next time.
+          // Each request read the workspace as it left, so a 404 was answered by the draft's own workspace:
+          // it is gone already, nothing to clean up. Anything else is tried again next time.
           if (error instanceof ApiError && (error.status === 404 || error.status === 409)) forgetDraft(entry.id);
         }
       }
@@ -92,6 +104,7 @@ function useDraftSweeper(openClipIds: string[]): void {
     void sweep();
     return () => {
       cancelled = true;
+      window.clearTimeout(again);
     };
   }, [actions, workspaceId]);
 }

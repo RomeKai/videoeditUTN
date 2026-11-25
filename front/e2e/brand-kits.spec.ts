@@ -1,28 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
-import { expectClean, settle, useScenario, type Problems } from './helpers';
-
-/**
- * Same as the shared `watch()`, minus one thing that is the browser's and not the screen's: the app's icon
- * is /icon.svg, and when the editor adds a history entry (unsaved changes) Chromium sometimes asks for
- * /favicon.ico on its own. That request cannot be intercepted, so its 404 is left out by its URL.
- */
-function watch(page: Page): Problems {
-  const problems: Problems = { consoleErrors: [], failedRequests: [] };
-  page.on('console', (message) => {
-    if (message.type() !== 'error' || message.location().url.endsWith('/favicon.ico')) return;
-    problems.consoleErrors.push(message.text());
-  });
-  page.on('pageerror', (error) => problems.consoleErrors.push(`pageerror: ${error.message}`));
-  page.on('requestfailed', (request) => {
-    const failure = request.failure()?.errorText ?? '';
-    if (failure.includes('ERR_ABORTED')) return;
-    problems.failedRequests.push(`${request.method()} ${request.url()} · ${failure}`);
-  });
-  page.on('response', (response) => {
-    if (response.status() >= 400 && !response.url().endsWith('/favicon.ico')) problems.failedRequests.push(`${response.request().method()} ${response.url()} · ${response.status()}`);
-  });
-  return problems;
-}
+import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expectClean, settle, useScenario, watch } from './helpers';
 
 test.describe('F1 · Brand kits y F2 · Editar brand kit', () => {
   test('crear un kit, editarlo, usarlo por defecto y borrarlo', async ({ page }) => {
@@ -151,6 +128,225 @@ test.describe('F1 · Brand kits y F2 · Editar brand kit', () => {
     await page.goBack();
     await expect(page).toHaveURL(/\/brand-kits$/);
     expectClean(problems, 'historial');
+  });
+
+  test('con cambios, el selector de workspace y el menú de comandos preguntan antes de sacarte de la pantalla', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    const problems = watch(page);
+    await page.goto('/brand-kits');
+    await settle(page);
+    await page.getByRole('link', { name: 'Estudio Norte', exact: true }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Estudio Norte' })).toBeVisible();
+    await page.getByLabel(/Descripción/).fill('Otra descripción');
+    await expect(page.getByRole('region', { name: 'Acciones' })).toBeVisible();
+
+    // The switcher asks first: staying keeps the workspace and the edits.
+    const switcher = page.getByRole('button', { name: /Cambiar de workspace/ });
+    await switcher.click();
+    await page.getByRole('menuitemradio').and(page.locator('[aria-checked="false"]')).first().click();
+    const dialog = page.getByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Seguir editando' }).click();
+    await expect(switcher).toHaveAccessibleName(/Actual: Estudio Norte/);
+    await expect(page.getByLabel(/Descripción/)).toHaveValue('Otra descripción');
+
+    // The command menu, too.
+    await page.keyboard.press('Control+k');
+    await page.getByRole('combobox', { name: 'Buscar o ejecutar un comando' }).fill('Publicaciones');
+    await page.keyboard.press('Enter');
+    await expect(dialog).toBeVisible();
+    await expect(page).toHaveURL(/\/brand-kits\/[0-9a-f-]{36}$/);
+    await dialog.getByRole('button', { name: 'Seguir editando' }).click();
+    await expect(page.getByLabel(/Descripción/)).toHaveValue('Otra descripción');
+
+    // Discarding lets the switch through. The screen is left first and the workspace changes on arrival:
+    // the kit is never asked for in a workspace that does not have it, so no "Esta página no existe" on the way out.
+    await page.evaluate(() => {
+      const seen = window as unknown as { __notFoundShown?: boolean };
+      const look = () => {
+        if (/Esta página no existe|No encontramos lo que buscabas|No pudimos cargar/.test(document.body.innerText)) seen.__notFoundShown = true;
+      };
+      new MutationObserver(look).observe(document.body, { childList: true, subtree: true, characterData: true });
+    });
+    await switcher.click();
+    await page.getByRole('menuitemradio').and(page.locator('[aria-checked="false"]')).first().click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Descartar' }).click();
+    await expect(page).toHaveURL(/\/proyectos$/);
+    await expect(switcher).not.toHaveAccessibleName(/Actual: Estudio Norte/);
+    await expect(page.getByText(/^Ahora estás en /)).toBeVisible();
+    await settle(page);
+    expect(await page.evaluate(() => (window as unknown as { __notFoundShown?: boolean }).__notFoundShown ?? false)).toBe(false);
+    // No request failed either: nothing was asked of the wrong workspace.
+    expectClean(problems, 'cambio de workspace con cambios');
+    // Back from there is not held by a guard that is gone.
+    await page.goBack();
+    await expect(page.getByRole('alertdialog')).toHaveCount(0);
+  });
+
+  test('cambiar de workspace en otra pestaña no pisa los cambios sin guardar de esta', async ({ context, page }) => {
+    await useScenario(page, 'estudio-norte');
+    await page.goto('/brand-kits');
+    await settle(page);
+    await page.getByRole('link', { name: 'Estudio Norte', exact: true }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Estudio Norte' })).toBeVisible();
+    await page.getByLabel(/Descripción/).fill('Cambio sin guardar');
+    await expect(page.getByRole('region', { name: 'Acciones' })).toBeVisible();
+
+    // The same person, another tab of the same browser: they switch workspace there.
+    const other = await context.newPage();
+    await other.goto('/proyectos');
+    await settle(other);
+    await other.getByRole('button', { name: /Cambiar de workspace/ }).click();
+    await other.getByRole('menuitemradio').and(other.locator('[aria-checked="false"]')).first().click();
+    await expect(other.getByRole('button', { name: /Cambiar de workspace/ })).not.toHaveAccessibleName(/Actual: Estudio Norte/);
+    await settle(other);
+
+    // This tab stays where it was, with what was being edited, and says so.
+    const banner = page.getByText(/en otra pestaña\. Esta sigue en Estudio Norte para no perder tus cambios/);
+    await expect(banner).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'Estudio Norte' })).toBeVisible();
+    await expect(page.getByLabel(/Descripción/)).toHaveValue('Cambio sin guardar');
+    await expect(page.getByRole('button', { name: /Cambiar de workspace/ })).toHaveAccessibleName(/Actual: Estudio Norte/);
+
+    // The other tab comes back to Estudio Norte, and leaves again: this one never moves, and the banner follows.
+    await other.getByRole('button', { name: /Cambiar de workspace/ }).click();
+    await other.getByRole('menuitemradio', { name: /Estudio Norte/ }).click();
+    await expect(other.getByRole('button', { name: /Cambiar de workspace/ })).toHaveAccessibleName(/Actual: Estudio Norte/);
+    await settle(other);
+    await expect(banner).toHaveCount(0);
+    await expect(page.getByRole('heading', { level: 1, name: 'Estudio Norte' })).toBeVisible();
+    await expect(page.getByLabel(/Descripción/)).toHaveValue('Cambio sin guardar');
+    await expect(page.getByRole('button', { name: /Cambiar de workspace/ })).toHaveAccessibleName(/Actual: Estudio Norte/);
+    await expect(page.getByText('Esta página no existe')).toHaveCount(0);
+    await other.getByRole('button', { name: /Cambiar de workspace/ }).click();
+    await other.getByRole('menuitemradio').and(other.locator('[aria-checked="false"]')).first().click();
+    await expect(other.getByRole('button', { name: /Cambiar de workspace/ })).not.toHaveAccessibleName(/Actual: Estudio Norte/);
+    await expect(banner).toBeVisible();
+    await expect(page.getByLabel(/Descripción/)).toHaveValue('Cambio sin guardar');
+
+    // Going there is the person's call, and it asks like any other way out.
+    await page.getByRole('button', { name: /^Cambiar a / }).click();
+    const dialog = page.getByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Seguir editando' }).click();
+    await expect(page.getByLabel(/Descripción/)).toHaveValue('Cambio sin guardar');
+    await page.getByRole('button', { name: /^Cambiar a / }).click();
+    await dialog.getByRole('button', { name: 'Descartar' }).click();
+    await expect(page).toHaveURL(/\/proyectos$/);
+    await expect(page.getByRole('button', { name: /Cambiar de workspace/ })).not.toHaveAccessibleName(/Actual: Estudio Norte/);
+    await expect(banner).toHaveCount(0);
+  });
+
+  /** The session can no longer be renewed, and the next request finds out: «Tu sesión venció» opens over the editor. */
+  const expireSession = async (page: Page) => {
+    await page.evaluate(() => {
+      const db = JSON.parse(window.localStorage.getItem('oc.mock.db') as string) as { flags: { sessionExpired: boolean } };
+      db.flags.sessionExpired = true;
+      window.localStorage.setItem('oc.mock.db', JSON.stringify(db));
+      const auth = JSON.parse(window.localStorage.getItem('oc.auth') as string) as { access: string };
+      auth.access = 'mock-access.nadie.x';
+      window.localStorage.setItem('oc.auth', JSON.stringify(auth));
+    });
+    await page.getByRole('button', { name: /Notificaciones/ }).click();
+    const expired = page.getByRole('dialog', { name: 'Tu sesión venció' });
+    await expect(expired).toBeVisible({ timeout: 10_000 });
+    return expired;
+  };
+  const editKit = async (page: Page) => {
+    await page.goto('/brand-kits');
+    await settle(page);
+    await page.getByRole('link', { name: 'Estudio Norte', exact: true }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Estudio Norte' })).toBeVisible();
+    await page.getByLabel(/Descripción/).fill('Cambio sin guardar');
+    await expect(page.getByRole('region', { name: 'Acciones' })).toBeVisible();
+  };
+
+  for (const [name, action, destination] of [
+    ['«Cerrar sesión»', (dialog: Locator) => dialog.getByRole('button', { name: 'Cerrar sesión' }), /\/login(\?|$)/],
+    ['«¿Olvidaste tu contraseña?»', (dialog: Locator) => dialog.getByRole('button', { name: '¿Olvidaste tu contraseña?' }), /\/recuperar$/],
+  ] as const) {
+    test(`sesión vencida con cambios sin guardar: ${name} pregunta primero y después sale de verdad`, async ({ page }) => {
+      await useScenario(page, 'estudio-norte');
+      await editKit(page);
+      const expired = await expireSession(page);
+      await action(expired).click();
+      // Signing out drops the editor: asked first, and nothing is signed out until the answer.
+      const unsaved = page.getByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
+      await expect(unsaved).toBeVisible();
+      expect(await page.evaluate(() => window.localStorage.getItem('oc.auth'))).not.toBeNull();
+      await unsaved.getByRole('button', { name: 'Seguir editando' }).click();
+      await expect(expired).toBeVisible();
+      await expect(page.getByLabel(/Descripción/)).toHaveValue('Cambio sin guardar');
+
+      await action(expired).click();
+      await unsaved.getByRole('button', { name: 'Descartar' }).click();
+      // Out, on a page that renders: not stuck on «Cargando OneCreator».
+      await expect(page).toHaveURL(destination);
+      await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+      await expect(page.getByRole('status', { name: 'Cargando OneCreator' })).toHaveCount(0);
+      // (Not checked on the recovery page: it is a full page load, and the mocks sign the scenario's user in again on every load.)
+      if (name === '«Cerrar sesión»') expect(await page.evaluate(() => window.localStorage.getItem('oc.auth'))).toBeNull();
+    });
+  }
+
+  test('cerrar sesión en otra pestaña con cambios sin guardar acá: esta termina en el login, no cargando para siempre', async ({ context, page }) => {
+    await useScenario(page, 'estudio-norte');
+    await editKit(page);
+    const other = await context.newPage();
+    await other.goto('/proyectos');
+    await settle(other);
+    await other.getByRole('button', { name: 'Tu cuenta' }).click();
+    await other.getByRole('menuitem', { name: /Cerrar sesión/ }).click();
+    await expect(other).toHaveURL(/\/login/);
+    await page.bringToFront();
+    await expect(page).toHaveURL(/\/login/, { timeout: 15_000 });
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  });
+
+  test('una pestaña que abre directo en el editor: sin Atrás que atajar, los links siguen preguntando', async ({ context, page }) => {
+    await useScenario(page, 'estudio-norte');
+    await page.goto('/brand-kits');
+    await settle(page);
+    const href = await page.getByRole('link', { name: 'Estudio Norte', exact: true }).getAttribute('href');
+    const [tab] = await Promise.all([context.waitForEvent('page'), page.evaluate((url) => void window.open(url ?? '', '_blank'), href)]);
+    await tab.waitForLoadState();
+    await settle(tab);
+    expect(await tab.evaluate(() => window.history.length)).toBe(1);
+    await tab.getByLabel(/Descripción/).fill('Otra descripción');
+    await expect(tab.getByRole('region', { name: 'Acciones' })).toBeVisible();
+    // No extra entry: there is nothing before this screen, so "Descartar" after Back would have nowhere to go.
+    expect(await tab.evaluate(() => window.history.length)).toBe(1);
+    // Still guarded: closing the tab warns, and a link asks.
+    expect(await tab.evaluate(() => !window.dispatchEvent(new Event('beforeunload', { cancelable: true })))).toBe(true);
+    await tab.getByRole('navigation', { name: 'Secciones', exact: true }).getByRole('link', { name: 'Publicaciones' }).click();
+    const dialog = tab.getByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Descartar' }).click();
+    await expect(tab).toHaveURL(/\/publicaciones$/);
+    // One step back is the kit, clean and not asking.
+    await tab.goBack();
+    await expect(tab.getByRole('heading', { level: 1, name: 'Estudio Norte' })).toBeVisible();
+    await expect(tab.getByLabel(/Descripción/)).not.toHaveValue('Otra descripción');
+  });
+
+  test('en el teléfono: un link del panel de notificaciones pregunta, y al descartar el panel no queda abierto', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await useScenario(page, 'estudio-norte');
+    await page.goto('/brand-kits');
+    await settle(page);
+    await page.getByRole('link', { name: 'Estudio Norte', exact: true }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Estudio Norte' })).toBeVisible();
+    await page.getByLabel(/Descripción/).fill('Otra descripción');
+    await page.getByRole('button', { name: /Menú de cuenta/ }).click();
+    await page.getByRole('menuitem', { name: /Notificaciones/ }).first().click();
+    const drawer = page.getByRole('dialog', { name: 'Notificaciones' });
+    await expect(drawer).toBeVisible();
+    await drawer.getByRole('link', { name: 'Avisos por email' }).click();
+    const dialog = page.getByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Descartar' }).click();
+    await expect(page).toHaveURL(/\/perfil\/notificaciones$/);
+    await expect(drawer).toBeHidden();
   });
 
   test('sin kits, y en el teléfono', async ({ page }) => {

@@ -207,8 +207,10 @@ describe('mocks', () => {
     expect(rendering.metadata.auto_render_skipped).toBeUndefined();
 
     signIn('saldo-bajo');
-    // 120 tokens pay the link (10) but not the render of the clips.
-    const poor = await apiCall(projects.createProject, { body: { video_url: 'https://youtu.be/abc', auto_render_bypass: true, max_clips: 8 } });
+    // 120 tokens pay the link (10) but not the render of the clips. Twenty clips, so that is true whatever
+    // clips the mock suggests: it seeds them from the clock, and with 8 they were short enough to be paid
+    // with the 110 tokens left about once in 70 runs (the project then went on to render).
+    const poor = await apiCall(projects.createProject, { body: { video_url: 'https://youtu.be/abc', auto_render_bypass: true, max_clips: 20 } });
     advance(SIM.queueMs + SIM.stageMs * 5);
     const waiting = await apiCall(projects.getProject, { params: { id: poor.id } });
     expect(waiting.status).toBe('awaiting_approval');
@@ -298,6 +300,30 @@ describe('mocks', () => {
     // An Editor deletes only their own projects.
     expect((await fail(apiCall(projects.deleteProject, { params: { id: foreign.id } }))).status).toBe(403);
     await expect(apiCall(projects.deleteProject, { params: { id: own.id } })).resolves.toBeUndefined();
+  });
+
+  it('publicar con la misma `Idempotency-Key` no publica dos veces: responde lo que creó el primer pedido', async () => {
+    const clip = (await apiCall(projects.listProjects, { query: { status_group: 'ready' } })).results.flatMap((project) => project.clips).find((item) => item.status === 'completed');
+    if (!clip) throw new Error('falta un clip listo');
+    const count = () => loadDb().posts.filter((post) => post.video_clip === clip.id && post.platform === 'INSTAGRAM_REELS').length;
+    const before = count();
+    const body = { video_clip: clip.id, platform: 'INSTAGRAM_REELS' as const, caption: 'Una sola vez' };
+    const first = await apiCall(social.createPost, { body, idempotencyKey: 'envio-1' });
+    // The answer was lost and the person pressed again: same submit, same key.
+    const again = await apiCall(social.createPost, { body, idempotencyKey: 'envio-1' });
+    expect(again.id).toBe(first.id);
+    expect(count()).toBe(before + 1);
+    // Another submit is another publication.
+    const other = await apiCall(social.createPost, { body, idempotencyKey: 'envio-2' });
+    expect(other.id).not.toBe(first.id);
+    expect(count()).toBe(before + 2);
+    // The batch takes it too.
+    const batch = await apiCall(social.createPostsBulk, { body: { posts: [body] }, idempotencyKey: 'lote-1' });
+    const batchAgain = await apiCall(social.createPostsBulk, { body: { posts: [body] }, idempotencyKey: 'lote-1' });
+    expect(batchAgain.posts.map((post) => post.id)).toEqual(batch.posts.map((post) => post.id));
+    expect(count()).toBe(before + 3);
+    expect(social.createPost.idempotencyKey).toBe(true);
+    expect(social.createPostsBulk.idempotencyKey).toBe(true);
   });
 
   it('publica un clip, la publicación sale, y una reprogramación tardía responde 409', async () => {

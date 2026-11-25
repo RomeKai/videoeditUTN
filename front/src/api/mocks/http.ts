@@ -1,7 +1,7 @@
 import { delay, http, HttpResponse, type HttpHandler } from 'msw';
 import type { ZodTypeAny } from 'zod';
 import { can, type Action, type PermissionContext } from '@/lib/permissions';
-import { API_URL, WORKSPACE_HEADER } from '../config';
+import { API_URL, IDEMPOTENCY_HEADER, WORKSPACE_HEADER } from '../config';
 import type { Role } from '../contracts/common';
 import type { AnyEndpoint, RequestBody, ResponseOf } from '../endpoint';
 import type { MockDb, MockUser, MockWorkspace } from './db';
@@ -21,6 +21,11 @@ export class MockHttpError extends Error {
 export const notFound = (detail = 'No encontrado.') => new MockHttpError(404, { detail });
 export const badRequest = (body: Record<string, unknown>) => new MockHttpError(400, body);
 export const conflict = (error: string, code?: string) => new MockHttpError(409, code ? { error, code } : { error });
+const ROLE_DENIED = {
+  viewer: 'Con el rol Lector podés ver, pero no crear ni cambiar nada. Pedile acceso a un admin.',
+  admins: 'Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin.',
+  editorDelete: 'Como Editor solo podés borrar los proyectos que subiste vos.',
+};
 export const forbidden = (detail = 'No tenés permiso para hacer esto.') => new MockHttpError(403, { detail, code: 'permission_denied' });
 
 export interface MockContext<E extends AnyEndpoint> {
@@ -162,11 +167,23 @@ export function route<E extends AnyEndpoint>(endpoint: E, resolver: Resolver<E>)
           return scoped.role;
         },
         require(action, permissionContext = {}) {
-          if (!scoped || !can(scoped.role, action, { userId: maybeUser?.id, ...permissionContext })) throw forbidden();
+          if (scoped && can(scoped.role, action, { userId: maybeUser?.id, ...permissionContext })) return;
+          // The sentences of the backend (back/apps/core/permissions.py · DENIED).
+          throw forbidden(scoped?.role === 'viewer' ? ROLE_DENIED.viewer : scoped?.role === 'editor' && action === 'project.delete' ? ROLE_DENIED.editorDelete : ROLE_DENIED.admins);
         },
       };
 
+      // A write that takes `Idempotency-Key`: a key already seen (in this workspace) is answered with what
+      // the first request did, and nothing is done again.
+      const idempotencyKey = endpoint.idempotencyKey ? request.headers.get(IDEMPOTENCY_HEADER) : null;
+      const remembered = idempotencyKey ? `${scoped?.workspace.id ?? '-'}:${endpoint.id}:${idempotencyKey}` : null;
+      const before = remembered ? db.idempotency?.[remembered] : undefined;
+      if (before) return HttpResponse.json(before.data as Record<string, unknown>, { status: before.status });
+
       const result = await resolver(context);
+      if (remembered && result.data !== undefined) {
+        db.idempotency = { ...db.idempotency, [remembered]: { status: result.status ?? endpoint.successStatus ?? 200, data: result.data } };
+      }
       saveDb(db);
       if (result.data === undefined) return new HttpResponse(null, { status: result.status ?? 204 });
       if (result.raw) {

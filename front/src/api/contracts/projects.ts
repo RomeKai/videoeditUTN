@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SLOW_REQUEST_TIMEOUT_MS } from '../config';
 import { defineEndpoint } from '../endpoint';
 import { ColorValue, Decimal, HexColor, Id, IsoDateTime, NoContent, PageQuery, Platform, RenderResolution, UserRef, paginated } from './common';
 
@@ -491,7 +492,7 @@ export const listProjects = defineEndpoint({
     status: 'partial',
     source: 'back/apps/videos/views.py · VideoProjectViewSet.list + VideoProjectSerializer',
     gap: 14,
-    note: 'Hoy devuelve un array sin paginar y sin filtros, con los proyectos de todos los workspaces del usuario: no lee `X-Workspace-Id` y debería acotar por ese header (mientras tanto B2 filtra por `workspace` en el navegador). Propuesto: paginación de 25, `status_group`, `search`, `status_counts` y los campos extra del proyecto.',
+    note: 'Hoy devuelve un array sin paginar y sin filtros. Desde el PR #125 lee `X-Workspace-Id` y trae solo los proyectos del workspace activo (404 si el usuario no es miembro activo); B2 igual filtra por `workspace` en el navegador, como defensa. Propuesto: paginación de 25, `status_group`, `search`, `status_counts` y los campos extra del proyecto.',
   },
   screens: ['B2', 'J1', 'B1'],
 });
@@ -500,6 +501,8 @@ export const createProject = defineEndpoint({
   id: 'projects.create',
   method: 'POST',
   path: '/api/v1/projects/',
+  // After the upload the server still validates the video (ffprobe), moves it to storage, prices it and reserves the tokens.
+  timeoutMs: SLOW_REQUEST_TIMEOUT_MS,
   summary: 'Crea un proyecto desde un archivo (multipart) o un link, reserva los tokens y arranca la ingesta.',
   request: CreateProjectRequest,
   bodyType: 'multipart',
@@ -515,7 +518,7 @@ export const createProject = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views.py · VideoProjectViewSet.create + VideoProjectSerializer.create/validate',
-    note: 'El código de InvalidUploadError no llega en el cuerpo (DRF solo manda el mensaje); el 403 trae un texto en inglés sin código. El workspace es `user.workspaces.first()`: no lee el workspace activo (J3).',
+    note: 'El código de InvalidUploadError no llega en el cuerpo (DRF solo manda el mensaje); el 403 trae un texto en inglés sin código. Desde el PR #125 el proyecto se crea en el workspace de `X-Workspace-Id` y se aplica el rol (el Lector recibe 403 `{ detail }` en español).',
   },
   screens: ['C1'],
 });
@@ -524,6 +527,8 @@ export const createProjectFromPrompt = defineEndpoint({
   id: 'projects.createFromPrompt',
   method: 'POST',
   path: '/api/v1/projects/from-prompt/',
+  // After the upload the server still validates the video (ffprobe), moves it to storage, prices it and reserves the tokens.
+  timeoutMs: SLOW_REQUEST_TIMEOUT_MS,
   summary: 'Igual que crear, más `prompt`: la IA arma la configuración al iniciar la ingesta (queda en `metadata.pte`).',
   request: CreateFromPromptRequest,
   bodyType: 'multipart',
@@ -617,7 +622,7 @@ export const approvePaperEdit = defineEndpoint({
   errors: [
     {
       status: 400,
-      when: 'Tres casos, todos `{ error }` (se distinguen con `approveErrorKind()` de `src/lib/error-messages.ts`): el proyecto ya no está en revisión ("El proyecto no está en espera de aprobación. Estado actual: rendering"): la UI avisa y lleva a Clips; el plan no permite la duración o la resolución ("Error en el motor de precios: …"): la UI abre D3; segmentos inválidos.',
+      when: 'Tres casos, todos `{ error }` (se distinguen con `approveErrorKind()` de `src/lib/error-messages.ts`): el proyecto ya no está en revisión ("El proyecto no está en espera de aprobación. Estado actual: rendering"): la UI avisa y lleva a Clips; el plan no permite la duración o la resolución ("Error en el motor de precios: …"): la UI abre D3; segmentos inválidos. De estos últimos, uno más largo que el límite del render (PR #124: "…cada segmento puede durar hasta 1800 segundos. Dividí los más largos en varios.") se muestra con la frase del servidor; el resto, con un mensaje genérico.',
     },
     { status: 402, when: 'Saldo insuficiente: `{ error, required }`. La UI abre D2.' },
     { status: 409, when: 'Solo en la carrera de dos aprobaciones simultáneas: `{ error }`. La UI lleva a Clips.' },
@@ -679,6 +684,8 @@ export const downloadAllClips = defineEndpoint({
   id: 'projects.downloadAll',
   method: 'POST',
   path: '/api/v1/projects/:id/clips/download/',
+  // The zip is built while the request waits.
+  timeoutMs: SLOW_REQUEST_TIMEOUT_MS,
   summary: 'Arma un .zip con los clips listos (todos, o los de `clip_ids`) y devuelve la URL temporal.',
   request: z.object({ clip_ids: z.array(Id).optional() }),
   response: z.object({ url: z.string().url(), expires_at: IsoDateTime }),
@@ -702,6 +709,8 @@ export const probeLink = defineEndpoint({
   id: 'projects.probeLink',
   method: 'POST',
   path: '/api/v1/projects/probe-link/',
+  // The backend asks the video site: slower than the API itself.
+  timeoutMs: 60_000,
   summary: 'Reconoce un link antes de crear el proyecto: de dónde es, su título y su duración.',
   request: z.object({ video_url: z.string().url().max(500) }),
   response: LinkProbe,

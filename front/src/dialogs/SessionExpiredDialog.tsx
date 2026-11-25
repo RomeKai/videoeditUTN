@@ -1,11 +1,11 @@
 'use client';
 
 import { useQueryClient } from '@tanstack/react-query';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState, type FormEvent } from 'react';
 import { useLogin } from '@/api/hooks';
 import { clearSession, onSessionExpired } from '@/api/session';
+import { useGuardedNavigation } from '@/shell/leaveGuard';
 import { useSession } from '@/shell/session';
 import { Avatar } from '@/ui/Avatar';
 import { Button } from '@/ui/Button';
@@ -44,23 +44,32 @@ export function SessionExpiredDialog() {
     );
   };
 
-  const signOut = () => {
-    setOpen(false);
-    clearSession();
-    queryClient.clear();
-    router.replace('/login');
-  };
+  const navigation = useGuardedNavigation();
+  /**
+   * Signing out drops the screen underneath. With unsaved changes on it the person is asked first
+   * (D8, like any other way out), and only then the session goes.
+   */
+  const signOut = (to: '/login' | '/recuperar' = '/login') =>
+    navigation.confirm(() => {
+      setOpen(false);
+      clearSession();
+      queryClient.clear();
+      // Without a session the app sends whatever screen is underneath to the login on its own, and that
+      // redirect would win over a client navigation to the recovery page: that one is a full page load.
+      if (to === '/login') router.replace(to);
+      else window.location.assign(to);
+    });
 
   return (
     <Dialog
       open={open}
-      onClose={signOut}
+      onClose={() => signOut()}
       dismissable={false}
       title="Tu sesión venció"
       description="Ingresá tu contraseña para seguir. Esta pantalla queda como la dejaste."
       footer={
         <>
-          <Button variant="ghost" onClick={signOut}>
+          <Button variant="ghost" onClick={() => signOut()}>
             Cerrar sesión
           </Button>
           <Button variant="primary" type="submit" form="session-expired-form" loading={login.isPending}>
@@ -86,9 +95,10 @@ export function SessionExpiredDialog() {
         <Field
           label="Contraseña"
           labelAside={
-            <Link className="lnk t-small" href="/recuperar" onClick={signOut}>
+            // A button that navigates, not a link: it signs out first, and that must wait for the guard's answer.
+            <button type="button" className="lnk t-small" onClick={() => signOut('/recuperar')}>
               ¿Olvidaste tu contraseña?
-            </Link>
+            </button>
           }
           error={login.isError ? 'El email o la contraseña no coinciden.' : undefined}
         >

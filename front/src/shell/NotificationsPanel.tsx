@@ -1,7 +1,6 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import type { Notification } from '@/api/contracts/notifications';
 import { useMarkAllNotificationsRead, useMarkNotificationRead, useNotifications } from '@/api/hooks';
 import { cx } from '@/lib/cx';
@@ -11,6 +10,7 @@ import { Icon, type IconName } from '@/ui/Icon';
 import { DateTime } from '@/ui/Numeric';
 import { SkeletonRows } from '@/ui/Skeleton';
 import styles from './AppShell.module.css';
+import { useGuardedNavigation } from './leaveGuard';
 import { LoadError } from './LoadError';
 import { notificationHref } from './nav';
 
@@ -27,7 +27,7 @@ export function NotificationsPanel({ onNavigate }: { onNavigate?: () => void }) 
   const notifications = useNotifications();
   const markRead = useMarkNotificationRead();
   const markAll = useMarkAllNotificationsRead();
-  const router = useRouter();
+  const navigation = useGuardedNavigation();
   const unread = notifications.data?.unread_count ?? 0;
   const items = notifications.data?.results ?? [];
   return (
@@ -63,7 +63,7 @@ export function NotificationsPanel({ onNavigate }: { onNavigate?: () => void }) 
               onClick={() => {
                 if (isUnread) markRead.mutate(item.id);
                 onNavigate?.();
-                router.push(notificationHref(item));
+                navigation.push(notificationHref(item));
               }}
             >
               <span className={cx(styles.notiIcon, failed && styles.notiIconErr)}>

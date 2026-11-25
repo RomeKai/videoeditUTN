@@ -9,7 +9,7 @@ import { server } from '@/api/mocks/server';
 import { loadDb, saveDb } from '@/api/mocks/state';
 import { ProjectsScreen } from './ProjectsScreen';
 import { applyListQuery } from './project-view';
-import { allowSlowScreens, renderScreen, startScenario } from './test-utils';
+import { allowSlowScreens, renderScreen, startScenario } from '@/testing';
 
 allowSlowScreens();
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));

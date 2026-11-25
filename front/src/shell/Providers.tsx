@@ -10,9 +10,11 @@ import { SessionExpiredDialog } from '@/dialogs/SessionExpiredDialog';
 import { ThemeProvider } from '@/lib/theme';
 import { ToastProvider } from '@/ui/Toast';
 import { GlobalLoading } from './GlobalLoading';
+import { LeaveGuardProvider } from './leaveGuard';
 import { MaintenanceGate } from './MaintenanceGate';
 import { OfflineBanner } from './OfflineBanner';
 import { SessionProvider } from './session';
+import { WorkspaceElsewhereBanner } from './WorkspaceElsewhereBanner';
 
 // Only loaded in mock mode, and only in the browser.
 const MockPanel = dynamic(() => import('@/dev/MockPanel').then((module) => module.MockPanel), { ssr: false });
@@ -57,7 +59,7 @@ function MockGate({ children }: { children: ReactNode }) {
   );
 }
 
-/** Everything the screens can count on: query cache, theme, toasts, session, shared dialogs and system banners. */
+/** Everything the screens can count on: query cache, theme, toasts, session, the leave guard, shared dialogs and system banners. */
 export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(createQueryClient);
   return (
@@ -65,13 +67,17 @@ export function Providers({ children }: { children: ReactNode }) {
       <QueryClientProvider client={queryClient}>
         <ToastProvider>
           <MockGate>
-            <SessionProvider>
-              <BillingDialogsProvider>
-                <OfflineBanner />
-                <MaintenanceGate>{children}</MaintenanceGate>
-                <SessionExpiredDialog />
-              </BillingDialogsProvider>
-            </SessionProvider>
+            {/* Outside the session: switching workspace goes through the guard. */}
+            <LeaveGuardProvider>
+              <SessionProvider>
+                <BillingDialogsProvider>
+                  <OfflineBanner />
+                  <WorkspaceElsewhereBanner />
+                  <MaintenanceGate>{children}</MaintenanceGate>
+                  <SessionExpiredDialog />
+                </BillingDialogsProvider>
+              </SessionProvider>
+            </LeaveGuardProvider>
           </MockGate>
         </ToastProvider>
       </QueryClientProvider>

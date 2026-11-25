@@ -4,9 +4,10 @@ import { http, HttpResponse } from 'msw';
 import { server } from '@/api/mocks/server';
 import { tick } from '@/api/mocks/sim';
 import { applyScenario, saveDb } from '@/api/mocks/state';
+import { setActiveWorkspaceId } from '@/api/session';
 import { PublishPanel } from './PublishPanel';
 import { PublishPanelMount, parseNetworkParam, parsePublishParam, publishHref } from './PublishPanelMount';
-import { STALE_DRAFT_MS, holdDraft, isRemembered, orphanDrafts, releaseDraft, rememberedDrafts, touchDrafts } from './draftRegistry';
+import { RECENT_DRAFT_MS, STALE_DRAFT_MS, findOrphanDrafts, holdDraft, isRemembered, orphanDrafts, releaseDraft, rememberedDrafts, touchDrafts } from './draftRegistry';
 import { dayKey } from './posts';
 import { CLIPS, db, idle, renderScreen } from './testing';
 
@@ -191,10 +192,12 @@ describe('E1 · Publicar', () => {
     expect(within(order).getAllByRole('listitem')[0]).toHaveTextContent(secondTitle);
 
     fireEvent.change(within(panel).getByLabelText('Quién puede ver estos videos'), { target: { value: 'PUBLIC_TO_EVERYONE' } });
+    // What was scheduled before: the seed has posts at "now + N days", which fall at 18:00 too when the test runs at that hour.
+    const before = new Set(db().posts.filter((post) => post.status === 'SCHEDULED').map((post) => post.id));
     fireEvent.click(publishButton('Programar'));
     await waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 20_000 });
 
-    const created = [CLIPS.first, CLIPS.second, CLIPS.third].map((clipId) => db().posts.filter((post) => post.video_clip === clipId && post.status === 'SCHEDULED' && new Date(post.publish_at).getHours() === 18 && new Date(post.publish_at).getTime() > start.getTime() - 86_400_000));
+    const created = [CLIPS.first, CLIPS.second, CLIPS.third].map((clipId) => db().posts.filter((post) => post.video_clip === clipId && post.status === 'SCHEDULED' && !before.has(post.id) && new Date(post.publish_at).getHours() === 18 && new Date(post.publish_at).getTime() > start.getTime() - 86_400_000));
     expect(created.map((posts) => posts.length)).toEqual([2, 2, 2]);
     const days = created.map((posts) => dayKey(new Date(posts[0]?.publish_at ?? 0)));
     expect(new Set(days).size).toBe(3);
@@ -270,6 +273,28 @@ describe('E1 · Publicar · borradores de ayuda', () => {
     await waitFor(() => expect(rememberedDrafts()).toEqual([]));
   });
 
+  it('si el workspace activo cambia mientras el panel se cierra, el borrador se descarta en el suyo', async () => {
+    const { unmount } = await openPanel();
+    await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toHaveLength(1));
+    const [draft] = postsOf(CLIPS.first, 'DRAFT');
+    const asked: Array<string | null> = [];
+    server.use(
+      http.post(`${API}/scheduled-posts/:id/cancel/`, ({ request }) => {
+        asked.push(request.headers.get('X-Workspace-Id'));
+        return undefined;
+      }),
+    );
+    // The switch: the id changes in the same frame the panel goes away, before its cleanup runs.
+    const other = db().workspaces.find((workspace) => workspace.id !== draft?.workspace);
+    setActiveWorkspaceId(other?.id ?? null);
+    unmount();
+    await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toEqual([]));
+    // Not with the new workspace's header: there the API does not know the draft, and it would stay behind.
+    expect(asked).toEqual([draft?.workspace]);
+    await waitFor(() => expect(rememberedDrafts()).toEqual([]));
+    setActiveWorkspaceId(draft?.workspace ?? null);
+  });
+
   it('el que vuelve después de irse se cancela al llegar', async () => {
     let release: () => void = () => undefined;
     const held = new Promise<void>((resolve) => (release = resolve));
@@ -296,10 +321,23 @@ describe('E1 · Publicar · borradores de ayuda', () => {
     const post = data.posts.find((item) => item.status === 'SCHEDULED');
     if (!post) throw new Error('falta una publicación de ejemplo');
     post.status = 'DRAFT';
+    // As the panel creates them: no options chosen yet.
+    post.tiktok = null;
     change(post);
     saveDb(data);
     holdDraft({ id: post.id, clip: post.video_clip, workspace: post.workspace });
+    // Its panel let go of it (the page went away before the discard got through).
     releaseDraft(post.id);
+    return post;
+  };
+  /**
+   * The same draft as another tab's open panel has it: remembered, refreshed `age` ms ago, and not
+   * held by this page. (That tab is slow, or in the background: it does not answer when asked.)
+   */
+  const inAnotherTab = (age: number) => {
+    const post = leftover();
+    const at = Date.now() - age;
+    window.localStorage.setItem('oc.publicar.borradores', JSON.stringify(rememberedDrafts().map((entry) => (entry.id === post.id ? { ...entry, at } : entry))));
     return post;
   };
   const exists = (id: string) => db().posts.some((post) => post.id === id);
@@ -329,6 +367,127 @@ describe('E1 · Publicar · borradores de ayuda', () => {
     expect(exists(edited.id)).toBe(true);
   });
 
+  it.each([
+    ['los hashtags', (post: ReturnType<typeof db>['posts'][number]) => void (post.hashtags = ['mendoza', 'vinos'])],
+    ['las opciones de TikTok', (post: ReturnType<typeof db>['posts'][number]) => void (post.tiktok = { privacy_level: 'PUBLIC_TO_EVERYONE', allow_comment: true, allow_duet: false, allow_stitch: false, brand_organic: false, branded_content: false })],
+  ])('si la persona solo tocó %s (el texto quedó igual), tampoco se descarta', async (_what, change) => {
+    const edited = leftover((post) => {
+      post.caption = post.generated_caption ?? '';
+      change(post);
+    });
+    renderScreen(<PublishPanelMount />, { keep: true });
+    await waitFor(() => expect(isRemembered(edited.id)).toBe(false));
+    await pause(300);
+    expect(exists(edited.id)).toBe(true);
+  });
+
+  it('si nadie responde pero el borrador se usó hace menos de dos minutos, se queda: una pestaña lenta o en segundo plano no lo pierde', async () => {
+    // Its panel refreshed the entry a minute ago, and its tab does not answer in time.
+    const theirs = inAnotherTab(60_000);
+    const found = await findOrphanDrafts(theirs.workspace, []);
+    expect(found.orphans).toEqual([]);
+    // It is looked at again when the two minutes are up.
+    const entry = rememberedDrafts().find((item) => item.id === theirs.id);
+    expect(found.retryAt).toBe((entry?.at ?? 0) + RECENT_DRAFT_MS + 1);
+    expect((await orphanDrafts(theirs.workspace, [], Date.now() + 61_000)).map((item) => item.id)).toEqual([theirs.id]);
+
+    // The sweeper leaves it alone now…
+    renderScreen(<PublishPanelMount />, { keep: true });
+    await pause(700);
+    expect(exists(theirs.id)).toBe(true);
+    expect(isRemembered(theirs.id)).toBe(true);
+  });
+
+  it('el barrido vuelve a pasar cuando se cumplen los dos minutos y descarta lo que nadie reclamó', async () => {
+    const theirs = inAnotherTab(RECENT_DRAFT_MS - 400);
+    renderScreen(<PublishPanelMount />, { keep: true });
+    await pause(350);
+    expect(exists(theirs.id)).toBe(true);
+    // The second pass comes at least a second later.
+    await waitFor(() => expect(exists(theirs.id)).toBe(false), { timeout: 4000 });
+    expect(isRemembered(theirs.id)).toBe(false);
+  });
+
+  it('si un panel toma el borrador mientras el barrido lo estaba leyendo, no se descarta', async () => {
+    const theirs = leftover();
+    let reading: () => void = () => undefined;
+    const read = new Promise<void>((resolve) => (reading = resolve));
+    let answer: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (answer = resolve));
+    server.use(
+      // Holds the answer and then lets the mocked API give it (a handler that returns nothing passes the request on).
+      http.get('http://localhost:8000/api/v1/scheduled-posts/:id/', async ({ params }) => {
+        if (params.id !== theirs.id) return;
+        reading();
+        await held;
+      }),
+    );
+    renderScreen(<PublishPanelMount />, { keep: true });
+    // The sweeper already decided it was an orphan and is waiting for the server…
+    await read;
+    // …when the panel of that clip (this page's or another tab's) takes it back.
+    holdDraft({ id: theirs.id, clip: theirs.video_clip, workspace: theirs.workspace });
+    answer();
+    await pause(400);
+    expect(exists(theirs.id)).toBe(true);
+    expect(isRemembered(theirs.id)).toBe(true);
+    releaseDraft(theirs.id);
+  });
+
+  it('lo que un panel soltó al cerrarse no espera los dos minutos: ya es de nadie', async () => {
+    const mine = leftover();
+    expect(rememberedDrafts().find((entry) => entry.id === mine.id)?.at).toBe(0);
+    expect((await findOrphanDrafts(mine.workspace, [])).orphans.map((entry) => entry.id)).toEqual([mine.id]);
+    // Taken back (the page came back from the cache, the panel opened again): in use from now on.
+    holdDraft({ id: mine.id, clip: mine.video_clip, workspace: mine.workspace });
+    expect(rememberedDrafts().find((entry) => entry.id === mine.id)?.at).toBeGreaterThan(0);
+    releaseDraft(mine.id);
+  });
+
+  it('si una pestaña duplicada también lo tiene abierto, soltarlo acá no le saca sus dos minutos', async () => {
+    const shared = leftover();
+    // Both tabs hold it: this page and a duplicate of it.
+    holdDraft({ id: shared.id, clip: shared.video_clip, workspace: shared.workspace });
+    const stored = rememberedDrafts();
+    window.localStorage.setItem('oc.publicar.borradores', JSON.stringify(stored.map((entry) => (entry.id === shared.id ? { ...entry, holders: [...(entry.holders ?? []), 'otra-pestaña'] } : entry))));
+    // This page's panel closes.
+    releaseDraft(shared.id);
+    const entry = rememberedDrafts().find((item) => item.id === shared.id);
+    expect(entry?.at).toBeGreaterThan(0);
+    expect(entry?.holders).toEqual(['otra-pestaña']);
+    // The other tab does not answer in time: the draft is still kept, as any recently used one.
+    expect((await findOrphanDrafts(shared.workspace, [])).orphans).toEqual([]);
+  });
+
+  it('el barrido no toca (ni olvida) un borrador si el workspace cambió mientras corría: el 404 sería del otro workspace', async () => {
+    const theirs = leftover();
+    let reading: () => void = () => undefined;
+    const read = new Promise<void>((resolve) => (reading = resolve));
+    let answer: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (answer = resolve));
+    const asked: Array<string | null> = [];
+    server.use(
+      http.get('http://localhost:8000/api/v1/scheduled-posts/:id/', async ({ params, request }) => {
+        if (params.id !== theirs.id) return;
+        asked.push(request.headers.get('X-Workspace-Id'));
+        reading();
+        await held;
+      }),
+    );
+    renderScreen(<PublishPanelMount />, { keep: true });
+    await read;
+    expect(asked).toEqual([theirs.workspace]);
+    // The person switches workspace while the sweeper waits for the server.
+    const other = db().workspaces.find((workspace) => workspace.id !== theirs.workspace);
+    setActiveWorkspaceId(other?.id ?? null);
+    answer();
+    await pause(500);
+    // Not discarded with the wrong workspace, and still remembered for the next visit to its own.
+    expect(exists(theirs.id)).toBe(true);
+    expect(isRemembered(theirs.id)).toBe(true);
+    expect(asked).toEqual([theirs.workspace]);
+  });
+
   it('otra instancia de la app (una pestaña duplicada) no descarta el borrador de un panel abierto', async () => {
     await openPanel();
     await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toHaveLength(1));
@@ -353,7 +512,7 @@ describe('E1 · Publicar · borradores de ayuda', () => {
   });
 
   it('sin forma de preguntarle a otras pestañas, solo se descarta lo que nadie usa hace una hora; un panel abierto lo mantiene al día', async () => {
-    const theirs = leftover();
+    const theirs = inAnotherTab(0);
     vi.stubGlobal('BroadcastChannel', undefined);
     try {
       const later = Date.now() + STALE_DRAFT_MS + 1;
@@ -382,6 +541,37 @@ describe('E1 · Publicar · borradores de ayuda', () => {
 });
 
 describe('E1 · Publicar · envío parcial', () => {
+  it('si publicar queda sin respuesta y la persona aprieta de nuevo, sale con la misma clave: no se publica dos veces', async () => {
+    const keys: Array<string | null> = [];
+    let lose = true;
+    server.use(
+      http.post(`${API}/scheduled-posts/`, async ({ request }) => {
+        // No helper draft for this pair: the publication is created by the submit itself.
+        if (((await request.clone().json()) as { draft?: boolean }).draft) return HttpResponse.json({ detail: 'sin borradores' }, { status: 500 });
+        keys.push(request.headers.get('Idempotency-Key'));
+        if (!lose) return undefined;
+        lose = false;
+        // The server did it (the same request, answered by the mocked API); the answer never reached the browser.
+        await fetch(request.clone());
+        return HttpResponse.error();
+      }),
+    );
+    const { panel, onClose } = await openPanel([CLIPS.first], undefined, ['INSTAGRAM_REELS']);
+    fireEvent.change(await within(panel).findByLabelText('Caption'), { target: { value: 'Una sola vez' } });
+    fireEvent.click(publishButton());
+    await within(panel).findByRole('alert');
+    expect(onClose).not.toHaveBeenCalled();
+    expect(outOf(CLIPS.first, 'INSTAGRAM_REELS')).toHaveLength(1);
+    // The primary button, whatever it is called after a failure.
+    fireEvent.click(within(screen.getByRole('region', { name: 'Acciones' })).getAllByRole('button').at(-1) as HTMLElement);
+    await waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 10_000 });
+    // First try, the server's own copy of it, and the retry: one key for all.
+    expect(keys.length).toBeGreaterThanOrEqual(2);
+    expect(keys[0]).toBeTruthy();
+    expect(new Set(keys).size).toBe(1);
+    expect(outOf(CLIPS.first, 'INSTAGRAM_REELS')).toHaveLength(1);
+  });
+
   it('una red sale y la otra falla: lo dice red por red, no reenvía la que salió y cerrar no la cancela', async () => {
     const { panel, onClose } = await openPanel();
     await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toHaveLength(1));
