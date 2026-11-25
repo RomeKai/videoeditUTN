@@ -38,7 +38,7 @@ export const authHandlers = [
 
   route(contract.register, ({ db, body, now }) => {
     if (db.users.some((item) => item.email.toLowerCase() === body.email.toLowerCase())) {
-      throw badRequest({ email: ['Ya existe una cuenta con este email.'] });
+      throw badRequest({ email: [{ message: 'Ya existe una cuenta con este email.', code: 'unique' }] });
     }
     if (/^\d+$/.test(body.password)) throw badRequest({ password: ['La contraseña no puede ser solo números.'] });
     const id = newId();

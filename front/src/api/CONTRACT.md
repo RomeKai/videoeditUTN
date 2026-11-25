@@ -63,9 +63,9 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | POST | `/api/token/refresh/` | Renueva el token de acceso. El backend rota el refresh (ROTATE_REFRESH_TOKENS). | ✅ existe | A1, D9 |
 | POST | `/api/v1/auth/register/` | Crea la cuenta y manda el email de verificación. | ❌ falta (propuesto) · hueco 1 | A2, A5 |
 | POST | `/api/v1/auth/verify-email/` | Verifica el email con el token del link y deja la sesión iniciada. | ❌ falta (propuesto) · hueco 1 | A3 |
-| POST | `/api/v1/auth/verify-email/resend/` | Reenvía el email de verificación (una vez cada 60 s). | ❌ falta (propuesto) · hueco 1 | A3 |
+| POST | `/api/v1/auth/verify-email/resend/` | Reenvía el email de verificación (una vez cada 60 s). Responde 204 exista o no el email y esté o no verificado, como recuperar contraseña. | ❌ falta (propuesto) · hueco 1 | A3 |
 | POST | `/api/v1/auth/password-reset/` | Pide el link para recuperar la contraseña. Siempre responde 204, exista o no el email. | ❌ falta (propuesto) · hueco 1 | A4, D9 |
-| POST | `/api/v1/auth/password-reset/confirm/` | Define la contraseña nueva con el token del link. | ❌ falta (propuesto) · hueco 1 | A4 |
+| POST | `/api/v1/auth/password-reset/confirm/` | Define la contraseña nueva con el token del link. Responde 204 sin tokens: la UI inicia sesión con el email del link y la contraseña nueva. | ❌ falta (propuesto) · hueco 1 | A4 |
 | POST | `/api/v1/auth/logout/` | Cierra la sesión: invalida el refresh. Con `all_devices`, todos los del usuario. | ❌ falta (propuesto) · hueco 2 | I1, Barra |
 | GET | `/api/v1/me/` | Perfil del usuario con sus workspaces, el rol en cada uno y el workspace activo. | ❌ falta (propuesto) · hueco 2 | Barra, B1, B2, J3, I1 |
 | PATCH | `/api/v1/me/` | Actualiza nombre, email, tour, uso elegido en la bienvenida y workspace activo. | ❌ falta (propuesto) · hueco 2 | B1, B2, J3, I1 |
@@ -183,10 +183,11 @@ Crea la cuenta y manda el email de verificación.
 |---|---|
 | Id | `auth.register` |
 | Backend | ❌ falta (propuesto) · hueco 1 |
+| Nota | Decir "email ya usado" permite averiguar qué emails tienen cuenta. El mapa (A2) lo pide así; para no ayudar a enumerar, el endpoint necesita un límite de intentos por IP. Recuperar contraseña y reenviar la verificación no lo revelan. |
 | Sesión | Pública |
 | Pedido | RegisterRequest |
 | Respuesta 201 | RegisterResponse |
-| Errores | **400** Validación por campo (email ya usado, contraseña débil). Se muestra debajo de cada campo. |
+| Errores | **400** Validación por campo (contraseña débil; email ya usado con `code: "unique"`, que la UI muestra con un link a Iniciar sesión). Se muestra debajo de cada campo. |
 | Pantallas | A2, A5 |
 
 #### `POST /api/v1/auth/verify-email/`
@@ -205,7 +206,7 @@ Verifica el email con el token del link y deja la sesión iniciada.
 
 #### `POST /api/v1/auth/verify-email/resend/`
 
-Reenvía el email de verificación (una vez cada 60 s).
+Reenvía el email de verificación (una vez cada 60 s). Responde 204 exista o no el email y esté o no verificado, como recuperar contraseña.
 
 | | |
 |---|---|
@@ -225,6 +226,7 @@ Pide el link para recuperar la contraseña. Siempre responde 204, exista o no el
 |---|---|
 | Id | `auth.requestPasswordReset` |
 | Backend | ❌ falta (propuesto) · hueco 1 |
+| Nota | El link del email (N2) tiene que ser `/recuperar?token=<token>&email=<email>`: con el email la pantalla dice de quién es la cuenta e inicia sesión después de guardar ("Guardar y entrar"). |
 | Sesión | Pública |
 | Pedido | { email: string } |
 | Respuesta 204 | NoContent |
@@ -232,7 +234,7 @@ Pide el link para recuperar la contraseña. Siempre responde 204, exista o no el
 
 #### `POST /api/v1/auth/password-reset/confirm/`
 
-Define la contraseña nueva con el token del link.
+Define la contraseña nueva con el token del link. Responde 204 sin tokens: la UI inicia sesión con el email del link y la contraseña nueva.
 
 | | |
 |---|---|
@@ -1415,6 +1417,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 
 | Campo | Tipo |
 |---|---|
+| `workspace_id` | Id |
 | `workspace_name` | string |
 | `inviter_name` | string |
 | `role` | MemberRole |
