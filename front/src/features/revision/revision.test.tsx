@@ -130,6 +130,20 @@ describe('D2 · Revisión de clips', () => {
     await waitFor(() => expect(router.push).toHaveBeenCalledWith(`/proyectos/${REVIEW}/clips`));
   });
 
+  it('también con el texto mal codificado que mandaba el backend antes del arreglo', async () => {
+    server.use(
+      http.post('*/api/v1/projects/:id/approve-paper-edit/', () =>
+        HttpResponse.json({ error: 'El proyecto no estÃ¡ en espera de aprobaciÃ³n. Estado actual: rendering' }, { status: 400 }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderScreen(<ReviewScreen projectId={REVIEW} />);
+    await user.click(await screen.findByRole('button', { name: 'Renderizar 5 clips' }));
+    await user.click(within(await screen.findByRole('dialog', { name: 'Renderizar 5 clips' })).getByRole('button', { name: 'Renderizar' }));
+    expect(await screen.findByText('Este proyecto ya se aprobó. Te llevamos a los clips.')).toBeInTheDocument();
+    await waitFor(() => expect(router.push).toHaveBeenCalledWith(`/proyectos/${REVIEW}/clips`));
+  });
+
   it('la carrera de dos aprobaciones (409) va por el mismo camino', async () => {
     server.use(http.post('*/api/v1/projects/:id/approve-paper-edit/', () => HttpResponse.json({ error: 'El proyecto ya se está renderizando.' }, { status: 409 })));
     const user = userEvent.setup();
