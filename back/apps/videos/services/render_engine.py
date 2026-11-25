@@ -1,4 +1,5 @@
 ﻿import os
+import uuid
 import logging
 from django.conf import settings
 from django.core.files import File
@@ -123,22 +124,32 @@ class RenderEngine:
             raise
 
     @staticmethod
-    def render_clip(clip_id):
+    def render_clip(clip_id, claim_token=None):
         """
         Full rendering pipeline for a single VideoClip.
         Includes layout processing, subtitle generation, S3 upload, and local cleanup.
+
+        ``claim_token`` is the owner token render_clip_task wrote when it
+        claimed the clip (None: a RENDERING clip with no owner). The result is
+        saved only while that claim still holds: a redelivered copy of the
+        task may have taken the clip over meanwhile. Returns True when the
+        clip was saved COMPLETED; False when it was no longer this delivery's,
+        after deleting the upload that nobody will use.
         """
         clip_obj, original_clip, final_clip = None, None, None
         output_path, temp_audio_path = None, None
+        s3_key, saved = None, False
 
         try:
             clip_obj = VideoClip.objects.get(id=clip_id)
             project = clip_obj.project
-            clip_obj.status = VideoClip.Status.RENDERING
-            clip_obj.save()
+            # No save here: render_clip_task's claim already left the clip
+            # RENDERING, and a full save would write back a stale owner token.
 
             original_path = project.source_file.path
-            filename = f"clip_{clip_obj.id}.mp4"
+            # One file per delivery: a redelivered copy may render the same
+            # clip at the same time on this host.
+            filename = f"clip_{clip_obj.id}_{uuid.uuid4().hex}.mp4"
             temp_dir = os.path.join(settings.MEDIA_ROOT, 'videos', 'clips', 'temp')
             os.makedirs(temp_dir, exist_ok=True)
             output_path = os.path.join(temp_dir, filename)
@@ -185,11 +196,20 @@ class RenderEngine:
                 project_id=str(project.id)
             )
             
-            # 6. Persistence & Status Update
-            clip_obj.s3_object_key = s3_key
-            clip_obj.status = VideoClip.Status.COMPLETED
-            clip_obj.save()
-            
+            # 6. Persistence & Status Update, only while this delivery owns
+            # the clip. COMPLETED is final: the claim and its start count go.
+            saved = VideoClip.objects.filter(
+                pk=clip_id, status=VideoClip.Status.RENDERING, render_claim_token=claim_token,
+            ).update(
+                s3_object_key=s3_key,
+                status=VideoClip.Status.COMPLETED,
+                render_claim_token=None,
+                render_unfinished_starts=0,
+            ) == 1
+            if not saved:
+                logger.warning("render.claim_lost clip_id=%s", clip_id)
+                return False
+
             logger.info(f"âœ… Render and Cloud Upload successful: {clip_id}")
             return True
 
@@ -200,6 +220,8 @@ class RenderEngine:
             raise e
             
         finally:
+            if s3_key and not saved:
+                RenderEngine._discard_unsaved_upload(clip_id, s3_key)
             # 7. GARBAGE COLLECTION (Local Disk Cleanup)
             logger.info("ðŸ§¹ Cleaning up local rendering files...")
             try:
@@ -212,3 +234,20 @@ class RenderEngine:
                     os.remove(temp_audio_path)
             except Exception as cleanup_err:
                 logger.warning(f"âš ï¸ Cleanup error: {type(cleanup_err).__name__}")
+
+    @staticmethod
+    def _discard_unsaved_upload(clip_id, s3_key):
+        """
+        Deletes an upload this delivery did not save (the clip was taken over,
+        or the save failed), so it is not left orphaned in R2. Kept if the clip
+        points to it after all (a save that committed before its error) or if
+        that cannot be checked.
+        """
+        from apps.videos.services.storage_service import CloudflareR2Manager
+
+        try:
+            if VideoClip.objects.filter(pk=clip_id, s3_object_key=s3_key).exists():
+                return
+            CloudflareR2Manager.delete_object(s3_key)
+        except Exception as exc:
+            logger.warning("render.orphan_not_deleted clip_id=%s error=%s", clip_id, type(exc).__name__)

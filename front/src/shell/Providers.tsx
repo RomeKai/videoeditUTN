@@ -27,6 +27,10 @@ function MockGate({ children }: { children: ReactNode }) {
       .then((module) => module.startMocks())
       .then(() => {
         if (!cancelled) setReady(true);
+      })
+      .catch((error: unknown) => {
+        // Without the worker nothing may fetch: the app stays on its outline and says why.
+        console.error('No se pudo iniciar la API simulada (MSW). Recargá la página.', error);
       });
     return () => {
       cancelled = true;

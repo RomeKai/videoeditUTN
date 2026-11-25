@@ -1,7 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, type RenderResult } from '@testing-library/react';
 import type { ReactElement } from 'react';
+import { http, HttpResponse } from 'msw';
 import { afterAll, afterEach, beforeAll } from 'vitest';
+import { API_URL } from '@/api/config';
 import { server } from '@/api/mocks/server';
 import { applyScenario } from '@/api/mocks/state';
 import { BillingDialogsProvider } from '@/dialogs/BillingDialogs';
@@ -38,4 +40,15 @@ export function renderScreen(
       </QueryClientProvider>
     </ThemeProvider>,
   );
+}
+
+/**
+ * Makes one read of the API answer 500 while the rest (the session included)
+ * keeps working: the state behind a screen's own error banner. Returns a
+ * function that brings the endpoint back, for the "Reintentar" half of a test.
+ */
+export function failRead(path: string | RegExp): () => void {
+  const matcher = typeof path === 'string' ? `${API_URL}${path}` : path;
+  server.use(http.get(matcher, () => HttpResponse.json({ detail: 'Error interno.' }, { status: 500 })));
+  return () => server.resetHandlers();
 }

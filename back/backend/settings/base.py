@@ -247,12 +247,30 @@ PIPELINE_SOFT_TIME_LIMIT = env.int('PIPELINE_SOFT_TIME_LIMIT', default=2 * 3600)
 PIPELINE_TIME_LIMIT = env.int('PIPELINE_TIME_LIMIT', default=PIPELINE_SOFT_TIME_LIMIT + 300)
 # Ceiling for one paper-edit render (render_video_segments). The soft limit is a
 # final failure: the project fails and its render reservation is returned. The
-# hard limit only kills a worker that ignored it (no refund then: the project
-# stays RENDERING until settle_stale_reservations reports it). Both must stay
-# below CELERY_VISIBILITY_TIMEOUT.
+# hard limit only kills a worker that ignored it: Celery acks that message, so
+# nothing redelivers it and recover_stuck_renders picks the project up. Both
+# must stay below CELERY_VISIBILITY_TIMEOUT.
 RENDER_SEGMENTS_SOFT_TIME_LIMIT = env.int('RENDER_SEGMENTS_SOFT_TIME_LIMIT', default=3 * 3600)
 RENDER_SEGMENTS_TIME_LIMIT = env.int(
     'RENDER_SEGMENTS_TIME_LIMIT', default=RENDER_SEGMENTS_SOFT_TIME_LIMIT + 300,
+)
+# Most starts of one clip render (render_clip_task) whose delivery never ended,
+# counting the one about to start. A clip that always kills its worker (an OOM
+# in MoviePy) is redelivered by acks_late; past this many it fails instead of
+# coming back forever. A start that ended (delivered, or an error handled with
+# a retry or a final failure) does not count, so transient retries never use
+# it up. At least 2: with 1, a single broker blip (a redelivered copy taking
+# over a live render) would fail a healthy clip.
+RENDER_CLIP_MAX_STARTS = env.int('RENDER_CLIP_MAX_STARTS', default=3)
+# A paper edit whose render reservation is still RESERVED, with no project
+# lock held and no start, approval or re-queue for this long, is stuck:
+# recover_stuck_renders re-queues it, charges it (delivered) or, after losing
+# its worker too many times, fails it and returns the reservation. Never below
+# RENDER_SEGMENTS_TIME_LIMIT + 15 min, whatever the environment says: a render
+# that started less than the hard limit ago may still be running, even if its
+# lock lapsed during a Redis blip. The environment can only raise it.
+RENDER_STUCK_AFTER_SECONDS = max(
+    env.int('RENDER_STUCK_AFTER_SECONDS', default=0), RENDER_SEGMENTS_TIME_LIMIT + 15 * 60,
 )
 
 # Heavy MoviePy renders get their own queue so they cannot starve ingestion.
@@ -285,6 +303,13 @@ PREVIEW_MAX_ACTIVE_PER_WORKSPACE = env.int('PREVIEW_MAX_ACTIVE_PER_WORKSPACE', d
 CELERY_BEAT_SCHEDULE = {
     'cleanup-expired-previews': {
         'task': 'apps.videos.tasks.cleanup_expired_previews',
+        'schedule': 15 * 60,
+    },
+    # Paper edits left RENDERING with their tokens reserved (a hard time limit,
+    # a lost redelivery). Without a beat process, the same routine runs from
+    # cron: manage.py recover_stuck_renders --apply.
+    'recover-stuck-renders': {
+        'task': 'apps.videos.tasks.recover_stuck_renders',
         'schedule': 15 * 60,
     },
 }

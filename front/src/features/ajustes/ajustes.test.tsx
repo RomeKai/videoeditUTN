@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadDb } from '@/api/mocks/state';
-import { renderScreen, startMockApi } from '../uso/test-utils';
+import { failRead, renderScreen, startMockApi } from '../uso/test-utils';
 import { GeneralSettings } from './GeneralSettings';
 import { parseEmails } from './InviteMemberDialog';
 import { MembersScreen } from './MembersScreen';
@@ -314,5 +314,41 @@ describe('I2 · Notificaciones', () => {
     await user.click(render);
     expect(await screen.findByText('Guardado. Te avisamos por email cuando termina un render.')).toBeInTheDocument();
     expect(render).toHaveAttribute('aria-checked', 'true');
+  });
+});
+
+describe('errores de carga: banner con Reintentar', () => {
+  it('Miembros', async () => {
+    const user = userEvent.setup();
+    const restore = failRead(/\/api\/v1\/workspaces\/[^/]+\/members\/$/);
+    renderScreen(<MembersScreen />);
+    const alert = await screen.findByRole('alert');
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Invitar' })).toBeDisabled();
+    restore();
+    await user.click(within(alert).getByRole('button', { name: 'Reintentar' }));
+    expect(await screen.findByText('Carla Ruiz')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('Redes sociales', async () => {
+    const user = userEvent.setup();
+    const restore = failRead('/api/v1/social-accounts/');
+    renderScreen(<NetworksScreen />);
+    const alert = await screen.findByRole('alert');
+    restore();
+    await user.click(within(alert).getByRole('button', { name: 'Reintentar' }));
+    expect(await screen.findByRole('button', { name: 'Desconectar TikTok' })).toBeInTheDocument();
+  });
+
+  it('Notificaciones', async () => {
+    const user = userEvent.setup();
+    const restore = failRead('/api/v1/me/notification-preferences/');
+    renderScreen(<NotificationsScreen />);
+    const alert = await screen.findByRole('alert');
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+    restore();
+    await user.click(within(alert).getByRole('button', { name: 'Reintentar' }));
+    expect(await screen.findAllByRole('switch')).toHaveLength(5);
   });
 });

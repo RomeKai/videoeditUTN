@@ -12,7 +12,7 @@ import { planFeatures, planLosses } from './PlanCard';
 import { PlansScreen } from './PlansScreen';
 import { PricingScreen } from './PricingScreen';
 import { PurchaseResultScreen } from './PurchaseResultScreen';
-import { renderScreen, startMockApi } from './test-utils';
+import { failRead, renderScreen, startMockApi } from './test-utils';
 import { gridStep, usageTotals } from './UsageChart';
 import { UsageHeader } from './UsageHeader';
 import { UsageOverview } from './UsageOverview';
@@ -339,5 +339,43 @@ describe('G5 · Resultado de la compra', () => {
   it('sin el id de la compra ofrece volver a comprar', async () => {
     renderScreen(<PurchaseResultScreen />);
     expect(await screen.findByText('No encontramos esa compra')).toBeInTheDocument();
+  });
+});
+
+describe('errores de carga: banner con Reintentar', () => {
+  it('Resumen: si falla la billetera, el resto queda a la vista y Reintentar la trae', async () => {
+    const user = userEvent.setup();
+    const restore = failRead('/api/v1/wallet/');
+    renderScreen(<UsageOverview />);
+    const alert = await screen.findByRole('alert');
+    expect(await screen.findByRole('region', { name: 'Plan actual' })).toBeInTheDocument();
+    expect(screen.queryByText('Saldo disponible')).not.toBeInTheDocument();
+    restore();
+    await user.click(within(alert).getByRole('button', { name: 'Reintentar' }));
+    expect(await screen.findByText('Saldo disponible')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+  });
+
+  it('Movimientos: el banner reemplaza a la tabla hasta reintentar', async () => {
+    const user = userEvent.setup();
+    const restore = failRead(/\/api\/v1\/transactions\/(\?.*)?$/);
+    renderScreen(<MovementsScreen />);
+    const alert = await screen.findByRole('alert');
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    restore();
+    await user.click(within(alert).getByRole('button', { name: 'Reintentar' }));
+    expect(await screen.findByRole('table', { name: /Movimientos de/ })).toBeInTheDocument();
+  });
+
+  it('Planes y Comprar tokens muestran el banner cuando no cargan sus datos', async () => {
+    failRead('/api/v1/plans/');
+    const plans = renderScreen(<PlansScreen />);
+    expect(within(await screen.findByRole('alert')).getByRole('button', { name: 'Reintentar' })).toBeInTheDocument();
+    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+    plans.unmount();
+    failRead('/api/v1/token-packages/');
+    renderScreen(<BuyTokensScreen />);
+    expect(within(await screen.findByRole('alert')).getByRole('button', { name: 'Reintentar' })).toBeInTheDocument();
+    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
   });
 });

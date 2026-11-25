@@ -1,5 +1,11 @@
 import { expect, type Page } from '@playwright/test';
 
+/** The API of the build with mocks (default of `src/api/config.ts`). */
+const MOCKED_API_URL = 'http://localhost:8000';
+
+/** Where the build without mocks thinks the backend is. Nothing listens there: the tests answer for it with `page.route`. */
+export const REAL_API_URL = 'http://localhost:8000';
+
 export interface Problems {
   consoleErrors: string[];
   failedRequests: string[];
@@ -7,7 +13,8 @@ export interface Problems {
 
 /**
  * Collects what the smoke test must not see: console errors, uncaught
- * exceptions, requests that fail and API answers with an error status.
+ * exceptions, requests that fail, API answers with an error status and API
+ * requests that the mock worker did not answer.
  */
 export function watch(page: Page): Problems {
   const problems: Problems = { consoleErrors: [], failedRequests: [] };
@@ -22,6 +29,10 @@ export function watch(page: Page): Problems {
     problems.failedRequests.push(`${request.method()} ${request.url()} · ${failure}`);
   });
   page.on('response', (response) => {
+    // In mock mode every API answer comes from the MSW worker: one from the network escaped the mocks.
+    if (response.url().startsWith(`${MOCKED_API_URL}/api/`) && !response.fromServiceWorker()) {
+      problems.failedRequests.push(`${response.request().method()} ${response.url()} · no pasó por MSW`);
+    }
     if (response.status() >= 400) problems.failedRequests.push(`${response.request().method()} ${response.url()} · ${response.status()}`);
   });
   return problems;

@@ -10,6 +10,9 @@ import { Brand } from './Brand';
 import styles from './PublicShell.module.css';
 import { useSession } from './session';
 
+/** Where the legal pages live: the marketing site, outside this app. */
+const SITE_URL = 'https://onecreator.app';
+
 /**
  * Layout of the public screens (A1–A6): the brand, links to Precios and to the
  * other access screen, and the content. No app bar.
@@ -50,8 +53,14 @@ export function PublicShell({ children }: { children: ReactNode }) {
       </header>
       <main className={styles.main}>{children}</main>
       <footer className={styles.foot}>
-        <span>© OneCreator</span>
-        <a href="mailto:soporte@onecreator.app">Soporte</a>
+        <span>© 2026 OneCreator</span>
+        <a href={`${SITE_URL}/terminos`} target="_blank" rel="noreferrer">
+          Términos
+        </a>
+        <a href={`${SITE_URL}/privacidad`} target="_blank" rel="noreferrer">
+          Privacidad
+        </a>
+        <a href="mailto:soporte@onecreator.app">Ayuda</a>
       </footer>
     </div>
   );
