@@ -99,6 +99,15 @@ class VideoProjectSerializer(serializers.ModelSerializer):
             'pipeline_error_code', 'pipeline_error_at',
         )
 
+    def get_fields(self):
+        fields = super().get_fields()
+        # The views pass the active workspace: a project can only use a brand
+        # kit of its own workspace.
+        workspace = self.context.get('workspace')
+        if workspace is not None and 'brand_kit' in fields:
+            fields['brand_kit'].queryset = BrandKit.objects.filter(workspace=workspace)
+        return fields
+
     def get_proxy_url(self, obj):
         if obj.proxy_r2_key:
             from apps.videos.services.storage_service import CloudflareR2Manager

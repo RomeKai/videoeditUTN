@@ -2,7 +2,7 @@ import os
 import logging
 import uuid
 from decimal import Decimal
-from rest_framework import viewsets, permissions, parsers, status
+from rest_framework import exceptions, viewsets, permissions, parsers, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.views import APIView
@@ -15,35 +15,83 @@ from .serializers import VideoProjectSerializer, BrandKitSerializer
 from .tasks import process_initial_ingestion
 from .services.segments import InvalidSegmentsError, validate_approved_segments
 
+from apps.core.permissions import WorkspaceRolePermission
+from apps.core.workspace import resolve_active_workspace
 from apps.users.models import Workspace
 from apps.payments.models import Transaction
 from apps.payments.services import wallet_service
 
 logger = logging.getLogger(__name__)
 
-class BrandKitViewSet(viewsets.ModelViewSet):
+# Without the header, no workspace of their own and no active membership.
+NO_WORKSPACE_ERROR = "El usuario no tiene un Workspace asignado."
+
+
+def _active_workspace(request):
+    """The workspace the request acts in (X-Workspace-Id, see apps.core.workspace), or None."""
+    active = resolve_active_workspace(request)
+    return active.workspace if active is not None else None
+
+
+class ActiveWorkspaceMixin:
+    """Scopes a viewset to the active workspace and checks the role it has there."""
+
+    permission_classes = [permissions.IsAuthenticated, WorkspaceRolePermission]
+
+    @property
+    def active_workspace(self):
+        return _active_workspace(self.request)
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['workspace'] = self.active_workspace
+        return context
+
+
+class BrandKitViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
     serializer_class = BrandKitSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    
+    workspace_actions = {
+        'create': 'brandkit.manage',
+        'update': 'brandkit.manage',
+        'partial_update': 'brandkit.manage',
+        'destroy': 'brandkit.manage',
+    }
+
     def get_queryset(self):
-        return BrandKit.objects.filter(workspace__members=self.request.user)
+        workspace = self.active_workspace
+        if workspace is None:
+            return BrandKit.objects.none()
+        return BrandKit.objects.filter(workspace=workspace)
 
     def perform_create(self, serializer):
-        workspace = self.request.user.workspaces.first()
+        workspace = self.active_workspace
         if not workspace:
-            raise ValidationError("No tienes un Workspace para crear BrandKits.")
+            # The same 400 as creating a project.
+            raise exceptions.ValidationError({"error": NO_WORKSPACE_ERROR})
         serializer.save(workspace=workspace)
 
 from .services.render_pricing import pricing_resolution as _pricing_resolution  # noqa: E402
 
 
-class VideoProjectViewSet(viewsets.ModelViewSet):
+class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
     serializer_class = VideoProjectSerializer
-    permission_classes = [permissions.IsAuthenticated]
     parser_classes = (parsers.JSONParser, parsers.MultiPartParser, parsers.FormParser)
+    # Reads (list, retrieve, paper-edit-data) are for every role.
+    workspace_actions = {
+        'create': 'project.create',
+        'from_prompt': 'project.create',
+        # The web app only renames; any other field is the same role.
+        'update': 'project.rename',
+        'partial_update': 'project.rename',
+        'destroy': 'project.delete',
+        'approve_paper_edit': 'project.review',
+    }
 
     def get_queryset(self):
-        return VideoProject.objects.filter(workspace__members=self.request.user).order_by('-created_at')
+        workspace = self.active_workspace
+        if workspace is None:
+            return VideoProject.objects.none()
+        return VideoProject.objects.filter(workspace=workspace).order_by('-created_at')
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -219,10 +267,10 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         user = request.user
-        workspace = user.workspaces.first()
-        
+        workspace = self.active_workspace
+
         if not workspace:
-            return Response({"error": "El usuario no tiene un Workspace asignado."}, status=400)
+            return Response({"error": NO_WORKSPACE_ERROR}, status=400)
 
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -479,16 +527,23 @@ class ClipPreviewView(APIView):
     - ``GET`` returns the newest preview that has not expired, with a temporary
       URL once it is ready; 404 when there is none.
     """
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, WorkspaceRolePermission]
+    # The preview is free and is how any role watches a clip before its
+    # render: the web app asks for one for a Lector too (ClipPreviewDialog).
+    workspace_actions = {'GET': 'project.view', 'POST': 'project.view'}
 
     def _get_clip(self, request, clip_id):
+        from django.http import Http404
         from django.shortcuts import get_object_or_404
 
         from .models import VideoClip
 
+        workspace = _active_workspace(request)
+        if workspace is None:
+            raise Http404
         return get_object_or_404(
             VideoClip.objects.select_related('project'),
-            pk=clip_id, project__workspace__members=request.user,
+            pk=clip_id, project__workspace=workspace,
         )
 
     @staticmethod
