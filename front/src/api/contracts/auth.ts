@@ -69,8 +69,17 @@ export const register = defineEndpoint({
   successStatus: 201,
   auth: false,
   workspaceScoped: false,
-  errors: [{ status: 400, when: 'Validación por campo (email ya usado, contraseña débil). Se muestra debajo de cada campo.' }],
-  backend: { status: 'proposed', gap: 1 },
+  errors: [
+    {
+      status: 400,
+      when: 'Validación por campo (contraseña débil; email ya usado con `code: "unique"`, que la UI muestra con un link a Iniciar sesión). Se muestra debajo de cada campo.',
+    },
+  ],
+  backend: {
+    status: 'proposed',
+    gap: 1,
+    note: 'Decir "email ya usado" permite averiguar qué emails tienen cuenta. El mapa (A2) lo pide así; para no ayudar a enumerar, el endpoint necesita un límite de intentos por IP. Recuperar contraseña y reenviar la verificación no lo revelan.',
+  },
   screens: ['A2', 'A5'],
 });
 
@@ -92,7 +101,7 @@ export const resendVerification = defineEndpoint({
   id: 'auth.resendVerification',
   method: 'POST',
   path: '/api/v1/auth/verify-email/resend/',
-  summary: 'Reenvía el email de verificación (una vez cada 60 s).',
+  summary: 'Reenvía el email de verificación (una vez cada 60 s). Responde 204 exista o no el email y esté o no verificado, como recuperar contraseña.',
   request: z.object({ email: z.string().email() }),
   response: NoContent,
   successStatus: 204,
@@ -114,7 +123,11 @@ export const requestPasswordReset = defineEndpoint({
   auth: false,
   workspaceScoped: false,
   errors: [],
-  backend: { status: 'proposed', gap: 1 },
+  backend: {
+    status: 'proposed',
+    gap: 1,
+    note: 'El link del email (N2) tiene que ser `/recuperar?token=<token>&email=<email>`: con el email la pantalla dice de quién es la cuenta e inicia sesión después de guardar ("Guardar y entrar").',
+  },
   screens: ['A4', 'D9'],
 });
 
@@ -122,7 +135,7 @@ export const confirmPasswordReset = defineEndpoint({
   id: 'auth.confirmPasswordReset',
   method: 'POST',
   path: '/api/v1/auth/password-reset/confirm/',
-  summary: 'Define la contraseña nueva con el token del link.',
+  summary: 'Define la contraseña nueva con el token del link. Responde 204 sin tokens: la UI inicia sesión con el email del link y la contraseña nueva.',
   request: z.object({ token: z.string().min(1), password: z.string().min(8) }),
   response: NoContent,
   successStatus: 204,

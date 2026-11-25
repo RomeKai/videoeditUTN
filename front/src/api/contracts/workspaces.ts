@@ -54,6 +54,8 @@ export type InviteRequest = z.infer<typeof InviteRequest>;
 export const InvitationStatus = z.enum(['pending', 'expired', 'used']);
 
 export const InvitationPreview = z.object({
+  /** To tell whether the signed-in user already belongs to it (names are not unique). */
+  workspace_id: Id,
   workspace_name: z.string(),
   inviter_name: z.string(),
   role: MemberRole,

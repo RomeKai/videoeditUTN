@@ -147,7 +147,7 @@ export const workspacesHandlers = [
         token: newId(),
       };
       db.members.push(member);
-      db.invitations.push({ token: member.token, member: member.id, workspace_name: workspace.name, inviter_name: user.name, role: body.role, email, status: 'pending', has_account: Boolean(existing) });
+      db.invitations.push({ token: member.token, member: member.id, workspace_id: workspace.id, workspace_name: workspace.name, inviter_name: user.name, role: body.role, email, status: 'pending', has_account: Boolean(existing) });
       return serializeMember(db, member);
     });
     return { data: { invited } };
@@ -174,7 +174,7 @@ export const workspacesHandlers = [
     const invitation = db.invitations.find((item) => item.token === params.token);
     if (!invitation) throw notFound('Esta invitación no existe.');
     if (invitation.status !== 'pending') throw new MockHttpError(410, { error: 'La invitación venció o ya se usó.', code: invitation.status });
-    const workspace = db.workspaces.find((item) => item.name === invitation.workspace_name) ?? db.workspaces[0];
+    const workspace = db.workspaces.find((item) => item.id === invitation.workspace_id);
     if (!workspace) throw notFound();
     let account = maybeUser;
     let tokens: ReturnType<typeof mockTokens> | null = null;
