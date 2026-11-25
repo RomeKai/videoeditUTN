@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import type { Clip, Project } from '@/api/contracts/projects';
-import { useDeleteClip, useDownloadAllClips, useProject, useRetryClip } from '@/api/hooks';
+import { useDeleteClip, useDownloadAllClips, useRetryClip } from '@/api/hooks';
 import { ConfirmDialog } from '@/dialogs';
 import { downloadUrl } from '@/lib/download';
 import { errorMessage } from '@/lib/error-messages';
@@ -32,6 +32,7 @@ import { ActionSheet, type SheetAction } from './ActionSheet';
 import { ClipPreviewDialog } from './ClipPreviewDialog';
 import styles from './ClipsScreen.module.css';
 import { clipCounts, clipDuration, describeClip, previewBlockedReason, shortDateTime, sortClips, type ClipDisplay, type ClipFilter } from './model';
+import { useCurrentProject } from './project-context';
 import { useClipActions, usePublish } from './useClipActions';
 
 interface TileHandlers {
@@ -66,7 +67,8 @@ function useClipActionList(project: Project, handlers: TileHandlers) {
     }
     if (display.group === 'failed') actions.push({ key: 'retry', label: 'Reintentar', icon: 'retry', hint: 'No gasta tokens', onSelect: () => handlers.onRetry(clip), ...gate('clip.edit') });
     if (display.group === 'draft') {
-      actions.push({ key: 'review', label: 'Revisar clips', icon: 'check-circle', href: `/proyectos/${project.id}/revision` });
+      // The review only exists while the project waits for it.
+      if (project.status === 'awaiting_approval') actions.push({ key: 'review', label: 'Revisar clips', icon: 'check-circle', href: `/proyectos/${project.id}/revision` });
       return actions;
     }
     actions.push({ key: 'edit', label: 'Editar', icon: 'edit', href: editHref, ...gate('clip.edit') });
@@ -230,11 +232,11 @@ const FILTER_LABEL: Record<ClipFilter, string> = {
 
 /** D3 · Clips: grid of clip cards with their state, filters, the selection mode and the actions per clip. */
 export function ClipsScreen({ projectId }: { projectId: string }) {
-  const { data: project } = useProject(projectId);
+  const project = useCurrentProject();
   const { gate } = usePermissions();
   const toast = useToast();
   const publish = usePublish();
-  const { downloadClip, downloadingId, copyLink } = useClipActions();
+  const { downloadClip, downloadingIds, copyLink } = useClipActions();
   const downloadAll = useDownloadAllClips(projectId);
   const retryClip = useRetryClip();
   const deleteClip = useDeleteClip();
@@ -436,7 +438,7 @@ export function ClipsScreen({ projectId }: { projectId: string }) {
                 onPick={(value) => setPicked((current) => (value ? [...current.filter((id) => id !== clip.id), clip.id] : current.filter((id) => id !== clip.id)))}
                 onOpenSheet={() => setSheetId(clip.id)}
                 retrying={retryClip.isPending && retryClip.variables === clip.id}
-                downloading={downloadingId === clip.id}
+                downloading={downloadingIds.includes(clip.id)}
               />
             );
           })}

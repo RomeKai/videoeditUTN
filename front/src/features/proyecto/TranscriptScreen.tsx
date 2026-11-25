@@ -3,7 +3,6 @@
 import Link from 'next/link';
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Clip, Project } from '@/api/contracts/projects';
-import { useProject } from '@/api/hooks';
 import { downloadText, transcriptToSrt, transcriptToTxt, type TranscriptLine } from '@/lib/download';
 import { formatDuration, formatNumber, formatTimecode } from '@/lib/format';
 import { useDebounced } from '@/lib/hooks';
@@ -13,6 +12,7 @@ import {
   describeClip,
   findMatches,
   groupLinesByClip,
+  isWholeVideo,
   projectDuration,
   rulerTicks,
   shortDateTime,
@@ -20,6 +20,7 @@ import {
   wordCount,
   type TranscriptMatch,
 } from './model';
+import { useCurrentProject } from './project-context';
 import styles from './TranscriptScreen.module.css';
 
 /** Lines rendered at first and added by "Mostrar más": a one-hour video has about a thousand. */
@@ -47,9 +48,8 @@ function Highlighted({ text, matches, currentIndex, offset }: { text: string; ma
   return <>{parts}</>;
 }
 
-function ClipNote({ clip, projectId }: { clip: Clip; projectId: string }) {
+function ClipNote({ clip, href }: { clip: Clip; href: string }) {
   const display = describeClip(clip);
-  const href = `/proyectos/${projectId}/clips`;
   return (
     <aside className={styles.note} aria-label="Clip de este tramo">
       <VideoThumb ratio="9:16" xs width={40} seed={clip.id} />
@@ -82,7 +82,7 @@ function ClipNote({ clip, projectId }: { clip: Clip; projectId: string }) {
           ) : null}
         </span>
         <Link className={`${styles.arrowLink} t-small`} href={href}>
-          Ver clip
+          {href.endsWith('/resultado') ? 'Ver resultado' : 'Ver clip'}
           <Icon name="chevron-right" size={14} />
         </Link>
       </div>
@@ -140,7 +140,7 @@ function ClipMap({ project, lines, duration, visibleRange }: { project: Project;
 
 /** D1e · Transcripción: the whole text with timecodes, search, the stretches that became clips, copy and .txt/.srt download. */
 export function TranscriptScreen({ projectId }: { projectId: string }) {
-  const { data: project } = useProject(projectId);
+  const project = useCurrentProject();
   const toast = useToast();
   const [query, setQuery] = useState('');
   const [current, setCurrent] = useState(0);
@@ -368,7 +368,7 @@ export function TranscriptScreen({ projectId }: { projectId: string }) {
                   >
                     {rows}
                   </div>
-                  <ClipNote clip={group.clip} projectId={projectId} />
+                  <ClipNote clip={group.clip} href={isWholeVideo(project) ? `${base}/resultado` : `${base}/clips`} />
                 </div>
               ) : (
                 <div key={group.from} className={styles.group}>

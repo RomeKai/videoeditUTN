@@ -733,6 +733,27 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
 
   const walletId = mid(KIND.wallet, 1);
   const transactions: MockTransaction[] = projects.map((project, position) => transactionFor(project, specs[position]?.index ?? position, walletId));
+  // "Renderizar sin revisar" with the render under way: its own reservation, still open.
+  for (const project of projects) {
+    const reservationId = project.metadata.auto_render_reservation_id;
+    if (!reservationId || project.status !== 'rendering') continue;
+    transactions.push({
+      id: reservationId,
+      workspace: project.workspace,
+      wallet: walletId,
+      created_by: project.uploaded_by,
+      amount: priceOf(Math.ceil(project.metadata.auto_render_seconds ?? 60), project.metadata.render_resolution ?? '720p', false, discount),
+      transaction_type: 'SPEND',
+      status: 'RESERVED',
+      description: `Render sin revisar: ${project.title}`,
+      created_at: project.created_at,
+      kind: 'reserved',
+      created_by_detail: project.uploaded_by_detail ?? null,
+      project: { id: project.id, title: project.title },
+      category: 'render',
+    });
+    project._reservations.push(reservationId);
+  }
   // Purchases and a visible refund, so Movimientos shows every kind of row.
   const purchase = (n: number, tokens: number, ageMs: number): MockTransaction => ({
     id: mid(KIND.transaction, 9000 + n),

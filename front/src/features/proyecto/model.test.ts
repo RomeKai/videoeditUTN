@@ -21,6 +21,7 @@ import {
   groupActivityByDay,
   groupLinesByClip,
   headerStatusText,
+  isWholeVideo,
   previewBlockedReason,
   pteAppliedLines,
   pteIgnoredLines,
@@ -89,6 +90,33 @@ describe('línea de tiempo del proceso', () => {
     }
   });
 
+  it('un reintento interno no se muestra: la etapa marcada failed sigue «En curso» mientras el proyecto procesa', () => {
+    const retrying = {
+      ...byTitle('Clase 3'),
+      pipeline_stage_status: { audio_extracted: 'completed' as const, transcribed: 'failed' as const },
+      pipeline_error_code: 'RetryableAIError',
+    };
+    const step = buildProcessSteps(retrying, NOW).find((item) => item.key === 'transcribe');
+    expect(step).toMatchObject({ state: 'run', stateLabel: 'En curso', description: 'Pasando a texto todo lo que se dice.' });
+    expect(buildProcessSteps(retrying, NOW).some((item) => item.state === 'fail')).toBe(false);
+    // The same map on a project that did fail is a failure.
+    const failed = buildProcessSteps({ ...retrying, status: 'failed' }, NOW).find((item) => item.key === 'transcribe');
+    expect(failed?.state).toBe('fail');
+  });
+
+  it('AutoRenderNotPaid: el render es lo que se detuvo, con su texto', () => {
+    const steps = buildProcessSteps(byTitle('Falló: AutoRenderNotPaid'), NOW);
+    expect(steps.at(-1)).toMatchObject({ key: 'render', state: 'fail', description: 'No alcanzó el saldo para renderizar los clips que faltaban.' });
+  });
+
+  it('un single_edit sin precio de video completo sigue el flujo de clips, con revisión', () => {
+    const legacy = { ...byTitle('Tutorial de Notion'), metadata: {} };
+    expect(isWholeVideo(legacy)).toBe(false);
+    expect(isWholeVideo(byTitle('Tutorial de Notion'))).toBe(true);
+    expect(buildProcessSteps(legacy, NOW).map((step) => step.key)).toContain('select');
+    expect(buildProjectTabs(legacy).map((tab) => tab.key)).toContain('clips');
+  });
+
   it('video completo: sin «Elegir clips» y sin esperar una revisión', () => {
     const steps = buildProcessSteps(byTitle('Video completo renderizando'), NOW);
     expect(steps.map((step) => step.key)).toEqual(['prepare', 'transcribe', 'moderate', 'render']);
@@ -154,7 +182,12 @@ describe('avisos de «Renderizar sin revisar»', () => {
   });
 
   it('avisa la reserva mientras renderiza y nada en los demás casos', () => {
-    expect(autoRenderNotice(byTitle('Sin revisar: render reservado'))?.kind).toBe('reserved');
+    const reserved = byTitle('Sin revisar: render reservado');
+    const reservationId = reserved.metadata.auto_render_reservation_id ?? '';
+    expect(autoRenderNotice(reserved, [reservationId])?.kind).toBe('reserved');
+    // A later re-render keeps the id in metadata, but that reservation is closed: no notice again.
+    expect(autoRenderNotice(reserved, [])).toBeNull();
+    expect(autoRenderNotice(reserved, null)).toBeNull();
     expect(autoRenderNotice(byTitle('Podcast Ep. 42'))).toBeNull();
     expect(autoRenderNotice(byTitle('Stream Valorant'))).toBeNull();
     expect(autoRenderNotice(byTitle('Video completo renderizando'))).toBeNull();
@@ -216,9 +249,9 @@ describe('clips', () => {
   });
 
   it('la vista previa necesita el archivo original y no existe para el video completo', () => {
-    expect(previewBlockedReason({ project_type: 'repurpose', source_file: '/media/x.mp4' })).toBeNull();
-    expect(previewBlockedReason({ project_type: 'repurpose', source_file: null })).toMatch(/archivo original/);
-    expect(previewBlockedReason({ project_type: 'single_edit', source_file: '/media/x.mp4' })).toMatch(/no tiene vista previa/);
+    expect(previewBlockedReason({ project_type: 'repurpose', metadata: {}, source_file: '/media/x.mp4' })).toBeNull();
+    expect(previewBlockedReason({ project_type: 'repurpose', metadata: {}, source_file: null })).toMatch(/archivo original/);
+    expect(previewBlockedReason({ project_type: 'single_edit', metadata: { priced_duration_s: 300 }, source_file: '/media/x.mp4' })).toMatch(/no tiene vista previa/);
   });
 });
 
@@ -282,9 +315,9 @@ describe('actividad', () => {
   });
 
   it('cada evento lleva a donde se puede seguir', () => {
-    const project = { id: 'p1', project_type: 'repurpose' as const, status: 'completed' as const };
+    const project = { id: 'p1', project_type: 'repurpose' as const, metadata: {}, status: 'completed' as const };
     expect(activityLink({ type: 'render_finished' }, project)).toEqual({ href: '/proyectos/p1/clips', label: 'Ver clips' });
-    expect(activityLink({ type: 'render_finished' }, { ...project, project_type: 'single_edit' })?.href).toBe('/proyectos/p1/resultado');
+    expect(activityLink({ type: 'render_finished' }, { ...project, project_type: 'single_edit', metadata: { priced_duration_s: 300 } })?.href).toBe('/proyectos/p1/resultado');
     expect(activityLink({ type: 'review_ready' }, project)).toBeNull();
     expect(activityLink({ type: 'review_ready' }, { ...project, status: 'awaiting_approval' })?.href).toBe('/proyectos/p1/revision');
     expect(activityLink({ type: 'tokens_charged' }, project)).toBeNull();
@@ -317,5 +350,39 @@ describe('actividad', () => {
       totalLabel: 'Total devuelto',
       lines: [{ key: 'link' }, { key: 'seo' }],
     });
+  });
+});
+
+describe('exportar la transcripción', () => {
+  it('con segmentos enteros (sin tiempos por palabra) los subtítulos siguen siendo cortos', async () => {
+    const { transcriptToSrt, groupTranscript } = await import('@/lib/download');
+    const segments = Array.from({ length: 4 }, (_, index) => ({
+      start: index * 12,
+      end: index * 12 + 11.5,
+      text: 'este es un segmento largo de la transcripción que no trae los tiempos de cada palabra y sigue varias líneas más sin un punto',
+    }));
+    const cues = groupTranscript(segments, { maxWords: 8 });
+    expect(cues.length).toBeGreaterThan(8);
+    for (const cue of cues) {
+      expect(cue.text.split(/\s+/).length).toBeLessThanOrEqual(8);
+      expect(cue.end - cue.start).toBeLessThan(6);
+      expect(cue.end).toBeGreaterThan(cue.start);
+    }
+    // Nothing is lost or reordered.
+    expect(cues.map((cue) => cue.text).join(' ')).toBe(segments.map((segment) => segment.text).join(' '));
+    expect(transcriptToSrt(segments)).toMatch(/^1\n00:00:00,000 --> 00:00:0\d,\d{3}\n/);
+  });
+
+  it('con palabras sueltas no cambia nada', async () => {
+    const { groupTranscript } = await import('@/lib/download');
+    const words = [
+      { start: 0.5, end: 0.9, text: 'Hola' },
+      { start: 0.95, end: 1.4, text: 'gente.' },
+      { start: 3, end: 3.2, text: 'Hoy' },
+    ];
+    expect(groupTranscript(words)).toEqual([
+      { start: 0.5, end: 1.4, text: 'Hola gente.' },
+      { start: 3, end: 3.2, text: 'Hoy' },
+    ]);
   });
 });

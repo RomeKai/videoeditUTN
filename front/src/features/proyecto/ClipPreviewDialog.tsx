@@ -1,11 +1,12 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import type { Clip, Project } from '@/api/contracts/projects';
 import { ApiError } from '@/api/errors';
 import { useClipPreview, useRequestClipPreview } from '@/api/hooks';
 import { errorMessage } from '@/lib/error-messages';
+import { LoadError } from '@/shell/LoadError';
 import { usePlan } from '@/shell/session';
 import { Banner, Button, Dialog, Spinner, VideoPlayer, VideoThumb } from '@/ui';
 import styles from './ClipsScreen.module.css';
@@ -24,10 +25,16 @@ function PreviewBody({ clip, project }: { clip: Clip; project: ClipPreviewDialog
   const current = useClipPreview(clip.id);
   const { plan } = usePlan();
   const { mutate } = request;
-  // Opening the dialog asks for the preview; the backend answers with the one in progress if there is one.
+  // First look at what there is. A new one is asked for only when there is none or the last one failed:
+  // a ready preview is not replaced, and the workspace's limit of previews in progress is not spent.
+  const asked = useRef(false);
+  const existing = current.data;
+  const known = current.isSuccess;
   useEffect(() => {
-    mutate();
-  }, [mutate, clip.id]);
+    if (!known || asked.current) return;
+    asked.current = true;
+    if (existing === null || existing?.status === 'failed') mutate();
+  }, [known, existing, mutate]);
 
   const preview = current.data ?? request.data ?? null;
   const tooMany = request.error instanceof ApiError && request.error.status === 429;
@@ -38,7 +45,9 @@ function PreviewBody({ clip, project }: { clip: Clip; project: ClipPreviewDialog
   );
 
   let stage;
-  if (request.isError && !preview) {
+  if (current.isError && !preview) {
+    stage = <LoadError error={current.error} onRetry={() => void current.refetch()} fullPageForMissing={false} />;
+  } else if (request.isError && (!preview || preview.status === 'failed')) {
     stage = (
       <Banner tone={tooMany ? 'warn' : 'err'} title={tooMany ? 'Ya hay vistas previas en proceso' : 'No podemos armar la vista previa'} action={tooMany ? retry : undefined}>
         {tooMany ? 'Esperá unos segundos y probá de nuevo.' : errorMessage(request.error, 'Probá de nuevo en un rato.')}

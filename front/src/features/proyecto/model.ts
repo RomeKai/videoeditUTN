@@ -9,6 +9,16 @@ import { countClips, describeProjectStatus, LABELS, type ProjectStatusView, type
 import type { IconName } from '@/ui/Icon';
 import type { StageState } from '@/ui/StageStepper';
 
+/**
+ * "Editar el video completo" as the backend decides it (`_is_whole_video`): a
+ * `single_edit` project priced at creation for its whole duration. A
+ * `single_edit` row without `metadata.priced_duration_s` (a link, an older
+ * project) was never priced that way and keeps the clips flow, with review.
+ */
+export function isWholeVideo(project: Pick<Project, 'project_type' | 'metadata'>): boolean {
+  return project.project_type === 'single_edit' && project.metadata?.priced_duration_s != null;
+}
+
 /* ── Process timeline (map D1 › Resumen) ────────────────────────────────── */
 
 export type StepKey = 'prepare' | 'transcribe' | 'moderate' | 'select' | 'render';
@@ -85,6 +95,7 @@ const FAIL_STEP_TEXT: Record<string, string> = {
   AINoSpeechDetectedError: 'No encontramos voz en el audio.',
   AIEmptySelectionError: 'No encontramos momentos que funcionen como clips.',
   SoftTimeLimitExceeded: 'Tardó demasiado en procesarse.',
+  AutoRenderNotPaid: 'No alcanzó el saldo para renderizar los clips que faltaban.',
 };
 
 function stageIndex(stage: string): number {
@@ -123,7 +134,7 @@ function finishedIndex(project: Pick<Project, 'pipeline_stage' | 'pipeline_stage
 
 type StepsProject = Pick<
   Project,
-  'status' | 'pipeline_stage' | 'pipeline_stage_status' | 'pipeline_error_code' | 'clips' | 'project_type' | 'auto_render_bypass' | 'stage_timings'
+  'status' | 'pipeline_stage' | 'pipeline_stage_status' | 'pipeline_error_code' | 'clips' | 'project_type' | 'auto_render_bypass' | 'stage_timings' | 'metadata'
 >;
 
 /**
@@ -131,7 +142,7 @@ type StepsProject = Pick<
  * its render does not wait for a review. `now` gives the running step its live duration.
  */
 export function buildProcessSteps(project: StepsProject, now: number = Date.now()): ProcessStep[] {
-  const single = project.project_type === 'single_edit';
+  const single = isWholeVideo(project);
   const keys: StepKey[] = single ? ['prepare', 'transcribe', 'moderate', 'render'] : ['prepare', 'transcribe', 'moderate', 'select', 'render'];
   const finished = finishedIndex(project);
   const clips = countClips(project.clips);
@@ -156,7 +167,10 @@ export function buildProcessSteps(project: StepsProject, now: number = Date.now(
     else if (finished >= index) state = 'done';
     else {
       const mapped = fromStatus(project.pipeline_stage_status?.[stage]);
-      if (mapped && mapped !== 'done') state = mapped;
+      // The backend marks a stage `failed` on every failure it is going to retry, while the project stays
+      // `ingesting` during the backoff. Internal retries are not shown (map §3): it keeps saying "En curso".
+      if (mapped === 'fail' && !failed) state = 'run';
+      else if (mapped && mapped !== 'done') state = mapped;
       else if (finished === index - 1 && active) state = 'run';
       else state = 'pending';
       if (!active && !failed && (state === 'run' || state === 'wait')) state = 'pending';
@@ -232,13 +246,13 @@ export function totalProcessSeconds(project: Pick<Project, 'stage_timings'>): nu
 
 /* ── Header ─────────────────────────────────────────────────────────────── */
 
-type HeaderProject = Pick<Project, 'status' | 'pipeline_error_at' | 'eta_seconds' | 'stage_timings' | 'project_type' | 'created_at'>;
+type HeaderProject = Pick<Project, 'status' | 'pipeline_error_at' | 'eta_seconds' | 'stage_timings' | 'project_type' | 'metadata' | 'created_at'>;
 
 /** Line under the title: the text of map §3, with the estimate, the wait or when it failed. */
 export function headerStatusText(project: HeaderProject, view: ProjectStatusView, now: number = Date.now()): string {
   if (view.step) {
     const eta = project.eta_seconds;
-    const goal = project.project_type === 'single_edit' ? 'para terminar' : 'para revisar';
+    const goal = isWholeVideo(project) ? 'para terminar' : 'para revisar';
     return eta ? `${view.text} · faltan ≈ ${formatMinutes(Math.max(60, eta))} ${goal}` : view.text;
   }
   if (view.key === 'waiting') {
@@ -302,13 +316,13 @@ export interface ProjectTab {
   disabledReason?: string;
 }
 
-type TabsProject = Pick<Project, 'id' | 'status' | 'project_type' | 'clips' | 'transcript_data' | 'pipeline_stage' | 'pipeline_stage_status'>;
+type TabsProject = Pick<Project, 'id' | 'status' | 'project_type' | 'metadata' | 'clips' | 'transcript_data' | 'pipeline_stage' | 'pipeline_stage_status'>;
 
 /** Tabs of a project: Resumen, Clips (or Resultado for a whole video), Transcripción and Actividad. */
 export function buildProjectTabs(project: TabsProject): ProjectTab[] {
   const base = `/proyectos/${project.id}`;
   const failed = project.status === 'failed';
-  const single = project.project_type === 'single_edit';
+  const single = isWholeVideo(project);
   const hasClips = project.clips.length > 0 || ['awaiting_approval', 'rendering', 'completed', 'partial'].includes(project.status);
   const hasTranscript = (project.transcript_data?.length ?? 0) > 0 || (!failed && finishedIndex(project) >= stageIndex('transcribed'));
   const stopped = 'El proyecto falló antes de llegar a este paso';
@@ -353,12 +367,18 @@ export type AutoRenderNotice =
  * balance is short or the plan does not allow it, the project stops at the
  * review and `metadata.auto_render_skipped` says why.
  */
-export function autoRenderNotice(project: Pick<Project, 'status' | 'metadata' | 'auto_render_bypass' | 'project_type' | 'pipeline_stage'>): AutoRenderNotice | null {
+export function autoRenderNotice(
+  project: Pick<Project, 'status' | 'metadata' | 'auto_render_bypass' | 'project_type' | 'pipeline_stage'>,
+  /** Ids of the workspace's open reservations (`GET /wallet`), or null while they are not known. */
+  openReservations: ReadonlyArray<string> | null = null,
+): AutoRenderNotice | null {
   const skipped = project.metadata.auto_render_skipped;
   const stopped = project.status === 'awaiting_approval' ? autoRenderSkippedMessage(skipped) : null;
   if (stopped && skipped) return { kind: skipped, ...stopped };
   const rendering = project.status === 'rendering' || (project.status === 'ingesting' && ['clips_selected', 'render_dispatched'].includes(project.pipeline_stage));
-  if (rendering && project.project_type === 'repurpose' && project.metadata.auto_render_reservation_id) {
+  // Only while that reservation is still open: a later paid re-render keeps the old id in metadata.
+  const reservationId = project.metadata.auto_render_reservation_id;
+  if (rendering && !isWholeVideo(project) && reservationId && openReservations?.includes(reservationId)) {
     return {
       kind: 'reserved',
       title: 'Reservamos el render de los clips',
@@ -440,7 +460,7 @@ export interface ConfigGroup {
 
 /** The applied configuration in the three groups of the artboard: Salida, Estilo and IA. */
 export function buildConfigGroups(project: ConfigProject): ConfigGroup[] {
-  const single = project.project_type === 'single_edit';
+  const single = isWholeVideo(project);
   const past = !['uploaded', 'ingesting'].includes(project.status);
   const yes = (value: boolean) => (value ? 'Sí' : 'No');
   const output: ConfigItem[] = [
@@ -481,7 +501,7 @@ export function buildConfigGroups(project: ConfigProject): ConfigGroup[] {
 /** One line for the folded card on phones: "Sacar clips · 9:16 · 720p · hasta 8 clips". */
 export function configSummary(project: ConfigProject): string {
   const parts: string[] = [LABELS.project_type[project.project_type], project.aspect_ratio, project.metadata.render_resolution ?? '720p'];
-  if (project.project_type !== 'single_edit') parts.push(`hasta ${plural(project.metadata.max_clips ?? 8, 'clip', 'clips')}`);
+  if (!isWholeVideo(project)) parts.push(`hasta ${plural(project.metadata.max_clips ?? 8, 'clip', 'clips')}`);
   return parts.join(' · ');
 }
 
@@ -635,8 +655,8 @@ export function shortDateTime(value: string): string {
 }
 
 /** Why a clip cannot get a free preview (PTE-03), or null when it can. */
-export function previewBlockedReason(project: Pick<Project, 'project_type' | 'source_file'>): string | null {
-  if (project.project_type === 'single_edit') return 'El video completo no tiene vista previa: el render sale enseguida';
+export function previewBlockedReason(project: Pick<Project, 'project_type' | 'metadata' | 'source_file'>): string | null {
+  if (isWholeVideo(project)) return 'El video completo no tiene vista previa: el render sale enseguida';
   if (!project.source_file) return 'La vista previa necesita el archivo original del video';
   return null;
 }
@@ -748,9 +768,9 @@ export function groupActivityByDay(items: ReadonlyArray<ActivityItem>, now: numb
   return days;
 }
 
-export function activityLink(item: Pick<ActivityItem, 'type'>, project: Pick<Project, 'id' | 'project_type' | 'status'>): { href: string; label: string } | null {
+export function activityLink(item: Pick<ActivityItem, 'type'>, project: Pick<Project, 'id' | 'project_type' | 'metadata' | 'status'>): { href: string; label: string } | null {
   const base = `/proyectos/${project.id}`;
-  const single = project.project_type === 'single_edit';
+  const single = isWholeVideo(project);
   switch (item.type) {
     case 'project_created':
     case 'prompt_applied':

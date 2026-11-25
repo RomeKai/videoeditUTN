@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Project } from '@/api/contracts/projects';
 import { ApiError } from '@/api/errors';
 import { useProject, useRenameProject } from '@/api/hooks';
@@ -31,7 +31,8 @@ import {
   type MenuItem,
   type ProjectHeaderMeta,
 } from '@/ui';
-import { buildProjectTabs, costLabel, currentTab, describeProjectStatus, headerStatusText, projectDuration, sourceInfo, type ProjectTabKey } from './model';
+import { buildProjectTabs, costLabel, currentTab, describeProjectStatus, headerStatusText, isWholeVideo, projectDuration, sourceInfo, type ProjectTabKey } from './model';
+import { ProjectProvider, anyClipRendering } from './project-context';
 import styles from './ProjectShell.module.css';
 import { ProjectTabs } from './ProjectTabs';
 import { recreateHref, useClipActions } from './useClipActions';
@@ -91,30 +92,34 @@ function RenameDialog({ project, open, onClose }: { project: Project; open: bool
 
 function HeaderActions({ project, tab, onRename, onDelete }: { project: Project; tab: ProjectTabKey; onRename: () => void; onDelete: () => void }) {
   const { gate, can } = usePermissions();
-  const { downloadClip, downloadingId } = useClipActions();
+  const { downloadClip, downloadingIds } = useClipActions();
   const view = describeProjectStatus(project);
   const base = `/proyectos/${project.id}`;
   const clip = project.clips[0];
+  // A single_edit project that was never priced as a whole video follows the clips flow.
+  const action = view.action === 'result' && !isWholeVideo(project) ? 'clips' : view.action;
+  // The clips are still there after a re-dispatch that could not be paid.
+  const unpaid = project.pipeline_error_code === 'AutoRenderNotPaid' && project.clips.length > 0;
 
   // One primary action per screen: the next thing to do with this project.
   let primary: ReactNode = null;
-  if (view.action === 'review') {
+  if (action === 'review' && project.status === 'awaiting_approval') {
     primary = (
       <Button variant="primary" href={`${base}/revision`}>
         Revisar clips
       </Button>
     );
-  } else if (view.action === 'clips' && tab !== 'clips') {
+  } else if ((action === 'clips' || (action === 'recreate' && unpaid && tab !== 'resumen')) && tab !== 'clips') {
     primary = (
       <Button variant="primary" href={`${base}/clips`}>
         Ver clips
       </Button>
     );
-  } else if (view.action === 'result') {
+  } else if (action === 'result') {
     const ready = clip && (clip.status === 'completed' || clip.status === 'published');
     if (tab === 'resultado' && ready) {
       primary = (
-        <Button variant="primary" iconLeft="download" loading={downloadingId === clip.id} onClick={() => downloadClip(clip, 'Video descargado')}>
+        <Button variant="primary" iconLeft="download" loading={downloadingIds.includes(clip.id)} onClick={() => downloadClip(clip, 'Video descargado')}>
           Descargar
         </Button>
       );
@@ -125,7 +130,7 @@ function HeaderActions({ project, tab, onRename, onDelete }: { project: Project;
         </Button>
       );
     }
-  } else if (view.action === 'recreate' && tab !== 'resumen') {
+  } else if (action === 'recreate' && !unpaid && tab !== 'resumen') {
     primary = (
       <Button variant="primary" iconLeft="retry" href={recreateHref(project.id)} {...gate('project.create')}>
         Crear de nuevo
@@ -193,19 +198,24 @@ function HeaderSkeleton() {
  * changes below. Polling lives in `useProject` (every 5 s while in progress).
  */
 export function ProjectShell({ projectId, children }: { projectId: string; children: ReactNode }) {
-  const query = useProject(projectId);
+  const [deleting, setDeleting] = useState(false);
+  const [deleted, setDeleted] = useState(false);
+  // While the delete dialog is open, and for good once it deleted the project, nothing is fetched:
+  // the screen keeps the last data until the list replaces it, instead of asking for a project that is gone.
+  const query = useProject(projectId, { enabled: !deleting && !deleted, pollWhile: anyClipRendering });
+  const lastProject = useRef(query.data);
+  if (query.data) lastProject.current = query.data;
   const pathname = usePathname() ?? '';
   const router = useRouter();
   const isMobile = useIsMobile();
   const toast = useToast();
   const { can } = usePermissions();
   const [renaming, setRenaming] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const project = query.data;
+  const project = query.data ?? (deleting || deleted ? lastProject.current : undefined);
   const tab = currentTab(pathname, projectId);
 
   // A whole-video project has Resultado instead of Clips, and the other way round.
-  const single = project?.project_type === 'single_edit';
+  const single = project ? isWholeVideo(project) : false;
   const misplaced = project ? (single && tab === 'clips') || (!single && tab === 'resultado') : false;
   useEffect(() => {
     if (misplaced) router.replace(`/proyectos/${projectId}/${single ? 'resultado' : 'clips'}`);
@@ -289,15 +299,16 @@ export function ProjectShell({ projectId, children }: { projectId: string; child
         actions={<HeaderActions project={project} tab={tab} onRename={() => setRenaming(true)} onDelete={() => setDeleting(true)} />}
       />
       <ProjectTabs tabs={buildProjectTabs(project)} current={tab} />
-      {misplaced ? null : children}
+      <ProjectProvider value={project}>{misplaced ? null : children}</ProjectProvider>
       <RenameDialog project={project} open={renaming} onClose={() => setRenaming(false)} />
       <DeleteProjectDialog
         open={deleting}
         onClose={() => setDeleting(false)}
         project={project}
         onDeleted={() => {
+          setDeleted(true);
           toast.success('Proyecto borrado');
-          router.push('/proyectos');
+          router.replace('/proyectos');
         }}
       />
     </Page>

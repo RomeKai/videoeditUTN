@@ -44,6 +44,31 @@ export interface TranscriptLine {
 }
 
 /**
+ * The backend sends words, or whole segments when the transcription has no word
+ * times. A segment is split into its words, with its time shared out by length,
+ * so lines and subtitle cues keep a readable size either way.
+ */
+function splitIntoWords(items: ReadonlyArray<TranscriptLine>): TranscriptLine[] {
+  const words: TranscriptLine[] = [];
+  for (const item of items) {
+    const parts = item.text.split(/\s+/).filter(Boolean);
+    if (parts.length <= 1) {
+      if (parts.length === 1) words.push({ start: item.start, end: item.end, text: parts[0] ?? '' });
+      continue;
+    }
+    const total = parts.reduce((sum, part) => sum + part.length, 0);
+    const span = Math.max(0, item.end - item.start);
+    let cursor = item.start;
+    for (const part of parts) {
+      const length = total > 0 ? (span * part.length) / total : 0;
+      words.push({ start: cursor, end: cursor + length, text: part });
+      cursor += length;
+    }
+  }
+  return words;
+}
+
+/**
  * Groups word-level transcript items into readable lines: a new line after a
  * sentence end, a pause longer than `maxGap` seconds or `maxWords` words.
  */
@@ -51,7 +76,7 @@ export function groupTranscript(items: ReadonlyArray<TranscriptLine>, { maxWords
   const lines: TranscriptLine[] = [];
   let current: TranscriptLine | null = null;
   let words = 0;
-  for (const item of items) {
+  for (const item of splitIntoWords(items)) {
     if (current && (item.start - current.end > maxGap || words >= maxWords)) {
       lines.push(current);
       current = null;

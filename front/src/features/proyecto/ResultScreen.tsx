@@ -2,16 +2,16 @@
 
 import Link from 'next/link';
 import { useState, type ReactNode } from 'react';
-import { useBrandKit, useProject, useRetryClip } from '@/api/hooks';
-import { errorMessage } from '@/lib/error-messages';
+import { useBrandKit } from '@/api/hooks';
 import { LABELS } from '@/lib/project-status';
 import { usePermissions } from '@/shell/session';
-import { Badge, Banner, Button, Card, CardHead, Duration, EmptyState, Icon, Spinner, StatusDot, Tokens, Tooltip, VideoPlayer, VideoThumb, useToast, type IconName } from '@/ui';
+import { Badge, Banner, Button, Card, CardHead, Duration, EmptyState, Icon, Spinner, StatusDot, Tokens, Tooltip, VideoPlayer, VideoThumb, type IconName } from '@/ui';
 import { RESOLUTION_PIXELS, clipDuration, describeClip, ratioLabel, subtitlesSummary } from './model';
+import { useCurrentProject } from './project-context';
 import shell from './ProjectShell.module.css';
 import { RerenderDialog, useRerenderEstimate } from './RerenderDialog';
 import styles from './ResultScreen.module.css';
-import { usePublish } from './useClipActions';
+import { recreateHref, usePublish } from './useClipActions';
 
 interface ActionRowProps {
   icon: IconName;
@@ -60,11 +60,9 @@ function ActionRow({ icon, title, description, href, onClick, aside, disabledRea
 
 /** D5 · Resultado: the single video of a whole-video project, its details and what to do with it. */
 export function ResultScreen({ projectId }: { projectId: string }) {
-  const { data: project } = useProject(projectId);
+  const project = useCurrentProject();
   const { gate } = usePermissions();
-  const toast = useToast();
   const publish = usePublish();
-  const retry = useRetryClip();
   const kit = useBrandKit(project?.brand_kit);
   const [rerendering, setRerendering] = useState(false);
   const clip = project?.clips[0];
@@ -111,35 +109,23 @@ export function ResultScreen({ projectId }: { projectId: string }) {
   return (
     <>
       {display.group === 'failed' ? (
+        // The backend never runs a refunded whole video again: the way forward is a new project, or the paid re-render below.
         <Banner
           tone="err"
           className={styles.notice}
           title="El video no se pudo generar"
           action={
-            <Button
-              size="sm"
-              variant="secondary"
-              iconLeft="retry"
-              loading={retry.isPending}
-              onClick={() =>
-                retry.mutate(clip.id, {
-                  onSuccess: () => toast.success('Reintentando el video. No gasta tokens.'),
-                  onError: (error) => toast.error(errorMessage(error, 'No pudimos reintentar el video.')),
-                })
-              }
-              {...gate('clip.edit')}
-            >
-              Reintentar
+            <Button size="sm" variant="secondary" iconLeft="retry" href={recreateHref(project.id)} {...gate('project.create')}>
+              Crear de nuevo
             </Button>
           }
         >
           {project.cost?.state === 'refunded' ? (
             <>
-              Te devolvimos <Tokens value={project.cost.amount} />. Reintentar no gasta tokens.
+              Te devolvimos <Tokens value={project.cost.amount} />.{' '}
             </>
-          ) : (
-            'Reintentar no gasta tokens.'
-          )}
+          ) : null}
+          Podés crear el proyecto de nuevo o volver a renderizarlo acá abajo: te mostramos el costo antes de confirmar.
         </Banner>
       ) : null}
       <div className={styles.result}>

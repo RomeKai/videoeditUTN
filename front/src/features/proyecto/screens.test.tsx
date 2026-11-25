@@ -1,7 +1,9 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { MockDb, MockProject } from '@/api/mocks/db';
 import { server } from '@/api/mocks/server';
+import { loadDb, saveDb } from '@/api/mocks/state';
 import { ActivityScreen } from './ActivityScreen';
 import { ClipsScreen } from './ClipsScreen';
 import { ProjectShell } from './ProjectShell';
@@ -24,16 +26,39 @@ vi.mock('@/lib/download', async (original) => ({ ...(await original<typeof impor
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => {
   server.resetHandlers();
+  server.events.removeAllListeners();
   vi.clearAllMocks();
 });
 afterAll(() => server.close());
 
-function open(title: string, tab: '' | 'clips' | 'resultado' | 'transcripcion' | 'actividad', scenario = 'todos-los-estados', user: Parameters<typeof signIn>[1] = 'lucia') {
+type Tab = '' | 'clips' | 'resultado' | 'transcripcion' | 'actividad';
+
+/** Changes the seeded project before the screen loads it (states the scenarios do not have). */
+function change(title: string, edit: (project: MockProject, db: MockDb) => void) {
+  const db = loadDb();
+  const project = db.projects.find((item) => item.title.startsWith(title));
+  if (!project) throw new Error(`No hay proyecto «${title}»`);
+  edit(project, db);
+  saveDb(db);
+}
+
+/** The mock finishes renders after a few seconds; this makes them due now, so only the screen's own polling is left to wait for. */
+function finishRenders() {
+  const db = loadDb();
+  for (const project of db.projects) {
+    if (project._sim) project._sim.startedAt -= 600_000;
+    for (const clip of project.clips) if (clip._renderUntil !== undefined) clip._renderUntil = 0;
+  }
+  saveDb(db);
+}
+
+function open(title: string, tab: Tab, scenario = 'todos-los-estados', user: Parameters<typeof signIn>[1] = 'lucia', edit?: (project: MockProject, db: MockDb) => void) {
   signIn(scenario, user);
+  if (edit) change(title, edit);
   const id = projectId(title);
   nav.pathname = `/proyectos/${id}${tab ? `/${tab}` : ''}`;
   const content =
-    tab === 'clips' ? <ClipsScreen projectId={id} /> : tab === 'resultado' ? <ResultScreen projectId={id} /> : tab === 'transcripcion' ? <TranscriptScreen projectId={id} /> : tab === 'actividad' ? <ActivityScreen projectId={id} /> : <SummaryScreen projectId={id} />;
+    tab === 'clips' ? <ClipsScreen projectId={id} /> : tab === 'resultado' ? <ResultScreen projectId={id} /> : tab === 'transcripcion' ? <TranscriptScreen projectId={id} /> : tab === 'actividad' ? <ActivityScreen projectId={id} /> : <SummaryScreen />;
   renderScreen(<ProjectShell projectId={id}>{content}</ProjectShell>);
   return { id, user: userEvent.setup() };
 }
@@ -98,6 +123,51 @@ describe('D1 · Proyecto', () => {
     expect(screen.getByText('3 pasos no llegaron a empezar')).toBeInTheDocument();
   });
 
+  it('error sin datos del costo (backend de hoy): no dice nada sobre la plata', async () => {
+    open('Falló: AINoSpeechDetectedError', '', 'todos-los-estados', 'lucia', (project) => {
+      delete project.cost;
+    });
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText(/No encontramos voz en el video/)).toBeInTheDocument();
+    expect(within(alert).queryByText(/devolvimos|cobr/i)).toBeNull();
+    expect(within(alert).queryByRole('link', { name: /Ver en Movimientos/ })).toBeNull();
+  });
+
+  it('AutoRenderNotPaid: lo ya cobrado no se niega, y ofrece comprar tokens y ver los clips en vez de crear de nuevo', async () => {
+    const { id } = open('Falló: AutoRenderNotPaid', '');
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText(/No alcanzó el saldo para renderizar los clips que faltaban/)).toBeInTheDocument();
+    expect(within(alert).queryByText(/no se cobró|devolvimos/i)).toBeNull();
+    expect(within(alert).getByRole('link', { name: 'Comprar tokens' })).toHaveAttribute('href', '/uso/comprar');
+    expect(within(alert).getByRole('link', { name: 'Ver clips' })).toHaveAttribute('href', `/proyectos/${id}/clips`);
+    expect(screen.queryByRole('link', { name: 'Crear de nuevo' })).toBeNull();
+    expect(screen.getByText('No alcanzó el saldo para renderizar los clips que faltaban.')).toBeInTheDocument();
+  });
+
+  it('AutoRenderNotPaid visto por un Editor: «Comprar tokens» queda deshabilitado', async () => {
+    open('Falló: AutoRenderNotPaid', '', 'todos-los-estados', 'carla');
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByRole('button', { name: 'Comprar tokens' })).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('un reintento interno del pipeline no se muestra como falla', async () => {
+    open('Clase 3', '', 'todos-los-estados', 'lucia', (project) => {
+      project.pipeline_stage_status = { ...project.pipeline_stage_status, transcribed: 'failed' };
+      project.pipeline_error_code = 'RetryableAIError';
+    });
+    const steps = await screen.findByRole('list', { name: 'Etapas del proceso' });
+    expect(within(steps).getByText('Transcribir').closest('[aria-current="step"]')).not.toBeNull();
+    expect(within(steps).queryByText('Falló')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getAllByText('Transcribiendo').length).toBeGreaterThan(0);
+  });
+
+  it('el aviso del plan no ofrece «Ver planes» a quien no puede cambiarlo', async () => {
+    open('Sin revisar: el plan', '', 'todos-los-estados', 'carla');
+    expect(await screen.findByText('Tu plan no permite renderizar estos clips sin revisar')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Ver planes' })).toBeNull();
+  });
+
   it('error de moderación: no dice la categoría y ofrece escribirnos', async () => {
     open('Falló: UnsafeContentError', '');
     const alert = await screen.findByRole('alert');
@@ -129,14 +199,24 @@ describe('D1 · Proyecto', () => {
   });
 
   it('borrar: el diálogo avisa que no se devuelve nada y vuelve a Proyectos', async () => {
-    const { user } = open('Vlog Mendoza', '');
+    const { user, id } = open('Vlog Mendoza', '');
     await user.click(await screen.findByRole('button', { name: /Más acciones: renombrar/ }));
     await user.click(screen.getByRole('menuitem', { name: 'Borrar' }));
     const dialog = await screen.findByRole('alertdialog');
     expect(within(dialog).getByText(/Se borran el video, los clips y las publicaciones programadas/)).toBeInTheDocument();
     expect(within(dialog).getByText(/No se devuelve nada de lo ya cobrado/)).toBeInTheDocument();
+    const requests: string[] = [];
+    server.events.on('request:start', ({ request }) => {
+      if (request.method === 'GET') requests.push(request.url);
+    });
     await user.click(within(dialog).getByRole('button', { name: 'Borrar proyecto' }));
-    await waitFor(() => expect(nav.push).toHaveBeenCalledWith('/proyectos'));
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/proyectos'));
+    // The screen keeps the last data: no skeleton, no 404 and no request for a project that is gone.
+    expect(screen.getByRole('heading', { level: 1, name: 'Vlog Mendoza' })).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(screen.queryByRole('heading', { name: /Esta página no existe/ })).toBeNull();
+    expect(screen.queryByLabelText('Cargando el proyecto')).toBeNull();
+    expect(requests.some((url) => url.includes(`/projects/${id}/`) && !url.includes('activity'))).toBe(false);
   });
 
   it('Lector: el menú y renombrar quedan deshabilitados, no ocultos', async () => {
@@ -247,6 +327,60 @@ describe('D3 · Clips', () => {
     expect(await screen.findByText('Renderizando…')).toBeInTheDocument();
   });
 
+  it('después de reintentar, la pantalla sigue consultando hasta que el clip termina (el proyecto sigue «parcial»)', async () => {
+    const { user } = open('Charla en la UTN', 'clips', 'estudio-norte');
+    await user.click(await screen.findByRole('button', { name: 'Reintentar' }));
+    expect(await screen.findByText('Renderizando…')).toBeInTheDocument();
+    finishRenders();
+    // Nothing else is touched: only the 5 s poll can bring the new state.
+    await waitFor(() => expect(screen.queryByText('Renderizando…')).toBeNull(), { timeout: 9000 });
+    expect(within(screen.getByRole('list')).getAllByText('Listo')).toHaveLength(6);
+  }, 20_000);
+
+  it('varias descargas a la vez: cada tarjeta lleva su propio estado', async () => {
+    const { user } = open('Vlog Mendoza', 'clips', 'estudio-norte');
+    const buttons = await screen.findAllByRole('button', { name: /^Descargar «/ });
+    await user.click(buttons[0] as HTMLElement);
+    await user.click(buttons[1] as HTMLElement);
+    await waitFor(() => expect(downloads.url).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(buttons[0]).toBeEnabled());
+    expect(buttons[1]).toBeEnabled();
+  });
+
+  it('una vista previa que ya está lista no se pide de nuevo', async () => {
+    const posts: string[] = [];
+    server.events.on('request:start', ({ request }) => {
+      if (request.method === 'POST' && request.url.includes('/preview/')) posts.push(request.url);
+    });
+    const { user } = open('Podcast Ep. 42', 'clips', 'estudio-norte', 'lucia', (project, db) => {
+      for (const clip of project.clips) {
+        db.previews.push({
+          preview_id: `00000000-0000-4000-8000-${clip.id.slice(-12)}`,
+          clip_id: clip.id,
+          status: 'ready',
+          url: 'mock://previews/lista.mp4',
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          error_code: null,
+          cost_tokens: 0,
+          simplified: { height: 360, face_tracking: false, silence_removal: false },
+          _startedAt: Date.now() - 60_000,
+        });
+      }
+    });
+    const first = (await screen.findAllByRole('listitem'))[0] as HTMLElement;
+    await user.click(within(first).getByRole('button', { name: 'Vista previa' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Vista previa' });
+    expect(await within(dialog).findByRole('group', { name: /^Vista previa: / })).toBeInTheDocument();
+    expect(posts).toEqual([]);
+  });
+
+  it('los clips sin renderizar de un proyecto que ya no espera revisión no ofrecen «Revisar clips»', async () => {
+    open('Falló: AutoRenderNotPaid', 'clips');
+    expect((await screen.findAllByText('Sugerido')).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('link', { name: 'Revisar clips' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Vista previa' }).length).toBeGreaterThan(0);
+  });
+
   it('borrar un clip pide confirmación', async () => {
     const { user } = open('Vlog Mendoza', 'clips', 'estudio-norte');
     const first = (await screen.findAllByRole('listitem'))[0] as HTMLElement;
@@ -332,6 +466,12 @@ describe('D1e · Transcripción', () => {
     expect(downloads.text).toHaveBeenLastCalledWith(expect.stringMatching(/^1\n00:00:0\d,\d{3} --> /), 'vlog-mendoza.srt', expect.any(String));
   });
 
+  it('en un video completo, el tramo lleva a Resultado', async () => {
+    const { id } = open('Tutorial de Notion', 'transcripcion', 'estudio-norte');
+    const links = await screen.findAllByRole('link', { name: /Ver resultado/ });
+    expect(links.at(-1)).toHaveAttribute('href', `/proyectos/${id}/resultado`);
+  });
+
   it('todavía sin transcribir, o fallido antes: estado vacío', async () => {
     open('Paso 1', 'transcripcion');
     expect(await screen.findByText('Todavía no hay transcripción')).toBeInTheDocument();
@@ -356,6 +496,24 @@ describe('D1f · Actividad', () => {
     expect(within(table).getByText('Devuelto')).toBeInTheDocument();
     expect(await screen.findByText('Total devuelto')).toBeInTheDocument();
     expect(screen.getByText('1 devolución en este proyecto.')).toBeInTheDocument();
+  });
+
+  it('vuelve a leer la actividad cuando cambia el estado del proyecto', async () => {
+    const { user } = open('Charla en la UTN', 'actividad', 'estudio-norte');
+    expect(await screen.findByText('Quién hizo qué, de lo más nuevo a lo más viejo')).toBeInTheDocument();
+    expect(screen.queryByText(/Reintentó el clip/)).toBeNull();
+    // Somebody retries the failed clip elsewhere: the project changes on its next read.
+    change('Charla en la UTN', (project, db) => {
+      const failed = project.clips.find((clip) => clip.status === 'failed');
+      if (!failed) throw new Error('sin clip fallido');
+      failed.status = 'rendering';
+      db.activity.unshift({ id: '00000000-0000-4000-8000-00000000abcd', project: project.id, type: 'clip_retried', actor: null, created_at: new Date().toISOString(), description: 'Reintentó el clip «uno»', amount: null });
+    });
+    await user.click(screen.getByRole('button', { name: 'Renombrar el proyecto' }));
+    const dialog = screen.getByRole('dialog', { name: 'Renombrar el proyecto' });
+    await user.type(within(dialog).getByLabelText('Nombre'), ' 2');
+    await user.click(within(dialog).getByRole('button', { name: 'Guardar' }));
+    expect(await screen.findByText(/Reintentó el clip «uno»/)).toBeInTheDocument();
   });
 
   it('Editor: ve la actividad, pero no entra a los movimientos del workspace', async () => {
@@ -399,9 +557,8 @@ describe('D5 · Resultado del video completo', () => {
     expect(await screen.findByText('Estamos editando tu video…')).toBeInTheDocument();
   });
 
-  it('con saldo bajo, volver a renderizar abre «No te alcanza el saldo»', async () => {
+  it('con saldo bajo, volver a renderizar abre «No te alcanza el saldo» antes de confirmar', async () => {
     signIn('saldo-bajo');
-    const { loadDb, saveDb } = await import('@/api/mocks/state');
     const db = loadDb();
     const wallet = db.wallets.find((item) => item.available_balance > 0);
     if (wallet) wallet.available_balance = 1;
@@ -418,8 +575,9 @@ describe('D5 · Resultado del video completo', () => {
     const style = await screen.findByRole('dialog', { name: 'Volver a renderizar con otro estilo' });
     await waitFor(() => expect(within(style).getByRole('button', { name: 'Ver el costo' })).toBeEnabled());
     await user.click(within(style).getByRole('button', { name: 'Ver el costo' }));
-    await user.click(within(await screen.findByRole('dialog', { name: 'Volver a renderizar' })).getByRole('button', { name: 'Renderizar' }));
+    // The estimate already does not fit: D2 opens before anything is confirmed or sent.
     expect(await screen.findByText('No te alcanza el saldo')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Volver a renderizar' })).toBeNull();
   });
 
   it('un video sin voz se edita igual y avisa que salió sin subtítulos', async () => {
@@ -435,14 +593,36 @@ describe('D5 · Resultado del video completo', () => {
     expect(screen.queryByRole('button', { name: 'Descargar' })).toBeNull();
   });
 
-  it('si el render falló: la devolución y Reintentar', async () => {
-    const { user } = open('Video completo que no se pudo generar', 'resultado');
+  it('si el render falló y ya se devolvió: no ofrece un reintento gratis, sino crear de nuevo o volver a renderizar con costo', async () => {
+    const { id } = open('Video completo que no se pudo generar', 'resultado');
     const alert = await screen.findByRole('alert');
     expect(within(alert).getByText('El video no se pudo generar')).toBeInTheDocument();
     expect(within(alert).getByText(/Te devolvimos/)).toBeInTheDocument();
-    await user.click(within(alert).getByRole('button', { name: 'Reintentar' }));
-    expect(await screen.findByText('Reintentando el video. No gasta tokens.')).toBeInTheDocument();
+    expect(within(alert).getByRole('link', { name: 'Crear de nuevo' })).toHaveAttribute('href', `/proyectos/nuevo?desde=${id}`);
+    expect(screen.queryByRole('button', { name: 'Reintentar' })).toBeNull();
+    expect(screen.queryByText(/no gasta tokens/i)).toBeNull();
+    const again = screen.getByRole('button', { name: /Volver a renderizar con otro estilo/ });
+    expect(again).not.toHaveAttribute('aria-disabled');
+    expect(await within(again).findByText(/tokens$/)).toBeInTheDocument();
   });
+
+  it('el Resumen del video completo fallido tampoco promete un reintento gratis', async () => {
+    open('Video completo que no se pudo generar', '');
+    expect(await screen.findByText(/Este video no se puede reintentar/)).toBeInTheDocument();
+    expect(screen.queryByText(/no gasta tokens/i)).toBeNull();
+  });
+
+  it('después de volver a renderizar, la pantalla sigue al render hasta que termina', async () => {
+    const { user } = open('Tutorial de Notion', 'resultado', 'estudio-norte');
+    await user.click(await screen.findByRole('button', { name: /Volver a renderizar con otro estilo/ }));
+    const style = await screen.findByRole('dialog', { name: 'Volver a renderizar con otro estilo' });
+    await waitFor(() => expect(within(style).getByRole('button', { name: 'Ver el costo' })).toBeEnabled());
+    await user.click(within(style).getByRole('button', { name: 'Ver el costo' }));
+    await user.click(within(await screen.findByRole('dialog', { name: 'Volver a renderizar' })).getByRole('button', { name: 'Renderizar' }));
+    expect(await screen.findByText(/Se actualiza cada 5 s/)).toBeInTheDocument();
+    finishRenders();
+    expect(await screen.findByRole('button', { name: 'Descargar' }, { timeout: 9000 })).toBeInTheDocument();
+  }, 20_000);
 
   it('un proyecto de clips no tiene Resultado: va a Clips', async () => {
     const { id } = open('Vlog Mendoza', 'resultado', 'estudio-norte');

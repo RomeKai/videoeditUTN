@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname, useRouter } from 'next/navigation';
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import type { Clip } from '@/api/contracts/projects';
 import { useClipDownload } from '@/api/hooks';
 import { downloadUrl } from '@/lib/download';
@@ -13,15 +13,19 @@ export function useClipActions() {
   const toast = useToast();
   const download = useClipDownload();
   const { mutate } = download;
+  // Several downloads can be under way at once: each card tracks its own.
+  const [downloadingIds, setDownloadingIds] = useState<string[]>([]);
 
   const downloadClip = useCallback(
     (clip: Pick<Clip, 'id'>, done = 'Clip descargado') => {
+      setDownloadingIds((ids) => [...ids.filter((id) => id !== clip.id), clip.id]);
       mutate(clip.id, {
         onSuccess: ({ url, filename }) => {
           downloadUrl(url, filename);
           toast.success(done);
         },
         onError: (error) => toast.error(errorMessage(error, 'No pudimos descargar el clip.')),
+        onSettled: () => setDownloadingIds((ids) => ids.filter((id) => id !== clip.id)),
       });
     },
     [mutate, toast],
@@ -39,7 +43,7 @@ export function useClipActions() {
     [toast],
   );
 
-  return { downloadClip, downloadingId: download.isPending ? (download.variables ?? null) : null, copyLink };
+  return { downloadClip, downloadingIds, copyLink };
 }
 
 /** Opens the publish panel (E1) with the convention `?publicar=<clipId>[,<clipId>…]` on the current screen. */

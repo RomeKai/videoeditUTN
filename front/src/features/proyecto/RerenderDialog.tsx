@@ -67,7 +67,7 @@ export function RerenderDialog({ open, onClose, project, durationSeconds }: Rere
         onClose={close}
         title="Volver a renderizar"
         subtitle={`${project.title} · estilo ${LABELS.editing_style[style]}`}
-        durationSeconds={durationSeconds}
+        durationSeconds={Math.ceil(durationSeconds)}
         resolution={resolution}
         estimate={estimate}
         planName={plan?.name}
@@ -105,7 +105,21 @@ export function RerenderDialog({ open, onClose, project, durationSeconds }: Rere
           <Button variant="ghost" onClick={close}>
             Cancelar
           </Button>
-          <Button variant="primary" onClick={() => setStep('cost')} disabled={!estimate || wallet.isLoading} data-autofocus>
+          <Button
+            variant="primary"
+            disabled={!estimate || !wallet.data}
+            data-autofocus
+            onClick={() => {
+              if (!estimate || !wallet.data) return;
+              // The estimate already says it does not fit: straight to "No te alcanza el saldo" (D2).
+              if (estimate.total > wallet.data.available_balance) {
+                billing.showInsufficientBalance({ required: estimate.total, concept: 'Costo del render' });
+                close();
+                return;
+              }
+              setStep('cost');
+            }}
+          >
             Ver el costo
           </Button>
         </>

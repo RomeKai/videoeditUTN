@@ -1,13 +1,15 @@
 'use client';
 
 import Link from 'next/link';
-import { useProject, useProjectActivity, usePricing } from '@/api/hooks';
+import { useEffect, useRef } from 'react';
+import { useProjectActivity, usePricing } from '@/api/hooks';
 import { formatTime, plural } from '@/lib/format';
 import { LoadError } from '@/shell/LoadError';
 import { usePermissions, usePlan } from '@/shell/session';
 import { Avatar, Badge, Button, Card, CardFoot, CardHead, DateTime, EmptyState, Icon, NetworkChip, Skeleton, Table, Tokens } from '@/ui';
 import styles from './ActivityScreen.module.css';
 import { MOVEMENT_KIND, activityLink, explainCost, groupActivityByDay, tokenMovements } from './model';
+import { useCurrentProject } from './project-context';
 
 function ActivitySkeleton() {
   return (
@@ -35,11 +37,22 @@ function ActivitySkeleton() {
 
 /** D1f · Actividad: who did what, the project's token movements and how its cost was calculated. */
 export function ActivityScreen({ projectId }: { projectId: string }) {
-  const { data: project } = useProject(projectId);
+  const project = useCurrentProject();
   const activity = useProjectActivity(projectId);
   const pricing = usePricing();
   const { plan } = usePlan();
   const { gate } = usePermissions();
+  // What happens to the project (a stage ends, a render finishes, a clip is retried) adds activity:
+  // read it again when the project's state changes, instead of waiting for the cache to expire.
+  const stamp = project ? `${project.status}:${project.pipeline_stage}:${project.clips.map((clip) => clip.status).join(',')}` : '';
+  const seenStamp = useRef(stamp);
+  const { refetch } = activity;
+  useEffect(() => {
+    if (seenStamp.current === stamp) return;
+    const first = seenStamp.current === '';
+    seenStamp.current = stamp;
+    if (!first) void refetch();
+  }, [stamp, refetch]);
   if (!project) return null;
   if (activity.isLoading) return <ActivitySkeleton />;
   if (activity.isError && !activity.data) return <LoadError error={activity.error} onRetry={() => void activity.refetch()} fullPageForMissing={false} />;

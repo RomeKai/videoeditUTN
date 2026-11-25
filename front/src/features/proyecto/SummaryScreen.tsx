@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import type { Project } from '@/api/contracts/projects';
-import { useBrandKit, useProject } from '@/api/hooks';
+import { useBrandKit, useWallet } from '@/api/hooks';
 import { isModerationError, pipelineErrorMessage } from '@/lib/error-messages';
 import { formatDuration, formatTime, plural } from '@/lib/format';
 import { useIsMobile } from '@/lib/hooks';
@@ -19,6 +19,7 @@ import {
   describeClip,
   describeProjectStatus,
   failedStepNumber,
+  isWholeVideo,
   pteAppliedLines,
   pteIgnoredLines,
   shortDateTime,
@@ -27,6 +28,7 @@ import {
   type ConfigGroup,
   type PteLine,
 } from './model';
+import { useCurrentProject } from './project-context';
 import shell from './ProjectShell.module.css';
 import styles from './SummaryScreen.module.css';
 import { recreateHref } from './useClipActions';
@@ -51,7 +53,7 @@ function useNow(active: boolean): number {
 
 function ProcessSteps({ project, now }: { project: Project; now: number }) {
   const steps = buildProcessSteps(project, now);
-  const single = project.project_type === 'single_edit';
+  const single = isWholeVideo(project);
   const rows: StageStep[] = steps.map((step) => ({
     key: step.collapsed ? 'rest' : step.key,
     state: step.state,
@@ -142,7 +144,7 @@ function ProcessCard({ project, folded }: { project: Project; folded: boolean })
       {view.inProgress ? (
         <CardFoot>
           <span className="t-small muted">
-            {project.status === 'rendering' || project.project_type === 'single_edit'
+            {project.status === 'rendering' || isWholeVideo(project)
               ? 'Podés cerrar esta pantalla. Te avisamos por email y en la campana cuando termine.'
               : 'Podés cerrar esta pantalla. Te avisamos por email y en la campana cuando esté listo para revisar.'}
           </span>
@@ -252,7 +254,7 @@ function ConfigCard({ project, wide }: { project: Project; wide: boolean }) {
     );
   } else {
     const quote =
-      project.project_type === 'single_edit' ? null : (
+      isWholeVideo(project) ? null : (
         <div className={styles.quote}>
           <span className="t-label subtle">¿Qué buscás?</span>
           <p>{criteria ? `«${criteria}»` : 'Sin criterio: la IA elige los momentos.'}</p>
@@ -348,19 +350,35 @@ const NETWORK_SHORT = { TIKTOK: 'TikTok', INSTAGRAM_REELS: 'Instagram', YOUTUBE_
 function FailedBanner({ project }: { project: Project }) {
   const { gate, can } = usePermissions();
   const code = project.pipeline_error_code;
+  // Money is only mentioned when it is known: the backend does not send `cost` yet (gap 4).
   const refunded = project.cost?.state === 'refunded' ? project.cost.amount : 0;
+  // Re-dispatched without tokens for what was left: the clips are still there, so there is nothing to create again.
+  const unpaid = code === 'AutoRenderNotPaid';
   return (
     <Banner
       tone="err"
       className={styles.notice}
       title={pipelineErrorMessage(code)}
       action={
-        <div className={styles.bannerActions}>
-          <Button variant="primary" iconLeft="retry" href={recreateHref(project.id)} {...gate('project.create')}>
-            Crear de nuevo
-          </Button>
-          <span className="t-label muted">Con la misma configuración</span>
-        </div>
+        unpaid ? (
+          <div className={styles.bannerActions}>
+            <Button variant="primary" iconLeft="tokens" href="/uso/comprar" {...gate('billing.manage')}>
+              Comprar tokens
+            </Button>
+            {project.clips.length > 0 ? (
+              <Button variant="secondary" href={`/proyectos/${project.id}/clips`}>
+                Ver clips
+              </Button>
+            ) : null}
+          </div>
+        ) : (
+          <div className={styles.bannerActions}>
+            <Button variant="primary" iconLeft="retry" href={recreateHref(project.id)} {...gate('project.create')}>
+              Crear de nuevo
+            </Button>
+            <span className="t-label muted">Con la misma configuración</span>
+          </div>
+        )
       }
     >
       {ERROR_HINT[code] ? <p>{ERROR_HINT[code]}</p> : null}
@@ -369,9 +387,7 @@ function FailedBanner({ project }: { project: Project }) {
           <span>
             Te devolvimos <Tokens value={refunded} className={styles.strong} />.
           </span>
-        ) : (
-          <span>No se cobró nada por este proyecto.</span>
-        )}
+        ) : null}
         {refunded > 0 && can('billing.manage') ? (
           <Link className={styles.arrowLink} href="/uso/movimientos">
             Ver en Movimientos <Icon name="chevron-right" size={14} />
@@ -387,9 +403,10 @@ function FailedBanner({ project }: { project: Project }) {
 
 function Notices({ project }: { project: Project }) {
   const { can } = usePermissions();
-  const notice = autoRenderNotice(project);
+  const wallet = useWallet();
+  const notice = autoRenderNotice(project, wallet.data ? wallet.data.reservations.map((item) => item.transaction_id) : null);
   const clips = countClips(project.clips);
-  const single = project.project_type === 'single_edit';
+  const whole = isWholeVideo(project);
   return (
     <>
       {notice && notice.kind === 'reserved' ? (
@@ -398,23 +415,13 @@ function Notices({ project }: { project: Project }) {
         </Banner>
       ) : null}
       {notice && notice.kind !== 'reserved' ? (
-        <Banner
-          tone="warn"
-          className={styles.notice}
-          title={notice.title}
-        >
+        <Banner tone="warn" className={styles.notice} title={notice.title}>
           {notice.text}{' '}
-          {notice.kind === 'insufficient_funds' ? (
-            can('billing.manage') ? (
-              <Link className={shell.link} href="/uso/comprar">
-                Comprar tokens
-              </Link>
-            ) : null
-          ) : (
-            <Link className={shell.link} href="/uso/planes">
-              Ver planes
+          {can('billing.manage') ? (
+            <Link className={shell.link} href={notice.kind === 'insufficient_funds' ? '/uso/comprar' : '/uso/planes'}>
+              {notice.kind === 'insufficient_funds' ? 'Comprar tokens' : 'Ver planes'}
             </Link>
-          )}
+          ) : null}
         </Banner>
       ) : null}
       {project.status === 'awaiting_approval' && !notice ? (
@@ -429,14 +436,15 @@ function Notices({ project }: { project: Project }) {
         </Banner>
       ) : null}
       {project.status === 'partial' ? (
-        <Banner
-          tone="warn"
-          className={styles.notice}
-          title={describeProjectStatus(project).text}
-        >
-          {single && project.cost?.state === 'refunded' ? (
+        <Banner tone="warn" className={styles.notice} title={describeProjectStatus(project).text}>
+          {whole ? (
             <>
-              Te devolvimos <Tokens value={project.cost.amount} />. Reintentar no gasta tokens.
+              {project.cost?.state === 'refunded' ? (
+                <>
+                  Te devolvimos <Tokens value={project.cost.amount} />.{' '}
+                </>
+              ) : null}
+              Este video no se puede reintentar: creá el proyecto de nuevo o volvé a renderizarlo desde Resultado.
             </>
           ) : (
             'Podés reintentar los que fallaron: no gasta tokens.'
@@ -448,8 +456,8 @@ function Notices({ project }: { project: Project }) {
 }
 
 /** D1 · Resumen: process timeline, applied configuration and, once there are clips, the strip that leads to them. */
-export function SummaryScreen({ projectId }: { projectId: string }) {
-  const { data: project } = useProject(projectId);
+export function SummaryScreen() {
+  const project = useCurrentProject();
   if (!project) return null;
   const failed = project.status === 'failed';
   const hasResults = ['awaiting_approval', 'rendering', 'completed', 'partial'].includes(project.status);
@@ -459,7 +467,7 @@ export function SummaryScreen({ projectId }: { projectId: string }) {
     return (
       <div className={styles.stack}>
         <Notices project={project} />
-        {project.project_type === 'repurpose' && project.clips.length > 0 ? <ClipStrip project={project} /> : null}
+        {!isWholeVideo(project) && project.clips.length > 0 ? <ClipStrip project={project} /> : null}
         <ProcessCard project={project} folded={final} />
         <ConfigCard project={project} wide />
       </div>
