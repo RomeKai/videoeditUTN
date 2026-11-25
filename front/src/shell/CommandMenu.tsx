@@ -50,7 +50,7 @@ export function CommandMenu({ open, onClose }: { open: boolean; onClose: () => v
   const { me, workspace, switchWorkspace } = useSession();
   const { can } = usePermissions();
   const isClient = useIsClient();
-  const ref = useModalLayer<HTMLDivElement>({ open, onClose });
+  const ref = useModalLayer<HTMLDivElement>({ open: open && isClient, onClose });
   const search = useDebounced(query.trim(), 200);
   const projects = useProjects({ search, page_size: 5 }, { enabled: open && search.length > 0 });
 

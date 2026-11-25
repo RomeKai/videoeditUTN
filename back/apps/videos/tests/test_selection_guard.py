@@ -78,6 +78,12 @@ class EmptySelectionGuardTests(IngestionHarness, TestCase):
 class StuckProjectRecoveryTests(IngestionHarness, TestCase):
     """Projects that reached CLIPS_SELECTED with zero clips before the guard existed."""
 
+    def setUp(self):
+        super().setUp()
+        from apps.videos.tests.test_ingestion_pipeline import fund_wallet
+
+        fund_wallet(self.workspace)
+
     def _stuck_project(self, **kwargs):
         project = self.make_project(auto_render_bypass=True, **kwargs)
         VideoProject.objects.filter(pk=project.pk).update(

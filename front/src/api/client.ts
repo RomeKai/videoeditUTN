@@ -2,7 +2,15 @@ import type { ZodTypeAny } from 'zod';
 import { API_URL, WORKSPACE_HEADER } from './config';
 import { buildPath, buildQuery, type AnyEndpoint, type ParamsOf, type QueryOf, type RequestBody, type ResponseOf } from './endpoint';
 import { ApiError, ContractError, NetworkError, SessionExpiredError } from './errors';
-import { getActiveWorkspaceId, getTokens, notifySessionExpired, setTokens } from './session';
+import {
+  getActiveWorkspaceId,
+  getTokens,
+  isSessionExpired,
+  notifyMaintenance,
+  notifySessionExpired,
+  secondsUntilExpiry,
+  setTokens,
+} from './session';
 
 export interface CallOptions<E extends AnyEndpoint> {
   params?: ParamsOf<E>;
@@ -44,6 +52,10 @@ let refreshing: Promise<string> | null = null;
  * Renews the access token with the refresh token. Concurrent 401s share one
  * request. The backend rotates refresh tokens (ROTATE_REFRESH_TOKENS), so the
  * new pair replaces the stored one.
+ *
+ * Only a 400 or 401 from the refresh endpoint means the session is over
+ * (SessionExpiredError). A 5xx, a 429 or no answer is a passing problem: it is
+ * thrown as ApiError / NetworkError and the session stays.
  */
 export function refreshAccessToken(): Promise<string> {
   if (refreshing) return refreshing;
@@ -60,7 +72,14 @@ export function refreshAccessToken(): Promise<string> {
     } catch (cause) {
       throw new NetworkError('auth.refresh', cause);
     }
-    if (!response.ok) throw new SessionExpiredError();
+    if (response.status === 503) notifyMaintenance(true);
+    if (!response.ok) {
+      // Another tab may have renewed (and rotated) the pair while this one waited: use what it stored.
+      const current = getTokens();
+      if (current && current.refresh !== tokens.refresh) return current.access;
+      if (response.status === 400 || response.status === 401) throw new SessionExpiredError();
+      throw new ApiError(response.status, 'auth.refresh', await readBody(response, 'json'));
+    }
     const data = (await response.json()) as { access?: unknown; refresh?: unknown };
     if (typeof data.access !== 'string') throw new SessionExpiredError();
     setTokens({ access: data.access, refresh: typeof data.refresh === 'string' ? data.refresh : tokens.refresh });
@@ -70,6 +89,9 @@ export function refreshAccessToken(): Promise<string> {
   });
   return refreshing;
 }
+
+/** An upload must not die halfway with a 401: renew first when the token has less than this left. */
+const UPLOAD_MIN_TOKEN_SECONDS = 120;
 
 async function readBody(response: Response, type: 'json' | 'text' | 'blob'): Promise<unknown> {
   if (response.status === 204 || response.status === 205) return undefined;
@@ -169,22 +191,41 @@ export async function apiCall<E extends AnyEndpoint>(endpoint: E, ...args: Args<
     }
   };
 
-  let response = await attempt(sendsToken ? getTokens()?.access : undefined);
+  // After the session expired nothing authenticated goes out until the user signs in again (dialog D9).
+  if (needsAuth && isSessionExpired()) throw new SessionExpiredError();
 
-  if (response.status === 401 && needsAuth) {
-    let renewed: string;
+  const expire = (): never => {
+    notifySessionExpired();
+    throw new SessionExpiredError();
+  };
+  const renew = async (): Promise<string | undefined> => {
     try {
-      renewed = await refreshAccessToken();
+      return await refreshAccessToken();
     } catch (error) {
-      if (error instanceof SessionExpiredError) notifySessionExpired();
-      throw error;
+      if (!(error instanceof SessionExpiredError)) throw error;
+      // A public endpoint that only sends the token when there is one goes on without it.
+      if (!needsAuth) return undefined;
+      return expire();
     }
-    response = await attempt(renewed);
-    if (response.status === 401) {
-      notifySessionExpired();
-      throw new SessionExpiredError();
-    }
+  };
+
+  let sent = sendsToken ? getTokens()?.access : undefined;
+  if (sent && (endpoint.bodyType === 'multipart' || options.onUploadProgress)) {
+    const left = secondsUntilExpiry(sent);
+    if (left !== null && left < UPLOAD_MIN_TOKEN_SECONDS) sent = await renew();
   }
+  let response = await attempt(sent);
+
+  if (response.status === 401 && sendsToken && (needsAuth || sent)) {
+    // Another tab may already have renewed the pair: try its token before spending a refresh.
+    const stored = getTokens()?.access;
+    const next = stored && stored !== sent ? stored : await renew();
+    response = await attempt(next);
+    if (response.status === 401 && needsAuth) expire();
+  }
+
+  // 503: the platform is down for maintenance (page K5). Any other answer means it is back.
+  notifyMaintenance(response.status === 503);
 
   if (!response.ok) {
     throw new ApiError(response.status, endpoint.id, await readBody(response, 'json'));

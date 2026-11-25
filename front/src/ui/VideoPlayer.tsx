@@ -53,6 +53,18 @@ export interface VideoPlayerProps {
   className?: string;
 }
 
+/** Mock media: there is no real file behind it. */
+export function isPlaceholderSource(url: string | null | undefined): boolean {
+  return Boolean(url && url.startsWith('mock:'));
+}
+
+function sameMedia(a: string | null, b: string | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const strip = (url: string) => url.split(/[?#]/)[0];
+  return strip(a) === strip(b);
+}
+
 const RATIO_CLASS: Record<AspectRatio, string> = {
   '16:9': styles.r16x9 ?? '',
   '9:16': styles.r9x16 ?? '',
@@ -67,7 +79,7 @@ const RATIO_CLASS: Record<AspectRatio, string> = {
  */
 export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(function VideoPlayer(
   {
-    src,
+    src: srcProp,
     seed,
     ratio = '16:9',
     duration = 0,
@@ -85,6 +97,16 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
   ref,
 ) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  // Presigned URLs change their query string on every poll while pointing at the same file:
+  // only a different origin or path is a new source, otherwise playback would restart.
+  const [stableSrc, setStableSrc] = useState(srcProp ?? null);
+  useEffect(() => {
+    setStableSrc((current) => (sameMedia(current, srcProp ?? null) ? current : (srcProp ?? null)));
+  }, [srcProp]);
+  // A source that cannot be played (the mock's `mock:` URLs, a link that expired, a codec the browser
+  // lacks) falls back to the placeholder frame and the simulated clock instead of a broken video.
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const src = stableSrc && !isPlaceholderSource(stableSrc) && failedSrc !== stableSrc ? stableSrc : null;
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(range?.start ?? 0);
   const [mediaDuration, setMediaDuration] = useState<number | null>(null);
@@ -204,6 +226,10 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}
             onEnded={() => setPlaying(false)}
+            onError={() => {
+              setPlaying(false);
+              setFailedSrc(src);
+            }}
           />
         ) : (
           <div className={styles.placeholder}>

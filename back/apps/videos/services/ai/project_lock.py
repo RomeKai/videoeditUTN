@@ -40,6 +40,27 @@ def get_redis_client():
     return redis.Redis.from_url(settings.REDIS_URL)
 
 
+def _lock_name(project_id):
+    return f"lock:pipeline:project:{project_id}"
+
+
+def project_lock_held(project_id, client=None):
+    """
+    Whether some worker holds the project's lock right now. Read only: it
+    never takes the lock, so the answer can change right after. Raises a
+    retryable error if Redis is unreachable, like ``project_lock``.
+    """
+    client = client if client is not None else get_redis_client()
+    try:
+        return bool(client.lock(_lock_name(project_id)).locked())
+    except redis.exceptions.RedisError as exc:
+        raise RetryableAIError(
+            f"Redis unavailable, cannot check the lock of project {project_id}: {exc}",
+            provider="redis",
+            raw_error=exc,
+        ) from exc
+
+
 class ProjectLockHandle:
     """Owner-side view of a held lock: renewal and loss detection."""
 
@@ -84,7 +105,7 @@ def _heartbeat(handle, stop, interval):
 def project_lock(project_id, client=None, ttl=None, heartbeat=True):
     client = client if client is not None else get_redis_client()
     ttl = ttl or getattr(settings, "PIPELINE_LOCK_TTL", DEFAULT_LOCK_TTL_SECONDS)
-    lock = client.lock(f"lock:pipeline:project:{project_id}", timeout=ttl)
+    lock = client.lock(_lock_name(project_id), timeout=ttl)
 
     try:
         acquired = lock.acquire(blocking=False)

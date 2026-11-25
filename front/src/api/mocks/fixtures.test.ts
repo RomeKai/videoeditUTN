@@ -81,7 +81,7 @@ describe('fixtures: cada escenario cumple los esquemas del contrato', () => {
     }
     check(
       ClipPreview,
-      { preview_id: db.plans[0]?.id, clip_id: db.plans[0]?.id, status: 'ready', url: 'https://media.onecreator.invalid/p.mp4', expires_at: new Date(NOW).toISOString(), error_code: null, cost_tokens: 0, simplified: { height: 360, face_tracking: false, silence_removal: false } },
+      { preview_id: db.plans[0]?.id, clip_id: db.plans[0]?.id, status: 'ready', url: 'mock://previews/p.mp4', expires_at: new Date(NOW).toISOString(), error_code: null, cost_tokens: 0, simplified: { height: 360, face_tracking: false, silence_removal: false } },
       'preview',
     );
   });
@@ -117,6 +117,13 @@ describe('fixtures: cubren los estados que describe el mapa', () => {
 
   it('incluye video completo, origen por link, prompt aplicado y fallido, revisión sin sugerencias y devolución', () => {
     expect(all.projects.some((project) => project.project_type === 'single_edit' && project.status === 'completed')).toBe(true);
+    // The whole video is one clip that spans the source (8:12 in the seeded one), not a 21 s cut.
+    const whole = all.projects.filter((project) => project.project_type === 'single_edit' && project.clips.length > 0);
+    for (const project of whole) {
+      expect(project.clips).toHaveLength(1);
+      expect([project.clips[0]?.start_time, project.clips[0]?.end_time]).toEqual([0, project.metadata.source_media?.duration_s]);
+    }
+    expect(whole.map((project) => project.clips[0]?.end_time)).toContain(492);
     expect(all.projects.some((project) => project.video_url !== null)).toBe(true);
     expect(all.projects.some((project) => project.metadata.pte?.status === 'applied')).toBe(true);
     expect(all.projects.some((project) => project.metadata.pte?.status === 'failed')).toBe(true);
