@@ -1,6 +1,6 @@
 import { configure, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse } from 'msw';
+import { delay, http, HttpResponse } from 'msw';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiCall } from '@/api/client';
 import * as projects from '@/api/contracts/projects';
@@ -640,6 +640,40 @@ describe('D4 · Editor de clip', () => {
     renderScreen(<ClipEditorScreen projectId={READY} clipId={CLIP} />);
     await screen.findByRole('region', { name: 'Recorte del clip' });
     expect(bar()).toHaveTextContent('Sin cambios');
+  });
+
+  it('con la sesión y el clip llegando tarde no hay nada que editar antes de tiempo, y lo editado no se pierde', async () => {
+    // A slow runner: the session answers late and the clip later still (the handlers fall through to the mocks).
+    server.use(
+      http.get('*/api/v1/me/', async () => {
+        await delay(700);
+      }),
+      http.get('*/api/v1/clips/:id/', async () => {
+        await delay(1200);
+      }),
+    );
+    const user = userEvent.setup();
+    const first = renderScreen(<ClipEditorScreen projectId={READY} clipId={CLIP} />);
+    // Until the session and the data are there the editor shows its skeleton: there is no control
+    // whose edit could be dropped or stored under a key without the person.
+    expect(screen.queryByRole('button', { name: 'Mover el inicio 0,5 segundos antes' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: /Inicio/ })).not.toBeInTheDocument();
+    const nudge = await screen.findByRole('button', { name: 'Mover el inicio 0,5 segundos antes' });
+    const start = screen.getByRole('textbox', { name: /Inicio/ }) as HTMLInputElement;
+    const before = start.value;
+    // The very first interaction once it is ready counts, and the field shows it at once.
+    await user.click(nudge);
+    expect(start.value).not.toBe(before);
+    const edited = start.value;
+    expect(Object.keys(window.sessionStorage).filter((key) => key.startsWith('oc.editor.'))).toHaveLength(1);
+    // A refetch of the clip that lands after the edit does not undo it.
+    await first.queryClient.invalidateQueries({ queryKey: keys.clips.detail(CLIP) });
+    expect(start.value).toBe(edited);
+    first.unmount();
+    // Reload on the same slow runner: the unsaved trim is back when the editor is ready.
+    renderScreen(<ClipEditorScreen projectId={READY} clipId={CLIP} />);
+    expect(((await screen.findByRole('textbox', { name: /Inicio/ })) as HTMLInputElement).value).toBe(edited);
+    expect(screen.getByText('Cambios sin guardar')).toBeInTheDocument();
   });
 
   it('pide la vista previa gratis y espera a que esté', async () => {

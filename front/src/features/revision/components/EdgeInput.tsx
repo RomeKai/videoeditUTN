@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { NO_ACCESS_REASON } from '@/lib/permissions';
 import { Input } from '@/ui';
 import { formatEdge, parseEdge } from '../lib/time';
@@ -20,23 +20,19 @@ export interface EdgeInputProps {
 
 /** Time field of a clip border ("04:12,0"). What is not a time goes back to the current value. */
 export function EdgeInput({ value, readOnly, readOnlyReason = NO_ACCESS_REASON, id, className, onCommit }: EdgeInputProps) {
-  const [text, setText] = useState(formatEdge(value));
-  const [invalid, setInvalid] = useState(false);
-  useEffect(() => {
-    setText(formatEdge(value));
-    setInvalid(false);
-  }, [value]);
+  // What is being typed, or null when the field just shows the value. The shown text is derived from
+  // the value in the same render: copying it into state from an effect left the field one render
+  // behind, so right after a ±0,5 s click it still read the old time.
+  const [typed, setTyped] = useState<string | null>(null);
+  const text = typed ?? formatEdge(value);
+  const invalid = typed !== null && parseEdge(typed) === null;
   const commit = () => {
-    const parsed = parseEdge(text);
-    if (parsed === null) {
-      setText(formatEdge(value));
-      setInvalid(false);
-      return;
-    }
-    if (Math.abs(parsed - value) > 0.04) onCommit(parsed);
-    // When the snapped time equals the current one the value does not change: show it again.
-    setText(formatEdge(value));
-    setInvalid(false);
+    if (typed === null) return;
+    const parsed = parseEdge(typed);
+    // Back to showing the value: the new one when the screen accepts the time (snapped to a word),
+    // the current one when what was typed is not a time or lands on the same word.
+    setTyped(null);
+    if (parsed !== null && Math.abs(parsed - value) > 0.04) onCommit(parsed);
   };
   return (
     <Input
@@ -49,18 +45,14 @@ export function EdgeInput({ value, readOnly, readOnlyReason = NO_ACCESS_REASON, 
       readOnly={readOnly}
       title={readOnly ? readOnlyReason : undefined}
       invalid={invalid}
-      onChange={(event) => {
-        setText(event.target.value);
-        setInvalid(parseEdge(event.target.value) === null);
-      }}
+      onChange={(event) => setTyped(event.target.value)}
       onBlur={commit}
       onKeyDown={(event) => {
         if (event.key === 'Enter') {
           event.preventDefault();
           commit();
         } else if (event.key === 'Escape') {
-          setText(formatEdge(value));
-          setInvalid(false);
+          setTyped(null);
         }
       }}
     />
