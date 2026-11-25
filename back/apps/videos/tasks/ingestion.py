@@ -850,10 +850,12 @@ def _whole_video_render_allowed(project_id, clip_id=None):
     left in the queue after the project failed (and was refunded) must not
     deliver for free.
 
-    With ``clip_id``, that reservation must also pay for that clip (its clip
-    ids): a re-dispatch reserves only the clips still DRAFT, so a stale message
-    for one that had failed would render it for free, and an approval pays
-    only the clips it approved.
+    With ``clip_id``, the clip is rendered only if a reservation that pays for
+    it (its clip ids) is still reserved: a re-dispatch reserves only the clips
+    still DRAFT, so a stale message for one that had failed would render it
+    for free, and an approval pays only the clips it approved. A reservation
+    that does not pay for the clip has no say: a settled auto-render left in
+    the metadata of an approved project does not block its approved clips.
     """
     project = VideoProject.objects.filter(pk=project_id).first()
     if project is None:
@@ -861,18 +863,20 @@ def _whole_video_render_allowed(project_id, clip_id=None):
     if _is_whole_video(project):
         return project.pipeline_stage == PipelineStage.RENDER_DISPATCHED and _whole_video_is_paid(project_id)
     metadata = project.metadata or {}
-    for paid in _paid_clip_renders(metadata):
-        paid_ids = metadata.get(paid.clip_ids_key)
-        if clip_id is not None and paid_ids is not None and str(clip_id) not in {str(paid_id) for paid_id in paid_ids}:
-            return False
-        if not (
-            project.pipeline_stage == PipelineStage.RENDER_DISPATCHED
-            and Transaction.objects.filter(
-                pk=metadata[paid.reservation_key], status=Transaction.Status.RESERVED,
-            ).exists()
-        ):
-            return False
-    return True
+    paid_renders = _paid_clip_renders(metadata)
+    if not paid_renders:
+        return True
+    paying = [paid for paid in paid_renders if clip_id is None or _pays_for(metadata, paid, clip_id)]
+    return project.pipeline_stage == PipelineStage.RENDER_DISPATCHED and any(
+        Transaction.objects.filter(pk=metadata[paid.reservation_key], status=Transaction.Status.RESERVED).exists()
+        for paid in paying
+    )
+
+
+def _pays_for(metadata, paid, clip_id):
+    """The reservation ``paid`` pays for the clip (an auto-render without clip ids pays for all)."""
+    paid_ids = metadata.get(paid.clip_ids_key)
+    return paid_ids is None or str(clip_id) in {str(paid_id) for paid_id in paid_ids}
 
 
 @dataclass(frozen=True)
@@ -951,6 +955,11 @@ def _reserve_auto_render(project_id, resuming=False):
             logger.info("pipeline.auto_render_not_ingesting project_id=%s", project_id)
             return False
         metadata = project.metadata or {}
+        if _renders_per_clip(metadata):
+            # The user approved the review: the approval pays for its clips.
+            # Reserving the auto-render again would charge the same clips twice.
+            logger.info("pipeline.auto_render_not_needed project_id=%s reason=approved", project_id)
+            return True
         linked = metadata.get(AUTO_RENDER_RESERVATION_KEY)
         if linked and Transaction.objects.filter(pk=linked, status=Transaction.Status.RESERVED).exists():
             return True
@@ -1276,6 +1285,30 @@ def _queue_clip_renders(project_id, clip_ids):
     return failure
 
 
+# A render of an approved clip that could not be queued is queued again by a
+# resume of the pipeline this long after (the broker may be back by then).
+RENDER_REDISPATCH_SECONDS = 60
+
+
+def _dispatch_approved_clips(project_id, clip_ids):
+    """
+    After an approval commits: one render_clip_task per approved clip. If one
+    cannot be queued, a resume of the pipeline is queued to retry it
+    (process_initial_ingestion at render_dispatched re-queues the clips still
+    DRAFT). If that cannot be queued either, recover_stuck_renders finds the
+    clips once the project has been idle long enough. Never raises: the
+    approval is already saved.
+    """
+    try:
+        failure = _queue_clip_renders(project_id, clip_ids)
+        if failure is None:
+            return
+        process_initial_ingestion.apply_async(args=[str(project_id)], countdown=RENDER_REDISPATCH_SECONDS)
+        logger.warning("render.redispatch_queued project_id=%s", project_id)
+    except Exception as exc:
+        logger.error("render.redispatch_not_queued project_id=%s error=%s", project_id, type(exc).__name__)
+
+
 def _resume_render_dispatch(project_id):
     """
     Project is at RENDER_DISPATCHED: (re)queue every clip still DRAFT. Duplicates
@@ -1339,9 +1372,10 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
         else:
             # A crash between the dispatch and the charge must not leave it reserved.
             _commit_ingestion_reservation(project_id)
-            if (project.metadata or {}).get(AUTO_RENDER_RESERVATION_KEY) and not _reserve_auto_render(
-                project_id, resuming=True,
-            ):
+            metadata = project.metadata or {}
+            # An approved review pays for its clips (render_clip_ids): never the auto-render too.
+            auto_render = metadata.get(AUTO_RENDER_RESERVATION_KEY) and not _renders_per_clip(metadata)
+            if auto_render and not _reserve_auto_render(project_id, resuming=True):
                 # Re-dispatched after its auto-render reservation was settled,
                 # and the clips still to render cannot be paid: the project goes
                 # back to failed (with its clips untouched), so it can be

@@ -70,6 +70,7 @@ from apps.videos.tasks.shared import (
     PIPELINE_LOCK_RETRY_SECONDS,
     _is_retryable_pipeline_error,
     _is_transient_storage_connection_error,
+    _merge_metadata,
     _publish_requeue,
     _retry_countdown,
 )
@@ -99,14 +100,19 @@ def finalize_project_render(project_id):
 
 
 def _close_render_fan_out(project_id):
+    from apps.videos.tasks.ingestion import APPROVED_RENDER, _renders_per_clip
+
     with transaction.atomic():
         project = VideoProject.objects.select_for_update().get(pk=project_id)
         if project.pipeline_stage != PipelineStage.RENDER_DISPATCHED:
             return None
 
-        statuses = set(
-            VideoClip.objects.filter(project_id=project_id).values_list('status', flat=True)
-        )
+        clips = VideoClip.objects.filter(project_id=project_id)
+        if _renders_per_clip(project.metadata):
+            # An approved review is what the user asked for: a clip failed by
+            # an earlier auto-render is not part of it.
+            clips = clips.filter(pk__in=project.metadata[APPROVED_RENDER.clip_ids_key])
+        statuses = set(clips.values_list('status', flat=True))
         if statuses & {VideoClip.Status.DRAFT, VideoClip.Status.RENDERING}:
             return None
 
@@ -337,6 +343,19 @@ def _claim_clip_for_render(clip_id, takeover=None):
     return ClipClaim(token=token, starts=before + 1)
 
 
+def _record_clip_start(project_id):
+    """
+    When a clip render of the project last started (``metadata
+    ['render_clip_started_at']``): recover_stuck_renders leaves alone a
+    project whose renders keep starting. Best effort: a database error is only
+    logged, the render goes on.
+    """
+    try:
+        _merge_metadata(project_id, {'render_clip_started_at': timezone.now().isoformat()})
+    except DatabaseError as exc:
+        logger.error("render.start_not_recorded project_id=%s error=%s", project_id, type(exc).__name__)
+
+
 def _release_clip_claim(clip_id, token):
     """
     RENDERING -> DRAFT, so the retry of this task can claim the clip again,
@@ -501,6 +520,7 @@ def render_clip_task(self, clip_id):
                 "The clip render lost its worker too many times.",
                 provider="render", metadata={'code': 'render_worker_lost'},
             )
+        _record_clip_start(clip.project_id)
 
         previous_key = clip.s3_object_key
         saved = RenderEngine.render_clip(clip_id, claim_token=claim.token)

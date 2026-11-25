@@ -1,9 +1,12 @@
 """
-Finds paper-edit renders whose render reservation stayed RESERVED and, with
-``--apply``, recovers them: re-queued, charged (delivered but not charged) or,
-after losing their worker too many times, failed with ``render_stuck`` and
-the reservation returned. A render that never starts is re-queued with a
-backoff and never failed; past the total of re-queues it is only reported.
+Finds renders whose reservation stayed RESERVED and, with ``--apply``,
+recovers them. A paper edit of before (``kind=paper_edit``) is re-queued,
+charged (delivered but not charged) or, after losing its worker too many
+times, failed with ``render_stuck`` and the reservation returned. A render
+clip by clip (``kind=clips``: an approved review or an auto-render) gets its
+stuck clips re-queued, or its fan-out closed when every paid clip is final.
+A render that never starts is re-queued with a backoff and never failed;
+past the total of re-queues it is only reported.
 
 The rules live in tasks/render_recovery.py, shared with the Celery task that
 CELERY_BEAT_SCHEDULE runs every 15 minutes. Without a beat process, run this
@@ -16,9 +19,10 @@ Safety
     re-queued within RENDER_STUCK_AFTER_SECONDS, is never touched.
 
 Output
-    One line per candidate (RENDERING or COMPLETED with its render
-    reservation RESERVED): ids, counters, idle minutes, the decision and the
-    result. No user text. Ends with a
+    One line per candidate (a paper edit RENDERING or COMPLETED with its
+    render reservation RESERVED, or a render clip by clip at render_dispatched
+    with its reservation RESERVED): ids, the kind, counters, idle minutes, the
+    decision and the result. No user text. Ends with a
     ``summary`` line, and with an error (exit code 1) if a project could not
     be processed, so that cron notices.
 """
@@ -34,8 +38,8 @@ def _value(row, key):
 
 class Command(BaseCommand):
     help = (
-        "Reports paper-edit renders whose tokens stayed reserved and, with --apply, "
-        "re-queues, charges or fails (refunding) each one."
+        "Reports renders whose tokens stayed reserved and, with --apply, "
+        "re-queues, charges, closes or fails (refunding) each one."
     )
 
     def add_arguments(self, parser):
@@ -52,7 +56,7 @@ class Command(BaseCommand):
             totals[row["action"]] = totals.get(row["action"], 0) + 1
             idle_min = row["idle_s"] / 60 if row.get("idle_s") is not None else None
             self.stdout.write(
-                f"project={row['project']} unfinished_starts={_value(row, 'starts')} "
+                f"project={row['project']} kind={row['kind']} unfinished_starts={_value(row, 'starts')} "
                 f"requeues={_value(row, 'requeues')} "
                 f"idle_min={'-' if idle_min is None else f'{idle_min:.0f}'} "
                 f"action={row['action']} reason={row['reason']} result={row['result']}"
@@ -62,7 +66,7 @@ class Command(BaseCommand):
         self.stdout.write(
             f"summary mode={'apply' if apply else 'dry_run'} candidates={len(rows)} "
             f"requeue={totals.get('requeue', 0)} charge={totals.get('charge', 0)} "
-            f"fail={totals.get('fail', 0)} report={totals.get('report', 0)} "
+            f"fail={totals.get('fail', 0)} close={totals.get('close', 0)} report={totals.get('report', 0)} "
             f"skip={totals.get('skip', 0)} errors={errors}"
         )
         if errors:

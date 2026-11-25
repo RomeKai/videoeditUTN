@@ -179,9 +179,17 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
 
         from .services.ai.pipeline_state import PipelineStateError
 
+        outcome = {}
         try:
-            _approve_clips(project.pk, approved_segments, total_duration, tx.id)
+            _approve_clips(project.pk, approved_segments, total_duration, tx.id, outcome)
         except Exception as exc:
+            if outcome.get('committed'):
+                # Raised after the approval was saved (its dispatch): it stays
+                # approved and paid, and its clips are recovered if not queued.
+                logger.error(
+                    "render.approval_after_commit_failed project_id=%s error=%s", project.pk, type(exc).__name__,
+                )
+                return self._approved_response(project, final_cost, tx)
             # Nothing was written: the reservation goes back and the project
             # waits for the review again.
             logger.error("render.approval_failed project_id=%s error=%s", project.pk, type(exc).__name__)
@@ -194,10 +202,15 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
                 )
             release_claim()
             if isinstance(exc, PipelineStateError):
-                # It left the review meanwhile (another worker moved its stage).
+                # It left the review meanwhile (another worker moved its stage),
+                # or an automatic render of it is still reserved.
                 return Response({"error": "El proyecto ya se está renderizando."}, status=409)
             raise
 
+        return self._approved_response(project, final_cost, tx)
+
+    @staticmethod
+    def _approved_response(project, final_cost, tx):
         return Response({
             "message": "Edición aprobada. Iniciando renderizado de alta calidad...",
             "project_id": project.id,
@@ -349,7 +362,24 @@ def _segment_title(segment):
     return title.strip()[:VideoClip._meta.get_field('title').max_length]
 
 
-def _approve_clips(project_id, segments, total_duration, reservation_id):
+def _open_auto_render(metadata):
+    """
+    Whether the project's auto-render reservation is still RESERVED. One that
+    was settled (refunded before the project went to the review) is left in
+    the metadata, and the approval drops it.
+    """
+    from .tasks.ingestion import AUTO_RENDER
+
+    reservation_id = (metadata or {}).get(AUTO_RENDER.reservation_key)
+    if not reservation_id:
+        return False
+    try:
+        return Transaction.objects.filter(pk=reservation_id, status=Transaction.Status.RESERVED).exists()
+    except ValidationError:
+        return False  # not a transaction id
+
+
+def _approve_clips(project_id, segments, total_duration, reservation_id, outcome=None):
     """
     The approval, under the project row lock: one DRAFT clip per approved
     segment, mapped like the review screen does (the approve-paper-edit mock):
@@ -364,21 +394,29 @@ def _approve_clips(project_id, segments, total_duration, reservation_id):
     Clips in any other status are never touched. Then the project moves to
     render_dispatched (status rendering) with the reservation, the clips it
     pays for (``render_clip_ids``) and their seconds (``render_seconds``), and
-    one render_clip_task per clip is queued once this commits. Raises
+    one render_clip_task per clip is queued once this commits. The keys of an
+    auto-render whose reservation was settled are dropped. Raises
     PipelineStateError, with nothing written, when the project is no longer
-    where an approval can start.
+    where an approval can start, or when its auto-render is still reserved.
+    ``outcome['committed']`` tells the caller the approval was saved: an
+    error after that must not undo it.
     """
     from .models import ClipPreview, VideoClip
     from .services.ai.pipeline_state import (
         STAGE_ORDER, PipelineConflictError, PipelineStage, advance_to,
     )
     from .services.clip_preview import delete_preview_files
-    from .tasks.ingestion import APPROVED_RENDER, _mark_render_dispatched, _queue_clip_renders
+    from .tasks.ingestion import APPROVED_RENDER, AUTO_RENDER, _dispatch_approved_clips, _mark_render_dispatched
 
+    outcome = outcome if outcome is not None else {}
     with transaction.atomic():
         project = VideoProject.objects.select_for_update().get(pk=project_id)
         if project.status != VideoProject.Status.RENDERING:
             raise PipelineConflictError(f"Project {project_id} is no longer claimed by this approval")
+        if _open_auto_render(project.metadata):
+            # Its clips are paid and may be rendering already: approving would
+            # pay for them twice.
+            raise PipelineConflictError(f"Project {project_id} has an auto-render reserved")
         stage = project.pipeline_stage
         if stage in STAGE_ORDER and STAGE_ORDER.index(stage) < STAGE_ORDER.index(PipelineStage.CLIPS_SELECTED):
             # A row from before the stage machine reached the review all the same.
@@ -429,11 +467,16 @@ def _approve_clips(project_id, segments, total_duration, reservation_id):
             APPROVED_RENDER.clip_ids_key: approved,
             APPROVED_RENDER.seconds_key: round(total_duration, 3),
         }
-        # The notice of an auto-render that could not be paid is answered.
-        metadata.pop('auto_render_skipped', None)
+        # The notice of an auto-render that could not be paid is answered, and
+        # the keys of a settled auto-render go: the approval pays now.
+        settled_auto_render = (AUTO_RENDER.reservation_key, AUTO_RENDER.clip_ids_key, AUTO_RENDER.seconds_key)
+        for key in ('auto_render_skipped', *settled_auto_render):
+            metadata.pop(key, None)
         VideoProject.objects.filter(pk=project_id).update(approved_segments=segments, metadata=metadata)
 
-        transaction.on_commit(lambda: _queue_clip_renders(project_id, approved))
+        # First callback after the commit: from here on, the approval stands.
+        transaction.on_commit(lambda: outcome.update(committed=True))
+        transaction.on_commit(lambda: _dispatch_approved_clips(project_id, approved))
         if preview_files:
             transaction.on_commit(lambda: delete_preview_files(preview_files))
     logger.info("render.approved project_id=%s clips=%d deleted=%d", project_id, len(approved), len(drafts))

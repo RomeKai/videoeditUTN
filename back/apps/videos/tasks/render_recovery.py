@@ -1,11 +1,14 @@
 """
-Recovery of paper-edit renders whose render reservation stayed RESERVED.
+Recovery of renders whose reservation stayed RESERVED with nothing to bring
+them back. Two kinds:
 
-Only approvals from before the review rendered clip by clip: since then an
-approval renders each segment as its own clip (render_clip_task) and never
-queues render_video_segments. This module, and render_video_segments, can go
-once no project approved the old way still has its render reservation
-RESERVED.
+- Paper edits approved before the review rendered clip by clip (one export
+  of every segment, render_video_segments). Most of this docstring is about
+  them. That part, and render_video_segments, can go once no project
+  approved the old way still has its render reservation RESERVED.
+- Clip by clip renders: an approved review (``render_clip_ids``) or an
+  auto-render, at render_dispatched with that reservation RESERVED (see
+  "Clip by clip" below).
 
 Why they exist
     render_video_segments acks late, so a worker that dies mid-render gets
@@ -66,6 +69,22 @@ Safety
     without touching its lock) and again under the locks before acting.
     Without ``apply`` nothing is written and no lock is taken.
 
+Clip by clip
+    A clip whose message was lost (the approval's ``delay`` failed and so did
+    the resume it queued, a broker that lost its queue) stays DRAFT, and one
+    whose worker died after a lost redelivery stays RENDERING under a dead
+    owner: either way the project never closes and its reservation is never
+    settled. Once nothing happened for RENDER_STUCK_AFTER_SECONDS (no clip
+    render started, ``metadata['render_clip_started_at']``, since the
+    reservation, nor since a re-queue of this routine), the clips that
+    reservation pays for are re-queued: DRAFT ones as they are, RENDERING ones
+    with a takeover right pinned to their current owner (the
+    ``render_takeover`` header), so a dead owner's clip is taken over and one
+    that keeps killing its worker fails at RENDER_CLIP_MAX_STARTS. The same
+    backoff and total cap as the paper edits apply. With every paid clip final
+    and the fan-out still open (a close that failed), it is closed, which
+    settles the reservation.
+
 Runs every 15 minutes from CELERY_BEAT_SCHEDULE (task recover_stuck_renders)
 and from ``manage.py recover_stuck_renders``. Logs and output carry ids,
 counts and states only.
@@ -77,21 +96,29 @@ from datetime import timedelta
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from apps.payments.models import Transaction
-from apps.videos.models import VideoProject
+from apps.videos.models import VideoClip, VideoProject
+from apps.videos.services.ai.pipeline_state import PipelineStage
 from apps.videos.services.ai.project_lock import (
     ProjectLockedError,
     project_lock,
     project_lock_held,
 )
-from apps.videos.tasks.ingestion import APPROVED_RENDER, _is_whole_video
+from apps.videos.tasks.ingestion import (
+    APPROVED_RENDER, AUTO_RENDER, _is_whole_video, _paid_clip_renders, _pays_for, _queue_clip_renders,
+)
 from apps.videos.tasks.render import (
     RENDER_SEGMENTS_MAX_REDELIVERIES,
+    RENDER_TAKEOVER_HEADER,
+    TakeoverRight,
     _fail_render,
     _settle_render_reservation,
+    finalize_project_render,
+    render_clip_task,
     render_video_segments,
 )
 from backend.celery import app as celery_app
@@ -99,6 +126,10 @@ from backend.celery import app as celery_app
 logger = logging.getLogger(__name__)
 
 CHARGE, REQUEUE, FAIL, REPORT, SKIP, ERROR = "charge", "requeue", "fail", "report", "skip", "error"
+CLOSE = "close"
+# What a candidate is: a paper edit of before (render_video_segments) or a
+# render clip by clip (an approved review or an auto-render).
+PAPER_EDIT, CLIPS = "paper_edit", "clips"
 STUCK_CODE = "render_stuck"
 # The idle window of a render that never started doubles with each re-queue
 # in a row, up to this (24 h), or RENDER_STUCK_AFTER_SECONDS if that is longer.
@@ -110,9 +141,10 @@ RENDER_RECOVERY_MAX_BACKOFF_SECONDS = 24 * 3600
 # about eight days of tries with the default threshold). Past it: report only.
 RENDER_RECOVERY_MAX_REQUEUES = 2 * RENDER_SEGMENTS_MAX_REDELIVERIES + 6
 # Actions that write: only these take the locks.
-_ACTS = (CHARGE, REQUEUE, FAIL)
+_ACTS = (CHARGE, REQUEUE, FAIL, CLOSE)
 _RESULTS = {
-    CHARGE: "charged", REQUEUE: "requeued", FAIL: "failed", REPORT: "reported", SKIP: "skipped",
+    CHARGE: "charged", REQUEUE: "requeued", FAIL: "failed", CLOSE: "closed", REPORT: "reported",
+    SKIP: "skipped",
 }
 
 
@@ -298,21 +330,201 @@ def _candidates():
     )
 
 
+# --- Clip by clip (approved reviews and auto-renders) ------------------------
+
+def _paid_reserved(project):
+    """
+    The clip-by-clip renders of the project (approval, auto-render) whose
+    reservation is still RESERVED, as ``[(paid, created_at)]``.
+    """
+    metadata = project.metadata or {}
+    reserved = []
+    for paid in _paid_clip_renders(metadata):
+        try:
+            created_at = Transaction.objects.filter(
+                pk=metadata[paid.reservation_key], status=Transaction.Status.RESERVED,
+            ).values_list('created_at', flat=True).first()
+        except ValidationError:
+            created_at = None  # not a transaction id
+        if created_at is not None:
+            reserved.append((paid, created_at))
+    return reserved
+
+
+def _open_clips(project, paid_renders):
+    """(DRAFT ids, [(RENDERING id, owner token)]) of the clips those reservations pay for."""
+    metadata = project.metadata or {}
+    rows = VideoClip.objects.filter(
+        project_id=project.pk, status__in=[VideoClip.Status.DRAFT, VideoClip.Status.RENDERING],
+    ).values_list('pk', 'status', 'render_claim_token', 'render_unfinished_starts')
+    paid_rows = [
+        row for row in rows if any(_pays_for(metadata, paid, row[0]) for paid, _created in paid_renders)
+    ]
+    drafts = [pk for pk, status, _token, _starts in paid_rows if status == VideoClip.Status.DRAFT]
+    rendering = [(pk, token) for pk, status, token, _starts in paid_rows if status == VideoClip.Status.RENDERING]
+    starts = max((count for _pk, _status, _token, count in paid_rows), default=0)
+    return drafts, rendering, starts
+
+
+def _clip_snapshot(project, paid_renders, now):
+    """What the decision and the output read, for a clip-by-clip render."""
+    metadata = project.metadata or {}
+    started_at = _when(metadata.get('render_clip_started_at'))
+    requeued_at = _when(metadata.get('render_recovery_requeued_at'))
+    requeues = _count(metadata, 'render_recovery_requeues')
+    if requeued_at and started_at and started_at >= requeued_at:
+        requeues = 0  # a render started after the last re-queue
+    drafts, rendering, starts = _open_clips(project, paid_renders)
+    times = [moment for moment in (
+        *(created for _paid, created in paid_renders), started_at, requeued_at,
+    ) if moment]
+    return {
+        'starts': starts,
+        'requeues': requeues,
+        'requeues_total': _count(metadata, 'render_recovery_requeues_total'),
+        'idle_s': (now - max(times)).total_seconds() if times else None,
+        'drafts': drafts,
+        'rendering': rendering,
+    }
+
+
+def decide_clips(project, paid_renders, snapshot, stuck_after):
+    """(action, reason) for a clip-by-clip render, from its row, its reserved renders and its snapshot."""
+    if project is None:
+        return SKIP, "gone"
+    if _is_whole_video(project):
+        return SKIP, "whole_video"
+    if project.pipeline_stage != PipelineStage.RENDER_DISPATCHED:
+        return SKIP, "not_rendering"
+    if not paid_renders:
+        return SKIP, "reservation_settled"
+    if snapshot['idle_s'] is not None and snapshot['idle_s'] < stuck_after.total_seconds():
+        return SKIP, "recent"
+    if not snapshot['drafts'] and not snapshot['rendering']:
+        # Every paid clip is final but the fan-out stayed open (its close failed).
+        return CLOSE, "fan_out_open"
+    if snapshot['requeues_total'] >= RENDER_RECOVERY_MAX_REQUEUES:
+        return REPORT, "requeue_total_cap"
+    if snapshot['requeues'] == 0:
+        return REQUEUE, "clips_left"
+    if snapshot['idle_s'] is not None and snapshot['idle_s'] < backoff_window(stuck_after, snapshot['requeues']):
+        return REPORT, "never_started"
+    return REQUEUE, "never_started"
+
+
+def _preview_clips(project_id, stuck_after):
+    """The decision for a clip-by-clip render, without taking any lock or writing anything."""
+    if project_lock_held(project_id):
+        return SKIP, "lock_held", None
+    project = VideoProject.objects.filter(pk=project_id).first()
+    if project is None:
+        return SKIP, "gone", None
+    paid_renders = _paid_reserved(project)
+    snapshot = _clip_snapshot(project, paid_renders, timezone.now())
+    action, reason = decide_clips(project, paid_renders, snapshot, stuck_after)
+    return action, reason, snapshot
+
+
+def _requeue_clips(project_id, drafts, rendering):
+    """
+    Queues the clips again: DRAFT ones as any dispatch does, RENDERING ones
+    with the right to take over from the owner they have now (its worker is
+    presumed dead). Tries every clip; raises the first error, so the caller
+    does not record a re-queue the broker refused.
+    """
+    failure = _queue_clip_renders(project_id, drafts)
+    for clip_id, token in rendering:
+        try:
+            render_clip_task.apply_async(
+                args=[str(clip_id)], headers={RENDER_TAKEOVER_HEADER: TakeoverRight(token).header_value()},
+            )
+        except Exception as exc:
+            logger.error(
+                "render.dispatch_failed project_id=%s clip_id=%s error=%s",
+                project_id, clip_id, type(exc).__name__,
+            )
+            failure = failure or exc
+    if failure is not None:
+        raise failure
+
+
+def _recover_clips(project_id, stuck_after):
+    """Decides again and acts under the project lock and the row lock, like ``_recover``."""
+    with project_lock(project_id, heartbeat=False):
+        with transaction.atomic():
+            project = VideoProject.objects.select_for_update().filter(pk=project_id).first()
+            if project is None:
+                return SKIP, "gone", None, "skipped"
+            paid_renders = _paid_reserved(project)
+            now = timezone.now()
+            snapshot = _clip_snapshot(project, paid_renders, now)
+            action, reason = decide_clips(project, paid_renders, snapshot, stuck_after)
+            if action == REQUEUE:
+                metadata = dict(project.metadata or {})
+                metadata['render_recovery_requeues'] = snapshot['requeues'] + 1
+                metadata['render_recovery_requeues_total'] = snapshot['requeues_total'] + 1
+                metadata['render_recovery_requeued_at'] = now.isoformat()
+                VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
+                # Inside the transaction: if the broker refuses a message, the
+                # record rolls back and the next run tries again. A duplicate
+                # message is harmless (the clip claim is a compare-and-set).
+                _requeue_clips(project_id, snapshot['drafts'], snapshot['rendering'])
+        if action == CLOSE:
+            # Its own row lock, and the settle of the reservation, outside ours.
+            finalize_project_render(project_id)
+    if action in _ACTS:
+        logger.warning(
+            "render.recovery_%s project_id=%s reason=%s drafts=%d rendering=%d requeues=%d "
+            "requeues_total=%d kind=clips",
+            _RESULTS[action], project_id, reason, len(snapshot['drafts']), len(snapshot['rendering']),
+            snapshot['requeues'], snapshot['requeues_total'],
+        )
+    return action, reason, snapshot, _RESULTS[action]
+
+
+def _clip_candidates():
+    """
+    Projects at render_dispatched whose approval (with ``render_clip_ids``) or
+    auto-render reservation is still RESERVED.
+    """
+    reserved = [
+        str(pk) for pk in Transaction.objects.filter(
+            status=Transaction.Status.RESERVED,
+        ).values_list('pk', flat=True)
+    ]
+    if not reserved:
+        return []
+    approved = Q(
+        metadata__has_key=APPROVED_RENDER.clip_ids_key,
+        **{f'metadata__{APPROVED_RENDER.reservation_key}__in': reserved},
+    )
+    auto_rendered = Q(**{f'metadata__{AUTO_RENDER.reservation_key}__in': reserved})
+    return list(
+        VideoProject.objects.filter(pipeline_stage=PipelineStage.RENDER_DISPATCHED)
+        .filter(approved | auto_rendered)
+        .order_by('created_at', 'id').values_list('pk', flat=True)
+    )
+
+
 def recover_stuck_renders_now(apply=False):
     """
-    Finds the stuck paper edits and, with ``apply``, recovers each one. One
-    failure never stops the run. Returns one dict per candidate: ``project``,
-    ``action``, ``reason``, ``result`` and, when read, ``starts``,
-    ``requeues`` and ``idle_s``.
+    Finds the stuck renders (paper edits of before, and clip-by-clip renders)
+    and, with ``apply``, recovers each one. One failure never stops the run.
+    Returns one dict per candidate: ``project``, ``kind``, ``action``,
+    ``reason``, ``result`` and, when read, ``starts``, ``requeues`` and
+    ``idle_s``.
     """
     stuck_after = timedelta(seconds=settings.RENDER_STUCK_AFTER_SECONDS)
+    handlers = {PAPER_EDIT: (_preview, _recover), CLIPS: (_preview_clips, _recover_clips)}
+    candidates = [(pk, PAPER_EDIT) for pk in _candidates()] + [(pk, CLIPS) for pk in _clip_candidates()]
     rows = []
-    for project_id in _candidates():
+    for project_id, kind in candidates:
+        preview, recover = handlers[kind]
         snapshot = None
         try:
-            action, reason, snapshot = _preview(project_id, stuck_after)
+            action, reason, snapshot = preview(project_id, stuck_after)
             if apply and action in _ACTS:
-                action, reason, snapshot, result = _recover(project_id, stuck_after)
+                action, reason, snapshot, result = recover(project_id, stuck_after)
             elif action in _ACTS:
                 result = "dry_run"
             else:
@@ -328,27 +540,31 @@ def recover_stuck_renders_now(apply=False):
         if action == REPORT:
             logger.warning(
                 "render.recovery_%s project_id=%s reason=%s unfinished_starts=%d requeues=%d "
-                "requeues_total=%d",
+                "requeues_total=%d kind=%s",
                 "not_started" if reason == "never_started" else "reported", project_id, reason,
-                snapshot['starts'], snapshot['requeues'], snapshot['requeues_total'],
+                snapshot['starts'], snapshot['requeues'], snapshot['requeues_total'], kind,
             )
-        rows.append({
-            'project': project_id, 'action': action, 'reason': reason, 'result': result,
+        row = {
+            'project': project_id, 'kind': kind, 'action': action, 'reason': reason, 'result': result,
             **(snapshot or {}),
-        })
+        }
+        for key in ('drafts', 'rendering'):
+            if key in row:
+                row[key] = len(row[key])
+        rows.append(row)
 
     totals = {name: sum(1 for row in rows if row['action'] == name) for name in _RESULTS}
     errors = sum(1 for row in rows if row['action'] == ERROR)
     logger.info(
-        "render.recovery_done mode=%s candidates=%d requeue=%d charge=%d fail=%d report=%d "
+        "render.recovery_done mode=%s candidates=%d requeue=%d charge=%d fail=%d close=%d report=%d "
         "skip=%d errors=%d",
         "apply" if apply else "dry_run", len(rows), totals[REQUEUE], totals[CHARGE],
-        totals[FAIL], totals[REPORT], totals[SKIP], errors,
+        totals[FAIL], totals[CLOSE], totals[REPORT], totals[SKIP], errors,
     )
     return rows
 
 
 @celery_app.task(name='apps.videos.tasks.recover_stuck_renders', ignore_result=True)
 def recover_stuck_renders():
-    """Recovers stuck paper-edit renders (CELERY_BEAT_SCHEDULE, every 15 min)."""
+    """Recovers stuck renders, paper edits and clip by clip (CELERY_BEAT_SCHEDULE, every 15 min)."""
     return len(recover_stuck_renders_now(apply=True))
