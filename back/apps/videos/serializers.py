@@ -1,5 +1,6 @@
 from django.db import transaction
 from rest_framework import serializers
+from rest_framework.fields import empty
 from rest_framework.exceptions import APIException
 from .models import VideoProject, VideoClip, ClipLayer, BrandKit
 from .services.ai.selection_criteria import (
@@ -41,6 +42,12 @@ class ProjectRenderingError(APIException):
     default_code = 'project_rendering'
 
 
+class _NotSentBooleanField(serializers.BooleanField):
+    """A boolean that a multipart form leaving it out did not send (DRF reads it as false)."""
+
+    default_empty_html = empty
+
+
 class VideoProjectSerializer(serializers.ModelSerializer):
     clips = VideoClipSerializer(many=True, read_only=True)
     brand_kit_name = serializers.CharField(source='brand_kit.name', read_only=True)
@@ -59,10 +66,11 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     use_seo = serializers.BooleanField(required=False, write_only=True)
     # A multipart form that leaves a boolean out reads as false in DRF (an
     # unchecked checkbox), so the model default never applied and a project
-    # created without the field came out without subtitles. Declared with its
-    # default, a missing value is true; from-prompt can then leave it out so
-    # the prompt decides (it only counts as explicit when sent).
-    add_subtitles = serializers.BooleanField(required=False, default=True)
+    # created without the field came out without subtitles. Missing now means
+    # not sent: a new project takes the model default (true), an update keeps
+    # what it had, and from-prompt can leave it out so the prompt decides (it
+    # only counts as explicit when sent).
+    add_subtitles = _NotSentBooleanField(required=False)
     # Output height tier. Priced at creation (PricingEngine resolution multiplier)
     # and checked against the plan's max_resolution; it cannot change afterwards.
     # Without it the project renders and is charged at 720p.

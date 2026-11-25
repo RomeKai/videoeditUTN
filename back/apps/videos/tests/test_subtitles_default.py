@@ -1,7 +1,8 @@
 """
 Un proyecto creado sin el campo `add_subtitles` sale con subtítulos. En un
 formulario multipart, DRF lee un booleano ausente como falso (un checkbox sin
-marcar), así que antes el default del modelo nunca se aplicaba.
+marcar), así que antes el default del modelo nunca se aplicaba. Una edición sin
+el campo deja lo que el proyecto tenía.
 """
 
 import tempfile
@@ -49,6 +50,17 @@ class SubtitlesDefaultTests(TestCase):
 
     def test_the_field_can_still_turn_them_off(self):
         self.assertFalse(self.upload(add_subtitles="false").add_subtitles)
+
+    def test_an_update_without_the_field_keeps_what_the_project_had(self):
+        for had in (True, False):
+            project = self.upload(add_subtitles=str(had).lower())
+            url = reverse("project-detail", args=[project.pk])
+            for method, fmt in (("put", "json"), ("put", "multipart"), ("patch", "multipart")):
+                with self.subTest(had=had, method=method, format=fmt):
+                    response = getattr(self.client, method)(url, {"title": "Otro título"}, format=fmt)
+                    self.assertEqual(response.status_code, 200, response.content[:300])
+                    project.refresh_from_db()
+                    self.assertEqual(project.add_subtitles, had)
 
     def test_leaving_it_out_does_not_count_as_explicit_for_prompt_to_edit(self):
         from apps.videos.services.ai.prompt_validator import explicit_config_fields
