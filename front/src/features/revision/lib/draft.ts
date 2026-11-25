@@ -29,6 +29,7 @@ export interface Draft {
 
 export type DraftAction =
   | { type: 'reset'; draft: Draft }
+  | { type: 'sync'; suggestions: ReadonlyArray<Clip> }
   | { type: 'select'; key: string | null }
   | { type: 'toggle'; key: string; included?: boolean }
   | { type: 'rename'; key: string; title: string }
@@ -93,6 +94,8 @@ export function draftReducer(draft: Draft, action: DraftAction): Draft {
   switch (action.type) {
     case 'reset':
       return action.draft;
+    case 'sync':
+      return mergeSuggestions(draft, action.suggestions);
     case 'select':
       return draft.selectedKey === action.key ? draft : { ...draft, selectedKey: action.key };
     case 'toggle':
@@ -169,47 +172,35 @@ export function buildApprovedSegments(clips: ReadonlyArray<DraftClip>, words: Re
     });
 }
 
-/* ── Kept across a reload and the round trip to "Comprar tokens" ───────── */
-
-const storageKey = (projectId: string) => `oc.revision.${projectId}`;
-
-export function saveDraft(projectId: string, draft: Draft): void {
-  try {
-    if (isDirty(draft)) window.sessionStorage.setItem(storageKey(projectId), JSON.stringify(draft));
-    else window.sessionStorage.removeItem(storageKey(projectId));
-  } catch {
-    // Storage blocked: the draft lives for this page only.
-  }
-}
-
-export function clearDraft(projectId: string): void {
-  try {
-    window.sessionStorage.removeItem(storageKey(projectId));
-  } catch {
-    // Nothing to clear.
-  }
-}
+/* ── Following the server ───────────────────────────────────────────── */
 
 /**
- * The stored draft, laid over the suggestions the API returns now. A suggestion
+ * Lays a draft over the suggestions the API returns now. For each suggestion a
+ * field keeps the person's value only when they changed it (it differs from
+ * the suggestion the draft started from) and that starting point is still what
+ * the server has. Everything else follows the server: a trim saved in the clip
+ * editor, or by a teammate, is never put back to its old value. A suggestion
  * that no longer exists is dropped and a new one is added as it comes.
  */
-export function restoreDraft(projectId: string, suggestions: ReadonlyArray<Clip>): Draft {
+export function mergeSuggestions(current: Draft, suggestions: ReadonlyArray<Clip>): Draft {
   const fresh = initialDraft(suggestions);
-  let stored: Draft | null = null;
-  try {
-    const raw = window.sessionStorage.getItem(storageKey(projectId));
-    stored = raw ? (JSON.parse(raw) as Draft) : null;
-  } catch {
-    stored = null;
-  }
-  if (!stored || !Array.isArray(stored.clips)) return fresh;
-  const byKey = new Map(stored.clips.map((clip) => [clip.key, clip]));
-  const merged = fresh.clips.map((clip) => {
-    const kept = byKey.get(clip.key);
-    return kept ? { ...clip, title: kept.title, start: kept.start, end: kept.end, included: kept.included } : clip;
+  const byKey = new Map(current.clips.map((clip) => [clip.key, clip]));
+  const merged = fresh.clips.map((clip): DraftClip => {
+    const old = byKey.get(clip.key);
+    const base = old?.original;
+    if (!old || !base) return clip;
+    const keep = <K extends 'title' | 'start' | 'end'>(field: K): DraftClip[K] =>
+      old[field] !== base[field] && base[field] === clip[field] ? old[field] : clip[field];
+    let start = keep('start');
+    let end = keep('end');
+    // An edit of one border against a new value of the other can cross: then the server wins both.
+    if (end - start < MIN_CLIP_SECONDS) {
+      start = clip.start;
+      end = clip.end;
+    }
+    return { ...clip, title: keep('title'), start, end, included: old.included !== base.included ? old.included : clip.included };
   });
-  const own = stored.clips.filter((clip) => clip.clipId === null && Number.isFinite(clip.start) && clip.end > clip.start);
+  const own = current.clips.filter((clip) => clip.clipId === null && Number.isFinite(clip.start) && clip.end > clip.start);
   let n = merged.length;
   const seen = new Set(merged.map((clip) => clip.key));
   const clips = [
@@ -221,7 +212,45 @@ export function restoreDraft(projectId: string, suggestions: ReadonlyArray<Clip>
       return { ...clip, key, n: (n += 1), original: null };
     }),
   ];
-  const stillThere = clips.some((clip) => clip.key === stored?.selectedKey);
-  const selectedKey = stillThere ? (stored.selectedKey as string) : fresh.selectedKey;
+  const selectedKey = clips.some((clip) => clip.key === current.selectedKey) ? current.selectedKey : fresh.selectedKey;
   return { clips, selectedKey };
+}
+
+/* ── Kept across a reload and the round trip to "Comprar tokens" ───────── */
+
+/** `scope` is "<user id>.<project id>": a draft never shows up for another person on the same tab. */
+const storageKey = (scope: string) => `oc.revision.${scope}`;
+
+export function draftScope(userId: string, projectId: string): string {
+  return `${userId}.${projectId}`;
+}
+
+export function saveDraft(scope: string, draft: Draft): void {
+  try {
+    if (isDirty(draft)) window.sessionStorage.setItem(storageKey(scope), JSON.stringify(draft));
+    else window.sessionStorage.removeItem(storageKey(scope));
+  } catch {
+    // Storage blocked: the draft lives for this page only.
+  }
+}
+
+export function clearDraft(scope: string): void {
+  try {
+    window.sessionStorage.removeItem(storageKey(scope));
+  } catch {
+    // Nothing to clear.
+  }
+}
+
+/** The stored draft merged over the suggestions the API returns now (see mergeSuggestions). */
+export function restoreDraft(scope: string, suggestions: ReadonlyArray<Clip>): Draft {
+  let stored: Draft | null = null;
+  try {
+    const raw = window.sessionStorage.getItem(storageKey(scope));
+    stored = raw ? (JSON.parse(raw) as Draft) : null;
+  } catch {
+    stored = null;
+  }
+  if (!stored || !Array.isArray(stored.clips)) return initialDraft(suggestions);
+  return mergeSuggestions(stored, suggestions);
 }

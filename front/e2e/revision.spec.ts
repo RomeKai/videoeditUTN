@@ -122,6 +122,33 @@ test.describe('Editor de clip (D4)', () => {
     expectClean(problems, EDITOR);
   });
 
+  test('un recorte guardado en el editor es el que muestra la revisión al volver', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    const problems = watch(page);
+    // The review has a session draft that only excludes one clip.
+    await page.goto(REVIEW);
+    await settle(page);
+    const before = await page.getByRole('textbox', { name: /Fin/ }).inputValue();
+    await page.getByRole('checkbox', { name: /Incluir «/ }).nth(1).uncheck();
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
+
+    // The best clip gets a longer trim in the editor (saving is free while the project is in review).
+    await page.goto(`/proyectos/${EXAMPLE_IDS.projectToReview}/clips/00000008-0000-4000-8000-00000000012d`);
+    await settle(page);
+    await page.getByRole('button', { name: 'Mover el fin 0,5 segundos después' }).click();
+    const saved = await page.getByRole('textbox', { name: /Fin/ }).inputValue();
+    expect(saved).not.toBe(before);
+    await page.getByRole('button', { name: 'Guardar cambios' }).click();
+    await expect(page.getByText('Cambios guardados')).toBeVisible();
+
+    await page.getByRole('link', { name: 'Ir a la revisión' }).click();
+    await expect(page).toHaveURL(new RegExp(`${REVIEW}$`));
+    await settle(page);
+    await expect(page.getByRole('textbox', { name: /Fin/ })).toHaveValue(saved);
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
+    expectClean(problems, REVIEW);
+  });
+
   test('un Lector lo ve en modo lectura', async ({ page }) => {
     await useScenario(page, 'rol-lector');
     const problems = watch(page);

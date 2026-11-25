@@ -18,7 +18,7 @@ import { NO_ACCESS_REASON } from '@/lib/permissions';
 import { estimateCost, planAllowsResolution } from '@/lib/pricing';
 import { CLIP_STATUS } from '@/lib/project-status';
 import { LoadError } from '@/shell/LoadError';
-import { usePermissions, usePlan } from '@/shell/session';
+import { usePermissions, usePlan, useSession } from '@/shell/session';
 import { NotFoundMessage } from '@/shell/SystemPage';
 import {
   ActionBar,
@@ -43,7 +43,7 @@ import { EdgeInput } from './components/EdgeInput';
 import { TrimTimeline, windowAround, type TimeWindow } from './components/TrimTimeline';
 import timeline from './components/timeline.module.css';
 import { describeStyle } from './lib/style';
-import { readEditorDraft, storeEditorDraft } from './lib/editorDraft';
+import { applyEditorDraft, editorScope, readEditorDraft, storeEditorDraft } from './lib/editorDraft';
 import { billedSeconds as billed, clamp, formatEdge, MIN_CLIP_SECONDS } from './lib/time';
 import { buildRows, snapEnd, snapStart, stepEdge, type Word } from './lib/transcript';
 import styles from './editor.module.css';
@@ -82,7 +82,9 @@ function EditorSkeleton() {
 export function ClipEditorScreen({ projectId, clipId }: { projectId: string; clipId: string }) {
   const clip = useClip(clipId);
   const project = useProject(projectId);
-  if (clip.isLoading || project.isLoading) {
+  const { me } = useSession();
+  // The draft is stored per person: wait for the session before reading it.
+  if (clip.isLoading || project.isLoading || (clip.data && project.data && !me)) {
     return (
       <Page width="wide" className={styles.page}>
         <ProjectHeader compact crumbs={[{ label: 'Proyectos', href: '/proyectos' }, { label: 'Editar clip' }]} title="Editar clip" />
@@ -90,7 +92,7 @@ export function ClipEditorScreen({ projectId, clipId }: { projectId: string; cli
       </Page>
     );
   }
-  if (!clip.data || !project.data) {
+  if (!clip.data || !project.data || !me) {
     const retry = () => {
       void clip.refetch();
       void project.refetch();
@@ -109,10 +111,10 @@ export function ClipEditorScreen({ projectId, clipId }: { projectId: string; cli
     );
   }
   // One editor per clip: its draft never leaks into another clip's screen.
-  return <Editor key={clip.data.id} clip={clip.data} project={project.data} loadError={clip.error ?? project.error} />;
+  return <Editor key={`${me.id}.${clip.data.id}`} userId={me.id} clip={clip.data} project={project.data} loadError={clip.error ?? project.error} />;
 }
 
-function Editor({ clip, project, loadError }: { clip: Clip; project: Project; loadError: unknown }) {
+function Editor({ userId, clip, project, loadError }: { userId: string; clip: Clip; project: Project; loadError: unknown }) {
   const toast = useToast();
   const isMobile = useIsMobile();
   const { can, gate } = usePermissions();
@@ -136,17 +138,17 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
 
   /* ── Draft ────────────────────────────────────────────────────────────── */
   // Unsaved work kept for the tab's session: it survives a reload, Back and the trip to buy tokens.
-  const [stored] = useState(() => readEditorDraft(clip.id));
-  const [title, setTitle] = useState(stored?.title ?? clip.title);
-  const [range, setRange] = useState<Range>(() =>
-    stored ? { start: stored.start, end: Math.min(stored.end, Math.max(total, clip.end_time)) } : { start: clip.start_time, end: clip.end_time },
-  );
+  const scope = editorScope(userId, clip.id);
+  // Only the fields the person really changed come back; the rest follows the server as it is now.
+  const [stored] = useState(() => applyEditorDraft({ title: clip.title, start: clip.start_time, end: clip.end_time }, readEditorDraft(scope)));
+  const [title, setTitle] = useState(stored.title);
+  const [range, setRange] = useState<Range>({ start: stored.start, end: Math.min(stored.end, Math.max(total, clip.end_time)) });
   // The trim of the render that exists. It only differs from the saved clip after "save without rendering".
   const [rendered] = useState<Range>({ start: clip.start_time, end: clip.end_time });
   const [renderedTitle, setRenderedTitle] = useState(clip.title);
   const [pendingRender, setPendingRender] = useState(false);
   const [detail, setDetail] = useState<TimeWindow>(() =>
-    windowAround(Math.min(stored?.start ?? clip.start_time, clip.start_time), Math.max(stored?.end ?? clip.end_time, clip.end_time), total),
+    windowAround(Math.min(stored.start, clip.start_time), Math.max(stored.end, clip.end_time), total),
   );
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
@@ -172,11 +174,12 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
   const dropped = useRef(false);
   useEffect(() => {
     if (dropped.current) return;
-    storeEditorDraft(clip.id, dirty ? { title, start: range.start, end: range.end } : null);
-  }, [clip.id, dirty, range.end, range.start, title]);
+    const base = { title: clip.title, start: clip.start_time, end: clip.end_time };
+    storeEditorDraft(scope, dirty ? { title, start: range.start, end: range.end, base } : null);
+  }, [scope, clip.title, clip.start_time, clip.end_time, dirty, range.end, range.start, title]);
   const dropDraft = () => {
     dropped.current = true;
-    storeEditorDraft(clip.id, null);
+    storeEditorDraft(scope, null);
   };
 
   // A 409 said the project is rendering before the cache knew. It stops holding once that render ends.

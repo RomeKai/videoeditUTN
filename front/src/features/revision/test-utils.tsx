@@ -23,9 +23,14 @@ export function editDb(change: (db: MockDb) => void): void {
   saveDb(db);
 }
 
+/** A cache that outlives a screen, like the app's: going from one screen to another keeps what was fetched. */
+export function appQueryClient(): QueryClient {
+  return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 15_000 }, mutations: { retry: false } } });
+}
+
 /** Renders a screen with what the root layout gives it: query cache, toasts, session and the billing dialogs. */
-export function renderScreen(ui: ReactElement) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } });
+export function renderScreen(ui: ReactElement, client?: QueryClient) {
+  const queryClient = client ?? new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } });
   const view = render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider>

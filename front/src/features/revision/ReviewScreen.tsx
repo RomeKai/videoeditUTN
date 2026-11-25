@@ -15,7 +15,7 @@ import { useIsMobile } from '@/lib/hooks';
 import { NO_ACCESS_REASON } from '@/lib/permissions';
 import { estimateCost, planAllowsResolution } from '@/lib/pricing';
 import { LoadError } from '@/shell/LoadError';
-import { usePermissions, usePlan } from '@/shell/session';
+import { usePermissions, usePlan, useSession } from '@/shell/session';
 import {
   ActionBar,
   Badge,
@@ -43,7 +43,7 @@ import { EdgeInput } from './components/EdgeInput';
 import { TranscriptPanel } from './components/TranscriptPanel';
 import { TrimTimeline, windowAround, type TimeWindow } from './components/TrimTimeline';
 import timeline from './components/timeline.module.css';
-import { buildApprovedSegments, clearDraft, draftReducer, includedTotals, isDirty, newLocalKey, restoreDraft, saveDraft, sortClips, type ClipSort, type Draft } from './lib/draft';
+import { buildApprovedSegments, clearDraft, draftReducer, draftScope, includedTotals, isDirty, newLocalKey, restoreDraft, saveDraft, sortClips, type ClipSort, type Draft } from './lib/draft';
 import { billedSeconds as billed, clamp, rulerTicks } from './lib/time';
 import { buildRows, captionAt, snapEnd, snapStart, stepEdge, titleFromText, wordIndexAt, type Word } from './lib/transcript';
 import styles from './review.module.css';
@@ -132,7 +132,9 @@ function durationOf(data: PaperEditData, project: Project | undefined, words: Re
 /** D2 · Revisión de clips. */
 export function ReviewScreen({ projectId }: { projectId: string }) {
   const paperEdit = usePaperEditData(projectId);
-  if (paperEdit.isLoading) {
+  const { me } = useSession();
+  // The draft is stored per person: with the data in hand, wait for the session before reading it.
+  if (paperEdit.isLoading || (paperEdit.data && !me)) {
     return (
       <Page width="wide" className={styles.page}>
         <ProjectHeader compact crumbs={[{ label: 'Proyectos', href: '/proyectos' }, { label: 'Revisión' }]} title="Revisión de clips" />
@@ -140,17 +142,37 @@ export function ReviewScreen({ projectId }: { projectId: string }) {
       </Page>
     );
   }
-  if (!paperEdit.data) {
+  if (!paperEdit.data || !me) {
     return (
       <Page width="wide" className={styles.page}>
         <LoadError error={paperEdit.error} onRetry={() => void paperEdit.refetch()} />
       </Page>
     );
   }
-  return <Review projectId={projectId} data={paperEdit.data} loadError={paperEdit.error} onRetry={() => void paperEdit.refetch()} />;
+  return (
+    <Review
+      key={`${me.id}.${projectId}`}
+      projectId={projectId}
+      userId={me.id}
+      data={paperEdit.data}
+      refreshing={paperEdit.isFetching}
+      loadError={paperEdit.error}
+      onRetry={() => void paperEdit.refetch()}
+    />
+  );
 }
 
-function Review({ projectId, data, loadError, onRetry }: { projectId: string; data: PaperEditData; loadError: unknown; onRetry: () => void }) {
+interface ReviewProps {
+  projectId: string;
+  userId: string;
+  data: PaperEditData;
+  /** The review is being fetched again: what is on screen may be about to change. */
+  refreshing: boolean;
+  loadError: unknown;
+  onRetry: () => void;
+}
+
+function Review({ projectId, userId, data, refreshing, loadError, onRetry }: ReviewProps) {
   const router = useRouter();
   const toast = useToast();
   const isMobile = useIsMobile();
@@ -169,11 +191,22 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
   const total = durationOf(data, project, words);
   const inReview = data.status === 'awaiting_approval';
 
-  const [draft, dispatch] = useReducer(draftReducer, undefined, (): Draft => restoreDraft(projectId, data.ai_suggestions));
+  const [fitNonce, setFitNonce] = useState(0);
+  const scope = draftScope(userId, projectId);
+  const [draft, dispatch] = useReducer(draftReducer, undefined, (): Draft => restoreDraft(scope, data.ai_suggestions));
+  // The first data can come from the cache while it is fetched again (a trim just saved in the clip
+  // editor, a teammate's change). When the fresh suggestions arrive, every clip nobody touched follows them.
+  const seenSuggestions = useRef(data.ai_suggestions);
+  useEffect(() => {
+    if (seenSuggestions.current === data.ai_suggestions) return;
+    seenSuggestions.current = data.ai_suggestions;
+    dispatch({ type: 'sync', suggestions: data.ai_suggestions });
+    setFitNonce((nonce) => nonce + 1);
+  }, [data.ai_suggestions]);
   const dirty = isDirty(draft);
   useEffect(() => {
-    saveDraft(projectId, draft);
-  }, [draft, projectId]);
+    saveDraft(scope, draft);
+  }, [draft, scope]);
 
   const [sort, setSort] = useState<ClipSort>('score');
   const [view, setView] = useState<View>('crop');
@@ -197,14 +230,14 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
   const destination = data.status === 'rendering' || data.status === 'completed' || data.status === 'partial' ? `/proyectos/${projectId}/clips` : `/proyectos/${projectId}`;
   const guard = useUnsavedGuard(dirty && inReview, {
     allow: (href) => href.startsWith('/uso/comprar') || href.startsWith('/uso/planes'),
-    onDiscard: () => clearDraft(projectId),
+    onDiscard: () => clearDraft(scope),
   });
   useEffect(() => {
     if (!inReview) {
-      clearDraft(projectId);
+      clearDraft(scope);
       router.replace(destination);
     }
-  }, [destination, inReview, projectId, router]);
+  }, [destination, inReview, scope, router]);
 
   /* The stretch of video the detail lanes show: follows the selection, and re-fits after an edit that is not a drag. */
   const [detail, setDetail] = useState<TimeWindow>(() => (selected ? windowAround(selected.start, selected.end, total) : { from: 0, to: total }));
@@ -212,7 +245,6 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
     const clip = selectedRef.current;
     setDetail(clip ? windowAround(clip.start, clip.end, total) : { from: 0, to: total });
   }, [total]);
-  const [fitNonce, setFitNonce] = useState(0);
   useEffect(refit, [refit, draft.selectedKey, fitNonce]);
 
   // Outside "Solo el clip" the player keeps the whole video: move the cursor to the clip that was picked.
@@ -344,9 +376,10 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
       { approved_segments: segments },
       {
         onSuccess: () => {
-          clearDraft(projectId);
+          clearDraft(scope);
           toast.success(`Render en marcha: ${segments.length === 1 ? '1 clip' : `${segments.length} clips`}`);
-          guard.leaveNow(`/proyectos/${projectId}/clips`);
+          // Replace: the review is over, Back must not land on it (it would bounce to Clips again).
+          guard.leaveNow(`/proyectos/${projectId}/clips`, { replace: true });
         },
         onError: (error) => {
           // Today the backend answers 400 `{ error }` for a review that was already approved and for a
@@ -354,12 +387,12 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
           const kind = approveErrorKind(error);
           if (kind?.kind === 'not_awaiting_approval') {
             setConfirming(false);
-            clearDraft(projectId);
+            clearDraft(scope);
             // Drop what the cache still says about the review (the paper-edit data hangs from this key),
             // so coming back to /revision redirects right away instead of showing the stale review.
             void queryClient.invalidateQueries({ queryKey: keys.projects.detail(projectId) });
             toast.show(kind.message, { tone: 'info' });
-            guard.leaveNow(`/proyectos/${projectId}/clips`);
+            guard.leaveNow(`/proyectos/${projectId}/clips`, { replace: true });
           } else if (kind?.kind === 'insufficient_funds' && billing.handleError(error, { concept: 'Costo del render' })) {
             // 402 opens "Saldo insuficiente"; the selection stays as it is.
             setConfirming(false);
@@ -934,7 +967,7 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
         <Button
           variant="accent"
           size="lg"
-          disabled={totals.count === 0 || !estimate}
+          disabled={totals.count === 0 || !estimate || refreshing}
           aria-label={totals.count > 0 ? `Renderizar ${totals.count === 1 ? '1 clip' : `${totals.count} clips`}` : 'Renderizar'}
           onClick={askToRender}
           {...gate('project.review')}

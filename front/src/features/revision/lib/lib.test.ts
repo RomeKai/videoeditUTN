@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Clip, Project } from '@/api/contracts/projects';
-import { buildApprovedSegments, draftReducer, includedTotals, initialDraft, isDirty, newLocalKey, restoreDraft, saveDraft, sortClips } from './draft';
+import { buildApprovedSegments, draftReducer, draftScope, includedTotals, initialDraft, isDirty, mergeSuggestions, newLocalKey, restoreDraft, saveDraft, sortClips } from './draft';
+import { applyEditorDraft, editorScope, readEditorDraft, storeEditorDraft } from './editorDraft';
 import { explainReasoning } from './reasoning';
 import { describeStyle, isManualCamera } from './style';
 import { billedSeconds, formatEdge, parseEdge, rulerTicks } from './time';
@@ -193,6 +194,86 @@ describe('borrador de la revisión', () => {
     expect(restored.clips.map((item) => item.title)).toEqual(['Clip 2', 'Clip 3', 'Mío']);
     expect(restored.clips[2]?.clipId).toBeNull();
     expect(restoreDraft('otro', suggestions).clips).toHaveLength(3);
+  });
+});
+
+describe('el borrador sigue al servidor', () => {
+  const suggestions = [clip(1, 60, 500), clip(2, 92, 100), clip(3, 75, 300)];
+  const byTitle = (draft: ReturnType<typeof initialDraft>, title: string) => draft.clips.find((item) => item.original?.title === title || item.title === title);
+
+  it('un borrador que solo excluyó otro clip no devuelve un recorte viejo', () => {
+    let draft = initialDraft(suggestions);
+    draft = draftReducer(draft, { type: 'toggle', key: byTitle(draft, 'Clip 3')?.key ?? '', included: false });
+    saveDraft('u1.p1', draft);
+    // Meanwhile the clip editor saved a new end for clip 2.
+    const moved = suggestions.map((item) => (item.title === 'Clip 2' ? { ...item, end_time: item.end_time + 0.5 } : item));
+    const restored = restoreDraft('u1.p1', moved);
+    expect(byTitle(restored, 'Clip 2')).toMatchObject({ start: 100, end: 130.5 });
+    expect(byTitle(restored, 'Clip 2')?.original).toMatchObject({ end: 130.5 });
+    // What the person did is still there.
+    expect(byTitle(restored, 'Clip 3')?.included).toBe(false);
+  });
+
+  it('conserva lo que la persona cambió solo si su punto de partida sigue igual', () => {
+    let draft = initialDraft(suggestions);
+    const key = byTitle(draft, 'Clip 2')?.key ?? '';
+    draft = draftReducer(draft, { type: 'edge', key, edge: 'start', value: 105, total: 600 });
+    draft = draftReducer(draft, { type: 'rename', key, title: 'Mi título' });
+    // Nothing changed on the server: the edits stay.
+    expect(mergeSuggestions(draft, suggestions).clips.find((item) => item.key === key)).toMatchObject({ start: 105, end: 130, title: 'Mi título' });
+    // The server moved the start: that field follows it; the title, whose base is the same, stays.
+    const moved = suggestions.map((item) => (item.title === 'Clip 2' ? { ...item, start_time: 98 } : item));
+    expect(mergeSuggestions(draft, moved).clips.find((item) => item.key === key)).toMatchObject({ start: 98, end: 130, title: 'Mi título' });
+  });
+
+  it('al llegar datos nuevos, lo que nadie tocó los sigue y los clips propios quedan', () => {
+    let draft = initialDraft(suggestions);
+    draft = draftReducer(draft, { type: 'add', key: newLocalKey(), start: 10, end: 26, title: 'Mío', total: 600 });
+    const moved = suggestions.slice(0, 2).map((item) => ({ ...item, end_time: item.end_time + 1 }));
+    const synced = draftReducer(draft, { type: 'sync', suggestions: moved });
+    expect(synced.clips.map((item) => [item.title, item.end])).toEqual([
+      ['Clip 2', 131],
+      ['Clip 1', 531],
+      ['Mío', 26],
+    ]);
+    expect(synced.selectedKey).toBe(draft.selectedKey);
+  });
+
+  it('un borde editado que se cruza con el valor nuevo del otro cede al servidor', () => {
+    let draft = initialDraft(suggestions);
+    const key = byTitle(draft, 'Clip 2')?.key ?? '';
+    draft = draftReducer(draft, { type: 'edge', key, edge: 'start', value: 128, total: 600 });
+    const moved = suggestions.map((item) => (item.title === 'Clip 2' ? { ...item, end_time: 120 } : item));
+    expect(mergeSuggestions(draft, moved).clips.find((item) => item.key === key)).toMatchObject({ start: 100, end: 120 });
+  });
+
+  it('las claves guardadas llevan a la persona', () => {
+    expect(draftScope('u1', 'p1')).not.toBe(draftScope('u2', 'p1'));
+    expect(editorScope('u1', 'c1')).not.toBe(editorScope('u2', 'c1'));
+  });
+});
+
+describe('borrador del editor de clip', () => {
+  const server = { title: 'Original', start: 10, end: 40 };
+
+  it('solo vuelven los campos que la persona cambió', () => {
+    // Only the title was edited; a teammate moved the trim meanwhile.
+    storeEditorDraft('u1.c1', { title: 'Nuevo', start: 10, end: 40, base: server });
+    const now = { title: 'Original', start: 8, end: 42 };
+    expect(applyEditorDraft(now, readEditorDraft('u1.c1'))).toEqual({ title: 'Nuevo', start: 8, end: 42 });
+    // Only the start was edited; the title follows the server.
+    storeEditorDraft('u1.c1', { title: 'Original', start: 12, end: 40, base: server });
+    expect(applyEditorDraft({ title: 'Otro', start: 10, end: 44 }, readEditorDraft('u1.c1'))).toEqual({ title: 'Otro', start: 12, end: 44 });
+    expect(applyEditorDraft(now, null)).toEqual(now);
+  });
+
+  it('un borrador sin su punto de partida o de otra persona no se usa', () => {
+    window.sessionStorage.setItem('oc.editor.u1.c1', JSON.stringify({ title: 'Viejo', start: 1, end: 5 }));
+    expect(readEditorDraft('u1.c1')).toBeNull();
+    storeEditorDraft(editorScope('u1', 'c1'), { title: 'Nuevo', start: 10, end: 40, base: server });
+    expect(readEditorDraft(editorScope('u2', 'c1'))).toBeNull();
+    storeEditorDraft(editorScope('u1', 'c1'), null);
+    expect(readEditorDraft(editorScope('u1', 'c1'))).toBeNull();
   });
 });
 

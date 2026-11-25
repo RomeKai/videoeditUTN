@@ -57,6 +57,8 @@ const RowView = memo(function RowView({ row, words, active, selFrom, selTo, inFr
       <span
         key={index}
         data-w={index}
+        role="option"
+        aria-selected={selected}
         tabIndex={index === cursor ? 0 : -1}
         className={cx(styles.w, index >= inFrom && index <= inTo && styles.in, selected && styles.sel, index === active && styles.now)}
         onClick={() => onWord(index)}
@@ -68,7 +70,10 @@ const RowView = memo(function RowView({ row, words, active, selFrom, selTo, inFr
   return (
     <div className={cx(styles.row, found && styles.found, current && styles.foundCurrent)} data-row={row.index}>
       <span className={cx('timecode', styles.ts)}>{formatTimecode(row.start)}</span>
-      <p>{spans}</p>
+      {/* Each paragraph is a list of words that can be selected: the name of a word is its text. */}
+      <p role="listbox" aria-multiselectable="true" aria-orientation="horizontal" aria-label={`Párrafo de ${formatTimecode(row.start)}`}>
+        {spans}
+      </p>
     </div>
   );
 });
@@ -374,6 +379,10 @@ export function TranscriptPanel({
         )}
       </div>
       {variant === 'side' && searching ? <div className={styles.searchRow}>{search}</div> : null}
+      {/* Says the range out loud when the selection changes (also when it is made with the keyboard). */}
+      <div className="sr-only" role="status" aria-live="polite">
+        {selection ? `Selección ${formatTimecode(selStart)}–${formatTimecode(selEnd)}, ${formatDuration(selEnd - selStart)}` : ''}
+      </div>
       {mobile ? <p className={cx('t-small muted', styles.mobileHint)}>Mantené apretada una palabra y arrastrá para seleccionar. Los bordes se ajustan a palabras completas.</p> : null}
       <div
         ref={scroller}

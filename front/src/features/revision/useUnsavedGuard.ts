@@ -9,8 +9,8 @@ export interface UnsavedGuard {
   dialog: { open: boolean; onStay: () => void; onDiscard: () => void };
   /** Leaves through the guard: asks first when there are changes. */
   leave: (href: string) => void;
-  /** Leaves without asking (after saving, or "Descartar cambios"). */
-  leaveNow: (href: string) => void;
+  /** Leaves without asking (after saving, or "Descartar cambios"). `replace` keeps this screen out of the history. */
+  leaveNow: (href: string, options?: { replace?: boolean }) => void;
 }
 
 export interface UnsavedGuardOptions {
@@ -61,10 +61,11 @@ export function useUnsavedGuard(dirty: boolean, { allow, onDiscard }: UnsavedGua
   }, []);
 
   const leaveNow = useCallback(
-    (href: string) => {
+    (href: string, options: { replace?: boolean } = {}) => {
       leaving.current = true;
       setBypass(true);
-      router.push(href);
+      if (options.replace) router.replace(href);
+      else router.push(href);
     },
     [router],
   );
