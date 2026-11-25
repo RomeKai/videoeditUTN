@@ -50,6 +50,7 @@ import {
   fileName,
   fontLabel,
   isHex,
+  kitColor,
   loadableUrl,
   normalizeHex,
   validateDraft,
@@ -367,9 +368,9 @@ function EditorForm({ kit }: { kit: BrandKit | null }) {
   const hasLogo = Boolean(logo.file || logo.url);
   const colors = { text: draft.primary_color, background: draft.secondary_color, accent: draft.accent_color };
   const safeColors = {
-    text: isHex(colors.text) ? colors.text : source.primary_color,
-    background: isHex(colors.background) ? colors.background : source.secondary_color,
-    accent: isHex(colors.accent) ? colors.accent : source.accent_color,
+    text: isHex(colors.text) ? colors.text : kitColor(source, 'primary_color'),
+    background: isHex(colors.background) ? colors.background : kitColor(source, 'secondary_color'),
+    accent: isHex(colors.accent) ? colors.accent : kitColor(source, 'accent_color'),
   };
   const title = draft.name.trim() || (isNew ? 'Nuevo brand kit' : source.name);
   const fontName = primaryFont.file ? fontLabel(primaryFont.file.name) : fontLabel(primaryFont.url);

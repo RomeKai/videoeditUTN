@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiCall } from '../client';
 import * as contract from '../contracts/brandkits';
 import { keys } from '../query';
-import { useScopedQuery } from './scope';
+import { scopedKey, useScopedQuery } from './scope';
 
 export function useBrandKits() {
   return useScopedQuery({ queryKey: keys.brandKits.all, queryFn: ({ signal }) => apiCall(contract.listBrandKits, { signal }) });
@@ -40,7 +40,7 @@ export function useUpdateBrandKit(id: string) {
     mutationFn: (body: Partial<contract.BrandKitInput>) => apiCall(contract.updateBrandKit, { params: { id }, body }),
     onSuccess: (saved) => {
       // The editor compares its draft with this copy: it must be the saved one right away, not after the refetch.
-      queryClient.setQueryData(keys.brandKits.detail(id), saved);
+      queryClient.setQueryData(scopedKey(keys.brandKits.detail(id)), saved);
       return invalidate();
     },
   });

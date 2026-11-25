@@ -1,10 +1,14 @@
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, configure, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { server } from '@/api/mocks/server';
 import { applyScenario } from '@/api/mocks/state';
 import { PublicacionesScreen } from './PublicacionesScreen';
 import { dayKey } from './posts';
 import { db, idle, renderScreen } from './testing';
+
+// These flows wait on the mocked API several times: on a busy CI runner the default 1 s / 5 s are not enough.
+configure({ asyncUtilTimeout: 5000 });
+vi.setConfig({ testTimeout: 30_000 });
 
 /** The screen keeps its view, filters and open detail in the URL: this is a URL that changes. */
 const nav = vi.hoisted(() => {

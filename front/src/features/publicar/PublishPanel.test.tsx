@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, configure, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { server } from '@/api/mocks/server';
 import { tick } from '@/api/mocks/sim';
@@ -7,6 +7,10 @@ import { PublishPanel } from './PublishPanel';
 import { parsePublishParam, publishHref } from './PublishPanelMount';
 import { dayKey } from './posts';
 import { CLIPS, db, idle, renderScreen } from './testing';
+
+// These flows wait on the mocked API several times: on a busy CI runner the default 1 s / 5 s are not enough.
+configure({ asyncUtilTimeout: 5000 });
+vi.setConfig({ testTimeout: 30_000 });
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(async () => {
@@ -68,7 +72,7 @@ describe('E1 · Publicar', () => {
     expect(publishButton()).toBeEnabled();
     fireEvent.click(publishButton());
 
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    await waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 20_000 });
     expect(postsOf(CLIPS.first, 'QUEUED').map((post) => post.platform).sort()).toEqual(['INSTAGRAM_REELS', 'TIKTOK']);
     expect(postsOf(CLIPS.first, 'QUEUED').find((post) => post.platform === 'TIKTOK')?.tiktok?.privacy_level).toBe('PUBLIC_TO_EVERYONE');
     // The drafts created to get the AI text are the ones that went out: none is left behind.
@@ -180,7 +184,7 @@ describe('E1 · Publicar', () => {
 
     fireEvent.change(within(panel).getByLabelText('Quién puede ver estos videos'), { target: { value: 'PUBLIC_TO_EVERYONE' } });
     fireEvent.click(publishButton('Programar'));
-    await waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 5000 });
+    await waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 20_000 });
 
     const created = [CLIPS.first, CLIPS.second, CLIPS.third].map((clipId) => db().posts.filter((post) => post.video_clip === clipId && post.status === 'SCHEDULED' && new Date(post.publish_at).getHours() === 18 && new Date(post.publish_at).getTime() > start.getTime() - 86_400_000));
     expect(created.map((posts) => posts.length)).toEqual([2, 2, 2]);

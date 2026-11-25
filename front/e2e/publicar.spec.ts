@@ -155,4 +155,37 @@ test.describe('E1 · Publicar y E2 · Publicaciones', () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
     expectClean(problems, 'publicaciones en el teléfono');
   });
+  // The panel has no route: it is mounted in the app layout, so it opens over whatever screen pushes the param.
+  for (const [where, route] of [
+    ['Clips', `/proyectos/${EXAMPLE_IDS.projectReady}/clips`],
+    ['el editor de clip', `/proyectos/${EXAMPLE_IDS.projectReady}/clips/${CLIP}`],
+    ['el resultado del video completo', `/proyectos/${EXAMPLE_IDS.projectSingleEdit}/resultado`],
+  ] as const) {
+    test(`el panel abre sobre ${where} y al cerrar deja la ruta sin el parámetro`, async ({ page }) => {
+      await useScenario(page, 'estudio-norte');
+      const problems = watch(page);
+      await page.goto(`${route}?publicar=${CLIP}`);
+      const panel = page.getByRole('dialog', { name: 'Publicar clip' });
+      await expect(panel.getByRole('heading', { name: 'Redes' })).toBeVisible();
+      await expect(panel.getByRole('checkbox', { name: 'Publicar en TikTok' })).toBeChecked();
+      await panel.getByRole('button', { name: 'Cancelar' }).click();
+      await expect(panel).toBeHidden();
+      await expect(page).toHaveURL(new RegExp(`${route}$`));
+      expectClean(problems, `publicar desde ${where}`);
+    });
+  }
+
+  test('cuenta vencida: la red no se puede elegir y «Reconectar» abre el diálogo de conexión', async ({ page }) => {
+    await useScenario(page, 'redes-vencidas');
+    const problems = watch(page);
+    await page.goto(`/publicaciones?vista=lista&publicar=${CLIP}`);
+    const panel = page.getByRole('dialog', { name: 'Publicar clip' });
+    await expect(panel.getByText('Vencida')).toBeVisible();
+    await expect(panel.getByRole('checkbox', { name: /TikTok: reconectá la cuenta/ })).toBeDisabled();
+    await expect(panel.getByText('Conectá una red para publicar')).toBeVisible();
+    await expect(panel.getByRole('region', { name: 'Acciones' }).getByRole('button', { name: 'Publicar', exact: true })).toBeDisabled();
+    await panel.getByRole('button', { name: /Reconectar TikTok/ }).click();
+    await expect(page.getByRole('dialog', { name: 'Conectar TikTok' })).toBeVisible();
+    expectClean(problems, 'cuenta vencida');
+  });
 });

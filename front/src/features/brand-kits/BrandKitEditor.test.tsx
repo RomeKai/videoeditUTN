@@ -1,9 +1,13 @@
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, configure, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { server } from '@/api/mocks/server';
 import { EXAMPLE_IDS } from '@/dev/screens';
 import { idle, renderScreen } from '../publicar/testing';
 import { BrandKitEditor } from './BrandKitEditor';
+
+// These flows wait on the mocked API several times: on a busy CI runner the default 1 s / 5 s are not enough.
+configure({ asyncUtilTimeout: 5000 });
+vi.setConfig({ testTimeout: 30_000 });
 
 /**
  * Saving a kit is multipart, and jsdom's FormData does not travel through

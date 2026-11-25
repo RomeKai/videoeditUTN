@@ -105,3 +105,12 @@ describe('cambios sin guardar', () => {
     });
   });
 });
+
+describe('colores guardados', () => {
+  it('lo que guardó el backend llega al editor como #RRGGBB, o el color de fábrica si no es un hex', () => {
+    const draft = draftFrom({ ...EMPTY_KIT, primary_color: '#abc', secondary_color: 'red', accent_color: '#f2c94c' });
+    expect(draft.primary_color).toBe('#AABBCC');
+    expect(draft.secondary_color).toBe(EMPTY_KIT.secondary_color);
+    expect(draft.accent_color).toBe('#F2C94C');
+  });
+});

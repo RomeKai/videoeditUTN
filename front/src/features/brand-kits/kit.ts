@@ -1,4 +1,5 @@
 import type { BrandKit, BrandKitInput, WatermarkPosition } from '@/api/contracts/brandkits';
+import { normalizeHex as savedHex } from '@/lib/format';
 
 export type FileField = 'primary_font' | 'secondary_font' | 'watermark_logo' | 'intro_video' | 'outro_video';
 export type ColorField = 'primary_color' | 'secondary_color' | 'accent_color';
@@ -115,13 +116,21 @@ export const EMPTY_KIT: Pick<
 
 export type KitSource = typeof EMPTY_KIT;
 
+/**
+ * A saved color as the editor can show it. Responses carry any string the backend stored
+ * (`red`, `#fff`, lower case); the inputs and the request only take `#RRGGBB`.
+ */
+export function kitColor(kit: KitSource, field: ColorField): string {
+  return savedHex(kit[field], EMPTY_KIT[field]);
+}
+
 export function draftFrom(kit: KitSource): KitDraft {
   return {
     name: kit.name,
     description: kit.description,
-    primary_color: kit.primary_color.toUpperCase(),
-    secondary_color: kit.secondary_color.toUpperCase(),
-    accent_color: kit.accent_color.toUpperCase(),
+    primary_color: kitColor(kit, 'primary_color'),
+    secondary_color: kitColor(kit, 'secondary_color'),
+    accent_color: kitColor(kit, 'accent_color'),
     is_default: kit.is_default,
     watermark_position: kit.watermark_position ?? DEFAULT_POSITION,
     files: {},
@@ -150,7 +159,7 @@ export function changedParts(kit: KitSource, draft: KitDraft): string[] {
   if (draft.name.trim() !== kit.name) parts.push('el nombre');
   if (draft.description !== kit.description) parts.push('la descripción');
   for (const field of COLOR_FIELDS) {
-    if (draft[field].toUpperCase() !== kit[field].toUpperCase()) parts.push(COLOR_LABEL[field].inSentence);
+    if (draft[field].toUpperCase() !== kitColor(kit, field)) parts.push(COLOR_LABEL[field].inSentence);
   }
   for (const field of FILE_FIELDS) {
     const change = draft.files[field];
@@ -194,7 +203,7 @@ export function buildInput(kit: KitSource, draft: KitDraft, { create }: { create
   if (create || name !== kit.name) input.name = name;
   if (create || draft.description !== kit.description) input.description = draft.description;
   for (const field of COLOR_FIELDS) {
-    if (create || draft[field].toUpperCase() !== kit[field].toUpperCase()) input[field] = draft[field].toUpperCase();
+    if (create || draft[field].toUpperCase() !== kitColor(kit, field)) input[field] = draft[field].toUpperCase();
   }
   for (const field of FILE_FIELDS) {
     const change = draft.files[field];
