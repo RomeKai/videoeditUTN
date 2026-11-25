@@ -149,6 +149,25 @@ class SingleEditPipelineTests(IngestionHarness, TestCase):
         self.assertEqual(txn.status, Transaction.Status.FAILED)
         self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
 
+    def test_a_resume_that_never_queues_the_render_still_fails_and_is_refunded(self):
+        # recover_stuck_renders never handles a whole video: out of retries, it
+        # fails and its creation reservation goes back, as before.
+        from kombu.exceptions import OperationalError
+
+        project = self.make_whole_video(paid=False)
+        txn = self.reserve(project)
+        self.run_to_render(project)  # its message was lost
+        self.mock_render.side_effect = OperationalError("broker down")
+
+        result = self.run_task(project)  # the resume
+
+        self.assertTrue(result.failed())
+        project.refresh_from_db()
+        txn.refresh_from_db()
+        self.assertEqual(project.pipeline_stage, PipelineStage.FAILED)
+        self.assertEqual(txn.status, Transaction.Status.FAILED)
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+
     def test_a_refunded_project_that_is_dispatched_again_is_not_rendered_for_free(self):
         project = self.make_whole_video(metadata={"duration": 10.0}, paid=False)
         txn = self.reserve(project)
