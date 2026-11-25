@@ -1,0 +1,217 @@
+/* Timeline pieces of D2 and D4 (artboards D2-Revision and D4-Editor-clip). Timecodes are Geist Mono by rule. */
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.lanes {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  cursor: pointer;
+  touch-action: none;
+}
+.lane {
+  position: relative;
+  border-radius: var(--r-sm);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.audio {
+  height: 56px;
+  padding: 6px 0;
+}
+.audio.tall {
+  height: 128px;
+}
+.words {
+  height: 16px;
+}
+.wave {
+  display: block;
+  width: 100%;
+  height: 100%;
+  color: var(--fg-subtle);
+  opacity: 0.75;
+}
+.wordTick {
+  position: absolute;
+  top: 5px;
+  height: 4px;
+  min-width: 1px;
+  border-radius: 1px;
+  background: var(--fg-subtle);
+  opacity: 0.8;
+}
+.range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--accent-soft);
+  border-top: 1px solid var(--accent);
+  border-bottom: 1px solid var(--accent);
+  cursor: default;
+}
+.handle {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 10px;
+  border: 0;
+  padding: 0;
+  background: var(--accent-fill);
+  cursor: ew-resize;
+  display: grid;
+  place-items: center;
+  touch-action: none;
+}
+.handle::after {
+  content: '';
+  width: 2px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--accent-fg);
+  opacity: 0.85;
+}
+.handle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  z-index: 1;
+}
+.handle[aria-disabled='true'] {
+  cursor: not-allowed;
+  background: var(--fg-subtle);
+}
+.handleStart {
+  left: -10px;
+  border-radius: 5px 0 0 5px;
+}
+.handleEnd {
+  right: -10px;
+  border-radius: 0 5px 5px 0;
+}
+.flag {
+  position: absolute;
+  bottom: 100%;
+  margin-bottom: 5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--accent-fill);
+  color: var(--accent-fg);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.flagStart {
+  left: -10px;
+}
+.flagEnd {
+  right: -10px;
+}
+.playhead {
+  position: absolute;
+  top: -6px;
+  bottom: -4px;
+  width: 0;
+  border-left: 1.5px solid var(--fg);
+  pointer-events: none;
+}
+.playhead::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -5px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--fg);
+}
+.curOut {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border: 1px solid var(--fg-muted);
+  border-radius: 2px;
+  pointer-events: none;
+}
+.ghost {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  opacity: 0.7;
+  pointer-events: none;
+}
+.hatch {
+  background-image: repeating-linear-gradient(135deg, var(--accent) 0 1.5px, transparent 1.5px 6px);
+}
+.ruler {
+  position: relative;
+  height: 16px;
+}
+.tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--fg-subtle);
+  white-space: nowrap;
+}
+.tickFirst {
+  transform: none;
+}
+.tickLast {
+  transform: translateX(-100%);
+}
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sw {
+  width: 12px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--fg-muted);
+  display: inline-block;
+}
+.swHollow {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--fg-subtle);
+}
+.swSel {
+  background: var(--accent);
+}
+.swPick {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.swCur {
+  height: 12px;
+  background: transparent;
+  border: 1px solid var(--fg-muted);
+}
+.swHatch {
+  background-color: transparent;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.timeIn {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}

@@ -52,8 +52,16 @@ export const updateClip = defineEndpoint({
   errors: [
     { status: 400, when: 'Recorte inválido (fin menor o igual al inicio, o fuera del video).' },
     { status: 403, when: 'El rol no puede editar (Lector).' },
+    {
+      status: 409,
+      when: 'El proyecto se está renderizando y el pedido cambia el recorte (`code: "project_rendering"`). Solo `title` se puede cambiar mientras tanto. La UI avisa y deja el borrador como está.',
+    },
   ],
-  backend: { status: 'proposed', gap: 11 },
+  backend: {
+    status: 'proposed',
+    gap: 11,
+    note: 'El 409 sigue la regla que ya aplica `VideoProjectSerializer.update` al PATCH del proyecto (ProjectRenderingError): lo que el render lee no cambia debajo de él.',
+  },
   screens: ['D4', 'D3', 'D5'],
 });
 
@@ -78,7 +86,8 @@ export const renderClip = defineEndpoint({
   successStatus: 202,
   errors: [
     { status: 402, when: 'Saldo insuficiente: `{ error, required }`. La UI abre D2.' },
-    { status: 409, when: 'El clip ya se está renderizando.' },
+    { status: 403, when: 'El plan actual no permite la resolución del proyecto (`code: "resolution"`). La UI abre D3.' },
+    { status: 409, when: 'El clip ya se está renderizando, o su proyecto (`code: "project_rendering"`).' },
   ],
   backend: { status: 'proposed', gap: 11 },
   screens: ['D4', 'D5'],

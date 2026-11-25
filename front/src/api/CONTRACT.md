@@ -896,10 +896,11 @@ Cambia el título o el recorte. No renderiza: para eso está `render`.
 |---|---|
 | Id | `clips.update` |
 | Backend | ❌ falta (propuesto) · hueco 11 |
+| Nota | El 409 sigue la regla que ya aplica `VideoProjectSerializer.update` al PATCH del proyecto (ProjectRenderingError): lo que el render lee no cambia debajo de él. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | UpdateClipRequest |
 | Respuesta 200 | Clip |
-| Errores | **400** Recorte inválido (fin menor o igual al inicio, o fuera del video).<br>**403** El rol no puede editar (Lector). |
+| Errores | **400** Recorte inválido (fin menor o igual al inicio, o fuera del video).<br>**403** El rol no puede editar (Lector).<br>**409** El proyecto se está renderizando y el pedido cambia el recorte (`code: "project_rendering"`). Solo `title` se puede cambiar mientras tanto. La UI avisa y deja el borrador como está. |
 | Pantallas | D4, D3, D5 |
 
 #### `DELETE /api/v1/clips/:id/`
@@ -925,7 +926,7 @@ Vuelve a renderizar el clip con su recorte actual y la configuración del proyec
 | Backend | ❌ falta (propuesto) · hueco 11 |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 202 | PaidActionResponse |
-| Errores | **402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**409** El clip ya se está renderizando. |
+| Errores | **402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**403** El plan actual no permite la resolución del proyecto (`code: "resolution"`). La UI abre D3.<br>**409** El clip ya se está renderizando, o su proyecto (`code: "project_rendering"`). |
 | Pantallas | D4, D5 |
 
 #### `POST /api/v1/clips/:id/retry/`

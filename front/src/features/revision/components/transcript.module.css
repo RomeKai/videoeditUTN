@@ -1,0 +1,242 @@
+/* Transcript of the review (artboards D2-Revision, D2b and M3). */
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.head h2 {
+  font-weight: 600;
+}
+.headMain {
+  min-height: 52px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+.headTitle {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.search > :first-child {
+  width: 260px;
+  max-width: 100%;
+  flex: 1;
+}
+.hits {
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.searchRow {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.searchRow .search > :first-child {
+  width: auto;
+}
+.mobileHint {
+  padding: 12px 12px 0;
+}
+.scroll {
+  position: absolute;
+  inset: 44px 0 0 0;
+  overflow: auto;
+  padding: 8px 16px 24px;
+}
+.scrollSearch {
+  top: 97px;
+}
+.scrollMain,
+.scrollMobile {
+  position: static;
+}
+.scrollMobile {
+  overflow: visible;
+}
+/* The whole transcript of a long video would push the player off the screen: it scrolls in its card. */
+.scrollMain {
+  padding: 8px 24px 24px;
+  max-height: max(520px, calc(100vh - 300px));
+}
+.scrollMobile {
+  padding: 12px;
+}
+.row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 12px;
+  padding: 8px 0;
+  position: relative;
+  /* An hour of video is hundreds of paragraphs: the browser skips the ones off screen. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 82px;
+}
+.ts {
+  line-height: 22px;
+  color: var(--fg-subtle);
+  user-select: none;
+}
+.row p {
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--fg-muted);
+  margin: 0;
+}
+.scrollMain .row {
+  grid-template-columns: 44px minmax(0, 680px);
+  gap: 16px;
+}
+.scrollMain .row p,
+.scrollMobile .row p {
+  font-size: 15px;
+  line-height: 24px;
+  color: var(--fg);
+}
+.scrollMain .ts,
+.scrollMobile .ts {
+  line-height: 24px;
+}
+.found p {
+  box-shadow: -8px 0 0 0 var(--bg), -10px 0 0 0 var(--border-strong);
+}
+.foundCurrent p {
+  box-shadow: -8px 0 0 0 var(--bg), -10px 0 0 0 var(--accent);
+  color: var(--fg);
+}
+/* Three different marks: the clip's stretch is a soft block, the current word a filled pill, the selection a grey block with an underline. */
+.w {
+  cursor: pointer;
+  border-radius: 3px;
+}
+.w:hover {
+  color: var(--fg);
+}
+.w:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.in {
+  background: var(--accent-soft);
+  color: var(--fg);
+  border-radius: 0;
+  padding: 2px 0;
+}
+.now {
+  background: var(--accent-fill);
+  color: var(--accent-fg);
+  border-radius: 3px;
+}
+.now:hover {
+  color: var(--accent-fg);
+}
+.sel {
+  color: var(--fg);
+  background: var(--surface-3);
+  padding: 3px 0 2px;
+  box-shadow: inset 0 -2px 0 var(--accent);
+  border-radius: 0;
+}
+.edge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--accent-strong);
+  padding: 2px 0;
+  user-select: none;
+}
+.edge::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--accent);
+  opacity: 0.5;
+}
+.selPop {
+  position: relative;
+  margin: 6px 0 4px 52px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 2;
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-pop);
+  user-select: none;
+}
+.selMain {
+  margin: 6px 0 8px 60px;
+  max-width: 340px;
+  padding: 10px;
+}
+.selBar {
+  margin: 4px 0 6px;
+  padding: 12px;
+  gap: 8px;
+  border: 1px solid var(--border-strong);
+  box-shadow: none;
+}
+.selMeta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.selBtn {
+  width: 100%;
+  justify-content: flex-start;
+}
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.menuItem:hover {
+  background: var(--neutral-soft);
+}
+.selBar .menuItem {
+  min-height: 44px;
+}
+.k {
+  margin-left: auto;
+  color: var(--fg-subtle);
+  font-size: 12px;
+}
+.hint {
+  padding: 6px 8px 2px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg-subtle);
+}
+.none {
+  padding: 24px 16px;
+}
