@@ -1,10 +1,14 @@
 import type { Metadata } from 'next';
-import { ScreenPlaceholder } from '@/dev/ScreenPlaceholder';
-import { SCREENS } from '@/dev/screens';
+import { Suspense } from 'react';
+import { PlansScreen } from '@/features/uso/PlansScreen';
 
 export const metadata: Metadata = { title: 'Planes' };
 
-// G3 · Planes: pantalla pendiente. El dominio dueño reemplaza este archivo (ver front/ROUTES.md).
+/** G3 · Uso › Planes (`?compra=<id>` al volver del checkout de un plan). */
 export default function Page() {
-  return <ScreenPlaceholder {...SCREENS.G3} page={false} headingLevel={2} />;
+  return (
+    <Suspense>
+      <PlansScreen />
+    </Suspense>
+  );
 }

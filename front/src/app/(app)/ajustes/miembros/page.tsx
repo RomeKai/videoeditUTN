@@ -1,10 +1,9 @@
 import type { Metadata } from 'next';
-import { ScreenPlaceholder } from '@/dev/ScreenPlaceholder';
-import { SCREENS } from '@/dev/screens';
+import { MembersScreen } from '@/features/ajustes/MembersScreen';
 
 export const metadata: Metadata = { title: 'Miembros' };
 
-// H2 · Miembros: pantalla pendiente. El dominio dueño reemplaza este archivo (ver front/ROUTES.md).
+/** H2 · Ajustes › Miembros (con D7 · Invitar miembro). */
 export default function Page() {
-  return <ScreenPlaceholder {...SCREENS.H2} page={false} headingLevel={2} />;
+  return <MembersScreen />;
 }

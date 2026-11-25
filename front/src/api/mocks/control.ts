@@ -17,9 +17,12 @@ export function resolveMockPurchase(purchaseId: string, approved: boolean): bool
   return true;
 }
 
-export function getMockPurchase(purchaseId: string): { tokens: number; amount_usd: number } | null {
-  const purchase = loadDb().purchases.find((item) => item.id === purchaseId);
-  return purchase ? { tokens: purchase.tokens, amount_usd: purchase.amount_usd } : null;
+export function getMockPurchase(purchaseId: string): { tokens: number; amount_usd: number; plan_name: string | null } | null {
+  const db = loadDb();
+  const purchase = db.purchases.find((item) => item.id === purchaseId);
+  if (!purchase) return null;
+  const plan = purchase.plan_id ? db.plans.find((item) => item.id === purchase.plan_id) : null;
+  return { tokens: purchase.tokens, amount_usd: purchase.amount_usd, plan_name: plan?.name ?? null };
 }
 
 /** The user authorized the network: the active workspace's account becomes connected. */
