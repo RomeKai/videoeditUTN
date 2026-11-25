@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -371,5 +371,26 @@ describe('VideoPlayer', () => {
     expect(onMarkOut).toHaveBeenCalledWith(4);
     await user.keyboard(' ');
     expect(within(player).getByRole('button', { name: 'Pausar' })).toBeInTheDocument();
+  });
+
+  it('un link firmado que solo cambia la firma no recarga el video; otro archivo sí', () => {
+    const { container, rerender } = render(<VideoPlayer label="Reproductor" src="https://r2.example/clips/a.mp4?X-Amz-Signature=1" />);
+    const video = () => container.querySelector('video');
+    expect(video()).toHaveAttribute('src', 'https://r2.example/clips/a.mp4?X-Amz-Signature=1');
+    rerender(<VideoPlayer label="Reproductor" src="https://r2.example/clips/a.mp4?X-Amz-Signature=2" />);
+    expect(video()).toHaveAttribute('src', 'https://r2.example/clips/a.mp4?X-Amz-Signature=1');
+    rerender(<VideoPlayer label="Reproductor" src="https://r2.example/clips/b.mp4?X-Amz-Signature=3" />);
+    expect(video()).toHaveAttribute('src', 'https://r2.example/clips/b.mp4?X-Amz-Signature=3');
+  });
+
+  it('un video de los mocks o uno que no carga muestra el fotograma de muestra, no un video roto', () => {
+    const { container, rerender } = render(<VideoPlayer label="Reproductor" src="mock://previews/1.mp4" duration={30} />);
+    expect(container.querySelector('video')).toBeNull();
+    rerender(<VideoPlayer label="Reproductor" src="https://r2.example/clips/vencido.mp4" duration={30} />);
+    const video = container.querySelector('video');
+    expect(video).not.toBeNull();
+    if (video) fireEvent.error(video);
+    expect(container.querySelector('video')).toBeNull();
+    expect(screen.getByRole('slider', { name: 'Posición' })).toBeInTheDocument();
   });
 });

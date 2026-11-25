@@ -21,8 +21,8 @@ npm run dev          # http://localhost:3000
 
 `npm run dev` arranca con `NEXT_PUBLIC_API_MOCKS=true` (ver `.env.development`): [MSW](https://mswjs.io) responde toda la API desde el navegador y no hace falta levantar nada más.
 
-- Entrás directo como Lucía, dueña de «Estudio Norte» (plan Pro). Para iniciar sesión a mano sirve cualquier contraseña menos `incorrecta`.
-- El botón **Mocks**, abajo a la izquierda, cambia de **escenario**: usuario nuevo, workspace vacío, saldo bajo, cada plan, cada rol, sesión vencida, servidor caído, mantenimiento y más. La lista completa está en `src/api/mocks/scenarios.ts`.
+- Entrás directo como Lucía, dueña de «Estudio Norte» (plan Pro). Para iniciar sesión a mano sirve cualquier contraseña. Tres contraseñas disparan los errores del login: `incorrecta` (401, «El email o la contraseña no coinciden»), `limite` (429, demasiados intentos) y `caida` (500, el servidor falló).
+- El botón **Mocks** (el ícono del matraz, sobre el borde izquierdo; se despliega al pasarle por encima) cambia de **escenario**: usuario nuevo, workspace vacío, saldo bajo, cada plan, cada rol, sesión vencida, servidor caído, mantenimiento y más. La lista completa está en `src/api/mocks/scenarios.ts`.
 - Los datos se guardan en el navegador (`localStorage`), así que sobreviven a una recarga. «Reiniciar datos» los vuelve a sembrar.
 - Lo que creás avanza solo: un proyecto pasa por las etapas del pipeline cada pocos segundos, se puede aprobar, renderizar, publicar y cobrar.
 
@@ -57,7 +57,7 @@ Levantá el backend como dice [`back/README.md`](../back/README.md) y reiniciá 
 | `npm run lint` | ESLint, sin warnings |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm test` | Vitest: componentes, cliente HTTP, mocks y contrato |
-| `npm run test:e2e` | Playwright: recorre todas las rutas con mocks y falla si hay errores de consola o pedidos fallidos. Arma su propio build con mocks en `.next-e2e` |
+| `npm run test:e2e` | Playwright, sobre dos builds propios. Con mocks (`.next-e2e`): recorre todas las rutas, recarga y falla si hay errores de consola, pedidos fallidos o pedidos que se le escapan a MSW. Sin mocks (`.next-e2e-real`, la API se finge en el navegador): la sesión al recargar y al entrar por un link directo. `E2E_PORT` cambia el puerto (usa ese y el siguiente) |
 | `npm run contract:doc` | Regenera `src/api/CONTRACT.md` y `ROUTES.md` |
 
 Antes de cada push tienen que pasar `lint`, `typecheck`, `test`, `build` y `test:e2e`. El job `Frontend` del CI corre lo mismo.

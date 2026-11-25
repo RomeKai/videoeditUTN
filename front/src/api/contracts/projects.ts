@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { defineEndpoint } from '../endpoint';
-import { Decimal, HexColor, Id, IsoDateTime, NoContent, PageQuery, Platform, RenderResolution, UserRef, paginated } from './common';
+import { ColorValue, Decimal, HexColor, Id, IsoDateTime, NoContent, PageQuery, Platform, RenderResolution, UserRef, paginated } from './common';
 
 /* ── Enums of VideoProject (back/apps/videos/models.py) ─────────────────── */
 
@@ -71,6 +71,8 @@ export const KNOWN_PIPELINE_ERROR_CODES = [
   'SoftTimeLimitExceeded',
   'ModerationUnavailableError',
   'AIAuthenticationError',
+  /** A re-dispatched auto-render whose remaining clips cannot be paid (tasks/ingestion.py). The clips stay; it can be re-dispatched with tokens. */
+  'AutoRenderNotPaid',
 ] as const;
 export type KnownPipelineErrorCode = (typeof KNOWN_PIPELINE_ERROR_CODES)[number];
 
@@ -179,6 +181,19 @@ export const ProjectMetadata = z
     pte_prompt: z.string().optional(),
     pte_explicit: z.array(z.string()).optional(),
     pte: PteResult.optional(),
+    /** The video has no speech: it is edited without subtitles (`_persist_silent_transcript`). */
+    no_speech: z.boolean().optional(),
+    /**
+     * "Renderizar sin revisar" could not be paid when the clips were chosen: the
+     * project waits in the review, where the user approves (and pays) what they want.
+     */
+    auto_render_skipped: z.enum(['insufficient_funds', 'plan_limit']).optional(),
+    /** Reservation of the automatic render (same price as approving the clips). */
+    auto_render_reservation_id: z.string().optional(),
+    /** Seconds that reservation paid for. */
+    auto_render_seconds: z.number().optional(),
+    /** Clips that reservation paid for: only they are charged. */
+    auto_render_clip_ids: z.array(z.string()).optional(),
   })
   .passthrough();
 export type ProjectMetadata = z.infer<typeof ProjectMetadata>;
@@ -226,7 +241,7 @@ export const Project = z.object({
   manual_camera_zoom: z.number(),
   speaker_tracking: z.boolean(),
   add_subtitles: z.boolean(),
-  subtitle_color: HexColor,
+  subtitle_color: ColorValue,
   subtitle_with_emojis: z.boolean(),
   subtitle_words_per_segment: z.number().int(),
   subtitle_size: SubtitleSize,
@@ -312,7 +327,12 @@ export const CreateProjectRequest = z
     manual_camera_y: z.number().min(0).max(1).optional(),
     manual_camera_zoom: z.number().min(1).max(4).optional(),
     speaker_tracking: z.boolean().optional(),
-    add_subtitles: z.boolean().optional(),
+    /**
+     * Always sent (true unless the user turns subtitles off). In a multipart
+     * form DRF reads a missing boolean as false, so leaving it out would create
+     * the project without subtitles instead of using the model's default.
+     */
+    add_subtitles: z.boolean().default(true),
     subtitle_color: HexColor.optional(),
     subtitle_words_per_segment: z.number().int().min(1).optional(),
     subtitle_size: SubtitleSize.optional(),
@@ -331,10 +351,11 @@ export const CreateProjectRequest = z
     message: "Mandá 'source_file' o 'video_url', uno solo.",
     path: ['source_file'],
   });
-export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
+/** What a screen passes to `useCreateProject` (`add_subtitles` may be left out: it defaults to true). */
+export type CreateProjectRequest = z.input<typeof CreateProjectRequest>;
 
 export const CreateFromPromptRequest = CreateProjectRequest.and(z.object({ prompt: z.string().min(1, 'Contanos qué querés') }));
-export type CreateFromPromptRequest = z.infer<typeof CreateFromPromptRequest>;
+export type CreateFromPromptRequest = z.input<typeof CreateFromPromptRequest>;
 
 export const CostDetails = z.object({ tokens_reserved: Decimal, transaction_id: Id });
 
@@ -531,11 +552,15 @@ export const updateProject = defineEndpoint({
   errors: [
     { status: 400, when: 'Título vacío.' },
     { status: 403, when: 'El rol no puede editar (Lector).' },
+    {
+      status: 409,
+      when: 'El proyecto se está renderizando y el pedido cambia algo más que `title` (ProjectRenderingError). El cuerpo trae solo `{ detail }`; el código `project_rendering` no llega. Renombrar siempre se puede.',
+    },
   ],
   backend: {
     status: 'exists',
-    source: 'back/apps/videos/views.py · VideoProjectViewSet.partial_update (ModelViewSet)',
-    note: 'El PATCH acepta más campos del serializer; el frontend solo manda `title`.',
+    source: 'back/apps/videos/views.py · VideoProjectViewSet.partial_update (ModelViewSet) + VideoProjectSerializer.update',
+    note: 'El PATCH acepta más campos del serializer; el frontend solo manda `title`, así que no debería ver el 409.',
   },
   screens: ['B2', 'D1'],
 });
@@ -575,11 +600,18 @@ export const approvePaperEdit = defineEndpoint({
   request: ApprovePaperEditRequest,
   response: ApprovePaperEditResponse,
   errors: [
-    { status: 400, when: 'El proyecto no está en revisión, o los segmentos son inválidos: `{ error }`.' },
+    {
+      status: 400,
+      when: 'Tres casos, todos `{ error }` (se distinguen con `approveErrorKind()` de `src/lib/error-messages.ts`): el proyecto ya no está en revisión ("El proyecto no está en espera de aprobación. Estado actual: rendering"): la UI avisa y lleva a Clips; el plan no permite la duración o la resolución ("Error en el motor de precios: …"): la UI abre D3; segmentos inválidos.',
+    },
     { status: 402, when: 'Saldo insuficiente: `{ error, required }`. La UI abre D2.' },
-    { status: 409, when: 'Otro pedido ya lo aprobó: `{ error }`. La UI lleva a Clips.' },
+    { status: 409, when: 'Solo en la carrera de dos aprobaciones simultáneas: `{ error }`. La UI lleva a Clips.' },
   ],
-  backend: { status: 'exists', source: 'back/apps/videos/views.py · VideoProjectViewSet.approve_paper_edit' },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/videos/views.py · VideoProjectViewSet.approve_paper_edit',
+    note: 'Propuesto: 409 con `code: "not_awaiting_approval"` para un proyecto que ya no está en revisión y 403 con `code` para el límite del plan, en lugar de los 400 de hoy.',
+  },
   screens: ['D2'],
 });
 

@@ -70,6 +70,17 @@ def selection_result(count=1):
     )
 
 
+def fund_wallet(workspace, amount="1000.00"):
+    """Auto-render reserves the render of the clips: these projects can pay it."""
+    from decimal import Decimal
+
+    from apps.payments.models import Wallet
+
+    wallet, _ = Wallet.objects.get_or_create(workspace=workspace)
+    Wallet.objects.filter(pk=wallet.pk).update(available_balance=Decimal(amount), reserved_balance=0)
+    return wallet
+
+
 class IngestionHarness(CapturedTaskFailures):
     """Shared fixtures: every external dependency mocked, Redis replaced by a fake."""
 
@@ -659,6 +670,10 @@ class ConcurrencyTests(IngestionHarness, TestCase):
 
 
 class RenderDispatchTests(IngestionHarness, TestCase):
+    def setUp(self):
+        super().setUp()
+        fund_wallet(self.workspace)
+
     def test_auto_render_bypass_dispatches_one_render_task_per_clip_on_commit(self):
         self.mock_select.return_value = selection_result(count=3)
         project = self.make_project(auto_render_bypass=True)

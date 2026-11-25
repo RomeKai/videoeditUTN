@@ -54,6 +54,27 @@ describe('Toast', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
+  it('con una acción espera mientras el puntero o el foco están encima; la región se anuncia', () => {
+    render(
+      <ToastProvider>
+        <Buttons />
+      </ToastProvider>,
+    );
+    expect(screen.getByRole('region', { name: 'Avisos' })).toHaveAttribute('aria-live', 'polite');
+    fireEvent.click(screen.getByText('error'));
+    const toast = screen.getByRole('alert');
+    fireEvent.mouseEnter(toast);
+    act(() => vi.advanceTimersByTime(TOAST_DURATION_MS * 3));
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    fireEvent.mouseLeave(toast);
+    fireEvent.focus(screen.getByRole('button', { name: 'Reintentar' }));
+    act(() => vi.advanceTimersByTime(TOAST_DURATION_MS * 3));
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    fireEvent.blur(screen.getByRole('button', { name: 'Reintentar' }));
+    act(() => vi.advanceTimersByTime(TOAST_DURATION_MS));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('muestra dos como máximo: el más viejo sale', () => {
     render(
       <ToastProvider>

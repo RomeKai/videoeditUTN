@@ -9,10 +9,13 @@ import { clearLoggedOut, markLoggedOut, mockTokens, userIdFromToken } from '../s
  * - any known email signs in with any password except the literal "incorrecta";
  * - unknown emails answer 401, like wrong credentials;
  * - scenario "email-sin-verificar" (or an unverified user) answers 403 `email_not_verified`;
+ * - the password "limite" answers 429 (too many attempts) and "caida" answers 500, to see A1's error states;
  * - tokens "invalido" / "vencido" fail in verify-email and password-reset/confirm.
  */
 export const authHandlers = [
   route(contract.login, ({ db, body }) => {
+    if (body.password === 'limite') throw new MockHttpError(429, { detail: 'Request was throttled. Expected available in 60 seconds.' });
+    if (body.password === 'caida') throw new MockHttpError(500, { detail: 'Internal server error' });
     const user = db.users.find((item) => item.email.toLowerCase() === body.email.toLowerCase());
     if (!user || body.password === 'incorrecta') {
       throw new MockHttpError(401, { detail: 'No active account found with the given credentials' });

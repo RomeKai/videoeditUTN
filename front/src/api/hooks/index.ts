@@ -5,6 +5,7 @@ export * from './brandkits';
 export * from './clips';
 export * from './notifications';
 export * from './projects';
+export * from './scope';
 export * from './social';
 export * from './system';
 export * from './users';

@@ -61,7 +61,8 @@ export function Dialog({
   const titleId = useId();
   const descriptionId = useId();
   const isClient = useIsClient();
-  const ref = useModalLayer<HTMLDivElement>({ open, onClose, dismissable });
+  // Only once the portal exists: a dialog open on the first render mounts after hydration.
+  const ref = useModalLayer<HTMLDivElement>({ open: open && isClient, onClose, dismissable });
   if (!open || !isClient) return null;
   return createPortal(
     <div
@@ -121,7 +122,8 @@ export interface DrawerProps {
 export function Drawer({ open, onClose, title, description, footer, wide = false, dismissable = true, className, children }: DrawerProps) {
   const titleId = useId();
   const isClient = useIsClient();
-  const ref = useModalLayer<HTMLDivElement>({ open, onClose, dismissable });
+  // Only once the portal exists: a dialog open on the first render mounts after hydration.
+  const ref = useModalLayer<HTMLDivElement>({ open: open && isClient, onClose, dismissable });
   if (!open || !isClient) return null;
   return createPortal(
     <div

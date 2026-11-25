@@ -6,7 +6,7 @@ import { apiCall, toFormData } from './client';
 import { API_URL, WORKSPACE_HEADER } from './config';
 import { defineEndpoint } from './endpoint';
 import { ApiError, ContractError, NetworkError, SessionExpiredError } from './errors';
-import { getTokens, onSessionExpired, setActiveWorkspaceId, setTokens } from './session';
+import { clearSession, getActiveWorkspaceId, getTokens, isSessionExpired, onMaintenance, onSessionExpired, setActiveWorkspaceId, setTokens } from './session';
 
 const Thing = z.object({ id: z.number(), name: z.string() });
 
@@ -47,6 +47,39 @@ const publicThing = defineEndpoint({
   backend: { status: 'proposed', note: 'Solo para el test.' },
   screens: ['test'],
 });
+
+const optionalThing = defineEndpoint({
+  id: 'test.optional',
+  method: 'POST',
+  path: '/api/v1/optional/',
+  summary: 'Endpoint público que manda el token si hay sesión.',
+  request: z.object({}),
+  response: z.object({ user: z.string().nullable() }),
+  auth: 'optional',
+  workspaceScoped: false,
+  errors: [],
+  backend: { status: 'proposed', note: 'Solo para el test.' },
+  screens: ['test'],
+});
+
+const uploadThing = defineEndpoint({
+  id: 'test.upload',
+  method: 'POST',
+  path: '/api/v1/uploads/',
+  summary: 'Subida de prueba.',
+  request: z.object({ title: z.string() }),
+  bodyType: 'multipart',
+  response: z.object({ ok: z.boolean() }),
+  errors: [],
+  backend: { status: 'proposed', note: 'Solo para el test.' },
+  screens: ['test'],
+});
+
+/** A JWT-shaped token that expires `seconds` from now. */
+function jwt(seconds: number, name: string): string {
+  const payload = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + seconds, name })).replace(/=+$/, '');
+  return `h.${payload}.s`;
+}
 
 const deleteThing = defineEndpoint({
   id: 'test.deleteThing',
@@ -200,6 +233,137 @@ describe('apiCall', () => {
     setTokens({ access: 'acceso-1', refresh: 'refresh-1' });
     server.use(http.get(`${API_URL}/api/v1/things/:id/`, () => HttpResponse.error()));
     await expect(apiCall(getThing, { params: { id: '1' } })).rejects.toBeInstanceOf(NetworkError);
+  });
+});
+
+describe('sesión', () => {
+  it('un endpoint opcional manda el token y lo renueva ante un 401', async () => {
+    setTokens({ access: 'vencido', refresh: 'refresh-1' });
+    server.use(
+      http.post(`${API_URL}/api/v1/optional/`, ({ request }) => {
+        const header = request.headers.get('Authorization');
+        if (header === 'Bearer vencido') return HttpResponse.json({ detail: 'Token vencido' }, { status: 401 });
+        return HttpResponse.json({ user: header ? 'lucia' : null });
+      }),
+      http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ access: 'nuevo', refresh: 'refresh-2' })),
+    );
+    await expect(apiCall(optionalThing, { body: {} })).resolves.toEqual({ user: 'lucia' });
+    // Without a session it goes out with no token at all.
+    setTokens(null);
+    await expect(apiCall(optionalThing, { body: {} })).resolves.toEqual({ user: null });
+  });
+
+  it('un endpoint opcional con la sesión muerta sigue como público, sin abrir «sesión vencida»', async () => {
+    setTokens({ access: 'vencido', refresh: 'refresh-vencido' });
+    const expired = vi.fn();
+    const off = onSessionExpired(expired);
+    server.use(
+      http.post(`${API_URL}/api/v1/optional/`, ({ request }) =>
+        request.headers.get('Authorization') ? HttpResponse.json({ detail: 'Token vencido' }, { status: 401 }) : HttpResponse.json({ user: null }),
+      ),
+      http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ detail: 'Token is invalid or expired' }, { status: 401 })),
+    );
+    await expect(apiCall(optionalThing, { body: {} })).resolves.toEqual({ user: null });
+    expect(expired).not.toHaveBeenCalled();
+    off();
+  });
+
+  it('un 500 o un 429 al renovar no es una sesión vencida', async () => {
+    setTokens({ access: 'vencido', refresh: 'refresh-1' });
+    const expired = vi.fn();
+    const off = onSessionExpired(expired);
+    for (const status of [500, 429]) {
+      server.use(
+        http.get(`${API_URL}/api/v1/things/:id/`, () => HttpResponse.json({ detail: 'Token vencido' }, { status: 401 })),
+        http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ detail: 'x' }, { status })),
+      );
+      const error = await apiCall(getThing, { params: { id: '1' } }).catch((reason: unknown) => reason);
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as ApiError).status).toBe(status);
+    }
+    expect(expired).not.toHaveBeenCalled();
+    expect(isSessionExpired()).toBe(false);
+    expect(getTokens()).toEqual({ access: 'vencido', refresh: 'refresh-1' });
+    off();
+  });
+
+  it('con la sesión vencida no sale nada más hasta que haya tokens nuevos', async () => {
+    setTokens({ access: 'vencido', refresh: 'refresh-vencido' });
+    let calls = 0;
+    server.use(
+      http.get(`${API_URL}/api/v1/things/:id/`, ({ request }) => {
+        calls += 1;
+        return request.headers.get('Authorization') === 'Bearer nuevo'
+          ? HttpResponse.json({ id: 1, name: 'Ok' })
+          : HttpResponse.json({ detail: 'Token vencido' }, { status: 401 });
+      }),
+      http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ detail: 'Token is invalid or expired' }, { status: 401 })),
+    );
+    await expect(apiCall(getThing, { params: { id: '1' } })).rejects.toBeInstanceOf(SessionExpiredError);
+    expect(isSessionExpired()).toBe(true);
+    const before = calls;
+    await expect(apiCall(getThing, { params: { id: '1' } })).rejects.toBeInstanceOf(SessionExpiredError);
+    expect(calls).toBe(before);
+    // Signing in again (dialog D9) ends the expired state.
+    setTokens({ access: 'nuevo', refresh: 'refresh-2' });
+    await expect(apiCall(getThing, { params: { id: '1' } })).resolves.toEqual({ id: 1, name: 'Ok' });
+  });
+
+  it('si otra pestaña ya renovó, usa su token sin gastar otro refresh', async () => {
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    let refreshes = 0;
+    server.use(
+      http.get(`${API_URL}/api/v1/things/:id/`, ({ request }) => {
+        if (request.headers.get('Authorization') === 'Bearer viejo') {
+          // While this request was in flight, another tab stored a new pair.
+          setTokens({ access: 'de-otra-pestaña', refresh: 'refresh-2' });
+          return HttpResponse.json({ detail: 'Token vencido' }, { status: 401 });
+        }
+        return HttpResponse.json({ id: 1, name: 'Ok' });
+      }),
+      http.post(`${API_URL}/api/token/refresh/`, () => {
+        refreshes += 1;
+        return HttpResponse.json({ detail: 'rotado' }, { status: 401 });
+      }),
+    );
+    await expect(apiCall(getThing, { params: { id: '1' } })).resolves.toEqual({ id: 1, name: 'Ok' });
+    expect(refreshes).toBe(0);
+  });
+
+  it('antes de una subida renueva un token que está por vencer', async () => {
+    const almost = jwt(30, 'por-vencer');
+    const fresh = jwt(1500, 'nuevo');
+    setTokens({ access: almost, refresh: 'refresh-1' });
+    let used: string | null = null;
+    server.use(
+      http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ access: fresh, refresh: 'refresh-2' })),
+      http.post(`${API_URL}/api/v1/uploads/`, ({ request }) => {
+        used = request.headers.get('Authorization');
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    await apiCall(uploadThing, { body: { title: 'x' } });
+    expect(used).toBe(`Bearer ${fresh}`);
+  });
+
+  it('cerrar sesión borra también el workspace activo', () => {
+    setTokens({ access: 'a', refresh: 'r' });
+    setActiveWorkspaceId('ws-1');
+    clearSession();
+    expect(getTokens()).toBeNull();
+    expect(getActiveWorkspaceId()).toBeNull();
+  });
+
+  it('un 503 avisa mantenimiento y la respuesta siguiente lo levanta', async () => {
+    setTokens({ access: 'acceso-1', refresh: 'refresh-1' });
+    const seen: boolean[] = [];
+    const off = onMaintenance((active) => seen.push(active));
+    server.use(http.get(`${API_URL}/api/v1/things/:id/`, () => HttpResponse.json({ detail: 'Service Unavailable' }, { status: 503 })));
+    await apiCall(getThing, { params: { id: '1' } }).catch(() => undefined);
+    server.use(http.get(`${API_URL}/api/v1/things/:id/`, () => HttpResponse.json({ id: 1, name: 'Ok' })));
+    await apiCall(getThing, { params: { id: '1' } });
+    expect(seen).toEqual([true, false]);
+    off();
   });
 });
 

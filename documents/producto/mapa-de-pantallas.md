@@ -344,7 +344,7 @@ Otras respuestas:
      - Seguir caras. Con el layout Quien habla se muestra prendido y deshabilitado: ese layout siempre sigue caras para saber quién habla.
      - Quitar silencios.
      - SEO (+5 tokens, según el plan).
-     - "Renderizar sin revisar" (`auto_render_bypass`), apagado por defecto. Al apagarlo, el proyecto se detiene en la revisión.
+     - "Renderizar sin revisar" (`auto_render_bypass`), apagado por defecto. Al apagarlo, el proyecto se detiene en la revisión. Prendido, cuando los clips están elegidos se reserva su render (mismo precio que aprobarlos) y se cobra solo lo que se entregó. Si no alcanza el saldo (`metadata.auto_render_skipped=insufficient_funds`) o supera el plan (`plan_limit`), el proyecto se detiene en la revisión con un aviso que dice por qué: "No alcanzó el saldo para renderizar sin revisar" o "Tu plan no permite renderizar estos clips sin revisar", y "Revisá y aprobá los clips que quieras".
 - **Opciones avanzadas:** posición del gameplay y cámara manual van en un bloque "Avanzado" cerrado por defecto. Se ve solo con los layouts Dividido o Versus.
   - **Dividido:** posición del gameplay (izquierda, centro, derecha), lado de la cámara (izquierda, centro = todo el cuadro, derecha) y cámara manual (centro x/y y zoom). La cámara manual reemplaza al lado elegido y a Seguir caras.
   - **Versus:** solo la cámara manual, que encuadra igual a las dos personas (una por mitad). La posición del gameplay y el lado de la cámara no se muestran.

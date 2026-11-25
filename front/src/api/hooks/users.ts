@@ -1,16 +1,10 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useSyncExternalStore } from 'react';
 import { apiCall } from '../client';
 import * as contract from '../contracts/users';
 import { keys } from '../query';
-import { getAccessSnapshot, subscribeSession } from '../session';
-
-/** True while there is a stored session (does not say it is still valid). */
-export function useHasSession(): boolean {
-  return useSyncExternalStore(subscribeSession, () => getAccessSnapshot() !== null, () => false);
-}
+import { useHasSession } from './scope';
 
 /** Profile, workspaces and role in each. Only runs with a session. */
 export function useMe() {

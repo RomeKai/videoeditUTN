@@ -100,6 +100,10 @@ export function route<E extends AnyEndpoint>(endpoint: E, resolver: Resolver<E>)
         throw new MockHttpError(500, { detail: 'Error interno del servidor.' });
       }
 
+      if (db.flags.maintenance && endpoint.id !== 'system.status') {
+        throw new MockHttpError(503, { detail: 'Service temporarily unavailable.' });
+      }
+
       const header = request.headers.get('Authorization');
       const userId = header?.startsWith('Bearer ') ? userIdFromToken(header.slice(7), 'access') : null;
       const maybeUser = db.flags.sessionExpired ? null : (db.users.find((item) => item.id === userId) ?? null);

@@ -1,14 +1,15 @@
 'use client';
 
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQueryClient } from '@tanstack/react-query';
 import { describeProjectStatus } from '@/lib/project-status';
 import { apiCall } from '../client';
 import * as contract from '../contracts/projects';
 import { keys, pollWhile } from '../query';
+import { scopedKey, useScopedQuery } from './scope';
 
 /** B2: paginated list (25 per page). Polls every 5 s while any project of the page is in progress. */
 export function useProjects(query: contract.ProjectsQuery = {}, { enabled = true }: { enabled?: boolean } = {}) {
-  return useQuery({
+  return useScopedQuery({
     queryKey: keys.projects.list(query),
     queryFn: ({ signal }) => apiCall(contract.listProjects, { query, signal }),
     placeholderData: keepPreviousData,
@@ -19,7 +20,7 @@ export function useProjects(query: contract.ProjectsQuery = {}, { enabled = true
 
 /** D1 and its tabs: polls every 5 s until the project reaches a final state. */
 export function useProject(id: string | null | undefined) {
-  return useQuery({
+  return useScopedQuery({
     queryKey: keys.projects.detail(id ?? ''),
     queryFn: ({ signal }) => apiCall(contract.getProject, { params: { id: id ?? '' }, signal }),
     enabled: Boolean(id),
@@ -62,7 +63,7 @@ export function useRenameProject(id: string) {
   return useMutation({
     mutationFn: (title: string) => apiCall(contract.updateProject, { params: { id }, body: { title } }),
     onSuccess: (project) => {
-      queryClient.setQueryData(keys.projects.detail(id), project);
+      queryClient.setQueryData(scopedKey(keys.projects.detail(id)), project);
       return queryClient.invalidateQueries({ queryKey: keys.projects.all });
     },
   });
@@ -84,7 +85,7 @@ export function useDeleteProject() {
 
 /** D2: proxy video, transcript and suggested clips. */
 export function usePaperEditData(id: string | null | undefined) {
-  return useQuery({
+  return useScopedQuery({
     queryKey: keys.projects.paperEdit(id ?? ''),
     queryFn: ({ signal }) => apiCall(contract.getPaperEditData, { params: { id: id ?? '' }, signal }),
     enabled: Boolean(id),
@@ -127,7 +128,7 @@ export function useRerenderProject(id: string) {
 }
 
 export function useProjectActivity(id: string | null | undefined) {
-  return useQuery({
+  return useScopedQuery({
     queryKey: keys.projects.activity(id ?? ''),
     queryFn: ({ signal }) => apiCall(contract.getProjectActivity, { params: { id: id ?? '' }, signal }),
     enabled: Boolean(id),
