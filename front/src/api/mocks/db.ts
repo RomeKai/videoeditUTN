@@ -181,6 +181,6 @@ export interface MockDb {
   resendAt: Record<string, number>;
 }
 
-export const DB_VERSION = 9;
+export const DB_VERSION = 10;
 
 export const PLATFORMS: Platform[] = ['TIKTOK', 'INSTAGRAM_REELS', 'YOUTUBE_SHORTS'];
