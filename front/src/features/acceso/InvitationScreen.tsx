@@ -2,10 +2,11 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useRef, useState, type FormEvent, type ReactNode } from 'react';
 import type { InvitationPreview } from '@/api/contracts/workspaces';
 import { ApiError } from '@/api/errors';
 import { useAcceptInvitation, useInvitation, useLogout } from '@/api/hooks';
+import { errorMessage, fieldError } from '@/lib/error-messages';
 import { ROLE_LABEL } from '@/lib/permissions';
 import { LoadError } from '@/shell/LoadError';
 import { useSession } from '@/shell/session';
@@ -27,9 +28,12 @@ const sameEmail = (a: string, b: string) => a.trim().toLowerCase() === b.trim().
 export function InvitationScreen({ token }: { token: string }) {
   const invitation = useInvitation(token);
   const { status, me } = useSession();
+  // Accepting changes what this screen is made of (the invitation becomes "used", a session appears).
+  // While the user is on the way to the app the card stays as it was, instead of flashing its other states.
+  const [joining, setJoining] = useState<{ data: InvitationPreview; mode: Mode } | null>(null);
   const loginHref = `/login?siguiente=${encodeURIComponent(`/invitacion/${token}`)}`;
 
-  if (invitation.isPending) {
+  if (!joining && invitation.isPending) {
     return (
       <Card className={styles.card} aria-busy="true">
         <span className="sr-only">Cargando la invitación</span>
@@ -45,7 +49,7 @@ export function InvitationScreen({ token }: { token: string }) {
     );
   }
 
-  if (invitation.isError) {
+  if (!joining && (invitation.isError || !invitation.data)) {
     if (invitation.error instanceof ApiError && invitation.error.status === 404) {
       return (
         <StateCard badge={<Badge dot>No existe</Badge>} title="Esta invitación no existe">
@@ -63,10 +67,10 @@ export function InvitationScreen({ token }: { token: string }) {
     );
   }
 
-  const data = invitation.data;
-  const member = status === 'authenticated' && me ? me.workspaces.some((workspace) => workspace.name === data.workspace_name) : false;
+  const data = joining?.data ?? (invitation.data as InvitationPreview);
+  const member = status === 'authenticated' && me ? me.workspaces.some((workspace) => workspace.id === data.workspace_id) : false;
 
-  if (data.status === 'expired') {
+  if (!joining && data.status === 'expired') {
     return (
       <StateCard badge={<Badge tone="warn" dot>Vencida</Badge>} title="Esta invitación venció">
         Pedile a {data.inviter_name} que te mande una nueva.
@@ -74,13 +78,13 @@ export function InvitationScreen({ token }: { token: string }) {
     );
   }
 
-  if (data.status === 'used') {
+  if (!joining && data.status === 'used') {
     if (member) {
       return (
         <StateCard
           badge={<Badge tone="ok" dot>Ya sos miembro</Badge>}
           title={`Ya sos parte de ${data.workspace_name}`}
-          action={<EnterWorkspace name={data.workspace_name} />}
+          action={<EnterWorkspace id={data.workspace_id} name={data.workspace_name} />}
         >
           No hace falta aceptar nada más: la invitación ya se usó.
         </StateCard>
@@ -97,18 +101,33 @@ export function InvitationScreen({ token }: { token: string }) {
     );
   }
 
+  const mode: Mode =
+    joining?.mode ??
+    (status === 'loading'
+      ? 'loading'
+      : status === 'authenticated' && me
+        ? sameEmail(me.email, data.email)
+          ? 'accept'
+          : 'other'
+        : data.has_account
+          ? 'login'
+          : 'create');
+  const flow = { token, invitation: data, loginHref, onJoining: (active: boolean) => setJoining(active ? { data, mode } : null) };
+
   let body: ReactNode;
   let footer: ReactNode = null;
-  if (status === 'loading') {
+  if (mode === 'loading') {
     body = (
       <div className={styles.form} aria-busy="true">
         <Skeleton height={36} />
         <Skeleton height={36} />
       </div>
     );
-  } else if (status === 'authenticated' && me) {
-    body = sameEmail(me.email, data.email) ? <AcceptAsMember token={token} invitation={data} /> : <OtherAccount invitation={data} />;
-  } else if (data.has_account) {
+  } else if (mode === 'accept') {
+    body = <AcceptAsMember {...flow} />;
+  } else if (mode === 'other') {
+    body = <OtherAccount invitation={data} />;
+  } else if (mode === 'login') {
     body = (
       <div className={styles.form}>
         <p className="t-small muted">
@@ -120,7 +139,7 @@ export function InvitationScreen({ token }: { token: string }) {
       </div>
     );
   } else {
-    body = <CreateAccount token={token} invitation={data} loginHref={loginHref} />;
+    body = <CreateAccount {...flow} />;
     footer = (
       <>
         ¿Ya tenés cuenta?{' '}
@@ -167,15 +186,14 @@ function StateCard({ badge, title, action, children }: { badge: ReactNode; title
 }
 
 /** Opens the app on the workspace of the invitation. */
-function EnterWorkspace({ name }: { name: string }) {
+function EnterWorkspace({ id, name }: { id: string; name: string }) {
   const router = useRouter();
-  const { me, switchWorkspace } = useSession();
+  const { switchWorkspace } = useSession();
   const [busy, setBusy] = useState(false);
   const enter = async () => {
-    const workspace = me?.workspaces.find((item) => item.name === name);
     setBusy(true);
     try {
-      if (workspace) await switchWorkspace(workspace.id);
+      await switchWorkspace(id);
     } catch {
       // The app opens on the workspace it had: the switcher is one click away.
     }
@@ -204,41 +222,83 @@ function useJoin(invitation: InvitationPreview) {
   };
 }
 
-/** Errors of "accept" that are not about a field. A 410 reloads the invitation, which then explains itself. */
-function AcceptError({ error }: { error: unknown }) {
+/**
+ * Every error of "accept" that is not shown under a field. A 410 is the exception: it reloads the
+ * invitation, which then explains by itself that it expired or was used.
+ */
+function AcceptError({ error, loginHref, email }: { error: unknown; loginHref: string; email: string }) {
   if (!error) return null;
-  if (error instanceof ApiError && (error.status === 400 || error.status === 410 || error.status === 401)) return null;
+  if (error instanceof ApiError) {
+    if (error.status === 410) return null;
+    if (error.status === 401) {
+      return (
+        <Banner
+          tone="err"
+          title="Hace falta iniciar sesión"
+          action={
+            <Button size="sm" variant="secondary" href={`${loginHref}&email=${encodeURIComponent(email)}`}>
+              Iniciar sesión
+            </Button>
+          }
+        >
+          Tu sesión se cerró o este email ya tiene una cuenta. Entrá con {email} para aceptar la invitación.
+        </Banner>
+      );
+    }
+    if (error.status === 400) {
+      // Field errors are under their fields; anything else of a 400 is said here.
+      if (fieldError(error, 'name') || fieldError(error, 'password')) return null;
+      return <Banner tone="err">{errorMessage(error, 'No pudimos aceptar la invitación. Revisá los datos y probá de nuevo.')}</Banner>;
+    }
+  }
   return <Banner tone="err">{requestErrorMessage(error)}</Banner>;
 }
 
-function AcceptAsMember({ token, invitation }: { token: string; invitation: InvitationPreview }) {
+type Mode = 'loading' | 'accept' | 'other' | 'login' | 'create';
+
+interface FlowProps {
+  token: string;
+  invitation: InvitationPreview;
+  loginHref: string;
+  /** Tells the screen to keep this card while the app opens (and to let go if accepting fails). */
+  onJoining: (active: boolean) => void;
+}
+
+function AcceptAsMember({ token, invitation, loginHref, onJoining }: FlowProps) {
   const { me } = useSession();
   const accept = useAcceptInvitation(token);
   const invitationQuery = useInvitation(token);
   const join = useJoin(invitation);
-  const [joining, setJoining] = useState(false);
-  if (!me) return null;
-  // mutateAsync: the answer reloads the invitation (now "used"), which unmounts this form before a mutate() callback could run.
+  const [busy, setBusy] = useState(false);
+  const shown = useRef(me);
+  // Kept while joining: the profile is refetched (and may blink) on the way to the app.
+  if (me) shown.current = me;
+  const who = shown.current;
+  if (!who) return null;
   const submit = async () => {
+    if (busy) return;
+    setBusy(true);
+    onJoining(true);
     try {
       const result = await accept.mutateAsync({});
-      setJoining(true);
       await join(result.workspace_id);
     } catch (error) {
+      onJoining(false);
+      setBusy(false);
       if (error instanceof ApiError && error.status === 410) void invitationQuery.refetch();
     }
   };
   return (
     <div className={styles.form}>
-      <AcceptError error={accept.error} />
+      <AcceptError error={accept.error} loginHref={loginHref} email={invitation.email} />
       <div className={styles.who}>
-        <Avatar name={me.name} seed={me.id} />
+        <Avatar name={who.name} seed={who.id} />
         <span className={styles.whoText}>
-          <span className={styles.strong}>{me.name}</span>
-          <span className="t-small muted">{me.email}</span>
+          <span className={styles.strong}>{who.name}</span>
+          <span className="t-small muted">{who.email}</span>
         </span>
       </div>
-      <Button variant="primary" block loading={accept.isPending || joining} onClick={() => void submit()} className={styles.tall}>
+      <Button variant="primary" block loading={busy} onClick={() => void submit()} className={styles.tall}>
         Aceptar invitación
       </Button>
     </div>
@@ -268,39 +328,39 @@ function OtherAccount({ invitation }: { invitation: InvitationPreview }) {
   );
 }
 
-function CreateAccount({ token, invitation, loginHref }: { token: string; invitation: InvitationPreview; loginHref: string }) {
-  const router = useRouter();
+function CreateAccount({ token, invitation, loginHref, onJoining }: FlowProps) {
   const accept = useAcceptInvitation(token);
   const invitationQuery = useInvitation(token);
   const join = useJoin(invitation);
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
   const [terms, setTerms] = useState(false);
-  const [joining, setJoining] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<{ name?: string; password?: string; terms?: boolean }>({});
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (accept.isPending || joining) return;
+    if (busy) return;
     const found = { name: nameError(name), password: newPasswordError(password), terms: !terms };
     setErrors(found);
     if (found.name || found.password || found.terms) return;
+    setBusy(true);
+    onJoining(true);
     try {
       const result = await accept.mutateAsync({ name: name.trim(), password, terms_accepted: true });
-      setJoining(true);
       await join(result.workspace_id);
     } catch (error) {
+      onJoining(false);
+      setBusy(false);
       if (!(error instanceof ApiError)) return;
-      if (error.status === 400) setErrors({ name: error.fieldErrors.name?.[0], password: error.fieldErrors.password?.[0] });
-      // Someone created the account in the meantime: accepting now needs its session.
-      if (error.status === 401) router.push(`${loginHref}&email=${encodeURIComponent(invitation.email)}`);
+      if (error.status === 400) setErrors({ name: fieldError(error, 'name'), password: fieldError(error, 'password') });
       if (error.status === 410) void invitationQuery.refetch();
     }
   };
 
   return (
     <form className={cx(styles.form, styles.phone)} onSubmit={(event) => void submit(event)} noValidate>
-      <AcceptError error={accept.error} />
+      <AcceptError error={accept.error} loginHref={loginHref} email={invitation.email} />
       <p className="t-small muted">Todavía no tenés cuenta con este email. Creala acá mismo para sumarte.</p>
       <Field label="Email" hint="La invitación es para este email.">
         <Input type="email" value={invitation.email} disabled readOnly className={styles.readonly} />
@@ -337,7 +397,7 @@ function CreateAccount({ token, invitation, loginHref }: { token: string; invita
           setErrors((current) => ({ ...current, terms: undefined }));
         }}
       />
-      <Button variant="primary" type="submit" block loading={accept.isPending || joining}>
+      <Button variant="primary" type="submit" block loading={busy}>
         Crear cuenta y unirme
       </Button>
     </form>

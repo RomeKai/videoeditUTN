@@ -12,9 +12,47 @@ export const HOME = '/proyectos';
  * would let a link send people to another site after signing in.
  */
 export function safeNext(next: string | null | undefined): string | null {
-  if (!next || !next.startsWith('/') || next.startsWith('//') || next.includes('\\')) return null;
-  if (/^\/(login|registro|verificar|recuperar)(\/|\?|$)/.test(next)) return null;
-  return next;
+  if (!next || !next.startsWith('/') || next.startsWith('//')) return null;
+  // The URL parser drops tabs and line breaks and reads "\" as "/": "/<TAB>/otro.sitio" would become "//otro.sitio".
+  if (/[\u0000-\u001F\u007F\s\\]/.test(next)) return null;
+  let url: URL;
+  try {
+    url = new URL(next, PARSE_ORIGIN);
+  } catch {
+    return null;
+  }
+  if (url.origin !== PARSE_ORIGIN) return null;
+  // "/.//otro.sitio" normalises to "//otro.sitio", which a browser reads as another host.
+  if (url.pathname.startsWith('//')) return null;
+  if (/^\/(login|registro|verificar|recuperar)(\/|$)/.test(url.pathname)) return null;
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+const PARSE_ORIGIN = 'http://app.invalid';
+const NEXT_KEY = 'oc.acceso.siguiente';
+
+/**
+ * Remembers where the user was going while the email gets verified (A1 → A3 → link of the email).
+ * The link usually opens in another tab, hence localStorage.
+ */
+export function rememberNext(next: string | null | undefined): void {
+  const safe = safeNext(next);
+  try {
+    if (safe) window.localStorage.setItem(NEXT_KEY, safe);
+  } catch {
+    // Private mode: the verification ends in the welcome, as usual.
+  }
+}
+
+/** Reads (and forgets) the page remembered by `rememberNext`. */
+export function takeNext(): string | null {
+  try {
+    const stored = window.localStorage.getItem(NEXT_KEY);
+    window.localStorage.removeItem(NEXT_KEY);
+    return safeNext(stored);
+  } catch {
+    return null;
+  }
 }
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

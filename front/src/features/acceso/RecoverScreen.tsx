@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 import { ApiError } from '@/api/errors';
 import { useConfirmPasswordReset, useLogin, useRequestPasswordReset } from '@/api/hooks';
+import { fieldError } from '@/lib/error-messages';
 import { AuthCard } from '@/shell/PublicShell';
 import { Banner, Button, Field, Input, Num, PasswordInput, cx, useToast } from '@/ui';
 import styles from './acceso.module.css';
@@ -135,9 +136,8 @@ function NewPassword({ token, email }: { token: string; email: string }) {
           );
         },
         onError: (error) => {
-          if (error instanceof ApiError && error.status === 400 && error.fieldErrors.password?.[0]) {
-            setErrors({ password: error.fieldErrors.password[0] });
-          }
+          const problem = fieldError(error, 'password');
+          if (problem) setErrors({ password: problem });
         },
       },
     );

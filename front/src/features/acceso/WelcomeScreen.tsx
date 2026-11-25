@@ -1,10 +1,11 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import type { Me, OnboardingUseCase, WorkspaceSummary } from '@/api/contracts/users';
 import { ApiError } from '@/api/errors';
 import { useUpdateMe, useUpdateWorkspace } from '@/api/hooks';
+import { fieldError } from '@/lib/error-messages';
 import { formatMinutes } from '@/lib/format';
 import { markWelcomeSeen, usePermissions, usePlan, useSession } from '@/shell/session';
 import { Avatar, Badge, Banner, Button, Card, CardFoot, Field, Icon, Input, Num, Tokens, cx } from '@/ui';
@@ -152,6 +153,16 @@ function WelcomeSteps({ me, workspace, initialStep }: { me: Me; workspace: Works
   const [useCase, setUseCase] = useState<OnboardingUseCase>(me.onboarding_use_case ?? 'podcast');
   const [leaving, setLeaving] = useState<'skip' | 'finish' | null>(null);
   const radios = useRef<Array<HTMLButtonElement | null>>([]);
+  const heading = useRef<HTMLHeadingElement | null>(null);
+  const shown = useRef(step);
+
+  // A new step announces itself and takes the focus: otherwise it stays on the button that was pressed,
+  // and a second Enter would press whatever the next step put in its place.
+  useEffect(() => {
+    if (shown.current === step) return;
+    shown.current = step;
+    heading.current?.focus();
+  }, [step]);
 
   const canRename = can('workspace.rename');
   const shownName = name.trim() || workspace.name;
@@ -181,7 +192,7 @@ function WelcomeSteps({ me, workspace, initialStep }: { me: Me; workspace: Works
     renameWorkspace.mutate(clean, {
       onSuccess: () => setStep(2),
       onError: (error) =>
-        setNameError(error instanceof ApiError && error.status === 400 ? (error.fieldErrors.name?.[0] ?? error.message) : requestErrorMessage(error)),
+        setNameError(error instanceof ApiError && error.status === 400 ? (fieldError(error, 'name') ?? 'Revisá el nombre y probá de nuevo.') : requestErrorMessage(error)),
     });
   };
 
@@ -217,7 +228,9 @@ function WelcomeSteps({ me, workspace, initialStep }: { me: Me; workspace: Works
         <div className={styles.welcomeBody}>
           <Steps step={1} />
           <div className={styles.title}>
-            <h1 className="t-h2">¿Cómo se llama tu workspace?</h1>
+            <h1 className="t-h2" ref={heading} tabIndex={-1}>
+              ¿Cómo se llama tu workspace?
+            </h1>
             <p className="t-small muted">
               Es el espacio donde viven tus proyectos, tus brand kits y tu saldo de tokens. Puede ser tu nombre, el de tu canal o el de tu equipo.
             </p>
@@ -270,7 +283,7 @@ function WelcomeSteps({ me, workspace, initialStep }: { me: Me; workspace: Works
         <div className={styles.welcomeBody}>
           <Steps step={2} />
           <div className={styles.title}>
-            <h1 className="t-h2" id="welcome-use">
+            <h1 className="t-h2" id="welcome-use" ref={heading} tabIndex={-1}>
               ¿Para qué lo vas a usar?
             </h1>
             <p className="t-small muted">
@@ -330,7 +343,9 @@ function WelcomeSteps({ me, workspace, initialStep }: { me: Me; workspace: Works
       <div className={styles.welcomeBody}>
         <Steps step={3} />
         <div className={styles.title}>
-          <h1 className="t-h2">Todo listo para tu primer video</h1>
+          <h1 className="t-h2" ref={heading} tabIndex={-1}>
+            Todo listo para tu primer video
+          </h1>
           <p className="t-small muted">Esto es lo que elegiste. Tu primer proyecto arranca con esta configuración y la podés cambiar antes de crearlo.</p>
         </div>
         <dl className={styles.summary}>

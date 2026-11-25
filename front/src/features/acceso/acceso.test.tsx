@@ -2,6 +2,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactElement } from 'react';
+import { http, HttpResponse } from 'msw';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createQueryClient } from '@/api/query';
 import { getActiveWorkspaceId, getTokens, setTokens } from '@/api/session';
@@ -63,6 +64,27 @@ describe('lib', () => {
     expect(safeNext('/\\otro.sitio')).toBeNull();
     expect(safeNext('/login?siguiente=/login')).toBeNull();
     expect(safeNext(null)).toBeNull();
+    expect(safeNext('/proyectos/abc?publicar=1#clips')).toBe('/proyectos/abc?publicar=1#clips');
+  });
+
+  it('safeNext rechaza lo que el navegador convertiría en otro sitio', () => {
+    // The URL parser drops tabs and line breaks: "/<TAB>/otro.sitio" is "//otro.sitio" for a browser.
+    for (const value of ['/\t/otro.sitio', '/\n/otro.sitio', '/\r/otro.sitio', '/\r\n/otro.sitio', '/ /otro.sitio', '/\u0000/otro.sitio', '/\u007f/otro.sitio', '/proyectos\t']) {
+      expect(safeNext(value), JSON.stringify(value)).toBeNull();
+    }
+    // Backslashes count as slashes, and dot segments are removed.
+    for (const value of ['/\\otro.sitio', '\\\\otro.sitio', '/.//otro.sitio', '/./\\otro.sitio', '/a/..//otro.sitio', '/%2e//otro.sitio']) {
+      expect(safeNext(value), JSON.stringify(value)).toBeNull();
+    }
+    for (const value of ['javascript:alert(1)', 'http://otro.sitio', 'otro.sitio', '', '/login', '/registro?x=1', '/a/../login']) {
+      expect(safeNext(value), JSON.stringify(value)).toBeNull();
+    }
+    // Whatever is accepted resolves inside the app.
+    for (const value of ['/uso/movimientos', '/a/../proyectos', '/proyectos?x=//otro.sitio', '/invitacion/valida']) {
+      const result = safeNext(value);
+      expect(result, value).not.toBeNull();
+      expect(new URL(result as string, 'https://app.onecreator.test').origin).toBe('https://app.onecreator.test');
+    }
   });
 
   it('lee la espera de un 429 y arma la cuenta regresiva', () => {
@@ -137,6 +159,42 @@ describe('A1 · Iniciar sesión', () => {
     await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/proyectos'));
   });
 
+  it('con sesión, un «siguiente» con un tabulador no saca de la app', async () => {
+    scenario('estudio-norte');
+    show(<LoginScreen next={'/\t/otro.sitio'} />);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/proyectos'));
+    expect(nav.replace).toHaveBeenCalledTimes(1);
+  });
+
+  it('si la contraseña está bien pero el perfil no carga, lo dice y deja reintentar', async () => {
+    scenario('sin-sesion');
+    // Today's backend has no /me yet: the token arrives and the profile fails.
+    server.use(http.get('http://localhost:8000/api/v1/me/', () => HttpResponse.json({ detail: 'Not found.' }, { status: 404 })));
+    const user = userEvent.setup();
+    show(<LoginScreen />);
+    await user.type(screen.getByLabelText('Email'), 'lucia@estudionorte.com');
+    await user.type(password(), 'contrasena');
+    await user.click(screen.getByRole('button', { name: 'Iniciar sesión' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Entraste, pero no pudimos cargar tu cuenta');
+    expect(alert).toHaveTextContent('Algo falló de nuestro lado. Probá de nuevo en un momento.');
+    // The form is usable again: no endless spinner.
+    expect(screen.getByRole('button', { name: 'Iniciar sesión' })).not.toHaveAttribute('aria-busy');
+    expect(nav.replace).not.toHaveBeenCalled();
+
+    server.resetHandlers();
+    await user.click(within(alert).getByRole('button', { name: 'Reintentar' }));
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/proyectos'));
+  });
+
+  it('llegar con una sesión cuyo perfil no carga también muestra el error', async () => {
+    scenario('estudio-norte');
+    server.use(http.get('http://localhost:8000/api/v1/me/', () => HttpResponse.json({ detail: 'boom' }, { status: 500 })));
+    show(<LoginScreen />);
+    expect(await screen.findByRole('alert', {}, { timeout: 5000 })).toHaveTextContent('Entraste, pero no pudimos cargar tu cuenta');
+    expect(screen.getByRole('button', { name: 'Reintentar' })).toBeInTheDocument();
+  });
+
   it('una cuenta nueva entra por la Bienvenida', async () => {
     scenario('usuario-nuevo', { signedIn: false });
     const user = userEvent.setup();
@@ -156,6 +214,15 @@ describe('A1 · Iniciar sesión', () => {
     await user.click(screen.getByRole('button', { name: 'Iniciar sesión' }));
     await waitFor(() => expect(nav.push).toHaveBeenCalledWith('/verificar?email=lucia%40estudionorte.com&motivo=login'));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('con el email sin verificar conserva la página que se había pedido', async () => {
+    scenario('email-sin-verificar');
+    const user = userEvent.setup();
+    show(<LoginScreen next="/invitacion/con-cuenta" email="sofia@ejemplo.com" />);
+    await user.type(password(), 'contrasena');
+    await user.click(screen.getByRole('button', { name: 'Iniciar sesión' }));
+    await waitFor(() => expect(nav.push).toHaveBeenCalledWith('/verificar?email=sofia%40ejemplo.com&motivo=login&siguiente=%2Finvitacion%2Fcon-cuenta'));
   });
 
   it('explica el límite de intentos y el error del servidor', async () => {
@@ -222,6 +289,25 @@ describe('A2 · Crear cuenta', () => {
     await waitFor(() => expect(password()).toHaveAccessibleDescription('La contraseña no puede ser solo números.'));
   });
 
+  it('traduce los errores del backend y reconoce el email ya usado aunque llegue en inglés', async () => {
+    scenario('sin-sesion');
+    server.use(
+      http.post('http://localhost:8000/api/v1/auth/register/', () =>
+        HttpResponse.json({ email: ['user with this email already exists.'], name: ['This field may not be blank.'], password: ['Ensure this field has at least 10 characters.'] }, { status: 400 }),
+      ),
+    );
+    const user = userEvent.setup();
+    show(<RegisterScreen />);
+    await fill(user, 'lucia@estudionorte.com');
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: 'Crear cuenta' }));
+    await waitFor(() => expect(screen.getByLabelText('Email')).toHaveAccessibleDescription(/Ya existe una cuenta con este email\./));
+    expect(screen.getAllByRole('link', { name: 'Iniciar sesión' }).some((link) => link.getAttribute('href') === '/login?email=lucia%40estudionorte.com')).toBe(true);
+    expect(screen.getByLabelText('Nombre')).toHaveAccessibleDescription('Este campo no puede quedar vacío.');
+    expect(password()).toHaveAccessibleDescription('Mínimo 10 caracteres.');
+    expect(screen.queryByText(/already exists|may not be blank|Ensure/)).not.toBeInTheDocument();
+  });
+
   it('al crear la cuenta pasa a Verificar email', async () => {
     scenario('sin-sesion');
     const user = userEvent.setup();
@@ -279,6 +365,26 @@ describe('A3 · Verificar email', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Verificando tu email' })).toBeInTheDocument();
     await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/bienvenida'));
     expect(getTokens()).not.toBeNull();
+  });
+
+  it('después de verificar vuelve a la página que se había pedido antes del login', async () => {
+    scenario('email-sin-verificar');
+    // Waiting screen, reached from a login that was going to an invitation.
+    const waiting = show(<VerifyEmailScreen email="sofia@ejemplo.com" fromLogin next="/invitacion/con-cuenta" />);
+    await screen.findByRole('heading', { level: 1, name: 'Te mandamos un link a tu email' });
+    waiting.unmount();
+    // The link of the email, opened later (it does not carry the destination).
+    show(<VerifyEmailScreen token="abc123" />);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/invitacion/con-cuenta'));
+    expect(nav.replace).not.toHaveBeenCalledWith('/bienvenida');
+  });
+
+  it('un «siguiente» de otro sitio no se guarda', async () => {
+    scenario('email-sin-verificar');
+    const waiting = show(<VerifyEmailScreen email="sofia@ejemplo.com" next={'/\t/otro.sitio'} />);
+    waiting.unmount();
+    show(<VerifyEmailScreen token="abc123" next="//otro.sitio" />);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/bienvenida'));
   });
 
   it('un link vencido ofrece pedir otro', async () => {
@@ -394,12 +500,54 @@ describe('A5 · Aceptar invitación', () => {
     scenario('usuario-nuevo');
     const user = userEvent.setup();
     show(<InvitationScreen token="con-cuenta" />);
-    await user.click(await screen.findByRole('button', { name: 'Aceptar invitación' }));
+    const button = await screen.findByRole('button', { name: 'Aceptar invitación' });
+    // Every heading the screen shows from here on.
+    const seen: string[] = [];
+    const observer = new MutationObserver(() => {
+      const title = document.querySelector('h1')?.textContent;
+      if (title && seen[seen.length - 1] !== title) seen.push(title);
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    await user.click(button);
     await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/proyectos'));
+    // On the way to the app the card stays as it was: it never shows "ya se usó" or "ya sos parte".
+    expect(seen.some((title) => /ya se usó|Ya sos parte/.test(title))).toBe(false);
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Lucía Fernández te invitó a Estudio Norte como Admin');
+    observer.disconnect();
     const db = loadDb();
     expect(db.invitations.find((item) => item.token === 'con-cuenta')?.status).toBe('used');
     // The app opens on the workspace that was joined, not on the one the user had before.
     expect(getActiveWorkspaceId()).toBe(db.workspaces.find((item) => item.name === 'Estudio Norte')?.id);
+  });
+
+  it('muestra todos los errores de aceptar: sesión perdida y un 400 sin campo', async () => {
+    scenario('usuario-nuevo');
+    const user = userEvent.setup();
+    server.use(http.post('http://localhost:8000/api/v1/invitations/con-cuenta/accept/', () => HttpResponse.json({ detail: 'Authentication credentials were not provided.' }, { status: 401 })));
+    show(<InvitationScreen token="con-cuenta" />);
+    await user.click(await screen.findByRole('button', { name: 'Aceptar invitación' }));
+    const lost = await screen.findByRole('alert');
+    expect(lost).toHaveTextContent('Hace falta iniciar sesión');
+    expect(within(lost).getByRole('link', { name: 'Iniciar sesión' })).toHaveAttribute('href', '/login?siguiente=%2Finvitacion%2Fcon-cuenta&email=sofia%40ejemplo.com');
+    // The button is usable again.
+    expect(screen.getByRole('button', { name: 'Aceptar invitación' })).not.toHaveAttribute('aria-busy');
+
+    server.use(http.post('http://localhost:8000/api/v1/invitations/con-cuenta/accept/', () => HttpResponse.json({ error: 'La invitación es para otro email.' }, { status: 400 })));
+    await user.click(screen.getByRole('button', { name: 'Aceptar invitación' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('La invitación es para otro email.'));
+    expect(nav.replace).not.toHaveBeenCalled();
+  });
+
+  it('reconoce al miembro por el id del workspace, no por el nombre', async () => {
+    scenario('estudio-norte');
+    const db = loadDb();
+    // Another workspace with the same name as one of Lucía's.
+    const invitation = db.invitations.find((item) => item.token === 'usada');
+    if (invitation) invitation.workspace_id = '00000000-0000-4000-8000-00000000abcd';
+    window.localStorage.setItem('oc.mock.db', JSON.stringify(db));
+    show(<InvitationScreen token="usada" />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Esta invitación ya se usó' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Ir a Estudio Norte' })).not.toBeInTheDocument();
   });
 
   it('con la sesión de otra cuenta: avisa y deja cerrar sesión', async () => {
@@ -455,7 +603,7 @@ describe('B1 · Bienvenida', () => {
     await user.type(name, 'Canal de Sofía');
     await user.click(screen.getByRole('button', { name: 'Continuar' }));
 
-    expect(await screen.findByRole('heading', { level: 1, name: '¿Para qué lo vas a usar?' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: '¿Para qué lo vas a usar?' })).toHaveFocus();
     expect(screen.getByText(/tu primer proyecto en Canal de Sofía/)).toBeInTheDocument();
     const group = screen.getByRole('radiogroup', { name: '¿Para qué lo vas a usar?' });
     expect(within(group).getAllByRole('radio')).toHaveLength(4);
@@ -467,7 +615,10 @@ describe('B1 · Bienvenida', () => {
     await user.keyboard('{ArrowLeft}');
     await user.click(screen.getByRole('button', { name: 'Continuar' }));
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Todo listo para tu primer video' })).toBeInTheDocument();
+    // The focus moves to the new step: a second Enter must not press "Subí tu primer video".
+    expect(await screen.findByRole('heading', { level: 1, name: 'Todo listo para tu primer video' })).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(nav.push).not.toHaveBeenCalled();
     expect(screen.getByText('Canal de Sofía')).toBeInTheDocument();
     expect(screen.getByText('Gaming')).toBeInTheDocument();
     expect(screen.getByText('Dinámico')).toBeInTheDocument();

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState, type FormEvent } from 'react';
 import { ApiError } from '@/api/errors';
 import { usePlans, useRegister } from '@/api/hooks';
+import { errorMessage, fieldError } from '@/lib/error-messages';
 import { formatMinutes } from '@/lib/format';
 import { AuthCard } from '@/shell/PublicShell';
 import { useSession } from '@/shell/session';
@@ -12,6 +13,13 @@ import { Banner, Button, Field, Input, Num, PasswordInput, cx } from '@/ui';
 import styles from './acceso.module.css';
 import { emailError, HOME, MIN_PASSWORD, nameError, newPasswordError, requestErrorMessage, startCooldown } from './lib';
 import { TermsCheckbox } from './Terms';
+
+export const EMAIL_TAKEN = 'Ya existe una cuenta con este email.';
+
+/** The email already has an account: `code: "unique"` (proposed), or DRF's own sentence while the code is missing. */
+function emailTaken(error: ApiError): boolean {
+  return error.fieldCodes.email === 'unique' || /already exists|ya existe/i.test(error.fieldErrors.email?.[0] ?? '');
+}
 
 interface Errors {
   name?: string;
@@ -58,7 +66,11 @@ export function RegisterScreen({ email: initialEmail }: { email?: string | null 
         },
         onError: (error) => {
           if (error instanceof ApiError && error.status === 400) {
-            setErrors({ name: error.fieldErrors.name?.[0], email: error.fieldErrors.email?.[0], password: error.fieldErrors.password?.[0] });
+            setErrors({
+              name: fieldError(error, 'name'),
+              email: emailTaken(error) ? EMAIL_TAKEN : fieldError(error, 'email'),
+              password: fieldError(error, 'password'),
+            });
           }
         },
       },
@@ -67,8 +79,8 @@ export function RegisterScreen({ email: initialEmail }: { email?: string | null 
 
   const error = register.error;
   const fieldProblem = error instanceof ApiError && error.status === 400 && Object.keys(error.fieldErrors).some((key) => ['name', 'email', 'password'].includes(key));
-  const formError = !error || fieldProblem ? null : error instanceof ApiError && error.status === 400 ? error.message : requestErrorMessage(error);
-  const emailTaken = Boolean(errors.email && /ya existe/i.test(errors.email));
+  const formError = !error || fieldProblem ? null : error instanceof ApiError && error.status === 400 ? errorMessage(error, 'Revisá los datos y probá de nuevo.') : requestErrorMessage(error);
+  const taken = errors.email === EMAIL_TAKEN;
 
   return (
     <AuthCard
@@ -113,7 +125,7 @@ export function RegisterScreen({ email: initialEmail }: { email?: string | null 
         <Field
           label="Email"
           error={
-            emailTaken ? (
+            taken ? (
               <>
                 {errors.email}{' '}
                 <Link className="lnk" href={`/login?email=${encodeURIComponent(email.trim())}`}>

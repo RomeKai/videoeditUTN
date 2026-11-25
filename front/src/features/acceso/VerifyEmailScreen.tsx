@@ -8,7 +8,7 @@ import { useResendVerification, useVerifyEmail } from '@/api/hooks';
 import { useSession } from '@/shell/session';
 import { Banner, Button, Card, Field, Icon, Input, Num, Skeleton, cx, useToast } from '@/ui';
 import styles from './acceso.module.css';
-import { emailError, formatCountdown, HOME, requestErrorMessage, retryAfterSeconds, useCooldown } from './lib';
+import { emailError, formatCountdown, HOME, rememberNext, requestErrorMessage, retryAfterSeconds, safeNext, takeNext, useCooldown } from './lib';
 
 export interface VerifyEmailScreenProps {
   /** `?email=`: the account waiting for verification (comes from A2 or from a login that answered "sin verificar"). */
@@ -17,10 +17,12 @@ export interface VerifyEmailScreenProps {
   token?: string | null;
   /** `?motivo=login`: the user tried to sign in with an unverified account. */
   fromLogin?: boolean;
+  /** `?siguiente=`: where the user was going when the login found the account unverified. */
+  next?: string | null;
 }
 
 /** A3 · Verificar email (artboard A3-Verificar-email). */
-export function VerifyEmailScreen({ email, token, fromLogin = false }: VerifyEmailScreenProps) {
+export function VerifyEmailScreen({ email, token, fromLogin = false, next }: VerifyEmailScreenProps) {
   const router = useRouter();
   const { status, me } = useSession();
   const verify = useVerifyEmail();
@@ -30,8 +32,13 @@ export function VerifyEmailScreen({ email, token, fromLogin = false }: VerifyEma
   useEffect(() => {
     if (!token || started.current) return;
     started.current = true;
-    verifyToken(token, { onSuccess: () => router.replace('/bienvenida') });
-  }, [router, token, verifyToken]);
+    // Back to the page that was asked for (kept while waiting for the email), or into the welcome.
+    verifyToken(token, { onSuccess: () => router.replace(safeNext(next) ?? takeNext() ?? '/bienvenida') });
+  }, [next, router, token, verifyToken]);
+
+  useEffect(() => {
+    if (!token) rememberNext(next);
+  }, [next, token]);
 
   // Without a link to check, a verified account that is already signed in has nothing to do here.
   useEffect(() => {

@@ -40,6 +40,39 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     await expect(page).toHaveURL(/\/proyectos$/);
   });
 
+  test('A1: un «siguiente» armado para salir de la app no redirige afuera', async ({ page }) => {
+    await useScenario(page, 'sin-sesion');
+    const outside: string[] = [];
+    page.on('request', (request) => {
+      if (request.isNavigationRequest() && !request.url().startsWith('http://127.0.0.1')) outside.push(request.url());
+    });
+    await page.route((url) => url.hostname === 'otro.sitio', (route) => route.abort());
+    // Tab, line feed, carriage return, backslash and a dot segment: all of them are "//otro.sitio" for a browser.
+    const attempts = ['/%09/otro.sitio', '/%0A/otro.sitio', '/%0D/otro.sitio', '/%5Cotro.sitio', '/.//otro.sitio', '//otro.sitio', 'https://otro.sitio'];
+    await page.goto(`/login?siguiente=${attempts[0]}`);
+    await signIn(page, 'lucia@estudionorte.com');
+    await expect(page).toHaveURL(/127\.0\.0\.1:\d+\/proyectos$/);
+    // Already signed in: the login redirects by itself, with no click.
+    for (const attempt of attempts) {
+      await page.goto(`/login?siguiente=${attempt}`);
+      await expect(page).toHaveURL(/127\.0\.0\.1:\d+\/proyectos$/);
+    }
+    expect(outside).toEqual([]);
+  });
+
+  test('A1 → A3 → A5: verificar el email devuelve a la invitación que se había pedido', async ({ page }) => {
+    await useScenario(page, 'email-sin-verificar');
+    await page.goto('/invitacion/con-cuenta');
+    await page.getByRole('link', { name: 'Iniciar sesión para aceptar' }).click();
+    await page.getByLabel('Contraseña', { exact: true }).fill('contrasena');
+    await page.getByRole('button', { name: 'Iniciar sesión' }).click();
+    await expect(page).toHaveURL(/\/verificar\?email=sofia%40ejemplo\.com&motivo=login&siguiente=%2Finvitacion%2Fcon-cuenta$/);
+    // The link of the email does not carry the destination.
+    await page.goto('/verificar?token=mock-token');
+    await expect(page).toHaveURL(/\/invitacion\/con-cuenta$/);
+    await expect(page.getByRole('button', { name: 'Aceptar invitación' })).toBeVisible();
+  });
+
   test('A1 en el teléfono (M12): una columna, sin scroll horizontal y controles de 44 px', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await useScenario(page, 'sin-sesion');
@@ -186,7 +219,11 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     await page.getByRole('radio', { name: /Educación/ }).click();
     await page.getByRole('button', { name: 'Continuar' }).click();
 
-    await expect(page.getByRole('heading', { level: 1, name: 'Todo listo para tu primer video' })).toBeVisible();
+    const last = page.getByRole('heading', { level: 1, name: 'Todo listo para tu primer video' });
+    await expect(last).toBeFocused();
+    // A second Enter does not press the button that took the place of "Continuar".
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(/\/bienvenida$/);
     await expect(page.getByText('Minimalista')).toBeVisible();
     await expect(page.getByText('Plan Gratis · 300 tokens')).toBeVisible();
     await page.getByRole('button', { name: 'Subí tu primer video' }).click();

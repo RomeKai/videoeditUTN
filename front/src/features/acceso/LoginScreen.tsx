@@ -23,7 +23,7 @@ export interface LoginScreenProps {
 /** A1 · Iniciar sesión (artboards A1-Login and M12-Movil-login). */
 export function LoginScreen({ next, email: initialEmail }: LoginScreenProps) {
   const router = useRouter();
-  const { status, me } = useSession();
+  const { status, me, error: sessionError, refetch } = useSession();
   const login = useLogin();
   const [email, setEmail] = useState(initialEmail ?? '');
   const [password, setPassword] = useState('');
@@ -49,7 +49,8 @@ export function LoginScreen({ next, email: initialEmail }: LoginScreenProps) {
         onError: (error) => {
           // The account exists but never opened the link of the verification email (map A1 → A3).
           if (error instanceof ApiError && error.code === 'email_not_verified') {
-            router.push(`/verificar?email=${encodeURIComponent(email.trim())}&motivo=login`);
+            const back = target ? `&siguiente=${encodeURIComponent(target)}` : '';
+            router.push(`/verificar?email=${encodeURIComponent(email.trim())}&motivo=login${back}`);
           }
         },
       },
@@ -60,7 +61,9 @@ export function LoginScreen({ next, email: initialEmail }: LoginScreenProps) {
   const unverified = error instanceof ApiError && error.code === 'email_not_verified';
   const formError = !error || unverified ? null : error instanceof ApiError && (error.status === 401 || error.status === 400) ? WRONG_CREDENTIALS : requestErrorMessage(error);
   // The button stays busy between the token and the profile, until the redirect happens.
-  const entering = login.isPending || (login.isSuccess && status !== 'anonymous');
+  const entering = login.isPending || (login.isSuccess && status === 'loading');
+  // The password was right (or there already was a session) but the profile did not load: say so instead of waiting forever.
+  const profileFailed = status === 'error' && !login.isPending;
 
   return (
     <AuthCard
@@ -75,10 +78,23 @@ export function LoginScreen({ next, email: initialEmail }: LoginScreenProps) {
         </>
       }
     >
-      <form className={cx(styles.form, styles.phone)} onSubmit={submit} noValidate aria-describedby={formError ? 'login-error' : undefined}>
+      <form className={cx(styles.form, styles.phone)} onSubmit={submit} noValidate aria-describedby={formError || profileFailed ? 'login-error' : undefined}>
         {formError ? (
           <Banner tone="err" id="login-error">
             {formError}
+          </Banner>
+        ) : profileFailed ? (
+          <Banner
+            tone="err"
+            id="login-error"
+            title="Entraste, pero no pudimos cargar tu cuenta"
+            action={
+              <Button size="sm" variant="secondary" iconLeft="retry" onClick={refetch}>
+                Reintentar
+              </Button>
+            }
+          >
+            {requestErrorMessage(sessionError)}
           </Banner>
         ) : null}
         <Field label="Email" error={errors.email}>
