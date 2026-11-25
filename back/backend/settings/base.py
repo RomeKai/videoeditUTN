@@ -215,6 +215,46 @@ SIMPLE_JWT = {
     'BLACKLIST_AFTER_ROTATION': True,
 }
 
+# --- LOGGING (INFRA-02) ---
+# LOG_FORMAT 'json' writes one JSON object per line (apps.core.structured_logging),
+# for a log platform to index; 'text' keeps the readable console format for
+# development. LOG_SERVICE tags every line (web, worker, beat).
+LOG_FORMAT = env('LOG_FORMAT', default='text' if DEBUG else 'json')
+LOG_LEVEL = env('LOG_LEVEL', default='INFO')
+LOG_SERVICE = env('LOG_SERVICE', default='')
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'filters': {
+        'celery_task': {'()': 'apps.core.structured_logging.CeleryTaskContextFilter'},
+    },
+    'formatters': {
+        'json': {
+            '()': 'apps.core.structured_logging.JsonFormatter',
+            'service': LOG_SERVICE,
+        },
+        'text': {
+            'format': '%(asctime)s %(levelname)s %(name)s %(message)s',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'json' if LOG_FORMAT == 'json' else 'text',
+            'filters': ['celery_task'],
+        },
+    },
+    'root': {'handlers': ['console'], 'level': LOG_LEVEL},
+    'loggers': {
+        # Django logs every request at INFO through django.server/django.request;
+        # WARNING keeps the 4xx/5xx and drops the noise.
+        'django': {'level': 'WARNING'},
+        'celery': {'level': LOG_LEVEL},
+    },
+}
+# Celery must not replace the root handlers with its own text format.
+CELERY_WORKER_HIJACK_ROOT_LOGGER = False
+
 # --- CELERY CONFIG ---
 if 'REDIS_URL' in os.environ:
     CELERY_BROKER_URL = env('REDIS_URL')
