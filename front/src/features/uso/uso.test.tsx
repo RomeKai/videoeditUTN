@@ -7,7 +7,7 @@ import { BuyTokensScreen, parseTokenAmount } from './BuyTokensScreen';
 import { leaveTo } from './leave';
 import { movementConcept, signedAmount } from './movements';
 import { MovementsScreen } from './MovementsScreen';
-import { monthKey, monthLong, monthTitle, recentMonths, shiftMonth } from './period';
+import { monthKey, monthLong, monthTitle, recentMonths, shiftMonth, workspaceDay } from './period';
 import { planFeatures, planLosses } from './PlanCard';
 import { PlansScreen } from './PlansScreen';
 import { PricingScreen } from './PricingScreen';
@@ -17,9 +17,9 @@ import { gridStep, usageTotals } from './UsageChart';
 import { UsageHeader } from './UsageHeader';
 import { UsageOverview } from './UsageOverview';
 
-const navigation = vi.hoisted(() => ({ pathname: '/uso', search: '' }));
+const navigation = vi.hoisted(() => ({ pathname: '/uso', search: '', replace: vi.fn() }));
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() }),
+  useRouter: () => ({ push: vi.fn(), replace: navigation.replace, back: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() }),
   usePathname: () => navigation.pathname,
   useSearchParams: () => new URLSearchParams(navigation.search),
   useParams: () => ({}),
@@ -33,7 +33,9 @@ startMockApi();
 /** The seed is relative to "now": mid-month keeps the seeded charges (1 to 20 days old) inside the current month. */
 const MID_MONTH = new Date(2026, 10, 15, 12, 0, 0);
 /** The first hour of a month: everything seeded more than an hour ago belongs to the previous one. */
-const FIRST_OF_MONTH = new Date(2026, 11, 1, 1, 0, 0);
+const FIRST_OF_MONTH = new Date('2026-12-01T04:00:00Z'); // 01:00 in Buenos Aires
+/** Already December in UTC (where these tests and CI run), still 30 November 23:50 for the workspace. */
+const MONTH_EDGE = new Date('2026-12-01T02:50:00Z');
 const pinClock = (date: Date) => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(date);
@@ -45,6 +47,7 @@ beforeEach(() => {
   pinClock(MID_MONTH);
   navigation.pathname = '/uso';
   navigation.search = '';
+  navigation.replace.mockClear();
   vi.mocked(leaveTo).mockClear();
   download.downloadText.mockClear();
 });
@@ -74,9 +77,20 @@ describe('utilidades de Uso', () => {
     const november = new Date(2026, 10, 24);
     expect(monthKey(november)).toBe('2026-11');
     expect(shiftMonth('2026-01', -1)).toBe('2025-12');
+    expect(shiftMonth('2026-12', 1)).toBe('2027-01');
+    expect(shiftMonth('2026-11', -11)).toBe('2025-12');
     expect(recentMonths(3, november)).toEqual(['2026-11', '2026-10', '2026-09']);
     expect(monthTitle('2026-11')).toBe('Noviembre 2026');
     expect(monthLong('2026-11')).toBe('noviembre de 2026');
+  });
+
+  it('cuenta el mes y el día en la zona horaria del workspace, no en la del navegador', () => {
+    expect(new Date(2026, 0, 1, 0, 0).getTimezoneOffset()).toBe(0); // the tests run in UTC, like CI
+    expect(workspaceDay(MONTH_EDGE)).toBe('2026-11-30');
+    expect(monthKey(MONTH_EDGE)).toBe('2026-11');
+    expect(recentMonths(2, MONTH_EDGE)).toEqual(['2026-11', '2026-10']);
+    expect(workspaceDay(new Date('2026-12-01T03:00:00Z'))).toBe('2026-12-01');
+    expect(monthKey(FIRST_OF_MONTH)).toBe('2026-12');
   });
 
   it('elige un paso redondo para la grilla del gráfico y suma por tipo', () => {
@@ -147,6 +161,16 @@ describe('G1 · Resumen', () => {
     expect(await within(latest).findByText('Compra de 1.000 tokens')).toBeInTheDocument();
     expect(await screen.findByRole('img', { name: /Consumo por día en/ })).toBeInTheDocument();
     expect(screen.queryByText('Te queda poco saldo')).not.toBeInTheDocument();
+  });
+
+  it('con el navegador ya en diciembre (UTC) y el workspace todavía en noviembre, el mes es noviembre', async () => {
+    pinClock(MONTH_EDGE);
+    renderScreen(<UsageOverview />);
+    const spent = await screen.findByRole('region', { name: 'Gastado este mes' });
+    expect(await within(spent).findByText(/Del 1 al 30 de noviembre, en \d+ cobros?\./)).toBeInTheDocument();
+    expect(await screen.findByText('Noviembre 2026 · tokens cobrados')).toBeInTheDocument();
+    expect(await screen.findByRole('img', { name: /Consumo por día en noviembre de 2026\. Total cobrado/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Todavía no hubo cobros/)).not.toBeInTheDocument();
   });
 
   it('avisa cuando el saldo no alcanza para un video promedio', async () => {
@@ -222,6 +246,15 @@ describe('G2 · Movimientos', () => {
     expect(within(table).getAllByText('Cobrado').length).toBeGreaterThan(0);
     await user.selectOptions(screen.getByLabelText('Filtrar por mes'), 'Noviembre 2026');
     expect(within(await screen.findByRole('table', { name: 'Movimientos de noviembre de 2026' })).getAllByText('Cobrado').length).toBeGreaterThan(0);
+  });
+
+  it('en el borde del mes abre en el mes del workspace y encuentra los cobros', async () => {
+    pinClock(MONTH_EDGE);
+    renderScreen(<MovementsScreen />);
+    const table = await screen.findByRole('table', { name: 'Movimientos de noviembre de 2026' });
+    expect(screen.getByLabelText('Filtrar por mes')).toHaveValue('2026-11');
+    expect(within(table).getAllByText('Cobrado').length).toBeGreaterThan(0);
+    expect(within(table).getAllByText('Reservado').length).toBeGreaterThan(0);
   });
 
   it('sin movimientos explica qué va a aparecer', async () => {
@@ -304,7 +337,6 @@ describe('G3 · Planes', () => {
       const workspace = db.workspaces[0];
       const studio = db.plans.find((item) => item.name === 'Estudio');
       if (!workspace || !studio) throw new Error('faltan datos');
-      if (status === 'approved') workspace.subscription_plan = studio.id;
       db.purchases.push({
         id: PAYMENT_ID,
         workspace: workspace.id,
@@ -323,8 +355,9 @@ describe('G3 · Planes', () => {
     };
     navigation.search = `compra=${PAYMENT_ID}`;
     const approved = renderScreen(<PlansScreen />, { scenario: 'plan-con-checkout', prepare: seed('approved') });
+    // The subscription on screen is still Pro (it refetches after): the notice names the plan that was paid.
     expect(await screen.findByText('Listo: ya estás en el plan Estudio')).toBeInTheDocument();
-    expect(await screen.findByRole('article', { name: 'Plan Estudio, tu plan' })).toBeInTheDocument();
+    expect(screen.queryByText('Listo: ya estás en el plan Pro')).not.toBeInTheDocument();
     approved.unmount();
 
     renderScreen(<PlansScreen />, { scenario: 'plan-con-checkout', prepare: seed('rejected') });
@@ -479,6 +512,23 @@ describe('G5 · Resultado de la compra', () => {
     expect(await within(alert).findByText(/Tu saldo sigue en/)).toHaveTextContent('4.860');
     expect(within(alert).getByRole('link', { name: 'Reintentar' })).toHaveAttribute('href', '/uso/comprar?tokens=5000');
     expect(within(alert).getByRole('link', { name: 'Elegir otro medio' })).toHaveAttribute('href', '/uso/comprar?tokens=5000');
+  });
+
+  it('el pago de un plan no se anuncia acá: sigue en Planes', async () => {
+    navigation.search = `compra=${PURCHASE_ID}`;
+    renderScreen(<PurchaseResultScreen />, {
+      scenario: 'plan-con-checkout',
+      prepare: () => {
+        const db = loadDb();
+        const workspace = db.workspaces[0];
+        const studio = db.plans.find((item) => item.name === 'Estudio');
+        if (!workspace || !studio) throw new Error('faltan datos');
+        db.purchases.push({ id: PURCHASE_ID, workspace: workspace.id, status: 'approved', tokens: 0, amount_usd: 129, plan_id: studio.id, checkout_url: null, failure_reason: null, created_at: new Date().toISOString(), balance_after: null, _settleAt: null, _reject: false });
+        saveDb(db);
+      },
+    });
+    await waitFor(() => expect(navigation.replace).toHaveBeenCalledWith(`/uso/planes?compra=${PURCHASE_ID}`));
+    expect(screen.queryByText(/Compra acreditada/)).not.toBeInTheDocument();
   });
 
   it('sin el id de la compra ofrece volver a comprar', async () => {

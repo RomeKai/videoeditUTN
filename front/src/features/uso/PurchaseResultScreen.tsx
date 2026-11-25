@@ -44,9 +44,14 @@ function PurchaseNotice() {
   const announced = useRef<string | null>(null);
 
   const status = purchase.data?.status;
+  // The payment of a plan upgrade is followed on Planes, not here: there are no tokens to credit.
+  const planPayment = Boolean(purchase.data?.plan_id);
+  useEffect(() => {
+    if (id && planPayment) router.replace(`/uso/planes?compra=${id}`);
+  }, [id, planPayment, router]);
   const tokens = purchase.data?.tokens ?? 0;
   useEffect(() => {
-    if (!id || status === undefined || status === 'pending' || announced.current === id) return;
+    if (!id || planPayment || status === undefined || status === 'pending' || announced.current === id) return;
     announced.current = id;
     // The balance, the movements and the usage changed (or the pending row went away).
     void queryClient.invalidateQueries({ queryKey: keys.billing.all });
@@ -60,7 +65,7 @@ function PurchaseNotice() {
         { action: { label: 'Ver movimiento', href: '/uso/movimientos' } },
       );
     }
-  }, [id, queryClient, status, toast, tokens]);
+  }, [id, planPayment, queryClient, status, toast, tokens]);
 
   if (!id) {
     return (
@@ -81,7 +86,7 @@ function PurchaseNotice() {
   if (purchase.isError) {
     return <LoadError error={purchase.error} onRetry={() => void purchase.refetch()} className={styles.notice} fullPageForMissing={false} />;
   }
-  if (!purchase.data || purchase.data.status === 'pending') {
+  if (!purchase.data || purchase.data.status === 'pending' || planPayment) {
     return (
       <div className={styles.strip} role="status" aria-busy="true">
         <Spinner />

@@ -96,7 +96,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/transactions/export/` | Los mismos movimientos en CSV. El monto lleva el signo de lo que le hizo al saldo: negativo lo reservado y lo cobrado, positivo lo comprado y lo devuelto. | ❌ falta (propuesto) · hueco 4 | G2 |
 | GET | `/api/v1/token-packages/` | Los 3 paquetes fijos, el precio de la cantidad libre y la conversión de referencia. | ❌ falta (propuesto) · hueco 12 | G4, D2 (diálogo) |
 | POST | `/api/v1/token-purchases/` | Inicia una compra de tokens y devuelve la URL del checkout del proveedor de pagos. | ❌ falta (propuesto) · hueco 12 | G4, D2 (diálogo) |
-| GET | `/api/v1/token-purchases/:id/` | Estado de una compra: pendiente, acreditada o rechazada. | ❌ falta (propuesto) · hueco 12 | G5 |
+| GET | `/api/v1/token-purchases/:id/` | Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`tokens` > 0) o el pago de una subida de plan (`plan_id`, `tokens` 0). | ❌ falta (propuesto) · hueco 12 | G5 |
 | POST | `/api/v1/projects/probe-link/` | Reconoce un link antes de crear el proyecto: de dónde es, su título y su duración. | ❌ falta (propuesto) | C1 |
 | GET | `/api/v1/projects/` | Proyectos del workspace, del más nuevo al más viejo. | ⚠️ existe en parte · hueco 14 | B2, J1, B1 |
 | POST | `/api/v1/projects/` | Crea un proyecto desde un archivo (multipart) o un link, reserva los tokens y arranca la ingesta. | ✅ existe | C1 |
@@ -468,7 +468,7 @@ Invita por email con un rol. Crea WorkspaceMember en `pending` y manda el email.
 | Sesión | JWT |
 | Pedido | InviteRequest |
 | Respuesta 201 | { invited: Member[] } |
-| Errores | **400** Email inválido o ya es miembro (error en `emails`).<br>**403** Sin lugares en el plan (`code: "seats_exceeded"`) o el rol no puede invitar. |
+| Errores | **400** Email inválido o ya es miembro (error en `emails`).<br>**403** Sin lugares en el plan (`code: "seats_exceeded"`: límite del plan, se resuelve subiendo de plan o quitando miembros; el mismo código en `billing.changePlan` es un 409 porque ahí lo que sobra son miembros) o el rol no puede invitar. |
 | Pantallas | D7, H2 |
 
 #### `POST /api/v1/workspaces/:id/invitations/:memberId/resend/`
@@ -582,7 +582,7 @@ Cambia de plan. Subir se aplica al momento, o al volver del checkout si hay que 
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | { plan_id: Id, return_url?: string } |
 | Respuesta 200 | { applied: "now" \\| "period_end", checkout_url: string \\| null, subscription: Subscription } |
-| Errores | **400** Ya es el plan actual y no hay ningún cambio programado para cancelar.<br>**403** El rol no puede cambiar el plan (solo Dueño y Admin).<br>**409** Bajar a un plan con menos lugares que los que el workspace ocupa hoy, contando invitaciones pendientes (`code: "seats_exceeded"`). No se programa nada: primero hay que quitar miembros. |
+| Errores | **400** Ya es el plan actual y no hay ningún cambio programado para cancelar.<br>**403** El rol no puede cambiar el plan (solo Dueño y Admin).<br>**409** Bajar a un plan con menos lugares que los que el workspace ocupa hoy, contando invitaciones pendientes (`code: "seats_exceeded"`). No se programa nada: primero hay que quitar miembros. Es un 409 porque lo impide el estado del workspace; el mismo código en `workspaces.invite` es un 403 de límite de plan, que se resuelve subiendo de plan. |
 | Pantallas | G3 |
 
 #### `GET /api/v1/wallet/`
@@ -669,7 +669,7 @@ Inicia una compra de tokens y devuelve la URL del checkout del proveedor de pago
 
 #### `GET /api/v1/token-purchases/:id/`
 
-Estado de una compra: pendiente, acreditada o rechazada.
+Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`tokens` > 0) o el pago de una subida de plan (`plan_id`, `tokens` 0).
 
 | | |
 |---|---|
@@ -677,7 +677,7 @@ Estado de una compra: pendiente, acreditada o rechazada.
 | Backend | ❌ falta (propuesto) · hueco 12 |
 | Nota | El webhook del proveedor acredita; la pantalla consulta cada 5 s mientras está pendiente. |
 | Sesión | JWT · `X-Workspace-Id` |
-| Respuesta 200 | TokenPurchase |
+| Respuesta 200 | Payment |
 | Errores | **404** La compra no existe en este workspace. |
 | Pantallas | G5 |
 
@@ -1480,6 +1480,20 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `render_resolution` (opcional) | RenderResolution |
 | `use_seo` (opcional) | boolean |
 | `max_clips` (opcional) | number |
+
+**Payment**
+
+| Campo | Tipo |
+|---|---|
+| `id` | Id |
+| `status` | PurchaseStatus |
+| `tokens` | number |
+| `amount_usd` | Decimal |
+| `plan_id` (opcional) | Id \\| null |
+| `checkout_url` | string \\| null |
+| `failure_reason` | string \\| null |
+| `created_at` | IsoDateTime |
+| `balance_after` | Decimal \\| null |
 
 **Plan**
 

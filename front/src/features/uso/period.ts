@@ -1,13 +1,30 @@
-/** Month helpers of Uso: keys are `YYYY-MM` in the browser's time zone, as the API filter expects. */
+/**
+ * Month and day helpers of Uso. The API counts months and days in the workspace's time zone
+ * (`billing.transactions`, `billing.usage`), so these screens do too, whatever the browser's zone:
+ * every month key (`YYYY-MM`), "today" and the default selected month come from here.
+ */
+export const WORKSPACE_TIME_ZONE = 'America/Argentina/Buenos_Aires';
+
 const MONTH_NAMES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'] as const;
 
+const DAY_PARTS = new Intl.DateTimeFormat('en-CA', { timeZone: WORKSPACE_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' });
+
+/** `YYYY-MM-DD` of a moment in the workspace's time zone. */
+export function workspaceDay(date: Date = new Date()): string {
+  const parts = DAY_PARTS.formatToParts(date);
+  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+
+/** `YYYY-MM` of a moment in the workspace's time zone. */
 export function monthKey(date: Date = new Date()): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+  return workspaceDay(date).slice(0, 7);
 }
 
 export function shiftMonth(key: string, delta: number): string {
   const [year = 0, month = 1] = key.split('-').map(Number);
-  return monthKey(new Date(year, month - 1 + delta, 1));
+  const index = year * 12 + (month - 1) + delta;
+  return `${Math.floor(index / 12)}-${String((index % 12) + 1).padStart(2, '0')}`;
 }
 
 /** "noviembre" */

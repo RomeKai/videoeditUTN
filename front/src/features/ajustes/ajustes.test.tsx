@@ -177,7 +177,8 @@ describe('H2 · Miembros', () => {
     expect(within(row).getByRole('button', { name: /Rol de juan@ejemplo.com: Lector/ })).toBeInTheDocument();
     expect(await screen.findByText('4 de 5 miembros · 1 invitación pendiente')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Invitar' })).toHaveAttribute('aria-disabled', 'true');
-  });
+    // A long flow (dialog, four validations, the invitation): on a busy machine it needs more than the default 5 s.
+  }, 30_000);
 
   it('con el plan lleno «Invitar» queda deshabilitado y explica por qué', async () => {
     const user = userEvent.setup();

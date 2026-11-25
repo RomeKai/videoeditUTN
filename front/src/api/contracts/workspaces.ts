@@ -208,7 +208,7 @@ export const inviteMembers = defineEndpoint({
   workspaceScoped: false,
   errors: [
     { status: 400, when: 'Email inválido o ya es miembro (error en `emails`).' },
-    { status: 403, when: 'Sin lugares en el plan (`code: "seats_exceeded"`) o el rol no puede invitar.' },
+    { status: 403, when: 'Sin lugares en el plan (`code: "seats_exceeded"`: límite del plan, se resuelve subiendo de plan o quitando miembros; el mismo código en `billing.changePlan` es un 409 porque ahí lo que sobra son miembros) o el rol no puede invitar.' },
   ],
   backend: { status: 'proposed', gap: 13 },
   screens: ['D7', 'H2'],

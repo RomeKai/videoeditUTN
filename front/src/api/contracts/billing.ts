@@ -205,6 +205,15 @@ export const TokenPurchase = z.object({
 });
 export type TokenPurchase = z.infer<typeof TokenPurchase>;
 
+/** What `billing.purchase` answers: a token purchase always has tokens; the payment of a plan upgrade has `plan_id` and none. */
+export const Payment = TokenPurchase.superRefine((value, context) => {
+  if (value.plan_id) {
+    if (value.tokens !== 0) context.addIssue({ code: z.ZodIssueCode.custom, path: ['tokens'], message: 'El pago de un plan no acredita tokens.' });
+  } else if (value.tokens <= 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['tokens'], message: 'Una compra de tokens tiene al menos uno.' });
+  }
+});
+
 export const listPlans = defineEndpoint({
   id: 'billing.plans',
   method: 'GET',
@@ -279,7 +288,7 @@ export const changePlan = defineEndpoint({
     { status: 403, when: 'El rol no puede cambiar el plan (solo Dueño y Admin).' },
     {
       status: 409,
-      when: 'Bajar a un plan con menos lugares que los que el workspace ocupa hoy, contando invitaciones pendientes (`code: "seats_exceeded"`). No se programa nada: primero hay que quitar miembros.',
+      when: 'Bajar a un plan con menos lugares que los que el workspace ocupa hoy, contando invitaciones pendientes (`code: "seats_exceeded"`). No se programa nada: primero hay que quitar miembros. Es un 409 porque lo impide el estado del workspace; el mismo código en `workspaces.invite` es un 403 de límite de plan, que se resuelve subiendo de plan.',
     },
   ],
   backend: {
@@ -385,8 +394,8 @@ export const getTokenPurchase = defineEndpoint({
   id: 'billing.purchase',
   method: 'GET',
   path: '/api/v1/token-purchases/:id/',
-  summary: 'Estado de una compra: pendiente, acreditada o rechazada.',
-  response: TokenPurchase,
+  summary: 'Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`tokens` > 0) o el pago de una subida de plan (`plan_id`, `tokens` 0).',
+  response: Payment,
   errors: [{ status: 404, when: 'La compra no existe en este workspace.' }],
   backend: { status: 'proposed', gap: 12, note: 'El webhook del proveedor acredita; la pantalla consulta cada 5 s mientras está pendiente.' },
   screens: ['G5'],

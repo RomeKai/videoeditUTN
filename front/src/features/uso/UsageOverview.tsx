@@ -12,13 +12,9 @@ import { LoadError } from '@/shell/LoadError';
 import { usePermissions, useSession } from '@/shell/session';
 import { Avatar, Badge, Banner, Button, Card, Icon, Skeleton, SkeletonText } from '@/ui';
 import { KindBadge, MovementAmount, movementConcept, totalOf } from './movements';
-import { monthKey, monthName, monthTitle, shiftMonth } from './period';
+import { monthKey, monthName, monthTitle, shiftMonth, workspaceDay } from './period';
 import { UsageChart, usageTotals } from './UsageChart';
 import styles from './uso.module.css';
-
-function localDay(date: Date): string {
-  return `${monthKey(date)}-${String(date.getDate()).padStart(2, '0')}`;
-}
 
 /** "24 nov, 14:21" */
 function shortStamp(value: string): string {
@@ -85,7 +81,7 @@ export function UsageOverview({ notice }: { notice?: ReactNode }) {
   const { workspace } = useSession();
   const { can, gate, role } = usePermissions();
   const admin = can('billing.manage');
-  // The month depends on the browser's clock: decided after mount so the server markup matches.
+  // The month depends on the clock (read in the workspace's time zone): decided after mount so the server markup matches.
   const [today, setToday] = useState<Date | null>(null);
   useEffect(() => setToday(new Date()), []);
   const month = today ? monthKey(today) : undefined;
@@ -202,7 +198,7 @@ export function UsageOverview({ notice }: { notice?: ReactNode }) {
                   {today && month ? (
                     charged.count > 0 ? (
                       <>
-                        Del 1 al {today.getDate()} de {monthName(month)}, en {plural(charged.count, 'cobro', 'cobros')}.
+                        Del 1 al {Number(workspaceDay(today).slice(8))} de {monthName(month)}, en {plural(charged.count, 'cobro', 'cobros')}.
                         {refunded.amount > 0 ? (
                           <>
                             {' '}
@@ -309,7 +305,7 @@ export function UsageOverview({ notice }: { notice?: ReactNode }) {
             <div className={styles.cardBody}>
               {usage.data && month && today ? (
                 <>
-                  <UsageChart month={month} days={usage.data} today={localDay(today)} />
+                  <UsageChart month={month} days={usage.data} today={workspaceDay(today)} />
                   <p className="t-small subtle">
                     {totals && totals.total > 0
                       ? 'Lo reservado no se cuenta acá y las devoluciones no se restan.'

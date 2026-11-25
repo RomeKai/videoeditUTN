@@ -24,7 +24,7 @@ import styles from './uso.module.css';
  * The way back from the checkout of a plan upgrade (`?compra=<id>`): a line while the provider has
  * not answered, then whether the plan changed or the payment did not go through.
  */
-function UpgradeNotice({ currentName }: { currentName: string | null }) {
+function UpgradeNotice({ currentName, plans }: { currentName: string | null; plans: ReadonlyArray<Plan> }) {
   const search = useSearchParams();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -53,8 +53,10 @@ function UpgradeNotice({ currentName }: { currentName: string | null }) {
     );
   }
   if (payment.data.status === 'approved') {
+    // Named from the payment itself: the subscription on screen may still be the one from before paying.
+    const paidName = plans.find((plan) => plan.id === payment.data.plan_id)?.name ?? null;
     return (
-      <Banner tone="ok" className={styles.notice} title={`Listo: ya estás en el plan ${currentName ?? 'nuevo'}`} action={close}>
+      <Banner tone="ok" className={styles.notice} title={`Listo: ya estás en el plan ${paidName ?? 'nuevo'}`} action={close}>
         El cambio ya está aplicado para todo el workspace.
       </Banner>
     );
@@ -148,7 +150,7 @@ function Plans() {
   return (
     <>
       <h2 className="sr-only">Planes</h2>
-      <UpgradeNotice currentName={current?.name ?? null} />
+      <UpgradeNotice currentName={current?.name ?? null} plans={plans.data ?? []} />
       {base !== null ? (
         <div className={styles.strip} role="note">
           <span className={styles.stripIco}>
