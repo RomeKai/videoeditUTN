@@ -1,10 +1,14 @@
 import type { Metadata } from 'next';
-import { ScreenPlaceholder } from '@/dev/ScreenPlaceholder';
-import { SCREENS } from '@/dev/screens';
+import { Suspense } from 'react';
+import { NewProjectScreen } from '@/features/proyectos/NewProjectScreen';
 
 export const metadata: Metadata = { title: 'Nuevo proyecto' };
 
-// C1 · Nuevo proyecto: pantalla pendiente. El dominio dueño reemplaza este archivo (ver front/ROUTES.md).
+// C1 · Nuevo proyecto. The screen reads ?desde, ?origen and ?prompt, so it renders inside Suspense.
 export default function Page() {
-  return <ScreenPlaceholder {...SCREENS.C1} />;
+  return (
+    <Suspense fallback={null}>
+      <NewProjectScreen />
+    </Suspense>
+  );
 }
