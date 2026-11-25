@@ -90,12 +90,12 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         return None
 
     def validate(self, data):
-        # En caso de creaciÃ³n (POST) o si se estÃ¡n enviando estos campos especÃ­ficamente en un PATCH
+        # En caso de creación (POST) o si se están enviando estos campos específicamente en un PATCH
         if not self.instance or 'source_file' in data or 'video_url' in data:
             file = data.get('source_file')
             url = data.get('video_url')
             
-            # Si es creaciÃ³n, exigimos uno de los dos
+            # Si es creación, exigimos uno de los dos
             if not self.instance:
                 if not file and not url:
                     raise serializers.ValidationError("Debes proporcionar un 'source_file' o una 'video_url'.")
@@ -165,7 +165,7 @@ class VideoProjectSerializer(serializers.ModelSerializer):
             if not value.name.lower().endswith(('.mp4', '.mov', '.avi')):
                 raise serializers.ValidationError("Solo se permiten archivos de video (.mp4, .mov, .avi)")
             if value.size > 500 * 1024 * 1024:
-                raise serializers.ValidationError("El archivo es demasiado grande (MÃ¡x 500MB)")
+                raise serializers.ValidationError("El archivo es demasiado grande (Máx 500MB)")
             # CORE-05: the bytes must be a video the pipeline can process.
             from .services.media_validation import InvalidUploadError, validate_upload
 
@@ -211,7 +211,7 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         # Creamos el proyecto normal
         project = super().create(validated_data)
         
-        # INYECCIÃ“N DINÃMICA: Atrapamos los campos crudos del CURL
+        # INYECCIÓN DINÁMICA: Atrapamos los campos crudos del CURL
         raw = self.initial_data
         project.metadata = project.metadata or {}
         

@@ -6,7 +6,7 @@ import { apiCall, toFormData } from './client';
 import { API_URL, WORKSPACE_HEADER } from './config';
 import { defineEndpoint } from './endpoint';
 import { ApiError, ContractError, NetworkError, SessionExpiredError } from './errors';
-import { clearSession, getActiveWorkspaceId, getTokens, isSessionExpired, onMaintenance, onSessionExpired, setActiveWorkspaceId, setTokens } from './session';
+import { AUTH_STORAGE_KEY, clearSession, getActiveWorkspaceId, getTokens, isSessionExpired, onMaintenance, onSessionExpired, setActiveWorkspaceId, setTokens, subscribeSession } from './session';
 
 const Thing = z.object({ id: z.number(), name: z.string() });
 
@@ -330,8 +330,8 @@ describe('sesión', () => {
     expect(refreshes).toBe(0);
   });
 
-  it('antes de una subida renueva un token que está por vencer', async () => {
-    const almost = jwt(30, 'por-vencer');
+  it('una subida siempre sale con un token recién renovado', async () => {
+    const almost = jwt(900, 'con-tiempo');
     const fresh = jwt(1500, 'nuevo');
     setTokens({ access: almost, refresh: 'refresh-1' });
     let used: string | null = null;
@@ -344,6 +344,42 @@ describe('sesión', () => {
     );
     await apiCall(uploadThing, { body: { title: 'x' } });
     expect(used).toBe(`Bearer ${fresh}`);
+  });
+
+  it('si la renovación previa a una subida falla por algo pasajero, la subida sale igual', async () => {
+    setTokens({ access: 'actual', refresh: 'refresh-1' });
+    let used: string | null = null;
+    server.use(
+      http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ detail: 'caído' }, { status: 500 })),
+      http.post(`${API_URL}/api/v1/uploads/`, ({ request }) => {
+        used = request.headers.get('Authorization');
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    await apiCall(uploadThing, { body: { title: 'x' } });
+    expect(used).toBe('Bearer actual');
+    expect(isSessionExpired()).toBe(false);
+  });
+
+  it('si otra pestaña vuelve a iniciar sesión, esta deja de estar vencida', async () => {
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    server.use(
+      http.get(`${API_URL}/api/v1/things/:id/`, ({ request }) =>
+        request.headers.get('Authorization') === 'Bearer de-otra-pestaña'
+          ? HttpResponse.json({ id: 1, name: 'Ok' })
+          : HttpResponse.json({ detail: 'Token vencido' }, { status: 401 }),
+      ),
+      http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ detail: 'Token is invalid or expired' }, { status: 401 })),
+    );
+    const unsubscribe = subscribeSession(() => undefined);
+    await expect(apiCall(getThing, { params: { id: '1' } })).rejects.toBeInstanceOf(SessionExpiredError);
+    expect(isSessionExpired()).toBe(true);
+    // What the other tab does: it writes the new pair, and this one hears the `storage` event.
+    window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ access: 'de-otra-pestaña', refresh: 'refresh-9' }));
+    window.dispatchEvent(new StorageEvent('storage', { key: AUTH_STORAGE_KEY }));
+    expect(isSessionExpired()).toBe(false);
+    await expect(apiCall(getThing, { params: { id: '1' } })).resolves.toEqual({ id: 1, name: 'Ok' });
+    unsubscribe();
   });
 
   it('cerrar sesión borra también el workspace activo', () => {

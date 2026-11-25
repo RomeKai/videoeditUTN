@@ -119,6 +119,10 @@ front/
 
 - **Tema:** oscuro por defecto; la elección se guarda en `localStorage` (`oc.theme`) y se aplica antes de pintar.
 - **Sesión:** el par JWT vive en `localStorage` (`oc.auth`). Ante un 401 el cliente renueva una vez y repite; si no puede, se abre «Tu sesión venció» sin perder la pantalla.
+  - *Lo que se resigna:* un token en `localStorage` lo puede leer cualquier script que corra en la página, así que un XSS se lleva la sesión. Se eligió igual porque el backend entrega el par en el cuerpo de `POST /api/token/` (no hay cookie `HttpOnly`) y la app es de otro origen que la API. La defensa es no dejar entrar scripts ajenos: nada de `dangerouslySetInnerHTML` con datos del usuario, sin scripts de terceros, y una Content-Security-Policy estricta en producción (`script-src 'self'`). El único script inline es el del tema (`src/lib/theme-script.ts`): la CSP tiene que permitirlo con su hash o un nonce. Si el backend pasa a cookies `HttpOnly`, cambia solo `src/api/session.ts` y `src/api/client.ts`.
+  - Varias pestañas comparten la sesión: si una renueva o vuelve a iniciar sesión, las otras toman el par nuevo.
+- **Layout raíz:** `src/app/layout.tsx` es un Server Component y no importa valores (constantes, funciones) de módulos `'use client'`, solo componentes. Un valor así llega al navegador como referencia que espera el JS de ese módulo; dentro de `<head>` eso rompía la hidratación de toda la página cuando el JS llegaba tarde (error #418 de React, intermitente bajo carga). Por eso el script del tema vive en `src/lib/theme-script.ts`.
+- **Mocks y service worker:** con los mocks apagados la app da de baja el worker de MSW que haya quedado registrado en ese origen.
 - **Workspace activo:** se manda en el header `X-Workspace-Id` (propuesto; hoy el backend usa el primer workspace del usuario).
 - **Roles:** la tabla 1.7 del mapa está en `src/lib/permissions.ts`. La API todavía no la aplica; los mocks sí.
 - **Estimado de costo:** `estimateCost()` en `src/lib/pricing.ts` usa la misma fórmula que `PricingEngine`, con los valores de `GET /pricing/`.
