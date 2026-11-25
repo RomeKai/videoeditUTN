@@ -111,6 +111,8 @@ class RenderReservationHarness:
             available_balance=Decimal("100.00"), reserved_balance=Decimal("0")
         )
         self.client.force_authenticate(user=self.user)
+        # A second workspace of the user, not their default one: named like the web app does.
+        self.client.credentials(HTTP_X_WORKSPACE_ID=str(self.workspace.pk))
         self.project = VideoProject.objects.create(
             workspace=self.workspace, uploaded_by=self.user, title="Render reservation",
             original_r2_key="videos/1/original/source.mp4",
