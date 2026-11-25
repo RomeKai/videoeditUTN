@@ -228,7 +228,9 @@ describe('C1 · Nuevo proyecto', () => {
     expect(bypass).not.toBeChecked();
     expect(screen.getByText(/Apagado: el proyecto se detiene en la revisión/)).toBeInTheDocument();
     await user.click(bypass);
-    expect(screen.getByText(/El render se cobra sin que elijas ni confirmes los clips en la revisión/)).toBeInTheDocument();
+    expect(
+      screen.getByText('El render de los clips se reserva apenas estén listos, al mismo precio que aprobarlos, y se cobra solo lo que se entrega. Si no alcanza el saldo, el proyecto espera tu revisión.'),
+    ).toBeInTheDocument();
     expect(within(await summary()).getByText('Se renderiza sin pasar por la revisión.')).toBeInTheDocument();
   });
 

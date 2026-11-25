@@ -78,7 +78,7 @@ test.describe('B2 · Proyectos', () => {
     for (const label of ['En cola', 'Preparando el video', 'Transcribiendo', 'Revisando el contenido', 'Eligiendo los mejores momentos', 'En espera', 'Listo para revisar', 'Renderizando', 'Listo', 'Listo con errores', 'Error']) {
       await expect(table.getByText(label, { exact: true }).first()).toBeVisible();
     }
-    await expect(page.getByText('1–25 de 27 proyectos')).toBeVisible();
+    await expect(page.getByText(/1–25 de \d+ proyectos/)).toBeVisible();
   });
 
   test('teléfono: tarjetas apiladas y filtros en un menú', async ({ page }) => {

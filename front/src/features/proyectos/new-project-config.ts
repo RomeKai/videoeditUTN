@@ -11,6 +11,7 @@ import type {
   SubtitlePosition,
   SubtitleSize,
 } from '@/api/contracts/projects';
+import { normalizeHex } from '@/lib/format';
 import { LABELS } from '@/lib/project-status';
 
 /** Everything the form of C1 decides, besides the video itself. */
@@ -206,7 +207,7 @@ export function subtitlesLine(values: Pick<ProjectConfig, 'add_subtitles' | 'sub
 export function colorLabel(color: string, brandColor?: string | null): string {
   const known = SUBTITLE_COLORS.find((item) => item.value.toLowerCase() === color.toLowerCase());
   if (known) return known.label.toLowerCase();
-  if (brandColor && brandColor.toLowerCase() === color.toLowerCase()) return 'color del brand kit';
+  if (brandColor && normalizeHex(brandColor, '') === color.toUpperCase()) return 'color del brand kit';
   return color.toUpperCase();
 }
 
@@ -274,7 +275,8 @@ export function configFromProject(project: Project): ProjectConfig {
     add_subtitles: project.add_subtitles,
     subtitle_size: project.subtitle_size,
     subtitle_position: project.subtitle_position,
-    subtitle_color: project.subtitle_color,
+    // Colors come back as free text; the form and the request need #RRGGBB.
+    subtitle_color: normalizeHex(project.subtitle_color, DEFAULT_CONFIG.subtitle_color),
     subtitle_words_per_segment: clamp(project.subtitle_words_per_segment, WORDS_PER_LINE.min, WORDS_PER_LINE.max),
     use_facetracking: project.use_facetracking,
     remove_silences: project.remove_silences,
@@ -392,6 +394,7 @@ export function buildCreateBody(source: ProjectSourceInput, config: ProjectConfi
         }
       : {}),
     ...(config.brand_kit ? { brand_kit: config.brand_kit } : {}),
+    // Always explicit: the contract defaults it to true when it is left out.
     add_subtitles: config.add_subtitles,
     subtitle_size: config.subtitle_size,
     subtitle_position: config.subtitle_position,

@@ -5,6 +5,7 @@ import {
   PRESETS,
   buildCreateBody,
   buildPromptBody,
+  configFromProject,
   loadLastConfig,
   manualCameraActive,
   matchesPreset,
@@ -75,6 +76,19 @@ describe('buildCreateBody', () => {
 
   it('sin brand kit no manda el campo', () => {
     expect(buildCreateBody(file, config({ brand_kit: null }))).not.toHaveProperty('brand_kit');
+  });
+});
+
+describe('contrato', () => {
+  it('add_subtitles viaja siempre, también apagado', () => {
+    expect(buildCreateBody(file, config({ add_subtitles: false }))).toHaveProperty('add_subtitles', false);
+    expect(buildCreateBody(link, config({ add_subtitles: true }))).toHaveProperty('add_subtitles', true);
+  });
+
+  it('un color que no es hexadecimal no llega al formulario', () => {
+    const project = { ...config(), metadata: {}, subtitle_color: 'amarillo', manual_camera_x: 0.5, manual_camera_y: 0.2, manual_camera_zoom: 1 } as unknown as Parameters<typeof configFromProject>[0];
+    expect(configFromProject(project).subtitle_color).toBe(DEFAULT_CONFIG.subtitle_color);
+    expect(configFromProject({ ...project, subtitle_color: '#fa0' }).subtitle_color).toBe('#FFAA00');
   });
 });
 

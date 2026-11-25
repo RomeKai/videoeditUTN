@@ -6,7 +6,7 @@ import type { Plan, Pricing } from '@/api/contracts/billing';
 import type { BrandKit } from '@/api/contracts/brandkits';
 import type { RenderResolution } from '@/api/contracts/common';
 import type { AspectRatio, EditingStyle, Layout, Position, ProjectType, SubtitlePosition, SubtitleSize } from '@/api/contracts/projects';
-import { formatMinutes, formatNumber, formatTokens } from '@/lib/format';
+import { formatMinutes, formatNumber, formatTokens, normalizeHex } from '@/lib/format';
 import { estimateCost, firstPlanWith, planAllowsResolution } from '@/lib/pricing';
 import { LABELS } from '@/lib/project-status';
 import { Badge, Icon, PlanLock, RadioCard, RadioGroup, SegmentedControl, Select, Slider, Stepper, Switch, Textarea, cx } from '@/ui';
@@ -510,10 +510,12 @@ export function CustomizeSection({ config, set, presetName, modified, open, onOp
   const facesForced = config.render_layout === 'active';
   const seoAllowed = plan ? plan.has_seo_optimization : true;
   const seoPlan = seoAllowed ? null : (firstPlanWith(plans, (item) => item.has_seo_optimization)?.name ?? null);
-  const kitColors = kit ? [kit.primary_color, kit.secondary_color, kit.accent_color] : [];
+  const kitColors = kit ? [kit.primary_color, kit.secondary_color, kit.accent_color].map((color) => normalizeHex(color, '')).filter(Boolean) : [];
+  // Brand kit colors arrive as free text: only a real hex can become a subtitle color.
+  const kitAccent = kit ? normalizeHex(kit.accent_color, '') : '';
   const colors: Array<{ value: string; label: string }> = [
     ...SUBTITLE_COLORS,
-    ...(kit && !SUBTITLE_COLORS.some((item) => item.value.toLowerCase() === kit.accent_color.toLowerCase()) ? [{ value: kit.accent_color, label: 'Color del brand kit' }] : []),
+    ...(kitAccent && !SUBTITLE_COLORS.some((item) => item.value.toUpperCase() === kitAccent) ? [{ value: kitAccent, label: 'Color del brand kit' }] : []),
   ];
   const subsOff = !config.add_subtitles;
 
@@ -731,7 +733,7 @@ export function CustomizeSection({ config, set, presetName, modified, open, onOp
                   {single
                     ? 'El video completo se renderiza siempre sin pasar por la revisión.'
                     : config.auto_render_bypass
-                      ? 'Prendido: los clips se renderizan apenas la IA los elige. El render se cobra sin que elijas ni confirmes los clips en la revisión.'
+                      ? 'El render de los clips se reserva apenas estén listos, al mismo precio que aprobarlos, y se cobra solo lo que se entrega. Si no alcanza el saldo, el proyecto espera tu revisión.'
                       : 'Apagado: el proyecto se detiene en la revisión para que elijas qué clips renderizar.'}
                 </span>
               </div>
