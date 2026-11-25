@@ -200,7 +200,7 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
   const close = () => {
     if (submitting) return;
     // Drafts this panel created only to get the AI text are not left behind. The ones that went out are not drafts any more.
-    void drafts.discardAll().then(() => actions.invalidate());
+    void drafts.discardAll();
     if (sentCount > 0) {
       const done = outcomeSummary({ platforms: PLATFORMS, clips, sent: Object.keys(sent) as PairKey[], failures: [], when });
       toast.success(done.title, { action: { label: 'Ver', href: '/publicaciones' } });
@@ -342,7 +342,7 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
           : `«${firstClip?.title}» quedó programado para el ${formatDateTime(start as Date)}`;
     toast.success(message, { action: { label: 'Ver', href: '/publicaciones' } });
     // Drafts of a network that was unticked afterwards are not part of what went out.
-    void drafts.discardAll().then(() => actions.invalidate());
+    void drafts.discardAll();
     onClose();
   };
 

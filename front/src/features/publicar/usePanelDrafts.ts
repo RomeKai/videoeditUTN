@@ -122,9 +122,13 @@ export function usePanelDrafts({ clipIds, wanted, enabled }: { clipIds: string[]
     closed.current = true;
     const ids = [...mine.current.keys()];
     mine.current.clear();
-    queue.current = queue.current.then(() => Promise.all(ids.map(discardOne))).then(() => undefined);
+    queue.current = queue.current
+      .then(() => Promise.all(ids.map(discardOne)))
+      // Once, when they are all gone: a screen underneath may have listed them meanwhile.
+      .then(() => (ids.length > 0 ? actions.invalidate() : undefined))
+      .then(() => undefined);
     return queue.current;
-  }, [discardOne]);
+  }, [actions, discardOne]);
 
   // Drafts of this tab that survived a reload are this panel's again.
   const listed = queries.map((query) => query.data?.results.map((post) => post.id).join(',') ?? '').join('|');

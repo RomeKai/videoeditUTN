@@ -1,13 +1,30 @@
-import { expect, test } from '@playwright/test';
-import { expectClean, settle, useScenario, watch } from './helpers';
+import { expect, test, type Page } from '@playwright/test';
+import { expectClean, settle, useScenario, type Problems } from './helpers';
+
+/**
+ * Same as the shared `watch()`, minus one thing that is the browser's and not the screen's: the app's icon
+ * is /icon.svg, and when the editor adds a history entry (unsaved changes) Chromium sometimes asks for
+ * /favicon.ico on its own. That request cannot be intercepted, so its 404 is left out by its URL.
+ */
+function watch(page: Page): Problems {
+  const problems: Problems = { consoleErrors: [], failedRequests: [] };
+  page.on('console', (message) => {
+    if (message.type() !== 'error' || message.location().url.endsWith('/favicon.ico')) return;
+    problems.consoleErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => problems.consoleErrors.push(`pageerror: ${error.message}`));
+  page.on('requestfailed', (request) => {
+    const failure = request.failure()?.errorText ?? '';
+    if (failure.includes('ERR_ABORTED')) return;
+    problems.failedRequests.push(`${request.method()} ${request.url()} · ${failure}`);
+  });
+  page.on('response', (response) => {
+    if (response.status() >= 400 && !response.url().endsWith('/favicon.ico')) problems.failedRequests.push(`${response.request().method()} ${response.url()} · ${response.status()}`);
+  });
+  return problems;
+}
 
 test.describe('F1 · Brand kits y F2 · Editar brand kit', () => {
-  // The app's icon is /icon.svg. With unsaved changes the editor adds a history entry, and Chromium then
-  // sometimes asks for /favicon.ico on its own: that 404 is the browser's, not something the screen requested.
-  test.beforeEach(async ({ page }) => {
-    await page.route('**/favicon.ico', (route) => route.fulfill({ status: 204 }));
-  });
-
   test('crear un kit, editarlo, usarlo por defecto y borrarlo', async ({ page }) => {
     await useScenario(page, 'estudio-norte');
     const problems = watch(page);
