@@ -1295,9 +1295,10 @@ def _dispatch_approved_clips(project_id, clip_ids):
     After an approval commits: one render_clip_task per approved clip. If one
     cannot be queued, a resume of the pipeline is queued to retry it
     (process_initial_ingestion at render_dispatched re-queues the clips still
-    DRAFT). If that cannot be queued either, recover_stuck_renders finds the
-    clips once the project has been idle long enough. Never raises: the
-    approval is already saved.
+    DRAFT). If that cannot be queued either, or runs out of retries (it never
+    fails the project for that), recover_stuck_renders finds the clips once
+    the project has been idle long enough. Never raises: the approval is
+    already saved.
     """
     try:
         failure = _queue_clip_renders(project_id, clip_ids)
@@ -1309,23 +1310,57 @@ def _dispatch_approved_clips(project_id, clip_ids):
         logger.error("render.redispatch_not_queued project_id=%s error=%s", project_id, type(exc).__name__)
 
 
-def _resume_render_dispatch(project_id):
+def _clip_render_recoverable(project_id):
     """
-    Project is at RENDER_DISPATCHED: (re)queue every clip still DRAFT. Duplicates
-    are harmless: render_clip_task claims the clip with a CAS and skips COMPLETED
-    ones. With nothing left to queue, closes the fan-out if every clip finished.
+    recover_stuck_renders brings the project's clips back if they are never
+    queued: it renders clip by clip (an approval or an auto-render, never a
+    whole video) with that reservation still RESERVED.
     """
-    clip_ids = list(
-        VideoClip.objects.filter(project_id=project_id, status=VideoClip.Status.DRAFT)
-        .values_list('id', flat=True)
+    project = VideoProject.objects.filter(pk=project_id).first()
+    if project is None or _is_whole_video(project):
+        return False
+    metadata = project.metadata or {}
+    return any(
+        Transaction.objects.filter(pk=metadata[paid.reservation_key], status=Transaction.Status.RESERVED).exists()
+        for paid in _paid_clip_renders(metadata)
     )
+
+
+def _resume_render_dispatch(project_id, progress=None):
+    """
+    Project is at RENDER_DISPATCHED: (re)queue every clip still DRAFT that its
+    render pays for (with a clip-by-clip reservation, the clips it lists: a
+    draft an approval kept without approving it is not one). Duplicates are
+    harmless: render_clip_task claims the clip with a CAS and skips COMPLETED
+    ones. With nothing left to queue, closes the fan-out if every clip finished.
+
+    If the clips cannot be queued (the broker), the error is raised so the task
+    retries it. With a clip-by-clip reservation still RESERVED, it also tells
+    the task (``progress['render_not_queued']``) that recover_stuck_renders
+    brings these clips back: running out of retries must not fail a render
+    that never started. Once they are queued, the error code an earlier
+    attempt recorded is cleared.
+    """
+    metadata = VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
+    paid_renders = _paid_clip_renders(metadata)
+    clip_ids = [
+        clip_id for clip_id in VideoClip.objects.filter(project_id=project_id, status=VideoClip.Status.DRAFT)
+        .values_list('id', flat=True)
+        if not paid_renders or any(_pays_for(metadata, paid, clip_id) for paid in paid_renders)
+    ]
     if not clip_ids:
         finalize_project_render(project_id)
         return f"Render already dispatched for {project_id}"
 
     failure = _queue_clip_renders(project_id, clip_ids)
     if failure is not None:
+        if progress is not None and _is_retryable_pipeline_error(failure) and _clip_render_recoverable(project_id):
+            progress['render_not_queued'] = True
         raise failure
+    # Queued: the error an earlier attempt recorded (the broker) no longer holds.
+    VideoProject.objects.filter(pk=project_id).exclude(pipeline_error_code='').update(
+        pipeline_error_code='', pipeline_error_at=None,
+    )
 
     logger.info(
         "pipeline.render_redispatched project_id=%s clips=%d", project_id, len(clip_ids),
@@ -1386,7 +1421,7 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
                 record_error(project_id, 'AutoRenderNotPaid')
                 logger.warning("pipeline.redispatch_skipped project_id=%s reason=auto_render_unpaid", project_id)
                 return f"Not resumed {project_id}: its auto-render cannot be paid"
-        return _resume_render_dispatch(project_id)
+        return _resume_render_dispatch(project_id, progress)
 
     # Prompt-to-Edit (PTE-01b): parse and apply once, before any stage reads the
     # project settings (idempotent; a project without a prompt is untouched).
@@ -1700,8 +1735,20 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
             raise
     except Exception as exc:
         will_retry = _is_retryable_pipeline_error(exc) and self.request.retries < self.max_retries
+        final = not will_retry
+        if final and progress.get('render_not_queued'):
+            # The clips of a paid render could not be queued for the whole
+            # retry budget (the broker). Never failed for that, like
+            # recover_stuck_renders never fails a render that never started:
+            # the project stays at render_dispatched, reserved, and that
+            # recovery queues its clips again once it has been idle long enough.
+            logger.warning(
+                "pipeline.render_not_queued project_id=%s attempt=%d error=%s",
+                project_id, attempt, type(exc).__name__,
+            )
+            final = False
         _record_pipeline_failure(
-            project_id, exc, attempt, final=not will_retry, stage=progress.get('stage')
+            project_id, exc, attempt, final=final, stage=progress.get('stage')
         )
         if will_retry:
             raise self.retry(exc=exc, countdown=_retry_countdown(self.request.retries))

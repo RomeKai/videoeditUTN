@@ -1,7 +1,9 @@
 from unittest.mock import patch
 
+from celery.exceptions import SoftTimeLimitExceeded
+from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db import connection
+from django.db import OperationalError, connection
 from django.test import TestCase, TransactionTestCase
 
 from apps.users.models import Workspace
@@ -123,6 +125,23 @@ class RenderClipTaskTests(RenderHarness, TestCase):
 
         clip.refresh_from_db()
         self.assertEqual(clip.status, VideoClip.Status.RENDERING)
+
+    def test_a_clip_that_failed_for_good_is_never_claimed_again(self):
+        clip = self.make_clip(status=VideoClip.Status.FAILED)
+
+        self.assertIsNone(_claim_clip_for_render(clip.id))
+        self.assertIsNone(_claim_clip_for_render(clip.id, takeover=True))  # not even with a takeover right
+        self.assertEqual(VideoClip.objects.get(pk=clip.pk).status, VideoClip.Status.FAILED)
+
+    def test_a_late_message_for_a_failed_clip_renders_nothing(self):
+        clip = self.make_clip(status=VideoClip.Status.FAILED)
+
+        with patch(RENDER) as render:
+            result = render_clip_task.apply(args=[str(clip.id)])
+
+        self.assertTrue(result.successful())
+        render.assert_not_called()
+        self.assertEqual(VideoClip.objects.get(pk=clip.pk).status, VideoClip.Status.FAILED)
 
     def test_a_redelivered_message_may_reclaim_a_clip_abandoned_in_rendering(self):
         clip = self.make_clip(status=VideoClip.Status.RENDERING)
@@ -466,6 +485,67 @@ class RenderClipUploadRetryTests(RenderHarness, TestCase):
         self.assertTrue(result.failed())
         self.assertEqual(client.upload_file.call_count, 1)
         self.assertEqual(VideoClip.objects.get(pk=clip.pk).status, VideoClip.Status.FAILED)
+
+
+class RenderClipTimeLimitTests(RenderHarness, TestCase):
+    """
+    A clip render that hangs or runs too long fails and frees its claim, well
+    before recover_stuck_renders would take a RENDERING clip over; and no
+    render runs without its start recorded, which that recovery reads.
+    """
+
+    def test_the_clip_render_has_soft_and_hard_limits_below_the_stuck_threshold(self):
+        soft, hard = render_clip_task.soft_time_limit, render_clip_task.time_limit
+        self.assertEqual(soft, settings.RENDER_CLIP_SOFT_TIME_LIMIT)
+        self.assertEqual(hard, settings.RENDER_CLIP_TIME_LIMIT)
+        self.assertLess(soft, hard)
+        self.assertLess(hard, settings.RENDER_STUCK_AFTER_SECONDS)
+        self.assertLess(hard, settings.CELERY_BROKER_TRANSPORT_OPTIONS["visibility_timeout"])
+
+    def test_a_render_past_its_soft_limit_fails_for_good_and_frees_its_claim(self):
+        clip = self.make_clip()
+
+        with patch(RENDER, side_effect=SoftTimeLimitExceeded()) as render:
+            result = render_clip_task.apply(args=[str(clip.id)])
+
+        self.assertTrue(result.failed())
+        render.assert_called_once()  # never retried
+        row = VideoClip.objects.get(pk=clip.pk)
+        self.assertEqual(
+            (row.status, row.render_claim_token, row.render_unfinished_starts), (VideoClip.Status.FAILED, None, 0),
+        )
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.PARTIAL)
+        self.assertFalse(_is_retryable_render_error(SoftTimeLimitExceeded()))
+
+    def test_a_render_never_runs_without_its_start_recorded(self):
+        from apps.videos.tasks import render as render_module
+
+        clip = self.make_clip()
+        real_merge = render_module._merge_metadata
+        calls = []
+        recorded = []
+
+        def database_blip_once(project_id, updates, **kwargs):
+            calls.append(updates)
+            if len(calls) == 1:
+                raise OperationalError("server closed the connection")
+            return real_merge(project_id, updates, **kwargs)
+
+        def render(clip_id, claim_token=None):
+            metadata = VideoProject.objects.values_list("metadata", flat=True).get(pk=self.project.pk) or {}
+            recorded.append("render_clip_started_at" in metadata)
+            return self.completing_render(clip_id)
+
+        with patch.object(render_module, "_merge_metadata", side_effect=database_blip_once), \
+                patch(RENDER, side_effect=render):
+            result = render_clip_task.apply(args=[str(clip.id)])
+
+        # The first delivery handed its claim back and its retry rendered, with the start recorded.
+        self.assertTrue(result.successful())
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(recorded, [True])
+        self.assertEqual(VideoClip.objects.get(pk=clip.pk).status, VideoClip.Status.COMPLETED)
 
 
 class RenderClipRetryNotQueuedTests(RenderHarness, TestCase):

@@ -19,7 +19,9 @@ from rest_framework.test import APITestCase
 from apps.users.models import Workspace
 from apps.videos.models import VideoProject
 from apps.videos.services.ai.errors import NonRetryableAIError
-from apps.videos.services.segments import InvalidSegmentsError, validate_approved_segments
+from apps.videos.services.segments import (
+    InvalidSegmentsError, check_segment_lengths, max_render_segment_seconds, validate_approved_segments,
+)
 from apps.videos.tasks import render_video_segments
 from apps.videos.tests.fakes import FakeRedis
 
@@ -58,6 +60,20 @@ def _fake_write(path, **kwargs):
 
 
 class ValidateApprovedSegmentsTests(TestCase):
+    def test_a_segment_longer_than_the_limit_is_too_long(self):
+        segments = validate_approved_segments([{"start": 0, "end": 30}, {"start": 40, "end": 141}])
+
+        with self.assertRaises(InvalidSegmentsError) as ctx:
+            check_segment_lengths(segments, 100)
+        self.assertEqual(ctx.exception.kind, "too_long")
+        check_segment_lengths(segments, 101)
+
+    @override_settings(RENDER_CLIP_SOFT_TIME_LIMIT=7200, RENDER_CLIP_SECONDS_PER_SECOND=4.0)
+    def test_the_longest_segment_renders_within_the_clip_soft_limit(self):
+        self.assertEqual(max_render_segment_seconds(), 1800)
+        with override_settings(RENDER_CLIP_SECONDS_PER_SECOND=0):
+            self.assertEqual(max_render_segment_seconds(), 7200)  # never above the limit itself
+
     def test_accepts_numeric_segments_and_returns_floats(self):
         result = validate_approved_segments([{"start": 1, "end": 2.5, "text": "x"}])
         self.assertEqual(result, [{"start": 1.0, "end": 2.5, "text": "x"}])

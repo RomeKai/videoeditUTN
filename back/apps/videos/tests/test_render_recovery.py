@@ -566,6 +566,7 @@ class RecoverStuckRendersScheduleTests(StuckRenderHarness, APITestCase):
 
     def test_a_render_is_stuck_only_after_its_hard_time_limit(self):
         self.assertGreater(settings.RENDER_STUCK_AFTER_SECONDS, settings.RENDER_SEGMENTS_TIME_LIMIT)
+        self.assertGreater(settings.RENDER_STUCK_AFTER_SECONDS, settings.RENDER_CLIP_TIME_LIMIT)
 
     def test_the_environment_can_raise_the_threshold_but_never_below_the_hard_limit(self):
         import runpy
@@ -573,9 +574,12 @@ class RecoverStuckRendersScheduleTests(StuckRenderHarness, APITestCase):
         import backend.settings.base as base
 
         def stuck_after(**env):
-            with patch.dict("os.environ", {"RENDER_SEGMENTS_TIME_LIMIT": "1000", **env}):
+            limits = {"RENDER_SEGMENTS_TIME_LIMIT": "1000", "RENDER_CLIP_TIME_LIMIT": "500"}
+            with patch.dict("os.environ", {**limits, **env}):
                 return runpy.run_path(base.__file__)["RENDER_STUCK_AFTER_SECONDS"]
 
         self.assertEqual(stuck_after(), 1900)
         self.assertEqual(stuck_after(RENDER_STUCK_AFTER_SECONDS="60"), 1900)
         self.assertEqual(stuck_after(RENDER_STUCK_AFTER_SECONDS="5000"), 5000)
+        # A clip render may live longer than a paper edit: its limit counts too.
+        self.assertEqual(stuck_after(RENDER_CLIP_TIME_LIMIT="3000"), 3900)

@@ -137,7 +137,11 @@ def render_preview(preview_id) -> Optional[ClipPreview]:
         # Already rendered, failed, expired and deleted, or taken by another worker.
         return None
 
-    preview = ClipPreview.objects.select_related('clip__project__uploaded_by').get(pk=preview_id)
+    preview = ClipPreview.objects.select_related('clip__project__uploaded_by').filter(pk=preview_id).first()
+    if preview is None:
+        # Deleted right after the claim (its clip was left out of an approval,
+        # or moved): nothing to render.
+        return None
     clip_obj = preview.clip
     project = clip_obj.project
     work_dir = tempfile.mkdtemp(prefix='clip_preview_')
@@ -168,8 +172,10 @@ def render_preview(preview_id) -> Optional[ClipPreview]:
             ready_at=now, expires_at=now + _ttl(),
         )
         if not stored:
-            # The row went meanwhile (its clip was left out of an approval, or
-            # it expired): its file must not stay behind.
+            # The row went meanwhile (its clip was left out of an approval or
+            # moved, or it expired): its file must not stay behind. An
+            # approval locks the rows it deletes, so this update waits for its
+            # commit and lands here instead of saving a file nobody deletes.
             delete_preview_files([(preview.pk, key)])
             return None
         logger.info("preview.ready clip_id=%s preview_id=%s", clip_obj.pk, preview.pk)
@@ -229,8 +235,8 @@ def preview_url(preview: ClipPreview) -> Optional[str]:
 def delete_preview_files(previews) -> None:
     """
     Deletes the files of previews whose rows are gone, as ``(preview_id, key)``
-    pairs: their clip was deleted (left out of an approval). Best effort: a
-    file that cannot be deleted is logged and left.
+    pairs: their clip was left out of an approval, or the approval moved its
+    bounds. Best effort: a file that cannot be deleted is logged and left.
     """
     from apps.videos.services.storage_service import CloudflareR2Manager
 
