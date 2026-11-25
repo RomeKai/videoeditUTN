@@ -12,23 +12,26 @@ import { useToast } from '@/ui';
 export function useClipActions() {
   const toast = useToast();
   const download = useClipDownload();
-  const { mutate } = download;
+  const { mutateAsync } = download;
   // Several downloads can be under way at once: each card tracks its own.
   const [downloadingIds, setDownloadingIds] = useState<string[]>([]);
 
   const downloadClip = useCallback(
-    (clip: Pick<Clip, 'id'>, done = 'Clip descargado') => {
+    async (clip: Pick<Clip, 'id'>, done = 'Clip descargado') => {
       setDownloadingIds((ids) => [...ids.filter((id) => id !== clip.id), clip.id]);
-      mutate(clip.id, {
-        onSuccess: ({ url, filename }) => {
-          downloadUrl(url, filename);
-          toast.success(done);
-        },
-        onError: (error) => toast.error(errorMessage(error, 'No pudimos descargar el clip.')),
-        onSettled: () => setDownloadingIds((ids) => ids.filter((id) => id !== clip.id)),
-      });
+      // Awaited per call: the callbacks passed to `mutate` only fire for the latest call of a shared
+      // mutation, so with two downloads at once the first one would never finish.
+      try {
+        const { url, filename } = await mutateAsync(clip.id);
+        downloadUrl(url, filename);
+        toast.success(done);
+      } catch (error) {
+        toast.error(errorMessage(error, 'No pudimos descargar el clip.'));
+      } finally {
+        setDownloadingIds((ids) => ids.filter((id) => id !== clip.id));
+      }
     },
-    [mutate, toast],
+    [mutateAsync, toast],
   );
 
   const copyLink = useCallback(

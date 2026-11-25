@@ -254,7 +254,7 @@ export function ClipsScreen({ projectId }: { projectId: string }) {
 
   const actionsFor = useClipActionList(project ?? EMPTY_PROJECT, {
     onPublish: (clip) => publish([clip.id]),
-    onDownload: (clip) => downloadClip(clip),
+    onDownload: (clip) => void downloadClip(clip),
     onCopyLink: (clip) => void copyLink(`/proyectos/${projectId}/clips/${clip.id}`),
     onPreview: (clip) => setPreviewId(clip.id),
     onRetry: (clip) =>

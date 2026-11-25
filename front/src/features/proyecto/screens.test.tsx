@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { configure, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { MockDb, MockProject } from '@/api/mocks/db';
@@ -22,6 +22,11 @@ vi.mock('next/navigation', () => ({
 // jsdom cannot follow a download link; the screens only need to hand it the URL.
 const downloads = vi.hoisted(() => ({ url: vi.fn(), text: vi.fn() }));
 vi.mock('@/lib/download', async (original) => ({ ...(await original<typeof import('@/lib/download')>()), downloadUrl: downloads.url, downloadText: downloads.text }));
+
+// These tests go through the whole screen and the mocked API. On a busy machine (several suites at once)
+// the defaults of 1 s per query and 5 s per test are too tight; nothing here waits that long otherwise.
+configure({ asyncUtilTimeout: 8000 });
+vi.setConfig({ testTimeout: 30_000 });
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => {
@@ -108,8 +113,9 @@ describe('D1 · Proyecto', () => {
 
   it('«Renderizar sin revisar» en curso: avisa que el render quedó reservado', async () => {
     open('Sin revisar: render reservado', '');
-    expect(await screen.findByText('Reservamos el render de los clips')).toBeInTheDocument();
-  });
+    // Waits for the project and then for the wallet: give it room when the machine is busy.
+    expect(await screen.findByText('Reservamos el render de los clips', undefined, { timeout: 8000 })).toBeInTheDocument();
+  }, 20_000);
 
   it('error: mensaje de la sección 4, devolución, contacto y «Crear de nuevo»', async () => {
     const { id } = open('Falló: AINoSpeechDetectedError', '');
@@ -337,15 +343,20 @@ describe('D3 · Clips', () => {
     expect(within(screen.getByRole('list')).getAllByText('Listo')).toHaveLength(6);
   }, 20_000);
 
-  it('varias descargas a la vez: cada tarjeta lleva su propio estado', async () => {
-    const { user } = open('Vlog Mendoza', 'clips', 'estudio-norte');
+  it('dos descargas a la vez: bajan los dos archivos y los dos botones vuelven a quedar disponibles', async () => {
+    open('Vlog Mendoza', 'clips', 'estudio-norte');
     const buttons = await screen.findAllByRole('button', { name: /^Descargar «/ });
-    await user.click(buttons[0] as HTMLElement);
-    await user.click(buttons[1] as HTMLElement);
-    await waitFor(() => expect(downloads.url).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(buttons[0]).toBeEnabled());
-    expect(buttons[1]).toBeEnabled();
-  });
+    const [first, second] = buttons as [HTMLElement, HTMLElement];
+    // Both start before either link comes back.
+    fireEvent.click(first);
+    fireEvent.click(second);
+    expect(first).toBeDisabled();
+    expect(second).toBeDisabled();
+    await waitFor(() => expect(downloads.url).toHaveBeenCalledTimes(2), { timeout: 8000 });
+    expect(new Set(downloads.url.mock.calls.map((call) => call[1])).size).toBe(2);
+    await waitFor(() => expect(first).toBeEnabled());
+    await waitFor(() => expect(second).toBeEnabled());
+  }, 20_000);
 
   it('una vista previa que ya está lista no se pide de nuevo', async () => {
     const posts: string[] = [];
@@ -445,7 +456,7 @@ describe('D1e · Transcripción', () => {
     expect(await screen.findByText(`2 de ${total}`)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Resultado anterior' }));
     expect(await screen.findByText(`1 de ${total}`)).toBeInTheDocument();
-  });
+  }, 20_000);
 
   it('sin resultados: lo dice y deja el texto como estaba', async () => {
     const { user } = open('Vlog Mendoza', 'transcripcion', 'estudio-norte');
@@ -454,7 +465,7 @@ describe('D1e · Transcripción', () => {
     expect(screen.getByRole('region', { name: 'Transcripción completa' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Borrar la búsqueda' }));
     await waitFor(() => expect(screen.queryByText(/No encontramos «/)).toBeNull());
-  });
+  }, 20_000);
 
   it('marca los tramos que se volvieron clip y exporta .txt y .srt', async () => {
     const { user } = open('Vlog Mendoza', 'transcripcion', 'estudio-norte');

@@ -119,7 +119,7 @@ function HeaderActions({ project, tab, onRename, onDelete }: { project: Project;
     const ready = clip && (clip.status === 'completed' || clip.status === 'published');
     if (tab === 'resultado' && ready) {
       primary = (
-        <Button variant="primary" iconLeft="download" loading={downloadingIds.includes(clip.id)} onClick={() => downloadClip(clip, 'Video descargado')}>
+        <Button variant="primary" iconLeft="download" loading={downloadingIds.includes(clip.id)} onClick={() => void downloadClip(clip, 'Video descargado')}>
           Descargar
         </Button>
       );
