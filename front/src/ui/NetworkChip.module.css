@@ -1,0 +1,27 @@
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.chipSm {
+  gap: 6px;
+  font-size: 12px;
+  line-height: 16px;
+}
+.net {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  display: grid;
+  place-items: center;
+  color: var(--fg-muted);
+  flex: none;
+}
+.sm {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+}

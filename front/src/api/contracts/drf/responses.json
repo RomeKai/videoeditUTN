@@ -1,0 +1,1407 @@
+{
+  "_about": "Cuerpos tal como los arma el backend de dev (VideoProjectSerializer, VideoClipSerializer, BrandKitSerializer y las vistas de apps/videos/views.py), escritos a mano a partir del código. Si un serializer cambia, se actualiza acá y el test dice qué esquema dejó de aceptarlo.",
+  "token_pair": {
+    "access": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU1MzYwMDB9.x",
+    "refresh": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU2MjI0MDB9.y"
+  },
+  "token_refresh": {
+    "access": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU1MzYwMDB9.x",
+    "refresh": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU2MjI0MDB9.z"
+  },
+  "project_uploaded": {
+    "id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
+    "clips": [],
+    "brand_kit_name": "Estudio Norte",
+    "proxy_url": null,
+    "source_file": "http://localhost:8000/media/videos/raw/2026/11/clase.mp4",
+    "video_url": null,
+    "aspect_ratio": "9:16",
+    "title": "Clase 3: Finanzas personales",
+    "original_r2_key": null,
+    "proxy_r2_key": null,
+    "final_export_r2_key": null,
+    "project_type": "repurpose",
+    "editing_style": "dynamic",
+    "intelligence_level": "fast",
+    "auto_render_bypass": false,
+    "render_layout": "fill",
+    "gameplay_position": "center",
+    "camera_selection_position": "center",
+    "manual_camera_x": 0.5,
+    "manual_camera_y": 0.2,
+    "manual_camera_zoom": 1.0,
+    "speaker_tracking": false,
+    "add_subtitles": true,
+    "subtitle_color": "#FFFF00",
+    "subtitle_with_emojis": false,
+    "subtitle_words_per_segment": 3,
+    "subtitle_size": "medium",
+    "subtitle_position": "bottom",
+    "use_facetracking": false,
+    "remove_silences": false,
+    "metadata": {
+      "max_clips": 8,
+      "render_resolution": "720p",
+      "use_seo": false,
+      "subtitle_size": "medium",
+      "source_media": {
+        "duration_s": 1234.5,
+        "width": 1920,
+        "height": 1080,
+        "mime": "video/mp4"
+      },
+      "priced_duration_s": 1234,
+      "reservation_id": "0d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2"
+    },
+    "ai_rationale_log": {},
+    "transcript_data": null,
+    "approved_segments": null,
+    "status": "uploaded",
+    "pipeline_stage": "uploaded",
+    "pipeline_stage_status": {},
+    "pipeline_attempts": 0,
+    "pipeline_error_code": "",
+    "pipeline_error_at": null,
+    "created_at": "2026-11-24T10:00:00.123456Z",
+    "workspace": "a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "uploaded_by": "b3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "brand_kit": "c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b"
+  },
+  "project_in_review_auto_render_skipped": {
+    "id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
+    "clips": [
+      {
+        "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01",
+        "layers": [],
+        "title": "Clip 1",
+        "s3_object_key": null,
+        "start_time": 72.4,
+        "end_time": 104.9,
+        "virality_score": 89,
+        "ai_reasoning": "Gancho fuerte y cierre claro.",
+        "status": "draft",
+        "created_at": "2026-11-24T10:09:12.004211Z",
+        "project": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11"
+      },
+      {
+        "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a02",
+        "layers": [],
+        "title": "Clip 2",
+        "s3_object_key": null,
+        "start_time": 132.4,
+        "end_time": 164.9,
+        "virality_score": 88,
+        "ai_reasoning": "Gancho fuerte y cierre claro.",
+        "status": "draft",
+        "created_at": "2026-11-24T10:09:12.004211Z",
+        "project": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11"
+      }
+    ],
+    "proxy_url": "https://r2.example.invalid/videos/proxy/x.mp4?X-Amz-Signature=abc",
+    "source_file": "http://localhost:8000/media/videos/raw/2026/11/clase.mp4",
+    "video_url": null,
+    "aspect_ratio": "9:16",
+    "title": "Clase 3: Finanzas personales",
+    "original_r2_key": null,
+    "proxy_r2_key": "videos/proxy/x.mp4",
+    "final_export_r2_key": null,
+    "project_type": "repurpose",
+    "editing_style": "dynamic",
+    "intelligence_level": "fast",
+    "auto_render_bypass": true,
+    "render_layout": "fill",
+    "gameplay_position": "center",
+    "camera_selection_position": "center",
+    "manual_camera_x": 0.5,
+    "manual_camera_y": 0.2,
+    "manual_camera_zoom": 1.0,
+    "speaker_tracking": false,
+    "add_subtitles": true,
+    "subtitle_color": "#FFFF00",
+    "subtitle_with_emojis": false,
+    "subtitle_words_per_segment": 3,
+    "subtitle_size": "medium",
+    "subtitle_position": "bottom",
+    "use_facetracking": false,
+    "remove_silences": false,
+    "metadata": {
+      "max_clips": 8,
+      "render_resolution": "720p",
+      "use_seo": false,
+      "subtitle_size": "medium",
+      "source_media": {
+        "duration_s": 1234.5,
+        "width": 1920,
+        "height": 1080,
+        "mime": "video/mp4"
+      },
+      "priced_duration_s": 1234,
+      "reservation_id": "0d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2",
+      "duration": 1234.48,
+      "resolution": [
+        1920,
+        1080
+      ],
+      "full_text": "Hoy arrancamos.",
+      "transcription_usage": {
+        "audio_seconds": 1234.5
+      },
+      "moderation": {
+        "outcome": "clean",
+        "latency_s": 0.4,
+        "checked_at": "2026-11-24T10:05:00Z"
+      },
+      "selection_usage": {
+        "prompt_tokens": 1200,
+        "completion_tokens": 300
+      },
+      "selection_reasoning_effort": "default",
+      "capacity_wait": null,
+      "auto_render_skipped": "insufficient_funds"
+    },
+    "ai_rationale_log": {
+      "suggestions_count": 2,
+      "raw_ai_output": [
+        {
+          "title": "Clip 1"
+        }
+      ]
+    },
+    "transcript_data": [
+      {
+        "start": 0.4,
+        "end": 0.8,
+        "text": "Hoy"
+      },
+      {
+        "start": 0.9,
+        "end": 1.3,
+        "text": "arrancamos."
+      }
+    ],
+    "approved_segments": null,
+    "status": "awaiting_approval",
+    "pipeline_stage": "clips_selected",
+    "pipeline_stage_status": {
+      "uploaded": "completed",
+      "audio_extracted": "completed",
+      "transcribed": "completed",
+      "moderated": "completed",
+      "clips_selected": "completed"
+    },
+    "pipeline_attempts": 1,
+    "pipeline_error_code": "",
+    "pipeline_error_at": null,
+    "created_at": "2026-11-24T10:00:00.123456Z",
+    "workspace": "a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "uploaded_by": "b3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "brand_kit": null
+  },
+  "project_completed_auto_render": {
+    "id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
+    "clips": [
+      {
+        "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01",
+        "layers": [
+          {
+            "id": "e3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+            "layer_type": "text",
+            "start_time": 0.0,
+            "end_time": null,
+            "content": "Hola",
+            "asset_file": null,
+            "config": {},
+            "is_ai_generated": false,
+            "prompt_used": "",
+            "clip": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01"
+          }
+        ],
+        "title": "Clip 1",
+        "s3_object_key": "clips/x/1.mp4",
+        "start_time": 72.4,
+        "end_time": 104.9,
+        "virality_score": 89,
+        "ai_reasoning": "Gancho fuerte y cierre claro.",
+        "status": "completed",
+        "created_at": "2026-11-24T10:09:12.004211Z",
+        "project": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11"
+      },
+      {
+        "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a02",
+        "layers": [],
+        "title": "Clip 2",
+        "s3_object_key": null,
+        "start_time": 132.4,
+        "end_time": 164.9,
+        "virality_score": 88,
+        "ai_reasoning": "Gancho fuerte y cierre claro.",
+        "status": "failed",
+        "created_at": "2026-11-24T10:09:12.004211Z",
+        "project": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11"
+      }
+    ],
+    "proxy_url": "https://r2.example.invalid/videos/proxy/x.mp4?X-Amz-Signature=abc",
+    "source_file": "http://localhost:8000/media/videos/raw/2026/11/clase.mp4",
+    "video_url": null,
+    "aspect_ratio": "9:16",
+    "title": "Clase 3: Finanzas personales",
+    "original_r2_key": null,
+    "proxy_r2_key": "videos/proxy/x.mp4",
+    "final_export_r2_key": null,
+    "project_type": "repurpose",
+    "editing_style": "dynamic",
+    "intelligence_level": "fast",
+    "auto_render_bypass": true,
+    "render_layout": "fill",
+    "gameplay_position": "center",
+    "camera_selection_position": "center",
+    "manual_camera_x": 0.5,
+    "manual_camera_y": 0.2,
+    "manual_camera_zoom": 1.0,
+    "speaker_tracking": false,
+    "add_subtitles": true,
+    "subtitle_color": "#FFFF00",
+    "subtitle_with_emojis": false,
+    "subtitle_words_per_segment": 3,
+    "subtitle_size": "medium",
+    "subtitle_position": "bottom",
+    "use_facetracking": false,
+    "remove_silences": false,
+    "metadata": {
+      "max_clips": 8,
+      "render_resolution": "720p",
+      "use_seo": false,
+      "subtitle_size": "medium",
+      "source_media": {
+        "duration_s": 1234.5,
+        "width": 1920,
+        "height": 1080,
+        "mime": "video/mp4"
+      },
+      "priced_duration_s": 1234,
+      "reservation_id": "0d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2",
+      "duration": 1234.48,
+      "resolution": [
+        1920,
+        1080
+      ],
+      "full_text": "Hoy arrancamos.",
+      "transcription_usage": {
+        "audio_seconds": 1234.5
+      },
+      "moderation": {
+        "outcome": "clean",
+        "latency_s": 0.4,
+        "checked_at": "2026-11-24T10:05:00Z"
+      },
+      "selection_usage": {
+        "prompt_tokens": 1200,
+        "completion_tokens": 300
+      },
+      "selection_reasoning_effort": "default",
+      "capacity_wait": null,
+      "auto_render_reservation_id": "1d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2",
+      "auto_render_seconds": 65.0,
+      "auto_render_clip_ids": [
+        "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01",
+        "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a02"
+      ],
+      "final_duration": 65.0,
+      "pte_prompt": "Sacá 2 clips",
+      "pte_explicit": [
+        "aspect_ratio"
+      ],
+      "pte": {
+        "status": "applied",
+        "applied": {
+          "max_clips": 2
+        },
+        "ignored": [
+          {
+            "field": "render_resolution",
+            "reason": "plan"
+          }
+        ]
+      }
+    },
+    "ai_rationale_log": {
+      "suggestions_count": 2,
+      "raw_ai_output": [
+        {
+          "title": "Clip 1"
+        }
+      ]
+    },
+    "transcript_data": [
+      {
+        "start": 0.4,
+        "end": 0.8,
+        "text": "Hoy"
+      },
+      {
+        "start": 0.9,
+        "end": 1.3,
+        "text": "arrancamos."
+      }
+    ],
+    "approved_segments": [
+      {
+        "start": 72.4,
+        "end": 104.9
+      },
+      {
+        "start": 132.4,
+        "end": 164.9,
+        "text": "…"
+      }
+    ],
+    "status": "completed",
+    "pipeline_stage": "completed",
+    "pipeline_stage_status": {
+      "uploaded": "completed",
+      "audio_extracted": "completed",
+      "transcribed": "completed",
+      "moderated": "completed",
+      "clips_selected": "completed"
+    },
+    "pipeline_attempts": 1,
+    "pipeline_error_code": "",
+    "pipeline_error_at": null,
+    "created_at": "2026-11-24T10:00:00.123456Z",
+    "workspace": "a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "uploaded_by": "b3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "brand_kit": null
+  },
+  "project_failed_auto_render_not_paid": {
+    "id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
+    "clips": [],
+    "brand_kit_name": "Estudio Norte",
+    "proxy_url": null,
+    "source_file": "http://localhost:8000/media/videos/raw/2026/11/clase.mp4",
+    "video_url": null,
+    "aspect_ratio": "9:16",
+    "title": "Clase 3: Finanzas personales",
+    "original_r2_key": null,
+    "proxy_r2_key": null,
+    "final_export_r2_key": null,
+    "project_type": "repurpose",
+    "editing_style": "dynamic",
+    "intelligence_level": "fast",
+    "auto_render_bypass": false,
+    "render_layout": "fill",
+    "gameplay_position": "center",
+    "camera_selection_position": "center",
+    "manual_camera_x": 0.5,
+    "manual_camera_y": 0.2,
+    "manual_camera_zoom": 1.0,
+    "speaker_tracking": false,
+    "add_subtitles": true,
+    "subtitle_color": "#fff",
+    "subtitle_with_emojis": false,
+    "subtitle_words_per_segment": 3,
+    "subtitle_size": "medium",
+    "subtitle_position": "bottom",
+    "use_facetracking": false,
+    "remove_silences": false,
+    "metadata": {
+      "max_clips": 8,
+      "render_resolution": "720p",
+      "use_seo": false,
+      "subtitle_size": "medium",
+      "source_media": {
+        "duration_s": 1234.5,
+        "width": 1920,
+        "height": 1080,
+        "mime": "video/mp4"
+      },
+      "priced_duration_s": 1234,
+      "reservation_id": "0d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2",
+      "no_speech": true,
+      "full_text": ""
+    },
+    "ai_rationale_log": {},
+    "transcript_data": [],
+    "approved_segments": null,
+    "status": "failed",
+    "pipeline_stage": "render_dispatched",
+    "pipeline_stage_status": {
+      "uploaded": "completed",
+      "audio_extracted": "completed",
+      "transcribed": "completed",
+      "moderated": "completed",
+      "clips_selected": "completed"
+    },
+    "pipeline_attempts": 0,
+    "pipeline_error_code": "AutoRenderNotPaid",
+    "pipeline_error_at": "2026-11-24T11:00:00.000001Z",
+    "created_at": "2026-11-24T10:00:00.123456Z",
+    "workspace": "a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "uploaded_by": "b3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "brand_kit": "c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b"
+  },
+  "project_from_link": {
+    "id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
+    "clips": [],
+    "proxy_url": null,
+    "source_file": null,
+    "video_url": "https://www.youtube.com/watch?v=abc",
+    "aspect_ratio": "9:16",
+    "title": "Clase 3: Finanzas personales",
+    "original_r2_key": null,
+    "proxy_r2_key": null,
+    "final_export_r2_key": null,
+    "project_type": "repurpose",
+    "editing_style": "dynamic",
+    "intelligence_level": "fast",
+    "auto_render_bypass": false,
+    "render_layout": "fill",
+    "gameplay_position": "center",
+    "camera_selection_position": "center",
+    "manual_camera_x": 0.5,
+    "manual_camera_y": 0.2,
+    "manual_camera_zoom": 1.0,
+    "speaker_tracking": false,
+    "add_subtitles": true,
+    "subtitle_color": "#FFFF00",
+    "subtitle_with_emojis": false,
+    "subtitle_words_per_segment": 3,
+    "subtitle_size": "medium",
+    "subtitle_position": "bottom",
+    "use_facetracking": false,
+    "remove_silences": false,
+    "metadata": {
+      "render_resolution": "720p",
+      "use_seo": true,
+      "reservation_id": "0d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2"
+    },
+    "ai_rationale_log": {},
+    "transcript_data": null,
+    "approved_segments": null,
+    "status": "uploaded",
+    "pipeline_stage": "uploaded",
+    "pipeline_stage_status": {},
+    "pipeline_attempts": 0,
+    "pipeline_error_code": "",
+    "pipeline_error_at": null,
+    "created_at": "2026-11-24T10:00:00.123456Z",
+    "workspace": "a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "uploaded_by": "b3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "brand_kit": null
+  },
+  "project_list": [
+    {
+      "id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
+      "clips": [],
+      "brand_kit_name": "Estudio Norte",
+      "proxy_url": null,
+      "source_file": "http://localhost:8000/media/videos/raw/2026/11/clase.mp4",
+      "video_url": null,
+      "aspect_ratio": "9:16",
+      "title": "Clase 3: Finanzas personales",
+      "original_r2_key": null,
+      "proxy_r2_key": null,
+      "final_export_r2_key": null,
+      "project_type": "repurpose",
+      "editing_style": "dynamic",
+      "intelligence_level": "fast",
+      "auto_render_bypass": false,
+      "render_layout": "fill",
+      "gameplay_position": "center",
+      "camera_selection_position": "center",
+      "manual_camera_x": 0.5,
+      "manual_camera_y": 0.2,
+      "manual_camera_zoom": 1.0,
+      "speaker_tracking": false,
+      "add_subtitles": true,
+      "subtitle_color": "#FFFF00",
+      "subtitle_with_emojis": false,
+      "subtitle_words_per_segment": 3,
+      "subtitle_size": "medium",
+      "subtitle_position": "bottom",
+      "use_facetracking": false,
+      "remove_silences": false,
+      "metadata": {
+        "max_clips": 8,
+        "render_resolution": "720p",
+        "use_seo": false,
+        "subtitle_size": "medium",
+        "source_media": {
+          "duration_s": 1234.5,
+          "width": 1920,
+          "height": 1080,
+          "mime": "video/mp4"
+        },
+        "priced_duration_s": 1234,
+        "reservation_id": "0d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2"
+      },
+      "ai_rationale_log": {},
+      "transcript_data": null,
+      "approved_segments": null,
+      "status": "uploaded",
+      "pipeline_stage": "uploaded",
+      "pipeline_stage_status": {},
+      "pipeline_attempts": 0,
+      "pipeline_error_code": "",
+      "pipeline_error_at": null,
+      "created_at": "2026-11-24T10:00:00.123456Z",
+      "workspace": "a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+      "uploaded_by": "b3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+      "brand_kit": "c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b"
+    },
+    {
+      "id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
+      "clips": [
+        {
+          "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01",
+          "layers": [],
+          "title": "Clip 1",
+          "s3_object_key": null,
+          "start_time": 72.4,
+          "end_time": 104.9,
+          "virality_score": 89,
+          "ai_reasoning": "Gancho fuerte y cierre claro.",
+          "status": "draft",
+          "created_at": "2026-11-24T10:09:12.004211Z",
+          "project": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11"
+        },
+        {
+          "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a02",
+          "layers": [],
+          "title": "Clip 2",
+          "s3_object_key": null,
+          "start_time": 132.4,
+          "end_time": 164.9,
+          "virality_score": 88,
+          "ai_reasoning": "Gancho fuerte y cierre claro.",
+          "status": "draft",
+          "created_at": "2026-11-24T10:09:12.004211Z",
+          "project": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11"
+        }
+      ],
+      "proxy_url": "https://r2.example.invalid/videos/proxy/x.mp4?X-Amz-Signature=abc",
+      "source_file": "http://localhost:8000/media/videos/raw/2026/11/clase.mp4",
+      "video_url": null,
+      "aspect_ratio": "9:16",
+      "title": "Clase 3: Finanzas personales",
+      "original_r2_key": null,
+      "proxy_r2_key": "videos/proxy/x.mp4",
+      "final_export_r2_key": null,
+      "project_type": "repurpose",
+      "editing_style": "dynamic",
+      "intelligence_level": "fast",
+      "auto_render_bypass": true,
+      "render_layout": "fill",
+      "gameplay_position": "center",
+      "camera_selection_position": "center",
+      "manual_camera_x": 0.5,
+      "manual_camera_y": 0.2,
+      "manual_camera_zoom": 1.0,
+      "speaker_tracking": false,
+      "add_subtitles": true,
+      "subtitle_color": "#FFFF00",
+      "subtitle_with_emojis": false,
+      "subtitle_words_per_segment": 3,
+      "subtitle_size": "medium",
+      "subtitle_position": "bottom",
+      "use_facetracking": false,
+      "remove_silences": false,
+      "metadata": {
+        "max_clips": 8,
+        "render_resolution": "720p",
+        "use_seo": false,
+        "subtitle_size": "medium",
+        "source_media": {
+          "duration_s": 1234.5,
+          "width": 1920,
+          "height": 1080,
+          "mime": "video/mp4"
+        },
+        "priced_duration_s": 1234,
+        "reservation_id": "0d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2",
+        "duration": 1234.48,
+        "resolution": [
+          1920,
+          1080
+        ],
+        "full_text": "Hoy arrancamos.",
+        "transcription_usage": {
+          "audio_seconds": 1234.5
+        },
+        "moderation": {
+          "outcome": "clean",
+          "latency_s": 0.4,
+          "checked_at": "2026-11-24T10:05:00Z"
+        },
+        "selection_usage": {
+          "prompt_tokens": 1200,
+          "completion_tokens": 300
+        },
+        "selection_reasoning_effort": "default",
+        "capacity_wait": null,
+        "auto_render_skipped": "insufficient_funds"
+      },
+      "ai_rationale_log": {
+        "suggestions_count": 2,
+        "raw_ai_output": [
+          {
+            "title": "Clip 1"
+          }
+        ]
+      },
+      "transcript_data": [
+        {
+          "start": 0.4,
+          "end": 0.8,
+          "text": "Hoy"
+        },
+        {
+          "start": 0.9,
+          "end": 1.3,
+          "text": "arrancamos."
+        }
+      ],
+      "approved_segments": null,
+      "status": "awaiting_approval",
+      "pipeline_stage": "clips_selected",
+      "pipeline_stage_status": {
+        "uploaded": "completed",
+        "audio_extracted": "completed",
+        "transcribed": "completed",
+        "moderated": "completed",
+        "clips_selected": "completed"
+      },
+      "pipeline_attempts": 1,
+      "pipeline_error_code": "",
+      "pipeline_error_at": null,
+      "created_at": "2026-11-24T10:00:00.123456Z",
+      "workspace": "a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+      "uploaded_by": "b3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+      "brand_kit": null
+    },
+    {
+      "id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
+      "clips": [
+        {
+          "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01",
+          "layers": [
+            {
+              "id": "e3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+              "layer_type": "text",
+              "start_time": 0.0,
+              "end_time": null,
+              "content": "Hola",
+              "asset_file": null,
+              "config": {},
+              "is_ai_generated": false,
+              "prompt_used": "",
+              "clip": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01"
+            }
+          ],
+          "title": "Clip 1",
+          "s3_object_key": "clips/x/1.mp4",
+          "start_time": 72.4,
+          "end_time": 104.9,
+          "virality_score": 89,
+          "ai_reasoning": "Gancho fuerte y cierre claro.",
+          "status": "completed",
+          "created_at": "2026-11-24T10:09:12.004211Z",
+          "project": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11"
+        },
+        {
+          "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a02",
+          "layers": [],
+          "title": "Clip 2",
+          "s3_object_key": null,
+          "start_time": 132.4,
+          "end_time": 164.9,
+          "virality_score": 88,
+          "ai_reasoning": "Gancho fuerte y cierre claro.",
+          "status": "failed",
+          "created_at": "2026-11-24T10:09:12.004211Z",
+          "project": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11"
+        }
+      ],
+      "proxy_url": "https://r2.example.invalid/videos/proxy/x.mp4?X-Amz-Signature=abc",
+      "source_file": "http://localhost:8000/media/videos/raw/2026/11/clase.mp4",
+      "video_url": null,
+      "aspect_ratio": "9:16",
+      "title": "Clase 3: Finanzas personales",
+      "original_r2_key": null,
+      "proxy_r2_key": "videos/proxy/x.mp4",
+      "final_export_r2_key": null,
+      "project_type": "repurpose",
+      "editing_style": "dynamic",
+      "intelligence_level": "fast",
+      "auto_render_bypass": true,
+      "render_layout": "fill",
+      "gameplay_position": "center",
+      "camera_selection_position": "center",
+      "manual_camera_x": 0.5,
+      "manual_camera_y": 0.2,
+      "manual_camera_zoom": 1.0,
+      "speaker_tracking": false,
+      "add_subtitles": true,
+      "subtitle_color": "#FFFF00",
+      "subtitle_with_emojis": false,
+      "subtitle_words_per_segment": 3,
+      "subtitle_size": "medium",
+      "subtitle_position": "bottom",
+      "use_facetracking": false,
+      "remove_silences": false,
+      "metadata": {
+        "max_clips": 8,
+        "render_resolution": "720p",
+        "use_seo": false,
+        "subtitle_size": "medium",
+        "source_media": {
+          "duration_s": 1234.5,
+          "width": 1920,
+          "height": 1080,
+          "mime": "video/mp4"
+        },
+        "priced_duration_s": 1234,
+        "reservation_id": "0d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2",
+        "duration": 1234.48,
+        "resolution": [
+          1920,
+          1080
+        ],
+        "full_text": "Hoy arrancamos.",
+        "transcription_usage": {
+          "audio_seconds": 1234.5
+        },
+        "moderation": {
+          "outcome": "clean",
+          "latency_s": 0.4,
+          "checked_at": "2026-11-24T10:05:00Z"
+        },
+        "selection_usage": {
+          "prompt_tokens": 1200,
+          "completion_tokens": 300
+        },
+        "selection_reasoning_effort": "default",
+        "capacity_wait": null,
+        "auto_render_reservation_id": "1d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2",
+        "auto_render_seconds": 65.0,
+        "auto_render_clip_ids": [
+          "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01",
+          "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a02"
+        ],
+        "final_duration": 65.0,
+        "pte_prompt": "Sacá 2 clips",
+        "pte_explicit": [
+          "aspect_ratio"
+        ],
+        "pte": {
+          "status": "applied",
+          "applied": {
+            "max_clips": 2
+          },
+          "ignored": [
+            {
+              "field": "render_resolution",
+              "reason": "plan"
+            }
+          ]
+        }
+      },
+      "ai_rationale_log": {
+        "suggestions_count": 2,
+        "raw_ai_output": [
+          {
+            "title": "Clip 1"
+          }
+        ]
+      },
+      "transcript_data": [
+        {
+          "start": 0.4,
+          "end": 0.8,
+          "text": "Hoy"
+        },
+        {
+          "start": 0.9,
+          "end": 1.3,
+          "text": "arrancamos."
+        }
+      ],
+      "approved_segments": [
+        {
+          "start": 72.4,
+          "end": 104.9
+        },
+        {
+          "start": 132.4,
+          "end": 164.9,
+          "text": "…"
+        }
+      ],
+      "status": "completed",
+      "pipeline_stage": "completed",
+      "pipeline_stage_status": {
+        "uploaded": "completed",
+        "audio_extracted": "completed",
+        "transcribed": "completed",
+        "moderated": "completed",
+        "clips_selected": "completed"
+      },
+      "pipeline_attempts": 1,
+      "pipeline_error_code": "",
+      "pipeline_error_at": null,
+      "created_at": "2026-11-24T10:00:00.123456Z",
+      "workspace": "a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+      "uploaded_by": "b3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+      "brand_kit": null
+    },
+    {
+      "id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
+      "clips": [],
+      "brand_kit_name": "Estudio Norte",
+      "proxy_url": null,
+      "source_file": "http://localhost:8000/media/videos/raw/2026/11/clase.mp4",
+      "video_url": null,
+      "aspect_ratio": "9:16",
+      "title": "Clase 3: Finanzas personales",
+      "original_r2_key": null,
+      "proxy_r2_key": null,
+      "final_export_r2_key": null,
+      "project_type": "repurpose",
+      "editing_style": "dynamic",
+      "intelligence_level": "fast",
+      "auto_render_bypass": false,
+      "render_layout": "fill",
+      "gameplay_position": "center",
+      "camera_selection_position": "center",
+      "manual_camera_x": 0.5,
+      "manual_camera_y": 0.2,
+      "manual_camera_zoom": 1.0,
+      "speaker_tracking": false,
+      "add_subtitles": true,
+      "subtitle_color": "#fff",
+      "subtitle_with_emojis": false,
+      "subtitle_words_per_segment": 3,
+      "subtitle_size": "medium",
+      "subtitle_position": "bottom",
+      "use_facetracking": false,
+      "remove_silences": false,
+      "metadata": {
+        "max_clips": 8,
+        "render_resolution": "720p",
+        "use_seo": false,
+        "subtitle_size": "medium",
+        "source_media": {
+          "duration_s": 1234.5,
+          "width": 1920,
+          "height": 1080,
+          "mime": "video/mp4"
+        },
+        "priced_duration_s": 1234,
+        "reservation_id": "0d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2",
+        "no_speech": true,
+        "full_text": ""
+      },
+      "ai_rationale_log": {},
+      "transcript_data": [],
+      "approved_segments": null,
+      "status": "failed",
+      "pipeline_stage": "render_dispatched",
+      "pipeline_stage_status": {
+        "uploaded": "completed",
+        "audio_extracted": "completed",
+        "transcribed": "completed",
+        "moderated": "completed",
+        "clips_selected": "completed"
+      },
+      "pipeline_attempts": 0,
+      "pipeline_error_code": "AutoRenderNotPaid",
+      "pipeline_error_at": "2026-11-24T11:00:00.000001Z",
+      "created_at": "2026-11-24T10:00:00.123456Z",
+      "workspace": "a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+      "uploaded_by": "b3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+      "brand_kit": "c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b"
+    },
+    {
+      "id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
+      "clips": [],
+      "proxy_url": null,
+      "source_file": null,
+      "video_url": "https://www.youtube.com/watch?v=abc",
+      "aspect_ratio": "9:16",
+      "title": "Clase 3: Finanzas personales",
+      "original_r2_key": null,
+      "proxy_r2_key": null,
+      "final_export_r2_key": null,
+      "project_type": "repurpose",
+      "editing_style": "dynamic",
+      "intelligence_level": "fast",
+      "auto_render_bypass": false,
+      "render_layout": "fill",
+      "gameplay_position": "center",
+      "camera_selection_position": "center",
+      "manual_camera_x": 0.5,
+      "manual_camera_y": 0.2,
+      "manual_camera_zoom": 1.0,
+      "speaker_tracking": false,
+      "add_subtitles": true,
+      "subtitle_color": "#FFFF00",
+      "subtitle_with_emojis": false,
+      "subtitle_words_per_segment": 3,
+      "subtitle_size": "medium",
+      "subtitle_position": "bottom",
+      "use_facetracking": false,
+      "remove_silences": false,
+      "metadata": {
+        "render_resolution": "720p",
+        "use_seo": true,
+        "reservation_id": "0d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2"
+      },
+      "ai_rationale_log": {},
+      "transcript_data": null,
+      "approved_segments": null,
+      "status": "uploaded",
+      "pipeline_stage": "uploaded",
+      "pipeline_stage_status": {},
+      "pipeline_attempts": 0,
+      "pipeline_error_code": "",
+      "pipeline_error_at": null,
+      "created_at": "2026-11-24T10:00:00.123456Z",
+      "workspace": "a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+      "uploaded_by": "b3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+      "brand_kit": null
+    }
+  ],
+  "project_create_response": {
+    "id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
+    "clips": [],
+    "brand_kit_name": "Estudio Norte",
+    "proxy_url": null,
+    "source_file": "http://localhost:8000/media/videos/raw/2026/11/clase.mp4",
+    "video_url": null,
+    "aspect_ratio": "9:16",
+    "title": "Clase 3: Finanzas personales",
+    "original_r2_key": null,
+    "proxy_r2_key": null,
+    "final_export_r2_key": null,
+    "project_type": "repurpose",
+    "editing_style": "dynamic",
+    "intelligence_level": "fast",
+    "auto_render_bypass": false,
+    "render_layout": "fill",
+    "gameplay_position": "center",
+    "camera_selection_position": "center",
+    "manual_camera_x": 0.5,
+    "manual_camera_y": 0.2,
+    "manual_camera_zoom": 1.0,
+    "speaker_tracking": false,
+    "add_subtitles": true,
+    "subtitle_color": "#FFFF00",
+    "subtitle_with_emojis": false,
+    "subtitle_words_per_segment": 3,
+    "subtitle_size": "medium",
+    "subtitle_position": "bottom",
+    "use_facetracking": false,
+    "remove_silences": false,
+    "metadata": {
+      "max_clips": 8,
+      "render_resolution": "720p",
+      "use_seo": false,
+      "subtitle_size": "medium",
+      "source_media": {
+        "duration_s": 1234.5,
+        "width": 1920,
+        "height": 1080,
+        "mime": "video/mp4"
+      },
+      "priced_duration_s": 1234,
+      "reservation_id": "0d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2"
+    },
+    "ai_rationale_log": {},
+    "transcript_data": null,
+    "approved_segments": null,
+    "status": "uploaded",
+    "pipeline_stage": "uploaded",
+    "pipeline_stage_status": {},
+    "pipeline_attempts": 0,
+    "pipeline_error_code": "",
+    "pipeline_error_at": null,
+    "created_at": "2026-11-24T10:00:00.123456Z",
+    "workspace": "a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "uploaded_by": "b3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "brand_kit": "c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "cost_details": {
+      "tokens_reserved": 555.3,
+      "transaction_id": "0d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2"
+    },
+    "message": "Video subido. Iniciando ingesta multimodal..."
+  },
+  "project_from_prompt_response": {
+    "id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
+    "clips": [],
+    "brand_kit_name": "Estudio Norte",
+    "proxy_url": null,
+    "source_file": "http://localhost:8000/media/videos/raw/2026/11/clase.mp4",
+    "video_url": null,
+    "aspect_ratio": "9:16",
+    "title": "Clase 3: Finanzas personales",
+    "original_r2_key": null,
+    "proxy_r2_key": null,
+    "final_export_r2_key": null,
+    "project_type": "repurpose",
+    "editing_style": "dynamic",
+    "intelligence_level": "fast",
+    "auto_render_bypass": false,
+    "render_layout": "fill",
+    "gameplay_position": "center",
+    "camera_selection_position": "center",
+    "manual_camera_x": 0.5,
+    "manual_camera_y": 0.2,
+    "manual_camera_zoom": 1.0,
+    "speaker_tracking": false,
+    "add_subtitles": true,
+    "subtitle_color": "#FFFF00",
+    "subtitle_with_emojis": false,
+    "subtitle_words_per_segment": 3,
+    "subtitle_size": "medium",
+    "subtitle_position": "bottom",
+    "use_facetracking": false,
+    "remove_silences": false,
+    "metadata": {
+      "max_clips": 8,
+      "render_resolution": "720p",
+      "use_seo": false,
+      "subtitle_size": "medium",
+      "source_media": {
+        "duration_s": 1234.5,
+        "width": 1920,
+        "height": 1080,
+        "mime": "video/mp4"
+      },
+      "priced_duration_s": 1234,
+      "reservation_id": "0d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2"
+    },
+    "ai_rationale_log": {},
+    "transcript_data": null,
+    "approved_segments": null,
+    "status": "uploaded",
+    "pipeline_stage": "uploaded",
+    "pipeline_stage_status": {},
+    "pipeline_attempts": 0,
+    "pipeline_error_code": "",
+    "pipeline_error_at": null,
+    "created_at": "2026-11-24T10:00:00.123456Z",
+    "workspace": "a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "uploaded_by": "b3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "brand_kit": "c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "cost_details": {
+      "tokens_reserved": 10.0,
+      "transaction_id": "0d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2"
+    },
+    "message": "Video subido. Iniciando ingesta multimodal...",
+    "prompt_config": {
+      "status": "pending",
+      "detail": "Se aplica al iniciar la ingesta; el resultado queda en metadata.pte."
+    }
+  },
+  "paper_edit_data": {
+    "project_id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
+    "title": "Clase 3: Finanzas personales",
+    "status": "awaiting_approval",
+    "proxy_url": "https://r2.example.invalid/videos/proxy/x.mp4?X-Amz-Signature=abc",
+    "transcript": [
+      {
+        "start": 0.4,
+        "end": 0.8,
+        "text": "Hoy"
+      },
+      {
+        "start": 0.9,
+        "end": 1.3,
+        "text": "arrancamos."
+      }
+    ],
+    "ai_suggestions": [
+      {
+        "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01",
+        "layers": [],
+        "title": "Clip 1",
+        "s3_object_key": null,
+        "start_time": 72.4,
+        "end_time": 104.9,
+        "virality_score": 89,
+        "ai_reasoning": "Gancho fuerte y cierre claro.",
+        "status": "draft",
+        "created_at": "2026-11-24T10:09:12.004211Z",
+        "project": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11"
+      },
+      {
+        "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a02",
+        "layers": [],
+        "title": "Clip 2",
+        "s3_object_key": null,
+        "start_time": 132.4,
+        "end_time": 164.9,
+        "virality_score": 88,
+        "ai_reasoning": "Gancho fuerte y cierre claro.",
+        "status": "draft",
+        "created_at": "2026-11-24T10:09:12.004211Z",
+        "project": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11"
+      }
+    ],
+    "metadata": {
+      "max_clips": 8,
+      "render_resolution": "720p",
+      "use_seo": false,
+      "subtitle_size": "medium",
+      "source_media": {
+        "duration_s": 1234.5,
+        "width": 1920,
+        "height": 1080,
+        "mime": "video/mp4"
+      },
+      "priced_duration_s": 1234,
+      "reservation_id": "0d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2",
+      "duration": 1234.48,
+      "resolution": [
+        1920,
+        1080
+      ],
+      "full_text": "Hoy arrancamos.",
+      "transcription_usage": {
+        "audio_seconds": 1234.5
+      },
+      "moderation": {
+        "outcome": "clean",
+        "latency_s": 0.4,
+        "checked_at": "2026-11-24T10:05:00Z"
+      },
+      "selection_usage": {
+        "prompt_tokens": 1200,
+        "completion_tokens": 300
+      },
+      "selection_reasoning_effort": "default",
+      "capacity_wait": null,
+      "auto_render_skipped": "insufficient_funds"
+    }
+  },
+  "approve_response": {
+    "message": "EdiciÃ³n aprobada. Iniciando renderizado de alta calidad...",
+    "project_id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
+    "final_cost": 29.25,
+    "transaction_id": "2d8b2a9e-3a4c-4c51-8b7d-91f1e1d6a0c2"
+  },
+  "clip_preview_pending": {
+    "preview_id": "f3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "clip_id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01",
+    "status": "pending",
+    "url": null,
+    "expires_at": "2026-11-24T11:00:00.123456Z",
+    "error_code": null,
+    "cost_tokens": 0,
+    "simplified": {
+      "height": 360,
+      "face_tracking": false,
+      "silence_removal": false
+    }
+  },
+  "clip_preview_ready": {
+    "preview_id": "f3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "clip_id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01",
+    "status": "ready",
+    "url": "https://r2.example.invalid/previews/p.mp4?X-Amz-Signature=abc",
+    "expires_at": "2026-11-24T11:00:00.123456Z",
+    "error_code": null,
+    "cost_tokens": 0,
+    "simplified": {
+      "height": 360,
+      "face_tracking": false,
+      "silence_removal": false
+    }
+  },
+  "clip_preview_failed": {
+    "preview_id": "f3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "clip_id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01",
+    "status": "failed",
+    "url": null,
+    "expires_at": "2026-11-24T11:00:00.123456Z",
+    "error_code": "OSError",
+    "cost_tokens": 0,
+    "simplified": {
+      "height": 360,
+      "face_tracking": false,
+      "silence_removal": false
+    }
+  },
+  "brand_kit": {
+    "id": "c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "name": "Estudio Norte",
+    "description": "",
+    "primary_font": "http://localhost:8000/media/assets/fonts/Inter.ttf",
+    "secondary_font": null,
+    "primary_color": "#FFFFFF",
+    "secondary_color": "#000",
+    "accent_color": "#ffff00",
+    "watermark_logo": null,
+    "intro_video": null,
+    "outro_video": null,
+    "is_default": true,
+    "created_at": "2026-11-01T09:00:00.500000Z",
+    "workspace": "a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "user": null
+  },
+  "brand_kit_list": [
+    {
+      "id": "c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+      "name": "Estudio Norte",
+      "description": "",
+      "primary_font": "http://localhost:8000/media/assets/fonts/Inter.ttf",
+      "secondary_font": null,
+      "primary_color": "#FFFFFF",
+      "secondary_color": "#000",
+      "accent_color": "#ffff00",
+      "watermark_logo": null,
+      "intro_video": null,
+      "outro_video": null,
+      "is_default": true,
+      "created_at": "2026-11-01T09:00:00.500000Z",
+      "workspace": "a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+      "user": null
+    }
+  ],
+  "errors": {
+    "login_401": {
+      "status": 401,
+      "body": {
+        "detail": "No active account found with the given credentials"
+      }
+    },
+    "token_401": {
+      "status": 401,
+      "body": {
+        "detail": "Given token not valid for any token type",
+        "code": "token_not_valid",
+        "messages": [
+          {
+            "token_class": "AccessToken",
+            "token_type": "access",
+            "message": "Token is invalid or expired"
+          }
+        ]
+      }
+    },
+    "create_400_upload": {
+      "status": 400,
+      "body": {
+        "source_file": [
+          "El video supera la duración máxima que podemos procesar (3 h)."
+        ]
+      }
+    },
+    "create_400_required": {
+      "status": 400,
+      "body": {
+        "non_field_errors": [
+          "Debes proporcionar un 'source_file' o una 'video_url'."
+        ]
+      }
+    },
+    "create_400_single_edit": {
+      "status": 400,
+      "body": {
+        "project_type": [
+          "Para editar el video completo, subí el archivo. Los links sirven para sacar clips."
+        ]
+      }
+    },
+    "create_400_drf_english": {
+      "status": 400,
+      "body": {
+        "title": [
+          "Ensure this field has no more than 255 characters."
+        ],
+        "aspect_ratio": [
+          "\"4:3\" is not a valid choice."
+        ]
+      }
+    },
+    "create_402": {
+      "status": 402,
+      "body": {
+        "error": "['Saldo insuficiente']",
+        "required": 555.3
+      }
+    },
+    "create_403_plan": {
+      "status": 403,
+      "body": {
+        "error": "['Video duration (4000s) exceeds your plan limit (600s).']"
+      }
+    },
+    "permission_403": {
+      "status": 403,
+      "body": {
+        "detail": "You do not have permission to perform this action."
+      }
+    },
+    "not_found_404": {
+      "status": 404,
+      "body": {
+        "detail": "No VideoProject matches the given query."
+      }
+    },
+    "approve_400_not_awaiting": {
+      "status": 400,
+      "body": {
+        "error": "El proyecto no estÃ¡ en espera de aprobaciÃ³n. Estado actual: rendering"
+      }
+    },
+    "approve_400_pricing": {
+      "status": 400,
+      "body": {
+        "error": "Error en el motor de precios: [\"Your plan 'Gratis' does not support 4K rendering.\"]"
+      }
+    },
+    "approve_400_segments": {
+      "status": 400,
+      "body": {
+        "error": "Debe proporcionar una lista de 'approved_segments'."
+      }
+    },
+    "approve_402": {
+      "status": 402,
+      "body": {
+        "error": "['Saldo insuficiente']",
+        "required": 29.25
+      }
+    },
+    "approve_409_race": {
+      "status": 409,
+      "body": {
+        "error": "El proyecto ya se está renderizando."
+      }
+    },
+    "patch_409_rendering": {
+      "status": 409,
+      "body": {
+        "detail": "El proyecto se está renderizando: esperá a que termine para cambiarlo."
+      }
+    },
+    "preview_409": {
+      "status": 409,
+      "body": {
+        "error": "El video completo se renderiza entero: no tiene vista previa."
+      }
+    },
+    "preview_429": {
+      "status": 429,
+      "body": {
+        "error": "Ya hay vistas previas en proceso en este espacio. Probá en unos segundos."
+      }
+    },
+    "preview_404": {
+      "status": 404,
+      "body": {
+        "error": "No hay vista previa vigente."
+      }
+    }
+  }
+}

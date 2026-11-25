@@ -1,0 +1,9 @@
+.spinner {
+  display: inline-block;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  opacity: 0.8;
+  animation: oc-spin 0.7s linear infinite;
+}

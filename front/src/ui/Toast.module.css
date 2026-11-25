@@ -1,0 +1,52 @@
+.region {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  pointer-events: none;
+}
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  font-size: 14px;
+  pointer-events: auto;
+}
+.icon {
+  display: grid;
+  flex: none;
+}
+.ok {
+  color: var(--ok);
+}
+.err {
+  color: var(--err);
+}
+.info {
+  color: var(--info);
+}
+.warn {
+  color: var(--warn);
+}
+.msg {
+  flex: 1;
+  min-width: 0;
+}
+@media (max-width: 639px) {
+  .region {
+    right: 16px;
+    left: 16px;
+    bottom: 16px;
+    width: auto;
+  }
+}

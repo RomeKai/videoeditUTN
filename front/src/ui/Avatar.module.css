@@ -1,0 +1,45 @@
+.avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--surface-3);
+  color: var(--fg);
+  flex: none;
+  overflow: hidden;
+}
+.sm {
+  width: 20px;
+  height: 20px;
+  font-size: 9px;
+}
+.xs {
+  width: 16px;
+  height: 16px;
+  font-size: 8px;
+}
+.lg {
+  width: 40px;
+  height: 40px;
+  font-size: 14px;
+}
+.ws {
+  border-radius: 6px;
+}
+.colored {
+  color: #fff;
+}
+.img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}

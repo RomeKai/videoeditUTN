@@ -1,0 +1,80 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: var(--neutral-soft);
+  color: var(--fg-muted);
+  flex: none;
+}
+.ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.err {
+  background: var(--err-soft);
+  color: var(--err);
+}
+.info {
+  background: var(--info-soft);
+  color: var(--info);
+}
+.accent {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+.outline {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--fg-muted);
+}
+.sm {
+  height: 18px;
+  padding: 0 6px;
+  font-size: 11px;
+  gap: 4px;
+}
+.dot::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.sdot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--fg-subtle);
+}
+.sdot.ok {
+  background: var(--ok);
+}
+.sdot.warn {
+  background: var(--warn);
+}
+.sdot.err {
+  background: var(--err);
+}
+.sdot.info {
+  background: var(--info);
+}
+.sdot.accent {
+  background: var(--accent);
+}
+.live {
+  box-shadow: 0 0 0 3px var(--info-soft);
+}
