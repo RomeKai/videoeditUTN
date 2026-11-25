@@ -13,7 +13,9 @@ from django.db import transaction
 from .models import VideoProject, BrandKit
 from .serializers import VideoProjectSerializer, BrandKitSerializer
 from .tasks import process_initial_ingestion
-from .services.segments import InvalidSegmentsError, validate_approved_segments
+from .services.segments import (
+    InvalidSegmentsError, check_segment_lengths, max_render_segment_seconds, validate_approved_segments,
+)
 
 from apps.users.models import Workspace
 from apps.payments.models import Transaction
@@ -127,11 +129,20 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
         if not approved_segments or not isinstance(approved_segments, list):
             return Response({"error": "Debe proporcionar una lista de 'approved_segments'."}, status=400)
 
+        # Each segment renders as one clip: one too long to finish before the
+        # clip's soft time limit is refused here, before anything is reserved.
+        max_seconds = max_render_segment_seconds()
         try:
             approved_segments = validate_approved_segments(approved_segments)
+            check_segment_lengths(approved_segments, max_seconds)
         except InvalidSegmentsError as e:
             if e.kind == "timestamps":
                 return Response({"error": "Los timestamps deben ser valores numéricos (float)."}, status=400)
+            if e.kind == "too_long":
+                return Response({"error": (
+                    "Los segmentos aprobados son inválidos: cada segmento puede durar hasta "
+                    f"{int(max_seconds)} segundos. Dividí los más largos en varios."
+                )}, status=400)
             return Response({"error": (
                 "Los segmentos aprobados son inválidos: cada segmento debe tener "
                 "'start' y 'end' numéricos con 0 <= start < end."

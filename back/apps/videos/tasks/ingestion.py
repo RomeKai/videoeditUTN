@@ -1338,7 +1338,8 @@ def _resume_render_dispatch(project_id, progress=None):
     retries it. With a clip-by-clip reservation still RESERVED, it also tells
     the task (``progress['render_not_queued']``) that recover_stuck_renders
     brings these clips back: running out of retries must not fail a render
-    that never started.
+    that never started. Once they are queued, the error code an earlier
+    attempt recorded is cleared.
     """
     metadata = VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
     paid_renders = _paid_clip_renders(metadata)
@@ -1356,6 +1357,10 @@ def _resume_render_dispatch(project_id, progress=None):
         if progress is not None and _is_retryable_pipeline_error(failure) and _clip_render_recoverable(project_id):
             progress['render_not_queued'] = True
         raise failure
+    # Queued: the error an earlier attempt recorded (the broker) no longer holds.
+    VideoProject.objects.filter(pk=project_id).exclude(pipeline_error_code='').update(
+        pipeline_error_code='', pipeline_error_at=None,
+    )
 
     logger.info(
         "pipeline.render_redispatched project_id=%s clips=%d", project_id, len(clip_ids),

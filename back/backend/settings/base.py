@@ -270,6 +270,11 @@ RENDER_CLIP_MAX_STARTS = env.int('RENDER_CLIP_MAX_STARTS', default=3)
 # (enforced there) and CELERY_VISIBILITY_TIMEOUT.
 RENDER_CLIP_SOFT_TIME_LIMIT = env.int('RENDER_CLIP_SOFT_TIME_LIMIT', default=2 * 3600)
 RENDER_CLIP_TIME_LIMIT = env.int('RENDER_CLIP_TIME_LIMIT', default=RENDER_CLIP_SOFT_TIME_LIMIT + 300)
+# Worst render seconds per second of clip (4K, face tracking and the active
+# speaker layout on CPU). The approval refuses a segment longer than
+# RENDER_CLIP_SOFT_TIME_LIMIT over this (1800 s by default): it would hit the
+# soft limit and fail after its tokens were reserved. Never below 1.
+RENDER_CLIP_SECONDS_PER_SECOND = env.float('RENDER_CLIP_SECONDS_PER_SECOND', default=4.0)
 # A render whose reservation is still RESERVED (a paper edit, or a render clip
 # by clip), with no project lock held and no start, approval or re-queue for
 # this long, is stuck: recover_stuck_renders re-queues it, charges it

@@ -27,7 +27,7 @@ from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.db import connection
 from django.db.models.signals import pre_delete
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from kombu.exceptions import OperationalError
@@ -47,7 +47,9 @@ from apps.videos.tasks.ingestion import (
     RENDER_REDISPATCH_SECONDS, _reserve_auto_render, _run_ingestion, _whole_video_render_allowed,
 )
 from apps.videos.tasks.render import RENDER_TAKEOVER_HEADER
-from apps.videos.tasks.render_recovery import RENDER_RECOVERY_MAX_REQUEUES, recover_stuck_renders_now
+from apps.videos.tasks.render_recovery import (
+    RENDER_RECOVERY_MAX_REQUEUES, _fail_stuck_clips, recover_stuck_renders_now,
+)
 from apps.videos.tests.fakes import CapturedTaskFailures, FakeRedis
 from apps.videos.tests.test_approved_segments_source import (
     CLIP_DELAY, DELAY, REDIS_CLIENT, SEGMENTS, _patched_render, _render_mocks,
@@ -365,6 +367,25 @@ class ApprovalRefusedTests(ApprovalHarness, APITestCase):
         delay.assert_not_called()
         self.assertFalse(Transaction.objects.filter(wallet=self.wallet).exists())
         self.assertEqual(len(self.clips()), 3)
+
+    def test_a_segment_too_long_to_render_as_one_clip_is_refused_before_reserving(self):
+        # 1800 s by default: RENDER_CLIP_SOFT_TIME_LIMIT (2 h) over 4 render seconds per clip second.
+        response, delay, _whole_edit = self.approve([{"start": 0, "end": 5}, {"start": 10, "end": 1811}])
+
+        self.assertEqual(response.status_code, 400, response.content[:300])
+        self.assertEqual(response.data["error"], (
+            "Los segmentos aprobados son inválidos: cada segmento puede durar hasta 1800 segundos. "
+            "Dividí los más largos en varios."
+        ))
+        delay.assert_not_called()
+        self.assertFalse(Transaction.objects.filter(wallet=self.wallet).exists())
+        self.assert_review_untouched()
+
+    @override_settings(RENDER_CLIP_SOFT_TIME_LIMIT=40, RENDER_CLIP_SECONDS_PER_SECOND=4)
+    def test_the_segment_limit_follows_the_clip_soft_time_limit(self):
+        self.assertEqual(self.approve([{"start": 0, "end": 10.5}])[0].status_code, 400)
+        self.assert_review_untouched()
+        self.assertEqual(self.approve([{"start": 0, "end": 10}])[0].status_code, 200)
 
     def test_over_the_plan_limit_nothing_changes(self):
         plan = SubscriptionPlan.objects.create(name="Corto", max_resolution="720p", max_video_duration_seconds=3)
@@ -905,24 +926,98 @@ class StuckApprovedClipsRecoveryTests(CapturedTaskFailures, ApprovalHarness, API
         self.assertEqual(self.reservation().status, Transaction.Status.RESERVED)
         statuses = set(VideoClip.objects.filter(pk__in=clip_ids).values_list("status", flat=True))
         self.assertEqual(statuses, {VideoClip.Status.DRAFT})
+        self.assertEqual(self.project.pipeline_error_code, "OperationalError")
 
         self.age()
         row, delay, _takeover = self.recover()
 
         self.assertEqual((row["action"], row["reason"], row["result"]), ("requeue", "clips_left", "requeued"))
         self.assertEqual(sorted(call.args[0] for call in delay.call_args_list), sorted(clip_ids))
+        # Queued again: the broker error no longer describes the project.
+        self.project.refresh_from_db()
+        self.assertEqual((self.project.pipeline_error_code, self.project.pipeline_error_at), ("", None))
 
-    def test_past_the_total_of_requeues_it_is_only_reported(self):
-        self.approve_and_lose_the_messages()
+    def test_a_resume_that_queues_the_clips_on_a_retry_clears_the_broker_error(self):
+        clip_ids = self.approve_and_lose_the_messages()
+        down = OperationalError("broker down")
+        with patch(CLIP_DELAY, side_effect=[down] * len(clip_ids) + [None] * len(clip_ids)):
+            result = process_initial_ingestion.apply(args=[str(self.project.id)])
+
+        self.assertTrue(result.successful())
+        self.project.refresh_from_db()
+        self.assertEqual((self.project.pipeline_error_code, self.project.pipeline_error_at), ("", None))
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.RENDER_DISPATCHED)
+
+    def at_the_total_cap(self, **metadata):
         self.age()
-        VideoProject.objects.filter(pk=self.project.pk).update(
-            metadata={**self.project.metadata, "render_recovery_requeues_total": RENDER_RECOVERY_MAX_REQUEUES},
-        )
+        self.project.refresh_from_db()
+        VideoProject.objects.filter(pk=self.project.pk).update(metadata={
+            **self.project.metadata, "render_recovery_requeues_total": RENDER_RECOVERY_MAX_REQUEUES, **metadata,
+        })
+
+    def test_past_the_total_of_requeues_the_clips_that_never_started_fail_and_it_is_refunded(self):
+        # Never left RENDERING with its tokens reserved forever.
+        clip_ids = self.approve_and_lose_the_messages()
+        self.at_the_total_cap()
 
         row, delay, _takeover = self.recover()
 
-        self.assertEqual((row["action"], row["reason"]), ("report", "requeue_total_cap"))
+        self.assertEqual((row["action"], row["reason"], row["result"]), ("fail", "requeue_total_cap", "failed"))
         delay.assert_not_called()
+        self.assertEqual(set(VideoClip.objects.filter(pk__in=clip_ids).values_list("status", flat=True)), {FAILED})
+        self.project.refresh_from_db()
+        self.assertEqual((self.project.pipeline_stage, self.project.status), (PipelineStage.PARTIAL, VideoProject.Status.PARTIAL))
+        self.assertEqual(self.project.pipeline_error_code, "render_stuck")
+        self.assertEqual(self.reservation().status, Transaction.Status.FAILED)
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+        # A message that shows up later renders nothing: a failed clip is never claimed.
+        with patch(RENDER_CLIP, side_effect=fake_render) as render:
+            render_clip_task.apply(args=[clip_ids[0]])
+        render.assert_not_called()
+
+    def test_past_the_total_of_requeues_the_delivered_share_is_charged(self):
+        self.approve_ok(SEGMENTS)
+        done, stuck = self.project.metadata["render_clip_ids"]
+        dead_owner = uuid.uuid4()
+        VideoClip.objects.filter(pk=done).update(status=DONE, s3_object_key="videos/done.mp4")
+        VideoClip.objects.filter(pk=stuck).update(status=RENDERING, render_claim_token=dead_owner, render_unfinished_starts=1)
+        self.at_the_total_cap()
+
+        row, _delay, takeover = self.recover()
+
+        self.assertEqual((row["action"], row["reason"]), ("fail", "requeue_total_cap"))
+        takeover.assert_not_called()
+        clip = VideoClip.objects.get(pk=stuck)
+        self.assertEqual((clip.status, clip.render_claim_token, clip.render_unfinished_starts), (FAILED, None, 0))
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.pipeline_stage, PipelineStage.PARTIAL)
+        txn = self.reservation()
+        self.assertEqual((txn.status, txn.amount), (Transaction.Status.COMPLETED, Decimal("1.11")))  # 2 of 4.5 s
+        self.assertEqual(self.balances(), (Decimal("98.89"), Decimal("0")))
+
+    def test_at_the_total_cap_its_last_requeue_still_gets_its_backoff_window(self):
+        self.approve_and_lose_the_messages()
+        just_past = (timezone.now() - timedelta(seconds=settings.RENDER_STUCK_AFTER_SECONDS + 60)).isoformat()
+        self.at_the_total_cap(render_recovery_requeues=1, render_recovery_requeued_at=just_past)
+
+        row, delay, _takeover = self.recover()
+
+        self.assertEqual((row["action"], row["reason"]), ("report", "never_started"))
+        delay.assert_not_called()
+        self.assertEqual(self.reservation().status, Transaction.Status.RESERVED)
+
+    def test_only_clips_nobody_claimed_since_are_failed_at_the_cap(self):
+        self.approve_ok(SEGMENTS)
+        draft, claimed = self.project.metadata["render_clip_ids"]
+        dead_owner, new_owner = uuid.uuid4(), uuid.uuid4()
+        # The snapshot saw both stuck; one was claimed by a fresh delivery since.
+        VideoClip.objects.filter(pk=claimed).update(status=RENDERING, render_claim_token=new_owner)
+
+        self.assertEqual(_fail_stuck_clips([draft], [(claimed, dead_owner)]), 1)
+
+        self.assertEqual(VideoClip.objects.get(pk=draft).status, FAILED)
+        clip = VideoClip.objects.get(pk=claimed)
+        self.assertEqual((clip.status, clip.render_claim_token), (RENDERING, new_owner))
 
     def test_a_fan_out_left_open_is_closed_and_settled(self):
         self.approve_ok(SEGMENTS)
