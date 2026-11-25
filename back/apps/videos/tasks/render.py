@@ -150,7 +150,8 @@ class ClipRenderTask(celery_app.Task):
     - Without one (it failed before claiming, or after handing the claim back
       for a retry that could not be queued), the clip is marked FAILED only if
       it is DRAFT with no owner: nobody is rendering it, and otherwise the
-      project would stay open forever. A later message can still claim it.
+      project would stay open forever. That is for good: a later message for
+      it is skipped (``_claim_clip_for_render`` never claims a FAILED clip).
     - A delivery with an unused takeover right (``TakeoverRight``: it was
       redelivered and failed before claiming) also fails the clip if it is
       still RENDERING under the owner it found when the message came back, in
@@ -310,18 +311,26 @@ def _max_clip_starts():
 
 def _claim_clip_for_render(clip_id, takeover=None):
     """
-    Compare-and-set DRAFT/FAILED -> RENDERING under the row lock. Only one
-    delivery wins; a duplicate finds the clip RENDERING (or COMPLETED) and must
-    skip. A redelivered message (``takeover``: its ``TakeoverRight``) may also
-    take over the clip from the owner it found RENDERING when it came back:
-    that worker may have died (acks_late) and nothing else would finish it.
+    Compare-and-set DRAFT -> RENDERING under the row lock. Only one delivery
+    wins; a duplicate finds the clip RENDERING (or COMPLETED) and must skip. A
+    redelivered message (``takeover``: its ``TakeoverRight``) may also take
+    over the clip from the owner it found RENDERING when it came back: that
+    worker may have died (acks_late) and nothing else would finish it.
+
+    A FAILED clip is never claimed: it failed for good and its share of the
+    reservation was settled with it, so a duplicate or late message would only
+    render (and charge) it again. No path queues one on purpose: the dispatch,
+    the resume and recover_stuck_renders queue DRAFT clips (and RENDERING ones
+    with a takeover right). A user retry or re-render of a failed clip (the
+    proposed ``clips/:id/retry/``) must reserve its render and put the clip
+    back to DRAFT before queueing it.
 
     The winner writes a new owner token (``render_claim_token``): a takeover
     replaces the previous owner's, so that copy can no longer write to the
     clip. It also counts a start (``render_unfinished_starts``). Returns the
     ``ClipClaim``, or None when the clip was not claimable.
     """
-    claimable = Q(status__in=[VideoClip.Status.DRAFT, VideoClip.Status.FAILED])
+    claimable = Q(status=VideoClip.Status.DRAFT)
     taken_over = _taken_over(takeover)
     if taken_over is not None:
         claimable |= taken_over
@@ -347,13 +356,17 @@ def _record_clip_start(project_id):
     """
     When a clip render of the project last started (``metadata
     ['render_clip_started_at']``): recover_stuck_renders leaves alone a
-    project whose renders keep starting. Best effort: a database error is only
-    logged, the render goes on.
+    project whose renders started within RENDER_STUCK_AFTER_SECONDS, longer
+    than any render can live (RENDER_CLIP_TIME_LIMIT). So no render runs
+    without it: a database error is logged and raised, and the task hands the
+    claim back for a retry like any transient error. Unrecorded, the render
+    could be taken over by the recovery while it is alive.
     """
     try:
         _merge_metadata(project_id, {'render_clip_started_at': timezone.now().isoformat()})
     except DatabaseError as exc:
         logger.error("render.start_not_recorded project_id=%s error=%s", project_id, type(exc).__name__)
+        raise
 
 
 def _release_clip_claim(clip_id, token):
@@ -430,7 +443,10 @@ def _is_retryable_render_error(exc):
     Connection and timeout errors (OSError subclasses) still retry, and so do
     botocore's transport errors with R2 (ReadTimeoutError, SSLError... also
     subclass OSError) and a throttled or failed upload (S3UploadFailedError).
+    The task's soft time limit never retries: the render hung or ran too long.
     """
+    if is_task_time_limit(exc):
+        return False
     if _is_transient_storage_connection_error(exc):
         return True
     if isinstance(exc, OSError) and not isinstance(exc, (ConnectionError, TimeoutError)):
@@ -448,12 +464,19 @@ def _is_retryable_render_error(exc):
 #   nothing and deletes what it uploaded;
 # - starts whose delivery never ended are capped (RENDER_CLIP_MAX_STARTS), so a
 #   clip that always kills its worker fails instead of coming back forever.
-@celery_app.task(name='apps.videos.tasks.render_clip_task', 
+# The soft time limit (RENDER_CLIP_SOFT_TIME_LIMIT) fails the clip for good
+# (on_failure, its claim cleared): a hung render never keeps its claim. The
+# hard limit only kills a worker that ignored it; Celery acks that message and
+# recover_stuck_renders takes the clip over. Both stay below
+# RENDER_STUCK_AFTER_SECONDS, so the recovery never takes over a live render.
+@celery_app.task(name='apps.videos.tasks.render_clip_task',
     bind=True,
     base=ClipRenderTask,
     acks_late=True,
     reject_on_worker_lost=True,
     max_retries=RENDER_CLIP_MAX_RETRIES,
+    soft_time_limit=getattr(settings, 'RENDER_CLIP_SOFT_TIME_LIMIT', 2 * 3600),
+    time_limit=getattr(settings, 'RENDER_CLIP_TIME_LIMIT', 2 * 3600 + 300),
 )
 def render_clip_task(self, clip_id):
     """

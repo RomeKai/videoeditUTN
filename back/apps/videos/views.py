@@ -147,41 +147,41 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"error": f"Error en el motor de precios: {str(e)}"}, status=400)
 
-        # Claim the approval before reserving: two concurrent approvals must not
-        # both reserve and render. Only the request that moves the project out of
-        # AWAITING_APPROVAL goes on.
-        claimed = VideoProject.objects.filter(
-            pk=project.pk, status=VideoProject.Status.AWAITING_APPROVAL,
-        ).update(status=VideoProject.Status.RENDERING)
-        if not claimed:
-            return Response({"error": "El proyecto ya se está renderizando."}, status=409)
-
-        def release_claim():
-            VideoProject.objects.filter(
-                pk=project.pk, status=VideoProject.Status.RENDERING,
-            ).update(status=VideoProject.Status.AWAITING_APPROVAL)
-
-        try:
-            # Centralización en wallet_service para integridad financiera
-            tx = wallet_service.reserve_funds(
-                wallet_id=workspace.wallet.id,
-                amount=final_cost,
-                user=request.user,
-                description=f"Render Final (Paper Edit): {project.title}"[:255]
-            )
-        except (wallet_service.InsufficientFundsError, ValidationError) as e:
-            release_claim()
-            return Response({"error": str(e), "required": final_cost}, status=402)
-        except Exception as e:
-            release_claim()
-            logger.error(f"Error reserving funds: {e}")
-            return Response({"error": "Error procesando el pago."}, status=500)
-
         from .services.ai.pipeline_state import PipelineStateError
 
+        # The claim, the reservation and the approval are one transaction: a
+        # request that dies before its commit (a killed worker, a dropped
+        # connection) leaves nothing behind, because the database rolls it all
+        # back. The project waits for the review again and nothing stays
+        # reserved. The claim comes first: two concurrent approvals must not
+        # both reserve and render. Its row lock makes the other one wait, and
+        # only the request that moves the project out of AWAITING_APPROVAL
+        # goes on.
         outcome = {}
+        tx = None
         try:
-            _approve_clips(project.pk, approved_segments, total_duration, tx.id, outcome)
+            with transaction.atomic():
+                claimed = VideoProject.objects.filter(
+                    pk=project.pk, status=VideoProject.Status.AWAITING_APPROVAL,
+                ).update(status=VideoProject.Status.RENDERING)
+                if not claimed:
+                    return Response({"error": "El proyecto ya se está renderizando."}, status=409)
+                try:
+                    # Centralización en wallet_service para integridad financiera
+                    tx = wallet_service.reserve_funds(
+                        wallet_id=workspace.wallet.id,
+                        amount=final_cost,
+                        user=request.user,
+                        description=f"Render Final (Paper Edit): {project.title}"[:255]
+                    )
+                except (wallet_service.InsufficientFundsError, ValidationError) as e:
+                    transaction.set_rollback(True)  # the claim goes back
+                    return Response({"error": str(e), "required": final_cost}, status=402)
+                except Exception as e:
+                    transaction.set_rollback(True)
+                    logger.error("render.approval_reserve_failed project_id=%s error=%s", project.pk, type(e).__name__)
+                    return Response({"error": "Error procesando el pago."}, status=500)
+                _approve_clips(project.pk, approved_segments, total_duration, tx.id, outcome)
         except Exception as exc:
             if outcome.get('committed'):
                 # Raised after the approval was saved (its dispatch): it stays
@@ -190,17 +190,9 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
                     "render.approval_after_commit_failed project_id=%s error=%s", project.pk, type(exc).__name__,
                 )
                 return self._approved_response(project, final_cost, tx)
-            # Nothing was written: the reservation goes back and the project
-            # waits for the review again.
+            # Rolled back: no claim, no reservation, no clip changed. The
+            # project waits for the review again.
             logger.error("render.approval_failed project_id=%s error=%s", project.pk, type(exc).__name__)
-            try:
-                wallet_service.rollback_reservation(tx.id)
-            except Exception as refund_exc:
-                logger.error(
-                    "render.approval_refund_failed project_id=%s error=%s",
-                    project.pk, type(refund_exc).__name__,
-                )
-            release_claim()
             if isinstance(exc, PipelineStateError):
                 # It left the review meanwhile (another worker moved its stage).
                 return Response({"error": "El proyecto ya se está renderizando."}, status=409)
@@ -367,11 +359,14 @@ def _approve_clips(project_id, segments, total_duration, reservation_id, outcome
     segment, mapped like the review screen does (the approve-paper-edit mock):
 
     - a segment whose ``clip_id`` is a DRAFT clip of the project updates it
-      (start, end, and its title when one is sent);
+      (start, end, and its title when one is sent); if its bounds change, its
+      previews (rows and files) go: they show the old ones;
     - any other segment creates a DRAFT clip (its title, or "Clip N");
     - the DRAFT clips of the project that were not approved are deleted, with
       the files of their previews: the review is the decision point (the AI's
-      reasoning stays in ``ai_rationale_log``).
+      reasoning stays in ``ai_rationale_log``). One with scheduled posts or
+      layers is kept untouched instead (``render.approval_draft_kept``): the
+      delete would cascade onto them.
 
     Clips in any other status are never touched. Then the project moves to
     render_dispatched (status rendering) with the reservation, the clips it
@@ -384,7 +379,7 @@ def _approve_clips(project_id, segments, total_duration, reservation_id, outcome
     ``outcome['committed']`` tells the caller the approval was saved: an
     error after that must not undo it.
     """
-    from .models import ClipPreview, VideoClip
+    from .models import ClipLayer, ClipPreview, ScheduledPost, VideoClip
     from .services.ai.pipeline_state import (
         STAGE_ORDER, PipelineConflictError, PipelineStage, advance_to,
     )
@@ -415,7 +410,7 @@ def _approve_clips(project_id, segments, total_duration, reservation_id, outcome
                 project_id=project_id, status=VideoClip.Status.DRAFT,
             )
         }
-        approved = []
+        approved, moved = [], []
         for number, segment in enumerate(segments, start=1):
             # Each draft is approved once: a repeated clip_id creates a new clip.
             clip = drafts.pop(_segment_clip_id(segment.get('clip_id')), None)
@@ -427,6 +422,8 @@ def _approve_clips(project_id, segments, total_duration, reservation_id, outcome
                     status=VideoClip.Status.DRAFT,
                 )
             else:
+                if (clip.start_time, clip.end_time) != (segment['start'], segment['end']):
+                    moved.append(str(clip.pk))  # its previews show the old bounds
                 clip.start_time, clip.end_time = segment['start'], segment['end']
                 fields = ['start_time', 'end_time']
                 if title:
@@ -435,13 +432,28 @@ def _approve_clips(project_id, segments, total_duration, reservation_id, outcome
                 clip.save(update_fields=fields)
             approved.append(str(clip.pk))
 
-        # The drafts left out: deleted with their previews (cascade), whose
-        # files go once this commits.
-        preview_files = list(
-            ClipPreview.objects.filter(clip_id__in=list(drafts)).exclude(storage_key='')
-            .values_list('pk', 'storage_key')
-        )
-        VideoClip.objects.filter(pk__in=list(drafts)).delete()
+        # A draft left out that has scheduled posts or layers (only the admin
+        # creates them) is kept as it is: deleting it would cascade onto them.
+        # It is not approved, so nothing renders or pays for it.
+        kept = {
+            str(pk) for pk in ScheduledPost.objects.filter(video_clip_id__in=list(drafts))
+            .values_list('video_clip_id', flat=True)
+        } | {
+            str(pk) for pk in ClipLayer.objects.filter(clip_id__in=list(drafts)).values_list('clip_id', flat=True)
+        }
+        for clip_id in sorted(kept):
+            logger.warning("render.approval_draft_kept project_id=%s clip_id=%s", project_id, clip_id)
+        left_out = [clip_id for clip_id in drafts if clip_id not in kept]
+
+        # The previews of the drafts left out, and of the drafts moved, go with
+        # their rows now and their files once this commits. Read under the row
+        # lock: a render_preview that saves its file meanwhile waits for this
+        # commit, finds its row gone and deletes its own file; one that saved
+        # before is in the list.
+        previews = ClipPreview.objects.select_for_update().filter(clip_id__in=[*left_out, *moved])
+        preview_files = [(pk, key) for pk, key in previews.values_list('pk', 'storage_key') if key]
+        previews.delete()
+        VideoClip.objects.filter(pk__in=left_out).delete()
 
         _mark_render_dispatched(project_id)
         metadata = {
@@ -464,7 +476,10 @@ def _approve_clips(project_id, segments, total_duration, reservation_id, outcome
         transaction.on_commit(lambda: _dispatch_approved_clips(project_id, approved))
         if preview_files:
             transaction.on_commit(lambda: delete_preview_files(preview_files))
-    logger.info("render.approved project_id=%s clips=%d deleted=%d", project_id, len(approved), len(drafts))
+    logger.info(
+        "render.approved project_id=%s clips=%d deleted=%d kept=%d",
+        project_id, len(approved), len(left_out), len(kept),
+    )
     return approved
 
 

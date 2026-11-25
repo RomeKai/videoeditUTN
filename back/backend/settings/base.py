@@ -262,15 +262,25 @@ RENDER_SEGMENTS_TIME_LIMIT = env.int(
 # it up. At least 2: with 1, a single broker blip (a redelivered copy taking
 # over a live render) would fail a healthy clip.
 RENDER_CLIP_MAX_STARTS = env.int('RENDER_CLIP_MAX_STARTS', default=3)
-# A paper edit whose render reservation is still RESERVED, with no project
-# lock held and no start, approval or re-queue for this long, is stuck:
-# recover_stuck_renders re-queues it, charges it (delivered) or, after losing
-# its worker too many times, fails it and returns the reservation. Never below
-# RENDER_SEGMENTS_TIME_LIMIT + 15 min, whatever the environment says: a render
-# that started less than the hard limit ago may still be running, even if its
-# lock lapsed during a Redis blip. The environment can only raise it.
+# Ceiling for one clip render (render_clip_task). The soft limit fails the
+# clip for good and clears its claim, so a hung render never keeps it. The
+# hard limit only kills a worker that ignored it: Celery acks that message and
+# recover_stuck_renders takes the clip over. Fixed, like the other tasks (none
+# scales its limit to its input). Both stay below RENDER_STUCK_AFTER_SECONDS
+# (enforced there) and CELERY_VISIBILITY_TIMEOUT.
+RENDER_CLIP_SOFT_TIME_LIMIT = env.int('RENDER_CLIP_SOFT_TIME_LIMIT', default=2 * 3600)
+RENDER_CLIP_TIME_LIMIT = env.int('RENDER_CLIP_TIME_LIMIT', default=RENDER_CLIP_SOFT_TIME_LIMIT + 300)
+# A render whose reservation is still RESERVED (a paper edit, or a render clip
+# by clip), with no project lock held and no start, approval or re-queue for
+# this long, is stuck: recover_stuck_renders re-queues it, charges it
+# (delivered) or, for a paper edit that lost its worker too many times, fails
+# it and returns the reservation. Never below the longer hard limit
+# (RENDER_SEGMENTS_TIME_LIMIT, RENDER_CLIP_TIME_LIMIT) + 15 min, whatever the
+# environment says: a render that started less than its hard limit ago may
+# still be running. The environment can only raise it.
 RENDER_STUCK_AFTER_SECONDS = max(
-    env.int('RENDER_STUCK_AFTER_SECONDS', default=0), RENDER_SEGMENTS_TIME_LIMIT + 15 * 60,
+    env.int('RENDER_STUCK_AFTER_SECONDS', default=0),
+    max(RENDER_SEGMENTS_TIME_LIMIT, RENDER_CLIP_TIME_LIMIT) + 15 * 60,
 )
 
 # Heavy MoviePy renders get their own queue so they cannot starve ingestion.

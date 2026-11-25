@@ -71,14 +71,18 @@ Safety
 
 Clip by clip
     A clip whose message was lost (the approval's ``delay`` failed and so did
-    the resume it queued, a broker that lost its queue) stays DRAFT, and one
+    the resume it queued, or that resume ran out of retries; a broker that
+    lost its queue) stays DRAFT, and one
     whose worker died after a lost redelivery stays RENDERING under a dead
     owner: either way the project never closes and its reservation is never
     settled. Once nothing happened for RENDER_STUCK_AFTER_SECONDS (no clip
     render started, ``metadata['render_clip_started_at']``, since the
     reservation, nor since a re-queue of this routine), the clips that
-    reservation pays for are re-queued: DRAFT ones as they are, RENDERING ones
-    with a takeover right pinned to their current owner (the
+    reservation pays for are re-queued. A clip render has no heartbeat, and
+    needs none: every claim records its start before rendering, and the task's
+    hard time limit (RENDER_CLIP_TIME_LIMIT) is shorter than that threshold,
+    so a clip still RENDERING by then has a dead owner. DRAFT ones go as they
+    are, RENDERING ones with a takeover right pinned to their current owner (the
     ``render_takeover`` header), so a dead owner's clip is taken over and one
     that keeps killing its worker fails at RENDER_CLIP_MAX_STARTS. The same
     backoff and total cap as the paper edits apply. With every paid clip final
