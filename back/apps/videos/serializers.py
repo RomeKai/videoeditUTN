@@ -57,6 +57,12 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     # Paid add-on (PricingEngine 'seo_optimization'): captions and hashtags are
     # generated for each ScheduledPost of the project (ADR-013). Creation only.
     use_seo = serializers.BooleanField(required=False, write_only=True)
+    # A multipart form that leaves a boolean out reads as false in DRF (an
+    # unchecked checkbox), so the model default never applied and a project
+    # created without the field came out without subtitles. Declared with its
+    # default, a missing value is true; from-prompt can then leave it out so
+    # the prompt decides (it only counts as explicit when sent).
+    add_subtitles = serializers.BooleanField(required=False, default=True)
     # Output height tier. Priced at creation (PricingEngine resolution multiplier)
     # and checked against the plan's max_resolution; it cannot change afterwards.
     # Without it the project renders and is charged at 720p.
