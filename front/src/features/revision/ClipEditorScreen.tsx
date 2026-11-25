@@ -1,11 +1,13 @@
 'use client';
 
+import { useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type { RenderResolution } from '@/api/contracts/common';
 import type { Clip, Project } from '@/api/contracts/projects';
 import { ApiError } from '@/api/errors';
 import { useClip, useClipDownload, usePricing, useProject, useRenderClip, useRetryClip, useUpdateClip, useWallet } from '@/api/hooks';
+import { keys } from '@/api/query';
 import { ConfirmCostDialog, UnsavedChangesDialog, useBillingDialogs } from '@/dialogs';
 import { cx } from '@/lib/cx';
 import { downloadUrl } from '@/lib/download';
@@ -41,7 +43,8 @@ import { EdgeInput } from './components/EdgeInput';
 import { TrimTimeline, windowAround, type TimeWindow } from './components/TrimTimeline';
 import timeline from './components/timeline.module.css';
 import { describeStyle } from './lib/style';
-import { clamp, formatEdge, MIN_CLIP_SECONDS } from './lib/time';
+import { readEditorDraft, storeEditorDraft } from './lib/editorDraft';
+import { billedSeconds as billed, clamp, formatEdge, MIN_CLIP_SECONDS } from './lib/time';
 import { buildRows, snapEnd, snapStart, stepEdge, type Word } from './lib/transcript';
 import styles from './editor.module.css';
 import { useFreePreview } from './useFreePreview';
@@ -105,7 +108,8 @@ export function ClipEditorScreen({ projectId, clipId }: { projectId: string; cli
       </Page>
     );
   }
-  return <Editor clip={clip.data} project={project.data} loadError={clip.error ?? project.error} />;
+  // One editor per clip: its draft never leaks into another clip's screen.
+  return <Editor key={clip.data.id} clip={clip.data} project={project.data} loadError={clip.error ?? project.error} />;
 }
 
 function Editor({ clip, project, loadError }: { clip: Clip; project: Project; loadError: unknown }) {
@@ -119,6 +123,7 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
   const update = useUpdateClip(clip.id);
   const renderClip = useRenderClip(clip.id);
   const retry = useRetryClip();
+  const queryClient = useQueryClient();
   const download = useClipDownload();
 
   const wholeVideo = project.project_type === 'single_edit';
@@ -130,32 +135,32 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
   const total = Math.max(project.duration_seconds ?? 0, words[words.length - 1]?.end ?? 0, clip.end_time);
 
   /* ── Draft ────────────────────────────────────────────────────────────── */
-  const [title, setTitle] = useState(clip.title);
-  const [range, setRange] = useState<Range>({ start: clip.start_time, end: clip.end_time });
+  // Unsaved work kept for the tab's session: it survives a reload, Back and the trip to buy tokens.
+  const [stored] = useState(() => readEditorDraft(clip.id));
+  const [title, setTitle] = useState(stored?.title ?? clip.title);
+  const [range, setRange] = useState<Range>(() =>
+    stored ? { start: stored.start, end: Math.min(stored.end, Math.max(total, clip.end_time)) } : { start: clip.start_time, end: clip.end_time },
+  );
   // The trim of the render that exists. It only differs from the saved clip after "save without rendering".
-  const [rendered, setRendered] = useState<Range>({ start: clip.start_time, end: clip.end_time });
+  const [rendered] = useState<Range>({ start: clip.start_time, end: clip.end_time });
   const [renderedTitle, setRenderedTitle] = useState(clip.title);
   const [pendingRender, setPendingRender] = useState(false);
-  const [detail, setDetail] = useState<TimeWindow>(() => windowAround(clip.start_time, clip.end_time, total));
+  const [detail, setDetail] = useState<TimeWindow>(() =>
+    windowAround(Math.min(stored?.start ?? clip.start_time, clip.start_time), Math.max(stored?.end ?? clip.end_time, clip.end_time), total),
+  );
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
 
-  // A different clip, or the server's copy changed while there is nothing unsaved: start from it.
-  const synced = useRef({ id: clip.id, title: clip.title, start: clip.start_time, end: clip.end_time });
+  // The server's copy changed (someone else edited, or a refetch after saving): follow it only in
+  // what has no local unsaved edit. What the person is typing or trimming is never overwritten.
+  const synced = useRef({ title: clip.title, start: clip.start_time, end: clip.end_time });
   useEffect(() => {
     const last = synced.current;
-    if (last.id === clip.id && last.title === clip.title && last.start === clip.start_time && last.end === clip.end_time) return;
-    const sameClip = last.id === clip.id;
-    synced.current = { id: clip.id, title: clip.title, start: clip.start_time, end: clip.end_time };
-    setTitle(clip.title);
-    setRange({ start: clip.start_time, end: clip.end_time });
-    if (!sameClip) {
-      setRendered({ start: clip.start_time, end: clip.end_time });
-      setRenderedTitle(clip.title);
-      setPendingRender(false);
-      setDetail(windowAround(clip.start_time, clip.end_time, total));
-    }
-  }, [clip.id, clip.title, clip.start_time, clip.end_time, total]);
+    if (last.title === clip.title && last.start === clip.start_time && last.end === clip.end_time) return;
+    synced.current = { title: clip.title, start: clip.start_time, end: clip.end_time };
+    setTitle((current) => (current.trim() === last.title ? clip.title : current));
+    setRange((current) => (current.start === last.start && current.end === last.end ? { start: clip.start_time, end: clip.end_time } : current));
+  }, [clip.title, clip.start_time, clip.end_time]);
 
   const trimDirty = range.start !== clip.start_time || range.end !== clip.end_time;
   const titleDirty = title.trim() !== clip.title;
@@ -163,14 +168,41 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
   const trimChanged = range.start !== rendered.start || range.end !== rendered.end;
   const titleChanged = title.trim() !== renderedTitle;
 
+  // Dropped on purpose (saved and leaving, or "Descartar"): stop mirroring the draft to the storage.
+  const dropped = useRef(false);
+  useEffect(() => {
+    if (dropped.current) return;
+    storeEditorDraft(clip.id, dirty ? { title, start: range.start, end: range.end } : null);
+  }, [clip.id, dirty, range.end, range.start, title]);
+  const dropDraft = () => {
+    dropped.current = true;
+    storeEditorDraft(clip.id, null);
+  };
+
+  // A 409 said the project is rendering before the cache knew. It stops holding once that render ends.
+  const lastStatus = useRef(project.status);
+  useEffect(() => {
+    if (lastStatus.current === 'rendering' && project.status !== 'rendering') setConflict(false);
+    lastStatus.current = project.status;
+  }, [project.status]);
+
   const projectRendering = project.status === 'rendering' || conflict;
   const clipRendering = clip.status === 'rendering';
   const hasRender = clip.status === 'completed' || clip.status === 'published';
   const canEdit = can('clip.edit');
   const canTrim = canEdit && !clipRendering && !projectRendering;
   const canRename = canEdit && !clipRendering;
+  // A clip of a project still in review is rendered (and paid) by approving the review: rendering it
+  // alone here would charge it now and again at the approval.
+  const inReviewDraft = clip.status === 'draft' && project.status === 'awaiting_approval';
+  const renderVerb = hasRender ? 'Volver a renderizar' : 'Renderizar';
+  const lockReason = !canEdit ? NO_ACCESS_REASON : clipRendering ? 'Este clip se está renderizando' : projectRendering ? PROJECT_RENDERING_MESSAGE : undefined;
 
-  const guard = useUnsavedGuard(dirty, { allow: (href) => href.startsWith('/uso/comprar') || href.startsWith('/uso/planes') });
+  // Buying tokens or changing plan keeps the work (the draft is stored); any other link asks first.
+  const guard = useUnsavedGuard(dirty, {
+    allow: (href) => href.startsWith('/uso/comprar') || href.startsWith('/uso/planes'),
+    onDiscard: dropDraft,
+  });
 
   const fit = (next: Range) => setDetail(windowAround(Math.min(next.start, rendered.start), Math.max(next.end, rendered.end), total));
   const setEdge = (edge: 'start' | 'end', value: number, options: { fit?: boolean } = {}) => {
@@ -202,8 +234,8 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
   const shownDuration = shown.end - shown.start;
 
   // I, O, space and the arrows work from anywhere on the screen.
-  const keys = useRef({ setEdge, snap, shown });
-  keys.current = { setEdge, snap, shown };
+  const shortcutRef = useRef({ setEdge, snap, shown });
+  shortcutRef.current = { setEdge, snap, shown };
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
@@ -213,7 +245,7 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
       const handle = player.current;
       if (!handle) return;
       const key = event.key;
-      const at = keys.current.shown.start + handle.getCurrentTime();
+      const at = shortcutRef.current.shown.start + handle.getCurrentTime();
       if (key === ' ') {
         if (target?.closest?.('button, a, summary, [role="button"], [role="switch"]')) return;
         event.preventDefault();
@@ -223,10 +255,10 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
         handle.seek(handle.getCurrentTime() + (key === 'ArrowLeft' ? -1 : 1) * (event.shiftKey ? 1 : 5));
       } else if (key === 'i' || key === 'I') {
         event.preventDefault();
-        keys.current.setEdge('start', keys.current.snap('start', at));
+        shortcutRef.current.setEdge('start', shortcutRef.current.snap('start', at));
       } else if (key === 'o' || key === 'O') {
         event.preventDefault();
-        keys.current.setEdge('end', keys.current.snap('end', at));
+        shortcutRef.current.setEdge('end', shortcutRef.current.snap('end', at));
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -235,7 +267,7 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
 
   /* ── Cost ─────────────────────────────────────────────────────────────── */
   const resolution: RenderResolution = project.metadata.render_resolution ?? '720p';
-  const billedSeconds = Math.ceil(range.end - range.start);
+  const billedSeconds = billed(range.end - range.start);
   const estimate = pricing.data ? estimateCost({ durationSeconds: billedSeconds, resolution }, pricing.data, plan) : null;
   const balance = wallet.data?.available_balance ?? null;
   const short = estimate !== null && balance !== null && estimate.total > balance;
@@ -255,14 +287,15 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
         ...(titleDirty ? { title: title.trim() } : {}),
         ...(trimDirty ? { start_time: range.start, end_time: range.end } : {}),
       });
-      synced.current = { id: clip.id, title: title.trim(), start: range.start, end: range.end };
-      if (trimDirty) setPendingRender(true);
+      if (trimDirty && hasRender) setPendingRender(true);
       return true;
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
-        // 409 project_rendering: what the render reads cannot change under it.
+        // 409 project_rendering: what the render reads cannot change under it. DRF sends only
+        // `{ detail }`, so without a code the server's own sentence is shown.
         setConflict(true);
-        toast.error(PROJECT_RENDERING_MESSAGE);
+        void queryClient.invalidateQueries({ queryKey: keys.projects.detail(project.id) });
+        toast.error(error.code === 'project_rendering' ? PROJECT_RENDERING_MESSAGE : errorMessage(error, PROJECT_RENDERING_MESSAGE));
       } else if (error instanceof ApiError && error.status === 400) {
         setFieldError(error.fieldErrors.end_time?.[0] ?? error.fieldErrors.start_time?.[0] ?? error.fieldErrors.title?.[0] ?? error.message);
       } else {
@@ -273,7 +306,7 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
   };
 
   const askToRender = () => {
-    if (!estimate) return;
+    if (!estimate || inReviewDraft) return;
     if (title.trim() === '') {
       setFieldError('Poné un título para el clip.');
       return;
@@ -294,6 +327,7 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
     try {
       await renderClip.mutateAsync();
       toast.success('Render en marcha. Te avisamos cuando esté listo.');
+      dropDraft();
       guard.leaveNow(backHref);
     } catch (error) {
       if (billing.handleError(error, { concept: 'Costo del render' })) {
@@ -301,17 +335,23 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
         if (hadChanges) toast.show('Guardamos los cambios. Falta renderizar el clip.', { tone: 'info' });
       } else if (error instanceof ApiError && error.isConflict) {
         setConfirming(false);
-        toast.error(error.code === 'project_rendering' ? PROJECT_RENDERING_MESSAGE : 'El clip ya se está renderizando.');
+        const message = error.code === 'project_rendering' ? PROJECT_RENDERING_MESSAGE : errorMessage(error, 'El clip ya se está renderizando.');
+        if (error.code === 'project_rendering' || /proyecto/i.test(message)) {
+          setConflict(true);
+          void queryClient.invalidateQueries({ queryKey: keys.projects.detail(project.id) });
+        }
+        toast.error(message);
       } else {
         setSaveError(errorMessage(error, 'No pudimos empezar el render. Probá de nuevo.'));
       }
     }
   };
 
-  const saveTitle = async () => {
+  const saveOnly = async () => {
+    const onlyTitle = !trimDirty;
     if (await saveChanges()) {
       setRenderedTitle(title.trim());
-      toast.success('Título guardado');
+      toast.success(onlyTitle ? 'Título guardado' : 'Cambios guardados');
     }
   };
 
@@ -374,15 +414,15 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
 
   const nudge = (edge: 'start' | 'end') => (
     <div className={styles.nudge}>
-      <Button className={cx('num', styles.nudgeBtn)} disabledReason={canEdit ? undefined : NO_ACCESS_REASON} disabled={canEdit && !canTrim} aria-label={`Mover el ${edge === 'start' ? 'inicio' : 'fin'} 0,5 segundos antes`} onClick={() => setEdge(edge, range[edge] - 0.5)}>
+      <Button className={cx('num', styles.nudgeBtn)} disabledReason={lockReason} aria-label={`Mover el ${edge === 'start' ? 'inicio' : 'fin'} 0,5 segundos antes`} onClick={() => setEdge(edge, range[edge] - 0.5)}>
         −0,5 s
       </Button>
       {isMobile ? (
         <output className={cx('timecode', styles.val)}>{formatEdge(range[edge])}</output>
       ) : (
-        <EdgeInput id={`d4-${edge}`} className={styles.edgeInput} value={range[edge]} readOnly={!canTrim} onCommit={(value) => setEdge(edge, snap(edge, value))} />
+        <EdgeInput id={`d4-${edge}`} className={styles.edgeInput} value={range[edge]} readOnly={!canTrim} readOnlyReason={lockReason} onCommit={(value) => setEdge(edge, snap(edge, value))} />
       )}
-      <Button className={cx('num', styles.nudgeBtn)} disabledReason={canEdit ? undefined : NO_ACCESS_REASON} disabled={canEdit && !canTrim} aria-label={`Mover el ${edge === 'start' ? 'inicio' : 'fin'} 0,5 segundos después`} onClick={() => setEdge(edge, range[edge] + 0.5)}>
+      <Button className={cx('num', styles.nudgeBtn)} disabledReason={lockReason} aria-label={`Mover el ${edge === 'start' ? 'inicio' : 'fin'} 0,5 segundos después`} onClick={() => setEdge(edge, range[edge] + 0.5)}>
         +0,5 s
       </Button>
     </div>
@@ -742,10 +782,23 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
       <ActionBar
         className={styles.bar}
         summary={dirty ? `Cambios sin guardar: ${changes}` : pendingRender ? 'El recorte guardado todavía no se renderizó' : 'Sin cambios'}
-        detail={trimDirty || !dirty ? costLine : 'Cambiar el título no vuelve a renderizar ni gasta tokens.'}
+        detail={
+          inReviewDraft
+            ? 'Este clip se renderiza al aprobar la revisión del proyecto. Guardar el recorte o el título no gasta tokens.'
+            : trimDirty || !dirty
+              ? costLine
+              : 'Cambiar el título no vuelve a renderizar ni gasta tokens.'
+        }
       >
         {dirty ? (
-          <Button variant="ghost" size="lg" onClick={() => guard.leaveNow(backHref)}>
+          <Button
+            variant="ghost"
+            size="lg"
+            onClick={() => {
+              dropDraft();
+              guard.leaveNow(backHref);
+            }}
+          >
             {isMobile ? 'Descartar' : 'Descartar cambios'}
           </Button>
         ) : (
@@ -753,9 +806,13 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
             {isMobile ? 'Volver' : `Volver a ${backLabel}`}
           </Button>
         )}
-        {dirty && !trimDirty ? (
-          <Button variant="primary" size="lg" loading={update.isPending} onClick={() => void saveTitle()} {...gate('clip.edit')}>
-            Guardar título
+        {dirty && (inReviewDraft || !trimDirty) ? (
+          <Button variant="primary" size="lg" loading={update.isPending} onClick={() => void saveOnly()} {...gate('clip.edit')}>
+            {trimDirty ? 'Guardar cambios' : 'Guardar título'}
+          </Button>
+        ) : inReviewDraft ? (
+          <Button variant="secondary" size="lg" disabledReason={gate('clip.edit').disabledReason ?? 'Renderizalo desde la revisión'}>
+            Renderizar
           </Button>
         ) : (
           <Button
@@ -765,7 +822,7 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
             onClick={askToRender}
             {...gate('clip.edit')}
           >
-            {dirty ? 'Guardar y renderizar' : 'Volver a renderizar'}
+            {dirty ? 'Guardar y renderizar' : renderVerb}
             {estimate ? (
               <>
                 <span className={styles.dot} aria-hidden="true">
@@ -782,7 +839,7 @@ function Editor({ clip, project, loadError }: { clip: Clip; project: Project; lo
           open={confirming}
           onClose={() => setConfirming(false)}
           onConfirm={() => void saveAndRender()}
-          title={dirty ? 'Guardar y renderizar' : 'Volver a renderizar'}
+          title={dirty ? 'Guardar y renderizar' : renderVerb}
           subtitle={title.trim() || clip.title}
           durationSeconds={billedSeconds}
           resolution={resolution}

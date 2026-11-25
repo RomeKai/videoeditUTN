@@ -26,7 +26,7 @@ export function editDb(change: (db: MockDb) => void): void {
 /** Renders a screen with what the root layout gives it: query cache, toasts, session and the billing dialogs. */
 export function renderScreen(ui: ReactElement) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
         <SessionProvider>
@@ -35,4 +35,5 @@ export function renderScreen(ui: ReactElement) {
       </ToastProvider>
     </QueryClientProvider>,
   );
+  return { ...view, queryClient };
 }

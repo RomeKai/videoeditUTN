@@ -101,6 +101,27 @@ test.describe('Editor de clip (D4)', () => {
     expectClean(problems, EDITOR);
   });
 
+  test('el recorte sin guardar sigue ahí después de recargar y de ir y volver', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    const problems = watch(page);
+    await page.goto(EDITOR);
+    await settle(page);
+    await page.getByRole('button', { name: 'Mover el inicio 0,5 segundos antes' }).click();
+    const start = await page.getByRole('textbox', { name: /Inicio/ }).inputValue();
+    await page.reload();
+    await settle(page);
+    await expect(page.getByText('Cambios sin guardar', { exact: true })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: /Inicio/ })).toHaveValue(start);
+    // Leaving for the token shop does not ask (the work is kept) and Back brings it back.
+    await page.goto('/uso/comprar');
+    await settle(page);
+    await page.goBack();
+    await settle(page);
+    await expect(page.getByRole('textbox', { name: /Inicio/ })).toHaveValue(start);
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('Cambios sin guardar: recorte');
+    expectClean(problems, EDITOR);
+  });
+
   test('un Lector lo ve en modo lectura', async ({ page }) => {
     await useScenario(page, 'rol-lector');
     const problems = watch(page);

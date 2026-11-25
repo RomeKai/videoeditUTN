@@ -3,11 +3,13 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiCall } from '@/api/client';
+import * as projects from '@/api/contracts/projects';
 import * as clips from '@/api/contracts/clips';
 import { ApiError } from '@/api/errors';
 import { mid, KIND } from '@/api/mocks/db';
 import { server } from '@/api/mocks/server';
 import { PLAN_IDS } from '@/api/mocks/seed';
+import { keys } from '@/api/query';
 import { loadDb } from '@/api/mocks/state';
 import { ClipEditorScreen, PROJECT_RENDERING_MESSAGE } from './ClipEditorScreen';
 import { ReviewScreen } from './ReviewScreen';
@@ -116,6 +118,77 @@ describe('D2 · Revisión de clips', () => {
     expect(project(REVIEW)?.clips).toHaveLength(5);
   });
 
+  it('manda cada segmento aprobado con su texto, en orden y con el id del clip', async () => {
+    let body: projects.ApprovePaperEditRequest | null = null;
+    server.use(
+      http.post('*/api/v1/projects/:id/approve-paper-edit/', async ({ request }) => {
+        body = (await request.json()) as projects.ApprovePaperEditRequest;
+        return HttpResponse.json({ message: 'ok', project_id: REVIEW, final_cost: '92.70', transaction_id: mid(KIND.transaction, 999) });
+      }),
+    );
+    const data = await apiCall(projects.getPaperEditData, { params: { id: REVIEW } });
+    const user = userEvent.setup();
+    renderScreen(<ReviewScreen projectId={REVIEW} />);
+    await user.click(await screen.findByRole('button', { name: 'Renderizar 5 clips' }));
+    await user.click(within(await screen.findByRole('dialog', { name: 'Renderizar 5 clips' })).getByRole('button', { name: 'Renderizar' }));
+    await waitFor(() => expect(body).not.toBeNull());
+    const segments = (body as unknown as projects.ApprovePaperEditRequest).approved_segments;
+    expect(segments).toHaveLength(5);
+    expect(segments.map((segment) => segment.start)).toEqual([...segments.map((segment) => segment.start)].sort((a, b) => a - b));
+    const suggestions = new Map(data.ai_suggestions.map((item) => [item.id, item]));
+    for (const segment of segments) {
+      const suggestion = suggestions.get(segment.clip_id ?? '');
+      expect(suggestion).toBeDefined();
+      expect(segment).toMatchObject({ start: suggestion?.start_time, end: suggestion?.end_time, title: suggestion?.title });
+      // Subtitles are built from this text and nothing else: it is what is said inside the range.
+      const said = (data.transcript ?? []).filter((word) => word.start >= segment.start - 0.01 && word.start < segment.end - 0.01).map((word) => word.text);
+      expect(said.length).toBeGreaterThan(0);
+      expect(segment.text).toBe(said.join(' '));
+    }
+  });
+
+  it('más clips de lo que el plan renderiza abre «Límite del plan» antes de confirmar', async () => {
+    signIn('plan-gratis');
+    const user = userEvent.setup();
+    renderScreen(<ReviewScreen projectId={REVIEW} />);
+    const end = (await screen.findByRole('textbox', { name: /Fin/ })) as HTMLInputElement;
+    await user.clear(end);
+    // The free plan renders up to 10 minutes: one clip of 20 is over it.
+    await user.type(end, '25:00{Enter}');
+    await user.click(await screen.findByRole('button', { name: 'Renderizar 5 clips' }));
+    const limit = await screen.findByRole('alertdialog', { name: 'Este video supera el límite de tu plan' });
+    expect(limit).toHaveTextContent(/renderiza hasta 10 min/);
+    expect(screen.queryByRole('dialog', { name: 'Renderizar 5 clips' })).not.toBeInTheDocument();
+  });
+
+  it('el texto se recorre y se selecciona con el teclado para crear un clip', async () => {
+    signIn('todos-los-estados');
+    const user = userEvent.setup();
+    renderScreen(<ReviewScreen projectId={NO_SUGGESTIONS} />);
+    const text = await screen.findByRole('group', { name: /^Texto de la transcripción/ });
+    // Exactly one word takes the Tab stop; the arrows move it.
+    expect(text.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+    const first = text.querySelector('[data-w="0"]') as HTMLElement;
+    first.focus();
+    await user.keyboard('{ArrowRight}{ArrowRight}');
+    expect(document.activeElement).toHaveAttribute('data-w', '2');
+    expect(text.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+    await user.keyboard('{Shift>}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowDown}{/Shift}');
+    const actions = await screen.findByRole('group', { name: 'Acciones para la selección' });
+    const create = within(actions).getByRole('button', { name: 'Crear clip con la selección' });
+    create.focus();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(bar()).toHaveTextContent('1 clip seleccionado'));
+    // Escape drops a keyboard selection.
+    // With a clip in the list the layout changes and the transcript moves to the side: look it up again.
+    const side = await screen.findByRole('group', { name: /^Texto de la transcripción/ });
+    (side.querySelector('[tabindex="0"]') as HTMLElement).focus();
+    await user.keyboard('{Shift>}{ArrowRight}{/Shift}');
+    expect(await screen.findByRole('group', { name: 'Acciones para la selección' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('group', { name: 'Acciones para la selección' })).not.toBeInTheDocument();
+  });
+
   it('si otra persona ya lo aprobó (hoy un 400) avisa y lleva a Clips', async () => {
     const user = userEvent.setup();
     renderScreen(<ReviewScreen projectId={REVIEW} />);
@@ -128,6 +201,8 @@ describe('D2 · Revisión de clips', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Renderizar' }));
     expect(await screen.findByText('Este proyecto ya se aprobó. Te llevamos a los clips.')).toBeInTheDocument();
     await waitFor(() => expect(router.push).toHaveBeenCalledWith(`/proyectos/${REVIEW}/clips`));
+    // The cached review is refreshed at once: the screen itself now knows the project left the review.
+    await waitFor(() => expect(router.replace).toHaveBeenCalledWith(`/proyectos/${REVIEW}/clips`));
   });
 
   it('también con el texto mal codificado que mandaba el backend antes del arreglo', async () => {
@@ -203,6 +278,10 @@ describe('D2 · Revisión de clips', () => {
     for (const box of within(list).getAllByRole('checkbox')) expect(box).toBeDisabled();
     const renderButton = await screen.findByRole('button', { name: 'Renderizar 5 clips' });
     expect(renderButton).toHaveAttribute('aria-disabled', 'true');
+    // Disabled, not hidden, and each one says why.
+    expect(screen.getByRole('button', { name: 'Nuevo clip desde el cursor' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('button', { name: 'Ver detalle' })).toHaveAttribute('title', 'Pedile acceso a un admin');
+    expect(screen.getByRole('textbox', { name: /Inicio/ })).toHaveAttribute('title', 'Pedile acceso a un admin');
     await user.click(renderButton);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
@@ -304,7 +383,9 @@ describe('D4 · Editor de clip', () => {
   it('con el proyecto renderizando avisa y no deja recortar', async () => {
     renderScreen(<ClipEditorScreen projectId={RENDERING} clipId={clipOf(4, 1)} />);
     expect(await screen.findByText(PROJECT_RENDERING_MESSAGE)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Mover el inicio 0,5 segundos antes' })).toBeDisabled();
+    // The reason is the render, not the role.
+    expect(screen.getByRole('button', { name: 'Mover el inicio 0,5 segundos antes' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('textbox', { name: /Inicio/ })).toHaveAttribute('title', PROJECT_RENDERING_MESSAGE);
     expect(screen.getByRole('button', { name: /Volver a renderizar/ })).toBeDisabled();
   });
 
@@ -323,6 +404,109 @@ describe('D4 · Editor de clip', () => {
     expect((await screen.findAllByText(PROJECT_RENDERING_MESSAGE)).length).toBeGreaterThan(0);
     expect(stored()?.start_time).toBe(original);
     expect(router.push).not.toHaveBeenCalled();
+    expect(screen.getByText('Cambios sin guardar')).toBeInTheDocument();
+  });
+
+  it('el recorte sin guardar sobrevive a ir a comprar tokens y volver', async () => {
+    signIn('saldo-bajo');
+    editDb((db) => {
+      for (const wallet of db.wallets) wallet.available_balance = 5;
+    });
+    const user = userEvent.setup();
+    const first = renderScreen(<ClipEditorScreen projectId={READY} clipId={CLIP} />);
+    await user.click(await screen.findByRole('button', { name: 'Mover el inicio 0,5 segundos antes' }));
+    const typed = (screen.getByRole('textbox', { name: /Inicio/ }) as HTMLInputElement).value;
+    await user.click(await screen.findByRole('button', { name: /Guardar y renderizar/ }));
+    // Not enough balance: the dialog says the configuration stays saved, and it does.
+    expect(await screen.findByRole('alertdialog', { name: 'No te alcanza el saldo' })).toHaveTextContent('Tu configuración queda guardada');
+    first.unmount();
+    renderScreen(<ClipEditorScreen projectId={READY} clipId={CLIP} />);
+    expect(await screen.findByText('Cambios sin guardar')).toBeInTheDocument();
+    expect((screen.getByRole('textbox', { name: /Inicio/ }) as HTMLInputElement).value).toBe(typed);
+    expect(screen.getByRole('group', { name: 'Inicio del clip' })).toHaveTextContent('Antes:');
+    // Nothing was saved behind the person's back.
+    expect(stored()?.start_time).not.toBe(undefined);
+    expect(bar()).toHaveTextContent('Cambios sin guardar: recorte');
+  });
+
+  it('descartar tira el borrador guardado', async () => {
+    const user = userEvent.setup();
+    const first = renderScreen(<ClipEditorScreen projectId={READY} clipId={CLIP} />);
+    await user.click(await screen.findByRole('button', { name: 'Mover el inicio 0,5 segundos antes' }));
+    await user.click(await screen.findByRole('button', { name: 'Descartar cambios' }));
+    expect(router.push).toHaveBeenCalledWith(`/proyectos/${READY}/clips`);
+    first.unmount();
+    renderScreen(<ClipEditorScreen projectId={READY} clipId={CLIP} />);
+    await screen.findByRole('region', { name: 'Recorte del clip' });
+    expect(bar()).toHaveTextContent('Sin cambios');
+  });
+
+  it('un clip en borrador de un proyecto en revisión no se renderiza solo', async () => {
+    const user = userEvent.setup();
+    const draftClip = clipOf(3, 1);
+    const saved = () => project(REVIEW)?.clips.find((item) => item.id === draftClip);
+    const balance = loadDb().wallets[0]?.available_balance;
+    const start = saved()?.start_time ?? 0;
+    renderScreen(<ClipEditorScreen projectId={REVIEW} clipId={draftClip} />);
+    await screen.findByRole('region', { name: 'Recorte del clip' });
+    // Never rendered: it is not "Volver a renderizar", and paying for it here would charge it twice.
+    expect(screen.queryByRole('button', { name: /Volver a renderizar/ })).not.toBeInTheDocument();
+    const renderButton = screen.getByRole('button', { name: 'Renderizar' });
+    expect(renderButton).toHaveAttribute('aria-disabled', 'true');
+    await user.hover(renderButton);
+    expect(await screen.findByText('Renderizalo desde la revisión')).toBeInTheDocument();
+    await user.click(renderButton);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    // Saving the trim stays, and it is free.
+    await user.click(screen.getByRole('button', { name: 'Mover el inicio 0,5 segundos antes' }));
+    expect(screen.queryByRole('button', { name: /Guardar y renderizar/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Guardar cambios' }));
+    expect(await screen.findByText('Cambios guardados')).toBeInTheDocument();
+    expect(saved()?.start_time).toBe(start - 0.5);
+    expect(saved()?.status).toBe('draft');
+    expect(loadDb().wallets[0]?.available_balance).toBe(balance);
+  });
+
+  it('un refetch del servidor no pisa lo que se está editando', async () => {
+    const user = userEvent.setup();
+    const { queryClient } = renderScreen(<ClipEditorScreen projectId={READY} clipId={CLIP} />);
+    const title = (await screen.findByRole('textbox', { name: 'Título' })) as HTMLInputElement;
+    await user.clear(title);
+    await user.type(title, 'Mi título a medio escribir');
+    const startBefore = (screen.getByRole('textbox', { name: /Inicio/ }) as HTMLInputElement).value;
+    // Someone else moves the start and renames the clip; the screen refetches.
+    editDb((db) => {
+      const target = db.projects.find((item) => item.id === READY)?.clips.find((item) => item.id === CLIP);
+      if (target) {
+        target.start_time -= 2;
+        target.title = 'Título de otra persona';
+      }
+    });
+    await queryClient.invalidateQueries({ queryKey: keys.clips.detail(CLIP) });
+    // The untouched trim follows the server; the title being typed stays.
+    await waitFor(() => expect((screen.getByRole('textbox', { name: /Inicio/ }) as HTMLInputElement).value).not.toBe(startBefore));
+    expect(title.value).toBe('Mi título a medio escribir');
+    expect(bar()).toHaveTextContent('Cambios sin guardar: título');
+  });
+
+  it('un 409 sin código muestra la frase del servidor y el bloqueo se levanta cuando termina el render', async () => {
+    server.use(http.patch('*/api/v1/clips/:id/', () => HttpResponse.json({ detail: 'El proyecto se está renderizando: esperá a que termine para cambiarlo.' }, { status: 409 })));
+    const user = userEvent.setup();
+    renderScreen(<ClipEditorScreen projectId={READY} clipId={CLIP} />);
+    await user.click(await screen.findByRole('button', { name: 'Mover el inicio 0,5 segundos antes' }));
+    editDb((db) => {
+      const target = db.projects.find((item) => item.id === READY);
+      if (target) target.status = 'rendering';
+    });
+    await user.click(await screen.findByRole('button', { name: 'Guardar y ver vista previa' }));
+    expect((await screen.findAllByText(PROJECT_RENDERING_MESSAGE)).length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Mover el inicio 0,5 segundos antes' })).toHaveAttribute('aria-disabled', 'true'));
+    // The render ends: the project is polled every 5 s and the trim opens again.
+    editDb((db) => {
+      const target = db.projects.find((item) => item.id === READY);
+      if (target) target.status = 'completed';
+    });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Mover el inicio 0,5 segundos antes' })).not.toHaveAttribute('aria-disabled'), { timeout: 15_000 });
     expect(screen.getByText('Cambios sin guardar')).toBeInTheDocument();
   });
 

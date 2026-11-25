@@ -10,6 +10,8 @@ export interface EdgeInputProps {
   /** Seconds in the source video. */
   value: number;
   readOnly?: boolean;
+  /** Why it cannot be edited (tooltip). Defaults to the role message. */
+  readOnlyReason?: string;
   id?: string;
   className?: string;
   /** Called with the typed time (Enter or leaving the field). The screen snaps it to a word. */
@@ -17,7 +19,7 @@ export interface EdgeInputProps {
 }
 
 /** Time field of a clip border ("04:12,0"). What is not a time goes back to the current value. */
-export function EdgeInput({ value, readOnly, id, className, onCommit }: EdgeInputProps) {
+export function EdgeInput({ value, readOnly, readOnlyReason = NO_ACCESS_REASON, id, className, onCommit }: EdgeInputProps) {
   const [text, setText] = useState(formatEdge(value));
   const [invalid, setInvalid] = useState(false);
   useEffect(() => {
@@ -45,7 +47,7 @@ export function EdgeInput({ value, readOnly, id, className, onCommit }: EdgeInpu
       autoComplete="off"
       spellCheck={false}
       readOnly={readOnly}
-      title={readOnly ? NO_ACCESS_REASON : undefined}
+      title={readOnly ? readOnlyReason : undefined}
       invalid={invalid}
       onChange={(event) => {
         setText(event.target.value);

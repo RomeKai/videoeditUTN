@@ -1,14 +1,16 @@
 'use client';
 
+import { useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { RenderResolution } from '@/api/contracts/common';
 import type { PaperEditData, Project } from '@/api/contracts/projects';
 import { useApprovePaperEdit, usePaperEditData, usePricing, useProject, useWallet } from '@/api/hooks';
+import { keys } from '@/api/query';
 import { ConfirmCostDialog, UnsavedChangesDialog, useBillingDialogs } from '@/dialogs';
 import { cx } from '@/lib/cx';
 import { approveErrorKind, autoRenderSkippedMessage, errorMessage } from '@/lib/error-messages';
-import { formatDuration, formatNumber, formatPercent, formatTimecode, formatTokens } from '@/lib/format';
+import { formatDuration, formatMinutes, formatNumber, formatPercent, formatTimecode, formatTokens } from '@/lib/format';
 import { useIsMobile } from '@/lib/hooks';
 import { NO_ACCESS_REASON } from '@/lib/permissions';
 import { estimateCost, planAllowsResolution } from '@/lib/pricing';
@@ -41,8 +43,8 @@ import { EdgeInput } from './components/EdgeInput';
 import { TranscriptPanel } from './components/TranscriptPanel';
 import { TrimTimeline, windowAround, type TimeWindow } from './components/TrimTimeline';
 import timeline from './components/timeline.module.css';
-import { clearDraft, draftReducer, includedTotals, isDirty, restoreDraft, saveDraft, sortClips, type ClipSort, type Draft } from './lib/draft';
-import { clamp, rulerTicks } from './lib/time';
+import { buildApprovedSegments, clearDraft, draftReducer, includedTotals, isDirty, newLocalKey, restoreDraft, saveDraft, sortClips, type ClipSort, type Draft } from './lib/draft';
+import { billedSeconds as billed, clamp, rulerTicks } from './lib/time';
 import { buildRows, captionAt, snapEnd, snapStart, stepEdge, titleFromText, wordIndexAt, type Word } from './lib/transcript';
 import styles from './review.module.css';
 import { useFreePreview } from './useFreePreview';
@@ -57,6 +59,7 @@ const SHORTCUTS: Array<{ keys: string[]; label: string }> = [
   { keys: ['X'], label: 'Excluir el clip' },
   { keys: ['I', 'O'], label: 'Marcar inicio y fin' },
   { keys: ['←', '→'], label: 'Mover el cursor' },
+  { keys: ['⇧', '←', '→'], label: 'En el texto: seleccionar palabras' },
 ];
 
 function ShortcutsButton({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
@@ -159,6 +162,7 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
   const project = useProject(projectId).data;
   const billing = useBillingDialogs();
   const approve = useApprovePaperEdit(projectId);
+  const queryClient = useQueryClient();
 
   const words = useMemo<Word[]>(() => data.transcript ?? [], [data.transcript]);
   const rows = useMemo(() => buildRows(words), [words]);
@@ -312,30 +316,29 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
   /* ── Cost ─────────────────────────────────────────────────────────────── */
   const totals = includedTotals(draft.clips);
   const resolution: RenderResolution = data.metadata.render_resolution ?? '720p';
-  const billedSeconds = Math.ceil(totals.seconds);
+  const billedSeconds = billed(totals.seconds);
   const estimate = pricing.data && totals.count > 0 ? estimateCost({ durationSeconds: billedSeconds, resolution }, pricing.data, plan) : null;
   const balance = wallet.data?.available_balance ?? null;
   const short = estimate !== null && balance !== null && estimate.total > balance;
   const planBlocks = plan !== null && !planAllowsResolution(plan, resolution);
+  // PricingEngine also refuses a render longer than the plan's video limit.
+  const tooLong = plan !== null && billedSeconds > plan.max_video_duration_seconds;
 
   const askToRender = () => {
     if (!estimate) return;
     setApproveError(null);
     if (planBlocks) billing.showPlanLimit({ kind: 'resolution', detail: `Este proyecto se creó en ${resolution} y el plan ${plan?.name ?? 'actual'} renderiza hasta ${plan?.max_resolution ?? '720p'}.` });
-    else if (short) billing.showInsufficientBalance({ required: estimate.total, concept: 'Costo del render' });
+    else if (tooLong) {
+      billing.showPlanLimit({
+        kind: 'duration',
+        detail: `Elegiste ${formatMinutes(billedSeconds)} de clips y el plan ${plan?.name ?? 'actual'} renderiza hasta ${formatMinutes(plan?.max_video_duration_seconds ?? 0)}. Sacá alguno o cambiá de plan.`,
+      });
+    } else if (short) billing.showInsufficientBalance({ required: estimate.total, concept: 'Costo del render' });
     else setConfirming(true);
   };
 
   const render = () => {
-    const segments = draft.clips
-      .filter((clip) => clip.included)
-      .sort((a, b) => a.start - b.start)
-      .map((clip) => ({
-        start: clip.start,
-        end: clip.end,
-        title: clip.title.trim() || `Clip ${clip.n}`,
-        ...(clip.clipId ? { clip_id: clip.clipId } : {}),
-      }));
+    const segments = buildApprovedSegments(draft.clips, words);
     setApproveError(null);
     approve.mutate(
       { approved_segments: segments },
@@ -352,6 +355,9 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
           if (kind?.kind === 'not_awaiting_approval') {
             setConfirming(false);
             clearDraft(projectId);
+            // Drop what the cache still says about the review (the paper-edit data hangs from this key),
+            // so coming back to /revision redirects right away instead of showing the stale review.
+            void queryClient.invalidateQueries({ queryKey: keys.projects.detail(projectId) });
             toast.show(kind.message, { tone: 'info' });
             guard.leaveNow(`/proyectos/${projectId}/clips`);
           } else if (kind?.kind === 'insufficient_funds' && billing.handleError(error, { concept: 'Costo del render' })) {
@@ -480,23 +486,24 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
           }}
         />
       )}
-      {canEdit && !isMobile ? (
+      {isMobile ? null : (
         <div className={styles.panelFoot}>
           <Button
             size="sm"
             variant="ghost"
             iconLeft="plus"
+            {...gate('project.review')}
             onClick={() => {
               const at = player.current?.getCurrentTime() ?? 0;
               const start = snapStart(words, clamp(at, 0, Math.max(0, total - 5)));
               const end = snapEnd(words, Math.min(total, start + 30));
-              dispatch({ type: 'add', start, end, title: `Clip en ${formatTimecode(start)}`, total });
+              dispatch({ type: 'add', key: newLocalKey(), start, end, title: `Clip en ${formatTimecode(start)}`, total });
             }}
           >
             Nuevo clip desde el cursor
           </Button>
         </div>
-      ) : null}
+      )}
     </Card>
   );
 
@@ -772,7 +779,7 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
           window.setTimeout(() => player.current?.seek(seconds), 0);
         }}
         onCreateClip={(start, end, text) => {
-          dispatch({ type: 'add', start, end, title: titleFromText(text), total });
+          dispatch({ type: 'add', key: newLocalKey(), start, end, title: titleFromText(text), total });
           if (isMobile) setTab('clips');
         }}
         onMoveEdge={(edge, seconds) => setEdge(edge, seconds)}
@@ -901,7 +908,13 @@ function Review({ projectId, data, loadError, onRetry }: { projectId: string; da
                 </>
               ) : null}{' '}
               ·{' '}
-              <button type="button" className={cx('lnk', styles.linkBtn)} onClick={askToRender} disabled={!canEdit}>
+              <button
+                type="button"
+                className={cx('lnk', styles.linkBtn)}
+                aria-disabled={!canEdit || undefined}
+                title={canEdit ? undefined : NO_ACCESS_REASON}
+                onClick={canEdit ? askToRender : undefined}
+              >
                 Ver detalle
               </button>{' '}
               ·{' '}

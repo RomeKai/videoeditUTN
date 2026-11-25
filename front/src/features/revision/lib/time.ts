@@ -7,6 +7,14 @@ export function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), Math.max(min, max));
 }
 
+/**
+ * Seconds the backend charges for: `ceil(round(seconds, 3))`. Rounding first keeps
+ * float noise (60.00000000001) from costing one more second.
+ */
+export function billedSeconds(seconds: number): number {
+  return Math.ceil(Math.round(seconds * 1000) / 1000);
+}
+
 export function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }

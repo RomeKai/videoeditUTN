@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { Clip, Project } from '@/api/contracts/projects';
-import { draftReducer, includedTotals, initialDraft, isDirty, restoreDraft, saveDraft, sortClips } from './draft';
+import { buildApprovedSegments, draftReducer, includedTotals, initialDraft, isDirty, newLocalKey, restoreDraft, saveDraft, sortClips } from './draft';
 import { explainReasoning } from './reasoning';
 import { describeStyle, isManualCamera } from './style';
-import { formatEdge, parseEdge, rulerTicks } from './time';
+import { billedSeconds, formatEdge, parseEdge, rulerTicks } from './time';
 import { buildRows, captionAt, snapEnd, snapStart, stepEdge, titleFromText, wordIndexAt, type Word } from './transcript';
 
 const words: Word[] = [
@@ -47,6 +47,13 @@ describe('tiempos', () => {
     expect(parseEdge('4:75')).toBeNull();
     expect(parseEdge('hola')).toBeNull();
     expect(parseEdge('')).toBeNull();
+  });
+
+  it('cobra los segundos como el backend: ceil(round(s, 3))', () => {
+    expect(billedSeconds(60.0000000001)).toBe(60);
+    expect(billedSeconds(59.9996)).toBe(60);
+    expect(billedSeconds(60.4)).toBe(61);
+    expect(billedSeconds(0.1 + 0.2 + 29.7)).toBe(30);
   });
 
   it('arma una regla con pocos cortes', () => {
@@ -139,7 +146,7 @@ describe('borrador de la revisión', () => {
 
   it('agrega, cuenta y quita clips propios', () => {
     let draft = initialDraft(suggestions);
-    draft = draftReducer(draft, { type: 'add', start: 10, end: 26, title: 'Mío', total: 600 });
+    draft = draftReducer(draft, { type: 'add', key: newLocalKey(), start: 10, end: 26, title: 'Mío', total: 600 });
     expect(draft.clips).toHaveLength(4);
     expect(draft.selectedKey).toBe(draft.clips[3]?.key);
     expect(includedTotals(draft.clips)).toEqual({ count: 3, seconds: 76 });
@@ -148,10 +155,38 @@ describe('borrador de la revisión', () => {
     expect(isDirty(draft)).toBe(false);
   });
 
+  it('dos clips propios en el mismo lugar no comparten clave', () => {
+    let draft = initialDraft(suggestions);
+    draft = draftReducer(draft, { type: 'add', key: newLocalKey(), start: 10, end: 26, title: 'Uno', total: 600 });
+    const first = draft.selectedKey ?? '';
+    draft = draftReducer(draft, { type: 'remove', key: first });
+    draft = draftReducer(draft, { type: 'add', key: newLocalKey(), start: 10, end: 26, title: 'Dos', total: 600 });
+    draft = draftReducer(draft, { type: 'add', key: draft.selectedKey ?? '', start: 10, end: 26, title: 'Tres', total: 600 });
+    const keys = draft.clips.map((item) => item.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys).not.toContain(first);
+  });
+
+  it('arma los segmentos aprobados en orden, con el texto de cada tramo', () => {
+    let draft = initialDraft([clip(1, 90, 4), clip(2, 80, 0)]);
+    draft = draftReducer(draft, { type: 'edge', key: draft.clips[0]?.key ?? '', edge: 'end', value: 6.3, total: 600 });
+    draft = draftReducer(draft, { type: 'edge', key: draft.clips[1]?.key ?? '', edge: 'end', value: 2.6, total: 600 });
+    draft = draftReducer(draft, { type: 'add', key: newLocalKey(), start: 100, end: 110, title: ' ', total: 600 });
+    const segments = buildApprovedSegments(draft.clips, words);
+    expect(segments.map((segment) => segment.start)).toEqual([0, 4, 100]);
+    // The render burns the subtitles from `text` only: every segment with speech carries it.
+    expect(segments[0]).toEqual({ start: 0, end: 2.6, text: 'Hoy quiero contarte algo.', title: 'Clip 2', clip_id: '00000008-0000-4000-8000-000000000002' });
+    expect(segments[1]?.text).toBe('Mirá este número.');
+    // No words in the range (silence): no text, and a blank title falls back to the clip number.
+    expect(segments[2]).toEqual({ start: 100, end: 110, title: 'Clip 3' });
+    draft = draftReducer(draft, { type: 'toggle', key: draft.clips[0]?.key ?? '', included: false });
+    expect(buildApprovedSegments(draft.clips, words)).toHaveLength(2);
+  });
+
   it('recupera el borrador guardado sobre las sugerencias de ahora', () => {
     let draft = initialDraft(suggestions);
     draft = draftReducer(draft, { type: 'toggle', key: draft.clips[2]?.key ?? '', included: true });
-    draft = draftReducer(draft, { type: 'add', start: 10, end: 26, title: 'Mío', total: 600 });
+    draft = draftReducer(draft, { type: 'add', key: newLocalKey(), start: 10, end: 26, title: 'Mío', total: 600 });
     saveDraft('p1', draft);
     // One suggestion is gone by the time the page reloads.
     const restored = restoreDraft('p1', suggestions.slice(1));

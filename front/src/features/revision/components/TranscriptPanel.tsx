@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { cx } from '@/lib/cx';
 import { formatDuration, formatTimecode } from '@/lib/format';
 import { Button, EmptyState, Icon, IconButton, Input } from '@/ui';
@@ -42,11 +42,13 @@ interface RowViewProps {
   inTo: number;
   found: boolean;
   current: boolean;
+  /** The word that takes the Tab stop (roving focus), -1 when it is in another row. */
+  cursor: number;
   onWord: (index: number) => void;
 }
 
 /** One paragraph. Memoized: playing only re-renders the row that holds the current word. */
-const RowView = memo(function RowView({ row, words, active, selFrom, selTo, inFrom, inTo, found, current, onWord }: RowViewProps) {
+const RowView = memo(function RowView({ row, words, active, selFrom, selTo, inFrom, inTo, found, current, cursor, onWord }: RowViewProps) {
   const spans: ReactNode[] = [];
   for (let index = row.from; index <= row.to; index += 1) {
     const word = words[index] as Word;
@@ -55,6 +57,7 @@ const RowView = memo(function RowView({ row, words, active, selFrom, selTo, inFr
       <span
         key={index}
         data-w={index}
+        tabIndex={index === cursor ? 0 : -1}
         className={cx(styles.w, index >= inFrom && index <= inTo && styles.in, selected && styles.sel, index === active && styles.now)}
         onClick={() => onWord(index)}
       >
@@ -100,6 +103,10 @@ export function TranscriptPanel({
   const [searching, setSearching] = useState(variant === 'main');
   const [query, setQuery] = useState('');
   const [hit, setHit] = useState(0);
+  // Keyboard path: one word holds the Tab stop, the arrows move it and Shift + arrows select.
+  const [cursor, setCursor] = useState(0);
+  const anchor = useRef<number | null>(null);
+  const focusNext = useRef(false);
 
   const inRange = useMemo(() => {
     if (!clip) return null;
@@ -139,6 +146,60 @@ export function TranscriptPanel({
   }, [clipKey, rows]);
 
   useEffect(() => {
+    if (inRange) setCursor(inRange.from);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clipKey]);
+
+  useEffect(() => {
+    if (!focusNext.current) return;
+    focusNext.current = false;
+    scroller.current?.querySelector<HTMLElement>(`[data-w="${cursor}"]`)?.focus();
+  }, [cursor]);
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const index = wordIndexOf(event.target as Node);
+    if (index === null || !(event.target as Element).hasAttribute?.('data-w')) return;
+    const key = event.key;
+    if (key === 'Enter' || key === ' ') {
+      event.preventDefault();
+      onSeek((words[index] as Word).start);
+      return;
+    }
+    if (key === 'Escape' && selection) {
+      event.preventDefault();
+      anchor.current = null;
+      setSelection(null);
+      return;
+    }
+    let next = index;
+    if (key === 'ArrowRight') next = index + 1;
+    else if (key === 'ArrowLeft') next = index - 1;
+    else if (key === 'ArrowDown' || key === 'ArrowUp') {
+      const row = rows.findIndex((item) => item.to >= index);
+      const target = rows[row + (key === 'ArrowDown' ? 1 : -1)];
+      if (!target) return event.preventDefault();
+      // Selecting downwards takes the whole next paragraph; otherwise land on its first word.
+      next = key === 'ArrowDown' && event.shiftKey ? target.to : target.from;
+    } else return;
+    event.preventDefault();
+    next = Math.min(Math.max(next, 0), words.length - 1);
+    if (event.shiftKey) {
+      if (anchor.current === null) anchor.current = index;
+      setSelection({ from: Math.min(anchor.current, next), to: Math.max(anchor.current, next) });
+    } else {
+      anchor.current = null;
+      if (selection) setSelection(null);
+    }
+    if (next !== cursor) {
+      focusNext.current = true;
+      setCursor(next);
+    } else {
+      scroller.current?.querySelector<HTMLElement>(`[data-w="${next}"]`)?.focus();
+    }
+  };
+
+  useEffect(() => {
     setHit(0);
     if (matches[0] !== undefined) scrollToRow(matches[0]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -171,6 +232,8 @@ export function TranscriptPanel({
   onWordRef.current = (index: number) => {
     const current = window.getSelection?.();
     if (current && !current.isCollapsed) return;
+    anchor.current = null;
+    setCursor(index);
     setSelection(null);
     onSeek((words[index] as Word).start);
   };
@@ -315,6 +378,9 @@ export function TranscriptPanel({
       <div
         ref={scroller}
         className={cx(styles.scroll, variant === 'main' && styles.scrollMain, mobile && styles.scrollMobile, searching && variant === 'side' && styles.scrollSearch)}
+        role="group"
+        aria-label="Texto de la transcripción. Con las flechas te movés por palabras, con Mayús y las flechas seleccionás, y con Enter vas a esa palabra en el video."
+        onKeyDown={onKeyDown}
         onMouseUp={() => window.setTimeout(readSelection, 0)}
         onTouchEnd={() => window.setTimeout(readSelection, 0)}
         onKeyUp={(event) => {
@@ -342,6 +408,7 @@ export function TranscriptPanel({
                 inTo={inFrom === -1 ? -1 : (inRange?.to ?? -1)}
                 found={matches.includes(row.index)}
                 current={matches[hit] === row.index}
+                cursor={cursor >= row.from && cursor <= row.to ? cursor : -1}
                 onWord={onWord}
               />
               {clip && lastInRow === row.index ? (

@@ -1,6 +1,7 @@
 import type { Clip } from '@/api/contracts/projects';
 import { scoreBand } from '@/ui/Score';
 import { clamp, MIN_CLIP_SECONDS } from './time';
+import { textOf, wordsInRange, type Word } from './transcript';
 
 /** A clip of the review as the person left it. Nothing is sent until "Renderizar". */
 export interface DraftClip {
@@ -32,7 +33,7 @@ export type DraftAction =
   | { type: 'toggle'; key: string; included?: boolean }
   | { type: 'rename'; key: string; title: string }
   | { type: 'edge'; key: string; edge: 'start' | 'end'; value: number; total: number }
-  | { type: 'add'; start: number; end: number; title: string; total: number }
+  | { type: 'add'; key: string; start: number; end: number; title: string; total: number }
   | { type: 'remove'; key: string };
 
 /**
@@ -59,6 +60,15 @@ export function initialDraft(suggestions: ReadonlyArray<Clip>): Draft {
     };
   });
   return { clips, selectedKey: clips[0]?.key ?? null };
+}
+
+let localCounter = 0;
+
+/** A key for a clip the person made: unique in the session, also after removing and adding at the same spot. */
+export function newLocalKey(): string {
+  localCounter += 1;
+  const random = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+  return `local-${localCounter}-${random}`;
 }
 
 export function isClipChanged(clip: DraftClip): boolean {
@@ -99,7 +109,8 @@ export function draftReducer(draft: Draft, action: DraftAction): Draft {
       const start = clamp(action.start, 0, Math.max(0, action.total - MIN_CLIP_SECONDS));
       const end = clamp(action.end, start + MIN_CLIP_SECONDS, Math.max(action.total, start + MIN_CLIP_SECONDS));
       const n = draft.clips.reduce((max, clip) => Math.max(max, clip.n), 0) + 1;
-      const key = `local-${n}-${Math.round(start * 100)}`;
+      // The caller makes the key (newLocalKey): two clips made at the same spot must not share one.
+      const key = draft.clips.some((clip) => clip.key === action.key) ? newLocalKey() : action.key;
       const clip: DraftClip = { key, clipId: null, n, title: action.title, start, end, score: null, reasoning: '', included: true, original: null };
       return { clips: [...draft.clips, clip], selectedKey: key };
     }
@@ -124,6 +135,38 @@ export function sortClips(clips: ReadonlyArray<DraftClip>, sort: ClipSort): Draf
 export function includedTotals(clips: ReadonlyArray<DraftClip>): { count: number; seconds: number } {
   const included = clips.filter((clip) => clip.included);
   return { count: included.length, seconds: included.reduce((sum, clip) => sum + (clip.end - clip.start), 0) };
+}
+
+export interface ApprovedSegmentInput {
+  start: number;
+  end: number;
+  /** What is said in the segment: the render builds the subtitles from it and from nothing else. */
+  text?: string;
+  title: string;
+  clip_id?: string;
+}
+
+/**
+ * Body of `approve-paper-edit`: the included clips in video order. Every segment
+ * carries the words inside its range, because the backend burns the subtitles
+ * from each segment's `text` (render_video_segments); without it an approved
+ * project with subtitles on comes back without them.
+ */
+export function buildApprovedSegments(clips: ReadonlyArray<DraftClip>, words: ReadonlyArray<Word>): ApprovedSegmentInput[] {
+  return clips
+    .filter((clip) => clip.included)
+    .sort((a, b) => a.start - b.start)
+    .map((clip) => {
+      const range = wordsInRange(words, clip.start, clip.end);
+      const text = range ? textOf(words, range.from, range.to) : '';
+      return {
+        start: clip.start,
+        end: clip.end,
+        ...(text ? { text } : {}),
+        title: clip.title.trim() || `Clip ${clip.n}`,
+        ...(clip.clipId ? { clip_id: clip.clipId } : {}),
+      };
+    });
 }
 
 /* ── Kept across a reload and the round trip to "Comprar tokens" ───────── */
@@ -168,7 +211,17 @@ export function restoreDraft(projectId: string, suggestions: ReadonlyArray<Clip>
   });
   const own = stored.clips.filter((clip) => clip.clipId === null && Number.isFinite(clip.start) && clip.end > clip.start);
   let n = merged.length;
-  const clips = [...merged, ...own.map((clip) => ({ ...clip, n: (n += 1), original: null }))];
-  const selectedKey = clips.some((clip) => clip.key === stored?.selectedKey) ? (stored.selectedKey as string) : fresh.selectedKey;
+  const seen = new Set(merged.map((clip) => clip.key));
+  const clips = [
+    ...merged,
+    ...own.map((clip) => {
+      // Drafts stored by an older build could repeat a key.
+      const key = seen.has(clip.key) ? newLocalKey() : clip.key;
+      seen.add(key);
+      return { ...clip, key, n: (n += 1), original: null };
+    }),
+  ];
+  const stillThere = clips.some((clip) => clip.key === stored?.selectedKey);
+  const selectedKey = stillThere ? (stored.selectedKey as string) : fresh.selectedKey;
   return { clips, selectedKey };
 }
