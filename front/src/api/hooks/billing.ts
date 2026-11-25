@@ -38,7 +38,9 @@ export function useSubscription({ enabled = true }: { enabled?: boolean } = {}) 
 export function useChangePlan() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (planId: string) => apiCall(contract.changePlan, { body: { plan_id: planId } }),
+    /** `returnUrl`: where the provider's checkout comes back when the upgrade needs a payment. Choosing the current plan cancels a scheduled change. */
+    mutationFn: ({ planId, returnUrl }: { planId: string; returnUrl?: string }) =>
+      apiCall(contract.changePlan, { body: { plan_id: planId, return_url: returnUrl } }),
     onSuccess: () =>
       Promise.all([queryClient.invalidateQueries({ queryKey: keys.billing.all }), queryClient.invalidateQueries({ queryKey: keys.me })]),
   });
@@ -54,10 +56,11 @@ export function useWallet({ enabled = true }: { enabled?: boolean } = {}) {
   });
 }
 
-export function useUsage(month?: string) {
+export function useUsage(month?: string, { enabled = true }: { enabled?: boolean } = {}) {
   return useScopedQuery({
     queryKey: keys.billing.usage(month),
     queryFn: ({ signal }) => apiCall(contract.getUsage, { query: { month }, signal }),
+    enabled,
   });
 }
 

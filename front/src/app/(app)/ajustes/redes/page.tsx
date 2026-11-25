@@ -1,10 +1,9 @@
 import type { Metadata } from 'next';
-import { ScreenPlaceholder } from '@/dev/ScreenPlaceholder';
-import { SCREENS } from '@/dev/screens';
+import { NetworksScreen } from '@/features/ajustes/NetworksScreen';
 
 export const metadata: Metadata = { title: 'Redes sociales' };
 
-// H3 · Redes sociales: pantalla pendiente. El dominio dueño reemplaza este archivo (ver front/ROUTES.md).
+/** H3 · Ajustes › Redes sociales. */
 export default function Page() {
-  return <ScreenPlaceholder {...SCREENS.H3} page={false} headingLevel={2} />;
+  return <NetworksScreen />;
 }

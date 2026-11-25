@@ -42,7 +42,10 @@ export function useDeleteWorkspace(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (confirmName: string) => apiCall(contract.deleteWorkspace, { params: { id }, body: { confirm_name: confirmName } }),
-    onSuccess: () => queryClient.invalidateQueries(),
+    // Nothing of the deleted workspace may be asked for again: its queries (detail, members and every
+    // workspace-scoped one, whose key ends with its id) are dropped, not refetched. The caller then
+    // switches to another workspace, which reloads the rest.
+    onSuccess: () => queryClient.removeQueries({ predicate: (query) => query.queryKey.includes(id) }),
   });
 }
 
