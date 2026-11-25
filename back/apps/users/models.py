@@ -97,3 +97,15 @@ class WorkspaceMember(models.Model):
     class Meta:
         # Evita que un usuario esté duplicado en el mismo equipo
         unique_together = ('workspace', 'user')
+
+
+class NotificationPreference(models.Model):
+    """Qué emails recibe el usuario, un switch por tipo de notificación (mapa 1.11)."""
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='notification_preferences')
+
+    project_ready = models.BooleanField(default=True)
+    render_finished = models.BooleanField(default=True)
+    project_failed = models.BooleanField(default=True)
+    post_failed = models.BooleanField(default=True)
+    low_balance = models.BooleanField(default=True)
