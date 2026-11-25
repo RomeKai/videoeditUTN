@@ -2,12 +2,18 @@
  * Starts a browser download from a URL (signed link of a clip, .zip, data URL).
  * Uses a temporary <a download> so it also works with the mock's data URLs,
  * which browsers refuse to open as a page.
+ *
+ * Browsers ignore `download` for another origin: whether the file is saved or
+ * played depends on the Content-Disposition the storage answers with (the
+ * signed URL has to ask for `attachment`; see CONTRACT.md). For those links it
+ * opens a new tab, so a file served inline never replaces the app.
  */
 export function downloadUrl(url: string, filename?: string): void {
   const anchor = document.createElement('a');
   anchor.href = url;
   if (filename) anchor.download = filename;
-  anchor.rel = 'noopener';
+  anchor.rel = 'noopener noreferrer';
+  if (/^https?:/i.test(url) && new URL(url, window.location.href).origin !== window.location.origin) anchor.target = '_blank';
   anchor.style.display = 'none';
   document.body.appendChild(anchor);
   anchor.click();

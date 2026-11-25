@@ -42,13 +42,30 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const nextId = useRef(1);
   const timers = useRef(new Map<number, number>());
+  const durations = useRef(new Map<number, number>());
 
   const dismiss = useCallback((id: number) => {
     const timer = timers.current.get(id);
     if (timer !== undefined) window.clearTimeout(timer);
     timers.current.delete(id);
+    durations.current.delete(id);
     setToasts((current) => current.filter((toast) => toast.id !== id));
   }, []);
+
+  /** A toast with an action waits while the pointer or the focus is on it, so there is time to use it. */
+  const pause = useCallback((id: number) => {
+    const timer = timers.current.get(id);
+    if (timer !== undefined) window.clearTimeout(timer);
+    timers.current.delete(id);
+  }, []);
+  const resume = useCallback(
+    (id: number) => {
+      const duration = durations.current.get(id);
+      if (!duration || timers.current.has(id)) return;
+      timers.current.set(id, window.setTimeout(() => dismiss(id), duration));
+    },
+    [dismiss],
+  );
 
   const show = useCallback(
     (message: ReactNode, options: ToastOptions = {}) => {
@@ -64,7 +81,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         return next.slice(-MAX_TOASTS);
       });
       const duration = options.duration ?? TOAST_DURATION_MS;
-      if (duration > 0) timers.current.set(id, window.setTimeout(() => dismiss(id), duration));
+      if (duration > 0) {
+        durations.current.set(id, duration);
+        timers.current.set(id, window.setTimeout(() => dismiss(id), duration));
+      }
       return id;
     },
     [dismiss],
@@ -91,11 +111,24 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={api}>
       {children}
-      <div className={styles.region} role="region" aria-label="Avisos">
+      {/* Always in the DOM so screen readers announce what is added to it. */}
+      <div className={styles.region} role="region" aria-label="Avisos" aria-live="polite" aria-relevant="additions">
         {toasts.map((toast) => {
           const tone = toast.tone ?? 'ok';
           return (
-            <div key={toast.id} className={styles.toast} role={tone === 'err' ? 'alert' : 'status'}>
+            <div
+              key={toast.id}
+              className={styles.toast}
+              role={tone === 'err' ? 'alert' : 'status'}
+              {...(toast.action
+                ? {
+                    onMouseEnter: () => pause(toast.id),
+                    onMouseLeave: () => resume(toast.id),
+                    onFocus: () => pause(toast.id),
+                    onBlur: () => resume(toast.id),
+                  }
+                : {})}
+            >
               <span className={cx(styles.icon, styles[tone])}>
                 <Icon name={TONE_ICON[tone]} />
               </span>

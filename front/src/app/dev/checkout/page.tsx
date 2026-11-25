@@ -8,16 +8,29 @@ import { formatNumber, formatUsd } from '@/lib/format';
 import { AuthCard } from '@/shell/PublicShell';
 import { Banner, Button } from '@/ui';
 
+const DEFAULT_RETURN = '/uso/comprar/resultado';
+
+/** `volver` comes from the URL: only a page of this same app is accepted, never another site. */
+function safeReturn(value: string | null): string {
+  if (!value) return DEFAULT_RETURN;
+  try {
+    const url = new URL(value, window.location.origin);
+    return url.origin === window.location.origin ? `${url.pathname}${url.search}` : DEFAULT_RETURN;
+  } catch {
+    return DEFAULT_RETURN;
+  }
+}
+
 function Checkout() {
   const search = useSearchParams();
   const purchaseId = search.get('compra') ?? '';
-  const returnUrl = search.get('volver') ?? '/uso/comprar/resultado';
+  const volver = search.get('volver');
   const [purchase, setPurchase] = useState<{ tokens: number; amount_usd: number } | null>(null);
   useEffect(() => setPurchase(API_MOCKS ? getMockPurchase(purchaseId) : null), [purchaseId]);
 
   const finish = (approved: boolean) => {
     resolveMockPurchase(purchaseId, approved);
-    const url = new URL(returnUrl, window.location.origin);
+    const url = new URL(safeReturn(volver), window.location.origin);
     url.searchParams.set('compra', purchaseId);
     window.location.assign(url.toString());
   };
