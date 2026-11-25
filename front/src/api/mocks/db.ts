@@ -122,6 +122,7 @@ export type MockSocialAccount = SocialAccount & { workspace: string };
 export interface MockInvitation {
   token: string;
   member: string | null;
+  workspace_id: string;
   workspace_name: string;
   inviter_name: string;
   role: MemberRole;
