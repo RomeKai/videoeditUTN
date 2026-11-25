@@ -31,25 +31,66 @@ export function safeNext(next: string | null | undefined): string | null {
 const PARSE_ORIGIN = 'http://app.invalid';
 const NEXT_KEY = 'oc.acceso.siguiente';
 
+/** How long a remembered destination is worth following: the verification email is opened soon or not at all. */
+export const NEXT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+interface StoredNext {
+  path: string;
+  email: string;
+  at: number;
+}
+
+const normalEmail = (email: string | null | undefined) => (email ?? '').trim().toLowerCase();
+
+function forgetNext(): void {
+  try {
+    window.localStorage.removeItem(NEXT_KEY);
+  } catch {
+    // Nothing stored, nothing to forget.
+  }
+}
+
 /**
  * Remembers where the user was going while the email gets verified (A1 → A3 → link of the email).
- * The link usually opens in another tab, hence localStorage.
+ * The link usually opens in another tab, hence localStorage. It belongs to one account: opening A3
+ * without a destination (or without knowing whose it is) forgets whatever an earlier visit left.
  */
-export function rememberNext(next: string | null | undefined): void {
-  const safe = safeNext(next);
+export function rememberNext(next: string | null | undefined, email: string | null | undefined): void {
+  const path = safeNext(next);
+  const owner = normalEmail(email);
+  if (!path || !owner) {
+    forgetNext();
+    return;
+  }
   try {
-    if (safe) window.localStorage.setItem(NEXT_KEY, safe);
+    const value: StoredNext = { path, email: owner, at: Date.now() };
+    window.localStorage.setItem(NEXT_KEY, JSON.stringify(value));
   } catch {
     // Private mode: the verification ends in the welcome, as usual.
   }
 }
 
-/** Reads (and forgets) the page remembered by `rememberNext`. */
-export function takeNext(): string | null {
+/**
+ * Reads the page remembered by `rememberNext` and always forgets it. It is only returned to the
+ * account it was stored for, and only while it is recent: someone else verifying later in the same
+ * browser goes through the welcome, not to a page another person asked for.
+ */
+export function takeNext(email: string | null | undefined): string | null {
+  let raw: string | null = null;
   try {
-    const stored = window.localStorage.getItem(NEXT_KEY);
-    window.localStorage.removeItem(NEXT_KEY);
-    return safeNext(stored);
+    raw = window.localStorage.getItem(NEXT_KEY);
+  } catch {
+    return null;
+  }
+  forgetNext();
+  if (!raw) return null;
+  try {
+    const stored = JSON.parse(raw) as Partial<StoredNext> | null;
+    if (!stored || typeof stored.path !== 'string' || typeof stored.email !== 'string' || typeof stored.at !== 'number') return null;
+    const age = Date.now() - stored.at;
+    if (age < 0 || age > NEXT_MAX_AGE_MS) return null;
+    if (!normalEmail(email) || stored.email !== normalEmail(email)) return null;
+    return safeNext(stored.path);
   } catch {
     return null;
   }
