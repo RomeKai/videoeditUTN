@@ -125,7 +125,7 @@ describe('D1 · Proyecto', () => {
     await user.type(input, 'Vlog Mendoza, día 2');
     await user.click(within(dialog).getByRole('button', { name: 'Guardar' }));
     expect(await screen.findByRole('heading', { level: 1, name: 'Vlog Mendoza, día 2' })).toBeInTheDocument();
-    expect(screen.getByText('Proyecto renombrado')).toBeInTheDocument();
+    expect(await screen.findByText('Proyecto renombrado')).toBeInTheDocument();
   });
 
   it('borrar: el diálogo avisa que no se devuelve nada y vuelve a Proyectos', async () => {
