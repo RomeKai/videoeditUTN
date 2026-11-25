@@ -1,10 +1,14 @@
 import type { Metadata } from 'next';
-import { ScreenPlaceholder } from '@/dev/ScreenPlaceholder';
-import { SCREENS } from '@/dev/screens';
+import { Suspense } from 'react';
+import { PurchaseResultScreen } from '@/features/uso/PurchaseResultScreen';
 
 export const metadata: Metadata = { title: 'Resultado de la compra' };
 
-// G5 · Resultado de la compra: pantalla pendiente. El dominio dueño reemplaza este archivo (ver front/ROUTES.md).
+/** G5 · Uso › Resultado de la compra (`?compra=<id>`). */
 export default function Page() {
-  return <ScreenPlaceholder {...SCREENS.G5} page={false} headingLevel={2} />;
+  return (
+    <Suspense>
+      <PurchaseResultScreen />
+    </Suspense>
+  );
 }

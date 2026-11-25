@@ -1,10 +1,9 @@
 import type { Metadata } from 'next';
-import { ScreenPlaceholder } from '@/dev/ScreenPlaceholder';
-import { SCREENS } from '@/dev/screens';
+import { NotificationsScreen } from '@/features/ajustes/NotificationsScreen';
 
 export const metadata: Metadata = { title: 'Notificaciones' };
 
-// I2 · Notificaciones: pantalla pendiente. El dominio dueño reemplaza este archivo (ver front/ROUTES.md).
+/** I2 · Perfil › Notificaciones. */
 export default function Page() {
-  return <ScreenPlaceholder {...SCREENS.I2} page={false} headingLevel={2} />;
+  return <NotificationsScreen />;
 }

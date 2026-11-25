@@ -136,7 +136,7 @@ describe('fixtures: cubren los estados que describe el mapa', () => {
     const clipStatuses = new Set(db.projects.flatMap((project) => project.clips.map((clip) => clip.status)));
     expect([...clipStatuses].sort()).toEqual(['completed', 'draft', 'failed', 'published', 'rendering']);
     expect(new Set(db.posts.map((post) => post.status))).toEqual(new Set(['DRAFT', 'SCHEDULED', 'QUEUED', 'PROCESSING', 'PUBLISHED', 'FAILED']));
-    expect(new Set(db.transactions.map((transaction) => transaction.kind))).toEqual(new Set(['purchase', 'reserved', 'charged', 'refund', 'released', 'pending']));
+    expect(new Set(db.transactions.map((transaction) => transaction.kind))).toEqual(new Set(['purchase', 'reserved', 'charged', 'released', 'pending']));
     expect(db.notifications.some((notification) => notification.read_at === null)).toBe(true);
     expect(db.brandKits.filter((kit) => kit.is_default)).toHaveLength(1);
   });

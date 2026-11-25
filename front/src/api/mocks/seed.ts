@@ -756,7 +756,8 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
     });
     project._reservations.push(reservationId);
   }
-  // Purchases and a visible refund, so Movimientos shows every kind of row.
+  // Purchases, so Movimientos shows every kind of row the backend writes. A partial charge has no row of
+  // its own: commit_partial_reservation lowers the SPEND to what was charged and returns the rest silently.
   const purchase = (n: number, tokens: number, ageMs: number): MockTransaction => ({
     id: mid(KIND.transaction, 9000 + n),
     workspace: mainWorkspace,
@@ -774,25 +775,6 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
   });
   if (mode !== 'none') {
     transactions.push(purchase(1, 5000, 20 * DAY), purchase(2, 15000, 45 * DAY));
-    // A refund of something already charged (REFUND + COMPLETED): the clip that could not be generated.
-    const partial = projects.find((project) => project.status === 'partial');
-    if (partial) {
-      transactions.push({
-        id: mid(KIND.transaction, 9100),
-        workspace: mainWorkspace,
-        wallet: walletId,
-        created_by: null,
-        amount: 13.5,
-        transaction_type: 'REFUND',
-        status: 'COMPLETED',
-        description: `Devolución: clip que no se pudo generar en ${partial.title}`,
-        created_at: iso(new Date(partial.created_at).getTime() + 30 * MIN),
-        kind: 'refund',
-        created_by_detail: null,
-        project: { id: partial.id, title: partial.title },
-        category: 'render',
-      });
-    }
     transactions.push({
       id: mid(KIND.transaction, 9200),
       workspace: mainWorkspace,
@@ -956,7 +938,7 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
       { token: 'vencida', member: null, workspace_id: WORKSPACE_IDS.estudio, workspace_name: 'Estudio Norte', inviter_name: 'Lucía Fernández', role: 'editor', email: 'juan@estudionorte.com', status: 'expired', has_account: false },
       { token: 'usada', member: null, workspace_id: WORKSPACE_IDS.estudio, workspace_name: 'Estudio Norte', inviter_name: 'Lucía Fernández', role: 'viewer', email: 'juan@estudionorte.com', status: 'used', has_account: true },
     ],
-    flags: { sessionExpired: false, maintenance: false, serverDown: false, rejectPayments: false, unverifiedLogin: false, ...options.flags },
+    flags: { sessionExpired: false, maintenance: false, serverDown: false, rejectPayments: false, unverifiedLogin: false, planCheckout: false, ...options.flags },
     resendAt: {},
   };
 }

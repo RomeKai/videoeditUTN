@@ -79,6 +79,31 @@ export function settleReservation(db: MockDb, transactionId: string, now: number
   transaction.kind = 'charged';
 }
 
+/**
+ * Part of the job was delivered (some clips failed): like the backend's commit_partial_reservation,
+ * the SPEND row keeps only what is charged and becomes COMPLETED; the rest goes back to the
+ * available balance without a row of its own. Returns what was returned.
+ */
+export function settleReservationPartially(db: MockDb, transactionId: string, amount: number, now: number): number {
+  const transaction = db.transactions.find((item) => item.id === transactionId);
+  if (!transaction || transaction.status !== 'RESERVED') return 0;
+  const charged = round2(amount);
+  if (charged >= transaction.amount) {
+    settleReservation(db, transactionId, now);
+    return 0;
+  }
+  if (charged <= 0) return releaseReservation(db, transactionId, now);
+  const wallet = walletOf(db, transaction.workspace);
+  const released = round2(transaction.amount - charged);
+  wallet.reserved_balance = round2(Math.max(0, wallet.reserved_balance - transaction.amount));
+  wallet.available_balance = round2(wallet.available_balance + released);
+  wallet.updated_at = iso(now);
+  transaction.amount = charged;
+  transaction.status = 'COMPLETED';
+  transaction.kind = 'charged';
+  return released;
+}
+
 /** The job failed: the reservation goes back to available (SPEND + FAILED, shown as "Devuelto"). */
 export function releaseReservation(db: MockDb, transactionId: string, now: number): number {
   const transaction = db.transactions.find((item) => item.id === transactionId);
@@ -350,11 +375,17 @@ function tickRender(db: MockDb, project: MockProject, now: number): void {
     return;
   }
   let charged = 0;
+  let returned = 0;
+  const delivered = project.clips.length > 0 ? (project.clips.length - failed) / project.clips.length : 1;
   for (const id of project._reservations) {
     const transaction = db.transactions.find((item) => item.id === id);
-    if (transaction?.status === 'RESERVED') charged += transaction.amount;
-    settleReservation(db, id, now);
+    if (transaction?.status !== 'RESERVED') continue;
+    // The render of the clips that failed is not charged; the processing of the video is.
+    if (failed > 0 && transaction.category === 'render') returned += settleReservationPartially(db, id, transaction.amount * delivered, now);
+    else settleReservation(db, id, now);
+    charged += transaction.amount;
   }
+  if (returned > 0) addActivity(db, project, 'tokens_refunded', 'Devolución por los clips que no se generaron', now, { amount: round2(returned) });
   if (project.cost) project.cost = { ...project.cost, state: 'charged' };
   addActivity(db, project, 'render_finished', 'Terminó el render', now);
   if (charged > 0) addActivity(db, project, 'tokens_charged', 'Cobro del procesamiento', now, { amount: -charged });
@@ -433,6 +464,17 @@ function tickPurchases(db: MockDb, now: number): void {
     if (purchase._reject) {
       purchase.status = 'rejected';
       purchase.failure_reason = 'El banco rechazó el pago. Probá con otra tarjeta.';
+      continue;
+    }
+    if (purchase.plan_id) {
+      // The payment of a plan upgrade: the plan changes now and nothing touches the wallet.
+      const workspace = db.workspaces.find((item) => item.id === purchase.workspace);
+      if (workspace) {
+        workspace.subscription_plan = purchase.plan_id;
+        workspace.pending_plan = null;
+        workspace.renews_at = iso(now + 30 * 24 * 3600 * 1000);
+      }
+      purchase.status = 'approved';
       continue;
     }
     const wallet = walletOf(db, purchase.workspace);
