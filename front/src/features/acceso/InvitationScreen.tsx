@@ -5,13 +5,12 @@ import { useRouter } from 'next/navigation';
 import { useState, type FormEvent, type ReactNode } from 'react';
 import type { InvitationPreview } from '@/api/contracts/workspaces';
 import { ApiError } from '@/api/errors';
-import { useInvitation, useLogout } from '@/api/hooks';
+import { useAcceptInvitation, useInvitation, useLogout } from '@/api/hooks';
 import { ROLE_LABEL } from '@/lib/permissions';
 import { LoadError } from '@/shell/LoadError';
 import { useSession } from '@/shell/session';
 import { Avatar, Badge, Banner, Button, Card, Field, Input, PasswordInput, Skeleton, SkeletonText, cx, useToast } from '@/ui';
 import styles from './acceso.module.css';
-import { useJoinWorkspace } from './hooks';
 import { HOME, nameError, newPasswordError, requestErrorMessage } from './lib';
 import { TermsCheckbox } from './Terms';
 
@@ -189,11 +188,17 @@ function EnterWorkspace({ name }: { name: string }) {
   );
 }
 
-/** After accepting: the app opens on the workspace the user has just joined (the hook already made it the active one). */
+/** After accepting: the app opens on the workspace the user has just joined. */
 function useJoin(invitation: InvitationPreview) {
   const router = useRouter();
   const toast = useToast();
-  return () => {
+  const { switchWorkspace } = useSession();
+  return async (workspaceId: string) => {
+    try {
+      await switchWorkspace(workspaceId);
+    } catch {
+      // Joined anyway: the workspace is in the switcher.
+    }
     toast.success(`Ya sos parte de ${invitation.workspace_name}`);
     router.replace(HOME);
   };
@@ -208,7 +213,7 @@ function AcceptError({ error }: { error: unknown }) {
 
 function AcceptAsMember({ token, invitation }: { token: string; invitation: InvitationPreview }) {
   const { me } = useSession();
-  const accept = useJoinWorkspace(token);
+  const accept = useAcceptInvitation(token);
   const invitationQuery = useInvitation(token);
   const join = useJoin(invitation);
   const [joining, setJoining] = useState(false);
@@ -216,9 +221,9 @@ function AcceptAsMember({ token, invitation }: { token: string; invitation: Invi
   // mutateAsync: the answer reloads the invitation (now "used"), which unmounts this form before a mutate() callback could run.
   const submit = async () => {
     try {
-      await accept.mutateAsync({});
+      const result = await accept.mutateAsync({});
       setJoining(true);
-      join();
+      await join(result.workspace_id);
     } catch (error) {
       if (error instanceof ApiError && error.status === 410) void invitationQuery.refetch();
     }
@@ -265,7 +270,7 @@ function OtherAccount({ invitation }: { invitation: InvitationPreview }) {
 
 function CreateAccount({ token, invitation, loginHref }: { token: string; invitation: InvitationPreview; loginHref: string }) {
   const router = useRouter();
-  const accept = useJoinWorkspace(token);
+  const accept = useAcceptInvitation(token);
   const invitationQuery = useInvitation(token);
   const join = useJoin(invitation);
   const [name, setName] = useState('');
@@ -281,9 +286,9 @@ function CreateAccount({ token, invitation, loginHref }: { token: string; invita
     setErrors(found);
     if (found.name || found.password || found.terms) return;
     try {
-      await accept.mutateAsync({ name: name.trim(), password, terms_accepted: true });
+      const result = await accept.mutateAsync({ name: name.trim(), password, terms_accepted: true });
       setJoining(true);
-      join();
+      await join(result.workspace_id);
     } catch (error) {
       if (!(error instanceof ApiError)) return;
       if (error.status === 400) setErrors({ name: error.fieldErrors.name?.[0], password: error.fieldErrors.password?.[0] });

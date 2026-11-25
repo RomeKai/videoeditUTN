@@ -1,9 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { expectClean, settle, useScenario, watch } from './helpers';
 
-// `expectClean` is checked before any second full page load of a test: reloading inside the same
-// browser context now and then logs a hydration warning from the app shell, which is not what these flows test.
-
 async function signIn(page: Page, email: string, password = 'contrasena') {
   await page.getByLabel('Email').fill(email);
   await page.getByLabel('Contraseña', { exact: true }).fill(password);
@@ -84,7 +81,6 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     await expect(page.getByText('ana@ejemplo.com')).toBeVisible();
     // The email has just been sent: asking again waits a minute, and a reload does not reset the wait.
     await expect(page.getByRole('button', { name: /Reenviar en \d:\d\d/ })).toBeDisabled();
-    expectClean(problems, 'el registro');
     await page.reload();
     await expect(page.getByRole('button', { name: /Reenviar en \d:\d\d/ })).toBeDisabled();
 
@@ -92,6 +88,7 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     await page.goto('/verificar?token=mock-token');
     await expect(page).toHaveURL(/\/bienvenida$/);
     await expect(page.getByRole('heading', { level: 1, name: '¿Cómo se llama tu workspace?' })).toBeVisible();
+    expectClean(problems, 'el registro');
   });
 
   test('A3: un link vencido ofrece pedir otro', async ({ page }) => {
@@ -112,7 +109,6 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     await page.getByRole('button', { name: 'Mandarme el link' }).click();
     await expect(page.getByRole('status').filter({ hasText: 'Si el email existe, te mandamos un link. Revisá tu correo.' })).toBeVisible();
     await expect(page.getByRole('button', { name: /Reenviar en \d:\d\d/ })).toBeDisabled();
-    expectClean(problems, 'recuperar');
 
     await page.goto('/recuperar?token=mock-token&email=lucia%40estudionorte.com');
     await expect(page.getByRole('heading', { level: 1, name: 'Elegí una contraseña nueva' })).toBeVisible();
@@ -123,6 +119,7 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     await page.getByLabel('Repetí la contraseña').fill('contrasena-nueva');
     await page.getByRole('button', { name: 'Guardar y entrar' }).click();
     await expect(page).toHaveURL(/\/proyectos$/);
+    expectClean(problems, 'recuperar');
   });
 
   test('A5: sin cuenta, la crea desde la invitación y entra al workspace', async ({ page }) => {
@@ -138,10 +135,10 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     await page.getByRole('button', { name: 'Crear cuenta y unirme' }).click();
     await expect(page).toHaveURL(/\/proyectos$/);
     await expect(page.getByRole('button', { name: /Cambiar de workspace. Actual: Estudio Norte/ })).toBeVisible();
-    expectClean(problems, 'la invitación');
     // The link cannot be used twice.
     await page.goto('/invitacion/valida');
     await expect(page.getByRole('heading', { level: 1, name: 'Ya sos parte de Estudio Norte' })).toBeVisible();
+    expectClean(problems, 'la invitación');
   });
 
   test('A5: con cuenta, inicia sesión, vuelve a la invitación y la acepta', async ({ page }) => {
@@ -195,11 +192,11 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     await page.getByRole('button', { name: 'Subí tu primer video' }).click();
     await expect(page).toHaveURL(/\/proyectos\/nuevo$/);
     await expect(page.getByRole('button', { name: /Cambiar de workspace. Actual: Canal de Sofía/ })).toBeVisible();
-    expectClean(problems, 'la bienvenida');
 
     await page.goto('/proyectos');
     await settle(page);
     await expect(page).toHaveURL(/\/proyectos$/);
+    expectClean(problems, 'la bienvenida');
   });
 
   test('B1: saltear va a Proyectos y no vuelve a aparecer', async ({ page }) => {

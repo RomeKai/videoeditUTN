@@ -5,9 +5,9 @@ import { Checkbox } from '@/ui';
 import styles from './acceso.module.css';
 import { TERMS_ERROR } from './lib';
 
-// The legal pages are not in the screen map yet: the anchors are the ones of the artboards.
-export const TERMS_URL = '#terminos';
-export const PRIVACY_URL = '#privacidad';
+// Same addresses as the footer of the public shell.
+export const TERMS_URL = 'https://onecreator.app/terminos';
+export const PRIVACY_URL = 'https://onecreator.app/privacidad';
 
 /** "Acepto los Términos y la Política de privacidad", with the error under the text (artboards A2 and A5). */
 export function TermsCheckbox({
@@ -30,11 +30,11 @@ export function TermsCheckbox({
         label={
           <>
             Acepto los{' '}
-            <a className="lnk" href={TERMS_URL}>
+            <a className="lnk" href={TERMS_URL} target="_blank" rel="noreferrer">
               Términos
             </a>{' '}
             y la{' '}
-            <a className="lnk" href={PRIVACY_URL}>
+            <a className="lnk" href={PRIVACY_URL} target="_blank" rel="noreferrer">
               Política de privacidad
             </a>
             .
