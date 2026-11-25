@@ -70,7 +70,9 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     # not sent: a new project takes the model default (true), an update keeps
     # what it had, and from-prompt can leave it out so the prompt decides (it
     # only counts as explicit when sent).
-    add_subtitles = _NotSentBooleanField(required=False)
+    add_subtitles = _NotSentBooleanField(
+        required=False, help_text=VideoProject._meta.get_field('add_subtitles').help_text,
+    )
     # Output height tier. Priced at creation (PricingEngine resolution multiplier)
     # and checked against the plan's max_resolution; it cannot change afterwards.
     # Without it the project renders and is charged at 720p.

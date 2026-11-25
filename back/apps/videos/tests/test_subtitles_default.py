@@ -33,12 +33,12 @@ class SubtitlesDefaultTests(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 
-    def upload(self, **extra):
+    def upload(self, url=None, **extra):
         probed = MediaInfo(duration_s=10.0, width=1920, height=1080, mime="video/mp4")
         with tempfile.TemporaryDirectory() as media, override_settings(MEDIA_ROOT=media), \
                 patch("apps.videos.services.media_validation.validate_upload", return_value=probed), \
                 patch("apps.videos.views.process_initial_ingestion.delay"):
-            response = self.client.post(reverse("project-list"), {
+            response = self.client.post(url or reverse("project-list"), {
                 "title": "Subtítulos", **extra,
                 "source_file": SimpleUploadedFile("v.mp4", b"0" * 10, content_type="video/mp4"),
             }, format="multipart")
@@ -52,18 +52,25 @@ class SubtitlesDefaultTests(TestCase):
         self.assertFalse(self.upload(add_subtitles="false").add_subtitles)
 
     def test_an_update_without_the_field_keeps_what_the_project_had(self):
+        project = self.upload()
+        url = reverse("project-detail", args=[project.pk])
         for had in (True, False):
-            project = self.upload(add_subtitles=str(had).lower())
-            url = reverse("project-detail", args=[project.pk])
             for method, fmt in (("put", "json"), ("put", "multipart"), ("patch", "multipart")):
                 with self.subTest(had=had, method=method, format=fmt):
+                    VideoProject.objects.filter(pk=project.pk).update(add_subtitles=had)
                     response = getattr(self.client, method)(url, {"title": "Otro título"}, format=fmt)
                     self.assertEqual(response.status_code, 200, response.content[:300])
                     project.refresh_from_db()
                     self.assertEqual(project.add_subtitles, had)
 
-    def test_leaving_it_out_does_not_count_as_explicit_for_prompt_to_edit(self):
-        from apps.videos.services.ai.prompt_validator import explicit_config_fields
+    def test_from_prompt_without_the_field_starts_with_subtitles_and_lets_the_prompt_decide(self):
+        project = self.upload(url="/api/v1/projects/from-prompt/", prompt="cortá los momentos de humor")
+        self.assertTrue(project.add_subtitles)
+        self.assertNotIn("add_subtitles", project.metadata["pte_explicit"])
 
-        self.assertNotIn("add_subtitles", explicit_config_fields({"title": "x"}))
-        self.assertIn("add_subtitles", explicit_config_fields({"add_subtitles": "true"}))
+    def test_from_prompt_with_the_field_counts_it_as_explicit(self):
+        project = self.upload(
+            url="/api/v1/projects/from-prompt/", prompt="con subtítulos grandes", add_subtitles="false",
+        )
+        self.assertFalse(project.add_subtitles)
+        self.assertIn("add_subtitles", project.metadata["pte_explicit"])
