@@ -408,3 +408,30 @@ class ClipPreviewView(APIView):
         if preview is None:
             return Response({"error": "No hay vista previa vigente."}, status=status.HTTP_404_NOT_FOUND)
         return Response(self._payload(preview))
+
+
+class PipelineMetricsView(APIView):
+    """
+    INFRA-02: data of the operations dashboard, for staff only.
+
+    ``GET /api/v1/ops/pipeline-metrics/?hours=24`` returns, for the projects
+    created in the window, the p50 / p95 / max duration of each pipeline stage,
+    the projects per status, the failure rate and the failures per error code.
+    Counts, durations and static codes only (see services.pipeline_metrics).
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        from .services.pipeline_metrics import DEFAULT_WINDOW_HOURS, collect
+
+        raw = request.query_params.get('hours', DEFAULT_WINDOW_HOURS)
+        try:
+            hours = int(raw)
+        except (TypeError, ValueError):
+            hours = 0
+        if not 1 <= hours <= 24 * 90:
+            return Response(
+                {"hours": ["Debe ser un entero entre 1 y 2160."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(collect(hours=hours))
