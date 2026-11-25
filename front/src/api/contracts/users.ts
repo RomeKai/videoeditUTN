@@ -46,7 +46,7 @@ export const UpdateMeRequest = z
     name: z.string().min(1).max(150),
     /** Changing it asks to verify again: the new one stays in `pending_email`. */
     email: z.string().email(),
-    /** Proposed: asked together with `email`, to confirm it is the owner of the account who changes it (I1). */
+    /** Proposed: required whenever `email` changes, to confirm it is the owner of the account who changes it (I1). */
     current_password: z.string().min(1),
     tour_completed: z.boolean(),
     onboarding_use_case: OnboardingUseCase,
@@ -85,7 +85,7 @@ export const updateMe = defineEndpoint({
   request: UpdateMeRequest,
   response: Me,
   workspaceScoped: false,
-  errors: [{ status: 400, when: 'Validación por campo (email ya usado, `current_password` incorrecta).' }],
+  errors: [{ status: 400, when: 'Validación por campo: email ya usado, o `email` nuevo sin `current_password` o con una incorrecta (error en `current_password`).' }],
   backend: { status: 'proposed', gap: 2 },
   screens: ['B1', 'B2', 'J3', 'I1'],
 });

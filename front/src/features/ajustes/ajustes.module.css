@@ -486,22 +486,25 @@
     gap: 0;
   }
   .side {
-    display: contents;
+    flex-direction: column;
+    gap: 16px;
+    overflow: visible;
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+  .content + .side {
+    margin-top: 16px;
   }
   .sideItem {
     height: auto;
     min-height: 64px;
     gap: 12px;
     padding: 10px 12px 10px 16px;
-    margin-top: 16px;
     border: 1px solid var(--border);
     border-radius: var(--r-md);
     background: var(--surface);
     color: var(--fg);
     white-space: normal;
-  }
-  .sideItem:first-child {
-    margin-top: 0;
   }
   .sideItem > svg:first-child {
     color: var(--fg-muted);

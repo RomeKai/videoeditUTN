@@ -11,7 +11,7 @@ import { secondsForTokens } from '@/lib/pricing';
 import { LoadError } from '@/shell/LoadError';
 import { usePermissions, useSession } from '@/shell/session';
 import { Avatar, Badge, Banner, Button, Card, Icon, Skeleton, SkeletonText } from '@/ui';
-import { KindBadge, MovementAmount, totalOf } from './movements';
+import { KindBadge, MovementAmount, movementConcept, totalOf } from './movements';
 import { monthKey, monthName, monthTitle, shiftMonth } from './period';
 import { UsageChart, usageTotals } from './UsageChart';
 import styles from './uso.module.css';
@@ -348,7 +348,7 @@ export function UsageOverview({ notice }: { notice?: ReactNode }) {
                             {item.project.title}
                           </Link>
                         ) : (
-                          `Compra de ${formatNumber(item.amount)} tokens`
+                          movementConcept(item)
                         )}
                       </span>
                       <span className={styles.mkind}>

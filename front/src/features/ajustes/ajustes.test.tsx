@@ -1,6 +1,9 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { http, HttpResponse, delay } from 'msw';
+import { API_URL } from '@/api/config';
+import { server } from '@/api/mocks/server';
 import { loadDb } from '@/api/mocks/state';
 import { failRead, renderScreen, startMockApi } from '../uso/test-utils';
 import { GeneralSettings } from './GeneralSettings';
@@ -72,9 +75,32 @@ describe('H1 · General', () => {
     expect(confirm).toBeDisabled();
     await user.type(within(dialog).getByRole('textbox'), 'Estudio Norte');
     expect(confirm).toBeEnabled();
+    expect(within(dialog).queryByText('Es tu único workspace')).not.toBeInTheDocument();
+    const deletedId = loadDb().workspaces.find((workspace) => workspace.name === 'Estudio Norte')?.id ?? '';
+    // A handler that answers nothing sees every request and lets the real mock respond.
+    const requests: Array<{ method: string; url: string; workspace: string | null }> = [];
+    server.use(
+      http.all('*', ({ request }) => {
+        requests.push({ method: request.method, url: request.url, workspace: request.headers.get('X-Workspace-Id') });
+      }),
+    );
     await user.click(confirm);
     await waitFor(() => expect(loadDb().workspaces.some((workspace) => workspace.name === 'Estudio Norte')).toBe(false));
     await waitFor(() => expect(navigation.replace).toHaveBeenCalledWith('/proyectos'));
+    // Pasa al otro workspace de Lucía y no vuelve a pedir nada del borrado.
+    expect(await screen.findByLabelText('Nombre del workspace')).toHaveValue('Canal de Martín');
+    const afterDelete = requests.slice(requests.findIndex((request) => request.method === 'DELETE') + 1);
+    expect(requests.some((request) => request.method === 'DELETE')).toBe(true);
+    expect(afterDelete.length).toBeGreaterThan(0);
+    expect(afterDelete.filter((request) => request.url.includes(deletedId) || request.workspace === deletedId)).toEqual([]);
+  });
+
+  it('borrar el único workspace lo avisa antes', async () => {
+    const user = userEvent.setup();
+    renderScreen(<GeneralSettings />, { scenario: 'usuario-nuevo' });
+    await user.click(await screen.findByRole('button', { name: 'Borrar el workspace…' }));
+    const dialog = await screen.findByRole('alertdialog', { name: '¿Borrar Mi Espacio?' });
+    expect(within(dialog).getByText('Es tu único workspace')).toBeInTheDocument();
   });
 
   it('transferir ofrece a los demás miembros activos', async () => {
@@ -83,9 +109,15 @@ describe('H1 · General', () => {
     await user.click(await screen.findByRole('button', { name: 'Transferir…' }));
     const dialog = await screen.findByRole('dialog', { name: 'Transferir Estudio Norte' });
     const select = await within(dialog).findByLabelText('Nuevo dueño');
-    expect(within(select).getAllByRole('option').map((option) => option.textContent)).toEqual(['Martín Sosa (Admin)', 'Carla Ruiz (Editor)', 'Diego Paz (Lector)']);
+    expect(within(select).getAllByRole('option').map((option) => option.textContent)).toEqual(['Elegí a alguien', 'Martín Sosa (Admin)', 'Carla Ruiz (Editor)', 'Diego Paz (Lector)']);
+    // Nadie viene elegido: hasta elegir no se puede seguir.
+    expect(select).toHaveValue('');
+    expect(within(dialog).getByRole('button', { name: 'Transferir el workspace' })).toBeDisabled();
     await user.selectOptions(select, 'Carla Ruiz (Editor)');
     await user.click(within(dialog).getByRole('button', { name: 'Transferir el workspace' }));
+    const confirm = await screen.findByRole('alertdialog', { name: '¿Transferir Estudio Norte a Carla Ruiz?' });
+    expect(loadDb().workspaces[0]?.owner).not.toBe(loadDb().users.find((item) => item.name === 'Carla Ruiz')?.id);
+    await user.click(within(confirm).getByRole('button', { name: 'Sí, transferir' }));
     expect(await screen.findByText(/Carla Ruiz es ahora la persona dueña de Estudio Norte/)).toBeInTheDocument();
     // Ya no es la dueña: la zona de peligro deja de mostrarse.
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Zona de peligro' })).not.toBeInTheDocument());
@@ -350,5 +382,61 @@ describe('errores de carga: banner con Reintentar', () => {
     restore();
     await user.click(within(alert).getByRole('button', { name: 'Reintentar' }));
     expect(await screen.findAllByRole('switch')).toHaveLength(5);
+  });
+});
+
+describe('I2 · respuestas fuera de orden', () => {
+  it('el interruptor queda como el último clic aunque la primera respuesta llegue después', async () => {
+    const user = userEvent.setup();
+    const all = { project_ready: true, render_finished: true, project_failed: true, post_failed: true, low_balance: true };
+    let stored = { ...all };
+    let calls = 0;
+    server.use(
+      http.get(`${API_URL}/api/v1/me/notification-preferences/`, () => HttpResponse.json(stored)),
+      http.patch(`${API_URL}/api/v1/me/notification-preferences/`, async ({ request }) => {
+        calls += 1;
+        const turn = calls;
+        const body = (await request.json()) as Partial<typeof all>;
+        // The server applies them in order; only the first answer travels slowly.
+        stored = { ...stored, ...body };
+        const snapshot = { ...stored };
+        if (turn === 1) await delay(250);
+        return HttpResponse.json(snapshot);
+      }),
+    );
+    renderScreen(<NotificationsScreen />);
+    const toggle = await screen.findByRole('switch', { name: 'Email: El render terminó' });
+    await user.click(toggle); // off (slow answer)
+    await user.click(toggle); // on (fast answer)
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    await waitFor(() => expect(calls).toBe(2));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(screen.queryByText(/Ya no te avisamos por email cuando termina un render/)).not.toBeInTheDocument();
+    expect(await screen.findByText('Guardado. Te avisamos por email cuando termina un render.')).toBeInTheDocument();
+  });
+});
+
+describe('M10 · orden en el teléfono', () => {
+  it('el contenido de la sección abierta va en el documento justo después de su fila', async () => {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({ matches: query.includes('max-width: 639px'), media: query, onchange: null, addEventListener: () => undefined, removeEventListener: () => undefined, addListener: () => undefined, removeListener: () => undefined, dispatchEvent: () => false })) as typeof window.matchMedia;
+    try {
+      navigation.pathname = '/ajustes/miembros';
+      const view = renderScreen(
+        <SettingsShell>
+          <button type="button">contenido</button>
+        </SettingsShell>,
+      );
+      await screen.findByRole('link', { name: /Redes sociales/ });
+      const order = [...view.container.querySelectorAll('a, button')].map((node) => node.textContent ?? '');
+      const at = (text: string) => order.findIndex((item) => item.includes(text));
+      expect(at('General')).toBeLessThan(at('Miembros'));
+      expect(at('Miembros')).toBeLessThan(at('contenido'));
+      expect(at('contenido')).toBeLessThan(at('Redes sociales'));
+      expect(screen.getByRole('navigation', { name: 'Secciones de ajustes, continuación' })).toBeInTheDocument();
+    } finally {
+      window.matchMedia = original;
+    }
   });
 });

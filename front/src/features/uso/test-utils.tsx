@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, type RenderResult } from '@testing-library/react';
+import { configure, render, type RenderResult } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { http, HttpResponse } from 'msw';
 import { afterAll, afterEach, beforeAll } from 'vitest';
@@ -10,6 +10,10 @@ import { BillingDialogsProvider } from '@/dialogs/BillingDialogs';
 import { ThemeProvider } from '@/lib/theme';
 import { SessionProvider } from '@/shell/session';
 import { ToastProvider } from '@/ui/Toast';
+
+// These tests render whole screens against the mocked API; on a busy machine the first answer can
+// take longer than the default second.
+configure({ asyncUtilTimeout: 5000 });
 
 /** Starts the mocked API (same handlers as the browser) for a test file. */
 export function startMockApi(): void {

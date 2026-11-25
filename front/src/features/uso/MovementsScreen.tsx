@@ -87,7 +87,15 @@ function Movements() {
   const exporter = useExportTransactions();
 
   const totals = movements.data?.totals;
-  const scope = monthFilter ? monthLong(monthFilter) : 'todos los meses';
+  // While the next month loads the previous rows stay on screen: the labels keep naming the month of
+  // what is shown and change together with the data.
+  const [shownMonth, setShownMonth] = useState<string | undefined>(undefined);
+  const fresh = Boolean(movements.data) && !movements.isPlaceholderData;
+  useEffect(() => {
+    if (fresh) setShownMonth(monthFilter);
+  }, [fresh, monthFilter]);
+  const scopeMonth = fresh ? monthFilter : shownMonth;
+  const scope = scopeMonth ? monthLong(scopeMonth) : 'todos los meses';
   const options: Array<FilterOption<KindFilter>> = [
     { value: 'all', label: 'Todos', count: totals ? countAll(totals) : undefined },
     ...KIND_ORDER.map((value) => ({ value, label: KIND_META[value].plural, count: totals ? totalOf(totals, value).count : undefined })),

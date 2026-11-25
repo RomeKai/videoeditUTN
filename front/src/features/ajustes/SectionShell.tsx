@@ -2,8 +2,9 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import type { CSSProperties, ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { useMembers, useSocialAccounts } from '@/api/hooks';
+import { useIsMobile } from '@/lib/hooks';
 import { PROFILE_NAV, SETTINGS_NAV } from '@/shell/nav';
 import { usePermissions, useSession } from '@/shell/session';
 import { Avatar, Icon, PageHead, type IconName } from '@/ui';
@@ -26,40 +27,52 @@ function isCurrent(pathname: string, item: SectionItem): boolean {
 /**
  * Sections at the left and the content in a 720 px column (H and I screens).
  * Under 640 px it becomes the list of M10: each section is a row with its
- * summary and the open one shows its content right below (CSS `order`), so the
- * routes stay the same on every screen size.
+ * summary and the open one shows its content right below, in the document too,
+ * so the routes stay the same on every screen size.
  */
 export function SectionShell({ ariaLabel, items, children }: { ariaLabel: string; items: SectionItem[]; children: ReactNode }) {
   const pathname = (usePathname() ?? '').replace(/\/+$/, '');
+  const mobile = useIsMobile();
   const active = Math.max(
     0,
     items.findIndex((item) => isCurrent(pathname, item)),
   );
+  const link = (item: SectionItem) => (
+    <Link key={item.href} href={item.href} className={styles.sideItem} aria-current={isCurrent(pathname, item) ? 'page' : undefined}>
+      <Icon name={item.icon} />
+      <span className={styles.sideText}>
+        <span className={styles.sideTitle}>{item.label}</span>
+        {item.summary ? <span className={styles.sideSummary}>{item.summary}</span> : null}
+      </span>
+      <span className={styles.chev} aria-hidden="true">
+        <Icon name="chevron-down" />
+      </span>
+    </Link>
+  );
+  if (mobile) {
+    // The document follows what is seen, so focus and reading order do too: the rows up to the
+    // open section, its content, then the rest of the rows.
+    const after = items.slice(active + 1);
+    return (
+      <div className={styles.split}>
+        <nav className={styles.side} aria-label={ariaLabel}>
+          {items.slice(0, active + 1).map(link)}
+        </nav>
+        <div className={styles.content}>{children}</div>
+        {after.length > 0 ? (
+          <nav className={styles.side} aria-label={`${ariaLabel}, continuación`}>
+            {after.map(link)}
+          </nav>
+        ) : null}
+      </div>
+    );
+  }
   return (
     <div className={styles.split}>
       <nav className={styles.side} aria-label={ariaLabel}>
-        {items.map((item, index) => (
-          <Link
-            key={item.href}
-            href={item.href}
-            className={styles.sideItem}
-            style={{ order: index * 2 } as CSSProperties}
-            aria-current={isCurrent(pathname, item) ? 'page' : undefined}
-          >
-            <Icon name={item.icon} />
-            <span className={styles.sideText}>
-              <span className={styles.sideTitle}>{item.label}</span>
-              {item.summary ? <span className={styles.sideSummary}>{item.summary}</span> : null}
-            </span>
-            <span className={styles.chev} aria-hidden="true">
-              <Icon name="chevron-down" />
-            </span>
-          </Link>
-        ))}
+        {items.map(link)}
       </nav>
-      <div className={styles.content} style={{ order: active * 2 + 1 } as CSSProperties}>
-        {children}
-      </div>
+      <div className={styles.content}>{children}</div>
     </div>
   );
 }

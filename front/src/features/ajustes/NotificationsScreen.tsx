@@ -1,8 +1,10 @@
 'use client';
 
-import { useId, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { useId, useRef, useState } from 'react';
 import type { NotificationPreferences } from '@/api/contracts/users';
 import { useNotificationPreferences, useUpdateNotificationPreferences } from '@/api/hooks';
+import { keys } from '@/api/query';
 import { cx } from '@/lib/cx';
 import { errorMessage } from '@/lib/error-messages';
 import { LoadError } from '@/shell/LoadError';
@@ -33,24 +35,43 @@ export function NotificationsScreen() {
   const { me } = useSession();
   const preferences = useNotificationPreferences();
   const update = useUpdateNotificationPreferences();
+  const queryClient = useQueryClient();
   // What the user just flipped, shown right away while the request is in flight.
   const [optimistic, setOptimistic] = useState<Partial<NotificationPreferences>>({});
 
+  // One counter per switch: only the answer to the last click of a switch may touch it, whatever
+  // order the answers arrive in.
+  const sequence = useRef<Partial<Record<PreferenceKey, number>>>({});
+  const inFlight = useRef(0);
+
   const toggle = (key: PreferenceKey, when: string, checked: boolean) => {
+    const turn = (sequence.current[key] ?? 0) + 1;
+    sequence.current[key] = turn;
+    const latest = () => sequence.current[key] === turn;
     setOptimistic((current) => ({ ...current, [key]: checked }));
-    update.mutate(
-      { [key]: checked },
-      {
-        onSuccess: () => toast.success(checked ? `Guardado. Te avisamos por email cuando ${when}.` : `Guardado. Ya no te avisamos por email cuando ${when}.`),
-        onError: (error) => toast.error(errorMessage(error, 'No pudimos guardar el cambio')),
-        onSettled: () =>
-          setOptimistic((current) => {
-            const { [key]: _done, ...rest } = current;
-            void _done;
-            return rest;
-          }),
-      },
-    );
+    inFlight.current += 1;
+    // mutateAsync, not mutate's callbacks: those only run for the last call, and two switches can be in flight.
+    update
+      .mutateAsync({ [key]: checked })
+      .then(
+        () => {
+          if (latest()) toast.success(checked ? `Guardado. Te avisamos por email cuando ${when}.` : `Guardado. Ya no te avisamos por email cuando ${when}.`);
+        },
+        (error: unknown) => {
+          if (latest()) toast.error(errorMessage(error, 'No pudimos guardar el cambio'));
+        },
+      )
+      .then(() => {
+        inFlight.current -= 1;
+        // The hook writes each answer to the cache as it arrives, so a slow, older answer can
+        // overwrite a newer one. Once nothing is in flight, ask for the truth and only then stop
+        // showing what the user chose.
+        if (inFlight.current > 0) return undefined;
+        return queryClient.invalidateQueries({ queryKey: keys.notificationPreferences }).finally(() => {
+          if (inFlight.current === 0) setOptimistic({});
+        });
+      })
+      .catch(() => undefined);
   };
 
   return (

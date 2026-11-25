@@ -1,31 +1,37 @@
 'use client';
 
+import { useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import { useEffect, useId, useState, type FormEvent } from 'react';
 import { ApiError } from '@/api/errors';
 import { useDeleteWorkspace, useMembers, useTransferWorkspace, useUpdateWorkspace } from '@/api/hooks';
+import { keys } from '@/api/query';
 import { ConfirmDialog } from '@/dialogs';
 import { cx } from '@/lib/cx';
 import { errorMessage } from '@/lib/error-messages';
 import { useBeforeUnload } from '@/lib/hooks';
 import { ROLE_LABEL } from '@/lib/permissions';
 import { usePermissions, useSession } from '@/shell/session';
-import { Avatar, Button, Dialog, Field, Input, Select, useToast } from '@/ui';
+import { Avatar, Banner, Button, Dialog, Field, Input, Select, useToast } from '@/ui';
 import styles from './ajustes.module.css';
 
-const NAME_MAX = 48;
+/** `workspaces.update` accepts up to 100 characters. */
+const NAME_MAX = 100;
 
 function TransferDialog({ open, onClose, workspaceId, workspaceName }: { open: boolean; onClose: () => void; workspaceId: string; workspaceName: string }) {
   const toast = useToast();
   const { me } = useSession();
   const members = useMembers(workspaceId, { enabled: open });
   const transfer = useTransferWorkspace(workspaceId);
+  // Nobody is preselected: handing the workspace over has to be a choice, and then a confirmation.
   const [chosen, setChosen] = useState('');
+  const [confirming, setConfirming] = useState(false);
   const candidates = (members.data?.members ?? []).filter((member) => member.status === 'active' && member.user && member.user.id !== me?.id);
-  const selected = candidates.find((member) => member.user?.id === chosen) ?? candidates[0];
+  const selected = candidates.find((member) => member.user?.id === chosen);
   useEffect(() => {
     if (!open) {
       setChosen('');
+      setConfirming(false);
       transfer.reset();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -42,19 +48,47 @@ function TransferDialog({ open, onClose, workspaceId, workspaceName }: { open: b
     });
   };
 
+  if (confirming && selected?.user) {
+    return (
+      <Dialog
+        open={open}
+        onClose={transfer.isPending ? () => undefined : onClose}
+        dismissable={!transfer.isPending}
+        role="alertdialog"
+        title={`¿Transferir ${workspaceName} a ${selected.user.name}?`}
+        description={`${selected.user.name} pasa a ser la persona dueña ahora mismo. Vos quedás como admin y solo ${selected.user.name.split(' ')[0]} va a poder devolvértelo.`}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setConfirming(false)} disabled={transfer.isPending} data-autofocus>
+              Volver
+            </Button>
+            <Button variant="primary" onClick={submit} loading={transfer.isPending}>
+              Sí, transferir
+            </Button>
+          </>
+        }
+      >
+        {transfer.isError ? (
+          <p className="t-small" style={{ color: 'var(--err)' }} role="alert">
+            {errorMessage(transfer.error, 'No pudimos transferir el workspace.')}
+          </p>
+        ) : null}
+      </Dialog>
+    );
+  }
+
   return (
     <Dialog
       open={open}
-      onClose={transfer.isPending ? () => undefined : onClose}
-      dismissable={!transfer.isPending}
+      onClose={onClose}
       title={`Transferir ${workspaceName}`}
       description="La persona que elijas pasa a ser la dueña. Vos quedás como admin y dejás de poder borrar o transferir el workspace."
       footer={
         <>
-          <Button variant="ghost" onClick={onClose} disabled={transfer.isPending}>
+          <Button variant="ghost" onClick={onClose}>
             Cancelar
           </Button>
-          <Button variant="primary" onClick={submit} loading={transfer.isPending} disabled={!selected}>
+          <Button variant="primary" onClick={() => setConfirming(true)} disabled={!selected}>
             Transferir el workspace
           </Button>
         </>
@@ -71,8 +105,8 @@ function TransferDialog({ open, onClose, workspaceId, workspaceName }: { open: b
             : 'Todavía no hay nadie más en el workspace. Invitá a alguien desde Miembros y, cuando acepte, vas a poder transferírselo.'}
         </p>
       ) : (
-        <Field label="Nuevo dueño" error={transfer.isError ? errorMessage(transfer.error, 'No pudimos transferir el workspace.') : undefined}>
-          <Select value={selected?.user?.id ?? ''} onChange={(event) => setChosen(event.target.value)} data-autofocus>
+        <Field label="Nuevo dueño">
+          <Select value={chosen} onChange={(event) => setChosen(event.target.value)} placeholder="Elegí a alguien" data-autofocus>
             {candidates.map((member) => (
               <option key={member.id} value={member.user?.id}>
                 {member.user?.name} ({ROLE_LABEL[member.role]})
@@ -103,6 +137,8 @@ export function GeneralSettings() {
   const [dialog, setDialog] = useState<'transfer' | 'delete' | null>(null);
   useEffect(() => setName(saved), [saved]);
 
+  const queryClient = useQueryClient();
+  const next = me?.workspaces.find((item) => item.id !== workspaceId);
   const canRename = can('workspace.rename');
   const owner = can('workspace.delete');
   const trimmed = name.trim();
@@ -124,13 +160,11 @@ export function GeneralSettings() {
       onSuccess: async () => {
         setDialog(null);
         toast.success(`Borraste ${saved}.`);
-        const next = me?.workspaces.find((item) => item.id !== workspaceId);
-        if (next) {
-          await switchWorkspace(next.id).catch(() => undefined);
-          router.replace('/proyectos');
-        } else {
-          window.location.assign('/proyectos');
-        }
+        // The hook already dropped the deleted workspace's queries. Move to another workspace first
+        // (that reloads everything for it); with none left, `/me` alone leads to the empty state.
+        if (next) await switchWorkspace(next.id).catch(() => undefined);
+        else await queryClient.invalidateQueries({ queryKey: keys.me });
+        router.replace('/proyectos');
       },
     });
   };
@@ -249,6 +283,11 @@ export function GeneralSettings() {
             }}
             error={remove.isError ? errorMessage(remove.error, 'No pudimos borrar el workspace.') : undefined}
           >
+            {next ? null : (
+              <Banner tone="warn" title="Es tu único workspace">
+                Después de borrarlo no vas a tener dónde trabajar hasta que alguien te invite al suyo.
+              </Banner>
+            )}
             <p className="t-small subtle">El botón se activa cuando el nombre coincide.</p>
           </ConfirmDialog>
         </section>

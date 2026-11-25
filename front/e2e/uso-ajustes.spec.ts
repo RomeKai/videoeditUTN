@@ -1,6 +1,15 @@
 import { expect, test } from '@playwright/test';
 import { expectClean, settle, useScenario, watch } from './helpers';
 
+/**
+ * These flows must not depend on the day they run: seeded charges are at least a day old, so on
+ * the 1st of a month they belong to the previous one. `E2E_NOW=2026-12-01T04:00:00Z` runs the
+ * whole file with the browser's clock starting at that moment (time keeps flowing from there).
+ */
+test.beforeEach(async ({ page }) => {
+  if (process.env.E2E_NOW) await page.clock.install({ time: new Date(process.env.E2E_NOW) });
+});
+
 test.describe('Uso y facturación', () => {
   test('comprar tokens: paquete → checkout → compra acreditada y saldo actualizado', async ({ page }) => {
     await useScenario(page, 'estudio-norte');
@@ -24,7 +33,13 @@ test.describe('Uso y facturación', () => {
     await expect(page.getByText('Estamos confirmando tu pago.')).toBeVisible();
     await expect(page.getByText('Compra acreditada:').first()).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole('link', { name: /Saldo: 9\.860 tokens disponibles/ })).toBeVisible();
-    await page.getByRole('link', { name: 'Ver movimiento' }).click();
+    // Reloading the result does not announce the same purchase again.
+    await page.reload();
+    await settle(page);
+    await expect(page.getByRole('region', { name: 'Resumen de tokens y plan' }).getByText('9.860')).toBeVisible();
+    await expect(page.getByRole('navigation', { name: 'Uso y facturación' }).getByRole('link', { name: 'Resumen' })).toHaveAttribute('aria-current', 'page');
+    await expect(page.getByRole('link', { name: 'Ver movimiento' })).toHaveCount(0);
+    await page.getByRole('navigation', { name: 'Uso y facturación' }).getByRole('link', { name: 'Movimientos' }).click();
     await expect(page).toHaveURL(/\/uso\/movimientos$/);
     await settle(page);
     await expect(page.getByRole('table', { name: /Movimientos de/ }).getByText('Compra de 5.000 tokens').first()).toBeVisible();
@@ -43,7 +58,8 @@ test.describe('Uso y facturación', () => {
     await expect(alert).toContainText('Tu saldo sigue en 4.860 tokens.');
     await expect(page.getByRole('link', { name: /Saldo: 4\.860 tokens disponibles/ })).toBeVisible();
     await alert.getByRole('link', { name: 'Reintentar' }).click();
-    await expect(page).toHaveURL(/\/uso\/comprar$/);
+    await expect(page).toHaveURL(/\/uso\/comprar\?tokens=5000$/);
+    await expect(page.getByRole('radiogroup').getByRole('radio').nth(1)).toHaveAttribute('aria-checked', 'true');
   });
 
   test('movimientos: filtrar por tipo y cambiar de mes', async ({ page }) => {
@@ -51,33 +67,71 @@ test.describe('Uso y facturación', () => {
     const problems = watch(page);
     await page.goto('/uso/movimientos');
     await settle(page);
-    const table = page.getByRole('table', { name: /Movimientos de/ });
+    // All months first: which month a seeded charge falls in depends on the day the test runs.
+    await page.getByLabel('Filtrar por mes').selectOption({ label: 'Todos los meses' });
+    const table = page.getByRole('table', { name: 'Movimientos de todos los meses' });
     await expect(table.getByText('Cobrado').first()).toBeVisible();
+    await expect(page.getByText(/movimientos? en todos los meses/)).toBeVisible();
     await page.getByRole('group', { name: 'Filtrar por tipo' }).getByRole('button', { name: /^Reservados/ }).click();
     await expect(table.getByText('Cobrado')).toHaveCount(0);
     await expect(table.getByText('Se cobra al terminar').first()).toBeVisible();
-    await page.getByLabel('Filtrar por mes').selectOption({ label: 'Todos los meses' });
-    await expect(page.getByText(/movimientos? en todos los meses/)).toBeVisible();
     const download = page.waitForEvent('download');
     await page.getByRole('button', { name: 'Exportar CSV' }).click();
     expect((await download).suggestedFilename()).toBe('movimientos-todos.csv');
     expectClean(problems, 'Movimientos');
   });
 
-  test('planes: bajar muestra qué se pierde y queda programado', async ({ page }) => {
+  test('planes: bajar muestra qué se pierde, queda programado y se puede cancelar', async ({ page }) => {
+    await useScenario(page, 'plan-estudio');
+    const problems = watch(page);
+    await page.goto('/uso/planes');
+    await settle(page);
+    await expect(page.getByRole('article', { name: 'Plan Estudio, tu plan' })).toBeVisible();
+    await page.getByRole('button', { name: 'Bajar a Pro' }).click();
+    const dialog = page.getByRole('alertdialog', { name: '¿Bajar a Pro?' });
+    await expect(dialog.getByText('Miembros: 5 (hoy 15)')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Bajar a Pro' }).click();
+    await expect(page.getByRole('article', { name: /^Plan Pro/ }).getByText('Próximo plan')).toBeVisible();
+    await page.getByRole('link', { name: 'Resumen' }).click();
+    await expect(page.getByRole('region', { name: 'Plan actual' })).toContainText('Pasa a Pro el');
+    await page.getByRole('region', { name: 'Plan actual' }).getByRole('link', { name: 'Cambiar plan' }).click();
+    await page.getByRole('button', { name: 'Seguir con Estudio' }).click();
+    await expect(page.getByText('Listo: seguís con el plan Estudio.')).toBeVisible();
+    await expect(page.getByText('Próximo plan')).toHaveCount(0);
+    expectClean(problems, 'Planes');
+  });
+
+  test('planes: con menos lugares que los ocupados no deja bajar', async ({ page }) => {
     await useScenario(page, 'estudio-norte');
     const problems = watch(page);
     await page.goto('/uso/planes');
     await settle(page);
-    await expect(page.getByRole('article', { name: 'Plan Pro, tu plan' })).toBeVisible();
     await page.getByRole('button', { name: 'Bajar a Creador' }).click();
-    const dialog = page.getByRole('alertdialog', { name: '¿Bajar a Creador?' });
-    await expect(dialog.getByText('Publicar en varias redes a la vez')).toBeVisible();
-    await dialog.getByRole('button', { name: 'Bajar a Creador' }).click();
-    await expect(page.getByRole('article', { name: 'Plan Creador' }).getByText('Próximo plan')).toBeVisible();
-    await page.getByRole('link', { name: 'Resumen' }).click();
-    await expect(page.getByRole('region', { name: 'Plan actual' })).toContainText('Pasa a Creador el');
-    expectClean(problems, 'Planes');
+    const dialog = page.getByRole('alertdialog', { name: 'Todavía no podés bajar a Creador' });
+    await expect(dialog).toContainText('Hoy ocupás 4 lugares');
+    await dialog.getByRole('link', { name: 'Ir a Miembros' }).click();
+    await expect(page).toHaveURL(/\/ajustes\/miembros$/);
+    expectClean(problems, 'Planes con lugares de más');
+  });
+
+  test('planes: subir con pago pasa por el checkout y al volver el plan ya cambió', async ({ page }) => {
+    await useScenario(page, 'plan-con-checkout');
+    const problems = watch(page);
+    await page.goto('/uso/planes');
+    await settle(page);
+    await page.getByRole('button', { name: 'Subir a Estudio' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Subir a Estudio' }).click();
+    await expect(page).toHaveURL(/\/dev\/checkout\?compra=/);
+    await expect(page.getByText('Plan Estudio')).toBeVisible();
+    await page.getByRole('button', { name: 'Pagar', exact: true }).click();
+    await expect(page).toHaveURL(/\/uso\/planes\?compra=/);
+    await expect(page.getByText('Listo: ya estás en el plan Estudio')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole('article', { name: 'Plan Estudio, tu plan' })).toBeVisible();
+    expectClean(problems, 'Planes con checkout');
+
+    // And a payment that does not go through leaves the plan as it was.
+    await page.getByRole('button', { name: 'Cerrar aviso' }).click();
+    await expect(page).toHaveURL(/\/uso\/planes$/);
   });
 
   test('rol Editor: solo el saldo, con las otras pestañas deshabilitadas (R1)', async ({ page }) => {
@@ -90,8 +144,10 @@ test.describe('Uso y facturación', () => {
     await expect(tabs.locator('[aria-disabled="true"]')).toHaveCount(3);
     await expect(page.getByRole('button', { name: 'Comprar tokens' })).toHaveAttribute('aria-disabled', 'true');
     await expect(page.getByText('Martín Sosa')).toBeVisible();
-    await page.goto('/uso/movimientos');
-    await expect(page.getByRole('heading', { name: /No tenés acceso a esto/ })).toBeVisible();
+    for (const path of ['/uso/movimientos', '/uso/planes', '/uso/comprar']) {
+      await page.goto(path);
+      await expect(page.getByRole('heading', { name: /No tenés acceso a esto/ })).toBeVisible();
+    }
   });
 
   test('saldo bajo y teléfono: aviso arriba y tarjetas apiladas (M9)', async ({ page }) => {
@@ -194,17 +250,21 @@ test.describe('Ajustes y cuenta', () => {
     const problems = watch(page);
     await page.goto('/ajustes');
     await settle(page);
-    const nav = page.getByRole('navigation', { name: 'Secciones de ajustes' });
-    await expect(nav.getByRole('link', { name: /Miembros/ })).toContainText('4 de 5 miembros · 1 invitación pendiente');
-    await nav.getByRole('link', { name: /Miembros/ }).click();
+    const membersRow = page.getByRole('link', { name: /Miembros/ }).filter({ hasText: 'invitación pendiente' });
+    await expect(membersRow).toContainText('4 de 5 miembros · 1 invitación pendiente');
+    await membersRow.click();
     await expect(page).toHaveURL(/\/ajustes\/miembros$/);
     await settle(page);
-    const members = page.getByRole('link', { name: /Miembros/ }).last();
-    const general = page.getByLabel('Secciones de ajustes').getByRole('link', { name: /General/ });
+    const general = page.getByRole('link', { name: /General/ });
+    const networks = page.getByRole('link', { name: /Redes sociales/ });
     const list = page.getByRole('list').filter({ hasText: 'juan@estudionorte.com' });
     await expect(list).toBeVisible();
-    const [generalBox, membersBox, listBox] = await Promise.all([general.boundingBox(), members.boundingBox(), list.boundingBox()]);
-    expect(generalBox && membersBox && listBox && generalBox.y < membersBox.y && membersBox.y < listBox.y).toBe(true);
+    const [generalBox, membersBox, listBox, networksBox] = await Promise.all([general.boundingBox(), membersRow.boundingBox(), list.boundingBox(), networks.boundingBox()]);
+    expect(generalBox && membersBox && listBox && networksBox && generalBox.y < membersBox.y && membersBox.y < listBox.y && listBox.y < networksBox.y).toBe(true);
+    // Focus follows what is seen: from the open row into its content, not to the next row.
+    await membersRow.focus();
+    await page.keyboard.press('Tab');
+    expect(await page.evaluate(() => document.activeElement?.closest('nav') === null)).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     expectClean(problems, 'Ajustes en el teléfono');
   });

@@ -7,6 +7,8 @@ import { usePermissions, useSession } from '@/shell/session';
 import { Icon, PageHead, Tooltip } from '@/ui';
 import styles from './uso.module.css';
 
+const RESULT_PATH = '/uso/comprar/resultado';
+
 /**
  * Title and sub-tabs of Uso y facturación. Dueño and Admin get the four tabs;
  * Editor and Lector see only the balance, so the other tabs stay visible but
@@ -23,7 +25,9 @@ export function UsageHeader() {
       <PageHead title="Uso y facturación" description={admin ? `Tokens, movimientos y plan de ${name}.` : `El saldo de tokens de ${name}.`} />
       <nav className={styles.subtabs} aria-label="Uso y facturación">
         {USAGE_TABS.map((tab) => {
-          const current = tab.exact ? pathname === tab.href : pathname === tab.href || pathname.startsWith(`${tab.href}/`);
+          // The result of a purchase is the Resumen with the outcome on top (G5), not a step of Comprar tokens.
+          const onResult = pathname === RESULT_PATH;
+          const current = tab.exact ? pathname === tab.href || onResult : !onResult && (pathname === tab.href || pathname.startsWith(`${tab.href}/`));
           if (!admin && !tab.exact) {
             return (
               <Tooltip key={tab.href} content={reason} side="bottom" className={styles.subtabWrap}>

@@ -12,6 +12,26 @@ import { Banner, Button, Icon, IconButton, Spinner, useToast } from '@/ui';
 import { UsageOverview } from './UsageOverview';
 import styles from './uso.module.css';
 
+const ANNOUNCED_KEY = 'oc.uso.compras-avisadas';
+
+/** Purchases whose outcome was already announced in this browser session: a reload must not toast again. */
+function wasAnnounced(id: string): boolean {
+  try {
+    return (JSON.parse(window.sessionStorage.getItem(ANNOUNCED_KEY) ?? '[]') as string[]).includes(id);
+  } catch {
+    return false;
+  }
+}
+
+function markAnnounced(id: string): void {
+  try {
+    const ids = JSON.parse(window.sessionStorage.getItem(ANNOUNCED_KEY) ?? '[]') as string[];
+    window.sessionStorage.setItem(ANNOUNCED_KEY, JSON.stringify([...ids.filter((item) => item !== id), id].slice(-20)));
+  } catch {
+    // Private mode: the worst case is a repeated toast.
+  }
+}
+
 function PurchaseNotice() {
   const search = useSearchParams();
   const router = useRouter();
@@ -31,7 +51,8 @@ function PurchaseNotice() {
     // The balance, the movements and the usage changed (or the pending row went away).
     void queryClient.invalidateQueries({ queryKey: keys.billing.all });
     void queryClient.invalidateQueries({ queryKey: keys.me });
-    if (status === 'approved') {
+    if (status === 'approved' && !wasAnnounced(id)) {
+      markAnnounced(id);
       toast.success(
         <>
           Compra acreditada: <span className="num">+{formatNumber(tokens, 0)} tokens</span>
@@ -79,6 +100,8 @@ function PurchaseNotice() {
     );
   }
   // Rejected: the balance did not change. The notice stays until it is closed or retried.
+  // Both actions go back to Comprar tokens with the same amount chosen.
+  const retryHref = tokens > 0 ? `/uso/comprar?tokens=${tokens}` : '/uso/comprar';
   return (
     <div className={styles.payFail} role="alert">
       <span className={styles.payFailIco}>
@@ -101,10 +124,10 @@ function PurchaseNotice() {
         </p>
       </div>
       <div className={styles.payFailActions}>
-        <Button size="sm" variant="secondary" href="/uso/comprar">
+        <Button size="sm" variant="secondary" href={retryHref}>
           Elegir otro medio
         </Button>
-        <Button size="sm" variant="primary" href="/uso/comprar">
+        <Button size="sm" variant="primary" href={retryHref}>
           Reintentar
         </Button>
         <IconButton

@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Plan } from '@/api/contracts/billing';
 import { loadDb, saveDb } from '@/api/mocks/state';
 import { BuyTokensScreen, parseTokenAmount } from './BuyTokensScreen';
@@ -30,7 +30,19 @@ vi.mock('@/lib/download', () => download);
 
 startMockApi();
 
+/** The seed is relative to "now": mid-month keeps the seeded charges (1 to 20 days old) inside the current month. */
+const MID_MONTH = new Date(2026, 10, 15, 12, 0, 0);
+/** The first hour of a month: everything seeded more than an hour ago belongs to the previous one. */
+const FIRST_OF_MONTH = new Date(2026, 11, 1, 1, 0, 0);
+const pinClock = (date: Date) => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(date);
+};
+
+afterEach(() => vi.useRealTimers());
+
 beforeEach(() => {
+  pinClock(MID_MONTH);
   navigation.pathname = '/uso';
   navigation.search = '';
   vi.mocked(leaveTo).mockClear();
@@ -89,7 +101,13 @@ describe('utilidades de Uso', () => {
   it('lee la cantidad libre de tokens con o sin puntos', () => {
     expect(parseTokenAmount('2.500')).toBe(2500);
     expect(parseTokenAmount('2500')).toBe(2500);
+    expect(parseTokenAmount('15.000')).toBe(15000);
+    expect(parseTokenAmount('1.500.000')).toBe(1500000);
     expect(parseTokenAmount('12,5')).toBeNull();
+    expect(parseTokenAmount('2.5')).toBeNull();
+    expect(parseTokenAmount('2.50')).toBeNull();
+    expect(parseTokenAmount('25.0000')).toBeNull();
+    expect(parseTokenAmount('1 000')).toBeNull();
     expect(parseTokenAmount('0')).toBeNull();
     expect(parseTokenAmount('abc')).toBeNull();
   });
@@ -126,6 +144,7 @@ describe('G1 · Resumen', () => {
     expect(within(planCard).getByText(/Incluye 10 % de descuento en tokens/)).toBeInTheDocument();
     const latest = await screen.findByRole('region', { name: 'Últimos movimientos' });
     expect((await within(latest).findAllByText('Reservado')).length).toBeGreaterThan(0);
+    expect(await within(latest).findByText('Compra de 1.000 tokens')).toBeInTheDocument();
     expect(await screen.findByRole('img', { name: /Consumo por día en/ })).toBeInTheDocument();
     expect(screen.queryByText('Te queda poco saldo')).not.toBeInTheDocument();
   });
@@ -186,7 +205,23 @@ describe('G2 · Movimientos', () => {
     expect(csv.split('\n')[0]).toBe('fecha,concepto,tipo,monto');
     expect(csv).toContain('reserved');
     expect(csv).not.toContain('charged');
+    // Lo reservado sale con el mismo signo que en la pantalla.
+    expect(csv.split('\n').slice(1).every((line) => line.split(',').pop()?.startsWith('-'))).toBe(true);
     expect(filename).toMatch(/^movimientos-\d{4}-\d{2}\.csv$/);
+  });
+
+  it('el día 1 los cobros de ayer quedan en el mes anterior y se llegan con el filtro de mes', async () => {
+    pinClock(FIRST_OF_MONTH);
+    const user = userEvent.setup();
+    renderScreen(<MovementsScreen />);
+    const filters = await screen.findByRole('group', { name: 'Filtrar por tipo' });
+    await waitFor(() => expect(within(filters).getByRole('button', { name: /^Cobrados/ })).toHaveTextContent('Cobrados0'));
+    expect(screen.getByLabelText('Filtrar por mes')).toHaveValue('2026-12');
+    await user.selectOptions(screen.getByLabelText('Filtrar por mes'), 'Todos los meses');
+    const table = await screen.findByRole('table', { name: 'Movimientos de todos los meses' });
+    expect(within(table).getAllByText('Cobrado').length).toBeGreaterThan(0);
+    await user.selectOptions(screen.getByLabelText('Filtrar por mes'), 'Noviembre 2026');
+    expect(within(await screen.findByRole('table', { name: 'Movimientos de noviembre de 2026' })).getAllByText('Cobrado').length).toBeGreaterThan(0);
   });
 
   it('sin movimientos explica qué va a aparecer', async () => {
@@ -202,23 +237,41 @@ describe('G2 · Movimientos', () => {
 });
 
 describe('G3 · Planes', () => {
-  it('marca el plan actual y, al bajar, muestra qué se pierde antes de programar el cambio', async () => {
+  it('marca el plan actual; bajar muestra qué se pierde, queda programado y se puede cancelar', async () => {
+    const user = userEvent.setup();
+    renderScreen(<PlansScreen />, { scenario: 'plan-estudio' });
+    const current = await screen.findByRole('article', { name: 'Plan Estudio, tu plan' });
+    expect(within(current).getAllByText('Tu plan').length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole('button', { name: 'Bajar a Pro' }));
+    const dialog = await screen.findByRole('alertdialog', { name: '¿Bajar a Pro?' });
+    expect(within(dialog).getByText('Videos de hasta 180 min (hoy 240 min)')).toBeInTheDocument();
+    expect(within(dialog).getByText('Miembros: 5 (hoy 15)')).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Bajar a Pro' }));
+
+    expect(await screen.findByText(/^Tu plan pasa a Pro el /, { selector: 'p' })).toBeInTheDocument();
+    expect(screen.getByRole('article', { name: 'Plan Estudio, tu plan' })).toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: /^Plan Pro/ })).getByText('Próximo plan')).toBeInTheDocument();
+    expect(loadDb().workspaces[0]?.pending_plan).not.toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Seguir con Estudio' }));
+    expect(await screen.findByText('Listo: seguís con el plan Estudio.')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('Próximo plan')).not.toBeInTheDocument());
+    expect(loadDb().workspaces[0]?.pending_plan).toBeNull();
+    expect(screen.getByRole('button', { name: 'Bajar a Pro' })).toBeInTheDocument();
+  });
+
+  it('no deja bajar a un plan con menos lugares que los ocupados', async () => {
     const user = userEvent.setup();
     renderScreen(<PlansScreen />);
-    const pro = await screen.findByRole('article', { name: 'Plan Pro, tu plan' });
-    expect(within(pro).getAllByText('Tu plan').length).toBeGreaterThan(0);
-    expect(screen.getByRole('button', { name: 'Subir a Estudio' })).toBeEnabled();
-
+    await screen.findByRole('article', { name: 'Plan Pro, tu plan' });
+    await waitFor(() => expect(loadDb().members.length).toBeGreaterThan(0));
     await user.click(screen.getByRole('button', { name: 'Bajar a Creador' }));
-    const dialog = await screen.findByRole('alertdialog', { name: '¿Bajar a Creador?' });
-    expect(within(dialog).getByText('Publicar en varias redes a la vez')).toBeInTheDocument();
-    expect(within(dialog).getByText('Miembros: 2 (hoy 5)')).toBeInTheDocument();
-    expect(await within(dialog).findByText(/Hoy ocupás 4 lugares y Creador tiene 2/)).toBeInTheDocument();
-    await user.click(within(dialog).getByRole('button', { name: 'Bajar a Creador' }));
-
-    expect(await screen.findByText(/^Tu plan pasa a Creador el /, { selector: 'p' })).toBeInTheDocument();
-    expect(screen.getByRole('article', { name: 'Plan Pro, tu plan' })).toBeInTheDocument();
-    expect(within(screen.getByRole('article', { name: 'Plan Creador' })).getByText('Próximo plan')).toBeInTheDocument();
+    const dialog = await screen.findByRole('alertdialog', { name: 'Todavía no podés bajar a Creador' });
+    expect(within(dialog).getByText(/Hoy ocupás 4 lugares, contando las invitaciones pendientes, y Creador tiene 2/)).toBeInTheDocument();
+    expect(within(dialog).getByRole('link', { name: 'Ir a Miembros' })).toHaveAttribute('href', '/ajustes/miembros');
+    expect(within(dialog).queryByRole('button', { name: 'Bajar a Creador' })).not.toBeInTheDocument();
+    expect(loadDb().workspaces[0]?.pending_plan).toBeNull();
   });
 
   it('subir de plan se aplica al momento', async () => {
@@ -232,11 +285,59 @@ describe('G3 · Planes', () => {
     expect(await screen.findByText('Listo: ya estás en el plan Creador.')).toBeInTheDocument();
   });
 
-  it('un Editor ve los planes pero no puede cambiarlos', async () => {
-    renderScreen(<PlansScreen />, { scenario: 'rol-editor' });
+  it('si subir pide un pago, va al checkout y el plan no cambia todavía', async () => {
+    const user = userEvent.setup();
+    renderScreen(<PlansScreen />, { scenario: 'plan-con-checkout' });
     await screen.findByRole('article', { name: 'Plan Pro, tu plan' });
-    expect(screen.getByRole('button', { name: 'Subir a Estudio' })).toHaveAttribute('aria-disabled', 'true');
-    expect(screen.getByRole('button', { name: 'Bajar a Gratis' })).toHaveAttribute('aria-disabled', 'true');
+    await user.click(screen.getByRole('button', { name: 'Subir a Estudio' }));
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Subir a Estudio' }));
+    await waitFor(() => expect(leaveTo).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(leaveTo).mock.calls[0]?.[0]).toMatch(/\/dev\/checkout\?compra=.+&volver=.+%2Fuso%2Fplanes$/);
+    expect(screen.getByRole('article', { name: 'Plan Pro, tu plan' })).toBeInTheDocument();
+    expect(loadDb().purchases[0]).toMatchObject({ status: 'pending', tokens: 0 });
+  });
+
+  it('al volver del checkout avisa si el plan cambió o si el pago no salió', async () => {
+    const PAYMENT_ID = '22222222-2222-4222-8222-222222222222';
+    const seed = (status: 'approved' | 'rejected') => () => {
+      const db = loadDb();
+      const workspace = db.workspaces[0];
+      const studio = db.plans.find((item) => item.name === 'Estudio');
+      if (!workspace || !studio) throw new Error('faltan datos');
+      if (status === 'approved') workspace.subscription_plan = studio.id;
+      db.purchases.push({
+        id: PAYMENT_ID,
+        workspace: workspace.id,
+        status,
+        tokens: 0,
+        amount_usd: 129,
+        plan_id: studio.id,
+        checkout_url: null,
+        failure_reason: status === 'rejected' ? 'El banco rechazó el pago. Probá con otra tarjeta.' : null,
+        created_at: new Date().toISOString(),
+        balance_after: null,
+        _settleAt: null,
+        _reject: status === 'rejected',
+      });
+      saveDb(db);
+    };
+    navigation.search = `compra=${PAYMENT_ID}`;
+    const approved = renderScreen(<PlansScreen />, { scenario: 'plan-con-checkout', prepare: seed('approved') });
+    expect(await screen.findByText('Listo: ya estás en el plan Estudio')).toBeInTheDocument();
+    expect(await screen.findByRole('article', { name: 'Plan Estudio, tu plan' })).toBeInTheDocument();
+    approved.unmount();
+
+    renderScreen(<PlansScreen />, { scenario: 'plan-con-checkout', prepare: seed('rejected') });
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText('El pago no se completó. No se te cobró nada.')).toBeInTheDocument();
+    expect(await within(alert).findByText(/Seguís con el plan Pro/)).toBeInTheDocument();
+    expect(screen.getByRole('article', { name: 'Plan Pro, tu plan' })).toBeInTheDocument();
+  });
+
+  it('un Editor que entra por URL ve lo mismo que dice la pestaña bloqueada: sin acceso', async () => {
+    renderScreen(<PlansScreen />, { scenario: 'rol-editor' });
+    expect(await screen.findByRole('heading', { name: /No tenés acceso a esto/ })).toBeInTheDocument();
+    expect(screen.queryByRole('article')).not.toBeInTheDocument();
   });
 });
 
@@ -292,6 +393,34 @@ describe('G4 · Comprar tokens', () => {
     await waitFor(() => expect(loadDb().purchases[0]).toMatchObject({ tokens: 2500 }));
   });
 
+  it('al reintentar una compra vuelve con la misma cantidad elegida', async () => {
+    navigation.search = 'tokens=15000';
+    const pack = renderScreen(<BuyTokensScreen />);
+    const radios = within(await screen.findByRole('radiogroup')).getAllByRole('radio');
+    expect(radios[2]).toHaveAttribute('aria-checked', 'true');
+    pack.unmount();
+    navigation.search = 'tokens=2500';
+    renderScreen(<BuyTokensScreen />);
+    await waitFor(async () => expect(await screen.findByLabelText('Otra cantidad')).toHaveValue('2.500'));
+    expect(within(screen.getByRole('region', { name: 'Resumen de la compra' })).getByText('USD 25')).toBeInTheDocument();
+  });
+
+  it('volver del checkout con el botón Atrás deja «Ir al pago» listo otra vez', async () => {
+    const user = userEvent.setup();
+    renderScreen(<BuyTokensScreen />);
+    await screen.findByRole('radiogroup');
+    const pay = screen.getByRole('button', { name: 'Ir al pago' });
+    await user.click(pay);
+    await waitFor(() => expect(leaveTo).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('button', { name: 'Ir al pago' })).toHaveAttribute('aria-busy', 'true');
+    const event = new Event('pageshow');
+    Object.defineProperty(event, 'persisted', { value: true });
+    window.dispatchEvent(event);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Ir al pago' })).not.toHaveAttribute('aria-busy', 'true'));
+    await user.click(screen.getByRole('button', { name: 'Ir al pago' }));
+    await waitFor(() => expect(leaveTo).toHaveBeenCalledTimes(2));
+  });
+
   it('un Editor no puede comprar', async () => {
     renderScreen(<BuyTokensScreen />, { scenario: 'rol-editor' });
     expect(await screen.findByRole('heading', { name: /No tenés acceso a esto/ })).toBeInTheDocument();
@@ -322,9 +451,24 @@ describe('G5 · Resultado de la compra', () => {
 
   it('compra acreditada: avisa con un toast sobre el Resumen', async () => {
     navigation.search = `compra=${PURCHASE_ID}`;
-    renderScreen(<PurchaseResultScreen />, { prepare: () => seedPurchase('approved') });
-    expect((await screen.findAllByText(/Compra acreditada:/)).length).toBeGreaterThan(0);
+    const first = renderScreen(<PurchaseResultScreen />, { prepare: () => seedPurchase('approved') });
+    expect(await screen.findByText(/Compra acreditada:/, { selector: 'span' })).toBeInTheDocument();
     expect(await screen.findByRole('link', { name: 'Ver movimiento' })).toHaveAttribute('href', '/uso/movimientos');
+
+    // Recargar el resultado no vuelve a avisar la misma compra.
+    first.unmount();
+    renderScreen(<PurchaseResultScreen />, { prepare: () => seedPurchase('approved') });
+    expect(await screen.findByText('Compra acreditada: +5.000 tokens.')).toHaveClass('sr-only');
+    await screen.findByRole('region', { name: 'Plan actual' });
+    expect(screen.queryByRole('link', { name: 'Ver movimiento' })).not.toBeInTheDocument();
+  });
+
+  it('en el resultado la pestaña actual es Resumen', async () => {
+    navigation.pathname = '/uso/comprar/resultado';
+    renderScreen(<UsageHeader />);
+    const tabs = await screen.findByRole('navigation', { name: 'Uso y facturación' });
+    expect(within(tabs).getByRole('link', { name: 'Resumen' })).toHaveAttribute('aria-current', 'page');
+    expect(within(tabs).getByRole('link', { name: 'Comprar tokens' })).not.toHaveAttribute('aria-current');
   });
 
   it('pago rechazado: el aviso queda arriba y el saldo no cambia', async () => {
@@ -333,7 +477,8 @@ describe('G5 · Resultado de la compra', () => {
     const alert = await screen.findByRole('alert');
     expect(within(alert).getByText('El pago no se completó. No se te cobró nada.')).toBeInTheDocument();
     expect(await within(alert).findByText(/Tu saldo sigue en/)).toHaveTextContent('4.860');
-    expect(within(alert).getByRole('link', { name: 'Reintentar' })).toHaveAttribute('href', '/uso/comprar');
+    expect(within(alert).getByRole('link', { name: 'Reintentar' })).toHaveAttribute('href', '/uso/comprar?tokens=5000');
+    expect(within(alert).getByRole('link', { name: 'Elegir otro medio' })).toHaveAttribute('href', '/uso/comprar?tokens=5000');
   });
 
   it('sin el id de la compra ofrece volver a comprar', async () => {

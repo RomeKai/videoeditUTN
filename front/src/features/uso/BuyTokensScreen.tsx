@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { useId, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { usePricing, useCreateTokenPurchase, useSubscription, useTokenPackages, useWallet } from '@/api/hooks';
 import { cx } from '@/lib/cx';
 import { errorMessage } from '@/lib/error-messages';
@@ -14,11 +14,14 @@ import { Badge, Banner, Button, Card, Field, Input, Skeleton } from '@/ui';
 import { leaveTo } from './leave';
 import styles from './uso.module.css';
 
-/** "2.500" or "2500" → 2500. Null when it is not a whole positive number. */
+/**
+ * "2.500" or "2500" → 2500. Null when it is not a whole positive number: a dot only counts as a
+ * thousands separator when groups of three digits follow it, so "2.5" and "2,5" are decimals, not 25.
+ */
 export function parseTokenAmount(text: string): number | null {
-  const digits = text.replace(/[.\s]/g, '');
-  if (!/^\d+$/.test(digits)) return null;
-  const value = Number(digits);
+  const clean = text.trim();
+  if (!/^(\d+|\d{1,3}(\.\d{3})+)$/.test(clean)) return null;
+  const value = Number(clean.replace(/\./g, ''));
   return value > 0 ? value : null;
 }
 
@@ -35,12 +38,34 @@ function BuyTokens() {
   const [custom, setCustom] = useState('');
   const [leaving, setLeaving] = useState(false);
 
+  // Coming back from the checkout with the browser's Back button restores this page from the
+  // back/forward cache, still "leaving": the button must work again.
+  const { reset: resetPurchase } = purchase;
+  useEffect(() => {
+    const onShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      setLeaving(false);
+      resetPurchase();
+    };
+    window.addEventListener('pageshow', onShow);
+    return () => window.removeEventListener('pageshow', onShow);
+  }, [resetPurchase]);
+
   const data = packages.data;
   const plan = subscription.data?.plan ?? null;
   const list = data?.packages ?? [];
   // Default: the pack the insufficient-balance dialog suggested, else the middle one.
+  // `tokens` comes from a purchase that did not go through (G5): the same pack, or the same free amount.
   const preferred = search.get('paquete');
-  const fallback = list.find((item) => item.id === preferred)?.id ?? list[Math.min(1, list.length - 1)]?.id ?? null;
+  const wanted = parseTokenAmount(search.get('tokens') ?? '');
+  const fallback =
+    list.find((item) => item.id === preferred)?.id ?? list.find((item) => item.tokens === wanted)?.id ?? list[Math.min(1, list.length - 1)]?.id ?? null;
+  const prefilled = useRef(false);
+  useEffect(() => {
+    if (prefilled.current || !data || wanted === null) return;
+    prefilled.current = true;
+    if (!data.packages.some((item) => item.tokens === wanted)) setCustom(formatNumber(wanted, 0));
+  }, [data, wanted]);
   const selectedId = chosen ?? fallback;
   const pack = list.find((item) => item.id === selectedId) ?? null;
 

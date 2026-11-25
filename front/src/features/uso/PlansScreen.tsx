@@ -1,28 +1,88 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useEffect, useRef, useState } from 'react';
 import type { Plan } from '@/api/contracts/billing';
-import { useChangePlan, useMembers, usePlans, usePricing, useSubscription } from '@/api/hooks';
+import { useChangePlan, useMembers, usePlans, usePricing, useSubscription, useTokenPurchase } from '@/api/hooks';
+import { keys } from '@/api/query';
 import { ConfirmDialog } from '@/dialogs';
 import { cx } from '@/lib/cx';
 import { errorMessage } from '@/lib/error-messages';
 import { formatDate, formatNumber, formatPercent, formatUsd } from '@/lib/format';
 import { estimateCost } from '@/lib/pricing';
 import { LoadError } from '@/shell/LoadError';
+import { RequireRole } from '@/shell/RequireSession';
 import { usePermissions, useSession } from '@/shell/session';
-import { Badge, Banner, Button, Icon, useToast } from '@/ui';
+import { Badge, Banner, Button, Dialog, Icon, IconButton, Spinner, useToast } from '@/ui';
 import { leaveTo } from './leave';
 import { PlanCard, PlanCardsSkeleton, planLosses } from './PlanCard';
 import styles from './uso.module.css';
 
 /**
+ * The way back from the checkout of a plan upgrade (`?compra=<id>`): a line while the provider has
+ * not answered, then whether the plan changed or the payment did not go through.
+ */
+function UpgradeNotice({ currentName }: { currentName: string | null }) {
+  const search = useSearchParams();
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const id = search.get('compra');
+  const payment = useTokenPurchase(id);
+  const refreshed = useRef<string | null>(null);
+  const status = payment.data?.status;
+  useEffect(() => {
+    if (!id || status !== 'approved' || refreshed.current === id) return;
+    refreshed.current = id;
+    void queryClient.invalidateQueries({ queryKey: keys.billing.all });
+    void queryClient.invalidateQueries({ queryKey: keys.me });
+  }, [id, queryClient, status]);
+  if (!id) return null;
+  const close = <IconButton icon="close" label="Cerrar aviso" size="sm" onClick={() => router.replace('/uso/planes')} />;
+  if (payment.isError) return <LoadError error={payment.error} onRetry={() => void payment.refetch()} className={styles.notice} fullPageForMissing={false} />;
+  if (!payment.data || payment.data.status === 'pending') {
+    return (
+      <div className={styles.strip} role="status" aria-busy="true">
+        <Spinner />
+        <p className="t-small">
+          <span className={styles.strong}>Estamos confirmando el pago del plan.</span>{' '}
+          <span className="muted">Suele tardar unos segundos. El plan cambia solo cuando se confirma.</span>
+        </p>
+      </div>
+    );
+  }
+  if (payment.data.status === 'approved') {
+    return (
+      <Banner tone="ok" className={styles.notice} title={`Listo: ya estás en el plan ${currentName ?? 'nuevo'}`} action={close}>
+        El cambio ya está aplicado para todo el workspace.
+      </Banner>
+    );
+  }
+  return (
+    <Banner tone="err" className={styles.notice} title="El pago no se completó. No se te cobró nada." action={close}>
+      {payment.data.failure_reason ? `${payment.data.failure_reason} ` : ''}
+      {currentName ? `Seguís con el plan ${currentName}.` : 'Tu plan no cambió.'} Podés intentarlo de nuevo cuando quieras.
+    </Banner>
+  );
+}
+
+/**
  * G3 · Uso › Planes: the cards of Precios with the current plan marked.
- * Going up applies right away; going down waits for the end of the period and
- * shows what is lost before confirming. Only Dueño and Admin change the plan;
- * the rest see the same cards with the buttons disabled.
+ * Going up applies right away (or after the checkout when it needs a payment);
+ * going down waits for the end of the period and shows what is lost before
+ * confirming, and a scheduled change can be cancelled. Only Dueño and Admin
+ * open it, like the locked tab says (R1); the rest get K2.
  */
 export function PlansScreen() {
+  return (
+    <RequireRole action="billing.manage">
+      <Plans />
+    </RequireRole>
+  );
+}
+
+function Plans() {
   const toast = useToast();
   const { workspace } = useSession();
   const { can, gate } = usePermissions();
@@ -43,7 +103,8 @@ export function PlansScreen() {
   const upgrade = target && current ? target.sort_order > current.sort_order : false;
   const losses = target && current && !upgrade ? planLosses(current, target) : [];
   const seats = members.data?.seats_used ?? 0;
-  const overSeats = target && !upgrade && seats > target.max_members;
+  // The backend rejects (409) a downgrade while the seats in use exceed the target plan.
+  const overSeats = Boolean(target && !upgrade && seats > target.max_members);
   const when = renewsAt ? formatDate(renewsAt) : null;
 
   const close = () => {
@@ -53,25 +114,41 @@ export function PlansScreen() {
   };
   const confirm = () => {
     if (!target) return;
-    change.mutate(target.id, {
-      onSuccess: (result) => {
-        setTarget(null);
-        if (result.checkout_url) {
-          leaveTo(result.checkout_url);
-          return;
-        }
-        toast.success(
-          result.applied === 'now'
-            ? `Listo: ya estás en el plan ${result.subscription.plan.name}.`
-            : `Tu plan pasa a ${target.name} el ${formatDate(result.subscription.pending_plan?.effective_at ?? renewsAt ?? new Date())}.`,
-        );
+    change.mutate(
+      { planId: target.id, returnUrl: `${window.location.origin}/uso/planes` },
+      {
+        onSuccess: (result) => {
+          setTarget(null);
+          if (result.checkout_url) {
+            // The upgrade needs a payment: the plan changes when the provider confirms it (UpgradeNotice).
+            leaveTo(result.checkout_url);
+            return;
+          }
+          toast.success(
+            result.applied === 'now'
+              ? `Listo: ya estás en el plan ${result.subscription.plan.name}.`
+              : `Tu plan pasa a ${target.name} el ${formatDate(result.subscription.pending_plan?.effective_at ?? renewsAt ?? new Date())}.`,
+          );
+        },
       },
-    });
+    );
+  };
+  /** Choosing the current plan again cancels the scheduled change. */
+  const keepCurrent = () => {
+    if (!current) return;
+    change.mutate(
+      { planId: current.id },
+      {
+        onSuccess: () => toast.success(`Listo: seguís con el plan ${current.name}.`),
+        onError: (error) => toast.error(errorMessage(error, 'No pudimos cancelar el cambio')),
+      },
+    );
   };
 
   return (
     <>
       <h2 className="sr-only">Planes</h2>
+      <UpgradeNotice currentName={current?.name ?? null} />
       {base !== null ? (
         <div className={styles.strip} role="note">
           <span className={styles.stripIco}>
@@ -96,8 +173,17 @@ export function PlansScreen() {
       ) : null}
 
       {pending ? (
-        <Banner tone="info" className={styles.notice} title={`Tu plan pasa a ${pending.name} el ${formatDate(pending.effective_at)}`}>
-          Hasta ese día seguís con {current?.name ?? 'tu plan'} y todo lo que incluye. Si elegís un plan más alto, el cambio se aplica al momento.
+        <Banner
+          tone="info"
+          className={styles.notice}
+          title={`Tu plan pasa a ${pending.name} el ${formatDate(pending.effective_at)}`}
+          action={
+            <Button size="sm" variant="secondary" onClick={keepCurrent} loading={change.isPending && !target} {...gate('billing.manage')}>
+              Seguir con {current?.name ?? 'mi plan'}
+            </Button>
+          }
+        >
+          Hasta ese día seguís con {current?.name ?? 'tu plan'} y todo lo que incluye. Podés cancelar el cambio hasta entonces.
         </Banner>
       ) : null}
       {plans.isError ? <LoadError error={plans.error} onRetry={() => void plans.refetch()} className={styles.notice} fullPageForMissing={false} /> : null}
@@ -195,8 +281,31 @@ export function PlansScreen() {
         ; antes de confirmar te mostramos qué vas a perder. En las filas con candado, a la derecha está el plan que lo habilita.
       </p>
 
+      <Dialog
+        open={Boolean(target) && Boolean(overSeats)}
+        onClose={close}
+        role="alertdialog"
+        icon="warning"
+        iconTone="warn"
+        title={target ? `Todavía no podés bajar a ${target.name}` : ''}
+        description={
+          target
+            ? `Hoy ocupás ${seats} lugares, contando las invitaciones pendientes, y ${target.name} tiene ${target.max_members}. Quitá miembros o invitaciones y volvé a intentarlo: no se programa ningún cambio mientras sobren.`
+            : undefined
+        }
+        footer={
+          <>
+            <Button variant="ghost" onClick={close}>
+              Cancelar
+            </Button>
+            <Button variant="primary" href="/ajustes/miembros" data-autofocus>
+              Ir a Miembros
+            </Button>
+          </>
+        }
+      />
       <ConfirmDialog
-        open={Boolean(target)}
+        open={Boolean(target) && !overSeats}
         onClose={close}
         onConfirm={confirm}
         loading={change.isPending}
@@ -222,15 +331,6 @@ export function PlansScreen() {
               ))}
             </ul>
           </div>
-        ) : null}
-        {target && overSeats ? (
-          <Banner tone="warn" title={`Hoy ocupás ${seats} lugares y ${target.name} tiene ${target.max_members}`}>
-            Antes del cambio quitá miembros o invitaciones en{' '}
-            <Link className={styles.link} href="/ajustes/miembros">
-              Ajustes › Miembros
-            </Link>
-            . Si no, los que sobren van a quedar sin acceso.
-          </Banner>
         ) : null}
         {target && upgrade ? (
           <p className="t-small muted">

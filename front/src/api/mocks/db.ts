@@ -115,6 +115,14 @@ export type MockActivity = ActivityItem & { project: string };
 
 export type MockPurchase = TokenPurchase & { workspace: string; _settleAt: number | null; _reject: boolean };
 
+/** Time zone of the workspaces in the mocks: months and days of Uso are counted in it (fixed UTC−3). */
+export const WORKSPACE_UTC_OFFSET_MS = -3 * 3600 * 1000;
+
+/** `YYYY-MM-DD` of a moment in the workspace's time zone. */
+export function workspaceDay(value: string | number): string {
+  return new Date(new Date(value).getTime() + WORKSPACE_UTC_OFFSET_MS).toISOString().slice(0, 10);
+}
+
 export type MockPreview = ClipPreview & { _startedAt: number };
 
 export type MockSocialAccount = SocialAccount & { workspace: string };
@@ -140,6 +148,8 @@ export interface MockFlags {
   rejectPayments: boolean;
   /** Login answers 403 email_not_verified. */
   unverifiedLogin: boolean;
+  /** Plan upgrades need a payment: `changePlan` answers with a `checkout_url` instead of applying. */
+  planCheckout: boolean;
 }
 
 export interface MockDb {
@@ -169,6 +179,6 @@ export interface MockDb {
   resendAt: Record<string, number>;
 }
 
-export const DB_VERSION = 5;
+export const DB_VERSION = 6;
 
 export const PLATFORMS: Platform[] = ['TIKTOK', 'INSTAGRAM_REELS', 'YOUTUBE_SHORTS'];
