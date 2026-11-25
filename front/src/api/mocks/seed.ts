@@ -723,9 +723,9 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
   const withKits = options.brandKits ?? !isNew;
   const brandKits: BrandKit[] = withKits
     ? [
-        { id: kitId, workspace: mainWorkspace, user: USER_IDS.lucia, name: 'Estudio Norte', description: 'Colores y tipografía del estudio.', primary_font: '/media/assets/fonts/Inter-Bold.ttf', secondary_font: null, primary_color: '#FFFFFF', secondary_color: '#111113', accent_color: '#F2C94C', watermark_logo: '/media/assets/logos/estudio-norte.png', intro_video: null, outro_video: '/media/assets/videos/outro.mp4', is_default: true, created_at: iso(now - 80 * DAY) },
-        { id: mid(KIND.brandKit, 2), workspace: mainWorkspace, user: USER_IDS.martin, name: 'Gaming nocturno', description: 'Para los streams.', primary_font: null, secondary_font: null, primary_color: '#EDEDF0', secondary_color: '#0A0A0B', accent_color: '#3FCF8E', watermark_logo: null, intro_video: null, outro_video: null, is_default: false, created_at: iso(now - 30 * DAY) },
-        { id: mid(KIND.brandKit, 3), workspace: mainWorkspace, user: USER_IDS.carla, name: 'Cliente: Bodega Andes', description: '', primary_font: null, secondary_font: null, primary_color: '#FFF8F0', secondary_color: '#3A1F2B', accent_color: '#A13D63', watermark_logo: '/media/assets/logos/bodega.png', intro_video: '/media/assets/videos/intro-bodega.mp4', outro_video: null, is_default: false, created_at: iso(now - 9 * DAY) },
+        { id: kitId, workspace: mainWorkspace, user: USER_IDS.lucia, name: 'Estudio Norte', description: 'Colores y tipografía del estudio.', primary_font: '/media/assets/fonts/Inter-Bold.ttf', secondary_font: null, primary_color: '#FFFFFF', secondary_color: '#111113', accent_color: '#F2C94C', watermark_logo: '/media/assets/logos/estudio-norte.png', intro_video: null, outro_video: '/media/assets/videos/outro.mp4', is_default: true, watermark_position: 'bottom_right', created_at: iso(now - 80 * DAY) },
+        { id: mid(KIND.brandKit, 2), workspace: mainWorkspace, user: USER_IDS.martin, name: 'Gaming nocturno', description: 'Para los streams.', primary_font: null, secondary_font: null, primary_color: '#EDEDF0', secondary_color: '#0A0A0B', accent_color: '#3FCF8E', watermark_logo: null, intro_video: null, outro_video: null, is_default: false, watermark_position: 'bottom_right', created_at: iso(now - 30 * DAY) },
+        { id: mid(KIND.brandKit, 3), workspace: mainWorkspace, user: USER_IDS.carla, name: 'Cliente: Bodega Andes', description: '', primary_font: null, secondary_font: null, primary_color: '#FFF8F0', secondary_color: '#3A1F2B', accent_color: '#A13D63', watermark_logo: '/media/assets/logos/bodega.png', intro_video: '/media/assets/videos/intro-bodega.mp4', outro_video: null, is_default: false, watermark_position: 'bottom_right', created_at: iso(now - 9 * DAY) },
       ]
     : [];
 
@@ -841,7 +841,7 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
         updated_at: iso(now - 1 * HOUR),
         caption: 'Subimos a 3.000 metros en una hora y esto fue lo que pasó.',
         hashtags: ['mendoza', 'vlog', 'montaña', 'viajes'],
-        seo_status: item.status === 'DRAFT' ? 'pending' : 'ready',
+        seo_status: 'ready',
         clip: { id: clip.id, title: clip.title, project_id: vlog.id, project_title: vlog.title, duration_seconds: round2(clip.end_time - clip.start_time), thumbnail_url: null },
         post_url: item.status === 'PUBLISHED' ? `https://example.com/${item.platform.toLowerCase()}/post/${position + 1}` : null,
         error_message: failed ? 'La red rechazó el video. Revisá que la cuenta siga conectada y volvé a intentarlo.' : null,

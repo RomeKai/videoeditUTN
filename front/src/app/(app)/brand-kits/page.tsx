@@ -1,10 +1,9 @@
 import type { Metadata } from 'next';
-import { ScreenPlaceholder } from '@/dev/ScreenPlaceholder';
-import { SCREENS } from '@/dev/screens';
+import { BrandKitsScreen } from '@/features/brand-kits/BrandKitsScreen';
 
 export const metadata: Metadata = { title: 'Brand kits' };
 
-// F1 · Brand kits: pantalla pendiente. El dominio dueño reemplaza este archivo (ver front/ROUTES.md).
+// F1 · Brand kits
 export default function Page() {
-  return <ScreenPlaceholder {...SCREENS.F1} />;
+  return <BrandKitsScreen />;
 }

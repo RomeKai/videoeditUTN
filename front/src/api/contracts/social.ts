@@ -70,7 +70,11 @@ export const ScheduledPost = z.object({
   /** What will be published. Starts as the AI suggestion when the project asked for SEO. */
   caption: z.string(),
   hashtags: z.array(z.string()),
-  /** pending: the AI text is still being generated ("Generando texto…"). none: the project has no SEO. */
+  /**
+   * pending: the AI text is still being generated ("Generando texto…"). none: the project has no SEO.
+   * failed: the generation failed. Proposed rule: a `DRAFT` stays `DRAFT` with `seo_status: 'failed'`
+   * and the user writes the text (today `_fail_seo_post` moves the post to `FAILED`).
+   */
   seo_status: z.enum(['none', 'pending', 'ready', 'failed']),
   clip: z.object({
     id: Id,
@@ -96,8 +100,14 @@ export const CreatePostInput = z.object({
   publish_at: IsoDateTime.nullable().optional(),
   caption: z.string().optional(),
   hashtags: z.array(z.string()).optional(),
-  /** Required when `platform` is TIKTOK. */
+  /** Required when `platform` is TIKTOK, unless it is a draft. */
   tiktok: TikTokOptions.optional(),
+  /**
+   * True: the post is created as `DRAFT` and nothing is published. It is how E1 gets the AI text
+   * before publishing: creating the post fires the SEO generation, as the model does today.
+   * A draft is published or scheduled with `PATCH` (`publish_at`).
+   */
+  draft: z.boolean().optional(),
 });
 export type CreatePostInput = z.infer<typeof CreatePostInput>;
 
@@ -114,7 +124,8 @@ export type PostsQuery = z.infer<typeof PostsQuery>;
 
 export const UpdatePostRequest = z
   .object({
-    publish_at: IsoDateTime,
+    /** UTC. A date schedules (or reschedules); null publishes now. Leaving it out keeps a draft as a draft. */
+    publish_at: IsoDateTime.nullable(),
     caption: z.string(),
     hashtags: z.array(z.string()),
     tiktok: TikTokOptions,
@@ -182,12 +193,17 @@ export const createPost = defineEndpoint({
   id: 'social.createPost',
   method: 'POST',
   path: '/api/v1/scheduled-posts/',
-  summary: 'Publica ahora o programa un clip en una red.',
+  summary: 'Publica ahora o programa un clip en una red. Con `draft: true` crea un borrador, que dispara la generación del texto con IA.',
   request: CreatePostInput,
   response: ScheduledPost,
   successStatus: 201,
   errors: planErrors,
-  backend: { status: 'proposed', gap: [8, 9], note: 'Al crear el post, la señal existente genera el SEO y la publicación usa Ayrshare.' },
+  backend: {
+    status: 'proposed',
+    gap: [8, 9],
+    note:
+      'Al crear el post, la señal existente genera el SEO y la publicación usa Ayrshare. Reglas propuestas: (1) una publicación en cola sin texto propio espera a que termine la generación con IA antes de salir (hoy saldría con el caption de reserva); (2) si la generación falla en un borrador, sigue en `DRAFT` con `seo_status: "failed"` (hoy `_fail_seo_post` lo pasa a `FAILED`); (3) un borrador creado con `draft: true` que nadie programa ni publica en N horas (sugerido: 24) se borra solo: el panel E1 los descarta al cerrarse, pero una pestaña que se cierra de golpe puede dejar alguno.',
+  },
   screens: ['E1'],
 });
 
@@ -219,11 +235,12 @@ export const updatePost = defineEndpoint({
   id: 'social.updatePost',
   method: 'PATCH',
   path: '/api/v1/scheduled-posts/:id/',
-  summary: 'Edita el texto o reprograma. Solo antes de `QUEUED`.',
+  summary: 'Edita el texto, reprograma, o publica un borrador (`publish_at`: fecha para programar, `null` para publicar ahora). Solo antes de `QUEUED`.',
   request: UpdatePostRequest,
   response: ScheduledPost,
   errors: [
-    { status: 400, when: 'Texto por encima del límite o fecha en el pasado.' },
+    { status: 400, when: 'Texto por encima del límite, fecha en el pasado, o falta `tiktok.privacy_level` al publicar un borrador de TikTok.' },
+    { status: 403, when: 'El plan no permite programar (`code: "scheduling"`), o el rol no publica.' },
     { status: 409, when: 'La publicación ya está en cola, publicando o publicada: no se puede editar.' },
   ],
   backend: { status: 'proposed', gap: 8 },
@@ -253,6 +270,25 @@ export const retryPost = defineEndpoint({
   screens: ['E2'],
 });
 
+export const regeneratePostSeo = defineEndpoint({
+  id: 'social.regeneratePostSeo',
+  method: 'POST',
+  path: '/api/v1/scheduled-posts/:id/regenerate-seo/',
+  summary: 'Vuelve a generar el caption y los hashtags con IA. Responde con `seo_status: "pending"`; el texto anterior se conserva hasta que llega el nuevo.',
+  response: ScheduledPost,
+  successStatus: 202,
+  errors: [
+    { status: 403, when: 'El proyecto no pidió SEO o el plan no lo incluye (`code: "seo"`), o el rol no publica.' },
+    { status: 409, when: 'La publicación ya se está publicando o ya se publicó: su texto no cambia.' },
+  ],
+  backend: {
+    status: 'proposed',
+    gap: 8,
+    note: 'Hoy solo existe como acción del admin: ScheduledPostAdmin.regenerate_ai_metadata → queue_post_seo(post_id, regenerate=True).',
+  },
+  screens: ['E1'],
+});
+
 export const socialEndpoints = [
   listSocialAccounts,
   connectSocialAccount,
@@ -264,4 +300,5 @@ export const socialEndpoints = [
   updatePost,
   cancelPost,
   retryPost,
+  regeneratePostSeo,
 ] as const;
