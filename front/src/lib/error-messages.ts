@@ -122,6 +122,29 @@ export function planLimitKind(error: unknown): PlanLimitKind {
   return limitFromText(error.message);
 }
 
+/**
+ * The backend's sentence for a project that left the review. Its source file is
+ * saved with the wrong encoding today, so the text arrives as "no estÃ¡ en espera
+ * de aprobaciÃ³n. Estado actual: rendering"; the pattern only uses the parts that
+ * read the same broken and fixed.
+ */
+const NOT_AWAITING_APPROVAL = /espera de aprobaci|Estado actual:|ya se est\S{1,2} renderizando/i;
+
+/**
+ * Text that was UTF-8 read as Latin-1 ("estÃ¡") back to what it meant ("está").
+ * Anything that is not that kind of damage comes back untouched.
+ */
+export function repairEncoding(text: string): string {
+  if (!/[ÃÂ][\u0080-\u00BF]/.test(text)) return text;
+  try {
+    const bytes = Uint8Array.from(text, (char) => char.charCodeAt(0));
+    if (Array.from(text).some((char) => char.charCodeAt(0) > 0xff)) return text;
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return text;
+  }
+}
+
 export type ApproveErrorKind =
   /** The project left the review (someone approved it, or it is already rendering): tell the user and go to Clips. */
   | 'not_awaiting_approval'
@@ -143,7 +166,7 @@ export function approveErrorKind(error: unknown): { kind: ApproveErrorKind; mess
   if (!(error instanceof ApiError)) return null;
   const text = error.message;
   if (error.status === 402) return { kind: 'insufficient_funds', message: 'No te alcanza el saldo' };
-  if (error.status === 409 || error.code === 'not_awaiting_approval' || /no est[áa] en espera de aprobaci[óo]n|ya se est[áa] renderizando/i.test(text)) {
+  if (error.status === 409 || error.code === 'not_awaiting_approval' || NOT_AWAITING_APPROVAL.test(text)) {
     return { kind: 'not_awaiting_approval', message: 'Este proyecto ya se aprobó. Te llevamos a los clips.' };
   }
   if (error.isPlanLimit || /motor de precios/i.test(text)) {
@@ -208,7 +231,8 @@ export function errorMessage(error: unknown, fallback = 'Algo falló de nuestro 
     if (error.status === 429) return isSpanish(error.message) ? error.message : 'Demasiados intentos. Probá en unos segundos.';
     const first = Object.values(error.fieldErrors)[0]?.[0];
     if (first && first === error.message) return translateFieldError(first, fallback);
-    return error.message && isSpanish(error.message) ? error.message : fallback;
+    const message = repairEncoding(error.message);
+    return message && isSpanish(message) ? message : fallback;
   }
   return fallback;
 }
