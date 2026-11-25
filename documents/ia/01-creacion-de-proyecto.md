@@ -206,12 +206,15 @@ flowchart TD
 
 `_refund_ingestion_reservation` es idempotente y nunca lanza: un `PaymentError`, un error de base o un proyecto borrado solo dejan `pipeline.refund_failed`, para no tapar el error original.
 
-**Reserva del render en `approve_paper_edit`.** Aprobar el paper edit primero toma el proyecto con un `UPDATE` condicional (`awaiting_approval` → `rendering`). Si otra aprobación ya lo tomó, responde 409 sin reservar ni encolar; si después no hay saldo (402) o falla el pago, lo devuelve a `awaiting_approval`. Después reserva el costo del render de los segmentos aprobados, sin adicionales porque SEO y miniatura se cobraron al crear (ADR-013), con `reserve_funds` (descripción `Render Final (Paper Edit): <título>`), y guarda el id en `metadata['render_reservation_id']`. `render_video_segments` la liquida con `_settle_render_reservation`:
+**Reserva del render en `approve_paper_edit`.** Aprobar el paper edit primero toma el proyecto con un `UPDATE` condicional (`awaiting_approval` → `rendering`). Si otra aprobación ya lo tomó, responde 409 sin reservar ni encolar; si después no hay saldo (402) o falla el pago, lo devuelve a `awaiting_approval`. Después reserva el costo del render de los segmentos aprobados, sin adicionales porque SEO y miniatura se cobraron al crear (ADR-013), con `reserve_funds` (descripción `Render Final (Paper Edit): <título>`), y guarda el id en `metadata['render_reservation_id']`, junto con los clips que paga (`render_clip_ids`) y sus segundos (`render_seconds`). Cada segmento aprobado es un clip que se renderiza con `render_clip_task` ([02](02-pipeline-de-ingesta.md#aprobación-de-la-revisión-approve-paper-edit)), y la reserva se liquida como la del render automático:
 
-- **Render entregado:** `commit_reservation` (log `render.charged`). Una re-entrega que encuentra el proyecto ya entregado no vuelve a renderizar: solo liquida, y si el worker murió entre guardar la exportación y cobrar, cobra ahí, una vez.
-- **Fallo que no se arregla reintentando** (`NonRetryableAIError`, por ejemplo segmentos inválidos o un render que perdió el worker más de `RENDER_SEGMENTS_MAX_REDELIVERIES` veces, o el soft time limit): `rollback_reservation` (`render.refunded`).
-- **Otro error:** mientras quedan reintentos la reserva sigue `RESERVED` y el proyecto `RENDERING`. En el último intento se devuelve y la excepción se propaga. Una copia del mensaje que llega después ya no renderiza: solo lo hace sobre un proyecto `RENDERING` con la reserva todavía `RESERVED`.
-- Una reserva que quedó `RESERVED` de todos modos (por ejemplo, de antes de que existiera el cobro) la liquida `settle_stale_reservations` ([07](07-capacidad-costos-y-operacion.md#operación-reservas-de-tokens-que-quedaron-reserved)).
+- **Clips entregados:** `finalize_project_render` cobra la parte de los segundos de los clips `completed` o `published` y devuelve el resto (`commit_partial_reservation`, log `render.charged`).
+- **Nada entregado:** se devuelve toda (`render.refunded`).
+- **Un clip todavía `rendering`:** espera.
+- **Si la aprobación no se puede guardar después de reservar** (el proyecto dejó la revisión mientras tanto): la reserva se devuelve en la misma respuesta (`render.approval_failed`).
+- Una reserva que quedó `RESERVED` de todos modos (por ejemplo, un cobro que falló por un error de base) la liquida `settle_stale_reservations` ([07](07-capacidad-costos-y-operacion.md#operación-reservas-de-tokens-que-quedaron-reserved)) con la misma regla.
+
+Una aprobación anterior a los clips por segmento (sin `render_clip_ids`, todavía en curso al desplegar) la renderiza `render_video_segments` como una sola exportación y la liquida `_settle_render_reservation`: la cobra entera cuando se entrega y la devuelve si falla del todo ([06, Paper edit](06-render-caras-y-hablante.md)).
 
 ## Errores, reintentos y casos borde
 

@@ -1,5 +1,6 @@
 import os
 import logging
+import uuid
 from decimal import Decimal
 from rest_framework import viewsets, permissions, parsers, status
 from rest_framework.response import Response
@@ -106,10 +107,21 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='approve-paper-edit')
     def approve_paper_edit(self, request, pk=None):
+        """
+        Approves the review (D2): every approved segment is rendered as its own
+        clip (D3). The render of all of them is priced and reserved before
+        anything is queued, and settled by the seconds delivered once the clips
+        finish (finalize_project_render), like "Renderizar sin revisar".
+        """
+        from .tasks.ingestion import _is_whole_video
+
         project = self.get_object()
         
         if project.status != VideoProject.Status.AWAITING_APPROVAL:
             return Response({"error": f"El proyecto no está en espera de aprobación. Estado actual: {project.status}"}, status=400)
+        if _is_whole_video(project):
+            # Rendered whole right after ingestion: it has nothing to review.
+            return Response({"error": "Un video completo se renderiza entero: no pasa por la revisión."}, status=400)
 
         approved_segments = request.data.get('approved_segments', [])
         if not approved_segments or not isinstance(approved_segments, list):
@@ -165,23 +177,26 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
             logger.error(f"Error reserving funds: {e}")
             return Response({"error": "Error procesando el pago."}, status=500)
 
-        with transaction.atomic():
-            # Merged into the row as it is now: the metadata read at the start of
-            # this request may be stale (a PATCH or the pipeline wrote since).
-            project = VideoProject.objects.select_for_update().get(pk=project.pk)
-            # Single source of truth for the render task: the typed column.
-            project.approved_segments = approved_segments
-            project.metadata = {
-                **(project.metadata or {}),
-                'final_duration': total_duration,
-                # Charged when the render is delivered, returned if it fails for good.
-                'render_reservation_id': str(tx.id),
-            }
-            project.status = VideoProject.Status.RENDERING
-            project.save(update_fields=['approved_segments', 'metadata', 'status'])
+        from .services.ai.pipeline_state import PipelineStateError
 
-        from .tasks import render_video_segments
-        render_video_segments.delay(project.id)
+        try:
+            _approve_clips(project.pk, approved_segments, total_duration, tx.id)
+        except Exception as exc:
+            # Nothing was written: the reservation goes back and the project
+            # waits for the review again.
+            logger.error("render.approval_failed project_id=%s error=%s", project.pk, type(exc).__name__)
+            try:
+                wallet_service.rollback_reservation(tx.id)
+            except Exception as refund_exc:
+                logger.error(
+                    "render.approval_refund_failed project_id=%s error=%s",
+                    project.pk, type(refund_exc).__name__,
+                )
+            release_claim()
+            if isinstance(exc, PipelineStateError):
+                # It left the review meanwhile (another worker moved its stage).
+                return Response({"error": "El proyecto ya se está renderizando."}, status=409)
+            raise
 
         return Response({
             "message": "Edición aprobada. Iniciando renderizado de alta calidad...",
@@ -314,6 +329,115 @@ class VideoProjectViewSet(viewsets.ModelViewSet):
         response_data['message'] = "Video subido. Iniciando ingesta multimodal..."
 
         return Response(response_data, status=status.HTTP_201_CREATED)
+
+
+def _segment_clip_id(value):
+    """The ``clip_id`` a segment sent, as the canonical id string, or None."""
+    try:
+        return str(uuid.UUID(str(value))) if value is not None else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _segment_title(segment):
+    """The title a segment sent ('' when none): a non-empty string, cut to the column."""
+    from .models import VideoClip
+
+    title = segment.get('title')
+    if not isinstance(title, str) or not title.strip():
+        return ''
+    return title.strip()[:VideoClip._meta.get_field('title').max_length]
+
+
+def _approve_clips(project_id, segments, total_duration, reservation_id):
+    """
+    The approval, under the project row lock: one DRAFT clip per approved
+    segment, mapped like the review screen does (the approve-paper-edit mock):
+
+    - a segment whose ``clip_id`` is a DRAFT clip of the project updates it
+      (start, end, and its title when one is sent);
+    - any other segment creates a DRAFT clip (its title, or "Clip N");
+    - the DRAFT clips of the project that were not approved are deleted, with
+      the files of their previews: the review is the decision point (the AI's
+      reasoning stays in ``ai_rationale_log``).
+
+    Clips in any other status are never touched. Then the project moves to
+    render_dispatched (status rendering) with the reservation, the clips it
+    pays for (``render_clip_ids``) and their seconds (``render_seconds``), and
+    one render_clip_task per clip is queued once this commits. Raises
+    PipelineStateError, with nothing written, when the project is no longer
+    where an approval can start.
+    """
+    from .models import ClipPreview, VideoClip
+    from .services.ai.pipeline_state import (
+        STAGE_ORDER, PipelineConflictError, PipelineStage, advance_to,
+    )
+    from .services.clip_preview import delete_preview_files
+    from .tasks.ingestion import APPROVED_RENDER, _mark_render_dispatched, _queue_clip_renders
+
+    with transaction.atomic():
+        project = VideoProject.objects.select_for_update().get(pk=project_id)
+        if project.status != VideoProject.Status.RENDERING:
+            raise PipelineConflictError(f"Project {project_id} is no longer claimed by this approval")
+        stage = project.pipeline_stage
+        if stage in STAGE_ORDER and STAGE_ORDER.index(stage) < STAGE_ORDER.index(PipelineStage.CLIPS_SELECTED):
+            # A row from before the stage machine reached the review all the same.
+            stage = advance_to(project_id, stage, PipelineStage.CLIPS_SELECTED)
+        if stage != PipelineStage.CLIPS_SELECTED:
+            raise PipelineConflictError(f"Project {project_id} is no longer at {PipelineStage.CLIPS_SELECTED}")
+
+        drafts = {
+            str(clip.pk): clip
+            for clip in VideoClip.objects.select_for_update().filter(
+                project_id=project_id, status=VideoClip.Status.DRAFT,
+            )
+        }
+        approved = []
+        for number, segment in enumerate(segments, start=1):
+            # Each draft is approved once: a repeated clip_id creates a new clip.
+            clip = drafts.pop(_segment_clip_id(segment.get('clip_id')), None)
+            title = _segment_title(segment)
+            if clip is None:
+                clip = VideoClip.objects.create(
+                    project_id=project_id, title=title or f"Clip {number}",
+                    start_time=segment['start'], end_time=segment['end'],
+                    status=VideoClip.Status.DRAFT,
+                )
+            else:
+                clip.start_time, clip.end_time = segment['start'], segment['end']
+                fields = ['start_time', 'end_time']
+                if title:
+                    clip.title = title
+                    fields.append('title')
+                clip.save(update_fields=fields)
+            approved.append(str(clip.pk))
+
+        # The drafts left out: deleted with their previews (cascade), whose
+        # files go once this commits.
+        preview_files = list(
+            ClipPreview.objects.filter(clip_id__in=list(drafts)).exclude(storage_key='')
+            .values_list('pk', 'storage_key')
+        )
+        VideoClip.objects.filter(pk__in=list(drafts)).delete()
+
+        _mark_render_dispatched(project_id)
+        metadata = {
+            **(project.metadata or {}),
+            'final_duration': total_duration,
+            # Settled by the seconds the clips deliver (finalize_project_render).
+            APPROVED_RENDER.reservation_key: str(reservation_id),
+            APPROVED_RENDER.clip_ids_key: approved,
+            APPROVED_RENDER.seconds_key: round(total_duration, 3),
+        }
+        # The notice of an auto-render that could not be paid is answered.
+        metadata.pop('auto_render_skipped', None)
+        VideoProject.objects.filter(pk=project_id).update(approved_segments=segments, metadata=metadata)
+
+        transaction.on_commit(lambda: _queue_clip_renders(project_id, approved))
+        if preview_files:
+            transaction.on_commit(lambda: delete_preview_files(preview_files))
+    logger.info("render.approved project_id=%s clips=%d deleted=%d", project_id, len(approved), len(drafts))
+    return approved
 
 
 class ClipPreviewView(APIView):

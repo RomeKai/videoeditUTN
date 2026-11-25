@@ -93,7 +93,7 @@ class StuckRenderHarness(RenderReservationHarness):
 
 class RenderStartTimeTests(StuckRenderHarness, APITestCase):
     def test_a_start_records_when_it_happened_with_the_start_counter(self):
-        self.approve()
+        self.approve_legacy()
         before = timezone.now()
 
         self.kill_render()
@@ -106,7 +106,7 @@ class RenderStartTimeTests(StuckRenderHarness, APITestCase):
 
 class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
     def test_a_hard_killed_render_is_found_and_requeued_once(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         self.kill_render()
         self.age()
 
@@ -131,7 +131,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assertEqual(self.metadata(), metadata)
 
     def test_the_requeued_render_is_delivered_and_charged_once(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         self.kill_render()
         self.age()
         self.recover()
@@ -148,7 +148,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assertEqual(self.balances(), (Decimal("100.00") - txn.amount, Decimal("0")))
 
     def test_a_render_that_keeps_losing_its_worker_fails_past_the_lost_starts_cap_and_is_refunded(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         actions = []
         for _ in range(RENDER_SEGMENTS_MAX_REDELIVERIES + 1):
             self.kill_render()  # the approval's delivery, then each re-queued one
@@ -177,7 +177,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assertNotIn(self.project.title, output)
 
     def test_at_the_lost_starts_cap_it_requeues_a_render_the_task_would_still_run(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         self.update_metadata(render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES)
         self.age(reservation_only=True)
 
@@ -195,7 +195,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
     def test_a_render_that_never_starts_keeps_being_requeued_with_backoff_never_failed(self):
         # Its message waits for a render worker that is down, or it was lost
         # with the broker: re-queued again and again, further apart each time.
-        txn = self.approve()
+        txn = self.approve_legacy()
         stuck_after = timedelta(seconds=settings.RENDER_STUCK_AFTER_SECONDS)
         steps = []
         for in_a_row in range(5):
@@ -252,7 +252,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         """
         from celery.exceptions import Retry
 
-        txn = self.approve()
+        txn = self.approve_legacy()
         actions = []
         for _ in range(RENDER_RECOVERY_MAX_REQUEUES + 2):
             with patch(RESOLVE_SEGMENTS, side_effect=ConnectionError("r2")), \
@@ -280,7 +280,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assertEqual(txn.status, Transaction.Status.RESERVED)
 
     def test_a_start_after_the_last_requeue_resets_the_requeue_count(self):
-        self.approve()
+        self.approve_legacy()
         requeued_at = timezone.now() - timedelta(seconds=settings.RENDER_STUCK_AFTER_SECONDS + 120)
         self.update_metadata(
             render_unfinished_starts=1,
@@ -297,7 +297,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assertEqual(self.metadata()["render_recovery_requeues"], 1)
 
     def test_a_render_that_never_started_is_requeued(self):
-        self.approve()  # the approval's delay failed: nothing was ever queued
+        self.approve_legacy()  # the approval's delay failed: nothing was ever queued
         self.age(reservation_only=True)
 
         rows, requeue = self.recover()
@@ -306,7 +306,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assertEqual(self.row(rows)["starts"], 0)
 
     def test_a_delivered_render_left_unpaid_is_charged_never_refunded(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         self.kill_render()
         # Saved (with COMPLETED), then its worker was killed before charging.
         VideoProject.objects.filter(pk=self.project.pk).update(
@@ -334,7 +334,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
     def test_a_charge_that_fails_is_reported_as_an_error_not_as_charged(self):
         from django.db import DatabaseError
 
-        txn = self.approve()
+        txn = self.approve_legacy()
         VideoProject.objects.filter(pk=self.project.pk).update(
             status=VideoProject.Status.COMPLETED, final_export_r2_key="final/key.mp4",
         )
@@ -358,7 +358,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         from apps.payments.services.wallet_service import commit_reservation
         from apps.videos.tasks import render_recovery
 
-        txn = self.approve()
+        txn = self.approve_legacy()
         VideoProject.objects.filter(pk=self.project.pk).update(
             status=VideoProject.Status.COMPLETED, final_export_r2_key="final/key.mp4",
         )
@@ -376,7 +376,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         )
 
     def test_a_delivered_render_being_charged_right_now_is_left_alone(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         self.kill_render()  # started just now
         VideoProject.objects.filter(pk=self.project.pk).update(
             status=VideoProject.Status.COMPLETED, final_export_r2_key="final/key.mp4",
@@ -390,7 +390,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assertEqual(txn.status, Transaction.Status.RESERVED)
 
     def test_a_rendering_project_with_an_export_is_never_failed_nor_refunded(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         VideoProject.objects.filter(pk=self.project.pk).update(final_export_r2_key="final/key.mp4")
         self.update_metadata(render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES + 1)
         self.age(reservation_only=True)
@@ -403,7 +403,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assert_untouched(txn, metadata)
 
     def test_a_project_whose_lock_is_held_is_not_touched(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         self.kill_render()
         self.update_metadata(render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES + 1)
         self.age()
@@ -418,7 +418,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
             self.assert_untouched(txn, metadata)
 
     def test_a_project_that_started_recently_is_not_touched_nor_locked(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         self.kill_render()
         self.update_metadata(render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES + 1)
         self.age(reservation_only=True)  # approved long ago, but it started just now
@@ -435,7 +435,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assertEqual([timeout for _, timeout in self.redis.lock_calls[calls:]], [None])
 
     def test_a_reported_project_is_not_locked_either(self):
-        self.approve()
+        self.approve_legacy()
         self.update_metadata(render_recovery_requeues=RENDER_SEGMENTS_MAX_REDELIVERIES)
         self.age()
         calls = len(self.redis.lock_calls)
@@ -446,7 +446,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assertEqual([timeout for _, timeout in self.redis.lock_calls[calls:]], [None])
 
     def test_a_requeue_the_broker_refuses_changes_nothing(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         self.kill_render()
         self.age()
         metadata = self.metadata()
@@ -462,7 +462,7 @@ class StuckRenderRecoveryTests(StuckRenderHarness, APITestCase):
         self.assertNotIn("broker down", "\n".join(logs.output))
 
     def test_a_completed_project_is_never_failed_or_refunded(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         # COMPLETED without an export: not a delivery this routine can charge.
         VideoProject.objects.filter(pk=self.project.pk).update(status=VideoProject.Status.COMPLETED)
         self.update_metadata(render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES + 1)
@@ -508,7 +508,7 @@ class RecoverStuckRendersCommandTests(StuckRenderHarness, APITestCase):
         return dict(part.split("=", 1) for part in line.split())
 
     def test_by_default_it_only_reports_and_writes_nothing(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         self.kill_render()
         self.age()
         metadata = self.metadata()
@@ -527,7 +527,7 @@ class RecoverStuckRendersCommandTests(StuckRenderHarness, APITestCase):
         self.assertNotIn(self.project.title, output)
 
     def test_with_apply_it_recovers(self):
-        self.approve()
+        self.approve_legacy()
         self.kill_render()
         self.age()
 
@@ -538,7 +538,7 @@ class RecoverStuckRendersCommandTests(StuckRenderHarness, APITestCase):
         self.assertIn("summary mode=apply", output)
 
     def test_an_error_is_reported_and_ends_with_an_error_code(self):
-        self.approve()
+        self.approve_legacy()
         self.kill_render()
         self.age()
 
@@ -555,7 +555,7 @@ class RecoverStuckRendersScheduleTests(StuckRenderHarness, APITestCase):
         self.assertEqual(entry["schedule"], 15 * 60)
 
     def test_the_task_applies_the_recovery(self):
-        txn = self.approve()
+        txn = self.approve_legacy()
         self.update_metadata(render_unfinished_starts=RENDER_SEGMENTS_MAX_REDELIVERIES + 1)
         self.age(reservation_only=True)
 

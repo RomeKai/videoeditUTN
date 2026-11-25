@@ -57,6 +57,7 @@ import time
 import random
 from decimal import ROUND_HALF_UP, Decimal
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from django.utils import timezone
 from django.db import DatabaseError, transaction
@@ -843,13 +844,16 @@ def _whole_video_render_allowed(project_id, clip_id=None):
     ``render_clip_task`` asks before claiming the clip (and again after): a
     paid render runs only while the project is at render_dispatched with the
     reservation that pays it still reserved. That is the creation reservation
-    of a whole-video edit, or the auto-render reservation of the selected clips
-    ("Renderizar sin revisar"). A render message left in the queue after the
-    project failed (and was refunded) must not deliver for free.
+    of a whole-video edit, or a reservation that pays a render clip by clip
+    (``_paid_clip_renders``): the auto-render of the selected clips
+    ("Renderizar sin revisar") or the approval of the review. A render message
+    left in the queue after the project failed (and was refunded) must not
+    deliver for free.
 
-    With ``clip_id``, an auto-render reservation must also pay for that clip
-    (``auto_render_clip_ids``): a re-dispatch reserves only the clips still
-    DRAFT, so a stale message for one that had failed would render it for free.
+    With ``clip_id``, that reservation must also pay for that clip (its clip
+    ids): a re-dispatch reserves only the clips still DRAFT, so a stale message
+    for one that had failed would render it for free, and an approval pays
+    only the clips it approved.
     """
     project = VideoProject.objects.filter(pk=project_id).first()
     if project is None:
@@ -857,20 +861,64 @@ def _whole_video_render_allowed(project_id, clip_id=None):
     if _is_whole_video(project):
         return project.pipeline_stage == PipelineStage.RENDER_DISPATCHED and _whole_video_is_paid(project_id)
     metadata = project.metadata or {}
-    paid_ids = metadata.get('auto_render_clip_ids')
-    if clip_id is not None and paid_ids is not None and str(clip_id) not in {str(paid) for paid in paid_ids}:
-        return False
-    auto_render_id = metadata.get(AUTO_RENDER_RESERVATION_KEY)
-    if auto_render_id:
-        return project.pipeline_stage == PipelineStage.RENDER_DISPATCHED and Transaction.objects.filter(
-            pk=auto_render_id, status=Transaction.Status.RESERVED,
-        ).exists()
+    for paid in _paid_clip_renders(metadata):
+        paid_ids = metadata.get(paid.clip_ids_key)
+        if clip_id is not None and paid_ids is not None and str(clip_id) not in {str(paid_id) for paid_id in paid_ids}:
+            return False
+        if not (
+            project.pipeline_stage == PipelineStage.RENDER_DISPATCHED
+            and Transaction.objects.filter(
+                pk=metadata[paid.reservation_key], status=Transaction.Status.RESERVED,
+            ).exists()
+        ):
+            return False
     return True
+
+
+@dataclass(frozen=True)
+class PaidClipRender:
+    """
+    A reservation that pays the render of some clips, one ``render_clip_task``
+    each, and is settled by the seconds delivered. The metadata keys of its
+    transaction, of the clips it pays for and of the seconds it priced, and
+    the prefix of its log events.
+    """
+    reservation_key: str
+    clip_ids_key: str
+    seconds_key: str
+    log_prefix: str
 
 
 # "Renderizar sin revisar" (auto_render_bypass): the render of the selected
 # clips, reserved before they are queued and settled by what was delivered.
 AUTO_RENDER_RESERVATION_KEY = 'auto_render_reservation_id'
+AUTO_RENDER = PaidClipRender(
+    AUTO_RENDER_RESERVATION_KEY, 'auto_render_clip_ids', 'auto_render_seconds', 'pipeline.auto_render_',
+)
+# The approval of the review (approve-paper-edit): one clip per approved
+# segment, priced, reserved and settled the same way. An approval from before
+# this (one export of every segment, render_video_segments) has the
+# reservation but no clip ids.
+APPROVED_RENDER = PaidClipRender('render_reservation_id', 'render_clip_ids', 'render_seconds', 'render.')
+PAID_CLIP_RENDERS = (AUTO_RENDER, APPROVED_RENDER)
+
+
+def _paid_clip_renders(metadata):
+    """The clip-by-clip render reservations linked to a project (its ``metadata``)."""
+    return [
+        paid for paid in PAID_CLIP_RENDERS
+        if metadata.get(paid.reservation_key)
+        # The legacy approval keeps its reservation in the same key, without clip ids.
+        and (paid is AUTO_RENDER or metadata.get(paid.clip_ids_key) is not None)
+    ]
+
+
+def _renders_per_clip(metadata):
+    """
+    The review was approved clip by clip (``metadata`` of the project):
+    render_video_segments never renders, fails or settles it.
+    """
+    return APPROVED_RENDER in _paid_clip_renders(metadata or {})
 
 
 def _reserve_auto_render(project_id, resuming=False):
@@ -940,10 +988,11 @@ def _reserve_auto_render(project_id, resuming=False):
     return True
 
 
-def _auto_render_settlement(project):
+def _clip_render_settlement(project, paid=AUTO_RENDER):
     """
-    What the auto-render reservation gets from where the project ended, as
-    ``(outcome, delivered_seconds)``. The one rule for the pipeline and for
+    What a clip-by-clip render reservation (``paid``: the auto-render or the
+    approval) gets from where the project ended, as ``(outcome,
+    delivered_seconds)``. The one rule for the pipeline and for
     settle_stale_reservations:
 
     - Not final yet (any stage but completed, partial or failed): ``('wait', 0)``.
@@ -951,15 +1000,15 @@ def _auto_render_settlement(project):
     - No clip delivered (completed or published): ``('rollback', 0)``.
     - Otherwise ``('charge', seconds delivered)``: only what was delivered is paid.
 
-    Only the clips the reservation paid for count (``auto_render_clip_ids``).
+    Only the clips the reservation paid for count (its clip ids).
     """
     if project.pipeline_stage not in (*TERMINAL_STAGES, PipelineStage.FAILED):
         return 'wait', 0.0
     clips = VideoClip.objects.filter(project_id=project.pk)
-    paid_ids = (project.metadata or {}).get('auto_render_clip_ids')
+    paid_ids = (project.metadata or {}).get(paid.clip_ids_key)
     if paid_ids is not None:
-        # Only the clips this reservation paid for: a paper-edit clip, or clips
-        # rendered before (a re-dispatch), are not part of it.
+        # Only the clips this reservation paid for: a clip rendered before (a
+        # re-dispatch) or paid by another reservation is not part of it.
         clips = clips.filter(pk__in=paid_ids)
     clips = list(clips.values_list('status', 'start_time', 'end_time'))
     if any(status == VideoClip.Status.RENDERING for status, _start, _end in clips):
@@ -974,9 +1023,9 @@ def _auto_render_settlement(project):
     return 'charge', delivered
 
 
-def _auto_render_charge(project, txn_amount, delivered_seconds):
+def _clip_render_charge(project, txn_amount, delivered_seconds, paid=AUTO_RENDER):
     """The share of the reservation for the seconds delivered (cents, at least 0.01)."""
-    reserved_seconds = float((project.metadata or {}).get('auto_render_seconds') or 0)
+    reserved_seconds = float((project.metadata or {}).get(paid.seconds_key) or 0)
     if reserved_seconds <= 0 or delivered_seconds >= reserved_seconds:
         return Decimal(txn_amount)
     share = Decimal(str(delivered_seconds / reserved_seconds))
@@ -984,13 +1033,23 @@ def _auto_render_charge(project, txn_amount, delivered_seconds):
     return max(charge, Decimal('0.01'))
 
 
-def _settle_auto_render_reservation(project_id):
+def _settle_clip_render_reservations(project_id):
     """
-    Settles the auto-render reservation from where the project ended (every
-    ``finalize_project_render`` and the failure handler run it): the clips
-    delivered are charged in proportion to their seconds, the rest is returned;
-    nothing delivered is refunded whole; still rendering or not final waits.
-    Idempotent (only a RESERVED transaction is touched) and never raises.
+    Settles every clip-by-clip render reservation of the project (the
+    auto-render and the approval of the review) from where it ended. Every
+    ``finalize_project_render`` and the failure handler run it.
+    """
+    for paid in PAID_CLIP_RENDERS:
+        _settle_clip_render_reservation(project_id, paid)
+
+
+def _settle_clip_render_reservation(project_id, paid):
+    """
+    Settles one clip-by-clip render reservation (``paid``) from where the
+    project ended: the clips delivered are charged in proportion to their
+    seconds, the rest is returned; nothing delivered is refunded whole; still
+    rendering or not final waits. Idempotent (only a RESERVED transaction is
+    touched) and never raises.
     """
     from django.core.exceptions import ValidationError
 
@@ -1004,31 +1063,30 @@ def _settle_auto_render_reservation(project_id):
             # Locked: a re-dispatch (reopen) must not slip between reading the
             # final state and settling from it.
             project = VideoProject.objects.select_for_update().filter(pk=project_id).first()
-            reservation_id = ((project.metadata or {}) if project else {}).get(AUTO_RENDER_RESERVATION_KEY)
-            if not reservation_id:
+            if project is None or paid not in _paid_clip_renders(project.metadata or {}):
                 return
+            reservation_id = project.metadata[paid.reservation_key]
             txn = Transaction.objects.filter(pk=reservation_id, status=Transaction.Status.RESERVED).first()
             if txn is None:
                 return  # already settled
-            outcome, delivered = _auto_render_settlement(project)
+            outcome, delivered = _clip_render_settlement(project, paid)
             if outcome == 'wait':
                 return
             if outcome == 'rollback':
                 rollback_reservation(reservation_id)
-                logger.info("pipeline.auto_render_refunded project_id=%s", project_id)
+                logger.info("%srefunded project_id=%s", paid.log_prefix, project_id)
             else:
-                charge = _auto_render_charge(project, txn.amount, delivered)
+                charge = _clip_render_charge(project, txn.amount, delivered, paid)
                 commit_partial_reservation(reservation_id, charge)
                 logger.info(
-                    "pipeline.auto_render_charged project_id=%s whole=%s",
-                    project_id, charge >= txn.amount,
+                    "%scharged project_id=%s whole=%s", paid.log_prefix, project_id, charge >= txn.amount,
                 )
     except PaymentError:
         # Another finalize, the failure handler or the sweeper settled it first.
-        logger.info("pipeline.auto_render_settle_skipped project_id=%s reason=already_settled", project_id)
+        logger.info("%ssettle_skipped project_id=%s reason=already_settled", paid.log_prefix, project_id)
     except (DatabaseError, ValidationError) as exc:
         logger.error(
-            "pipeline.auto_render_settle_failed project_id=%s error=%s", project_id, type(exc).__name__,
+            "%ssettle_failed project_id=%s error=%s", paid.log_prefix, project_id, type(exc).__name__,
         )
 
 
@@ -1170,6 +1228,19 @@ def _stage_dispatch_render(project_id, progress=None):
     with its clips still DRAFT and ``_resume_render_dispatch`` queues them again.
     """
     with transaction.atomic():
+        clip_ids = _mark_render_dispatched(project_id, progress)
+        for clip_id in clip_ids:
+            transaction.on_commit(lambda clip_id=clip_id: render_clip_task.delay(str(clip_id)))
+
+
+def _mark_render_dispatched(project_id, progress=None):
+    """
+    clips_selected -> render_dispatched (and status rendering) under the row
+    lock, inside the caller's transaction. Returns the DRAFT clips to queue:
+    the caller queues them only after the commit. Raises PipelineConflictError
+    if the project is no longer at clips_selected.
+    """
+    with transaction.atomic():
         VideoProject.objects.select_for_update().get(pk=project_id)
         clip_ids = list(
             VideoClip.objects.filter(project_id=project_id, status=VideoClip.Status.DRAFT)
@@ -1183,8 +1254,26 @@ def _stage_dispatch_render(project_id, progress=None):
             # The stage is ours now: a failure past this point must be recorded against it.
             progress['stage'] = PipelineStage.RENDER_DISPATCHED
         VideoProject.objects.filter(pk=project_id).update(status=VideoProject.Status.RENDERING)
-        for clip_id in clip_ids:
-            transaction.on_commit(lambda clip_id=clip_id: render_clip_task.delay(str(clip_id)))
+    return clip_ids
+
+
+def _queue_clip_renders(project_id, clip_ids):
+    """
+    Queues one render_clip_task per clip. Every clip is tried even if one
+    fails (logged with its class); returns the first error, or None. A clip
+    left DRAFT is queued again by ``_resume_render_dispatch``.
+    """
+    failure = None
+    for clip_id in clip_ids:
+        try:
+            render_clip_task.delay(str(clip_id))
+        except Exception as exc:
+            logger.error(
+                "render.dispatch_failed project_id=%s clip_id=%s error=%s",
+                project_id, clip_id, type(exc).__name__,
+            )
+            failure = failure or exc
+    return failure
 
 
 def _resume_render_dispatch(project_id):
@@ -1201,16 +1290,7 @@ def _resume_render_dispatch(project_id):
         finalize_project_render(project_id)
         return f"Render already dispatched for {project_id}"
 
-    failure = None
-    for clip_id in clip_ids:
-        try:
-            render_clip_task.delay(str(clip_id))
-        except Exception as exc:
-            logger.error(
-                "render.dispatch_failed project_id=%s clip_id=%s error=%s",
-                project_id, clip_id, type(exc).__name__,
-            )
-            failure = failure or exc
+    failure = _queue_clip_renders(project_id, clip_ids)
     if failure is not None:
         raise failure
 
@@ -1423,7 +1503,7 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
     # failed the project refunds it, so a project another worker moved on keeps it.
     if failed_now:
         _refund_ingestion_reservation(project_id)
-        _settle_auto_render_reservation(project_id)
+        _settle_clip_render_reservations(project_id)
 
 
 # acks_late + reject_on_worker_lost: if the worker dies mid-task (OOM during

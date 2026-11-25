@@ -1,6 +1,12 @@
 """
 Recovery of paper-edit renders whose render reservation stayed RESERVED.
 
+Only approvals from before the review rendered clip by clip: since then an
+approval renders each segment as its own clip (render_clip_task) and never
+queues render_video_segments. This module, and render_video_segments, can go
+once no project approved the old way still has its render reservation
+RESERVED.
+
 Why they exist
     render_video_segments acks late, so a worker that dies mid-render gets
     its message back. Two cases never come back: a worker killed by the hard
@@ -81,7 +87,7 @@ from apps.videos.services.ai.project_lock import (
     project_lock,
     project_lock_held,
 )
-from apps.videos.tasks.ingestion import _is_whole_video
+from apps.videos.tasks.ingestion import APPROVED_RENDER, _is_whole_video
 from apps.videos.tasks.render import (
     RENDER_SEGMENTS_MAX_REDELIVERIES,
     _fail_render,
@@ -269,7 +275,12 @@ def _recover(project_id, stuck_after):
 
 
 def _candidates():
-    """RENDERING or COMPLETED projects whose render reservation is still RESERVED."""
+    """
+    RENDERING or COMPLETED projects whose render reservation is still RESERVED,
+    approved before the review rendered clip by clip. An approval with clip ids
+    (``render_clip_ids``) renders with render_clip_task and is settled by what
+    its clips deliver (finalize_project_render): it is never one of these.
+    """
     reserved = [
         str(pk) for pk in Transaction.objects.filter(
             status=Transaction.Status.RESERVED,
@@ -281,6 +292,8 @@ def _candidates():
         VideoProject.objects.filter(
             status__in=[VideoProject.Status.RENDERING, VideoProject.Status.COMPLETED],
             metadata__render_reservation_id__in=reserved,
+        ).exclude(
+            metadata__has_key=APPROVED_RENDER.clip_ids_key,
         ).order_by('created_at', 'id').values_list('pk', flat=True)
     )
 

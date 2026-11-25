@@ -1,5 +1,6 @@
 """
-Render tasks: one clip per task, the paper-edit render and the fan-out close.
+Render tasks: one clip per task, the fan-out close, and the paper-edit render
+of the approvals from before the review rendered clip by clip.
 """
 
 import json
@@ -83,16 +84,17 @@ def finalize_project_render(project_id):
     call after every clip: counting happens under the project row lock, so only
     the call that sees the last clip finish transitions the project.
 
-    A whole-video project (``single_edit``) is paid by its creation reservation
-    and an auto-rendered one by its auto-render reservation: both are settled
-    here from where the project ended. Every call checks them, so they are
-    settled even if the project left render_dispatched another way.
+    A whole-video project (``single_edit``) is paid by its creation reservation;
+    an auto-rendered one by its auto-render reservation, and an approved review
+    by its approval: all are settled here from where the project ended. Every
+    call checks them, so they are settled even if the project left
+    render_dispatched another way.
     """
-    from apps.videos.tasks.ingestion import _settle_auto_render_reservation, _settle_whole_video_reservation
+    from apps.videos.tasks.ingestion import _settle_clip_render_reservations, _settle_whole_video_reservation
 
     stage = _close_render_fan_out(project_id)
     _settle_whole_video_reservation(project_id)
-    _settle_auto_render_reservation(project_id)
+    _settle_clip_render_reservations(project_id)
     return stage
 
 
@@ -616,12 +618,16 @@ def _settle_render_reservation(project_id, charge):
     from apps.payments.services.wallet_service import (
         PaymentError, commit_reservation, rollback_reservation,
     )
+    from apps.videos.tasks.ingestion import _renders_per_clip
 
     reservation_id = None
     try:
-        reservation_id = (
-            VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
-        ).get('render_reservation_id')
+        metadata = VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
+        if _renders_per_clip(metadata):
+            # Settled by what its clips deliver (finalize_project_render).
+            logger.info("render.settle_skipped project_id=%s reason=per_clip", project_id)
+            return False
+        reservation_id = metadata.get('render_reservation_id')
         if not reservation_id or not Transaction.objects.filter(
             pk=reservation_id, status=Transaction.Status.RESERVED
         ).exists():
@@ -735,8 +741,13 @@ def _fail_render(project_id, code):
     the error code and the render reservation returned. Race-free even without
     the lock, because a delivery is only saved over a RENDERING project: once
     FAILED, no other copy can deliver it, and one that delivered first keeps
-    its charge.
+    its charge. Never a project approved clip by clip: its clips decide.
     """
+    from apps.videos.tasks.ingestion import _renders_per_clip
+
+    if _renders_per_clip(VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first()):
+        logger.warning("render.fail_skipped project_id=%s reason=per_clip", project_id)
+        return
     VideoProject.objects.filter(pk=project_id).exclude(
         status=VideoProject.Status.COMPLETED,
     ).update(status=VideoProject.Status.FAILED)
@@ -766,6 +777,7 @@ def _render_final_edit(project_id, lock, attempt):
     """
     from apps.videos.services.storage_service import CloudflareR2Manager
     from apps.videos.services.render_engine import RenderEngine
+    from apps.videos.tasks.ingestion import _renders_per_clip
     from moviepy import VideoFileClip, concatenate_videoclips
     import tempfile
 
@@ -777,6 +789,12 @@ def _render_final_edit(project_id, lock, attempt):
         return f"Render already delivered for {project_id}"
 
     project = VideoProject.objects.get(pk=project_id)
+    if _renders_per_clip(project.metadata):
+        # Approved clip by clip: its clips render with render_clip_task and
+        # its reservation is settled by what they deliver. One export of every
+        # segment would render (and charge) the approval twice.
+        logger.warning("render.skipped project_id=%s reason=per_clip", project_id)
+        return f"Skipped {project_id}: approved clip by clip"
     if project.status != VideoProject.Status.RENDERING:
         # A copy of a render that already failed for good: rendering it now
         # would deliver it for free.
@@ -1031,6 +1049,12 @@ def render_video_segments(self, project_id):
 
     A busy project lock re-queues the task with its own budget, carried in
     the ``render_lock_retries`` message header (RENDER_LOCK_RETRIES_HEADER).
+
+    Only for approvals made before the review rendered clip by clip (no
+    ``render_clip_ids``), still in flight at deploy: an approval now renders
+    each segment as its own clip (render_clip_task) and is skipped here. It
+    can go, with recover_stuck_renders, once none of those is left with its
+    render reservation RESERVED.
     """
     logger.info(f"🎬 [FINAL RENDER] Starting for project {project_id}")
     lock_retries = _render_lock_retries(self.request)

@@ -425,8 +425,9 @@ Otras respuestas:
   - Los bordes se ajustan con botones de ±0,5 s.
 - **API:**
   - ✅ `GET paper-edit-data`: proxy, transcripción, sugerencias y metadata.
-  - ✅ `POST approve-paper-edit`: segmentos aprobados; cobra y responde 402 si no hay saldo.
-  - ⚠️ esa segunda reserva no se liquida nunca (ver la [documentación de IA](../ia/01-creacion-de-proyecto.md)).
+  - ✅ `POST approve-paper-edit`: segmentos aprobados (`start`, `end`, `title` y `clip_id` opcionales). Reserva el render y responde 402 si no hay saldo.
+    - Cada segmento es un clip: con el `clip_id` de un sugerido lo actualiza, sin él crea uno nuevo. Los sugeridos que no se aprobaron se borran.
+    - La reserva se cobra por los segundos de los clips que salen bien y se devuelve el resto (ver la [documentación de IA](../ia/02-pipeline-de-ingesta.md#aprobación-de-la-revisión-approve-paper-edit)).
 
 #### D3. Clips — `/proyectos/:id/clips`
 - **Para qué:** ver, descargar y publicar los resultados.
@@ -446,7 +447,7 @@ Otras respuestas:
   - Error: una tarjeta roja con **Reintentar**. Reintentar no cobra si el error fue nuestro.
 - **Móvil:** dos columnas; las acciones se abren en una hoja inferior.
 - **API:**
-  - ✅ los clips llegan dentro del proyecto.
+  - ✅ los clips llegan dentro del proyecto: uno por segmento aprobado en D2, cada uno con su estado (`draft` mientras espera su render, `rendering`, `completed` o `failed`). El proyecto termina `completed`, o `partial` si algún clip falló.
   - ❌ falta un link de descarga firmado por clip: `s3_object_key` no es una URL.
   - ❌ falta reintentar el render de un clip.
   - ❌ falta el .zip.
