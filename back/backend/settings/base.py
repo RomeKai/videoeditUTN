@@ -255,6 +255,13 @@ LOGGING = {
 # Celery must not replace the root handlers with its own text format.
 CELERY_WORKER_HIJACK_ROOT_LOGGER = False
 
+# Alert when a Celery task fails this many times in a row (apps.core.task_alerts):
+# CRITICAL log alert.task_failing and an email to ADMINS. 0 disables it.
+TASK_FAILURE_ALERT_THRESHOLD = env.int('TASK_FAILURE_ALERT_THRESHOLD', default=3)
+# ADMIN_EMAILS: comma-separated addresses that receive the alerts.
+ADMINS = [(email, email) for email in env.list('ADMIN_EMAILS', default=[])]
+SERVER_EMAIL = env('SERVER_EMAIL', default='alertas@onecreator.local')
+
 # --- CELERY CONFIG ---
 if 'REDIS_URL' in os.environ:
     CELERY_BROKER_URL = env('REDIS_URL')
