@@ -70,7 +70,7 @@ sequenceDiagram
 6. Antes de `clips_selected` corre `apply_prompt_to_project` con `can_retry=parse_retries < PTE_PARSE_MAX_RETRIES` y la capacidad del parser reservada bajo la etapa que sigue. Es idempotente: un proyecto sin prompt o ya parseado no se toca. El detalle está en [04-prompt-to-edit](04-prompt-to-edit.md).
 7. `infer_completed_stage` mira los datos persistidos (clips o `transcript_data`) de proyectos creados antes de la máquina de estados. Si están más adelante que `pipeline_stage`, `advance_to` avanza de a una transición hasta ahí, sin rehacer trabajo.
 8. Mientras el proyecto está entre `uploaded` y `moderated`, `status` pasa a `ingesting`. Después corren las etapas en orden. Antes de cada una se llama a `lock.renew()`, que lanza `ProjectLockLostError` si el lock ya no es de este worker.
-9. En `moderated`, un proyecto `single_edit` corre `_stage_whole_video` en lugar de `_stage_select_clips` (ver abajo). En `clips_selected`, con `auto_render_bypass` o en un proyecto `single_edit` se despacha el render (`_stage_dispatch_render`). Sin bypass, `status` pasa a `awaiting_approval` solo si estaba en `uploaded` o `ingesting`: una re-entrega no pisa una acción posterior del usuario.
+9. En `moderated`, un proyecto `single_edit` corre `_stage_whole_video` en lugar de `_stage_select_clips` (ver abajo). En `clips_selected`, con `auto_render_bypass` o en un proyecto `single_edit` se despacha el render (`_stage_dispatch_render`). Con `auto_render_bypass`, antes de despachar se cobra la reserva de creación y se reserva el render de los clips (ver "Renderizar sin revisar" abajo); si no se puede pagar, el proyecto queda esperando la revisión como si el bypass estuviera apagado. Sin bypass, `status` pasa a `awaiting_approval` solo si estaba en `uploaded` o `ingesting`: una re-entrega no pisa una acción posterior del usuario.
 10. El `with project_lock(...)` libera el lock en su `finally`, también cuando hay excepción. Los handlers de la tarea corren con el lock ya liberado.
 
 ## Flujo: máquina de etapas
@@ -144,12 +144,28 @@ Después:
 - **Re-despacho:** la reserva tiene que seguir `reserved` (`_whole_video_is_paid`).
   - Al re-despachar un proyecto `failed` ya devuelto, no se reabre ni corre nada (`pipeline.redispatch_skipped`), y el proyecto conserva el código del error por el que falló. Así un override de moderación no crea un clip en un proyecto devuelto: hay que crear uno nuevo.
   - Antes de despachar el render y al reanudar en `render_dispatched`, `_ensure_whole_video_paid` lanza `WholeVideoNotPaidError` si ya no está reservada.
-- **Mensajes de render que quedaron en la cola:** `render_clip_task` pregunta `_whole_video_render_allowed` antes de reclamar el clip y otra vez apenas lo reclama: el proyecto tiene que estar en `render_dispatched` y la reserva seguir `reserved`. Si no, marca el clip `failed`, llama a `finalize_project_render` y no renderiza (`render.skipped_unpaid`).
+- **Mensajes de render que quedaron en la cola:** `render_clip_task` pregunta `_whole_video_render_allowed` antes de reclamar el clip y otra vez apenas lo reclama: el proyecto tiene que estar en `render_dispatched` y la reserva seguir `reserved`. Si no, marca el clip `failed`, llama a `finalize_project_render` y no renderiza (`render.skipped_unpaid`). Solo falla un clip que es suyo o de nadie: antes del claim, uno `draft` sin dueño (o uno `rendering` si el mensaje es una re-entrega, que lo toma); después, solo si todavía tiene el claim. Una copia que perdió el clip no lo entrega ([dueño del claim](06-render-caras-y-hablante.md#dueño-del-claim-y-renders-que-no-terminan)).
 - **API:** el archivo de un video completo no se puede cambiar con un PATCH (400 en `source_file`). No tiene vista previa (409): su render real se despacha enseguida. Los campos `pipeline_*` son de solo lectura para cualquier proyecto.
 - El precio de creación ya es el del video entero a su resolución, que es justo lo que se renderiza. No se cobra nada más.
 - Solo se crea con un archivo subido de hasta `AI_SINGLE_EDIT_MAX_DURATION_SECONDS` (600 s por defecto). Ver [01](01-creacion-de-proyecto.md).
 
 `last_completed_stage` tiene dos ajustes. Si `clips_selected` figura `completed` pero el proyecto no tiene clips, reanuda en `transcribed` para volver a correr la selección. Y si `moderated` no tiene estado pero `clips_selected` sí está `completed` (proyectos anteriores a la etapa de moderación), la saltea (`_predates_moderation`).
+
+### Renderizar sin revisar (`auto_render_bypass`)
+
+Es la opción "Renderizar sin revisar" de C1. Los clips elegidos se renderizan sin pasar por la revisión, así que su render se paga igual que una aprobación:
+
+- **Reserva:** en `clips_selected`, después de cobrar la reserva de creación (el trabajo de IA ya está entregado), `_reserve_auto_render` reserva el render de los clips `draft` con el mismo precio que `approve-paper-edit` (`render_cost`, en `services/render_pricing.py`, sobre la suma de sus segundos; el límite de duración del plan se compara con esa suma, igual que en la aprobación). Guarda `metadata['auto_render_reservation_id']`, `auto_render_seconds` y `auto_render_clip_ids` (los clips que paga) en la misma transacción que la reserva, y recién después se despacha el render.
+- **Solo mientras se ingesta:** con el proyecto en `uploaded` o `ingesting`. Un mensaje de ingesta re-entregado que encuentra que el usuario ya aprobó un paper edit (u otro estado) no reserva ni despacha nada.
+- **Sin saldo o sobre el límite del plan:** no despacha nada. Guarda `metadata['auto_render_skipped']` (`insufficient_funds` o `plan_limit`) y el proyecto pasa a `awaiting_approval`: el usuario revisa y aprueba (y paga) lo que quiera.
+- **Re-entregas:** una reserva que sigue `reserved` se reusa. Si ya se liquidó (el proyecto falló y se re-despacha), se reserva de nuevo solo lo que falta renderizar, también al reanudar en `render_dispatched` (`resuming=True`).
+  - Si al reanudar no se puede pagar, el proyecto vuelve a `failed` (código `AutoRenderNotPaid`, `pipeline.redispatch_skipped`) con sus clips intactos: se puede re-despachar cuando el workspace tenga tokens. No escribe `auto_render_skipped`, que es el aviso de la revisión.
+  - Un proyecto despachado antes de que el render automático se cobrara no tiene la clave: se reanuda como empezó, sin reserva.
+- **Liquidación con lock:** `_settle_auto_render_reservation` bloquea la fila del proyecto mientras lee cómo terminó y liquida, así un re-despacho no se cuela en el medio.
+- **Cobro:** `_settle_auto_render_reservation` corre en cada `finalize_project_render` y cuando el pipeline marca el proyecto `failed`, y decide por cómo terminó (`_auto_render_settlement`):
+  - con el proyecto en `completed`, `partial` o `failed` y ningún clip pagado `rendering`: se cobra la parte de los segundos entregados (clips de `auto_render_clip_ids` en `completed` o `published`) y se devuelve el resto (`commit_partial_reservation`). Si no se entregó nada, se devuelve todo. Un clip de paper edit o uno renderizado antes no cuenta;
+  - antes de eso, o con un clip todavía `rendering`, espera.
+- **Mensajes de render en la cola:** `render_clip_task` no renderiza un clip de un proyecto con render automático si el proyecto ya no está en `render_dispatched` o esa reserva ya no está `reserved` (`_whole_video_render_allowed`, que cubre los dos casos pagos). Tampoco uno que esa reserva no paga: la tarea le pasa el id del clip y tiene que estar en `auto_render_clip_ids`. Un re-despacho reserva solo los clips `draft`, así que un mensaje viejo de un clip que había fallado lo encuentra fuera de la lista, no lo renderiza y el clip sigue `failed`.
 
 ### Estado por etapa (`pipeline_stage_status`)
 
@@ -249,7 +265,7 @@ Con `AI_CAPACITY_ENABLED=True`, cada llamada a Groq y al LLM reserva capacidad a
 4. Si no, `_capacity_countdown` calcula la demora (el déficit del bucket, entre 1 s y `AI_CAPACITY_MAX_COUNTDOWN_SECONDS`, más 0–20 % de jitter), la suma a `planned_s` y re-encola la tarea con `apply_async(countdown=..., retries=self.request.retries)`. No es un intento fallido: no toca `pipeline_attempts` ni escribe filas de uso, y el worker queda libre.
 5. Cuando la reserva por fin entra, `_capacity_granted` borra `capacity_wait` y acumula los segundos esperados en `metadata.capacity_waited_s[<etapa>]` (log `pipeline.capacity_granted`).
 6. Para el parser del prompt la regla cambia: si la espera vencería, `_prompt_capacity_exhausted` lo detecta, `give_up_prompt` guarda `pte.status=failed` con `CapacityTimeoutError` y el proyecto sigue sin el prompt, sin fallar.
-7. Si estacionar la tarea falla (por ejemplo, la DB), ese error se trata como cualquier error de etapa: nunca queda un proyecto en `pending_capacity` sin mensaje en la cola.
+7. Si estacionar la tarea falla (por ejemplo, la DB), ese error se trata como cualquier error de etapa: nunca queda un proyecto en `pending_capacity` sin mensaje en la cola. Si lo que falla es publicar el re-encolado (broker caído), `_restore_capacity_wait` devuelve `capacity_wait` a como estaba (salvo que otra entrega lo haya cambiado) y el mismo mensaje vuelve al broker (`_publish_requeue`): la re-entrega planifica esa espera una sola vez y no cuenta un intento fallido.
 
 ## Flujo: re-entregas, idempotencia y re-despacho manual
 
@@ -281,6 +297,7 @@ Correr la tarea dos veces sobre el mismo proyecto es seguro. Las piezas:
 |-----------|----------|-------|
 | Redis caído al tomar el lock | `RetryableAIError` → reintento con backoff. Nunca se procesa sin lock | `project_lock` |
 | Lock tomado por otro worker | Re-encolado con `lock_retries` hasta 8 veces; después `pipeline.skipped` | `process_initial_ingestion` |
+| Un re-encolado no se puede publicar (broker caído): por lock, por el parser del prompt o por capacidad | `pipeline.requeue_not_published` con `requeue=lock`, `prompt_parse` o `capacity`, pausa de `REQUEUE_NOT_PUBLISHED_PAUSE_SECONDS` (5 s) y `Reject(requeue=True)`: el mismo mensaje vuelve al broker con sus kwargs sin cambios (`lock_retries`, `parse_retries`, `retries`), así que el re-encolado perdido no gasta nada. En capacidad, además, se devuelve la espera que se había sumado a `planned_s`. Con `acks_late`, volver a lanzar el error lo perdería (Celery hace ack de una tarea que falló), y `self.retry` publica otro mensaje que falla igual y termina en `Reject(requeue=False)`. Detalle en [06, Paper edit](06-render-caras-y-hablante.md) | `_publish_requeue`, `_restore_capacity_wait` |
 | Lock perdido a mitad de la corrida | El heartbeat loguea `pipeline.lock_lost`; el próximo `renew()` lanza `ProjectLockLostError` y la tarea termina con `pipeline.skipped` sin marcar fallo | `ProjectLockHandle.renew` |
 | Error transitorio de Redis al renovar | Solo `pipeline.lock_renew_failed`: el TTL restante cubre unas renovaciones perdidas | `ProjectLockHandle.renew` |
 | Otro worker avanzó el proyecto | `PipelineConflictError` → `pipeline.skipped`. Las filas de uso de la llamada ya cobrada se escriben igual | `advance`, `_persist_then_record_usage` |
@@ -325,7 +342,7 @@ Correr la tarea dos veces sobre el mismo proyecto es seguro. Las piezas:
 
 **`AIUsageRecord`**: filas de `transcription` y `selection` (y `prompt_parse`, ver [04](04-prompt-to-edit.md)). La columna `attempt` es el `pipeline_attempts` del momento: 0 en la primera corrida. Detalle en [03](03-transcripcion-moderacion-seleccion.md#datos-que-escribe) y costos en [07](07-capacidad-costos-y-operacion.md).
 
-**Logs** (sin texto del usuario): `pipeline.started`, `pipeline.stage_started`, `pipeline.stage_completed`, `pipeline.stage_failed`, `pipeline.advanced`, `pipeline.failed`, `pipeline.fail_skipped`, `pipeline.mark_failed_skipped`, `pipeline.failure_not_recorded`, `pipeline.status_write_skipped`, `pipeline.status_write_failed`, `pipeline.refunded`, `pipeline.refund_skipped` (`reason=has_clips`, `no_reservation` o `not_reserved`), `pipeline.refund_failed`, `pipeline.lock_busy_retrying`, `pipeline.skipped`, `pipeline.lock_lost`, `pipeline.lock_renew_failed`, `pipeline.lock_not_owned`, `pipeline.lock_release_failed`, `pipeline.pending_capacity`, `pipeline.capacity_granted`, `pipeline.capacity_timeout`, `pipeline.render_redispatched`, `render.dispatch_failed`, `prompt_parse.retrying` y `prompt_parse.capacity_timeout`.
+**Logs** (sin texto del usuario): `pipeline.started`, `pipeline.stage_started`, `pipeline.stage_completed`, `pipeline.stage_failed`, `pipeline.advanced`, `pipeline.failed`, `pipeline.fail_skipped`, `pipeline.mark_failed_skipped`, `pipeline.failure_not_recorded`, `pipeline.status_write_skipped`, `pipeline.status_write_failed`, `pipeline.refunded`, `pipeline.refund_skipped` (`reason=has_clips`, `no_reservation` o `not_reserved`), `pipeline.refund_failed`, `pipeline.lock_busy_retrying`, `pipeline.requeue_not_published`, `pipeline.skipped`, `pipeline.lock_lost`, `pipeline.lock_renew_failed`, `pipeline.lock_not_owned`, `pipeline.lock_release_failed`, `pipeline.pending_capacity`, `pipeline.capacity_granted`, `pipeline.capacity_timeout`, `pipeline.render_redispatched`, `render.dispatch_failed`, `prompt_parse.retrying` y `prompt_parse.capacity_timeout`.
 
 ## Configuración
 
@@ -342,7 +359,7 @@ Correr la tarea dos veces sobre el mismo proyecto es seguro. Las piezas:
 | `AI_CAPACITY_MAX_WAIT_SECONDS` | 3600 | Espera máxima por etapa antes de `CapacityTimeoutError` |
 | `AI_CAPACITY_MAX_COUNTDOWN_SECONDS` | 300 | Tope de cada re-encolado por capacidad |
 
-Constantes del código (no son settings): `PIPELINE_MAX_RETRIES` = 5, `PIPELINE_RETRY_BASE_SECONDS` = 30, `PIPELINE_RETRY_CAP_SECONDS` = 600, `PIPELINE_LOCK_RETRY_SECONDS` = 45, `PIPELINE_LOCK_MAX_RETRIES` = 8 ([tasks/shared.py](../../back/apps/videos/tasks/shared.py); los dos del lock los usa también el render del paper edit); `PTE_PARSE_MAX_RETRIES` = 2, `PTE_PARSE_RETRY_SECONDS` = (30, 90) ([tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py)). `CELERY_WORKER_PREFETCH_MULTIPLIER` = 1 en `settings/base.py`.
+Constantes del código (no son settings): `PIPELINE_MAX_RETRIES` = 5, `PIPELINE_RETRY_BASE_SECONDS` = 30, `PIPELINE_RETRY_CAP_SECONDS` = 600, `PIPELINE_LOCK_RETRY_SECONDS` = 45, `PIPELINE_LOCK_MAX_RETRIES` = 8, `REQUEUE_NOT_PUBLISHED_PAUSE_SECONDS` = 5 ([tasks/shared.py](../../back/apps/videos/tasks/shared.py); los del lock los usa también el render del paper edit); `PTE_PARSE_MAX_RETRIES` = 2, `PTE_PARSE_RETRY_SECONDS` = (30, 90) ([tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py)). `CELERY_WORKER_PREFETCH_MULTIPLIER` = 1 en `settings/base.py`.
 
 ## Referencias
 

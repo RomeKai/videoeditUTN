@@ -1,14 +1,15 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiCall } from '../client';
 import * as contract from '../contracts/clips';
 import type { Clip } from '../contracts/projects';
 import { ApiError } from '../errors';
 import { keys, pollWhile } from '../query';
+import { scopedKey, useScopedQuery } from './scope';
 
 export function useClip(id: string | null | undefined) {
-  return useQuery({
+  return useScopedQuery({
     queryKey: keys.clips.detail(id ?? ''),
     queryFn: ({ signal }) => apiCall(contract.getClip, { params: { id: id ?? '' }, signal }),
     enabled: Boolean(id),
@@ -75,13 +76,13 @@ export function useRequestClipPreview(clipId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => apiCall(contract.requestClipPreview, { params: { clipId } }),
-    onSuccess: (preview) => queryClient.setQueryData(keys.clips.preview(clipId), preview),
+    onSuccess: (preview) => queryClient.setQueryData(scopedKey(keys.clips.preview(clipId)), preview),
   });
 }
 
 /** Current preview of a clip, or null when there is none (404). Polls every 5 s until ready or failed. */
 export function useClipPreview(clipId: string | null | undefined, { enabled = true }: { enabled?: boolean } = {}) {
-  return useQuery({
+  return useScopedQuery({
     queryKey: keys.clips.preview(clipId ?? ''),
     queryFn: async ({ signal }) => {
       try {

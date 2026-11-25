@@ -1,13 +1,14 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiCall } from '../client';
 import * as contract from '../contracts/notifications';
 import { keys } from '../query';
+import { useScopedQuery } from './scope';
 
 /** J2: the last 20 and the unread count for the bell. Refreshed every minute. */
 export function useNotifications({ enabled = true }: { enabled?: boolean } = {}) {
-  return useQuery({
+  return useScopedQuery({
     queryKey: keys.notifications,
     queryFn: ({ signal }) => apiCall(contract.listNotifications, { signal }),
     enabled,

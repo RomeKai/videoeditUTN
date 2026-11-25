@@ -42,6 +42,11 @@ function firstCode(value: unknown): string | undefined {
   return undefined;
 }
 
+/** Proposed machine-readable codes of a plan 403. */
+export const PLAN_LIMIT_CODES = new Set(['duration', 'resolution', 'seo', 'scheduling', 'crossposting', 'seats_exceeded', 'plan_limit']);
+/** What PricingEngine raises today (English, no code). */
+export const PLAN_LIMIT_MESSAGE = /exceeds your plan limit|does not support .+ rendering|not allowed in your current plan/i;
+
 const NON_FIELD_KEYS = new Set(['detail', 'error', 'code', 'required', 'limit', 'messages', 'non_field_errors']);
 
 /** A non-2xx answer from the API. */
@@ -97,9 +102,15 @@ export class ApiError extends Error {
     return Number.isFinite(value) ? value : undefined;
   }
 
-  /** 403 from the pricing engine: the plan does not allow it. Opens dialog D3. */
+  /**
+   * 403 because the plan does not allow it (opens dialog D3). Detected
+   * positively: a plan `code`, or one of the messages PricingEngine raises
+   * today. Any other 403 (DRF's PermissionDenied has no code) is a role 403.
+   */
   get isPlanLimit(): boolean {
-    return this.status === 403 && this.code !== 'permission_denied' && this.code !== 'email_not_verified';
+    if (this.status !== 403) return false;
+    if (this.code && PLAN_LIMIT_CODES.has(this.code)) return true;
+    return PLAN_LIMIT_MESSAGE.test(this.message);
   }
 
   get isConflict(): boolean {

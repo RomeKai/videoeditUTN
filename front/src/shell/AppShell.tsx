@@ -64,7 +64,24 @@ function AccountMenu({ close, mobile, onCreateWorkspace, onOpenNotifications }: 
   const unread = notifications.data?.unread_count ?? 0;
   if (!me) return null;
   return (
-    <div className={styles.menu} role="menu" aria-label="Cuenta y workspace">
+    <div
+      className={styles.menu}
+      role="menu"
+      aria-label="Cuenta y workspace"
+      onKeyDown={(event) => {
+        // Arrow keys move between the items, like any menu.
+        const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role^="menuitem"]'));
+        const index = items.indexOf(document.activeElement as HTMLElement);
+        let next: number | null = null;
+        if (event.key === 'ArrowDown') next = (index + 1) % items.length;
+        else if (event.key === 'ArrowUp') next = (index - 1 + items.length) % items.length;
+        else if (event.key === 'Home') next = 0;
+        else if (event.key === 'End') next = items.length - 1;
+        if (next === null) return;
+        event.preventDefault();
+        items[next]?.focus();
+      }}
+    >
       <div className={styles.menuHead}>
         <Avatar name={me.name} seed={me.id} />
         <div className={styles.grow}>

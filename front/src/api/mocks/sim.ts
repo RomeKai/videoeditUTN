@@ -1,7 +1,7 @@
 import type { Role } from '../contracts/common';
 import type { PipelineStage } from '../contracts/projects';
 import { KIND, mid, newId, type MockClip, type MockDb, type MockProject, type MockTransaction, type MockWallet } from './db';
-import { buildClips, stageStatusFor } from './seed';
+import { buildClips, PLAN_IDS, priceOf, stageStatusFor } from './seed';
 
 /** Pace of the simulated pipeline: slow enough to see each step with the 5 s polling, fast enough to click through. */
 export const SIM = {
@@ -175,6 +175,43 @@ function startRender(project: MockProject, now: number, sim: { failOneClip?: boo
   project._sim = { phase: 'render', startedAt: now, failOneClip: sim.failOneClip };
 }
 
+const RESOLUTION_RANK = { '720p': 1, '1080p': 2, '4K': 3 } as const;
+
+/** `_reserve_auto_render`: returns why it could not be paid, or null when the reservation was made. */
+function reserveAutoRender(db: MockDb, project: MockProject, now: number): 'insufficient_funds' | 'plan_limit' | null {
+  const seconds = project.clips.reduce((sum, clip) => sum + Math.max(0, clip.end_time - clip.start_time), 0);
+  const workspace = db.workspaces.find((item) => item.id === project.workspace);
+  const plan = db.plans.find((item) => item.id === (workspace?.subscription_plan ?? PLAN_IDS.free));
+  const resolution = project.metadata.render_resolution ?? '720p';
+  const billed = Math.ceil(Math.round(seconds * 1000) / 1000);
+  if (plan && (billed > plan.max_video_duration_seconds || RESOLUTION_RANK[resolution] > RESOLUTION_RANK[plan.max_resolution])) return 'plan_limit';
+  try {
+    const transaction = reserveFunds(
+      db,
+      {
+        workspace: project.workspace,
+        amount: priceOf(billed, resolution, false, plan?.base_discount_rate ?? 0),
+        userId: project.uploaded_by,
+        description: `Render automático: ${project.title}`.slice(0, 255),
+        project: { id: project.id, title: project.title },
+        category: 'render',
+      },
+      now,
+    );
+    project.metadata = {
+      ...project.metadata,
+      auto_render_reservation_id: transaction.id,
+      auto_render_seconds: Math.round(seconds * 1000) / 1000,
+      auto_render_clip_ids: project.clips.map((clip) => clip.id),
+    };
+    project._reservations.push(transaction.id);
+    return null;
+  } catch (error) {
+    if (error instanceof InsufficientFunds) return 'insufficient_funds';
+    throw error;
+  }
+}
+
 function tickIngest(db: MockDb, project: MockProject, now: number): void {
   const sim = project._sim;
   if (!sim) return;
@@ -263,9 +300,15 @@ function tickIngest(db: MockDb, project: MockProject, now: number): void {
   project.clips = buildClips(project.id, seedIndex, duration, { count, statuses: ['draft'] }, now).map((clip) => ({ ...clip, id: newId() }));
   project.ai_rationale_log = { suggestions_count: project.clips.length };
   if (project.auto_render_bypass) {
-    project.approved_segments = project.clips.map((clip) => ({ start: clip.start_time, end: clip.end_time }));
-    startRender(project, now, { failOneClip: sim.failOneClip });
-    return;
+    // "Renderizar sin revisar": the render of the chosen clips is reserved like an approval.
+    const skipped = reserveAutoRender(db, project, now);
+    if (!skipped) {
+      project.approved_segments = project.clips.map((clip) => ({ start: clip.start_time, end: clip.end_time }));
+      startRender(project, now, { failOneClip: sim.failOneClip });
+      return;
+    }
+    // It cannot be paid: the project waits in the review with the reason.
+    project.metadata = { ...project.metadata, auto_render_skipped: skipped };
   }
   project.status = 'awaiting_approval';
   delete project._sim;
@@ -434,7 +477,8 @@ function tickPreviews(db: MockDb, now: number): void {
     if (preview.status === 'pending' && elapsed >= SIM.previewPendingMs) preview.status = 'rendering';
     if (preview.status === 'rendering' && elapsed >= SIM.previewPendingMs + SIM.previewRenderMs) {
       preview.status = 'ready';
-      preview.url = `https://media.onecreator.invalid/previews/${preview.preview_id}.mp4`;
+      // No real media in the mocks: a `mock:` URL, which <VideoPlayer> shows as its placeholder frame.
+      preview.url = `mock://previews/${preview.preview_id}.mp4`;
     }
   }
   db.previews = db.previews.filter((preview) => new Date(preview.expires_at).getTime() > now);

@@ -1,7 +1,8 @@
 'use client';
 
-import { cloneElement, isValidElement, useId, useState, type ReactElement, type ReactNode } from 'react';
+import { cloneElement, isValidElement, useId, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { cx } from '@/lib/cx';
+import { useDismiss } from './overlay';
 import styles from './Tooltip.module.css';
 
 export interface TooltipProps {
@@ -18,6 +19,11 @@ export interface TooltipProps {
 export function Tooltip({ content, children, side = 'top', align = 'center', multiline, className }: TooltipProps) {
   const id = useId();
   const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  // Escape hides the tooltip (and only the tooltip) without moving the pointer or the focus.
+  useDismiss(open && Boolean(content), [ref], (reason) => {
+    if (reason === 'escape') setOpen(false);
+  });
   const child = isValidElement(children)
     ? cloneElement(children as ReactElement<{ 'aria-describedby'?: string }>, {
         'aria-describedby': open ? id : undefined,
@@ -25,14 +31,12 @@ export function Tooltip({ content, children, side = 'top', align = 'center', mul
     : children;
   return (
     <span
+      ref={ref}
       className={cx(styles.wrap, className)}
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
       onFocus={() => setOpen(true)}
       onBlur={() => setOpen(false)}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') setOpen(false);
-      }}
     >
       {child}
       {open && content ? (

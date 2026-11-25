@@ -55,11 +55,17 @@
 .foot {
   display: flex;
   justify-content: center;
-  gap: 8px 20px;
+  gap: 4px 8px;
   flex-wrap: wrap;
   padding: 20px 24px;
   font-size: 12px;
   line-height: 16px;
+  color: var(--fg-subtle);
+}
+/* "© 2026 OneCreator · Términos · Privacidad · Ayuda" */
+.foot > * + *::before {
+  content: '·';
+  margin-right: 8px;
   color: var(--fg-subtle);
 }
 .foot a:hover {

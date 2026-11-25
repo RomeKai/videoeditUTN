@@ -5,20 +5,24 @@ import { createContext, useCallback, useContext, useEffect, useMemo, type ReactN
 import type { Plan } from '@/api/contracts/billing';
 import type { Role } from '@/api/contracts/common';
 import type { Me, WorkspaceSummary } from '@/api/contracts/users';
-import { useHasSession, useMe, useSubscription, useUpdateMe } from '@/api/hooks';
+import { useActiveWorkspaceId, useMe, useSessionPresence, useSubscription, useUpdateMe } from '@/api/hooks';
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '@/api/session';
 import { can as canDo, NO_ACCESS_REASON, type Action, type PermissionContext } from '@/lib/permissions';
 
 export type SessionStatus = 'loading' | 'authenticated' | 'anonymous' | 'error';
 
 export interface SessionValue {
-  /** loading: there are tokens but `/me` has not answered yet. error: `/me` failed (network or server). */
+  /** loading: not known yet (hydration), or there are tokens but `/me` has not answered. Never redirect on it. error: `/me` failed (network or server). */
   status: SessionStatus;
   me: Me | null;
   /** Active workspace, with the user's role in it. */
   workspace: WorkspaceSummary | null;
   role: Role | null;
-  /** Changes the active workspace and reloads every workspace-scoped query (J3). */
+  /**
+   * Changes the active workspace and reloads every workspace-scoped query (J3).
+   * The UI follows at once, also when `/me` comes back unchanged. Use it too after
+   * accepting an invitation or creating a workspace (the id may not be in `me` yet).
+   */
   switchWorkspace: (workspaceId: string) => Promise<void>;
   /** Error of `/me` (network or server), so the shell can offer to retry. */
   error: unknown;
@@ -28,22 +32,26 @@ export interface SessionValue {
 const SessionContext = createContext<SessionValue | null>(null);
 
 export function SessionProvider({ children }: { children: ReactNode }) {
-  const hasSession = useHasSession();
+  // undefined until the browser storage can be read (server render and hydration).
+  const hasSession = useSessionPresence();
   const meQuery = useMe();
   const updateMe = useUpdateMe();
   const queryClient = useQueryClient();
   const me = meQuery.data ?? null;
 
+  // The id the client sends in X-Workspace-Id. Subscribed, not read once: switching (or accepting an
+  // invitation) changes it before `/me` is refetched, and `/me` may come back identical.
+  const stored = useActiveWorkspaceId();
+
   const workspace = useMemo(() => {
     if (!me) return null;
-    const stored = getActiveWorkspaceId();
     return (
       me.workspaces.find((item) => item.id === stored) ??
       me.workspaces.find((item) => item.id === me.active_workspace_id) ??
       me.workspaces[0] ??
       null
     );
-  }, [me]);
+  }, [me, stored]);
 
   // Keep the header the client sends in line with the workspace the UI shows.
   useEffect(() => {
@@ -57,6 +65,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       try {
         await saveMe({ active_workspace_id: workspaceId });
       } finally {
+        // Again: while the workspace was not in `/me` yet (just created, invitation just accepted)
+        // the effect above put the previous one back.
+        setActiveWorkspaceId(workspaceId);
         // Everything on screen belongs to the previous workspace.
         await queryClient.invalidateQueries();
       }
@@ -65,12 +76,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo<SessionValue>(() => {
-    const status: SessionStatus = !hasSession ? 'anonymous' : me ? 'authenticated' : meQuery.isError ? 'error' : 'loading';
+    const status: SessionStatus =
+      hasSession === undefined ? 'loading' : !hasSession ? 'anonymous' : me ? 'authenticated' : meQuery.isError ? 'error' : 'loading';
     return {
       status,
-      me,
-      workspace,
-      role: workspace?.role ?? null,
+      // A stored session that turned out to be someone else's cache is never shown as signed in.
+      me: hasSession ? me : null,
+      workspace: hasSession ? workspace : null,
+      role: hasSession ? (workspace?.role ?? null) : null,
       switchWorkspace,
       error: meQuery.error,
       refetch: () => void meQuery.refetch(),

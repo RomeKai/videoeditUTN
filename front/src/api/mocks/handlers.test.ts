@@ -13,7 +13,9 @@ import * as social from '../contracts/social';
 import * as system from '../contracts/system';
 import * as users from '../contracts/users';
 import * as workspaces from '../contracts/workspaces';
+import { approveErrorKind } from '@/lib/error-messages';
 import { ApiError, SessionExpiredError } from '../errors';
+import { API_URL } from '../config';
 import { setActiveWorkspaceId, setTokens } from '../session';
 import { mockedEndpointIds } from './http';
 import { USER_IDS, WORKSPACE_IDS } from './seed';
@@ -128,8 +130,10 @@ describe('mocks', () => {
       body: { approved_segments: project.clips.slice(0, 2).map((clip) => ({ start: clip.start_time, end: clip.end_time, clip_id: clip.id })) },
     });
     expect(approved.final_cost).toBeGreaterThan(0);
-    // A second approval finds the project already rendering.
-    expect((await fail(apiCall(projects.approvePaperEdit, { params: { id: created.id }, body: { approved_segments: [{ start: 0, end: 10 }] } }))).status).toBe(409);
+    // A second approval finds the project already rendering: the backend answers 400 with the status, not 409.
+    const again = await fail(apiCall(projects.approvePaperEdit, { params: { id: created.id }, body: { approved_segments: [{ start: 0, end: 10 }] } }));
+    expect(again.status).toBe(400);
+    expect(approveErrorKind(again)?.kind).toBe('not_awaiting_approval');
 
     advance(SIM.clipMs * 3);
     project = await apiCall(projects.getProject, { params: { id: created.id } });
@@ -161,6 +165,65 @@ describe('mocks', () => {
     const waiting = await upload('demanda-5min.mp4');
     advance(SIM.queueMs + SIM.stageMs * 1.2);
     expect(Object.values((await apiCall(projects.getProject, { params: { id: waiting.id } })).pipeline_stage_status)).toContain('pending_capacity');
+  });
+
+  it('multipart como DRF: sin `add_subtitles` el proyecto queda sin subtítulos; el cliente lo manda siempre', async () => {
+    // The client fills the default, so a screen that says nothing gets subtitles.
+    const viaClient = await apiCall(projects.createProject, { body: { video_url: 'https://youtu.be/abc' } });
+    expect(viaClient.add_subtitles).toBe(true);
+    const off = await apiCall(projects.createProject, { body: { video_url: 'https://youtu.be/abc', add_subtitles: false } });
+    expect(off.add_subtitles).toBe(false);
+    // A raw multipart form without the field, as any other client would send it.
+    const form = new FormData();
+    form.append('video_url', 'https://youtu.be/abc');
+    const response = await fetch(`${API_URL}/api/v1/projects/`, { method: 'POST', body: form, headers: { Authorization: `Bearer ${mockTokens(USER_IDS.lucia).access}` } });
+    expect(response.status).toBe(201);
+    expect(((await response.json()) as { add_subtitles: boolean }).add_subtitles).toBe(false);
+  });
+
+  it('renderizar sin revisar: reserva el render; sin saldo o fuera del plan queda en revisión con el motivo', async () => {
+    const upload = (name: string, extra: Record<string, unknown> = {}) =>
+      apiCall(projects.createProject, { body: { source_file: new File(['x'], name, { type: 'video/mp4' }), auto_render_bypass: true, max_clips: 3, ...extra } });
+    const paid = await upload('auto-10min.mp4');
+    advance(SIM.queueMs + SIM.stageMs * 5);
+    const rendering = await apiCall(projects.getProject, { params: { id: paid.id } });
+    expect(rendering.status).toBe('rendering');
+    expect(rendering.metadata.auto_render_reservation_id).toBeTruthy();
+    expect(rendering.metadata.auto_render_clip_ids).toHaveLength(3);
+    expect(rendering.metadata.auto_render_skipped).toBeUndefined();
+
+    signIn('saldo-bajo');
+    // 120 tokens pay the link (10) but not the render of the clips.
+    const poor = await apiCall(projects.createProject, { body: { video_url: 'https://youtu.be/abc', auto_render_bypass: true, max_clips: 8 } });
+    advance(SIM.queueMs + SIM.stageMs * 5);
+    const waiting = await apiCall(projects.getProject, { params: { id: poor.id } });
+    expect(waiting.status).toBe('awaiting_approval');
+    expect(waiting.metadata.auto_render_skipped).toBe('insufficient_funds');
+
+    signIn('todos-los-estados');
+    const seeded = (await apiCall(projects.listProjects, { query: { status_group: 'to_review', page_size: 100 } })).results;
+    expect(seeded.map((project) => project.metadata.auto_render_skipped).filter(Boolean).sort()).toEqual(['insufficient_funds', 'plan_limit']);
+  });
+
+  it('aprobar fuera del plan responde el 400 del motor de precios', async () => {
+    signIn('plan-gratis');
+    const review = (await apiCall(projects.listProjects, { query: { status_group: 'to_review' } })).results[0];
+    if (!review) throw new Error('falta el proyecto para revisar');
+    // The free plan takes 10 minutes: approving more than that is a plan limit.
+    const error = await fail(apiCall(projects.approvePaperEdit, { params: { id: review.id }, body: { approved_segments: [{ start: 0, end: 700 }] } }));
+    expect(error.status).toBe(400);
+    expect(error.message).toMatch(/^Error en el motor de precios/);
+    expect(approveErrorKind(error)).toMatchObject({ kind: 'plan_limit', limit: 'duration' });
+  });
+
+  it('una invitación se acepta con la sesión iniciada (el token viaja aunque el endpoint sea público)', async () => {
+    signIn('estudio-norte', 'nuevo');
+    const accepted = await apiCall(workspaces.acceptInvitation, { params: { token: 'con-cuenta' }, body: {} });
+    expect(accepted.tokens).toBeNull();
+    expect((await apiCall(users.getMe)).workspaces.map((workspace) => workspace.name)).toContain('Estudio Norte');
+    // Without a session the same invitation asks to sign in.
+    signIn('estudio-norte', null);
+    expect((await fail(apiCall(workspaces.acceptInvitation, { params: { token: 'con-cuenta' }, body: {} }))).status).toBe(401);
   });
 
   it('saldo insuficiente responde 402 con lo que hacía falta', async () => {
@@ -298,5 +361,7 @@ describe('mocks', () => {
     expect((await fail(apiCall(projects.listProjects, { query: {} }))).status).toBe(500);
     signIn('mantenimiento');
     expect((await apiCall(system.getSystemStatus)).maintenance_window).not.toBeNull();
+    // Everything else answers 503, which is what puts the app on the maintenance page.
+    expect((await fail(apiCall(projects.listProjects, { query: {} }))).status).toBe(503);
   });
 });

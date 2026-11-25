@@ -1,16 +1,17 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiCall } from '../client';
 import * as contract from '../contracts/brandkits';
 import { keys } from '../query';
+import { useScopedQuery } from './scope';
 
 export function useBrandKits() {
-  return useQuery({ queryKey: keys.brandKits.all, queryFn: ({ signal }) => apiCall(contract.listBrandKits, { signal }) });
+  return useScopedQuery({ queryKey: keys.brandKits.all, queryFn: ({ signal }) => apiCall(contract.listBrandKits, { signal }) });
 }
 
 export function useBrandKit(id: string | null | undefined) {
-  return useQuery({
+  return useScopedQuery({
     queryKey: keys.brandKits.detail(id ?? ''),
     queryFn: ({ signal }) => apiCall(contract.getBrandKit, { params: { id: id ?? '' }, signal }),
     enabled: Boolean(id),

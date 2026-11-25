@@ -45,17 +45,20 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [preference, setPreferenceState] = useState<ThemePreference>('dark');
   const [theme, setTheme] = useState<ResolvedTheme>('dark');
+  // False until the stored choice was read: before that the inline script's data-theme must not be overwritten.
+  const [ready, setReady] = useState(false);
 
   // The stored choice is only readable in the browser.
   useEffect(() => {
     const stored = readPreference();
     setPreferenceState(stored);
     setTheme(resolveTheme(stored));
+    setReady(true);
   }, []);
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-  }, [theme]);
+    if (ready && document.documentElement.getAttribute('data-theme') !== theme) document.documentElement.setAttribute('data-theme', theme);
+  }, [ready, theme]);
 
   // "Sistema" follows the OS while the app is open.
   useEffect(() => {

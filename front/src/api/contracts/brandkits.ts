@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { defineEndpoint } from '../endpoint';
-import { HexColor, Id, IsoDateTime, NoContent } from './common';
+import { ColorValue, HexColor, Id, IsoDateTime, NoContent } from './common';
 
 export const WatermarkPosition = z.enum(['top_left', 'top_right', 'bottom_left', 'bottom_right']);
 export type WatermarkPosition = z.infer<typeof WatermarkPosition>;
@@ -14,9 +14,9 @@ export const BrandKit = z.object({
   description: z.string(),
   primary_font: z.string().nullable(),
   secondary_font: z.string().nullable(),
-  primary_color: HexColor,
-  secondary_color: HexColor,
-  accent_color: HexColor,
+  primary_color: ColorValue,
+  secondary_color: ColorValue,
+  accent_color: ColorValue,
   watermark_logo: z.string().nullable(),
   intro_video: z.string().nullable(),
   outro_video: z.string().nullable(),
