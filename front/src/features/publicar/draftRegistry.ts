@@ -12,12 +12,14 @@
  * - an open panel keeps the entry's time fresh. A tab that is slow or in the background may not
  *   answer in time, so an entry refreshed in the last two minutes is in use whatever the answers
  *   say; and where there is no BroadcastChannel, only entries nobody refreshed for an hour go.
+ *   A panel that closes (or whose page goes away) clears the time of what it could not discard:
+ *   those are nobody's from that moment.
  */
 export interface DraftEntry {
   id: string;
   clip: string;
   workspace: string;
-  /** Last time a panel said it was using it. */
+  /** Last time a panel said it was using it. 0: its panel let go of it. */
   at: number;
 }
 
@@ -84,9 +86,15 @@ export function holdDraft(entry: Omit<DraftEntry, 'at'>, now = Date.now()): void
   write([...read().filter((item) => item.id !== entry.id), { ...entry, at: now }]);
 }
 
-/** The panel no longer uses it, but it may still exist on the server (the discard failed): it stays remembered. */
+/**
+ * The panel no longer uses it, but it may still exist on the server (the discard failed): it stays
+ * remembered, with no "last used" time. Its panel said it is done, so the next sweep can take it
+ * without waiting the two minutes a draft that may still be on screen is given.
+ */
 export function releaseDraft(id: string): void {
   held.delete(id);
+  const entries = read();
+  if (entries.some((item) => item.id === id && item.at !== 0)) write(entries.map((item) => (item.id === id ? { ...item, at: 0 } : item)));
 }
 
 /** The draft is gone, went out, or became the person's own: nothing to clean up. */

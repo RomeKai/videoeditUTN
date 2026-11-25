@@ -290,7 +290,7 @@ describe('E1 · Publicar · borradores de ayuda', () => {
   });
 
   /** A helper draft that a reload left behind: remembered in the browser, with no panel using it. */
-  const leftover = (change: (post: ReturnType<typeof db>['posts'][number]) => void = () => undefined, age = RECENT_DRAFT_MS + 1000) => {
+  const leftover = (change: (post: ReturnType<typeof db>['posts'][number]) => void = () => undefined) => {
     applyDefault();
     const data = db();
     const post = data.posts.find((item) => item.status === 'SCHEDULED');
@@ -300,9 +300,19 @@ describe('E1 · Publicar · borradores de ayuda', () => {
     post.tiktok = null;
     change(post);
     saveDb(data);
-    // Its panel is long gone: nothing refreshed the entry for more than the two minutes a live one is given.
-    holdDraft({ id: post.id, clip: post.video_clip, workspace: post.workspace }, Date.now() - age);
+    holdDraft({ id: post.id, clip: post.video_clip, workspace: post.workspace });
+    // Its panel let go of it (the page went away before the discard got through).
     releaseDraft(post.id);
+    return post;
+  };
+  /**
+   * The same draft as another tab's open panel has it: remembered, refreshed `age` ms ago, and not
+   * held by this page. (That tab is slow, or in the background: it does not answer when asked.)
+   */
+  const inAnotherTab = (age: number) => {
+    const post = leftover();
+    const at = Date.now() - age;
+    window.localStorage.setItem('oc.publicar.borradores', JSON.stringify(rememberedDrafts().map((entry) => (entry.id === post.id ? { ...entry, at } : entry))));
     return post;
   };
   const exists = (id: string) => db().posts.some((post) => post.id === id);
@@ -348,7 +358,7 @@ describe('E1 · Publicar · borradores de ayuda', () => {
 
   it('si nadie responde pero el borrador se usó hace menos de dos minutos, se queda: una pestaña lenta o en segundo plano no lo pierde', async () => {
     // Its panel refreshed the entry a minute ago, and its tab does not answer in time.
-    const theirs = leftover(undefined, 60_000);
+    const theirs = inAnotherTab(60_000);
     const found = await findOrphanDrafts(theirs.workspace, []);
     expect(found.orphans).toEqual([]);
     // It is looked at again when the two minutes are up.
@@ -364,7 +374,7 @@ describe('E1 · Publicar · borradores de ayuda', () => {
   });
 
   it('el barrido vuelve a pasar cuando se cumplen los dos minutos y descarta lo que nadie reclamó', async () => {
-    const theirs = leftover(undefined, RECENT_DRAFT_MS - 400);
+    const theirs = inAnotherTab(RECENT_DRAFT_MS - 400);
     renderScreen(<PublishPanelMount />, { keep: true });
     await pause(350);
     expect(exists(theirs.id)).toBe(true);
@@ -399,6 +409,16 @@ describe('E1 · Publicar · borradores de ayuda', () => {
     releaseDraft(theirs.id);
   });
 
+  it('lo que un panel soltó al cerrarse no espera los dos minutos: ya es de nadie', async () => {
+    const mine = leftover();
+    expect(rememberedDrafts().find((entry) => entry.id === mine.id)?.at).toBe(0);
+    expect((await findOrphanDrafts(mine.workspace, [])).orphans.map((entry) => entry.id)).toEqual([mine.id]);
+    // Taken back (the page came back from the cache, the panel opened again): in use from now on.
+    holdDraft({ id: mine.id, clip: mine.video_clip, workspace: mine.workspace });
+    expect(rememberedDrafts().find((entry) => entry.id === mine.id)?.at).toBeGreaterThan(0);
+    releaseDraft(mine.id);
+  });
+
   it('otra instancia de la app (una pestaña duplicada) no descarta el borrador de un panel abierto', async () => {
     await openPanel();
     await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toHaveLength(1));
@@ -423,7 +443,7 @@ describe('E1 · Publicar · borradores de ayuda', () => {
   });
 
   it('sin forma de preguntarle a otras pestañas, solo se descarta lo que nadie usa hace una hora; un panel abierto lo mantiene al día', async () => {
-    const theirs = leftover();
+    const theirs = inAnotherTab(0);
     vi.stubGlobal('BroadcastChannel', undefined);
     try {
       const later = Date.now() + STALE_DRAFT_MS + 1;
