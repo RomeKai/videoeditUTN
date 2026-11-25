@@ -153,6 +153,51 @@ test.describe('F1 · Brand kits y F2 · Editar brand kit', () => {
     expectClean(problems, 'historial');
   });
 
+  test('con cambios, el selector de workspace y el menú de comandos preguntan antes de sacarte de la pantalla', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    const problems = watch(page);
+    await page.goto('/brand-kits');
+    await settle(page);
+    await page.getByRole('link', { name: 'Estudio Norte', exact: true }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Estudio Norte' })).toBeVisible();
+    await page.getByLabel(/Descripción/).fill('Otra descripción');
+    await expect(page.getByRole('region', { name: 'Acciones' })).toBeVisible();
+
+    // The switcher asks first: staying keeps the workspace and the edits.
+    const switcher = page.getByRole('button', { name: /Cambiar de workspace/ });
+    await switcher.click();
+    await page.getByRole('menuitemradio').and(page.locator('[aria-checked="false"]')).first().click();
+    const dialog = page.getByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Seguir editando' }).click();
+    await expect(switcher).toHaveAccessibleName(/Actual: Estudio Norte/);
+    await expect(page.getByLabel(/Descripción/)).toHaveValue('Otra descripción');
+
+    // The command menu, too.
+    await page.keyboard.press('Control+k');
+    await page.getByRole('combobox', { name: 'Buscar o ejecutar un comando' }).fill('Publicaciones');
+    await page.keyboard.press('Enter');
+    await expect(dialog).toBeVisible();
+    await expect(page).toHaveURL(/\/brand-kits\/[0-9a-f-]{36}$/);
+    await dialog.getByRole('button', { name: 'Seguir editando' }).click();
+    await expect(page.getByLabel(/Descripción/)).toHaveValue('Otra descripción');
+
+    // Discarding lets the switch through, and Back from there is not held by a guard that is gone.
+    await switcher.click();
+    await page.getByRole('menuitemradio').and(page.locator('[aria-checked="false"]')).first().click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Descartar' }).click();
+    await expect(page).toHaveURL(/\/proyectos$/);
+    await expect(switcher).not.toHaveAccessibleName(/Actual: Estudio Norte/);
+    await settle(page);
+    // The switch reloads everything on screen before leaving it, and the kit is not in the new workspace:
+    // that 404 of the screen being left is the switch's (it happens without the guard too), not this test's.
+    const ofTheKitLeftBehind = (line: string) => /\/api\/v1\/brand-kits\/[0-9a-f-]{36}\/ · 404$/.test(line) || /status of 404/.test(line);
+    expectClean(
+      { failedRequests: problems.failedRequests.filter((line) => !ofTheKitLeftBehind(line)), consoleErrors: problems.consoleErrors.filter((line) => !ofTheKitLeftBehind(line)) },
+      'cambio de workspace con cambios',
+    );
+  });
+
   test('sin kits, y en el teléfono', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await useScenario(page, 'workspace-vacio');

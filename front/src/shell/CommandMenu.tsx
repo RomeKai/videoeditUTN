@@ -1,6 +1,5 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useProjects } from '@/api/hooks';
@@ -13,6 +12,7 @@ import { Icon, type IconName } from '@/ui/Icon';
 import { Kbd } from '@/ui/Kbd';
 import { useModalLayer } from '@/ui/overlay';
 import styles from './AppShell.module.css';
+import { useGuardedNavigation } from './leaveGuard';
 import { MAIN_NAV } from './nav';
 import { usePermissions, useSession } from './session';
 
@@ -45,7 +45,7 @@ function highlight(text: string, query: string): ReactNode {
 export function CommandMenu({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(0);
-  const router = useRouter();
+  const navigation = useGuardedNavigation();
   const { toggle: toggleTheme } = useTheme();
   const { me, workspace, switchWorkspace } = useSession();
   const { can } = usePermissions();
@@ -64,7 +64,7 @@ export function CommandMenu({ open, onClose }: { open: boolean; onClose: () => v
   const commands = useMemo<Command[]>(() => {
     const go = (href: string) => () => {
       onClose();
-      router.push(href);
+      navigation.push(href);
     };
     const text = query.trim().toLowerCase();
     const matches = (label: string) => !text || label.toLowerCase().includes(text);
@@ -110,12 +110,13 @@ export function CommandMenu({ open, onClose }: { open: boolean; onClose: () => v
         icon: 'selector' as const,
         run: () => {
           onClose();
-          void switchWorkspace(item.id).then(() => router.push('/proyectos'));
+          // With unsaved changes on screen, the switch waits for the answer: switching first would lose them without asking.
+          navigation.confirm(() => switchWorkspace(item.id).then(() => navigation.push('/proyectos')));
         },
       }))
       .filter((item) => matches(item.label) || matches('Cambiar de workspace'));
     return [...found, ...sections, ...actions, ...others];
-  }, [can, me?.workspaces, onClose, projects.data?.results, query, router, search, switchWorkspace, toggleTheme, workspace?.id]);
+  }, [can, me?.workspaces, onClose, projects.data?.results, query, navigation, search, switchWorkspace, toggleTheme, workspace?.id]);
 
   useEffect(() => {
     setSelected((index) => Math.min(index, Math.max(0, commands.length - 1)));

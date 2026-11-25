@@ -20,6 +20,7 @@ import { Tooltip } from '@/ui/Tooltip';
 import styles from './AppShell.module.css';
 import { Brand } from './Brand';
 import { CommandMenu } from './CommandMenu';
+import { useGuardedNavigation } from './leaveGuard';
 import { MAIN_NAV } from './nav';
 import { NotificationsPanel } from './NotificationsPanel';
 import { usePermissions, useSession } from './session';
@@ -61,6 +62,7 @@ function AccountMenu({ close, mobile, onCreateWorkspace, onOpenNotifications }: 
   const wallet = useWallet();
   const logout = useLogout();
   const router = useRouter();
+  const navigation = useGuardedNavigation();
   const unread = notifications.data?.unread_count ?? 0;
   if (!me) return null;
   return (
@@ -147,7 +149,7 @@ function AccountMenu({ close, mobile, onCreateWorkspace, onOpenNotifications }: 
         className={styles.menuItem}
         onClick={() => {
           close();
-          logout.mutate({}, { onSettled: () => router.replace('/login') });
+          navigation.confirm(() => logout.mutate({}, { onSettled: () => router.replace('/login') }));
         }}
       >
         <Icon name="logout" />

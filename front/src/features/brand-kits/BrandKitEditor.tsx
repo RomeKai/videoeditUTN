@@ -1,7 +1,6 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import type { BrandKit } from '@/api/contracts/brandkits';
 import { ApiError } from '@/api/errors';
@@ -9,6 +8,7 @@ import { useBrandKit, useBrandKits, useCreateBrandKit, useDeleteBrandKit, useUpd
 import { ConfirmDialog, UnsavedChangesDialog } from '@/dialogs';
 import { errorMessage } from '@/lib/error-messages';
 import { formatBytes, formatDuration } from '@/lib/format';
+import { useLeaveGuard } from '@/shell/leaveGuard';
 import { LoadError } from '@/shell/LoadError';
 import { usePermissions, usePlan } from '@/shell/session';
 import {
@@ -62,7 +62,6 @@ import {
   type KitErrors,
   type KitSource,
 } from './kit';
-import { useUnsavedGuard } from './useUnsavedGuard';
 
 const NEW_ID = 'nuevo';
 
@@ -291,7 +290,6 @@ function EditorSkeleton() {
 }
 
 function EditorForm({ kit }: { kit: BrandKit | null }) {
-  const router = useRouter();
   const toast = useToast();
   const { can, reason, role } = usePermissions();
   const { plan } = usePlan();
@@ -329,7 +327,7 @@ function EditorForm({ kit }: { kit: BrandKit | null }) {
     setFileErrors({});
     setServerError(null);
   };
-  const guard = useUnsavedGuard(dirty && !saving);
+  const guard = useLeaveGuard(dirty && !saving);
 
   const set = <K extends keyof KitDraft>(key: K, value: KitDraft[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -413,7 +411,7 @@ function EditorForm({ kit }: { kit: BrandKit | null }) {
         onSuccess: (created) => {
           toast.success(`Se creó «${created.name}»`);
           // The extra history entry of the unsaved changes goes first: the new kit takes the place of `nuevo`.
-          void guard.release().then(() => router.replace(`/brand-kits/${created.id}`));
+          guard.leaveNow(`/brand-kits/${created.id}`, { replace: true });
         },
         onError,
       });
@@ -729,7 +727,7 @@ function EditorForm({ kit }: { kit: BrandKit | null }) {
         </ActionBar>
       ) : null}
 
-      <UnsavedChangesDialog open={guard.asking} onStay={guard.stay} onDiscard={guard.discard} what={isNew ? 'los datos del brand kit nuevo' : `los cambios de «${source.name}»`} />
+      <UnsavedChangesDialog open={guard.dialog.open} onStay={guard.dialog.onStay} onDiscard={guard.dialog.onDiscard} what={isNew ? 'los datos del brand kit nuevo' : `los cambios de «${source.name}»`} />
       <ConfirmDialog
         open={confirmDelete}
         onClose={() => {
@@ -752,7 +750,7 @@ function EditorForm({ kit }: { kit: BrandKit | null }) {
           remove.mutate(kit.id, {
             onSuccess: () => {
               toast.success(`Se borró «${kit.name}»`);
-              void guard.release().then(() => router.replace('/brand-kits'));
+              guard.leaveNow('/brand-kits', { replace: true });
             },
           });
         }}

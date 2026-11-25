@@ -1,9 +1,10 @@
-import { cleanup, configure, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, configure, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/api/mocks/server';
 import { loadDb } from '@/api/mocks/state';
 import { EXAMPLE_IDS } from '@/dev/screens';
+import { useGuardedNavigation, type GuardedNavigation } from '@/shell/leaveGuard';
 import { idle, renderScreen } from '../publicar/testing';
 import { BrandKitEditor } from './BrandKitEditor';
 
@@ -23,7 +24,7 @@ vi.mock('@/api/hooks', async (original) => ({
   useCreateBrandKit: () => ({ mutate: writes.create, isPending: false }),
 }));
 
-/** One router for the whole app, as in the real one: the unsaved-changes guard watches its `push`. */
+/** One router for the whole app, as in the real one. */
 const router = vi.hoisted(() => {
   const push = vi.fn();
   return { original: push, object: { push, replace: vi.fn(), back: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() } };
@@ -155,44 +156,66 @@ describe('F2 · Editar brand kit', () => {
   });
 
   it('el botón Atrás del navegador también pregunta', async () => {
+    window.history.pushState(null, '', '/brand-kits');
+    window.history.pushState(null, '', '/brand-kits/x');
     const pushState = vi.spyOn(window.history, 'pushState');
-    const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
     const form = await open();
     expect(pushState).not.toHaveBeenCalled();
     fireEvent.change(within(form).getByLabelText(/Descripción/), { target: { value: 'Otra descripción' } });
     // With changes there is one more history entry for this same page: Back lands on it instead of leaving.
     await waitFor(() => expect(pushState).toHaveBeenCalledTimes(1));
-    fireEvent.popState(window);
+    window.history.back();
     const dialog = await screen.findByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
+    expect(window.location.pathname).toBe('/brand-kits/x');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Seguir editando' }));
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
-    // Staying puts the entry back, so the next Back asks again.
+    // The entry is in place again, so the next Back asks again.
     expect(pushState).toHaveBeenCalledTimes(2);
     expect(within(form).getByLabelText(/Descripción/)).toHaveValue('Otra descripción');
 
-    fireEvent.popState(window);
+    window.history.back();
     fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: /Descartar/ }));
-    expect(back).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(window.location.pathname).toBe('/brand-kits'));
     pushState.mockRestore();
-    back.mockRestore();
   });
 
   it('una navegación desde el menú de comandos, las notificaciones o el selector de workspace también pregunta', async () => {
-    const form = await open();
-    // Without changes the router is untouched.
-    router.object.push('/uso');
+    // What the shell does: it navigates from code through the guard, with no link to intercept.
+    let shell: GuardedNavigation | undefined;
+    const Shell = () => {
+      shell = useGuardedNavigation();
+      return null;
+    };
+    const switchWorkspace = vi.fn(() => Promise.resolve());
+    renderScreen(
+      <>
+        <Shell />
+        <BrandKitEditor id={EXAMPLE_IDS.brandKit} />
+      </>,
+    );
+    const form = await screen.findByRole('form', { name: 'Editar brand kit' });
+    // Without changes nothing asks.
+    act(() => shell?.push('/uso'));
     expect(router.original).toHaveBeenLastCalledWith('/uso');
     router.original.mockClear();
 
     fireEvent.change(within(form).getByLabelText(/Descripción/), { target: { value: 'Otra descripción' } });
-    await waitFor(() => expect(router.object.push).not.toBe(router.original));
-    // What the shell does: `router.push()` from code, with no link to intercept.
-    router.object.push('/proyectos');
+    await screen.findByRole('region', { name: 'Acciones' });
+    act(() => shell?.push('/proyectos'));
     const dialog = await screen.findByRole('alertdialog', { name: 'Tenés cambios sin guardar' });
+    expect(dialog).toHaveTextContent('los cambios de «Estudio Norte»');
     expect(router.original).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole('button', { name: /Descartar/ }));
-    // The extra history entry goes first, then the navigation.
-    await waitFor(() => expect(router.original).toHaveBeenCalledWith('/proyectos', undefined));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Seguir editando' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+
+    // The workspace switcher: nothing is switched until the person answers.
+    act(() => shell?.confirm(switchWorkspace));
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: /Descartar/ }));
+    expect(switchWorkspace).not.toHaveBeenCalled();
+    // The extra history entry goes first, then what the person asked for.
+    await waitFor(() => expect(switchWorkspace).toHaveBeenCalledTimes(1));
+    // The router is the app's own: the guard never replaces its methods.
+    expect(router.object.push).toBe(router.original);
   });
 
   it('sin `watermark_position` en la respuesta (el backend de hoy) no hay selector de esquina ni se manda el campo', async () => {

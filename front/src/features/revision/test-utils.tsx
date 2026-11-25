@@ -6,6 +6,7 @@ import type { MockDb } from '@/api/mocks/db';
 import { USER_IDS, WORKSPACE_IDS } from '@/api/mocks/seed';
 import { applyScenario, loadDb, mockTokens, saveDb } from '@/api/mocks/state';
 import { BillingDialogsProvider } from '@/dialogs/BillingDialogs';
+import { LeaveGuardProvider } from '@/shell/leaveGuard';
 import { SessionProvider } from '@/shell/session';
 import { ToastProvider } from '@/ui/Toast';
 
@@ -35,7 +36,9 @@ export function renderScreen(ui: ReactElement, client?: QueryClient) {
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
         <SessionProvider>
-          <BillingDialogsProvider>{ui}</BillingDialogsProvider>
+          <LeaveGuardProvider>
+            <BillingDialogsProvider>{ui}</BillingDialogsProvider>
+          </LeaveGuardProvider>
         </SessionProvider>
       </ToastProvider>
     </QueryClientProvider>,

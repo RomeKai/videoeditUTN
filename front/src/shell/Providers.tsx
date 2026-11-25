@@ -10,6 +10,7 @@ import { SessionExpiredDialog } from '@/dialogs/SessionExpiredDialog';
 import { ThemeProvider } from '@/lib/theme';
 import { ToastProvider } from '@/ui/Toast';
 import { GlobalLoading } from './GlobalLoading';
+import { LeaveGuardProvider } from './leaveGuard';
 import { MaintenanceGate } from './MaintenanceGate';
 import { OfflineBanner } from './OfflineBanner';
 import { SessionProvider } from './session';
@@ -57,7 +58,7 @@ function MockGate({ children }: { children: ReactNode }) {
   );
 }
 
-/** Everything the screens can count on: query cache, theme, toasts, session, shared dialogs and system banners. */
+/** Everything the screens can count on: query cache, theme, toasts, session, the leave guard, shared dialogs and system banners. */
 export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(createQueryClient);
   return (
@@ -66,11 +67,13 @@ export function Providers({ children }: { children: ReactNode }) {
         <ToastProvider>
           <MockGate>
             <SessionProvider>
-              <BillingDialogsProvider>
-                <OfflineBanner />
-                <MaintenanceGate>{children}</MaintenanceGate>
-                <SessionExpiredDialog />
-              </BillingDialogsProvider>
+              <LeaveGuardProvider>
+                <BillingDialogsProvider>
+                  <OfflineBanner />
+                  <MaintenanceGate>{children}</MaintenanceGate>
+                  <SessionExpiredDialog />
+                </BillingDialogsProvider>
+              </LeaveGuardProvider>
             </SessionProvider>
           </MockGate>
         </ToastProvider>

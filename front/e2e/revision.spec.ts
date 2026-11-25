@@ -49,6 +49,13 @@ test.describe('Revisión de clips (D2)', () => {
     await expect(page).toHaveURL(new RegExp(`${REVIEW}$`));
     await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
 
+    // Back asks too (the shell's guard), and staying keeps the selection.
+    await page.goBack();
+    await expect(dialog).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`${REVIEW}$`));
+    await dialog.getByRole('button', { name: 'Seguir editando' }).click();
+    await expect(page.getByRole('region', { name: 'Acciones' })).toContainText('4 clips seleccionados');
+
     // The draft survives a reload; "Descartar" really drops it.
     await page.reload();
     await settle(page);
