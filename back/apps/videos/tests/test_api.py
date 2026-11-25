@@ -37,6 +37,8 @@ class PrivateVideoProjectAPITests(APITestCase):
         # 3. Crear Workspace
         self.workspace = Workspace.objects.create(name="Test Workspace", owner=self.user)
         self.workspace.members.add(self.user)
+        # Segundo workspace del usuario, no el suyo por defecto: se lo nombra como hace el frontend.
+        self.client.credentials(HTTP_X_WORKSPACE_ID=str(self.workspace.pk))
 
         # 4. Crear proyectos de prueba
         self.project1 = VideoProject.objects.create(
