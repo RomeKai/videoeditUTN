@@ -11,6 +11,11 @@ export const Workspace = z.object({
   created_at: IsoDateTime,
   /** Proposed: role of the current user, so the screen does not need `/me` to decide. */
   role: Role.optional(),
+  /**
+   * Proposed, only in the detail: Dueño and Admins, so a member who cannot open
+   * Miembros knows who to ask for tokens or access (artboard R1).
+   */
+  admins: z.array(z.object({ id: Id, name: z.string(), role: Role })).optional(),
 });
 export type Workspace = z.infer<typeof Workspace>;
 
@@ -203,7 +208,7 @@ export const inviteMembers = defineEndpoint({
   workspaceScoped: false,
   errors: [
     { status: 400, when: 'Email inválido o ya es miembro (error en `emails`).' },
-    { status: 403, when: 'Sin lugares en el plan (`code: "seats_exceeded"`) o el rol no puede invitar.' },
+    { status: 403, when: 'Sin lugares en el plan (`code: "seats_exceeded"`: límite del plan, se resuelve subiendo de plan o quitando miembros; el mismo código en `billing.changePlan` es un 409 porque ahí lo que sobra son miembros) o el rol no puede invitar.' },
   ],
   backend: { status: 'proposed', gap: 13 },
   screens: ['D7', 'H2'],

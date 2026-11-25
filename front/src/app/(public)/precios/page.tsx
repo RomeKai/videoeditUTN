@@ -1,10 +1,9 @@
 import type { Metadata } from 'next';
-import { ScreenPlaceholder } from '@/dev/ScreenPlaceholder';
-import { SCREENS } from '@/dev/screens';
+import { PricingScreen } from '@/features/uso/PricingScreen';
 
 export const metadata: Metadata = { title: 'Precios' };
 
-// A6 · Precios: pantalla pendiente. El dominio dueño reemplaza este archivo (ver front/ROUTES.md).
+/** A6 · Precios (pública). */
 export default function Page() {
-  return <ScreenPlaceholder {...SCREENS.A6} page={false} />;
+  return <PricingScreen />;
 }

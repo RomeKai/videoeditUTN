@@ -145,6 +145,13 @@ export const SCENARIOS: Scenario[] = [
     options: { flags: { rejectPayments: true } },
   },
   {
+    id: 'plan-con-checkout',
+    label: 'Plan con checkout',
+    description: 'Subir de plan pide un pago: Planes manda al checkout y, al volver, avisa si el plan cambió o si el pago no salió.',
+    group: 'Sistema',
+    options: { flags: { planCheckout: true } },
+  },
+  {
     id: 'servidor-caido',
     label: 'Servidor caído',
     description: 'Las lecturas responden 500: banners de error con Reintentar y la página de error.',

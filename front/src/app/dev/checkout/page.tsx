@@ -25,7 +25,7 @@ function Checkout() {
   const search = useSearchParams();
   const purchaseId = search.get('compra') ?? '';
   const volver = search.get('volver');
-  const [purchase, setPurchase] = useState<{ tokens: number; amount_usd: number } | null>(null);
+  const [purchase, setPurchase] = useState<{ tokens: number; amount_usd: number; plan_name: string | null } | null>(null);
   useEffect(() => setPurchase(API_MOCKS ? getMockPurchase(purchaseId) : null), [purchaseId]);
 
   const finish = (approved: boolean) => {
@@ -41,7 +41,9 @@ function Checkout() {
         {purchase ? (
           <>
             <p>
-              <span className="num">{formatNumber(purchase.tokens, 0)} tokens</span> por <span className="num">{formatUsd(purchase.amount_usd)}</span>
+              {purchase.plan_name ? `Plan ${purchase.plan_name}` : <span className="num">{formatNumber(purchase.tokens, 0)} tokens</span>} por{' '}
+              <span className="num">{formatUsd(purchase.amount_usd)}</span>
+              {purchase.plan_name ? ' por mes' : ''}
             </p>
             <Button variant="primary" block onClick={() => finish(true)}>
               Pagar
@@ -55,8 +57,8 @@ function Checkout() {
             Volvé a Comprar tokens y empezá de nuevo.
           </Banner>
         )}
-        <Button variant="ghost" block href="/uso/comprar">
-          Volver a Comprar tokens
+        <Button variant="ghost" block href={purchase?.plan_name ? '/uso/planes' : '/uso/comprar'}>
+          {purchase?.plan_name ? 'Volver a Planes' : 'Volver a Comprar tokens'}
         </Button>
       </AuthCard>
     </div>

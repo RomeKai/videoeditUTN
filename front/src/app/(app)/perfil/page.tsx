@@ -1,10 +1,9 @@
 import type { Metadata } from 'next';
-import { ScreenPlaceholder } from '@/dev/ScreenPlaceholder';
-import { SCREENS } from '@/dev/screens';
+import { ProfileScreen } from '@/features/ajustes/ProfileScreen';
 
-export const metadata: Metadata = { title: 'Perfil' };
+export const metadata: Metadata = { title: 'Tu cuenta' };
 
-// I1 · Perfil: pantalla pendiente. El dominio dueño reemplaza este archivo (ver front/ROUTES.md).
+/** I1 · Perfil. */
 export default function Page() {
-  return <ScreenPlaceholder {...SCREENS.I1} page={false} headingLevel={2} />;
+  return <ProfileScreen />;
 }

@@ -152,6 +152,10 @@ export const TransactionsQuery = PageQuery.extend({
 });
 export type TransactionsQuery = z.infer<typeof TransactionsQuery>;
 
+/** Count and sum of the movements of one kind, for the filter chips and the totals of G2 and G1. */
+export const TransactionKindTotal = z.object({ count: z.number().int().nonnegative(), amount: Decimal });
+export type TransactionKindTotal = z.infer<typeof TransactionKindTotal>;
+
 export const UsageDay = z.object({
   /** YYYY-MM-DD */
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -186,8 +190,11 @@ export const PurchaseStatus = z.enum(['pending', 'approved', 'rejected']);
 export const TokenPurchase = z.object({
   id: Id,
   status: PurchaseStatus,
-  tokens: z.number().int().positive(),
+  /** 0 when the payment is for a plan upgrade (`plan_id` set). */
+  tokens: z.number().int().nonnegative(),
   amount_usd: Decimal,
+  /** Proposed: set when this payment is the checkout of a plan upgrade (`billing.changePlan`). */
+  plan_id: Id.nullable().optional(),
   /** Where the browser goes to pay. Null once it is settled. */
   checkout_url: z.string().url().nullable(),
   /** Why the provider rejected it, as a readable sentence. */
@@ -197,6 +204,15 @@ export const TokenPurchase = z.object({
   balance_after: Decimal.nullable(),
 });
 export type TokenPurchase = z.infer<typeof TokenPurchase>;
+
+/** What `billing.purchase` answers: a token purchase always has tokens; the payment of a plan upgrade has `plan_id` and none. */
+export const Payment = TokenPurchase.superRefine((value, context) => {
+  if (value.plan_id) {
+    if (value.tokens !== 0) context.addIssue({ code: z.ZodIssueCode.custom, path: ['tokens'], message: 'El pago de un plan no acredita tokens.' });
+  } else if (value.tokens <= 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['tokens'], message: 'Una compra de tokens tiene al menos uno.' });
+  }
+});
 
 export const listPlans = defineEndpoint({
   id: 'billing.plans',
@@ -251,8 +267,16 @@ export const changePlan = defineEndpoint({
   id: 'billing.changePlan',
   method: 'POST',
   path: '/api/v1/subscription/change/',
-  summary: 'Cambia de plan. Subir se aplica al momento (con checkout si hay que pagar); bajar, al fin del período.',
-  request: z.object({ plan_id: Id }),
+  summary:
+    'Cambia de plan. Subir se aplica al momento, o al volver del checkout si hay que pagar; bajar, al fin del período. Mandar el plan actual cancela un cambio programado.',
+  request: z.object({
+    plan_id: Id,
+    /**
+     * Where the provider sends the browser back when the upgrade needs a payment (`/uso/planes`).
+     * The backend appends `compra=<id>`; the screen follows that payment with `billing.purchase`.
+     */
+    return_url: z.string().url().optional(),
+  }),
   response: z.object({
     applied: z.enum(['now', 'period_end']),
     /** Present when the upgrade needs a payment. */
@@ -260,10 +284,18 @@ export const changePlan = defineEndpoint({
     subscription: Subscription,
   }),
   errors: [
-    { status: 400, when: 'Ya es el plan actual.' },
+    { status: 400, when: 'Ya es el plan actual y no hay ningún cambio programado para cancelar.' },
     { status: 403, when: 'El rol no puede cambiar el plan (solo Dueño y Admin).' },
+    {
+      status: 409,
+      when: 'Bajar a un plan con menos lugares que los que el workspace ocupa hoy, contando invitaciones pendientes (`code: "seats_exceeded"`). No se programa nada: primero hay que quitar miembros. Es un 409 porque lo impide el estado del workspace; el mismo código en `workspaces.invite` es un 403 de límite de plan, que se resuelve subiendo de plan.',
+    },
   ],
-  backend: { status: 'proposed', gap: 12 },
+  backend: {
+    status: 'proposed',
+    gap: 12,
+    note: 'Con `plan_id` igual al plan actual y un cambio programado, lo cancela (`pending_plan` vuelve a null, `applied: "now"`). Si subir necesita un pago, `checkout_url` viene con valor, el plan no cambia todavía y el proveedor vuelve a `return_url` con `compra=<id>`.',
+  },
   screens: ['G3'],
 });
 
@@ -282,7 +314,7 @@ export const getUsage = defineEndpoint({
   id: 'billing.usage',
   method: 'GET',
   path: '/api/v1/wallet/usage/',
-  summary: 'Consumo por día de un mes, separado en proyectos, renders y SEO.',
+  summary: 'Consumo por día de un mes (solo lo cobrado), separado en proyectos, renders y SEO. El mes y los días son los de la zona horaria del workspace (America/Argentina/Buenos_Aires).',
   query: z.object({ month: z.string().regex(/^\d{4}-\d{2}$/).optional() }),
   response: z.array(UsageDay),
   errors: [{ status: 403, when: 'Solo Dueño y Admin.' }],
@@ -294,11 +326,18 @@ export const listTransactions = defineEndpoint({
   id: 'billing.transactions',
   method: 'GET',
   path: '/api/v1/transactions/',
-  summary: 'Movimientos de la billetera, paginados, con filtro por tipo, mes y proyecto.',
+  summary: 'Movimientos de la billetera, paginados, con filtro por tipo, mes y proyecto. `month=YYYY-MM` es el mes en la zona horaria del workspace (America/Argentina/Buenos_Aires).',
   query: TransactionsQuery,
-  response: paginated(Transaction),
+  response: paginated(Transaction).extend({
+    /**
+     * Proposed (gap 4), always present: how many movements and how many tokens per kind, for the
+     * same month and project but ignoring `kind` and the page, so the chips can show every count
+     * at once. Kinds without movements may be absent.
+     */
+    totals: z.record(TransactionKind, TransactionKindTotal),
+  }),
   errors: [{ status: 403, when: 'Solo Dueño y Admin (Editor y Lector ven únicamente el saldo).' }],
-  backend: { status: 'proposed', gap: 4, note: 'Modelo: Transaction. Faltan el vínculo al proyecto y el estado "devuelto" (hoy SPEND + FAILED).' },
+  backend: { status: 'proposed', gap: 4, note: 'Modelo: Transaction. Faltan el vínculo al proyecto y `kind`. Hoy el backend solo escribe DEPOSIT y SPEND: un cobro parcial (`commit_partial_reservation`) baja el monto del SPEND a lo cobrado y lo deja COMPLETED, y devuelve el resto al saldo sin escribir otra fila; una reserva que se cae queda SPEND + FAILED (`kind: "released"`, «Devuelto»). El tipo REFUND existe en el modelo pero nada lo escribe: `kind: "refund"` queda propuesto para devoluciones de algo ya cobrado.' },
   screens: ['G2', 'D1f'],
 });
 
@@ -306,7 +345,7 @@ export const exportTransactions = defineEndpoint({
   id: 'billing.exportTransactions',
   method: 'GET',
   path: '/api/v1/transactions/export/',
-  summary: 'Los mismos movimientos en CSV.',
+  summary: 'Los mismos movimientos en CSV. El monto lleva el signo de lo que le hizo al saldo: negativo lo reservado y lo cobrado, positivo lo comprado y lo devuelto.',
   query: TransactionsQuery.omit({ page: true, page_size: true }),
   response: z.string(),
   responseType: 'text',
@@ -335,7 +374,7 @@ export const createTokenPurchase = defineEndpoint({
     .object({
       package_id: z.string().min(1).optional(),
       custom_tokens: z.number().int().positive().optional(),
-      /** Where the provider sends the browser back: `/uso/comprar/resultado`. */
+      /** Where the provider sends the browser back: `/uso/comprar/resultado`. The backend appends `compra=<id>` to it. */
       return_url: z.string().url(),
     })
     .refine((value) => Boolean(value.package_id) !== Boolean(value.custom_tokens), {
@@ -355,8 +394,8 @@ export const getTokenPurchase = defineEndpoint({
   id: 'billing.purchase',
   method: 'GET',
   path: '/api/v1/token-purchases/:id/',
-  summary: 'Estado de una compra: pendiente, acreditada o rechazada.',
-  response: TokenPurchase,
+  summary: 'Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`tokens` > 0) o el pago de una subida de plan (`plan_id`, `tokens` 0).',
+  response: Payment,
   errors: [{ status: 404, when: 'La compra no existe en este workspace.' }],
   backend: { status: 'proposed', gap: 12, note: 'El webhook del proveedor acredita; la pantalla consulta cada 5 s mientras está pendiente.' },
   screens: ['G5'],

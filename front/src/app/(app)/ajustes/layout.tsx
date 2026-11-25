@@ -1,14 +1,12 @@
 import type { ReactNode } from 'react';
-import { SettingsNav } from '@/shell/SectionNav';
-import { Page, PageHead } from '@/ui/Page';
-import { SideLayout } from '@/ui/Settings';
+import { SettingsShell } from '@/features/ajustes/SectionShell';
+import { Page } from '@/ui/Page';
 
-/** Ajustes del workspace (H1–H3): sections at the left, a horizontal list on phones. Dominio dueño: `ajustes`. */
+/** Ajustes del workspace (H1–H3): sections at the left; a list on phones (M10). Dominio dueño: `ajustes`. */
 export default function SettingsLayout({ children }: { children: ReactNode }) {
   return (
     <Page>
-      <PageHead title="Ajustes" />
-      <SideLayout nav={<SettingsNav />}>{children}</SideLayout>
+      <SettingsShell>{children}</SettingsShell>
     </Page>
   );
 }
