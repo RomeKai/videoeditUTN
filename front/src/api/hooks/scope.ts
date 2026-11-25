@@ -39,8 +39,19 @@ export function useScopedQuery<TQueryFnData = unknown, TError = DefaultError, TD
   options: UseQueryOptions<TQueryFnData, TError, TData, TQueryKey>,
 ): UseQueryResult<TData, TError> {
   const workspaceId = useActiveWorkspaceId();
+  const { placeholderData } = options;
   return useQuery({
     ...options,
+    // `keepPreviousData` (and any function) only keeps what belongs to this workspace: after a switch the
+    // previous key is the other workspace's, and its rows would lead to 404s.
+    ...(typeof placeholderData === 'function'
+      ? {
+          placeholderData: ((previous: unknown, previousQuery: { queryKey: QueryKey } | undefined) =>
+            previousQuery && previousQuery.queryKey[previousQuery.queryKey.length - 1] === workspaceId
+              ? (placeholderData as (data: unknown, query: unknown) => unknown)(previous, previousQuery)
+              : undefined) as typeof placeholderData,
+        }
+      : {}),
     queryKey: [...options.queryKey, workspaceId] as unknown as TQueryKey,
     enabled: Boolean(workspaceId) && options.enabled !== false,
   } as UseQueryOptions<TQueryFnData, TError, TData, TQueryKey>);

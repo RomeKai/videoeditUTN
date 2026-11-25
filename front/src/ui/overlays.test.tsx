@@ -2,12 +2,74 @@ import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { hydrateRoot } from 'react-dom/client';
 import { renderToString } from 'react-dom/server';
+import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { Button } from './Button';
 import { Dialog } from './Dialog';
 import { DropdownMenu } from './DropdownMenu';
 import { Popover } from './Popover';
 import { Tooltip } from './Tooltip';
+
+describe('la trampa de foco del diálogo sigue con algo abierto adentro', () => {
+  it('Tab desde el último control con su tooltip abierto vuelve al primero; al cerrar, el foco vuelve a quien lo abrió', async () => {
+    const user = userEvent.setup();
+    function Case() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            Abrir
+          </button>
+          <Dialog open={open} onClose={() => setOpen(false)} title="Con tooltip">
+            <input aria-label="Nombre" data-autofocus />
+            <Button disabledReason="Pedile acceso a un admin">Guardar</Button>
+          </Dialog>
+        </>
+      );
+    }
+    render(<Case />);
+    await user.click(screen.getByRole('button', { name: 'Abrir' }));
+    const dialog = screen.getByRole('dialog');
+    const focusable = Array.from(dialog.querySelectorAll<HTMLElement>('button, input'));
+    // Walk to the last control: its tooltip opens on focus and becomes the top layer.
+    act(() => (focusable[focusable.length - 1] as HTMLElement).focus());
+    expect(screen.getByRole('tooltip')).toBeInTheDocument();
+    await user.tab();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(focusable[0]);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(focusable[focusable.length - 1]);
+    // Escape hides the tooltip first, then closes the dialog and gives the focus back.
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Abrir' })).toHaveFocus();
+  });
+
+  it('con un menú o un popover abierto como último elemento, Tab no sale del diálogo', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <button type="button">Detrás</button>
+        <Dialog open onClose={() => {}} title="Con menú al final">
+          <input aria-label="Nombre" />
+          <Popover ariaLabel="Detalle" trigger={(props) => <Button {...props}>Ver detalle</Button>}>
+            <button type="button">Adentro</button>
+          </Popover>
+        </Dialog>
+      </>,
+    );
+    const dialog = screen.getByRole('dialog');
+    await user.click(screen.getByRole('button', { name: 'Ver detalle' }));
+    expect(screen.getByRole('button', { name: 'Adentro' })).toBeInTheDocument();
+    for (let step = 0; step < 6; step += 1) {
+      await user.tab();
+      expect(dialog.contains(document.activeElement)).toBe(true);
+    }
+    expect(screen.getByRole('button', { name: 'Detrás' })).not.toHaveFocus();
+  });
+});
 
 describe('capas anidadas: Escape solo actúa sobre la de arriba', () => {
   it('un menú abierto dentro de un diálogo se cierra primero; el diálogo, con el segundo Escape', async () => {

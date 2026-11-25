@@ -1,17 +1,12 @@
 'use client';
 
+import { THEME_INIT_SCRIPT, THEME_STORAGE_KEY } from './theme-script';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 export type ThemePreference = 'system' | 'dark' | 'light';
 export type ResolvedTheme = 'dark' | 'light';
 
-export const THEME_STORAGE_KEY = 'oc.theme';
-
-/**
- * Inline script for <head>: applies the stored theme before the first paint.
- * Dark is the default; "system" follows the OS (map 1.2).
- */
-export const THEME_INIT_SCRIPT = `(function(){try{var p=localStorage.getItem('${THEME_STORAGE_KEY}')||'dark';var t=p==='system'?(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'):p;document.documentElement.setAttribute('data-theme',t==='light'?'light':'dark');}catch(e){document.documentElement.setAttribute('data-theme','dark');}})();`;
+export { THEME_INIT_SCRIPT, THEME_STORAGE_KEY };
 
 function readPreference(): ThemePreference {
   try {

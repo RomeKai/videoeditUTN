@@ -99,6 +99,11 @@ describe('errores reales del backend', () => {
 
   it('aprobar: cada 400 lleva a su lugar', () => {
     expect(approveErrorKind(error('approve_400_not_awaiting'))).toMatchObject({ kind: 'not_awaiting_approval' });
+    // The backend's source has that sentence with a broken encoding today; it is recognised broken and fixed.
+    expect(real.errors.approve_400_not_awaiting.body.error).toContain('no estÃ¡ en espera de aprobaciÃ³n');
+    const fixed = new ApiError(400, 'x', { error: 'El proyecto no está en espera de aprobación. Estado actual: rendering' });
+    expect(approveErrorKind(fixed)).toMatchObject({ kind: 'not_awaiting_approval' });
+    expect(errorMessage(error('approve_400_not_awaiting'))).toBe('El proyecto no está en espera de aprobación. Estado actual: rendering');
     expect(approveErrorKind(error('approve_409_race'))).toMatchObject({ kind: 'not_awaiting_approval' });
     expect(approveErrorKind(error('approve_400_pricing'))).toMatchObject({ kind: 'plan_limit', limit: 'resolution' });
     expect(approveErrorKind(error('approve_402'))).toMatchObject({ kind: 'insufficient_funds' });

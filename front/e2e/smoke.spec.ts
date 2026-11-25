@@ -43,12 +43,15 @@ test.describe('Smoke en modo mock', () => {
   // A full reload goes through hydration and the start of the mock worker again: neither may fail.
   for (const path of ['/proyectos', '/mantenimiento', '/uso/comprar/resultado']) {
     test(`recargar ${path} no deja errores de consola ni pedidos sin simular`, async ({ page }) => {
+      // Eight full page loads: more than the default minute on a busy machine.
+      test.setTimeout(180_000);
       await useScenario(page, 'estudio-norte');
       const problems = watch(page);
       await page.goto(path);
       await settle(page);
       // Quick reloads first (the mock worker used to unregister itself between two of them)…
-      for (let round = 0; round < 6; round += 1) await page.reload({ waitUntil: 'load' });
+      // (MSW reloads the page by itself when it finds its worker not in control yet: that cancels ours.)
+      for (let round = 0; round < 6; round += 1) await page.reload({ waitUntil: 'load' }).catch(() => page.waitForLoadState('load'));
       // …then slow ones, each waiting for the screen.
       for (let round = 0; round < 2; round += 1) {
         await page.reload();
@@ -58,6 +61,29 @@ test.describe('Smoke en modo mock', () => {
       // The browser checks the worker for updates about a second after the load: a failure shows up then.
       await page.waitForTimeout(1500);
       expectClean(problems, `${path} recargada`);
+    });
+  }
+
+  // React error #418 used to show up now and then on a busy machine: the root layout took the theme script
+  // from a client module, so <head> waited for the layout's JS and hydration lost its place when that file
+  // arrived after it had started. Here the file is held back on purpose.
+  for (const delay of [100, 300, 1000]) {
+    test(`la página hidrata bien aunque el JS del layout llegue ${delay} ms tarde`, async ({ page }) => {
+      await useScenario(page, 'estudio-norte');
+      const problems = watch(page);
+      let delayed = 0;
+      await page.route(/\/chunks\/app\/layout-[^/]*\.js/, async (route) => {
+        delayed += 1;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        await route.continue();
+      });
+      for (const path of ['/mantenimiento', '/proyectos', '/login']) {
+        await page.goto(path);
+        await settle(page);
+        await expect(page.locator('h1').first()).toBeVisible();
+      }
+      expect(delayed, 'el JS del layout pasó por la demora').toBeGreaterThan(0);
+      expectClean(problems, `layout ${delay} ms tarde`);
     });
   }
 
