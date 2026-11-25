@@ -1,9 +1,15 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { EXAMPLE_IDS } from '../src/dev/screens';
 import { expectClean, settle, useScenario, watch } from './helpers';
 
 const REVIEW = `/proyectos/${EXAMPLE_IDS.projectToReview}/revision`;
 const EDITOR = `/proyectos/${EXAMPLE_IDS.projectReady}/clips/${EXAMPLE_IDS.clip}`;
+
+/** The project's Clips tab is the screen on display: its tab is the current one, under the project's own heading. */
+async function expectClipsTab(page: Page): Promise<void> {
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Secciones del proyecto' }).getByRole('link', { name: /^Clips/ })).toHaveAttribute('aria-current', 'page');
+}
 
 test.describe('Revisión de clips (D2)', () => {
   test('elegir clips con el teclado, aprobar y quedar renderizando', async ({ page }) => {
@@ -24,14 +30,14 @@ test.describe('Revisión de clips (D2)', () => {
     await expect(dialog).toContainText('Saldo después');
     await dialog.getByRole('button', { name: 'Renderizar' }).click();
     await expect(page).toHaveURL(new RegExp(`/proyectos/${EXAMPLE_IDS.projectToReview}/clips$`), { timeout: 20_000 });
-    // Clips shows its cards as busy while they render, so the page never "settles" here: wait for its heading.
-    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    // Clips shows its cards as busy while they render, so the page never "settles" here: wait for its tab.
+    await expectClipsTab(page);
     await page.waitForLoadState('networkidle');
 
     // The project left the review: going back sends you to its clips.
     await page.goto(REVIEW);
     await expect(page).toHaveURL(new RegExp(`/proyectos/${EXAMPLE_IDS.projectToReview}/clips$`), { timeout: 20_000 });
-    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    await expectClipsTab(page);
     expectClean(problems, REVIEW);
   });
 
@@ -108,7 +114,7 @@ test.describe('Editor de clip (D4)', () => {
     await page.getByRole('dialog', { name: 'Volver a renderizar' }).getByRole('button', { name: 'Renderizar' }).click();
     await expect(page).toHaveURL(new RegExp(`/proyectos/${EXAMPLE_IDS.projectReady}/clips$`), { timeout: 20_000 });
     // The clip is rendering again: Clips keeps its card busy until it ends.
-    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    await expectClipsTab(page);
     await page.waitForLoadState('networkidle');
     expectClean(problems, EDITOR);
   });

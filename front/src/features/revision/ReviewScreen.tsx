@@ -51,6 +51,9 @@ import { useFreePreview } from './useFreePreview';
 
 type View = 'crop' | 'original';
 
+/** Why "Renderizar" waits while the review is being fetched again. */
+const REFRESHING_REASON = 'Actualizando la revisión…';
+
 const SHORTCUTS: Array<{ keys: string[]; label: string }> = [
   { keys: ['espacio'], label: 'Reproducir o pausar' },
   { keys: ['↑', '↓'], label: 'Cambiar de clip' },
@@ -59,6 +62,8 @@ const SHORTCUTS: Array<{ keys: string[]; label: string }> = [
   { keys: ['I', 'O'], label: 'Marcar inicio y fin' },
   { keys: ['←', '→'], label: 'Mover el cursor' },
   { keys: ['⇧', '←', '→'], label: 'En el texto: seleccionar palabras' },
+  { keys: ['espacio'], label: 'En el texto: marcar o desmarcar la palabra' },
+  { keys: ['↵'], label: 'En el texto: ir a esa palabra en el video' },
 ];
 
 function ShortcutsButton({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
@@ -967,10 +972,11 @@ function Review({ projectId, userId, data, refreshing, loadError, onRetry }: Rev
         <Button
           variant="accent"
           size="lg"
-          disabled={totals.count === 0 || !estimate || refreshing}
+          disabled={totals.count === 0 || !estimate}
+          // While the review is fetched again the clips on screen may be about to change: the button waits, and says so.
+          disabledReason={gate('project.review').disabledReason ?? (refreshing && totals.count > 0 && estimate ? REFRESHING_REASON : '')}
           aria-label={totals.count > 0 ? `Renderizar ${totals.count === 1 ? '1 clip' : `${totals.count} clips`}` : 'Renderizar'}
           onClick={askToRender}
-          {...gate('project.review')}
         >
           {isMobile || totals.count === 0 ? 'Renderizar' : `Renderizar ${totals.count === 1 ? '1 clip' : `${totals.count} clips`}`}
         </Button>

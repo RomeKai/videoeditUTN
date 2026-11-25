@@ -27,6 +27,9 @@ export interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement
   /**
    * Why the action is not available (role or plan). The button stays focusable,
    * announces itself as disabled and shows the reason in a tooltip (map 1.7).
+   * For a reason that comes and goes (something is being refreshed), pass `''` while there is
+   * none: the button is not blocked, and it keeps its place in the tree (and the focus) when the
+   * reason appears.
    */
   disabledReason?: string;
   children?: ReactNode;
@@ -108,7 +111,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       </button>
     );
   }
-  return disabledReason ? <Tooltip content={disabledReason}>{element}</Tooltip> : element;
+  return disabledReason !== undefined ? <Tooltip content={disabledReason}>{element}</Tooltip> : element;
 });
 
 export interface IconButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children' | 'aria-label'> {

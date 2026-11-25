@@ -90,6 +90,24 @@ function wordIndexOf(node: Node | null): number | null {
  * make a clip or move a border of the current one; borders always land on
  * whole words because the selection is turned into word indexes.
  */
+/**
+ * Space on a word. The selection is always one run of words (it becomes a clip, or one of its
+ * edges), so toggling keeps it in one piece: a word next to the run joins it, a word at its edge
+ * leaves it, one in the middle ends the run before it, and a word away from it starts a new run.
+ */
+export function toggleWord(selection: { from: number; to: number } | null, index: number): { from: number; to: number } | null {
+  if (!selection) return { from: index, to: index };
+  const { from, to } = selection;
+  if (index >= from && index <= to) {
+    if (from === to) return null;
+    if (index === from) return { from: from + 1, to };
+    return { from, to: index - 1 };
+  }
+  if (index === from - 1) return { from: index, to };
+  if (index === to + 1) return { from, to: index };
+  return { from: index, to: index };
+}
+
 export function TranscriptPanel({
   words,
   rows,
@@ -166,9 +184,23 @@ export function TranscriptPanel({
     const index = wordIndexOf(event.target as Node);
     if (index === null || !(event.target as Element).hasAttribute?.('data-w')) return;
     const key = event.key;
-    if (key === 'Enter' || key === ' ') {
+    // The listbox convention: Enter acts on the word (goes to it in the video), Space changes its selection.
+    if (key === 'Enter') {
       event.preventDefault();
       onSeek((words[index] as Word).start);
+      return;
+    }
+    if (key === ' ') {
+      event.preventDefault();
+      if (event.shiftKey && anchor.current !== null) {
+        // Shift + Space: everything from where the selection started to this word.
+        setSelection({ from: Math.min(anchor.current, index), to: Math.max(anchor.current, index) });
+        return;
+      }
+      const next = toggleWord(selection, index);
+      // Shift + arrows go on from the far end of what is left.
+      anchor.current = next ? (index <= next.from ? next.to : next.from) : null;
+      setSelection(next);
       return;
     }
     if (key === 'Escape' && selection) {
@@ -388,7 +420,7 @@ export function TranscriptPanel({
         ref={scroller}
         className={cx(styles.scroll, variant === 'main' && styles.scrollMain, mobile && styles.scrollMobile, searching && variant === 'side' && styles.scrollSearch)}
         role="group"
-        aria-label="Texto de la transcripción. Con las flechas te movés por palabras, con Mayús y las flechas seleccionás, y con Enter vas a esa palabra en el video."
+        aria-label="Texto de la transcripción. Con las flechas te movés por palabras, con Mayús y las flechas seleccionás, con Espacio marcás o desmarcás la palabra y con Enter vas a esa palabra en el video."
         onKeyDown={onKeyDown}
         onMouseUp={() => window.setTimeout(readSelection, 0)}
         onTouchEnd={() => window.setTimeout(readSelection, 0)}
