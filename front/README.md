@@ -81,11 +81,12 @@ front/
     │   ├── client.ts     El único fetch: token, renovación, validación con zod
     │   └── CONTRACT.md   Generado
     ├── ui/               Sistema visual: un componente por archivo, con su CSS Module
-    ├── shell/            Barra, sesión, permisos, protección de rutas, páginas de sistema
+    ├── shell/            Barra, sesión, permisos, protección de rutas, guarda de salida, páginas de sistema
     ├── dialogs/          Diálogos compartidos (costo, saldo, plan, borrar, sesión…)
     ├── lib/              Formatos, permisos, precios, estados del proyecto, mensajes de error
     ├── features/         Código de cada pantalla, por dominio
     ├── dev/              Registro de pantallas, cartel de pantalla pendiente, panel de mocks
+    ├── testing/          Utilidades de los tests de pantallas (providers, API simulada, escenarios)
     └── styles/           Tokens de los dos temas y estilos base
 ```
 
@@ -100,10 +101,11 @@ front/
    - **Sesión, rol y plan:** `useSession()`, `usePermissions()` y `usePlan()` de `@/shell/session`.
    - **Diálogos:** `@/dialogs`. Para un 402 o un 403 de precios: `useBillingDialogs().handleError(error)`.
    - **Avisos:** `useToast()`.
+   - **Cambios sin guardar:** `useLeaveGuard(dirty)` de `@/shell/leaveGuard` y `<UnsavedChangesDialog {...guard.dialog} />`. La guarda del shell cubre los links, Atrás, cerrar la pestaña y lo que navega desde la barra; la pantalla no intercepta nada por su cuenta. Para salir después de guardar, `guard.leaveNow(href)`.
 5. Cubrí los estados del mapa: cargando con `Skeleton` (nunca un spinner de pantalla completa), vacío con `EmptyState`, error con `<LoadError>` de `@/shell/LoadError`.
 6. Lo que el rol no permite se deshabilita, no se oculta: `<Button {...gate('project.create')}>`. Lo que el plan no incluye se muestra con `<PlanLock plan="Creador" />`.
 7. Los textos van en español rioplatense, tal como están en el mapa y en los artboards. Montos, fechas y duraciones salen de `@/lib/format` o de `<Tokens>`, `<DateTime>` y `<Duration>`.
-8. Agregá tests de la pantalla y fijate que el smoke (`npm run test:e2e`) siga pasando: visita todas las rutas del registro.
+8. Agregá tests de la pantalla (`renderScreen` y compañía están en `@/testing`) y fijate que el smoke (`npm run test:e2e`) siga pasando: visita todas las rutas del registro.
 
 ## Cómo agregar un endpoint al contrato
 
