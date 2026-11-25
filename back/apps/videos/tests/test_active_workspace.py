@@ -597,3 +597,16 @@ class CorsAllowsTheHeaderTests(APITestCase):
 
         allowed = {name.strip() for name in response["access-control-allow-headers"].split(",")}
         self.assertIn("x-workspace-id", allowed)
+
+    @override_settings(CORS_ALLOW_ALL_ORIGINS=True)
+    def test_the_preflight_allows_the_idempotency_key(self):
+        # The publish panel sends one per submit so a retry never publishes twice.
+        response = self.client.options(
+            PROJECTS,
+            HTTP_ORIGIN="http://localhost:3000",
+            HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
+            HTTP_ACCESS_CONTROL_REQUEST_HEADERS="authorization, x-workspace-id, idempotency-key",
+        )
+
+        allowed = {name.strip() for name in response["access-control-allow-headers"].split(",")}
+        self.assertIn("idempotency-key", allowed)

@@ -59,7 +59,10 @@ MIDDLEWARE = [
 # without it in the list, the browser's preflight drops every scoped request.
 from corsheaders.defaults import default_headers  # noqa: E402
 
-CORS_ALLOW_HEADERS = (*default_headers, 'x-workspace-id')
+# The web app sends the active workspace on every scoped request, and an
+# Idempotency-Key on writes that must not run twice when retried (publishing).
+# Without them in this list the browser's preflight blocks those requests.
+CORS_ALLOW_HEADERS = (*default_headers, 'x-workspace-id', 'idempotency-key')
 
 ROOT_URLCONF = 'backend.urls'
 WSGI_APPLICATION = 'backend.wsgi.application'
