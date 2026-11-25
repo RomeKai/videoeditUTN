@@ -1,9 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useState } from 'react';
 import { DEFAULT_PAGE_SIZE } from '@/api/contracts/common';
 import type { Project, ProjectStatusGroup } from '@/api/contracts/projects';
+import { ApiError } from '@/api/errors';
 import { useProjects } from '@/api/hooks';
+import { keys } from '@/api/query';
 import { DeleteProjectDialog } from '@/dialogs';
 import { plural } from '@/lib/format';
 import { useDebounced, useIsMobile, useStoredState } from '@/lib/hooks';
@@ -30,7 +33,7 @@ import { ProjectsCards, ProjectsGrid, ProjectsTable } from './ProjectItems';
 import { ProjectsEmpty } from './ProjectsEmpty';
 import styles from './Projects.module.css';
 import { RenameProjectDialog } from './RenameProjectDialog';
-import { ORDERINGS, STATUS_FILTERS, type Ordering } from './project-view';
+import { ORDERINGS, STATUS_FILTERS, applyListQuery, type Ordering } from './project-view';
 
 type View = 'list' | 'grid';
 
@@ -38,39 +41,56 @@ type View = 'list' | 'grid';
 export function ProjectsScreen() {
   const { workspace } = useSession();
   const toast = useToast();
+  const queryClient = useQueryClient();
   const mobile = useIsMobile();
   const [view, setView] = useStoredState<View>('oc.proyectos.vista', 'list');
   const [search, setSearch] = useState('');
   const [group, setGroup] = useState<ProjectStatusGroup>('all');
   const [ordering, setOrdering] = useState<Ordering>('-created_at');
-  const [page, setPage] = useState(1);
+  const [paging, setPaging] = useState({ scope: '', page: 1 });
   const [renaming, setRenaming] = useState<Project | null>(null);
   const [deleting, setDeleting] = useState<Project | null>(null);
   const term = useDebounced(search.trim(), 300);
 
-  // A new search starts on the first page.
-  useEffect(() => setPage(1), [term]);
+  // The page belongs to one search in one workspace: a new search or another workspace starts on the first
+  // page in the same render, so no request ever asks for a page of the previous list.
+  const scope = `${workspace?.id ?? ''}|${term}`;
+  const askedPage = paging.scope === scope ? paging.page : 1;
+  const setPage = (next: number) => setPaging({ scope, page: Math.max(1, next) });
 
   const query = useProjects({
-    page,
+    page: askedPage,
     page_size: DEFAULT_PAGE_SIZE,
     ...(group !== 'all' ? { status_group: group } : {}),
     ...(term ? { search: term } : {}),
     ...(ordering !== '-created_at' ? { ordering } : {}),
   });
   const data = query.data;
-  const projects = data?.results ?? [];
-  const counts = data?.status_counts;
+  // Today's backend answers one array and ignores the query: filter, search, order and pages happen here.
+  const local = useMemo(
+    () => (data && !data.paginated ? applyListQuery(data.results, { group, term, ordering, page: askedPage, pageSize: DEFAULT_PAGE_SIZE }) : null),
+    [data, group, term, ordering, askedPage],
+  );
+  const projects = local?.results ?? data?.results ?? [];
+  const counts = local?.counts ?? data?.status_counts;
+  const count = local?.count ?? data?.count ?? 0;
+  const page = local?.page ?? askedPage;
   const filtered = group !== 'all' || term !== '';
-  const total = counts?.all ?? data?.count ?? 0;
+  const total = counts?.all ?? count;
   const workspaceEmpty = Boolean(data) && !filtered && total === 0;
   const anyInProgress = projects.some((project) => describeProjectStatus(project).inProgress);
   const order = ORDERINGS.find((item) => item.value === ordering) ?? ORDERINGS[0];
 
-  // Deleting the last row of a page leaves it empty: step back.
+  // A page past the end answers 404: the last row was deleted (here or by someone else), or the list got
+  // shorter while polling. Step back until a page exists.
+  const pastTheEnd = query.error instanceof ApiError && query.error.status === 404 && askedPage > 1;
   useEffect(() => {
-    if (data && data.results.length === 0 && data.count > 0 && page > 1) setPage(Math.max(1, Math.ceil(data.count / DEFAULT_PAGE_SIZE)));
-  }, [data, page]);
+    if (pastTheEnd) {
+      // The pages kept in memory are as outdated as the one that just disappeared.
+      void queryClient.invalidateQueries({ queryKey: keys.projects.all });
+      setPaging((current) => ({ scope, page: Math.max(1, (current.scope === scope ? current.page : 1) - 1) }));
+    } else if (data?.paginated && data.results.length === 0 && data.count > 0 && askedPage > 1) setPaging({ scope, page: Math.max(1, Math.ceil(data.count / DEFAULT_PAGE_SIZE)) });
+  }, [pastTheEnd, data, askedPage, scope, queryClient]);
 
   const pickGroup = (next: ProjectStatusGroup) => {
     setGroup(next);
@@ -105,7 +125,7 @@ export function ProjectsScreen() {
   ];
 
   const actions = { onRename: setRenaming, onDelete: setDeleting };
-  const pagination = data ? <Pagination page={page} pageSize={DEFAULT_PAGE_SIZE} count={data.count} onPageChange={setPage} noun="proyectos" /> : null;
+  const pagination = data ? <Pagination page={page} pageSize={DEFAULT_PAGE_SIZE} count={count} onPageChange={setPage} noun="proyectos" /> : null;
   const liveNote = anyInProgress ? (
     <span className={styles.live}>
       <StatusDot tone="info" live />
@@ -191,14 +211,14 @@ export function ProjectsScreen() {
         description={
           mobile && data && !workspaceEmpty ? (
             <span className="num">
-              {plural(data.count, 'proyecto', 'proyectos')} · {order.summary}
+              {plural(count, 'proyecto', 'proyectos')} · {order.summary}
             </span>
           ) : (
             `Todo lo que está pasando en ${workspace?.name ?? 'tu workspace'}.`
           )
         }
       />
-      {query.isError ? <LoadError className={styles.error} error={query.error} onRetry={() => void query.refetch()} fullPageForMissing={false} /> : null}
+      {query.isError && !pastTheEnd ? <LoadError className={styles.error} error={query.error} onRetry={() => void query.refetch()} fullPageForMissing={false} /> : null}
       {workspaceEmpty || (query.isPending && !data) ? null : mobile ? (
         <div className={styles.mTools}>
           {searchBox}

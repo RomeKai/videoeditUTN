@@ -125,10 +125,11 @@ describe('puntos de partida', () => {
 });
 
 describe('última configuración', () => {
-  it('se guarda por usuario y vuelve sin el criterio ni el tipo de proyecto', () => {
-    saveLastConfig('u1', config({ project_type: 'single_edit', selection_criteria: 'algo', render_layout: 'versus', max_clips: 14, use_seo: true }));
+  it('se guarda por usuario y vuelve sin el criterio, el tipo de proyecto ni «Renderizar sin revisar»', () => {
+    saveLastConfig('u1', config({ project_type: 'single_edit', selection_criteria: 'algo', render_layout: 'versus', max_clips: 14, use_seo: true, auto_render_bypass: true }));
     expect(loadLastConfig('u2')).toBeNull();
-    expect(loadLastConfig('u1')).toMatchObject({ project_type: 'repurpose', selection_criteria: '', render_layout: 'versus', max_clips: 14, use_seo: true });
+    expect(loadLastConfig('u1')).toMatchObject({ project_type: 'repurpose', selection_criteria: '', render_layout: 'versus', max_clips: 14, use_seo: true, auto_render_bypass: false });
+    expect(sanitizeConfig({ auto_render_bypass: true })?.auto_render_bypass).toBe(false);
   });
 
   it('descarta lo que ya no es válido', () => {

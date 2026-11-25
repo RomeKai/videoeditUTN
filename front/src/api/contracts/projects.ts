@@ -301,60 +301,71 @@ const ProjectsPage = paginated(Project).extend({
  * against the current backend too.
  */
 export const ProjectsResponse = z.union([ProjectsPage, z.array(Project)]).transform((value) =>
-  Array.isArray(value) ? { count: value.length, next: null, previous: null, results: value, status_counts: undefined } : value,
+  Array.isArray(value)
+    ? // `paginated: false`: the backend ignored page, filter, search and order, so the screen applies them itself.
+      { count: value.length, next: null, previous: null, results: value, status_counts: undefined, paginated: false as const }
+    : { ...value, paginated: true as const },
 );
 export type ProjectsResponse = z.infer<typeof ProjectsResponse>;
 
 const FileField = z.custom<Blob>((value) => typeof Blob !== 'undefined' && value instanceof Blob, 'Archivo inválido');
 
-/** Body of `POST /projects/` (multipart). Field names as VideoProjectSerializer reads them. */
-export const CreateProjectRequest = z
-  .object({
-    title: z.string().min(1).max(255).optional(),
-    /** .mp4, .mov or .avi, up to 500 MB. Exactly one of source_file / video_url. */
-    source_file: FileField.optional(),
-    video_url: z.string().url().max(500).optional(),
-    project_type: ProjectType.optional(),
-    editing_style: EditingStyle.optional(),
-    intelligence_level: IntelligenceLevel.optional(),
-    auto_render_bypass: z.boolean().optional(),
-    brand_kit: Id.optional(),
-    aspect_ratio: AspectRatio.optional(),
-    render_layout: Layout.optional(),
-    gameplay_position: Position.optional(),
-    camera_selection_position: Position.optional(),
-    manual_camera_x: z.number().min(0).max(1).optional(),
-    manual_camera_y: z.number().min(0).max(1).optional(),
-    manual_camera_zoom: z.number().min(1).max(4).optional(),
-    speaker_tracking: z.boolean().optional(),
-    /**
-     * Always sent (true unless the user turns subtitles off). In a multipart
-     * form DRF reads a missing boolean as false, so leaving it out would create
-     * the project without subtitles instead of using the model's default.
-     */
-    add_subtitles: z.boolean().default(true),
-    subtitle_color: HexColor.optional(),
-    subtitle_words_per_segment: z.number().int().min(1).optional(),
-    subtitle_size: SubtitleSize.optional(),
-    subtitle_position: SubtitlePosition.optional(),
-    use_facetracking: z.boolean().optional(),
-    remove_silences: z.boolean().optional(),
-    /** 1–20, stored in metadata.max_clips. */
-    max_clips: z.number().int().min(1).max(20).optional(),
-    selection_criteria: z.string().optional(),
-    /** Paid add-on (+5 tokens), plan permitting. */
-    use_seo: z.boolean().optional(),
-    /** Priced at creation; 720p when absent. Links only accept 720p. */
-    render_resolution: RenderResolution.optional(),
-  })
-  .refine((value) => Boolean(value.source_file) !== Boolean(value.video_url), {
-    message: "Mandá 'source_file' o 'video_url', uno solo.",
-    path: ['source_file'],
-  });
+/** Fields of the creation body (multipart). Field names as VideoProjectSerializer reads them. */
+const CreateProjectFields = z.object({
+  title: z.string().min(1).max(255).optional(),
+  /** .mp4, .mov or .avi, up to 500 MB. Exactly one of source_file / video_url. */
+  source_file: FileField.optional(),
+  video_url: z.string().url().max(500).optional(),
+  project_type: ProjectType.optional(),
+  editing_style: EditingStyle.optional(),
+  intelligence_level: IntelligenceLevel.optional(),
+  auto_render_bypass: z.boolean().optional(),
+  brand_kit: Id.optional(),
+  aspect_ratio: AspectRatio.optional(),
+  render_layout: Layout.optional(),
+  gameplay_position: Position.optional(),
+  camera_selection_position: Position.optional(),
+  manual_camera_x: z.number().min(0).max(1).optional(),
+  manual_camera_y: z.number().min(0).max(1).optional(),
+  manual_camera_zoom: z.number().min(1).max(4).optional(),
+  speaker_tracking: z.boolean().optional(),
+  /** Left out means true (the serializer declares `BooleanField(required=False, default=True)`). */
+  add_subtitles: z.boolean().optional(),
+  subtitle_color: HexColor.optional(),
+  subtitle_words_per_segment: z.number().int().min(1).optional(),
+  subtitle_size: SubtitleSize.optional(),
+  subtitle_position: SubtitlePosition.optional(),
+  use_facetracking: z.boolean().optional(),
+  remove_silences: z.boolean().optional(),
+  /** 1–20, stored in metadata.max_clips. */
+  max_clips: z.number().int().min(1).max(20).optional(),
+  selection_criteria: z.string().optional(),
+  /** Paid add-on (+5 tokens), plan permitting. */
+  use_seo: z.boolean().optional(),
+  /** Priced at creation; 720p when absent. Links only accept 720p. */
+  render_resolution: RenderResolution.optional(),
+});
+
+const oneSource = {
+  check: (value: { source_file?: unknown; video_url?: unknown }) => Boolean(value.source_file) !== Boolean(value.video_url),
+  issue: { message: "Mandá 'source_file' o 'video_url', uno solo.", path: ['source_file'] },
+};
+
+/**
+ * Body of `POST /projects/`. `add_subtitles` always travels (true unless the
+ * user turns subtitles off), so the request says what the form shows whatever
+ * the serializer's default is.
+ */
+export const CreateProjectRequest = CreateProjectFields.extend({ add_subtitles: z.boolean().default(true) }).refine(oneSource.check, oneSource.issue);
 /** What a screen passes to `useCreateProject` (`add_subtitles` may be left out: it defaults to true). */
 export type CreateProjectRequest = z.input<typeof CreateProjectRequest>;
 
-export const CreateFromPromptRequest = CreateProjectRequest.and(z.object({ prompt: z.string().min(1, 'Contanos qué querés') }));
+/**
+ * Body of `POST /projects/from-prompt/`. Here `add_subtitles` stays out unless
+ * the user chose it: a field that is present counts as explicit and wins over
+ * the text, so sending it would stop "sin subtítulos" in the prompt from working.
+ */
+export const CreateFromPromptRequest = CreateProjectFields.extend({ prompt: z.string().min(1, 'Contanos qué querés') }).refine(oneSource.check, oneSource.issue);
 export type CreateFromPromptRequest = z.input<typeof CreateFromPromptRequest>;
 
 export const CostDetails = z.object({ tokens_reserved: Decimal, transaction_id: Id });
@@ -522,7 +533,11 @@ export const createProjectFromPrompt = defineEndpoint({
     { status: 400, when: '`prompt` vacío ("Contanos qué querés") o más largo que el máximo; más las validaciones de crear.' },
     ...paymentErrors,
   ],
-  backend: { status: 'exists', source: 'back/apps/videos/views.py · VideoProjectViewSet.from_prompt' },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/videos/views.py · VideoProjectViewSet.from_prompt',
+    note: '`add_subtitles` es opcional: si no viaja vale true (el serializer pasa a `BooleanField(required=False, default=True)`), y el texto puede apagar los subtítulos. Si viaja, cuenta como elegido a mano y le gana al texto.',
+  },
   screens: ['C1'],
 });
 

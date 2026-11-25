@@ -31,6 +31,8 @@ export interface LinkState {
 export interface CutUpload {
   percent: number;
   loaded: number;
+  /** The whole body had left the browser: the project may exist even though no answer arrived. */
+  delivered: boolean;
 }
 
 /** Message and help of a file problem (map §4), next to the file field. */
@@ -153,10 +155,25 @@ export function FilePicker({ state, onPick, cut, onRetry, busy, plan, plans, pri
         </span>
         {cut ? (
           <>
-            <ErrorLine>
-              Se cortó la subida al <span className="num">{cut.percent} %</span>.
-            </ErrorLine>
-            <span className={styles.hint}>Revisá tu conexión y volvé a intentar. No se creó el proyecto ni se reservaron tokens.</span>
+            {cut.delivered ? (
+              <>
+                <ErrorLine>Se cortó la conexión cuando el video ya estaba subido.</ErrorLine>
+                <span className={styles.hint}>
+                  Puede que el proyecto se haya creado:{' '}
+                  <Link className="lnk" href="/proyectos">
+                    revisá tus proyectos
+                  </Link>{' '}
+                  antes de reintentar.
+                </span>
+              </>
+            ) : (
+              <>
+                <ErrorLine>
+                  Se cortó la subida al <span className="num">{cut.percent} %</span>.
+                </ErrorLine>
+                <span className={styles.hint}>Revisá tu conexión y volvé a intentar. No se creó el proyecto ni se reservaron tokens.</span>
+              </>
+            )}
           </>
         ) : described ? (
           <>
@@ -212,6 +229,8 @@ export function LinkField({ state, onChange, busy }: LinkFieldProps) {
     }
   };
   const probe = state.status === 'ok' ? state.probe : undefined;
+  /** Accepted without its data: the backend has no way to look the link up before creating. */
+  const unprobed = state.status === 'ok' && !state.probe;
   const invalid = state.status === 'error';
   return (
     <>
@@ -247,7 +266,9 @@ export function LinkField({ state, onChange, busy }: LinkFieldProps) {
               <Spinner size={12} /> Buscando el video…
             </span>
           ) : (
-            <span className={styles.hint}>YouTube, Vimeo y otros sitios públicos.</span>
+            <span className={styles.hint}>
+              {unprobed ? 'Lo revisamos al crear el proyecto: si no se puede traer, te devolvemos los tokens.' : 'YouTube, Vimeo y otros sitios públicos.'}
+            </span>
           )}
         </span>
       </div>
@@ -358,7 +379,7 @@ export function OriginSection({ tab, onTab, aiVideo, onAiVideo, prompt, onPrompt
                 />
                 <div className={styles.promptFoot}>
                   <span className={styles.hint} id={`${promptId}-help`}>
-                    Podés pedir cantidad y duración de clips, formato, resolución, estilo, subtítulos y seguimiento de caras.
+                    Podés pedir cantidad y duración de clips, formato, estilo, subtítulos y seguimiento de caras.
                   </span>
                   <span className={cx('num', styles.hint, styles.nowrap)} aria-label={`${prompt.length} de ${promptMax} caracteres`}>
                     {prompt.length} / {promptMax}

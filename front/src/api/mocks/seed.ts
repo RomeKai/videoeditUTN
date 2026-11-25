@@ -111,7 +111,7 @@ export const PRICING = {
   upload_max_duration_seconds: 10800,
   upload_max_size_bytes: 500 * 1024 * 1024,
   upload_extensions: ['.mp4', '.mov', '.avi'],
-  selection_criteria_max_chars: 500,
+  selection_criteria_max_chars: 300,
   prompt_max_chars: 1000,
 } as const;
 

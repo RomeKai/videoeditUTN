@@ -28,6 +28,22 @@ export function useProject(id: string | null | undefined) {
   });
 }
 
+/**
+ * C1 › `?desde=<id>`: the configuration of a project to start from. Read once:
+ * it is copied when the screen opens, so it neither polls nor refetches.
+ */
+export function useProjectSnapshot(id: string | null | undefined) {
+  return useScopedQuery({
+    queryKey: [...keys.projects.detail(id ?? ''), 'snapshot'] as const,
+    queryFn: ({ signal }) => apiCall(contract.getProject, { params: { id: id ?? '' }, signal }),
+    enabled: Boolean(id),
+    staleTime: Infinity,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+}
+
 export interface CreateProjectVariables {
   body: contract.CreateProjectRequest;
   /** With a prompt the request goes to `from-prompt`. */

@@ -1,6 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
 import { expectClean, settle, useScenario as pickScenario, watch } from './helpers';
 
+// These flows build and click through whole screens: on a busy machine the default 60 s is not enough.
+test.describe.configure({ timeout: 180_000 });
+
 const PROJECT_URL = /\/proyectos\/[0-9a-f-]{36}$/;
 
 /** A tiny file stands in for the video: in mock mode the name decides the duration ("NNmin") and the errors. */
@@ -11,6 +14,15 @@ async function openNew(page: Page, scenario: string, query = '') {
   await page.goto(`/proyectos/nuevo${query}`);
   await settle(page);
   await expect(page.getByRole('heading', { level: 1, name: 'Nuevo proyecto' })).toBeVisible();
+}
+
+/** Every creation request the page makes, to assert how many went out. */
+function watchCreates(page: Page): string[] {
+  const seen: string[] = [];
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && /\/api\/v1\/projects\/(from-prompt\/)?$/.test(request.url())) seen.push(request.url());
+  });
+  return seen;
 }
 
 const summary = (page: Page) => page.getByRole('complementary', { name: 'Resumen del proyecto' });
@@ -191,7 +203,9 @@ test.describe('C1 · Nuevo proyecto', () => {
     await expect(prompt).toHaveValue(/Encontrá los 3 mejores consejos/);
 
     await page.getByLabel('Elegir video').setInputFiles(video('episodio-30min.mp4'));
-    await expect(summary(page).getByText('Entre 810 y 2.430')).toBeVisible();
+    // With AI the project is always priced at 720p: 1.800 s × 0,5 × 0,9.
+    await expect(summary(page).getByTestId('cost-total')).toHaveText('810');
+    await expect(summary(page).getByText(/Lo que pida tu texto no lo sube/)).toBeVisible();
     await prompt.fill('');
     await summary(page).getByRole('button', { name: 'Crear proyecto' }).click();
     await expect(page.getByRole('region', { name: 'Origen' }).getByRole('alert')).toHaveText('Contanos qué querés');
@@ -227,6 +241,69 @@ test.describe('C1 · Nuevo proyecto', () => {
     await dialog.getByRole('button', { name: 'Cambiar opciones' }).click();
     await expect(dialog).toBeHidden();
     await expect(page.getByTestId('file-row').getByRole('alert')).toContainText('El video dura más de lo que permite tu plan');
+  });
+
+  test('Enter en un campo no crea el proyecto: ni para un Lector ni con saldo insuficiente', async ({ page }) => {
+    const creates = watchCreates(page);
+    await openNew(page, 'rol-lector');
+    await page.getByLabel('Elegir video').setInputFiles(video('corto-8min.mp4'));
+    await expect(page.getByText(/Entra en tu plan Pro/)).toBeVisible();
+    await expect(summary(page).getByRole('button', { name: 'Crear proyecto' })).toHaveAttribute('aria-disabled', 'true');
+    await page.getByRole('textbox', { name: 'Cantidad máxima' }).press('Enter');
+    await page.getByRole('tab', { name: /Describir con IA/ }).click();
+    await page.getByRole('textbox', { name: 'Contanos qué querés' }).fill('hola');
+    await page.getByRole('button', { name: 'Link' }).click();
+    const link = page.getByRole('textbox', { name: 'Link del video' });
+    await link.fill('https://www.youtube.com/watch?v=k3Vn8sQx2Lw');
+    await expect(page.getByTestId('link-row')).toBeVisible();
+    await link.press('Enter');
+    await page.waitForTimeout(800);
+    expect(creates).toEqual([]);
+    await expect(page).toHaveURL(/\/proyectos\/nuevo$/);
+
+    await pickScenario(page, 'saldo-bajo');
+    await page.goto('/proyectos/nuevo');
+    await settle(page);
+    await page.getByLabel('Elegir video').setInputFiles(video('charla-20min.mp4'));
+    await expect(summary(page).getByText('Te faltan')).toBeVisible();
+    await page.getByRole('textbox', { name: 'Cantidad máxima' }).press('Enter');
+    await page.waitForTimeout(800);
+    expect(creates).toEqual([]);
+    await expect(page.getByRole('alertdialog')).toHaveCount(0);
+  });
+
+  test('dos clics en «Crear proyecto» crean un solo proyecto', async ({ page }) => {
+    const creates = watchCreates(page);
+    await openNew(page, 'estudio-norte', '?origen=link');
+    await page.getByRole('textbox', { name: 'Link del video' }).fill('https://www.youtube.com/watch?v=k3Vn8sQx2Lw');
+    await expect(page.getByTestId('link-row')).toBeVisible();
+    // Two clicks in the same task: the button has not re-rendered as busy in between.
+    await page.evaluate(() => {
+      const button = Array.from(document.querySelectorAll('aside button')).find((item) => item.textContent?.trim() === 'Crear proyecto') as HTMLButtonElement;
+      button.click();
+      button.click();
+    });
+    await expect(page).toHaveURL(PROJECT_URL);
+    await page.waitForTimeout(500);
+    expect(creates).toHaveLength(1);
+  });
+
+  test('Proyectos: borrar la única fila de la última página vuelve a la anterior', async ({ page }) => {
+    await pickScenario(page, 'muchos-proyectos');
+    await page.goto('/proyectos');
+    await settle(page);
+    await patchDb(page, 'const ws = db.projects[0].workspace; let kept = 0; db.projects = db.projects.filter((p) => p.workspace !== ws || (kept += 1) <= 26);');
+    await page.reload();
+    await settle(page);
+    await page.getByRole('button', { name: 'Siguiente' }).click();
+    await expect(page.getByText('26–26 de 26 proyectos')).toBeVisible();
+    // The previous page stays on screen until the new one arrives: wait for the single row.
+    await expect(page.getByRole('table', { name: 'Proyectos del workspace' }).getByRole('row')).toHaveCount(2);
+    await page.getByRole('button', { name: /Más acciones de/ }).click();
+    await page.getByRole('menuitem', { name: 'Borrar' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Borrar proyecto' }).click();
+    await expect(page.getByText('1–25 de 25 proyectos')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Reintentar' })).toHaveCount(0);
   });
 
   test('saldo bajo: el resumen ofrece comprar tokens', async ({ page }) => {

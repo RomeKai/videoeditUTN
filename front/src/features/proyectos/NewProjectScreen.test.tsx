@@ -72,7 +72,7 @@ describe('C1 · Nuevo proyecto', () => {
     expect(whole()).toHaveAttribute('aria-checked', 'true');
     // The Clips section belongs to "Sacar clips" only.
     expect(screen.queryByRole('heading', { name: 'Clips' })).not.toBeInTheDocument();
-    expect(within(await summary()).getByText('Se renderiza sin pasar por la revisión.')).toBeInTheDocument();
+    expect(within(await summary()).getByText('El video completo se renderiza sin pasar por la revisión.')).toBeInTheDocument();
 
     await user.upload(screen.getByLabelText('Elegir otro video'), video('largo-45min.mp4'));
     expect(await screen.findByText('Para editar el video completo, el video puede durar hasta 10 min')).toBeInTheDocument();
@@ -149,7 +149,7 @@ describe('C1 · Nuevo proyecto', () => {
     expect(await screen.findByText('Pegá el link completo, empezando por https://', {}, { timeout: 3000 })).toBeInTheDocument();
   }, 30_000);
 
-  it('describir con IA: pide el texto y estima un rango según la resolución', async () => {
+  it('describir con IA: pide el texto y muestra el precio de 720p, que el texto no puede subir', async () => {
     const user = await open('estudio-norte');
     await user.click(screen.getByRole('tab', { name: /Describir con IA/ }));
     expect(screen.queryByRole('heading', { name: 'Qué querés hacer' })).not.toBeInTheDocument();
@@ -157,8 +157,10 @@ describe('C1 · Nuevo proyecto', () => {
 
     await pick(user, video('podcast-ep42-72min.mp4'));
     const side = await summary();
-    expect(await within(side).findByText('Entre 1.944 y 5.832')).toBeInTheDocument();
-    expect(within(side).getByText('La define tu texto')).toBeInTheDocument();
+    await waitFor(() => expect(within(side).getByTestId('cost-total')).toHaveTextContent('1.944'));
+    expect(within(side).getByText('Precio en 720p. Lo que pida tu texto no lo sube: con IA el proyecto se cobra siempre en 720p.')).toBeInTheDocument();
+    expect(within(side).queryByText(/Entre /)).not.toBeInTheDocument();
+    expect(within(side).queryByText('La define tu texto')).not.toBeInTheDocument();
     expect(within(side).getByText('Ninguno: SEO apagado')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Crear proyecto' }));
@@ -233,7 +235,14 @@ describe('C1 · Nuevo proyecto', () => {
     expect(
       screen.getByText('El render de los clips se reserva apenas estén listos, al mismo precio que aprobarlos, y se cobra solo lo que se entrega. Si no alcanza el saldo, el proyecto espera tu revisión.'),
     ).toBeInTheDocument();
-    expect(within(await summary()).getByText('Se renderiza sin pasar por la revisión.')).toBeInTheDocument();
+    const side = await summary();
+    expect(within(side).getByText('Se renderiza sin pasar por la revisión, si el saldo alcanza para el render.')).toBeInTheDocument();
+    // Map 1.5: the second reservation, with the rate per second (0,5 × 1 × 0,9 on the Pro plan).
+    expect(within(side).getByTestId('render-note')).toHaveTextContent('Sin revisar hay una segunda reserva, por el render de los clips: 0,45 tokens por segundo de clip en 720p, con tu descuento.');
+    await user.click(screen.getByRole('radio', { name: /1080p/ }));
+    expect(within(side).getByTestId('render-note')).toHaveTextContent('0,675 tokens por segundo de clip en 1080p');
+    await user.click(bypass);
+    expect(within(side).queryByTestId('render-note')).not.toBeInTheDocument();
   });
 
   it('plan Gratis: candados de resolución y SEO, marca de agua y límite de 10 min', async () => {
@@ -281,7 +290,7 @@ describe('C1 · Nuevo proyecto', () => {
   });
 
   it('propone la última configuración usada en este navegador', async () => {
-    saveLastConfig(USER_IDS.lucia, { ...DEFAULT_CONFIG, editing_style: 'hormozi', render_layout: 'versus', aspect_ratio: '1:1', max_clips: 12, subtitle_size: 'small' });
+    saveLastConfig(USER_IDS.lucia, { ...DEFAULT_CONFIG, editing_style: 'hormozi', render_layout: 'versus', aspect_ratio: '1:1', max_clips: 12, subtitle_size: 'small', auto_render_bypass: true });
     await open('estudio-norte');
     const last = await screen.findByRole('radio', { name: /Mi última configuración/ });
     expect(last).toHaveAttribute('aria-checked', 'true');
@@ -290,6 +299,9 @@ describe('C1 · Nuevo proyecto', () => {
     expect(screen.getByRole('radio', { name: /1:1/ })).toHaveAttribute('aria-checked', 'true');
     expect(screen.getByRole('textbox', { name: 'Cantidad máxima' })).toHaveValue('12');
     expect(screen.getByText('Valores de «Mi última configuración». Abrí lo que quieras cambiar.')).toBeInTheDocument();
+    // «Renderizar sin revisar» is never proposed from memory.
+    expect(screen.getByRole('button', { name: /^Inteligencia/ })).toHaveTextContent(/se detiene en la revisión/i);
+    expect(screen.getByText('0 / 300')).toBeInTheDocument();
 
     const user = userEvent.setup();
     await user.click(screen.getByRole('radio', { name: /^Clase/ }));

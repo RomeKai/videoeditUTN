@@ -331,7 +331,8 @@ export function sanitizeConfig(raw: unknown): ProjectConfig | null {
     use_facetracking: bool('use_facetracking'),
     remove_silences: bool('remove_silences'),
     use_seo: bool('use_seo'),
-    auto_render_bypass: bool('auto_render_bypass'),
+    // Never proposed from memory: it renders, and spends, without a review.
+    auto_render_bypass: false,
   };
 }
 
@@ -347,10 +348,10 @@ export function loadLastConfig(userId: string): ProjectConfig | null {
   }
 }
 
-/** The criteria and the kind of project belong to one video, so they are not remembered. */
+/** The criteria and the kind of project belong to one video, and "Renderizar sin revisar" is a decision for each project: none is remembered. */
 export function saveLastConfig(userId: string, config: ProjectConfig): void {
   try {
-    const stored: ProjectConfig = { ...config, selection_criteria: '', project_type: 'repurpose' };
+    const stored: ProjectConfig = { ...config, selection_criteria: '', project_type: 'repurpose', auto_render_bypass: false };
     window.localStorage.setItem(`${STORAGE_PREFIX}.${userId}`, JSON.stringify({ version: STORAGE_VERSION, config: stored }));
   } catch {
     // Storage blocked: nothing to remember.

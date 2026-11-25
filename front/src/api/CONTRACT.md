@@ -734,6 +734,7 @@ Igual que crear, más `prompt`: la IA arma la configuración al iniciar la inges
 |---|---|
 | Id | `projects.createFromPrompt` |
 | Backend | ✅ existe · `back/apps/videos/views.py · VideoProjectViewSet.from_prompt` |
+| Nota | `add_subtitles` es opcional: si no viaja vale true (el serializer pasa a `BooleanField(required=False, default=True)`), y el texto puede apagar los subtítulos. Si viaja, cuenta como elegido a mano y le gana al texto. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido (multipart) | CreateFromPromptRequest |
 | Respuesta 201 | CreateFromPromptResponse |
@@ -1703,7 +1704,38 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `tokens_reserved` | Decimal |
 | `transaction_id` | Id |
 
-**CreateFromPromptRequest:** CreateProjectRequest & { prompt: string }
+**CreateFromPromptRequest**
+
+| Campo | Tipo |
+|---|---|
+| `title` (opcional) | string |
+| `source_file` (opcional) | unknown |
+| `video_url` (opcional) | string |
+| `project_type` (opcional) | ProjectType |
+| `editing_style` (opcional) | EditingStyle |
+| `intelligence_level` (opcional) | IntelligenceLevel |
+| `auto_render_bypass` (opcional) | boolean |
+| `brand_kit` (opcional) | Id |
+| `aspect_ratio` (opcional) | AspectRatio |
+| `render_layout` (opcional) | Layout |
+| `gameplay_position` (opcional) | Position |
+| `camera_selection_position` (opcional) | Position |
+| `manual_camera_x` (opcional) | number |
+| `manual_camera_y` (opcional) | number |
+| `manual_camera_zoom` (opcional) | number |
+| `speaker_tracking` (opcional) | boolean |
+| `add_subtitles` (opcional) | boolean |
+| `subtitle_color` (opcional) | HexColor |
+| `subtitle_words_per_segment` (opcional) | number |
+| `subtitle_size` (opcional) | SubtitleSize |
+| `subtitle_position` (opcional) | SubtitlePosition |
+| `use_facetracking` (opcional) | boolean |
+| `remove_silences` (opcional) | boolean |
+| `max_clips` (opcional) | number |
+| `selection_criteria` (opcional) | string |
+| `use_seo` (opcional) | boolean |
+| `render_resolution` (opcional) | RenderResolution |
+| `prompt` | string |
 
 **CreateFromPromptResponse**
 

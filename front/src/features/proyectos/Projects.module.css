@@ -367,6 +367,20 @@
 .prompt:hover {
   background: var(--neutral-soft);
 }
+.promptOff {
+  cursor: not-allowed;
+  color: var(--fg-muted);
+}
+.promptOff:hover {
+  background: transparent;
+}
+.promptOff:hover .promptGo {
+  color: var(--fg-subtle);
+}
+.promptOff:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
 .promptIco {
   width: 32px;
   height: 32px;

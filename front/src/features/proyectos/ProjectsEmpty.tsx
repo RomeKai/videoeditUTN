@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { usePlans } from '@/api/hooks';
+import { useEffect } from 'react';
+import { usePlans, useUpdateMe } from '@/api/hooks';
 import { useStoredState } from '@/lib/hooks';
 import { firstPlanWith } from '@/lib/pricing';
 import { usePermissions, usePlan, useSession } from '@/shell/session';
@@ -33,7 +34,19 @@ function FirstSteps() {
   const { plan } = usePlan();
   const plans = usePlans();
   const [hidden, setHidden] = useStoredState<string | null>('oc.proyectos.primeros-pasos.oculto', null);
+  const { mutate: updateMe } = useUpdateMe();
+  const onboarding = me?.onboarding;
+  const allDone = Boolean(onboarding?.has_project && onboarding.has_brand_kit && onboarding.has_social_account && onboarding.has_invited_member);
+  const tourPending = me ? !me.tour_completed : false;
+  // Finishing the list ends the first-time tour (map B1), the same as closing it.
+  useEffect(() => {
+    if (allDone && tourPending) updateMe({ tour_completed: true });
+  }, [allDone, tourPending, updateMe]);
   if (!me || hidden === me.id) return null;
+  const close = () => {
+    setHidden(me.id);
+    if (!me.tour_completed) updateMe({ tour_completed: true });
+  };
 
   const done = me.onboarding;
   const teamPlan = plan && plan.max_members <= 1 ? firstPlanWith(plans.data ?? [], (item) => item.max_members > 1) : null;
@@ -62,7 +75,7 @@ function FirstSteps() {
           {count} de {steps.length}
         </span>
         <StepSegments className={styles.todoSegs} total={steps.length} done={count} running={false} label={`Primeros pasos completados: ${count} de ${steps.length}`} />
-        <IconButton icon="close" size="sm" label="Cerrar la lista de primeros pasos" onClick={() => setHidden(me.id)} />
+        <IconButton icon="close" size="sm" label="Cerrar la lista de primeros pasos" onClick={close} />
       </div>
       <ol className={styles.todo}>
         {steps.map((step) => (
@@ -99,7 +112,8 @@ function FirstSteps() {
 
 /** B2b · Proyectos vacío: una frase, una acción, tres pedidos de ejemplo y los primeros pasos. */
 export function ProjectsEmpty() {
-  const { gate } = usePermissions();
+  const { gate, can, reason } = usePermissions();
+  const canCreate = can('project.create');
   return (
     <div className={styles.cols}>
       <div className={styles.colMain}>
@@ -121,20 +135,33 @@ export function ProjectsEmpty() {
             <p className="t-small muted">Tres pedidos de ejemplo. Elegí uno y sumale tu video.</p>
           </div>
           <Card className={styles.prompts}>
-            {AI_EXAMPLES.map((example) => (
-              <Link key={example.title} className={styles.prompt} href={promptHref(example.prompt)}>
-                <span className={styles.promptIco}>
-                  <Icon name={example.icon} />
+            {AI_EXAMPLES.map((example) => {
+              const content = (
+                <>
+                  <span className={styles.promptIco}>
+                    <Icon name={example.icon} />
+                  </span>
+                  <span className={styles.promptText}>
+                    <span className={styles.promptTitle}>{example.title}</span>
+                    <span className={styles.promptQ}>«{example.prompt}»</span>
+                  </span>
+                  <span className={styles.promptGo}>
+                    <Icon name={canCreate ? 'chevron-right' : 'lock'} />
+                  </span>
+                </>
+              );
+              // Creating spends tokens: a role that cannot create sees the examples, disabled, with the reason.
+              return canCreate ? (
+                <Link key={example.title} className={styles.prompt} href={promptHref(example.prompt)}>
+                  {content}
+                </Link>
+              ) : (
+                <span key={example.title} className={cx(styles.prompt, styles.promptOff)} role="link" aria-disabled="true" title={reason} tabIndex={0}>
+                  {content}
+                  <span className="sr-only">. {reason}</span>
                 </span>
-                <span className={styles.promptText}>
-                  <span className={styles.promptTitle}>{example.title}</span>
-                  <span className={styles.promptQ}>«{example.prompt}»</span>
-                </span>
-                <span className={styles.promptGo}>
-                  <Icon name="chevron-right" />
-                </span>
-              </Link>
-            ))}
+              );
+            })}
           </Card>
         </section>
       </div>

@@ -167,7 +167,7 @@ describe('mocks', () => {
     expect(Object.values((await apiCall(projects.getProject, { params: { id: waiting.id } })).pipeline_stage_status)).toContain('pending_capacity');
   });
 
-  it('multipart como DRF: sin `add_subtitles` el proyecto queda sin subtítulos; el cliente lo manda siempre', async () => {
+  it('multipart: sin `add_subtitles` el proyecto queda con subtítulos (el serializer lo declara con default true); al crear, el cliente lo manda siempre', async () => {
     // The client fills the default, so a screen that says nothing gets subtitles.
     const viaClient = await apiCall(projects.createProject, { body: { video_url: 'https://youtu.be/abc' } });
     expect(viaClient.add_subtitles).toBe(true);
@@ -178,7 +178,10 @@ describe('mocks', () => {
     form.append('video_url', 'https://youtu.be/abc');
     const response = await fetch(`${API_URL}/api/v1/projects/`, { method: 'POST', body: form, headers: { Authorization: `Bearer ${mockTokens(USER_IDS.lucia).access}` } });
     expect(response.status).toBe(201);
-    expect(((await response.json()) as { add_subtitles: boolean }).add_subtitles).toBe(false);
+    expect(((await response.json()) as { add_subtitles: boolean }).add_subtitles).toBe(true);
+    // from-prompt leaves it out unless the user chose it, so the text can turn subtitles off.
+    const prompted = await apiCall(projects.createProjectFromPrompt, { body: { video_url: 'https://youtu.be/abc', prompt: 'sin subtítulos' } });
+    expect(prompted.metadata.pte_explicit ?? []).not.toContain('add_subtitles');
   });
 
   it('renderizar sin revisar: reserva el render; sin saldo o fuera del plan queda en revisión con el motivo', async () => {

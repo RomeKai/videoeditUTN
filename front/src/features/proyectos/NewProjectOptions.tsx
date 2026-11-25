@@ -250,7 +250,7 @@ export function FormatSection({
 
 /* ── Clips ──────────────────────────────────────────────────────────────── */
 
-export function ClipsSection({ config, set, maxCriteria }: { config: ProjectConfig; set: SetConfig; maxCriteria: number }) {
+export function ClipsSection({ config, set, maxCriteria, error }: { config: ProjectConfig; set: SetConfig; maxCriteria: number; error?: string | null }) {
   const criteriaId = useId();
   const maxId = useId();
   return (
@@ -295,11 +295,20 @@ export function ClipsSection({ config, set, maxCriteria }: { config: ProjectConf
             className={styles.criteria}
             maxLength={maxCriteria}
             value={config.selection_criteria}
+            invalid={Boolean(error)}
+            aria-describedby={`${criteriaId}-help`}
             onChange={(event) => set({ selection_criteria: event.target.value })}
             placeholder="Por ejemplo: momentos con consejos concretos, sin la parte de la publicidad"
           />
-          <span className={cx(styles.hint, styles.hintRow)}>
-            <span>Si lo dejás vacío, la IA elige los momentos que mejor funcionan solos.</span>
+          <span className={cx(styles.hint, styles.hintRow)} id={`${criteriaId}-help`}>
+            {error ? (
+              <span className={styles.errline} role="alert">
+                <Icon name="error" size={14} />
+                <span>{error}</span>
+              </span>
+            ) : (
+              <span>Si lo dejás vacío, la IA elige los momentos que mejor funcionan solos.</span>
+            )}
             <span className="num" aria-label={`${config.selection_criteria.length} de ${maxCriteria} caracteres`}>
               {config.selection_criteria.length} / {maxCriteria}
             </span>

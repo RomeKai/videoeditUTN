@@ -15,9 +15,8 @@ export interface SummaryRow {
 export type CostView =
   /** Nothing to estimate yet (no video, or a video the plan does not take). */
   | { kind: 'none'; reason: string }
-  | { kind: 'exact'; total: number }
-  /** "Describir con IA": the text decides the resolution. */
-  | { kind: 'range'; min: number; max: number; note: string };
+  /** `note`: a line under the number ("Describir con IA" is always priced at 720p). */
+  | { kind: 'exact'; total: number; note?: string };
 
 export interface UploadProgress {
   loaded: number;
@@ -38,6 +37,8 @@ export interface SummaryProps {
   missing: number | null;
   required: number | null;
   etaSeconds: number | null;
+  /** "Renderizar sin revisar": the second reservation, for the render of the clips. */
+  renderNote: ReactNode | null;
   /** Small print under the card. */
   note: ReactNode;
   cta: CtaProps;
@@ -89,10 +90,17 @@ function UploadStatus({ upload, onCancel, compact }: { upload: UploadProgress | 
           </span>
         ) : null}
       </div>
-      <Button variant="secondary" onClick={onCancel} block={!compact}>
-        Cancelar
-      </Button>
-      {compact ? null : <span className={cx(styles.hint, styles.center)}>No cierres esta pestaña hasta que termine. Después se abre el proyecto.</span>}
+      {/* Once the whole video left the browser the server is already creating the project: cancelling would not undo it. */}
+      {sent ? null : (
+        <Button variant="secondary" onClick={onCancel} block={!compact}>
+          Cancelar
+        </Button>
+      )}
+      {compact ? null : (
+        <span className={cx(styles.hint, styles.center)}>
+          {sent ? 'El video ya está subido. En un momento se abre el proyecto.' : 'No cierres esta pestaña hasta que termine. Después se abre el proyecto.'}
+        </span>
+      )}
     </>
   );
 }
@@ -125,16 +133,6 @@ function CostNumber({ cost }: { cost: CostView }) {
     return (
       <span className={cx('num subtle', styles.totalNum)} aria-label="Sin estimación">
         —
-      </span>
-    );
-  }
-  if (cost.kind === 'range') {
-    return (
-      <span className={cx(styles.row, styles.baseline, styles.wrap)}>
-        <span className={cx('num', styles.totalNum, styles.totalRange)}>
-          Entre {formatNumber(cost.min)} y {formatNumber(cost.max)}
-        </span>
-        <span className="muted">tokens</span>
       </span>
     );
   }
@@ -199,7 +197,7 @@ function CtaNotes({ cta, missing, required, available }: { cta: CtaProps; missin
 
 /** Fixed summary at the right of C1: what is being created, what it costs and the button. */
 export function SummaryCard(props: SummaryProps) {
-  const { rows, watermarkPlan, cost, detail, missing, required, available, etaSeconds, note, cta } = props;
+  const { rows, watermarkPlan, cost, detail, missing, required, available, etaSeconds, renderNote, note, cta } = props;
   const [open, setOpen] = useState(false);
   const detailId = useId();
   const busy = cta.phase === 'uploading';
@@ -222,7 +220,7 @@ export function SummaryCard(props: SummaryProps) {
           <div className={styles.stack2}>
             <span className="t-small muted">Costo estimado</span>
             <CostNumber cost={cost} />
-            {cost.kind === 'range' ? <span className="t-small muted">{cost.note}</span> : null}
+            {cost.kind === 'exact' && cost.note ? <span className="t-small muted">{cost.note}</span> : null}
           </div>
           {cost.kind === 'none' ? <p className="t-small muted">{cost.reason}</p> : null}
           {cost.kind !== 'none' && detail.length > 0 ? (
@@ -237,6 +235,11 @@ export function SummaryCard(props: SummaryProps) {
             </div>
           ) : null}
           <Rows rows={balanceRows(props)} className={styles.balance} />
+          {renderNote ? (
+            <p className={cx('t-small muted', styles.renderNote)} data-testid="render-note">
+              {renderNote}
+            </p>
+          ) : null}
           <Eta seconds={cost.kind === 'none' ? null : etaSeconds} />
         </div>
         <div className={styles.sumCta}>
@@ -258,19 +261,20 @@ export function SummaryCard(props: SummaryProps) {
 
 /** Phone (M4): the cost and the button stay fixed at the bottom; the detail opens above them. */
 export function SummaryBar(props: SummaryProps) {
-  const { rows, watermarkPlan, cost, detail, missing, required, available, after, etaSeconds, cta } = props;
+  const { rows, watermarkPlan, cost, detail, missing, required, available, after, etaSeconds, renderNote, cta } = props;
   const [open, setOpen] = useState(false);
   const id = useId();
   const busy = cta.phase === 'uploading';
   const headline =
-    cost.kind === 'exact' ? formatTokens(cost.total) : cost.kind === 'range' ? `${formatNumber(cost.min)}–${formatTokens(cost.max)}` : 'Sin estimación';
+    cost.kind === 'exact' ? formatTokens(cost.total) : 'Sin estimación';
   return (
     <div className={styles.foot} role="region" aria-label="Costo y creación del proyecto">
       {open && !busy ? (
         <div className={styles.footSum} id={id}>
           <Rows rows={rows} className={styles.footRows} />
           {cost.kind !== 'none' ? <Rows rows={detail} className={styles.footRows} /> : <p className="t-small muted">{cost.reason}</p>}
-          {cost.kind === 'range' ? <p className="t-small muted">{cost.note}</p> : null}
+          {cost.kind === 'exact' && cost.note ? <p className="t-small muted">{cost.note}</p> : null}
+          {renderNote ? <p className="t-small muted">{renderNote}</p> : null}
           <Rows rows={balanceRows(props)} className={styles.footRows} />
           {watermarkPlan !== undefined ? (
             <p className="t-small muted">
