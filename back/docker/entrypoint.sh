@@ -8,9 +8,11 @@ while ! nc -z $POSTGRES_HOST $POSTGRES_PORT; do
 done
 echo "Base de datos lista."
 
-# Intentar migraciones pero no morir si no hay
+# Aplicar migraciones. Si una falla, el contenedor no arranca: seguir con la
+# base a medias deja código nuevo corriendo sobre un esquema viejo (por ejemplo,
+# la migración de emails sin distinguir mayúsculas se frena si hay duplicados).
 echo "Aplicando migraciones..."
-python manage.py migrate || true
+python manage.py migrate
 
 # Arrancar servidor Django
 echo "Iniciando servidor Django..."
