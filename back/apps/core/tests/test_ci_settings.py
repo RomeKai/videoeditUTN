@@ -146,6 +146,7 @@ def test_production_settings_compose_the_base_configuration():
             "ALLOWED_HOSTS": "localhost",
             "CORS_ALLOWED_ORIGINS": "https://example.invalid",
             "USE_R2": "True",
+            "NUM_PROXIES": "1",
         },
     )
     settings = parse_settings_output(result)
