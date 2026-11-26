@@ -338,15 +338,19 @@ def _price(project, seconds):
         ), 'duration', limit=limit)
 
 
-def _reserve(project, amount, user, description):
-    """The reservation, or ``_Refused`` with the 402 (the caller's transaction rolls back)."""
+def _reserve(project, amount, user, description, category=Transaction.Category.RENDER):
+    """
+    The reservation, linked to the project with its ``category``, or
+    ``_Refused`` with the 402 (the caller's transaction rolls back).
+    """
     wallet, _ = Wallet.objects.get_or_create(workspace=project.workspace)
     try:
-        return wallet_service.reserve_funds(
+        reservation = wallet_service.reserve_funds(
             wallet_id=wallet.id, amount=amount, user=user, description=description[:255],
         )
     except wallet_service.InsufficientFundsError:
         raise _Refused(_error(402, INSUFFICIENT_FUNDS, required=amount))
+    return wallet_service.link_reservation(reservation, project, category)
 
 
 def _replaced(metadata, key):
@@ -762,7 +766,9 @@ class ProjectRedispatchView(_WorkspaceScoped):
                     # the pipeline must not skip it any more.
                     updates['pipeline_error_code'] = metadata.pop(REDISPATCH_PREVIOUS_CODE_KEY, '') or ''
                 if amount is not None:
-                    reservation = _reserve(project, amount, request.user, f"Procesamiento: {project.title}")
+                    reservation = _reserve(
+                        project, amount, request.user, f"Procesamiento: {project.title}", Transaction.Category.PROJECT,
+                    )
                     metadata[REPLACED_RESERVATIONS_KEY] = _replaced(metadata, 'reservation_id')
                     metadata['reservation_id'] = str(reservation.id)
                 if updates or amount is not None:

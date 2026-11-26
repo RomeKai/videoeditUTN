@@ -53,6 +53,18 @@ def reserve_funds(wallet_id, amount: Decimal, project_id=None, user=None, descri
     
     return txn
 
+def link_reservation(txn, project, category) -> Transaction:
+    """
+    Records what a reservation pays for: its project and its
+    ``Transaction.Category``, for the wallet's movements, its reservations and
+    the usage chart. Called right after ``reserve_funds``, in the same
+    transaction. Apart from it because its ``project_id`` queues the pipeline.
+    """
+    Transaction.objects.filter(pk=txn.id).update(project_id=project.pk, category=category)
+    txn.project_id = project.pk
+    txn.category = category
+    return txn
+
 @transaction.atomic
 def commit_reservation(transaction_id) -> Transaction:
     """

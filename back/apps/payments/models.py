@@ -130,6 +130,19 @@ class Transaction(models.Model):
         SPEND = 'SPEND', 'Gasto'
         REFUND = 'REFUND', 'Reembolso'
 
+    class Category(models.TextChoices):
+        """
+        What the movement paid for: the split of the usage chart
+        (GET /api/v1/wallet/usage/). A project's creation (SEO included, it is
+        charged with it) is PROJECT; any render the user pays for later is
+        RENDER. A DEPOSIT is PURCHASE.
+        """
+        PROJECT = 'project', 'Proyecto'
+        RENDER = 'render', 'Render'
+        SEO = 'seo', 'SEO'
+        PURCHASE = 'purchase', 'Compra'
+        OTHER = 'other', 'Otro'
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name='transactions')
     
@@ -155,3 +168,17 @@ class Transaction(models.Model):
     # When the reservation was charged or returned (it left RESERVED). Null
     # while it is reserved, and on rows settled before migration 0012.
     settled_at = models.DateTimeField(null=True, blank=True)
+    # The project the reservation pays for (wallet_service.link_reservation),
+    # for the movements and the reservations of the wallet. Null on a
+    # purchase, once the project is deleted, and on old rows migration 0016
+    # could not link (their metadata key was gone).
+    project = models.ForeignKey(
+        'videos.VideoProject', on_delete=models.SET_NULL, null=True, blank=True, related_name='transactions',
+    )
+    category = models.CharField(max_length=10, choices=Category.choices, default=Category.OTHER)
+
+    class Meta:
+        indexes = [
+            # The movements of a wallet, newest first.
+            models.Index(fields=['wallet', '-created_at'], name='payments_txn_wallet_created'),
+        ]
