@@ -42,9 +42,10 @@ function movementsOf(transactions: MockTransaction[], workspace: string, query: 
 /** Like the backend (services/token_packages.py): no purchase above this many tokens. */
 const CUSTOM_MAX_TOKENS = 1_000_000;
 const REPLACED = 'Elegiste otro plan antes de pagar este.';
+const KEPT = 'Elegiste seguir con tu plan antes de pagar este.';
 
 /** Like the backend: choosing a plan rejects the upgrade payment that was waiting, unless it is for that same plan. */
-function replacePendingUpgrade(db: MockDb, workspaceId: string, keepPlanId: string | null) {
+function replacePendingUpgrade(db: MockDb, workspaceId: string, keepPlanId: string | null, reason = REPLACED) {
   let kept: MockPurchase | null = null;
   for (const purchase of db.purchases) {
     if (purchase.workspace !== workspaceId || purchase.status !== 'pending' || !purchase.plan_id) continue;
@@ -53,7 +54,7 @@ function replacePendingUpgrade(db: MockDb, workspaceId: string, keepPlanId: stri
       continue;
     }
     purchase.status = 'rejected';
-    purchase.failure_reason = REPLACED;
+    purchase.failure_reason = reason;
     purchase.checkout_url = null;
     purchase._settleAt = null;
   }
@@ -130,17 +131,21 @@ export const billingHandlers = [
     if (!target) throw notFound('El plan no existe.');
     const current = planOf(db, workspace.id);
     if (current?.id === target.id) {
-      // Choosing the current plan again cancels a scheduled change.
-      if (!workspace.pending_plan) throw badRequest({ plan_id: ['Ya es tu plan actual.'] });
+      // Choosing the current plan again cancels a scheduled change and the upgrade waiting for its payment.
+      const waiting = db.purchases.some((item) => item.workspace === workspace.id && item.status === 'pending' && item.plan_id);
+      if (!workspace.pending_plan && !waiting) throw badRequest({ plan_id: ['Ya es tu plan actual.'] });
+      replacePendingUpgrade(db, workspace.id, null, KEPT);
       workspace.pending_plan = null;
       return { data: { applied: 'now', checkout_url: null, subscription: serializeSubscription(db, workspace) } };
     }
-    const upgrade = !current || target.sort_order > current.sort_order;
+    // Like the backend, the price decides: only a pricier plan is paid for; a cheaper one, or one of the same price, waits.
+    const currentPrice = current?.price_usd_monthly ?? 0;
+    const upgrade = target.price_usd_monthly > currentPrice;
     // No change leaves more seats in use (members plus pending invitations) than the new plan has.
     const seatsUsed = db.members.filter((member) => member.workspace === workspace.id).length;
     if (seatsUsed > target.max_members) {
       throw new MockHttpError(409, {
-        error: `Ocupás ${seatsUsed} lugares y el plan ${target.name} tiene ${target.max_members}. Quitá miembros o invitaciones antes de ${upgrade ? 'cambiar de plan' : 'bajar'}.`,
+        error: `Ocupás ${seatsUsed} lugares y el plan ${target.name} tiene ${target.max_members}. Quitá miembros o invitaciones antes de ${target.price_usd_monthly < currentPrice ? 'bajar' : 'cambiar de plan'}.`,
         code: 'seats_exceeded',
         seats_used: seatsUsed,
         max_members: target.max_members,

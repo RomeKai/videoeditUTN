@@ -414,6 +414,29 @@ describe('mocks', () => {
     const again = await apiCall(billing.changePlan, { body: { plan_id: plan('Estudio'), return_url: 'http://localhost:3000/uso/planes' } });
     expect(again.checkout_url).toBe(first.checkout_url);
     expect(loadDb().purchases.filter((item) => item.plan_id && item.status === 'pending')).toHaveLength(1);
+    // Keeping the current plan cancels the upgrade that waits for its payment.
+    const kept = await apiCall(billing.changePlan, { body: { plan_id: plan('Pro') } });
+    expect(kept.applied).toBe('now');
+    expect(loadDb().purchases.find((item) => item.plan_id)?.status).toBe('rejected');
+    expect((await fail(apiCall(billing.changePlan, { body: { plan_id: plan('Pro') } }))).fieldErrors.plan_id).toEqual(['Ya es tu plan actual.']);
+  });
+
+  it('planes: decide el precio, y mientras una bajada espera nadie entra pasado sus lugares', async () => {
+    const db = loadDb();
+    const workspace = db.workspaces.find((item) => item.id === WORKSPACE_IDS.estudio);
+    const pro = db.plans.find((item) => item.name === 'Pro');
+    if (!workspace || !pro) throw new Error('faltan datos');
+    // Same price, listed later: a lateral move that waits for the end of the period and moves no money.
+    db.plans.push({ ...pro, id: '44444444-4444-4444-8444-444444444444', name: 'Pro Plus', sort_order: 9, is_recommended: false, max_members: 5 });
+    saveDb(db);
+    const lateral = await apiCall(billing.changePlan, { body: { plan_id: '44444444-4444-4444-8444-444444444444' } });
+    expect(lateral.applied).toBe('period_end');
+    expect(lateral.checkout_url).toBeNull();
+    // Pro Plus has 5 seats and 4 are taken: one more fits, the next does not.
+    await apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['quinta@estudionorte.com'], role: 'viewer' } });
+    const refused = await fail(apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['sexta@estudionorte.com'], role: 'viewer' } }));
+    expect(refused.code).toBe('seats_exceeded');
+    expect(refused.message).toMatch(/^Tu plan pasa a 'Pro Plus' el .* y ese plan permite 5 miembros/);
   });
 
   it('la sesión: login, credenciales incorrectas, email sin verificar y sesión vencida', async () => {
