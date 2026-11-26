@@ -65,6 +65,11 @@ describe('lib', () => {
     expect(safeNext('/login?siguiente=/login')).toBeNull();
     expect(safeNext(null)).toBeNull();
     expect(safeNext('/proyectos/abc?publicar=1#clips')).toBe('/proyectos/abc?publicar=1#clips');
+    // Only the login goes back to a verification link, and only one that carries its token.
+    expect(safeNext('/verificar?token=abc&siguiente=%2Fperfil')).toBeNull();
+    expect(safeNext('/verificar?token=abc&siguiente=%2Fperfil', { verifyLink: true })).toBe('/verificar?token=abc&siguiente=%2Fperfil');
+    expect(safeNext('/verificar?email=a%40b.com', { verifyLink: true })).toBeNull();
+    expect(safeNext('/recuperar?token=abc', { verifyLink: true })).toBeNull();
   });
 
   it('safeNext rechaza lo que el navegador convertiría en otro sitio', () => {
@@ -193,6 +198,16 @@ describe('A1 · Iniciar sesión', () => {
     await user.type(password(), 'contrasena');
     await user.click(screen.getByRole('button', { name: 'Iniciar sesión' }));
     await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/uso/movimientos'));
+  });
+
+  it('al entrar vuelve al link de verificación que pedía la sesión', async () => {
+    scenario('sin-sesion');
+    const user = userEvent.setup();
+    const link = '/verificar?token=cambio-de-email&siguiente=%2Fperfil';
+    show(<LoginScreen next={link} email="lucia@estudionorte.com" />);
+    await user.type(password(), 'contrasena');
+    await user.click(screen.getByRole('button', { name: 'Iniciar sesión' }));
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith(link));
   });
 
   it('ignora un «siguiente» que apunta fuera de la app', async () => {
@@ -423,7 +438,10 @@ describe('A3 · Verificar email', () => {
     scenario('sin-sesion');
     show(<VerifyEmailScreen token="cambio-de-email" next="/perfil" />);
     expect(await screen.findByRole('heading', { level: 1, name: 'Iniciá sesión para confirmar el email' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Iniciar sesión' })).toHaveAttribute('href', '/login?siguiente=%2Fperfil');
+    expect(screen.getByRole('link', { name: 'Iniciar sesión' })).toHaveAttribute(
+      'href',
+      `/login?siguiente=${encodeURIComponent('/verificar?token=cambio-de-email&siguiente=%2Fperfil')}`,
+    );
     expect(getTokens()).toBeNull();
   });
 

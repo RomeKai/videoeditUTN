@@ -204,7 +204,7 @@ Verifica el email con el token del link. El de una cuenta nueva deja la sesión 
 | Sesión | Pública (manda el token si hay sesión) |
 | Pedido | { token: string } |
 | Respuesta 200 | TokenPair |
-| Errores | **400** Token inválido, vencido, ya usado o cancelado (error en `token`). La UI ofrece reenviar el email.<br>**403** `code: "other_account"`: hay una sesión de otra cuenta. `code: "login_required"`: el link de un cambio de email necesita la sesión de su cuenta. No se aplica nada; la UI muestra `detail` y, en el segundo caso, lleva a iniciar sesión. |
+| Errores | **400** Token inválido, vencido, ya usado o cancelado (error en `token`). La UI ofrece reenviar el email.<br>**403** `code: "other_account"`: hay una sesión de otra cuenta. `code: "login_required"`: el link de un cambio de email necesita la sesión de su cuenta. No se aplica nada; la UI muestra `detail` y, en el segundo caso, lleva a iniciar sesión y de vuelta al mismo link. |
 | Pantallas | A3 |
 
 #### `POST /api/v1/auth/verify-email/resend/`

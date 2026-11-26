@@ -11,7 +11,7 @@ export const HOME = '/proyectos';
  * Only paths inside the app are accepted: an absolute or protocol-relative URL
  * would let a link send people to another site after signing in.
  */
-export function safeNext(next: string | null | undefined): string | null {
+export function safeNext(next: string | null | undefined, { verifyLink = false }: { verifyLink?: boolean } = {}): string | null {
   if (!next || !next.startsWith('/') || next.startsWith('//')) return null;
   // The URL parser drops tabs and line breaks and reads "\" as "/": "/<TAB>/otro.sitio" would become "//otro.sitio".
   if (/[\u0000-\u001F\u007F\s\\]/.test(next)) return null;
@@ -24,7 +24,10 @@ export function safeNext(next: string | null | undefined): string | null {
   if (url.origin !== PARSE_ORIGIN) return null;
   // "/.//otro.sitio" normalises to "//otro.sitio", which a browser reads as another host.
   if (url.pathname.startsWith('//')) return null;
-  if (/^\/(login|registro|verificar|recuperar)(\/|$)/.test(url.pathname)) return null;
+  // `verifyLink`: the login may go back to an email-change link it interrupted (A3 answers
+  // `login_required`); a link of another account only gets a 403 there, never its session.
+  const backToLink = verifyLink && url.pathname === '/verificar' && Boolean(url.searchParams.get('token'));
+  if (!backToLink && /^\/(login|registro|verificar|recuperar)(\/|$)/.test(url.pathname)) return null;
   return `${url.pathname}${url.search}${url.hash}`;
 }
 

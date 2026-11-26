@@ -101,7 +101,7 @@ export const verifyEmail = defineEndpoint({
     { status: 400, when: 'Token inválido, vencido, ya usado o cancelado (error en `token`). La UI ofrece reenviar el email.' },
     {
       status: 403,
-      when: '`code: "other_account"`: hay una sesión de otra cuenta. `code: "login_required"`: el link de un cambio de email necesita la sesión de su cuenta. No se aplica nada; la UI muestra `detail` y, en el segundo caso, lleva a iniciar sesión.',
+      when: '`code: "other_account"`: hay una sesión de otra cuenta. `code: "login_required"`: el link de un cambio de email necesita la sesión de su cuenta. No se aplica nada; la UI muestra `detail` y, en el segundo caso, lleva a iniciar sesión y de vuelta al mismo link.',
     },
   ],
   backend: {

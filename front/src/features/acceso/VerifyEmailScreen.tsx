@@ -77,6 +77,9 @@ export function VerifyEmailScreen({ email, token, fromLogin = false, next }: Ver
   const denied = token && verify.error instanceof ApiError && verify.error.status === 403 ? verify.error : null;
   if (denied) {
     const needsLogin = denied.code === 'login_required';
+    // After signing in, the login brings the person back to this same link (with its destination).
+    const after = safeNext(next);
+    const link = `/verificar?token=${encodeURIComponent(token)}${after ? `&siguiente=${encodeURIComponent(after)}` : ''}`;
     return (
       <Card className={cx(styles.card, styles.verify)}>
         <span className={styles.heroIcon}>
@@ -86,7 +89,7 @@ export function VerifyEmailScreen({ email, token, fromLogin = false, next }: Ver
           <h1 className="t-h2">{needsLogin ? 'Iniciá sesión para confirmar el email' : 'Este link es de otra cuenta'}</h1>
           <p className="t-small muted">{denied.message}</p>
         </div>
-        <Link className="lnk" href={needsLogin ? `/login?siguiente=${encodeURIComponent(safeNext(next) ?? '/perfil')}` : HOME}>
+        <Link className="lnk" href={needsLogin ? `/login?siguiente=${encodeURIComponent(link)}` : HOME}>
           {needsLogin ? 'Iniciar sesión' : 'Volver a OneCreator'}
         </Link>
       </Card>
