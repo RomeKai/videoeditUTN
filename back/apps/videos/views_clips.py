@@ -532,7 +532,7 @@ class ClipDetailView(_WorkspaceScoped):
         200: VideoClipSerializer, 404: OpenApiResponse(description='No existe o es de otro workspace.'),
     })
     def get(self, request, clip_id):
-        return Response(VideoClipSerializer(self.get_clip(request, clip_id)).data)
+        return Response(VideoClipSerializer(self.get_clip(request, clip_id), context={'request': request}).data)
 
     @extend_schema(request=ClipUpdateSerializer, responses={
         200: VideoClipSerializer,
@@ -578,7 +578,7 @@ class ClipDetailView(_WorkspaceScoped):
         except _Refused as refused:
             return refused.response
         clip.refresh_from_db()
-        return Response(VideoClipSerializer(clip).data)
+        return Response(VideoClipSerializer(clip, context={'request': request}).data)
 
     @staticmethod
     def _check_trim(project, clip, start, end):
@@ -610,6 +610,7 @@ class ClipDetailView(_WorkspaceScoped):
         )),
     })
     def delete(self, request, clip_id):
+        from .services.clip_media import delete_thumbnail
         from .services.clip_preview import delete_preview_files
         from .services.storage_service import CloudflareR2Manager
 
@@ -630,7 +631,7 @@ class ClipDetailView(_WorkspaceScoped):
                               'post_processing')
             previews = ClipPreview.objects.select_for_update().filter(clip_id=clip.pk)
             preview_files = [(pk, key) for pk, key in previews.values_list('pk', 'storage_key') if key]
-            render_key = clip.s3_object_key
+            render_key, thumbnail_key = clip.s3_object_key, clip.thumbnail_object_key
             clip.delete()  # its posts, layers and previews go with it
 
             def delete_files():
@@ -640,6 +641,7 @@ class ClipDetailView(_WorkspaceScoped):
                         CloudflareR2Manager.delete_object(render_key)
                     except Exception as exc:
                         logger.warning("clip.file_not_deleted clip_id=%s error=%s", found.pk, type(exc).__name__)
+                delete_thumbnail(found.pk, thumbnail_key)
 
             transaction.on_commit(delete_files)
         logger.info("clip.deleted clip_id=%s project_id=%s", found.pk, found.project_id)
@@ -717,7 +719,7 @@ class ClipRetryView(_WorkspaceScoped):
             return started
         _project, _clips, reservation = started
         fresh = VideoClip.objects.get(pk=clip.pk)
-        return _paid_response(reservation, VideoClipSerializer(fresh).data)
+        return _paid_response(reservation, VideoClipSerializer(fresh, context={'request': request}).data)
 
 
 # --- Project ------------------------------------------------------------------

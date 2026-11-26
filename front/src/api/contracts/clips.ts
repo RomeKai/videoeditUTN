@@ -45,7 +45,7 @@ export const getClip = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_clips.py · ClipDetailView.get + VideoClipSerializer',
-    note: 'Los mismos campos que el clip dentro del proyecto. Los extras propuestos (`preview_url`, `thumbnail_url`, `error_code`, `posts`) todavía no llegan.',
+    note: 'Los mismos campos que el clip dentro del proyecto, con `preview_url` (reproduce el render; `null` si el clip no está `completed` o `published`) y `thumbnail_url` (`null` si no hay miniatura): URLs temporales de 1 h. Los extras propuestos (`error_code`, `posts`) todavía no llegan.',
   },
   screens: ['D4', 'E1'],
 });

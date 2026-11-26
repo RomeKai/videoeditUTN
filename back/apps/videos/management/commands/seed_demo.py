@@ -156,6 +156,13 @@ def make_cut(source, path, start, end):
     ])
 
 
+def make_thumbnail(clip_path, path, duration):
+    """The thumbnail of a cut, as a render leaves it (services/clip_media.py)."""
+    from apps.videos.services.clip_media import thumbnail_ffmpeg_args
+
+    run_ffmpeg(thumbnail_ffmpeg_args(clip_path, path, duration))
+
+
 class Command(BaseCommand):
     help = (
         'Crea (o repone) la cuenta de la demo: usuario, workspace en el plan Pro con saldo, '
@@ -342,11 +349,15 @@ class Command(BaseCommand):
         source = os.path.join(directory, 'source.mp4')
         make_source(source)
         cuts = REVIEW_CUTS if slug == 'review' else FINISHED_CUTS
-        clip_files = {}
+        from apps.videos.services.clip_media import thumbnail_key_for
+
+        clip_files, clip_thumbnails = {}, {}
         if slug == 'clips':
             for index, (_, start, end, _) in enumerate(cuts, start=1):
                 clip_files[index] = os.path.join(directory, f'clip-{index}.mp4')
                 make_cut(source, clip_files[index], start, end)
+                clip_thumbnails[index] = thumbnail_key_for(clip_files[index])
+                make_thumbnail(clip_files[index], clip_thumbnails[index], end - start)
 
         words = transcript_words()
         done = 'completed'
@@ -390,5 +401,6 @@ class Command(BaseCommand):
                     virality_score=score, ai_reasoning=FIXTURE_NOTE,
                     status=VideoClip.Status.COMPLETED if finished else VideoClip.Status.DRAFT,
                     s3_object_key=clip_files.get(index),
+                    thumbnail_object_key=clip_thumbnails.get(index),
                 )
         return project, True

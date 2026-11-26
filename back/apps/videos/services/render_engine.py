@@ -201,12 +201,21 @@ class RenderEngine:
                 project_id=str(project.id)
             )
             
+            # Its thumbnail, from the file still on this disk. Best effort:
+            # None when it cannot be made, and the clip is delivered all the same.
+            from apps.videos.services.clip_media import make_clip_thumbnail
+
+            thumbnail_key = make_clip_thumbnail(
+                clip_id, output_path, s3_key, clip_obj.end_time - clip_obj.start_time,
+            )
+
             # 6. Persistence & Status Update, only while this delivery owns
             # the clip. COMPLETED is final: the claim and its start count go.
             saved = VideoClip.objects.filter(
                 pk=clip_id, status=VideoClip.Status.RENDERING, render_claim_token=claim_token,
             ).update(
                 s3_object_key=s3_key,
+                thumbnail_object_key=thumbnail_key,
                 status=VideoClip.Status.COMPLETED,
                 render_claim_token=None,
                 render_unfinished_starts=0,
@@ -226,7 +235,7 @@ class RenderEngine:
             
         finally:
             if s3_key and not saved:
-                RenderEngine._discard_unsaved_upload(clip_id, s3_key)
+                RenderEngine._discard_unsaved_upload(clip_id, s3_key, thumbnail_key)
             # 7. GARBAGE COLLECTION (Local Disk Cleanup)
             logger.info("ðŸ§¹ Cleaning up local rendering files...")
             try:
@@ -242,7 +251,7 @@ class RenderEngine:
                 logger.warning(f"âš ï¸ Cleanup error: {type(cleanup_err).__name__}")
 
     @staticmethod
-    def _discard_unsaved_upload(clip_id, s3_key):
+    def _discard_unsaved_upload(clip_id, s3_key, thumbnail_key=None):
         """
         Deletes an upload this delivery did not save (the clip was taken over,
         or the save failed), so it is not left orphaned in R2. Kept if the clip
@@ -255,5 +264,7 @@ class RenderEngine:
             if VideoClip.objects.filter(pk=clip_id, s3_object_key=s3_key).exists():
                 return
             CloudflareR2Manager.delete_object(s3_key)
+            if thumbnail_key:
+                CloudflareR2Manager.delete_object(thumbnail_key)
         except Exception as exc:
             logger.warning("render.orphan_not_deleted clip_id=%s error=%s", clip_id, type(exc).__name__)

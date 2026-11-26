@@ -99,11 +99,33 @@ class VideoClipSerializer(serializers.ModelSerializer):
         "reservation still RESERVED pays for the clip. False for a suggestion and for any other status."
     ))
 
+    preview_url = serializers.SerializerMethodField(help_text=(
+        "Temporary URL that plays the rendered file of a completed or published clip (a presigned GET "
+        "that lasts CLIP_DOWNLOAD_URL_TTL_SECONDS; with local files, the absolute /media/ URL). Null for "
+        "any other clip."
+    ))
+    thumbnail_url = serializers.SerializerMethodField(help_text=(
+        "Temporary URL of the clip's thumbnail (a JPEG frame of its render), as preview_url. Null when "
+        "the clip has none: never rendered, or the thumbnail could not be made."
+    ))
+
     class Meta:
         model = VideoClip
-        # The render claim is internal bookkeeping of render_clip_task.
-        exclude = ('render_claim_token', 'render_unfinished_starts')
+        # The render claim is internal bookkeeping of render_clip_task; the
+        # thumbnail's storage key is sent as thumbnail_url.
+        exclude = ('render_claim_token', 'render_unfinished_starts', 'thumbnail_object_key')
         read_only_fields = ('id', 'project', 'status', 's3_object_key', 'virality_score', 'ai_reasoning')
+
+    # Both URLs are signed locally from the row: no query and no network call per clip.
+    def get_preview_url(self, clip) -> str | None:
+        from .services.clip_media import preview_url
+
+        return preview_url(clip, self.context)
+
+    def get_thumbnail_url(self, clip) -> str | None:
+        from .services.clip_media import thumbnail_url
+
+        return thumbnail_url(clip, self.context)
 
     def get_render_queued(self, clip) -> bool:
         if clip.status != VideoClip.Status.DRAFT:
@@ -135,6 +157,9 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     clips = VideoClipSerializer(many=True, read_only=True)
     brand_kit_name = serializers.CharField(source='brand_kit.name', read_only=True)
     proxy_url = serializers.SerializerMethodField()
+    thumbnail_url = serializers.SerializerMethodField(help_text=(
+        "The thumbnail of the project's first clip that has one (the same temporary URL), or null."
+    ))
     
     source_file = serializers.FileField(required=False)
     video_url = serializers.CharField(required=False, allow_blank=True)
@@ -189,6 +214,18 @@ class VideoProjectSerializer(serializers.ModelSerializer):
                 obj.proxy_r2_key, expiration_seconds=3600, request=self.context.get('request'),
             )
         return None
+
+    def get_thumbnail_url(self, obj) -> str | None:
+        return None  # filled by to_representation, from the clips it already serialized
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if 'thumbnail_url' in data:
+            # Read from the serialized clips, not from the rows: no query of its own.
+            data['thumbnail_url'] = next(
+                (clip['thumbnail_url'] for clip in data.get('clips') or () if clip.get('thumbnail_url')), None,
+            )
+        return data
 
     def validate(self, data):
         # En caso de creación (POST) o si se están enviando estos campos específicamente en un PATCH

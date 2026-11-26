@@ -308,7 +308,7 @@ Contratos `contracts/projects.ts` y `contracts/clips.ts`. Backend: `apps/videos`
 | POST `clips/:id/retry/` | `clips.retry` | `useRetryClip` · `retryClip` | D3 (§5 D) | `ClipRetryView`. Cobra el render del clip (su parte se devolvió cuando falló): reserva como `clips.render` y responde el clip más `final_cost` y `transaction_id`; 402 sin saldo, 409 si no está en error o el proyecto ya renderiza. La UI confirma el costo antes | — | M |
 | GET `clips/:id/download/` | `clips.download` | `useClipDownload` · `getClipDownload` | D3, D4, D5 | `CloudflareR2Manager.generate_presigned_url` con `ResponseContentDisposition=attachment` | — | S |
 | GET `projects/` ⚠️ | `projects.list` | `useProjects` · `listProjects` | B2 (§5 B), J1, B1 | Paginación de 25, `status_group`, `search`, `status_counts`, serializer liviano (hueco 14) | — | M |
-| GET `projects/:id/` ⚠️ | `projects.detail` | `useProject` · `getProject` | D1, D3, D4, D5 | Faltan `cost`, `stage_timings`, `eta_seconds`, `duration_seconds`, `uploaded_by_detail`, `thumbnail_url` (huecos 4, 15, 18) | Vínculo `Transaction` ↔ proyecto | M |
+| GET `projects/:id/` ⚠️ | `projects.detail` | `useProject` · `getProject` | D1, D3, D4, D5 | Faltan `cost`, `stage_timings`, `eta_seconds`, `duration_seconds`, `uploaded_by_detail` (huecos 4, 15, 18). Ya llegan `thumbnail_url` y, en cada clip, `preview_url` y `thumbnail_url` | Vínculo `Transaction` ↔ proyecto | M |
 
 ⚠️ = existe en parte. Los dos parciales son del área del lead, pero no tienen rama: coordinalo con él antes de tocarlos.
 

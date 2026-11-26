@@ -217,6 +217,10 @@ class VideoClip(models.Model):
     title = models.CharField(max_length=255)
     # Mantener s3_object_key por compatibilidad con r2_key
     s3_object_key = models.CharField(max_length=1024, blank=True, null=True, verbose_name="R2/S3 Key")
+    # One frame of the rendered file (a JPEG next to it), made at the end of
+    # the render, best effort: None when there is no render or it could not
+    # be made (services/clip_media.py). It goes with the file it shows.
+    thumbnail_object_key = models.CharField(max_length=1024, blank=True, null=True, editable=False)
     
     start_time = models.FloatField()
     end_time = models.FloatField()

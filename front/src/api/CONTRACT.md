@@ -786,7 +786,7 @@ Detalle del proyecto con el estado del pipeline, la metadata, la transcripción 
 |---|---|
 | Id | `projects.detail` |
 | Backend | ⚠️ existe en parte · hueco 4, 15, 18 · `back/apps/videos/views.py · VideoProjectViewSet.retrieve + VideoProjectSerializer` |
-| Nota | Faltan `cost` (vínculo con la transacción y estado devuelto), `stage_timings`, `eta_seconds`, `duration_seconds`, `uploaded_by_detail` y `thumbnail_url`. |
+| Nota | Faltan `cost` (vínculo con la transacción y estado devuelto), `stage_timings`, `eta_seconds`, `duration_seconds` y `uploaded_by_detail`. Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Project |
 | Errores | **404** No existe o es de otro workspace. La UI muestra K1. |
@@ -919,7 +919,7 @@ Un clip con sus datos, sus capas y dónde está publicado.
 |---|---|
 | Id | `clips.detail` |
 | Backend | ✅ existe · `back/apps/videos/views_clips.py · ClipDetailView.get + VideoClipSerializer` |
-| Nota | Los mismos campos que el clip dentro del proyecto. Los extras propuestos (`preview_url`, `thumbnail_url`, `error_code`, `posts`) todavía no llegan. |
+| Nota | Los mismos campos que el clip dentro del proyecto, con `preview_url` (reproduce el render; `null` si el clip no está `completed` o `published`) y `thumbnail_url` (`null` si no hay miniatura): URLs temporales de 1 h. Los extras propuestos (`error_code`, `posts`) todavía no llegan. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Clip |
 | Errores | **404** No existe o es de otro workspace. |
@@ -1162,7 +1162,7 @@ Publicaciones del workspace, ordenadas por `publish_at`, con filtros por estado,
 |---|---|
 | Id | `social.posts` |
 | Backend | ⚠️ existe en parte · hueco 8 · `back/apps/videos/views_social.py · ScheduledPostViewSet.list + ScheduledPostSerializer` |
-| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. Falta: `thumbnail_url` viene siempre `null` (los clips no tienen miniatura), `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos. |
+| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. `clip.thumbnail_url` es la miniatura del clip (URL temporal de 1 h; `null` si no tiene). Falta: `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | PostsQuery |
 | Respuesta 200 | { count: number, next: string \\| null, previous: string \\| null, results: ScheduledPost[], status_counts?: { [clave]: number } } |
@@ -1206,7 +1206,7 @@ Detalle de una publicación. Se consulta cada 5 s mientras está en cola o publi
 |---|---|
 | Id | `social.post` |
 | Backend | ⚠️ existe en parte · hueco 8 · `back/apps/videos/views_social.py · ScheduledPostViewSet.retrieve + ScheduledPostSerializer` |
-| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. Falta: `thumbnail_url` viene siempre `null` (los clips no tienen miniatura), `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos. |
+| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. `clip.thumbnail_url` es la miniatura del clip (URL temporal de 1 h; `null` si no tiene). Falta: `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | ScheduledPost |
 | Errores | **404** No existe o es de otro workspace. |
@@ -1882,8 +1882,8 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `created_at` | IsoDateTime |
 | `clips` | Clip[] |
 | `proxy_url` | string \\| null |
-| `uploaded_by_detail` (opcional) | UserRef \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
+| `uploaded_by_detail` (opcional) | UserRef \\| null |
 | `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
@@ -1978,8 +1978,8 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `created_at` | IsoDateTime |
 | `clips` | Clip[] |
 | `proxy_url` | string \\| null |
-| `uploaded_by_detail` (opcional) | UserRef \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
+| `uploaded_by_detail` (opcional) | UserRef \\| null |
 | `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
@@ -2084,8 +2084,8 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `created_at` | IsoDateTime |
 | `clips` | Clip[] |
 | `proxy_url` | string \\| null |
-| `uploaded_by_detail` (opcional) | UserRef \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
+| `uploaded_by_detail` (opcional) | UserRef \\| null |
 | `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
@@ -2201,8 +2201,8 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `created_at` | IsoDateTime |
 | `clips` | Clip[] |
 | `proxy_url` | string \\| null |
-| `uploaded_by_detail` (opcional) | UserRef \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
+| `uploaded_by_detail` (opcional) | UserRef \\| null |
 | `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
