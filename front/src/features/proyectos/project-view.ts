@@ -6,19 +6,33 @@ import type { ButtonVariant, IconName } from '@/ui';
 /** What the list needs of a project (the list endpoint sends the whole serializer). */
 export type ProjectRow = Project;
 
-const PROVIDERS: Array<[RegExp, string]> = [
-  [/(^|\.)youtube\.com$|(^|\.)youtu\.be$/, 'YouTube'],
-  [/(^|\.)vimeo\.com$/, 'Vimeo'],
-  [/(^|\.)twitch\.tv$/, 'Twitch'],
-  [/(^|\.)drive\.google\.com$/, 'Google Drive'],
-];
+/**
+ * The hosts the backend downloads links from, exactly (`LINK_HOSTS` of
+ * back/apps/videos/services/link_validation.py): no other subdomain.
+ */
+export const LINK_HOSTS: Readonly<Record<string, string>> = {
+  'youtube.com': 'YouTube',
+  'www.youtube.com': 'YouTube',
+  'm.youtube.com': 'YouTube',
+  'music.youtube.com': 'YouTube',
+  'youtu.be': 'YouTube',
+  'vimeo.com': 'Vimeo',
+  'www.vimeo.com': 'Vimeo',
+  'player.vimeo.com': 'Vimeo',
+  'twitch.tv': 'Twitch',
+  'www.twitch.tv': 'Twitch',
+  'm.twitch.tv': 'Twitch',
+  'clips.twitch.tv': 'Twitch',
+  'player.twitch.tv': 'Twitch',
+  'drive.google.com': 'Google Drive',
+};
 
 /** "YouTube" for a YouTube link; null when the site is not one we name. */
 export function linkProvider(url: string | null | undefined): string | null {
   if (!url) return null;
   try {
-    const host = new URL(url).hostname.toLowerCase();
-    return PROVIDERS.find(([pattern]) => pattern.test(host))?.[1] ?? null;
+    const host = new URL(url).hostname.toLowerCase().replace(/\.$/, '');
+    return Object.hasOwn(LINK_HOSTS, host) ? (LINK_HOSTS[host] ?? null) : null;
   } catch {
     return null;
   }

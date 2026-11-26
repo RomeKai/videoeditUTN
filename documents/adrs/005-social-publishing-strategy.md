@@ -29,8 +29,8 @@ La decisión es: ¿construimos OAuth directo con cada plataforma o usamos un int
 ### Opción B: Ayrshare (Intermediario)
 
 - **Pros:** Una sola API para todas las redes. OAuth y app review manejados por Ayrshare. SDK simple. Soporte para scheduling nativo.
-- **Contras:** **$99/mes** (plan Business) o $299/mes (Premium). Dependencia de un tercero para funcionalidad core. Features limitados a lo que Ayrshare expone. Latencia adicional (Ayrshare → Red Social). Vendor lock-in.
-- **Costo:** $99-299/mes + por-post fees en tiers altos.
+- **Contras:** costo por perfil social (el escrito originalmente, $99/mes, quedó desactualizado: ver "Hallazgos del SPIKE-02"). Dependencia de un tercero para funcionalidad core. Features limitados a lo que Ayrshare expone. Latencia adicional (Ayrshare → Red Social). Vendor lock-in.
+- **Costo:** por perfil social, no un monto fijo (ver "Hallazgos del SPIKE-02").
 
 ### Opción C: Híbrido (OAuth directo con fallback a Ayrshare)
 
@@ -53,6 +53,20 @@ La decisión es: ¿construimos OAuth directo con cada plataforma o usamos un int
 **Opción C (Híbrido)** con esta estrategia:
 - MVP: YouTube directo (OAuth más simple) + Ayrshare para TikTok/Instagram
 - Post-MVP: Migrar TikTok e Instagram a OAuth directo, eliminar Ayrshare
+
+---
+
+## Hallazgos del SPIKE-02 (2026-11-25)
+
+Datos verificados en la documentación oficial, para decidir con evidencia. Los pasos de registro y el seguimiento de plazos reales están en el [runbook](../runbooks/social-app-review.md). **Esto no cambia el estado ni la decisión:** sigue `proposed`.
+
+1. **TikTok no deja publicar en público sin auditoría.** Un cliente sin auditar solo publica en modo privado, para un máximo de 5 usuarios en 24 h y desde cuentas privadas. La auditoría exige una app de público amplio: una herramienta que publica solo en cuentas del propio equipo no es aceptable. Con OAuth directo, la publicación pública en TikTok queda bloqueada hasta pasar la auditoría.
+2. **Instagram exige acceso avanzado** para publicar en cuentas de terceros: App Review más verificación de negocio de Meta. El acceso estándar sirve solo para cuentas propias.
+3. **Los plazos del backlog no coinciden con los oficiales.** TikTok declara de varios días a 2 semanas y Meta de 2 a 3 días, con avisos de "varias semanas" por volumen. Ninguna plataforma da garantía; los foros reportan más de un mes en Meta. Faltan los plazos reales del equipo (se miden en el runbook).
+4. **El costo de Ayrshare cambió y escala por perfil.** Según las páginas de Ayrshare (fuente del proveedor, sin confirmar en su página de precios): Premium desde $149/mes con 1 perfil, Launch $299/mes con 10 perfiles y Business $599/mes con 30, más un adicional por perfil extra. Si cada workspace conecta sus redes como un perfil, el costo crece con la cantidad de clientes en lugar de ser un monto fijo de $99/mes. Conviene modelarlo antes de elegir la opción B o C.
+5. **Implicancia para la recomendación preliminar:** usar Ayrshare para TikTok e Instagram en el MVP evita la auditoría de TikTok y la verificación de Meta, pero tiene un costo recurrente por perfil. Elegir OAuth directo traslada ese costo a tiempo de revisión y mantenimiento.
+
+**Pendiente para cerrar el ADR:** registrar las apps y medir los plazos reales, confirmar el precio vigente de Ayrshare con su equipo comercial o en su página de precios, y decidir el alcance del MVP (¿solo YouTube?).
 
 ---
 

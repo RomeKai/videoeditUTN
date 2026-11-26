@@ -242,6 +242,16 @@ describe('mocks', () => {
     expect((await fail(apiCall(workspaces.acceptInvitation, { params: { token: 'con-cuenta' }, body: {} }))).status).toBe(401);
   });
 
+  it('probe-link reconoce solo los hosts exactos del backend', async () => {
+    const ok = await apiCall(projects.probeLink, { body: { video_url: 'https://www.youtube.com/watch?v=abc' } });
+    expect(ok.provider).toBe('YouTube');
+    for (const video_url of ['https://youtube.com.evil.com/watch?v=abc', 'https://consent.youtube.com/m?continue=x', 'https://evil.vimeo.com.example/1']) {
+      const error = await fail(apiCall(projects.probeLink, { body: { video_url } }));
+      expect(error.status, video_url).toBe(400);
+      expect(error.code, video_url).toBe('unsupported');
+    }
+  });
+
   it('saldo insuficiente responde 402 con lo que hacía falta', async () => {
     signIn('saldo-bajo');
     const error = await fail(apiCall(projects.createProject, { body: { source_file: new File(['x'], 'clase-30min.mp4', { type: 'video/mp4' }) } }));

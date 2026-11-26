@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**80 endpoints:** 22 existen hoy en el backend, 3 existen en parte y 55 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**80 endpoints:** 26 existen hoy en el backend, 3 existen en parte y 51 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -99,7 +99,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/token-packages/` | Los 3 paquetes fijos, el precio de la cantidad libre y la conversión de referencia. | ❌ falta (propuesto) · hueco 12 | G4, D2 (diálogo) |
 | POST | `/api/v1/token-purchases/` | Inicia una compra de tokens y devuelve la URL del checkout del proveedor de pagos. | ❌ falta (propuesto) · hueco 12 | G4, D2 (diálogo) |
 | GET | `/api/v1/token-purchases/:id/` | Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`tokens` > 0) o el pago de una subida de plan (`plan_id`, `tokens` 0). | ❌ falta (propuesto) · hueco 12 | G5 |
-| POST | `/api/v1/projects/probe-link/` | Reconoce un link antes de crear el proyecto: de dónde es, su título y su duración. | ❌ falta (propuesto) | C1 |
+| POST | `/api/v1/projects/probe-link/` | Reconoce un link antes de crear el proyecto: de dónde es, su título y su duración. | ✅ existe | C1 |
 | GET | `/api/v1/projects/` | Proyectos del workspace, del más nuevo al más viejo. | ⚠️ existe en parte · hueco 14 | B2, J1, B1 |
 | POST | `/api/v1/projects/` | Crea un proyecto desde un archivo (multipart) o un link, reserva los tokens y arranca la ingesta. | ✅ existe | C1 |
 | POST | `/api/v1/projects/from-prompt/` | Igual que crear, más `prompt`: la IA arma la configuración al iniciar la ingesta (queda en `metadata.pte`). | ✅ existe | C1 |
@@ -110,14 +110,14 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | POST | `/api/v1/projects/:id/approve-paper-edit/` | Aprueba los segmentos elegidos, reserva el costo del render y lo despacha. | ✅ existe | D2 |
 | POST | `/api/v1/projects/:id/redispatch/` | Vuelve a despachar el pipeline de un proyecto detenido, desde la última etapa terminada. No cobra. | ❌ falta (propuesto) | D1 |
 | POST | `/api/v1/projects/:id/rerender/` | Renderiza todos los clips de nuevo con otro estilo (layout, subtítulos, brand kit). Cobra el render. | ❌ falta (propuesto) · hueco 11 | D1, D4, D5 |
-| GET | `/api/v1/projects/:id/activity/` | Quién hizo qué en el proyecto y sus movimientos de tokens, del más nuevo al más viejo. | ❌ falta (propuesto) · hueco 4 | D1f |
-| POST | `/api/v1/projects/:id/clips/download/` | Arma un .zip con los clips listos (todos, o los de `clip_ids`) y devuelve la URL temporal. | ❌ falta (propuesto) · hueco 17 | D3 |
+| GET | `/api/v1/projects/:id/activity/` | Quién hizo qué en el proyecto y sus movimientos de tokens, del más nuevo al más viejo. | ✅ existe | D1f |
+| POST | `/api/v1/projects/:id/clips/download/` | Arma un .zip con los clips listos (todos, o los de `clip_ids`) y devuelve la URL temporal. | ✅ existe | D3 |
 | GET | `/api/v1/clips/:id/` | Un clip con sus datos, sus capas y dónde está publicado. | ❌ falta (propuesto) · hueco 11 | D4, E1 |
 | PATCH | `/api/v1/clips/:id/` | Cambia el título o el recorte. No renderiza: para eso está `render`. | ❌ falta (propuesto) · hueco 11 | D4, D3, D5 |
 | DELETE | `/api/v1/clips/:id/` | Borra el clip y cancela sus publicaciones programadas. | ❌ falta (propuesto) · hueco 11 | D3 |
 | POST | `/api/v1/clips/:id/render/` | Vuelve a renderizar el clip con su recorte actual y la configuración del proyecto. Cobra por la duración del clip. | ❌ falta (propuesto) · hueco 11 | D4, D5 |
 | POST | `/api/v1/clips/:id/retry/` | Reintenta el render de un clip que falló. No cobra si el error fue del sistema. | ❌ falta (propuesto) · hueco 11 | D3 |
-| GET | `/api/v1/clips/:id/download/` | Link de descarga firmado y temporal del clip renderizado. | ❌ falta (propuesto) · hueco 5 | D3, D4, D5 |
+| GET | `/api/v1/clips/:id/download/` | Link de descarga firmado y temporal del clip renderizado. | ✅ existe | D3, D4, D5 |
 | POST | `/api/v1/clips/:clipId/preview/` | Pide una vista previa gratis en 360p, o devuelve la que ya está en curso. Nunca reserva tokens. | ✅ existe | D2, D4 |
 | GET | `/api/v1/clips/:clipId/preview/` | La vista previa vigente más nueva del clip. Se consulta cada 5 s hasta `ready` o `failed`. | ✅ existe | D2, D4 |
 | GET | `/api/v1/brand-kits/` | Brand kits del workspace. | ✅ existe | F1, C1, B2, D5 |
@@ -698,12 +698,12 @@ Reconoce un link antes de crear el proyecto: de dónde es, su título y su durac
 | | |
 |---|---|
 | Id | `projects.probeLink` |
-| Backend | ❌ falta (propuesto) |
-| Nota | Sin número de hueco: lo pide C1 (artboard «Pegar link») y cierra el aviso del mapa de que los links no pasan por la validación de duración del plan. |
+| Backend | ✅ existe · `back/apps/videos/views_project_data.py · ProbeLinkView + services/link_probe.py · probe_link` |
+| Nota | Hosts admitidos, exactos: youtube.com (y www, m, music), youtu.be, vimeo.com (y www, player), twitch.tv (y www, m, clips, player) y drive.google.com (`LINK_HOSTS` de services/link_validation.py, los mismos que crear un proyecto y la descarga del worker). Antes de consultar nada rechaza otros esquemas, IPs, otros subdominios, usuario en la URL, puertos raros, hosts que resuelven a direcciones privadas y links que no nombran un solo video. yt-dlp lee solo los datos con los extractores de esos sitios (services/ytdlp_safe.py), sin pedidos ni redirecciones a direcciones no públicas, en un proceso aparte con entorno mínimo que se corta entero a los 25 s. `video_url` vuelve como la URL del video (`watch?v=<id>` en YouTube) y es la que hay que mandar al crear. Crear no exige el probe: la duración del plan vale igual en la descarga, y un video más largo hace fallar el proyecto con `LinkTooLongError` y la devolución de la reserva. Un link leído se guarda 10 min en la caché. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | { video_url: string } |
 | Respuesta 200 | LinkProbe |
-| Errores | **400** El link no es de un sitio soportado (`code: "unsupported"`) o no se puede bajar: privado, borrado o con restricción (`code: "unavailable"`).<br>**403** La duración supera el plan (`code: "duration"`, `limit` en segundos). La UI lo muestra junto al campo, con link a Planes. |
+| Errores | **400** El link no es una URL web (`code: "invalid"`), no es de un sitio soportado, es una IP o una dirección interna, o es una lista, un canal o un vivo (`code: "unsupported"`), o no se puede bajar: privado, borrado o con restricción (`code: "unavailable"`). Sin `video_url`: `{ video_url: [...] }`.<br>**403** La duración supera el plan (`code: "duration"`, `limit` en segundos). La UI lo muestra junto al campo, con link a Planes. También el Lector (`{ detail }`): revisar un link es parte de crear.<br>**404** El workspace de `X-Workspace-Id` no es del usuario.<br>**429** Más de 20 links por minuto del mismo usuario.<br>**502** El sitio del video respondió con un error o no se encontró su dirección (`code: "provider_error"`).<br>**503** La herramienta que lee los links no está disponible (`code: "unavailable_tool"`).<br>**504** El sitio tardó más de 25 s (`code: "timeout"`). |
 | Pantallas | C1 |
 
 #### `GET /api/v1/projects/`
@@ -732,7 +732,7 @@ Crea un proyecto desde un archivo (multipart) o un link, reserva los tokens y ar
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido (multipart) | CreateProjectRequest |
 | Respuesta 201 | CreateProjectResponse |
-| Errores | **400** Validación. En `source_file` llega el mensaje de InvalidUploadError; la UI lo traduce por código (propuesto: `{message, code}`) o por el texto. `project_type` para video completo con link o de más de 10 min. Link con resolución distinta de 720p.<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre el diálogo D2.<br>**403** El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3.<br>**503** No se pudo encolar la ingesta (broker caído): `{ error, code: "IngestionNotQueued", project_id, refunded }`. Con `refunded: true` el proyecto queda `failed` con ese `pipeline_error_code` y la reserva ya volvió; con `false` no se pudo escribir y el proyecto sigue en `uploaded` con la reserva. La UI muestra el genérico de 5xx. |
+| Errores | **400** Validación. En `source_file` llega el mensaje de InvalidUploadError; la UI lo traduce por código (propuesto: `{message, code}`) o por el texto. `project_type` para video completo con link o de más de 10 min. Link con resolución distinta de 720p. En `video_url`, un link que no es de un host admitido, que apunta a una IP o una dirección interna, o que no nombra un solo video (una lista, un canal): las mismas reglas que `probe-link`. Se guarda la URL del video (`watch?v=<id>` en YouTube).<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre el diálogo D2.<br>**403** El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3.<br>**503** No se pudo encolar la ingesta (broker caído): `{ error, code: "IngestionNotQueued", project_id, refunded }`. Con `refunded: true` el proyecto queda `failed` con ese `pipeline_error_code` y la reserva ya volvió; con `false` no se pudo escribir y el proyecto sigue en `uploaded` con la reserva. La UI muestra el genérico de 5xx. |
 | Pantallas | C1 |
 
 #### `POST /api/v1/projects/from-prompt/`
@@ -856,9 +856,11 @@ Quién hizo qué en el proyecto y sus movimientos de tokens, del más nuevo al m
 | | |
 |---|---|
 | Id | `projects.activity` |
-| Backend | ❌ falta (propuesto) · hueco 4 |
+| Backend | ✅ existe · `back/apps/videos/views_project_data.py · ProjectActivityView + services/project_activity.py · build_activity` |
+| Nota | No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (las Transaction de las claves `*reservation_id` de la metadata, con `settled_at` y `reserved_amount` desde la migración 0012 de payments), fin del render (cuando se liquidó la reserva que lo pagó), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva cuya clave se borró de la metadata (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | ActivityItem[] |
+| Errores | **404** No existe o es de otro workspace. |
 | Pantallas | D1f |
 
 #### `POST /api/v1/projects/:id/clips/download/`
@@ -868,11 +870,12 @@ Arma un .zip con los clips listos (todos, o los de `clip_ids`) y devuelve la URL
 | | |
 |---|---|
 | Id | `projects.downloadAll` |
-| Backend | ❌ falta (propuesto) · hueco 17 |
+| Backend | ✅ existe · `back/apps/videos/views_project_data.py · ProjectClipsDownloadView + services/clip_download.py · build_project_zip` |
+| Nota | Se arma mientras espera el pedido: lee los tamaños antes de bajar nada, copia cada clip del almacenamiento al .zip por partes (sin comprimir: son MP4), lo guarda en `exports/zips/` y devuelve la URL firmada por 1 h, con `Content-Disposition: attachment`. Borra siempre la carpeta temporal, y cada pedido borra los .zip vencidos. Entran los clips `completed` y `published` con archivo; los ids de `clip_ids` que no son de clips listos del proyecto (de otro proyecto o workspace) se ignoran. Lo puede pedir cualquier rol (`clip.download`). |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | { clip_ids?: Id[] } |
 | Respuesta 200 | { url: string, expires_at: IsoDateTime } |
-| Errores | **409** Ningún clip está listo todavía. |
+| Errores | **400** `clip_ids` no es una lista de ids, o trae más de 50.<br>**404** No existe o es de otro workspace.<br>**409** Ningún clip está listo todavía.<br>**422** Supera el tope del .zip: `code: "zip_too_large"` (`limit` en bytes, 1 GB por defecto) o `code: "zip_too_many_clips"` (`limit` en clips, 50). La UI muestra el mensaje del servidor: elegir menos o bajarlos de a uno.<br>**429** Ya se está armando otro .zip en el mismo workspace (un lock de Redis con dueño, entre todos los workers).<br>**503** Error del almacenamiento (`code: "storage_unavailable"`) o el armado, subida incluida, pasó el tiempo máximo (`code: "zip_timeout"`, 140 s por defecto). |
 | Pantallas | D3 |
 
 ### Clips
@@ -954,11 +957,11 @@ Link de descarga firmado y temporal del clip renderizado.
 | | |
 |---|---|
 | Id | `clips.download` |
-| Backend | ❌ falta (propuesto) · hueco 5 |
-| Nota | `s3_object_key` no es una URL: hay que firmarla (CloudflareR2Manager.generate_presigned_url). |
+| Backend | ✅ existe · `back/apps/videos/views_project_data.py · ClipDownloadView + services/clip_download.py · clip_download` |
+| Nota | En R2 la URL firmada (1 h) pide `Content-Disposition: attachment` con `filename`, así el navegador guarda el archivo aunque sea de otro origen. En local (USE_R2=False) es la URL absoluta de /media/. `filename` es el título en minúsculas, con guiones en lugar de lo que no es letra o número, y `.mp4` («clip.mp4» si queda vacío). Lo puede pedir cualquier rol (`clip.download`). |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | { url: string, filename: string, expires_at: IsoDateTime } |
-| Errores | **409** El clip todavía no está renderizado. |
+| Errores | **404** No existe o es de otro workspace.<br>**409** El clip todavía no está renderizado.<br>**503** No se pudo firmar el link o el archivo no está en el almacenamiento (`code: "storage_unavailable"`). |
 | Pantallas | D3, D4, D5 |
 
 #### `POST /api/v1/clips/:clipId/preview/`

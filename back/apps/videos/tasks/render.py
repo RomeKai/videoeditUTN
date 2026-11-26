@@ -15,6 +15,7 @@ from apps.videos.models import AIUsageRecord, VideoProject, VideoClip
 from apps.payments.models import Transaction
 from moviepy import VideoFileClip, concatenate_videoclips
 from apps.videos.services.selection_engine import GeminiFlashStrategy, SelectionEngine
+from apps.videos.services.watermark import apply_watermark, project_needs_watermark
 from apps.videos.services.ai.contracts import ProviderUsage
 from apps.videos.services.ai.usage_recorder import (
     record_usages,
@@ -939,6 +940,11 @@ def _render_final_edit(project_id, lock, attempt):
                     final_clip = subtitler.add_subtitles(video_layout_processed, final_segments)
                 else:
                     final_clip = video_layout_processed
+
+                # The plan's watermark (PAY-01): decided here, never by the request. If it
+                # cannot be applied the export fails; the video is not delivered unmarked.
+                if project_needs_watermark(project):
+                    final_clip = apply_watermark(final_clip)
 
                 # 4. EXPORT & S3 UPLOAD
                 output_filename = f"final_{project.id}.mp4"

@@ -519,7 +519,7 @@ export const createProject = defineEndpoint({
   errors: [
     {
       status: 400,
-      when: 'Validación. En `source_file` llega el mensaje de InvalidUploadError; la UI lo traduce por código (propuesto: `{message, code}`) o por el texto. `project_type` para video completo con link o de más de 10 min. Link con resolución distinta de 720p.',
+      when: 'Validación. En `source_file` llega el mensaje de InvalidUploadError; la UI lo traduce por código (propuesto: `{message, code}`) o por el texto. `project_type` para video completo con link o de más de 10 min. Link con resolución distinta de 720p. En `video_url`, un link que no es de un host admitido, que apunta a una IP o una dirección interna, o que no nombra un solo video (una lista, un canal): las mismas reglas que `probe-link`. Se guarda la URL del video (`watch?v=<id>` en YouTube).',
     },
     ...paymentErrors,
     notQueuedError,
@@ -685,8 +685,12 @@ export const getProjectActivity = defineEndpoint({
   path: '/api/v1/projects/:id/activity/',
   summary: 'Quién hizo qué en el proyecto y sus movimientos de tokens, del más nuevo al más viejo.',
   response: z.array(ActivityItem),
-  errors: [],
-  backend: { status: 'proposed', gap: 4 },
+  errors: [{ status: 404, when: 'No existe o es de otro workspace.' }],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/videos/views_project_data.py · ProjectActivityView + services/project_activity.py · build_activity',
+    note: 'No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (las Transaction de las claves `*reservation_id` de la metadata, con `settled_at` y `reserved_amount` desde la migración 0012 de payments), fin del render (cuando se liquidó la reserva que lo pagó), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva cuya clave se borró de la metadata (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems.',
+  },
   screens: ['D1f'],
 });
 
@@ -699,8 +703,22 @@ export const downloadAllClips = defineEndpoint({
   summary: 'Arma un .zip con los clips listos (todos, o los de `clip_ids`) y devuelve la URL temporal.',
   request: z.object({ clip_ids: z.array(Id).optional() }),
   response: z.object({ url: z.string().url(), expires_at: IsoDateTime }),
-  errors: [{ status: 409, when: 'Ningún clip está listo todavía.' }],
-  backend: { status: 'proposed', gap: 17 },
+  errors: [
+    { status: 400, when: '`clip_ids` no es una lista de ids, o trae más de 50.' },
+    { status: 404, when: 'No existe o es de otro workspace.' },
+    { status: 409, when: 'Ningún clip está listo todavía.' },
+    {
+      status: 422,
+      when: 'Supera el tope del .zip: `code: "zip_too_large"` (`limit` en bytes, 1 GB por defecto) o `code: "zip_too_many_clips"` (`limit` en clips, 50). La UI muestra el mensaje del servidor: elegir menos o bajarlos de a uno.',
+    },
+    { status: 429, when: 'Ya se está armando otro .zip en el mismo workspace (un lock de Redis con dueño, entre todos los workers).' },
+    { status: 503, when: 'Error del almacenamiento (`code: "storage_unavailable"`) o el armado, subida incluida, pasó el tiempo máximo (`code: "zip_timeout"`, 140 s por defecto).' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/videos/views_project_data.py · ProjectClipsDownloadView + services/clip_download.py · build_project_zip',
+    note: 'Se arma mientras espera el pedido: lee los tamaños antes de bajar nada, copia cada clip del almacenamiento al .zip por partes (sin comprimir: son MP4), lo guarda en `exports/zips/` y devuelve la URL firmada por 1 h, con `Content-Disposition: attachment`. Borra siempre la carpeta temporal, y cada pedido borra los .zip vencidos. Entran los clips `completed` y `published` con archivo; los ids de `clip_ids` que no son de clips listos del proyecto (de otro proyecto o workspace) se ignoran. Lo puede pedir cualquier rol (`clip.download`).',
+  },
   screens: ['D3'],
 });
 
@@ -725,12 +743,21 @@ export const probeLink = defineEndpoint({
   request: z.object({ video_url: z.string().url().max(500) }),
   response: LinkProbe,
   errors: [
-    { status: 400, when: 'El link no es de un sitio soportado (`code: "unsupported"`) o no se puede bajar: privado, borrado o con restricción (`code: "unavailable"`).' },
-    { status: 403, when: 'La duración supera el plan (`code: "duration"`, `limit` en segundos). La UI lo muestra junto al campo, con link a Planes.' },
+    {
+      status: 400,
+      when: 'El link no es una URL web (`code: "invalid"`), no es de un sitio soportado, es una IP o una dirección interna, o es una lista, un canal o un vivo (`code: "unsupported"`), o no se puede bajar: privado, borrado o con restricción (`code: "unavailable"`). Sin `video_url`: `{ video_url: [...] }`.',
+    },
+    { status: 403, when: 'La duración supera el plan (`code: "duration"`, `limit` en segundos). La UI lo muestra junto al campo, con link a Planes. También el Lector (`{ detail }`): revisar un link es parte de crear.' },
+    { status: 404, when: 'El workspace de `X-Workspace-Id` no es del usuario.' },
+    { status: 429, when: 'Más de 20 links por minuto del mismo usuario.' },
+    { status: 502, when: 'El sitio del video respondió con un error o no se encontró su dirección (`code: "provider_error"`).' },
+    { status: 503, when: 'La herramienta que lee los links no está disponible (`code: "unavailable_tool"`).' },
+    { status: 504, when: 'El sitio tardó más de 25 s (`code: "timeout"`).' },
   ],
   backend: {
-    status: 'proposed',
-    note: 'Sin número de hueco: lo pide C1 (artboard «Pegar link») y cierra el aviso del mapa de que los links no pasan por la validación de duración del plan.',
+    status: 'exists',
+    source: 'back/apps/videos/views_project_data.py · ProbeLinkView + services/link_probe.py · probe_link',
+    note: 'Hosts admitidos, exactos: youtube.com (y www, m, music), youtu.be, vimeo.com (y www, player), twitch.tv (y www, m, clips, player) y drive.google.com (`LINK_HOSTS` de services/link_validation.py, los mismos que crear un proyecto y la descarga del worker). Antes de consultar nada rechaza otros esquemas, IPs, otros subdominios, usuario en la URL, puertos raros, hosts que resuelven a direcciones privadas y links que no nombran un solo video. yt-dlp lee solo los datos con los extractores de esos sitios (services/ytdlp_safe.py), sin pedidos ni redirecciones a direcciones no públicas, en un proceso aparte con entorno mínimo que se corta entero a los 25 s. `video_url` vuelve como la URL del video (`watch?v=<id>` en YouTube) y es la que hay que mandar al crear. Crear no exige el probe: la duración del plan vale igual en la descarga, y un video más largo hace fallar el proyecto con `LinkTooLongError` y la devolución de la reserva. Un link leído se guarda 10 min en la caché.',
   },
   screens: ['C1'],
 });
