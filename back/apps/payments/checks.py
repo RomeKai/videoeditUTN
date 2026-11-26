@@ -36,9 +36,9 @@ def check_simulated_payments_in_deploy(app_configs=None, **kwargs):
 def check_public_plan_order(app_configs=None, databases=None, **kwargs):
     """
     The pricing page lists the public plans by ``sort_order``, and the web app
-    calls "Subir" what comes later; the backend decides by price
-    (services/subscriptions.py). They must agree: a plan later in the list
-    that costs less is warned. Runs with ``check --database`` and ``migrate``;
+    labels "Subir" what comes later and "Bajar" what comes before; what it
+    costs is the price (services/subscriptions.py). They must agree: a plan
+    later in the list that costs less is warned. Runs with ``check --database`` and ``migrate``;
     before the payments tables exist it says nothing.
     """
     from .models import SubscriptionPlan
@@ -59,7 +59,7 @@ def check_public_plan_order(app_configs=None, databases=None, **kwargs):
                 warnings.append(Warning(
                     f"Public plan {name!r} comes after {previous!r} in sort_order but costs less "
                     f"({price} < {previous_price} USD).",
-                    hint='Order the public plans by price: the web app offers going up by sort_order, the backend charges by price.',
+                    hint='Order the public plans by price: the web app labels going up and down by sort_order.',
                     id='payments.W002',
                 ))
     return warnings
