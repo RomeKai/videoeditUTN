@@ -1,0 +1,18 @@
+import importlib
+
+import pytest
+
+# The seed of the plans lives in its migration; the tests call the same function
+# instead of trusting the rows the migrations left: a TransactionTestCase flushes
+# them, and with --reuse-db they are gone for good.
+seed_migration = importlib.import_module('apps.payments.migrations.0007_complete_seeded_plans')
+SEEDED_NAMES = [plan['name'] for plan in seed_migration.PLANS]
+
+
+@pytest.fixture
+def seeded_plans(db):
+    """The four plans of the pricing page, by name."""
+    from apps.payments.models import SubscriptionPlan
+
+    seed_migration.seed_plans(SubscriptionPlan)
+    return {plan.name: plan for plan in SubscriptionPlan.objects.filter(name__in=SEEDED_NAMES)}

@@ -83,7 +83,7 @@ export function seedPlans(): Plan[] {
       ...base,
       id: PLAN_IDS.studio,
       name: 'Estudio',
-      max_video_duration_seconds: 14400,
+      max_video_duration_seconds: 10800,
       max_resolution: '4K',
       has_watermark: false,
       allow_scheduling: true,

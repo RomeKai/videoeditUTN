@@ -91,7 +91,7 @@ export const SCENARIOS: Scenario[] = [
   {
     id: 'plan-estudio',
     label: 'Plan Estudio',
-    description: 'El plan más alto: 4K, 240 min, 15 miembros, 20 % de descuento.',
+    description: 'El plan más alto: 4K, 180 min, 15 miembros, 20 % de descuento.',
     group: 'Plan',
     options: { plan: 'studio' },
   },

@@ -3,7 +3,7 @@ from django.dispatch import receiver
 from django.conf import settings
 from django.db.models.signals import pre_save
 from django.core.exceptions import ValidationError
-from apps.payments.models import SubscriptionPlan
+from apps.payments.services.plans import get_default_plan
 from .models import User, Workspace, WorkspaceMember
 
 @receiver(post_save, sender=User)
@@ -17,8 +17,9 @@ def create_default_workspace(sender, instance, created, **kwargs):
         default_name = instance.username or instance.email.split('@')[0]
         workspace_name = f"Espacio de {default_name}"
 
-        # Intentamos obtener el plan Starter por defecto
-        default_plan = SubscriptionPlan.objects.filter(name='Starter').first()
+        # Plan inicial: settings.DEFAULT_PLAN_NAME ('Gratis'). Si todavía no existe,
+        # el workspace se crea sin plan y queda en el log; no frena el registro.
+        default_plan = get_default_plan()
 
         # 1. Crear el Workspace
         workspace = Workspace.objects.create(

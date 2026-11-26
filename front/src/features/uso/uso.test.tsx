@@ -278,7 +278,8 @@ describe('G3 · Planes', () => {
 
     await user.click(screen.getByRole('button', { name: 'Bajar a Pro' }));
     const dialog = await screen.findByRole('alertdialog', { name: '¿Bajar a Pro?' });
-    expect(within(dialog).getByText('Videos de hasta 180 min (hoy 240 min)')).toBeInTheDocument();
+    // Pro and Estudio both allow 3 h (the upload ceiling): the duration is not lost.
+    expect(within(dialog).queryByText(/^Videos de hasta/)).not.toBeInTheDocument();
     expect(within(dialog).getByText('Miembros: 5 (hoy 15)')).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Bajar a Pro' }));
 

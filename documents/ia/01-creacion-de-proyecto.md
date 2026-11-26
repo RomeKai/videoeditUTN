@@ -325,7 +325,18 @@ Valores fijos en el código (no son settings):
 | `FEATURE_COSTS` | `seo_optimization` 5, `ai_thumbnail` 15 | `PricingEngine` |
 | Tarifa de un proyecto por URL | 10 tokens | `VideoProjectViewSet.create` |
 
-Límites por plan (`SubscriptionPlan`, asignado en `Workspace.subscription_plan`; sin plan no hay límites ni descuento): `max_video_duration_seconds`, `max_resolution`, `has_seo_optimization`, `has_thumbnail_engine` y `base_discount_rate`.
+Límites por plan (`SubscriptionPlan`, asignado en `Workspace.subscription_plan`): `max_video_duration_seconds`, `max_resolution`, `has_seo_optimization`, `has_thumbnail_engine` y `base_discount_rate`. `max_video_duration_seconds` y `max_members` valen al menos 1 (`MinValueValidator`).
+
+**Plan de un workspace nuevo.** Empieza en el plan que nombra `DEFAULT_PLAN_NAME` (`Gratis` por defecto). Lo asigna `create_default_workspace` (users/signals.py) con `get_default_plan` (payments/services/plans.py). Si no hay un plan con ese nombre, el workspace se crea sin plan, el registro sigue y se loguea `plans.default_plan_missing`. Sin plan no hay límites ni descuento: es el caso de los workspaces de antes del plan por defecto, hasta que se corre `assign_default_plan` ([ver 07](07-capacidad-costos-y-operacion.md#operación-workspaces-sin-plan)).
+
+**Los cuatro planes.** Las migraciones `payments` 0005 y 0007 los siembran y `GET /api/v1/plans/` los lista (los activos con `is_public`, en `sort_order`). Ninguno pasa de `AI_UPLOAD_MAX_DURATION_SECONDS` (10800 s), el techo de cualquier subida.
+
+| Plan | `max_video_duration_seconds` | `max_resolution` | `max_members` | `base_discount_rate` | Precio (USD/mes) |
+|------|------------------------------|------------------|---------------|----------------------|------------------|
+| Gratis | 600 | `720p` | 1 | 0,00 | 0 |
+| Creador | 3600 | `1080p` | 2 | 0,05 | 19 |
+| Pro (recomendado) | 10800 | `4K` | 5 | 0,10 | 49 |
+| Estudio | 10800 | `4K` | 15 | 0,20 | 129 |
 
 ## Referencias
 

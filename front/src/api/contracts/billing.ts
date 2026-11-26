@@ -18,7 +18,7 @@ export const Plan = z.object({
   base_discount_rate: Decimal,
   max_members: z.number().int().positive(),
   is_active: z.boolean(),
-  /** Proposed (PAY-01): monthly price, tagline, order and the recommended mark of A6/G3. */
+  /** Monthly price, tagline, order and the recommended mark of A6/G3 (PAY-03; at most one plan is recommended). */
   price_usd_monthly: Decimal,
   description: z.string(),
   sort_order: z.number().int(),
@@ -219,12 +219,16 @@ export const listPlans = defineEndpoint({
   id: 'billing.plans',
   method: 'GET',
   path: '/api/v1/plans/',
-  summary: 'Planes activos, en orden, para Precios y Uso › Planes.',
+  summary: 'Planes activos y públicos, en orden, para Precios y Uso › Planes.',
   response: z.array(Plan),
   auth: false,
   workspaceScoped: false,
   errors: [],
-  backend: { status: 'proposed', gap: [6, 12], note: 'Modelo: SubscriptionPlan (apps/payments/models.py); faltan precio, descripción, orden y recomendado.' },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views.py · PublicPlanListView + PublicPlanSerializer (apps/payments/serializers.py)',
+    note: 'Público, sin token. Lista los planes con `is_active` e `is_public` (los cuatro sembrados por las migraciones `payments` 0005 y 0007), ordenados por `sort_order`; un plan creado en el admin no sale hasta marcarlo público. `is_public` no viaja en la respuesta. Cache de 5 min que se borra cuando un cambio de plan hace commit. Un workspace nuevo empieza en Gratis (`DEFAULT_PLAN_NAME`).',
+  },
   screens: ['A6', 'G3', 'D3 (diálogo)', 'C1'],
 });
 

@@ -5,11 +5,12 @@ from .models import Wallet, Transaction, SubscriptionPlan
 @admin.register(SubscriptionPlan)
 class SubscriptionPlanAdmin(admin.ModelAdmin):
     list_display = (
-        'name', 'max_video_duration_seconds', 'max_resolution', 
-        'has_watermark', 'base_discount_rate', 'allow_scheduling', 
-        'allow_crossposting', 'has_seo_optimization', 'has_thumbnail_engine', 'is_active'
+        'name', 'price_usd_monthly', 'sort_order', 'is_recommended', 'is_public', 'is_active',
+        'max_video_duration_seconds', 'max_resolution', 'max_members',
+        'has_watermark', 'base_discount_rate', 'allow_scheduling',
+        'allow_crossposting', 'has_seo_optimization', 'has_thumbnail_engine',
     )
-    list_filter = ('is_active', 'max_resolution', 'has_watermark', 'allow_scheduling', 'has_seo_optimization')
+    list_filter = ('is_public', 'is_active', 'is_recommended', 'max_resolution', 'has_watermark', 'allow_scheduling', 'has_seo_optimization')
     search_fields = ('name',)
 
 @admin.register(Wallet)
