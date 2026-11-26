@@ -20,7 +20,7 @@ Este documento cubre lo transversal del core de IA: el control de capacidad prop
 | Export del piloto | [export_ai_pilot_metrics.py](../../back/apps/videos/management/commands/export_ai_pilot_metrics.py) | CSV o JSONL por registro o por proyecto |
 | Evaluación de transcripción | [evaluate_ai_transcription.py](../../back/apps/videos/management/commands/evaluate_ai_transcription.py) | WER y error de timestamps contra referencias humanas |
 | Barrido de reservas | [settle_stale_reservations.py](../../back/apps/videos/management/commands/settle_stale_reservations.py) | Reporta las reservas de tokens que quedaron `RESERVED` y, con `--apply`, las cobra o las devuelve según el estado del proyecto |
-| Cache de Django | [settings/base.py](../../back/backend/settings/base.py), [settings/prod.py](../../back/backend/settings/prod.py), [core/cache.py](../../back/apps/core/cache.py), [core/testing.py](../../back/apps/core/testing.py) | `CACHES` (`default` y `locks`) en la base de Redis de `CACHE_REDIS_URL` (django-redis), compartida por todos los procesos web y worker; `clear_local_caches` para los tests ([ver abajo](#cache-compartida)) |
+| Cache de Django | [settings/base.py](../../back/backend/settings/base.py), [settings/prod.py](../../back/backend/settings/prod.py), [core/cache.py](../../back/apps/core/cache.py), [core/testing.py](../../back/apps/core/testing.py) | `CACHES` (`default` y `locks`) en la base de Redis de `CACHE_REDIS_URL` (django-redis), compartida por todos los procesos web y worker; el corte de `default` cuando Redis no contesta; `clear_local_caches` para los tests ([ver abajo](#cache-compartida)) |
 | Workspaces sin plan | [services/plans.py](../../back/apps/payments/services/plans.py), [assign_default_plan.py](../../back/apps/payments/management/commands/assign_default_plan.py) | `get_default_plan_id` da el plan de `DEFAULT_PLAN_NAME` a un workspace nuevo; el comando lista los workspaces sin plan y, con `--apply`, les asigna ese plan |
 | Renders trabados | [tasks/render_recovery.py](../../back/apps/videos/tasks/render_recovery.py), [recover_stuck_renders.py](../../back/apps/videos/management/commands/recover_stuck_renders.py) | `recover_stuck_renders` (Celery Beat) y el comando del mismo nombre: re-encolan los paper edits de antes (una sola exportación) que quedaron `RENDERING` con la reserva tomada, cobran los entregados sin cobrar y fallan con reembolso los que perdieron su worker demasiadas veces; y re-encolan los clips trabados de una revisión aprobada o un render automático |
 
@@ -257,8 +257,24 @@ Hay dos alias, con reglas distintas cuando Redis no contesta ([core/cache.py](..
 
 | Alias | Backend | Sin Redis | Para qué |
 |-------|---------|-----------|----------|
-| `default` | `FailOpenRedisCache` (`IGNORE_EXCEPTIONS`) | Un `get` es un miss, un `set` o un `delete` no hace nada. Cada error se loguea como `cache.unavailable error=<clase>`, sin el traceback | Lo que se puede reconstruir o dejar pasar: la lista pública de planes (`payments.services.plans`, una hora, que entonces sale de la base), los límites de intentos y las caches de consultas. Nunca un lock: ahí `add` devolvería `None` |
+| `default` | `FailOpenRedisCache` (`IGNORE_EXCEPTIONS`), con un corte por proceso | Un `get` es un miss, un `set` o un `delete` no hace nada. El primer error de una caída se loguea como `cache.unavailable error=<clase>`, sin el traceback, y abre el corte (ver abajo) | Lo que se puede reconstruir o dejar pasar: la lista pública de planes (`payments.services.plans`, una hora, que entonces sale de la base), los límites de intentos y las caches de consultas. Nunca un lock: ahí `add` devolvería `None` |
 | `locks` | `django_redis.cache.RedisCache`, con prefijo `<prefijo>:locks` | Lanza el error de redis-py | Locks con `caches['locks'].add(clave, ...)`: en Redis es un solo `SET NX PX`, atómico entre procesos. Hoy, el lock de cada publicación (`lock_post_publish_<post_id>` en `upload_to_social_network`, [05](05-seo-y-publicacion.md)): sin Redis la tarea reintenta y nunca publica sin lock |
+
+**Corte de la cache `default` (circuit breaker).** Con Redis colgado, cada llamada a la cache esperaba su `SOCKET_TIMEOUT` de 2 s, y un login hace varias. `FailOpenRedisCache` guarda un `CircuitBreaker` por proceso y por URL de Redis:
+
+- El primer error de conexión abre el corte y loguea `cache.unavailable` una sola vez por caída. Solo cuenta que Redis no conteste (`ConnectionError`, `TimeoutError` de redis-py, o un timeout del socket). Un error con el que Redis contesta a un comando (`ResponseError`: `WRONGTYPE`, sin memoria al escribir) se loguea como `cache.command_failed error=<clase>`, devuelve lo mismo que un miss y no abre el corte.
+- Con el corte abierto, cada llamada contesta lo mismo que un miss sin tocar Redis, durante `CACHE_CIRCUIT_COOLDOWN_SECONDS` (5 s).
+- Al terminar ese tiempo, una sola llamada prueba Redis. Las demás siguen sin tocarlo. Si la prueba falla, empieza otra espera. Mientras la caída sigue, cada 5 minutos loguea `cache.still_unavailable error=<clase> down_for_seconds=<n>` a nivel ERROR: una URL mal puesta no se arregla sola y no puede quedar en un solo aviso. Si contesta, el corte se cierra y loguea `cache.recovered after_seconds=<n>`.
+- El alias `locks` no tiene corte: cada `add` va a Redis y lanza si no contesta.
+
+Así, un Redis que no contesta le cuesta a cada proceso una espera de 2 s cada 5 s, no una por llamada.
+
+**Límites de intentos sin Redis.** Los límites de los endpoints que verifican una contraseña cuentan en la cache `default`. Si fallaran abiertos, una caída de Redis (o los 5 s del corte) dejaría adivinar contraseñas sin límite. Por eso guardan la cuenta en la memoria del proceso mientras la cache no contesta ([users/throttles.py](../../back/apps/users/throttles.py)):
+
+- **`LoginFailureGuard`** (logins fallidos por cuenta, `LOGIN_FAILURE_RATES`): cuenta en `local_counts`, una `LocMemCache` del proceso con hasta 20000 claves. Solo para emails que tienen cuenta: los de emails inventados no ocupan lugar, así que no pueden desalojar los contadores de una cuenta.
+- **`AttemptThrottle`** (login y renovación por IP, cambio de contraseña y cambio de email por usuario; `EmailChangeThrottle` hereda de ella): su cache es `LocalFallbackCache`. Una escritura que Redis no tomó queda en memoria, y una lectura sin resultado mira ahí.
+
+En los dos casos el límite vale por proceso: con N procesos web, admite hasta N veces el límite mientras dura la caída. Lo guardado en memoria vence con su ventana, igual que lo compartido, y un login correcto borra los fallos de su cuenta. Cuando Redis vuelve, sigue la cuenta compartida.
 
 Con la LocMem de antes, cada worker de gunicorn o contenedor tenía su propia lista de planes y su propio lock: dos entregas del mismo post en workers distintos podían publicar dos veces.
 
@@ -335,6 +351,7 @@ Todos los settings de IA de [settings/base.py](../../back/backend/settings/base.
 | `AI_UPLOAD_MAX_LONG_SIDE_PX` / `AI_UPLOAD_MIN_SHORT_SIDE_PX` | `4096` / `240` | Límites de resolución de una subida |
 | `REDIS_URL` | `redis://redis:6379/0` | Broker y result backend de Celery, lock por proyecto, buckets y contador de alertas |
 | `CACHE_REDIS_URL` | sin valor (docker-compose: `redis://redis:6379/1`) | Base de Redis de la cache de Django, otra que la del broker. Sin la variable, la cache es LocMem por proceso (`cache.not_shared` en prod); en la misma base que `REDIS_URL`, `cache.shares_broker_db` |
+| `CACHE_CIRCUIT_COOLDOWN_SECONDS` | `5` | Cuánto saltea Redis la cache `default` después de un error, antes de probar de nuevo ([corte](#cache-compartida)) |
 | `CACHE_KEY_PREFIX` | `onecreator` | Prefijo de las claves de la cache (`<prefijo>:locks` en el alias `locks`). Distinto por entorno si dos comparten Redis |
 | `PIPELINE_LOCK_TTL` | `300` | TTL del lock por proyecto, renovado por heartbeat |
 | `CELERY_BROKER_TRANSPORT_OPTIONS['visibility_timeout']` (variable `CELERY_VISIBILITY_TIMEOUT`) | `14400` | Tiempo tras el cual Redis reentrega una tarea sin ack. Mayor que el lock y que la etapa más larga |
@@ -347,7 +364,7 @@ Todos los settings de IA de [settings/base.py](../../back/backend/settings/base.
 | `RENDER_SEGMENTS_SOFT_TIME_LIMIT` | `10800` | Soft time limit de `render_video_segments` (paper edit): el proyecto falla y se devuelve la reserva del render |
 | `RENDER_SEGMENTS_TIME_LIMIT` | `RENDER_SEGMENTS_SOFT_TIME_LIMIT + 300` | Hard time limit del paper edit. Celery hace ack de ese mensaje: el proyecto lo levanta `recover_stuck_renders`. Menor que el `visibility_timeout` |
 | `RENDER_STUCK_AFTER_SECONDS` | el mayor de `RENDER_SEGMENTS_TIME_LIMIT` y `RENDER_CLIP_TIME_LIMIT`, `+ 900` | Tiempo sin inicio, aprobación ni re-encolado tras el cual `recover_stuck_renders` da por trabado un paper edit o un render clip por clip. Es también el mínimo: el entorno solo puede subirlo, porque un render más nuevo que su hard limit puede seguir corriendo |
-| `CELERY_BEAT_SCHEDULE` | `cleanup-expired-previews` y `recover-stuck-renders`, cada 15 min | Fijo en código. Solo corre si hay un proceso `celery beat`; `docker-compose.yml` no lo levanta (ver [renders trabados](#operación-renders-trabados)) |
+| `CELERY_BEAT_SCHEDULE` | `cleanup-expired-previews` y `recover-stuck-renders`, cada 15 min; `flush-expired-tokens`, todos los días a las 04:30 UTC | Fijo en código. Solo corre si hay un proceso `celery beat` (el servicio `beat` de docker-compose). Ver [renders trabados](#operación-renders-trabados) y [cuentas](#operación-cuentas-emails-y-tokens) |
 | `CELERY_TASK_ROUTES` | `render_clip_task` y `render_video_segments` a la cola `render` | Fijo en código. El resto va a la cola `celery` |
 | `CELERY_WORKER_PREFETCH_MULTIPLIER` | `1` | Fijo en código. Un worker solo reserva la tarea que corre |
 | `AI_CAPACITY_ENABLED` | `False` | Prende los buckets de capacidad |
@@ -384,7 +401,9 @@ Los eventos tienen nombre estable y llevan ids, códigos y números, nunca texto
 | `plans.` | `default_plan_missing` (no hay un plan con el nombre de `DEFAULT_PLAN_NAME`), `default_plan_inactive` (`plan_id`) y `default_plan_lookup_failed` (la clase del error): el workspace nuevo quedó sin plan. `cache_unavailable` (`operation`: `get`, `set`, `delete` o `migrate`, y la clase del error): la cache de la lista pública falló y se leyó de la base | [payments/services/plans.py](../../back/apps/payments/services/plans.py) |
 | `upload.` | `rejected` (`code`), `probe_failed`; de una creación rechazada, `deleted` y `cleanup_failed` | [media_validation.py](../../back/apps/videos/services/media_validation.py), [storage_service.py](../../back/apps/videos/services/storage_service.py) |
 | `project.` | `save_failed`, `ingestion_not_queued` (la clase del error del broker), `not_queued_refunded`, `not_queued_not_recorded`. Si el mensaje llega tarde, `pipeline.redispatch_skipped reason=not_queued` | [views.py](../../back/apps/videos/views.py), [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) |
-| `cache.` | `not_shared` (prod sin `CACHE_REDIS_URL`), `shares_broker_db`, `unavailable` (la clase del error de un Redis que no contesta, alias `default`) | [settings](../../back/backend/settings/base.py), [core/cache.py](../../back/apps/core/cache.py) |
+| `cache.` | `not_shared` (prod sin `CACHE_REDIS_URL`), `shares_broker_db`, `unavailable` (la clase del primer error de una caída de Redis, alias `default`; una vez por caída y por proceso), `still_unavailable` (ERROR, cada 5 minutos mientras sigue caída, con `down_for_seconds`), `recovered` (`after_seconds`: Redis volvió a contestar), `command_failed` (Redis contestó un comando con error; la clase) | [settings](../../back/backend/settings/base.py), [core/cache.py](../../back/apps/core/cache.py) |
+| `tokens.` | `expired_flushed` (`outstanding_deleted`, `blacklisted_deleted`, `outstanding_left`, `blacklisted_left`): la limpieza diaria de refresh tokens vencidos | [users/tasks.py](../../back/apps/users/tasks.py) |
+| `users.` | `email_domains_not_normalized` (`count`): cuentas que la migración `users` 0008 dejó con el dominio del email sin normalizar | [users/migrations](../../back/apps/users/migrations/0008_dominios_de_email_normalizados.py) |
 | `probe_link.` | `ok`, `rejected` (`code`), `failed` (`provider`, `code`, clase del error), `dns_failed`. Con el id del usuario, nunca el link | [link_probe.py](../../back/apps/videos/services/link_probe.py) |
 | `clips_zip.` / `clip_download.` | `built` (clips, bytes, duración), `lock_fallback`, `lock_unavailable`, `lock_not_owned`, `lock_release_failed`, `size_failed`, `read_failed`, `store_failed`, `client_failed`, `storage_failed`, `no_disk`, `timeout`, `delete_failed`, `cleanup_failed`; `clip_download.failed` | [clip_download.py](../../back/apps/videos/services/clip_download.py), [views_project_data.py](../../back/apps/videos/views_project_data.py) |
 | `face_tracker.` | `mediapipe_unavailable`, `detector_unavailable`, `detector_failed`, `tracked`, `no_faces`, `failed`, `all_frames_failed` | [face_tracker.py](../../back/apps/videos/services/face_tracker.py) |
@@ -398,7 +417,9 @@ Los eventos tienen nombre estable y llevan ids, códigos y números, nunca texto
 | Un proyecto lleva mucho en "Procesando" | `pipeline_stage_status`: si una etapa está `pending_capacity`, mirar `metadata['capacity_wait']` y los logs `pipeline.pending_capacity`. Si es seguido, falta capacidad del proveedor (ampliar el tier, no subir los límites por encima del 80 %) |
 | Proyecto `failed` con `pipeline_error_code=IngestionNotQueued`, o creaciones que responden 503 | El broker no tomó la ingesta al crear (`project.ingestion_not_queued`). Con `project.not_queued_refunded` la reserva ya se devolvió; revisar Valkey y el worker. El usuario crea el proyecto de nuevo: re-despacharlo no hace nada. Con `project.not_queued_not_recorded` el proyecto quedó en `uploaded` con la reserva tomada: ver [reservas](#operación-reservas-de-tokens-que-quedaron-reserved) |
 | La lista de planes no se actualiza igual en todos los servidores, o un post se publicó dos veces | La cache no es compartida: buscar `cache.not_shared` al arrancar y que `CACHE_REDIS_URL` esté en el entorno de web y worker ([cache compartida](#cache-compartida)) |
-| Muchos `cache.unavailable` | Redis de la cache no contesta: las lecturas van a la base y los límites de intentos no frenan. Las publicaciones fallan (alias `locks`). Revisar Valkey |
+| `cache.unavailable` sin un `cache.recovered` después | Redis de la cache no contesta: las lecturas van a la base y los límites de intentos pasan a contarse por proceso. Las publicaciones fallan (alias `locks`). Revisar Valkey y `CACHE_REDIS_URL`. Sale una línea por caída y por proceso, no una por pedido, y un `cache.still_unavailable` (ERROR) cada 5 minutos mientras sigue |
+| `cache.command_failed` seguido | Redis contesta, pero rechaza un comando: una clave con otro tipo de dato, o Redis sin memoria. La cache sigue en uso para lo demás |
+| `users.email_domains_not_normalized` al migrar | Hay cuentas con el dominio del email sin normalizar: correr `manage.py check_email_domains` ([cuentas](#operación-cuentas-emails-y-tokens)) |
 | Proyecto `failed` con `pipeline_error_code=CapacityTimeoutError` | La espera planificada superó `AI_CAPACITY_MAX_WAIT_SECONDS`, por ejemplo por una cuota diaria agotada. Confirmar el reembolso (`pipeline.refunded`) y re-despachar cuando haya cuota |
 | Una etapa falla con `ImproperlyConfigured` que nombra `AI_CAPACITY_LIMITS` | Falta la entrada de un modelo que el pipeline llama. Correr `manage.py check` (`videos.E005`) y completar los límites |
 | El deploy o `migrate` falla con un código `videos.E001` a `videos.E006` | Ver la tabla del [chequeo de arranque](#chequeo-de-arranque) |
@@ -515,12 +536,48 @@ docker compose exec web python manage.py assign_default_plan --apply
 
 **Nota de deploy (planes).** Las migraciones `payments` 0006 a 0011 agregan `is_public`, completan los cuatro planes sembrados que quedaron con los valores vacíos de 0004 (precio 0,00, sin descripción, orden 0, ninguno recomendado) sin pisar lo editado en el admin, los marcan públicos, pasan Estudio de 14400 s a 10800 s y Gratis de 1 a 2 miembros si nadie los cambió, dejan un solo plan recomendado (Pro, salvo que se haya marcado otro) y lo vuelven una constraint (`payments_plan_single_recommended`), y suben a 1 un `max_members` o `max_video_duration_seconds` menor (0010) antes de las check constraints de 0011. Un plan con otro nombre ("Starter", "Free") deja de salir en `GET /api/v1/plans/` hasta que se lo marque público. Las migraciones de datos borran la lista cacheada al hacer commit, y un error de la cache no las frena (se loguea `plans.cache_unavailable operation=migrate`); la clave lleva versión (`payments:public-plans:v2`), así que tampoco se sirve lo que cacheó el código anterior. La 0013 pasa Creador de 2 a 5 miembros y la 0014 Pro de 5 a 10, cada una solo si nadie cambió el valor (al revertir quedan así), y también borran la lista cacheada.
 
-**Migraciones al arrancar.** `back/docker/entrypoint.sh` espera una conexión real a la base (hasta 30 intentos, cada 2 s) y después corre `migrate` sin `|| true`: si una migración falla, el contenedor no arranca y el error queda en el log. `migrate` también corre los checks de Django, así que un check de nivel Error (`videos.E001` a `E006`) frena el arranque. Antes de desplegar, revisar que no haya emails repetidos que solo difieran en mayúsculas (la migración de usuarios se frena) y que el deploy reinicie el contenedor si sale con error.
+**Migraciones al arrancar.** `back/docker/entrypoint.sh` espera una conexión real a la base (hasta 30 intentos, cada 2 s) y después corre `migrate` sin `|| true`: si una migración falla, el contenedor no arranca y el error queda en el log. `migrate` también corre los checks de Django, así que un check de nivel Error (`videos.E001` a `E006`) frena el arranque. Antes de desplegar, revisar que no haya emails repetidos que solo difieran en mayúsculas (la migración `users` 0006 se frena; la 0008, que normaliza dominios, no se frena nunca) y que el deploy reinicie el contenedor si sale con error.
 
 Después del deploy:
 
 1. Correr `assign_default_plan` en modo reporte y revisar los `over_member_limit=yes`.
 2. Cuando se decida, correrlo con `--apply`.
+
+## Operación: cuentas, emails y tokens
+
+**Un email, una escritura.** El dominio de un email se puede escribir de varias formas que llegan a la misma casilla: con mayúsculas, con letras de ancho completo (`ｔｅｓｔ.com`), en Unicode (`mañana.com`) o en su forma ASCII (`xn--maana-pta.com`). `normalize_email` ([users/emails.py](../../back/apps/users/emails.py)) deja una sola: Unicode NFKC, después IDNA a ASCII (punycode), después minúsculas. La parte local queda como se escribió.
+
+- **IDNA 2008.** Usa el paquete `idna` con UTS 46 no transicional. `straße.de` queda como `xn--strae-oqa.de` y no se confunde con `strasse.de`, que es de otro dueño. El codec `idna` de la biblioteca estándar de Python es IDNA 2003 y sí los mezcla: no usarlo.
+- **Largo.** El punycode alarga un dominio Unicode. Después de normalizar, el dominio admite 253 caracteres y el email entero 254 (la columna).
+- **Error.** Un dominio que no se puede codificar, o un email que no entra, lanza `InvalidEmailDomain`. Su `message` es un texto para el usuario.
+
+Pasan por ahí todas las entradas de un email que existen hoy:
+
+| Entrada | Qué hace | Dominio que no se puede codificar |
+|---------|----------|-----------------------------------|
+| `User.save` y `UserManager.normalize_email` (`create_user`, `createsuperuser`) | Guarda `email` y `pending_email` normalizados. Solo normaliza el campo que ese guardado escribe: un alta, un guardado completo, o el campo en `update_fields` | `InvalidEmailDomain` (un `ValueError`) |
+| Login (`UserManager.get_by_natural_key`) y `LoginFailureGuard.account_key` | Busca la cuenta por el email normalizado: todas las escrituras entran a la misma cuenta y comparten sus contadores | Busca el email tal como se escribió: 401 como cualquier email sin cuenta, salvo una cuenta de antes guardada así |
+| `PATCH /api/v1/me/` (`UpdateMeSerializer.validate_email`, `email_taken`) | Normaliza antes de comparar con el email propio y con los de otras cuentas | 400 en `email`: "El dominio del email no es válido. Revisá que esté bien escrito.", o "El email es demasiado largo. Probá con una dirección más corta." |
+| `POST /api/v1/auth/verify-email/` (`VerifyEmailView`) | Pasa `pending_email` a `email`, normalizado | 400 en `token` con el mismo texto; no aplica nada |
+| Admin (`User.clean`) | Normaliza en el formulario | Error del campo, con el mismo texto |
+
+El registro y la recuperación de contraseña todavía no existen en el backend. Cuando existan, tienen que usar `User.objects.normalize_email`, `email_taken` y `get_by_natural_key`.
+
+Una cuenta con dominio Unicode se guarda y se muestra en punycode (`ana@xn--maana-pta.com`). Entra escribiendo cualquiera de las dos formas.
+
+**Cuentas de antes.** La migración `users` 0008 normaliza las filas que ya existían, de la cuenta más antigua a la más nueva (`date_joined`, `pk`). No falla nunca: cada fila se actualiza en su propio savepoint, y un error de la base deja esa fila y sigue. Deja un email como está en estos casos, y loguea cuántas cuentas quedaron con `users.email_domains_not_normalized count=<n>`:
+
+- otra cuenta ya tiene el email normalizado (son dos cuentas de una misma casilla; gana la más antigua);
+- el dominio no se puede codificar, o el email no entra una vez codificado;
+- lo mismo para `pending_email`.
+
+`manage.py check_email_domains` las cuenta y las lista por id, nunca por email, y no cambia nada. Tiene cuatro grupos: choque, dominio que no se puede codificar, sin normalizar y sin choque, y email pendiente sin normalizar o inválido.
+
+- **Choque.** Qué cuenta queda se decide a mano, en el admin: cambiarle el email a una o borrarla. Mientras tanto, un login con ese email entra a la cuenta que tiene el email normalizado; la otra no puede iniciar sesión. Sus sesiones abiertas siguen andando.
+- **Dominio que no se puede codificar.** La cuenta sigue andando: inicia sesión con su email tal como está guardado, y cambia su nombre y su contraseña. Puede pasar a un email válido con `PATCH /api/v1/me/`. Un guardado completo (`save()` sin `update_fields`, o el admin) pide un email válido.
+- **Email pendiente inválido.** Su link responde 400. El usuario pide el cambio de nuevo.
+
+**Tokens vencidos.** Con `ROTATE_REFRESH_TOKENS` y `BLACKLIST_AFTER_ROTATION`, cada login y cada renovación agregan filas a `OutstandingToken` y `BlacklistedToken`. La tarea `apps.users.tasks.flush_expired_tokens` corre `flushexpiredtokens` de SimpleJWT todos los días a las 04:30 UTC (`flush-expired-tokens` en `CELERY_BEAT_SCHEDULE`) y loguea `tokens.expired_flushed` con cuántas filas borró y cuántas quedan. Solo borra tokens vencidos, que ya se rechazan por su fecha. Sin proceso beat, correr `manage.py flushexpiredtokens` desde cron.
 
 ## Referencias
 

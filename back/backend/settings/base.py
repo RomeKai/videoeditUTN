@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 import re
 import environ
+from celery.schedules import crontab
 from django.core.exceptions import ImproperlyConfigured
 
 # 1. Path Configuration
@@ -388,10 +389,14 @@ PIPELINE_LOCK_TTL = env.int('PIPELINE_LOCK_TTL', default=300)
 # buckets. Two aliases (apps/core/cache.py):
 # - default fails open (a Redis that does not answer is a cache miss) and logs
 #   cache.unavailable: plans, throttles, probe caches.
-# - locks raises: a lock that cannot be taken stops the caller.
+#   After an error it skips Redis for CACHE_CIRCUIT_COOLDOWN_SECONDS (a circuit
+#   breaker per process): a Redis that hangs costs one SOCKET_TIMEOUT per
+#   cooldown and per process, not one per cache call.
+# - locks raises: a lock that cannot be taken stops the caller. No breaker.
 # Without CACHE_REDIS_URL (a runserver with no Redis) both are LocMem, and
 # prod.py warns.
 CACHE_KEY_PREFIX = env('CACHE_KEY_PREFIX', default='onecreator')
+CACHE_CIRCUIT_COOLDOWN_SECONDS = env.float('CACHE_CIRCUIT_COOLDOWN_SECONDS', default=5)
 if 'CACHE_REDIS_URL' in os.environ:
     CACHE_REDIS_URL = env('CACHE_REDIS_URL')
     _CACHE_REDIS_OPTIONS = {
@@ -529,6 +534,12 @@ PREVIEW_HEIGHT = env.int('PREVIEW_HEIGHT', default=360)
 PREVIEW_TTL_SECONDS = env.int('PREVIEW_TTL_SECONDS', default=3600)
 PREVIEW_MAX_ACTIVE_PER_WORKSPACE = env.int('PREVIEW_MAX_ACTIVE_PER_WORKSPACE', default=3)
 CELERY_BEAT_SCHEDULE = {
+    # Expired refresh tokens (ROTATE_REFRESH_TOKENS + BLACKLIST_AFTER_ROTATION add
+    # rows on every login and refresh). Daily at 04:30 UTC, a quiet hour.
+    'flush-expired-tokens': {
+        'task': 'apps.users.tasks.flush_expired_tokens',
+        'schedule': crontab(hour=4, minute=30),
+    },
     # DIST-03: SCHEDULED posts due in the next hour (or already overdue) go to the
     # worker with their publish time as ETA. Needs one beat process (docker-compose
     # `beat`); the task is idempotent, so a second one cannot publish twice.
