@@ -265,9 +265,10 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
                         wallet_id=workspace.wallet.id,
                         amount=final_cost,
                         user=request.user,
-                        description=f"Render Final (Paper Edit): {project.title}"[:255]
+                        description=f"Render Final (Paper Edit): {project.title}"[:255],
+                        project=project,
+                        category=Transaction.Category.RENDER,
                     )
-                    wallet_service.link_reservation(tx, project, Transaction.Category.RENDER)
                 except (wallet_service.InsufficientFundsError, ValidationError) as e:
                     transaction.set_rollback(True)  # the claim goes back
                     return Response({"error": str(e), "required": final_cost}, status=402)
@@ -321,13 +322,17 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
             logger.error("project.save_failed error=%s", type(e).__name__)
             return Response({"error": SAVE_FAILED_ERROR}, status=500)
 
-        from apps.payments.services.pricing_engine import PricingEngine, PlanLimitExceededError, FeatureNotAllowedError
-        
+        from apps.payments.services.pricing_engine import PlanLimitExceededError, FeatureNotAllowedError
+        from .services.render_pricing import NewProjectRefused, price_new_project
+
         cost_in_tokens = Decimal('0.0')
         duration_seconds = 0
+        plan = workspace.subscription_plan
+        use_seo = bool(project.metadata.get('use_seo'))
 
         # From here on, every refusal goes through _discard_new_project: the
-        # row goes, and so does the upload it saved.
+        # row goes, and so does the upload it saved. The price is the one
+        # POST pricing/estimate/ shows (price_new_project).
         if project.source_file:
             try:
                 source_media = project.metadata.get('source_media') or {}
@@ -338,54 +343,37 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
                     from moviepy import VideoFileClip
                     with VideoFileClip(project.source_file.path) as clip:
                         duration_seconds = int(clip.duration)
-                
-                features_requested = {
-                    'seo_optimization': project.metadata.get('use_seo', False),
-                    'ai_thumbnail': project.metadata.get('use_ai_thumbnail', False),
-                }
 
-                cost_in_tokens = PricingEngine.calculate_render_cost(
-                    duration_seconds=duration_seconds,
-                    resolution=_pricing_resolution(project),
-                    features_requested=features_requested,
-                    plan=workspace.subscription_plan
-                )
+                cost_in_tokens = price_new_project(
+                    plan=plan, source='file', resolution=_pricing_resolution(project),
+                    duration_seconds=duration_seconds, use_seo=use_seo,
+                    use_ai_thumbnail=bool(project.metadata.get('use_ai_thumbnail')),
+                ).total
                 # What was priced, kept apart from source_media (a PATCH of the
                 # file replaces that): a whole-video edit never renders more.
                 project.metadata = {**(project.metadata or {}), 'priced_duration_s': duration_seconds}
-                
+
             except (PlanLimitExceededError, FeatureNotAllowedError) as e:
                 _discard_new_project(project)
                 return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
+            except NewProjectRefused as refused:
+                _discard_new_project(project)
+                return Response(refused.body, status=status.HTTP_400_BAD_REQUEST)
             except Exception as e:
                 _discard_new_project(project)
                 logger.error("Error calculando costo V3 project_id=%s error=%s", project.pk, type(e).__name__)
                 return Response({"error": "Error interno al procesar el presupuesto del video."}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         elif project.video_url:
-            if _pricing_resolution(project) != '720p':
-                # The flat link price does not know the duration, so it cannot
-                # price a higher tier; an auto-rendered link would get it free.
-                _discard_new_project(project)
-                return Response(
-                    {"error": "Los proyectos por link se procesan en 720p. Para 1080p o 4K, subí el archivo."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            cost_in_tokens = PricingEngine.LINK_FLAT_COST
-            # The duration of a URL video is unknown here: the requested
-            # resolution and the SEO add-on are checked against the plan, and
-            # only the SEO add-on is charged on top of the flat price (ADR-013).
-            use_seo = bool(project.metadata.get('use_seo'))
+            # The duration of a URL video is unknown here: a flat price, only
+            # in 720p, and only the SEO add-on on top (ADR-013).
             try:
-                add_on = PricingEngine.calculate_render_cost(
-                    duration_seconds=0,
-                    resolution=_pricing_resolution(project),
-                    features_requested={'seo_optimization': use_seo},
-                    plan=workspace.subscription_plan,
-                )
-                if use_seo:
-                    # Without add-ons the engine still returns its 0.01 floor.
-                    cost_in_tokens += add_on
+                cost_in_tokens = price_new_project(
+                    plan=plan, source='link', resolution=_pricing_resolution(project), use_seo=use_seo,
+                ).total
+            except NewProjectRefused as refused:
+                _discard_new_project(project)
+                return Response(refused.body, status=status.HTTP_400_BAD_REQUEST)
             except (PlanLimitExceededError, FeatureNotAllowedError) as e:
                 _discard_new_project(project)
                 return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
@@ -406,9 +394,10 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
                     wallet_id=wallet.id,
                     amount=cost_in_tokens,
                     user=user,
-                    description=f"Procesamiento: {project.title}"[:255]
+                    description=f"Procesamiento: {project.title}"[:255],
+                    project=project,
+                    category=Transaction.Category.PROJECT,
                 )
-                wallet_service.link_reservation(tx, project, Transaction.Category.PROJECT)
                 project.metadata = {**(project.metadata or {}), 'reservation_id': str(tx.id)}
                 VideoProject.objects.filter(pk=project.pk).update(metadata=project.metadata)
                 transaction.on_commit(lambda: _queue_ingestion(project.pk, tx.pk, outcome))

@@ -4,32 +4,38 @@ Prices for the web app before anything is created (C1 and the dialogs of D):
 - ``pricing_values``: the numbers of PricingEngine and the upload limits
   (GET /api/v1/pricing/), so the browser estimates with the same formula.
 - ``estimate``: what a configuration would cost the active workspace, with
-  its plan and its balance (POST /api/v1/pricing/estimate/). The same rules
-  as VideoProjectViewSet.create: a file is priced by its whole seconds, a link
-  has a flat price, is always 720p and only pays the SEO add-on on top.
+  its plan and its balance (POST /api/v1/pricing/estimate/). The price and
+  its refusals are the creation's own (price_new_project, in
+  apps/videos/services/render_pricing.py).
 - ``review_eta_seconds``: how long the pipeline takes to leave a video ready
   for the review, from the stage times of the latest projects.
 """
 import math
 import statistics
+from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
+from django.core.cache import cache
+from django.utils import timezone
 
 from ..models import Wallet
 from .movements import money
 from .pricing_engine import FeatureNotAllowedError, PlanLimitExceededError, PricingEngine
 
-LINK_RESOLUTION_ERROR = "Los proyectos por link se procesan en 720p. Para 1080p o 4K, subí el archivo."
 FILE_DURATION_ERROR = "Mandá la duración del archivo, en segundos."
 
 # "Saldo bajo" (map 1.11): below what an average video costs, 20 minutes at
 # 720p with the plan's discount.
 LOW_BALANCE_REFERENCE_SECONDS = 1200
 
-# The stages before the review, and how many recent projects the ETA reads.
+# The stages before the review; how many recent projects, of how many days,
+# the ETA reads; and how long its ratio is kept in the cache.
 REVIEW_STAGES = ('audio_extracted', 'transcribed', 'moderated', 'clips_selected')
 ETA_SAMPLES = 50
+ETA_WINDOW_DAYS = 30
+ETA_CACHE_KEY = 'pricing:review-seconds-per-second'
+ETA_CACHE_SECONDS = 300
 
 
 class EstimateRefused(Exception):
@@ -90,20 +96,18 @@ def _number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def review_eta_seconds(duration_seconds):
+def _review_seconds_per_second():
     """
-    Seconds until a video of ``duration_seconds`` is ready for the review: the
-    median, over the latest ETA_SAMPLES projects that got there, of the time
-    their stages took per second of video (``metadata['stage_durations']``
-    over the seconds priced). Only the stages' own time: not the wait in the
-    queue. None without such projects, or for a video of 0 s.
+    How long the stages before the review took per second of video: the
+    median over the latest ETA_SAMPLES projects of the last ETA_WINDOW_DAYS
+    that got there (``metadata['stage_durations']`` over the seconds priced).
+    None without such projects.
     """
     from apps.videos.models import VideoProject
 
-    if duration_seconds <= 0:
-        return None
+    since = timezone.now() - timedelta(days=ETA_WINDOW_DAYS)
     rows = (
-        VideoProject.objects.filter(metadata__stage_durations__has_key=REVIEW_STAGES[-1])
+        VideoProject.objects.filter(created_at__gte=since, metadata__stage_durations__has_key=REVIEW_STAGES[-1])
         .order_by('-created_at')
         .values_list('metadata__stage_durations', 'metadata__priced_duration_s', 'metadata__source_media__duration_s')
         [:ETA_SAMPLES]
@@ -116,56 +120,65 @@ def review_eta_seconds(duration_seconds):
         spent = [stages.get(stage) for stage in REVIEW_STAGES]
         if all(_number(seconds) and seconds >= 0 for seconds in spent):
             ratios.append(sum(spent) / video)
-    if not ratios:
+    return statistics.median(ratios) if ratios else None
+
+
+def review_eta_seconds(duration_seconds):
+    """
+    Seconds until a video of ``duration_seconds`` is ready for the review: the
+    ratio of the latest projects times its duration. Only the stages' own
+    time, not the wait in the queue. None without history, or for 0 s.
+
+    The ratio is the same for every estimate and moves slowly: it is kept in
+    the default cache for ETA_CACHE_SECONDS, so an estimate reads the
+    projects at most once in that time (a cache that does not answer is a
+    miss, and the ratio is computed again).
+    """
+    if duration_seconds <= 0:
         return None
-    return int(round(statistics.median(ratios) * duration_seconds))
+    cached = cache.get(ETA_CACHE_KEY)
+    if isinstance(cached, dict) and 'ratio' in cached:
+        ratio = cached['ratio']
+    else:
+        ratio = _review_seconds_per_second()
+        cache.set(ETA_CACHE_KEY, {'ratio': ratio}, ETA_CACHE_SECONDS)
+    return int(round(ratio * duration_seconds)) if ratio is not None else None
 
 
 def estimate(workspace, *, source, duration_seconds=None, render_resolution=None, use_seo=False):
-    """The contract's ``Estimate`` for ``workspace``, or EstimateRefused (400 or 403)."""
+    """
+    The contract's ``Estimate`` for ``workspace``, or EstimateRefused (400 or
+    403): price_new_project, the price the creation reserves, with its refusals.
+    """
+    from apps.videos.services.render_pricing import NewProjectRefused, price_new_project
+
     plan = workspace.subscription_plan
-    resolution = render_resolution or '720p'
-    features = {'seo_optimization': bool(use_seo)}
-    add_ons = PricingEngine.FEATURE_COSTS['seo_optimization'] if use_seo else Decimal('0')
+    if source == 'file' and duration_seconds is None:
+        raise EstimateRefused(400, {'duration_seconds': [FILE_DURATION_ERROR]})
     try:
-        if source == 'link':
-            if resolution != '720p':
-                raise EstimateRefused(400, {'render_resolution': [LINK_RESOLUTION_ERROR]})
-            base = PricingEngine.LINK_FLAT_COST
-            # Checks the SEO against the plan; without it the engine still answers its floor.
-            seo = PricingEngine.calculate_render_cost(
-                duration_seconds=0, resolution='720p', features_requested=features, plan=plan,
-            )
-            total = base + (seo if use_seo else Decimal('0'))
-            eta = None
-        else:
-            if duration_seconds is None:
-                raise EstimateRefused(400, {'duration_seconds': [FILE_DURATION_ERROR]})
-            seconds = int(duration_seconds)
-            total = PricingEngine.calculate_render_cost(
-                duration_seconds=seconds, resolution=resolution, features_requested=features, plan=plan,
-            )
-            base = (
-                Decimal(seconds) * PricingEngine.BASE_COST_PER_SECOND_720P
-                * PricingEngine.RESOLUTION_MULTIPLIERS[resolution]
-            )
-            eta = review_eta_seconds(seconds)
+        price = price_new_project(
+            plan=plan, source=source, resolution=render_resolution or '720p',
+            duration_seconds=duration_seconds, use_seo=bool(use_seo),
+        )
+    except NewProjectRefused as refused:
+        raise EstimateRefused(400, refused.body)
     except (PlanLimitExceededError, FeatureNotAllowedError) as exc:
         raise _plan_refusal(exc, plan)
+    eta = review_eta_seconds(int(duration_seconds)) if source == 'file' else None
 
     available = (
         Wallet.objects.filter(workspace_id=workspace.pk).values_list('available_balance', flat=True).first()
         or Decimal('0')
     )
     return {
-        'base_cost': money(base),
-        'add_ons_cost': money(add_ons),
+        'base_cost': money(price.base),
+        'add_ons_cost': money(price.add_ons),
         'discount_rate': money(plan.base_discount_rate if plan is not None else Decimal('0')),
-        'discount_amount': money(max(Decimal('0'), base + add_ons - total)),
-        'total': money(total),
+        'discount_amount': money(max(Decimal('0'), price.base + price.add_ons - price.total)),
+        'total': money(price.total),
         'available_balance': money(available),
-        'balance_after': money(available - total),
-        'sufficient': available >= total,
+        'balance_after': money(available - price.total),
+        'sufficient': available >= price.total,
         'has_watermark': plan.has_watermark if plan is not None else True,
         'eta_seconds': eta,
     }

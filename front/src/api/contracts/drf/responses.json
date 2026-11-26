@@ -1,5 +1,5 @@
 {
-  "_about": "Cuerpos tal como los arma el backend de dev (VideoProjectSerializer, VideoClipSerializer, BrandKitSerializer y las vistas de apps/videos/views.py), escritos a mano a partir del código. Si un serializer cambia, se actualiza acá y el test dice qué esquema dejó de aceptarlo. Los de la billetera (pricing, estimate_*, wallet*, transactions_* y sus errores) son respuestas reales: los arma back/apps/payments/tests/test_contract_fixture.py, que además comprueba que su forma siga siendo la del backend.",
+  "_about": "Cuerpos tal como los arma el backend de dev (VideoProjectSerializer, VideoClipSerializer, BrandKitSerializer y las vistas de apps/videos/views.py), escritos a mano a partir del código. Si un serializer cambia, se actualiza acá y el test dice qué esquema dejó de aceptarlo. Los de la billetera (pricing, estimate_*, wallet*, transactions_* y sus errores) son respuestas reales: los arma back/apps/payments/tests/test_contract_fixture.py, que además compara cada valor con el backend (con el reloj fijo y los ids normalizados).",
   "token_pair": {
     "access": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU1MzYwMDB9.x",
     "refresh": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU2MjI0MDB9.y"
@@ -1460,9 +1460,7 @@
     "estimate_400_link": {
       "status": 400,
       "body": {
-        "render_resolution": [
-          "Los proyectos por link se procesan en 720p. Para 1080p o 4K, subí el archivo."
-        ]
+        "error": "Los proyectos por link se procesan en 720p. Para 1080p o 4K, subí el archivo."
       }
     },
     "usage_400_month": {
@@ -1568,20 +1566,20 @@
     "eta_seconds": null
   },
   "wallet": {
-    "id": "fc7721af-d647-4b33-a665-dd04e138c96c",
-    "workspace": "c5b5cd3f-f055-4bfa-abef-7658adb6a5df",
+    "id": "ff9d854f-7cdc-4d6d-8698-059bd0b39ccc",
+    "workspace": "8cda70d6-4810-4cd3-a4c3-5be48b44be85",
     "available_balance": "496.5000000000",
     "reserved_balance": "3.5000000000",
-    "updated_at": "2026-11-26T18:51:24.978894Z",
+    "updated_at": "2026-11-04T15:00:00Z",
     "spent_this_month": "0.0000000000",
     "low_balance_threshold": "570.00",
     "reservations": [
       {
-        "transaction_id": "1cf0f783-e82e-4152-9e54-5411d51e1e6f",
-        "project_id": "c07cd024-3b1a-4ac1-9573-3b1465fab0b0",
+        "transaction_id": "d583209f-4833-4632-bfc7-013de23228f8",
+        "project_id": "67d66d7d-03ab-494c-bae1-eaf0cc203cb4",
         "project_title": "Entrevista con Ana",
         "amount": "3.5000000000",
-        "created_at": "2026-11-26T18:51:24.979396Z"
+        "created_at": "2026-11-04T15:00:00Z"
       }
     ]
   },
@@ -1649,7 +1647,7 @@
     {
       "date": "2026-10-11",
       "projects": "12.5000000000",
-      "renders": "0.0000000000",
+      "renders": "5.0000000000",
       "seo": "0.0000000000"
     },
     {
@@ -1774,66 +1772,91 @@
     }
   ],
   "transactions_page": {
-    "count": 5,
-    "next": "http://testserver/api/v1/transactions/?page=2&page_size=3",
+    "count": 6,
+    "next": "http://testserver/api/v1/transactions/?page=2&page_size=4",
     "previous": null,
     "results": [
       {
-        "id": "1cf0f783-e82e-4152-9e54-5411d51e1e6f",
-        "wallet": "fc7721af-d647-4b33-a665-dd04e138c96c",
-        "created_by": "5aa55977-6077-4954-b7bf-7ebbe2928194",
+        "id": "d583209f-4833-4632-bfc7-013de23228f8",
+        "wallet": "ff9d854f-7cdc-4d6d-8698-059bd0b39ccc",
+        "created_by": "53a17987-adf1-4bc1-a051-f6978c7fd866",
         "amount": "3.5000000000",
+        "reserved_amount": "3.5000000000",
         "transaction_type": "SPEND",
         "status": "RESERVED",
         "description": "Render de clip: Gancho",
-        "created_at": "2026-11-26T18:51:24.979396Z",
+        "created_at": "2026-11-04T15:00:00Z",
+        "settled_at": null,
         "kind": "reserved",
         "created_by_detail": {
-          "id": "5aa55977-6077-4954-b7bf-7ebbe2928194",
+          "id": "53a17987-adf1-4bc1-a051-f6978c7fd866",
           "name": "alice"
         },
         "project": {
-          "id": "c07cd024-3b1a-4ac1-9573-3b1465fab0b0",
+          "id": "67d66d7d-03ab-494c-bae1-eaf0cc203cb4",
           "title": "Entrevista con Ana"
         },
         "category": "render"
       },
       {
-        "id": "d03af27c-d03d-48ee-bc59-837b2967fc0f",
-        "wallet": "fc7721af-d647-4b33-a665-dd04e138c96c",
+        "id": "36cf6983-265b-492d-a43b-9a4eba382bd7",
+        "wallet": "ff9d854f-7cdc-4d6d-8698-059bd0b39ccc",
         "created_by": null,
         "amount": "1000.0000000000",
+        "reserved_amount": null,
         "transaction_type": "DEPOSIT",
         "status": "PENDING",
         "description": "Compra de 1000 tokens",
         "created_at": "2026-10-13T15:00:00Z",
+        "settled_at": null,
         "kind": "pending",
         "created_by_detail": null,
         "project": null,
         "category": "purchase"
       },
       {
-        "id": "6b22cec5-71a5-4a0f-88f7-1da1b3ec6c9d",
-        "wallet": "fc7721af-d647-4b33-a665-dd04e138c96c",
+        "id": "0ea55e63-7607-4774-9a77-f229348f768d",
+        "wallet": "ff9d854f-7cdc-4d6d-8698-059bd0b39ccc",
         "created_by": null,
         "amount": "7.2500000000",
+        "reserved_amount": "7.2500000000",
         "transaction_type": "SPEND",
         "status": "FAILED",
         "description": "Render Final (Paper Edit): Podcast 12",
         "created_at": "2026-10-12T15:00:00Z",
+        "settled_at": "2026-10-12T15:05:00Z",
         "kind": "released",
         "created_by_detail": null,
         "project": {
-          "id": "5001ba4e-29b2-4c99-9dbd-edc2ebcd011f",
+          "id": "ad9dd8e4-b9d7-4dca-9804-3027e53ebc8b",
           "title": "Podcast 12"
+        },
+        "category": "render"
+      },
+      {
+        "id": "4e1e663b-d149-491e-bf9e-d76db682e2b0",
+        "wallet": "ff9d854f-7cdc-4d6d-8698-059bd0b39ccc",
+        "created_by": null,
+        "amount": "5.0000000000",
+        "reserved_amount": "20.0000000000",
+        "transaction_type": "SPEND",
+        "status": "COMPLETED",
+        "description": "Render Final (Paper Edit): Entrevista con Ana",
+        "created_at": "2026-10-11T16:00:00Z",
+        "settled_at": "2026-10-11T16:30:00Z",
+        "kind": "charged",
+        "created_by_detail": null,
+        "project": {
+          "id": "67d66d7d-03ab-494c-bae1-eaf0cc203cb4",
+          "title": "Entrevista con Ana"
         },
         "category": "render"
       }
     ],
     "totals": {
       "charged": {
-        "count": 1,
-        "amount": "12.5000000000"
+        "count": 2,
+        "amount": "17.5000000000"
       },
       "pending": {
         "count": 1,
@@ -1845,7 +1868,8 @@
       },
       "released": {
         "count": 1,
-        "amount": "7.2500000000"
+        "amount": "22.2500000000",
+        "partial_count": 1
       },
       "reserved": {
         "count": 1,
@@ -1853,7 +1877,7 @@
       }
     }
   },
-  "transactions_export": "fecha,concepto,proyecto,tipo,monto\n2026-10-13T12:00:00-03:00,Compra de 1000 tokens,,Pendiente,1000.00\n2026-10-12T12:00:00-03:00,Render Final (Paper Edit): Podcast 12,Podcast 12,Devuelto,7.25\n2026-10-11T12:00:00-03:00,Procesamiento: Entrevista con Ana,Entrevista con Ana,Cobrado,-12.50\n2026-10-10T12:00:00-03:00,Compra de 5000 tokens,,Compra,5000.00\n",
+  "transactions_export": "fecha,concepto,proyecto,tipo,monto,estado,transaccion\n2026-10-12T12:05:00-03:00,Render Final (Paper Edit): Podcast 12,Podcast 12,Devuelto,7.25,Devuelto,0ea55e63-7607-4774-9a77-f229348f768d\n2026-10-12T12:00:00-03:00,Render Final (Paper Edit): Podcast 12,Podcast 12,Reserva,-7.25,Devuelto,0ea55e63-7607-4774-9a77-f229348f768d\n2026-10-11T13:30:00-03:00,Render Final (Paper Edit): Entrevista con Ana,Entrevista con Ana,Devuelto,15.00,Cobrado,4e1e663b-d149-491e-bf9e-d76db682e2b0\n2026-10-11T13:00:00-03:00,Render Final (Paper Edit): Entrevista con Ana,Entrevista con Ana,Reserva,-20.00,Cobrado,4e1e663b-d149-491e-bf9e-d76db682e2b0\n2026-10-11T12:00:00-03:00,Procesamiento: Entrevista con Ana,Entrevista con Ana,Reserva,-12.50,Cobrado,b18a3ecb-3fbb-40ee-8c7a-cc18cad90b97\n2026-10-10T12:00:00-03:00,Compra de 5000 tokens,,Compra,5000.00,Compra,2624153a-de28-46b5-b443-96afe8e6b766\n",
   "_about_billing": "Los cuerpos billing_* salieron del backend real (apps/payments/views_subscription.py y views_purchases.py, proveedor simulado), no escritos a mano.",
   "billing_subscription_free": {
     "plan": {

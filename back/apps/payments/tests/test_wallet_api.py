@@ -16,7 +16,9 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from django.core.cache import cache
 from django.db import connection
+from django.test import override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
@@ -25,7 +27,8 @@ from rest_framework.test import APIClient, APITestCase
 from apps.core.permissions import ADMINS, DENIED
 from apps.payments.models import SubscriptionPlan, Transaction, Wallet
 from apps.payments.services import wallet_service
-from apps.payments.services.estimate import LINK_RESOLUTION_ERROR
+from apps.videos.services.render_pricing import LINK_RESOLUTION_ERROR, price_new_project
+from apps.payments.services.estimate import ETA_CACHE_KEY
 from apps.payments.services.pricing_engine import PricingEngine
 from apps.users.models import WorkspaceMember
 from apps.videos.models import VideoProject
@@ -110,8 +113,9 @@ class WalletTests(WalletHarness, APITestCase):
     def test_the_balances_and_each_reservation_with_its_project(self):
         project = self.project()
         wallet = Wallet.objects.get(workspace=self.home)
-        older = wallet_service.reserve_funds(wallet.id, Decimal('12.5'), description='Procesamiento: Entrevista con Ana')
-        wallet_service.link_reservation(older, project, PROJECT)
+        older = wallet_service.reserve_funds(
+            wallet.id, Decimal('12.5'), description='Procesamiento: Entrevista con Ana', project=project, category=PROJECT,
+        )
         newer = wallet_service.reserve_funds(wallet.id, Decimal('0.3333333333'), description='Render suelto')
         Transaction.objects.filter(pk=older.pk).update(created_at=timezone.now() - timedelta(minutes=5))
         # Neither a charge nor a refund is reserved.
@@ -356,11 +360,38 @@ class EstimateTests(WalletHarness, APITestCase):
             ('10.0', '5.0', '14.75', '0.25', None),
         )
 
-    def test_a_link_is_always_720p(self):
+    def test_a_link_is_always_720p_with_the_400_of_the_creation(self):
         response = self.estimate(source='link', render_resolution='1080p')
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json(), {'render_resolution': [LINK_RESOLUTION_ERROR]})
+        self.assertEqual(response.json(), {'error': LINK_RESOLUTION_ERROR})
+
+    def test_a_file_longer_than_any_upload_is_the_400_of_the_creation(self):
+        self.home.subscription_plan = None  # no plan limit: only the ceiling of any upload
+        self.home.save(update_fields=['subscription_plan'])
+
+        with override_settings(AI_UPLOAD_MAX_DURATION_SECONDS=3600):
+            over = self.estimate(source='file', duration_seconds=3600.5)
+            at = self.estimate(source='file', duration_seconds=3600)
+
+        self.assertEqual(over.status_code, 400)
+        self.assertEqual(over.json(), {'source_file': ['El video supera la duración máxima que podemos procesar (1 h 00 min).']})
+        self.assertEqual(at.status_code, 200)
+
+    def test_it_is_the_price_the_creation_reserves(self):
+        for body in (
+            {'source': 'file', 'duration_seconds': 181.9, 'render_resolution': '1080p', 'use_seo': True},
+            {'source': 'file', 'duration_seconds': 0},
+            {'source': 'link', 'use_seo': True},
+            {'source': 'link'},
+        ):
+            with self.subTest(body=body):
+                expected = price_new_project(
+                    plan=self.home.subscription_plan, source=body['source'],
+                    resolution=body.get('render_resolution', '720p'), duration_seconds=body.get('duration_seconds'),
+                    use_seo=body.get('use_seo', False),
+                )
+                self.assertEqual(Decimal(self.estimate(**body).json()['total']), expected.total)
 
     def test_a_file_needs_its_duration(self):
         response = self.estimate(source='file')
@@ -421,6 +452,35 @@ class EstimateTests(WalletHarness, APITestCase):
 
         self.assertEqual(self.estimate(source='file', duration_seconds=300).json()['eta_seconds'], 300)
         self.assertIsNone(self.estimate(source='link').json()['eta_seconds'])
+
+    def eta_project(self, seconds_per_second, days_ago=0):
+        stages = {stage: 15 * seconds_per_second for stage in ('audio_extracted', 'transcribed', 'moderated', 'clips_selected')}
+        project = VideoProject.objects.create(
+            workspace=self.team, uploaded_by=self.boss, title='Otro', source_file='x.mp4',
+            metadata={'stage_durations': stages, 'priced_duration_s': 60},
+        )
+        if days_ago:
+            VideoProject.objects.filter(pk=project.pk).update(created_at=timezone.now() - timedelta(days=days_ago))
+
+    def test_the_eta_reads_only_the_last_30_days(self):
+        self.eta_project(1)
+        self.eta_project(10, days_ago=31)
+
+        self.assertEqual(self.estimate(source='file', duration_seconds=100).json()['eta_seconds'], 100)
+
+    def test_the_eta_ratio_is_cached_so_an_estimate_does_not_read_the_projects_again(self):
+        self.eta_project(1)
+        self.assertEqual(self.estimate(source='file', duration_seconds=100).json()['eta_seconds'], 100)
+        self.eta_project(3)
+        self.eta_project(3)
+
+        with CaptureQueriesContext(connection) as queries:
+            cached = self.estimate(source='file', duration_seconds=200).json()['eta_seconds']
+
+        self.assertEqual(cached, 200)
+        self.assertFalse([q for q in queries.captured_queries if 'videos_videoproject' in q['sql']])
+        cache.delete(ETA_CACHE_KEY)  # what ETA_CACHE_SECONDS does
+        self.assertEqual(self.estimate(source='file', duration_seconds=200).json()['eta_seconds'], 600)
 
     def test_every_role_can_estimate_and_it_uses_that_workspace(self):
         self.as_member(VIEWER)

@@ -4,6 +4,7 @@ import { approveErrorKind, errorMessage, fieldError, pipelineErrorMessage, planL
 import { describeProjectStatus } from '@/lib/project-status';
 import { ApiError } from '../errors';
 import { TokenPair, refreshToken } from './auth';
+import { returnedPart } from '@/features/uso/movements';
 import {
   Payment,
   Subscription,
@@ -112,10 +113,19 @@ describe('billetera, movimientos y precios: respuestas reales del backend', () =
     const released = page.results.find((item) => item.kind === 'released');
     // "Devuelto" keeps the link to its project.
     expect(released?.project?.title).toBe('Podcast 12');
-    expect(page.totals.charged).toEqual({ count: 1, amount: 12.5 });
+    // A partial charge: 5 charged of 20 reserved, settled after it was made.
+    const partial = page.results.find((item) => item.kind === 'charged' && item.reserved_amount !== null && item.reserved_amount > item.amount);
+    expect(partial).toMatchObject({ amount: 5, reserved_amount: 20, settled_at: '2026-10-11T16:30:00Z' });
+    expect(returnedPart(partial!)).toBe(15);
+    expect(page.totals.charged).toEqual({ count: 2, amount: 17.5 });
+    // What came back: the released reservation (7.25) and the part the partial charge did not use (15).
+    expect(page.totals.released).toEqual({ count: 1, amount: 22.25, partial_count: 1 });
     const csv = parse(exportTransactions.response, real.transactions_export) as string;
-    expect(csv.split('\n')[0]).toBe('fecha,concepto,proyecto,tipo,monto');
-    expect(csv).toContain(',Podcast 12,Devuelto,7.25');
+    expect(csv.split('\n')[0]).toBe('fecha,concepto,proyecto,tipo,monto,estado,transaccion');
+    // The ledger of October adds up to what the balance did: −20 +15, −12.50, −7.25 +7.25 and the purchase.
+    const sum = csv.split('\n').slice(1).filter(Boolean).reduce((total, line) => total + Number(line.split(',')[4]) * 100, 0) / 100;
+    expect(sum).toBe(4982.5);
+    expect(csv).toContain(',Podcast 12,Devuelto,7.25,Devuelto,');
   });
 
   it('sus errores: el límite del plan abre D3, el rol no, y los 400 van por campo', () => {
@@ -125,7 +135,8 @@ describe('billetera, movimientos y precios: respuestas reales del backend', () =
     const role = error('transactions_403_role', 'billing.transactions');
     expect(role.isPlanLimit).toBe(false);
     expect(errorMessage(role)).toMatch(/dueño o un admin/);
-    expect(fieldError(error('estimate_400_link'), 'render_resolution')).toMatch(/720p/);
+    // The creation's own 400 for a link in another resolution.
+    expect(errorMessage(error('estimate_400_link'))).toMatch(/720p/);
     expect(fieldError(error('usage_400_month'), 'month')).toMatch(/AAAA-MM/);
   });
 });

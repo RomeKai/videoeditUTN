@@ -2,7 +2,7 @@ import * as contract from '../../contracts/billing';
 import { newId, workspaceDateTime, workspaceDay, type MockDb, type MockPurchase, type MockTransaction } from '../db';
 import { badRequest, dec, MockHttpError, notFound, paginate, route } from '../http';
 import { priceOf, PRICING, TOKEN_PACKAGES } from '../seed';
-import { chargedAt, planOf, serializeSubscription, serializeTransaction, serializeWallet } from '../serialize';
+import { movedAt, planOf, serializeSubscription, serializeTransaction, serializeWallet } from '../serialize';
 import { SIM, tick, walletOf } from '../sim';
 
 const RANK = { '720p': 1, '1080p': 2, '4K': 3 } as const;
@@ -14,7 +14,7 @@ function formatDuration(seconds: number): string {
   return minutes >= 60 ? `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')} min` : `${minutes} min`;
 }
 
-/** How the CSV names each kind (the screen's labels, KIND_META). */
+/** How the CSV names the state of each transaction (the screen's labels, KIND_META). */
 const KIND_LABEL: Record<contract.TransactionKind, string> = {
   purchase: 'Compra', reserved: 'Reservado', charged: 'Cobrado', refund: 'Devolución', released: 'Devuelto', pending: 'Pendiente',
 };
@@ -30,13 +30,45 @@ function csvAmount(value: number): string {
   return Math.round(value * 100) / 100 === value ? value.toFixed(2) : String(value);
 }
 
+const cents = (value: number) => Math.round(value * 100) / 100;
+
+/** The workspace's movements with `month` (by when each one last moved the balance) and `project`, newest first. */
 function movementsOf(transactions: MockTransaction[], workspace: string, query: URLSearchParams): MockTransaction[] {
   const month = query.get('month');
   const project = query.get('project');
   return transactions
     .filter((item) => item.workspace === workspace)
-    .filter((item) => !month || workspaceDay(item.created_at).startsWith(month))
-    .filter((item) => !project || item.project?.id === project);
+    .filter((item) => !month || workspaceDay(movedAt(item)).startsWith(month))
+    .filter((item) => !project || item.project?.id === project)
+    .sort((a, b) => movedAt(b).localeCompare(movedAt(a)) || b.id.localeCompare(a.id));
+}
+
+/** What a partial charge gave back: reserved_amount − amount (the backend writes no row for it). */
+function returnedPart(item: MockTransaction): number {
+  return item.kind === 'charged' && item.reserved_amount !== null && item.reserved_amount > item.amount ? cents(item.reserved_amount - item.amount) : 0;
+}
+
+interface BalanceChange {
+  at: string;
+  /** A reservation before its return when both happen at the same instant. */
+  order: number;
+  item: MockTransaction;
+  what: 'Reserva' | 'Devuelto' | 'Compra' | 'Devolución';
+  amount: number;
+}
+
+/** Like the backend's balance_changes: each time a transaction moved the available balance. */
+function balanceChanges(item: MockTransaction): BalanceChange[] {
+  const settled = item.settled_at ?? item.created_at;
+  if (item.transaction_type === 'SPEND') {
+    const reserved = item.reserved_amount ?? item.amount;
+    const changes: BalanceChange[] = [{ at: item.created_at, order: 0, item, what: 'Reserva', amount: -reserved }];
+    if (item.status === 'FAILED') changes.push({ at: settled, order: 1, item, what: 'Devuelto', amount: reserved });
+    else if (returnedPart(item) > 0) changes.push({ at: settled, order: 1, item, what: 'Devuelto', amount: returnedPart(item) });
+    return changes;
+  }
+  if (item.status !== 'COMPLETED') return []; // a pending purchase has not moved the balance yet
+  return [{ at: settled, order: 0, item, what: item.transaction_type === 'DEPOSIT' ? 'Compra' : 'Devolución', amount: item.amount }];
 }
 
 /** Like the backend (services/token_packages.py): no purchase above this many tokens. */
@@ -84,13 +116,17 @@ export const billingHandlers = [
   route(contract.estimateCost, ({ db, workspace, body }) => {
     const plan = planOf(db, workspace.id);
     const resolution = body.render_resolution ?? '720p';
+    // The creation's own 400s (price_new_project in the backend).
     if (body.source === 'link' && resolution !== '720p') {
-      throw badRequest({ render_resolution: ['Los proyectos por link se procesan en 720p. Para 1080p o 4K, subí el archivo.'] });
+      throw badRequest({ error: 'Los proyectos por link se procesan en 720p. Para 1080p o 4K, subí el archivo.' });
     }
     if (body.source === 'file' && body.duration_seconds === undefined) {
       throw badRequest({ duration_seconds: ['Mandá la duración del archivo, en segundos.'] });
     }
     const duration = body.duration_seconds ?? 0;
+    if (body.source === 'file' && duration > PRICING.upload_max_duration_seconds) {
+      throw badRequest({ source_file: [`El video supera la duración máxima que podemos procesar (${formatDuration(PRICING.upload_max_duration_seconds)}).`] });
+    }
     if (plan) {
       if (body.source === 'file' && Math.floor(duration) > plan.max_video_duration_seconds) {
         throw new MockHttpError(403, { error: `Tu plan ${plan.name} permite videos de hasta ${formatDuration(plan.max_video_duration_seconds)}.`, code: 'duration', limit: plan.max_video_duration_seconds });
@@ -204,7 +240,7 @@ export const billingHandlers = [
       // Only what was charged: reservations are not consumption yet and released ones never were.
       if (transaction.workspace !== workspace.id || transaction.transaction_type !== 'SPEND' || transaction.status !== 'COMPLETED') continue;
       // On the day it was charged, like the backend (`settled_at`).
-      const day = workspaceDay(chargedAt(transaction));
+      const day = workspaceDay(movedAt(transaction));
       if (!day.startsWith(month)) continue;
       const entry = byDay.get(day) ?? { projects: 0, renders: 0, seo: 0 };
       if (transaction.category === 'render') entry.renders += transaction.amount;
@@ -226,11 +262,22 @@ export const billingHandlers = [
     require('billing.manage');
     const kind = query.get('kind');
     const scoped = movementsOf(db.transactions, workspace.id, query);
-    const totals: Record<string, { count: number; amount: number }> = {};
+    const totals: Record<string, { count: number; amount: number; partial_count?: number }> = {};
+    let partialCount = 0;
+    let partialAmount = 0;
     for (const item of scoped) {
       const entry = (totals[item.kind] ??= { count: 0, amount: 0 });
       entry.count += 1;
-      entry.amount = Math.round((entry.amount + item.amount) * 100) / 100;
+      entry.amount = cents(entry.amount + item.amount);
+      if (returnedPart(item) > 0) {
+        partialCount += 1;
+        partialAmount = cents(partialAmount + returnedPart(item));
+      }
+    }
+    // "Devuelto" is also what partial charges gave back; its count stays the rows its filter lists.
+    if (partialCount > 0 || totals.released) {
+      const released = totals.released ?? { count: 0, amount: 0 };
+      totals.released = { ...released, amount: cents(released.amount + partialAmount), partial_count: partialCount };
     }
     const items = scoped.filter((item) => !kind || item.kind === kind).map(serializeTransaction);
     return { data: { ...paginate(items, query, contract.listTransactions.path), totals } };
@@ -239,19 +286,26 @@ export const billingHandlers = [
   route(contract.exportTransactions, ({ db, workspace, query, require }) => {
     require('billing.manage');
     const kind = query.get('kind');
-    const rows = movementsOf(db.transactions, workspace.id, query)
-      .filter((item) => !kind || item.kind === kind)
-      // Same sign as the screen: what left the balance is negative, what came (back) to it is positive.
-      .map((item) =>
-        [
-          workspaceDateTime(item.created_at),
-          csvText(item.description),
-          csvText(item.project?.title ?? ''),
-          KIND_LABEL[item.kind],
-          csvAmount(item.kind === 'reserved' || item.kind === 'charged' ? -item.amount : item.amount),
-        ].join(','),
-      );
-    return { data: [['fecha', 'concepto', 'proyecto', 'tipo', 'monto'].join(','), ...rows].join('\n'), raw: true };
+    const month = query.get('month');
+    const project = query.get('project');
+    // The ledger: one row per change of the balance, dated when it happened, so a month adds up to what the balance did.
+    const changes = db.transactions
+      .filter((item) => item.workspace === workspace.id && (!kind || item.kind === kind) && (!project || item.project?.id === project))
+      .flatMap(balanceChanges)
+      .filter((change) => !month || workspaceDay(change.at).startsWith(month))
+      .sort((a, b) => b.at.localeCompare(a.at) || b.order - a.order || b.item.id.localeCompare(a.item.id));
+    const rows = changes.map((change) =>
+      [
+        workspaceDateTime(change.at),
+        csvText(change.item.description),
+        csvText(change.item.project?.title ?? ''),
+        change.what,
+        csvAmount(change.amount),
+        KIND_LABEL[change.item.kind],
+        change.item.id,
+      ].join(','),
+    );
+    return { data: [['fecha', 'concepto', 'proyecto', 'tipo', 'monto', 'estado', 'transaccion'].join(','), ...rows].join('\n'), raw: true };
   }),
 
   route(contract.listTokenPackages, () => ({ data: TOKEN_PACKAGES })),

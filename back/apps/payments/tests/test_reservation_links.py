@@ -1,14 +1,16 @@
 """
 Every reservation is linked to the project it pays for, with what it pays
-(Transaction.project and Transaction.category, wallet_service.link_reservation),
-in the same transaction that reserves: the creation and its re-dispatch are
+(Transaction.project and Transaction.category, the ``project`` and ``category``
+of wallet_service.reserve_funds), in the same INSERT that reserves: the creation and its re-dispatch are
 the project; the approval, the auto-render and a render asked for later
 (a clip, a retry, a rerender) are a render.
 """
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APITestCase
 
 from apps.payments.models import Transaction
@@ -25,6 +27,32 @@ PROJECT, RENDER = Transaction.Category.PROJECT, Transaction.Category.RENDER
 def link_of(transaction_id):
     txn = Transaction.objects.get(pk=transaction_id)
     return txn.project_id, txn.category
+
+
+class ReserveFundsLinkTests(TestCase):
+    def setUp(self):
+        self.user = make_user('ana')
+        self.workspace = home_of(self.user)
+        self.wallet = fund(self.workspace)
+        self.project = VideoProject.objects.create(workspace=self.workspace, uploaded_by=self.user, title='P')
+
+    def test_project_and_category_go_in_the_insert_and_queue_nothing(self):
+        with patch('apps.payments.services.wallet_service.process_video_pipeline.delay') as pipeline, \
+                CaptureQueriesContext(connection) as queries:
+            txn = wallet_service.reserve_funds(
+                self.wallet.id, Decimal('5'), user=self.user, project=self.project, category=RENDER,
+            )
+
+        self.assertEqual(link_of(txn.pk), (self.project.pk, RENDER))
+        updates = [q['sql'] for q in queries.captured_queries if q['sql'].startswith('UPDATE "payments_transaction"')]
+        self.assertEqual(updates, [])
+        # Only project_id queues the pipeline, as before.
+        pipeline.assert_not_called()
+
+    def test_without_them_the_reservation_is_other_and_has_no_project(self):
+        txn = wallet_service.reserve_funds(self.wallet.id, Decimal('5'))
+
+        self.assertEqual(link_of(txn.pk), (None, Transaction.Category.OTHER))
 
 
 class CreationLinkTests(APITestCase):

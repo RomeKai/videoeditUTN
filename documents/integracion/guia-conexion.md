@@ -94,7 +94,7 @@ Detalle y tabla de lo que ya tiene endpoint: [01, Workspace activo y roles](../i
 
 - `WorkspaceRolePermission` y `ROLE_MATRIX` (`back/apps/core/permissions.py`) copian `MATRIX` de `front/src/lib/permissions.ts`, que es la tabla 1.7 del mapa. Si sumás una acción, sumala en los dos.
 - Cada vista mapea sus pedidos a acciones con `workspace_actions`: acciones del viewset (`create`, `approve_paper_edit`…) o métodos HTTP en un `APIView`.
-  - Un método seguro sin mapear es una lectura (`project.view`, todos los roles).
+  - Un método seguro sin mapear es una lectura (`project.view`, todos los roles). Un `HEAD` pide la acción del `GET`.
   - **Una escritura sin mapear queda para Dueño y Admin** (`members.manage`).
   - Un método que la vista no tiene sigue de largo: DRF responde 405, no 403.
 - Las acciones de tus áreas: `members.manage`, `workspace.rename`, `workspace.delete`, `workspace.transfer`, `billing.manage`, `wallet.view`, `social.manage` y `post.publish`.
@@ -427,7 +427,7 @@ El backlog (`documents/backlog_mvp.md`) asigna por par, no por persona: PAY-01 a
 | Resuelto en `feat/perfil-me`: `token_blacklist` instalada, y límites de intentos en el login (por IP y por cuenta, solo los fallidos), el refresh, la contraseña y el cambio de email (`apps/users/throttles.py`). El registro y el reenvío necesitan los suyos. | `auth.register`, `auth.resendVerification` | 1, 2 |
 | [ADR-005](../adrs/005-social-publishing-strategy.md) sigue `proposed`: el contrato asume Ayrshare, DIST-01 propone OAuth directo. | `social.accounts`, `social.connect`, `social.disconnect` | 10 |
 | No hay beat para `dispatch_scheduled_posts_batch`: no está en `CELERY_BEAT_SCHEDULE` y `docker-compose.yml` no tiene servicio `beat`. | Publicaciones programadas | 9 |
-| Resuelto en `feat/billetera-movimientos-precios`: `Transaction.project` y `Transaction.category` (`link_reservation` al reservar, la migración 0016 para las filas viejas) y `kind` en la API. `projects.activity` sigue leyendo la metadata; `projects.detail` todavía no lo usa. | `projects.detail` | 4, 19 |
+| Resuelto en `feat/billetera-movimientos-precios`: `Transaction.project` y `Transaction.category` (`reserve_funds` los guarda al reservar, la migración 0016 en las filas viejas) y `kind` en la API. `projects.activity` sigue leyendo la metadata; `projects.detail` todavía no lo usa. | `projects.detail` | 4, 19 |
 | Stripe: `stripe_service.py` está vacío y no hay función para acreditar tokens. | `billing.createPurchase`, `billing.purchase`, `billing.changePlan` | 12 |
 | `LANGUAGE_CODE = 'en-us'`: los mensajes propios de DRF llegan en inglés (el frontend los traduce). | Nada, pero tus mensajes van en español igual | — |
 
