@@ -25,6 +25,13 @@ def test_a_limit_of_zero_is_rejected(field):
     assert field in error.value.message_dict
 
 
+@pytest.mark.parametrize('field', ['max_members', 'max_video_duration_seconds'])
+def test_the_database_refuses_a_limit_of_zero_too(seeded_plans, field):
+    """update() and the shell skip the validators: a check constraint backs them."""
+    with pytest.raises(IntegrityError), transaction.atomic():
+        SubscriptionPlan.objects.filter(name='Gratis').update(**{field: 0})
+
+
 def test_a_limit_of_one_is_valid():
     plan(max_members=1, max_video_duration_seconds=1).full_clean()
 

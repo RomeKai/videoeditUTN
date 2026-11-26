@@ -77,6 +77,17 @@ class SubscriptionPlan(models.Model):
                 name='payments_plan_single_recommended',
                 violation_error_message=_("Only one plan can be recommended. Unmark the other one first."),
             ),
+            # The validators of the two limits, also for what skips them (update(), the shell).
+            models.CheckConstraint(
+                condition=models.Q(max_members__gte=1),
+                name='payments_plan_max_members_min_1',
+                violation_error_message=_("A plan allows at least 1 member."),
+            ),
+            models.CheckConstraint(
+                condition=models.Q(max_video_duration_seconds__gte=1),
+                name='payments_plan_max_duration_min_1',
+                violation_error_message=_("A plan allows videos of at least 1 second."),
+            ),
         ]
 
     def __str__(self):

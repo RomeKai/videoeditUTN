@@ -1,3 +1,5 @@
+import logging
+
 from django.db import migrations
 
 # Gratis allows 2 members (its owner and one more) instead of 1. Only if nobody
@@ -20,9 +22,14 @@ def forwards(apps, schema_editor):
     widen_free_plan(apps.get_model('payments', 'SubscriptionPlan'), using=using)
 
     # update() sends no signal: drop the cached public list here.
-    from apps.payments.services.plans import invalidate_public_plans
+    # A cache error never fails the migration (the cache is only an optimization,
+    # and the next migrations must still run): it is logged and the TTL ends the list.
+    try:
+        from apps.payments.services.plans import invalidate_public_plans
 
-    invalidate_public_plans(using=using)
+        invalidate_public_plans(using=using)
+    except Exception as exc:
+        logging.getLogger(__name__).warning('plans.cache_unavailable operation=migrate error=%s', type(exc).__name__)
 
 
 class Migration(migrations.Migration):

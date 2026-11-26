@@ -1,7 +1,8 @@
 """
-payments 0006-0009: the four seeded plans end complete and public after a rollback
+payments 0006-0011: the four seeded plans end complete and public after a rollback
 and a new migrate, an edit made in the admin stays, Estudio moves to 3 h and Gratis
-to 2 members only if nobody changed them, and only one plan stays recommended.
+to 2 members only if nobody changed them, only one plan stays recommended, and a
+limit below 1 is raised to 1 before the check constraints.
 """
 from decimal import Decimal
 
@@ -16,7 +17,8 @@ from apps.payments.services.plans import PUBLIC_PLANS_CACHE_KEY
 BEFORE_PRICING = [('payments', '0003_transaction_created_at')]
 AFTER_SEED = [('payments', '0006_subscriptionplan_is_public_and_limits')]
 BEFORE_FREE_SEATS = [('payments', '0008_subscriptionplan_single_recommended')]
-LATEST = [('payments', '0009_free_plan_two_members')]
+BEFORE_LIMIT_CHECKS = [('payments', '0009_free_plan_two_members')]
+LATEST = [('payments', '0011_subscriptionplan_limits_check')]
 
 EXPECTED = {
     # name: (price, sort_order, max_video_duration_seconds)
@@ -108,6 +110,18 @@ class SeededPlansMigrationTests(TransactionTestCase):
         Plan.objects.filter(name='Gratis').update(max_members=4)
         Plan = self.migrate(LATEST)
         self.assertEqual(Plan.objects.get(name='Gratis').max_members, 4)
+
+    def test_a_limit_below_one_is_raised_to_one_before_the_check_constraints(self):
+        Plan = self.migrate(BEFORE_LIMIT_CHECKS)
+        Plan.objects.update_or_create(name='Free', defaults={'max_members': 0, 'max_video_duration_seconds': -5})
+
+        Plan = self.migrate(LATEST)
+
+        old = Plan.objects.get(name='Free')
+        self.assertEqual((old.max_members, old.max_video_duration_seconds), (1, 1))
+        with connection.cursor() as cursor:
+            constraints = connection.introspection.get_constraints(cursor, 'payments_subscriptionplan')
+        self.assertTrue({'payments_plan_max_members_min_1', 'payments_plan_max_duration_min_1'} <= set(constraints))
 
     def test_the_cached_public_list_is_dropped(self):
         for start in (AFTER_SEED, BEFORE_FREE_SEATS):  # by 0007 and by 0009

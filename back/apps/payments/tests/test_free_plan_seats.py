@@ -51,5 +51,7 @@ def test_a_free_workspace_has_its_owner_and_one_more_and_refuses_a_third(seeded_
     else:
         # Before PR #137 the limit never ran: it looked at instance.id, which the
         # UUID default fills before the INSERT. The seats above still hold.
+        # TODO: once PR #137 is merged, drop this skip and make the test strict
+        # (pytest.raises around the third join): a skip here would hide a broken limit.
         pytest.skip('check_workspace_member_limit no corre en esta rama (PR #137 lo arregla)')
     assert WorkspaceMember.objects.filter(workspace=workspace).count() == 2

@@ -218,8 +218,9 @@ AI_SINGLE_EDIT_MAX_DURATION_SECONDS = env.int('AI_SINGLE_EDIT_MAX_DURATION_SECON
 
 # --- PLANS (PAY-03) ---
 # The plan a new workspace starts on (users/signals.py, via
-# apps.payments.services.plans.get_default_plan). If no plan has this name, the
-# workspace is created without one and `plans.default_plan_missing` is logged;
+# apps.payments.services.plans.get_default_plan_id). If no active plan has this
+# name, the workspace is created without one and it is logged
+# (`plans.default_plan_missing` or `plans.default_plan_inactive`);
 # `manage.py assign_default_plan` assigns it later.
 DEFAULT_PLAN_NAME = env('DEFAULT_PLAN_NAME', default='Gratis')
 

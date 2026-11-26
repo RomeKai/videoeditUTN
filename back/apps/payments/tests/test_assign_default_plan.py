@@ -7,7 +7,10 @@ from io import StringIO
 
 import pytest
 from django.core.management import CommandError, call_command
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 
+from apps.payments.models import SubscriptionPlan
 from apps.users.models import User, Workspace, WorkspaceMember
 
 pytestmark = pytest.mark.django_db
@@ -126,3 +129,38 @@ def test_without_the_default_plan_it_lists_and_fails(old_workspaces, settings):
 def test_dry_run_and_apply_cannot_go_together(old_workspaces):
     with pytest.raises(CommandError):
         run('--dry-run', '--apply')
+
+
+def test_apply_does_not_run_one_update_per_workspace(seeded_plans):
+    """The queries of --apply do not grow with the number of workspaces."""
+    def queries_to_apply(count, prefix):
+        without_plan(*[workspace_of(f'{prefix}{index}') for index in range(count)])
+        with CaptureQueriesContext(connection) as context:
+            run('--apply')
+        return len(context.captured_queries)
+
+    assert queries_to_apply(2, 'pocos') == queries_to_apply(6, 'muchos')
+
+
+def test_apply_goes_in_batches(seeded_plans, monkeypatch):
+    from apps.payments.management.commands import assign_default_plan
+
+    monkeypatch.setattr(assign_default_plan, 'BATCH_SIZE', 2)
+    workspaces = [workspace_of(f'lote{index}') for index in range(5)]
+    without_plan(*workspaces)
+
+    output = run('--apply')
+
+    assert output.count('result=assigned') == 5
+    assert 'without_plan=5 assigned=5 skipped=0' in output
+    assert all(plan_of(workspace) == seeded_plans['Gratis'] for workspace in workspaces)
+
+
+def test_an_inactive_default_plan_is_not_assigned(old_workspaces, seeded_plans):
+    first, _, _ = old_workspaces
+    SubscriptionPlan.objects.filter(name='Gratis').update(is_active=False)
+
+    with pytest.raises(CommandError):
+        run('--apply')
+
+    assert plan_of(first) is None

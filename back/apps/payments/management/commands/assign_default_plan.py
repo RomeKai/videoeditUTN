@@ -12,10 +12,12 @@ Why they exist
 
 Safety
     Dry run by default (``--dry-run`` says it explicitly): nothing is written.
-    With ``--apply`` each workspace is updated only if it still has no plan, so
-    a plan assigned meanwhile (in the admin, for example) is kept. Members are
+    With ``--apply`` one UPDATE per batch of ``BATCH_SIZE`` workspaces assigns
+    the plan only where there is still none, so a plan assigned meanwhile (in
+    the admin, for example) is kept and reported as ``skipped``. Members are
     never removed: a workspace with more members than the plan allows keeps
-    them (``over_member_limit=yes``), but cannot add more.
+    them (``over_member_limit=yes``), but cannot add more. Without the default
+    plan (missing or inactive) nothing is assigned.
 
 Output
     One line per workspace with ids and numbers only, never its name (it holds
@@ -28,8 +30,12 @@ Output
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Count
 
-from apps.payments.services.plans import get_default_plan
+from apps.payments.models import SubscriptionPlan
+from apps.payments.services.plans import get_default_plan_id
 from apps.users.models import Workspace
+
+# Workspaces per UPDATE: bounds the `IN (...)` list and the time a batch holds its row locks.
+BATCH_SIZE = 500
 
 
 class Command(BaseCommand):
@@ -51,7 +57,8 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         apply = options["apply"]
-        plan = get_default_plan()
+        plan_id = get_default_plan_id()
+        plan = SubscriptionPlan.objects.filter(pk=plan_id).first() if plan_id else None
 
         workspaces = list(
             Workspace.objects.filter(subscription_plan__isnull=True)
@@ -60,24 +67,33 @@ class Command(BaseCommand):
             .values("id", "owner_id", "member_count", "created_at")
         )
 
-        assigned = skipped = over_limit = 0
+        assigned_ids = set()
+        if apply and plan is not None:
+            ids = [row["id"] for row in workspaces]
+            for start in range(0, len(ids), BATCH_SIZE):
+                batch = ids[start:start + BATCH_SIZE]
+                Workspace.objects.filter(pk__in=batch, subscription_plan__isnull=True).update(subscription_plan=plan)
+                # The ones of the batch on the plan now; any other got a plan meanwhile.
+                assigned_ids.update(
+                    Workspace.objects.filter(pk__in=batch, subscription_plan=plan).values_list("pk", flat=True)
+                )
+
+        over_limit = 0
         for row in workspaces:
             over = plan is not None and row["member_count"] > plan.max_members
             over_limit += over
-            result = "dry_run"
-            if apply and plan is not None:
-                updated = Workspace.objects.filter(pk=row["id"], subscription_plan__isnull=True).update(
-                    subscription_plan=plan
-                )
-                result = "assigned" if updated else "skipped"
-                assigned += updated
-                skipped += not updated
+            if not apply or plan is None:
+                result = "dry_run"
+            else:
+                result = "assigned" if row["id"] in assigned_ids else "skipped"
             self.stdout.write(
                 f"workspace={row['id']} owner={row['owner_id']} members={row['member_count']} "
                 f"created={row['created_at']:%Y-%m-%d} over_member_limit={'yes' if over else 'no'} "
                 f"result={result}"
             )
 
+        assigned = len(assigned_ids)
+        skipped = len(workspaces) - assigned if apply and plan is not None else 0
         self.stdout.write(
             f"summary mode={'apply' if apply else 'dry_run'} plan={plan.pk if plan else 'missing'} "
             f"without_plan={len(workspaces)} assigned={assigned} skipped={skipped} "
@@ -85,6 +101,6 @@ class Command(BaseCommand):
         )
         if plan is None:
             raise CommandError(
-                "No plan is named like settings.DEFAULT_PLAN_NAME: run the payments migrations "
+                "No active plan is named like settings.DEFAULT_PLAN_NAME: run the payments migrations "
                 "or fix the setting. Nothing was assigned."
             )

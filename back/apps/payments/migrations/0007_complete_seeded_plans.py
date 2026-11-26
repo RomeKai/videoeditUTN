@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal
 
 from django.db import migrations
@@ -133,9 +134,14 @@ def forwards(apps, schema_editor):
     seed_plans(apps.get_model('payments', 'SubscriptionPlan'), using=using)
 
     # Historical models do not send the signals that refresh the public list.
-    from apps.payments.services.plans import invalidate_public_plans
+    # A cache error never fails the migration (the cache is only an optimization,
+    # and the next migrations must still run): it is logged and the TTL ends the list.
+    try:
+        from apps.payments.services.plans import invalidate_public_plans
 
-    invalidate_public_plans(using=using)
+        invalidate_public_plans(using=using)
+    except Exception as exc:
+        logging.getLogger(__name__).warning('plans.cache_unavailable operation=migrate error=%s', type(exc).__name__)
 
 
 class Migration(migrations.Migration):
