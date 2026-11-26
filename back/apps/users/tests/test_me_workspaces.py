@@ -1,5 +1,4 @@
 """/me: the active workspace (last chosen, never from the header), the order of the list and the first steps."""
-import uuid
 from datetime import timedelta
 
 import pytest
@@ -47,7 +46,9 @@ def test_the_chosen_workspace_comes_back_as_the_active_one(client, workspace, us
     assert with_header["active_workspace_id"] == str(agency.pk)
 
 
-@pytest.mark.parametrize("header", ["no-es-un-uuid", str(uuid.uuid4()), "foreign"])
+# A fixed id that matches no workspace: a random one changes the test id on every
+# collection, and parallel runs (pytest -n) refuse to start.
+@pytest.mark.parametrize("header", ["no-es-un-uuid", "00000000-0000-4000-8000-000000000000", "foreign"])
 def test_a_stale_header_never_breaks_me(client, workspace, header):
     if header == "foreign":
         header = str(Workspace.objects.create(name="Ajeno", owner=_other_user()).pk)
