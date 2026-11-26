@@ -59,12 +59,17 @@ services:
     # Pocos procesos: cada render usa mucha CPU y memoria (ADR-003).
     command: celery -A backend worker -l info -Q celery,render -c ${DEMO_WORKER_CONCURRENCY:-2}
     restart: on-failure
+    environment:
+      # Igual que en web: un link que arme una tarea también abre la web por el proxy.
+      - FRONTEND_URL=${DEMO_PUBLIC_URL:-http://localhost:${DEMO_PORT:-8080}}
     depends_on:
       web:
         condition: service_healthy
 
   beat:
     restart: on-failure
+    environment:
+      - FRONTEND_URL=${DEMO_PUBLIC_URL:-http://localhost:${DEMO_PORT:-8080}}
     depends_on:
       web:
         condition: service_healthy
