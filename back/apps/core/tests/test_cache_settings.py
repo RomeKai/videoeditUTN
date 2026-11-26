@@ -51,7 +51,13 @@ def load_caches(settings_module, **environment):
         if key not in {"REDIS_URL", "CACHE_REDIS_URL", "CACHE_KEY_PREFIX", "DATABASE_URL"}
     }
     # ci skips reading back/.env, so a developer's .env cannot add a URL.
-    env.update({"DJANGO_SETTINGS_MODULE": "backend.settings.ci", "PYTHONPATH": str(BACKEND_ROOT), **environment})
+    env.update({"DJANGO_SETTINGS_MODULE": "backend.settings.ci", "PYTHONPATH": str(BACKEND_ROOT)})
+    # What prod.py refuses to start without (proxies and email), so the cache is what is tested.
+    env.update({
+        "NUM_PROXIES": "1", "FRONTEND_URL": "https://app.example.invalid",
+        "DEFAULT_FROM_EMAIL": "no-reply@example.invalid", "EMAIL_HOST": "smtp.example.invalid",
+    })
+    env.update(environment)
     script = f"import json\nfrom {settings_module} import CACHES\nprint(json.dumps(CACHES))"
     result = subprocess.run(
         [sys.executable, "-c", script], cwd=BACKEND_ROOT, env=env, capture_output=True, text=True, check=False,

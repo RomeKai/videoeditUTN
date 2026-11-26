@@ -143,28 +143,24 @@ def test_failures_with_another_spelling_lock_the_account(user, no_ip_limit, vari
     assert plain.status_code == 429
 
 
-class _CacheDown:
-    """What the fail-open `default` cache answers with Redis down: every read a miss, every write ignored."""
-
-    def add(self, *args, **kwargs):
-        return None
-
-    def incr(self, *args, **kwargs):
-        return None
-
-    def decr(self, *args, **kwargs):
-        return None
-
-    def delete_many(self, *args, **kwargs):
-        return None
+# The `default` cache of production (apps.core.cache), pointed at a Redis that refuses the connection.
+REDIS_DOWN = {
+    "default": {
+        "BACKEND": "apps.core.cache.FailOpenRedisCache",
+        "LOCATION": "redis://127.0.0.1:6399/1",
+        "OPTIONS": {"SOCKET_CONNECT_TIMEOUT": 2, "SOCKET_TIMEOUT": 2, "IGNORE_EXCEPTIONS": True},
+    },
+    "locks": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "down-locks"},
+}
 
 
-def test_with_the_cache_down_the_login_still_answers(user, no_ip_limit):
-    with mock.patch("apps.users.throttles.cache", _CacheDown()):
+def test_with_redis_down_the_login_still_answers(user):
+    refused = mock.patch("redis.connection.Connection._connect", side_effect=ConnectionRefusedError(111, "refused"))
+    with override_settings(CACHES=REDIS_DOWN), refused:
         failures = [_login(_from("10.0.12.1")).status_code for _ in range(12)]
         ok = _login(_from("10.0.12.1"), password="password")
 
-    # No lockout without counters, and no 500: only the password decides.
+    # Every count reads as a miss: no lockout and no 500, only the password decides.
     assert failures == [401] * 12
     assert ok.status_code == 200
 
