@@ -5,9 +5,9 @@ más el seed de los cuatro planes y el plan por defecto de un workspace nuevo.
 from decimal import Decimal
 
 import pytest
-from django.core.cache import cache
 from rest_framework.test import APIClient
 
+from apps.core.testing import clear_local_caches
 from apps.payments.models import SubscriptionPlan, Wallet
 from apps.users.models import User, Workspace, WorkspaceMember
 
@@ -25,9 +25,10 @@ CONTRACT_FIELDS = {
 
 @pytest.fixture(autouse=True)
 def clean_cache():
-    cache.clear()
+    # Only a LocMem cache: on Redis, clear() is a FLUSHDB (apps/core/testing.py).
+    clear_local_caches()
     yield
-    cache.clear()
+    clear_local_caches()
 
 
 @pytest.fixture

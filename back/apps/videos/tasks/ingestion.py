@@ -101,6 +101,10 @@ logger = logging.getLogger(__name__)
 # these, the project goes on with the default settings.
 PTE_PARSE_MAX_RETRIES = 2
 PTE_PARSE_RETRY_SECONDS = (30, 90)
+# pipeline_error_code of a project the create view failed and refunded because
+# the broker did not take its ingestion (views._fail_unqueued_project). Its
+# message may still arrive later: it is never resumed.
+INGESTION_NOT_QUEUED = 'IngestionNotQueued'
 
 _CLIP_SUGGESTION_FIELDS = {'start', 'end', 'title', 'virality_score', 'reasoning'}
 
@@ -1410,6 +1414,12 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
     progress['stage'] = stage
 
     if stage == PipelineStage.FAILED:
+        if project.pipeline_error_code == INGESTION_NOT_QUEUED:
+            # Refunded at creation, in the same transaction that wrote this
+            # code: a late delivery of its message (or a re-dispatch) would
+            # run every paid stage for free. The user creates it again.
+            logger.warning("pipeline.redispatch_skipped project_id=%s reason=not_queued", project_id)
+            return f"Not resumed {project_id}: it was refunded when its ingestion could not be queued"
         if _is_whole_video(project) and not _whole_video_is_paid(project_id):
             # Refunded when it failed: nothing is run again (not even a clip
             # created), and the reason it failed stays as it was.

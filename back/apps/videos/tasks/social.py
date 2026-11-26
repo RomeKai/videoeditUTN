@@ -56,7 +56,7 @@ from datetime import datetime, timedelta
 from django.utils import timezone
 from django.db import DatabaseError, transaction
 from django.db.models import F, Q
-from django.core.cache import cache
+from django.core.cache import caches
 from apps.videos.models import VideoProject, VideoClip, ScheduledPost
 from backend.celery import app as celery_app
 
@@ -125,9 +125,12 @@ def upload_to_social_network(self, post_id):
     from apps.videos.services.storage_service import CloudflareR2Manager
 
     lock_id = f"lock_post_publish_{post_id}"
-    # Outlives the slowest Ayrshare call (read timeout) plus the rest of the task,
-    # so a second delivery cannot start while the first one is still sending.
-    if not cache.add(lock_id, "locked", AyrshareClient.TIMEOUT_SECONDS[1] + 300):
+    # The cache that raises (apps/core/cache.py): with Redis down the task fails
+    # instead of publishing without the lock. Outlives the slowest Ayrshare call
+    # (read timeout) plus the rest of the task, so a second delivery cannot
+    # start while the first one is still sending.
+    locks = caches['locks']
+    if not locks.add(lock_id, "locked", AyrshareClient.TIMEOUT_SECONDS[1] + 300):
         logger.warning(f"🔒 [WORKER] Aborting post {post_id}: Already running.")
         return "Locked"
 
@@ -242,7 +245,7 @@ def upload_to_social_network(self, post_id):
         raise
 
     finally:
-        cache.delete(lock_id)
+        locks.delete(lock_id)
 
 # Social metadata (AICORE-17, ADR-013). One generation at a time per post, and
 # the last generation kept until its output moderation passes, so a moderation

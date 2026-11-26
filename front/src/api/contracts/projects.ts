@@ -74,7 +74,7 @@ export const KNOWN_PIPELINE_ERROR_CODES = [
   'AIAuthenticationError',
   /** A re-dispatched auto-render whose remaining clips cannot be paid (tasks/ingestion.py). The clips stay; it can be re-dispatched with tokens. */
   'AutoRenderNotPaid',
-  /** The creation could not queue the ingestion (broker down): the project fails and its reservation goes back (views.py · _queue_ingestion). */
+  /** The creation could not queue the ingestion (broker down): the project fails and its reservation goes back, together (views.py · _fail_unqueued_project). Never resumed. */
   'IngestionNotQueued',
 ] as const;
 export type KnownPipelineErrorCode = (typeof KNOWN_PIPELINE_ERROR_CODES)[number];
@@ -485,7 +485,7 @@ const paymentErrors = [
 /** Creation only: the reservation was made but the broker did not take the ingestion. */
 const notQueuedError = {
   status: 503,
-  when: 'No se pudo encolar la ingesta (broker caído): `{ error, code: "IngestionNotQueued", project_id }`. El proyecto queda `failed` con ese `pipeline_error_code` y la reserva vuelve. La UI muestra el genérico de 5xx.',
+  when: 'No se pudo encolar la ingesta (broker caído): `{ error, code: "IngestionNotQueued", project_id, refunded }`. Con `refunded: true` el proyecto queda `failed` con ese `pipeline_error_code` y la reserva ya volvió; con `false` no se pudo escribir y el proyecto sigue en `uploaded` con la reserva. La UI muestra el genérico de 5xx.',
 };
 
 export const listProjects = defineEndpoint({

@@ -2,9 +2,9 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.conf import settings
 from django.db.models.signals import pre_save
-from django.core.exceptions import ValidationError
 from apps.payments.models import SubscriptionPlan
 from .models import User, Workspace, WorkspaceMember
+from .seats import check_seat_limit
 
 @receiver(post_save, sender=User)
 def create_default_workspace(sender, instance, created, **kwargs):
@@ -37,27 +37,11 @@ def create_default_workspace(sender, instance, created, **kwargs):
 @receiver(pre_save, sender=WorkspaceMember)
 def check_workspace_member_limit(sender, instance, **kwargs):
     """
-    Antes de guardar un nuevo miembro, verificamos si el plan del Workspace lo permite.
-    Una invitación pendiente también ocupa un lugar.
+    Antes de guardar un nuevo miembro, verificamos si el plan del Workspace lo
+    permite (check_seat_limit). Una invitación pendiente también ocupa un lugar.
     """
     # Una fila que ya existe es una edición (ej: cambiar rol), no un ingreso nuevo.
     # instance.id no sirve para saberlo: el UUID tiene default y ya está antes del INSERT.
     if not instance._state.adding:
         return
-
-    workspace = instance.workspace
-    if instance.user_id == workspace.owner_id:
-        # El dueño siempre entra a su propio workspace, tenga plan o no.
-        return
-    current_count = workspace.members.count()
-
-    plan = workspace.subscription_plan
-
-    if plan:
-        limit = plan.max_members
-        if current_count >= limit:
-            raise ValidationError(f"Tu plan '{plan.name}' solo permite {limit} miembros. Mejora tu suscripción para invitar más gente.")
-    else:
-        # Si no hay plan (error de configuración), por seguridad permitimos solo 1
-        if current_count >= 1:
-            raise ValidationError("Este workspace no tiene un plan activo. Contacta a soporte.")
+    check_seat_limit(instance.workspace, [instance.user_id])

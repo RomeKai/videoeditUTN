@@ -83,3 +83,73 @@ class MemberLimitTests(TestCase):
         join(workspace, self.owner, role=ADMIN)
 
         self.assertTrue(WorkspaceMember.objects.filter(workspace=workspace, user=self.owner).exists())
+
+
+class AdminSeatLimitTests(TestCase):
+    """The admin inlines check the seats as a form error (SeatLimitFormSet), not a 500 from the signal."""
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser(username="root", email="root@test.com", password="pw")
+        self.client.force_login(self.admin)
+        self.owner = make_user("duena")
+        self.workspace = self.owner.owned_workspaces.get()
+        self.workspace.subscription_plan = SubscriptionPlan.objects.create(name="2 lugares", max_members=2)
+        self.workspace.save(update_fields=["subscription_plan"])
+        self.url = f"/admin/users/workspace/{self.workspace.pk}/change/"
+
+    def post(self, new_users, delete_existing=()):
+        """The workspace form with its members inline: the current ones, plus a row per new user."""
+        prefix = "workspacemember_set"
+        members = list(WorkspaceMember.objects.filter(workspace=self.workspace).order_by("joined_at"))
+        data = {
+            "name": self.workspace.name,
+            "owner": str(self.owner.pk),
+            "subscription_plan": str(self.workspace.subscription_plan_id),
+            "ayrshare_profile_key": "",
+            f"{prefix}-TOTAL_FORMS": str(len(members) + len(new_users)),
+            f"{prefix}-INITIAL_FORMS": str(len(members)),
+            f"{prefix}-MIN_NUM_FORMS": "0",
+            f"{prefix}-MAX_NUM_FORMS": "1000",
+        }
+        for index, member in enumerate(members):
+            data.update({
+                f"{prefix}-{index}-id": str(member.pk),
+                f"{prefix}-{index}-workspace": str(self.workspace.pk),
+                f"{prefix}-{index}-user": str(member.user_id),
+                f"{prefix}-{index}-role": member.role,
+                f"{prefix}-{index}-status": member.status,
+            })
+            if member.user in delete_existing:
+                data[f"{prefix}-{index}-DELETE"] = "on"
+        for offset, user in enumerate(new_users, start=len(members)):
+            data.update({
+                f"{prefix}-{offset}-workspace": str(self.workspace.pk),
+                f"{prefix}-{offset}-user": str(user.pk),
+                f"{prefix}-{offset}-role": EDITOR,
+                f"{prefix}-{offset}-status": PENDING,
+            })
+        return self.client.post(self.url, data)
+
+    def members(self):
+        return set(WorkspaceMember.objects.filter(workspace=self.workspace).values_list("user__username", flat=True))
+
+    def test_a_new_member_that_fits_is_saved(self):
+        response = self.post([make_user("uno")])
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.members(), {"duena", "uno"})
+
+    def test_members_over_the_seats_are_a_form_error(self):
+        response = self.post([make_user("uno"), make_user("dos")])
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "solo permite 2 miembros")
+        self.assertEqual(self.members(), {"duena"})
+
+    def test_a_member_deleted_in_the_same_save_frees_its_seat(self):
+        join(self.workspace, make_user("uno"))
+
+        response = self.post([make_user("dos")], delete_existing=[User.objects.get(username="uno")])
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.members(), {"duena", "dos"})

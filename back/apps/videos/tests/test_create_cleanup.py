@@ -9,19 +9,22 @@ deja tokens reservados:
 - La reserva y su vínculo (metadata.reservation_id) son una transacción, y la
   ingesta se encola cuando esa transacción hace commit.
 - Si el broker no toma el mensaje, nadie levantaría el proyecto: falla con
-  pipeline_error_code=IngestionNotQueued, se devuelve la reserva y el pedido
-  responde 503.
+  pipeline_error_code=IngestionNotQueued y se devuelve la reserva, en una
+  sola transacción, y el pedido responde 503. Si el mensaje llega igual más
+  tarde, el worker no lo corre. Si no se puede escribir, el 503 no dice que
+  no se cobró nada.
 """
 
 import logging
 import tempfile
+import threading
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import DEFAULT as DEFAULT_MOCK, patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import DatabaseError, connection
+from django.db import DatabaseError, connection, connections
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from kombu.exceptions import OperationalError
@@ -38,6 +41,9 @@ PROJECTS = reverse("project-list")
 FROM_PROMPT = reverse("project-from-prompt")
 LINK = "https://www.youtube.com/watch?v=x"
 DELAY = "apps.videos.views.process_initial_ingestion.delay"
+ROLLBACK = "apps.payments.services.wallet_service.rollback_reservation"
+MARK_FAILED = "apps.videos.services.ai.pipeline_state.mark_failed"
+REDIS_CLIENT = "apps.videos.services.ai.project_lock.get_redis_client"
 BALANCE = Decimal("1000.00")
 # The code front/src/lib/error-messages.ts translates (views.INGESTION_NOT_QUEUED).
 INGESTION_NOT_QUEUED = "IngestionNotQueued"
@@ -111,6 +117,29 @@ class UploadCleanupTests(CreationHarness, TestCase):
             response = self.upload()
 
         self.assert_nothing_left(response, 500)
+
+    def test_a_failed_save_does_not_leak_the_error_text(self):
+        detail = "/srv/media/videos/raw/privado.mp4 DETAIL: Key (title)=(Privado)"
+        with patch.object(MediaInfo, "as_metadata", side_effect=RuntimeError(detail)), \
+                self.assertLogs("apps.videos.views", level=logging.ERROR) as logs:
+            response = self.upload()
+
+        self.assert_nothing_left(response, 500)
+        self.assertEqual(response.data, {"error": "No pudimos guardar el proyecto. Probá de nuevo en unos minutos."})
+        self.assertEqual(logs.output, ["ERROR:apps.videos.views:project.save_failed error=RuntimeError"])
+
+    def test_a_refusal_with_the_same_file_name_only_deletes_its_own_file(self):
+        """The storage gives the second upload another name: the refusal never deletes the first project's file."""
+        created = self.upload()
+        self.assertEqual(created.status_code, 201, created.content[:300])
+        first = Path(VideoProject.objects.get(pk=created.data["id"]).source_file.path)
+        self.set_plan(max_video_duration_seconds=60)
+
+        refused = self.upload()
+
+        self.assertEqual(refused.status_code, 403, refused.content[:300])
+        self.assertEqual(self.stored(), [first])
+        self.assertEqual(VideoProject.objects.count(), 1)
 
     def test_a_failed_insert_deletes_the_upload(self):
         def fail_the_insert(execute, sql, params, many, context):
@@ -247,6 +276,8 @@ class BrokerDownTests(CreationHarness, TransactionTestCase):
     def assert_failed_and_refunded(self, response):
         self.assertEqual(response.status_code, 503, response.content[:300])
         self.assertEqual(response.data["code"], INGESTION_NOT_QUEUED)
+        self.assertIs(response.data["refunded"], True)
+        self.assertIn("no se cobró nada", response.data["error"])
         self.assertNotIn("prompt_config", response.data)
         project = VideoProject.objects.get(pk=response.data["project_id"])
         self.assertEqual(project.status, VideoProject.Status.FAILED)
@@ -312,3 +343,84 @@ class BrokerDownTests(CreationHarness, TransactionTestCase):
         self.assertEqual(
             Transaction.objects.get(pk=project.metadata["reservation_id"]).status, Transaction.Status.RESERVED,
         )
+
+    def test_a_late_delivery_of_the_message_does_not_run_the_refunded_project(self):
+        """delay() raised, but the broker had the message: the worker gets it after the refund."""
+        from apps.videos.tasks import ingestion
+        from apps.videos.tests.fakes import FakeRedis
+
+        with patch(DELAY, side_effect=OperationalError("broker down")):
+            response = self.client.post(PROJECTS, {"title": "Link", "video_url": LINK}, format="json")
+        self.assert_failed_and_refunded(response)
+
+        stages = ("_stage_prepare_source", "_stage_transcribe", "_stage_moderate", "_stage_select_clips")
+        with patch(REDIS_CLIENT, return_value=FakeRedis()), \
+                patch("apps.videos.services.ai.prompt_validator.apply_prompt_to_project") as parse, \
+                patch.multiple(ingestion, **{name: DEFAULT_MOCK for name in stages}) as ran:
+            result = ingestion.process_initial_ingestion.apply(args=[str(response.data["project_id"])])
+
+        self.assertIn("Not resumed", result.result)
+        parse.assert_not_called()
+        for name in stages:
+            ran[name].assert_not_called()
+        # Still failed and refunded, with its code: nothing ran for free.
+        self.assert_failed_and_refunded(response)
+
+    def test_no_one_sees_the_project_failed_before_its_refund(self):
+        """The failure and the refund commit together: another connection sees both or neither."""
+        from apps.payments.services import wallet_service
+
+        rollback = wallet_service.rollback_reservation
+        seen = {}
+
+        def look_from_another_connection(project_id):
+            try:
+                project = VideoProject.objects.get(pk=project_id)
+                txn = Transaction.objects.get(pk=project.metadata["reservation_id"])
+                seen["before_refund"] = (project.pipeline_stage, project.pipeline_error_code, txn.status)
+            finally:
+                connections.close_all()
+
+        def refund(transaction_id):
+            project_id = VideoProject.objects.get().pk
+            reader = threading.Thread(target=look_from_another_connection, args=(project_id,))
+            reader.start()
+            reader.join(timeout=30)
+            return rollback(transaction_id)
+
+        with patch(DELAY, side_effect=OperationalError("broker down")), patch(ROLLBACK, side_effect=refund):
+            response = self.upload()
+
+        self.assert_failed_and_refunded(response)
+        self.assertEqual(seen["before_refund"], (PipelineStage.UPLOADED, "", Transaction.Status.RESERVED))
+
+    def assert_left_as_it_was(self, response, logs):
+        """Nothing could be written: the 503 does not say nothing was charged, and a person is told."""
+        self.assertEqual(response.status_code, 503, response.content[:300])
+        self.assertEqual(response.data["code"], INGESTION_NOT_QUEUED)
+        self.assertIs(response.data["refunded"], False)
+        self.assertNotIn("no se cobró", response.data["error"])
+        project = VideoProject.objects.get(pk=response.data["project_id"])
+        self.assertEqual((project.pipeline_stage, project.pipeline_error_code), (PipelineStage.UPLOADED, ""))
+        txn = Transaction.objects.get(pk=project.metadata["reservation_id"])
+        self.assertEqual(txn.status, Transaction.Status.RESERVED)
+        self.assertTrue(any(
+            f"project.not_queued_not_recorded project_id={project.id} error=DatabaseError" in line
+            for line in logs.output
+        ), logs.output)
+
+    def test_a_refund_that_cannot_be_written_leaves_the_project_as_it_was(self):
+        with patch(DELAY, side_effect=OperationalError("broker down")), \
+                patch(ROLLBACK, side_effect=DatabaseError("db down")), \
+                self.assertLogs("apps.videos.views", level=logging.ERROR) as logs:
+            response = self.upload()
+
+        self.assert_left_as_it_was(response, logs)
+
+    def test_a_failure_that_cannot_be_written_leaves_the_project_as_it_was(self):
+        with patch(DELAY, side_effect=OperationalError("broker down")), \
+                patch(MARK_FAILED, side_effect=DatabaseError("db down")), \
+                self.assertLogs("apps.videos.views", level=logging.ERROR) as logs:
+            response = self.upload()
+
+        self.assert_left_as_it_was(response, logs)
