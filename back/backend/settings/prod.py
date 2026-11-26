@@ -28,6 +28,27 @@ if 'NUM_PROXIES' not in os.environ:
     )
 REST_FRAMEWORK = {**REST_FRAMEWORK, 'NUM_PROXIES': env.int('NUM_PROXIES')}
 
+# --- EMAIL ---
+# The change of email (apps.users.email_verification) and the alerts to ADMINS
+# send through this. Without it Django tries localhost:25: the change answers
+# an error and nothing is sent. The links open FRONTEND_URL.
+EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
+EMAIL_HOST = env('EMAIL_HOST', default='')
+EMAIL_PORT = env.int('EMAIL_PORT', default=587)
+EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
+EMAIL_USE_TLS = env.bool('EMAIL_USE_TLS', default=True)
+EMAIL_USE_SSL = env.bool('EMAIL_USE_SSL', default=False)
+# Seconds an SMTP call may take before the request gives up.
+EMAIL_TIMEOUT = env.int('EMAIL_TIMEOUT', default=10)
+_missing_email = [name for name in ('FRONTEND_URL', 'DEFAULT_FROM_EMAIL') if not os.environ.get(name)]
+if EMAIL_BACKEND == 'django.core.mail.backends.smtp.EmailBackend' and not EMAIL_HOST:
+    _missing_email.append('EMAIL_HOST')
+if _missing_email:
+    raise ImproperlyConfigured(
+        f"Email is not configured for production: set {', '.join(_missing_email)} (see back/.env.example)."
+    )
+
 # --- SEGURIDAD (Hardening) ---
 # Forzar HTTPS (Descomentar cuando tengas certificado SSL en el server)
 # SECURE_SSL_REDIRECT = True

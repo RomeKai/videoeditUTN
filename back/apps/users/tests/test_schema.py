@@ -6,7 +6,7 @@ EXPECTED = {
     ("/api/token/", "post"): {"200", "401", "429"},
     ("/api/token/refresh/", "post"): {"200", "401", "429"},
     ("/api/v1/me/", "get"): {"200", "401"},
-    ("/api/v1/me/", "patch"): {"200", "400", "401", "429"},
+    ("/api/v1/me/", "patch"): {"200", "400", "401", "429", "502"},
     ("/api/v1/me/password/", "post"): {"200", "400", "401", "429"},
     ("/api/v1/me/notification-preferences/", "get"): {"200", "401"},
     ("/api/v1/me/notification-preferences/", "patch"): {"200", "400", "401"},

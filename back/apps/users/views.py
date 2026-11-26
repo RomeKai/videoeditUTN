@@ -1,8 +1,10 @@
-﻿from decimal import Decimal
+﻿import logging
+import smtplib
+from decimal import Decimal
 
 from django.db import IntegrityError, transaction
 from django.db.models import Exists, OuterRef
-from rest_framework.exceptions import AuthenticationFailed, ValidationError
+from rest_framework.exceptions import APIException, AuthenticationFailed, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -27,6 +29,20 @@ from apps.users.serializers import (
 from apps.users.email_verification import EMAIL_CHANGE, send_email_change_verification, user_for_token
 from apps.users.throttles import EmailChangeThrottle, LoginFailureGuard, SpanishThrottleMixin, TooManyAttempts
 from apps.users.tokens import RevocableTokenRefreshSerializer, issue_token_pair
+
+
+logger = logging.getLogger(__name__)
+
+
+class EmailNotSent(APIException):
+    """
+    The email server did not take the verification email: nothing was saved.
+    502, not 503: the web app reads any 503 as maintenance (page K5).
+    """
+
+    status_code = 502
+    default_detail = 'No pudimos mandar el email de verificación. Probá de nuevo en unos minutos.'
+    default_code = 'email_not_sent'
 
 
 UNAUTHORIZED = OpenApiResponse(description='Sin sesión, o con un token vencido o revocado.')
@@ -147,6 +163,7 @@ class MeView(SpanishThrottleMixin, APIView):
             )),
             401: UNAUTHORIZED,
             429: THROTTLED,
+            502: OpenApiResponse(description='El servidor de email no aceptó el email de verificación; no se guardó nada.'),
         },
     )
     def patch(self, request):
@@ -173,12 +190,17 @@ class MeView(SpanishThrottleMixin, APIView):
             # cancels a pending change, and with it its link.
             user.pending_email = data['email']
             fields.append('pending_email')
-        with transaction.atomic():
-            if fields:
-                user.save(update_fields=fields)
-            if data.get('email'):
-                # A failed send rolls the change back: no pending email without its link.
-                send_email_change_verification(user)
+        try:
+            with transaction.atomic():
+                if fields:
+                    user.save(update_fields=fields)
+                if data.get('email'):
+                    # A failed send rolls the change back: no pending email without its link.
+                    send_email_change_verification(user)
+        except (smtplib.SMTPException, OSError) as exc:
+            logger.warning('email_change.send_failed user_id=%s error=%s', user.pk, type(exc).__name__)
+            user.refresh_from_db()
+            raise EmailNotSent()
         return Response(_me_payload(request.user))
 
 

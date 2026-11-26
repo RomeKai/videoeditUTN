@@ -342,3 +342,19 @@ def test_the_link_of_a_deactivated_account_applies_nothing(client, user):
     assert response.status_code == 400
     user.refresh_from_db()
     assert (user.email, user.pending_email) == ("tester@test.com", NEW_EMAIL)
+
+
+def test_an_email_server_that_fails_saves_nothing(client, user, caplog):
+    import smtplib
+
+    with mock.patch(
+        "apps.users.views.send_email_change_verification", side_effect=smtplib.SMTPServerDisconnected("smtp.secreto"),
+    ), caplog.at_level("WARNING", logger="apps.users.views"):
+        response = client.patch(ME_URL, {"email": NEW_EMAIL, "current_password": PASSWORD}, format="json")
+
+    # 502, not 503: for the web app a 503 is the maintenance page.
+    assert response.status_code == 502
+    assert response.json() == {"detail": "No pudimos mandar el email de verificación. Probá de nuevo en unos minutos."}
+    user.refresh_from_db()
+    assert user.pending_email is None
+    assert "SMTPServerDisconnected" in caplog.text and "secreto" not in caplog.text
