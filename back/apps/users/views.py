@@ -22,6 +22,7 @@ from apps.users.serializers import (
     UpdateMeSerializer,
     TokenPairSerializer,
     VerifyEmailSerializer,
+    email_taken,
 )
 from apps.users.email_verification import EMAIL_CHANGE, send_email_change_verification, user_for_token
 from apps.users.throttles import EmailChangeThrottle, LoginFailureGuard, SpanishThrottleMixin, TooManyAttempts
@@ -335,8 +336,9 @@ class VerifyEmailView(APIView):
                     return Response({'detail': LOGIN_REQUIRED, 'code': 'login_required'}, status=403)
                 fields = ['is_email_verified']
                 if purpose == EMAIL_CHANGE:
-                    # Someone may have taken it since the link was sent.
-                    if User.objects.filter(email__iexact=user.pending_email).exclude(pk=user.pk).exists():
+                    # Someone may have taken it since the link was sent. Two links
+                    # confirmed at the same time end in the unique constraint instead.
+                    if email_taken(user.pending_email, exclude_pk=user.pk):
                         raise ValidationError({'token': [EMAIL_TAKEN]})
                     user.email, user.pending_email = user.pending_email, None
                     fields += ['email', 'pending_email']

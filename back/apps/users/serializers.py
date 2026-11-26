@@ -33,6 +33,11 @@ def check_current_password(user, value):
         raise serializers.ValidationError(WRONG_PASSWORD, code='wrong_password')
 
 
+def email_taken(email, exclude_pk=None):
+    """Another account already uses the email, ignoring case (User.Meta's constraint)."""
+    return User.objects.filter(email__iexact=email).exclude(pk=exclude_pk).exists()
+
+
 def _password_rule_message(error):
     template = PASSWORD_RULE_MESSAGES.get(error.code)
     if template is None:
@@ -120,7 +125,7 @@ class UpdateMeSerializer(serializers.Serializer):
             check_current_password(user, password or '')
         except serializers.ValidationError as exc:
             raise serializers.ValidationError({'current_password': exc.detail})
-        if User.objects.filter(email__iexact=email).exclude(pk=user.pk).exists():
+        if email_taken(email, exclude_pk=user.pk):
             raise serializers.ValidationError({'email': [ErrorDetail(EMAIL_TAKEN, code='unique')]})
         attrs['email'] = email
         return attrs

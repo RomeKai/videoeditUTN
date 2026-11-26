@@ -1,7 +1,16 @@
 ﻿import uuid
 from django.db import models
-from django.contrib.auth.models import AbstractUser
+from django.db.models.functions import Lower
+from django.contrib.auth.models import AbstractUser, UserManager as DjangoUserManager
 from django.utils.translation import gettext_lazy as _
+
+
+class UserManager(DjangoUserManager):
+    """The email signs in whatever its case: one account per email, ignoring case (see User.Meta)."""
+
+    def get_by_natural_key(self, username):
+        return self.get(**{f'{self.model.USERNAME_FIELD}__iexact': username})
+
 
 class User(AbstractUser):
     """
@@ -45,10 +54,22 @@ class User(AbstractUser):
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['username'] # Django lo pide internamente
 
+    objects = UserManager()
+
+    class Meta(AbstractUser.Meta):
+        constraints = [
+            # Ana@x.com and ana@x.com are the same person: one account per email, ignoring case.
+            models.UniqueConstraint(Lower('email'), name='users_user_email_lower_unique'),
+        ]
+
     def __str__(self):
         return self.email
 
     def save(self, *args, **kwargs):
+        # The domain part of an email has no case (normalize_email lowers it).
+        self.email = type(self).objects.normalize_email(self.email)
+        if self.pending_email:
+            self.pending_email = type(self).objects.normalize_email(self.pending_email)
         # set_password() keeps the raw value in _password until the save; the
         # tokens of the old password stop refreshing, whoever changed it.
         password_changed = self._password is not None and not self._state.adding
