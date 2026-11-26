@@ -191,6 +191,9 @@ describe('mensajes de error (sección 4 del mapa)', () => {
     expect(pipelineErrorMessage('SoftTimeLimitExceeded')).toMatch(/tardó demasiado/);
     expect(pipelineErrorMessage('IngestionNotQueued')).toBe('No pudimos empezar a procesar tu video y no se cobró nada. Creá el proyecto de nuevo en unos minutos.');
     expect(pipelineErrorTitle('IngestionNotQueued')).toBe('No pudimos empezar a procesar el video');
+    // recover_stuck_renders failed it and returned the reservation: it can be tried again.
+    expect(pipelineErrorMessage('IngestionStuck')).toBe('El proceso se trabó y te devolvimos los tokens. Podés intentarlo de nuevo.');
+    expect(pipelineErrorTitle('IngestionStuck')).toBe('El proceso se trabó');
     // Link projects: what the download refused, in the user's words (only the four providers the backend allows).
     expect(pipelineErrorMessage('UnsupportedLinkError')).toMatch(/un solo video público de YouTube, Vimeo, Twitch o Google Drive/);
     expect(pipelineErrorTitle('UnsupportedLinkError')).toBe('No pudimos usar este link');
