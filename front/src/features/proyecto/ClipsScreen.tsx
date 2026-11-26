@@ -267,9 +267,9 @@ export function ClipsScreen({ projectId }: { projectId: string }) {
 
   if (!project) return null;
   const base = `/proyectos/${projectId}`;
-  const counts = clipCounts(clips);
+  const counts = clipCounts(clips, project.status);
   const totals = countClips(clips);
-  const readyIds = clips.filter((clip) => describeClip(clip).ready).map((clip) => clip.id);
+  const readyIds = clips.filter((clip) => describeClip(clip, project.status).ready).map((clip) => clip.id);
 
   if (clips.length === 0) {
     if (project.status === 'failed') {
@@ -323,7 +323,7 @@ export function ClipsScreen({ projectId }: { projectId: string }) {
     count: counts[value],
     hideWhenEmpty: value === 'rendering' || value === 'failed' || value === 'draft' || (value !== 'all' && counts.draft === clips.length),
   }));
-  const visible = filter === 'all' ? clips : clips.filter((clip) => describeClip(clip).group === filter);
+  const visible = filter === 'all' ? clips : clips.filter((clip) => describeClip(clip, project.status).group === filter);
   const pickedReady = picked.filter((id) => readyIds.includes(id));
   const stopSelecting = () => {
     setSelecting(false);
@@ -424,7 +424,7 @@ export function ClipsScreen({ projectId }: { projectId: string }) {
       ) : (
         <ul className={styles.grid}>
           {visible.map((clip) => {
-            const display = describeClip(clip);
+            const display = describeClip(clip, project.status);
             return (
               <ClipTile
                 key={clip.id}
@@ -448,9 +448,9 @@ export function ClipsScreen({ projectId }: { projectId: string }) {
         open={sheetClip !== null}
         onClose={() => setSheetId(null)}
         title={sheetClip?.title ?? ''}
-        subtitle={sheetClip ? `${formatDuration(clipDuration(sheetClip))} · Puntaje ${sheetClip.virality_score} · ${describeClip(sheetClip).label}` : undefined}
+        subtitle={sheetClip ? `${formatDuration(clipDuration(sheetClip))} · Puntaje ${sheetClip.virality_score} · ${describeClip(sheetClip, project.status).label}` : undefined}
         media={sheetClip ? <VideoThumb ratio="9:16" xs width={36} seed={sheetClip.id} /> : undefined}
-        actions={sheetClip ? actionsFor(sheetClip, describeClip(sheetClip)) : []}
+        actions={sheetClip ? actionsFor(sheetClip, describeClip(sheetClip, project.status)) : []}
       />
       <ClipPreviewDialog clip={find(previewId)} project={project} onClose={() => setPreviewId(null)} />
       {retryClip.dialog}

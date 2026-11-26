@@ -13,7 +13,7 @@ export function useClip(id: string | null | undefined) {
     queryKey: keys.clips.detail(id ?? ''),
     queryFn: ({ signal }) => apiCall(contract.getClip, { params: { id: id ?? '' }, signal }),
     enabled: Boolean(id),
-    ...pollWhile<Clip>((clip) => clip?.status === 'rendering'),
+    ...pollWhile<Clip>((clip) => clip?.status === 'rendering' || clip?.render_queued === true),
   });
 }
 

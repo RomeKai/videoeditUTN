@@ -309,7 +309,7 @@ function ClipStrip({ project }: { project: Project }) {
       </CardHead>
       <ul className={styles.strip}>
         {sortClips(project.clips).map((clip) => {
-          const display = describeClip(clip);
+          const display = describeClip(clip, project.status);
           return (
             <li key={clip.id}>
               <Link href={href} className={styles.stripLink} aria-label={`${clip.title}: ${display.label}`}>

@@ -551,7 +551,8 @@ describe('D4 · Editor de clip', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Renderizar' }));
     await waitFor(() => expect(router.push).toHaveBeenCalledWith(`/proyectos/${READY}/clips`));
     expect(stored()?.end_time).toBe((before?.end_time ?? 0) + 0.5);
-    expect(stored()?.status).toBe('rendering');
+    // As the backend: queued in `draft` until a worker takes it.
+    expect([stored()?.status, stored()?.render_queued]).toEqual(['draft', true]);
   });
 
   it('cambiar solo el título se guarda sin renderizar ni cobrar', async () => {
@@ -654,6 +655,20 @@ describe('D4 · Editor de clip', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Reintentar' }));
     expect(await screen.findByText(/^Reintentando el clip\. Reservamos [\d.,]+ tokens?;/)).toBeInTheDocument();
     await waitFor(() => expect(loadDb().transactions.find((item) => item.description === `Reintento de clip: ${failed.title}`)?.status).toBe('RESERVED'));
+  });
+
+  it('un clip en cola de un render pago (draft con render_queued) se muestra renderizando, no como sugerido', async () => {
+    editDb((db) => {
+      const item = db.projects.find((entry) => entry.id === READY);
+      const queued = item?.clips.find((entry) => entry.id === CLIP);
+      if (!item || !queued) throw new Error('falta el clip');
+      item.status = 'rendering';
+      queued.status = 'draft';
+      queued.render_queued = true;
+    });
+    renderScreen(<ClipEditorScreen projectId={READY} clipId={CLIP} />);
+    expect(await screen.findByText('Este clip se está renderizando')).toBeInTheDocument();
+    expect(screen.queryByText('Este clip todavía no se renderizó')).not.toBeInTheDocument();
   });
 
   it('un clip en borrador de un proyecto en revisión no se renderiza solo', async () => {

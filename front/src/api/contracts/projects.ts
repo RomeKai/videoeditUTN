@@ -153,6 +153,11 @@ export const Clip = z.object({
   preview_url: z.string().url().nullable().optional(),
   /** Proposed: poster image. */
   thumbnail_url: z.string().url().nullable().optional(),
+  /**
+   * A paid render of the clip is queued: it is `draft` only until a worker takes it. Optional: older
+   * answers do not send it, and the UI falls back to "a draft of a project that is rendering".
+   */
+  render_queued: z.boolean().optional(),
   /** Proposed (gap 11): why the render failed (class name). The retry is paid whatever the reason (clips.retry). */
   error_code: z.string().nullable().optional(),
   /** Proposed (gap 8): networks where it is published or scheduled. */

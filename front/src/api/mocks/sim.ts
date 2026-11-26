@@ -8,6 +8,8 @@ export const SIM = {
   queueMs: 3_000,
   stageMs: 6_000,
   clipMs: 4_000,
+  /** How long the clips of a paid render wait in `draft` before a worker takes them. */
+  claimMs: 1_500,
   postQueuedMs: 4_000,
   postProcessingMs: 6_000,
   purchaseMs: 3_000,
@@ -242,6 +244,12 @@ function tickIngest(db: MockDb, project: MockProject, now: number): void {
   if (!sim) return;
   const elapsed = now - sim.startedAt;
   if (elapsed < SIM.queueMs) return;
+  // A re-dispatched project stays `failed` with its code until the task reopens it.
+  if (project.status === 'failed') {
+    project.pipeline_error_code = '';
+    project.pipeline_error_at = null;
+    project.pipeline_stage = 'uploaded';
+  }
   project.status = 'ingesting';
   project.pipeline_attempts = 1;
   let time = elapsed - SIM.queueMs;
@@ -320,6 +328,14 @@ function tickIngest(db: MockDb, project: MockProject, now: number): void {
     startRender(project, now, { failOneClip: sim.failOneClip });
     return;
   }
+  // `_commit_ingestion_reservation`: a clips project pays its processing here, before the review.
+  // (A whole video is paid by the same reservation when its render ends.)
+  const creation = db.transactions.find((item) => item.id === project.metadata.reservation_id);
+  if (creation?.status === 'RESERVED') {
+    settleReservation(db, creation.id, now);
+    if (project.cost) project.cost = { ...project.cost, state: 'charged' };
+    addActivity(db, project, 'tokens_charged', 'Cobro del procesamiento', now, { amount: -creation.amount });
+  }
   const count = Math.min(20, Math.max(1, project.metadata.max_clips ?? 8));
   const seedIndex = Math.floor(sim.startedAt % 9_000) + 500;
   project.clips = buildClips(project.id, seedIndex, duration, { count, statuses: ['draft'] }, now).map((clip) => ({ ...clip, id: newId() }));
@@ -344,9 +360,19 @@ function tickIngest(db: MockDb, project: MockProject, now: number): void {
 function tickRender(db: MockDb, project: MockProject, now: number): void {
   const sim = project._sim;
   if (!sim) return;
+  const paid = project._paidRender;
+  // A paid render leaves its clips in `draft` until a worker claims them (`render_queued`).
+  if (paid && now - sim.startedAt < SIM.claimMs) return;
+  if (paid) {
+    for (const clip of project.clips) {
+      if (!paid.clipIds.includes(clip.id) || clip.status !== 'draft') continue;
+      clip.status = 'rendering';
+      delete clip.render_queued;
+    }
+  }
   const pending = project.clips.filter((clip) => clip.status === 'rendering');
   const alreadyDone = project.clips.length - pending.length;
-  const finishedNow = Math.min(pending.length, Math.floor((now - sim.startedAt) / SIM.clipMs));
+  const finishedNow = Math.min(pending.length, Math.floor((now - sim.startedAt - (paid ? SIM.claimMs : 0)) / SIM.clipMs));
   pending.slice(0, finishedNow).forEach((clip, index) => {
     const last = alreadyDone + index === project.clips.length - 1;
     const fails = clip._renderFails === true;

@@ -239,7 +239,8 @@ describe('G2 · Movimientos', () => {
     const user = userEvent.setup();
     renderScreen(<MovementsScreen />);
     const filters = await screen.findByRole('group', { name: 'Filtrar por tipo' });
-    await waitFor(() => expect(within(filters).getByRole('button', { name: /^Cobrados/ })).toHaveTextContent('Cobrados0'));
+    // Only the project that reached its review in the last hour was charged this month (its processing is charged before the review).
+    await waitFor(() => expect(within(filters).getByRole('button', { name: /^Cobrados/ })).toHaveTextContent('Cobrados1'));
     expect(screen.getByLabelText('Filtrar por mes')).toHaveValue('2026-12');
     await user.selectOptions(screen.getByLabelText('Filtrar por mes'), 'Todos los meses');
     const table = await screen.findByRole('table', { name: 'Movimientos de todos los meses' });

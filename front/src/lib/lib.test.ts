@@ -194,7 +194,7 @@ describe('mensajes de error (sección 4 del mapa)', () => {
     // Link projects: what the download refused, in the user's words (only the four providers the backend allows).
     expect(pipelineErrorMessage('UnsupportedLinkError')).toMatch(/un solo video público de YouTube, Vimeo, Twitch o Google Drive/);
     expect(pipelineErrorTitle('UnsupportedLinkError')).toBe('No pudimos usar este link');
-    expect(pipelineErrorMessage('LinkTooLongError')).toMatch(/dura más de lo que permite tu plan/);
+    expect(pipelineErrorMessage('LinkTooLongError')).toBe('El video del link dura más de lo permitido para tu plan o para la app. Probá con uno más corto.');
     expect(pipelineErrorTitle('LinkTooLongError')).toBe('El video del link es muy largo');
     expect(pipelineErrorMessage('LinkTooLargeError')).toMatch(/pesa más de lo que podemos descargar/);
     expect(pipelineErrorTitle('LinkTooLargeError')).toBe('El video del link es muy pesado');

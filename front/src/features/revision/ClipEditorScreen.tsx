@@ -190,7 +190,9 @@ function Editor({ userId, clip, project, loadError }: { userId: string; clip: Cl
   }, [project.status]);
 
   const projectRendering = project.status === 'rendering' || conflict;
-  const clipRendering = clip.status === 'rendering';
+  // A paid render puts the clip back to `draft` until a worker takes it: that is a render under way, not a suggestion.
+  const renderQueued = clip.status === 'draft' && (clip.render_queued === true || project.status === 'rendering');
+  const clipRendering = clip.status === 'rendering' || renderQueued;
   const hasRender = clip.status === 'completed' || clip.status === 'published';
   const canEdit = can('clip.edit');
   const canTrim = canEdit && !clipRendering && !projectRendering;

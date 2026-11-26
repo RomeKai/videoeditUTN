@@ -356,7 +356,7 @@ export function buildProject(spec: ProjectSpec, now: number, brandKitId: string 
     // The whole video is one clip: it spans the source, has the project's title and no score.
     clips = clips.slice(0, 1).map((clip) => ({ ...clip, title: spec.title, start_time: 0, end_time: spec.durationSeconds, virality_score: 0, ai_reasoning: '' }));
   }
-  const costState = spec.costState ?? (spec.status === 'failed' ? 'refunded' : spec.status === 'completed' || spec.status === 'partial' ? 'charged' : 'reserved');
+  const costState = spec.costState ?? (spec.status === 'failed' ? 'refunded' : spec.status === 'completed' || spec.status === 'partial' || spec.status === 'awaiting_approval' ? 'charged' : 'reserved');
   const timings: MockProject['stage_timings'] = {};
   const doneIndex = INGEST_ORDER.indexOf(spec.stage) === -1 ? INGEST_ORDER.length - 1 : INGEST_ORDER.indexOf(spec.stage);
   const stageDurations = [42, 195, 38, 71, 12];

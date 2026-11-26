@@ -1727,6 +1727,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `layers` | ClipLayer[] |
 | `preview_url` (opcional) | string \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
+| `render_queued` (opcional) | boolean |
 | `error_code` (opcional) | string \\| null |
 | `posts` (opcional) | ClipPostRef[] |
 
@@ -2142,6 +2143,9 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `manual_camera_x` | number |
 | `manual_camera_y` | number |
 | `manual_camera_zoom` | number |
+| `pip_corner` | PipCorner |
+| `trending_color` | ColorValue |
+| `trending_text` | string |
 | `speaker_tracking` | boolean |
 | `add_subtitles` | boolean |
 | `subtitle_color` | ColorValue |
@@ -2255,6 +2259,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `layers` | ClipLayer[] |
 | `preview_url` (opcional) | string \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
+| `render_queued` (opcional) | boolean |
 | `error_code` (opcional) | string \\| null |
 | `posts` (opcional) | ClipPostRef[] |
 | `final_cost` | Decimal |

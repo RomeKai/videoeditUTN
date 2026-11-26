@@ -29,7 +29,8 @@ export function renderReservationOpen(db: MockDb, project: MockProject): boolean
 
 /** `_render_refusal` and `_posts_refusal`, in the backend's order: throws the 409 `{ error, code }`. */
 function refuse(db: MockDb, project: MockProject, clips: MockClip[]): void {
-  if (clips.some((clip) => clip.status === 'rendering')) throw conflict('El clip ya se está renderizando.', 'clip_rendering');
+  // `_clip_in_render`: rendering, or waiting in `draft` for a render that pays for it.
+  if (clips.some((clip) => clip.status === 'rendering' || (clip.status === 'draft' && clip.render_queued))) throw conflict('El clip ya se está renderizando.', 'clip_rendering');
   if (project.status === 'awaiting_approval') throw conflict('Los clips de un proyecto en revisión se renderizan al aprobarla.', 'awaiting_approval');
   if (project.status === 'rendering') throw conflict('El proyecto se está renderizando: esperá a que termine para cambiarlo.', 'project_rendering');
   if (!ENDED.includes(project.status)) throw conflict('El proyecto se está procesando: esperá a que termine.', 'project_processing');
@@ -86,8 +87,9 @@ export function startPaidRender(
   const previous: NonNullable<MockProject['_paidRender']>['previous'] = {};
   for (const clip of clips) {
     if ((clip.status === 'completed' || clip.status === 'published') && clip.s3_object_key) previous[clip.id] = { status: clip.status, key: clip.s3_object_key };
-    // The backend leaves the clip in `draft` until a worker takes it; the mock goes straight to `rendering`.
-    clip.status = 'rendering';
+    // As the backend: back to `draft`, queued, until a worker takes it (sim.ts · tickRender).
+    clip.status = 'draft';
+    clip.render_queued = true;
     clip.error_code = null;
   }
   project.status = 'rendering';

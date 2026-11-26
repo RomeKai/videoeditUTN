@@ -457,7 +457,8 @@ describe('mocks · renders pagos (views_clips.py)', () => {
     const before = await apiCall(billing.getWallet);
 
     const retried = await apiCall(clips.retryClip, { params: { id: failed.id } });
-    expect(retried.status).toBe('rendering');
+    // As the backend: the clip is `draft`, queued, until a worker takes it.
+    expect([retried.status, retried.render_queued]).toEqual(['draft', true]);
     expect(retried.final_cost).toBeGreaterThan(0);
     expect(transaction(retried.transaction_id)).toMatchObject({ status: 'RESERVED', amount: retried.final_cost, category: 'render', description: `Reintento de clip: ${failed.title}` });
     const reserved = await apiCall(billing.getWallet);
@@ -465,6 +466,9 @@ describe('mocks · renders pagos (views_clips.py)', () => {
     expect(reserved.reserved_balance).toBeCloseTo(before.reserved_balance + retried.final_cost, 2);
     // The project renders until the clip ends, as in the backend.
     expect((await apiCall(projects.getProject, { params: { id: project.id } })).status).toBe('rendering');
+    advance(SIM.claimMs);
+    const claimed = (await apiCall(projects.getProject, { params: { id: project.id } })).clips.find((clip) => clip.id === failed.id);
+    expect([claimed?.status, claimed?.render_queued]).toEqual(['rendering', undefined]);
 
     advance(SIM.clipMs * 2);
     const after = await apiCall(projects.getProject, { params: { id: project.id } });
@@ -487,7 +491,7 @@ describe('mocks · renders pagos (views_clips.py)', () => {
     // A double click on the retry: the clip is no longer failed.
     const again = await fail(apiCall(clips.retryClip, { params: { id: failed.id } }));
     expect([again.status, again.code]).toEqual([409, 'not_failed']);
-    // The same clip from the editor.
+    // The same clip from the editor, while it waits for its render.
     const same = await fail(apiCall(clips.renderClip, { params: { id: failed.id } }));
     expect([same.status, same.code, same.message]).toEqual([409, 'clip_rendering', 'El clip ya se está renderizando.']);
     // Another clip of the same project.
@@ -497,6 +501,10 @@ describe('mocks · renders pagos (views_clips.py)', () => {
     // And the whole project.
     const all = await fail(apiCall(projects.rerenderProject, { params: { id: project.id }, body: {} }));
     expect([all.status, all.code]).toEqual([409, 'clip_rendering']);
+    // The same once a worker took the clip.
+    advance(SIM.claimMs);
+    const claimed = await fail(apiCall(clips.renderClip, { params: { id: failed.id } }));
+    expect([claimed.status, claimed.code]).toEqual([409, 'clip_rendering']);
     // Nothing else was reserved.
     expect((await apiCall(billing.getWallet)).available_balance).toBe(wallet.available_balance);
     expect((await apiCall(billing.getWallet)).reserved_balance).toBe(wallet.reserved_balance);
@@ -578,14 +586,21 @@ describe('mocks · renders pagos (views_clips.py)', () => {
     const before = await apiCall(billing.getWallet);
 
     const resumed = await apiCall(projects.redispatchProject, { params: { id: project.id } });
-    expect(resumed.status).toBe('uploaded');
-    expect(resumed.pipeline_error_code).toBe('');
+    // As the backend: the row is still `failed` with its code; the task reopens it when it runs.
+    expect([resumed.status, resumed.pipeline_error_code]).toEqual(['failed', 'CapacityTimeoutError']);
     expect(resumed.cost_details?.tokens_reserved).toBe(creation?.amount);
     expect(transaction(resumed.cost_details?.transaction_id ?? '')).toMatchObject({ status: 'RESERVED', amount: creation?.amount, description: `Procesamiento: ${project.title}` });
     expect((await apiCall(billing.getWallet)).available_balance).toBeCloseTo(before.available_balance - (creation?.amount ?? 0), 2);
-    // Already under way: a second one is refused and reserves nothing.
-    const again = await fail(apiCall(projects.redispatchProject, { params: { id: project.id } }));
-    expect([again.status, again.code]).toEqual([409, 'not_failed']);
+    // A second one before the task ran queues it again and reserves nothing more: its reservation is open.
+    const again = await apiCall(projects.redispatchProject, { params: { id: project.id } });
+    expect(again.cost_details).toBeUndefined();
+    expect((await apiCall(billing.getWallet)).available_balance).toBeCloseTo(before.available_balance - (creation?.amount ?? 0), 2);
+    // The task runs: the project is reopened and its error is gone.
+    advance(SIM.queueMs);
+    const reopened = await apiCall(projects.getProject, { params: { id: project.id } });
+    expect([reopened.status, reopened.pipeline_error_code]).toEqual(['ingesting', '']);
+    const late = await fail(apiCall(projects.redispatchProject, { params: { id: project.id } }));
+    expect([late.status, late.code]).toEqual([409, 'not_failed']);
   });
 
   it('re-despachar: sin saldo 402; moderación, ingesta sin encolar y un proyecto que no falló, 409 con su código', async () => {
@@ -634,6 +649,27 @@ describe('mocks · renders pagos (views_clips.py)', () => {
     });
     advance(SIM.clipMs * 2);
     await expect(apiCall(projects.deleteProject, { params: { id: project.id } })).resolves.toBeUndefined();
+  });
+
+  it('un proyecto en revisión se puede borrar: su procesamiento ya se cobró, no queda ninguna reserva', async () => {
+    // A seeded one…
+    const seeded = projectByTitle('Podcast Ep. 42');
+    expect(seeded.status).toBe('awaiting_approval');
+    expect(transaction(String(seeded.metadata.reservation_id))?.status).toBe('COMPLETED');
+    await expect(apiCall(projects.deleteProject, { params: { id: seeded.id } })).resolves.toBeUndefined();
+    // …and one that went through the pipeline: charged when its clips were selected, before the review.
+    const reservedBefore = (await apiCall(billing.getWallet)).reserved_balance;
+    const created = await apiCall(projects.createProject, { body: { source_file: new File(['x'], 'clase-8min.mp4', { type: 'video/mp4' }) } });
+    expect(transaction(created.cost_details.transaction_id)?.status).toBe('RESERVED');
+    const busy = await fail(apiCall(projects.deleteProject, { params: { id: created.id } }));
+    expect([busy.status, busy.code]).toEqual([409, 'project_processing']);
+    advance(SIM.queueMs + SIM.stageMs * 5);
+    const inReview = await apiCall(projects.getProject, { params: { id: created.id } });
+    expect(inReview.status).toBe('awaiting_approval');
+    expect(transaction(created.cost_details.transaction_id)?.status).toBe('COMPLETED');
+    expect((await apiCall(billing.getWallet)).reserved_balance).toBeCloseTo(reservedBefore, 2);
+    await expect(apiCall(projects.deleteProject, { params: { id: created.id } })).resolves.toBeUndefined();
+    expect(loadDb().projects.some((item) => item.id === created.id)).toBe(false);
   });
 
   it('un clip no se borra mientras su proyecto renderiza', async () => {

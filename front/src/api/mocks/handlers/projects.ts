@@ -411,22 +411,25 @@ export const projectsHandlers = [
     }
     const whole = project.project_type === 'single_edit';
     const beforeClips = STAGE_ORDER.indexOf(project.pipeline_stage) < STAGE_ORDER.indexOf('clips_selected');
-    const reopen = () => {
-      project.pipeline_error_code = '';
-      project.pipeline_error_at = null;
+    // The row is answered as it is, still `failed` with its code: the task reopens it when it runs (the next ticks).
+    const answer = (reservation?: { id: string; amount: number }) => {
+      const data = serializeProject(db, project, { full: true });
+      return { data: reservation ? { ...data, cost_details: { tokens_reserved: dec(reservation.amount), transaction_id: reservation.id } } : data, status: 202 as const };
     };
     if (!whole && !beforeClips) {
       // The ingestion was paid and the render pays itself: the auto-render reserves again when it resumes.
       if (project.pipeline_error_code !== 'AutoRenderNotPaid') {
         throw conflict('El render de estos clips ya se liquidó: reintentá cada clip desde Clips.', 'render_settled');
       }
+      const response = answer();
       // Without balance the pipeline fails it again with the same code: it stays as it was.
       if (reserveAutoRender(db, project, now) === null) {
-        reopen();
+        project.pipeline_error_code = '';
+        project.pipeline_error_at = null;
         project.clips = project.clips.map((clip) => (clip.status === 'draft' ? { ...clip, status: 'rendering' as const } : clip));
         startRender(project, now);
       }
-      return { data: serializeProject(db, project, { full: true }), status: 202 };
+      return response;
     }
     if (whole && project.clips.some((clip) => ['completed', 'published', 'failed'].includes(clip.status))) {
       throw conflict('Este video ya se renderizó: para hacerlo de nuevo, usá «Volver a renderizar».', 'use_rerender');
@@ -446,20 +449,15 @@ export const projectsHandlers = [
       if (project.cost) project.cost = { amount: reservation.amount, state: 'reserved', transaction_id: reservation.id };
       addActivity(db, project, 'tokens_reserved', 'Reserva por volver a procesar', now, { actorId: user.id, amount: -reservation.amount });
     }
-    reopen();
-    project.status = 'uploaded';
-    project.pipeline_stage = 'uploaded';
-    project.pipeline_stage_status = stageStatusFor('uploaded', null);
     project._sim = { phase: 'ingest', startedAt: now };
-    const data = serializeProject(db, project, { full: true });
-    return { data: reservation ? { ...data, cost_details: { tokens_reserved: dec(reservation.amount), transaction_id: reservation.id } } : data, status: 202 };
+    return answer(reservation);
   }),
 
   route(contract.rerenderProject, ({ db, workspace, params, body, user, now, require }) => {
     require('project.review');
     const project = own(db, params.id, workspace.id);
-    // A whole video is its one clip; a clips project, the clips it delivered or failed (never a suggested draft).
-    const clips = project.project_type === 'single_edit' ? project.clips : project.clips.filter((clip) => clip.status !== 'draft');
+    // A whole video is its one clip; a clips project, the clips it delivered or failed (never a suggested draft; a draft a render paid for is one of them).
+    const clips = project.project_type === 'single_edit' ? project.clips : project.clips.filter((clip) => clip.status !== 'draft' || clip.render_queued);
     if (clips.length === 0) throw conflict('El proyecto no tiene clips para renderizar.', 'no_clips');
     const transaction = startPaidRender(db, project, clips, { userId: user.id, description: `Render con otro estilo: ${project.title}`, now });
     const { brand_kit: brandKitId, ...style } = body;

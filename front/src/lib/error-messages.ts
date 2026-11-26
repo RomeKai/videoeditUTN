@@ -19,7 +19,8 @@ const PIPELINE_MESSAGES: Record<string, string> = {
   // Link projects (back/apps/videos/tasks/shared.py · download_from_youtube): refused when the video is fetched, never retried.
   UnsupportedLinkError:
     'No pudimos usar este link. Tiene que ser el link de un solo video público de YouTube, Vimeo, Twitch o Google Drive: no una lista, un canal ni una transmisión en vivo.',
-  LinkTooLongError: 'El video del link dura más de lo que permite tu plan. Probá con uno más corto o cambiá de plan.',
+  // The limit is the lower of the plan's and the app's (3 h): the code does not say which one it was.
+  LinkTooLongError: 'El video del link dura más de lo permitido para tu plan o para la app. Probá con uno más corto.',
   LinkTooLargeError: 'El video del link pesa más de lo que podemos descargar. Probá con una versión más liviana o subí el archivo.',
 };
 
