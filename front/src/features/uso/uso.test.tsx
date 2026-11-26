@@ -128,16 +128,16 @@ describe('utilidades de Uso', () => {
 
   it('dice qué se pierde al bajar de plan y qué plan habilita cada función', () => {
     const pro = plan({});
-    const creator = plan({ name: 'Creador', sort_order: 2, max_video_duration_seconds: 3600, max_resolution: '1080p', allow_crossposting: false, base_discount_rate: 0.05, max_members: 2 });
+    const creator = plan({ name: 'Creador', sort_order: 2, max_video_duration_seconds: 3600, max_resolution: '1080p', allow_crossposting: false, base_discount_rate: 0.05, max_members: 5 });
     const free = plan({ name: 'Gratis', sort_order: 1, has_watermark: true, allow_scheduling: false, allow_crossposting: false, has_seo_optimization: false, base_discount_rate: 0, max_members: 2 });
     expect(planLosses(pro, creator)).toEqual([
       'Videos de hasta 60 min (hoy 180 min)',
       'Resolución hasta 1080p (hoy 4K)',
       'Publicar en varias redes a la vez',
-      'Miembros: 2 (hoy 5)',
       'Descuento en tokens: 5 % (hoy 10 %)',
     ]);
     expect(planLosses(creator, pro)).toEqual([]);
+    expect(planLosses(pro, free)).toContain('Miembros: 2 (hoy 5)');
     const features = planFeatures(free, [free, creator, pro]);
     expect(features.find((item) => item.key === 'crossposting')).toMatchObject({ included: false, availableIn: 'Pro' });
     expect(features.find((item) => item.key === 'watermark')).toMatchObject({ included: false, availableIn: 'Creador' });
@@ -300,11 +300,11 @@ describe('G3 · Planes', () => {
     renderScreen(<PlansScreen />);
     await screen.findByRole('article', { name: 'Plan Pro, tu plan' });
     await waitFor(() => expect(loadDb().members.length).toBeGreaterThan(0));
-    await user.click(screen.getByRole('button', { name: 'Bajar a Creador' }));
-    const dialog = await screen.findByRole('alertdialog', { name: 'Todavía no podés bajar a Creador' });
-    expect(within(dialog).getByText(/Hoy ocupás 4 lugares, contando las invitaciones pendientes, y Creador tiene 2/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Bajar a Gratis' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Todavía no podés bajar a Gratis' });
+    expect(within(dialog).getByText(/Hoy ocupás 4 lugares, contando las invitaciones pendientes, y Gratis tiene 2/)).toBeInTheDocument();
     expect(within(dialog).getByRole('link', { name: 'Ir a Miembros' })).toHaveAttribute('href', '/ajustes/miembros');
-    expect(within(dialog).queryByRole('button', { name: 'Bajar a Creador' })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Bajar a Gratis' })).not.toBeInTheDocument();
     expect(loadDb().workspaces[0]?.pending_plan).toBeNull();
   });
 
