@@ -328,6 +328,15 @@ class ClipDetailTests(ClipActionsHarness, APITestCase):
 
 
 class RolesAndWorkspaceTests(ClipActionsHarness, APITestCase):
+    def setUp(self):
+        super().setUp()
+        # Members take seats (check_seat_limit): a plan with room for the ones these tests add.
+        plan = SubscriptionPlan.objects.create(
+            name="Equipo de prueba", max_members=5, max_resolution="720p", max_video_duration_seconds=600,
+        )
+        Workspace.objects.filter(pk=self.workspace.pk).update(subscription_plan=plan)
+        self.workspace.refresh_from_db()
+
     def test_a_viewer_reads_and_cannot_write_or_spend(self):
         project, (clip, failed) = self.finished()
         viewer = self.member(WorkspaceMember.Role.VIEWER, "lector")
@@ -1118,6 +1127,174 @@ class ProjectDeleteTests(ClipActionsHarness, APITestCase):
 
         self.assertEqual(self.delete(project).status_code, 204)
         self.assertFalse(VideoProject.objects.filter(pk=project.pk).exists())
+
+
+class StuckProjectDeleteTests(ClipActionsHarness, APITestCase):
+    """
+    A project stuck for good (a lost message: no worker, nothing for longer
+    than any task can live) can be deleted: its open reservations go back.
+    One that may still be in progress, or that delivered something, cannot.
+    """
+
+    LOCK_HELD = "apps.videos.services.ai.project_lock.project_lock_held"
+
+    def long_ago(self):
+        return timezone.now() - timedelta(seconds=settings.RENDER_STUCK_AFTER_SECONDS + 60)
+
+    def lost_ingestion(self, when=None):
+        when = when or self.long_ago()
+        creation = reserve_funds(self.wallet.id, Decimal("12.50"))
+        project = VideoProject.objects.create(
+            workspace=self.workspace, uploaded_by=self.user, title="Perdido", source_file="videos/raw/p.mp4",
+            status=VideoProject.Status.UPLOADED, metadata={"reservation_id": str(creation.id)},
+        )
+        VideoProject.objects.filter(pk=project.pk).update(created_at=when)
+        Transaction.objects.filter(pk=creation.pk).update(created_at=when)
+        return project, creation
+
+    def delete(self, project, lock_held=False):
+        with patch(DELETE_OBJECT), patch(self.LOCK_HELD, return_value=lock_held):
+            return self.client.delete(reverse("project-detail", args=[project.pk]))
+
+    def test_a_lost_ingestion_is_refunded_and_deleted(self):
+        project, creation = self.lost_ingestion()
+
+        response = self.delete(project)
+
+        self.assertEqual(response.status_code, 204, response.content[:300])
+        self.assertFalse(VideoProject.objects.filter(pk=project.pk).exists())
+        creation.refresh_from_db()
+        self.assertEqual(creation.status, REFUNDED)
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+
+    def test_an_ingestion_that_may_be_in_progress_is_kept(self):
+        recent, _creation = self.lost_ingestion(when=timezone.now() - timedelta(minutes=30))
+        running, _creation = self.lost_ingestion()
+
+        for project, lock_held in ((recent, False), (running, True)):
+            with self.subTest(lock_held=lock_held):
+                response = self.delete(project, lock_held=lock_held)
+                self.assertEqual((response.status_code, response.data["code"]), (409, "project_processing"))
+                self.assertTrue(VideoProject.objects.filter(pk=project.pk).exists())
+        self.assertEqual(Transaction.objects.filter(wallet=self.wallet, status=RESERVED).count(), 2)
+
+    def test_a_paper_edit_left_rendering_after_the_sweep_cap_is_refunded_and_deleted(self):
+        render = reserve_funds(self.wallet.id, Decimal("5.00"))
+        past = self.long_ago()
+        project = VideoProject.objects.create(
+            workspace=self.workspace, uploaded_by=self.user, title="Paper edit", source_file="videos/raw/e.mp4",
+            status=VideoProject.Status.RENDERING, pipeline_stage=PipelineStage.CLIPS_SELECTED,
+            metadata={"render_reservation_id": str(render.id), "render_started_at": past.isoformat(),
+                      "render_recovery_requeues_total": 10, "render_recovery_requeued_at": past.isoformat()},
+        )
+        VideoProject.objects.filter(pk=project.pk).update(created_at=past)
+        Transaction.objects.filter(pk=render.pk).update(created_at=past)
+
+        response = self.delete(project)
+
+        self.assertEqual(response.status_code, 204, response.content[:300])
+        render.refresh_from_db()
+        self.assertEqual(render.status, REFUNDED)
+
+    def test_a_stuck_render_that_delivered_a_clip_is_kept_for_its_settle(self):
+        project, (clip, failed) = self.finished()
+        approval = reserve_funds(self.wallet.id, Decimal("10.00"))
+        past = self.long_ago()
+        VideoClip.objects.filter(pk=failed.pk).update(status=DRAFT)
+        VideoProject.objects.filter(pk=project.pk).update(
+            status=VideoProject.Status.RENDERING, pipeline_stage=PipelineStage.RENDER_DISPATCHED, created_at=past,
+            metadata={**project.metadata, "render_reservation_id": str(approval.id)},
+        )
+        Transaction.objects.filter(pk=approval.pk).update(created_at=past)
+
+        response = self.delete(project)
+
+        self.assertEqual((response.status_code, response.data["code"]), (409, "project_processing"))
+        approval.refresh_from_db()
+        self.assertEqual(approval.status, RESERVED)  # its delivered clip is charged by its settle
+
+
+class RerenderedDraftRestoreTests(CapturedTaskFailures, ClipActionsHarness, APITestCase):
+    """A delivered clip whose new render never started, once that render is settled."""
+
+    def test_the_failure_handler_gives_it_back_as_it_was(self):
+        from apps.videos.services.ai.pipeline_state import mark_failed
+        from apps.videos.tasks.ingestion import _settle_clip_render_reservations
+
+        project, (clip, _failed) = self.finished()
+        self.post(clip_url(clip, "render"), execute=False)  # its message never ran
+        clip.refresh_from_db()
+        self.assertEqual(clip.status, DRAFT)
+        finalize = __import__("apps.videos.tasks", fromlist=["finalize_project_render"]).finalize_project_render
+        finalize(project.pk)  # still reserved: the draft waits for its render
+        clip.refresh_from_db()
+        self.assertEqual(clip.status, DRAFT)
+
+        # The pipeline fails the project: what _record_pipeline_failure runs.
+        mark_failed(project.pk)
+        _settle_clip_render_reservations(project.pk)
+
+        self.assertEqual(self.clip_render(project).status, REFUNDED)
+        clip.refresh_from_db()
+        self.assertEqual((clip.status, clip.s3_object_key), (DONE, "videos/old-0.mp4"))
+
+    def test_the_stale_sweep_gives_it_back_too(self):
+        project, (clip, _failed) = self.finished()
+        self.post(clip_url(clip, "render"), execute=False)
+        VideoProject.objects.filter(pk=project.pk).update(
+            pipeline_stage=PipelineStage.FAILED, status=VideoProject.Status.FAILED,
+        )
+        txn = self.clip_render(project)
+        Transaction.objects.filter(pk=txn.pk).update(created_at=timezone.now() - timedelta(days=2))
+
+        call_command("settle_stale_reservations", "--apply", stdout=StringIO())
+
+        txn.refresh_from_db()
+        self.assertEqual(txn.status, REFUNDED)
+        clip.refresh_from_db()
+        self.assertEqual((clip.status, clip.s3_object_key), (DONE, "videos/old-0.mp4"))
+
+
+class BothNotQueuedSkipsTests(ClipActionsHarness, APITestCase):
+    """Both codes of a refunded, never-queued message keep a late copy from running (PR #137 and the re-dispatch)."""
+
+    def test_neither_code_is_ever_resumed(self):
+        for code in ("IngestionNotQueued", "RedispatchNotQueued"):
+            with self.subTest(code=code):
+                project = VideoProject.objects.create(
+                    workspace=self.workspace, uploaded_by=self.user, title=code, source_file="videos/raw/q.mp4",
+                    status=VideoProject.Status.FAILED, pipeline_stage=PipelineStage.FAILED,
+                    pipeline_stage_status={"audio_extracted": "completed"}, pipeline_error_code=code,
+                )
+                with patch("apps.videos.tasks.ingestion._stage_transcribe") as transcribe:
+                    _run_ingestion(project.pk, attempt=1)
+                transcribe.assert_not_called()
+                project.refresh_from_db()
+                self.assertEqual((project.pipeline_stage, project.status, project.pipeline_error_code),
+                                 (PipelineStage.FAILED, VideoProject.Status.FAILED, code))
+
+    def test_a_code_written_after_the_first_read_is_seen_under_the_lock(self):
+        from apps.videos.services.ai import pipeline_state
+
+        project = VideoProject.objects.create(
+            workspace=self.workspace, uploaded_by=self.user, title="Carrera", source_file="videos/raw/r.mp4",
+            status=VideoProject.Status.FAILED, pipeline_stage=PipelineStage.FAILED,
+            pipeline_stage_status={"audio_extracted": "completed"}, pipeline_error_code="CapacityTimeoutError",
+        )
+        real = pipeline_state.last_completed_stage
+
+        def refunded_meanwhile(row):
+            # The create view fails and refunds it right after _run_ingestion read it.
+            VideoProject.objects.filter(pk=project.pk).update(pipeline_error_code="IngestionNotQueued")
+            return real(row)
+
+        with patch("apps.videos.tasks.ingestion.last_completed_stage", side_effect=refunded_meanwhile), \
+                patch("apps.videos.tasks.ingestion._stage_transcribe") as transcribe:
+            _run_ingestion(project.pk, attempt=1)
+
+        transcribe.assert_not_called()
+        project.refresh_from_db()
+        self.assertEqual(project.pipeline_stage, PipelineStage.FAILED)
 
 
 class EndedProjectRecoveryTests(CapturedTaskFailures, ClipActionsHarness, APITestCase):

@@ -192,26 +192,112 @@ def _posts_refusal(clips):
     return None
 
 
-def project_delete_refusal(project):
+def project_delete_decision(project):
     """
-    The 409 of a project that cannot be deleted now (VideoProjectViewSet.destroy),
-    read under its row lock, or None. While it renders or processes, or with a
-    creation or render reservation still RESERVED, deleting it would leave
-    those tokens reserved for good: nothing settles a reservation without its
-    project (settle_stale_reservations only reports it as unlinked).
+    What VideoProjectViewSet.destroy may do, read under the project's row lock,
+    as ``(refusal, refund_ids)``:
+
+    - Nothing open (no creation or render reservation RESERVED, and it neither
+      renders nor processes): ``(None, [])``, deleted.
+    - Ended (completed, partial or failed) with a reservation still RESERVED:
+      409 ``reservation_open``. The pipeline, recover_stuck_renders or
+      settle_stale_reservations settle it soon; nothing would once its project
+      is gone (the sweep only reports a reservation without one as unlinked).
+    - Uploaded, ingesting or rendering: 409 ``project_processing`` while it may
+      be in progress. Once it is stuck (``_stuck``: no worker holds its lock and
+      nothing happened for RENDER_STUCK_AFTER_SECONDS) with nothing delivered
+      under its open reservations (``_delivered_under``), those reservations
+      are returned and it is deleted: ``(None, ids)``. A message lost for good
+      would otherwise keep it, and its tokens, forever.
     """
     from .tasks.ingestion import PAID_CLIP_RENDERS
 
-    if project.status in (Status.RENDERING, *_PROCESSING):
-        return _error(409, "El proyecto se está procesando: esperá a que termine para borrarlo.", 'project_processing')
     metadata = project.metadata or {}
     keys = ['reservation_id', *(paid.reservation_key for paid in PAID_CLIP_RENDERS)]
-    ids = [str(metadata[key]) for key in keys if metadata.get(key)]
-    if ids and Transaction.objects.filter(pk__in=ids, status=Transaction.Status.RESERVED).exists():
+    linked = {key: str(metadata[key]) for key in keys if metadata.get(key)}
+    open_rows = dict(
+        Transaction.objects.filter(pk__in=list(linked.values()), status=Transaction.Status.RESERVED)
+        .values_list('pk', 'created_at')
+    ) if linked else {}
+    open_keys = [key for key, txn_id in linked.items() if any(str(pk) == txn_id for pk in open_rows)]
+    busy = project.status in (Status.RENDERING, *_PROCESSING)
+    if not busy and not open_keys:
+        return None, []
+    if not busy:
         return _error(409, (
             "El proyecto tiene tokens reservados que todavía no se liquidaron. Probá de nuevo en unos minutos."
-        ), 'reservation_open')
-    return None
+        ), 'reservation_open'), []
+    if _stuck(project, open_rows.values()) and not _delivered_under(project, open_keys):
+        return None, [linked[key] for key in open_keys]
+    return _error(409, "El proyecto se está procesando: esperá a que termine para borrarlo.", 'project_processing'), []
+
+
+def _stuck(project, reserved_at):
+    """
+    No worker holds the project's lock and nothing happened for
+    RENDER_STUCK_AFTER_SECONDS (longer than any task can live): no creation,
+    reservation, recorded error, capacity wait, render start or re-queue.
+    """
+    from datetime import timedelta
+
+    from django.conf import settings
+    from django.utils import timezone
+
+    from .services.ai.project_lock import project_lock_held
+    from .tasks.render_recovery import _when
+
+    try:
+        if project_lock_held(project.pk):
+            return False
+    except Exception:
+        return False  # Redis down: it may be running
+    metadata = project.metadata or {}
+    moments = [project.created_at, project.pipeline_error_at, *reserved_at]
+    for key in ('render_clip_started_at', 'render_started_at', 'render_recovery_requeued_at'):
+        moments.append(_when(metadata.get(key)))
+    moments.append(_when((metadata.get('capacity_wait') or {}).get('since')))
+    last = max(moment for moment in moments if moment)
+    return timezone.now() - last >= timedelta(seconds=settings.RENDER_STUCK_AFTER_SECONDS)
+
+
+def _delivered_under(project, open_keys):
+    """
+    Something the open reservations (``open_keys``, metadata keys) pay for was
+    delivered: returning them would give it for free. The rules of their
+    settles: the clips of an ingestion, the video of a whole video, the clips
+    of a clip-by-clip render (a new file for a render asked for later), the
+    export of a paper edit of before.
+    """
+    from .services.ai.pipeline_state import STAGE_ORDER, PipelineStage
+    from .tasks.ingestion import CLIP_RENDER, CLIP_RENDER_PREVIOUS_KEY, _is_whole_video, _paid_clip_renders
+
+    metadata = project.metadata or {}
+    clips = VideoClip.objects.filter(project_id=project.pk)
+    by_key = {paid.reservation_key: paid for paid in _paid_clip_renders(metadata)}
+    for key in open_keys:
+        if key == 'reservation_id':
+            if _is_whole_video(project):
+                if clips.filter(status__in=_DELIVERED).exists():
+                    return True
+            elif clips.exists() or (
+                project.pipeline_stage in STAGE_ORDER
+                and STAGE_ORDER.index(project.pipeline_stage) >= STAGE_ORDER.index(PipelineStage.CLIPS_SELECTED)
+            ):
+                return True
+            continue
+        paid = by_key.get(key)
+        if paid is None:
+            # A paper edit of before (no clip ids): its export.
+            if project.final_export_r2_key:
+                return True
+            continue
+        ids = metadata.get(paid.clip_ids_key)
+        paid_clips = clips if ids is None else clips.filter(pk__in=ids)
+        previous = (metadata.get(CLIP_RENDER_PREVIOUS_KEY) or {}) if paid is CLIP_RENDER else {}
+        for pk, key_now in paid_clips.filter(status__in=_DELIVERED).values_list('pk', 's3_object_key'):
+            if not (str(pk) in previous and key_now == previous[str(pk)].get('key')):
+                return True
+    return False
 
 
 def _length_refusal(clips):

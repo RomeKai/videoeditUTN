@@ -606,12 +606,12 @@ export const deleteProject = defineEndpoint({
     { status: 403, when: 'El rol no puede borrar (Lector; Editor solo los propios).' },
     {
       status: 409,
-      when: '`{ error, code }`: el proyecto se está procesando o renderizando (`project_processing`) o tiene tokens reservados sin liquidar (`reservation_open`). El diálogo muestra el mensaje del servidor.',
+      when: '`{ error, code }`: el proyecto puede estar procesando o renderizando (`project_processing`) o terminó con tokens reservados sin liquidar (`reservation_open`). El diálogo muestra el mensaje del servidor. Uno trabado del todo (ningún worker y nada en `RENDER_STUCK_AFTER_SECONDS`, sin nada entregado) se borra y devuelve lo reservado.',
     },
   ],
   backend: {
     status: 'exists',
-    source: 'back/apps/videos/views.py · VideoProjectViewSet.destroy + views_clips.project_delete_refusal',
+    source: 'back/apps/videos/views.py · VideoProjectViewSet.destroy + views_clips.project_delete_decision',
     note: 'Nada liquida una reserva cuyo proyecto ya no existe, por eso el 409. No devuelve nada de lo cobrado.',
   },
   screens: ['B2', 'D1', 'D4 (diálogo)'],

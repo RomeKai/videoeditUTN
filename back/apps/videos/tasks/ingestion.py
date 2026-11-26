@@ -1108,21 +1108,29 @@ def _clip_render_settlement(project, paid=AUTO_RENDER):
 def _restore_rerendered_clips(project_id):
     """
     A clip that was delivered and rendered again (CLIP_RENDER) keeps what the
-    user had: if its new render failed, it goes back to COMPLETED or PUBLISHED
-    with its old file (still in storage: only a new file replaces it); if it
-    was PUBLISHED, it stays PUBLISHED with the new one. Conditional updates,
-    idempotent. The settle never counts the old file (_clip_render_settlement).
+    user had: if its new render failed, or never started and its reservation
+    was settled (DRAFT, left by a project that ended), it goes back to
+    COMPLETED or PUBLISHED with its old file (still in storage: only a new file
+    replaces it); if it was PUBLISHED, it stays PUBLISHED with the new one. A
+    DRAFT clip is left alone while the reservation is still RESERVED: its
+    render may still claim it. Conditional updates, idempotent. The settle
+    never counts the old file (_clip_render_settlement).
     """
     metadata = VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
     previous = metadata.get(CLIP_RENDER_PREVIOUS_KEY) or {}
+    if not previous:
+        return 0
+    not_rendered = [VideoClip.Status.FAILED]
+    if not _clip_render_reserved(metadata):
+        not_rendered.append(VideoClip.Status.DRAFT)
     restored = 0
     for clip_id, before in previous.items():
         status, key = before.get('status'), before.get('key')
         if status not in (VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED) or not key:
             continue
         restored += VideoClip.objects.filter(
-            pk=clip_id, status=VideoClip.Status.FAILED, s3_object_key=key,
-        ).update(status=status)
+            pk=clip_id, status__in=not_rendered, s3_object_key=key,
+        ).update(status=status, render_claim_token=None, render_unfinished_starts=0)
         if status == VideoClip.Status.PUBLISHED:
             VideoClip.objects.filter(pk=clip_id, status=VideoClip.Status.COMPLETED).exclude(
                 s3_object_key=key,
@@ -1145,11 +1153,18 @@ def _clip_render_charge(project, txn_amount, delivered_seconds, paid=AUTO_RENDER
 def _settle_clip_render_reservations(project_id):
     """
     Settles every clip-by-clip render reservation of the project (the
-    auto-render and the approval of the review) from where it ended. Every
-    ``finalize_project_render`` and the failure handler run it.
+    auto-render, the approval of the review and a render asked for later)
+    from where it ended. Every ``finalize_project_render`` and the failure
+    handler run it. Once a render asked for later is settled, the clips it
+    never rendered are given back as they were (``_restore_rerendered_clips``).
     """
     for paid in PAID_CLIP_RENDERS:
         _settle_clip_render_reservation(project_id, paid)
+    try:
+        _restore_rerendered_clips(project_id)
+    except DatabaseError as exc:
+        # Display only: the next finalize or paid render restores them.
+        logger.error("render.clip_restore_failed project_id=%s error=%s", project_id, type(exc).__name__)
 
 
 def _settle_clip_render_reservation(project_id, paid):
@@ -1515,9 +1530,11 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
             code = VideoProject.objects.select_for_update().filter(pk=project_id).values_list(
                 'pipeline_error_code', flat=True,
             ).first()
-            if code == REDISPATCH_NOT_QUEUED:
-                logger.warning("pipeline.redispatch_skipped project_id=%s reason=redispatch_not_queued", project_id)
-                return f"Not resumed {project_id}: its re-dispatch was refunded"
+            if code in (REDISPATCH_NOT_QUEUED, INGESTION_NOT_QUEUED):
+                # INGESTION_NOT_QUEUED again, now under the lock: the create
+                # view may have failed it after the read above.
+                logger.warning("pipeline.redispatch_skipped project_id=%s reason=%s", project_id, code)
+                return f"Not resumed {project_id}: it was refunded when its message could not be queued"
             reopen(project_id, stage)
         progress['stage'] = stage
 

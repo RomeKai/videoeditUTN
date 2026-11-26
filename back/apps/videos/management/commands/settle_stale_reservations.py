@@ -66,7 +66,8 @@ from apps.videos.models import VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import STAGE_ORDER, TERMINAL_STAGES
 from apps.videos.tasks.ingestion import (
     APPROVED_RENDER, AUTO_RENDER, AUTO_RENDER_RESERVATION_KEY, CLIP_RENDER, _clip_render_charge,
-    _clip_render_settlement, _is_whole_video, _paid_clip_renders, _whole_video_settlement,
+    _clip_render_settlement, _is_whole_video, _paid_clip_renders, _restore_rerendered_clips,
+    _whole_video_settlement,
 )
 
 COMMIT, ROLLBACK, REPORT = "commit", "rollback", "report"
@@ -189,6 +190,9 @@ def _settle(transaction_id, kind, project_id):
             ).exists():
                 return action, reason, "already_settled"
             raise
+    if kind == "clip_render":
+        # Settled: the clips it never rendered are the user's again, as they were.
+        _restore_rerendered_clips(project_id)
     return action, reason, "committed" if action == COMMIT else "rolled_back"
 
 

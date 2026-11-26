@@ -783,11 +783,11 @@ Borra el proyecto con su video, sus clips y sus publicaciones programadas. No de
 | | |
 |---|---|
 | Id | `projects.delete` |
-| Backend | ✅ existe · `back/apps/videos/views.py · VideoProjectViewSet.destroy + views_clips.project_delete_refusal` |
+| Backend | ✅ existe · `back/apps/videos/views.py · VideoProjectViewSet.destroy + views_clips.project_delete_decision` |
 | Nota | Nada liquida una reserva cuyo proyecto ya no existe, por eso el 409. No devuelve nada de lo cobrado. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 204 | NoContent |
-| Errores | **403** El rol no puede borrar (Lector; Editor solo los propios).<br>**409** `{ error, code }`: el proyecto se está procesando o renderizando (`project_processing`) o tiene tokens reservados sin liquidar (`reservation_open`). El diálogo muestra el mensaje del servidor. |
+| Errores | **403** El rol no puede borrar (Lector; Editor solo los propios).<br>**409** `{ error, code }`: el proyecto puede estar procesando o renderizando (`project_processing`) o terminó con tokens reservados sin liquidar (`reservation_open`). El diálogo muestra el mensaje del servidor. Uno trabado del todo (ningún worker y nada en `RENDER_STUCK_AFTER_SECONDS`, sin nada entregado) se borra y devuelve lo reservado. |
 | Pantallas | B2, D1, D4 (diálogo) |
 
 #### `GET /api/v1/projects/:id/paper-edit-data/`
