@@ -1,7 +1,7 @@
 """
-payments 0006-0011: the four seeded plans end complete and public after a rollback
-and a new migrate, an edit made in the admin stays, Estudio moves to 3 h and Gratis
-to 2 members only if nobody changed them, only one plan stays recommended, and a
+payments 0006-0013: the four seeded plans end complete and public after a rollback
+and a new migrate, an edit made in the admin stays, Estudio moves to 3 h, Gratis
+to 2 members and Creador to 5 only if nobody changed them, only one plan stays recommended, and a
 limit below 1 is raised to 1 before the check constraints.
 """
 from decimal import Decimal
@@ -19,7 +19,8 @@ BEFORE_PRICING = [('payments', '0003_transaction_created_at')]
 AFTER_SEED = [('payments', '0006_subscriptionplan_is_public_and_limits')]
 BEFORE_FREE_SEATS = [('payments', '0008_subscriptionplan_single_recommended')]
 BEFORE_LIMIT_CHECKS = [('payments', '0009_free_plan_two_members')]
-LATEST = [('payments', '0011_subscriptionplan_limits_check')]
+BEFORE_CREATOR_SEATS = [('payments', '0012_transaction_settled_at_reserved_amount')]
+LATEST = [('payments', '0013_creator_plan_five_members')]
 
 EXPECTED = {
     # name: (price, sort_order, max_video_duration_seconds)
@@ -99,7 +100,7 @@ class SeededPlansMigrationTests(TransactionTestCase):
         for name in EXPECTED:
             Plan.objects.get_or_create(name=name, defaults={'max_video_duration_seconds': 600})
         Plan.objects.filter(name='Gratis').update(max_members=1)
-        Plan.objects.filter(name='Creador').update(max_members=3)  # an edit, on a plan 0009 does not touch
+        Plan.objects.filter(name='Creador').update(max_members=3)  # an edit: 0009 does not touch Creador, 0013 keeps it
 
         Plan = self.migrate(LATEST)
         self.assertEqual(Plan.objects.get(name='Gratis').max_members, 2)
@@ -111,6 +112,24 @@ class SeededPlansMigrationTests(TransactionTestCase):
         Plan.objects.filter(name='Gratis').update(max_members=4)
         Plan = self.migrate(LATEST)
         self.assertEqual(Plan.objects.get(name='Gratis').max_members, 4)
+
+    def test_the_creator_plan_moves_to_five_members_only_if_it_still_had_two(self):
+        Plan = self.migrate(BEFORE_CREATOR_SEATS)
+        for name in EXPECTED:
+            Plan.objects.get_or_create(name=name, defaults={'max_video_duration_seconds': 600})
+        Plan.objects.filter(name='Creador').update(max_members=2)
+        Plan.objects.filter(name='Pro').update(max_members=2)  # same value, another plan: 0013 leaves it
+
+        Plan = self.migrate(LATEST)
+        self.assertEqual(Plan.objects.get(name='Creador').max_members, 5)
+        self.assertEqual(Plan.objects.get(name='Pro').max_members, 2)
+
+        # The reverse keeps 5, and a value set in the admin stays when 0013 runs again.
+        Plan = self.migrate(BEFORE_CREATOR_SEATS)
+        self.assertEqual(Plan.objects.get(name='Creador').max_members, 5)
+        Plan.objects.filter(name='Creador').update(max_members=3)
+        Plan = self.migrate(LATEST)
+        self.assertEqual(Plan.objects.get(name='Creador').max_members, 3)
 
     def test_a_limit_below_one_is_raised_to_one_before_the_check_constraints(self):
         Plan = self.migrate(BEFORE_LIMIT_CHECKS)
@@ -125,9 +144,11 @@ class SeededPlansMigrationTests(TransactionTestCase):
         self.assertTrue({'payments_plan_max_members_min_1', 'payments_plan_max_duration_min_1'} <= set(constraints))
 
     def test_the_cached_public_list_is_dropped(self):
-        for start in (AFTER_SEED, BEFORE_FREE_SEATS):  # by 0007 and by 0009
+        for start in (AFTER_SEED, BEFORE_FREE_SEATS, BEFORE_CREATOR_SEATS):  # by 0007, 0009 and 0013
             with self.subTest(start=start[0][1]):
-                self.migrate(start)
+                Plan = self.migrate(start)
+                if start is BEFORE_CREATOR_SEATS:  # 0013 only drops it when it changes a plan
+                    Plan.objects.update_or_create(name='Creador', defaults={'max_members': 2, 'max_video_duration_seconds': 3600})
                 cache.set(PUBLIC_PLANS_CACHE_KEY, [{'name': 'Starter'}], 60)
 
                 self.migrate(LATEST)

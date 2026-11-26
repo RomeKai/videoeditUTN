@@ -106,8 +106,8 @@ test.describe('Uso y facturación', () => {
     const problems = watch(page);
     await page.goto('/uso/planes');
     await settle(page);
-    await page.getByRole('button', { name: 'Bajar a Creador' }).click();
-    const dialog = page.getByRole('alertdialog', { name: 'Todavía no podés bajar a Creador' });
+    await page.getByRole('button', { name: 'Bajar a Gratis' }).click();
+    const dialog = page.getByRole('alertdialog', { name: 'Todavía no podés bajar a Gratis' });
     await expect(dialog).toContainText('Hoy ocupás 4 lugares');
     await dialog.getByRole('link', { name: 'Ir a Miembros' }).click();
     await expect(page).toHaveURL(/\/ajustes\/miembros$/);

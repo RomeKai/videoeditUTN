@@ -19,7 +19,11 @@ export const getSystemStatus = defineEndpoint({
   auth: false,
   workspaceScoped: false,
   errors: [{ status: 503, when: 'En mantenimiento sin poder responder: la UI muestra K5 igual.' }],
-  backend: { status: 'proposed', note: 'Sin número de hueco: lo pide la pantalla K5 (horario estimado).' },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/core/views.py · SystemStatusView; apps/core/maintenance.py',
+    note: 'Se prende con MAINTENANCE_MODE y la ventana con MAINTENANCE_STARTS_AT / MAINTENANCE_ENDS_AT. Durante el mantenimiento este endpoint sigue en 200 y el resto de la API responde 503.',
+  },
   screens: ['K5'],
 });
 

@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiCall } from '../client';
 import * as contract from '../contracts/users';
 import { keys } from '../query';
+import { setTokens } from '../session';
 import { useHasSession } from './scope';
 
 /** Profile, workspaces and role in each. Only runs with a session. */
@@ -25,9 +26,11 @@ export function useUpdateMe() {
   });
 }
 
+/** The change ends every other session: the answer is this browser's new pair, stored at once. */
 export function useChangePassword() {
   return useMutation({
     mutationFn: (body: { current_password: string; new_password: string }) => apiCall(contract.changePassword, { body }),
+    onSuccess: (tokens) => setTokens(tokens),
   });
 }
 
