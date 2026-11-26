@@ -11,20 +11,22 @@ Invitations (create, resend, accept) are not here.
 """
 import logging
 import uuid
+from datetime import timedelta
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.core.permissions import ADMIN, require_workspace_role
 from apps.core.workspace import OWNER
+from apps.integrations.ayrshare_api import AyrshareClient
 from apps.payments.models import Transaction, Wallet
 from apps.users.models import User, Workspace, WorkspaceMember
 from apps.users.serializers_workspaces import (
@@ -43,7 +45,7 @@ from apps.users.serializers_workspaces import (
     WorkspaceNameSerializer,
     WorkspaceSerializer,
 )
-from apps.users.throttles import SpanishThrottleMixin
+from apps.users.throttles import AttemptThrottle, SpanishThrottleMixin
 from apps.users.workspaces import create_owned_workspace
 from apps.videos.models import ScheduledPost, VideoProject
 
@@ -60,7 +62,8 @@ WORKSPACE_RESERVED = (
     'El espacio tiene tokens reservados que todavía no se liquidaron. Probá de nuevo en unos minutos.'
 )
 POSTS_IN_FLIGHT = (
-    'Hay publicaciones saliendo a las redes en este momento: esperá a que terminen para borrar el espacio.'
+    'Hay publicaciones saliendo a las redes en este momento: esperá a que terminen para borrar el espacio. '
+    'Si alguna quedó trabada, se libera sola: probá de nuevo en unos 15 minutos.'
 )
 LAST_WORKSPACE = (
     'Es tu único espacio de trabajo y no se puede borrar. Creá otro primero, o sumate al de alguien más.'
@@ -93,8 +96,26 @@ THROTTLED = OpenApiResponse(description='Demasiados intentos: `detail` dice en c
 
 # What cannot be deleted under: a project the pipeline or a render may still touch.
 _BUSY = (VideoProject.Status.UPLOADED, VideoProject.Status.INGESTING, VideoProject.Status.RENDERING)
-# A post its task may be sending to the networks right now.
-_IN_FLIGHT = (ScheduledPost.Status.QUEUED, ScheduledPost.Status.PROCESSING)
+# A post counts as going out only while its task can still be working on it.
+# PROCESSING: for as long as the task holds its lock (tasks.social: the slowest
+# Ayrshare answer plus a margin) since the attempt started (`updated_at`).
+POST_PROCESSING_WINDOW = timedelta(seconds=AyrshareClient.TIMEOUT_SECONDS[1] + 300)
+# QUEUED: until its task is due (`publish_at`), plus its retries for the lock
+# (60 + 120 + 240 s) and a late worker.
+POST_QUEUED_GRACE = timedelta(minutes=15)
+
+
+def _post_in_flight(status, updated_at, publish_at, now):
+    """
+    Older rows are stuck (a lost message, a worker that died): they never end
+    on their own, so they must not keep the workspace forever. If their task
+    does run later, it finds no post and ends (tasks.social).
+    """
+    if status == ScheduledPost.Status.PROCESSING:
+        return updated_at >= now - POST_PROCESSING_WINDOW
+    if status == ScheduledPost.Status.QUEUED:
+        return publish_at >= now - POST_QUEUED_GRACE
+    return False
 
 
 def _full_name(user):
@@ -165,8 +186,11 @@ def _other_workspaces(user, workspace):
     )
 
 
-class WorkspaceCreateThrottle(ScopedRateThrottle):
-    """Only the POSTs count (scope `workspace_create`, per user): listing stays unlimited."""
+class WorkspaceCreateThrottle(AttemptThrottle):
+    """
+    Only the POSTs count (scope `workspace_create`, per user): listing stays
+    unlimited. AttemptThrottle keeps limiting while the shared cache is down.
+    """
 
     def allow_request(self, request, view):
         if request.method != 'POST':
@@ -256,9 +280,9 @@ class WorkspaceDetailView(APIView):
             404: NOT_FOUND,
             409: OpenApiResponse(description=(
                 '`{error, code}`, y no se borra nada: `project_processing` con un proyecto subido, en ingesta o '
-                'renderizando; `posts_in_flight` con una publicación en cola o saliendo; `reservation_open` con '
-                'tokens reservados sin liquidar; `balance_left` con saldo disponible (trae `available_balance`); '
-                '`last_workspace` si es el único workspace del usuario.'
+                'renderizando; `posts_in_flight` con una publicación en cola o saliendo (una trabada no cuenta); '
+                '`reservation_open` con tokens reservados sin liquidar; `balance_left` con saldo disponible (trae '
+                '`available_balance`); `last_workspace`, que se revisa primero, si es el único workspace del usuario.'
             )),
         },
     )
@@ -266,19 +290,23 @@ class WorkspaceDetailView(APIView):
         """
         Deletes the workspace for good: only its owner, typing its name.
 
-        A 409 `{error, code}`, with nothing deleted, while any of these holds:
+        A 409 `{error, code}`, with nothing deleted, while any of these holds
+        (checked in this order):
 
+        - `last_workspace`: the only workspace the owner owns or is an ACTIVE
+          member of. Nobody is left without a place to work. First, because
+          it is the only one that waiting does not fix.
         - `project_processing`: a project uploaded, ingesting or rendering. A
           stuck one keeps the workspace until that project is deleted (its own
           delete returns its reservations).
-        - `posts_in_flight`: a post QUEUED or PROCESSING. Its task may be
-          sending it to the networks right now.
+        - `posts_in_flight`: a post its task may be sending right now: PROCESSING
+          since less than POST_PROCESSING_WINDOW, or QUEUED and not more than
+          POST_QUEUED_GRACE past its `publish_at`. An older one is stuck and
+          does not keep the workspace.
         - `reservation_open`: a reservation still RESERVED, or reserved balance.
           Nothing would settle those tokens once the wallet is gone.
         - `balance_left`: available balance above zero. Tokens are money and
           are never deleted; there is no way to move them yet.
-        - `last_workspace`: the only workspace the owner owns or is an ACTIVE
-          member of. Nobody is left without a place to work.
 
         What goes with it (the models' CASCADE): its projects with their clips
         and posts (DRAFT, SCHEDULED, PUBLISHED and FAILED ones; a SCHEDULED post
@@ -295,6 +323,13 @@ class WorkspaceDetailView(APIView):
             serializer.is_valid(raise_exception=True)
             if serializer.validated_data['confirm_name'] != workspace.name:
                 raise ValidationError({'confirm_name': [CONFIRM_NAME_MISMATCH]})
+            # First: it is the one refusal that waiting does not fix. Under the user's row
+            # lock (the one a creation takes), so two deletes of the same person's last two
+            # workspaces count one after the other. NO KEY: rows that point at the user
+            # (a project, a membership) can still be written meanwhile.
+            User.objects.select_for_update(no_key=True).filter(pk=request.user.pk).first()
+            if not _other_workspaces(request.user, workspace):
+                return _error(409, LAST_WORKSPACE, 'last_workspace')
             # Locks in the order an approval or a paid render takes them (project, then
             # wallet: wallet_service.reserve_funds), so one that starts meanwhile waits
             # for this delete instead of deadlocking with it.
@@ -306,16 +341,17 @@ class WorkspaceDetailView(APIView):
             )
             # The post's lock is the one its publishing task takes (tasks.social): a post
             # the dispatcher queues meanwhile waits, and then is gone with its workspace.
-            post_statuses = list(
+            posts = list(
                 ScheduledPost.objects.select_for_update(of=('self',))
                 .filter(video_clip__project__workspace=workspace)
                 .order_by('pk')
-                .values_list('status', flat=True)
+                .values_list('status', 'updated_at', 'publish_at')
             )
             wallet = Wallet.objects.select_for_update().filter(workspace=workspace).first()
             if any(project_status in _BUSY for project_status in statuses):
                 return _error(409, WORKSPACE_BUSY, 'project_processing')
-            if any(post_status in _IN_FLIGHT for post_status in post_statuses):
+            now = timezone.now()
+            if any(_post_in_flight(*post, now) for post in posts):
                 return _error(409, POSTS_IN_FLIGHT, 'posts_in_flight')
             if wallet is not None and (
                 wallet.reserved_balance > 0
@@ -327,8 +363,6 @@ class WorkspaceDetailView(APIView):
                     409, _balance_left(wallet.available_balance), 'balance_left',
                     available_balance=_tokens(wallet.available_balance),
                 )
-            if not _other_workspaces(request.user, workspace):
-                return _error(409, LAST_WORKSPACE, 'last_workspace')
             pk = workspace.pk
             # Zero by the checks above; logged so the ledger that goes with the wallet leaves a trace.
             available = _tokens(wallet.available_balance) if wallet is not None else None
@@ -338,7 +372,7 @@ class WorkspaceDetailView(APIView):
         logger.warning(
             'workspace.deleted workspace_id=%s user_id=%s wallet_available=%s wallet_reserved=%s '
             'wallet_transactions=%d projects=%d posts=%d',
-            pk, request.user.pk, available, reserved, transactions, len(statuses), len(post_statuses),
+            pk, request.user.pk, available, reserved, transactions, len(statuses), len(posts),
         )
         return Response(status=status.HTTP_204_NO_CONTENT)
 

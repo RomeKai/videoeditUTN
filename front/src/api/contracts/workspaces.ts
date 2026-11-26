@@ -160,7 +160,7 @@ export const deleteWorkspace = defineEndpoint({
     { status: 404, when: 'El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos.' },
     {
       status: 409,
-      when: 'No se borra nada. Cuerpo `{error, code}`, y el `error` se muestra tal cual. `project_processing`: hay un proyecto subido, en ingesta o renderizando (uno trabado se borra primero). `posts_in_flight`: hay una publicación en cola o saliendo. `reservation_open`: hay tokens reservados sin liquidar. `balance_left`: queda saldo disponible (trae `available_balance`); los tokens nunca se borran. `last_workspace`: es el único workspace del usuario.',
+      when: 'No se borra nada. Cuerpo `{error, code}`, y el `error` se muestra tal cual. Se revisan en este orden. `last_workspace`: es el único workspace del usuario (va primero porque esperar no lo resuelve). `project_processing`: hay un proyecto subido, en ingesta o renderizando (uno trabado se borra primero). `posts_in_flight`: hay una publicación saliendo (`PROCESSING` hace menos de 10 minutos) o en cola (`QUEUED` hasta 15 minutos después de su `publish_at`); una más vieja está trabada y no frena el borrado. `reservation_open`: hay tokens reservados sin liquidar. `balance_left`: queda saldo disponible (trae `available_balance`); los tokens nunca se borran.',
     },
   ],
   backend: {

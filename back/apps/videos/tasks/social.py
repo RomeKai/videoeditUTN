@@ -172,13 +172,15 @@ def upload_to_social_network(self, post_id):
                 logger.error(f"❌ [WORKER] Post {post_id} FAILED: No ayrshare_profile_key for workspace {workspace.id}")
                 post.status = ScheduledPost.Status.FAILED
                 post.error_log = "Error: Ayrshare Profile Key not configured in workspace."
-                post.save(update_fields=['status', 'error_log'])
+                # updated_at too: auto_now only reaches the database when it is listed,
+                # and the project's activity dates the failure with it.
+                post.save(update_fields=['status', 'error_log', 'updated_at'])
                 # Committed on exit of the atomic block; raised after so the task is not reported as SUCCESS.
                 missing_key = True
             else:
                 missing_key = False
                 post.status = ScheduledPost.Status.PROCESSING
-                post.save(update_fields=['status'])
+                post.save(update_fields=['status', 'updated_at'])
 
         if missing_key:
             raise PostConfigurationError(f"No ayrshare_profile_key for workspace {workspace.id}")
@@ -225,7 +227,7 @@ def upload_to_social_network(self, post_id):
             # while Ayrshare answered tries to insert it again and breaks on its clip.
             # In a savepoint: the error of a row that is gone must not break an outer transaction.
             with transaction.atomic():
-                post.save(update_fields=['status', 'error_log'])
+                post.save(update_fields=['status', 'error_log', 'updated_at'])
         except DatabaseError:
             if ScheduledPost.objects.filter(id=post_id).exists():
                 raise

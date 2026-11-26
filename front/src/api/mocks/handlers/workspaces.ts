@@ -91,8 +91,11 @@ export const workspacesHandlers = [
     const { workspace, role } = workspaceFor(db, params.id, user.id);
     if (role !== 'owner') throw ownerOnly();
     if (body.confirm_name !== workspace.name) throw badRequest({ confirm_name: ['El nombre no coincide.'] });
-    // Like the backend, in its order: never with work in progress, posts going out, tokens set aside
-    // or left, and never the person's last workspace.
+    // Like the backend, in its order: never the person's last workspace (first: waiting does not fix it),
+    // never with work in progress, posts going out, or tokens set aside or left.
+    if (!db.workspaces.some((item) => item.id !== workspace.id && roleIn(db, item.id, user.id))) {
+      throw conflict('Es tu único espacio de trabajo y no se puede borrar. Creá otro primero, o sumate al de alguien más.', 'last_workspace');
+    }
     if (db.projects.some((item) => item.workspace === workspace.id && ['uploaded', 'ingesting', 'rendering'].includes(item.status))) {
       throw conflict(
         'Hay proyectos procesándose o renderizándose en este espacio: esperá a que terminen para borrarlo. Si alguno quedó trabado, borrá ese proyecto primero.',
@@ -100,7 +103,7 @@ export const workspacesHandlers = [
       );
     }
     if (db.posts.some((item) => item.workspace === workspace.id && (item.status === 'QUEUED' || item.status === 'PROCESSING'))) {
-      throw conflict('Hay publicaciones saliendo a las redes en este momento: esperá a que terminen para borrar el espacio.', 'posts_in_flight');
+      throw conflict('Hay publicaciones saliendo a las redes en este momento: esperá a que terminen para borrar el espacio. Si alguna quedó trabada, se libera sola: probá de nuevo en unos 15 minutos.', 'posts_in_flight');
     }
     const wallet = db.wallets.find((item) => item.workspace === workspace.id);
     if (wallet && wallet.reserved_balance > 0) {
@@ -113,9 +116,6 @@ export const workspacesHandlers = [
         code: 'balance_left',
         available_balance: left,
       });
-    }
-    if (!db.workspaces.some((item) => item.id !== workspace.id && roleIn(db, item.id, user.id))) {
-      throw conflict('Es tu único espacio de trabajo y no se puede borrar. Creá otro primero, o sumate al de alguien más.', 'last_workspace');
     }
     db.workspaces = db.workspaces.filter((item) => item.id !== workspace.id);
     db.members = db.members.filter((item) => item.workspace !== workspace.id);

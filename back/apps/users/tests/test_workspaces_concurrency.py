@@ -88,3 +88,55 @@ class ConcurrentOwnerChangesTests(APITransactionTestCase):
             winner.pk: WorkspaceMember.Role.ADMIN,
             loser.pk: WorkspaceMember.Role.EDITOR,
         }
+
+
+class ConcurrentLastWorkspaceTests(APITransactionTestCase):
+    """
+    An owner deletes their only two workspaces at the same time. Each delete
+    locks its own workspace, so only the owner's row lock makes the second one
+    count after the first: one goes, the other is their last and stays.
+    """
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username="sola", email="sola@test.com", password="password")
+        self.first = self.owner.owned_workspaces.get()
+        self.second = Workspace.objects.create(name="El segundo", owner=self.owner)
+
+    def test_two_deletes_at_once_leave_one_workspace(self):
+        from apps.users import views_workspaces
+
+        meeting = threading.Barrier(2)
+        count = views_workspaces._other_workspaces
+
+        def count_together(user, workspace):
+            # Both requests about to count: with the user's row lock the second never gets here
+            # while the first waits, so the first goes on alone after two seconds.
+            try:
+                meeting.wait(timeout=2)
+            except threading.BrokenBarrierError:
+                pass
+            return count(user, workspace)
+
+        answers = {}
+
+        def delete(workspace):
+            try:
+                api = APIClient()
+                api.force_authenticate(user=self.owner)
+                answers[workspace.pk] = api.delete(
+                    f"/api/v1/workspaces/{workspace.pk}/", {"confirm_name": workspace.name}, format="json",
+                )
+            finally:
+                connection.close()
+
+        with mock.patch.object(views_workspaces, "_other_workspaces", count_together):
+            threads = [threading.Thread(target=delete, args=(workspace,)) for workspace in (self.first, self.second)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+
+        assert sorted(response.status_code for response in answers.values()) == [204, 409]
+        refused = next(response for response in answers.values() if response.status_code == 409)
+        assert refused.json()["code"] == "last_workspace"
+        assert Workspace.objects.filter(owner=self.owner).count() == 1

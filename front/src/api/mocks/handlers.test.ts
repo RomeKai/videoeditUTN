@@ -365,9 +365,8 @@ describe('mocks', () => {
     const balance = await remove();
     expect(balance.code).toBe('balance_left');
     expect(balance.message).toBe('Quedan 120.5 tokens en este espacio y no se pueden recuperar después de borrarlo. Usalos o escribinos antes de borrarlo.');
-    // Empty wallet, but no other workspace to work in.
+    // No other workspace to work in: that comes first, whatever else holds (the tokens are still there).
     edit((db) => {
-      for (const wallet of db.wallets) if (wallet.workspace === id) wallet.available_balance = 0;
       db.workspaces = db.workspaces.filter((workspace) => workspace.id === id);
       db.members = db.members.filter((member) => member.workspace === id);
     });

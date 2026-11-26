@@ -332,17 +332,70 @@ def test_delete_is_refused_with_tokens_reserved(team, how):
     assert Workspace.objects.filter(pk=team.workspace.pk).exists()
 
 
-@pytest.mark.parametrize("in_flight", [ScheduledPost.Status.QUEUED, ScheduledPost.Status.PROCESSING])
-def test_delete_is_refused_while_a_post_is_going_out(team, in_flight):
+def _post(team, status, publish_in=None, updated_ago=None):
+    from datetime import timedelta
+
+    from django.utils import timezone
+
     clip = VideoClip.objects.create(project=_project(team.workspace, team.editor), title="c", start_time=0, end_time=5)
-    post = ScheduledPost.objects.create(video_clip=clip, platform=ScheduledPost.Platform.TIKTOK, publish_at="2030-01-01T00:00:00Z", status=in_flight)
+    post = ScheduledPost.objects.create(
+        video_clip=clip, platform=ScheduledPost.Platform.TIKTOK, status=status,
+        publish_at=timezone.now() + (publish_in or timedelta(hours=1)),
+    )
+    if updated_ago is not None:
+        ScheduledPost.objects.filter(pk=post.pk).update(updated_at=timezone.now() - updated_ago)
+    return post
+
+
+def _in_flight_cases():
+    from datetime import timedelta
+
+    from apps.users.views_workspaces import POST_PROCESSING_WINDOW, POST_QUEUED_GRACE
+
+    minute = timedelta(minutes=1)
+    return [
+        # (status, publish_at from now, updated_at ago, refused)
+        ("QUEUED", timedelta(minutes=30), None, True),            # waiting for its time
+        ("QUEUED", -(POST_QUEUED_GRACE - minute), None, True),    # due, its task may be retrying
+        ("QUEUED", -(POST_QUEUED_GRACE + minute), None, False),   # stuck: its task never came
+        ("PROCESSING", -timedelta(days=1), timedelta(0), True),   # being sent now, however late
+        ("PROCESSING", timedelta(0), POST_PROCESSING_WINDOW - minute, True),
+        ("PROCESSING", timedelta(0), POST_PROCESSING_WINDOW + minute, False),  # stuck: the worker died
+    ]
+
+
+@pytest.mark.parametrize("case", range(6))
+def test_delete_is_refused_only_while_a_post_can_be_going_out(team, case):
+    status, publish_in, updated_ago, refused = _in_flight_cases()[case]
+    post = _post(team, status, publish_in, updated_ago)
+
+    response = client_for(team.owner).delete(url(team.workspace), {"confirm_name": team.workspace.name}, format="json")
+
+    if refused:
+        assert response.status_code == 409
+        assert response.json()["code"] == "posts_in_flight"
+        assert "Si alguna quedó trabada, se libera sola" in response.json()["error"]
+        assert Workspace.objects.filter(pk=team.workspace.pk).exists()
+        assert ScheduledPost.objects.filter(pk=post.pk).exists()
+    else:
+        # A stuck post never ends on its own: it goes with the workspace.
+        assert response.status_code == 204
+        assert not ScheduledPost.objects.filter(pk=post.pk).exists()
+
+
+def test_the_last_workspace_refusal_comes_before_the_ones_that_pass_with_time(team):
+    """Processing, a post going out, reserved tokens and balance: all true, and the answer is still last_workspace."""
+    team.spare.delete()
+    _project(team.workspace, team.editor, status=VideoProject.Status.RENDERING)
+    _post(team, "PROCESSING")
+    wallet = team.workspace.wallet
+    wallet.available_balance, wallet.reserved_balance = Decimal("50"), Decimal("5")
+    wallet.save()
 
     response = client_for(team.owner).delete(url(team.workspace), {"confirm_name": team.workspace.name}, format="json")
 
     assert response.status_code == 409
-    assert response.json()["code"] == "posts_in_flight"
-    assert Workspace.objects.filter(pk=team.workspace.pk).exists()
-    assert ScheduledPost.objects.filter(pk=post.pk).exists()
+    assert response.json()["code"] == "last_workspace"
 
 
 @pytest.mark.parametrize("balance, sentence", [("120.5", "Quedan 120.5 tokens"), ("1", "Queda 1 token "), ("0.0000000001", "Quedan 0.0000000001 tokens")])
