@@ -13,7 +13,7 @@ export function useClip(id: string | null | undefined) {
     queryKey: keys.clips.detail(id ?? ''),
     queryFn: ({ signal }) => apiCall(contract.getClip, { params: { id: id ?? '' }, signal }),
     enabled: Boolean(id),
-    ...pollWhile<Clip>((clip) => clip?.status === 'rendering'),
+    ...pollWhile<Clip>((clip) => clip?.status === 'rendering' || clip?.render_queued === true),
   });
 }
 
@@ -57,12 +57,16 @@ export function useRenderClip(id: string) {
   });
 }
 
-/** D3: retry a failed clip (free when the failure was ours). */
+/**
+ * D3: retry a failed clip. Paid like a render (its share went back when it failed): confirm the
+ * cost first. The answer brings `final_cost`; a 402 opens D2 and a plan 403 opens D3.
+ */
 export function useRetryClip() {
   const invalidate = useInvalidateClip();
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => apiCall(contract.retryClip, { params: { id } }),
-    onSuccess: (_clip, id) => invalidate(id),
+    onSuccess: (_clip, id) => Promise.all([invalidate(id), queryClient.invalidateQueries({ queryKey: keys.billing.all })]),
   });
 }
 

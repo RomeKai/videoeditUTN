@@ -252,6 +252,20 @@ describe('mocks', () => {
     }
   });
 
+  it('probe-link: más largo que el plan es 403 `duration`; más largo que la app, sin plan que lo acepte, 400 `duration_app`', async () => {
+    const long = { body: { video_url: 'https://www.youtube.com/watch?v=largo' } }; // 5 h
+    // Pro takes up to the app's 3 h: no plan would take it.
+    const app = await fail(apiCall(projects.probeLink, long));
+    expect([app.status, app.code, app.data.limit]).toEqual([400, 'duration_app', 10800]);
+    expect(app.isPlanLimit).toBe(false);
+    // Gratis (10 min): another plan could, up to its own limit.
+    signIn('plan-gratis');
+    const plan = await fail(apiCall(projects.probeLink, long));
+    expect([plan.status, plan.code, plan.data.limit]).toEqual([403, 'duration', 600]);
+    const shorter = await fail(apiCall(projects.probeLink, { body: { video_url: 'https://www.youtube.com/watch?v=clase-45min' } }));
+    expect([shorter.status, shorter.code]).toEqual([403, 'duration']);
+  });
+
   it('saldo insuficiente responde 402 con lo que hacía falta', async () => {
     signIn('saldo-bajo');
     const error = await fail(apiCall(projects.createProject, { body: { source_file: new File(['x'], 'clase-30min.mp4', { type: 'video/mp4' }) } }));
@@ -305,7 +319,8 @@ describe('mocks', () => {
     expect((await fail(apiCall(social.connectSocialAccount, { body: { platform: 'YOUTUBE_SHORTS' } }))).status).toBe(403);
     const mine = (await apiCall(projects.listProjects, { query: {} })).results;
     const foreign = mine.find((project) => project.uploaded_by !== USER_IDS.carla);
-    const own = mine.find((project) => project.uploaded_by === USER_IDS.carla);
+    // One that ended: a project that is processing or rendering cannot be deleted (409).
+    const own = mine.find((project) => project.uploaded_by === USER_IDS.carla && project.status === 'completed');
     if (!foreign || !own) throw new Error('faltan proyectos');
     // An Editor deletes only their own projects.
     expect((await fail(apiCall(projects.deleteProject, { params: { id: foreign.id } }))).status).toBe(403);
@@ -431,5 +446,256 @@ describe('mocks', () => {
     expect((await apiCall(system.getSystemStatus)).maintenance_window).not.toBeNull();
     // Everything else answers 503, which is what puts the app on the maintenance page.
     expect((await fail(apiCall(projects.listProjects, { query: {} }))).status).toBe(503);
+  });
+});
+
+describe('mocks · renders pagos (views_clips.py)', () => {
+  beforeEach(() => signIn('estudio-norte'));
+
+  const projectByTitle = (title: string) => {
+    const project = loadDb().projects.find((item) => item.title.startsWith(title));
+    if (!project) throw new Error(`No hay proyecto «${title}»`);
+    return project;
+  };
+  const edit = (title: string, change: (project: ReturnType<typeof projectByTitle>, db: ReturnType<typeof loadDb>) => void) => {
+    const db = loadDb();
+    const project = db.projects.find((item) => item.title.startsWith(title));
+    if (!project) throw new Error(`No hay proyecto «${title}»`);
+    change(project, db);
+    saveDb(db);
+  };
+  const transaction = (id: string) => loadDb().transactions.find((item) => item.id === id);
+  const seconds = (clip: { start_time: number; end_time: number }) => clip.end_time - clip.start_time;
+
+  it('reintentar un clip fallido cobra su render: reserva, renderiza y liquida', async () => {
+    const project = projectByTitle('Charla en la UTN');
+    const failed = project.clips.find((clip) => clip.status === 'failed');
+    if (!failed) throw new Error('falta el clip fallido');
+    const before = await apiCall(billing.getWallet);
+
+    const retried = await apiCall(clips.retryClip, { params: { id: failed.id } });
+    // As the backend: the clip is `draft`, queued, until a worker takes it.
+    expect([retried.status, retried.render_queued]).toEqual(['draft', true]);
+    expect(retried.final_cost).toBeGreaterThan(0);
+    expect(transaction(retried.transaction_id)).toMatchObject({ status: 'RESERVED', amount: retried.final_cost, category: 'render', description: `Reintento de clip: ${failed.title}` });
+    const reserved = await apiCall(billing.getWallet);
+    expect(reserved.available_balance).toBeCloseTo(before.available_balance - retried.final_cost, 2);
+    expect(reserved.reserved_balance).toBeCloseTo(before.reserved_balance + retried.final_cost, 2);
+    // The project renders until the clip ends, as in the backend.
+    expect((await apiCall(projects.getProject, { params: { id: project.id } })).status).toBe('rendering');
+    advance(SIM.claimMs);
+    const claimed = (await apiCall(projects.getProject, { params: { id: project.id } })).clips.find((clip) => clip.id === failed.id);
+    expect([claimed?.status, claimed?.render_queued]).toEqual(['rendering', undefined]);
+
+    advance(SIM.clipMs * 2);
+    const after = await apiCall(projects.getProject, { params: { id: project.id } });
+    expect(after.status).toBe('completed');
+    expect(after.clips.find((clip) => clip.id === failed.id)?.status).toBe('completed');
+    expect(transaction(retried.transaction_id)).toMatchObject({ status: 'COMPLETED', amount: retried.final_cost });
+    const settled = await apiCall(billing.getWallet);
+    expect(settled.available_balance).toBeCloseTo(before.available_balance - retried.final_cost, 2);
+    expect(settled.reserved_balance).toBeCloseTo(before.reserved_balance, 2);
+  });
+
+  it('un solo render pago por proyecto a la vez: el segundo recibe el 409 del backend y no se cobra', async () => {
+    const project = projectByTitle('Charla en la UTN');
+    const failed = project.clips.find((clip) => clip.status === 'failed');
+    const ready = project.clips.find((clip) => clip.status === 'completed');
+    if (!failed || !ready) throw new Error('faltan clips');
+    await apiCall(clips.retryClip, { params: { id: failed.id } });
+    const wallet = await apiCall(billing.getWallet);
+
+    // A double click on the retry: the clip is no longer failed.
+    const again = await fail(apiCall(clips.retryClip, { params: { id: failed.id } }));
+    expect([again.status, again.code]).toEqual([409, 'not_failed']);
+    // The same clip from the editor, while it waits for its render.
+    const same = await fail(apiCall(clips.renderClip, { params: { id: failed.id } }));
+    expect([same.status, same.code, same.message]).toEqual([409, 'clip_rendering', 'El clip ya se está renderizando.']);
+    // Another clip of the same project.
+    const other = await fail(apiCall(clips.renderClip, { params: { id: ready.id } }));
+    expect([other.status, other.code]).toEqual([409, 'project_rendering']);
+    expect(other.message).toMatch(/El proyecto se está renderizando/);
+    // And the whole project.
+    const all = await fail(apiCall(projects.rerenderProject, { params: { id: project.id }, body: {} }));
+    expect([all.status, all.code]).toEqual([409, 'clip_rendering']);
+    // The same once a worker took the clip.
+    advance(SIM.claimMs);
+    const claimed = await fail(apiCall(clips.renderClip, { params: { id: failed.id } }));
+    expect([claimed.status, claimed.code]).toEqual([409, 'clip_rendering']);
+    // Nothing else was reserved.
+    expect((await apiCall(billing.getWallet)).available_balance).toBe(wallet.available_balance);
+    expect((await apiCall(billing.getWallet)).reserved_balance).toBe(wallet.reserved_balance);
+  });
+
+  it('un reintento que vuelve a fallar devuelve todo y el clip queda en error', async () => {
+    const project = projectByTitle('Charla en la UTN');
+    const failed = project.clips.find((clip) => clip.status === 'failed');
+    if (!failed) throw new Error('falta el clip fallido');
+    const before = await apiCall(billing.getWallet);
+    const retried = await apiCall(clips.retryClip, { params: { id: failed.id } });
+    edit('Charla en la UTN', (item) => {
+      for (const clip of item.clips) if (clip.id === failed.id) clip._renderFails = true;
+    });
+    advance(SIM.clipMs * 2);
+    const after = await apiCall(projects.getProject, { params: { id: project.id } });
+    expect(after.status).toBe('partial');
+    expect(after.clips.find((clip) => clip.id === failed.id)?.status).toBe('failed');
+    expect(transaction(retried.transaction_id)).toMatchObject({ status: 'FAILED', kind: 'released' });
+    expect((await apiCall(billing.getWallet)).available_balance).toBeCloseTo(before.available_balance, 2);
+  });
+
+  it('se cobra por lo entregado: de un render de todos los clips, lo que falló vuelve y el clip conserva lo que tenía', async () => {
+    // Its scheduled posts would refuse the render (posts_pending): they are cancelled first.
+    edit('Vlog Mendoza', (item, db) => {
+      db.posts = db.posts.filter((post) => post.clip.project_id !== item.id);
+    });
+    const project = projectByTitle('Vlog Mendoza');
+    const delivered = project.clips.filter((clip) => clip.status === 'completed' || clip.status === 'published');
+    expect(delivered.length).toBeGreaterThan(1);
+    const loser = delivered[0] as (typeof delivered)[number];
+    const before = await apiCall(billing.getWallet);
+
+    const paid = await apiCall(projects.rerenderProject, { params: { id: project.id }, body: { editing_style: 'hormozi' } });
+    edit('Vlog Mendoza', (item) => {
+      for (const clip of item.clips) if (clip.id === loser.id) clip._renderFails = true;
+    });
+    advance(SIM.clipMs * (delivered.length + 1));
+
+    const total = delivered.reduce((sum, clip) => sum + seconds(clip), 0);
+    const charged = Math.round(paid.final_cost * ((total - seconds(loser)) / total) * 100) / 100;
+    expect(transaction(paid.transaction_id)).toMatchObject({ status: 'COMPLETED', amount: charged });
+    expect((await apiCall(billing.getWallet)).available_balance).toBeCloseTo(before.available_balance - charged, 2);
+    const after = await apiCall(projects.getProject, { params: { id: project.id } });
+    // The clip whose new render failed keeps the file it had: the project has nothing in error.
+    expect(after.status).toBe('completed');
+    const kept = after.clips.find((clip) => clip.id === loser.id);
+    expect([kept?.status, kept?.s3_object_key]).toEqual([loser.status, loser.s3_object_key]);
+    expect(after.editing_style).toBe('hormozi');
+  });
+
+  it('sin saldo el reintento responde 402 con lo que hacía falta y no cambia nada', async () => {
+    const project = projectByTitle('Charla en la UTN');
+    const failed = project.clips.find((clip) => clip.status === 'failed');
+    if (!failed) throw new Error('falta el clip fallido');
+    edit('Charla en la UTN', (_item, db) => {
+      for (const wallet of db.wallets) wallet.available_balance = 0;
+    });
+    const error = await fail(apiCall(clips.retryClip, { params: { id: failed.id } }));
+    expect(error.status).toBe(402);
+    expect(error.message).toBe('Saldo insuficiente para reservar los tokens.');
+    expect(error.requiredTokens).toBeGreaterThan(0);
+    const after = await apiCall(projects.getProject, { params: { id: project.id } });
+    expect([after.status, after.clips.find((clip) => clip.id === failed.id)?.status]).toEqual(['partial', 'failed']);
+  });
+
+  it('un clip con una publicación programada no se renderiza de nuevo (409 posts_pending)', async () => {
+    const post = loadDb().posts.find((item) => item.status === 'SCHEDULED');
+    if (!post) throw new Error('falta una publicación programada');
+    const error = await fail(apiCall(clips.renderClip, { params: { id: post.video_clip } }));
+    expect([error.status, error.code]).toEqual([409, 'posts_pending']);
+  });
+
+  it('re-despachar un proyecto que falló reserva de nuevo lo que se había devuelto', async () => {
+    signIn('todos-los-estados', 'martin');
+    const project = projectByTitle('Falló: CapacityTimeoutError');
+    const creation = transaction(String(project.metadata.reservation_id));
+    expect(creation?.status).toBe('FAILED');
+    const before = await apiCall(billing.getWallet);
+
+    const resumed = await apiCall(projects.redispatchProject, { params: { id: project.id } });
+    // As the backend: the row is still `failed` with its code; the task reopens it when it runs.
+    expect([resumed.status, resumed.pipeline_error_code]).toEqual(['failed', 'CapacityTimeoutError']);
+    expect(resumed.cost_details?.tokens_reserved).toBe(creation?.amount);
+    expect(transaction(resumed.cost_details?.transaction_id ?? '')).toMatchObject({ status: 'RESERVED', amount: creation?.amount, description: `Procesamiento: ${project.title}` });
+    expect((await apiCall(billing.getWallet)).available_balance).toBeCloseTo(before.available_balance - (creation?.amount ?? 0), 2);
+    // A second one before the task ran queues it again and reserves nothing more: its reservation is open.
+    const again = await apiCall(projects.redispatchProject, { params: { id: project.id } });
+    expect(again.cost_details).toBeUndefined();
+    expect((await apiCall(billing.getWallet)).available_balance).toBeCloseTo(before.available_balance - (creation?.amount ?? 0), 2);
+    // The task runs: the project is reopened and its error is gone.
+    advance(SIM.queueMs);
+    const reopened = await apiCall(projects.getProject, { params: { id: project.id } });
+    expect([reopened.status, reopened.pipeline_error_code]).toEqual(['ingesting', '']);
+    const late = await fail(apiCall(projects.redispatchProject, { params: { id: project.id } }));
+    expect([late.status, late.code]).toEqual([409, 'not_failed']);
+  });
+
+  it('re-despachar: sin saldo 402; moderación, ingesta sin encolar y un proyecto que no falló, 409 con su código', async () => {
+    signIn('todos-los-estados', 'martin');
+    const code = async (title: string) => {
+      const error = await fail(apiCall(projects.redispatchProject, { params: { id: projectByTitle(title).id } }));
+      return [error.status, error.code];
+    };
+    expect(await code('Falló: UnsafeContentError')).toEqual([409, 'moderation_blocked']);
+    expect(await code('Falló: IngestionNotQueued')).toEqual([409, 'not_queued']);
+    expect(await code('Vlog Mendoza')).toEqual([409, 'not_failed']);
+    edit('Falló: CapacityTimeoutError', (_item, db) => {
+      for (const wallet of db.wallets) wallet.available_balance = 0;
+    });
+    const broke = await fail(apiCall(projects.redispatchProject, { params: { id: projectByTitle('Falló: CapacityTimeoutError').id } }));
+    expect(broke.status).toBe(402);
+    expect(broke.requiredTokens).toBeGreaterThan(0);
+    expect(projectByTitle('Falló: CapacityTimeoutError').status).toBe('failed');
+  });
+
+  it('re-despachar es del Dueño y de los Admin', async () => {
+    signIn('todos-los-estados', 'carla');
+    const error = await fail(apiCall(projects.redispatchProject, { params: { id: projectByTitle('Falló: CapacityTimeoutError').id } }));
+    expect(error.status).toBe(403);
+  });
+
+  it('borrar un proyecto con un render abierto responde 409 con el mensaje del servidor; cuando termina, se borra', async () => {
+    const project = projectByTitle('Charla en la UTN');
+    const failed = project.clips.find((clip) => clip.status === 'failed');
+    if (!failed) throw new Error('falta el clip fallido');
+    await apiCall(clips.retryClip, { params: { id: failed.id } });
+    const busy = await fail(apiCall(projects.deleteProject, { params: { id: project.id } }));
+    expect([busy.status, busy.code, busy.message]).toEqual([409, 'project_processing', 'El proyecto se está procesando: esperá a que termine para borrarlo.']);
+    expect(loadDb().projects.some((item) => item.id === project.id)).toBe(true);
+
+    // Ended, but its reservation is not settled yet.
+    edit('Charla en la UTN', (item) => {
+      item.status = 'partial';
+    });
+    const open = await fail(apiCall(projects.deleteProject, { params: { id: project.id } }));
+    expect([open.status, open.code]).toEqual([409, 'reservation_open']);
+    expect(open.message).toMatch(/tokens reservados que todavía no se liquidaron/);
+
+    edit('Charla en la UTN', (item) => {
+      item.status = 'rendering';
+    });
+    advance(SIM.clipMs * 2);
+    await expect(apiCall(projects.deleteProject, { params: { id: project.id } })).resolves.toBeUndefined();
+  });
+
+  it('un proyecto en revisión se puede borrar: su procesamiento ya se cobró, no queda ninguna reserva', async () => {
+    // A seeded one…
+    const seeded = projectByTitle('Podcast Ep. 42');
+    expect(seeded.status).toBe('awaiting_approval');
+    expect(transaction(String(seeded.metadata.reservation_id))?.status).toBe('COMPLETED');
+    await expect(apiCall(projects.deleteProject, { params: { id: seeded.id } })).resolves.toBeUndefined();
+    // …and one that went through the pipeline: charged when its clips were selected, before the review.
+    const reservedBefore = (await apiCall(billing.getWallet)).reserved_balance;
+    const created = await apiCall(projects.createProject, { body: { source_file: new File(['x'], 'clase-8min.mp4', { type: 'video/mp4' }) } });
+    expect(transaction(created.cost_details.transaction_id)?.status).toBe('RESERVED');
+    const busy = await fail(apiCall(projects.deleteProject, { params: { id: created.id } }));
+    expect([busy.status, busy.code]).toEqual([409, 'project_processing']);
+    advance(SIM.queueMs + SIM.stageMs * 5);
+    const inReview = await apiCall(projects.getProject, { params: { id: created.id } });
+    expect(inReview.status).toBe('awaiting_approval');
+    expect(transaction(created.cost_details.transaction_id)?.status).toBe('COMPLETED');
+    expect((await apiCall(billing.getWallet)).reserved_balance).toBeCloseTo(reservedBefore, 2);
+    await expect(apiCall(projects.deleteProject, { params: { id: created.id } })).resolves.toBeUndefined();
+    expect(loadDb().projects.some((item) => item.id === created.id)).toBe(false);
+  });
+
+  it('un clip no se borra mientras su proyecto renderiza', async () => {
+    const project = projectByTitle('Charla en la UTN');
+    const failed = project.clips.find((clip) => clip.status === 'failed');
+    const ready = project.clips.find((clip) => clip.status === 'completed');
+    if (!failed || !ready) throw new Error('faltan clips');
+    await apiCall(clips.retryClip, { params: { id: failed.id } });
+    const error = await fail(apiCall(clips.deleteClip, { params: { id: ready.id } }));
+    expect([error.status, error.code]).toEqual([409, 'project_rendering']);
   });
 });

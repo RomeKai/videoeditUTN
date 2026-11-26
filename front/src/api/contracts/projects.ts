@@ -80,6 +80,14 @@ export const KNOWN_PIPELINE_ERROR_CODES = [
   'AutoRenderNotPaid',
   /** The creation could not queue the ingestion (broker down): the project fails and its reservation goes back, together (views.py · _fail_unqueued_project). Never resumed. */
   'IngestionNotQueued',
+  /** A link project whose link is not one video of YouTube, Vimeo, Twitch or Google Drive when it is fetched (tasks/shared.py · download_from_youtube). Not retried. */
+  'UnsupportedLinkError',
+  /** The linked video is longer than the plan allows (another plan would take it). Not retried. */
+  'LinkTooLongError',
+  /** The linked video is longer than the app accepts on any plan (AI_UPLOAD_MAX_DURATION_SECONDS, 3 h). Not retried. */
+  'LinkTooLongForAppError',
+  /** The linked video's file is larger than LINK_DOWNLOAD_MAX_BYTES. Not retried. */
+  'LinkTooLargeError',
 ] as const;
 export type KnownPipelineErrorCode = (typeof KNOWN_PIPELINE_ERROR_CODES)[number];
 
@@ -147,7 +155,14 @@ export const Clip = z.object({
   preview_url: z.string().url().nullable().optional(),
   /** Proposed: poster image. */
   thumbnail_url: z.string().url().nullable().optional(),
-  /** Proposed (gap 11): why the render failed (class name), for "Reintentar no gasta tokens". */
+  /**
+   * True only while the clip, in `draft`, waits for a worker in an open paid render (a render, a
+   * retry or a rerender); false otherwise, also once it is `rendering`. Read-only. The backend adds
+   * it in PR #147 (VideoClipSerializer); older backends do not send it, so it is optional and the UI
+   * falls back to "a draft of a project that is rendering".
+   */
+  render_queued: z.boolean().optional(),
+  /** Proposed (gap 11): why the render failed (class name). The retry is paid whatever the reason (clips.retry). */
   error_code: z.string().nullable().optional(),
   /** Proposed (gap 8): networks where it is published or scheduled. */
   posts: z.array(ClipPostRef).optional(),
@@ -395,6 +410,10 @@ export type CreateProjectResponse = z.infer<typeof CreateProjectResponse>;
 export const CreateFromPromptResponse = CreateProjectResponse.extend({
   prompt_config: z.object({ status: z.literal('pending'), detail: z.string() }),
 });
+
+/** Body of `POST projects/{id}/redispatch/`: the project, with `cost_details` only when it reserved again (ProjectRedispatchView). */
+export const RedispatchResponse = Project.extend({ cost_details: CostDetails.optional() });
+export type RedispatchResponse = z.infer<typeof RedispatchResponse>;
 
 export const UpdateProjectRequest = z.object({ title: z.string().min(1).max(255) }).partial();
 
@@ -672,7 +691,7 @@ export const redispatchProject = defineEndpoint({
   method: 'POST',
   path: '/api/v1/projects/:id/redispatch/',
   summary: 'Vuelve a despachar el pipeline de un proyecto que falló, desde la última etapa terminada. Si lo que falta se había devuelto, lo reserva de nuevo por el mismo monto.',
-  response: Project,
+  response: RedispatchResponse,
   successStatus: 202,
   errors: [
     { status: 402, when: 'Saldo insuficiente para volver a reservar lo devuelto: `{ error, required }`. La UI abre D2.' },
@@ -782,7 +801,7 @@ export const probeLink = defineEndpoint({
   errors: [
     {
       status: 400,
-      when: 'El link no es una URL web (`code: "invalid"`), no es de un sitio soportado, es una IP o una dirección interna, o es una lista, un canal o un vivo (`code: "unsupported"`), o no se puede bajar: privado, borrado o con restricción (`code: "unavailable"`). Sin `video_url`: `{ video_url: [...] }`.',
+      when: 'El link no es una URL web (`code: "invalid"`), no es de un sitio soportado, es una IP o una dirección interna, o es una lista, un canal o un vivo (`code: "unsupported"`), o no se puede bajar: privado, borrado o con restricción (`code: "unavailable"`), o dura más que el máximo de la app y ningún plan lo aceptaría (`code: "duration_app"`, `limit` en segundos, 10800: sin plan, o con un plan cuyo límite es igual o mayor). La UI lo dice junto al campo, sin ofrecer planes. Sin `video_url`: `{ video_url: [...] }`.',
     },
     { status: 403, when: 'La duración supera el plan (`code: "duration"`, `limit` en segundos). La UI lo muestra junto al campo, con link a Planes. También el Lector (`{ detail }`): revisar un link es parte de crear.' },
     { status: 404, when: 'El workspace de `X-Workspace-Id` no es del usuario.' },

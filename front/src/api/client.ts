@@ -5,6 +5,7 @@ import { isBackendDefaultWorkspace } from './routing';
 import { ApiError, ContractError, NetworkError, RequestTimeoutError, SessionExpiredError, UploadStalledError } from './errors';
 import {
   getActiveWorkspaceId,
+  getTokenGeneration,
   getTokens,
   isSessionExpired,
   notifyMaintenance,
@@ -60,10 +61,72 @@ export function toFormData(fields: Record<string, unknown>): FormData {
 
 let refreshing: Promise<string> | null = null;
 
+/** Name of the Web Lock every tab of the app takes to renew the pair: one renewal at a time per browser. */
+export const REFRESH_LOCK_NAME = 'oc.auth.refresh';
+/**
+ * How long a renewal that was refused waits for the pair another tab may be about to store: its
+ * request reached the server first and its answer is on the way (a renewal without Web Locks, or
+ * the new pair of a password change, which takes no lock).
+ */
+export const REFRESH_FALLBACK_WAIT_MS = 500;
+/** How long a tab waits for the renewal lock: what the holder's request can take, plus a margin. */
+export const REFRESH_LOCK_WAIT_MS = REQUEST_TIMEOUT_MS + 5_000;
+const REFRESH_FALLBACK_POLL_MS = 50;
+
+function webLocks(): LockManager | undefined {
+  const locks = typeof navigator === 'undefined' ? undefined : (navigator as Navigator & { locks?: LockManager }).locks;
+  return locks && typeof locks.request === 'function' ? locks : undefined;
+}
+
+/**
+ * Runs `run` while holding the renewal lock, so two tabs never send the same refresh token (the
+ * backend rotates and blacklists it: the second would get a 401 and its tab the "Sesión vencida"
+ * dialog for nothing). Where Web Locks do not exist, cannot be asked for, or the lock does not
+ * come in `REFRESH_LOCK_WAIT_MS`, it runs without one.
+ */
+async function withRefreshLock<T>(run: () => Promise<T>): Promise<T> {
+  const locks = webLocks();
+  if (!locks) return run();
+  let entered = false;
+  // A tab that was suspended while holding the lock must not hang the others: past the longest a
+  // renewal can take, the wait is given up and this tab renews without the lock.
+  const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(REFRESH_LOCK_WAIT_MS) : undefined;
+  try {
+    return await locks.request(REFRESH_LOCK_NAME, signal ? { signal } : {}, () => {
+      entered = true;
+      return run();
+    });
+  } catch (error) {
+    if (entered) throw error;
+    // The lock itself failed (blocked by the browser, or the wait timed out): renew without it.
+    return run();
+  }
+}
+
+/** The pair another tab stored instead of `mine`, waiting up to `waitMs` for it. Null: nobody replaced it. */
+async function pairFromElsewhere(mine: string, waitMs: number): Promise<{ access: string } | null> {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const current = getTokens();
+    if (current && current.refresh !== mine) return current;
+    if (!current || Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, REFRESH_FALLBACK_POLL_MS));
+  }
+}
+
 /**
  * Renews the access token with the refresh token. Concurrent 401s share one
- * request. The backend rotates refresh tokens (ROTATE_REFRESH_TOKENS), so the
- * new pair replaces the stored one.
+ * request, and so do the tabs of the browser (`withRefreshLock`). The backend
+ * rotates refresh tokens (ROTATE_REFRESH_TOKENS) and blacklists the one it
+ * replaced (BLACKLIST_AFTER_ROTATION), so the new pair replaces the stored one.
+ *
+ * The stored pair is read again once the lock is held: if another tab renewed
+ * while this one waited, its pair is used and no request goes out.
+ *
+ * A pair stored while the request is in flight (a sign in, the new pair of a
+ * password change, a renewal of another tab) wins: the answer of this renewal
+ * is dropped, never written over it (`getTokenGeneration`). The server already
+ * revoked what this renewal would bring.
  *
  * Only a 400 or 401 from the refresh endpoint means the session is over
  * (SessionExpiredError). A 5xx, a 429 or no answer is a passing problem: it is
@@ -71,9 +134,23 @@ let refreshing: Promise<string> | null = null;
  */
 export function refreshAccessToken(): Promise<string> {
   if (refreshing) return refreshing;
-  refreshing = (async () => {
+  const initial = getTokens();
+  refreshing = withRefreshLock(async () => {
     const tokens = getTokens();
-    if (!tokens) throw new SessionExpiredError();
+    if (!tokens || !initial) throw new SessionExpiredError();
+    // Another tab renewed while this one waited for the lock: its pair is the current one.
+    if (tokens.refresh !== initial.refresh) return tokens.access;
+    const generation = getTokenGeneration();
+    /**
+     * The pair that replaced the one this renewal started with, if any: this renewal's answer is
+     * void. Replaced means this tab stored a pair meanwhile (the generation moved) or the stored
+     * refresh token is another one (another tab did).
+     */
+    const replacedBy = () => {
+      const current = getTokens();
+      if (getTokenGeneration() === generation && current && current.refresh === tokens.refresh) return null;
+      return { current };
+    };
     let response: Response;
     try {
       response = await send(
@@ -86,21 +163,32 @@ export function refreshAccessToken(): Promise<string> {
         { timeoutMs: REQUEST_TIMEOUT_MS },
       );
     } catch (cause) {
+      const replaced = replacedBy();
+      if (replaced?.current) return replaced.current.access;
       throw new NetworkError('auth.refresh', cause, 'POST');
     }
     if (response.status === 503) notifyMaintenance(true);
+    const replaced = replacedBy();
+    if (replaced) {
+      // Signed out meanwhile: nothing to renew, and nothing to bring back.
+      if (!replaced.current) throw new SessionExpiredError();
+      return replaced.current.access;
+    }
     if (!response.ok) {
-      // Another tab may have renewed (and rotated) the pair while this one waited: use what it stored.
-      const current = getTokens();
-      if (current && current.refresh !== tokens.refresh) return current.access;
-      if (response.status === 400 || response.status === 401) throw new SessionExpiredError();
+      if (response.status === 400 || response.status === 401) {
+        // Another tab may have got to the server first (the same refresh token without the lock, or a
+        // password change that revoked it): its pair is about to be stored.
+        const other = await pairFromElsewhere(tokens.refresh, REFRESH_FALLBACK_WAIT_MS);
+        if (other) return other.access;
+        throw new SessionExpiredError();
+      }
       throw new ApiError(response.status, 'auth.refresh', await readBody(response, 'json'));
     }
     const data = (await response.json()) as { access?: unknown; refresh?: unknown };
     if (typeof data.access !== 'string') throw new SessionExpiredError();
     setTokens({ access: data.access, refresh: typeof data.refresh === 'string' ? data.refresh : tokens.refresh });
     return data.access;
-  })().finally(() => {
+  }).finally(() => {
     refreshing = null;
   });
   return refreshing;

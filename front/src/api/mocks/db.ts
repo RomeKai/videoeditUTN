@@ -96,7 +96,20 @@ export interface ProjectSim {
   failOneClip?: boolean;
 }
 
-export type MockClip = Clip & { _renderUntil?: number; _renderFails?: boolean };
+/** `_renderFails`: the next render of the clip fails (tests and the mock panel set it). */
+export type MockClip = Clip & { _renderFails?: boolean };
+
+/**
+ * A render the user paid for after the project ended (CLIP_RENDER in the backend): a clip rendered
+ * again, a failed clip retried or every clip with another style. One per project at a time.
+ */
+export interface PaidRender {
+  /** Its reservation: settled by the seconds delivered when the last clip ends. */
+  reservation: string;
+  clipIds: string[];
+  /** What the user had of each clip: it comes back if the new render of that clip fails. */
+  previous: Record<string, { status: 'completed' | 'published'; key: string | null }>;
+}
 
 export type MockProject = Omit<Project, 'clips' | 'transcript_data'> & {
   clips: MockClip[];
@@ -105,6 +118,8 @@ export type MockProject = Omit<Project, 'clips' | 'transcript_data'> & {
   _sim?: ProjectSim;
   /** Reservation of the creation and of the render, to settle or refund them. */
   _reservations: string[];
+  /** The paid render in progress, if any (see PaidRender). */
+  _paidRender?: PaidRender;
 };
 
 /** `regen`: how many times the AI text was regenerated (E1 · Regenerar); the new text replaces the current one. */
@@ -183,6 +198,6 @@ export interface MockDb {
   resendAt: Record<string, number>;
 }
 
-export const DB_VERSION = 11;
+export const DB_VERSION = 12;
 
 export const PLATFORMS: Platform[] = ['TIKTOK', 'INSTAGRAM_REELS', 'YOUTUBE_SHORTS'];

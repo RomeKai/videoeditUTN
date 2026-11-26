@@ -52,7 +52,6 @@ function finishRenders() {
   const db = loadDb();
   for (const project of db.projects) {
     if (project._sim) project._sim.startedAt -= 600_000;
-    for (const clip of project.clips) if (clip._renderUntil !== undefined) clip._renderUntil = 0;
   }
   saveDb(db);
 }
@@ -325,23 +324,96 @@ describe('D3 · Clips', () => {
     expect(nav.push.mock.calls[0]?.[0]).toMatch(/\?publicar=[0-9a-f-]{36}$/);
   });
 
-  it('un clip con error se reintenta sin gastar tokens', async () => {
-    const { user } = open('Charla en la UTN', 'clips', 'estudio-norte');
-    expect(await screen.findByText('No se pudo generar. Reintentar no gasta tokens.')).toBeInTheDocument();
+  it('reintentar un clip con error es pago: muestra el costo, se confirma y reserva los tokens', async () => {
+    const { user, id } = open('Charla en la UTN', 'clips', 'estudio-norte');
+    expect(await screen.findByText('No se pudo generar y no se cobró. Reintentar cuesta tokens.')).toBeInTheDocument();
+    expect(screen.queryByText(/no gasta tokens/i)).toBeNull();
+    const failed = loadDb().projects.find((item) => item.id === id)?.clips.find((clip) => clip.status === 'failed');
+    if (!failed) throw new Error('falta el clip fallido');
     await user.click(screen.getByRole('button', { name: 'Reintentar' }));
-    expect(await screen.findByText('Reintentando el clip. No gasta tokens.')).toBeInTheDocument();
+    // The same "Confirmar costo" of every paid action: nothing was sent yet.
+    const dialog = await screen.findByRole('dialog', { name: 'Reintentar el clip' });
+    expect(within(dialog).getByText(failed.title)).toBeInTheDocument();
+    expect(within(dialog).getByText('Total')).toBeInTheDocument();
+    expect(within(dialog).getByText('Saldo después')).toBeInTheDocument();
+    expect(loadDb().projects.find((item) => item.id === id)?.status).toBe('partial');
+    await user.click(within(dialog).getByRole('button', { name: 'Reintentar' }));
+    // The toast says what was reserved.
+    const reservation = await waitFor(() => {
+      const found = loadDb().transactions.find((item) => item.description === `Reintento de clip: ${failed.title}`);
+      if (!found) throw new Error('todavía no reservó');
+      return found;
+    });
+    expect(reservation.status).toBe('RESERVED');
+    expect(await screen.findByText(/^Reintentando el clip\. Reservamos [\d.,]+ tokens?; si vuelve a fallar, te los devolvemos\.$/)).toBeInTheDocument();
     expect(await screen.findByText('Renderizando…')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Reintentar el clip' })).toBeNull();
   });
 
-  it('después de reintentar, la pantalla sigue consultando hasta que el clip termina (el proyecto sigue «parcial»)', async () => {
+  it('reintentar: cancelar el costo no manda nada', async () => {
+    const { user, id } = open('Charla en la UTN', 'clips', 'estudio-norte');
+    await user.click(await screen.findByRole('button', { name: 'Reintentar' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Reintentar el clip' });
+    await user.click(within(dialog).getByRole('button', { name: 'Cancelar' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Reintentar el clip' })).toBeNull());
+    const project = loadDb().projects.find((item) => item.id === id);
+    expect(project?.status).toBe('partial');
+    expect(loadDb().transactions.some((item) => item.description.startsWith('Reintento de clip'))).toBe(false);
+  });
+
+  it('reintentar sin saldo abre «No te alcanza el saldo» en vez de confirmar', async () => {
+    const { user } = open('Charla en la UTN', 'clips', 'estudio-norte', 'lucia', (_project, db) => {
+      for (const wallet of db.wallets) wallet.available_balance = 0;
+    });
+    const button = await screen.findByRole('button', { name: 'Reintentar' });
+    // The balance is read before the click decides.
+    await waitFor(() => expect(loadDb().wallets[0]?.available_balance).toBe(0));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await user.click(button);
+    expect(await screen.findByRole('alertdialog', { name: 'No te alcanza el saldo' })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Reintentar el clip' })).toBeNull();
+  });
+
+  it('reintentar mientras el proyecto ya renderiza: el diálogo muestra el motivo del servidor y no se cobra dos veces', async () => {
+    const { user, id } = open('Charla en la UTN', 'clips', 'estudio-norte');
+    await user.click(await screen.findByRole('button', { name: 'Reintentar' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Reintentar el clip' });
+    // Someone else started a render of this project meanwhile.
+    const db = loadDb();
+    const project = db.projects.find((item) => item.id === id);
+    if (project) project.status = 'rendering';
+    saveDb(db);
+    await user.click(within(dialog).getByRole('button', { name: 'Reintentar' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('El proyecto se está renderizando: esperá a que termine para cambiarlo.');
+    expect(loadDb().transactions.some((item) => item.description.startsWith('Reintento de clip'))).toBe(false);
+  });
+
+  it('después de reintentar, la pantalla sigue consultando hasta que el clip termina', async () => {
     const { user } = open('Charla en la UTN', 'clips', 'estudio-norte');
     await user.click(await screen.findByRole('button', { name: 'Reintentar' }));
+    await user.click(within(await screen.findByRole('dialog', { name: 'Reintentar el clip' })).getByRole('button', { name: 'Reintentar' }));
     expect(await screen.findByText('Renderizando…')).toBeInTheDocument();
     finishRenders();
     // Nothing else is touched: only the 5 s poll can bring the new state.
     await waitFor(() => expect(screen.queryByText('Renderizando…')).toBeNull(), { timeout: 9000 });
     expect(within(screen.getByRole('list')).getAllByText('Listo')).toHaveLength(6);
   }, 20_000);
+
+  it('borrar un proyecto que está renderizando: el diálogo muestra el motivo del servidor y el proyecto sigue', async () => {
+    const { user, id } = open('Charla en la UTN', '', 'estudio-norte', 'lucia', (project) => {
+      project.status = 'rendering';
+      project.pipeline_stage = 'render_dispatched';
+      for (const clip of project.clips) if (clip.status === 'failed') clip.status = 'rendering';
+    });
+    await user.click(await screen.findByRole('button', { name: /Más acciones: renombrar/ }));
+    await user.click(screen.getByRole('menuitem', { name: 'Borrar' }));
+    const dialog = await screen.findByRole('alertdialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Borrar proyecto' }));
+    expect(await within(dialog).findByText('El proyecto se está procesando: esperá a que termine para borrarlo.')).toBeInTheDocument();
+    expect(within(dialog).queryByText('No pudimos borrar el proyecto.')).toBeNull();
+    expect(nav.replace).not.toHaveBeenCalled();
+    expect(loadDb().projects.some((item) => item.id === id)).toBe(true);
+  });
 
   it('dos descargas a la vez: bajan los dos archivos y los dos botones vuelven a quedar disponibles', async () => {
     open('Vlog Mendoza', 'clips', 'estudio-norte');

@@ -703,7 +703,7 @@ Reconoce un link antes de crear el proyecto: de dónde es, su título y su durac
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | { video_url: string } |
 | Respuesta 200 | LinkProbe |
-| Errores | **400** El link no es una URL web (`code: "invalid"`), no es de un sitio soportado, es una IP o una dirección interna, o es una lista, un canal o un vivo (`code: "unsupported"`), o no se puede bajar: privado, borrado o con restricción (`code: "unavailable"`). Sin `video_url`: `{ video_url: [...] }`.<br>**403** La duración supera el plan (`code: "duration"`, `limit` en segundos). La UI lo muestra junto al campo, con link a Planes. También el Lector (`{ detail }`): revisar un link es parte de crear.<br>**404** El workspace de `X-Workspace-Id` no es del usuario.<br>**429** Más de 20 links por minuto del mismo usuario.<br>**502** El sitio del video respondió con un error o no se encontró su dirección (`code: "provider_error"`).<br>**503** La herramienta que lee los links no está disponible (`code: "unavailable_tool"`).<br>**504** El sitio tardó más de 25 s (`code: "timeout"`). |
+| Errores | **400** El link no es una URL web (`code: "invalid"`), no es de un sitio soportado, es una IP o una dirección interna, o es una lista, un canal o un vivo (`code: "unsupported"`), o no se puede bajar: privado, borrado o con restricción (`code: "unavailable"`), o dura más que el máximo de la app y ningún plan lo aceptaría (`code: "duration_app"`, `limit` en segundos, 10800: sin plan, o con un plan cuyo límite es igual o mayor). La UI lo dice junto al campo, sin ofrecer planes. Sin `video_url`: `{ video_url: [...] }`.<br>**403** La duración supera el plan (`code: "duration"`, `limit` en segundos). La UI lo muestra junto al campo, con link a Planes. También el Lector (`{ detail }`): revisar un link es parte de crear.<br>**404** El workspace de `X-Workspace-Id` no es del usuario.<br>**429** Más de 20 links por minuto del mismo usuario.<br>**502** El sitio del video respondió con un error o no se encontró su dirección (`code: "provider_error"`).<br>**503** La herramienta que lee los links no está disponible (`code: "unavailable_tool"`).<br>**504** El sitio tardó más de 25 s (`code: "timeout"`). |
 | Pantallas | C1 |
 
 #### `GET /api/v1/projects/`
@@ -831,7 +831,7 @@ Vuelve a despachar el pipeline de un proyecto que falló, desde la última etapa
 | Backend | ✅ existe · `back/apps/videos/views_clips.py · ProjectRedispatchView` |
 | Nota | No cobra lo que sigue pagado: un proyecto con los clips elegidos sigue gratis (su render se paga solo). Lo que se devolvió al fallar (una etapa antes de elegir los clips, o el render de un video completo) se reserva otra vez y el pipeline lo liquida como al crear. Responde `cost_details` cuando reservó. El proyecto sigue `failed` hasta que la tarea lo reabre. |
 | Sesión | JWT · `X-Workspace-Id` |
-| Respuesta 202 | Project |
+| Respuesta 202 | RedispatchResponse |
 | Errores | **402** Saldo insuficiente para volver a reservar lo devuelto: `{ error, required }`. La UI abre D2.<br>**403** Solo Dueño y Admin.<br>**409** `{ error, code }`: no está en error (`not_failed`), la moderación frenó su contenido (`moderation_blocked`, solo `UnsafeContentError`), su ingesta nunca se encoló al crearlo (`not_queued`: se crea de nuevo), sus clips ya se liquidaron y se reintentan de a uno desde Clips (`render_settled`), su video completo ya se renderizó (`use_rerender`) o no tiene reserva de creación (`no_reservation`).<br>**503** No se pudo encolar: lo reservado vuelve (el proyecto queda con `pipeline_error_code: "RedispatchNotQueued"`) y se puede probar de nuevo. |
 | Pantallas | D1 |
 
@@ -950,7 +950,7 @@ Reintenta el render de un clip que falló. Cobra su render: su parte se devolvi�
 | Backend | ✅ existe · `back/apps/videos/views_clips.py · ClipRetryView` |
 | Nota | El cuerpo es el clip (en `draft` hasta que su render empieza) más `final_cost` y `transaction_id`. No hay reintento gratis: el reparto por segundos entregados ya devolvió lo que el clip fallido no entregó, y el modelo no guarda por qué falló. |
 | Sesión | JWT · `X-Workspace-Id` |
-| Respuesta 202 | Clip |
+| Respuesta 202 | RetryClipResponse |
 | Errores | **402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**403** El plan no permite la resolución o la duración (`code`), como `render`. La UI abre D3.<br>**409** El clip no está en error (`code: "not_failed"`), o su proyecto se está renderizando o procesando (los mismos códigos que `render`). |
 | Pantallas | D3 |
 
@@ -1727,6 +1727,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `layers` | ClipLayer[] |
 | `preview_url` (opcional) | string \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
+| `render_queued` (opcional) | boolean |
 | `error_code` (opcional) | string \\| null |
 | `posts` (opcional) | ClipPostRef[] |
 
@@ -2118,6 +2119,65 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `ignored` (opcional) | { field: string, reason: string }[] |
 | `error_code` (opcional) | string |
 
+**RedispatchResponse**
+
+| Campo | Tipo |
+|---|---|
+| `id` | Id |
+| `workspace` | Id |
+| `uploaded_by` | Id \\| null |
+| `title` | string |
+| `original_r2_key` | string \\| null |
+| `proxy_r2_key` | string \\| null |
+| `final_export_r2_key` | string \\| null |
+| `project_type` | ProjectType |
+| `editing_style` | EditingStyle |
+| `intelligence_level` | IntelligenceLevel |
+| `auto_render_bypass` | boolean |
+| `brand_kit` | Id \\| null |
+| `brand_kit_name` (opcional) | string |
+| `aspect_ratio` | AspectRatio |
+| `render_layout` | Layout |
+| `gameplay_position` | Position |
+| `camera_selection_position` | Position |
+| `manual_camera_x` | number |
+| `manual_camera_y` | number |
+| `manual_camera_zoom` | number |
+| `pip_corner` | PipCorner |
+| `trending_color` | ColorValue |
+| `trending_text` | string |
+| `speaker_tracking` | boolean |
+| `add_subtitles` | boolean |
+| `subtitle_color` | ColorValue |
+| `subtitle_with_emojis` | boolean |
+| `subtitle_words_per_segment` | number |
+| `subtitle_size` | SubtitleSize |
+| `subtitle_position` | SubtitlePosition |
+| `use_facetracking` | boolean |
+| `remove_silences` | boolean |
+| `source_file` | string \\| null |
+| `video_url` | string \\| null |
+| `metadata` | ProjectMetadata |
+| `ai_rationale_log` | { [clave]: unknown } |
+| `transcript_data` | TranscriptItem[] \\| null |
+| `approved_segments` | ApprovedSegment[] \\| null |
+| `status` | ProjectStatus |
+| `pipeline_stage` | PipelineStage |
+| `pipeline_stage_status` | PipelineStageStatus |
+| `pipeline_attempts` | number |
+| `pipeline_error_code` | string |
+| `pipeline_error_at` | IsoDateTime \\| null |
+| `created_at` | IsoDateTime |
+| `clips` | Clip[] |
+| `proxy_url` | string \\| null |
+| `uploaded_by_detail` (opcional) | UserRef \\| null |
+| `thumbnail_url` (opcional) | string \\| null |
+| `duration_seconds` (opcional) | number \\| null |
+| `cost` (opcional) | ProjectCost \\| null |
+| `stage_timings` (opcional) | { [clave]: StageTiming } |
+| `eta_seconds` (opcional) | number \\| null |
+| `cost_details` (opcional) | CostDetails |
+
 **RerenderRequest**
 
 | Campo | Tipo |
@@ -2181,6 +2241,29 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `simplified` | { height: number, face_tracking: boolean, silence_removal: boolean } |
 
 **PreviewStatus:** "pending" \| "rendering" \| "ready" \| "failed"
+
+**RetryClipResponse**
+
+| Campo | Tipo |
+|---|---|
+| `id` | Id |
+| `project` | Id |
+| `title` | string |
+| `s3_object_key` | string \\| null |
+| `start_time` | number |
+| `end_time` | number |
+| `virality_score` | number |
+| `ai_reasoning` | string |
+| `status` | ClipStatus |
+| `created_at` | IsoDateTime |
+| `layers` | ClipLayer[] |
+| `preview_url` (opcional) | string \\| null |
+| `thumbnail_url` (opcional) | string \\| null |
+| `render_queued` (opcional) | boolean |
+| `error_code` (opcional) | string \\| null |
+| `posts` (opcional) | ClipPostRef[] |
+| `final_cost` | Decimal |
+| `transaction_id` | Id |
 
 **UpdateClipRequest**
 

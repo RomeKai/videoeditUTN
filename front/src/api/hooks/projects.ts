@@ -134,11 +134,19 @@ export function useApprovePaperEdit(id: string) {
   });
 }
 
+/**
+ * Resumes a failed project (owner and admin). Paid when what is left had been returned: the answer
+ * brings `cost_details` with what it reserved again, and a 402 opens D2. No screen calls it yet.
+ */
 export function useRedispatchProject(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => apiCall(contract.redispatchProject, { params: { id } }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.projects.all }),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: keys.projects.all }),
+        queryClient.invalidateQueries({ queryKey: keys.billing.all }),
+      ]),
   });
 }
 
