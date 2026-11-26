@@ -6,9 +6,10 @@ them back. Two kinds:
   of every segment, render_video_segments). Most of this docstring is about
   them. That part, and render_video_segments, can go once no project
   approved the old way still has its render reservation RESERVED.
-- Clip by clip renders: an approved review (``render_clip_ids``) or an
-  auto-render, at render_dispatched with that reservation RESERVED (see
-  "Clip by clip" below).
+- Clip by clip renders: an approved review (``render_clip_ids``), an
+  auto-render or a render asked for after the project ended (CLIP_RENDER:
+  a clip, a retry or a rerender, whole videos included), at render_dispatched
+  with that reservation RESERVED (see "Clip by clip" below).
 
 Why they exist
     render_video_segments acks late, so a worker that dies mid-render gets
@@ -124,7 +125,8 @@ from apps.videos.services.ai.project_lock import (
     project_lock_held,
 )
 from apps.videos.tasks.ingestion import (
-    APPROVED_RENDER, AUTO_RENDER, _is_whole_video, _paid_clip_renders, _pays_for, _queue_clip_renders,
+    APPROVED_RENDER, AUTO_RENDER, CLIP_RENDER, _is_whole_video, _paid_clip_renders, _pays_for,
+    _queue_clip_renders,
 )
 from apps.videos.tasks.render import (
     RENDER_SEGMENTS_MAX_REDELIVERIES,
@@ -408,7 +410,9 @@ def decide_clips(project, paid_renders, snapshot, stuck_after):
     """(action, reason) for a clip-by-clip render, from its row, its reserved renders and its snapshot."""
     if project is None:
         return SKIP, "gone"
-    if _is_whole_video(project):
+    if _is_whole_video(project) and all(paid is not CLIP_RENDER for paid, _created in paid_renders):
+        # Its first render is paid by its creation; one asked for later
+        # (CLIP_RENDER) is recovered like any clip-by-clip render.
         return SKIP, "whole_video"
     if project.pipeline_stage != PipelineStage.RENDER_DISPATCHED:
         return SKIP, "not_rendering"
@@ -527,8 +531,9 @@ def _recover_clips(project_id, stuck_after):
 
 def _clip_candidates():
     """
-    Projects at render_dispatched whose approval (with ``render_clip_ids``) or
-    auto-render reservation is still RESERVED.
+    Projects at render_dispatched whose approval (with ``render_clip_ids``),
+    auto-render or later render (CLIP_RENDER, apps/videos/views_clips.py)
+    reservation is still RESERVED.
     """
     reserved = [
         str(pk) for pk in Transaction.objects.filter(
@@ -542,9 +547,10 @@ def _clip_candidates():
         **{f'metadata__{APPROVED_RENDER.reservation_key}__in': reserved},
     )
     auto_rendered = Q(**{f'metadata__{AUTO_RENDER.reservation_key}__in': reserved})
+    asked_later = Q(**{f'metadata__{CLIP_RENDER.reservation_key}__in': reserved})
     return list(
         VideoProject.objects.filter(pipeline_stage=PipelineStage.RENDER_DISPATCHED)
-        .filter(approved | auto_rendered)
+        .filter(approved | auto_rendered | asked_later)
         .order_by('created_at', 'id').values_list('pk', flat=True)
     )
 

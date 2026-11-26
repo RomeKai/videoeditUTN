@@ -12,7 +12,7 @@
 | `_stage_prepare_source`, `_stage_transcribe`, `_stage_moderate`, `_stage_select_clips`, `_stage_whole_video`, `_stage_dispatch_render` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Una función por etapa. Cada una persiste su artefacto antes de avanzar (transcripción, moderación, selección y despacho lo hacen en la misma transacción que el `advance`) |
 | `_mark_render_dispatched`, `_queue_clip_renders`, `_dispatch_approved_clips` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | El despacho en partes, que usan `_stage_dispatch_render` y la aprobación: la transición a `render_dispatched` con la fila bloqueada, el encolado de un `render_clip_task` por clip (prueba todos aunque uno falle) y, en la aprobación, un re-despacho si alguno no entró |
 | `_resume_render_dispatch` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Vuelve a encolar los clips `draft` de un proyecto que quedó en `render_dispatched` (con una reserva clip por clip, solo los que esa reserva paga) |
-| `PaidClipRender`, `AUTO_RENDER`, `APPROVED_RENDER`, `_paid_clip_renders`, `_clip_render_settlement`, `_settle_clip_render_reservations` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Las reservas que pagan un render clip por clip (render automático y aprobación): sus claves de `metadata`, la regla de cobro por segundos entregados y la liquidación |
+| `PaidClipRender`, `AUTO_RENDER`, `APPROVED_RENDER`, `CLIP_RENDER`, `_paid_clip_renders`, `_clip_render_reserved`, `_clip_render_settlement`, `_settle_clip_render_reservations` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Las reservas que pagan un render clip por clip (render automático, aprobación y render que pide el usuario con el proyecto terminado): sus claves de `metadata`, la regla de cobro por segundos entregados y la liquidación |
 | `_record_pipeline_failure`, `_refund_ingestion_reservation`, `_work_already_done` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Registro del fallo, fallo final y devolución de la reserva de tokens |
 | `_wait_for_capacity` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Re-encola la tarea cuando no hay capacidad del proveedor, o falla el proyecto si la espera supera el máximo |
 | `_is_retryable_pipeline_error`, `_retry_countdown`, `_merge_metadata`, `_persist_then_record_usage` | [tasks/shared.py](../../back/apps/videos/tasks/shared.py) | Política de reintentos, backoff, escritura de `metadata` sin pisar claves y escritura de las filas de uso después de persistir |
@@ -100,7 +100,9 @@ stateDiagram-v2
     failed --> transcribed: reopen
     failed --> moderated: reopen
     failed --> clips_selected: reopen
-    failed --> render_dispatched: reopen
+    failed --> render_dispatched: reopen, o un render que pide el usuario
+    completed --> render_dispatched: un render que pide el usuario (views_clips)
+    partial --> render_dispatched: un render que pide el usuario (views_clips)
     completed --> [*]
     partial --> [*]
     note right of clips_selected
@@ -121,6 +123,7 @@ stateDiagram-v2
 | `render_dispatched` → `completed` / `partial` | `finalize_project_render` en [tasks/render.py](../../back/apps/videos/tasks/render.py) | Ver [06-render-caras-y-hablante](06-render-caras-y-hablante.md) |
 | cualquiera → `failed` | `mark_failed`, llamado por `_record_pipeline_failure` con `final=True` | `pipeline_error_code` y `status=failed`. No toca `completed` ni `partial` |
 | `failed` → etapa de `STAGE_ORDER` | `reopen`, en un re-despacho | La etapa que devuelve `last_completed_stage` |
+| `completed`, `partial` o `failed` → `render_dispatched` | `_start_paid_render` en [views_clips.py](../../back/apps/videos/views_clips.py): un clip desde su editor, el reintento de un clip fallido o un `rerender` | La reserva `CLIP_RENDER`, sus clips en `draft` y `status=rendering`, en la misma transacción. Ver [06](06-render-caras-y-hablante.md#renders-que-pide-el-usuario) |
 | varias juntas | `advance_to` (proyectos viejos) | Camina de a una transición hasta lo que devuelve `infer_completed_stage` |
 
 ### Editar el video completo (`single_edit`)
@@ -313,7 +316,14 @@ Correr la tarea dos veces sobre el mismo proyecto es seguro. Las piezas:
 
 **Límite de tiempo.** El soft limit lanza `SoftTimeLimitExceeded`, que no es reintentable: el proyecto falla con ese código y el lock se libera, en vez de quedar renovado para siempre por un worker colgado. Los proveedores lo re-lanzan sin envolverlo (`is_task_time_limit`), así que nunca dispara un fallback ni un reintento. El hard limit solo mata a un worker que ignoró el soft.
 
-**Re-despacho manual de un proyecto `failed`.** Encolar de nuevo `process_initial_ingestion` para un proyecto `failed` lo reabre en `last_completed_stage` y sigue desde ahí, con el presupuesto de reintentos completo. En el código, el único camino que lo hace es guardar un `ModerationOverride` en el admin (ver [03](03-transcripcion-moderacion-seleccion.md#override-de-moderación)). Si la reserva ya se devolvió al fallar, la tarea no reserva de nuevo.
+**Re-despacho manual de un proyecto `failed`.** Encolar de nuevo `process_initial_ingestion` para un proyecto `failed` lo reabre en `last_completed_stage` y sigue desde ahí, con el presupuesto de reintentos completo. Lo hacen dos caminos: guardar un `ModerationOverride` en el admin (ver [03](03-transcripcion-moderacion-seleccion.md#override-de-moderación)) y `POST projects/:id/redispatch/` (`ProjectRedispatchView` en [views_clips.py](../../back/apps/videos/views_clips.py)). La tarea no reserva de nuevo una reserva devuelta al fallar; el endpoint sí:
+
+- Solo el Dueño y un Admin del workspace activo (`members.manage`, como el mock del frontend). Otro workspace, 404.
+- Solo un proyecto `failed`, en estado y etapa (si no, 409 `not_failed`). Uno frenado por la moderación (`UnsafeContentError`, `ModerationBlockedError`) tampoco: moderarlo de nuevo lo frena igual, y para eso está el override (409 `moderation_blocked`).
+- Si lo que falta se había devuelto (una etapa antes de `clips_selected`, o un video completo, que paga su render con la reserva de creación), reserva otra vez el mismo monto, con el lock de fila tomado, y lo guarda en `metadata['reservation_id']` (402 sin saldo). La reserva anterior queda en `metadata['replaced_reservation_ids']`. Después el pipeline la cobra o la devuelve como al crear. Una reserva que sigue `reserved` se reusa: un doble click no reserva dos veces.
+- Un proyecto de clips con los clips ya elegidos sigue gratis: la ingesta se cobró y su render se paga solo (el render automático vuelve a reservar; una revisión espera su aprobación). Si quedó en `render_dispatched` con una aprobación o un render pedido después ya liquidados, la reanudación solo fallaría sus clips como impagos: 409 `render_settled`, y cada clip se reintenta desde Clips.
+- Un video completo cuyo clip ya se entregó o falló se vuelve a renderizar con `rerender` (409 `use_rerender`). Sin reserva de creación, 409 `no_reservation`.
+- La vista no reabre el proyecto: sigue `failed` hasta que la tarea lo reabre. Si la tarea no se puede encolar, devuelve lo que reservó y responde 503 (`pipeline.redispatch_not_queued`). Si el mensaje se pierde después, `settle_stale_reservations` devuelve esa reserva: el proyecto sigue `failed` sin clips entregados.
 
 **V2 o legacy por etapa.** No se decide una vez por proyecto: la transcripción y la selección llaman cada una a `v2_enabled_for(project)` cuando corren (`AI_CORE_V2_ENABLED` como kill switch y `AI_CORE_V2_ALLOWLIST` por usuario). Los settings se leen al arrancar el worker; después de reiniciarlo, el cambio aplica a la próxima etapa de un proyecto en curso, y cada fila de uso registra el camino que efectivamente corrió en `pipeline_version`. Detalle por etapa en [03](03-transcripcion-moderacion-seleccion.md).
 

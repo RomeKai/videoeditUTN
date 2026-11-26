@@ -56,8 +56,10 @@ _TRANSITIONS: Dict[str, FrozenSet[str]] = {
     PipelineStage.RENDER_DISPATCHED: frozenset(
         {PipelineStage.COMPLETED, PipelineStage.PARTIAL, PipelineStage.FAILED}
     ),
-    PipelineStage.COMPLETED: frozenset(),
-    PipelineStage.PARTIAL: frozenset(),
+    # A render the user asks for once the project ended (a clip, a retry, a
+    # rerender: apps/videos/views_clips.py) reopens the fan-out, paid first.
+    PipelineStage.COMPLETED: frozenset({PipelineStage.RENDER_DISPATCHED}),
+    PipelineStage.PARTIAL: frozenset({PipelineStage.RENDER_DISPATCHED}),
     # A failed project may be reopened at any work stage to resume from there.
     PipelineStage.FAILED: frozenset(STAGE_ORDER),
 }

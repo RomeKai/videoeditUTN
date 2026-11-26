@@ -870,7 +870,9 @@ def _whole_video_render_allowed(project_id, clip_id=None):
     reservation that pays it still reserved. That is the creation reservation
     of a whole-video edit, or a reservation that pays a render clip by clip
     (``_paid_clip_renders``): the auto-render of the selected clips
-    ("Renderizar sin revisar") or the approval of the review. A render message
+    ("Renderizar sin revisar"), the approval of the review, or a render the
+    user asked for after the project ended (CLIP_RENDER, also for a whole
+    video once its creation was settled). A render message
     left in the queue after the project failed (and was refunded) must not
     deliver for free.
 
@@ -884,9 +886,16 @@ def _whole_video_render_allowed(project_id, clip_id=None):
     project = VideoProject.objects.filter(pk=project_id).first()
     if project is None:
         return True
-    if _is_whole_video(project):
-        return project.pipeline_stage == PipelineStage.RENDER_DISPATCHED and _whole_video_is_paid(project_id)
     metadata = project.metadata or {}
+    if _is_whole_video(project):
+        if project.pipeline_stage != PipelineStage.RENDER_DISPATCHED:
+            return False
+        # Its creation pays the first render; one asked for later
+        # (CLIP_RENDER: rerender, retry, the editor) pays its own.
+        return _whole_video_is_paid(project_id) or (
+            _clip_render_reserved(metadata)
+            and (clip_id is None or _pays_for(metadata, CLIP_RENDER, clip_id))
+        )
     paid_renders = _paid_clip_renders(metadata)
     if not paid_renders:
         return True
@@ -928,7 +937,15 @@ AUTO_RENDER = PaidClipRender(
 # this (one export of every segment, render_video_segments) has the
 # reservation but no clip ids.
 APPROVED_RENDER = PaidClipRender('render_reservation_id', 'render_clip_ids', 'render_seconds', 'render.')
-PAID_CLIP_RENDERS = (AUTO_RENDER, APPROVED_RENDER)
+# A render the user asks for once the project ended (apps/videos/views_clips.py):
+# a clip from its editor (clips/:id/render/), a failed clip (clips/:id/retry/)
+# or every clip again (projects/:id/rerender/, the whole video of a
+# single_edit too). Reserved before the project goes back to render_dispatched
+# and settled like the others.
+CLIP_RENDER = PaidClipRender(
+    'clip_render_reservation_id', 'clip_render_clip_ids', 'clip_render_seconds', 'render.clip_',
+)
+PAID_CLIP_RENDERS = (AUTO_RENDER, APPROVED_RENDER, CLIP_RENDER)
 
 
 def _paid_clip_renders(metadata):
@@ -947,6 +964,14 @@ def _renders_per_clip(metadata):
     render_video_segments never renders, fails or settles it.
     """
     return APPROVED_RENDER in _paid_clip_renders(metadata or {})
+
+
+def _clip_render_reserved(metadata):
+    """A render asked for after the project ended (CLIP_RENDER) is still RESERVED: it pays its clips."""
+    reservation_id = (metadata or {}).get(CLIP_RENDER.reservation_key)
+    return bool(reservation_id) and CLIP_RENDER in _paid_clip_renders(metadata) and Transaction.objects.filter(
+        pk=reservation_id, status=Transaction.Status.RESERVED,
+    ).exists()
 
 
 def _reserve_auto_render(project_id, resuming=False):
@@ -983,6 +1008,11 @@ def _reserve_auto_render(project_id, resuming=False):
             # The user approved the review: the approval pays for its clips.
             # Reserving the auto-render again would charge the same clips twice.
             logger.info("pipeline.auto_render_not_needed project_id=%s reason=approved", project_id)
+            return True
+        if _clip_render_reserved(metadata):
+            # The user asked for this render (views_clips) and it pays its
+            # clips: an auto-render now would charge them twice.
+            logger.info("pipeline.auto_render_not_needed project_id=%s reason=clip_render", project_id)
             return True
         linked = metadata.get(AUTO_RENDER_RESERVATION_KEY)
         if linked and Transaction.objects.filter(pk=linked, status=Transaction.Status.RESERVED).exists():
@@ -1337,13 +1367,16 @@ def _dispatch_approved_clips(project_id, clip_ids):
 def _clip_render_recoverable(project_id):
     """
     recover_stuck_renders brings the project's clips back if they are never
-    queued: it renders clip by clip (an approval or an auto-render, never a
-    whole video) with that reservation still RESERVED.
+    queued: it renders clip by clip (an approval, an auto-render or a render
+    asked for later, CLIP_RENDER) with that reservation still RESERVED. A
+    whole video only with CLIP_RENDER: its first render is paid by its creation.
     """
     project = VideoProject.objects.filter(pk=project_id).first()
-    if project is None or _is_whole_video(project):
+    if project is None:
         return False
     metadata = project.metadata or {}
+    if _is_whole_video(project):
+        return _clip_render_reserved(metadata)
     return any(
         Transaction.objects.filter(pk=metadata[paid.reservation_key], status=Transaction.Status.RESERVED).exists()
         for paid in _paid_clip_renders(metadata)
@@ -1367,6 +1400,10 @@ def _resume_render_dispatch(project_id, progress=None):
     """
     metadata = VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
     paid_renders = _paid_clip_renders(metadata)
+    if _clip_render_reserved(metadata):
+        # A render asked for after the project ended: only its clips. A draft
+        # an earlier, settled render left would only fail as unpaid.
+        paid_renders = [CLIP_RENDER]
     clip_ids = [
         clip_id for clip_id in VideoClip.objects.filter(project_id=project_id, status=VideoClip.Status.DRAFT)
         .values_list('id', flat=True)
@@ -1425,6 +1462,11 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
 
     if stage == PipelineStage.RENDER_DISPATCHED:
         renew_lock()
+        if _clip_render_reserved(project.metadata):
+            # A render the user asked for after the project ended (a clip, a
+            # retry, a rerender): it pays its clips, and the creation and any
+            # auto-render were settled before it was reserved.
+            return _resume_render_dispatch(project_id, progress)
         if _is_whole_video(project):
             # Charged by finalize_project_render once the video is delivered.
             _ensure_whole_video_paid(project_id)

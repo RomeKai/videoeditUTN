@@ -100,20 +100,33 @@ def finalize_project_render(project_id):
 
 
 def _close_render_fan_out(project_id):
-    from apps.videos.tasks.ingestion import APPROVED_RENDER, _renders_per_clip
+    from apps.videos.tasks.ingestion import (
+        APPROVED_RENDER, CLIP_RENDER, _clip_render_reserved, _renders_per_clip,
+    )
 
     with transaction.atomic():
         project = VideoProject.objects.select_for_update().get(pk=project_id)
         if project.pipeline_stage != PipelineStage.RENDER_DISPATCHED:
             return None
 
+        metadata = project.metadata or {}
         clips = VideoClip.objects.filter(project_id=project_id)
-        if _renders_per_clip(project.metadata):
+        clip_render_ids = list(metadata.get(CLIP_RENDER.clip_ids_key) or [])
+        if _renders_per_clip(metadata):
             # An approved review is what the user asked for: a clip failed by
-            # an earlier auto-render is not part of it.
-            clips = clips.filter(pk__in=project.metadata[APPROVED_RENDER.clip_ids_key])
+            # an earlier auto-render is not part of it. A clip rendered again
+            # later (CLIP_RENDER) is.
+            clips = clips.filter(pk__in=[*metadata[APPROVED_RENDER.clip_ids_key], *clip_render_ids])
         statuses = set(clips.values_list('status', flat=True))
-        if statuses & {VideoClip.Status.DRAFT, VideoClip.Status.RENDERING}:
+        waiting = statuses
+        if _clip_render_reserved(metadata):
+            # A render asked for after the project ended waits only for its
+            # own clips: a draft an earlier, settled render left is not queued.
+            waiting = set(
+                VideoClip.objects.filter(project_id=project_id, pk__in=clip_render_ids)
+                .values_list('status', flat=True)
+            )
+        if waiting & {VideoClip.Status.DRAFT, VideoClip.Status.RENDERING}:
             return None
 
         if VideoClip.Status.FAILED in statuses:

@@ -639,16 +639,22 @@ export const redispatchProject = defineEndpoint({
   id: 'projects.redispatch',
   method: 'POST',
   path: '/api/v1/projects/:id/redispatch/',
-  summary: 'Vuelve a despachar el pipeline de un proyecto detenido, desde la última etapa terminada. No cobra.',
+  summary: 'Vuelve a despachar el pipeline de un proyecto que falló, desde la última etapa terminada. Si lo que falta se había devuelto, lo reserva de nuevo por el mismo monto.',
   response: Project,
   successStatus: 202,
   errors: [
+    { status: 402, when: 'Saldo insuficiente para volver a reservar lo devuelto: `{ error, required }`. La UI abre D2.' },
     { status: 403, when: 'Solo Dueño y Admin.' },
-    { status: 409, when: 'El proyecto ya está en curso o terminó.' },
+    {
+      status: 409,
+      when: '`{ error, code }`: no está en error (`not_failed`), lo frenó la moderación (`moderation_blocked`), sus clips ya se liquidaron y se reintentan de a uno desde Clips (`render_settled`), su video completo ya se renderizó (`use_rerender`) o no tiene reserva de creación (`no_reservation`).',
+    },
+    { status: 503, when: 'No se pudo encolar: lo reservado vuelve y se puede probar de nuevo.' },
   ],
   backend: {
-    status: 'proposed',
-    note: 'Hoy es una acción del admin de Django (mapa §7: herramientas internas fuera del MVP). Se define para no tener que tocar el contrato cuando se exponga.',
+    status: 'exists',
+    source: 'back/apps/videos/views_clips.py · ProjectRedispatchView',
+    note: 'No cobra lo que sigue pagado: un proyecto con los clips elegidos sigue gratis (su render se paga solo). Lo que se devolvió al fallar (una etapa antes de elegir los clips, o el render de un video completo) se reserva otra vez y el pipeline lo liquida como al crear. Responde `cost_details` cuando reservó. El proyecto sigue `failed` hasta que la tarea lo reabre.',
   },
   screens: ['D1'],
 });
@@ -662,10 +668,19 @@ export const rerenderProject = defineEndpoint({
   response: PaidActionResponse,
   successStatus: 202,
   errors: [
+    { status: 400, when: 'Un campo del estilo inválido (por campo, como el PATCH del proyecto), o un clip más largo de lo que un render termina.' },
     { status: 402, when: 'Saldo insuficiente: `{ error, required }`. La UI abre D2.' },
-    { status: 409, when: 'El proyecto está procesando o renderizando.' },
+    { status: 403, when: 'El plan no permite la resolución o la suma de segundos (`code: "resolution"` / `"duration"`). La UI abre D3.' },
+    {
+      status: 409,
+      when: '`{ error, code }`: el proyecto está procesando o renderizando (`project_processing`, `project_rendering`, `clip_rendering`), espera la revisión (`awaiting_approval`), tiene un render sin liquidar (`render_unsettled`) o no tiene clips (`no_clips`).',
+    },
   ],
-  backend: { status: 'proposed', gap: 11 },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/videos/views_clips.py · ProjectRerenderView',
+    note: 'Un video completo es su único clip; en un proyecto de clips, los que se entregaron o fallaron (nunca un sugerido en `draft`). Reserva `render_cost` de la suma de sus segundos y guarda el estilo en la misma transacción. `render_resolution` no cambia (se cobró al crear). Se cobra lo entregado (CLIP_RENDER).',
+  },
   screens: ['D1', 'D4', 'D5'],
 });
 
