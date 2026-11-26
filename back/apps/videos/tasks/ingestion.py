@@ -629,7 +629,6 @@ def _refund_ingestion_reservation(project_id):
     """
     from django.core.exceptions import ValidationError
 
-    # Deferred: wallet_service imports this module at load time.
     from apps.payments.services.wallet_service import PaymentError, rollback_reservation
 
     try:
@@ -674,7 +673,6 @@ def _commit_ingestion_reservation(project_id):
     """
     from django.core.exceptions import ValidationError
 
-    # Deferred: wallet_service imports this module at load time.
     from apps.payments.services.wallet_service import PaymentError, commit_reservation
 
     reservation_id = None
@@ -1263,7 +1261,6 @@ def _settle_clip_render_reservation(project_id, paid):
     """
     from django.core.exceptions import ValidationError
 
-    # Deferred: wallet_service imports this module at load time.
     from apps.payments.services.wallet_service import (
         PaymentError, commit_partial_reservation, rollback_reservation,
     )
@@ -1340,7 +1337,6 @@ def _settle_whole_video_reservation(project_id):
     """
     from django.core.exceptions import ValidationError
 
-    # Deferred: wallet_service imports this module at load time.
     from apps.payments.services.wallet_service import PaymentError, rollback_reservation
 
     project = VideoProject.objects.filter(pk=project_id).first()
@@ -1783,7 +1779,6 @@ def _refund_undispatched_auto_render(project_id):
     Under the row lock; returns whether it refunded. A reservation another
     settle returned meanwhile is not an error; a database error propagates.
     """
-    # Deferred: wallet_service imports this module at load time.
     from apps.payments.services.wallet_service import PaymentError, rollback_reservation
 
     with transaction.atomic():

@@ -20,7 +20,7 @@
 | `project_lock`, `ProjectLockHandle.renew`, `ProjectLockedError`, `ProjectLockLostError` | [services/ai/project_lock.py](../../back/apps/videos/services/ai/project_lock.py) | Lock distribuido por proyecto en Redis, con TTL y heartbeat |
 | `AIError` y subclases, `is_retryable_error`, `is_task_time_limit` | [services/ai/errors.py](../../back/apps/videos/services/ai/errors.py) | Separan errores reintentables de los deterministas |
 | `v2_enabled_for` | [services/ai/rollout.py](../../back/apps/videos/services/ai/rollout.py) | Decide por proyecto si sus etapas de IA corren en V2 o en legacy |
-| `process_video_pipeline` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Orquestador que solo delega en `process_initial_ingestion`. Lo dispara `wallet_service.reserve_funds` cuando recibe `project_id`; las vistas de creación no se lo pasan y encolan `process_initial_ingestion` directo |
+| `process_video_pipeline` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Orquestador que solo delega en `process_initial_ingestion`. Nada lo encola: `wallet_service.reserve_funds` acepta `project_id` y lo ignora (antes encolaba esta tarea, una segunda ingesta del mismo proyecto). Queda registrada por los mensajes viejos |
 
 ## Flujo: una corrida de la tarea
 

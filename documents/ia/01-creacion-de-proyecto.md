@@ -139,7 +139,7 @@ sequenceDiagram
     Se eligió esto y no un barrido que lo re-encole porque no hay ninguno para la ingesta y `docker-compose.yml` no levanta beat: así el usuario sabe enseguida si se le cobró algo y puede reintentar.
 11. Responde 201 con los datos del serializer, `cost_details` (`tokens_reserved`, `transaction_id`) y `message`.
 
-`reserve_funds` acepta un `project_id` y, si viene, encola `process_video_pipeline`. Ninguna vista lo pasa, así que la creación encola una sola tarea.
+`reserve_funds` acepta un `project_id` por compatibilidad y lo ignora: no encola nada. Antes encolaba `process_video_pipeline`, que habría arrancado una segunda ingesta del mismo proyecto. La creación encola una sola tarea, la suya.
 
 ### Precio
 

@@ -213,7 +213,6 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        # Deferred: wallet_service imports the tasks package at load time.
         from apps.payments.services.wallet_service import PaymentError
 
         apply = options["apply"]
