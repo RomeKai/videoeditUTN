@@ -14,7 +14,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
-from apps.payments.models import Transaction, Wallet
+from apps.payments.models import SubscriptionPlan, Transaction, Wallet
 from apps.payments.services.wallet_service import reserve_funds, rollback_reservation
 from apps.users.models import Workspace
 from apps.videos.models import AIUsageRecord, VideoClip, VideoProject
@@ -556,6 +556,10 @@ class SingleEditCreationTests(TestCase):
         self.assertEqual(at_the_limit.status_code, 201, at_the_limit.content[:300])
 
     def test_the_limit_is_only_for_the_whole_video(self):
+        # On a plan that allows the duration: Gratis, the plan of a new workspace, stops at 600 s too.
+        longer = SubscriptionPlan.objects.create(name="Una hora", max_video_duration_seconds=3600)
+        Workspace.objects.filter(members=self.user).update(subscription_plan=longer)
+
         response, _ = self.upload(duration=601.0)
 
         self.assertEqual(response.status_code, 201, response.content[:300])

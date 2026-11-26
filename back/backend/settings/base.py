@@ -216,6 +216,14 @@ AI_UPLOAD_MIN_SHORT_SIDE_PX = env.int('AI_UPLOAD_MIN_SHORT_SIDE_PX', default=240
 # by one task, so it is for short videos.
 AI_SINGLE_EDIT_MAX_DURATION_SECONDS = env.int('AI_SINGLE_EDIT_MAX_DURATION_SECONDS', default=600)
 
+# --- PLANS (PAY-03) ---
+# The plan a new workspace starts on (users/signals.py, via
+# apps.payments.services.plans.get_default_plan_id). If no active plan has this
+# name, the workspace is created without one and it is logged
+# (`plans.default_plan_missing` or `plans.default_plan_inactive`);
+# `manage.py assign_default_plan` assigns it later.
+DEFAULT_PLAN_NAME = env('DEFAULT_PLAN_NAME', default='Gratis')
+
 # JWT Configuration
 from datetime import timedelta
 SIMPLE_JWT = {
@@ -481,6 +489,11 @@ SPECTACULAR_SETTINGS = {
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
     'COMPONENT_SPLIT_REQUEST': True,
+    # SubscriptionPlan.max_resolution and the projects' render_resolution share
+    # their tiers: one enum instead of MaxResolutionEnum and RenderResolutionEnum.
+    'ENUM_NAME_OVERRIDES': {
+        'ResolutionEnum': 'apps.payments.models.RESOLUTION_CHOICES',
+    },
     'SWAGGER_UI_SETTINGS': {
         'deepLinking': True,
         'persistAuthorization': True,

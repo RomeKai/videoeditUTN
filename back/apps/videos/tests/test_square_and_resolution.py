@@ -111,6 +111,12 @@ class ChosenResolutionTests(TestCase):
         self.plan_720 = SubscriptionPlan.objects.create(
             name="Solo 720", max_resolution="720p", max_video_duration_seconds=3600,
         )
+        # Every tier and no discount, so the price is the formula's. A new
+        # workspace starts on Gratis, which stops at 720p.
+        self.plan_4k = SubscriptionPlan.objects.create(
+            name="Hasta 4K", max_resolution="4K", max_video_duration_seconds=3600,
+        )
+        Workspace.objects.filter(pk=self.workspace.pk).update(subscription_plan=self.plan_4k)
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 
