@@ -307,6 +307,23 @@ except Exception as exc:
 if not re.fullmatch(r'\d+(\.\d+)?', TOKEN_PRICE_USD) or not float(TOKEN_PRICE_USD) > 0:
     raise ImproperlyConfigured(f'TOKEN_PRICE_USD={TOKEN_PRICE_USD!r} is not a positive decimal: write it like 0.01.')
 
+# --- PAYMENTS: token purchases and plan upgrades (gap 12) ---
+# Who takes the payments (apps.payments.services.payment_providers). Empty: no
+# provider, and starting a payment answers 501 (payments_unavailable).
+# 'simulated': the test checkout of the web app (/dev/checkout), which approves
+# or rejects without charging anything. It only runs with DEBUG or with
+# PAYMENTS_ALLOW_SIMULATED=True (a demo); prod.py refuses it without that flag.
+PAYMENTS_PROVIDER = env('PAYMENTS_PROVIDER', default='').strip().lower()
+PAYMENTS_ALLOW_SIMULATED = env.bool('PAYMENTS_ALLOW_SIMULATED', default=False)
+# Reference conversion shown next to the token packages ("≈ ARS 14.500").
+# Display only: every payment is in USD.
+PAYMENTS_LOCAL_CURRENCY = env('PAYMENTS_LOCAL_CURRENCY', default='ARS')
+PAYMENTS_USD_TO_LOCAL_RATE = env('PAYMENTS_USD_TO_LOCAL_RATE', default='1450')
+if not re.fullmatch(r'[A-Z]{3}', PAYMENTS_LOCAL_CURRENCY):
+    raise ImproperlyConfigured(f'PAYMENTS_LOCAL_CURRENCY={PAYMENTS_LOCAL_CURRENCY!r} is not an ISO 4217 code like "ARS".')
+if not re.fullmatch(r'[1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*', PAYMENTS_USD_TO_LOCAL_RATE):
+    raise ImproperlyConfigured(f'PAYMENTS_USD_TO_LOCAL_RATE={PAYMENTS_USD_TO_LOCAL_RATE!r} is not a positive number like "1450".')
+
 # JWT Configuration
 from datetime import timedelta
 SIMPLE_JWT = {
@@ -545,6 +562,11 @@ CELERY_BEAT_SCHEDULE = {
     # cron: manage.py recover_stuck_renders --apply.
     'recover-stuck-renders': {
         'task': 'apps.videos.tasks.recover_stuck_renders',
+        'schedule': 15 * 60,
+    },
+    # Plan downgrades whose paid period ended (apps.payments.tasks).
+    'apply-due-plan-changes': {
+        'task': 'apps.payments.tasks.apply_due_plan_changes',
         'schedule': 15 * 60,
     },
 }
