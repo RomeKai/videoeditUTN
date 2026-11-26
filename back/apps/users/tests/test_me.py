@@ -26,6 +26,8 @@ def test_me_requires_authentication():
 
 def test_me_returns_profile_and_owned_workspace(client, user, workspace):
     Wallet.objects.filter(workspace=workspace).update(available_balance=Decimal("250.0000000000"))
+    # A new workspace starts on the default plan (settings.DEFAULT_PLAN_NAME, PR #138).
+    plan = workspace.subscription_plan
 
     response = client.get(ME_URL)
 
@@ -42,7 +44,7 @@ def test_me_returns_profile_and_owned_workspace(client, user, workspace):
             "id": str(workspace.pk),
             "name": workspace.name,
             "role": "owner",
-            "plan": None,
+            "plan": {"id": str(plan.pk), "name": "Gratis"},
             "available_balance": "250.0000000000",
         }
     ]
