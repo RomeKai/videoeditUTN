@@ -248,8 +248,8 @@ def test_choosing_another_plan_rejects_the_unpaid_upgrade(owner, plans):
 def test_a_confirmed_upgrade_drops_the_scheduled_downgrade(owner, plans):
     user, workspace = owner
     set_plan(workspace, plans['Pro'], renews_at=timezone.now() + timedelta(days=10))
-    change(client_for(user), plans['Creador'])
-    assert reload(workspace).pending_plan == plans['Creador']
+    change(client_for(user), plans['Gratis'])
+    assert reload(workspace).pending_plan == plans['Gratis']
 
     change(client_for(user), plans['Estudio'])
     settle_payment(Payment.objects.get(workspace=workspace).pk, approved=True)
@@ -262,35 +262,49 @@ def test_a_confirmed_upgrade_drops_the_scheduled_downgrade(owner, plans):
 
 # --- down ----------------------------------------------------------------------------
 
-def test_going_down_waits_for_the_end_of_the_paid_period(owner, plans):
+def test_going_down_to_the_free_plan_waits_for_the_end_of_the_paid_period(owner, plans):
     user, workspace = owner
     renews = timezone.now() + timedelta(days=12)
     set_plan(workspace, plans['Pro'], renews_at=renews)
 
-    response = change(client_for(user), plans['Creador'])
+    response = change(client_for(user), plans['Gratis'])
 
     assert response.status_code == 200
     body = response.json()
     assert body['applied'] == 'period_end'
     assert body['checkout_url'] is None
     assert body['subscription']['plan']['name'] == 'Pro'
-    assert body['subscription']['pending_plan']['id'] == str(plans['Creador'].pk)
-    assert body['subscription']['pending_plan']['name'] == 'Creador'
+    assert body['subscription']['pending_plan']['id'] == str(plans['Gratis'].pk)
+    assert body['subscription']['pending_plan']['name'] == 'Gratis'
     assert datetime.fromisoformat(body['subscription']['pending_plan']['effective_at']) == renews
     workspace = reload(workspace)
-    assert (workspace.subscription_plan, workspace.pending_plan, workspace.pending_plan_effective_at) == (plans['Pro'], plans['Creador'], renews)
+    assert (workspace.subscription_plan, workspace.pending_plan, workspace.pending_plan_effective_at) == (plans['Pro'], plans['Gratis'], renews)
     assert not Payment.objects.exists()
 
 
-def test_going_down_without_a_paid_period_applies_at_once(owner, plans):
+def test_going_down_to_the_free_plan_without_a_paid_period_applies_at_once(owner, plans):
     user, workspace = owner
     # Put on Pro in the admin: nothing was paid, there is no period to wait for.
     set_plan(workspace, plans['Pro'])
 
-    body = change(client_for(user), plans['Creador']).json()
+    body = change(client_for(user), plans['Gratis']).json()
 
     assert body['applied'] == 'now'
-    assert body['subscription']['plan']['name'] == 'Creador'
+    assert body['subscription']['plan']['name'] == 'Gratis'
+    assert reload(workspace).subscription_plan == plans['Gratis']
+
+
+@override_settings(**SIMULATED)
+def test_going_down_to_a_cheaper_paid_plan_is_paid_and_applies_on_confirmation(owner, plans):
+    user, workspace = owner
+    set_plan(workspace, plans['Pro'], renews_at=timezone.now() + timedelta(days=12))
+
+    body = change(client_for(user), plans['Creador']).json()
+
+    assert (body['applied'], body['subscription']['pending_plan']) == ('now', None)
+    assert body['checkout_url']
+    assert reload(workspace).subscription_plan == plans['Pro']
+    settle_payment(Payment.objects.get(workspace=workspace).pk, approved=True)
     assert reload(workspace).subscription_plan == plans['Creador']
 
 
@@ -331,7 +345,7 @@ def test_going_down_with_exactly_the_seats_of_the_plan_is_allowed(owner, plans):
 def test_choosing_the_current_plan_cancels_the_scheduled_change(owner, plans):
     user, workspace = owner
     set_plan(workspace, plans['Pro'], renews_at=timezone.now() + timedelta(days=5))
-    change(client_for(user), plans['Creador'])
+    change(client_for(user), plans['Gratis'])
 
     body = change(client_for(user), plans['Pro']).json()
 
@@ -383,18 +397,18 @@ def test_the_task_applies_the_downgrades_that_are_due_once(plans):
     _, later = owner_with_workspace('despues')
     now = timezone.now()
     set_plan(due, plans['Pro'], renews_at=now - timedelta(minutes=1))
-    schedule(due, plans['Creador'], now - timedelta(minutes=1))
+    schedule(due, plans['Gratis'], now - timedelta(minutes=1))
     set_plan(later, plans['Pro'], renews_at=now + timedelta(days=3))
-    schedule(later, plans['Creador'], now + timedelta(days=3))
+    schedule(later, plans['Gratis'], now + timedelta(days=3))
 
     assert apply_due_plan_changes_task() == 1
 
     due, later = reload(due), reload(later)
-    assert (due.subscription_plan, due.pending_plan, due.pending_plan_effective_at, due.plan_renews_at) == (plans['Creador'], None, None, None)
-    assert (later.subscription_plan, later.pending_plan) == (plans['Pro'], plans['Creador'])
+    assert (due.subscription_plan, due.pending_plan, due.pending_plan_effective_at, due.plan_renews_at) == (plans['Gratis'], None, None, None)
+    assert (later.subscription_plan, later.pending_plan) == (plans['Pro'], plans['Gratis'])
     # Nothing is left to apply: a second run (or a second beat) changes nothing.
     assert apply_due_plan_changes() == 0
-    assert reload(due).subscription_plan == plans['Creador']
+    assert reload(due).subscription_plan == plans['Gratis']
 
 
 def test_while_a_downgrade_waits_no_invitation_breaks_its_seats(plans):

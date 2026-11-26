@@ -319,6 +319,10 @@ PAYMENTS_ALLOW_SIMULATED = env.bool('PAYMENTS_ALLOW_SIMULATED', default=False)
 # Without DEBUG (a demo on production settings) only staff and these emails may
 # approve or reject a simulated payment (POST /token-purchases/<id>/simulate/).
 PAYMENTS_SIMULATE_ALLOWED_EMAILS = env.list('PAYMENTS_SIMULATE_ALLOWED_EMAILS', default=[])
+# Longest a provider call that opens a checkout may take. A pending payment
+# still without a checkout after twice this lost its call: it is rejected and
+# its Idempotency-Key freed (services/payments.py, fail_stale_checkouts).
+PAYMENTS_PROVIDER_TIMEOUT_SECONDS = env.int('PAYMENTS_PROVIDER_TIMEOUT_SECONDS', default=30)
 # Reference conversion shown next to the token packages ("≈ ARS 14.500").
 # Display only: every payment is in USD.
 PAYMENTS_LOCAL_CURRENCY = env('PAYMENTS_LOCAL_CURRENCY', default='ARS')

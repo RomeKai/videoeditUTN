@@ -79,31 +79,65 @@ def test_a_pricier_plan_earlier_in_the_page_still_needs_a_payment(owner, plans):
 
 
 @override_settings(**SIMULATED)
-def test_a_cheaper_plan_later_in_the_page_is_a_scheduled_downgrade(owner, plans):
+@pytest.mark.parametrize('price', ['5.00', '49.00'])
+def test_any_other_paid_plan_is_a_purchase_that_applies_on_confirmation(owner, plans, price):
     user, workspace = owner
-    renews = timezone.now() + timedelta(days=9)
-    set_plan(workspace, plans['Pro'], renews_at=renews)
-    late = public_plan('Tardío', '5.00', sort_order=99)
+    # Cheaper, or the same price (a lateral move): paid all the same, and the rest of the period is lost.
+    set_plan(workspace, plans['Pro'], renews_at=timezone.now() + timedelta(days=9))
+    other = public_plan('Otro', price, sort_order=99)
 
-    body = change(client_for(user), late).json()
+    body = change(client_for(user), other).json()
 
-    assert (body['applied'], body['checkout_url']) == ('period_end', None)
-    assert reload(workspace).pending_plan == late
-    assert not Payment.objects.exists()
+    assert body['checkout_url'] and body['applied'] == 'now'
+    workspace = reload(workspace)
+    assert (workspace.subscription_plan, workspace.pending_plan) == (plans['Pro'], None)
+    payment = Payment.objects.get(workspace=workspace)
+    assert payment.amount_usd == Decimal(price)
+
+    before = timezone.now()
+    settle_payment(payment.pk, approved=True)
+
+    workspace = reload(workspace)
+    assert workspace.subscription_plan == other
+    assert add_month(before) <= workspace.plan_renews_at <= add_month(timezone.now())
 
 
 @override_settings(**SIMULATED)
-def test_a_plan_of_the_same_price_is_scheduled_and_moves_no_money(owner, plans):
+def test_paying_once_never_keeps_a_cheaper_paid_plan_for_good(owner, plans):
+    user, workspace = owner
+    change(client_for(user), plans['Pro'])
+    settle_payment(Payment.objects.get(workspace=workspace).pk, approved=True)
+
+    # Going to Creador is paid too: it is not scheduled for free at the end of the Pro period.
+    body = change(client_for(user), plans['Creador']).json()
+
+    assert body['checkout_url']
+    assert reload(workspace).pending_plan is None
+    assert Payment.objects.filter(workspace=workspace, status='pending', plan=plans['Creador']).exists()
+
+
+@override_settings(**SIMULATED)
+def test_a_lapsed_period_does_not_let_a_paid_plan_apply_unpaid(owner, plans):
+    user, workspace = owner
+    # The period ended and the beat has not dropped it yet.
+    set_plan(workspace, plans['Estudio'], renews_at=timezone.now() - timedelta(minutes=5))
+
+    body = change(client_for(user), plans['Pro']).json()
+
+    assert body['checkout_url']
+    assert reload(workspace).subscription_plan == plans['Estudio']
+
+
+def test_only_the_free_plan_is_scheduled_for_the_end_of_the_period(owner, plans):
     user, workspace = owner
     renews = timezone.now() + timedelta(days=9)
     set_plan(workspace, plans['Pro'], renews_at=renews)
-    twin = public_plan('Pro Plus', '49.00', sort_order=5)
 
-    body = change(client_for(user), twin).json()
+    body = change(client_for(user), plans['Gratis']).json()
 
     assert (body['applied'], body['checkout_url']) == ('period_end', None)
     workspace = reload(workspace)
-    assert (workspace.subscription_plan, workspace.pending_plan, workspace.pending_plan_effective_at) == (plans['Pro'], twin, renews)
+    assert (workspace.pending_plan, workspace.pending_plan_effective_at) == (plans['Gratis'], renews)
     assert not Payment.objects.exists()
 
 
@@ -127,6 +161,15 @@ def test_while_a_downgrade_waits_nobody_joins_past_its_seats(owner, plans):
     with pytest.raises(ValidationError, match="Tu plan pasa a 'Gratis'.*2 miembros"):
         join(workspace, make_user('dos'), status=WorkspaceMember.Status.PENDING)
     assert WorkspaceMember.objects.filter(workspace=workspace).count() == 2
+
+    # Read from the database, not from the instance: one loaded before the downgrade was scheduled says nothing.
+    stale = Workspace.objects.get(pk=workspace.pk)
+    Workspace.objects.filter(pk=workspace.pk).update(pending_plan=None, pending_plan_effective_at=None)
+    schedule(workspace, plans['Gratis'], timezone.now() + timedelta(days=5))
+    stale.pending_plan = None
+    stale.pending_plan_effective_at = None
+    with pytest.raises(ValidationError, match="Tu plan pasa a 'Gratis'"):
+        join(stale, make_user('cuatro'))
 
     # Canceling the downgrade gives the seats of the plan back.
     client_for(workspace.owner).post(CHANGE, {'plan_id': str(plans['Pro'].pk)}, format='json')
@@ -159,11 +202,11 @@ def test_a_paid_period_that_ends_with_a_scheduled_downgrade_applies_the_downgrad
     _, workspace = owner_with_workspace()
     ended = timezone.now() - timedelta(minutes=1)
     set_plan(workspace, plans['Pro'], renews_at=ended)
-    schedule(workspace, plans['Creador'], ended)
+    schedule(workspace, plans['Gratis'], ended)
 
     assert apply_due_plan_changes() == 1
 
-    assert reload(workspace).subscription_plan == plans['Creador']
+    assert reload(workspace).subscription_plan == plans['Gratis']
 
 
 def test_without_a_default_plan_an_ended_period_keeps_the_plan(plans, caplog):

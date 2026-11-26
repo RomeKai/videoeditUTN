@@ -53,7 +53,7 @@ def real_bodies(seeded_plans):
         payment_id = checkout['checkout_url'].split('compra=')[1].split('&')[0]
         bodies['plan_payment_pending'] = client.get(f'/api/v1/token-purchases/{payment_id}/').json()
         bodies['plan_payment_approved'] = client.post(f'/api/v1/token-purchases/{payment_id}/simulate/', {'approved': True}, format='json').json()
-        bodies['change_plan_period_end'] = client.post('/api/v1/subscription/change/', {'plan_id': str(plans['Creador'].pk)}, format='json').json()
+        bodies['change_plan_period_end'] = client.post('/api/v1/subscription/change/', {'plan_id': str(plans['Gratis'].pk)}, format='json').json()
         bodies['change_plan_cancel'] = client.post('/api/v1/subscription/change/', {'plan_id': str(plans['Pro'].pk)}, format='json').json()
 
         def error(name, response):

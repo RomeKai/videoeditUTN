@@ -3,18 +3,26 @@ The subscription of a workspace (gap 12): what GET /api/v1/subscription/
 shows, the rules of POST /api/v1/subscription/change/ and what the beat task
 applies when a paid period ends.
 
-The price decides, never the order of the pricing page:
-- A plan that costs more than the current one needs a payment: nothing
-  changes until the provider confirms it (services/payments.py). No
-  proration: the whole month of the new plan, from the confirmation.
-- A plan that costs less, or the same (a lateral move: no money moves either
-  way), is scheduled for the end of the paid period (plan_periods.py).
-  Without a paid period there is nothing to wait for, and it applies at once.
+Before PAY-02 every move to a paid plan is a purchase, never the order of the
+pricing page nor the price relative to the current plan:
+- Any paid plan other than the current one (pricier, cheaper or the same
+  price) needs a payment: nothing changes until the provider confirms it
+  (services/payments.py), and then it applies at once with a paid month of
+  its own. No proration: the rest of the current period is lost. So paying
+  once never buys a cheaper paid plan for good.
+- Only a plan without a price (the default, Gratis) is scheduled for the end
+  of the paid period (plan_periods.py). Without a paid period there is
+  nothing to wait for, and it applies at once.
 - No change leaves the workspace with more seats in use (members plus
   pending invitations, apps.users.seats) than the new plan has. While a
   downgrade waits, check_seat_limit already counts its seats.
-- Choosing the current plan cancels the scheduled downgrade and the upgrade
-  waiting for its payment.
+- Choosing the current plan cancels the scheduled downgrade and the plan
+  payment waiting for its checkout.
+- The plan payment waiting is read with its row locked, so a checkout that
+  is still opening either lands before (and is closed at the provider) or
+  finds it settled. One whose checkout never opened stops blocking after
+  twice PAYMENTS_PROVIDER_TIMEOUT_SECONDS. A request whose payment was
+  replaced while its checkout opened never gets another plan's checkout.
 - When the paid period ends with no renewal paid (nothing charges one before
   PAY-02), apply_due_plan_changes applies the scheduled downgrade, or else
   puts the workspace on the default plan.
@@ -34,8 +42,8 @@ from apps.users.seats import seats_used
 
 from ..models import Payment, SubscriptionPlan
 from .payment_providers import get_payment_provider, require_payment_provider
-from .payments import lock_workspace, open_checkout, settle_payment
-from .plan_periods import PLAN_FIELDS, paid_period_end, price_of, switch_plan
+from .payments import checkout_is_stale, fail_stale_checkout, lock_workspace, open_checkout, settle_payment
+from .plan_periods import PLAN_FIELDS, is_paid, paid_period_end, price_of, switch_plan
 from .plans import get_default_plan_id
 
 logger = logging.getLogger(__name__)
@@ -57,7 +65,11 @@ class NothingToCancel(PlanChangeError):
 
 
 class CheckoutInProgress(PlanChangeError):
-    """The same upgrade is still opening its checkout (a double submit): it is never replaced."""
+    """The same plan payment is still opening its checkout (a double submit): it is never replaced."""
+
+
+class PlanChangeSuperseded(PlanChangeError):
+    """Another plan was chosen (or the plan was kept) while this request's checkout opened."""
 
 
 class SeatsExceeded(PlanChangeError):
@@ -120,40 +132,49 @@ def subscription_payload(workspace, now=None):
 
 
 def needs_payment(current, target):
-    """Only a plan that costs more than the current one (or than none) is paid for."""
-    return target.price_usd_monthly > price_of(current)
+    """Every paid plan other than the current one is a purchase (before PAY-02). Only a free plan is not."""
+    return is_paid(target)
 
 
 def _pending_upgrade(workspace):
-    return Payment.objects.filter(workspace=workspace, status=Payment.Status.PENDING, plan__isnull=False).first()
+    """The plan payment waiting for its checkout, its row locked (the workspace's is already)."""
+    return (
+        Payment.objects.select_for_update()
+        .filter(workspace=workspace, status=Payment.Status.PENDING, plan__isnull=False)
+        .first()
+    )
 
 
 def _drop_pending_upgrade(workspace, reason, keep_plan=None):
     """
-    The upgrade payment the workspace is waiting for: kept and returned when
-    it is for ``keep_plan`` and its checkout is open; CheckoutInProgress when
-    that same upgrade is still opening its checkout; otherwise rejected (the
-    person chose something else) and returned second, to close its checkout
-    after the commit.
+    The plan payment the workspace is waiting for: kept and returned when it
+    is for ``keep_plan`` and its checkout is open; CheckoutInProgress when
+    that same payment is still opening its checkout (unless its provider call
+    was lost: then it is failed); otherwise rejected (the person chose
+    something else) and returned second, as the locked row read again, to
+    close its checkout after the commit.
     """
     pending = _pending_upgrade(workspace)
     if pending is None:
+        return None, None
+    if not pending.checkout_url and checkout_is_stale(pending):
+        fail_stale_checkout(pending)
         return None, None
     if keep_plan is not None and pending.plan_id == keep_plan.pk:
         if not pending.checkout_url:
             raise CheckoutInProgress()
         if pending.amount_usd == keep_plan.price_usd_monthly:
             return pending, None
-    settle_payment(pending.pk, approved=False, failure_reason=reason)
-    return None, pending
+    settled, _ = settle_payment(pending.pk, approved=False, failure_reason=reason)
+    return None, settled
 
 
 def change_plan(workspace_id, plan_id, *, user, return_url, now=None):
     """
     Apply, schedule or start paying the change to ``plan_id`` (see the module).
     Raises PlanNotFound, NothingToCancel, SeatsExceeded, CheckoutInProgress,
-    PaymentsUnavailable (a pricier plan and no provider: nothing changes) or
-    CheckoutFailed.
+    PlanChangeSuperseded, PaymentsUnavailable (a paid plan and no provider:
+    nothing changes) or CheckoutFailed.
     """
     now = now or timezone.now()
     new_payment = provider = replaced = None
@@ -200,7 +221,7 @@ def change_plan(workspace_id, plan_id, *, user, return_url, now=None):
                 )
                 applied = 'now'
             else:
-                # Cheaper or the same price: it waits for the end of the paid period.
+                # A plan without a price: it waits for the end of the paid period.
                 _, replaced = _drop_pending_upgrade(workspace, REPLACED)
                 effective_at = paid_period_end(workspace, now)
                 if effective_at is None:
@@ -222,9 +243,11 @@ def change_plan(workspace_id, plan_id, *, user, return_url, now=None):
     if new_payment is None:
         return PlanChange(applied, None, workspace)
     payment = open_checkout(provider, new_payment, return_url)
-    if payment.status != Payment.Status.PENDING or not payment.checkout_url:
-        # Settled while its checkout opened (another plan was chosen, or the plan was kept),
-        # and nothing else is ready to pay yet.
+    if payment.status != Payment.Status.PENDING or payment.plan_id != new_payment.plan_id:
+        # Settled while its checkout opened: another plan was chosen, or the plan was kept.
+        # Never hand out the checkout of another plan.
+        raise PlanChangeSuperseded()
+    if not payment.checkout_url:
         raise CheckoutInProgress()
     logger.info(
         'payments.started payment=%s kind=plan plan=%s amount_usd=%s provider=%s',

@@ -11,7 +11,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
-from .models import WorkspaceMember
+from .models import Workspace, WorkspaceMember
 
 
 def seats_used(workspace):
@@ -40,17 +40,24 @@ def check_seat_limit(workspace, user_ids, freed=0):
     current = 0 if workspace._state.adding else seats_used(workspace)
     plan = workspace.subscription_plan
     limit = plan.max_members if plan else 1
-    pending = workspace.pending_plan if plan and workspace.pending_plan_id else None
-    if pending is not None and pending.max_members < limit:
-        limit = pending.max_members
+    # The scheduled downgrade as the database has it now, not as the instance was loaded.
+    pending = None
+    if plan and not workspace._state.adding:
+        pending = (
+            Workspace.objects.filter(pk=workspace.pk, pending_plan__isnull=False)
+            .values('pending_plan__name', 'pending_plan__max_members', 'pending_plan_effective_at')
+            .first()
+        )
+    if pending is not None and pending['pending_plan__max_members'] < limit:
+        limit = pending['pending_plan__max_members']
     else:
         pending = None
     if current - freed + len(new) <= limit:
         return
     if pending is not None:
-        when = timezone.localtime(workspace.pending_plan_effective_at, ZoneInfo(settings.WORKSPACE_TIME_ZONE))
+        when = timezone.localtime(pending['pending_plan_effective_at'], ZoneInfo(settings.WORKSPACE_TIME_ZONE))
         raise ValidationError(
-            f"Tu plan pasa a '{pending.name}' el {when:%d/%m/%Y} y ese plan permite {limit} miembros. "
+            f"Tu plan pasa a '{pending['pending_plan__name']}' el {when:%d/%m/%Y} y ese plan permite {limit} miembros. "
             "Cancelá el cambio de plan para invitar más gente."
         )
     if plan:

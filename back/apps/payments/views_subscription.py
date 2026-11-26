@@ -4,10 +4,10 @@ The subscription of the active workspace (gap 12, services/subscriptions.py):
 - ``GET  /api/v1/subscription/``: the plan, when the paid period renews and
   the scheduled downgrade. Every role (the topbar shows the plan).
 - ``POST /api/v1/subscription/change/``: change of plan, Owner and Admin only
-  (``billing.manage``). A pricier plan applies when the provider confirms the
-  payment; a cheaper one, or one of the same price, waits for the end of the
-  paid period (409 ``seats_exceeded`` with more seats in use than the plan
-  has); the current plan cancels what is scheduled or waiting for its payment.
+  (``billing.manage``). Any other paid plan applies when the provider
+  confirms its payment; a free plan waits for the end of the paid period
+  (409 ``seats_exceeded`` with more seats in use than the plan has); the
+  current plan cancels what is scheduled or waiting for its payment.
 
 Both act in the active workspace (X-Workspace-Id) with ROLE_MATRIX (apps/core/permissions.py).
 """
@@ -26,7 +26,8 @@ from .serializers_billing import ChangePlanRequestSerializer, ChangePlanResponse
 from .services.payment_providers import PaymentsUnavailable
 from .services.payments import CheckoutFailed
 from .services.subscriptions import (
-    CheckoutInProgress, NothingToCancel, PlanNotFound, SeatsExceeded, change_plan, subscription_payload,
+    CheckoutInProgress, NothingToCancel, PlanChangeSuperseded, PlanNotFound, SeatsExceeded, change_plan,
+    subscription_payload,
 )
 
 NO_PLAN = "Este workspace no tiene un plan activo. Contactá a soporte."
@@ -40,6 +41,10 @@ PAYMENTS_UNAVAILABLE = {
 CHECKOUT_IN_PROGRESS = {
     'error': "Ya estamos abriendo el checkout de este cambio de plan. Probá de nuevo en unos segundos.",
     'code': 'checkout_in_progress',
+}
+PLAN_CHANGE_SUPERSEDED = {
+    'error': "Elegiste otro plan mientras abríamos el pago. Revisá tu plan y, si querés, probá de nuevo.",
+    'code': 'plan_change_superseded',
 }
 CHECKOUT_FAILED = {
     'error': "No pudimos abrir el checkout del proveedor de pagos. No se te cobró nada: probá de nuevo en unos minutos.",
@@ -91,7 +96,7 @@ class ChangePlanView(BillingView):
             400: OpenApiResponse(description='Ya es el plan actual y no hay nada programado (`plan_id`), o un campo inválido.'),
             403: ROLE_DENIED,
             404: NOT_FOUND,
-            409: OpenApiResponse(description='`code: "seats_exceeded"`: más lugares ocupados que los del plan elegido; `code: "checkout_in_progress"`: la misma subida todavía abre su checkout.'),
+            409: OpenApiResponse(description='`code: "seats_exceeded"`: más lugares ocupados que los del plan elegido; `code: "checkout_in_progress"`: el mismo pago todavía abre su checkout; `code: "plan_change_superseded"`: se eligió otro plan mientras abría.'),
             501: OpenApiResponse(description='`code: "payments_unavailable"`: subir a un plan pago sin proveedor de pagos.'),
             502: OpenApiResponse(description='`code: "checkout_failed"`: el proveedor no abrió el checkout.'),
         },
@@ -116,6 +121,8 @@ class ChangePlanView(BillingView):
             )
         except CheckoutInProgress:
             return Response(CHECKOUT_IN_PROGRESS, status=status.HTTP_409_CONFLICT)
+        except PlanChangeSuperseded:
+            return Response(PLAN_CHANGE_SUPERSEDED, status=status.HTTP_409_CONFLICT)
         except PaymentsUnavailable:
             return payments_unavailable()
         except CheckoutFailed:

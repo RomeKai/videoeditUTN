@@ -18,6 +18,10 @@ Money rules:
   payment the first one started, never a second checkout; while that one is
   still opening its checkout it answers PurchaseInProgress. A failed checkout
   frees its key, so the same key can try again.
+- An attempt whose checkout never opened (the process died inside the
+  provider call) counts as failed after twice PAYMENTS_PROVIDER_TIMEOUT_SECONDS:
+  the next request, or the beat task (fail_stale_checkouts), rejects it and
+  frees its key, so nothing stays "in progress" for good.
 - A confirmation for a payment already rejected (replaced, canceled, or its
   checkout failed) changes nothing: it is logged as ``payment.late_paid`` so
   staff can refund it by hand.
@@ -27,8 +31,10 @@ settlements without blocking the rows that point to the workspace.
 Logs carry ids, amounts and error classes only.
 """
 import logging
+from datetime import timedelta
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import DataError, IntegrityError, transaction
 from django.utils import timezone
 
@@ -68,8 +74,44 @@ def lock_workspace(workspace_id):
 
 def _fail_checkout(payment):
     """The checkout did not open: the payment is rejected and frees its Idempotency-Key for a new attempt."""
-    settle_payment(payment.pk, approved=False, failure_reason=CHECKOUT_FAILED)
+    settled, _ = settle_payment(payment.pk, approved=False, failure_reason=CHECKOUT_FAILED)
     Payment.objects.filter(pk=payment.pk).update(idempotency_key=None)
+    settled.idempotency_key = None
+    return settled
+
+
+def stale_checkout_cutoff(now=None):
+    """Before this moment, a pending payment still without a checkout lost its provider call."""
+    return (now or timezone.now()) - timedelta(seconds=2 * settings.PAYMENTS_PROVIDER_TIMEOUT_SECONDS)
+
+
+def checkout_is_stale(payment, now=None):
+    return (
+        payment.status == Payment.Status.PENDING
+        and not payment.checkout_url
+        and payment.created_at < stale_checkout_cutoff(now)
+    )
+
+
+def fail_stale_checkout(payment):
+    """An attempt whose checkout never opened: rejected, its key freed. A checkout that opens later is closed (open_checkout)."""
+    logger.warning('payments.stale_checkout_failed payment=%s provider=%s', payment.pk, payment.provider)
+    return _fail_checkout(payment)
+
+
+def fail_stale_checkouts(now=None):
+    """The beat's sweep of fail_stale_checkout. Returns how many it rejected."""
+    stale = Payment.objects.filter(
+        status=Payment.Status.PENDING, checkout_url='', created_at__lt=stale_checkout_cutoff(now),
+    ).values_list('pk', flat=True)
+    failed = 0
+    for payment in Payment.objects.filter(pk__in=list(stale)):
+        try:
+            if fail_stale_checkout(payment).status == Payment.Status.REJECTED:
+                failed += 1
+        except Exception as exc:  # logged; the next run tries again
+            logger.error('payments.stale_checkout_sweep_failed payment=%s error=%s', payment.pk, type(exc).__name__)
+    return failed
 
 
 def _close(provider, payment):
@@ -120,9 +162,13 @@ def open_checkout(provider, payment, return_url):
 
 
 def _replay(payment, tokens, package_id):
+    """The payment a repeated key answers, or None when its attempt was lost (its key is free again)."""
     if payment.plan_id is not None or payment.tokens != tokens or payment.package_id != package_id:
         raise IdempotencyKeyReused()
     if payment.status == Payment.Status.PENDING and not payment.checkout_url:
+        if checkout_is_stale(payment):
+            fail_stale_checkout(payment)
+            return None
         raise PurchaseInProgress()
     return payment
 
@@ -138,8 +184,9 @@ def start_token_purchase(workspace, *, user, tokens, amount_usd, package_id, ret
     provider = require_payment_provider()
     if idempotency_key:
         existing = Payment.objects.filter(workspace=workspace, idempotency_key=idempotency_key).first()
-        if existing is not None:
-            return _replay(existing, tokens, package_id), False
+        replayed = _replay(existing, tokens, package_id) if existing is not None else None
+        if replayed is not None:
+            return replayed, False
     try:
         with transaction.atomic():
             payment = Payment.objects.create(
@@ -154,9 +201,10 @@ def start_token_purchase(workspace, *, user, tokens, amount_usd, package_id, ret
     except IntegrityError:
         # Another request with the same key got there first.
         existing = Payment.objects.filter(workspace=workspace, idempotency_key=idempotency_key).first() if idempotency_key else None
-        if existing is None:
+        replayed = _replay(existing, tokens, package_id) if existing is not None else None
+        if replayed is None:
             raise
-        return _replay(existing, tokens, package_id), False
+        return replayed, False
     payment = open_checkout(provider, payment, return_url)
     logger.info(
         'payments.started payment=%s kind=tokens tokens=%s amount_usd=%s provider=%s',

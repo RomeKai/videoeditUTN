@@ -20,8 +20,10 @@ def make_user(name):
 
 
 def owner_with_workspace(name='duena'):
-    """A user and the workspace the sign-up signal made for them (on the default plan, Gratis)."""
+    """A user with a verified email and the workspace the sign-up signal made for them (on the default plan, Gratis)."""
     user = make_user(name)
+    User.objects.filter(pk=user.pk).update(is_email_verified=True)
+    user.refresh_from_db()
     return user, Workspace.objects.get(owner=user)
 
 

@@ -75,14 +75,15 @@ def simulated_payments_allowed():
 def may_simulate(user):
     """
     Who may settle a simulated payment: anyone with DEBUG; otherwise (a demo
-    on production settings) staff and the emails of PAYMENTS_SIMULATE_ALLOWED_EMAILS.
+    on production settings) staff and the verified emails of PAYMENTS_SIMULATE_ALLOWED_EMAILS.
     """
     if settings.DEBUG:
         return True
     if getattr(user, 'is_staff', False):
         return True
     allowed = {email.strip().lower() for email in getattr(settings, 'PAYMENTS_SIMULATE_ALLOWED_EMAILS', []) if email.strip()}
-    return bool(getattr(user, 'email', '')) and user.email.lower() in allowed
+    # Only a verified address: anyone can type a listed one into their account.
+    return bool(getattr(user, 'is_email_verified', False)) and bool(getattr(user, 'email', '')) and user.email.lower() in allowed
 
 
 def get_payment_provider():
