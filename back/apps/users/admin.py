@@ -79,9 +79,15 @@ class WorkspaceAdmin(admin.ModelAdmin):
     inlines = [WorkspaceMemberWorkspaceInline]
 
     def save_model(self, request, obj, form, change):
-        # Un plan puesto a mano reemplaza la bajada programada: si no, la tarea
-        # apply_due_plan_changes lo pisaría al llegar la fecha.
+        # Un plan puesto a mano es una cortesía: reemplaza la bajada programada
+        # y el período pagado del plan anterior, así la tarea
+        # apply_due_plan_changes no lo pisa ni lo baja al plan por defecto
+        # cuando ese período termina. Salvo que el staff ponga la fecha de
+        # renovación en el mismo guardado.
         if change and 'subscription_plan' in form.changed_data:
             obj.pending_plan = None
             obj.pending_plan_effective_at = None
+            if 'plan_renews_at' not in form.changed_data:
+                obj.plan_renews_at = None
+                obj.plan_anchor_day = None
         super().save_model(request, obj, form, change)

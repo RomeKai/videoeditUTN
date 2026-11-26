@@ -231,6 +231,43 @@ def test_changing_the_plan_in_the_admin_drops_the_scheduled_change(owner, plans)
     assert (workspace.subscription_plan, workspace.pending_plan, workspace.pending_plan_effective_at) == (plans['Estudio'], None, None)
 
 
+def save_in_admin(workspace, changed):
+    model_admin = admin.site._registry[Workspace]
+    request = RequestFactory().post('/admin/')
+    request.user = make_user('staff')
+    model_admin.save_model(request, workspace, mock.Mock(changed_data=changed), change=True)
+    return reload(workspace)
+
+
+def test_a_plan_set_in_the_admin_is_a_comp_that_no_old_period_ends(owner, plans):
+    _, workspace = owner
+    set_plan(workspace, plans['Pro'], renews_at=timezone.now() + timedelta(days=5))
+    Workspace.objects.filter(pk=workspace.pk).update(plan_anchor_day=21)
+    workspace = reload(workspace)
+    workspace.subscription_plan = plans['Estudio']
+
+    workspace = save_in_admin(workspace, ['subscription_plan'])
+
+    assert (workspace.subscription_plan, workspace.plan_renews_at, workspace.plan_anchor_day) == (plans['Estudio'], None, None)
+    # When the old period would have ended, nothing drops it to the default plan.
+    assert apply_due_plan_changes(now=timezone.now() + timedelta(days=6)) == 0
+    assert reload(workspace).subscription_plan == plans['Estudio']
+
+
+def test_a_renewal_date_set_in_the_same_admin_save_is_kept(owner, plans):
+    _, workspace = owner
+    set_plan(workspace, plans['Pro'], renews_at=timezone.now() + timedelta(days=5))
+    Workspace.objects.filter(pk=workspace.pk).update(plan_anchor_day=21)
+    workspace = reload(workspace)
+    chosen = timezone.now() + timedelta(days=30)
+    workspace.subscription_plan = plans['Estudio']
+    workspace.plan_renews_at = chosen
+
+    workspace = save_in_admin(workspace, ['subscription_plan', 'plan_renews_at'])
+
+    assert (workspace.subscription_plan, workspace.plan_renews_at, workspace.plan_anchor_day) == (plans['Estudio'], chosen, 21)
+
+
 # --- 12. the paid period, in the workspace's time zone ------------------------------
 
 @override_settings(WORKSPACE_TIME_ZONE='America/Argentina/Buenos_Aires')
