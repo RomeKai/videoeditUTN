@@ -12,6 +12,7 @@ from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
 
+from apps.core.testing import clear_local_caches
 from apps.payments.services.plans import PUBLIC_PLANS_CACHE_KEY
 
 BEFORE_PRICING = [('payments', '0003_transaction_created_at')]
@@ -34,7 +35,7 @@ class SeededPlansMigrationTests(TransactionTestCase):
     def tearDown(self):
         # Leave the schema at the latest migration for the tests that follow.
         call_command('migrate', verbosity=0)
-        cache.clear()
+        clear_local_caches()
 
     def migrate(self, target):
         executor = MigrationExecutor(connection)

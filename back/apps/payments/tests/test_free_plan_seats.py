@@ -3,10 +3,10 @@ Gratis allows 2 members: the owner and one more. A pending invitation takes a se
 (check_workspace_member_limit, users/signals.py), so a third person is refused.
 """
 import pytest
-from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from rest_framework.test import APIClient
 
+from apps.core.testing import clear_local_caches
 from apps.users.models import User, Workspace, WorkspaceMember
 
 pytestmark = pytest.mark.django_db
@@ -29,7 +29,7 @@ def test_the_free_plan_has_two_seats(seeded_plans):
 
 
 def test_the_public_list_shows_two_seats_for_the_free_plan(seeded_plans):
-    cache.clear()
+    clear_local_caches()
     plans = APIClient().get('/api/v1/plans/').json()
 
     assert next(plan for plan in plans if plan['name'] == 'Gratis')['max_members'] == 2
@@ -44,14 +44,6 @@ def test_a_free_workspace_has_its_owner_and_one_more_and_refuses_a_third(seeded_
     # The second seat. A pending invitation takes it the same as a member.
     join(workspace, make_user('invitada'), status=second)
 
-    try:
+    with pytest.raises(ValidationError, match="Tu plan 'Gratis' solo permite 2 miembros"):
         join(workspace, make_user('tercera'))
-    except ValidationError as error:
-        assert "Tu plan 'Gratis' solo permite 2 miembros" in str(error)
-    else:
-        # Before PR #137 the limit never ran: it looked at instance.id, which the
-        # UUID default fills before the INSERT. The seats above still hold.
-        # TODO: once PR #137 is merged, drop this skip and make the test strict
-        # (pytest.raises around the third join): a skip here would hide a broken limit.
-        pytest.skip('check_workspace_member_limit no corre en esta rama (PR #137 lo arregla)')
     assert WorkspaceMember.objects.filter(workspace=workspace).count() == 2

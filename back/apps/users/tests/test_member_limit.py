@@ -7,7 +7,7 @@ instance.id, que con el UUID por default ya existe antes del INSERT.
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from apps.payments.models import SubscriptionPlan
 from apps.users.models import Workspace, WorkspaceMember
@@ -52,7 +52,9 @@ class MemberLimitTests(TestCase):
             join(self.workspace, make_user("otra"))
 
     def test_without_a_plan_the_workspace_has_one_seat(self):
-        self.assertIsNone(self.workspace.subscription_plan)
+        # A workspace from before the default plan (PR #138): new ones start on Gratis.
+        Workspace.objects.filter(pk=self.workspace.pk).update(subscription_plan=None)
+        self.workspace.refresh_from_db()
 
         with self.assertRaisesMessage(ValidationError, "no tiene un plan activo"):
             join(self.workspace, make_user("sobra"))
@@ -67,6 +69,7 @@ class MemberLimitTests(TestCase):
         member.refresh_from_db()
         self.assertEqual((member.role, member.status), (VIEWER, ACTIVE))
 
+    @override_settings(DEFAULT_PLAN_NAME="")  # no default plan, as when it does not exist yet
     def test_a_new_user_gets_their_own_membership_without_a_plan(self):
         user = make_user("nueva")
 

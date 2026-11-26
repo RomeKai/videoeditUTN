@@ -176,9 +176,13 @@ class RedisDownTests(TestCase):
         """Saving a plan refreshes the cached list (payments/signals.py): a skipped delete, not an error."""
         from apps.payments.models import SubscriptionPlan
 
-        with override_settings(CACHES=self.caches), redis_down(), self.assertLogs("apps.core.cache", level=logging.WARNING):
-            plan = SubscriptionPlan.objects.create(name="Sin Redis", max_members=3)
-            plan.delete()
+        with override_settings(CACHES=self.caches), redis_down(), \
+                self.assertLogs("apps.core.cache", level=logging.WARNING):
+            # The list is dropped once the save commits.
+            with self.captureOnCommitCallbacks(execute=True):
+                plan = SubscriptionPlan.objects.create(name="Sin Redis", max_members=3)
+            with self.captureOnCommitCallbacks(execute=True):
+                plan.delete()
 
     def test_the_locks_cache_raises(self):
         from redis.exceptions import ConnectionError as RedisConnectionError
