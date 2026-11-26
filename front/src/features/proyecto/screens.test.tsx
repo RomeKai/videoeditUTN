@@ -173,6 +173,14 @@ describe('D1 · Proyecto', () => {
     expect(screen.queryByRole('link', { name: 'Ver planes' })).toBeNull();
   });
 
+  it('la moderación no se pudo usar (ModerationBlockedError): no culpa al contenido del video', async () => {
+    open('Falló: ModerationBlockedError', '');
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText(/Algo falló de nuestro lado/)).toBeInTheDocument();
+    expect(within(alert).getByRole('link', { name: /Escribir a soporte/ })).toBeInTheDocument();
+    expect(screen.queryByText(/no cumple nuestras políticas/)).toBeNull();
+  });
+
   it('error de moderación: no dice la categoría y ofrece escribirnos', async () => {
     open('Falló: UnsafeContentError', '');
     const alert = await screen.findByRole('alert');

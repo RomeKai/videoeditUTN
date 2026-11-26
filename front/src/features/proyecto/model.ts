@@ -87,10 +87,9 @@ export const WAITING_TEXT = 'Hay mucha demanda. Tu video sigue en la fila y arra
 
 const STATE_LABEL: Record<StageState, string> = { done: 'Listo', run: 'En curso', wait: 'En espera', fail: 'Falló', pending: 'Pendiente' };
 
-/** Short reason shown in the failed step of the timeline. */
+/** Short reason shown in the failed step of the timeline. `ModerationBlockedError` is not here: the service failed, not the video. */
 const FAIL_STEP_TEXT: Record<string, string> = {
   UnsafeContentError: 'El contenido no cumple nuestras políticas.',
-  ModerationBlockedError: 'El contenido no cumple nuestras políticas.',
   CapacityTimeoutError: 'Había mucha demanda y no pudimos procesarlo.',
   AINoSpeechDetectedError: 'No encontramos voz en el audio.',
   AIEmptySelectionError: 'No encontramos momentos que funcionen como clips.',

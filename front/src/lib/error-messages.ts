@@ -6,8 +6,9 @@ const MODERATION = 'No podemos procesar este video porque su contenido no cumple
 const GENERIC = 'Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo.';
 
 const PIPELINE_MESSAGES: Record<string, string> = {
+  // Only the content itself. `ModerationBlockedError` is ours (the moderation key or its quota): it gets the
+  // generic message, never a text that blames the video (back/apps/core/security.py).
   UnsafeContentError: MODERATION,
-  ModerationBlockedError: MODERATION,
   CapacityTimeoutError: 'Hay mucha demanda en este momento y no pudimos procesar tu video. Volvé a intentarlo en unos minutos.',
   AINoSpeechDetectedError: 'No encontramos voz en el video. OneCreator elige clips a partir de lo que se dice.',
   AIEmptySelectionError: 'No encontramos momentos que funcionen como clips. Probá con otro video o cambiá el criterio.',
@@ -31,16 +32,18 @@ export function pipelineErrorMessage(code: string | null | undefined): string {
   return (code && PIPELINE_MESSAGES[code]) || GENERIC;
 }
 
-/** True when the project was stopped by moderation: opens dialog D5 (never says which category). */
+/**
+ * True when moderation stopped the project because of its content: opens dialog D5 (never says which category).
+ * `ModerationBlockedError` is not that: the moderation service could not be used, whatever the video says.
+ */
 export function isModerationError(code: string | null | undefined): boolean {
-  return code === 'UnsafeContentError' || code === 'ModerationBlockedError';
+  return code === 'UnsafeContentError';
 }
 
 /** Short titles for the red box of a failed project. */
 export function pipelineErrorTitle(code: string | null | undefined): string {
   switch (code) {
     case 'UnsafeContentError':
-    case 'ModerationBlockedError':
       return 'No podemos procesar este video';
     case 'CapacityTimeoutError':
       return 'Hay mucha demanda';

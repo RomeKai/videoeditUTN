@@ -184,8 +184,11 @@ describe('estado del proyecto (sección 3 del mapa)', () => {
 
 describe('mensajes de error (sección 4 del mapa)', () => {
   it('traduce pipeline_error_code y cae al genérico', () => {
-    expect(pipelineErrorMessage('ModerationBlockedError')).toMatch(/no cumple nuestras políticas/);
-    expect(pipelineErrorMessage('UnsafeContentError')).toBe(pipelineErrorMessage('ModerationBlockedError'));
+    expect(pipelineErrorMessage('UnsafeContentError')).toMatch(/no cumple nuestras políticas/);
+    // The moderation service failed (invalid key, quota): it is ours, and the video is not blamed for it.
+    expect(pipelineErrorMessage('ModerationBlockedError')).toBe('Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo.');
+    expect(pipelineErrorTitle('ModerationBlockedError')).toBe('Algo falló de nuestro lado');
+    expect(isModerationError('ModerationBlockedError')).toBe(false);
     expect(pipelineErrorMessage('CapacityTimeoutError')).toMatch(/mucha demanda/);
     expect(pipelineErrorMessage('AIEmptySelectionError')).toMatch(/No encontramos momentos/);
     expect(pipelineErrorMessage('SoftTimeLimitExceeded')).toMatch(/tardó demasiado/);

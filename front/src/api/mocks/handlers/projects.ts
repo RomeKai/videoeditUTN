@@ -48,7 +48,7 @@ const UPLOAD_TRIGGERS: Array<[RegExp, keyof typeof UPLOAD_MESSAGES]> = [
 
 function simFor(text: string, now: number): ProjectSim {
   const sim: ProjectSim = { phase: 'ingest', startedAt: now };
-  if (/moderaci[oó]n/i.test(text)) sim.failAt = { stage: 'moderated', code: 'ModerationBlockedError' };
+  if (/moderaci[oó]n/i.test(text)) sim.failAt = { stage: 'moderated', code: 'UnsafeContentError' };
   else if (/sin-voz/i.test(text)) sim.failAt = { stage: 'transcribed', code: 'AINoSpeechDetectedError' };
   else if (/sin-clips/i.test(text)) sim.failAt = { stage: 'clips_selected', code: 'AIEmptySelectionError' };
   else if (/timeout/i.test(text)) sim.failAt = { stage: 'transcribed', code: 'CapacityTimeoutError' };
