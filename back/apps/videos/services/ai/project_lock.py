@@ -1,11 +1,11 @@
 """
 Distributed per-project lock for the ingestion pipeline (AICORE-7).
 
-Uses redis-py directly: the project has no shared Django cache (``cache.add``
-would be per-process), so the broker's Redis is the only store workers share.
-The lock carries an ownership token and a TTL, and only its owner can release
-it. If Redis is unreachable we fail fast with a retryable error: processing a
-project without the lock is never an option.
+Uses redis-py directly, on the broker's Redis: the Django cache (the same
+Redis since CACHES uses it) has no ownership token, heartbeat renewal or
+owner-only release. The lock carries an ownership token and a TTL, and only
+its owner can release it. If Redis is unreachable we fail fast with a
+retryable error: processing a project without the lock is never an option.
 """
 
 import logging

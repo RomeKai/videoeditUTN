@@ -25,7 +25,7 @@ from rest_framework.views import APIView
 
 from apps.core.permissions import ADMINS, DENIED, EDITOR_DELETE_DENIED, MAKERS, WorkspaceRolePermission
 from apps.core.workspace import NOT_FOUND_DETAIL, WORKSPACE_HEADER
-from apps.payments.models import Transaction, Wallet
+from apps.payments.models import SubscriptionPlan, Transaction, Wallet
 from apps.users.models import Workspace, WorkspaceMember
 from apps.videos.models import BrandKit, ClipPreview, VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import PipelineStage
@@ -497,6 +497,9 @@ class UnmappedWriteTests(ActiveWorkspaceHarness):
         return _UnmappedView.as_view()(request)
 
     def test_an_unmapped_write_is_for_the_owner_and_admins_only(self):
+        # Three members: without a plan the workspace has one seat (users/signals.py).
+        self.team.subscription_plan = SubscriptionPlan.objects.create(name="Tres lugares", max_members=3)
+        self.team.save(update_fields=["subscription_plan"])
         members = {role: make_user(f"m-{role}") for role in (ADMIN, EDITOR, VIEWER)}
         for role, user in members.items():
             join(self.team, user, role)
