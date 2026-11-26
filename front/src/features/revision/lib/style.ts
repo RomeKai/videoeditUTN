@@ -12,6 +12,9 @@ type StyleSource = Pick<
   | 'manual_camera_x'
   | 'manual_camera_y'
   | 'manual_camera_zoom'
+  | 'pip_corner'
+  | 'trending_color'
+  | 'trending_text'
   | 'use_facetracking'
   | 'add_subtitles'
   | 'subtitle_color'
@@ -22,6 +25,9 @@ type StyleSource = Pick<
   | 'brand_kit_name'
   | 'metadata'
 >;
+
+/** Layouts with a camera pane: the manual camera applies to them. */
+const CAMERA_LAYOUTS: ReadonlyArray<Project['render_layout']> = ['split', 'versus', 'reaction', 'podcast', 'pip'];
 
 export interface StyleRow {
   key: string;
@@ -39,28 +45,37 @@ export function isManualCamera(project: Pick<Project, 'manual_camera_x' | 'manua
 /**
  * The project's style as the editor shows it (read only: the style is changed
  * in the project and applies to every clip). The advanced options follow the
- * map: gameplay position and camera side only for Dividido, the manual camera
- * for Dividido and Versus, where it replaces the side and "Seguir caras".
+ * map: gameplay position for Dividido and Reacción, camera side also for PiP,
+ * the manual camera for every layout with a camera pane, where it replaces the
+ * side and "Seguir caras". PiP adds its corner, Trending its color and text.
  */
 export function describeStyle(project: StyleSource): StyleRow[] {
   const layout = project.render_layout;
-  const manual = (layout === 'split' || layout === 'versus') && isManualCamera(project);
+  const cameraPane = CAMERA_LAYOUTS.includes(layout);
+  const sideLayout = layout === 'split' || layout === 'reaction' || layout === 'pip';
+  const manual = cameraPane && isManualCamera(project);
   const rows: StyleRow[] = [
     { key: 'format', label: 'Formato', value: `${project.aspect_ratio} · ${project.metadata.render_resolution ?? '720p'}` },
     { key: 'style', label: 'Estilo', value: LABELS.editing_style[project.editing_style] },
     { key: 'layout', label: 'Layout', value: LABELS.render_layout[layout] },
   ];
-  if (layout === 'split') {
+  if (layout === 'split' || layout === 'reaction') {
     rows.push({ key: 'gameplay', label: 'Posición del gameplay', value: LABELS.position[project.gameplay_position] });
   }
-  if (layout === 'split' || layout === 'versus') {
+  if (layout === 'pip') {
+    rows.push({ key: 'corner', label: 'Esquina de la cámara', value: LABELS.pip_corner[project.pip_corner] });
+  }
+  if (layout === 'trending') {
+    rows.push({ key: 'trending', label: 'Borde', value: project.trending_text ? `Texto: «${project.trending_text}»` : 'Sin texto', swatch: project.trending_color });
+  }
+  if (cameraPane) {
     const side = project.camera_selection_position === 'center' ? 'Todo el cuadro' : LABELS.position[project.camera_selection_position];
     rows.push({
       key: 'camera',
       label: 'Cámara',
       value: manual
         ? `Manual · x ${formatNumber(project.manual_camera_x)} · y ${formatNumber(project.manual_camera_y)} · zoom ${formatNumber(project.manual_camera_zoom)}`
-        : layout === 'split'
+        : sideLayout
           ? `Lado: ${side}`
           : 'Automática',
     });

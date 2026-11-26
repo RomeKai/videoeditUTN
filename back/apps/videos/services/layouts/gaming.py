@@ -60,18 +60,25 @@ class GamingLayout(BaseLayout):
 
     Gameplay pane: from a wide source, a vertical slice at
     ``gameplay_position`` (left, center or right).
+
+    Subclasses change the share of the camera pane and which pane goes on
+    top (``CAMERA_SHARE``, ``CAMERA_ON_TOP``; see ``ReactionLayout``).
     """
+    # Reels Proportion: 35% Camera on top, 65% Gameplay below
+    CAMERA_SHARE = 0.35
+    CAMERA_ON_TOP = True
+
     def apply(self, clip, camera_pos='top'):
         target_w, target_h = self.target_w, self.target_h
 
-        # Reels Proportion: 35% Camera, 65% Gameplay
-        cam_h = int(target_h * 0.35)
+        cam_h = int(target_h * self.CAMERA_SHARE)
         game_h = target_h - cam_h
+        cam_side, game_side = ('top', 'bottom') if self.CAMERA_ON_TOP else ('bottom', 'top')
 
         # 1. Camera Layer
         cam = self._camera(clip, target_w / cam_h)
         cam = cam.resized(new_size=(target_w, cam_h))
-        cam = cam.with_position(('center', 'top'))
+        cam = cam.with_position(('center', cam_side))
 
         # 2. Gameplay Layer
         game_target_aspect = target_w / game_h
@@ -101,7 +108,7 @@ class GamingLayout(BaseLayout):
         # Apply the final calculated center
         game = clip.cropped(x_center=best_x_center, y_center=clip.h//2, width=game_crop_w, height=game_crop_h)
         game = game.resized(new_size=(target_w, game_h))
-        game = game.with_position(('center', 'bottom'))
+        game = game.with_position(('center', game_side))
 
         # 3. Composition
         bg = ColorClip(size=(target_w, target_h), color=(0,0,0), duration=clip.duration)

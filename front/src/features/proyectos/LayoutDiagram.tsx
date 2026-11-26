@@ -9,6 +9,9 @@ const FRAME: Record<AspectRatio, { width: number; ratio: string }> = {
   '16:9': { width: 48, ratio: '16 / 9' },
 };
 
+/** The 2.35:1 band of the cinematic layout in each output format: [top %, height %]. */
+const CINEMATIC_BAND: Record<AspectRatio, [number, number]> = { '9:16': [38, 24], '1:1': [29, 42], '16:9': [12, 76] };
+
 /** Where a horizontal source lands when it is fitted inside each output format: [top %, height %]. */
 const FIT_BAND: Record<AspectRatio, [number, number]> = { '9:16': [36, 28], '1:1': [22, 56], '16:9': [4, 92] };
 
@@ -78,6 +81,43 @@ export function LayoutDiagram({ layout, ratio }: { layout: Layout; ratio: Aspect
         </>
       );
       break;
+    case 'reaction':
+      shapes = (
+        <>
+          {box({ left: 2, right: 2, top: 2, height: '46%' }, styles.dgV2)}
+          {box({ left: 2, right: 2, bottom: 2, height: '46%' }, styles.dgV)}
+        </>
+      );
+      break;
+    case 'podcast':
+      shapes = (
+        <>
+          {box({ left: 2, right: 2, top: 2, height: '46%' }, styles.dgV)}
+          {box({ left: 2, right: 2, bottom: 2, height: '46%' }, styles.dgV2)}
+          {box({ left: '38%', top: '12%', width: '24%', height: wide ? '24%' : '14%', borderRadius: '50%' }, styles.dgRing)}
+          {box({ left: '38%', bottom: '12%', width: '24%', height: wide ? '24%' : '14%', borderRadius: '50%' }, styles.dgRing)}
+        </>
+      );
+      break;
+    case 'trending':
+      shapes = (
+        <>
+          {box({ inset: 0 }, styles.dgTrend)}
+          {box({ left: '12%', right: '12%', top: '5%', height: '7%' }, styles.dgText)}
+          {box({ left: '7%', right: '7%', top: '16%', bottom: '5%' }, styles.dgV)}
+        </>
+      );
+      break;
+    case 'cinematic': {
+      const [bandTop, bandHeight] = CINEMATIC_BAND[ratio];
+      shapes = (
+        <>
+          {box({ inset: 0 }, styles.dgBlack)}
+          {box({ left: 0, right: 0, top: `${bandTop}%`, height: `${bandHeight}%` }, styles.dgV)}
+        </>
+      );
+      break;
+    }
   }
   return (
     <span className={styles.dgBox} aria-hidden="true">

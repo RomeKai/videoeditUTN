@@ -5,6 +5,7 @@ import type {
   EditingStyle,
   IntelligenceLevel,
   Layout,
+  PipCorner,
   Position,
   Project,
   ProjectType,
@@ -31,6 +32,12 @@ export interface ProjectConfig {
   manual_camera_x: number;
   manual_camera_y: number;
   manual_camera_zoom: number;
+  /** PiP only: where the camera inset goes. */
+  pip_corner: PipCorner;
+  /** Trending only: one end of the border gradient. */
+  trending_color: string;
+  /** Trending only: text above the video, up to TRENDING_TEXT_MAX characters; empty means none. */
+  trending_text: string;
   /** null: no brand kit. undefined: not chosen yet, the workspace default is proposed. */
   brand_kit: string | null | undefined;
   add_subtitles: boolean;
@@ -48,6 +55,15 @@ export interface ProjectConfig {
 export const MANUAL_CAMERA_DEFAULT = { x: 0.5, y: 0.2, zoom: 1 } as const;
 export const MAX_CLIPS = { min: 1, max: 20, default: 8 } as const;
 export const WORDS_PER_LINE = { min: 1, max: 8 } as const;
+export const TRENDING_TEXT_MAX = 60;
+export const PIP_CORNERS: readonly PipCorner[] = ['bottom-right', 'bottom-left', 'top-right', 'top-left'];
+
+export const TRENDING_COLORS = [
+  { value: '#FF2D55', label: 'Rosa' },
+  { value: '#7C5CFF', label: 'Violeta' },
+  { value: '#00C2FF', label: 'Celeste' },
+  { value: '#FFB800', label: 'Naranja' },
+] as const;
 
 export const SUBTITLE_COLORS = [
   { value: '#FFFFFF', label: 'Blanco' },
@@ -71,6 +87,9 @@ export const DEFAULT_CONFIG: ProjectConfig = {
   manual_camera_x: MANUAL_CAMERA_DEFAULT.x,
   manual_camera_y: MANUAL_CAMERA_DEFAULT.y,
   manual_camera_zoom: MANUAL_CAMERA_DEFAULT.zoom,
+  pip_corner: 'bottom-right',
+  trending_color: TRENDING_COLORS[0].value,
+  trending_text: '',
   brand_kit: undefined,
   add_subtitles: true,
   subtitle_size: 'medium',
@@ -229,14 +248,29 @@ export function followsFaces(config: Pick<ProjectConfig, 'render_layout' | 'use_
   return config.render_layout === 'active' || config.use_facetracking;
 }
 
+/** Layouts with a camera pane: the manual camera applies to them. */
+export function usesManualCamera(layout: Layout): boolean {
+  return layout === 'split' || layout === 'versus' || layout === 'reaction' || layout === 'podcast' || layout === 'pip';
+}
+
+/** Layouts whose camera follows the face of one side of the source ("Lado de la cámara"). */
+export function usesCameraSide(layout: Layout): boolean {
+  return layout === 'split' || layout === 'reaction' || layout === 'pip';
+}
+
+/** Layouts with a content pane sliced from a wide source ("Posición del gameplay"). */
+export function usesGameplayPosition(layout: Layout): boolean {
+  return layout === 'split' || layout === 'reaction';
+}
+
 export function hasAdvanced(layout: Layout): boolean {
-  return layout === 'split' || layout === 'versus';
+  return usesManualCamera(layout);
 }
 
 /** The manual camera only counts while it differs from its defaults. */
 export function manualCameraActive(config: ProjectConfig): boolean {
   return (
-    hasAdvanced(config.render_layout) &&
+    usesManualCamera(config.render_layout) &&
     config.manual_camera &&
     (config.manual_camera_x !== MANUAL_CAMERA_DEFAULT.x || config.manual_camera_y !== MANUAL_CAMERA_DEFAULT.y || config.manual_camera_zoom !== MANUAL_CAMERA_DEFAULT.zoom)
   );
@@ -250,6 +284,10 @@ export const LAYOUT_HINTS: Record<Layout, string> = {
   pip: 'PiP: el video de fondo y la cámara en un recuadro.',
   versus: 'Versus: dos personas, una en cada mitad.',
   active: 'Quien habla: el encuadre va a la persona que está hablando.',
+  reaction: 'Reacción: el contenido arriba y la cara de quien reacciona abajo.',
+  cinematic: 'Cinemático: una franja 2.35:1 con bandas negras, como en el cine.',
+  podcast: 'Podcast: dos personas, una en cada mitad, y cada una seguida por separado.',
+  trending: 'Trending: el video con un borde de gradiente que gira y un texto arriba.',
 };
 
 /** Configuration of an existing project, for "Crear de nuevo" and "Duplicar configuración". */
@@ -271,6 +309,9 @@ export function configFromProject(project: Project): ProjectConfig {
     manual_camera_x: project.manual_camera_x,
     manual_camera_y: project.manual_camera_y,
     manual_camera_zoom: project.manual_camera_zoom,
+    pip_corner: project.pip_corner,
+    trending_color: normalizeHex(project.trending_color, DEFAULT_CONFIG.trending_color),
+    trending_text: project.trending_text.slice(0, TRENDING_TEXT_MAX),
     brand_kit: project.brand_kit,
     add_subtitles: project.add_subtitles,
     subtitle_size: project.subtitle_size,
@@ -315,13 +356,16 @@ export function sanitizeConfig(raw: unknown): ProjectConfig | null {
     selection_criteria: '',
     intelligence_level: isOneOf(['fast', 'smart'] as const, value.intelligence_level) ? value.intelligence_level : base.intelligence_level,
     editing_style: isOneOf(['dynamic', 'minimalist', 'vlog', 'hormozi'] as const, value.editing_style) ? value.editing_style : base.editing_style,
-    render_layout: isOneOf(['fill', 'fit', 'blurred', 'split', 'pip', 'versus', 'active'] as const, value.render_layout) ? value.render_layout : base.render_layout,
+    render_layout: isOneOf(['fill', 'fit', 'blurred', 'split', 'pip', 'versus', 'active', 'reaction', 'cinematic', 'podcast', 'trending'] as const, value.render_layout) ? value.render_layout : base.render_layout,
     gameplay_position: isOneOf(positions, value.gameplay_position) ? value.gameplay_position : base.gameplay_position,
     camera_selection_position: isOneOf(positions, value.camera_selection_position) ? value.camera_selection_position : base.camera_selection_position,
     manual_camera: bool('manual_camera'),
     manual_camera_x: num('manual_camera_x', 0, 1),
     manual_camera_y: num('manual_camera_y', 0, 1),
     manual_camera_zoom: num('manual_camera_zoom', 1, 4),
+    pip_corner: isOneOf(PIP_CORNERS, value.pip_corner) ? value.pip_corner : base.pip_corner,
+    trending_color: typeof value.trending_color === 'string' && /^#[0-9a-fA-F]{6}$/.test(value.trending_color) ? value.trending_color : base.trending_color,
+    trending_text: typeof value.trending_text === 'string' ? value.trending_text.slice(0, TRENDING_TEXT_MAX) : base.trending_text,
     brand_kit: typeof value.brand_kit === 'string' ? value.brand_kit : value.brand_kit === null ? null : undefined,
     add_subtitles: bool('add_subtitles'),
     subtitle_size: isOneOf(['small', 'medium', 'large'] as const, value.subtitle_size) ? value.subtitle_size : base.subtitle_size,
@@ -386,7 +430,10 @@ export function buildCreateBody(source: ProjectSourceInput, config: ProjectConfi
     render_resolution: source.kind === 'link' ? '720p' : config.render_resolution,
     editing_style: config.editing_style,
     render_layout: config.render_layout,
-    ...(config.render_layout === 'split' ? { gameplay_position: config.gameplay_position, camera_selection_position: config.camera_selection_position } : {}),
+    ...(usesGameplayPosition(config.render_layout) ? { gameplay_position: config.gameplay_position } : {}),
+    ...(usesCameraSide(config.render_layout) ? { camera_selection_position: config.camera_selection_position } : {}),
+    ...(config.render_layout === 'pip' ? { pip_corner: config.pip_corner } : {}),
+    ...(config.render_layout === 'trending' ? { trending_color: config.trending_color, trending_text: config.trending_text.trim() } : {}),
     ...(advanced
       ? {
           manual_camera_x: manual ? config.manual_camera_x : MANUAL_CAMERA_DEFAULT.x,

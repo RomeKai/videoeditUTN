@@ -1782,6 +1782,9 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `manual_camera_x` (opcional) | number |
 | `manual_camera_y` (opcional) | number |
 | `manual_camera_zoom` (opcional) | number |
+| `pip_corner` (opcional) | PipCorner |
+| `trending_color` (opcional) | HexColor |
+| `trending_text` (opcional) | string |
 | `speaker_tracking` (opcional) | boolean |
 | `add_subtitles` (opcional) | boolean |
 | `subtitle_color` (opcional) | HexColor |
@@ -1820,6 +1823,9 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `manual_camera_x` | number |
 | `manual_camera_y` | number |
 | `manual_camera_zoom` | number |
+| `pip_corner` | PipCorner |
+| `trending_color` | ColorValue |
+| `trending_text` | string |
 | `speaker_tracking` | boolean |
 | `add_subtitles` | boolean |
 | `subtitle_color` | ColorValue |
@@ -1873,6 +1879,9 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `manual_camera_x` (opcional) | number |
 | `manual_camera_y` (opcional) | number |
 | `manual_camera_zoom` (opcional) | number |
+| `pip_corner` (opcional) | PipCorner |
+| `trending_color` (opcional) | HexColor |
+| `trending_text` (opcional) | string |
 | `speaker_tracking` (opcional) | boolean |
 | `add_subtitles` (opcional) | boolean |
 | `subtitle_color` (opcional) | HexColor |
@@ -1910,6 +1919,9 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `manual_camera_x` | number |
 | `manual_camera_y` | number |
 | `manual_camera_zoom` | number |
+| `pip_corner` | PipCorner |
+| `trending_color` | ColorValue |
+| `trending_text` | string |
 | `speaker_tracking` | boolean |
 | `add_subtitles` | boolean |
 | `subtitle_color` | ColorValue |
@@ -1947,7 +1959,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 
 **IntelligenceLevel:** "fast" \| "smart"
 
-**Layout:** "fill" \| "fit" \| "blurred" \| "split" \| "pip" \| "versus" \| "active"
+**Layout:** "fill" \| "fit" \| "blurred" \| "split" \| "pip" \| "versus" \| "active" \| "reaction" \| "cinematic" \| "podcast" \| "trending"
 
 **LinkProbe**
 
@@ -1978,6 +1990,8 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `transcript` | TranscriptItem[] \\| null |
 | `ai_suggestions` | Clip[] |
 | `metadata` | ProjectMetadata |
+
+**PipCorner:** "bottom-right" \| "bottom-left" \| "top-right" \| "top-left"
 
 **PipelineStage:** "uploaded" \| "audio_extracted" \| "transcribed" \| "moderated" \| "clips_selected" \| "render_dispatched" \| "completed" \| "partial" \| "failed"
 
@@ -2011,6 +2025,9 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `manual_camera_x` | number |
 | `manual_camera_y` | number |
 | `manual_camera_zoom` | number |
+| `pip_corner` | PipCorner |
+| `trending_color` | ColorValue |
+| `trending_text` | string |
 | `speaker_tracking` | boolean |
 | `add_subtitles` | boolean |
 | `subtitle_color` | ColorValue |
@@ -2163,6 +2180,9 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 |---|---|
 | `editing_style` (opcional) | EditingStyle |
 | `render_layout` (opcional) | Layout |
+| `pip_corner` (opcional) | PipCorner |
+| `trending_color` (opcional) | HexColor |
+| `trending_text` (opcional) | string |
 | `aspect_ratio` (opcional) | AspectRatio |
 | `brand_kit` (opcional) | Id \\| null |
 | `add_subtitles` (opcional) | boolean |

@@ -320,4 +320,24 @@ describe('estilo del proyecto', () => {
     expect(value(versus, 'camera')).toBe('Automática');
     expect(value({ ...versus, manual_camera_x: 0.3 } as Project, 'camera')).toContain('Manual');
   });
+
+  it('PiP: esquina y lado de la cámara', () => {
+    const pip = { ...base, render_layout: 'pip', pip_corner: 'top-left' } as Project;
+    expect(value(pip, 'corner')).toBe('Arriba a la izquierda');
+    expect(value(pip, 'camera')).toBe('Lado: Derecha');
+    expect(value(pip, 'gameplay')).toBeUndefined();
+  });
+
+  it('Reacción y Podcast: como Dividido y como Versus', () => {
+    expect(value({ ...base, render_layout: 'reaction' } as Project, 'gameplay')).toBe('Izquierda');
+    expect(value({ ...base, render_layout: 'podcast' } as Project, 'camera')).toBe('Automática');
+  });
+
+  it('Trending: el color del borde y el texto', () => {
+    const trending = { ...base, render_layout: 'trending', trending_color: '#00C2FF', trending_text: 'Mirá esto' } as Project;
+    const row = describeStyle(trending).find((item) => item.key === 'trending');
+    expect(row).toMatchObject({ value: 'Texto: «Mirá esto»', swatch: '#00C2FF' });
+    expect(value({ ...trending, trending_text: '' } as Project, 'trending')).toBe('Sin texto');
+    expect(value(trending, 'camera')).toBeUndefined();
+  });
 });

@@ -5,7 +5,7 @@ class BaseLayout(ABC):
     Interfaz abstracta para estrategias de layout.
     """
     
-    def __init__(self, target_w, target_h, use_facetracking=False, gameplay_pos='center', camera_selection_pos='center', manual_camera_coords=None, editing_style=None, static=False):
+    def __init__(self, target_w, target_h, use_facetracking=False, gameplay_pos='center', camera_selection_pos='center', manual_camera_coords=None, editing_style=None, static=False, layout_options=None):
         self.target_w = int(target_w)
         self.target_h = int(target_h)
         # static: no face or speaker tracking at all, whatever the layout
@@ -16,6 +16,9 @@ class BaseLayout(ABC):
         self.camera_selection_pos = camera_selection_pos
         self.manual_camera_coords = manual_camera_coords
         self.editing_style = editing_style
+        # Options of one layout only (CORE-03): the PiP corner, the trending
+        # color and text. Missing keys keep each layout's default.
+        self.layout_options = dict(layout_options or {})
 
     @property
     def tracking_fps(self):

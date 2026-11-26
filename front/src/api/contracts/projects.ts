@@ -50,11 +50,15 @@ export type IntelligenceLevel = z.infer<typeof IntelligenceLevel>;
 export const AspectRatio = z.enum(['9:16', '1:1', '16:9']);
 export type AspectRatio = z.infer<typeof AspectRatio>;
 
-export const Layout = z.enum(['fill', 'fit', 'blurred', 'split', 'pip', 'versus', 'active']);
+export const Layout = z.enum(['fill', 'fit', 'blurred', 'split', 'pip', 'versus', 'active', 'reaction', 'cinematic', 'podcast', 'trending']);
 export type Layout = z.infer<typeof Layout>;
 
 export const Position = z.enum(['left', 'center', 'right']);
 export type Position = z.infer<typeof Position>;
+
+/** Corner of the camera inset of the PiP layout. */
+export const PipCorner = z.enum(['bottom-right', 'bottom-left', 'top-right', 'top-left']);
+export type PipCorner = z.infer<typeof PipCorner>;
 
 export const SubtitleSize = z.enum(['small', 'medium', 'large']);
 export type SubtitleSize = z.infer<typeof SubtitleSize>;
@@ -248,6 +252,12 @@ export const Project = z.object({
   manual_camera_x: z.number(),
   manual_camera_y: z.number(),
   manual_camera_zoom: z.number(),
+  /** PiP layout only. */
+  pip_corner: PipCorner,
+  /** Trending layout only: one end of the border gradient. */
+  trending_color: ColorValue,
+  /** Trending layout only: text above the video; empty means none. */
+  trending_text: z.string(),
   speaker_tracking: z.boolean(),
   add_subtitles: z.boolean(),
   subtitle_color: ColorValue,
@@ -337,6 +347,9 @@ const CreateProjectFields = z.object({
   manual_camera_x: z.number().min(0).max(1).optional(),
   manual_camera_y: z.number().min(0).max(1).optional(),
   manual_camera_zoom: z.number().min(1).max(4).optional(),
+  pip_corner: PipCorner.optional(),
+  trending_color: HexColor.optional(),
+  trending_text: z.string().max(60).optional(),
   speaker_tracking: z.boolean().optional(),
   /** "Not sent" is its own case in the serializer (`_NotSentBooleanField`): true on create, unchanged on update. */
   add_subtitles: z.boolean().optional(),
@@ -468,6 +481,9 @@ export const RerenderRequest = z
   .object({
     editing_style: EditingStyle,
     render_layout: Layout,
+    pip_corner: PipCorner,
+    trending_color: HexColor,
+    trending_text: z.string().max(60),
     aspect_ratio: AspectRatio,
     brand_kit: Id.nullable(),
     add_subtitles: z.boolean(),
