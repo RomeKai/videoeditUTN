@@ -319,3 +319,26 @@ def test_a_workspace_without_access_is_rejected(client, user, status):
     assert response.json() == {"active_workspace_id": ["No sos miembro de ese workspace."]}
     user.refresh_from_db()
     assert user.last_workspace_id is None
+
+
+def test_the_email_carries_nothing_the_user_typed(client, user):
+    client.patch(ME_URL, {"name": "Soporte: tu cuenta fue bloqueada, entrá a https://evil.example/x"}, format="json")
+
+    client.patch(ME_URL, {"email": NEW_EMAIL, "current_password": PASSWORD}, format="json")
+
+    body = mail.outbox[0].body
+    assert body.startswith("Hola:\n")
+    assert "evil.example" not in body and "Soporte" not in body
+
+
+def test_the_link_of_a_deactivated_account_applies_nothing(client, user):
+    client.patch(ME_URL, {"email": NEW_EMAIL, "current_password": PASSWORD}, format="json")
+    token, _, _ = _link_token(mail.outbox[0])
+    User.objects.filter(pk=user.pk).update(is_active=False)
+    user.refresh_from_db()
+
+    response = _verify(token, as_user=user)
+
+    assert response.status_code == 400
+    user.refresh_from_db()
+    assert (user.email, user.pending_email) == ("tester@test.com", NEW_EMAIL)

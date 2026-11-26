@@ -56,7 +56,7 @@ def user_for_token(token, queryset=None):
         return None
     if purpose not in (EMAIL_CHANGE, SIGNUP):
         return None
-    user = (queryset if queryset is not None else User.objects).filter(pk=user_id).first()
+    user = (queryset if queryset is not None else User.objects).filter(pk=user_id, is_active=True).first()
     if user is None or not constant_time_compare(state, _state(user)):
         return None
     if purpose == EMAIL_CHANGE and not user.pending_email:
@@ -72,9 +72,10 @@ def verification_link(user):
 def send_email_change_verification(user):
     """Emails the link to `user.pending_email` (Django's email backend)."""
     hours = max(1, settings.EMAIL_VERIFICATION_MAX_AGE_SECONDS // 3600)
-    greeting = f'Hola, {user.first_name}:' if user.first_name else 'Hola:'
+    # Nothing the user typed goes in: the address can be anyone's, and the
+    # official sender must not carry someone else's text to it.
     message = (
-        f'{greeting}\n\n'
+        'Hola:\n\n'
         'Pediste usar este email en tu cuenta de OneCreator. Para confirmarlo, abrí este link:\n\n'
         f'{verification_link(user)}\n\n'
         f'El link vence en {hours} horas. Hasta que lo abras, tu cuenta sigue con el email anterior.\n\n'
