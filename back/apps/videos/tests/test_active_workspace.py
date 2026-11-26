@@ -428,7 +428,7 @@ class EditorTests(ActiveWorkspaceHarness):
 
     def test_an_editor_deletes_only_the_projects_they_uploaded(self):
         editor = header(self.team)
-        mine = project_in(self.team, self.alice, "Mío")
+        mine = project_in(self.team, self.alice, "Mío", status=VideoProject.Status.COMPLETED)
 
         refused = self.client.delete(detail(self.theirs), **editor)
         self.assertEqual(refused.status_code, 403)
@@ -444,12 +444,12 @@ class EditorTests(ActiveWorkspaceHarness):
         # The owner wins over a membership row of their own, even a pending Lector one.
         join(self.team, self.boss, VIEWER, status=PENDING)
         self.client.force_authenticate(user=self.boss)
-        alices = project_in(self.team, self.alice, "De Alice")
+        alices = project_in(self.team, self.alice, "De Alice", status=VideoProject.Status.COMPLETED)
         self.assertEqual(self.client.delete(detail(alices), **header(self.team)).status_code, 204)
 
 
     def test_a_project_nobody_uploaded_is_deleted_by_an_admin_or_the_owner_only(self):
-        orphans = [project_in(self.team, None, f"Sin autor {n}") for n in range(2)]
+        orphans = [project_in(self.team, None, f"Sin autor {n}", status=VideoProject.Status.COMPLETED) for n in range(2)]
 
         refused = self.client.delete(detail(orphans[0]), **header(self.team))
         self.assertEqual(refused.status_code, 403)

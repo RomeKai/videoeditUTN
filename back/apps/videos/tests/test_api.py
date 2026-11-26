@@ -135,6 +135,8 @@ class VideoProjectDeleteTests(PrivateVideoProjectAPITests):
     def test_delete_project_success(self):
         """Asegura que el usuario puede eliminar su propio proyecto."""
         url = reverse('project-detail', args=[self.project1.id])
+        # Terminado: uno que se procesa no se borra (tiene tokens reservados).
+        VideoProject.objects.filter(pk=self.project1.pk).update(status=VideoProject.Status.COMPLETED)
         # Cuenta cuántos proyectos hay antes de eliminar
         count_before = VideoProject.objects.count()
         
