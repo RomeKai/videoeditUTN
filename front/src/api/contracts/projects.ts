@@ -292,7 +292,7 @@ export const Project = z.object({
   pipeline_error_at: IsoDateTime.nullable(),
   created_at: IsoDateTime,
   clips: z.array(Clip),
-  /** Presigned URL of the proxy video (1 h), null until ingestion makes it. */
+  /** Presigned URL of the proxy video (1 h), null until ingestion makes it. With local files (USE_R2=False), the absolute /media/ URL. */
   proxy_url: z.string().nullable(),
   /* Proposed extras */
   uploaded_by_detail: UserRef.nullable().optional(),

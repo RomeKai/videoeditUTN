@@ -218,8 +218,11 @@ def _store(local_path: str, preview: ClipPreview) -> str:
     return relative_key
 
 
-def preview_url(preview: ClipPreview) -> Optional[str]:
-    """Temporary URL of a ready preview, valid no longer than the preview itself."""
+def preview_url(preview: ClipPreview, request=None) -> Optional[str]:
+    """
+    Temporary URL of a ready preview, valid no longer than the preview itself.
+    ``request`` makes a local /media/ URL absolute (storage_service.absolute_media_url).
+    """
     from apps.videos.services.storage_service import CloudflareR2Manager
 
     if preview.status != ClipPreview.Status.READY or not preview.storage_key:
@@ -228,7 +231,7 @@ def preview_url(preview: ClipPreview) -> Optional[str]:
     if remaining <= 0:
         return None
     return CloudflareR2Manager.generate_presigned_url(
-        preview.storage_key, expiration_seconds=max(60, remaining),
+        preview.storage_key, expiration_seconds=max(60, remaining), request=request,
     )
 
 

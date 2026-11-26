@@ -256,7 +256,7 @@ class TestExampleProjects:
         assert {project['title'] for project in listed.data} == set(seed_demo.FIXTURES.values())
         paper = client.get(f'/api/v1/projects/{review.pk}/paper-edit-data/')
         assert paper.status_code == 200
-        assert paper.data['proxy_url'] == '/media/demo/review/source.mp4'
+        assert paper.data['proxy_url'] == 'http://testserver/media/demo/review/source.mp4'
         assert len(paper.data['ai_suggestions']) == 3
         clip = VideoClip.objects.get(title='[DEMO] Clip de ejemplo 1')
         download = client.get(f'/api/v1/clips/{clip.pk}/download/')

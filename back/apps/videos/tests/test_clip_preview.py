@@ -296,7 +296,7 @@ def test_post_then_get_returns_the_rendered_preview(api, clip, django_capture_on
 
     assert got.status_code == 200
     assert got.data["status"] == "ready"
-    assert got.data["url"].startswith("/media/previews/")
+    assert got.data["url"].startswith("http://testserver/media/previews/")
     assert got.data["simplified"] == {"height": 360, "face_tracking": False, "silence_removal": False}
 
 
