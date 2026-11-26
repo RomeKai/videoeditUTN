@@ -129,7 +129,7 @@ Los tres pasan por `_start_paid_render`, en una transacción con la fila del pro
 2. **Estado.** El proyecto tiene que haber terminado (`completed`, `partial` o `failed`, en estado y etapa) y ninguna reserva de render suya puede seguir `reserved` (`_render_reservation_open`: la aprobación, también una de antes, el render automático, un render pedido antes y, en un video completo, la de creación). Si no, 409 `{ error, code }`: `clip_rendering` (el clip se renderiza o espera su render), `project_rendering`, `project_processing`, `awaiting_approval` (los clips de una revisión se renderizan y se pagan al aprobarla) o `render_unsettled`.
 3. **Publicaciones.** Un clip con archivo no se renderiza de nuevo mientras tiene posts `SCHEDULED`, `QUEUED` o `PROCESSING` (409 `posts_pending`): el render nuevo reemplaza ese archivo y borra el viejo debajo del post. Se cancelan o se esperan antes.
 4. **Largo y precio.** Cada clip tiene que entrar en un render (`max_render_segment_seconds`, la regla de `check_segment_lengths`): si no, 400. El precio es `render_cost` de la suma de sus segundos. Sobre el límite del plan, 403 con `code` `resolution` o `duration` (y `limit`), los códigos que lee el frontend.
-5. **Reserva.** `reserve_funds`. Sin saldo, 402 `{ error, required }` y no se escribe nada.
+5. **Reserva.** `reserve_funds`, y `link_reservation` la vincula con el proyecto con la categoría `render` (el re-despacho, con `project`). Sin saldo, 402 `{ error, required }` y no se escribe nada.
 6. **Escrituras**, en la misma transacción:
    - el estilo, solo en `rerender`, validado como el PATCH del proyecto. `render_resolution` no cambia: se cobró al crear;
    - los clips a `draft`, con un compare-and-set sobre las filas bloqueadas;
