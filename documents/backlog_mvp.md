@@ -400,10 +400,10 @@ El `FaceTracker` actual usa MediaPipe Tasks con un modelo `.tflite` estático. F
 
 ---
 
-### CORE-03: Nuevos Layouts — Podcast, Cinematic, Trending `P0` 🔴 `missing`
+### CORE-03: Nuevos Layouts — Podcast, Cinematic, Trending `P0` 🟢 `exists`
 
 **Descripción:**
-Actualmente hay 6 layouts (`fill`, `fit`, `blurred`, `split`, `versus`, `active`). `pip` está mapeado a `FitLayout` (placeholder). Para competir con Opus Clips faltan layouts que son estándar en la industria.
+Había 6 layouts (`fill`, `fit`, `blurred`, `split`, `versus`, `active`) y `pip` estaba mapeado a `FitLayout` (placeholder). Ahora están `reaction`, `cinematic`, `podcast` y `trending`, y `pip` es un PiP real con la misma clave (el front ya lo dibujaba así, por eso no se creó `pip_real`). La esquina del PiP y el color y el texto de trending son columnas del proyecto (`pip_corner`, `trending_color`, `trending_text`, migración `videos/0015`). `cinematic` sigue las caras de CORE-01 en lugar de recuperar el `saliency_tracker`.
 
 **Layouts nuevos a implementar:**
 
@@ -427,11 +427,11 @@ Actualmente hay 6 layouts (`fill`, `fit`, `blurred`, `split`, `versus`, `active`
 
 **Criterios de Aceptación:**
 
-* \[ ] Cada layout implementa la interfaz `LayoutStrategy` (método `apply(clip) → clip`).
-* \[ ] Todos respetan `target\_w × target\_h` y producen dimensiones pares (H.264 safe).
-* \[ ] `podcast` y `pip\_real` usan multi-face tracking de CORE-01.
-* \[ ] `trending` acepta parámetros configurables (color de borde, texto overlay).
-* [ ] Tests visuales: render de un clip de 5s con cada layout nuevo.
+* \[x] Cada layout implementa la interfaz `LayoutStrategy` (método `apply(clip) → clip`).
+* \[x] Todos respetan `target\_w × target\_h` y producen dimensiones pares (H.264 safe).
+* \[x] `podcast` y `pip\_real` usan multi-face tracking de CORE-01.
+* \[x] `trending` acepta parámetros configurables (color de borde, texto overlay).
+* [x] Tests visuales: render de un clip de 5s con cada layout nuevo (`manage.py render_layout_samples`).
 
 **Subtareas con estimación:**
 
@@ -446,9 +446,9 @@ Actualmente hay 6 layouts (`fill`, `fit`, `blurred`, `split`, `versus`, `active`
 | 7 | Tests visuales: script que renderiza 5s con cada layout nuevo | M | Genera PNG/MP4 para visual review |
 
 **Definition of Done:**
-- [ ] Criterios de aceptación cumplidos
-- [ ] Cada layout tiene test automatizado (assert dimensiones, assert no crash)
-- [ ] Migración de DB para nuevos choices
+- [x] Criterios de aceptación cumplidos
+- [x] Cada layout tiene test automatizado (assert dimensiones, assert no crash)
+- [x] Migración de DB para nuevos choices
 - [ ] PR revisado por Par IA (cross-review — ellos consumen los layouts)
 
 **Riesgos:**
@@ -1215,7 +1215,7 @@ Para agencias o creadores con flujos automatizados. Si un video entra por webhoo
 
 |Issue|Título|Prioridad|Estado|
 |-|-|-|-|
-|CORE-03|Nuevos Layouts — Podcast, Cinematic, Trending|`P0`|🔴 `missing`|
+|CORE-03|Nuevos Layouts — Podcast, Cinematic, Trending|`P0`|🟢 `exists`|
 |CORE-04|Optimización de Performance del Worker|`P0`|🟡 `partial`|
 |CORE-06|Tests de Integración del Pipeline|`P0`|🟡 `partial`|
 |PTE-03|Preview Pipeline — Pre-render Rápido|`P1`|🔴 `missing`|
