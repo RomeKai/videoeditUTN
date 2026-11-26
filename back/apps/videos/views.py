@@ -172,7 +172,8 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         if project.proxy_r2_key:
             proxy_url = CloudflareR2Manager.generate_presigned_url(
                 project.proxy_r2_key, 
-                expiration_seconds=7200
+                expiration_seconds=7200,
+                request=request,
             )
         
         from .serializers import VideoClipSerializer
@@ -689,7 +690,7 @@ class ClipPreviewView(APIView):
         )
 
     @staticmethod
-    def _payload(preview):
+    def _payload(preview, request=None):
         from django.conf import settings as django_settings
 
         from .services.clip_preview import preview_url
@@ -698,7 +699,7 @@ class ClipPreviewView(APIView):
             "preview_id": preview.id,
             "clip_id": preview.clip_id,
             "status": preview.status,
-            "url": preview_url(preview),
+            "url": preview_url(preview, request),
             "expires_at": preview.expires_at,
             "error_code": preview.error_code or None,
             "cost_tokens": 0,
@@ -734,7 +735,7 @@ class ClipPreviewView(APIView):
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
             )
         return Response(
-            self._payload(preview),
+            self._payload(preview, request),
             status=status.HTTP_202_ACCEPTED if created else status.HTTP_200_OK,
         )
 
@@ -744,7 +745,7 @@ class ClipPreviewView(APIView):
         preview = current_preview(self._get_clip(request, clip_id))
         if preview is None:
             return Response({"error": "No hay vista previa vigente."}, status=status.HTTP_404_NOT_FOUND)
-        return Response(self._payload(preview))
+        return Response(self._payload(preview, request))
 
 
 class PipelineMetricsView(APIView):
