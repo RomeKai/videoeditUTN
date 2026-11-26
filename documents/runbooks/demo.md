@@ -71,7 +71,7 @@ La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario,
 | Publicar y Publicaciones | panel «Publicar», `/publicaciones` | Mock |
 | Miembros y ajustes del workspace | `/ajustes` | Mock |
 | Notificaciones (la campana) | — | Mock |
-| Crear cuenta y recuperar contraseña | `/registro`, `/recuperar` | No existen en el backend: **no las muestres** |
+| Crear cuenta, verificar el email y recuperar contraseña | `/registro`, `/verificar`, `/recuperar` | **Backend**. Los emails salen por consola (settings `dev`): el link del registro en `demo logs web`, los de reenviar y recuperar en `demo logs worker`. Copialo de ahí al navegador. Sin verificar en la demo: probalo antes |
 
 Dos cosas para tener presentes:
 
