@@ -176,19 +176,29 @@ sequenceDiagram
 1. La duración de un video por URL no se conoce en el request, así que se cobra una tarifa fija de 10 tokens.
 2. Si el pedido trae `use_seo=true`, se suma el adicional `seo_optimization` calculado con `duration_seconds=0`: solo se chequea el plan para el SEO y se cobra `5 × (1 − base_discount_rate)` (ADR-013). Sin plan, se cobra 5.
 3. La reserva, `reservation_id` y el encolado son iguales al flujo con archivo.
-4. La URL no pasa por `validate_upload` ni por el límite de duración del plan: esa duración la mira `probe-link` antes de crear ([ver abajo](#revisar-un-link-antes-de-crear-probe-link)), pero crear no la exige. `validate_video_url` la pasa por `validate_video_link` (sin consultar DNS) y guarda la URL normalizada; un link de otro sitio o a una dirección interna da 400 en `video_url` ([links admitidos](#links-admitidos)). El archivo se baja con `download_from_youtube` en `_stage_prepare_source` (ver [02-pipeline-de-ingesta](02-pipeline-de-ingesta.md)).
+4. La URL no pasa por `validate_upload` ni por el límite de duración del plan al crear: esa duración la mira `probe-link` antes ([ver abajo](#revisar-un-link-antes-de-crear-probe-link)) y la descarga la hace obligatoria (`LinkTooLongError`, [02](02-pipeline-de-ingesta.md)). `validate_video_url` la pasa por `validate_video_link` (sin consultar DNS) y guarda la URL normalizada; un link de otro sitio o a una dirección interna da 400 en `video_url` ([links admitidos](#links-admitidos)). El archivo se baja con `download_from_youtube` en `_stage_prepare_source` (ver [02-pipeline-de-ingesta](02-pipeline-de-ingesta.md)).
 
 ### Links admitidos
 
-yt-dlp, con su extractor genérico, baja lo que sea que apunte una URL. Un link sin revisar es un SSRF: el worker pediría `http://169.254.169.254/...`, `http://localhost:8000/admin/` o un host de la red interna. Por eso todo link pasa por `validate_video_link` tres veces: al crear el proyecto (`validate_video_url`), en `probe-link` y justo antes de bajarlo (`download_from_youtube`, también para las filas guardadas antes de esta regla).
+yt-dlp está hecho para bajar lo que sea que apunte una página, así que sin control es un SSRF: el worker pediría `http://169.254.169.254/...`, `http://localhost:8000/admin/` o un host de la red interna. Un caso real: la página de consentimiento de YouTube (`consent.youtube.com/m?continue=<url>`) le pasa su `continue` a cualquiera de sus ~1.800 extractores, y uno de ellos pedía esa URL desde el worker. Por eso hay dos capas.
+
+**`validate_video_link`** ([services/link_validation.py](../../back/apps/videos/services/link_validation.py)) revisa el link al crear el proyecto (`validate_video_url`), en `probe-link`, justo antes de bajarlo (`download_from_youtube`, también para las filas guardadas antes de esta regla) y en cada salto que sigue yt-dlp:
 
 - Solo `http` y `https`, sin usuario ni contraseña en la URL y con el puerto por defecto (80 o 443).
-- El host es uno de `LINK_PROVIDERS`: `youtube.com` y sus subdominios, `youtu.be`, `vimeo.com` y sus subdominios, `twitch.tv` y sus subdominios, y `drive.google.com`. Son los mismos sitios que nombra la web (`PROVIDERS` de `front/src/features/proyectos/project-view.ts`). Nunca una IP, ni en decimal.
-- Con `resolve=True` (probe-link y la descarga), cada dirección a la que resuelve el host tiene que ser pública: ni loopback, privada, link-local, multicast ni reservada, tampoco una IPv4 dentro de una IPv6.
-- La URL queda normalizada: `https`, host en minúsculas y sin fragmento.
-- `download_from_youtube` además usa `allowed_extractors=['default', '-generic']` y `noplaylist`: aunque la página apunte a otro lado, yt-dlp no lo sigue con el extractor genérico. Un link rechazado ahí lanza `UnsupportedLinkError`, que no se reintenta; un host que no resuelve lanza su `OSError`, que sí.
+- El host es exactamente uno de `LINK_HOSTS`: `youtube.com`, `www.`, `m.` y `music.youtube.com`, `youtu.be`; `vimeo.com`, `www.` y `player.vimeo.com`; `twitch.tv`, `www.`, `m.`, `clips.` y `player.twitch.tv`; `drive.google.com`. Ningún otro subdominio (tampoco `consent.youtube.com`) y nunca una IP. Cada parte del host son solo letras, dígitos y guiones: `evil.com;.youtube.com`, `*.youtube.com` o `127.0.0.1%23.youtube.com` no pasan. La web nombra los mismos hosts (`LINK_HOSTS` de `front/src/features/proyectos/project-view.ts`).
+- El link tiene que nombrar un solo video y queda como la URL de ese video: en YouTube, `https://www.youtube.com/watch?v=<id>` (sin lista, tiempo ni parámetros; `youtu.be/<id>` y `/shorts/<id>` también); en Twitch, `www.twitch.tv/videos/<id>` o `clips.twitch.tv/<clip>`; en Vimeo, con su id numérico; en Drive, `drive.google.com/file/d/<id>/view`. Un canal, una lista, una carpeta o el canal de Twitch (que es su vivo) dan 400 `Pegá el link de un solo video...`.
+- Con `resolve=True` (probe-link, la descarga y cada salto), cada dirección a la que resuelve el host tiene que ser pública: ni loopback, privada, link-local, multicast ni reservada, tampoco una IPv4 dentro de una IPv6.
 
-Los mensajes son en español (`No reconocemos este sitio. Probá con YouTube, Vimeo u otro sitio público.`) y el link nunca va a un log.
+**`ytdlp_safe`** ([services/ytdlp_safe.py](../../back/apps/videos/services/ytdlp_safe.py)) es la única forma en que el backend corre yt-dlp, en el probe y en la descarga:
+
+- Solo corren los extractores de esos sitios (`ALLOWED_EXTRACTORS`: `youtube`, `vimeo`, `twitch:vod`, `twitch:clips`, `googledrive`). Sin el genérico, sin la página de consentimiento y sin los de canales o listas.
+- La primera lectura es con `process=False`. Un resultado que apunta a otro link se sigue a lo sumo dos veces, solo con uno de esos extractores forzado por clave y después de pasar `validate_video_link` otra vez.
+- Tiene que quedar un solo video que no esté en vivo (`is_live`, `is_upcoming` o `post_live`). Recién ahí se procesa: el probe lee los datos y la descarga elige los formatos y baja.
+- `GuardedYoutubeDL` revisa cada pedido de yt-dlp (`urlopen`) e `install_redirect_guard` cada redirección: si va a una IP o a un host que resuelve a una dirección no pública, se corta antes de conectar (`blocked non-public address`). Solo quedan los handlers `Urllib` y `Requests`, cuyas redirecciones están revisadas.
+
+Un link rechazado en la descarga lanza `UnsupportedLinkError`, que no se reintenta; un host que no resuelve lanza su `OSError`, que sí. Los mensajes son en español (`No reconocemos este sitio. Probá con YouTube, Vimeo u otro sitio público.`) y el link nunca va a un log.
+
+Queda abierto, para un firewall de salida de los workers: la consulta de DNS y la conexión son separadas (un host que cambia la respuesta en el medio), y ffmpeg, si yt-dlp lo usa para un stream que no baja solo, hace sus propios pedidos.
 
 ## Revisar un link antes de crear (`probe-link`)
 
@@ -227,11 +237,11 @@ sequenceDiagram
 1. `ProbeLinkView` valida el cuerpo (`video_url` obligatoria, hasta 500 caracteres) y cuenta los pedidos del usuario en la caché (`probe-link-rate:<id>`): pasado `PROBE_MAX_PER_MINUTE` (20) responde 429.
 2. `probe_link` pasa el link por `validate_video_link(resolve=True)`. Si no resuelve, 502 `provider_error`.
 3. Un link ya leído sale de la caché (`link-probe:v1:<sha256 de la URL>`, `LINK_PROBE_CACHE_SECONDS`).
-4. Si no, `run_worker` corre [link_probe_worker.py](../../back/apps/videos/services/link_probe_worker.py) como script aparte (`sys.executable -I`), con `subprocess.run(timeout=LINK_PROBE_TIMEOUT_SECONDS)`: al vencer, el hijo se mata y la respuesta es 504 `timeout`. Su stderr va a `/dev/null`.
-5. El hijo usa las opciones de la descarga (mismo user agent y referer, sin extractor genérico) más `skip_download`, `noplaylist`, `socket_timeout=10` y sin reintentos. Lee el resultado sin procesar los formatos. Un resultado que apunta a otro link (un `watch?v=..&list=..` da el del video) se sigue hasta dos veces, y solo con un extractor conocido forzado por clave (`FOLLOW_EXTRACTORS`).
-6. El texto del sitio no sale del hijo: `categorize` lo reduce a `unavailable` (privado, borrado, con login o restricción), `unsupported` (sin extractor) o `provider_error`, más la clase de la excepción.
+4. Si no, `run_worker` corre [link_probe_worker.py](../../back/apps/videos/services/link_probe_worker.py) como script aparte (`sys.executable -I`), en su propio grupo de procesos (`start_new_session`) y con un entorno mínimo (`child_environment`: `PATH`, `HOME`, el idioma, el proxy de salida y su CA). Nunca ve `SECRET_KEY`, la base de datos ni las keys de R2 o de los proveedores. Al pasar `LINK_PROBE_TIMEOUT_SECONDS` se mata el grupo entero, con lo que el hijo haya lanzado (yt-dlp puede correr un runtime de JavaScript), y la respuesta es 504 `timeout`. Su stderr va a `/dev/null`.
+5. El hijo corre yt-dlp con `ytdlp_safe` ([links admitidos](#links-admitidos)) más `skip_download`, `socket_timeout=10` y sin reintentos, y lee solo los datos.
+6. El texto del sitio no sale del hijo: `categorize` lo reduce a `unavailable` (privado, borrado, con login o restricción), `unsupported` (sin extractor, o un pedido a una dirección no pública) o `provider_error`, más la clase de la excepción.
 7. Un resultado que no es un video (lista, canal, vivo o sin duración) da 400 `unsupported`. La `video_url` de la respuesta es la página canónica del video si es del mismo sitio; si no, el link como llegó.
-8. Con plan, una duración mayor que `max_video_duration_seconds` da 403 `{error, code: "duration", limit}` (por ejemplo `El video dura 45 min y tu plan permite hasta 10 min.`). Sin plan no hay límite.
+8. Con plan, una duración mayor que `max_video_duration_seconds` da 403 `{error, code: "duration", limit}` (por ejemplo `El video dura 45 min y tu plan permite hasta 10 min.`). Sin plan no hay límite. Crear no pasa por el probe, así que el límite vuelve a valer en la descarga ([02](02-pipeline-de-ingesta.md)).
 
 | Respuesta | Cuándo |
 |-----------|--------|
@@ -413,6 +423,7 @@ No aparece lo que no se guarda: los renombres (`project_renamed`), las ediciones
 | `AI_PROMPT_MAX_CHARS` | `1000` | Largo máximo de `prompt` en `from_prompt` ([04-prompt-to-edit](04-prompt-to-edit.md)) |
 | `LINK_PROBE_TIMEOUT_SECONDS` | `25` | Tope de `probe-link` para el proceso de yt-dlp; al vencer se mata y responde 504. La web espera 60 s. No está en `base.py`: se lee con `getattr` |
 | `LINK_PROBE_CACHE_SECONDS` | `600` | Cuánto se guarda en la caché un link leído. También con `getattr` |
+| `LINK_DOWNLOAD_MAX_BYTES` | `4294967296` (4 GB) | Tope del archivo que baja el worker de un link: más, `LinkTooLargeError`. También con `getattr` |
 
 Valores fijos en el código (no son settings):
 

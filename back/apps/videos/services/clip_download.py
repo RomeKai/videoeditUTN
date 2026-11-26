@@ -15,8 +15,10 @@ web app gives it SLOW_REQUEST_TIMEOUT_MS):
 - each clip is streamed from storage into the .zip on disk, in chunks
   (``CHUNK_BYTES``): nothing is held whole in memory. The .zip stores them
   as they are (MP4 does not compress);
-- the build stops at CLIPS_ZIP_MAX_SECONDS, or when the bytes go over the
-  cap;
+- the build, upload included, stops at CLIPS_ZIP_MAX_SECONDS, or when the
+  bytes go over the cap;
+- one .zip at a time per workspace (``workspace_zip_lock``: Redis with an
+  owner token, the cache as a fallback);
 - the .zip is stored under ``exports/zips/<hour>/`` and signed for
   CLIPS_ZIP_URL_TTL_SECONDS. The temporary folder is always deleted, and
   every request first deletes the stored .zips whose links already expired
@@ -32,6 +34,7 @@ import tempfile
 import time
 import uuid
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -72,7 +75,13 @@ def zip_max_clips():
 
 
 def zip_max_seconds():
-    return _setting('CLIPS_ZIP_MAX_SECONDS', 100)
+    # The whole build: reading the clips, the .zip and its upload. The web app waits 180 s.
+    return _setting('CLIPS_ZIP_MAX_SECONDS', 140)
+
+
+def zip_lock_ttl_seconds():
+    # Outlasts the build, so a lock never expires while its owner still works.
+    return zip_max_seconds() + 60
 
 
 class StorageUnavailable(Exception):
@@ -88,6 +97,60 @@ class ZipTooLarge(Exception):
 
 class ZipTimeout(Exception):
     """The .zip took longer than CLIPS_ZIP_MAX_SECONDS."""
+
+
+class ZipBusy(Exception):
+    """Another .zip of the workspace is being built."""
+
+
+def _redis_client():
+    from apps.videos.services.ai.project_lock import get_redis_client
+
+    return get_redis_client()
+
+
+@contextmanager
+def workspace_zip_lock(workspace_id):
+    """
+    One .zip at a time per workspace, across web workers: a Redis lock with an
+    owner token (redis-py ``Lock``, as ``project_lock``), so only its owner
+    releases it, with a TTL longer than the build. Without Redis it falls back
+    to the Django cache, also with an owner token. Raises ZipBusy.
+    """
+    import redis
+
+    name = f"lock:clips-zip:workspace:{workspace_id}"
+    ttl = zip_lock_ttl_seconds()
+    lock = None
+    try:
+        lock = _redis_client().lock(name, timeout=ttl)
+        acquired = lock.acquire(blocking=False)
+    except redis.exceptions.RedisError as exc:
+        logger.warning("clips_zip.lock_fallback workspace_id=%s error=%s", workspace_id, type(exc).__name__)
+        lock = None
+    if lock is not None:
+        if not acquired:
+            raise ZipBusy()
+        try:
+            yield
+        finally:
+            try:
+                lock.release()
+            except redis.exceptions.LockError:
+                logger.warning("clips_zip.lock_not_owned workspace_id=%s", workspace_id)
+            except redis.exceptions.RedisError as exc:
+                logger.warning("clips_zip.lock_release_failed workspace_id=%s error=%s", workspace_id, type(exc).__name__)
+        return
+    from django.core.cache import cache
+
+    token = uuid.uuid4().hex
+    if not cache.add(name, token, ttl):
+        raise ZipBusy()
+    try:
+        yield
+    finally:
+        if cache.get(name) == token:
+            cache.delete(name)
 
 
 def slugify_filename(title, fallback):
@@ -277,16 +340,35 @@ def _export_key(project):
     return f"{EXPORT_PREFIX}{timezone.now():%Y%m%d%H}/{project.pk}-{uuid.uuid4().hex}.zip"
 
 
-def _store_zip(path, key, filename, client):
+def _store_zip(path, key, filename, client, deadline):
     if client is None:
         destination = os.path.join(str(settings.MEDIA_ROOT), *key.split('/'))
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         shutil.move(path, destination)
         return destination
-    client.upload_file(
-        path, _bucket(), key,
-        ExtraArgs={'ContentType': 'application/zip', 'ContentDisposition': content_disposition_header(True, filename)},
-    )
+    from boto3.s3.transfer import TransferConfig
+
+    def on_progress(_sent):
+        # Called as parts go out: past the deadline the upload is aborted.
+        if time.monotonic() > deadline:
+            raise ZipTimeout()
+
+    if time.monotonic() > deadline:
+        raise ZipTimeout()
+    try:
+        client.upload_file(
+            path, _bucket(), key,
+            ExtraArgs={'ContentType': 'application/zip', 'ContentDisposition': content_disposition_header(True, filename)},
+            Callback=on_progress,
+            # In this thread, so the callback's ZipTimeout reaches the caller as is.
+            Config=TransferConfig(use_threads=False),
+        )
+    except ZipTimeout:
+        raise
+    except Exception:
+        if time.monotonic() > deadline:
+            raise ZipTimeout() from None
+        raise
     return key
 
 
@@ -330,7 +412,9 @@ def build_project_zip(project, clips, request):
         filename = zip_filename(project)
         key = _export_key(project)
         try:
-            stored = _store_zip(path, key, filename, client)
+            stored = _store_zip(path, key, filename, client, deadline)
+        except ZipTimeout:
+            raise
         except Exception as exc:
             logger.error("clips_zip.store_failed project_id=%s error=%s", project.pk, type(exc).__name__)
             raise StorageUnavailable(type(exc).__name__) from exc

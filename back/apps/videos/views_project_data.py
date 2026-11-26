@@ -35,9 +35,6 @@ ZIP_BUSY = "Ya estamos armando un .zip en este espacio. Probá de nuevo en unos 
 ZIP_TIMEOUT = "Armar el .zip tardó demasiado. Elegí menos clips o descargalos de a uno."
 PROBE_RATE_LIMITED = "Revisaste muchos links seguidos. Probá de nuevo en un minuto."
 
-# One .zip at a time per workspace: each one holds a web worker for up to
-# CLIPS_ZIP_MAX_SECONDS and its size in disk.
-ZIP_LOCK_PREFIX = 'clips-zip-lock:'
 # probe-link starts a process per link: bounded per user.
 PROBE_RATE_PREFIX = 'probe-link-rate:'
 PROBE_MAX_PER_MINUTE = 20
@@ -80,11 +77,11 @@ class ProjectClipsDownloadView(_WorkspaceView):
     workspace_actions = {'POST': 'clip.download'}
 
     @staticmethod
-    def _clip_ids(data):
+    def _clip_ids(data, limit):
         raw = data.get('clip_ids') if hasattr(data, 'get') else None
         if raw is None:
             return None
-        if not isinstance(raw, list):
+        if not isinstance(raw, list) or len(raw) > limit:
             return False
         try:
             return {uuid.UUID(str(value)) for value in raw}
@@ -95,9 +92,12 @@ class ProjectClipsDownloadView(_WorkspaceView):
         from .services import clip_download
 
         project = self.project(project_id)
-        clip_ids = self._clip_ids(request.data)
+        limit = clip_download.zip_max_clips()
+        clip_ids = self._clip_ids(request.data, limit)
         if clip_ids is False:
-            return Response({"clip_ids": ["Mandá una lista de ids de clips."]}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"clip_ids": [f"Mandá una lista de hasta {limit} ids de clips."]}, status=status.HTTP_400_BAD_REQUEST,
+            )
         clips = VideoClip.objects.filter(
             project=project, status__in=clip_download.READY_STATUSES,
         ).exclude(s3_object_key__isnull=True).exclude(s3_object_key='').order_by('created_at', 'pk')
@@ -107,11 +107,11 @@ class ProjectClipsDownloadView(_WorkspaceView):
         if not clips:
             return Response({"error": NO_CLIP_READY}, status=status.HTTP_409_CONFLICT)
 
-        lock = f"{ZIP_LOCK_PREFIX}{project.workspace_id}"
-        if not cache.add(lock, 1, clip_download.zip_max_seconds() + 60):
-            return Response({"error": ZIP_BUSY}, status=status.HTTP_429_TOO_MANY_REQUESTS)
         try:
-            result = clip_download.build_project_zip(project, clips, request)
+            with clip_download.workspace_zip_lock(project.workspace_id):
+                result = clip_download.build_project_zip(project, clips, request)
+        except clip_download.ZipBusy:
+            return Response({"error": ZIP_BUSY}, status=status.HTTP_429_TOO_MANY_REQUESTS)
         except clip_download.ZipTooLarge as exc:
             if exc.code == 'zip_too_many_clips':
                 message = f"Son demasiados clips para un solo .zip (hasta {exc.limit}). Elegí menos."
@@ -131,8 +131,6 @@ class ProjectClipsDownloadView(_WorkspaceView):
             # Our own code or an exception class name, never the provider's text.
             logger.error("clips_zip.storage_failed project_id=%s error=%s", project.pk, exc)
             return Response({"error": STORAGE_ERROR, "code": "storage_unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        finally:
-            cache.delete(lock)
         return Response({"url": result.url, "expires_at": result.expires_at})
 
 

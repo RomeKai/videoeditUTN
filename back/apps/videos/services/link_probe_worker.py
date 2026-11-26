@@ -3,33 +3,26 @@ Child process of probe-link (``link_probe.probe_link``): reads the metadata
 of one video with yt-dlp, without downloading it, and prints one JSON line.
 
 It runs as a script (``python -I link_probe_worker.py <url>``), apart from
-the web process, so the parent can kill it when it takes too long. It imports
-nothing of the project: only yt-dlp and the standard library.
+the web process, in its own process group and with a minimal environment
+(no secrets of the web process), so the parent can kill it and everything it
+started when it takes too long. It imports only yt-dlp, the standard library
+and the two plain modules next to it: ``ytdlp_safe`` (how the app runs
+yt-dlp) and ``link_validation``.
 
 The output never carries the provider's text: an error is reduced here to a
 category (``unavailable``, ``unsupported`` or ``provider_error``) and the
 class name of the exception.
 """
 import json
+import os
 import sys
-
-# Same request identity as download_from_youtube (tasks/shared.py), so the
-# probe sees what the download will see.
-USER_AGENT = (
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-    '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-)
-REFERER = 'https://www.google.com/'
-# Every extractor but the generic one: it fetches any URL (SSRF).
-ALLOWED_EXTRACTORS = ['default', '-generic']
-SOCKET_TIMEOUT_SECONDS = 10
 
 _UNAVAILABLE_MARKERS = (
     'video unavailable', 'private video', 'sign in', 'members-only', 'age-restricted',
     'copyright', 'not available', 'does not exist', 'has been removed', 'removed by',
     'this video is private', 'requires payment', 'premieres in', 'live event will begin',
 )
-_UNSUPPORTED_MARKERS = ('unsupported url', 'no suitable extractor')
+_UNSUPPORTED_MARKERS = ('unsupported url', 'no suitable extractor', 'blocked non-public address')
 
 
 def categorize(message):
@@ -42,60 +35,29 @@ def categorize(message):
     return 'provider_error'
 
 
+def _safe():
+    """ytdlp_safe, imported the same way as a script or inside the package."""
+    try:
+        from . import ytdlp_safe
+    except ImportError:
+        # Appended, not prepended: nothing next to this file can shadow the standard library.
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.append(here)
+        import ytdlp_safe
+    return ytdlp_safe
+
+
 def ydl_options():
-    return {
-        'quiet': True,
-        'no_warnings': True,
-        'noprogress': True,
-        'skip_download': True,
-        'noplaylist': True,
-        'socket_timeout': SOCKET_TIMEOUT_SECONDS,
-        'retries': 0,
-        'extractor_retries': 0,
-        'allowed_extractors': ALLOWED_EXTRACTORS,
-        'user_agent': USER_AGENT,
-        'referer': REFERER,
-        'logger': _SilentLogger(),
-    }
-
-
-class _SilentLogger:
-    """yt-dlp writes errors to stderr: the provider's text stays in this process."""
-
-    def debug(self, msg):
-        pass
-
-    info = warning = error = debug
-
-
-# A link can resolve to another one (``watch?v=..&list=..`` gives the video's
-# own URL). It is followed only through these extractors, forced by key: each
-# one reads only its own site's URLs.
-FOLLOW_EXTRACTORS = frozenset({'Youtube', 'Vimeo', 'TwitchVod', 'TwitchClips', 'GoogleDrive'})
-MAX_HOPS = 2
-
-
-def _follow(ydl, info):
-    for _hop in range(MAX_HOPS):
-        if not isinstance(info, dict) or info.get('_type') not in ('url', 'url_transparent'):
-            return info
-        ie_key, target = info.get('ie_key'), info.get('url')
-        if ie_key not in FOLLOW_EXTRACTORS or not isinstance(target, str):
-            return info
-        inner = ydl.extract_info(target, download=False, process=False, ie_key=ie_key)
-        if isinstance(inner, dict) and info.get('_type') == 'url_transparent':
-            # The outer result's fields win, as yt-dlp does when it processes it.
-            outer = {k: v for k, v in info.items() if k not in ('_type', 'url', 'ie_key') and v is not None}
-            inner = {**inner, **outer}
-        info = inner
-    return info
+    options = _safe().base_options()
+    options.update({'skip_download': True, 'retries': 0, 'extractor_retries': 0})
+    return options
 
 
 def summarize(info):
     """The fields probe-link answers with, from a yt-dlp info dict."""
-    kind = info.get('_type') or 'video'
     return {
-        'kind': kind,
+        'kind': info.get('_type') or 'video',
         'title': info.get('title') if isinstance(info.get('title'), str) else '',
         'duration': info.get('duration') if isinstance(info.get('duration'), (int, float)) else None,
         'is_live': bool(info.get('is_live')),
@@ -106,17 +68,19 @@ def summarize(info):
 
 def probe(url):
     try:
-        import yt_dlp
+        safe = _safe()
     except ImportError:
         return {'error': 'tool_missing', 'class': 'ImportError'}
     try:
-        with yt_dlp.YoutubeDL(ydl_options()) as ydl:
-            info = ydl.extract_info(url, download=False, process=False)
-            info = _follow(ydl, info)
+        with safe.GuardedYoutubeDL(ydl_options()) as ydl:
+            info = safe.extract_single_video(ydl, url)
+    except safe.LinkRefused as exc:
+        if exc.code == 'unsupported':
+            return {'error': 'unsupported', 'class': 'LinkRefused'}
+        return {'ok': {'kind': 'live' if exc.code == 'live' else 'playlist', 'title': '', 'duration': None,
+                       'is_live': exc.code == 'live', 'thumbnail': None, 'webpage_url': None}}
     except Exception as exc:
         return {'error': categorize(str(exc)), 'class': type(exc).__name__}
-    if not isinstance(info, dict):
-        return {'error': 'provider_error', 'class': type(info).__name__}
     return {'ok': summarize(info)}
 
 

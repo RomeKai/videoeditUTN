@@ -332,15 +332,15 @@ flowchart TD
     J -->|error del almacenamiento| O["503 storage_unavailable"]
 ```
 
-1. Entran los clips `completed` y `published` con archivo, por orden de creación. Los ids de `clip_ids` que no son de clips listos del proyecto se ignoran; un `clip_ids` que no es una lista de ids da 400.
-2. Un lock en la caché (`clips-zip-lock:<workspace>`) deja un solo .zip a la vez por workspace: cada uno ocupa un worker web y su tamaño en disco. Se suelta al terminar, salga como salga.
+1. Entran los clips `completed` y `published` con archivo, por orden de creación. Los ids de `clip_ids` que no son de clips listos del proyecto (de otro proyecto u otro workspace, borradores) se ignoran; un `clip_ids` que no es una lista de ids, o que trae más de `CLIPS_ZIP_MAX_CLIPS`, da 400.
+2. `workspace_zip_lock` deja un solo .zip a la vez por workspace, entre todos los workers web: cada uno ocupa un worker y su tamaño en disco. Es un lock de Redis con token de dueño (`Lock` de redis-py, como `project_lock`) en `lock:clips-zip:workspace:<id>`, con un TTL de `CLIPS_ZIP_MAX_SECONDS` + 60 s, más largo que el armado. Solo su dueño lo suelta, así que un pedido no puede borrar el lock de otro (`clips_zip.lock_not_owned`). Sin Redis usa la caché de Django, también con un token (`clips_zip.lock_fallback`).
 3. Antes de bajar nada se suman los tamaños. También se mira que la carpeta temporal tenga lugar para el .zip y 64 MB más.
 4. Cada clip pasa del almacenamiento al .zip de a `CHUNK_BYTES` (1 MB): en R2 con `get_object` e `iter_chunks`, en local leyendo el archivo. Nada se carga entero en memoria. El .zip guarda los MP4 sin comprimir (`ZIP_STORED`, con ZIP64), con nombres como los de un clip suelto: un título repetido sale `-2`, `-3`.
-5. Entre parte y parte se miran el tiempo y los bytes escritos: si se pasa de `CLIPS_ZIP_MAX_SECONDS` corta con 503 `zip_timeout`, y si los bytes superan el tope (un tamaño que mintió), con 422. El cliente de R2 de este módulo tiene timeouts cortos (5 s para conectar, 20 s de lectura) para que una lectura trabada no pase el tope.
+5. Entre parte y parte se miran el tiempo y los bytes escritos: si se pasa de `CLIPS_ZIP_MAX_SECONDS` corta con 503 `zip_timeout`, y si los bytes superan el tope (un tamaño que mintió), con 422. El tope cubre también la subida a R2: se sube en el mismo hilo y cada parte que sale mira el reloj (`Callback`), así que una subida que se pasa se corta. El cliente de R2 de este módulo tiene timeouts cortos (5 s para conectar, 20 s de lectura) para que una lectura trabada no pase el tope.
 6. El .zip se guarda en `exports/zips/<AAAAMMDDHH>/<proyecto>-<uuid>.zip` (en local, bajo `MEDIA_ROOT`) y se firma por `CLIPS_ZIP_URL_TTL_SECONDS`, con `Content-Disposition: attachment` y el título del proyecto (`clips.zip` si queda vacío). Si la firma falla, se borra lo que se subió.
 7. La carpeta temporal se borra siempre. Cada pedido borra, antes de armar el suyo, hasta 50 .zip guardados cuyo link ya venció (la hora va primero en la clave, así que R2 los lista del más viejo al más nuevo). En R2 conviene además una regla de ciclo de vida que borre `exports/` después de un día, por si nadie pide otro .zip.
 
-Logs: `clips_zip.built` (clips, bytes y duración), `clips_zip.size_failed`, `clips_zip.read_failed`, `clips_zip.store_failed`, `clips_zip.client_failed`, `clips_zip.storage_failed`, `clips_zip.no_disk`, `clips_zip.timeout`, `clips_zip.delete_failed`, `clips_zip.cleanup_failed` y `clip_download.failed`, con ids, números y la clase del error.
+Logs: `clips_zip.built` (clips, bytes y duración), `clips_zip.lock_fallback`, `clips_zip.lock_not_owned`, `clips_zip.lock_release_failed`, `clips_zip.size_failed`, `clips_zip.read_failed`, `clips_zip.store_failed`, `clips_zip.client_failed`, `clips_zip.storage_failed`, `clips_zip.no_disk`, `clips_zip.timeout`, `clips_zip.delete_failed`, `clips_zip.cleanup_failed` y `clip_download.failed`, con ids, números y la clase del error.
 
 ## Errores, reintentos y casos borde
 
@@ -422,8 +422,8 @@ Logs: `clips_zip.built` (clips, bytes y duración), `clips_zip.size_failed`, `cl
 | `USE_R2` | `False` | Sin R2, `upload_video` copia el archivo bajo `MEDIA_ROOT` y devuelve esa ruta como clave. |
 | `CLIP_DOWNLOAD_URL_TTL_SECONDS` | `3600` | Duración del link de descarga de un clip. Se lee con `getattr`: no está en `base.py`, igual que los cuatro siguientes. |
 | `CLIPS_ZIP_MAX_BYTES` | `1073741824` (1 GB) | Tope de lo que entra en un .zip. Más, 422 `zip_too_large`. |
-| `CLIPS_ZIP_MAX_CLIPS` | `50` | Tope de clips de un .zip. Más, 422 `zip_too_many_clips`. |
-| `CLIPS_ZIP_MAX_SECONDS` | `100` | Tope para bajar los clips al .zip; la subida y la firma van aparte. La web espera 180 s. |
+| `CLIPS_ZIP_MAX_CLIPS` | `50` | Tope de clips de un .zip. Más, 422 `zip_too_many_clips`; un `clip_ids` más largo, 400. |
+| `CLIPS_ZIP_MAX_SECONDS` | `140` | Tope de todo el armado: leer los clips, el .zip y su subida. La web espera 180 s. El lock del workspace dura esto más 60 s. |
 | `CLIPS_ZIP_URL_TTL_SECONDS` | `3600` | Duración del link del .zip, y edad desde la que se borra. |
 | `CLIPS_ZIP_TMP_DIR` | la carpeta temporal del sistema | Dónde se arma el .zip. |
 

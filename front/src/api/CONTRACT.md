@@ -696,7 +696,7 @@ Reconoce un link antes de crear el proyecto: de dónde es, su título y su durac
 |---|---|
 | Id | `projects.probeLink` |
 | Backend | ✅ existe · `back/apps/videos/views_project_data.py · ProbeLinkView + services/link_probe.py · probe_link` |
-| Nota | Sitios admitidos: YouTube, Vimeo, Twitch y Google Drive (services/link_validation.py, los mismos que crear un proyecto y la descarga del worker). Antes de consultar nada rechaza otros esquemas, IPs, usuario en la URL, puertos raros y hosts que resuelven a direcciones privadas. yt-dlp lee solo los datos (sin bajar el video ni usar su extractor genérico) en un proceso aparte que se corta a los 25 s. `video_url` vuelve normalizada (la página canónica del video, sin lista ni parámetros de seguimiento) y es la que hay que mandar al crear. Un link leído se guarda 10 min en la caché. |
+| Nota | Hosts admitidos, exactos: youtube.com (y www, m, music), youtu.be, vimeo.com (y www, player), twitch.tv (y www, m, clips, player) y drive.google.com (`LINK_HOSTS` de services/link_validation.py, los mismos que crear un proyecto y la descarga del worker). Antes de consultar nada rechaza otros esquemas, IPs, otros subdominios, usuario en la URL, puertos raros, hosts que resuelven a direcciones privadas y links que no nombran un solo video. yt-dlp lee solo los datos con los extractores de esos sitios (services/ytdlp_safe.py), sin pedidos ni redirecciones a direcciones no públicas, en un proceso aparte con entorno mínimo que se corta entero a los 25 s. `video_url` vuelve como la URL del video (`watch?v=<id>` en YouTube) y es la que hay que mandar al crear. Crear no exige el probe: la duración del plan vale igual en la descarga, y un video más largo hace fallar el proyecto con `LinkTooLongError` y la devolución de la reserva. Un link leído se guarda 10 min en la caché. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | { video_url: string } |
 | Respuesta 200 | LinkProbe |
@@ -729,7 +729,7 @@ Crea un proyecto desde un archivo (multipart) o un link, reserva los tokens y ar
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido (multipart) | CreateProjectRequest |
 | Respuesta 201 | CreateProjectResponse |
-| Errores | **400** Validación. En `source_file` llega el mensaje de InvalidUploadError; la UI lo traduce por código (propuesto: `{message, code}`) o por el texto. `project_type` para video completo con link o de más de 10 min. Link con resolución distinta de 720p. En `video_url`, un link que no es de un sitio admitido o que apunta a una IP o una dirección interna (las mismas reglas que `probe-link`).<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre el diálogo D2.<br>**403** El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3. |
+| Errores | **400** Validación. En `source_file` llega el mensaje de InvalidUploadError; la UI lo traduce por código (propuesto: `{message, code}`) o por el texto. `project_type` para video completo con link o de más de 10 min. Link con resolución distinta de 720p. En `video_url`, un link que no es de un host admitido, que apunta a una IP o una dirección interna, o que no nombra un solo video (una lista, un canal): las mismas reglas que `probe-link`. Se guarda la URL del video (`watch?v=<id>` en YouTube).<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre el diálogo D2.<br>**403** El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3. |
 | Pantallas | C1 |
 
 #### `POST /api/v1/projects/from-prompt/`
@@ -868,11 +868,11 @@ Arma un .zip con los clips listos (todos, o los de `clip_ids`) y devuelve la URL
 |---|---|
 | Id | `projects.downloadAll` |
 | Backend | ✅ existe · `back/apps/videos/views_project_data.py · ProjectClipsDownloadView + services/clip_download.py · build_project_zip` |
-| Nota | Se arma mientras espera el pedido: lee los tamaños antes de bajar nada, copia cada clip del almacenamiento al .zip por partes (sin comprimir: son MP4), lo guarda en `exports/zips/` y devuelve la URL firmada por 1 h, con `Content-Disposition: attachment`. Borra siempre la carpeta temporal, y cada pedido borra los .zip vencidos. Entran los clips `completed` y `published` con archivo; los ids de `clip_ids` que no son de clips listos del proyecto se ignoran. Lo puede pedir cualquier rol (`clip.download`). |
+| Nota | Se arma mientras espera el pedido: lee los tamaños antes de bajar nada, copia cada clip del almacenamiento al .zip por partes (sin comprimir: son MP4), lo guarda en `exports/zips/` y devuelve la URL firmada por 1 h, con `Content-Disposition: attachment`. Borra siempre la carpeta temporal, y cada pedido borra los .zip vencidos. Entran los clips `completed` y `published` con archivo; los ids de `clip_ids` que no son de clips listos del proyecto (de otro proyecto o workspace) se ignoran. Lo puede pedir cualquier rol (`clip.download`). |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | { clip_ids?: Id[] } |
 | Respuesta 200 | { url: string, expires_at: IsoDateTime } |
-| Errores | **400** `clip_ids` no es una lista de ids.<br>**404** No existe o es de otro workspace.<br>**409** Ningún clip está listo todavía.<br>**422** Supera el tope del .zip: `code: "zip_too_large"` (`limit` en bytes, 1 GB por defecto) o `code: "zip_too_many_clips"` (`limit` en clips, 50). La UI muestra el mensaje del servidor: elegir menos o bajarlos de a uno.<br>**429** Ya se está armando otro .zip en el mismo workspace.<br>**503** Error del almacenamiento (`code: "storage_unavailable"`) o el armado pasó el tiempo máximo (`code: "zip_timeout"`, 100 s por defecto). |
+| Errores | **400** `clip_ids` no es una lista de ids, o trae más de 50.<br>**404** No existe o es de otro workspace.<br>**409** Ningún clip está listo todavía.<br>**422** Supera el tope del .zip: `code: "zip_too_large"` (`limit` en bytes, 1 GB por defecto) o `code: "zip_too_many_clips"` (`limit` en clips, 50). La UI muestra el mensaje del servidor: elegir menos o bajarlos de a uno.<br>**429** Ya se está armando otro .zip en el mismo workspace (un lock de Redis con dueño, entre todos los workers).<br>**503** Error del almacenamiento (`code: "storage_unavailable"`) o el armado, subida incluida, pasó el tiempo máximo (`code: "zip_timeout"`, 140 s por defecto). |
 | Pantallas | D3 |
 
 ### Clips

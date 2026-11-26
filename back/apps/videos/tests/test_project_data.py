@@ -13,6 +13,7 @@ role, Lector included.
 import io
 import os
 import tempfile
+import uuid
 import zipfile
 from datetime import timedelta
 from decimal import Decimal
@@ -34,7 +35,9 @@ from apps.payments.services import wallet_service
 from apps.videos.models import AIUsageRecord, ScheduledPost, VideoClip, VideoProject
 from apps.videos.services import clip_download
 from apps.videos.services.ai.pipeline_state import PipelineStage
+from apps.videos.tests.fakes import DownRedis, FakeRedis
 from apps.videos.tests.test_active_workspace import VIEWER, fund, header, home_of, join, make_user, team
+from apps.videos.tests.test_approved_segments_source import REDIS_CLIENT
 
 ACTIVITY_TYPES = {
     'project_created', 'prompt_applied', 'review_ready', 'review_approved', 'render_finished', 'clip_edited',
@@ -283,6 +286,7 @@ class FakeR2:
         self.fail, self.fail_after = fail, fail_after
         self.uploads, self.presigned, self.bodies, self.deleted = {}, [], [], []
         self.listed = []
+        self.before_upload = None
 
     def _maybe_fail(self, operation):
         if self.fail == operation:
@@ -300,10 +304,15 @@ class FakeR2:
         self.bodies.append(body)
         return {'Body': body}
 
-    def upload_file(self, path, bucket, key, ExtraArgs=None):
+    def upload_file(self, path, bucket, key, ExtraArgs=None, Callback=None, Config=None):
         self._maybe_fail('PutObject')
+        if self.before_upload is not None:
+            self.before_upload()
         with open(path, 'rb') as handle:
-            self.uploads[key] = (handle.read(), ExtraArgs)
+            data = handle.read()
+        if Callback is not None:
+            Callback(len(data))
+        self.uploads[key] = (data, ExtraArgs)
 
     def generate_presigned_url(self, operation, Params, ExpiresIn):
         self._maybe_fail('Presign')
@@ -404,6 +413,10 @@ class ProjectZipTests(ProjectDataHarness):
         patcher = override_settings(CLIPS_ZIP_TMP_DIR=self.tmp)
         patcher.enable()
         self.addCleanup(patcher.disable)
+        self.redis = FakeRedis()
+        redis_patcher = patch(REDIS_CLIENT, return_value=self.redis)
+        redis_patcher.start()
+        self.addCleanup(redis_patcher.stop)
 
     def assert_no_temp_files(self):
         self.assertEqual(os.listdir(self.tmp), [])
@@ -511,15 +524,65 @@ class ProjectZipTests(ProjectDataHarness):
     def test_another_zip_of_the_workspace_in_progress_is_a_429(self):
         project = self.project()
         self.clip(project)
-        cache.add(f'clips-zip-lock:{self.home.pk}', 1, 60)
+        name = f'lock:clips-zip:workspace:{self.home.pk}'
+        other = self.redis.lock(name, timeout=60)
+        other.acquire()
 
         response = self.client.post(zip_url(project), {}, format='json')
 
         self.assertEqual(response.status_code, 429)
-        cache.delete(f'clips-zip-lock:{self.home.pk}')
+        self.assertEqual(self.redis.locks[-1].timeout, clip_download.zip_max_seconds() + 60)
+        other.release()
         self.assertEqual(self.client.post(zip_url(project), {}, format='json').status_code, 200)
-        # The lock goes when the request ends.
+        # The lock goes when the request ends, released by its owner only.
+        self.assertEqual(self.redis.held, {})
         self.assertEqual(self.client.post(zip_url(project), {}, format='json').status_code, 200)
+
+    def test_a_lock_taken_over_meanwhile_is_not_released_by_the_old_owner(self):
+        project = self.project()
+        self.clip(project)
+        name = f'lock:clips-zip:workspace:{self.home.pk}'
+        intruder = object()
+        real_build = clip_download.build_project_zip
+
+        def build_and_lose_the_lock(*args):
+            self.redis.held[name] = intruder  # the TTL ran out and another request took it
+            return real_build(*args)
+
+        with patch.object(clip_download, 'build_project_zip', side_effect=build_and_lose_the_lock), \
+                self.assertLogs('apps.videos.services.clip_download', 'WARNING') as logs:
+            self.assertEqual(self.client.post(zip_url(project), {}, format='json').status_code, 200)
+        self.assertIs(self.redis.held[name], intruder)
+        self.assertIn('clips_zip.lock_not_owned', '\n'.join(logs.output))
+
+    def test_without_redis_the_cache_holds_the_lock_with_an_owner_token(self):
+        project = self.project()
+        self.clip(project)
+        name = f'lock:clips-zip:workspace:{self.home.pk}'
+        with patch(REDIS_CLIENT, return_value=DownRedis()):
+            cache.set(name, 'someone-else', 60)
+            self.assertEqual(self.client.post(zip_url(project), {}, format='json').status_code, 429)
+            self.assertEqual(cache.get(name), 'someone-else')
+            cache.delete(name)
+            self.assertEqual(self.client.post(zip_url(project), {}, format='json').status_code, 200)
+            self.assertIsNone(cache.get(name))
+
+    def test_clip_ids_are_bounded_and_only_ready_clips_of_the_project_count(self):
+        project = self.project()
+        mine = self.clip(project, 'Mio')
+        other_project = self.clip(self.project(title='Otro'), 'Ajeno de otro proyecto')
+        other_workspace = self.clip(self.project(workspace=self.team, user=self.boss), 'Ajeno de otro espacio')
+
+        too_many = [str(uuid.uuid4()) for _ in range(clip_download.zip_max_clips() + 1)]
+        self.assertEqual(self.client.post(zip_url(project), {'clip_ids': too_many}, format='json').status_code, 400)
+
+        only_foreign = [str(other_project.pk), str(other_workspace.pk)]
+        self.assertEqual(self.client.post(zip_url(project), {'clip_ids': only_foreign}, format='json').status_code, 409)
+
+        response = self.client.post(zip_url(project), {'clip_ids': [str(mine.pk), *only_foreign]}, format='json')
+        self.assertEqual(response.status_code, 200)
+        with zipfile.ZipFile(self.stored_zips()[0]) as archive:
+            self.assertEqual(archive.namelist(), ['mio.mp4'])
 
     def test_cross_workspace_is_a_404_and_a_lector_downloads(self):
         foreign = self.project(workspace=self.team, user=self.boss)
@@ -568,6 +631,23 @@ class ProjectZipTests(ProjectDataHarness):
         self.assertEqual(params['Key'], key)
         self.assertEqual(params['ResponseContentDisposition'], 'attachment; filename="mi-podcast.zip"')
         self.assertEqual(fake.deleted, ['exports/zips/2020010100/old.zip'])
+        self.assert_no_temp_files()
+
+    @R2
+    def test_the_deadline_covers_the_upload(self):
+        project = self.project()
+        VideoClip.objects.create(project=project, title='a', start_time=0, end_time=1, status='completed',
+                                 s3_object_key='videos/a.mp4')
+        fake = FakeR2({'videos/a.mp4': b'a' * 10})
+        clock = [1000.0]
+        fake.before_upload = lambda: clock.__setitem__(0, clock[0] + clip_download.zip_max_seconds() + 1)
+        with patch.object(clip_download, '_client', return_value=fake), \
+                patch.object(clip_download.time, 'monotonic', side_effect=lambda: clock[0]):
+            response = self.client.post(zip_url(project), {}, format='json')
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()['code'], 'zip_timeout')
+        self.assertEqual(fake.uploads, {})
         self.assert_no_temp_files()
 
     @R2

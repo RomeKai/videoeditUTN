@@ -5,10 +5,14 @@ created from it: its site, title and duration, without downloading it.
 - The link goes through ``validate_video_link(resolve=True)`` first: only the
   sites of LINK_PROVIDERS, never an IP or a host that resolves to a private
   address, so nothing is fetched for a link the app would not download.
-- yt-dlp (the tool the ingestion downloads links with) runs in a child process
-  (``link_probe_worker.py``) with LINK_PROBE_TIMEOUT_SECONDS of wall time; the
-  child is killed when it runs out. Inside, each socket waits at most
-  ``SOCKET_TIMEOUT_SECONDS`` and nothing is retried.
+- yt-dlp (the tool the ingestion downloads links with, through ``ytdlp_safe``)
+  runs in a child process (``link_probe_worker.py``) with
+  LINK_PROBE_TIMEOUT_SECONDS of wall time. The child starts its own process
+  group, so when it runs out the whole group is killed, anything it started
+  included (yt-dlp may run a JavaScript runtime). It gets a minimal
+  environment (``child_environment``): never the web process's secrets.
+  Inside, each socket waits at most ``SOCKET_TIMEOUT_SECONDS`` and nothing is
+  retried.
 - The provider's text never leaves the child: it answers with a category and
   a class name. Logs carry ids, the provider name and those codes only.
 - A link read correctly is cached LINK_PROBE_CACHE_SECONDS (keyed by a hash of
@@ -18,6 +22,7 @@ import hashlib
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -25,7 +30,9 @@ from dataclasses import dataclass
 from django.conf import settings
 from django.core.cache import cache
 
-from .link_validation import UNSUPPORTED_MESSAGE, LinkRejected, provider_for_host, validate_video_link
+from .link_validation import (
+    NOT_A_VIDEO_MESSAGE, UNSUPPORTED_MESSAGE, LinkRejected, provider_for_host, validate_video_link,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +64,7 @@ UNAVAILABLE = (
     'unavailable', 400,
     "No pudimos acceder a este video. Puede ser privado, haberse borrado o pedir iniciar sesión.",
 )
-NOT_A_VIDEO = ('unsupported', 400, "Pegá el link de un solo video, no de una lista, un canal o una transmisión en vivo.")
+NOT_A_VIDEO = ('unsupported', 400, NOT_A_VIDEO_MESSAGE)
 TIMEOUT = ('timeout', 504, "El sitio del video tardó demasiado en responder. Probá de nuevo en unos minutos.")
 PROVIDER_ERROR = ('provider_error', 502, "No pudimos consultar el sitio del video. Probá de nuevo en unos minutos.")
 TOOL_MISSING = ('unavailable_tool', 503, "No podemos revisar links en este momento. Probá de nuevo más tarde.")
@@ -85,28 +92,57 @@ class LinkInfo:
         }
 
 
+# What the child may see of the environment: where programs are, the locale,
+# and the outbound proxy with its CA bundle. Nothing else: the web process
+# holds SECRET_KEY, the database URL, the R2 and provider keys.
+CHILD_ENV_KEYS = (
+    'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR',
+    'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy',
+    'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE',
+)
+
+
+def child_environment():
+    return {key: os.environ[key] for key in CHILD_ENV_KEYS if key in os.environ}
+
+
+def _kill_group(process):
+    """Kills the child's process group (the child and whatever it started)."""
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass  # already gone
+
+
 def run_worker(url):
     """
     Runs yt-dlp in the child process and returns its parsed answer. Raises
-    LinkProbeError(TIMEOUT) when it takes longer than the limit (the child is
-    killed) and TOOL_MISSING when the interpreter cannot start it.
+    LinkProbeError(TIMEOUT) when it takes longer than the limit (the child's
+    whole process group is killed) and TOOL_MISSING when the interpreter
+    cannot start it.
     """
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             [sys.executable, '-I', WORKER_PATH, url],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             # The provider's messages stay out of the logs and the response.
             stderr=subprocess.DEVNULL,
-            timeout=_timeout_seconds(),
-            check=False,
+            env=child_environment(),
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired:
-        raise _error(TIMEOUT)
     except OSError:
         raise _error(TOOL_MISSING)
     try:
-        lines = completed.stdout.decode('utf-8', errors='replace').strip().splitlines()
+        stdout, _ = process.communicate(timeout=_timeout_seconds())
+    except subprocess.TimeoutExpired:
+        # Not reaped yet, so the group id cannot belong to anyone else. A
+        # grandchild that still holds the output pipe also ends up here.
+        _kill_group(process)
+        process.communicate()
+        raise _error(TIMEOUT)
+    try:
+        lines = stdout.decode('utf-8', errors='replace').strip().splitlines()
         answer = json.loads(lines[-1]) if lines else {}
     except ValueError:
         return {}

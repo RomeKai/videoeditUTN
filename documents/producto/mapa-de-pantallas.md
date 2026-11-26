@@ -369,8 +369,8 @@ Otras respuestas:
   - ✅ `project_type` (`repurpose` o `single_edit`). `single_edit` solo acepta un archivo de hasta 10 min (`AI_SINGLE_EDIT_MAX_DURATION_SECONDS`); con un link o un archivo más largo da 400. No cambia después de crear.
   - ✅ `speaker_tracking=true` sin layout crea el proyecto con Quien habla (`render_layout=active`).
   - ❌ falta el endpoint de precios para el estimado.
-  - ✅ `POST /api/v1/projects/probe-link/` reconoce el link antes de crear (sitio, título y duración) y responde 403 `duration` si supera el plan. Crear igual no exige la duración: el link sigue con su precio fijo.
-  - ✅ solo se aceptan links de YouTube, Vimeo, Twitch y Google Drive, nunca una IP ni una dirección interna.
+  - ✅ `POST /api/v1/projects/probe-link/` reconoce el link antes de crear (sitio, título y duración) y responde 403 `duration` si supera el plan. Crear no pasa por el probe, pero la descarga aplica el mismo límite: un video más largo hace fallar el proyecto (`LinkTooLongError`) y se devuelve la reserva.
+  - ✅ solo se aceptan links de un video de YouTube, Vimeo, Twitch o Google Drive (hosts exactos, sin listas, canales ni vivos), nunca una IP ni una dirección interna.
 
 ### D. Proyecto
 
