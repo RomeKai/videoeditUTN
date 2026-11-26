@@ -63,7 +63,7 @@ WORKSPACE_RESERVED = (
 )
 POSTS_IN_FLIGHT = (
     'Hay publicaciones saliendo a las redes en este momento: esperá a que terminen para borrar el espacio. '
-    'Si alguna quedó trabada, se libera sola: probá de nuevo en unos 15 minutos.'
+    'Si alguna quedó trabada, se libera sola un rato después de su hora de publicación: probá de nuevo más tarde.'
 )
 LAST_WORKSPACE = (
     'Es tu único espacio de trabajo y no se puede borrar. Creá otro primero, o sumate al de alguien más.'

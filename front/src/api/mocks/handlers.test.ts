@@ -80,7 +80,7 @@ describe('mocks', () => {
     expect(wallet.reservations.length).toBeGreaterThan(0);
     await apiCall(billing.getUsage, { query: {} });
     expect((await apiCall(billing.listTransactions, { query: { kind: 'purchase' } })).results.every((item) => item.kind === 'purchase')).toBe(true);
-    expect(await apiCall(billing.exportTransactions, { query: {} })).toContain('fecha,concepto,tipo,monto');
+    expect(await apiCall(billing.exportTransactions, { query: {} })).toContain('fecha,concepto,proyecto,tipo,monto');
     expect((await apiCall(billing.listTokenPackages)).packages).toHaveLength(3);
 
     const list = await apiCall(projects.listProjects, { query: { status_group: 'to_review' } });

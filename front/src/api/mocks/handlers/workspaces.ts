@@ -103,7 +103,7 @@ export const workspacesHandlers = [
       );
     }
     if (db.posts.some((item) => item.workspace === workspace.id && (item.status === 'QUEUED' || item.status === 'PROCESSING'))) {
-      throw conflict('Hay publicaciones saliendo a las redes en este momento: esperá a que terminen para borrar el espacio. Si alguna quedó trabada, se libera sola: probá de nuevo en unos 15 minutos.', 'posts_in_flight');
+      throw conflict('Hay publicaciones saliendo a las redes en este momento: esperá a que terminen para borrar el espacio. Si alguna quedó trabada, se libera sola un rato después de su hora de publicación: probá de nuevo más tarde.', 'posts_in_flight');
     }
     const wallet = db.wallets.find((item) => item.workspace === workspace.id);
     if (wallet && wallet.reserved_balance > 0) {

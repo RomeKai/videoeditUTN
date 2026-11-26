@@ -12,7 +12,7 @@ import { formatDateTime, formatNumber, plural } from '@/lib/format';
 import { LoadError } from '@/shell/LoadError';
 import { RequireRole } from '@/shell/RequireSession';
 import { Button, Card, EmptyState, FilterChips, Pagination, Select, Skeleton, Table, useToast, type FilterOption } from '@/ui';
-import { KIND_META, KIND_ORDER, KindBadge, MINUS, MovementAmount, movementConcept, totalOf, type KindTotals } from './movements';
+import { KIND_META, KIND_ORDER, KindBadge, MINUS, MovementAmount, movementConcept, movementDate, returnedPart, totalOf, type KindTotals } from './movements';
 import { monthKey, monthLong, monthTitle, recentMonths } from './period';
 import styles from './uso.module.css';
 
@@ -30,10 +30,13 @@ function Totals({ totals, scope }: { totals: KindTotals | undefined; scope: stri
   const released = totalOf(totals, 'released');
   const purchase = totalOf(totals, 'purchase');
   const pending = totalOf(totals, 'pending');
+  // `released` also has what partial charges gave back (their count is `partial_count`).
   const returned = refund.amount + released.amount;
+  const partial = released.partial_count ?? 0;
   const returnedParts = [
     refund.count > 0 ? plural(refund.count, 'devolución', 'devoluciones') : null,
     released.count > 0 ? plural(released.count, 'reserva liberada', 'reservas liberadas') : null,
+    partial > 0 ? plural(partial, 'cobro parcial', 'cobros parciales') : null,
   ].filter(Boolean);
   return (
     <Card as="section" className={styles.totals} aria-label={`Totales de ${scope}`}>
@@ -220,10 +223,12 @@ function Movements() {
             <tbody>
               {rows.map((item) => {
                 const meta = KIND_META[item.kind];
+                const returnedNow = returnedPart(item);
+                const note = returnedNow > 0 ? `Devolvimos ${formatNumber(returnedNow)} de lo reservado` : meta.note;
                 return (
                   <tr key={item.id}>
                     <td>
-                      <span className={cx('num t-small muted', styles.nowrap)}>{formatDateTime(item.created_at)}</span>
+                      <span className={cx('num t-small muted', styles.nowrap)}>{formatDateTime(movementDate(item))}</span>
                     </td>
                     <td>
                       <div className={styles.cell2}>
@@ -244,7 +249,7 @@ function Movements() {
                     <td>
                       <div className={cx(styles.cell2, styles.kindCell)}>
                         <KindBadge kind={item.kind} />
-                        {meta.note ? <span className={styles.kindNote}>{meta.note}</span> : null}
+                        {note ? <span className={styles.kindNote}>{note}</span> : null}
                       </div>
                     </td>
                     <td className={styles.right}>

@@ -13,10 +13,17 @@ class InsufficientFundsError(PaymentError):
     pass
 
 @transaction.atomic
-def reserve_funds(wallet_id, amount: Decimal, project_id=None, user=None, description="") -> Transaction:
+def reserve_funds(
+    wallet_id, amount: Decimal, project_id=None, user=None, description="", *, project=None, category=None,
+) -> Transaction:
     """
     Locks funds in the workspace's wallet before an operation begins.
     Uses select_for_update to prevent race conditions.
+
+    ``project`` and ``category`` say what the reservation pays for
+    (Transaction.project and Transaction.category: the wallet's movements and
+    the usage chart). They are only written on the row; ``project_id`` is
+    another thing: it queues the pipeline.
     """
     # Select for update locks the row until the transaction block ends
     try:
@@ -42,7 +49,9 @@ def reserve_funds(wallet_id, amount: Decimal, project_id=None, user=None, descri
         reserved_amount=amount,
         transaction_type=Transaction.Type.SPEND,
         status=Transaction.Status.RESERVED,
-        description=description
+        description=description,
+        project=project,
+        category=category or Transaction.Category.OTHER,
     )
     
     # DISPARO DE TAREA CELERY (Sincronización con Video Factory)

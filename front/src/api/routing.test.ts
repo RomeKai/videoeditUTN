@@ -100,8 +100,10 @@ describe('ruteo híbrido', () => {
     const plus = hybrid('existing,users.me');
     expect(routeOf(projects.listProjects, plus)).toBe('real');
     expect(routeOf(users.getMe, plus)).toBe('real');
-    // A proposed endpoint that was not named (users.updateMe exists since feat/perfil-me).
-    expect(routeOf(billing.getWallet, plus)).toBe('mock');
+    // A proposed endpoint that was not named (users.updateMe exists since feat/perfil-me, billing.wallet
+    // since feat/billetera-movimientos-precios).
+    expect(routeOf(billing.getSubscription, plus)).toBe('mock');
+    expect(routeOf(billing.getWallet, plus)).toBe('real');
     expect(parseRealList(' Projects ,billing.Plans,, existing ')).toEqual({ domains: new Set(['projects']), endpoints: new Set(['billing.plans']), existing: true });
     expect(parseRealList(undefined).existing).toBe(true);
     expect(parseRealList('projects').existing).toBe(false);

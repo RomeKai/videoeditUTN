@@ -131,7 +131,11 @@ class WorkspaceRolePermission(permissions.BasePermission):
     @staticmethod
     def required_action(request, view):
         actions = getattr(view, 'workspace_actions', {})
-        action = actions.get(getattr(view, 'action', None)) or actions.get(request.method)
+        # Django answers HEAD with the GET handler, so it needs GET's action:
+        # unmapped, it fell to project.view and a Lector got a 200 (and the
+        # work of the GET) where GET is a 403.
+        method = 'GET' if request.method == 'HEAD' else request.method
+        action = actions.get(getattr(view, 'action', None)) or actions.get(method)
         if action:
             return action
         return 'project.view' if request.method in permissions.SAFE_METHODS else _UNMAPPED_WRITE
