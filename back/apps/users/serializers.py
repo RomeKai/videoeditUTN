@@ -4,7 +4,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import ErrorDetail
 
 from apps.core.workspace import role_in
-from apps.users.emails import INVALID_EMAIL_DOMAIN, InvalidEmailDomain
+from apps.users.emails import InvalidEmailDomain
 from apps.users.models import NotificationPreference, User, Workspace
 
 
@@ -120,8 +120,9 @@ class UpdateMeSerializer(serializers.Serializer):
             return value
         try:
             return User.objects.normalize_email(value)
-        except InvalidEmailDomain:
-            raise serializers.ValidationError(INVALID_EMAIL_DOMAIN, code='invalid_domain')
+        except InvalidEmailDomain as error:
+            # Also an email that passes max_length as typed and not once its domain is encoded.
+            raise serializers.ValidationError(error.message, code='invalid_domain')
 
     def validate(self, attrs):
         if 'email' not in attrs:

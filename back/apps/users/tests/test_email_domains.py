@@ -41,6 +41,14 @@ def _user(username, email):
     # "ñ" as n + a combining tilde: the same domain.
     ("Ana@mañana.com", "Ana@xn--maana-pta.com"),
     ("  tester@test.com ", "tester@test.com"),
+    # IDNA 2008: "ß" and the final sigma are letters of their own, not "ss" and "σ".
+    ("ana@straße.de", "ana@xn--strae-oqa.de"),
+    ("ana@XN--STRAE-OQA.de", "ana@xn--strae-oqa.de"),
+    ("ana@strasse.de", "ana@strasse.de"),
+    ("ana@βόλος.gr", "ana@xn--nxasmm1c.gr"),
+    ("ana@βόλοσ.gr", "ana@xn--nxasmq6b.gr"),
+    # A zero-width joiner where the script uses one is part of the name.
+    ("ana@क्\u200dष.com", "ana@xn--11b2ezcw70k.com"),
     ("tester@[127.0.0.1]", "tester@[127.0.0.1]"),
     ("sin-arroba", "sin-arroba"),
     ("", ""),
@@ -50,10 +58,33 @@ def test_the_domain_is_normalized(typed, stored):
     assert normalize_email(typed) == stored
 
 
-@pytest.mark.parametrize("email", [UNENCODABLE, "a@b..com", "a@-b.com", "a@b_c.com", "a@b c.com", f"a@{'ñ' * 64}.com"])
+@pytest.mark.parametrize("email", [UNENCODABLE, "a@b..com", "a@-b.com", "a@b_c.com", "a@b c.com", f"a@{'ñ' * 64}.com", "a@xn--zz.com", "a@a\u200db.com"])
 def test_a_domain_that_cannot_be_encoded_is_refused(email):
     with pytest.raises(InvalidEmailDomain):
         normalize_email(email)
+
+
+# 178 characters as typed (EmailField takes it), 300 with its domain in punycode.
+LONG_DOMAIN = "ana@" + ".".join(["中文测试域名" * 3] * 9) + ".com"
+# The domain fits; the whole email does not once it is encoded.
+LONG_EMAIL = "a" * 220 + "@" + "中文测试域名" * 3 + ".com"
+TOO_LONG = "El email es demasiado largo. Probá con una dirección más corta."
+
+
+@pytest.mark.parametrize("email", [LONG_DOMAIN, LONG_EMAIL])
+def test_an_email_that_does_not_fit_once_encoded_is_refused(email):
+    assert len(email) <= 254
+
+    with pytest.raises(InvalidEmailDomain) as error:
+        normalize_email(email)
+
+    assert error.value.message == TOO_LONG
+
+
+def test_an_email_of_254_characters_is_kept():
+    email = "a" * 245 + "@test.com"
+
+    assert normalize_email(email) == email
 
 
 def test_the_local_part_is_left_as_typed():
@@ -167,6 +198,28 @@ def test_an_email_change_to_a_domain_that_cannot_be_encoded_is_a_400(user):
     assert mail.outbox == []
 
 
+@pytest.mark.parametrize("email", [LONG_DOMAIN, LONG_EMAIL])
+def test_an_email_change_that_does_not_fit_once_encoded_is_a_400(user, email):
+    response = _api(user).patch(ME_URL, {"email": email, "current_password": "password"}, format="json")
+
+    assert response.status_code == 400
+    assert response.json() == {"email": [TOO_LONG]}
+    user.refresh_from_db()
+    assert user.pending_email is None
+    assert mail.outbox == []
+
+
+def test_the_sharp_s_domain_is_not_the_account_of_the_double_s_domain():
+    _user("ss", "ana@strasse.de")
+    sharp = _user("sharp", "ana@straße.de")
+
+    assert User.objects.get(pk=sharp.pk).email == "ana@xn--strae-oqa.de"
+    response = APIClient().post(LOGIN_URL, {"email": "ana@xn--strae-oqa.de", "password": "password"}, format="json")
+    assert response.status_code == 200
+    with pytest.raises(IntegrityError), transaction.atomic():
+        _user("sharp2", "ana@XN--strae-oqa.de")
+
+
 def test_the_own_email_in_another_spelling_cancels_the_pending_change(user):
     User.objects.filter(pk=user.pk).update(pending_email="nueva@test.com")
 
@@ -238,18 +291,23 @@ def test_the_command_reports_the_accounts_by_count_and_id_never_by_email(user):
     collides = _stored_as("choca", FULL_WIDTH)
     invalid = _stored_as("raro", UNENCODABLE)
     pending = _stored_as("pendiente", "ana@mañana.com")
+    User.objects.filter(pk=user.pk).update(pending_email="Nueva@Mañana.com")
+    User.objects.filter(pk=invalid.pk).update(pending_email=UNENCODABLE)
     out = StringIO()
 
     call_command("check_email_domains", stdout=out)
 
     assert out.getvalue().splitlines() == [
-        "Cuentas con el dominio del email sin normalizar: 3",
+        "Cuentas con el dominio del email sin normalizar: 4",
         "Otra cuenta ya tiene el mismo email normalizado: 1",
         f"  {collides.pk}",
         "El dominio no se puede codificar: 1",
         f"  {invalid.pk}",
         "Sin normalizar y sin choque (se normaliza al guardar la cuenta): 1",
         f"  {pending.pk}",
+        "El email pendiente de verificar no está normalizado o no se puede codificar: 2",
+        f"  {user.pk}",
+        f"  {invalid.pk}",
     ]
     assert "@" not in out.getvalue()
     # It only reports.
@@ -274,3 +332,77 @@ def test_an_account_left_with_a_colliding_email_can_still_be_used_and_saved_in_p
     collides.save(update_fields=["first_name"])
 
     assert User.objects.get(pk=collides.pk).email == FULL_WIDTH
+
+
+# --- an account stored before with a domain that cannot be encoded keeps working ---
+
+@pytest.fixture
+def legacy():
+    created = _stored_as("raro", UNENCODABLE)
+    created.refresh_from_db()
+    return created
+
+
+def test_a_legacy_account_with_an_invalid_domain_still_signs_in(legacy):
+    response = APIClient().post(LOGIN_URL, {"email": UNENCODABLE, "password": "password"}, format="json")
+
+    assert response.status_code == 200
+
+
+def test_failed_logins_of_a_legacy_account_are_counted(legacy):
+    api = APIClient(REMOTE_ADDR="10.0.21.1")
+    with mock.patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"login": "1000/min"}):
+        failures = [
+            api.post(LOGIN_URL, {"email": UNENCODABLE, "password": "otra"}, format="json").status_code
+            for _ in range(10)
+        ]
+        blocked = api.post(LOGIN_URL, {"email": UNENCODABLE, "password": "password"}, format="json")
+
+    assert failures == [401] * 10
+    assert blocked.status_code == 429
+
+
+def test_a_legacy_account_with_an_invalid_domain_can_change_its_name(legacy):
+    response = _api(legacy).patch(ME_URL, {"name": "Ana Paz"}, format="json")
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Ana Paz"
+    assert response.json()["email"] == UNENCODABLE
+
+
+def test_a_legacy_account_with_an_invalid_domain_can_change_its_password(legacy):
+    response = _api(legacy).post(
+        "/api/v1/me/password/", {"current_password": "password", "new_password": "una-clave-Nueva-2026"}, format="json",
+    )
+
+    assert response.status_code == 200
+    legacy.refresh_from_db()
+    assert legacy.check_password("una-clave-Nueva-2026")
+
+
+def test_a_legacy_account_with_an_invalid_domain_can_move_to_a_valid_email(legacy):
+    response = _api(legacy).patch(ME_URL, {"email": "raro@test.com", "current_password": "password"}, format="json")
+
+    assert response.status_code == 200
+    assert response.json()["pending_email"] == "raro@test.com"
+
+
+def test_a_link_for_a_legacy_pending_email_with_an_invalid_domain_is_a_400(user):
+    from apps.users.email_verification import make_token
+
+    User.objects.filter(pk=user.pk).update(pending_email=UNENCODABLE)
+    user.refresh_from_db()
+    token = make_token(user)
+
+    response = _api(user).post("/api/v1/auth/verify-email/", {"token": token}, format="json")
+
+    assert response.status_code == 400
+    assert response.json() == {"token": [INVALID_DOMAIN]}
+    user.refresh_from_db()
+    assert (user.email, user.pending_email, user.is_email_verified) == ("tester@test.com", UNENCODABLE, False)
+
+
+def test_a_full_save_of_a_legacy_account_with_an_invalid_domain_is_refused(legacy):
+    # Writing the email again needs a valid one; the partial saves above do not write it.
+    with pytest.raises(InvalidEmailDomain):
+        legacy.save()

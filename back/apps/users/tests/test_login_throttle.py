@@ -158,7 +158,7 @@ def _refused():
     return mock.patch("redis.connection.Connection._connect", side_effect=ConnectionRefusedError(111, "refused"))
 
 
-def test_with_redis_down_the_account_limit_still_holds_in_this_process(user):
+def test_with_redis_down_the_account_limit_still_holds_in_this_process(user, no_ip_limit):
     with override_settings(CACHES=REDIS_DOWN), _refused():
         failures = [_login(_from("10.0.12.1")).status_code for _ in range(12)]
         blocked = _login(_from("10.0.12.1"), password="password")
@@ -172,19 +172,23 @@ def test_with_redis_down_the_account_limit_still_holds_in_this_process(user):
     assert elsewhere.status_code == 200
 
 
-def test_with_redis_down_a_successful_login_clears_the_failures(user):
+def test_with_redis_down_a_successful_login_clears_the_failures(user, no_ip_limit):
     api = _from("10.0.12.3")
     with override_settings(CACHES=REDIS_DOWN), _refused():
         first = [_login(api).status_code for _ in range(9)]
         ok = _login(api, password="password")
         second = [_login(api).status_code for _ in range(10)]
+        blocked = _login(api, password="password")
 
+    # 19 failures and no lock before the 20th: the good login cleared the first nine.
     assert first == [401] * 9
     assert ok.status_code == 200
     assert second == [401] * 10
+    # And they are being counted: the limit comes at its number.
+    assert blocked.status_code == 429
 
 
-def test_with_redis_down_the_lock_ends_with_its_window(user):
+def test_with_redis_down_the_lock_ends_with_its_window(user, no_ip_limit):
     api = _from("10.0.12.4")
     with override_settings(CACHES=REDIS_DOWN), _refused():
         with mock.patch("apps.users.throttles.time.time", return_value=900 * 1000.0):
@@ -197,17 +201,97 @@ def test_with_redis_down_the_lock_ends_with_its_window(user):
     assert later.status_code == 200
 
 
-def test_requests_that_never_reach_the_password_check_do_not_count_with_redis_down(user):
+def test_requests_that_never_reach_the_password_check_do_not_count_with_redis_down(user, no_ip_limit):
     api = _from("10.0.12.5")
     with override_settings(CACHES=REDIS_DOWN), _refused():
         invalid = [api.post(LOGIN_URL, {"email": "tester@test.com"}, format="json").status_code for _ in range(12)]
-        ok = _login(api, password="password")
+        failures = [_login(api).status_code for _ in range(10)]
+        blocked = _login(api, password="password")
 
     assert invalid == [400] * 12
-    assert ok.status_code == 200
+    # The twelve 400s were given back: the ten failures that follow all reach the password check.
+    assert failures == [401] * 10
+    assert blocked.status_code == 429
 
 
-def test_an_outage_is_logged_once_and_redis_is_tried_once_per_cooldown(user, caplog):
+def test_with_redis_down_emails_without_an_account_get_no_counter_in_memory(user, no_ip_limit):
+    from apps.users.throttles import local_counts
+
+    api = _from("10.0.12.7")
+    with override_settings(CACHES=REDIS_DOWN), _refused():
+        unknown = [_login(api, email=f"nadie{n}@test.com").status_code for n in range(30)]
+        assert len(local_counts._cache) == 0
+        known = _login(api)
+        # Only the account's two windows (per IP and in total).
+        assert len(local_counts._cache) == 2
+
+    assert unknown == [401] * 30
+    assert known.status_code == 401
+
+
+def test_made_up_emails_cannot_push_an_account_out_of_the_memory(user, no_ip_limit):
+    from apps.users import throttles
+
+    small = throttles.LocMemCache("small-login-fallback", {"OPTIONS": {"MAX_ENTRIES": 4}})
+    small.clear()
+    attacker = _from("10.0.12.8")
+    with override_settings(CACHES=REDIS_DOWN), _refused(), mock.patch.object(throttles, "local_counts", small):
+        failures = []
+        for n in range(10):
+            failures.append(_login(attacker).status_code)
+            # Between guesses, logins with emails nobody has: they would fill a store of 4 keys.
+            for m in range(6):
+                _login(attacker, email=f"relleno{n}-{m}@test.com")
+        blocked = _login(attacker, password="password")
+
+    assert failures == [401] * 10
+    assert blocked.status_code == 429
+
+
+def test_with_redis_down_the_login_is_still_limited_per_ip(user):
+    api = _from("10.0.12.9")
+    with override_settings(CACHES=REDIS_DOWN), _refused():
+        answers = [_login(api, email=f"nadie{n}@test.com").status_code for n in range(10)]
+        blocked = _login(api, password="password")
+        elsewhere = _login(_from("10.0.12.10"), password="password")
+
+    assert answers == [401] * 10
+    assert blocked.status_code == 429
+    assert int(blocked["Retry-After"]) > 0
+    assert elsewhere.status_code == 200
+
+
+def test_with_redis_down_the_token_refresh_is_still_limited_per_ip():
+    api = _from("10.0.12.11")
+    with override_settings(CACHES=REDIS_DOWN), _refused():
+        answers = [api.post(REFRESH_URL, {"refresh": "no-es-un-token"}, format="json").status_code for _ in range(31)]
+
+    assert answers == [401] * 30 + [429]
+
+
+def test_with_redis_down_guessing_the_current_password_is_still_throttled(user):
+    api = APIClient()
+    api.force_authenticate(user=user)
+    payload = {"current_password": "otra", "new_password": "una-clave-Nueva-2026"}
+    with override_settings(CACHES=REDIS_DOWN), _refused():
+        answers = [api.post("/api/v1/me/password/", payload, format="json").status_code for _ in range(6)]
+
+    assert answers == [400] * 5 + [429]
+
+
+def test_with_redis_down_email_changes_are_still_throttled_and_other_edits_are_not(user):
+    api = APIClient()
+    api.force_authenticate(user=user)
+    payload = {"email": "nueva@test.com", "current_password": "otra"}
+    with override_settings(CACHES=REDIS_DOWN), _refused():
+        answers = [api.patch("/api/v1/me/", payload, format="json").status_code for _ in range(6)]
+        edits = [api.patch("/api/v1/me/", {"tour_completed": True}, format="json").status_code for _ in range(8)]
+
+    assert answers == [400] * 5 + [429]
+    assert edits == [200] * 8
+
+
+def test_an_outage_is_logged_once_and_redis_is_tried_once_per_cooldown(user, caplog, no_ip_limit):
     api = _from("10.0.12.6")
     with override_settings(CACHES=REDIS_DOWN), _refused() as connect, caplog.at_level("INFO", logger="apps.core.cache"):
         answers = [_login(api).status_code for _ in range(5)]

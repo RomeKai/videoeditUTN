@@ -5,7 +5,7 @@ from django.db.models.functions import Upper
 from django.contrib.auth.models import AbstractUser, UserManager as DjangoUserManager
 from django.utils.translation import gettext_lazy as _
 
-from apps.users.emails import INVALID_EMAIL_DOMAIN, InvalidEmailDomain, normalize_email
+from apps.users.emails import InvalidEmailDomain, normalize_email
 
 
 class UserManager(DjangoUserManager):
@@ -17,7 +17,8 @@ class UserManager(DjangoUserManager):
 
     The domain is normalized first (apps.users.emails): "tester@ｔｅｓｔ.com"
     signs into the account of "tester@test.com". A domain that cannot be
-    encoded has no account.
+    encoded is looked up as typed: only an account stored that way before
+    (migration 0008 leaves them) can match it.
     """
 
     @classmethod
@@ -29,7 +30,9 @@ class UserManager(DjangoUserManager):
         try:
             username = self.normalize_email(username)
         except InvalidEmailDomain:
-            raise self.model.DoesNotExist() from None
+            # An account stored before the domains were normalized, with one that
+            # cannot be encoded: it is found by its email as it was typed.
+            username = (username or '').strip()
         return self.get(**{f'{self.model.USERNAME_FIELD}__iexact': username})
 
 
@@ -92,18 +95,23 @@ class User(AbstractUser):
         # full_clean (the admin's forms) answers a field error instead of save()'s ValueError.
         try:
             super().clean()
-        except InvalidEmailDomain:
-            raise ValidationError({'email': INVALID_EMAIL_DOMAIN}) from None
+        except InvalidEmailDomain as error:
+            raise ValidationError({'email': error.message}) from None
         if self.pending_email:
             try:
                 self.pending_email = type(self).objects.normalize_email(self.pending_email)
-            except InvalidEmailDomain:
-                raise ValidationError({'pending_email': INVALID_EMAIL_DOMAIN}) from None
+            except InvalidEmailDomain as error:
+                raise ValidationError({'pending_email': error.message}) from None
 
     def save(self, *args, **kwargs):
         # One spelling per domain (apps.users.emails): the constraint compares what is stored.
-        self.email = type(self).objects.normalize_email(self.email)
-        if self.pending_email:
+        # Only an email that this save writes: an account stored before with a
+        # domain that cannot be encoded (migration 0008 leaves it) must still
+        # save its name or its password. Raises InvalidEmailDomain.
+        update_fields = kwargs.get('update_fields')
+        if update_fields is None or 'email' in update_fields:
+            self.email = type(self).objects.normalize_email(self.email)
+        if self.pending_email and (update_fields is None or 'pending_email' in update_fields):
             self.pending_email = type(self).objects.normalize_email(self.pending_email)
         # set_password() keeps the raw value in _password until the save; the
         # tokens of the old password stop refreshing, whoever changed it.

@@ -17,6 +17,7 @@ LABELS = {
     'collisions': 'Otra cuenta ya tiene el mismo email normalizado',
     'invalid': 'El dominio no se puede codificar',
     'pending': 'Sin normalizar y sin choque (se normaliza al guardar la cuenta)',
+    'pending_email': 'El email pendiente de verificar no está normalizado o no se puede codificar',
 }
 
 
@@ -25,7 +26,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         found = accounts_to_review(User.objects.all())
-        total = sum(len(ids) for ids in found.values())
+        total = len({pk for ids in found.values() for pk in ids})
         self.stdout.write(f'Cuentas con el dominio del email sin normalizar: {total}')
         for kind, label in LABELS.items():
             ids = found[kind]

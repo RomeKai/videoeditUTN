@@ -4,7 +4,9 @@ refresh and the account endpoints that ask for `current_password`.
 
 Without them a password can be guessed as fast as the server answers. The
 rates are in REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'] and are counted in the
-default cache: per user when signed in, per IP otherwise.
+default cache: per user when signed in, per IP otherwise. While that cache does
+not answer they are counted in this process's memory (LocalFallbackCache,
+LoginFailureGuard), so an outage does not switch the limits off.
 """
 import math
 import time
@@ -43,7 +45,47 @@ class SpanishThrottleMixin:
         raise TooManyAttempts(wait)
 
 
-class EmailChangeThrottle(ScopedRateThrottle):
+class LocalFallbackCache:
+    """
+    The `default` cache for a DRF throttle, with this process's memory behind
+    it. When the shared cache fails open (apps.core.cache: Redis down, or
+    skipped by its circuit breaker) a read is a miss and a write is dropped,
+    so the throttle would let everything through. Here a write that the
+    shared cache did not take is kept in `store`, and a read that misses
+    looks there: the limit holds per process during the outage. The entries
+    expire with the throttle's window.
+    """
+
+    def __init__(self, name):
+        self.store = LocMemCache(name, {'OPTIONS': {'MAX_ENTRIES': 20000}})
+
+    def get(self, key, default=None):
+        value = cache.get(key)
+        if value is None and getattr(cache, 'fails_open', False):
+            value = self.store.get(key)
+        return default if value is None else value
+
+    def set(self, key, value, timeout=None):
+        # django-redis answers True for a write Redis took; an ignored error is None.
+        if cache.set(key, value, timeout) is not True and getattr(cache, 'fails_open', False):
+            self.store.set(key, value, timeout)
+
+
+# Every attempt throttle of this module, while the shared cache does not answer.
+local_throttle_history = LocalFallbackCache('attempt-throttles-fallback')
+
+
+class AttemptThrottle(ScopedRateThrottle):
+    """
+    ScopedRateThrottle for the endpoints that check a password (login, token
+    refresh, password change, email change): it keeps limiting, per process,
+    while the shared cache is down.
+    """
+
+    cache = local_throttle_history
+
+
+class EmailChangeThrottle(AttemptThrottle):
     """
     Only counts the PATCHes of `/me` that change the email (they check the
     password and send an email). The rest of `/me` stays unlimited: the web app
@@ -81,7 +123,10 @@ def parse_rate(rate):
 
 
 # The login guard's counters while the shared cache does not answer. One per
-# process, bounded: when it is full Django's LocMem drops a third of its keys.
+# process, bounded: when it is full Django's LocMem drops the third of its keys
+# used longest ago. Only real accounts get a key here (LoginFailureGuard._count):
+# logins with made-up emails cannot fill it and push an account's counters out,
+# and the counter of an account under attack is always among the latest used.
 local_counts = LocMemCache('login-failures-fallback', {'OPTIONS': {'MAX_ENTRIES': 20000}})
 
 
@@ -105,7 +150,8 @@ class LoginFailureGuard:
     skipped by the cache's circuit breaker) a count comes back as a miss.
     Those attempts are counted in `local_counts`, a memory of this process
     only, so the limits still hold per process during the outage instead of
-    not at all. Its counts expire with their window like the shared ones, and
+    not at all. Only for emails that have an account: there is no password
+    to guess behind the others, and their keys would fill the memory. Its counts expire with their window like the shared ones, and
     nobody is locked for longer than a window. When Redis answers again the
     shared counts go on from where they were. The keys are an HMAC of the
     account (and the IP), never the email.
@@ -115,6 +161,7 @@ class LoginFailureGuard:
 
     def __init__(self, request, email):
         account = self.account_key(email)
+        self.has_account = account.startswith('user:')
         ip = BaseThrottle().get_ident(request) or ''
         rates = settings.LOGIN_FAILURE_RATES
         self.windows = [
@@ -160,7 +207,7 @@ class LoginFailureGuard:
 
     def _count(self, key, timeout):
         """Counts in the shared cache, or in this process when it does not answer."""
-        for store in (cache, local_counts):
+        for store in (cache, local_counts) if self.has_account else (cache,):
             count = self._count_in(store, key, timeout)
             if count is not None:
                 self.counted.append((store, key))

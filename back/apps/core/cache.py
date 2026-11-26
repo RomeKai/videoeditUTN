@@ -21,11 +21,21 @@ import sys
 import threading
 import time
 
+import socket
+
 from django.conf import settings
 from django_redis.cache import RedisCache
 from django_redis.exceptions import ConnectionInterrupted
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 logger = logging.getLogger(__name__)
+
+# Redis did not answer. Anything else django-redis wraps (a ResponseError: WRONGTYPE,
+# out of memory on a write, a script error) is an answer about one command.
+UNREACHABLE = (RedisConnectionError, RedisTimeoutError, socket.timeout, OSError)
+# While an outage lasts, how often it is logged again (cache.still_unavailable).
+OUTAGE_REMINDER_SECONDS = 300
 
 
 class CircuitOpen(Exception):
@@ -38,7 +48,9 @@ class CircuitBreaker:
     ``cache.unavailable`` once. Open: calls are skipped. When the cooldown
     ends, one call is let through as a probe while the others keep being
     skipped: its success closes the breaker (``cache.recovered``), its
-    failure starts another cooldown without logging again.
+    failure starts another cooldown. An outage that goes on (a wrong URL
+    never recovers) is logged again as ``cache.still_unavailable``, at ERROR,
+    every OUTAGE_REMINDER_SECONDS.
     """
 
     def __init__(self, cooldown):
@@ -46,6 +58,7 @@ class CircuitBreaker:
         self._lock = threading.Lock()
         self._retry_at = None
         self._down_since = None
+        self._logged_at = None
 
     def allow(self):
         """True (go to Redis), False (skip it) or 'probe' (go, and report the result)."""
@@ -61,13 +74,19 @@ class CircuitBreaker:
 
     def failed(self, error):
         with self._lock:
-            first = self._down_since is None
             now = time.monotonic()
+            first = self._down_since is None
             if first:
                 self._down_since = now
+            remind = not first and now - self._logged_at >= OUTAGE_REMINDER_SECONDS
+            if first or remind:
+                self._logged_at = now
+            down_for = now - self._down_since
             self._retry_at = now + self.cooldown
         if first:
             logger.warning("cache.unavailable error=%s", type(error).__name__)
+        elif remind:
+            logger.error("cache.still_unavailable error=%s down_for_seconds=%d", type(error).__name__, down_for)
 
     def succeeded(self):
         with self._lock:
@@ -95,7 +114,10 @@ def reset_circuit_breakers():
 
 
 class _Probe:
-    """The client for the one call that tests Redis after a cooldown: a call that returns closes the breaker."""
+    """
+    The client for the one call that tests Redis after a cooldown: a call that
+    returns closes the breaker. So does one that Redis refuses (_IgnoredErrorLog).
+    """
 
     def __init__(self, client, breaker):
         self._client = client
@@ -115,8 +137,14 @@ class _Probe:
 class _IgnoredErrorLog:
     """
     django-redis logs every ignored error with its whole traceback. This
-    tells the breaker instead, which logs the class of the first error of an
-    outage (``cache.unavailable``) and nothing for the calls it skips.
+    tells the breaker instead:
+
+    - Redis did not answer (UNREACHABLE): the breaker opens, and logs the
+      class of the first error of an outage (``cache.unavailable``).
+    - Redis answered with an error for that command: logged as
+      ``cache.command_failed`` with the class, and the breaker stays closed.
+      One bad key must not take the cache away from every request.
+    - A call the breaker skipped: nothing.
     """
 
     def __init__(self, breaker):
@@ -126,8 +154,14 @@ class _IgnoredErrorLog:
         error = sys.exc_info()[1]
         # ConnectionInterrupted wraps the redis-py error that caused it.
         cause = getattr(error, "__cause__", None) or error
-        if not isinstance(cause, CircuitOpen):
+        if isinstance(cause, CircuitOpen):
+            return
+        if isinstance(cause, UNREACHABLE):
             self.breaker.failed(cause)
+            return
+        # Redis is there: for a probe, that is the answer it was after.
+        self.breaker.succeeded()
+        logger.warning("cache.command_failed error=%s", type(cause).__name__)
 
 
 class FailOpenRedisCache(RedisCache):
@@ -136,6 +170,9 @@ class FailOpenRedisCache(RedisCache):
     a call skipped while the breaker is open, returns what a miss returns
     (None, or the default of ``get``).
     """
+
+    # For callers that keep their own fallback: a miss here may be Redis not answering.
+    fails_open = True
 
     def __init__(self, server, params):
         super().__init__(server, params)

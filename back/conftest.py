@@ -174,10 +174,11 @@ def isolate_test_effects(tmp_path, settings):
     # An outage one test simulates (the cache's circuit breaker, the login
     # guard's counts in memory) is over for the next one.
     from apps.core.cache import reset_circuit_breakers
-    from apps.users.throttles import local_counts
+    from apps.users.throttles import local_counts, local_throttle_history
 
     reset_circuit_breakers()
     local_counts.clear()
+    local_throttle_history.store.clear()
     checkpoint = NETWORK_GUARD.checkpoint()
     previous_media_root = settings.MEDIA_ROOT
     isolated_media_root = tmp_path / "media"

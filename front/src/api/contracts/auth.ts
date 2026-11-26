@@ -40,7 +40,7 @@ export const login = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/users/views.py · LoginView (TokenObtainPairView de SimpleJWT, USERNAME_FIELD = email)',
-    note: 'El email entra con cualquier escritura de su dominio (mayúsculas, letras de ancho completo, Unicode o punycode); un dominio que no se puede codificar responde 401 como cualquier email sin cuenta. El 429 sale de 10 pedidos por minuto por IP, o de los intentos fallidos de la cuenta: 10 cada 15 minutos desde la misma IP y 100 por hora en total. Un login correcto los reinicia. `detail` dice en castellano cuánto esperar. Hoy no distingue la cuenta sin verificar (falta el 403 propuesto, hueco 1).',
+    note: 'El email entra con cualquier escritura de su dominio (mayúsculas, letras de ancho completo, Unicode o punycode); un dominio que no se puede codificar responde 401 como cualquier email sin cuenta. Sin Redis los límites siguen, contados por proceso. El 429 sale de 10 pedidos por minuto por IP, o de los intentos fallidos de la cuenta: 10 cada 15 minutos desde la misma IP y 100 por hora en total. Un login correcto los reinicia. `detail` dice en castellano cuánto esperar. Hoy no distingue la cuenta sin verificar (falta el 403 propuesto, hueco 1).',
   },
   screens: ['A1', 'D9'],
 });
@@ -98,7 +98,7 @@ export const verifyEmail = defineEndpoint({
   auth: 'optional',
   workspaceScoped: false,
   errors: [
-    { status: 400, when: 'Token inválido, vencido, ya usado o cancelado (error en `token`). La UI ofrece reenviar el email.' },
+    { status: 400, when: 'Token inválido, vencido, ya usado o cancelado, o un email pendiente con un dominio que no se puede codificar (error en `token`). La UI ofrece reenviar el email.' },
     {
       status: 403,
       when: '`code: "other_account"`: hay una sesión de otra cuenta. `code: "login_required"`: el link de un cambio de email necesita la sesión de su cuenta. No se aplica nada; la UI muestra `detail` y, en el segundo caso, lleva a iniciar sesión y de vuelta al mismo link.',

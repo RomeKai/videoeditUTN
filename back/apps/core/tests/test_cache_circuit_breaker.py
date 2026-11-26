@@ -9,7 +9,9 @@ from unittest.mock import patch
 import pytest
 from django.core.cache import caches
 from django.test import override_settings
+from django_redis.exceptions import ConnectionInterrupted
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import ResponseError
 
 from apps.core import cache as core_cache
 
@@ -140,3 +142,58 @@ def test_the_locks_cache_has_no_breaker(redis, clock):
 
     # default: 1 attempt. locks: one per call, never skipped.
     assert redis.attempts == 4
+
+
+def _refused_command(*args, **kwargs):
+    """What django-redis raises when Redis answers a command with an error."""
+    raise ConnectionInterrupted(connection=None) from ResponseError("WRONGTYPE Operation against a key holding the wrong kind of value")
+
+
+def test_a_command_redis_refuses_does_not_open_the_breaker(redis, clock, caplog):
+    cache = caches["default"]
+    with caplog.at_level(logging.INFO, logger="apps.core.cache"), \
+            patch("django_redis.client.DefaultClient.incr", side_effect=_refused_command), \
+            patch("django_redis.client.DefaultClient.get", return_value="v") as real_get:
+        assert cache.incr("lista") is None
+        # The next call still goes to Redis.
+        assert cache.get("k") == "v"
+
+    assert real_get.call_count == 1
+    assert redis.attempts == 0
+    # The class of the error only: the message names the key.
+    assert _messages(caplog) == ["cache.command_failed error=ResponseError"]
+
+
+def test_a_probe_that_redis_answers_with_an_error_closes_the_breaker(redis, clock, caplog):
+    cache = caches["default"]
+    with caplog.at_level(logging.INFO, logger="apps.core.cache"):
+        cache.get("k")
+        clock[0] += 6
+        with patch("django_redis.client.DefaultClient.incr", side_effect=_refused_command), \
+                patch("django_redis.client.DefaultClient.get", return_value="v") as real_get:
+            assert cache.incr("lista") is None
+            assert cache.get("k") == "v"
+
+    assert real_get.call_count == 1
+    assert _messages(caplog) == [
+        "cache.unavailable error=ConnectionError",
+        "cache.recovered after_seconds=6",
+        "cache.command_failed error=ResponseError",
+    ]
+
+
+def test_an_outage_that_goes_on_is_logged_again_as_an_error_every_few_minutes(redis, clock, caplog):
+    cache = caches["default"]
+    with caplog.at_level(logging.INFO, logger="apps.core.cache"):
+        cache.get("k")
+        # 13 minutes of failed probes, one every 6 seconds.
+        for _ in range(130):
+            clock[0] += 6
+            cache.get("k")
+
+    records = [record for record in caplog.records if record.name == "apps.core.cache"]
+    assert [(record.levelname, record.getMessage()) for record in records] == [
+        ("WARNING", "cache.unavailable error=ConnectionError"),
+        ("ERROR", "cache.still_unavailable error=ConnectionError down_for_seconds=300"),
+        ("ERROR", "cache.still_unavailable error=ConnectionError down_for_seconds=600"),
+    ]

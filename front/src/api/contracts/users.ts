@@ -93,7 +93,7 @@ export const updateMe = defineEndpoint({
   errors: [
     {
       status: 400,
-      when: 'Validación por campo: email ya usado, con un dominio que no se puede codificar ("El dominio del email no es válido. Revisá que esté bien escrito.") o rechazado por el servidor de email (error en `email`), o `email` nuevo sin `current_password`, con una incorrecta o en una cuenta sin contraseña (error en `current_password`); `active_workspace_id` de un workspace donde no es miembro activo.',
+      when: 'Validación por campo: email ya usado, con un dominio que no se puede codificar ("El dominio del email no es válido. Revisá que esté bien escrito."), demasiado largo una vez codificado el dominio ("El email es demasiado largo. Probá con una dirección más corta.") o rechazado por el servidor de email (error en `email`), o `email` nuevo sin `current_password`, con una incorrecta o en una cuenta sin contraseña (error en `current_password`); `active_workspace_id` de un workspace donde no es miembro activo.',
     },
     { status: 429, when: 'Demasiados cambios de email seguidos (5 por hora). `detail` dice en castellano cuánto esperar.' },
     { status: 502, when: 'El servidor de email no aceptó el email de verificación: no se guardó nada. No es 503, que la UI lee como mantenimiento.' },
