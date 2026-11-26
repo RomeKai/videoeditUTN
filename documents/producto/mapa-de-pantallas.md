@@ -476,7 +476,7 @@ Otras respuestas:
 - **API:**
   - ✅ `GET/PATCH /api/v1/clips/:id/` lee el clip y guarda el título y el recorte.
   - ✅ `POST /api/v1/clips/:id/render/` lo vuelve a renderizar, con su costo.
-  - ✅ `POST/GET /api/v1/clips/:id/preview/` da la vista previa gratis en 360p (PTE-03).
+  - ✅ `POST/GET /api/v1/clips/:id/preview/` da la vista previa gratis en 360p (PTE-03). Está dentro del MVP.
 
 #### D5. Resultado de "Editar el video completo" — `/proyectos/:id/resultado`
 - **Para qué:** ver y usar el video que devuelve un proyecto de tipo "Editar el video completo" (`project_type=single_edit`).
@@ -725,7 +725,6 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 - Plantillas por nicho (EXTRA-01).
 - Miniaturas con IA (`has_thumbnail_engine`).
 - Estilo por clip y capas en el editor (texto, imagen, música).
-- Vista previa sin render (PTE-03).
 - Métricas de rendimiento de las publicaciones (vistas, likes).
 - Comentarios y colaboración en tiempo real.
 - Login social y SSO.
@@ -743,7 +742,7 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad. El detalle e
 | # | Qué falta | Pantallas que bloquea | Prioridad |
 |---|---|---|---|
 | 1 | Registro, reenviar la verificación y recuperar contraseña. Existe en parte: `POST /auth/verify-email/` verifica el link, pero hoy solo lo manda el cambio de email (I1) | A2, A3, A4 | P0 |
-| 2 | ~~`GET/PATCH /me` con workspaces, rol en cada uno y workspace activo~~ Resuelto (PR #135): `GET/PATCH /me/` y `POST /me/password/`. Sigue faltando: cerrar sesión (`POST /auth/logout/`) y los endpoints de workspace (listar, crear, renombrar, borrar, transferir) | Barra, J3, H1, I1 | P0 |
+| 2 | ~~`GET/PATCH /me` con workspaces, rol en cada uno y workspace activo~~ Resuelto (PR #135): `GET/PATCH /me/` y `POST /me/password/`. Sigue faltando: cerrar sesión (`POST /auth/logout/`) y los endpoints de workspace (listar, crear, renombrar, borrar, transferir) | Barra, J3, H1, I1 | P1 |
 | 3 | ~~Roles aplicados en la API (tabla 1.7)~~ Resuelto: la API aplica los roles sobre el workspace de `X-Workspace-Id` y responde 403 con el motivo | Todas | — |
 | 4 | Wallet y transacciones (`GET /wallet`, `GET /transactions`), con vínculo al proyecto y estado "devuelto" visible | Barra, D1, G1, G2 | P0 |
 | 5 | ~~Link de descarga firmado por clip~~ Resuelto: `GET /clips/:id/download/` | D3, D4 | — |
