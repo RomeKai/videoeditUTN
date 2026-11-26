@@ -171,13 +171,19 @@ class ProbeLinkView(_WorkspaceView):
     workspace_actions = {'POST': 'project.create'}
 
     def _rate_limited(self, request):
+        """
+        Over PROBE_MAX_PER_MINUTE in the cache. Fails open on purpose: a cache
+        that errors, or answers nothing (one that swallows its errors), never
+        blocks a probe.
+        """
         key = f"{PROBE_RATE_PREFIX}{request.user.pk}"
         try:
             if cache.add(key, 1, 60):
                 return False
-            return cache.incr(key) > PROBE_MAX_PER_MINUTE
-        except Exception:  # a cache outage must not block the probe (or count it)
+            count = cache.incr(key)
+        except Exception:
             return False
+        return isinstance(count, int) and count > PROBE_MAX_PER_MINUTE
 
     def post(self, request):
         from .services.link_probe import LinkProbeError, probe_link

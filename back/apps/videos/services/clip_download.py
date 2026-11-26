@@ -103,10 +103,26 @@ class ZipBusy(Exception):
     """Another .zip of the workspace is being built."""
 
 
-def _redis_client():
-    from apps.videos.services.ai.project_lock import get_redis_client
+# A lock that cannot be reached must not hold the request: short socket timeouts.
+REDIS_CONNECT_TIMEOUT_SECONDS = 2
+REDIS_SOCKET_TIMEOUT_SECONDS = 2
 
-    return get_redis_client()
+
+def _redis_client():
+    import redis
+
+    return redis.Redis.from_url(
+        settings.REDIS_URL,
+        socket_connect_timeout=REDIS_CONNECT_TIMEOUT_SECONDS,
+        socket_timeout=REDIS_SOCKET_TIMEOUT_SECONDS,
+    )
+
+
+def _fallback_cache():
+    """The ``locks`` cache when settings define it (one that reports its errors), else ``default``."""
+    from django.core.cache import caches
+
+    return caches['locks'] if 'locks' in getattr(settings, 'CACHES', {}) else caches['default']
 
 
 @contextmanager
@@ -115,7 +131,9 @@ def workspace_zip_lock(workspace_id):
     One .zip at a time per workspace, across web workers: a Redis lock with an
     owner token (redis-py ``Lock``, as ``project_lock``), so only its owner
     releases it, with a TTL longer than the build. Without Redis it falls back
-    to the Django cache, also with an owner token. Raises ZipBusy.
+    to the ``locks`` cache (or ``default``), also with an owner token. If that
+    cannot answer either, the .zip goes on without a lock (logged): a lock
+    store that is down must not refuse every download. Raises ZipBusy.
     """
     import redis
 
@@ -141,16 +159,27 @@ def workspace_zip_lock(workspace_id):
             except redis.exceptions.RedisError as exc:
                 logger.warning("clips_zip.lock_release_failed workspace_id=%s error=%s", workspace_id, type(exc).__name__)
         return
-    from django.core.cache import cache
-
+    cache = _fallback_cache()
     token = uuid.uuid4().hex
-    if not cache.add(name, token, ttl):
+    try:
+        added = cache.add(name, token, ttl)
+    except Exception as exc:
+        added = None
+        logger.warning("clips_zip.lock_unavailable workspace_id=%s error=%s", workspace_id, type(exc).__name__)
+    if added is None:
+        # No answer (an error, or a cache that swallows errors): no lock rather than a false "busy".
+        yield
+        return
+    if not added:
         raise ZipBusy()
     try:
         yield
     finally:
-        if cache.get(name) == token:
-            cache.delete(name)
+        try:
+            if cache.get(name) == token:
+                cache.delete(name)
+        except Exception as exc:
+            logger.warning("clips_zip.lock_release_failed workspace_id=%s error=%s", workspace_id, type(exc).__name__)
 
 
 def slugify_filename(title, fallback):

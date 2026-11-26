@@ -102,10 +102,31 @@ def _resolve(host, port):
     return {info[4][0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)}
 
 
+_NAT64 = ipaddress.ip_network('64:ff9b::/96')
+_IPV4_COMPATIBLE = ipaddress.ip_network('::/96')
+
+
+def _embedded_ipv4(ip):
+    """The IPv4 addresses an IPv6 address carries: mapped, NAT64, compatible, 6to4, Teredo."""
+    embedded = []
+    if ip.ipv4_mapped is not None:
+        embedded.append(ip.ipv4_mapped)
+    if ip in _NAT64 or (ip in _IPV4_COMPATIBLE and int(ip) > 1):
+        embedded.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
+    if ip.sixtofour is not None:
+        embedded.append(ip.sixtofour)
+    if ip.teredo is not None:
+        embedded.extend(ip.teredo)
+    return embedded
+
+
 def is_public_address(address):
-    ip = ipaddress.ip_address(address.split('%')[0])
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    ip = ipaddress.ip_address(str(address).split('%')[0])
+    if isinstance(ip, ipaddress.IPv6Address):
+        embedded = _embedded_ipv4(ip)
+        if embedded:
+            # Judged by the IPv4 inside: 64:ff9b::a00:5 is 10.0.0.5.
+            return all(is_public_address(str(inner)) for inner in embedded)
     return ip.is_global and not ip.is_multicast
 
 

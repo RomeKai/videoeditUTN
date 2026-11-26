@@ -261,6 +261,15 @@ def _stage_prepare_source(project_id):
     source_path = project.source_file.path
     user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
 
+    duration = resolution = None
+    if link_limit is not None:
+        # Measured before anything else is done with it: the site may not have
+        # said how long it was. Longer than allowed fails (and is refunded)
+        # before the upload and the proxy.
+        duration, resolution = _probe_video(source_path)
+        if duration > link_limit:
+            raise LinkTooLongError("The linked video is longer than allowed.")
+
     # A retry after a later failure inside this stage must not re-upload.
     if not project.original_r2_key:
         orig_r2_key = CloudflareR2Manager.upload_video(source_path, user_id, str(project.id))
@@ -280,10 +289,8 @@ def _stage_prepare_source(project_id):
             )
             _generate_proxy(project, source_path, user_id)
 
-    duration, resolution = _probe_video(source_path)
-    if link_limit is not None and duration > link_limit:
-        # The site did not say how long it was: measured now, still refused (and refunded).
-        raise LinkTooLongError("The linked video is longer than allowed.")
+    if duration is None:
+        duration, resolution = _probe_video(source_path)
     if _is_whole_video(project):
         # Before transcribing it: a file that is not what was priced costs nothing more.
         _check_whole_video_source(project, duration)

@@ -187,18 +187,19 @@ yt-dlp está hecho para bajar lo que sea que apunte una página, así que sin co
 - Solo `http` y `https`, sin usuario ni contraseña en la URL y con el puerto por defecto (80 o 443).
 - El host es exactamente uno de `LINK_HOSTS`: `youtube.com`, `www.`, `m.` y `music.youtube.com`, `youtu.be`; `vimeo.com`, `www.` y `player.vimeo.com`; `twitch.tv`, `www.`, `m.`, `clips.` y `player.twitch.tv`; `drive.google.com`. Ningún otro subdominio (tampoco `consent.youtube.com`) y nunca una IP. Cada parte del host son solo letras, dígitos y guiones: `evil.com;.youtube.com`, `*.youtube.com` o `127.0.0.1%23.youtube.com` no pasan. La web nombra los mismos hosts (`LINK_HOSTS` de `front/src/features/proyectos/project-view.ts`).
 - El link tiene que nombrar un solo video y queda como la URL de ese video: en YouTube, `https://www.youtube.com/watch?v=<id>` (sin lista, tiempo ni parámetros; `youtu.be/<id>` y `/shorts/<id>` también); en Twitch, `www.twitch.tv/videos/<id>` o `clips.twitch.tv/<clip>`; en Vimeo, con su id numérico; en Drive, `drive.google.com/file/d/<id>/view`. Un canal, una lista, una carpeta o el canal de Twitch (que es su vivo) dan 400 `Pegá el link de un solo video...`.
-- Con `resolve=True` (probe-link, la descarga y cada salto), cada dirección a la que resuelve el host tiene que ser pública: ni loopback, privada, link-local, multicast ni reservada, tampoco una IPv4 dentro de una IPv6.
+- Con `resolve=True` (probe-link, la descarga y cada salto), cada dirección a la que resuelve el host tiene que ser pública: ni loopback, privada, link-local, multicast ni reservada. Una IPv6 que lleva una IPv4 adentro (mapeada, NAT64 `64:ff9b::/96`, compatible `::/96`, 6to4 o Teredo) se juzga por esa IPv4: `64:ff9b::a00:5` es `10.0.0.5`.
 
 **`ytdlp_safe`** ([services/ytdlp_safe.py](../../back/apps/videos/services/ytdlp_safe.py)) es la única forma en que el backend corre yt-dlp, en el probe y en la descarga:
 
 - Solo corren los extractores de esos sitios (`ALLOWED_EXTRACTORS`: `youtube`, `vimeo`, `twitch:vod`, `twitch:clips`, `googledrive`). Sin el genérico, sin la página de consentimiento y sin los de canales o listas.
-- La primera lectura es con `process=False`. Un resultado que apunta a otro link se sigue a lo sumo dos veces, solo con uno de esos extractores forzado por clave y después de pasar `validate_video_link` otra vez.
+- La primera lectura es con `process=False`. Un resultado que apunta a otro link se sigue a lo sumo dos veces, solo con uno de esos extractores forzado por clave, después de pasar `validate_video_link` otra vez y con la URL canónica que devuelve, no la que dio la página.
 - Tiene que quedar un solo video que no esté en vivo (`is_live`, `is_upcoming` o `post_live`). Recién ahí se procesa: el probe lee los datos y la descarga elige los formatos y baja.
-- `GuardedYoutubeDL` revisa cada pedido de yt-dlp (`urlopen`) e `install_redirect_guard` cada redirección: si va a una IP o a un host que resuelve a una dirección no pública, se corta antes de conectar (`blocked non-public address`). Solo quedan los handlers `Urllib` y `Requests`, cuyas redirecciones están revisadas.
+- `GuardedYoutubeDL` revisa cada pedido de yt-dlp (`urlopen`) e `install_guards` cada redirección: si va a una IP o a un host que resuelve a una dirección no pública, se corta (`blocked non-public address`).
+- Y la dirección a la que el socket se conecta se revisa otra vez justo antes del `connect` (`_guarded_create_connection`): un nombre que responde una IP pública al chequeo y una interna a la conexión (DNS rebinding) también se corta. Por eso solo queda el handler `Urllib` de yt-dlp, cuyas conexiones pasan por esa función. El proxy configurado es la única dirección no pública permitida: el destino lo resuelve él.
 
 Un link rechazado en la descarga lanza `UnsupportedLinkError`, que no se reintenta; un host que no resuelve lanza su `OSError`, que sí. Los mensajes son en español (`No reconocemos este sitio. Probá con YouTube, Vimeo u otro sitio público.`) y el link nunca va a un log.
 
-Queda abierto, para un firewall de salida de los workers: la consulta de DNS y la conexión son separadas (un host que cambia la respuesta en el medio), y ffmpeg, si yt-dlp lo usa para un stream que no baja solo, hace sus propios pedidos.
+Queda abierto, para la infraestructura: ffmpeg, si yt-dlp lo usa para un stream que no baja solo, hace sus propios pedidos (lo cierra un firewall de salida en los workers). Detrás de un proxy, el DNS rebinding del destino lo tiene que frenar el proxy.
 
 ## Revisar un link antes de crear (`probe-link`)
 
@@ -234,7 +235,7 @@ sequenceDiagram
     V-->>C: 200, o 403 duration con limit
 ```
 
-1. `ProbeLinkView` valida el cuerpo (`video_url` obligatoria, hasta 500 caracteres) y cuenta los pedidos del usuario en la caché (`probe-link-rate:<id>`): pasado `PROBE_MAX_PER_MINUTE` (20) responde 429.
+1. `ProbeLinkView` valida el cuerpo (`video_url` obligatoria, hasta 500 caracteres) y cuenta los pedidos del usuario en la caché (`probe-link-rate:<id>`): pasado `PROBE_MAX_PER_MINUTE` (20) responde 429. Si la caché falla o no responde, no cuenta y deja pasar.
 2. `probe_link` pasa el link por `validate_video_link(resolve=True)`. Si no resuelve, 502 `provider_error`.
 3. Un link ya leído sale de la caché (`link-probe:v1:<sha256 de la URL>`, `LINK_PROBE_CACHE_SECONDS`).
 4. Si no, `run_worker` corre [link_probe_worker.py](../../back/apps/videos/services/link_probe_worker.py) como script aparte (`sys.executable -I`), en su propio grupo de procesos (`start_new_session`) y con un entorno mínimo (`child_environment`: `PATH`, `HOME`, el idioma, el proxy de salida y su CA). Nunca ve `SECRET_KEY`, la base de datos ni las keys de R2 o de los proveedores. Al pasar `LINK_PROBE_TIMEOUT_SECONDS` se mata el grupo entero, con lo que el hijo haya lanzado (yt-dlp puede correr un runtime de JavaScript), y la respuesta es 504 `timeout`. Su stderr va a `/dev/null`.

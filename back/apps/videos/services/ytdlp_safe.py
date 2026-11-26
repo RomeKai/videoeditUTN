@@ -15,16 +15,19 @@ the internal network. Here:
 - the result must be one video that is not live; only then is it processed
   (formats chosen and, for the download, downloaded);
 - every request yt-dlp makes (``GuardedYoutubeDL.urlopen``) and every
-  redirect it follows (``install_redirect_guard``) goes only to public
-  addresses: an IP literal or a host that resolves to loopback, a private
-  range, link-local or reserved is refused before connecting. Only the
-  ``Urllib`` and ``Requests`` handlers are kept, the ones whose redirects are
-  guarded.
+  redirect it follows (``install_guards``) goes only to public addresses: an
+  IP literal or a host that resolves to loopback, a private range,
+  link-local or reserved is refused before connecting;
+- and the address the socket actually connects to is checked again right
+  before ``connect`` (``_guarded_create_connection``), so a name that
+  answers public to the check and internal to the connection (DNS
+  rebinding) is refused too. Only yt-dlp's ``Urllib`` handler is kept: its
+  connections go through that function. A configured proxy is the one
+  private address allowed (the proxy resolves the target itself).
 
-What is still open: the lookup here and the connection are separate (a host
-that changes its answer in between), and ffmpeg, which yt-dlp may run for a
-stream it cannot download natively, makes its own requests. An outbound
-firewall for the workers closes both.
+Still open, for the infrastructure: ffmpeg, which yt-dlp may run for a
+stream it cannot download natively, makes its own requests (an outbound
+firewall on the workers closes it).
 
 Plain Python on purpose: the probe's child imports it without Django.
 """
@@ -55,7 +58,11 @@ ALLOWED_EXTRACTORS = ['youtube', 'vimeo', 'twitch:vod', 'twitch:clips', 'googled
 FOLLOW_EXTRACTORS = frozenset({'Youtube', 'Vimeo', 'TwitchVod', 'TwitchClips', 'GoogleDrive'})
 MAX_HOPS = 2
 LIVE_STATUSES = frozenset({'is_live', 'is_upcoming', 'post_live'})
-_GUARDED_HANDLERS = frozenset({'Urllib', 'Requests'})
+# The handler whose connections go through _guarded_create_connection.
+_GUARDED_HANDLERS = frozenset({'Urllib'})
+# Hosts of the proxies the GuardedYoutubeDL instances use: the only names a
+# socket may connect to without a public address.
+_PROXY_HOSTS = set()
 
 
 class BlockedRequest(RequestError):
@@ -94,18 +101,47 @@ def check_public_url(url):
         raise BlockedRequest() from None
 
 
-_redirect_guard_installed = False
+_guards_installed = False
 
 
-def install_redirect_guard():
+def _guarded_create_connection(address, timeout=None, source_address=None, **kwargs):
     """
-    Checks the target of every redirect yt-dlp's handlers follow. Idempotent;
-    it only refuses non-public targets, so it is safe for the whole process.
+    yt-dlp's ``create_connection`` (the urllib handler's), with the resolved
+    address checked right before each ``connect``: what the socket reaches,
+    not what an earlier lookup said.
     """
-    global _redirect_guard_installed
-    if _redirect_guard_installed:
+    import socket
+
+    from yt_dlp.networking import _helper
+
+    if timeout is None:
+        timeout = socket._GLOBAL_DEFAULT_TIMEOUT
+    create_socket = kwargs.pop('_create_socket_func', _helper._socket_connect)
+    host = str(address[0]).strip('[]').lower()
+    if host in _PROXY_HOSTS:
+        return _helper.create_connection(address, timeout, source_address, _create_socket_func=create_socket, **kwargs)
+
+    def connect_if_public(ip_addr, timeout, source_address):
+        if not link_validation.is_public_address(str(ip_addr[4][0])):
+            raise BlockedRequest()
+        return create_socket(ip_addr, timeout, source_address)
+
+    return _helper.create_connection(address, timeout, source_address, _create_socket_func=connect_if_public, **kwargs)
+
+
+def install_guards():
+    """
+    Checks the target of every redirect yt-dlp's handlers follow, and the
+    address of every connection of its urllib handler. Idempotent; it only
+    refuses non-public addresses, and only yt-dlp's networking uses these
+    functions, so it is safe for the whole process.
+    """
+    global _guards_installed
+    if _guards_installed:
         return
     from yt_dlp.networking import _urllib
+
+    _urllib.create_connection = _guarded_create_connection
 
     follow = _urllib.RedirectHandler.redirect_request
 
@@ -127,19 +163,26 @@ def install_redirect_guard():
             return rebuild(self, prepared_request, response)
 
         _requests.RequestsSession.rebuild_method = rebuild_method
-    _redirect_guard_installed = True
+    _guards_installed = True
 
 
 class GuardedYoutubeDL(yt_dlp.YoutubeDL):
     """A YoutubeDL whose every request and redirect goes to a public address."""
 
     def __init__(self, params=None, *args, **kwargs):
-        install_redirect_guard()
+        from urllib.parse import urlsplit
+
+        install_guards()
         super().__init__(params, *args, **kwargs)
+        for key, proxy in (self.proxies or {}).items():
+            if key != 'no' and isinstance(proxy, str) and proxy:
+                host = urlsplit(proxy if '://' in proxy else f'http://{proxy}').hostname
+                if host:
+                    _PROXY_HOSTS.add(host.lower())
         director = getattr(self, '_request_director', None)
         handlers = getattr(director, 'handlers', None)
         if isinstance(handlers, dict):
-            # Keep only the handlers whose redirects are guarded (no curl_cffi, no websockets).
+            # Keep only the handler whose connections are guarded (no requests, curl_cffi or websockets).
             for key in [key for key in handlers if key not in _GUARDED_HANDLERS]:
                 handlers.pop(key).close()
 
@@ -202,7 +245,8 @@ def extract_single_video(ydl, url):
         if ie_key not in FOLLOW_EXTRACTORS or not isinstance(target, str):
             raise LinkRefused('unsupported')
         try:
-            link_validation.validate_video_link(target, resolve=True)
+            # The canonical URL is what gets extracted, not what the page said.
+            target = link_validation.validate_video_link(target, resolve=True).url
         except (link_validation.LinkRejected, OSError):
             raise LinkRefused('unsupported') from None
         inner = ydl.extract_info(target, download=False, process=False, ie_key=ie_key)
@@ -226,10 +270,15 @@ def download_video(url, output_path, *, max_filesize, check_info=None):
     (the info dict) may raise before anything is downloaded (the duration of
     the plan). Raises LinkRefused, LinkTooLarge or yt-dlp's DownloadError.
     """
+    sizes = {}
+
     def cap(progress):
+        # Per file (video, audio...), summed: the cap is for all the formats together.
+        name = progress.get('filename') or progress.get('tmpfilename') or ''
         done = progress.get('downloaded_bytes') or 0
         expected = progress.get('total_bytes') or progress.get('total_bytes_estimate') or 0
-        if max(done, expected) > max_filesize:
+        sizes[name] = max(sizes.get(name, 0), done, expected)
+        if sum(sizes.values()) > max_filesize:
             raise LinkTooLarge()
 
     options = {

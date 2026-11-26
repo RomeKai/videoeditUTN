@@ -149,6 +149,19 @@ class LinkValidationTests(SimpleTestCase):
             self.assertEqual(validate_video_link('https://youtu.be/a', resolve=True).host, 'www.youtube.com')
         dns.assert_called_once_with('www.youtube.com', 443)
 
+    def test_ipv6_forms_that_carry_an_ipv4_are_judged_by_it(self):
+        from apps.videos.services.link_validation import is_public_address
+
+        for internal in ('64:ff9b::a00:5', '64:ff9b::7f00:1', '::a00:5', '::7f00:1', '::ffff:10.0.0.5',
+                         '2002:a00:5::1', '2001:0:4136:e378:8000:63bf:f5ff:fffa', 'fe80::1', '::1', '::'):
+            with self.subTest(internal):
+                self.assertFalse(is_public_address(internal))
+        for public in ('64:ff9b::808:808', '::ffff:8.8.8.8', '2a00:1450:4001:80b::200e', '142.250.0.1'):
+            with self.subTest(public):
+                self.assertTrue(is_public_address(public))
+        with resolving({'64:ff9b::a00:5'}), self.assertRaises(LinkRejected):
+            validate_video_link('https://www.youtube.com/watch?v=abc', resolve=True)
+
     def test_the_lookup_is_patched_here_and_not_in_the_socket_module(self):
         before = socket.getaddrinfo
         with resolving(PUBLIC):
@@ -180,7 +193,9 @@ class FakeYdl:
     def process_ie_result(self, info, download=True):
         self.processed.append(info)
         for hook in self.options.get('progress_hooks', []):
-            hook({'downloaded_bytes': info.get('_bytes', 1)})
+            # One progress report per format (video, audio), like a merged download.
+            for number, size in enumerate(info.get('_formats') or [info.get('_bytes', 1)]):
+                hook({'filename': f'part{number}', 'downloaded_bytes': size})
         if not info.get('_no_file'):
             with open(self.options['outtmpl'], 'wb') as handle:
                 handle.write(b'x' * info.get('_bytes', 1))
@@ -229,10 +244,12 @@ class WorkerTests(SimpleTestCase):
 
     def test_a_redirect_is_followed_only_through_a_known_extractor_and_an_allowed_link(self):
         video = {'title': 'Video', 'duration': 30}
-        fake = FakeYdl({'_type': 'url', 'url': 'https://www.youtube.com/watch?v=a', 'ie_key': 'Youtube'}, video)
+        fake = FakeYdl({'_type': 'url', 'url': 'https://youtu.be/a?list=PL&t=3', 'ie_key': 'Youtube'}, video)
         with resolving():
             self.assertEqual(ytdlp_safe.extract_single_video(fake, 'https://www.youtube.com/watch?v=b'), video)
-        self.assertEqual(fake.calls[1][1]['ie_key'], 'Youtube')
+        # The hop is extracted by its canonical URL, not the one the page gave.
+        self.assertEqual(fake.calls[1], ('https://www.youtube.com/watch?v=a',
+                                          {'download': False, 'process': False, 'ie_key': 'Youtube'}))
 
         for hop in (
             {'_type': 'url', 'url': 'http://10.0.0.1/Mediasite/Play/x', 'ie_key': 'Mediasite'},
@@ -453,6 +470,13 @@ class ProbeLinkTests(APITestCase):
         self.client.force_authenticate(other)
         self.assertEqual(self.probe(**header(shared)).status_code, 200)
 
+    def test_the_rate_limit_fails_open_when_the_cache_does_not_answer(self):
+        for broken in ({'add': MagicMock(return_value=False), 'incr': MagicMock(side_effect=ValueError('missing'))},
+                       {'add': MagicMock(return_value=None), 'incr': MagicMock(return_value=None)},
+                       {'add': MagicMock(side_effect=ConnectionError('down'))}):
+            with self.subTest(broken), patch.multiple('apps.videos.views_project_data.cache', **broken):
+                self.assertEqual(self.probe('https://vimeo.com/1').status_code, 200)
+
     def test_too_many_probes_in_a_minute_are_a_429(self):
         for _ in range(20):
             self.assertEqual(self.probe('https://vimeo.com/1').status_code, 200)
@@ -525,6 +549,15 @@ class CreationAndDownloadUseTheSameRulesTests(APITestCase):
         self.assertFalse(_is_retryable_pipeline_error(caught.exception))
 
     @override_settings(LINK_DOWNLOAD_MAX_BYTES=100)
+    def test_the_size_cap_is_for_all_the_formats_together(self):
+        from apps.videos.tasks.shared import LinkTooLargeError, download_from_youtube
+
+        fake = FakeYdl({'title': 'video y audio', 'duration': 10, '_formats': [60, 60]})  # each under 100
+        with resolving(), patch.object(ytdlp_safe, 'GuardedYoutubeDL', fake), self.assertRaises(LinkTooLargeError):
+            download_from_youtube('https://www.youtube.com/watch?v=abc', self.folder)
+        self.assertEqual(os.listdir(self.folder), [])
+
+    @override_settings(LINK_DOWNLOAD_MAX_BYTES=100)
     def test_a_file_over_the_size_cap_is_refused_and_leaves_nothing(self):
         from apps.videos.tasks.shared import LinkTooLargeError, _is_retryable_pipeline_error, download_from_youtube
 
@@ -562,14 +595,30 @@ class LinkDurationAtIngestionTests(APITestCase):
 
         project = self.link_project()
         with patch('apps.videos.tasks.ingestion.download_from_youtube', side_effect=self.fake_download), \
-                patch('apps.videos.services.storage_service.CloudflareR2Manager.upload_video', return_value='k'), \
-                patch('apps.videos.tasks.ingestion.generate_proxy_task.delay'), \
+                patch('apps.videos.services.storage_service.CloudflareR2Manager.upload_video', return_value='k') as upload, \
+                patch('apps.videos.tasks.ingestion.generate_proxy_task.delay') as proxy, \
                 patch('apps.videos.tasks.ingestion._probe_video', return_value=(900.0, [640, 360])):
             with self.assertRaises(LinkTooLongError):
                 _stage_prepare_source(project.pk)
         self.assertEqual(self.limit, 600)
+        # Refused before the upload and the proxy.
+        upload.assert_not_called()
+        proxy.assert_not_called()
         project.refresh_from_db()
         self.assertEqual(project.pipeline_stage, 'uploaded')
+
+    def test_a_link_within_the_plan_is_measured_once(self):
+        from apps.videos.tasks.ingestion import _stage_prepare_source
+
+        project = self.link_project()
+        with patch('apps.videos.tasks.ingestion.download_from_youtube', side_effect=self.fake_download), \
+                patch('apps.videos.services.storage_service.CloudflareR2Manager.upload_video', return_value='k'), \
+                patch('apps.videos.tasks.ingestion.generate_proxy_task.delay'), \
+                patch('apps.videos.tasks.ingestion._probe_video', return_value=(300.0, [640, 360])) as probe:
+            _stage_prepare_source(project.pk)
+        probe.assert_called_once()
+        project.refresh_from_db()
+        self.assertEqual((project.pipeline_stage, project.metadata['duration']), ('audio_extracted', 300.0))
 
     def test_the_app_limit_applies_without_a_plan(self):
         from apps.videos.tasks.shared import link_duration_limit
@@ -652,17 +701,17 @@ def test_real_yt_dlp_the_consent_page_bypass_makes_no_request(servers):
     assert servers['outer_hits'] == [] and servers['internal_hits'] == []
 
 
-@pytest.mark.parametrize('handler', ['Requests', 'Urllib'])
-def test_real_yt_dlp_a_redirect_to_an_internal_host_is_refused(servers, handler, monkeypatch):
-    """An allowed extractor's own fetch is redirected to 127.0.0.2: the redirect is never followed."""
-    # 127.0.0.1 stands for a public site here; 127.0.0.2 stays internal.
+@pytest.fixture
+def outer_is_public(monkeypatch):
+    """127.0.0.1 stands for a public site in these tests; 127.0.0.2 stays internal."""
     real = link_validation.is_public_address
     monkeypatch.setattr(link_validation, 'is_public_address', lambda address: address == '127.0.0.1' or real(address))
+
+
+def test_real_yt_dlp_a_redirect_to_an_internal_host_is_refused(servers, outer_is_public):
+    """An allowed extractor's own fetch is redirected to 127.0.0.2: the redirect is never followed."""
     with ytdlp_safe.GuardedYoutubeDL(_options()) as ydl:
-        handlers = ydl._request_director.handlers
-        for key in [key for key in handlers if key != handler]:
-            handlers.pop(key).close()
-        assert list(handlers) == [handler]
+        assert list(ydl._request_director.handlers) == ['Urllib']
         youtube = ydl.get_info_extractor('Youtube')
         with pytest.raises(Exception, match='blocked non-public address'):
             youtube._download_webpage(f"http://127.0.0.1:{servers['outer']}/watch", None)
@@ -670,9 +719,50 @@ def test_real_yt_dlp_a_redirect_to_an_internal_host_is_refused(servers, handler,
     assert servers['internal_hits'] == []
 
 
+def test_real_yt_dlp_the_requests_handler_redirect_is_guarded_too(servers, outer_is_public):
+    """GuardedYoutubeDL drops it, but its redirects are checked all the same once the guards are in."""
+    import yt_dlp
+
+    ytdlp_safe.install_guards()
+    with yt_dlp.YoutubeDL(_options()) as plain:
+        handlers = plain._request_director.handlers
+        for key in [key for key in handlers if key != 'Requests']:
+            handlers.pop(key).close()
+        with pytest.raises(Exception, match='blocked non-public address'):
+            plain.urlopen(f"http://127.0.0.1:{servers['outer']}/watch").read()
+    assert servers['internal_hits'] == []
+
+
 def test_real_yt_dlp_a_request_to_an_internal_address_is_refused(servers):
     with ytdlp_safe.GuardedYoutubeDL(_options()) as ydl:
         with pytest.raises(ytdlp_safe.BlockedRequest):
             ydl.urlopen(f"http://127.0.0.2:{servers['internal']}/latest/meta-data/")
-        assert set(ydl._request_director.handlers) <= {'Urllib', 'Requests'}
+        assert list(ydl._request_director.handlers) == ['Urllib']
     assert servers['internal_hits'] == []
+
+
+def test_real_yt_dlp_dns_rebinding_is_refused_at_connect(servers, monkeypatch):
+    """A name that resolves public for the check and internal for the connection: the socket never connects."""
+    monkeypatch.setattr(link_validation, '_resolve', lambda host, port: {'142.250.0.1'})  # what the check sees
+    guarded = socket.getaddrinfo
+
+    def connection_lookup(host, port, *args, **kwargs):
+        if host == 'rebind.test':  # what the connection sees
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('127.0.0.2', int(port)))]
+        return guarded(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(socket, 'getaddrinfo', connection_lookup)
+    with ytdlp_safe.GuardedYoutubeDL(_options()) as ydl:
+        with pytest.raises(ytdlp_safe.BlockedRequest):
+            ydl.urlopen(f"http://rebind.test:{servers['internal']}/latest/meta-data/")
+    assert servers['internal_hits'] == []
+
+
+def test_a_configured_proxy_is_the_one_private_address_allowed(monkeypatch):
+    created = []
+    monkeypatch.setattr('yt_dlp.networking._helper.create_connection',
+                        lambda address, *args, **kwargs: created.append(address) or 'socket')
+    with ytdlp_safe.GuardedYoutubeDL({**_options(), 'proxy': 'http://proxy.internal:3128'}):
+        pass
+    assert ytdlp_safe._guarded_create_connection(('proxy.internal', 3128), 5) == 'socket'
+    assert created == [('proxy.internal', 3128)]
