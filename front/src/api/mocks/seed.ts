@@ -39,7 +39,7 @@ export function seedPlans(): Plan[] {
       allow_crossposting: false,
       has_seo_optimization: false,
       base_discount_rate: 0,
-      max_members: 1,
+      max_members: 2,
       price_usd_monthly: 0,
       description: 'Para probar con videos cortos.',
       sort_order: 1,

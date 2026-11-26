@@ -68,6 +68,18 @@ def test_apply_puts_them_on_the_free_plan_and_keeps_the_others(old_workspaces, s
     assert run().count('workspace=') == 0  # nothing left
 
 
+def test_a_workspace_at_the_free_plan_seats_is_not_flagged(seeded_plans):
+    pair = workspace_of('pareja')
+    guest = User.objects.create_user(username='otra', email='otra@example.com', password='x')
+    WorkspaceMember.objects.create(
+        workspace=pair, user=guest, role=WorkspaceMember.Role.EDITOR, status=WorkspaceMember.Status.PENDING,
+    )
+    without_plan(pair)
+
+    assert f'workspace={pair.pk} owner={pair.owner_id} members=2 ' in run()
+    assert 'over_member_limit=no' in run()
+
+
 def test_the_output_has_ids_and_numbers_but_no_workspace_name(old_workspaces):
     first, _, _ = old_workspaces
 
@@ -83,17 +95,18 @@ def test_a_workspace_with_more_members_than_the_plan_allows_is_flagged(seeded_pl
     # Members join while it is on a plan that allows them, then it loses the plan.
     Workspace.objects.filter(pk=team.pk).update(subscription_plan=seeded_plans['Estudio'])
     team.refresh_from_db()
-    guest = User.objects.create_user(username='invitado', email='invitado@example.com', password='x')
-    WorkspaceMember.objects.create(
-        workspace=team, user=guest, role=WorkspaceMember.Role.EDITOR, status=WorkspaceMember.Status.ACTIVE,
-    )
+    for name in ('invitado1', 'invitado2'):  # the owner and two more: Gratis has 2 seats
+        guest = User.objects.create_user(username=name, email=f'{name}@example.com', password='x')
+        WorkspaceMember.objects.create(
+            workspace=team, user=guest, role=WorkspaceMember.Role.EDITOR, status=WorkspaceMember.Status.ACTIVE,
+        )
     without_plan(team)
 
     output = run('--apply')
 
-    assert f'workspace={team.pk} owner={team.owner_id} members=2' in output
+    assert f'workspace={team.pk} owner={team.owner_id} members=3' in output
     assert 'over_member_limit=yes' in output
-    assert WorkspaceMember.objects.filter(workspace=team).count() == 2  # nobody is removed
+    assert WorkspaceMember.objects.filter(workspace=team).count() == 3  # nobody is removed
     assert plan_of(team) == seeded_plans['Gratis']
 
 

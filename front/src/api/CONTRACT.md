@@ -527,7 +527,7 @@ Planes activos y públicos, en orden, para Precios y Uso › Planes.
 |---|---|
 | Id | `billing.plans` |
 | Backend | ✅ existe · `back/apps/payments/views.py · PublicPlanListView + PublicPlanSerializer (apps/payments/serializers.py)` |
-| Nota | Público, sin token. Lista los planes con `is_active` e `is_public` (los cuatro sembrados por las migraciones `payments` 0005 y 0007), ordenados por `sort_order`; un plan creado en el admin no sale hasta marcarlo público. `is_public` no viaja en la respuesta. Cache de 5 min que se borra cuando un cambio de plan hace commit. Un workspace nuevo empieza en Gratis (`DEFAULT_PLAN_NAME`). |
+| Nota | Público, sin token. Lista los planes con `is_active` e `is_public` (los cuatro sembrados por las migraciones `payments` 0005, 0007 y 0009), ordenados por `sort_order`; un plan creado en el admin no sale hasta marcarlo público. `is_public` no viaja en la respuesta. Cache de 5 min que se borra cuando un cambio de plan hace commit. Un workspace nuevo empieza en Gratis (`DEFAULT_PLAN_NAME`). |
 | Sesión | Pública |
 | Respuesta 200 | Plan[] |
 | Pantallas | A6, G3, D3 (diálogo), C1 |

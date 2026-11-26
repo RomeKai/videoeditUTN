@@ -28,7 +28,7 @@ export const SCENARIOS: Scenario[] = [
   {
     id: 'usuario-nuevo',
     label: 'Usuario nuevo',
-    description: 'Sofía recién verificó su email: sin tour, workspace «Mi Espacio» en plan Gratis con 300 tokens. Entra por la Bienvenida.',
+    description: 'Sofía recién verificó su email: sin tour, workspace «Mi Espacio» en plan Gratis (2 lugares: ella y una persona más) con 300 tokens. Entra por la Bienvenida.',
     group: 'Datos',
     options: { as: 'nuevo', plan: 'free' },
   },

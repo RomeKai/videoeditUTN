@@ -129,7 +129,7 @@ describe('utilidades de Uso', () => {
   it('dice qué se pierde al bajar de plan y qué plan habilita cada función', () => {
     const pro = plan({});
     const creator = plan({ name: 'Creador', sort_order: 2, max_video_duration_seconds: 3600, max_resolution: '1080p', allow_crossposting: false, base_discount_rate: 0.05, max_members: 2 });
-    const free = plan({ name: 'Gratis', sort_order: 1, has_watermark: true, allow_scheduling: false, allow_crossposting: false, has_seo_optimization: false, base_discount_rate: 0, max_members: 1 });
+    const free = plan({ name: 'Gratis', sort_order: 1, has_watermark: true, allow_scheduling: false, allow_crossposting: false, has_seo_optimization: false, base_discount_rate: 0, max_members: 2 });
     expect(planLosses(pro, creator)).toEqual([
       'Videos de hasta 60 min (hoy 180 min)',
       'Resolución hasta 1080p (hoy 4K)',
@@ -141,7 +141,7 @@ describe('utilidades de Uso', () => {
     const features = planFeatures(free, [free, creator, pro]);
     expect(features.find((item) => item.key === 'crossposting')).toMatchObject({ included: false, availableIn: 'Pro' });
     expect(features.find((item) => item.key === 'watermark')).toMatchObject({ included: false, availableIn: 'Creador' });
-    expect(features.find((item) => item.key === 'members')).toMatchObject({ included: true, value: '1' });
+    expect(features.find((item) => item.key === 'members')).toMatchObject({ included: true, value: '2' });
   });
 });
 

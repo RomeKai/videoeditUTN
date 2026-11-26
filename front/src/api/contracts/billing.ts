@@ -227,7 +227,7 @@ export const listPlans = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/payments/views.py · PublicPlanListView + PublicPlanSerializer (apps/payments/serializers.py)',
-    note: 'Público, sin token. Lista los planes con `is_active` e `is_public` (los cuatro sembrados por las migraciones `payments` 0005 y 0007), ordenados por `sort_order`; un plan creado en el admin no sale hasta marcarlo público. `is_public` no viaja en la respuesta. Cache de 5 min que se borra cuando un cambio de plan hace commit. Un workspace nuevo empieza en Gratis (`DEFAULT_PLAN_NAME`).',
+    note: 'Público, sin token. Lista los planes con `is_active` e `is_public` (los cuatro sembrados por las migraciones `payments` 0005, 0007 y 0009), ordenados por `sort_order`; un plan creado en el admin no sale hasta marcarlo público. `is_public` no viaja en la respuesta. Cache de 5 min que se borra cuando un cambio de plan hace commit. Un workspace nuevo empieza en Gratis (`DEFAULT_PLAN_NAME`).',
   },
   screens: ['A6', 'G3', 'D3 (diálogo)', 'C1'],
 });

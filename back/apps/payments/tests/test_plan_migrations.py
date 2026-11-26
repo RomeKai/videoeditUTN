@@ -1,7 +1,7 @@
 """
-payments 0006-0008: the four seeded plans end complete and public after a rollback
-and a new migrate, an edit made in the admin stays, Estudio moves to 3 h only if
-nobody changed it, and only one plan stays recommended.
+payments 0006-0009: the four seeded plans end complete and public after a rollback
+and a new migrate, an edit made in the admin stays, Estudio moves to 3 h and Gratis
+to 2 members only if nobody changed them, and only one plan stays recommended.
 """
 from decimal import Decimal
 
@@ -15,7 +15,8 @@ from apps.payments.services.plans import PUBLIC_PLANS_CACHE_KEY
 
 BEFORE_PRICING = [('payments', '0003_transaction_created_at')]
 AFTER_SEED = [('payments', '0006_subscriptionplan_is_public_and_limits')]
-LATEST = [('payments', '0008_subscriptionplan_single_recommended')]
+BEFORE_FREE_SEATS = [('payments', '0008_subscriptionplan_single_recommended')]
+LATEST = [('payments', '0009_free_plan_two_members')]
 
 EXPECTED = {
     # name: (price, sort_order, max_video_duration_seconds)
@@ -58,6 +59,7 @@ class SeededPlansMigrationTests(TransactionTestCase):
             self.assertTrue(plan.is_public, name)
         self.assertEqual(list(Plan.objects.filter(is_recommended=True).values_list('name', flat=True)), ['Pro'])
         self.assertFalse(Plan.objects.get(name='Starter').is_public)
+        self.assertEqual(Plan.objects.get(name='Gratis').max_members, 2)
 
     def test_values_edited_in_the_admin_are_kept(self):
         Plan = self.migrate(AFTER_SEED)
@@ -89,10 +91,30 @@ class SeededPlansMigrationTests(TransactionTestCase):
 
         self.assertEqual(list(Plan.objects.filter(is_recommended=True).values_list('name', flat=True)), ['Pro'])
 
+    def test_the_free_plan_moves_to_two_members_only_if_it_still_had_one(self):
+        Plan = self.migrate(BEFORE_FREE_SEATS)
+        for name in EXPECTED:
+            Plan.objects.get_or_create(name=name, defaults={'max_video_duration_seconds': 600})
+        Plan.objects.filter(name='Gratis').update(max_members=1)
+        Plan.objects.filter(name='Creador').update(max_members=3)  # an edit, on a plan 0009 does not touch
+
+        Plan = self.migrate(LATEST)
+        self.assertEqual(Plan.objects.get(name='Gratis').max_members, 2)
+        self.assertEqual(Plan.objects.get(name='Creador').max_members, 3)
+
+        # The reverse keeps 2, and a value set in the admin stays when 0009 runs again.
+        Plan = self.migrate(BEFORE_FREE_SEATS)
+        self.assertEqual(Plan.objects.get(name='Gratis').max_members, 2)
+        Plan.objects.filter(name='Gratis').update(max_members=4)
+        Plan = self.migrate(LATEST)
+        self.assertEqual(Plan.objects.get(name='Gratis').max_members, 4)
+
     def test_the_cached_public_list_is_dropped(self):
-        self.migrate(AFTER_SEED)
-        cache.set(PUBLIC_PLANS_CACHE_KEY, [{'name': 'Starter'}], 60)
+        for start in (AFTER_SEED, BEFORE_FREE_SEATS):  # by 0007 and by 0009
+            with self.subTest(start=start[0][1]):
+                self.migrate(start)
+                cache.set(PUBLIC_PLANS_CACHE_KEY, [{'name': 'Starter'}], 60)
 
-        self.migrate(LATEST)
+                self.migrate(LATEST)
 
-        self.assertIsNone(cache.get(PUBLIC_PLANS_CACHE_KEY))
+                self.assertIsNone(cache.get(PUBLIC_PLANS_CACHE_KEY))
