@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("users", "0008_dominios_de_email_normalizados"),
+        ("users", "0009_workspace_plan_renews_and_pending_plan"),
     ]
 
     operations = [

@@ -40,20 +40,22 @@ demo exec web python manage.py seed_demo --with-projects
 `seed_demo` imprime el usuario y la contraseña al final:
 
 - usuario `demo@onecreator.local`, contraseña `OneCreator-Demo-2026`;
-- workspace «Demo OneCreator» en el plan Pro, con 4.860 tokens y el brand kit «Kit de la demo»;
+- workspace «Demo OneCreator» en el plan Pro, con 4.860 tokens y el brand kit «Kit de la demo». Pro queda como cortesía, igual que un plan puesto en el admin: sin período pagado, así nunca vence ni baja solo a Gratis;
 - con `--with-projects`, dos proyectos **de ejemplo**, marcados `[DEMO]`: uno listo para revisar y otro con clips listos. Son datos de prueba: un patrón de colores generado con ffmpeg y un texto escrito a mano. La IA no los analizó, y así lo dicen el título y el «Por qué» de cada clip.
 
-Se puede correr las veces que haga falta: no duplica nada, repone el plan, el saldo y la contraseña, y no toca ninguna otra cuenta. `--reset-projects` borra los dos proyectos de ejemplo y los crea de nuevo (por ejemplo, después de aprobar el de revisión en un ensayo). Sin `DEBUG=True` no corre, salvo con `--force`.
+Se puede correr las veces que haga falta: no duplica nada, repone el plan (sin el período ni la bajada que haya dejado un ensayo), el saldo y la contraseña, y no toca ninguna otra cuenta. `--reset-projects` borra los dos proyectos de ejemplo y los crea de nuevo (por ejemplo, después de aprobar el de revisión en un ensayo). Sin `DEBUG=True` no corre, salvo con `--force`.
 
 Para apagar: `demo down` (los datos quedan). `demo down -v` borra la base.
 
 ## 3. Qué es real y qué es mock
 
-La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario, los proyectos, los clips, los brand kits, la billetera (saldo, consumo, movimientos y su exportación) y los precios (fórmula y estimado), y deja **en mocks** los planes, la suscripción, comprar tokens, las redes, las publicaciones, los miembros y las notificaciones. La lista se cambia en un solo lugar: `DEMO_API_REAL` (`docker-compose.demo.yml` la pasa a `NEXT_PUBLIC_API_REAL` al construir `front`).
+La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario, los proyectos, los clips, los brand kits, la billetera (saldo, consumo, movimientos y su exportación), los precios (fórmula y estimado), los planes, la suscripción, comprar tokens y el checkout de prueba, y deja **en mocks** las redes, las publicaciones, los miembros y las notificaciones. La lista se cambia en un solo lugar: `DEMO_API_REAL` (`docker-compose.demo.yml` la pasa a `NEXT_PUBLIC_API_REAL` al construir `front`).
 
-> **Por qué los planes y las publicaciones son mocks hoy.** El backend ya tiene `billing.plans`, `social.posts` y `social.post`, pero no la suscripción ni crear una publicación. Con esos tres en real, «tu plan» no coincide con ningún plan de la lista y una publicación creada en la demo no aparece en el calendario. Quedan en mocks hasta que estén los endpoints de suscripción.
+> **Los pagos son simulados.** No hay pasarela de pagos (Stripe es PAY-02). El backend de la demo corre con `DEBUG=True`, y `settings/dev.py` trae `PAYMENTS_PROVIDER=simulated` por defecto: comprar tokens o pasar a otro plan pago crea el pago de verdad en el backend, y el «checkout» es la página `/dev/checkout` de la web, que lo aprueba o lo rechaza sin cobrar nada (`POST /api/v1/token-purchases/<id>/simulate/`). Al aprobar, el backend acredita los tokens (un movimiento «Compra») o cambia el plan. No pongas `PAYMENTS_PROVIDER=` vacío en `back/.env`: sin proveedor, comprar responde «Los pagos todavía no están habilitados».
 >
-> **La lista se va a ampliar.** Billetera, movimientos y precios ya están (PR #153). Hay PRs en curso para suscripción y compras, y para workspaces y miembros. Cuando se mergeen, se suman sus endpoints (`billing.plans`, `billing.subscription`, `billing.changePlan`, las compras, y `workspaces`) al valor por defecto de `DEMO_API_REAL` en `docker-compose.demo.yml`, se reconstruye con `demo up -d --build front` y se actualiza la tabla de abajo. Un dominio en la lista va entero al backend, también lo que todavía no existe ahí (responde 404): si falta algo, nombrá los endpoints uno por uno. `DEMO_API_REAL=existing` manda al backend todo lo que el contrato marca como existente.
+> **Por qué las publicaciones son mocks hoy.** El backend ya tiene `social.posts` y `social.post`, pero no crear una publicación: una creada en la demo no aparecería en el calendario. Quedan en mocks hasta que esté ese endpoint.
+>
+> **La lista se puede ampliar.** Workspaces y miembros (PR #151) ya están en `dev`, y todavía no van en la lista: para sumarlos, se agrega `workspaces` al valor por defecto de `DEMO_API_REAL` en `docker-compose.demo.yml`, se reconstruye con `demo up -d --build front` y se actualiza la tabla de abajo. Un dominio en la lista va entero al backend, también lo que todavía no existe ahí (responde 404): si falta algo, nombrá los endpoints uno por uno. `DEMO_API_REAL=existing` manda al backend todo lo que el contrato marca como existente.
 
 | Pantalla | Ruta | Quién responde |
 |---|---|---|
@@ -66,7 +68,8 @@ La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario,
 | Brand kits | `/brand-kits` | **Backend** (duplicar es mock) |
 | Mi cuenta y avisos por email | menú del usuario | **Backend** |
 | Saldo de la barra, Uso (consumo y movimientos) | `/uso` | **Backend** |
-| Planes y Comprar tokens | `/uso/planes`, `/uso/comprar` | Mock |
+| Planes y Comprar tokens | `/uso/planes`, `/uso/comprar` | **Backend**, con el proveedor simulado: no se cobra nada |
+| Checkout de prueba | `/dev/checkout` | **Backend**: aprueba o rechaza el pago simulado |
 | Redes sociales | `/ajustes/redes` | Mock |
 | Publicar y Publicaciones | panel «Publicar», `/publicaciones` | Mock |
 | Miembros y ajustes del workspace | `/ajustes` | Mock |
@@ -87,8 +90,9 @@ Dos cosas para tener presentes:
 5. **Clips**: aparecen en «Listo» cuando terminan. Descargá uno y abrilo.
 6. **Brand kits**: abrí «Kit de la demo» y cambiá un color. Queda guardado en el backend.
 7. **Publicar** un clip y mirar **Publicaciones**. Decilo: en esta demo la publicación es simulada.
-8. **Uso y facturación** y **Planes**. También simulados.
-9. Volvé al proyecto del paso 2. Si ya está listo para revisar, mostralo.
+8. **Comprar tokens**: en Uso → Comprar tokens elegí un paquete (por ejemplo 1.000 tokens) y tocá «Ir al pago». Se abre el checkout de prueba: tocá «Pagar». Vuelve a Uso con «Compra acreditada» y el saldo de la barra sube en esos tokens; en Movimientos aparece la compra. Decilo: el pago es simulado, nadie cobra. Con «Simular pago rechazado» se ve el aviso de pago rechazado y el saldo no cambia.
+9. **Planes**: pasar a otro plan pago también pasa por el checkout de prueba y, al aprobar, se aplica al momento. Pasar a Gratis queda para el fin del período (con Pro de cortesía no hay período, así que se aplica al momento: mejor no mostrarlo, o correr `seed_demo` después para volver a Pro).
+10. Volvé al proyecto del paso 2. Si ya está listo para revisar, mostralo.
 
 ## 5. Antes de la presentación
 
@@ -125,7 +129,8 @@ Regla práctica: con Groq, un video de 2 minutos está listo para revisar en alr
 |---|---|
 | **Links de YouTube o Vimeo.** Esos sitios bloquean las descargas desde IPs de datacenter, y a veces también desde otras | Usá siempre **subir archivo**. No muestres «pegar un link» |
 | **Publicar en redes** necesita una cuenta y una key de Ayrshare | Es mock. Decilo en voz alta. Nada sale a ninguna red |
-| **Pagos**: Stripe no está integrado | Comprar tokens y cambiar de plan son mocks (`/dev/checkout` hace de pasarela) |
+| **Pagos**: Stripe no está integrado | Comprar tokens y cambiar de plan van al backend con el proveedor simulado: `/dev/checkout` hace de pasarela y no cobra nada. Si comprar dice «Los pagos todavía no están habilitados», `back/.env` tiene `PAYMENTS_PROVIDER` vacío: sacalo y `demo up -d --force-recreate web worker beat` |
+| **Un ensayo cambió el plan** | `seed_demo` vuelve a poner Pro de cortesía, sin período ni bajada programada. Los tokens comprados en el ensayo quedan |
 | **Un proveedor de IA falla o tarda** (key vencida, sin cuota, sin internet) | El proyecto queda en error y los tokens vuelven solos. Seguí con el proyecto preparado. Probá las keys el mismo día |
 | **El video no tiene voz** | El proyecto falla con «no se detectó voz». Usá un video con alguien hablando |
 | **La web dice «No pudimos conectar»** | `demo ps`: si `web` no está, `demo logs web --tail 50` y `demo up -d` |
@@ -146,7 +151,7 @@ Regla práctica: con Groq, un video de 2 minutos está listo para revisar en alr
 - [ ] **Keys reales** de OpenAI y Gemini, y de Groq si se usa V2, cargadas en `back/.env` de la máquina de la demo. Con cuota para los ensayos.
 - [ ] **Decidir el pipeline:** `AI_CORE_V2_ENABLED=True` (Groq, rápido) o `False` (Whisper local, lento). El piloto de V2 todavía no pasó su gate G0 ([runbook del piloto](ai-core-pilot-runbook.md), §11.1): probá el video de la demo con el que elijan.
 - [ ] **Elegir el video de prueba** y ensayarlo de punta a punta en la máquina de la presentación.
-- [ ] **Decidir qué se dice** sobre lo simulado: pagos, redes, publicaciones, miembros y notificaciones.
+- [ ] **Decidir qué se dice** sobre lo simulado: pagos (el checkout de prueba no cobra), redes, publicaciones, miembros y notificaciones.
 - [ ] **`back/docker/entrypoint.sh`** sigue sin dueño. No frena la demo, porque ni el `Dockerfile` ni los compose lo usan (las migraciones las corre `docker-compose.demo.yml`). Si alguien lo activa hoy, no arranca: espera `POSTGRES_HOST` y `POSTGRES_PORT`, que ningún compose define, y su última línea deja el contenedor vivo aunque Django se caiga.
 
 ## Sin Docker

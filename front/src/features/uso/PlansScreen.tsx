@@ -103,6 +103,10 @@ function Plans() {
   const mine = pricing.data && current ? estimateCost({ durationSeconds: 1800, resolution: '720p' }, pricing.data, current).total : null;
 
   const upgrade = target && current ? target.sort_order > current.sort_order : false;
+  // Every paid plan other than the current one is a purchase: paid now, it applies at once with a month of
+  // its own (no proration). Only a free plan waits for the end of the period.
+  const paidTarget = Boolean(target && target.price_usd_monthly > 0);
+  const lostPeriod = paidTarget && current && current.price_usd_monthly > 0 && renewsAt ? formatDate(renewsAt) : null;
   const losses = target && current && !upgrade ? planLosses(current, target) : [];
   const seats = members.data?.seats_used ?? 0;
   // The backend rejects (409) a downgrade while the seats in use exceed the target plan.
@@ -225,7 +229,7 @@ function Plans() {
                         {when ? (
                           <>
                             {' '}
-                            · {pending ? 'termina' : 'se renueva'} el <span className="num">{when}</span>
+                            · {pending ? 'termina' : 'vence'} el <span className="num">{when}</span>
                           </>
                         ) : (
                           ' · no se renueva ni vence'
@@ -240,7 +244,7 @@ function Plans() {
                       <Button variant="primary" block onClick={() => setTarget(plan)} {...gate('billing.manage')}>
                         Subir a {plan.name}
                       </Button>
-                      <p className={cx(styles.ctaNote, styles.ctaCenter)}>Se aplica al momento.</p>
+                      <p className={cx(styles.ctaNote, styles.ctaCenter)}>Se paga y se aplica al momento.</p>
                     </>
                   ) : isPending ? (
                     <>
@@ -255,12 +259,14 @@ function Plans() {
                         Bajar a {plan.name}
                       </Button>
                       <p className={styles.ctaNote}>
-                        {when ? (
+                        {plan.price_usd_monthly > 0 ? (
+                          'Se paga y se aplica al momento.'
+                        ) : when ? (
                           <>
                             Desde el <span className="num">{when}</span>, al fin del período.
                           </>
                         ) : (
-                          'Al fin del período.'
+                          'Se aplica al momento.'
                         )}
                       </p>
                     </>
@@ -274,7 +280,8 @@ function Plans() {
         <PlanCardsSkeleton />
       )}
       <p className="t-small subtle" style={{ marginTop: 16 }}>
-        Subir de plan se aplica al momento. Bajar se aplica al fin del período
+        Pasar a otro plan pago se paga y se aplica al momento, con un mes nuevo: lo que queda del período actual no se descuenta.
+        Pasar a un plan gratis se aplica al fin del período
         {when ? (
           <>
             , el <span className="num">{when}</span>
@@ -314,9 +321,13 @@ function Plans() {
         title={target ? (upgrade ? `¿Subir a ${target.name}?` : `¿Bajar a ${target.name}?`) : ''}
         description={
           target
-            ? upgrade
-              ? `El cambio se aplica al momento y el plan pasa a costar ${formatUsd(target.price_usd_monthly)} por mes.`
-              : `El cambio se aplica ${when ? `el ${when}, ` : ''}al fin del período. Hasta entonces seguís con ${current?.name ?? 'tu plan'}.`
+            ? paidTarget
+              ? `Se paga ${formatUsd(target.price_usd_monthly)} por mes y se aplica al momento, cuando se confirma el pago.${
+                  lostPeriod ? ` Lo que queda de tu período de ${current?.name ?? 'tu plan'} (hasta el ${lostPeriod}) no se descuenta.` : ''
+                }`
+              : when
+                ? `El cambio se aplica el ${when}, al fin del período. Hasta entonces seguís con ${current?.name ?? 'tu plan'}.`
+                : 'El cambio se aplica al momento.'
             : undefined
         }
         confirmLabel={target ? (upgrade ? `Subir a ${target.name}` : `Bajar a ${target.name}`) : 'Confirmar'}

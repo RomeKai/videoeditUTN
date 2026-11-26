@@ -1,5 +1,6 @@
 ﻿import uuid
 from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models.functions import Upper
 from django.contrib.auth.models import AbstractUser, UserManager as DjangoUserManager
@@ -156,6 +157,27 @@ class Workspace(models.Model):
         null=True,
         blank=True
     )
+    # Fin del período pagado del plan: lo fija la confirmación del pago de una
+    # subida (apps.payments.services.payments). Null si no hay período pagado
+    # (plan gratis, o asignado en el admin). Todavía nada cobra la renovación
+    # (PAY-02): cuando pasa, la tarea apply_due_plan_changes aplica la bajada
+    # programada o pasa el workspace al plan por defecto.
+    plan_renews_at = models.DateTimeField(null=True, blank=True)
+    # Día del mes (en WORKSPACE_TIME_ZONE) en que empezó el período pagado: los
+    # períodos encadenados vuelven a ese día (31 ene → 28 feb → 31 mar).
+    plan_anchor_day = models.PositiveSmallIntegerField(
+        null=True, blank=True, validators=[MinValueValidator(1), MaxValueValidator(31)],
+    )
+    # Bajada de plan programada para el fin del período pagado. La aplica la
+    # tarea apply_due_plan_changes (apps.payments.tasks) cuando llega la fecha.
+    pending_plan = models.ForeignKey(
+        'payments.SubscriptionPlan',
+        on_delete=models.PROTECT,
+        related_name='+',
+        null=True,
+        blank=True,
+    )
+    pending_plan_effective_at = models.DateTimeField(null=True, blank=True)
 
     # Distribución Social (Ayrshare)
     ayrshare_profile_key = models.CharField(
@@ -169,6 +191,18 @@ class Workspace(models.Model):
     
     # Relación a través de la tabla intermedia
     members = models.ManyToManyField(User, through='WorkspaceMember', related_name='workspaces')
+
+    class Meta:
+        constraints = [
+            # Un cambio programado siempre dice cuándo se aplica.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(pending_plan__isnull=True, pending_plan_effective_at__isnull=True)
+                    | models.Q(pending_plan__isnull=False, pending_plan_effective_at__isnull=False)
+                ),
+                name='users_workspace_pending_plan_has_date',
+            ),
+        ]
 
     def __str__(self):
         return self.name

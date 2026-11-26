@@ -4,7 +4,7 @@ import os
 from django.core.exceptions import ImproperlyConfigured
 
 from .base import *  # noqa: F403
-from .base import REST_FRAMEWORK, env
+from .base import PAYMENTS_ALLOW_SIMULATED, PAYMENTS_PROVIDER, REST_FRAMEWORK, env
 
 # --- MODO PRODUCCIÓN ---
 # ¡CRÍTICO! Nunca True en producción, o te pueden robar las claves.
@@ -49,6 +49,20 @@ if EMAIL_BACKEND == 'django.core.mail.backends.smtp.EmailBackend' and not EMAIL_
 if _missing_email:
     raise ImproperlyConfigured(
         f"Email is not configured for production: set {', '.join(_missing_email)} (see back/.env.example)."
+    )
+
+# --- PAGOS ---
+# The simulated provider approves payments nobody made and credits their tokens.
+# Production never runs it by accident: only a demo that asks for it with
+# PAYMENTS_ALLOW_SIMULATED=True, and then it is logged at every start.
+if PAYMENTS_PROVIDER == 'simulated':
+    if not PAYMENTS_ALLOW_SIMULATED:
+        raise ImproperlyConfigured(
+            'PAYMENTS_PROVIDER=simulated approves payments without charging them. In production it needs '
+            'PAYMENTS_ALLOW_SIMULATED=True (a demo only); leave PAYMENTS_PROVIDER empty otherwise.'
+        )
+    logging.getLogger('backend.settings').warning(
+        'payments.simulated_provider_on PAYMENTS_ALLOW_SIMULATED is set: payments are approved without charging'
     )
 
 # --- SEGURIDAD (Hardening) ---
