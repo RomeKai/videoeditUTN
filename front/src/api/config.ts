@@ -1,11 +1,65 @@
 /** Base URL of the Django backend, without a trailing slash. */
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000').replace(/\/+$/, '');
 
-/** True: MSW answers every request in the browser. False: the app talks to the real backend. */
-export const API_MOCKS = process.env.NEXT_PUBLIC_API_MOCKS === 'true';
+export type ApiMode = 'mock' | 'hybrid' | 'real';
+
+/**
+ * Who answers the API:
+ * - `mock`: MSW answers every request in the browser;
+ * - `real`: the app talks to the Django backend for everything (no MSW worker);
+ * - `hybrid`: MSW runs, but lets through to the backend the endpoints routed as real
+ *   (`src/api/routing.ts`) and mocks the rest.
+ * `NEXT_PUBLIC_API_MODE` decides; without it, the older `NEXT_PUBLIC_API_MOCKS` does (`true` → mock,
+ * anything else → real).
+ */
+export function resolveApiMode(mode: string | undefined, mocks: string | undefined): ApiMode {
+  const value = mode?.trim().toLowerCase();
+  if (value === 'mock' || value === 'hybrid' || value === 'real') return value;
+  return mocks === 'true' ? 'mock' : 'real';
+}
+
+export const API_MODE: ApiMode = resolveApiMode(process.env.NEXT_PUBLIC_API_MODE, process.env.NEXT_PUBLIC_API_MOCKS);
+
+/** True: the MSW worker runs in the browser (it answers everything in `mock`, only the mocked part in `hybrid`). */
+export const API_MOCKS = API_MODE !== 'real';
+
+/**
+ * Hybrid mode: what goes to the real backend. Comma-separated contract domains (`projects`, `brandkits`…),
+ * endpoint ids (`billing.plans`) or the word `existing` (what the contract marks `exists` or `partial`).
+ * Empty: `existing`.
+ */
+export const API_REAL_LIST = process.env.NEXT_PUBLIC_API_REAL ?? '';
 
 /** Header that carries the active workspace on every request (proposed, map J3 / gap 2). */
 export const WORKSPACE_HEADER = 'X-Workspace-Id';
+
+/**
+ * DEV BRIDGE (hybrid mode only). While `/me` is still mocked, the mocks cannot know the ids of the user's
+ * real workspaces, so the mocked `/me` shows one placeholder workspace. Its id starts with this prefix
+ * (the rest comes from the user's id, so two real users in one browser do not share mocked data). The
+ * HTTP client sends no `X-Workspace-Id` for it, and the backend falls back to the user's default
+ * workspace (`back/apps/core/workspace.py · _default_workspace`). It goes away when `/me` is real.
+ */
+export const BACKEND_DEFAULT_WORKSPACE_PREFIX = '00000000-0000-4000-8000-';
+
+/** The placeholder workspace of a real user: a valid UUID that no backend and no seeded mock row has. */
+export function backendDefaultWorkspaceId(userId: string): string {
+  const hex = userId.toLowerCase().replace(/[^0-9a-f]/g, '');
+  return `${BACKEND_DEFAULT_WORKSPACE_PREFIX}${hex.slice(-12).padStart(12, '0')}`;
+}
+
+export function isBackendDefaultWorkspace(workspaceId: string | null | undefined): boolean {
+  return Boolean(workspaceId?.startsWith(BACKEND_DEFAULT_WORKSPACE_PREFIX));
+}
+
+/**
+ * Whether a row (`workspace` of a project, a brand kit…) belongs to the active workspace: the defensive
+ * check of the screens. With the placeholder the real id is not known, and the backend already scoped
+ * its answer to the user's default workspace, so every row counts as the active one's.
+ */
+export function isOfWorkspace(rowWorkspaceId: string | null | undefined, activeWorkspaceId: string): boolean {
+  return isBackendDefaultWorkspace(activeWorkspaceId) || rowWorkspaceId === activeWorkspaceId;
+}
 
 /**
  * How long a request may go without an answer before it counts as a network error. Without it, a

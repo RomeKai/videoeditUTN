@@ -16,10 +16,10 @@ import { OfflineBanner } from './OfflineBanner';
 import { SessionProvider } from './session';
 import { WorkspaceElsewhereBanner } from './WorkspaceElsewhereBanner';
 
-// Only loaded in mock mode, and only in the browser.
+// Only loaded while the mocks run (modes mock and hybrid), and only in the browser.
 const MockPanel = dynamic(() => import('@/dev/MockPanel').then((module) => module.MockPanel), { ssr: false });
 
-/** In mock mode nothing may fetch before the service worker is ready. */
+/** While the mocks run (modes mock and hybrid) nothing may fetch before the service worker is ready. */
 function MockGate({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(!API_MOCKS);
   useEffect(() => {

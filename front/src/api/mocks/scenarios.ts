@@ -8,6 +8,20 @@ export interface Scenario {
   description: string;
   group: 'Datos' | 'Plan' | 'Rol' | 'Sesión' | 'Sistema';
   options: Omit<SeedOptions, 'scenario'>;
+  /**
+   * Also works in hybrid mode, where the user and part of the data come from the real backend: only the
+   * scenarios about what a mocked domain answers (the plan, the balance, payments, a server that fails).
+   */
+  hybrid?: boolean;
+}
+
+/** Why the other scenarios are disabled in hybrid mode (shown in the picker). */
+export const HYBRID_ONLY_MOCK_REASON = 'Solo en modo mock: en híbrido la sesión, el usuario y sus datos vienen del backend real.';
+export const HYBRID_MAINTENANCE_REASON = 'Solo en modo mock: en híbrido el backend real responde normalmente y la página de mantenimiento se cerraría sola.';
+
+export function hybridBlockReason(scenario: Scenario): string | null {
+  if (scenario.hybrid) return null;
+  return scenario.id === 'mantenimiento' ? HYBRID_MAINTENANCE_REASON : HYBRID_ONLY_MOCK_REASON;
 }
 
 export const DEFAULT_SCENARIO = 'estudio-norte';
@@ -24,6 +38,7 @@ export const SCENARIOS: Scenario[] = [
     description: 'Lucía, dueña, plan Pro, 4.860 tokens. Proyectos en cada estado principal, 3 brand kits, 2 redes conectadas y publicaciones en todos los estados.',
     group: 'Datos',
     options: {},
+    hybrid: true,
   },
   {
     id: 'usuario-nuevo',
@@ -59,6 +74,7 @@ export const SCENARIOS: Scenario[] = [
     description: '120 tokens: aviso de saldo bajo, el resumen de Nuevo proyecto cambia a «Comprar tokens» y crear o renderizar responde 402.',
     group: 'Datos',
     options: { balance: 120 },
+    hybrid: true,
   },
   {
     id: 'miembros-al-limite',
@@ -80,6 +96,7 @@ export const SCENARIOS: Scenario[] = [
     description: 'Estudio Norte en plan Gratis: candados (1080p, 4K, SEO, programar, varias redes), marca de agua, videos de hasta 10 min y 300 tokens.',
     group: 'Plan',
     options: { plan: 'free', balance: 300 },
+    hybrid: true,
   },
   {
     id: 'plan-creador',
@@ -87,6 +104,7 @@ export const SCENARIOS: Scenario[] = [
     description: 'Hasta 1080p, programa publicaciones, una sola red por publicación, 5 % de descuento.',
     group: 'Plan',
     options: { plan: 'creator' },
+    hybrid: true,
   },
   {
     id: 'plan-estudio',
@@ -94,6 +112,7 @@ export const SCENARIOS: Scenario[] = [
     description: 'El plan más alto: 4K, 240 min, 15 miembros, 20 % de descuento.',
     group: 'Plan',
     options: { plan: 'studio' },
+    hybrid: true,
   },
   {
     id: 'rol-admin',
@@ -143,6 +162,7 @@ export const SCENARIOS: Scenario[] = [
     description: 'El proveedor de pagos rechaza las compras de tokens.',
     group: 'Sistema',
     options: { flags: { rejectPayments: true } },
+    hybrid: true,
   },
   {
     id: 'plan-con-checkout',
@@ -150,6 +170,7 @@ export const SCENARIOS: Scenario[] = [
     description: 'Subir de plan pide un pago: Planes manda al checkout y, al volver, avisa si el plan cambió o si el pago no salió.',
     group: 'Sistema',
     options: { flags: { planCheckout: true } },
+    hybrid: true,
   },
   {
     id: 'servidor-caido',
@@ -157,6 +178,7 @@ export const SCENARIOS: Scenario[] = [
     description: 'Las lecturas responden 500: banners de error con Reintentar y la página de error.',
     group: 'Sistema',
     options: { flags: { serverDown: true } },
+    hybrid: true,
   },
   {
     id: 'mantenimiento',

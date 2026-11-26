@@ -1,3 +1,4 @@
+import { isOfWorkspace } from '@/api/config';
 import type { Project, ProjectStatusGroup } from '@/api/contracts/projects';
 import { projectStatusGroup, type ProjectStatusView } from '@/lib/project-status';
 import type { ButtonVariant, IconName } from '@/ui';
@@ -123,7 +124,9 @@ export function applyListQuery(projects: ReadonlyArray<Project>, query: ListQuer
   const term = query.term.toLowerCase();
   // The backend scopes the list by `X-Workspace-Id` (PR #125). Kept as a cheap defence: a project of
   // another workspace must never show up here, whatever the list brings.
-  const own = query.workspaceId ? projects.filter((project) => project.workspace === query.workspaceId) : projects;
+  // (`isOfWorkspace`: in hybrid mode the active workspace can be a placeholder whose real id is not known.)
+  const workspaceId = query.workspaceId;
+  const own = workspaceId ? projects.filter((project) => isOfWorkspace(project.workspace, workspaceId)) : projects;
   const matching = term ? own.filter((project) => project.title.toLowerCase().includes(term)) : [...own];
   const counts: Record<ProjectStatusGroup, number> = { all: matching.length, in_progress: 0, to_review: 0, ready: 0, failed: 0 };
   const groups = new Map<string, ProjectStatusGroup>();

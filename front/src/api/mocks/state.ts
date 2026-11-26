@@ -1,4 +1,5 @@
-import { setActiveWorkspaceId, setTokens, type TokenPair } from '../session';
+import { isHybrid } from '../routing';
+import { clearSession, getTokens, setActiveWorkspaceId, setTokens, type TokenPair } from '../session';
 import { DB_VERSION, type MockDb } from './db';
 import { DEFAULT_SCENARIO, findScenario } from './scenarios';
 import { seedDb } from './seed';
@@ -21,7 +22,9 @@ function storage(): Storage | null {
 
 export function getScenarioId(): string {
   const stored = storage()?.getItem(MOCK_SCENARIO_KEY) ?? memoryScenario;
-  return findScenario(stored ?? DEFAULT_SCENARIO).id;
+  const scenario = findScenario(stored ?? DEFAULT_SCENARIO);
+  // A scenario about the mocked session or its data (chosen in mock mode) makes no sense with a real session.
+  return isHybrid() && !scenario.hybrid ? DEFAULT_SCENARIO : scenario.id;
 }
 
 /**
@@ -86,6 +89,8 @@ export function resetDb(scenarioId: string = getScenarioId()): MockDb {
 /** Switches scenario: seeds it and signs in (or out) the user the scenario starts with. The caller reloads the page. */
 export function applyScenario(scenarioId: string): void {
   const db = resetDb(scenarioId);
+  // Hybrid: the session is the real one and stays as it is; what was adopted from the backend comes back on its own.
+  if (isHybrid()) return;
   storage()?.removeItem(MOCK_LOGGED_OUT_KEY);
   syncSession(db, true);
 }
@@ -108,6 +113,18 @@ export function syncSession(db: MockDb = loadDb(), force = false): void {
   setTokens(mockTokens(db.sessionUserId));
   const user = db.users.find((item) => item.id === db.sessionUserId);
   setActiveWorkspaceId(user?.active_workspace_id ?? null);
+}
+
+/**
+ * Tokens left by the other mode are of no use: the real backend rejects the mock ones (hybrid) and the
+ * mocks do not know the user of a real one (mock). The session is dropped, so the app asks to sign in
+ * (hybrid) or the scenario signs its user in again (mock).
+ */
+export function dropForeignSession(): void {
+  const access = getTokens()?.access;
+  if (!access) return;
+  const isMock = userIdFromToken(access, 'access') !== null;
+  if (isMock === isHybrid()) clearSession();
 }
 
 export function markLoggedOut(): void {

@@ -19,7 +19,7 @@ npm run dev          # http://localhost:3000
 
 ### Con datos de prueba (por defecto)
 
-`npm run dev` arranca con `NEXT_PUBLIC_API_MOCKS=true` (ver `.env.development`): [MSW](https://mswjs.io) responde toda la API desde el navegador y no hace falta levantar nada más.
+`npm run dev` arranca en modo `mock` (`NEXT_PUBLIC_API_MOCKS=true` en `.env.development`, que equivale a `NEXT_PUBLIC_API_MODE=mock`): [MSW](https://mswjs.io) responde toda la API desde el navegador y no hace falta levantar nada más.
 
 - Entrás directo como Lucía, dueña de «Estudio Norte» (plan Pro). Para iniciar sesión a mano sirve cualquier contraseña. Tres contraseñas disparan los errores del login: `incorrecta` (401, «El email o la contraseña no coinciden»), `limite` (429, demasiados intentos) y `caida` (500, el servidor falló).
 - El botón **Mocks** (el ícono del matraz, sobre el borde izquierdo; se despliega al pasarle por encima) cambia de **escenario**: usuario nuevo, workspace vacío, saldo bajo, cada plan, cada rol, sesión vencida, servidor caído, mantenimiento y más. La lista completa está en `src/api/mocks/scenarios.ts`.
@@ -42,11 +42,84 @@ Otros disparadores: un link con `privado` no se puede bajar; un texto de publica
 
 ```bash
 # front/.env.local
-NEXT_PUBLIC_API_MOCKS=false
+NEXT_PUBLIC_API_MODE=real
 NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
+(`NEXT_PUBLIC_API_MOCKS=false` sigue funcionando y significa lo mismo. Si están las dos variables, manda `NEXT_PUBLIC_API_MODE`.)
+
 Levantá el backend como dice [`back/README.md`](../back/README.md) y reiniciá `npm run dev`. Hoy el backend tiene 17 de los 79 endpoints del contrato (login, proyectos, revisión, vista previa de clip y brand kits); el resto son los huecos de la sección 8 del mapa. `src/api/CONTRACT.md` dice cuál es cuál.
+
+### Modo híbrido: una parte real y el resto simulado
+
+Sirve para conectar la app al backend de a un dominio, sin romper lo que todavía no existe ahí. MSW sigue corriendo: deja pasar al backend los pedidos de los endpoints «reales» y responde él los demás.
+
+```bash
+# front/.env.local
+NEXT_PUBLIC_API_MODE=hybrid
+NEXT_PUBLIC_API_URL=http://localhost:8000
+# Opcional. Qué va al backend real, separado por comas:
+NEXT_PUBLIC_API_REAL=
+```
+
+| `NEXT_PUBLIC_API_MODE` | Quién responde |
+|---|---|
+| `mock` | MSW, todo (lo mismo que `NEXT_PUBLIC_API_MOCKS=true`) |
+| `real` | El backend, todo; MSW no arranca (lo mismo que `NEXT_PUBLIC_API_MOCKS=false`) |
+| `hybrid` | El backend lo que diga `NEXT_PUBLIC_API_REAL`; MSW el resto |
+
+`NEXT_PUBLIC_API_REAL` acepta, en cualquier combinación:
+
+- **nada (vacío):** va al backend todo endpoint que el contrato marca `exists` o `partial`. Marcar un endpoint como `exists` en `src/api/contracts/` alcanza para que deje de simularse; no hay otra lista que tocar.
+- **dominios del contrato** (`users`, `workspaces`, `projects`, `clips`, `brandkits`, `billing`, `social`, `notifications`, `system`): el dominio va **entero** al backend, también lo que el contrato marca `proposed` (responderá 404 hasta que exista).
+- **ids de endpoint** (`billing.plans`, `users.me`): solo ese endpoint.
+- **`existing`:** lo mismo que la lista vacía, para sumarle algo: `NEXT_PUBLIC_API_REAL=existing,users.me`.
+
+Con una lista, lo que no está en ella se simula. `auth` va siempre al backend en híbrido y no hace falta nombrarlo: el backend no acepta los tokens simulados, así que la sesión tiene que ser real. Por eso en híbrido se entra con un usuario del backend (el registro y la recuperación de contraseña todavía no existen ahí y responden 404).
+
+El ruteo sale del registro del contrato (`src/api/routing.ts`); cada respuesta de un mock lleva la cabecera `X-OC-Mock: <id del endpoint>`, así que en la pestaña de red se ve quién contestó.
+
+**Panel de desarrollo.** El botón del matraz dice «Híbrido» y muestra cada dominio como Real, Mock o Mixto, con un interruptor por dominio (también en `/dev/kit`). El cambio se guarda en el `localStorage` de ese navegador (`oc.api.routes`), le gana al env y se aplica al recargar; «Volver a lo que dice el env» lo borra. Los escenarios que solo tienen sentido con todo simulado (los de sesión, rol y datos sembrados, y Mantenimiento) aparecen deshabilitados con el motivo; siguen sirviendo los de plan, saldo, pagos y «Servidor caído», que actúan sobre lo simulado.
+
+**Si el backend no responde,** un pedido real falla como cualquier error de red («No pudimos conectar» con Reintentar); lo simulado sigue andando. El backend tiene que aceptar el origen del front por CORS: `backend.settings.dev` acepta cualquiera.
+
+#### Identidad: quién es el usuario y cuál es el workspace
+
+Los mocks y el backend no pueden discrepar sobre eso. Hay dos casos:
+
+- **`/me` real** (cuando exista en el backend: `NEXT_PUBLIC_API_REAL=existing,users.me`, o solo marcarlo `exists`). La app usa los workspaces reales y manda su id en `X-Workspace-Id`. Un dominio simulado que recibe un workspace que no conoce lo **adopta**: le crea una billetera con el saldo y el plan del escenario, las tres redes sin conectar y al usuario como miembro.
+- **`/me` simulado** (hoy). Es un **puente de desarrollo**, marcado como tal en el código (`src/api/mocks/hybrid.ts`, `BACKEND_DEFAULT_WORKSPACE_PREFIX` en `src/api/config.ts`): el mock lee el `user_id` del JWT real (sin poder verificar la firma), usa el email con el que se inició sesión y muestra un único workspace, «Workspace por defecto (backend)». Su id es un marcador: para ese id el cliente **no manda** `X-Workspace-Id` y el backend usa el workspace por defecto del usuario (`back/apps/core/workspace.py`). Con este puente solo se ve ese workspace: no hay forma de cambiar a otro hasta que `/me` sea real.
+
+Lo mismo pasa con proyectos y clips: si un endpoint simulado recibe el id de uno que solo existe en el backend (su actividad, publicarlo), crea un **doble** con ese id («Proyecto del backend», «Clip del backend»). El doble no copia nada del real.
+
+#### Qué combinaciones son coherentes
+
+| Combinación | ¿Coherente? | Detalle |
+|---|---|---|
+| Lecturas reales de proyectos y brand kits + todo lo demás simulado (el valor por defecto) | Sí, para ver y navegar | Las listas, el detalle, la revisión y los brand kits son los del backend. |
+| Crear un proyecto real + billetera simulada | **No** | El backend reserva y cobra en su billetera; la simulada no se entera. El saldo, los movimientos y la estimación de costo que muestra la app no reflejan los cobros reales, y el backend puede responder 402 con un saldo simulado que alcanza. |
+| Planes reales (`billing.plans`) + suscripción simulada | **No** | La suscripción simulada apunta a un plan sembrado, con otro id: «tu plan» no coincide con ninguno de la lista real. Los límites que aplica el backend son los del plan real. |
+| Proyecto real + endpoints simulados de ese proyecto o sus clips (actividad, re-render, editar, renderizar o borrar un clip) | **No**, solo no se rompe | Trabajan sobre el doble: lo que se cambia ahí no llega al proyecto real ni se ve en su detalle. |
+| Clip real + publicación simulada | A medias | Se puede recorrer el flujo de publicar, pero no se publica nada y el clip real no muestra sus publicaciones. |
+| Workspaces o miembros simulados + todo lo demás | **No** para roles | Los mocks no conocen el rol real: tratan al usuario como admin. El backend aplica el rol verdadero en lo que responde, así que la app puede ofrecer acciones que el backend rechaza con 403. |
+| `/me` simulado + `workspaces` real | **No** | El workspace que muestra `/me` es el marcador, que el backend no conoce. Pasá `users` (o `users.me`) a real antes que `workspaces`. |
+| Notificaciones simuladas | Sí, pero vacías | No hay eventos reales que las generen. |
+| Dos usuarios reales en el mismo navegador | Sí | Cada uno tiene su usuario y su workspace marcador en la base simulada. |
+| Cambiar de modo en el mismo navegador | Sí | Al arrancar, la sesión del otro modo se descarta (un token simulado no sirve en el backend y uno real no sirve en los mocks). |
+
+Regla práctica: es coherente **leer** de los dos lados; deja de serlo cuando una **escritura** real tiene efectos en un dominio simulado (o al revés). Pasá a real el dominio entero donde cae el efecto antes de confiar en lo que muestra.
+
+#### Probar el modo híbrido contra un backend
+
+`e2e/hibrido.hybrid.spec.ts` corre solo si se le dice dónde hay un backend; sin eso aparece como salteado.
+
+```bash
+E2E_HYBRID_API_URL=http://127.0.0.1:8000 \
+E2E_HYBRID_EMAIL=alguien@ejemplo.com E2E_HYBRID_PASSWORD=… \
+npm run test:e2e -- --project=hibrido
+```
+
+Arma un tercer build (`.next-e2e-hybrid`) y lo sirve en `E2E_PORT + 2` (o en `E2E_HYBRID_PORT`). El usuario tiene que existir en el backend y ser dueño de un workspace. Comprueba que el login, la lista de proyectos y los brand kits salgan del backend y la billetera del mock; crea y borra un brand kit; cambia un dominio desde el panel; y corta el backend para ver el estado de error. `E2E_HYBRID_REAL` pasa una lista a `NEXT_PUBLIC_API_REAL` (el smoke asume la lista vacía).
 
 ## Comandos
 
@@ -57,7 +130,7 @@ Levantá el backend como dice [`back/README.md`](../back/README.md) y reiniciá 
 | `npm run lint` | ESLint, sin warnings |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm test` | Vitest: componentes, cliente HTTP, mocks y contrato |
-| `npm run test:e2e` | Playwright, sobre dos builds propios. Con mocks (`.next-e2e`): recorre todas las rutas, recarga y falla si hay errores de consola, pedidos fallidos o pedidos que se le escapan a MSW. Sin mocks (`.next-e2e-real`, la API se finge en el navegador): la sesión al recargar y al entrar por un link directo. `E2E_PORT` cambia el puerto (usa ese y el siguiente) |
+| `npm run test:e2e` | Playwright, sobre dos builds propios (tres con `E2E_HYBRID_API_URL`: ver «Modo híbrido»). Con mocks (`.next-e2e`): recorre todas las rutas, recarga y falla si hay errores de consola, pedidos fallidos o pedidos que se le escapan a MSW. Sin mocks (`.next-e2e-real`, la API se finge en el navegador): la sesión al recargar y al entrar por un link directo. `E2E_PORT` cambia el puerto (usa ese y el siguiente) |
 | `npm run contract:doc` | Regenera `src/api/CONTRACT.md` y `ROUTES.md` |
 
 Antes de cada push tienen que pasar `lint`, `typecheck`, `test`, `build` y `test:e2e`. El job `Frontend` del CI corre lo mismo.

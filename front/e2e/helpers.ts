@@ -1,10 +1,28 @@
 import { expect, type Page } from '@playwright/test';
+import { ALL_ENDPOINTS } from '../src/api/contracts';
+import { matchEndpoint, routeOf } from '../src/api/routing';
 
 /** The API of the build with mocks (default of `src/api/config.ts`). */
 const MOCKED_API_URL = 'http://localhost:8000';
 
 /** Where the build without mocks thinks the backend is. Nothing listens there: the tests answer for it with `page.route`. */
 export const REAL_API_URL = 'http://localhost:8000';
+
+/**
+ * The hybrid smoke only runs against a real backend: `E2E_HYBRID_API_URL` says where it is (for example
+ * `http://127.0.0.1:8000`). Without it the hybrid build is not made and the spec is skipped.
+ */
+export const HYBRID_API_URL = (process.env.E2E_HYBRID_API_URL ?? '').replace(/\/+$/, '');
+/** `NEXT_PUBLIC_API_REAL` of the hybrid build. Empty: what the contract marks as existing. */
+export const HYBRID_REAL = process.env.E2E_HYBRID_REAL ?? '';
+
+/** Header of the answers a mock gives (`MOCK_HEADER` in src/api/mocks/http.ts), as Playwright reads it. */
+const MOCK_HEADER = 'x-oc-mock';
+
+export interface WatchOptions {
+  /** The build under test is the hybrid one: the API is at `apiUrl` and `real` is its `NEXT_PUBLIC_API_REAL`. */
+  hybrid?: { apiUrl: string; real: string };
+}
 
 export interface Problems {
   consoleErrors: string[];
@@ -14,10 +32,13 @@ export interface Problems {
 /**
  * Collects what the smoke test must not see: console errors, uncaught
  * exceptions, requests that fail, API answers with an error status and API
- * requests that the mock worker did not answer.
+ * answers that came from the wrong side: in mock mode, any that the mock worker
+ * did not give; in hybrid mode, a mocked endpoint answered by the network, a
+ * real one answered by a mock, or a path that is not in the contract.
  */
-export function watch(page: Page): Problems {
+export function watch(page: Page, options: WatchOptions = {}): Problems {
   const problems: Problems = { consoleErrors: [], failedRequests: [] };
+  const apiUrl = options.hybrid?.apiUrl ?? MOCKED_API_URL;
   page.on('console', (message) => {
     if (message.type() === 'error') problems.consoleErrors.push(message.text());
   });
@@ -29,11 +50,25 @@ export function watch(page: Page): Problems {
     problems.failedRequests.push(`${request.method()} ${request.url()} · ${failure}`);
   });
   page.on('response', (response) => {
-    // In mock mode every API answer comes from the MSW worker: one from the network escaped the mocks.
-    if (response.url().startsWith(`${MOCKED_API_URL}/api/`) && !response.fromServiceWorker()) {
-      problems.failedRequests.push(`${response.request().method()} ${response.url()} · no pasó por MSW`);
+    const request = response.request();
+    const label = `${request.method()} ${response.url()}`;
+    // (Hybrid: the preflight of a request the worker lets through is the browser's own, not an API answer.)
+    const preflight = Boolean(options.hybrid) && request.method() === 'OPTIONS';
+    if (response.url().startsWith(`${apiUrl}/api/`) && !preflight) {
+      // Mock and hybrid: every API request goes through the MSW worker, which answers it or lets it through.
+      if (!response.fromServiceWorker()) problems.failedRequests.push(`${label} · no pasó por MSW`);
+      else if (options.hybrid) {
+        const endpoint = matchEndpoint(ALL_ENDPOINTS, request.method(), new URL(response.url()).pathname);
+        const mocked = response.headers()[MOCK_HEADER] !== undefined;
+        if (!endpoint) problems.failedRequests.push(`${label} · no está en el contrato`);
+        else {
+          const expected = routeOf(endpoint, { mode: 'hybrid', real: options.hybrid.real, overrides: {} });
+          if (expected === 'mock' && !mocked) problems.failedRequests.push(`${label} · ${endpoint.id} es simulado y lo respondió la red`);
+          if (expected === 'real' && mocked) problems.failedRequests.push(`${label} · ${endpoint.id} es real y lo respondió un mock`);
+        }
+      }
     }
-    if (response.status() >= 400) problems.failedRequests.push(`${response.request().method()} ${response.url()} · ${response.status()}`);
+    if (response.status() >= 400) problems.failedRequests.push(`${label} · ${response.status()}`);
   });
   return problems;
 }

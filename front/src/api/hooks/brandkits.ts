@@ -2,6 +2,7 @@
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiCall } from '../client';
+import { isOfWorkspace } from '../config';
 import * as contract from '../contracts/brandkits';
 import { keys } from '../query';
 import { getActiveWorkspaceId } from '../session';
@@ -33,7 +34,7 @@ export async function demoteOtherDefaults(keepId: string): Promise<void> {
   if (!workspaceId) return;
   const kits = await apiCall(contract.listBrandKits, {});
   for (const kit of kits) {
-    if (kit.workspace !== workspaceId || !kit.is_default || kit.id === keepId) continue;
+    if (!isOfWorkspace(kit.workspace, workspaceId) || !kit.is_default || kit.id === keepId) continue;
     await apiCall(contract.updateBrandKit, { params: { id: kit.id }, body: { is_default: false } });
   }
 }
