@@ -20,7 +20,7 @@ export interface ClipCardProps {
   /**
    * ready: thumbnail with score and duration.
    * rendering: skeleton with "Renderizando…".
-   * failed: neutral card; red only on the icon ("No se pudo generar. Reintentar no gasta tokens.").
+   * failed: neutral card; red only on the icon ("No se pudo generar y no se cobró. Reintentar cuesta tokens.").
    */
   state?: 'ready' | 'rendering' | 'failed';
   /** Under the title: status badge, networks, etc. */
@@ -61,7 +61,7 @@ export function ClipCard({
           <span className={styles.clipErrIcon}>
             <Icon name="error" size={20} />
           </span>
-          <span>No se pudo generar. Reintentar no gasta tokens.</span>
+          <span>No se pudo generar y no se cobró. Reintentar cuesta tokens.</span>
           {failedAction}
         </div>
       ) : state === 'rendering' ? (

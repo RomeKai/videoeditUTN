@@ -86,11 +86,34 @@ class ClipLayerSerializer(serializers.ModelSerializer):
 
 class VideoClipSerializer(serializers.ModelSerializer):
     layers = ClipLayerSerializer(many=True, read_only=True)
+    # A paid render (a retry, a render from the editor, a rerender, an approval,
+    # an auto-render) puts its clips in DRAFT until a worker takes them: this
+    # tells such a draft from a suggestion.
+    render_queued = serializers.SerializerMethodField(help_text=(
+        "True for a draft clip that a paid render will take: its project is at render_dispatched and a "
+        "reservation still RESERVED pays for the clip. False for a suggestion and for any other status."
+    ))
+
     class Meta:
         model = VideoClip
         # The render claim is internal bookkeeping of render_clip_task.
         exclude = ('render_claim_token', 'render_unfinished_starts')
         read_only_fields = ('id', 'project', 'status', 's3_object_key', 'virality_score', 'ai_reasoning')
+
+    def get_render_queued(self, clip) -> bool:
+        if clip.status != VideoClip.Status.DRAFT:
+            return False
+        from .tasks.ingestion import render_queued_rule
+
+        # Read once per project for every clip this serializer sends (the
+        # project's clips, a page of projects): one query at most for each
+        # project that renders, none for the others. ``clip.project`` is the
+        # project already loaded when the clips come from ``project.clips``.
+        rules = self.context.setdefault('_render_queued_rules', {})
+        if clip.project_id not in rules:
+            rules[clip.project_id] = render_queued_rule(clip.project)
+        return rules[clip.project_id](clip.pk)
+
 
 class ProjectRenderingError(APIException):
     status_code = 409

@@ -6,9 +6,9 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type { RenderResolution } from '@/api/contracts/common';
 import type { Clip, Project } from '@/api/contracts/projects';
 import { ApiError } from '@/api/errors';
-import { useClip, useClipDownload, usePricing, useProject, useRenderClip, useRetryClip, useUpdateClip, useWallet } from '@/api/hooks';
+import { useClip, useClipDownload, usePricing, useProject, useRenderClip, useUpdateClip, useWallet } from '@/api/hooks';
 import { keys } from '@/api/query';
-import { ConfirmCostDialog, UnsavedChangesDialog, useBillingDialogs } from '@/dialogs';
+import { ConfirmCostDialog, UnsavedChangesDialog, useBillingDialogs, useRetryClipFlow } from '@/dialogs';
 import { cx } from '@/lib/cx';
 import { downloadUrl } from '@/lib/download';
 import { errorMessage } from '@/lib/error-messages';
@@ -124,7 +124,7 @@ function Editor({ userId, clip, project, loadError }: { userId: string; clip: Cl
   const billing = useBillingDialogs();
   const update = useUpdateClip(clip.id);
   const renderClip = useRenderClip(clip.id);
-  const retry = useRetryClip();
+  const retry = useRetryClipFlow(project);
   const queryClient = useQueryClient();
   const download = useClipDownload();
 
@@ -183,14 +183,21 @@ function Editor({ userId, clip, project, loadError }: { userId: string; clip: Cl
   };
 
   // A 409 said the project is rendering before the cache knew. It stops holding once that render ends.
+  // The render that ended may have been this clip's: a clip that waited for it in `draft` is not
+  // polled when the backend does not say `render_queued`, so it is read again here.
   const lastStatus = useRef(project.status);
   useEffect(() => {
-    if (lastStatus.current === 'rendering' && project.status !== 'rendering') setConflict(false);
+    if (lastStatus.current === 'rendering' && project.status !== 'rendering') {
+      setConflict(false);
+      void queryClient.invalidateQueries({ queryKey: keys.clips.detail(clip.id) });
+    }
     lastStatus.current = project.status;
-  }, [project.status]);
+  }, [project.status, clip.id, queryClient]);
 
   const projectRendering = project.status === 'rendering' || conflict;
-  const clipRendering = clip.status === 'rendering';
+  // A paid render puts the clip back to `draft` until a worker takes it: that is a render under way, not a suggestion.
+  const renderQueued = clip.status === 'draft' && (clip.render_queued === true || project.status === 'rendering');
+  const clipRendering = clip.status === 'rendering' || renderQueued;
   const hasRender = clip.status === 'completed' || clip.status === 'published';
   const canEdit = can('clip.edit');
   const canTrim = canEdit && !clipRendering && !projectRendering;
@@ -493,18 +500,15 @@ function Editor({ userId, clip, project, loadError }: { userId: string; clip: Cl
           <Banner
             tone="err"
             className={styles.banner}
-            title="No se pudo generar. Reintentar no gasta tokens."
+            title="No se pudo generar y no se cobró"
             action={
-              <Button
-                size="sm"
-                iconLeft="retry"
-                loading={retry.isPending}
-                onClick={() => retry.mutate(clip.id, { onError: (error) => toast.error(errorMessage(error, 'No pudimos reintentar. Probá de nuevo.')) })}
-              >
+              <Button size="sm" iconLeft="retry" loading={retry.retryingId === clip.id} onClick={() => retry.ask(clip)}>
                 Reintentar
               </Button>
             }
-          />
+          >
+            {`Reintentarlo cuesta su render${retry.estimateFor(clip) ? `: ${retry.costHint(clip)}` : ''}. Te mostramos el costo antes de confirmar.`}
+          </Banner>
         ) : clip.status === 'draft' ? (
           <Banner
             tone="info"
@@ -855,6 +859,7 @@ function Editor({ userId, clip, project, loadError }: { userId: string; clip: Cl
           error={saveError}
         />
       ) : null}
+      {retry.dialog}
       <UnsavedChangesDialog {...guard.dialog} what={<>el {changes || 'recorte'} nuevo de «{clip.title}»</>} />
     </>
   );

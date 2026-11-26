@@ -4,6 +4,8 @@ import { expectClean, settle, useScenario as pickScenario, watch } from './helpe
 
 const READY = `/proyectos/${EXAMPLE_IDS.projectReady}`;
 const SINGLE = `/proyectos/${EXAMPLE_IDS.projectSingleEdit}`;
+/** «Charla en la UTN»: listo con errores, un clip que no se pudo generar (src/api/mocks/seed.ts · defaultProjects). */
+const PARTIAL = '/proyectos/00000007-0000-4000-8000-000000000008';
 /** Ids of the «todos-los-estados» scenario (src/api/mocks/seed.ts · allStateProjects). */
 const project = (hex: string) => `/proyectos/00000007-0000-4000-8000-${hex.padStart(12, '0')}`;
 const STATES = {
@@ -96,6 +98,23 @@ test.describe('Proyecto', () => {
     // The mock finishes the render by itself and the screen follows it.
     await expect(page.getByRole('button', { name: 'Descargar' })).toBeVisible({ timeout: 45_000 });
     expectClean(problems, 'Resultado');
+  });
+
+  test('clip con error: reintentar es pago, pasa por el costo y el clip vuelve a renderizarse', async ({ page }) => {
+    const problems = watch(page);
+    await open(page, 'estudio-norte', `${PARTIAL}/clips`);
+    await expect(page.getByText('No se pudo generar y no se cobró. Reintentar cuesta tokens.')).toBeVisible();
+    await page.getByRole('button', { name: 'Reintentar' }).click();
+    const cost = page.getByRole('dialog', { name: 'Reintentar el clip' });
+    await expect(cost.getByText('Total', { exact: true })).toBeVisible();
+    await expect(cost.getByText('Saldo después')).toBeVisible();
+    await cost.getByRole('button', { name: 'Reintentar' }).click();
+    await expect(page.getByText(/Reintentando el clip\. Reservamos .+ tokens?; si vuelve a fallar, te los devolvemos\./)).toBeVisible();
+    await expect(page.getByText('Renderizando…')).toBeVisible();
+    // The mock finishes the render by itself: the clip ends ready and nothing is left in error.
+    await expect(page.getByText('Renderizando…')).toHaveCount(0, { timeout: 45_000 });
+    await expect(page.getByRole('button', { name: 'Reintentar' })).toHaveCount(0);
+    expectClean(problems, 'Clips · reintento');
   });
 
   test('todos los estados: procesando, en espera, error y renderizado detenido', async ({ page }) => {

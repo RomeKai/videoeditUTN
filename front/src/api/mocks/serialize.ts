@@ -13,8 +13,7 @@ import { roleIn, walletOf } from './sim';
 type Wire<T> = { [K in keyof T]: T[K] extends number ? number | string : T[K] };
 
 export function serializeClip(db: MockDb, clip: MockClip): Clip {
-  const { _renderUntil, _renderFails, ...rest } = clip;
-  void _renderUntil;
+  const { _renderFails, ...rest } = clip;
   void _renderFails;
   return {
     ...rest,
@@ -29,8 +28,9 @@ export function serializeClip(db: MockDb, clip: MockClip): Clip {
  * sends it too, which is heavy; see the note in CONTRACT.md.
  */
 export function serializeProject(db: MockDb, project: MockProject, { full }: { full: boolean }): Project {
-  const { _sim, _transcriptSeed, _reservations, clips, ...rest } = project;
+  const { _sim, _transcriptSeed, _reservations, _paidRender, clips, ...rest } = project;
   void _sim;
+  void _paidRender;
   void _reservations;
   const duration = project.duration_seconds ?? 0;
   return {

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { defineEndpoint } from '../endpoint';
-import { Id, IsoDateTime, NoContent } from './common';
+import { Decimal, Id, IsoDateTime, NoContent } from './common';
 import { Clip, PaidActionResponse } from './projects';
 
 /** ClipPreview.Status */
@@ -30,6 +30,10 @@ export const UpdateClipRequest = z
   })
   .partial();
 export type UpdateClipRequest = z.infer<typeof UpdateClipRequest>;
+
+/** Body of `POST clips/{id}/retry/`: the clip, plus what its render reserved (ClipRetryView · `_paid_response`). */
+export const RetryClipResponse = Clip.extend({ final_cost: Decimal, transaction_id: Id });
+export type RetryClipResponse = z.infer<typeof RetryClipResponse>;
 
 export const getClip = defineEndpoint({
   id: 'clips.detail',
@@ -126,7 +130,7 @@ export const retryClip = defineEndpoint({
   method: 'POST',
   path: '/api/v1/clips/:id/retry/',
   summary: 'Reintenta el render de un clip que falló. Cobra su render: su parte se devolvió cuando falló, así que el clip se paga una vez en total.',
-  response: Clip,
+  response: RetryClipResponse,
   successStatus: 202,
   errors: [
     { status: 402, when: 'Saldo insuficiente: `{ error, required }`. La UI abre D2.' },
@@ -139,7 +143,7 @@ export const retryClip = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_clips.py · ClipRetryView',
-    note: 'El cuerpo es el clip (en `draft` hasta que su render empieza) más `final_cost` y `transaction_id`. No hay reintento gratis: el reparto por segundos entregados ya devolvió lo que el clip fallido no entregó, y el modelo no guarda por qué falló.',
+    note: 'El cuerpo es el clip (en `draft` con `render_queued: true` hasta que su render empieza) más `final_cost` y `transaction_id`. Un segundo click mientras el clip espera o se renderiza recibe 409 `clip_rendering`, no `not_failed`. No hay reintento gratis: el reparto por segundos entregados ya devolvió lo que el clip fallido no entregó, y el modelo no guarda por qué falló.',
   },
   screens: ['D3'],
 });

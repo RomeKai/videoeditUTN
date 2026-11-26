@@ -309,7 +309,7 @@ function ClipStrip({ project }: { project: Project }) {
       </CardHead>
       <ul className={styles.strip}>
         {sortClips(project.clips).map((clip) => {
-          const display = describeClip(clip);
+          const display = describeClip(clip, project.status);
           return (
             <li key={clip.id}>
               <Link href={href} className={styles.stripLink} aria-label={`${clip.title}: ${display.label}`}>
@@ -447,7 +447,7 @@ function Notices({ project }: { project: Project }) {
               Este video no se puede reintentar: creá el proyecto de nuevo o volvé a renderizarlo desde Resultado.
             </>
           ) : (
-            'Podés reintentar los que fallaron: no gasta tokens.'
+            'Los clips que fallaron no se cobraron. Podés reintentarlos desde Clips: cada reintento cuesta el render de ese clip.'
           )}
         </Banner>
       ) : null}

@@ -76,6 +76,7 @@
       {
         "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01",
         "layers": [],
+        "render_queued": false,
         "title": "Clip 1",
         "s3_object_key": null,
         "start_time": 72.4,
@@ -89,6 +90,7 @@
       {
         "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a02",
         "layers": [],
+        "render_queued": false,
         "title": "Clip 2",
         "s3_object_key": null,
         "start_time": 132.4,
@@ -222,6 +224,7 @@
             "clip": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01"
           }
         ],
+        "render_queued": false,
         "title": "Clip 1",
         "s3_object_key": "clips/x/1.mp4",
         "start_time": 72.4,
@@ -235,6 +238,7 @@
       {
         "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a02",
         "layers": [],
+        "render_queued": false,
         "title": "Clip 2",
         "s3_object_key": null,
         "start_time": 132.4,
@@ -572,6 +576,7 @@
         {
           "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01",
           "layers": [],
+          "render_queued": false,
           "title": "Clip 1",
           "s3_object_key": null,
           "start_time": 72.4,
@@ -585,6 +590,7 @@
         {
           "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a02",
           "layers": [],
+          "render_queued": false,
           "title": "Clip 2",
           "s3_object_key": null,
           "start_time": 132.4,
@@ -718,6 +724,7 @@
               "clip": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01"
             }
           ],
+          "render_queued": false,
           "title": "Clip 1",
           "s3_object_key": "clips/x/1.mp4",
           "start_time": 72.4,
@@ -731,6 +738,7 @@
         {
           "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a02",
           "layers": [],
+          "render_queued": false,
           "title": "Clip 2",
           "s3_object_key": null,
           "start_time": 132.4,
@@ -1159,6 +1167,7 @@
       {
         "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a01",
         "layers": [],
+        "render_queued": false,
         "title": "Clip 1",
         "s3_object_key": null,
         "start_time": 72.4,
@@ -1172,6 +1181,7 @@
       {
         "id": "d3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a02",
         "layers": [],
+        "render_queued": false,
         "title": "Clip 2",
         "s3_object_key": null,
         "start_time": 132.4,

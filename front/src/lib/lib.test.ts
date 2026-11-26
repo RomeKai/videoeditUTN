@@ -191,6 +191,18 @@ describe('mensajes de error (sección 4 del mapa)', () => {
     expect(pipelineErrorMessage('SoftTimeLimitExceeded')).toMatch(/tardó demasiado/);
     expect(pipelineErrorMessage('IngestionNotQueued')).toBe('No pudimos empezar a procesar tu video y no se cobró nada. Creá el proyecto de nuevo en unos minutos.');
     expect(pipelineErrorTitle('IngestionNotQueued')).toBe('No pudimos empezar a procesar el video');
+    // Link projects: what the download refused, in the user's words (only the four providers the backend allows).
+    expect(pipelineErrorMessage('UnsupportedLinkError')).toMatch(/un solo video público de YouTube, Vimeo, Twitch o Google Drive/);
+    expect(pipelineErrorTitle('UnsupportedLinkError')).toBe('No pudimos usar este link');
+    // Over the plan's limit: changing plan helps. Over the app's 3 h: it does not, so it is not offered.
+    expect(pipelineErrorMessage('LinkTooLongError')).toBe('El video del link dura más de lo que permite tu plan. Probá con uno más corto o cambiá de plan.');
+    expect(pipelineErrorTitle('LinkTooLongError')).toBe('El video del link es muy largo para tu plan');
+    expect(pipelineErrorMessage('LinkTooLongForAppError')).toBe('El video del link dura más de 3 horas, el máximo que acepta OneCreator. Probá con uno más corto.');
+    expect(pipelineErrorMessage('LinkTooLongForAppError')).not.toMatch(/plan/i);
+    expect(pipelineErrorTitle('LinkTooLongForAppError')).toBe('El video del link dura más de 3 horas');
+    expect(pipelineErrorMessage('LinkTooLargeError')).toMatch(/pesa más de lo que podemos descargar/);
+    expect(pipelineErrorTitle('LinkTooLargeError')).toBe('El video del link es muy pesado');
+    for (const code of ['UnsupportedLinkError', 'LinkTooLongError', 'LinkTooLongForAppError', 'LinkTooLargeError']) expect(pipelineErrorMessage(code)).not.toBe(pipelineErrorMessage(''));
     expect(pipelineErrorMessage('AIAuthenticationError')).toBe('Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo.');
     expect(pipelineErrorMessage('CualquierOtro')).toBe(pipelineErrorMessage(''));
     expect(isModerationError('UnsafeContentError')).toBe(true);
