@@ -156,6 +156,7 @@ Resumen. Cada documento tiene su tabla completa.
 | Situación | Qué pasa | Dónde |
 |-----------|----------|-------|
 | El broker no toma la ingesta al crear | 503 al cliente, proyecto `failed` con `IngestionNotQueued` y la reserva de tokens devuelta | [01](01-creacion-de-proyecto.md) |
+| Una ingesta no avanza (su mensaje se perdió o su worker murió) | `recover_stuck_renders` la re-encola con una cadena nueva; si tampoco así avanza, `failed` con `IngestionStuck` y la reserva devuelta. Una copia vieja del mensaje no corre nada | [02](02-pipeline-de-ingesta.md#flujo-ingestas-que-no-avanzan) |
 | Error reintentable de proveedor o infraestructura | Backoff exponencial con jitter, hasta `PIPELINE_MAX_RETRIES` (5) | [02](02-pipeline-de-ingesta.md) |
 | Error no reintentable o reintentos agotados | Proyecto `failed` con `pipeline_error_code`. Si no tiene clips, se devuelve la reserva de tokens | [02](02-pipeline-de-ingesta.md) |
 | Moderación bloquea el contenido | `UnsafeContentError`, proyecto `failed` y reembolso. Un `ModerationOverride` lo libera | [03](03-transcripcion-moderacion-seleccion.md) |

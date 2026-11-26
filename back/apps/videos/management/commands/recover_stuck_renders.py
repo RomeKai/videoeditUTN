@@ -8,6 +8,13 @@ stuck clips re-queued, or its fan-out closed when every paid clip is final.
 A render that never starts is re-queued with a backoff and never failed;
 past the total of re-queues it is only reported.
 
+It also finds ingestions that make no progress with their creation reserved,
+or left ingesting at clips_selected (``kind=ingestion``): re-queued with a new
+chain at most twice in a row (four in all), then failed with
+``IngestionStuck`` and the reservation returned (never one whose clips were
+selected). And it retries the restore of the clips a settled render asked
+for later left undone (``kind=restore``).
+
 The rules live in tasks/render_recovery.py, shared with the Celery task that
 CELERY_BEAT_SCHEDULE runs every 15 minutes. Without a beat process, run this
 from cron with ``--apply`` (for example every 15 minutes). Both can run at the
@@ -20,9 +27,10 @@ Safety
 
 Output
     One line per candidate (a paper edit RENDERING or COMPLETED with its
-    render reservation RESERVED, or a render clip by clip at render_dispatched
-    with its reservation RESERVED): ids, the kind, counters, idle minutes, the
-    decision and the result. No user text. Ends with a
+    render reservation RESERVED, a render clip by clip at render_dispatched
+    with its reservation RESERVED, an ingestion with its creation RESERVED, or
+    a project with clips to give back): ids, the kind, counters, idle minutes,
+    the decision and the result. No user text. Ends with a
     ``summary`` line, and with an error (exit code 1) if a project could not
     be processed, so that cron notices.
 """
@@ -38,14 +46,15 @@ def _value(row, key):
 
 class Command(BaseCommand):
     help = (
-        "Reports renders whose tokens stayed reserved and, with --apply, "
-        "re-queues, charges, closes or fails (refunding) each one."
+        "Reports renders and ingestions whose tokens stayed reserved and, with --apply, "
+        "re-queues, charges, closes or fails (refunding) each one, and gives back the clips "
+        "a settled render left as drafts."
     )
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--apply", action="store_true",
-            help="Recover the stuck renders. Without it the command only reports (dry run).",
+            help="Recover what is stuck. Without it the command only reports (dry run).",
         )
 
     def handle(self, *args, **options):
@@ -67,7 +76,8 @@ class Command(BaseCommand):
             f"summary mode={'apply' if apply else 'dry_run'} candidates={len(rows)} "
             f"requeue={totals.get('requeue', 0)} charge={totals.get('charge', 0)} "
             f"fail={totals.get('fail', 0)} close={totals.get('close', 0)} report={totals.get('report', 0)} "
-            f"skip={totals.get('skip', 0)} errors={errors}"
+            f"skip={totals.get('skip', 0)} errors={errors} restore={totals.get('restore', 0)} "
+            f"handoff={totals.get('handoff', 0)}"
         )
         if errors:
             raise CommandError(f"{errors} project(s) could not be processed.")
