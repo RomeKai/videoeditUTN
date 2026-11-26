@@ -191,6 +191,14 @@ describe('mensajes de error (sección 4 del mapa)', () => {
     expect(pipelineErrorMessage('SoftTimeLimitExceeded')).toMatch(/tardó demasiado/);
     expect(pipelineErrorMessage('IngestionNotQueued')).toBe('No pudimos empezar a procesar tu video y no se cobró nada. Creá el proyecto de nuevo en unos minutos.');
     expect(pipelineErrorTitle('IngestionNotQueued')).toBe('No pudimos empezar a procesar el video');
+    // Link projects: what the download refused, in the user's words (only the four providers the backend allows).
+    expect(pipelineErrorMessage('UnsupportedLinkError')).toMatch(/un solo video público de YouTube, Vimeo, Twitch o Google Drive/);
+    expect(pipelineErrorTitle('UnsupportedLinkError')).toBe('No pudimos usar este link');
+    expect(pipelineErrorMessage('LinkTooLongError')).toMatch(/dura más de lo que permite tu plan/);
+    expect(pipelineErrorTitle('LinkTooLongError')).toBe('El video del link es muy largo');
+    expect(pipelineErrorMessage('LinkTooLargeError')).toMatch(/pesa más de lo que podemos descargar/);
+    expect(pipelineErrorTitle('LinkTooLargeError')).toBe('El video del link es muy pesado');
+    for (const code of ['UnsupportedLinkError', 'LinkTooLongError', 'LinkTooLargeError']) expect(pipelineErrorMessage(code)).not.toBe(pipelineErrorMessage(''));
     expect(pipelineErrorMessage('AIAuthenticationError')).toBe('Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo.');
     expect(pipelineErrorMessage('CualquierOtro')).toBe(pipelineErrorMessage(''));
     expect(isModerationError('UnsafeContentError')).toBe(true);

@@ -16,6 +16,11 @@ const PIPELINE_MESSAGES: Record<string, string> = {
   AutoRenderNotPaid: 'No alcanzó el saldo para renderizar los clips que faltaban. Cargá tokens y volvé a intentarlo; los clips siguen ahí.',
   // Not in map §4 yet: the creation could not queue the processing (broker down); the reservation went back.
   IngestionNotQueued: 'No pudimos empezar a procesar tu video y no se cobró nada. Creá el proyecto de nuevo en unos minutos.',
+  // Link projects (back/apps/videos/tasks/shared.py · download_from_youtube): refused when the video is fetched, never retried.
+  UnsupportedLinkError:
+    'No pudimos usar este link. Tiene que ser el link de un solo video público de YouTube, Vimeo, Twitch o Google Drive: no una lista, un canal ni una transmisión en vivo.',
+  LinkTooLongError: 'El video del link dura más de lo que permite tu plan. Probá con uno más corto o cambiá de plan.',
+  LinkTooLargeError: 'El video del link pesa más de lo que podemos descargar. Probá con una versión más liviana o subí el archivo.',
 };
 
 /** `pipeline_error_code` (class name of the exception) → message for the user (map §4). Unknown codes get the generic one. */
@@ -46,6 +51,12 @@ export function pipelineErrorTitle(code: string | null | undefined): string {
       return 'No alcanzó el saldo para renderizar';
     case 'IngestionNotQueued':
       return 'No pudimos empezar a procesar el video';
+    case 'UnsupportedLinkError':
+      return 'No pudimos usar este link';
+    case 'LinkTooLongError':
+      return 'El video del link es muy largo';
+    case 'LinkTooLargeError':
+      return 'El video del link es muy pesado';
     default:
       return 'Algo falló de nuestro lado';
   }
