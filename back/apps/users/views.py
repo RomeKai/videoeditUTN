@@ -1,8 +1,9 @@
 ﻿from decimal import Decimal
 
-from rest_framework import status
+from django.db import transaction
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.core.workspace import OWNER, ActiveWorkspace, resolve_active_workspace
@@ -14,6 +15,8 @@ from apps.users.serializers import (
     PasswordChangeSerializer,
     UpdateMeSerializer,
 )
+from apps.users.throttles import SpanishThrottleMixin
+from apps.users.tokens import issue_token_pair, revoke_refresh_tokens
 
 
 def _user_workspaces(user):
@@ -79,16 +82,27 @@ class MeView(APIView):
         return Response(_me_payload(request))
 
 
-class PasswordChangeView(APIView):
+class PasswordChangeView(SpanishThrottleMixin, APIView):
+    """
+    Changes the password and ends every other session: the tokens issued before
+    stop working (apps.users.tokens). This client stays signed in with the new
+    pair of the answer.
+    """
+
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'password_change'
 
     def post(self, request):
         serializer = PasswordChangeSerializer(data=request.data, context={'user': request.user})
         serializer.is_valid(raise_exception=True)
         user = request.user
-        user.set_password(serializer.validated_data['new_password'])
-        user.save(update_fields=['password'])
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        with transaction.atomic():
+            user.set_password(serializer.validated_data['new_password'])
+            user.save(update_fields=['password'])
+            revoke_refresh_tokens(user)
+            tokens = issue_token_pair(user)
+        return Response(tokens)
 
 
 class NotificationPreferencesView(APIView):

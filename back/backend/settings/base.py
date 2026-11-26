@@ -29,6 +29,9 @@ DJANGO_APPS = [
 
 THIRD_PARTY_APPS = [
     'rest_framework',
+    # OutstandingToken / BlacklistedToken: a rotated refresh token stops working
+    # (BLACKLIST_AFTER_ROTATION) and a password change revokes the user's sessions.
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'drf_spectacular',
 ]
@@ -127,6 +130,11 @@ REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': None,
     # drf-spectacular's AutoSchema, plus the X-Workspace-Id header on scoped views.
     'DEFAULT_SCHEMA_CLASS': 'apps.core.schema.WorkspaceAutoSchema',
+    # Scopes of ScopedRateThrottle, per user. The endpoints that check the
+    # current password (apps.users.views) must not let it be guessed.
+    'DEFAULT_THROTTLE_RATES': {
+        'password_change': env('THROTTLE_PASSWORD_CHANGE', default='5/hour'),
+    },
 }
 
 # --- AI CONFIG & FEATURE FLAGS ---
@@ -223,6 +231,9 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=3),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
+    # Each token carries a hash of the password: after a change, every access
+    # token issued before answers 401 (apps.users.tokens).
+    'CHECK_REVOKE_TOKEN': True,
 }
 
 # --- LOGGING (INFRA-02) ---

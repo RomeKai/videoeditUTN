@@ -52,7 +52,7 @@ def test_password_change_sets_the_new_password(client, user):
     )
 
     user.refresh_from_db()
-    assert response.status_code == 204
+    assert response.status_code == 200
     assert user.check_password(NEW_PASSWORD)
     assert not user.check_password(PASSWORD)
 
