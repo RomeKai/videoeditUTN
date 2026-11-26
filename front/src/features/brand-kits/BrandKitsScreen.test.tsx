@@ -2,7 +2,7 @@ import { cleanup, configure, fireEvent, screen, waitFor, within } from '@testing
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/api/mocks/server';
-import { db, idle, renderScreen } from '../publicar/testing';
+import { db, idle, renderScenario } from '@/testing';
 import { BrandKitsScreen } from './BrandKitsScreen';
 
 // These flows wait on the mocked API several times: on a busy CI runner the default 1 s / 5 s are not enough.
@@ -18,7 +18,7 @@ afterEach(async () => {
 afterAll(() => server.close());
 
 const open = async (scenario?: string) => {
-  renderScreen(<BrandKitsScreen />, { scenario });
+  renderScenario(<BrandKitsScreen />, { scenario });
   await screen.findByRole('heading', { level: 1, name: 'Brand kits' });
 };
 const card = (name: string) => screen.findByRole('article', { name: `Brand kit ${name}` });
