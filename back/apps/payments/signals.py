@@ -18,8 +18,9 @@ def create_workspace_wallet(sender, instance, created, **kwargs):
 
 @receiver(post_save, sender=SubscriptionPlan)
 @receiver(post_delete, sender=SubscriptionPlan)
-def refresh_public_plans(sender, **kwargs):
+def refresh_public_plans(sender, using='default', **kwargs):
     """
-    La lista pública de planes se cachea una hora: cualquier alta, edición o baja la renueva.
+    La lista pública de planes está en cache: cualquier alta, edición o baja la borra
+    cuando la transacción hace commit (la del admin, por ejemplo), no antes.
     """
-    invalidate_public_plans()
+    invalidate_public_plans(using=using)
