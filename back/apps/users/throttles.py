@@ -81,15 +81,25 @@ def parse_rate(rate):
 
 class LoginFailureGuard:
     """
-    Failed logins of one account (the email of the request). Only failures
-    count, and a successful login clears them, so nobody can lock a user out
-    with requests that succeed, nor with fewer failures than the limits:
+    Failed logins of one account. Only failures count, and a successful login
+    clears them, so nobody can lock a user out with requests that succeed,
+    nor with fewer failures than the limits:
 
     - from one IP: LOGIN_FAILURE_RATES['account_ip'] (10 every 15 minutes);
     - from any IP: LOGIN_FAILURE_RATES['account'] (100 an hour), so spreading
       the guesses over many addresses does not help either.
 
-    The keys are an HMAC of the account (and the IP), never the email.
+    Each attempt is counted before the password is checked, with the cache's
+    atomic add + incr (an INCR in Redis), and given back if it did not fail:
+    simultaneous attempts cannot all slip under the limit. The windows are
+    fixed (they start at multiples of their length), so right at the border
+    up to twice the limit can go through in a short time.
+
+    It uses the `default` cache, which fails open: with Redis down every
+    count reads as a miss and the login only has the password check (and the
+    per-IP throttle, which fails open too). Locking everyone out during an
+    outage would be worse. The keys are an HMAC of the account (and the IP),
+    never the email.
     """
 
     SALT = 'apps.users.throttles.login'
@@ -99,9 +109,10 @@ class LoginFailureGuard:
         ip = BaseThrottle().get_ident(request) or ''
         rates = settings.LOGIN_FAILURE_RATES
         self.windows = [
-            (f'login_failures:{salted_hmac(self.SALT, f"{account}|{ip}").hexdigest()}', parse_rate(rates['account_ip'])),
-            (f'login_failures:{salted_hmac(self.SALT, account).hexdigest()}', parse_rate(rates['account'])),
+            (f'login_failures:{salted_hmac(self.SALT, f"{account}|{ip}").hexdigest()}', *parse_rate(rates['account_ip'])),
+            (f'login_failures:{salted_hmac(self.SALT, account).hexdigest()}', *parse_rate(rates['account'])),
         ]
+        self.counted = []
 
     @staticmethod
     def account_key(email):
@@ -121,23 +132,41 @@ class LoginFailureGuard:
         return cls(request, email) if isinstance(email, str) and email.strip() else None
 
     @staticmethod
-    def _recent(key, duration, now):
-        return [moment for moment in cache.get(key, []) if moment > now - duration]
+    def _count(key, timeout):
+        """This attempt's number in its window, or 0 when the cache does not answer."""
+        try:
+            cache.add(key, 0, timeout)
+            count = cache.incr(key)
+        except ValueError:
+            # The key expired between add and incr: this is the window's first attempt.
+            cache.add(key, 1, timeout)
+            count = 1
+        return count if isinstance(count, int) else 0
 
-    def wait(self):
-        """Seconds until the next attempt is allowed, or 0."""
+    def reserve(self):
+        """
+        Counts the attempt in every window. Returns 0 when it may go on, or the
+        seconds until the fullest window ends.
+        """
         now = time.time()
         waits = []
-        for key, (count, duration) in self.windows:
-            recent = self._recent(key, duration, now)
-            if len(recent) >= count:
-                waits.append(duration - (now - recent[-count]))
+        for base, count, duration in self.windows:
+            window = int(now // duration)
+            ends = (window + 1) * duration
+            key = f'{base}:{window}'
+            number = self._count(key, int(ends - now) + 1)
+            self.counted.append(key)
+            if number > count:
+                waits.append(ends - now)
         return max(waits, default=0)
 
-    def record_failure(self):
-        now = time.time()
-        for key, (count, duration) in self.windows:
-            cache.set(key, [*self._recent(key, duration, now), now][-count:], duration)
+    def release(self):
+        """The attempt did not reach the password check (a 400, an error): it does not count."""
+        for key in self.counted:
+            try:
+                cache.decr(key)
+            except ValueError:
+                pass
 
-    def clear(self):
-        cache.delete_many([key for key, _ in self.windows])
+    def succeeded(self):
+        cache.delete_many(self.counted)

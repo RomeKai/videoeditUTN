@@ -157,15 +157,12 @@ def network_guard():
 
 @pytest.fixture(autouse=True)
 def isolate_test_effects(tmp_path, settings):
-    from django.core.cache import caches
-    from django.core.cache.backends.locmem import LocMemCache
+    from apps.core.testing import clear_local_caches
 
-    # The DRF throttles count in the cache (per IP for the login): each test
-    # starts from zero, whatever the tests before it did. Only the in-memory
-    # cache of backend.settings.ci: on Redis, clear() is a FLUSHDB that would
-    # also empty the broker's queues.
-    if isinstance(caches["default"], LocMemCache):
-        caches["default"].clear()
+    # The DRF throttles and the login guard count in the cache (per IP for the
+    # login): each test starts from zero, whatever the tests before it did.
+    # clear_local_caches refuses anything but the LocMem of backend.settings.ci.
+    clear_local_caches("default", "locks")
     checkpoint = NETWORK_GUARD.checkpoint()
     previous_media_root = settings.MEDIA_ROOT
     isolated_media_root = tmp_path / "media"

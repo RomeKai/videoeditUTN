@@ -220,18 +220,20 @@ class LoginView(SpanishThrottleMixin, TokenObtainPairView):
 
     def post(self, request, *args, **kwargs):
         guard = LoginFailureGuard.for_request(request)
-        if guard is not None:
-            wait = guard.wait()
-            if wait:
-                raise TooManyAttempts(wait)
+        if guard is None:
+            return super().post(request, *args, **kwargs)
+        wait = guard.reserve()
+        if wait:
+            raise TooManyAttempts(wait)
         try:
             response = super().post(request, *args, **kwargs)
         except AuthenticationFailed:
-            if guard is not None:
-                guard.record_failure()
+            # A failure: the attempt stays counted.
             raise
-        if guard is not None:
-            guard.clear()
+        except Exception:
+            guard.release()
+            raise
+        guard.succeeded()
         return response
 
 

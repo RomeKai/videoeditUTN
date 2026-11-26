@@ -15,6 +15,12 @@ REFRESH_URL = "/api/token/refresh/"
 WAIT_IN_SECONDS = re.compile(r"(\d+)\s*segundos?")
 
 
+def _wait_seconds(response):
+    """The wait the 429 announces, back in seconds (the window ends at a fixed time)."""
+    number, unit = re.search(r"en (\d+) (segundos?|minutos?)", response.json()["detail"]).groups()
+    return int(number) * (1 if unit.startswith("segundo") else 60)
+
+
 def _from(ip):
     return APIClient(REMOTE_ADDR=ip)
 
@@ -72,7 +78,7 @@ def test_failures_from_one_ip_lock_the_account_only_there(user, no_ip_limit):
 
     assert failures == [401] * 10
     assert blocked.status_code == 429
-    assert "15 minutos" in blocked.json()["detail"]
+    assert 0 < _wait_seconds(blocked) <= 15 * 60
     # The owner, somewhere else, still signs in.
     assert _login(_from("10.0.4.2"), password="password").status_code == 200
     # Other accounts from the attacker's address are not affected.
@@ -97,7 +103,7 @@ def test_failures_spread_over_many_ips_lock_the_account_everywhere(user):
 
     assert failures == [401] * 5
     assert blocked.status_code == 429
-    assert "60 minutos" in blocked.json()["detail"]
+    assert 0 < _wait_seconds(blocked) <= 60 * 60
 
 
 def test_the_token_refresh_is_limited_per_ip():
@@ -135,3 +141,38 @@ def test_failures_with_another_spelling_lock_the_account(user, no_ip_limit, vari
 
     assert failures == [401] * 3
     assert plain.status_code == 429
+
+
+class _CacheDown:
+    """What the fail-open `default` cache answers with Redis down: every read a miss, every write ignored."""
+
+    def add(self, *args, **kwargs):
+        return None
+
+    def incr(self, *args, **kwargs):
+        return None
+
+    def decr(self, *args, **kwargs):
+        return None
+
+    def delete_many(self, *args, **kwargs):
+        return None
+
+
+def test_with_the_cache_down_the_login_still_answers(user, no_ip_limit):
+    with mock.patch("apps.users.throttles.cache", _CacheDown()):
+        failures = [_login(_from("10.0.12.1")).status_code for _ in range(12)]
+        ok = _login(_from("10.0.12.1"), password="password")
+
+    # No lockout without counters, and no 500: only the password decides.
+    assert failures == [401] * 12
+    assert ok.status_code == 200
+
+
+def test_a_request_that_never_reached_the_password_check_does_not_count(user, no_ip_limit):
+    api = _from("10.0.13.1")
+
+    invalid = [api.post(LOGIN_URL, {"email": "tester@test.com"}, format="json").status_code for _ in range(12)]
+
+    assert invalid == [400] * 12
+    assert _login(api, password="password").status_code == 200
