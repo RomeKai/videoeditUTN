@@ -3,8 +3,13 @@ Roles of the active workspace (table 1.7 of documents/producto/mapa-de-pantallas
 
 ROLE_MATRIX has the same actions and roles as MATRIX in
 front/src/lib/permissions.ts, so the API refuses what the UI disables.
+Nothing is copied by hand: ``manage.py export_role_matrix`` writes ROLE_MATRIX
+to front/src/lib/role-matrix.json, a test on each side compares its own table
+with that file, and both fail naming the role and the action that differ.
 """
+import json
 import uuid
+from pathlib import Path
 
 from rest_framework import permissions
 from rest_framework.exceptions import NotFound, PermissionDenied
@@ -41,6 +46,30 @@ ROLE_MATRIX = {
     'workspace.delete': OWNER_ONLY,
     'workspace.transfer': OWNER_ONLY,
 }
+
+# Order of the roles in the export, from most to least access.
+ROLE_ORDER = (OWNER, ADMIN, EDITOR, VIEWER)
+
+# The file the frontend test reads. parents[3] is the repository root; an image
+# built from back/ alone does not have front/.
+ROLE_MATRIX_FIXTURE = Path(__file__).resolve().parents[3] / 'front' / 'src' / 'lib' / 'role-matrix.json'
+
+
+def role_matrix_export():
+    """ROLE_MATRIX as plain data: ``{action: [role, ...]}``, in a stable order."""
+    return {
+        'roles': [str(role) for role in ROLE_ORDER],
+        'matrix': {
+            action: [str(role) for role in ROLE_ORDER if role in allowed]
+            for action, allowed in ROLE_MATRIX.items()
+        },
+    }
+
+
+def role_matrix_json():
+    """The exact text of ROLE_MATRIX_FIXTURE."""
+    return json.dumps(role_matrix_export(), indent=2) + '\n'
+
 
 # A write a view did not map to an action: only the owner and admins.
 _UNMAPPED_WRITE = 'members.manage'

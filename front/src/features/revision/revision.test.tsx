@@ -1,5 +1,7 @@
+import type { QueryClient } from '@tanstack/react-query';
 import { configure, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactElement } from 'react';
 import { delay, http, HttpResponse } from 'msw';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiCall } from '@/api/client';
@@ -11,11 +13,14 @@ import { server } from '@/api/mocks/server';
 import { PLAN_IDS } from '@/api/mocks/seed';
 import { keys } from '@/api/query';
 import { loadDb } from '@/api/mocks/state';
+import { appQueryClient, editDb, freshQueryClient, renderScreen as renderInApp, signIn } from '@/testing';
 import { ClipEditorScreen, PROJECT_RENDERING_MESSAGE } from './ClipEditorScreen';
 import { ReviewScreen } from './ReviewScreen';
 import { toggleWord } from './components/TranscriptPanel';
 import { formatEdge } from './lib/time';
-import { appQueryClient, editDb, renderScreen, signIn } from './test-utils';
+
+/** Without a `client` the cache dies with the screen: each render starts from the server. */
+const renderScreen = (ui: ReactElement, client: QueryClient = freshQueryClient()) => renderInApp(ui, { client });
 
 const router = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() }));
 vi.mock('next/navigation', () => ({

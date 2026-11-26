@@ -5,11 +5,12 @@ import { server } from '@/api/mocks/server';
 import { tick } from '@/api/mocks/sim';
 import { applyScenario, saveDb } from '@/api/mocks/state';
 import { setActiveWorkspaceId } from '@/api/session';
+import { db, idle, renderScenario } from '@/testing';
 import { PublishPanel } from './PublishPanel';
 import { PublishPanelMount, parseNetworkParam, parsePublishParam, publishHref } from './PublishPanelMount';
 import { RECENT_DRAFT_MS, STALE_DRAFT_MS, findOrphanDrafts, holdDraft, isRemembered, orphanDrafts, releaseDraft, rememberedDrafts, touchDrafts } from './draftRegistry';
 import { dayKey } from './posts';
-import { CLIPS, db, idle, renderScreen } from './testing';
+import { CLIPS } from './testing';
 
 // These flows wait on the mocked API several times: on a busy CI runner the default 1 s / 5 s are not enough.
 configure({ asyncUtilTimeout: 5000 });
@@ -30,10 +31,10 @@ const whenButton = (name: string) => within(screen.getByRole('group', { name: 'C
 
 async function openPanel(clipIds: string[] = [CLIPS.first], scenario?: string, platforms?: Array<'TIKTOK' | 'INSTAGRAM_REELS' | 'YOUTUBE_SHORTS'>) {
   const onClose = vi.fn();
-  const view = renderScreen(<PublishPanel clipIds={clipIds} platforms={platforms} onClose={onClose} />, { scenario });
+  const view = renderScenario(<PublishPanel clipIds={clipIds} platforms={platforms} onClose={onClose} />, { scenario });
   const panel = await screen.findByRole('dialog', { name: clipIds.length > 1 ? `Publicar ${clipIds.length} clips` : 'Publicar clip' });
   await within(panel).findByRole('heading', { name: 'Redes' });
-  return { onClose, panel, ...view };
+  return { onClose, panel, client: view.queryClient, ...view };
 }
 
 /** Seeds the default scenario before the panel renders, to read the database first. */
@@ -350,7 +351,7 @@ describe('E1 · Publicar · borradores de ayuda', () => {
     expect(await orphanDrafts(mine.workspace, [mine.video_clip])).toEqual([]);
     expect(await orphanDrafts('otro-workspace', [])).toEqual([]);
 
-    renderScreen(<PublishPanelMount />, { keep: true });
+    renderScenario(<PublishPanelMount />, { keep: true });
     await waitFor(() => expect(exists(mine.id)).toBe(false));
     await waitFor(() => expect(rememberedDrafts()).toEqual([]));
     // A draft the user made on purpose is nobody's helper: it stays.
@@ -361,7 +362,7 @@ describe('E1 · Publicar · borradores de ayuda', () => {
     const edited = leftover((post) => {
       post.caption = 'Lo edité a mano en Publicaciones, me lo quedo';
     });
-    renderScreen(<PublishPanelMount />, { keep: true });
+    renderScenario(<PublishPanelMount />, { keep: true });
     await waitFor(() => expect(isRemembered(edited.id)).toBe(false));
     await pause(300);
     expect(exists(edited.id)).toBe(true);
@@ -375,7 +376,7 @@ describe('E1 · Publicar · borradores de ayuda', () => {
       post.caption = post.generated_caption ?? '';
       change(post);
     });
-    renderScreen(<PublishPanelMount />, { keep: true });
+    renderScenario(<PublishPanelMount />, { keep: true });
     await waitFor(() => expect(isRemembered(edited.id)).toBe(false));
     await pause(300);
     expect(exists(edited.id)).toBe(true);
@@ -392,7 +393,7 @@ describe('E1 · Publicar · borradores de ayuda', () => {
     expect((await orphanDrafts(theirs.workspace, [], Date.now() + 61_000)).map((item) => item.id)).toEqual([theirs.id]);
 
     // The sweeper leaves it alone now…
-    renderScreen(<PublishPanelMount />, { keep: true });
+    renderScenario(<PublishPanelMount />, { keep: true });
     await pause(700);
     expect(exists(theirs.id)).toBe(true);
     expect(isRemembered(theirs.id)).toBe(true);
@@ -400,7 +401,7 @@ describe('E1 · Publicar · borradores de ayuda', () => {
 
   it('el barrido vuelve a pasar cuando se cumplen los dos minutos y descarta lo que nadie reclamó', async () => {
     const theirs = inAnotherTab(RECENT_DRAFT_MS - 400);
-    renderScreen(<PublishPanelMount />, { keep: true });
+    renderScenario(<PublishPanelMount />, { keep: true });
     await pause(350);
     expect(exists(theirs.id)).toBe(true);
     // The second pass comes at least a second later.
@@ -422,7 +423,7 @@ describe('E1 · Publicar · borradores de ayuda', () => {
         await held;
       }),
     );
-    renderScreen(<PublishPanelMount />, { keep: true });
+    renderScenario(<PublishPanelMount />, { keep: true });
     // The sweeper already decided it was an orphan and is waiting for the server…
     await read;
     // …when the panel of that clip (this page's or another tab's) takes it back.
@@ -474,7 +475,7 @@ describe('E1 · Publicar · borradores de ayuda', () => {
         await held;
       }),
     );
-    renderScreen(<PublishPanelMount />, { keep: true });
+    renderScenario(<PublishPanelMount />, { keep: true });
     await read;
     expect(asked).toEqual([theirs.workspace]);
     // The person switches workspace while the sweeper waits for the server.
@@ -493,7 +494,7 @@ describe('E1 · Publicar · borradores de ayuda', () => {
     await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toHaveLength(1));
     const [live] = postsOf(CLIPS.first, 'DRAFT');
     // A second app with the same storage and no panel of its own.
-    renderScreen(<PublishPanelMount />, { keep: true });
+    renderScenario(<PublishPanelMount />, { keep: true });
     await pause(900);
     expect(exists(live?.id ?? '')).toBe(true);
     expect(isRemembered(live?.id ?? '')).toBe(true);
