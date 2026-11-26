@@ -3,7 +3,7 @@ import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { apiCall, toFormData } from './client';
+import { apiCall, REFRESH_LOCK_NAME, toFormData } from './client';
 import { errorMessage } from '@/lib/error-messages';
 import { API_URL, REQUEST_TIMEOUT_MS, SLOW_REQUEST_TIMEOUT_MS, UPLOAD_STALL_TIMEOUT_MS, WORKSPACE_HEADER } from './config';
 import { exportTransactions } from './contracts/billing';
@@ -700,5 +700,243 @@ describe('toFormData', () => {
     expect((form.get('source_file') as File).name).toBe('clase.mp4');
     expect(form.has('brand_kit')).toBe(false);
     expect(form.has('video_url')).toBe(false);
+  });
+});
+
+/** Another tab of the same browser stores a pair: it writes localStorage, without going through this tab's `setTokens`. */
+function otherTabStores(pair: { access: string; refresh: string } | null): void {
+  if (pair) window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(pair));
+  else window.localStorage.removeItem(AUTH_STORAGE_KEY);
+}
+
+/** Web Locks as the browser gives them: one holder per name, the rest wait in order. Shared by every "tab" of the test. */
+function fakeLocks() {
+  const queues = new Map<string, Promise<unknown>>();
+  const names: string[] = [];
+  const request = <T,>(name: string, run: () => Promise<T>): Promise<T> => {
+    names.push(name);
+    const previous = queues.get(name) ?? Promise.resolve();
+    const mine = previous.then(run, run);
+    queues.set(name, mine.catch(() => undefined));
+    return mine;
+  };
+  return { locks: { request }, names };
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+describe('renovar el token con varias pestañas', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    clearSession();
+  });
+
+  const thingNeedsToken = (valid: string) =>
+    http.get(`${API_URL}/api/v1/things/:id/`, ({ request }) =>
+      request.headers.get('Authorization') === `Bearer ${valid}` ? HttpResponse.json({ id: 1, name: 'Ok' }) : HttpResponse.json({ detail: 'Token vencido' }, { status: 401 }),
+    );
+
+  it('la renovación toma siempre el mismo lock del navegador', async () => {
+    const { locks, names } = fakeLocks();
+    vi.stubGlobal('navigator', { ...navigator, locks });
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    server.use(thingNeedsToken('nuevo'), http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ access: 'nuevo', refresh: 'refresh-2' })));
+    await expect(apiCall(getThing, { params: { id: '1' } })).resolves.toEqual({ id: 1, name: 'Ok' });
+    expect(names).toEqual([REFRESH_LOCK_NAME]);
+    expect(REFRESH_LOCK_NAME).toBe('oc.auth.refresh');
+    expect(getTokens()).toEqual({ access: 'nuevo', refresh: 'refresh-2' });
+  });
+
+  it('si otra pestaña renovó mientras esperaba el lock, usa su par y no manda el refresh ya rotado', async () => {
+    const { locks } = fakeLocks();
+    vi.stubGlobal('navigator', { ...navigator, locks });
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    const expired = vi.fn();
+    const off = onSessionExpired(expired);
+    let refreshes = 0;
+    server.use(
+      thingNeedsToken('de-otra-pestaña'),
+      // The backend blacklists a rotated refresh token: sending it again is what used to end the session.
+      http.post(`${API_URL}/api/token/refresh/`, () => {
+        refreshes += 1;
+        return HttpResponse.json({ detail: 'Token is blacklisted', code: 'token_not_valid' }, { status: 401 });
+      }),
+    );
+    // The other tab holds the lock while it renews.
+    const otherTab = deferred();
+    const held = locks.request(REFRESH_LOCK_NAME, () => otherTab.promise);
+    const call = apiCall(getThing, { params: { id: '1' } });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(refreshes).toBe(0);
+    otherTabStores({ access: 'de-otra-pestaña', refresh: 'refresh-2' });
+    otherTab.resolve();
+    await held;
+    await expect(call).resolves.toEqual({ id: 1, name: 'Ok' });
+    expect(refreshes).toBe(0);
+    expect(expired).not.toHaveBeenCalled();
+    expect(isSessionExpired()).toBe(false);
+    expect(getTokens()).toEqual({ access: 'de-otra-pestaña', refresh: 'refresh-2' });
+    off();
+  });
+
+  it('dos pestañas que renuevan a la vez mandan un solo refresh', async () => {
+    const { locks } = fakeLocks();
+    vi.stubGlobal('navigator', { ...navigator, locks });
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    const used: unknown[] = [];
+    server.use(
+      thingNeedsToken('nuevo'),
+      http.post(`${API_URL}/api/token/refresh/`, async ({ request }) => {
+        const body = (await request.json()) as { refresh: string };
+        used.push(body.refresh);
+        if (used.length > 1) return HttpResponse.json({ detail: 'Token is blacklisted' }, { status: 401 });
+        return HttpResponse.json({ access: 'nuevo', refresh: 'refresh-2' });
+      }),
+    );
+    // A second copy of the client module is the other tab: its own memory, the same localStorage and the same locks.
+    vi.resetModules();
+    const otherTab = await import('./client');
+    const [mine, theirs] = await Promise.all([apiCall(getThing, { params: { id: '1' } }), otherTab.apiCall(getThing, { params: { id: '1' } })]);
+    expect(mine).toEqual({ id: 1, name: 'Ok' });
+    expect(theirs).toEqual({ id: 1, name: 'Ok' });
+    expect(used).toEqual(['refresh-1']);
+    expect(isSessionExpired()).toBe(false);
+  });
+
+  it('sin Web Locks: si el refresh ya lo rotó otra pestaña, espera su par en vez de dar la sesión por vencida', async () => {
+    vi.stubGlobal('navigator', { ...navigator, locks: undefined });
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    const expired = vi.fn();
+    const off = onSessionExpired(expired);
+    server.use(
+      thingNeedsToken('de-otra-pestaña'),
+      http.post(`${API_URL}/api/token/refresh/`, () => {
+        // The other tab's answer is still on its way when this one is refused.
+        setTimeout(() => otherTabStores({ access: 'de-otra-pestaña', refresh: 'refresh-2' }), 120);
+        return HttpResponse.json({ detail: 'Token is blacklisted', code: 'token_not_valid' }, { status: 401 });
+      }),
+    );
+    await expect(apiCall(getThing, { params: { id: '1' } })).resolves.toEqual({ id: 1, name: 'Ok' });
+    expect(expired).not.toHaveBeenCalled();
+    off();
+  });
+
+  it('sin Web Locks y sin otra pestaña, un refresh rechazado sigue siendo una sesión vencida', async () => {
+    vi.stubGlobal('navigator', { ...navigator, locks: undefined });
+    setTokens({ access: 'viejo', refresh: 'refresh-vencido' });
+    server.use(thingNeedsToken('ninguno'), http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ detail: 'Token is invalid or expired' }, { status: 401 })));
+    await expect(apiCall(getThing, { params: { id: '1' } })).rejects.toBeInstanceOf(SessionExpiredError);
+    expect(isSessionExpired()).toBe(true);
+  });
+
+  it('si el navegador no deja pedir el lock, renueva igual', async () => {
+    vi.stubGlobal('navigator', { ...navigator, locks: { request: () => Promise.reject(new DOMException('no', 'SecurityError')) } });
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    server.use(thingNeedsToken('nuevo'), http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ access: 'nuevo', refresh: 'refresh-2' })));
+    await expect(apiCall(getThing, { params: { id: '1' } })).resolves.toEqual({ id: 1, name: 'Ok' });
+  });
+});
+
+describe('un par nuevo anula la renovación en vuelo', () => {
+  afterEach(() => clearSession());
+
+  it('cambiar la contraseña mientras se renueva: el par del cambio queda, el de la renovación se descarta', async () => {
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    const refreshArrived = deferred();
+    const release = deferred();
+    const expired = vi.fn();
+    const off = onSessionExpired(expired);
+    server.use(
+      http.get(`${API_URL}/api/v1/things/:id/`, ({ request }) =>
+        request.headers.get('Authorization') === 'Bearer del-cambio' ? HttpResponse.json({ id: 1, name: 'Ok' }) : HttpResponse.json({ detail: 'Token vencido' }, { status: 401 }),
+      ),
+      http.post(`${API_URL}/api/token/refresh/`, async () => {
+        refreshArrived.resolve();
+        await release.promise;
+        // Rotated before the password changed: the server revoked this pair with the change.
+        return HttpResponse.json({ access: 'revocado', refresh: 'refresh-revocado' });
+      }),
+    );
+    const call = apiCall(getThing, { params: { id: '1' } });
+    await refreshArrived.promise;
+    // POST /me/password/ answered: useChangePassword stores the new pair.
+    setTokens({ access: 'del-cambio', refresh: 'refresh-del-cambio' });
+    release.resolve();
+    // The request that was waiting for the renewal goes on with the pair that is valid.
+    await expect(call).resolves.toEqual({ id: 1, name: 'Ok' });
+    expect(getTokens()).toEqual({ access: 'del-cambio', refresh: 'refresh-del-cambio' });
+    expect(expired).not.toHaveBeenCalled();
+    off();
+  });
+
+  it('también si la renovación tardía falla: no vence la sesión que el cambio dejó', async () => {
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    const refreshArrived = deferred();
+    const release = deferred();
+    server.use(
+      http.get(`${API_URL}/api/v1/things/:id/`, ({ request }) =>
+        request.headers.get('Authorization') === 'Bearer del-cambio' ? HttpResponse.json({ id: 1, name: 'Ok' }) : HttpResponse.json({ detail: 'Token vencido' }, { status: 401 }),
+      ),
+      http.post(`${API_URL}/api/token/refresh/`, async () => {
+        refreshArrived.resolve();
+        await release.promise;
+        return HttpResponse.json({ detail: 'Token is blacklisted' }, { status: 401 });
+      }),
+    );
+    const call = apiCall(getThing, { params: { id: '1' } });
+    await refreshArrived.promise;
+    setTokens({ access: 'del-cambio', refresh: 'refresh-del-cambio' });
+    release.resolve();
+    await expect(call).resolves.toEqual({ id: 1, name: 'Ok' });
+    expect(isSessionExpired()).toBe(false);
+    expect(getTokens()).toEqual({ access: 'del-cambio', refresh: 'refresh-del-cambio' });
+  });
+
+  it('cerrar sesión mientras se renueva: la renovación no la revive', async () => {
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    const refreshArrived = deferred();
+    const release = deferred();
+    server.use(
+      http.get(`${API_URL}/api/v1/things/:id/`, () => HttpResponse.json({ detail: 'Token vencido' }, { status: 401 })),
+      http.post(`${API_URL}/api/token/refresh/`, async () => {
+        refreshArrived.resolve();
+        await release.promise;
+        return HttpResponse.json({ access: 'tarde', refresh: 'refresh-tarde' });
+      }),
+    );
+    const call = apiCall(getThing, { params: { id: '1' } }).catch((reason: unknown) => reason);
+    await refreshArrived.promise;
+    clearSession();
+    release.resolve();
+    expect(await call).toBeInstanceOf(SessionExpiredError);
+    expect(getTokens()).toBeNull();
+  });
+
+  it('un par que guardó otra pestaña mientras tanto también gana', async () => {
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    const refreshArrived = deferred();
+    const release = deferred();
+    server.use(
+      http.get(`${API_URL}/api/v1/things/:id/`, ({ request }) =>
+        request.headers.get('Authorization') === 'Bearer de-otra-pestaña' ? HttpResponse.json({ id: 1, name: 'Ok' }) : HttpResponse.json({ detail: 'Token vencido' }, { status: 401 }),
+      ),
+      http.post(`${API_URL}/api/token/refresh/`, async () => {
+        refreshArrived.resolve();
+        await release.promise;
+        return HttpResponse.json({ access: 'revocado', refresh: 'refresh-revocado' });
+      }),
+    );
+    const call = apiCall(getThing, { params: { id: '1' } });
+    await refreshArrived.promise;
+    otherTabStores({ access: 'de-otra-pestaña', refresh: 'refresh-de-otra' });
+    release.resolve();
+    await expect(call).resolves.toEqual({ id: 1, name: 'Ok' });
+    expect(getTokens()).toEqual({ access: 'de-otra-pestaña', refresh: 'refresh-de-otra' });
   });
 });

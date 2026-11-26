@@ -43,7 +43,19 @@ export function getTokens(): TokenPair | null {
   }
 }
 
+/**
+ * Counts every time this tab's pair is replaced (sign in, sign out, a new pair after changing the
+ * password, a renewal) or another tab replaces it. A renewal that started under an older
+ * generation must not store its result: see `refreshAccessToken`.
+ */
+let tokenGeneration = 0;
+
+export function getTokenGeneration(): number {
+  return tokenGeneration;
+}
+
 export function setTokens(tokens: TokenPair | null): void {
+  tokenGeneration += 1;
   memoryTokens = tokens;
   // New tokens end the "expired" state; dropping them ends it too (there is nothing left to expire).
   expired = false;
@@ -113,7 +125,10 @@ export function clearSession(): void {
 function onStorage(event: StorageEvent): void {
   if (event.key !== AUTH_STORAGE_KEY && event.key !== WORKSPACE_STORAGE_KEY) return;
   // Another tab signed in again (or out): this tab's "expired" state is over too.
-  if (event.key === AUTH_STORAGE_KEY) expired = false;
+  if (event.key === AUTH_STORAGE_KEY) {
+    expired = false;
+    tokenGeneration += 1;
+  }
   if (event.key === WORKSPACE_STORAGE_KEY) {
     // The other tab came back to this one's workspace: nothing is deferred any more.
     if (heldWorkspace !== null && event.newValue === heldWorkspace) heldWorkspace = null;
