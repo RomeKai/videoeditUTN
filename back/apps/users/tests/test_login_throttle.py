@@ -36,6 +36,18 @@ def test_the_login_is_limited_per_ip(user):
     assert _login(_from("10.0.0.2"), password="password").status_code == 200
 
 
+def test_a_forged_x_forwarded_for_does_not_escape_the_ip_limit(user):
+    # Without a proxy in front (NUM_PROXIES=0, the default outside production) the header is ignored.
+    codes = [
+        APIClient(REMOTE_ADDR="10.9.9.9", HTTP_X_FORWARDED_FOR=f"1.2.3.{n}").post(
+            LOGIN_URL, {"email": f"nadie{n}@test.com", "password": "x"}, format="json",
+        ).status_code
+        for n in range(11)
+    ]
+
+    assert codes == [401] * 10 + [429]
+
+
 def test_the_login_is_limited_per_account_from_any_ip(user):
     answers = [_login(_from(f"10.0.1.{n}")).status_code for n in range(20)]
     blocked = _login(_from("10.0.2.1"), email="Tester@Test.com ", password="password")

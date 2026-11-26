@@ -157,10 +157,12 @@ REST_FRAMEWORK = {
         # PATCH /me with a new email: checks the password and sends an email.
         'email_change': env('THROTTLE_EMAIL_CHANGE', default='5/hour'),
     },
-    # Proxies in front of Django (load balancer, nginx). Unset, the per-IP
-    # limits use the whole X-Forwarded-For, which a client can forge: set it
-    # where the deployment knows how many proxies add their address.
-    'NUM_PROXIES': env.int('NUM_PROXIES', default=None),
+    # Proxies in front of Django (load balancer, nginx) that add the client's
+    # address to X-Forwarded-For. The per-IP limits take the address that many
+    # hops from the end. 0 (dev, ci): REMOTE_ADDR only, X-Forwarded-For is
+    # never trusted. DRF's own default (None) trusts the whole header, which
+    # any client can forge; prod.py requires the variable.
+    'NUM_PROXIES': env.int('NUM_PROXIES', default=0),
 }
 
 # --- AI CONFIG & FEATURE FLAGS ---

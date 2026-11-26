@@ -1,5 +1,9 @@
+import os
+
+from django.core.exceptions import ImproperlyConfigured
+
 from .base import *  # noqa: F403
-from .base import env
+from .base import REST_FRAMEWORK, env
 
 # --- MODO PRODUCCIÓN ---
 # ¡CRÍTICO! Nunca True en producción, o te pueden robar las claves.
@@ -11,6 +15,18 @@ ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=[])
 # --- CORS (Restrictivo) ---
 # Solo permitir peticiones desde tu dominio frontend real
 CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[])
+
+# --- PROXIES ---
+# Required: the per-IP attempt limits (login, refresh) read the client's
+# address from X-Forwarded-For, NUM_PROXIES hops from the end. A wrong value
+# lets a client forge its address (too high) or puts every user behind the
+# same proxy in one bucket (0 behind a proxy). See back/.env.example.
+if 'NUM_PROXIES' not in os.environ:
+    raise ImproperlyConfigured(
+        'NUM_PROXIES is required in production: the number of proxies in front of Django '
+        'that add the client address to X-Forwarded-For (0 if Django gets the requests directly).'
+    )
+REST_FRAMEWORK = {**REST_FRAMEWORK, 'NUM_PROXIES': env.int('NUM_PROXIES')}
 
 # --- SEGURIDAD (Hardening) ---
 # Forzar HTTPS (Descomentar cuando tengas certificado SSL en el server)
