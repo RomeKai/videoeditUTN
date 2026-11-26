@@ -133,7 +133,7 @@ export const retryClip = defineEndpoint({
     { status: 403, when: 'El plan no permite la resolución o la duración (`code`), como `render`. La UI abre D3.' },
     {
       status: 409,
-      when: 'El clip ya está en el render que pagó un click anterior, esperando o renderizándose (`code: "clip_rendering"`); no está en error (`code: "not_failed"`); o su proyecto se está renderizando o procesando (los mismos códigos que `render`).',
+      when: 'El clip no está en error (`code: "not_failed"`), o su proyecto se está renderizando o procesando (los mismos códigos que `render`).',
     },
   ],
   backend: {

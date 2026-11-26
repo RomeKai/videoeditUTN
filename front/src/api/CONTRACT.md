@@ -951,7 +951,7 @@ Reintenta el render de un clip que falló. Cobra su render: su parte se devolvi�
 | Nota | El cuerpo es el clip (en `draft` con `render_queued: true` hasta que su render empieza) más `final_cost` y `transaction_id`. Un segundo click mientras el clip espera o se renderiza recibe 409 `clip_rendering`, no `not_failed`. No hay reintento gratis: el reparto por segundos entregados ya devolvió lo que el clip fallido no entregó, y el modelo no guarda por qué falló. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 202 | Clip |
-| Errores | **402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**403** El plan no permite la resolución o la duración (`code`), como `render`. La UI abre D3.<br>**409** El clip ya está en el render que pagó un click anterior, esperando o renderizándose (`code: "clip_rendering"`); no está en error (`code: "not_failed"`); o su proyecto se está renderizando o procesando (los mismos códigos que `render`). |
+| Errores | **402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**403** El plan no permite la resolución o la duración (`code`), como `render`. La UI abre D3.<br>**409** El clip no está en error (`code: "not_failed"`), o su proyecto se está renderizando o procesando (los mismos códigos que `render`). |
 | Pantallas | D3 |
 
 #### `GET /api/v1/clips/:id/download/`
@@ -1723,7 +1723,6 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `virality_score` | number |
 | `ai_reasoning` | string |
 | `status` | ClipStatus |
-| `render_queued` (opcional) | boolean |
 | `created_at` | IsoDateTime |
 | `layers` | ClipLayer[] |
 | `preview_url` (opcional) | string \\| null |
