@@ -56,7 +56,7 @@ from datetime import datetime, timedelta
 from django.utils import timezone
 from django.db import DatabaseError, transaction
 from django.db.models import F, Q
-from django.core.cache import cache
+from django.core.cache import caches
 from apps.videos.models import VideoProject, VideoClip, ScheduledPost
 from backend.celery import app as celery_app
 
@@ -78,16 +78,17 @@ logger = logging.getLogger(__name__)
 @celery_app.task(name='apps.videos.tasks.dispatch_scheduled_posts_batch')
 def dispatch_scheduled_posts_batch():
     """
-    Orchestrator: Dispatches posts scheduled for the next hour.
-    Runs every hour via Celery Beat.
+    Orchestrator: dispatches the SCHEDULED posts due within the next hour, and
+    those already overdue (the beat or the worker was down), which go out at once.
+    Runs every 5 minutes via Celery Beat (CELERY_BEAT_SCHEDULE).
     """
     now = timezone.now()
     window_end = now + timedelta(hours=1)
     
-    # Batch query for scheduled posts in the next hour
+    # Batch query: everything due by the end of the window, overdue posts included
     scheduled_posts = ScheduledPost.objects.filter(
         status=ScheduledPost.Status.SCHEDULED,
-        publish_at__range=(now, window_end)
+        publish_at__lte=window_end
     )
     
     count = 0
@@ -125,9 +126,29 @@ def upload_to_social_network(self, post_id):
     from apps.videos.services.storage_service import CloudflareR2Manager
 
     lock_id = f"lock_post_publish_{post_id}"
-    # Outlives the slowest Ayrshare call (read timeout) plus the rest of the task,
-    # so a second delivery cannot start while the first one is still sending.
-    if not cache.add(lock_id, "locked", AyrshareClient.TIMEOUT_SECONDS[1] + 300):
+    # The cache that raises (apps/core/cache.py): with Redis down the task fails
+    # instead of publishing without the lock. Outlives the slowest Ayrshare call
+    # (read timeout) plus the rest of the task, so a second delivery cannot
+    # start while the first one is still sending.
+    locks = caches['locks']
+    try:
+        acquired = locks.add(lock_id, "locked", AyrshareClient.TIMEOUT_SECONDS[1] + 300)
+    except Exception as exc:
+        # Redis did not answer: never published without the lock. Retried with
+        # backoff; out of retries the post fails, instead of staying QUEUED
+        # with no task behind it (the dispatcher only picks SCHEDULED).
+        attempts = self.request.retries + 1
+        logger.warning(
+            "publish.lock_unavailable post_id=%s attempt=%d error=%s", post_id, attempts, type(exc).__name__,
+        )
+        if self.request.retries >= self.max_retries:
+            ScheduledPost.objects.filter(id=post_id).update(
+                status=ScheduledPost.Status.FAILED,
+                error_log=f"Lock unavailable after {attempts} attempts: {type(exc).__name__}",
+            )
+            raise
+        raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+    if not acquired:
         logger.warning(f"🔒 [WORKER] Aborting post {post_id}: Already running.")
         return "Locked"
 
@@ -242,7 +263,11 @@ def upload_to_social_network(self, post_id):
         raise
 
     finally:
-        cache.delete(lock_id)
+        try:
+            locks.delete(lock_id)
+        except Exception as exc:
+            # Its TTL frees it; the error must not hide the task's own outcome.
+            logger.warning("publish.lock_release_failed post_id=%s error=%s", post_id, type(exc).__name__)
 
 # Social metadata (AICORE-17, ADR-013). One generation at a time per post, and
 # the last generation kept until its output moderation passes, so a moderation

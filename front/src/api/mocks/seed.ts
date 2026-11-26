@@ -39,7 +39,7 @@ export function seedPlans(): Plan[] {
       allow_crossposting: false,
       has_seo_optimization: false,
       base_discount_rate: 0,
-      max_members: 1,
+      max_members: 2,
       price_usd_monthly: 0,
       description: 'Para probar con videos cortos.',
       sort_order: 1,
@@ -83,7 +83,7 @@ export function seedPlans(): Plan[] {
       ...base,
       id: PLAN_IDS.studio,
       name: 'Estudio',
-      max_video_duration_seconds: 14400,
+      max_video_duration_seconds: 10800,
       max_resolution: '4K',
       has_watermark: false,
       allow_scheduling: true,
@@ -480,7 +480,7 @@ function transactionFor(project: MockProject, index: number, walletId: string): 
   };
 }
 
-function socialAccounts(workspace: string, states: Partial<Record<Platform, 'connected' | 'expired' | 'disconnected'>>, now: number): MockSocialAccount[] {
+export function socialAccounts(workspace: string, states: Partial<Record<Platform, 'connected' | 'expired' | 'disconnected'>>, now: number): MockSocialAccount[] {
   const limits: Record<Platform, MockSocialAccount['limits']> = {
     TIKTOK: { caption_max_chars: 2200, hashtags_max: 30, max_duration_seconds: 600, aspect_ratios: ['9:16'] },
     INSTAGRAM_REELS: { caption_max_chars: 2200, hashtags_max: 30, max_duration_seconds: 90, aspect_ratios: ['9:16'] },

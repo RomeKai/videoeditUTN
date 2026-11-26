@@ -102,6 +102,40 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
             context['pte_prompt'] = prompt
         return context
 
+    def destroy(self, request, *args, **kwargs):
+        """
+        Deletes the project, never with tokens still reserved: while it may
+        render or process, or with a creation or render reservation RESERVED,
+        it is a 409 (views_clips.project_delete_decision). Nothing would settle
+        that reservation once its project is gone. A project stuck for good
+        (no worker, nothing for RENDER_STUCK_AFTER_SECONDS, nothing delivered)
+        gets its open reservations returned, in the same transaction, and goes.
+        Nothing charged comes back.
+        """
+        from .views_clips import project_delete_decision
+
+        project = self.get_object()  # 404 outside the workspace; an Editor's own projects only
+        with transaction.atomic():
+            # Locked: an approval or a paid render that starts meanwhile waits for it.
+            locked = VideoProject.objects.select_for_update().get(pk=project.pk)
+            refusal, refunds = project_delete_decision(locked)
+            if refusal is not None:
+                return refusal
+            try:
+                for reservation_id in refunds:
+                    wallet_service.rollback_reservation(reservation_id)
+            except wallet_service.PaymentError:
+                # Settled meanwhile (the pipeline or a sweep): decide again.
+                transaction.set_rollback(True)
+                return Response({
+                    "error": "El proyecto tiene tokens reservados que todavía no se liquidaron. Probá de nuevo en unos minutos.",
+                    "code": "reservation_open",
+                }, status=409)
+            self.perform_destroy(locked)
+        if refunds:
+            logger.warning("project.deleted_stuck project_id=%s refunded=%d", project.pk, len(refunds))
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=False, methods=['post'], url_path='from-prompt')
     def from_prompt(self, request):
         """
@@ -279,15 +313,20 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         try:
+            # A failure here leaves neither the row nor the upload (serializer.create).
             project = serializer.save(workspace=workspace, uploaded_by=user, status=VideoProject.Status.UPLOADED)
         except Exception as e:
-            return Response({"error": f"Error al guardar proyecto: {str(e)}"}, status=500)
+            # Never the error's text: it can carry storage paths and database details.
+            logger.error("project.save_failed error=%s", type(e).__name__)
+            return Response({"error": SAVE_FAILED_ERROR}, status=500)
 
         from apps.payments.services.pricing_engine import PricingEngine, PlanLimitExceededError, FeatureNotAllowedError
         
         cost_in_tokens = Decimal('0.0')
         duration_seconds = 0
 
+        # From here on, every refusal goes through _discard_new_project: the
+        # row goes, and so does the upload it saved.
         if project.source_file:
             try:
                 source_media = project.metadata.get('source_media') or {}
@@ -315,18 +354,18 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
                 project.metadata = {**(project.metadata or {}), 'priced_duration_s': duration_seconds}
                 
             except (PlanLimitExceededError, FeatureNotAllowedError) as e:
-                project.delete()
+                _discard_new_project(project)
                 return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
             except Exception as e:
-                project.delete()
-                logger.error(f"Error calculando costo V3: {e}")
+                _discard_new_project(project)
+                logger.error("Error calculando costo V3 project_id=%s error=%s", project.pk, type(e).__name__)
                 return Response({"error": "Error interno al procesar el presupuesto del video."}, status=status.HTTP_400_BAD_REQUEST)
         
         elif project.video_url:
             if _pricing_resolution(project) != '720p':
                 # The flat link price does not know the duration, so it cannot
                 # price a higher tier; an auto-rendered link would get it free.
-                project.delete()
+                _discard_new_project(project)
                 return Response(
                     {"error": "Los proyectos por link se procesan en 720p. Para 1080p o 4K, subí el archivo."},
                     status=status.HTTP_400_BAD_REQUEST,
@@ -347,42 +386,55 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
                     # Without add-ons the engine still returns its 0.01 floor.
                     cost_in_tokens += add_on
             except (PlanLimitExceededError, FeatureNotAllowedError) as e:
-                project.delete()
+                _discard_new_project(project)
                 return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
 
+        # The reservation and its link to the project (ADR-011 D-M5: the
+        # pipeline refunds it from metadata['reservation_id']) are one
+        # transaction, and the ingestion is queued once it commits: the worker
+        # always finds both. outcome['not_queued'] says what happened if the
+        # broker did not take it.
+        outcome = {}
         try:
-            # Asegurar que el workspace tenga billetera (autocuración)
-            from apps.payments.models import Wallet
-            wallet, _ = Wallet.objects.get_or_create(workspace=workspace)
-            
-            tx = wallet_service.reserve_funds(
-                wallet_id=wallet.id,
-                amount=cost_in_tokens,
-                user=user,
-                description=f"Procesamiento: {project.title}"[:255]
-            )
-            
+            with transaction.atomic():
+                # Asegurar que el workspace tenga billetera (autocuración)
+                from apps.payments.models import Wallet
+                wallet, _ = Wallet.objects.get_or_create(workspace=workspace)
+
+                tx = wallet_service.reserve_funds(
+                    wallet_id=wallet.id,
+                    amount=cost_in_tokens,
+                    user=user,
+                    description=f"Procesamiento: {project.title}"[:255]
+                )
+                project.metadata = {**(project.metadata or {}), 'reservation_id': str(tx.id)}
+                VideoProject.objects.filter(pk=project.pk).update(metadata=project.metadata)
+                transaction.on_commit(lambda: _queue_ingestion(project.pk, tx.pk, outcome))
+
         except (wallet_service.InsufficientFundsError, ValidationError) as e:
-            project.delete()
-            if project.source_file and os.path.exists(project.source_file.path):
-                os.remove(project.source_file.path)
-            
+            _discard_new_project(project)
             return Response({
                 "error": str(e),
                 "required": cost_in_tokens
             }, status=status.HTTP_402_PAYMENT_REQUIRED)
             
         except Exception as e:
-            project.delete()
-            logger.error(f"Error reserving funds on create: {e}")
+            _discard_new_project(project)
+            logger.error("Error reserving funds on create project_id=%s error=%s", project.pk, type(e).__name__)
             return Response({"error": "Error procesando el pago."}, status=500)
 
-        # Links the reservation to the project so the pipeline can refund it when
-        # moderation stops the project (ADR-011 D-M5). Written before the task is queued.
-        project.metadata = {**(project.metadata or {}), 'reservation_id': str(tx.id)}
-        VideoProject.objects.filter(pk=project.pk).update(metadata=project.metadata)
-
-        process_initial_ingestion.delay(project.id)
+        not_queued = outcome.get('not_queued')
+        if not_queued is not None:
+            # The broker did not take it (_queue_ingestion): the request fails
+            # and can be retried. "Nothing was charged" only once the refund
+            # is committed.
+            refunded = not_queued == NOT_QUEUED_REFUNDED
+            return Response({
+                "error": INGESTION_NOT_QUEUED_ERROR if refunded else INGESTION_NOT_QUEUED_UNCONFIRMED_ERROR,
+                "code": INGESTION_NOT_QUEUED,
+                "project_id": project.id,
+                "refunded": refunded,
+            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
         response_data = serializer.data
         response_data['cost_details'] = {
@@ -392,6 +444,79 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         response_data['message'] = "Video subido. Iniciando ingesta multimodal..."
 
         return Response(response_data, status=status.HTTP_201_CREATED)
+
+
+# pipeline_error_code of a project whose ingestion could not be queued at
+# creation (the broker was down): front/src/lib/error-messages.ts translates it,
+# and _run_ingestion never resumes it.
+from .tasks.ingestion import INGESTION_NOT_QUEUED  # noqa: E402
+
+INGESTION_NOT_QUEUED_ERROR = "No pudimos empezar a procesar el video y no se cobró nada. Probá de nuevo en unos minutos."
+INGESTION_NOT_QUEUED_UNCONFIRMED_ERROR = (
+    "No pudimos empezar a procesar el video. Probá de nuevo en unos minutos; "
+    "si quedan tokens reservados por este proyecto, escribinos."
+)
+SAVE_FAILED_ERROR = "No pudimos guardar el proyecto. Probá de nuevo en unos minutos."
+# What _fail_unqueued_project could do.
+NOT_QUEUED_REFUNDED, NOT_QUEUED_UNCONFIRMED = 'refunded', 'unconfirmed'
+
+
+def _discard_new_project(project):
+    """A creation refused after the INSERT: neither the row nor its upload stays."""
+    from .services.storage_service import delete_upload
+
+    upload = project.source_file.name if project.source_file else None
+    project_id = project.pk
+    project.delete()
+    delete_upload(upload, project_id)
+
+
+def _queue_ingestion(project_id, reservation_id, outcome):
+    """
+    Queues the ingestion of a new project once its reservation is committed.
+    Without the message nothing would ever pick the project up, and its tokens
+    would stay reserved: ``_fail_unqueued_project`` fails it now, and
+    ``outcome['not_queued']`` says how that went. Never raises: it runs after
+    the commit, so an error here must not undo the creation.
+    """
+    try:
+        process_initial_ingestion.delay(project_id)
+    except Exception as exc:
+        logger.error("project.ingestion_not_queued project_id=%s error=%s", project_id, type(exc).__name__)
+        result = _fail_unqueued_project(project_id, reservation_id)
+        if result is not None:
+            outcome['not_queued'] = result
+
+
+def _fail_unqueued_project(project_id, reservation_id):
+    """
+    Fails a new project whose ingestion was not queued, with
+    INGESTION_NOT_QUEUED, and returns its reservation. Both in one
+    transaction, under the project's row lock: no one ever sees it failed and
+    not refunded, or refunded and still running. A late delivery of the
+    message finds the code and does not run it (``_run_ingestion``).
+
+    Returns NOT_QUEUED_REFUNDED when that is committed; None when the message
+    got through after all and a worker already moved the project on (it stays
+    the worker's, with its reservation); NOT_QUEUED_UNCONFIRMED when it could
+    not be written: the project stays at ``uploaded`` with its reservation,
+    logged as ``project.not_queued_not_recorded`` for a person. Never raises.
+    """
+    from apps.payments.services.wallet_service import rollback_reservation
+
+    from .services.ai.pipeline_state import PipelineStage, mark_failed, record_error
+
+    try:
+        with transaction.atomic():
+            if not mark_failed(project_id, expected_stage=PipelineStage.UPLOADED):
+                return None
+            record_error(project_id, INGESTION_NOT_QUEUED)
+            rollback_reservation(reservation_id)
+    except Exception as exc:
+        logger.error("project.not_queued_not_recorded project_id=%s error=%s", project_id, type(exc).__name__)
+        return NOT_QUEUED_UNCONFIRMED
+    logger.info("project.not_queued_refunded project_id=%s", project_id)
+    return NOT_QUEUED_REFUNDED
 
 
 def _segment_clip_id(value):

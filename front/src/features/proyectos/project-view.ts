@@ -1,3 +1,4 @@
+import { isOfWorkspace } from '@/api/routing';
 import type { Project, ProjectStatusGroup } from '@/api/contracts/projects';
 import { projectStatusGroup, type ProjectStatusView } from '@/lib/project-status';
 import type { ButtonVariant, IconName } from '@/ui';
@@ -5,19 +6,33 @@ import type { ButtonVariant, IconName } from '@/ui';
 /** What the list needs of a project (the list endpoint sends the whole serializer). */
 export type ProjectRow = Project;
 
-const PROVIDERS: Array<[RegExp, string]> = [
-  [/(^|\.)youtube\.com$|(^|\.)youtu\.be$/, 'YouTube'],
-  [/(^|\.)vimeo\.com$/, 'Vimeo'],
-  [/(^|\.)twitch\.tv$/, 'Twitch'],
-  [/(^|\.)drive\.google\.com$/, 'Google Drive'],
-];
+/**
+ * The hosts the backend downloads links from, exactly (`LINK_HOSTS` of
+ * back/apps/videos/services/link_validation.py): no other subdomain.
+ */
+export const LINK_HOSTS: Readonly<Record<string, string>> = {
+  'youtube.com': 'YouTube',
+  'www.youtube.com': 'YouTube',
+  'm.youtube.com': 'YouTube',
+  'music.youtube.com': 'YouTube',
+  'youtu.be': 'YouTube',
+  'vimeo.com': 'Vimeo',
+  'www.vimeo.com': 'Vimeo',
+  'player.vimeo.com': 'Vimeo',
+  'twitch.tv': 'Twitch',
+  'www.twitch.tv': 'Twitch',
+  'm.twitch.tv': 'Twitch',
+  'clips.twitch.tv': 'Twitch',
+  'player.twitch.tv': 'Twitch',
+  'drive.google.com': 'Google Drive',
+};
 
 /** "YouTube" for a YouTube link; null when the site is not one we name. */
 export function linkProvider(url: string | null | undefined): string | null {
   if (!url) return null;
   try {
-    const host = new URL(url).hostname.toLowerCase();
-    return PROVIDERS.find(([pattern]) => pattern.test(host))?.[1] ?? null;
+    const host = new URL(url).hostname.toLowerCase().replace(/\.$/, '');
+    return Object.hasOwn(LINK_HOSTS, host) ? (LINK_HOSTS[host] ?? null) : null;
   } catch {
     return null;
   }
@@ -123,7 +138,9 @@ export function applyListQuery(projects: ReadonlyArray<Project>, query: ListQuer
   const term = query.term.toLowerCase();
   // The backend scopes the list by `X-Workspace-Id` (PR #125). Kept as a cheap defence: a project of
   // another workspace must never show up here, whatever the list brings.
-  const own = query.workspaceId ? projects.filter((project) => project.workspace === query.workspaceId) : projects;
+  // (`isOfWorkspace`: in hybrid mode the active workspace can be a placeholder whose real id is not known.)
+  const workspaceId = query.workspaceId;
+  const own = workspaceId ? projects.filter((project) => isOfWorkspace(project.workspace, workspaceId)) : projects;
   const matching = term ? own.filter((project) => project.title.toLowerCase().includes(term)) : [...own];
   const counts: Record<ProjectStatusGroup, number> = { all: matching.length, in_progress: 0, to_review: 0, ready: 0, failed: 0 };
   const groups = new Map<string, ProjectStatusGroup>();

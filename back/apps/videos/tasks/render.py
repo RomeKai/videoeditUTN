@@ -15,6 +15,7 @@ from apps.videos.models import AIUsageRecord, VideoProject, VideoClip
 from apps.payments.models import Transaction
 from moviepy import VideoFileClip, concatenate_videoclips
 from apps.videos.services.selection_engine import GeminiFlashStrategy, SelectionEngine
+from apps.videos.services.watermark import apply_watermark, project_needs_watermark
 from apps.videos.services.ai.contracts import ProviderUsage
 from apps.videos.services.ai.usage_recorder import (
     record_usages,
@@ -91,8 +92,12 @@ def finalize_project_render(project_id):
     call checks them, so they are settled even if the project left
     render_dispatched another way.
     """
-    from apps.videos.tasks.ingestion import _settle_clip_render_reservations, _settle_whole_video_reservation
+    from apps.videos.tasks.ingestion import (
+        _restore_rerendered_clips, _settle_clip_render_reservations, _settle_whole_video_reservation,
+    )
 
+    # First: a delivered clip whose new render failed is the user's again.
+    _restore_rerendered_clips(project_id)
     stage = _close_render_fan_out(project_id)
     _settle_whole_video_reservation(project_id)
     _settle_clip_render_reservations(project_id)
@@ -100,23 +105,39 @@ def finalize_project_render(project_id):
 
 
 def _close_render_fan_out(project_id):
-    from apps.videos.tasks.ingestion import APPROVED_RENDER, _renders_per_clip
+    from apps.videos.tasks.ingestion import (
+        APPROVED_RENDER, CLIP_RENDER, _clip_render_reserved, _renders_per_clip,
+    )
 
     with transaction.atomic():
         project = VideoProject.objects.select_for_update().get(pk=project_id)
         if project.pipeline_stage != PipelineStage.RENDER_DISPATCHED:
             return None
 
+        metadata = project.metadata or {}
         clips = VideoClip.objects.filter(project_id=project_id)
-        if _renders_per_clip(project.metadata):
+        clip_render_ids = list(metadata.get(CLIP_RENDER.clip_ids_key) or [])
+        if _renders_per_clip(metadata):
             # An approved review is what the user asked for: a clip failed by
-            # an earlier auto-render is not part of it.
-            clips = clips.filter(pk__in=project.metadata[APPROVED_RENDER.clip_ids_key])
+            # an earlier auto-render is not part of it. A clip rendered again
+            # later (CLIP_RENDER) is.
+            clips = clips.filter(pk__in=[*metadata[APPROVED_RENDER.clip_ids_key], *clip_render_ids])
         statuses = set(clips.values_list('status', flat=True))
-        if statuses & {VideoClip.Status.DRAFT, VideoClip.Status.RENDERING}:
+        waiting = statuses
+        if _clip_render_reserved(metadata):
+            # A render asked for after the project ended waits only for its
+            # own clips: a draft an earlier, settled render left is not queued.
+            waiting = set(
+                VideoClip.objects.filter(project_id=project_id, pk__in=clip_render_ids)
+                .values_list('status', flat=True)
+            )
+        if waiting & {VideoClip.Status.DRAFT, VideoClip.Status.RENDERING}:
             return None
 
-        if VideoClip.Status.FAILED in statuses:
+        # A clip of the project left out of the render that just closed (a
+        # draft a settled render never delivered) makes it partial too: it
+        # can still be rendered from its editor or a rerender.
+        if statuses & {VideoClip.Status.FAILED, VideoClip.Status.DRAFT, VideoClip.Status.RENDERING}:
             stage, status = PipelineStage.PARTIAL, VideoProject.Status.PARTIAL
         else:
             stage, status = PipelineStage.COMPLETED, VideoProject.Status.COMPLETED
@@ -940,6 +961,11 @@ def _render_final_edit(project_id, lock, attempt):
                     final_clip = subtitler.add_subtitles(video_layout_processed, final_segments)
                 else:
                     final_clip = video_layout_processed
+
+                # The plan's watermark (PAY-01): decided here, never by the request. If it
+                # cannot be applied the export fails; the video is not delivered unmarked.
+                if project_needs_watermark(project):
+                    final_clip = apply_watermark(final_clip)
 
                 # 4. EXPORT & S3 UPLOAD
                 output_filename = f"final_{project.id}.mp4"

@@ -33,6 +33,7 @@ flowchart TD
 | Componente | Archivo | Rol |
 |------------|---------|-----|
 | API (DRF) | [views.py](../../back/apps/videos/views.py) | `VideoProjectViewSet`: `create`, `from_prompt` (`from-prompt`), `approve_paper_edit` (`approve-paper-edit`) y `paper_edit_data`. Valida la subida, reserva tokens y encola `process_initial_ingestion`, o, al aprobar, un `render_clip_task` por segmento aprobado. Rutas bajo `api/v1/projects/`. Cada request trabaja en el workspace activo (`X-Workspace-Id`) y con el rol que el usuario tiene ahí ([01](01-creacion-de-proyecto.md#workspace-activo-y-roles)) |
+| API de clips y renders pedidos (DRF) | [views_clips.py](../../back/apps/videos/views_clips.py) | `clips/:id/` (leer, título y recorte, borrar), `clips/:id/render/`, `clips/:id/retry/`, `projects/:id/rerender/` y `projects/:id/redispatch/`. Los renders reservan antes de volver el proyecto a `render_dispatched` ([06](06-render-caras-y-hablante.md#renders-que-pide-el-usuario)); el re-despacho reserva de nuevo lo que se devolvió ([02](02-pipeline-de-ingesta.md#flujo-re-entregas-idempotencia-y-re-despacho-manual)) |
 | Celery | [celery.py](../../back/backend/celery.py), [settings/base.py](../../back/backend/settings/base.py) | Broker y result backend en `REDIS_URL`. `CELERY_TASK_ROUTES` manda `apps.videos.tasks.render_clip_task` y `apps.videos.tasks.render_video_segments` a la cola `render`; el resto va a la cola por defecto de Celery, `celery`. Los workers consumen las dos: `celery -A backend worker -Q celery,render` ([docker-compose.yml](../../docker-compose.yml)) |
 | Postgres | `DATABASE_URL` (Postgres en `docker-compose.yml`; sin la variable, SQLite) | `VideoProject` (etapa, estado por etapa, `metadata`), `VideoClip`, `ScheduledPost`, `AIUsageRecord`, `ModerationOverride` y el wallet |
 | Valkey / Redis | `REDIS_URL` (servicio `redis`, imagen `valkey/valkey:8-alpine`) | Broker de Celery, lock por proyecto (`lock:pipeline:project:<id>`), lock y resultado pendiente de SEO (`lock:seo:post:<id>`, `seo:pending:<id>`) y buckets de capacidad (`capacity:v1:<modelo>:<recurso>_per_<ventana>`) |
@@ -51,7 +52,13 @@ Rutas relativas a `back/apps/videos/` salvo indicación.
 | Módulo | Qué hace |
 |--------|----------|
 | [tasks/\_\_init\_\_.py](../../back/apps/videos/tasks/__init__.py) | Reexporta las tareas. Cada una conserva su nombre registrado `apps.videos.tasks.<nombre>` |
-| [tasks/shared.py](../../back/apps/videos/tasks/shared.py) | Helpers compartidos: descarga con yt-dlp, política de reintentos (`_is_retryable_pipeline_error`, `_retry_countdown`), `_merge_metadata`, filas de uso y helpers de capacidad |
+| [tasks/shared.py](../../back/apps/videos/tasks/shared.py) | Helpers compartidos: descarga con yt-dlp (`download_from_youtube`, que revisa el link otra vez y aplica el tope de duración del plan y de tamaño), política de reintentos (`_is_retryable_pipeline_error`, `_retry_countdown`), `_merge_metadata`, filas de uso y helpers de capacidad |
+| [views_project_data.py](../../back/apps/videos/views_project_data.py) | Lecturas y descargas: actividad del proyecto, .zip de los clips, link de un clip y `probe-link` ([01](01-creacion-de-proyecto.md#actividad-del-proyecto), [06](06-render-caras-y-hablante.md#descargas-de-clips)) |
+| [services/link_validation.py](../../back/apps/videos/services/link_validation.py) | `validate_video_link`: sitios admitidos y protección contra SSRF de los links ([01](01-creacion-de-proyecto.md#links-admitidos)) |
+| [services/ytdlp_safe.py](../../back/apps/videos/services/ytdlp_safe.py) | La única forma de correr yt-dlp: solo los extractores de los sitios admitidos, un video que no esté en vivo, cada salto revisado y ningún pedido ni redirección a una dirección no pública ([01](01-creacion-de-proyecto.md#links-admitidos)) |
+| [services/link_probe.py](../../back/apps/videos/services/link_probe.py), [services/link_probe_worker.py](../../back/apps/videos/services/link_probe_worker.py) | `probe_link`: título y duración de un link con yt-dlp en un proceso aparte, con entorno mínimo, grupo de procesos propio y tope de tiempo |
+| [services/project_activity.py](../../back/apps/videos/services/project_activity.py) | `build_activity`: actividad del proyecto armada con lo guardado |
+| [services/clip_download.py](../../back/apps/videos/services/clip_download.py) | Link firmado de un clip y .zip de los clips listos, con topes de tamaño y tiempo |
 | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | `process_initial_ingestion`: lock, Prompt-to-Edit, etapas, espera de capacidad, fallo final y reembolso |
 | [tasks/render.py](../../back/apps/videos/tasks/render.py) | `render_clip_task` (cola `render`), `finalize_project_render` y `render_video_segments` (paper edit de antes, en una sola exportación) |
 | [tasks/social.py](../../back/apps/videos/tasks/social.py) | `process_video_seo`, `dispatch_scheduled_posts_batch` y `upload_to_social_network` |
@@ -148,6 +155,7 @@ Resumen. Cada documento tiene su tabla completa.
 
 | Situación | Qué pasa | Dónde |
 |-----------|----------|-------|
+| El broker no toma la ingesta al crear | 503 al cliente, proyecto `failed` con `IngestionNotQueued` y la reserva de tokens devuelta | [01](01-creacion-de-proyecto.md) |
 | Error reintentable de proveedor o infraestructura | Backoff exponencial con jitter, hasta `PIPELINE_MAX_RETRIES` (5) | [02](02-pipeline-de-ingesta.md) |
 | Error no reintentable o reintentos agotados | Proyecto `failed` con `pipeline_error_code`. Si no tiene clips, se devuelve la reserva de tokens | [02](02-pipeline-de-ingesta.md) |
 | Moderación bloquea el contenido | `UnsafeContentError`, proyecto `failed` y reembolso. Un `ModerationOverride` lo libera | [03](03-transcripcion-moderacion-seleccion.md) |
@@ -217,7 +225,7 @@ Los interruptores principales. La referencia completa está en [07](07-capacidad
 | [04-prompt-to-edit.md](04-prompt-to-edit.md) | Endpoint `from-prompt`, `PromptParser`, `ConfigValidator`, reintentos y capacidad del parser, `metadata['pte']` |
 | [05-seo-y-publicacion.md](05-seo-y-publicacion.md) | `ScheduledPost`, disparo por señal, `process_video_seo`, moderación de entrada y salida, publicación |
 | [06-render-caras-y-hablante.md](06-render-caras-y-hablante.md) | Render por clip y paper edit, layouts, seguimiento de caras, detección de quién habla, resolución |
-| [07-capacidad-costos-y-operacion.md](07-capacidad-costos-y-operacion.md) | Buckets de capacidad, `AIUsageRecord` y precios, export del piloto, allowlist, chequeo de arranque, configuración completa y logs |
+| [07-capacidad-costos-y-operacion.md](07-capacidad-costos-y-operacion.md) | Buckets de capacidad, `AIUsageRecord` y precios, export del piloto, allowlist, chequeo de arranque, cache compartida, configuración completa y logs |
 
 ## Referencias
 

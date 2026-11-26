@@ -3,7 +3,7 @@ import type { Pricing } from '@/api/contracts/billing';
 import type { Project } from '@/api/contracts/projects';
 import { ApiError, NetworkError } from '@/api/errors';
 import { transcriptToSrt, transcriptToTxt } from './download';
-import { approveErrorKind, errorMessage, isModerationError, pipelineErrorMessage, planLimitKind, uploadErrorCode, uploadErrorMessage } from './error-messages';
+import { approveErrorKind, errorMessage, isModerationError, pipelineErrorMessage, pipelineErrorTitle, planLimitKind, uploadErrorCode, uploadErrorMessage } from './error-messages';
 import { formatBytes, formatDateTime, formatDuration, formatMinutes, formatNumber, formatPercent, formatRelative, formatTimecode, formatTokens, formatUsd, initials, plural } from './format';
 import { can } from './permissions';
 import { estimateCost, firstPlanWith, planAllowsResolution, secondsForTokens } from './pricing';
@@ -189,6 +189,8 @@ describe('mensajes de error (sección 4 del mapa)', () => {
     expect(pipelineErrorMessage('CapacityTimeoutError')).toMatch(/mucha demanda/);
     expect(pipelineErrorMessage('AIEmptySelectionError')).toMatch(/No encontramos momentos/);
     expect(pipelineErrorMessage('SoftTimeLimitExceeded')).toMatch(/tardó demasiado/);
+    expect(pipelineErrorMessage('IngestionNotQueued')).toBe('No pudimos empezar a procesar tu video y no se cobró nada. Creá el proyecto de nuevo en unos minutos.');
+    expect(pipelineErrorTitle('IngestionNotQueued')).toBe('No pudimos empezar a procesar el video');
     expect(pipelineErrorMessage('AIAuthenticationError')).toBe('Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo.');
     expect(pipelineErrorMessage('CualquierOtro')).toBe(pipelineErrorMessage(''));
     expect(isModerationError('UnsafeContentError')).toBe(true);

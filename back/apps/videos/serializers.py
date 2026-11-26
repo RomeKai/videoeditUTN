@@ -229,6 +229,18 @@ class VideoProjectSerializer(serializers.ModelSerializer):
             )
         return value
 
+    def validate_video_url(self, value):
+        # Only the sites the worker downloads from, never an internal address
+        # (services/link_validation.py): what is saved here is fetched later.
+        if not value:
+            return value
+        from .services.link_validation import LinkRejected, validate_video_link
+
+        try:
+            return validate_video_link(value).url
+        except LinkRejected as exc:
+            raise serializers.ValidationError(exc.message, code=exc.code)
+
     def validate_aspect_ratio(self, value):
         from .services.ai.contracts import LEGACY_ASPECT_RATIOS
 
@@ -280,9 +292,35 @@ class VideoProjectSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         # One transaction: a failure after the INSERT leaves no project behind
-        # (the view reserves tokens only after this returns).
-        with transaction.atomic():
-            return self._create(validated_data)
+        # (the view reserves tokens only after this returns). The rollback does
+        # not reach the storage, so the upload is saved first and deleted here
+        # by name, even when the INSERT itself fails.
+        upload = self._store_upload(validated_data)
+        try:
+            with transaction.atomic():
+                return self._create(validated_data)
+        except BaseException:
+            from .services.storage_service import delete_upload
+
+            delete_upload(upload)
+            raise
+
+    @staticmethod
+    def _store_upload(validated_data):
+        """
+        Saves the uploaded ``source_file`` to storage, as ``FileField.pre_save``
+        would at the INSERT, and leaves its stored name in ``validated_data``.
+        Returns that name, or None without an upload.
+        """
+        upload = validated_data.get('source_file')
+        if not upload:
+            return None
+        field = VideoProject._meta.get_field('source_file')
+        name = field.storage.save(
+            field.generate_filename(None, upload.name), upload, max_length=field.max_length,
+        )
+        validated_data['source_file'] = name
+        return name
 
     def _create(self, validated_data):
         criteria = normalize_selection_criteria(validated_data.pop('selection_criteria', None))

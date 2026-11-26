@@ -50,7 +50,7 @@ export function describeFileProblem(problem: FileProblem, plan: Plan | null, pla
   return { message: uploadErrorMessage(problem.code) };
 }
 
-/** "El plan Estudio acepta videos de hasta 4 h. Ver planes" */
+/** "El plan Pro acepta videos de hasta 3 h. Ver planes" (only "Ver planes" when no plan accepts more) */
 export function LongerPlanHint({ plan, plans, duration }: { plan: Plan | null; plans: Plan[]; duration?: number | null }) {
   const better = plan ? firstPlanWith(plans, (item) => item.max_video_duration_seconds > Math.max(plan.max_video_duration_seconds, duration ?? 0)) : null;
   return (

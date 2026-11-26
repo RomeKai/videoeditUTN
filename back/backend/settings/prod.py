@@ -1,3 +1,6 @@
+import logging
+import os
+
 from .base import *  # noqa: F403
 from .base import env
 
@@ -31,3 +34,12 @@ CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[])
 # if env('AWS_ACCESS_KEY_ID', default=None):
 #     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
 #     STATICFILES_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+
+# --- CACHE ---
+# Without CACHE_REDIS_URL, base.py leaves a LocMem cache per process: each
+# gunicorn worker and container keeps its own plans list, throttles and locks.
+# Logged now, while the settings load (before LOGGING applies: it goes to stderr).
+if 'CACHE_REDIS_URL' not in os.environ:
+    logging.getLogger('backend.settings').warning(
+        "cache.not_shared CACHE_REDIS_URL is not set: CACHES falls back to a LocMemCache per process"
+    )

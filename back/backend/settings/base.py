@@ -216,6 +216,14 @@ AI_UPLOAD_MIN_SHORT_SIDE_PX = env.int('AI_UPLOAD_MIN_SHORT_SIDE_PX', default=240
 # by one task, so it is for short videos.
 AI_SINGLE_EDIT_MAX_DURATION_SECONDS = env.int('AI_SINGLE_EDIT_MAX_DURATION_SECONDS', default=600)
 
+# --- PLANS (PAY-03) ---
+# The plan a new workspace starts on (users/signals.py, via
+# apps.payments.services.plans.get_default_plan_id). If no active plan has this
+# name, the workspace is created without one and it is logged
+# (`plans.default_plan_missing` or `plans.default_plan_inactive`);
+# `manage.py assign_default_plan` assigns it later.
+DEFAULT_PLAN_NAME = env('DEFAULT_PLAN_NAME', default='Gratis')
+
 # JWT Configuration
 from datetime import timedelta
 SIMPLE_JWT = {
@@ -283,6 +291,68 @@ REDIS_URL = env('REDIS_URL', default='redis://redis:6379/0')
 # alive, so the TTL only decides how long a crashed worker's lock keeps the
 # redelivered task waiting (it retries, see PIPELINE_LOCK_* in tasks.py).
 PIPELINE_LOCK_TTL = env.int('PIPELINE_LOCK_TTL', default=300)
+
+# --- CACHE ---
+# One store for every web and worker process (documents/ia/07, "Cache
+# compartida"): the public plans list, throttles and the cache.add locks only
+# work if all of them see the same keys. Django's default LocMem is one cache
+# per process. CACHE_REDIS_URL is its own Redis database, never the broker's:
+# django-redis runs cache.clear() as FLUSHDB, whatever the key prefix, and
+# that would also empty the Celery queues, the project locks and the capacity
+# buckets. Two aliases (apps/core/cache.py):
+# - default fails open (a Redis that does not answer is a cache miss) and logs
+#   cache.unavailable: plans, throttles, probe caches.
+# - locks raises: a lock that cannot be taken stops the caller.
+# Without CACHE_REDIS_URL (a runserver with no Redis) both are LocMem, and
+# prod.py warns.
+CACHE_KEY_PREFIX = env('CACHE_KEY_PREFIX', default='onecreator')
+if 'CACHE_REDIS_URL' in os.environ:
+    CACHE_REDIS_URL = env('CACHE_REDIS_URL')
+    _CACHE_REDIS_OPTIONS = {
+        # A Redis that does not answer fails the call in seconds instead of
+        # holding the request or the task.
+        'SOCKET_CONNECT_TIMEOUT': 2,
+        'SOCKET_TIMEOUT': 2,
+    }
+    CACHES = {
+        'default': {
+            'BACKEND': 'apps.core.cache.FailOpenRedisCache',
+            'LOCATION': CACHE_REDIS_URL,
+            'KEY_PREFIX': CACHE_KEY_PREFIX,
+            'TIMEOUT': 300,
+            'OPTIONS': {**_CACHE_REDIS_OPTIONS, 'IGNORE_EXCEPTIONS': True},
+        },
+        'locks': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': CACHE_REDIS_URL,
+            'KEY_PREFIX': f'{CACHE_KEY_PREFIX}:locks',
+            'TIMEOUT': 300,
+            'OPTIONS': dict(_CACHE_REDIS_OPTIONS),
+        },
+    }
+else:
+    CACHE_REDIS_URL = None
+    CACHES = {
+        'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache', 'LOCATION': 'onecreator'},
+        'locks': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache', 'LOCATION': 'onecreator-locks'},
+    }
+
+
+def _redis_database(url):
+    """(host, port, db) of a redis:// URL, to tell whether two URLs are the same database."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    return (parsed.hostname, parsed.port or 6379, (parsed.path or '/0').strip('/') or '0')
+
+
+if CACHE_REDIS_URL and _redis_database(CACHE_REDIS_URL) == _redis_database(REDIS_URL):
+    import logging as _logging
+
+    # Logged while the settings load (before LOGGING applies: it goes to stderr).
+    _logging.getLogger('backend.settings').warning(
+        "cache.shares_broker_db CACHE_REDIS_URL is the broker's Redis database: cache.clear() would empty its queues"
+    )
 
 # Redis broker visibility timeout. Tasks use acks_late, so a running task stays
 # unacked and Redis redelivers it once this timeout passes. It must be comfortably
@@ -373,6 +443,13 @@ PREVIEW_HEIGHT = env.int('PREVIEW_HEIGHT', default=360)
 PREVIEW_TTL_SECONDS = env.int('PREVIEW_TTL_SECONDS', default=3600)
 PREVIEW_MAX_ACTIVE_PER_WORKSPACE = env.int('PREVIEW_MAX_ACTIVE_PER_WORKSPACE', default=3)
 CELERY_BEAT_SCHEDULE = {
+    # DIST-03: SCHEDULED posts due in the next hour (or already overdue) go to the
+    # worker with their publish time as ETA. Needs one beat process (docker-compose
+    # `beat`); the task is idempotent, so a second one cannot publish twice.
+    'dispatch-scheduled-posts': {
+        'task': 'apps.videos.tasks.dispatch_scheduled_posts_batch',
+        'schedule': 5 * 60,
+    },
     'cleanup-expired-previews': {
         'task': 'apps.videos.tasks.cleanup_expired_previews',
         'schedule': 15 * 60,
@@ -419,6 +496,11 @@ SPECTACULAR_SETTINGS = {
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
     'COMPONENT_SPLIT_REQUEST': True,
+    # SubscriptionPlan.max_resolution and the projects' render_resolution share
+    # their tiers: one enum instead of MaxResolutionEnum and RenderResolutionEnum.
+    'ENUM_NAME_OVERRIDES': {
+        'ResolutionEnum': 'apps.payments.models.RESOLUTION_CHOICES',
+    },
     'SWAGGER_UI_SETTINGS': {
         'deepLinking': True,
         'persistAuthorization': True,
@@ -440,5 +522,7 @@ CLOUDFLARE_R2_ENDPOINT_URL = f"https://{CLOUDFLARE_R2_ACCOUNT_ID}.r2.cloudflares
 
 # --- ASSETS ---
 FONTS_DIR = os.path.join(BASE_DIR, 'assets', 'fonts')
+# Logo that a plan with has_watermark renders over every delivered video (PAY-01).
+WATERMARK_PATH = os.path.join(BASE_DIR, 'assets', 'watermarks', 'onecreator_logo.png')
 
 AYRSHARE_API_KEY = env('AYRSHARE_API_KEY', default=None)

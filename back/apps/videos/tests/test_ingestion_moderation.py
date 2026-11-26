@@ -243,6 +243,21 @@ class ModerationOverrideAdminTests(TestCase):
         self.assertEqual(override.reason, "Falso positivo")
         delay.assert_called_once_with(str(self.project.pk))
 
+    def test_a_project_refunded_because_it_was_never_queued_is_not_requeued(self):
+        """IngestionNotQueued: the pipeline never resumes it, so the admin does not say it will."""
+        VideoProject.objects.filter(pk=self.project.pk).update(pipeline_error_code="IngestionNotQueued")
+
+        with patch("apps.videos.tasks.process_initial_ingestion.delay") as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.client.post(
+                    self.url, {"project": str(self.project.pk), "reason": "Falso positivo"}, follow=True,
+                )
+
+        delay.assert_not_called()
+        self.assertTrue(ModerationOverride.objects.filter(project=self.project).exists())
+        self.assertContains(response, "no se re-encola")
+        self.assertNotContains(response, "se vuelve a encolar")
+
     def test_a_project_that_is_not_failed_is_not_requeued(self):
         VideoProject.objects.filter(pk=self.project.pk).update(
             pipeline_stage=PipelineStage.CLIPS_SELECTED

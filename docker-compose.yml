@@ -30,6 +30,8 @@ services:
     environment:
       - DJANGO_SETTINGS_MODULE=backend.settings.dev
       - REDIS_URL=redis://redis:6379/0
+      # Django cache in its own Redis database: cache.clear() is a FLUSHDB (documents/ia/07).
+      - CACHE_REDIS_URL=redis://redis:6379/1
       - LOG_SERVICE=web
       - DATABASE_URL=postgres://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-admin}@db:5432/${POSTGRES_DB:-backend_db}
     depends_on:
@@ -37,6 +39,28 @@ services:
       - redis
 
   # --- SERVICE 4: IA Worker (Heavy) ---
+  # Celery Beat (CELERY_BEAT_SCHEDULE): dispatches the scheduled posts and runs the
+  # periodic cleanups. Run exactly one: a second beat would fire every task twice.
+  # The schedule file lives in /tmp so it never lands in the ./back checkout.
+  beat:
+    build:
+      context: ./back
+      target: worker
+    command: celery -A backend beat -l info --schedule=/tmp/celerybeat-schedule
+    volumes:
+      - ./back:/app
+    env_file:
+      - ./back/.env
+    environment:
+      - DJANGO_SETTINGS_MODULE=backend.settings.dev
+      - REDIS_URL=redis://redis:6379/0
+      - CACHE_REDIS_URL=redis://redis:6379/1
+      - LOG_SERVICE=beat
+      - DATABASE_URL=postgres://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-admin}@db:5432/${POSTGRES_DB:-backend_db}
+    depends_on:
+      - db
+      - redis
+
   worker:
     build:
       context: ./back
@@ -49,6 +73,8 @@ services:
     environment:
       - DJANGO_SETTINGS_MODULE=backend.settings.dev
       - REDIS_URL=redis://redis:6379/0
+      # Django cache in its own Redis database: cache.clear() is a FLUSHDB (documents/ia/07).
+      - CACHE_REDIS_URL=redis://redis:6379/1
       - LOG_SERVICE=worker
       - DATABASE_URL=postgres://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-admin}@db:5432/${POSTGRES_DB:-backend_db}
     depends_on:

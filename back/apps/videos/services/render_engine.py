@@ -8,6 +8,7 @@ from apps.videos.models import VideoClip
 from apps.videos.services.layouts import get_layout_strategy
 from apps.videos.services.transcription_engine import TranscriptionEngine
 from apps.videos.services.subtitle_engine import SubtitleEngine, StyleConfig
+from apps.videos.services.watermark import apply_watermark, project_needs_watermark
 from apps.videos.utils.ffmpeg_utils import FFmpegManager
 from apps.videos.utils.moviepy_utils import RENDER_FPS, RENDER_CODEC, RENDER_AUDIO_CODEC, RENDER_PRESET, FFMPEG_PARAMS, ensure_even
 
@@ -136,7 +137,7 @@ class RenderEngine:
         clip was saved COMPLETED; False when it was no longer this delivery's,
         after deleting the upload that nobody will use.
         """
-        clip_obj, original_clip, final_clip = None, None, None
+        clip_obj, original_clip, final_clip, export_clip = None, None, None, None
         output_path, temp_audio_path = None, None
         s3_key, saved = None, False
 
@@ -163,8 +164,12 @@ class RenderEngine:
                 use_facetracking=getattr(project, 'use_facetracking', False),
             )
 
+            # The plan's watermark (PAY-01): decided here, never by the request. If it
+            # cannot be applied the render fails; the clip is not delivered unmarked.
+            export_clip = apply_watermark(final_clip) if project_needs_watermark(project) else final_clip
+
             # 4. Physical Rendering
-            final_clip.write_videofile(
+            export_clip.write_videofile(
                 output_path,
                 codec=RENDER_CODEC,
                 audio_codec=RENDER_AUDIO_CODEC,
@@ -227,6 +232,7 @@ class RenderEngine:
             try:
                 if original_clip: original_clip.close()
                 if final_clip and final_clip != original_clip: final_clip.close()
+                if export_clip and export_clip is not final_clip: export_clip.close()
                 
                 if output_path and os.path.exists(output_path): 
                     os.remove(output_path)

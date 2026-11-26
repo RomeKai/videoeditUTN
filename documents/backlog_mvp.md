@@ -799,28 +799,28 @@ Generar un preview de baja resolución (360p, sin subtítulos complejos) antes d
 
 \---
 
-### PAY-01: Watermark Injection en Render (Plan Free) `P0` 🟡 `partial`
+### PAY-01: Watermark Injection en Render (Plan Free) `P0` 🟢 `exists`
 
 **Descripción:**
-`SubscriptionPlan.has\_watermark` existe. Falta la inyección física en `RenderEngine.render\_clip()`.
+`SubscriptionPlan.has\_watermark` existe. La inyección está en `RenderEngine.render_clip()` y en la exportación de `render_video_segments`, desde `apps/videos/services/watermark.py`. Un workspace sin plan no lleva marca (igual que el resto de los límites) y la vista previa a 360p tampoco.
 
 **Criterios de Aceptación:**
 
-* \[ ] Si `plan.has\_watermark == True`, el render superpone el logo de OneCreator.
-* \[ ] Watermark: semi-transparente (40% opacity), esquina inferior derecha, 15% del ancho del video.
-* \[ ] Asset del watermark en `back/assets/watermarks/onecreator\_logo.png`.
-* \[ ] Server-side enforced — no bypasseable desde la API.
-* [ ] Test: render con y sin watermark produce archivos diferentes.
+* \[x] Si `plan.has\_watermark == True`, el render superpone el logo de OneCreator.
+* \[x] Watermark: semi-transparente (40% opacity), esquina inferior derecha, 15% del ancho del video.
+* \[x] Asset del watermark en `back/assets/watermarks/onecreator\_logo.png`.
+* \[x] Server-side enforced — no bypasseable desde la API.
+* [x] Test: render con y sin watermark produce archivos diferentes.
 
 **Definition of Done:**
-- [ ] Criterios de aceptación cumplidos
-- [ ] Watermark NO removible manipulando la API (server-side enforced)
-- [ ] Asset PNG del watermark commiteado en el repo
-- [ ] Test automatizado: hash de output difiere con/sin watermark
+- [x] Criterios de aceptación cumplidos
+- [x] Watermark NO removible manipulando la API (server-side enforced)
+- [x] Asset PNG del watermark commiteado en el repo
+- [x] Test automatizado: hash de output difiere con/sin watermark
 
 **Riesgos:**
 - 🟢 Riesgo bajo — es un overlay de imagen sobre video, MoviePy lo resuelve nativo
-- 🟡 El asset del watermark necesita ser creado (diseño gráfico)
+- 🟡 El logo commiteado es un placeholder (texto "OneCreator"); falta el diseño final, que reemplaza el PNG en la misma ruta
 
 ---
 
@@ -864,7 +864,7 @@ Generar un preview de baja resolución (360p, sin subtítulos complejos) antes d
 ### PAY-03: Endpoint de Planes Públicos `P0` 🟢 `exists`
 
 **Descripción:**
-El modelo `SubscriptionPlan` existe completo. El endpoint público `GET /api/v1/plans/` lista los planes activos (cache de 1 h, invalidada al editar un plan) y los cuatro planes se siembran en la migración `payments/0005`.
+El modelo `SubscriptionPlan` existe completo. El endpoint público `GET /api/v1/plans/` lista los planes activos y públicos (`is_public`; cache de 5 min que se borra cuando un cambio de plan hace commit) y los cuatro planes se siembran en las migraciones `payments/0005` y `payments/0007`. Un workspace nuevo empieza en Gratis (`DEFAULT_PLAN_NAME`); los de antes se pasan con `assign_default_plan`.
 
 **Criterios de Aceptación:**
 
@@ -875,7 +875,7 @@ El modelo `SubscriptionPlan` existe completo. El endpoint público `GET /api/v1/
 **Definition of Done:**
 - [x] Criterios de aceptación cumplidos
 - [x] Endpoint accesible sin autenticación (público)
-- [x] Response cacheada (1h TTL) para evitar queries innecesarias
+- [x] Response cacheada (5 min de TTL, borrada en el commit de cada cambio) para evitar queries innecesarias
 - [x] Schema documentado en Spectacular/Swagger
 
 **Riesgos:**
@@ -958,12 +958,12 @@ Motor de publicación que sube el video directamente a cada API de plataforma, s
 ### DIST-03: Scheduling Engine — Celery Beat + Calendar `P0` 🟡 `partial`
 
 **Descripción:**
-`ScheduledPost` model y `dispatch\_scheduled\_posts\_batch` task existen. Falta Celery Beat y endpoints REST.
+`ScheduledPost` model y `dispatch_scheduled_posts_batch` task existen. Celery Beat ya despacha cada 5 min (servicio `beat`); desde `GET /api/v1/scheduled-posts/` la lista y el detalle existen. Faltan crear, editar, cancelar, bulk, retry y regenerar el texto (contrato `social.*`).
 
 **Criterios de Aceptación:**
 
-* \[ ] Servicio `beat` en `docker-compose.yml`.
-* \[ ] `dispatch\_scheduled\_posts\_batch` corre cada 5 min vía `CELERY\_BEAT\_SCHEDULE`.
+* \[x] Servicio `beat` en `docker-compose.yml`.
+* \[x] `dispatch\_scheduled\_posts\_batch` corre cada 5 min vía `CELERY\_BEAT\_SCHEDULE`.
 * \[ ] CRUD completo: `POST/GET/PATCH/DELETE /api/v1/scheduled-posts/`.
 * \[ ] `GET /api/v1/scheduled-posts/calendar/?from=...\&to=...` devuelve posts por día.
 * [ ] SEO metadata auto-generado al crear un scheduled post (via `SEOOptimizationService`).
@@ -1231,7 +1231,7 @@ Para agencias o creadores con flujos automatizados. Si un video entra por webhoo
 
 |Issue|Título|Prioridad|Estado|
 |-|-|-|-|
-|PAY-01|Watermark Injection en Render|`P0`|🟡 `partial`|
+|PAY-01|Watermark Injection en Render|`P0`|🟢 `exists`|
 |PAY-02|Stripe Checkout — Compra de Tokens|`P1`|🔴 `missing`|
 |PAY-03|Endpoint de Planes Públicos|`P0`|🟢 `exists`|
 |DIST-01|Social Auth — OAuth Flows|`P0`|🔴 `missing`|

@@ -304,7 +304,16 @@ class ScheduledPost(models.Model):
     # AI SEO Metadata (Generated)
     generated_caption = models.TextField(null=True, blank=True, verbose_name="AI Caption")
     generated_hashtags = models.JSONField(null=True, blank=True, verbose_name="AI Hashtags")
-    
+
+    # What will be published (DIST-03). Empty means "the AI suggestion", which the API
+    # shows in its place until the user writes their own text.
+    caption = models.TextField(blank=True, default='')
+    hashtags = models.JSONField(default=list, blank=True)
+    # Link to the post once published.
+    post_url = models.URLField(max_length=500, null=True, blank=True)
+    # TikTok direct-post options (privacy_level, allow_comment, ...); null for other platforms.
+    tiktok = models.JSONField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

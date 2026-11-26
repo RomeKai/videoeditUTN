@@ -129,9 +129,13 @@ class TestCreateEndpoint:
         client.force_authenticate(user=user)
         return client
 
-    def post(self, api, upload):
+    def post(self, api, upload, capture=None):
         with patch("apps.videos.views.process_initial_ingestion.delay") as ingest:
-            response = api.post(reverse("project-list"), {"title": "Subido", "source_file": upload}, format="multipart")
+            if capture is None:
+                response = api.post(reverse("project-list"), {"title": "Subido", "source_file": upload}, format="multipart")
+            else:
+                with capture(execute=True):  # queued once the reservation commits
+                    response = api.post(reverse("project-list"), {"title": "Subido", "source_file": upload}, format="multipart")
         return response, ingest
 
     def test_a_fake_video_is_rejected_before_saving_or_charging(self, api):
@@ -142,16 +146,18 @@ class TestCreateEndpoint:
         assert not Transaction.objects.exists()
         ingest.assert_not_called()
 
-    def test_a_real_video_is_priced_with_the_probed_duration(self, api, synthetic_video_path):
+    def test_a_real_video_is_priced_with_the_probed_duration(
+        self, api, synthetic_video_path, django_capture_on_commit_callbacks,
+    ):
         with patch("moviepy.VideoFileClip", side_effect=AssertionError("decoded twice")):
-            response, ingest = self.post(api, upload_of(synthetic_video_path))
+            response, ingest = self.post(api, upload_of(synthetic_video_path), django_capture_on_commit_callbacks)
         assert response.status_code == 201, response.content[:300]
         project = VideoProject.objects.get(pk=response.data["id"])
         assert project.metadata["source_media"] == {
             "duration_s": pytest.approx(2.0, abs=0.1), "width": 640, "height": 360, "mime": "video/mp4",
         }
         txn = Transaction.objects.get(pk=project.metadata["reservation_id"])
-        assert txn.amount == Decimal("1.00")  # 2 s x 0.5 tokens, no plan
+        assert txn.amount == Decimal("1.00")  # 2 s x 0.5 tokens: Gratis, the plan of a new workspace, has no discount
         ingest.assert_called_once()
 
 

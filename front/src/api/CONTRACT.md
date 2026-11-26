@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**80 endpoints:** 14 existen hoy en el backend, 3 existen en parte y 63 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**80 endpoints:** 26 existen hoy en el backend, 5 existen en parte y 49 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -23,14 +23,14 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 - **JSON en snake_case**, como el backend. Ids UUID. Fechas ISO 8601 en UTC.
 - **Decimales:** un `DecimalField` de un serializer llega como string (`"4860.0000000000"`); un `Decimal` que la vista pone directo en la respuesta (`tokens_reserved`, `final_cost`, `required`) llega como número, porque el encoder de DRF lo pasa a float. El esquema `Decimal` acepta los dos y entrega un número.
 - **Colores:** el backend los guarda como texto libre de hasta 7 caracteres. Los pedidos mandan siempre `#RRGGBB` (`HexColor`); las respuestas aceptan cualquier texto (`ColorValue`) y la UI los normaliza con `normalizeHex()`.
-- **Booleanos en multipart:** DRF lee como `false` un booleano que no viene en un formulario multipart, sin mirar el default del modelo. `add_subtitles` es la excepción desde el PR #121 del backend (`_NotSentBooleanField`): «no enviado» es un caso propio, que al crear deja el proyecto con subtítulos (`true`) y al editar no cambia lo que había. En `POST /projects/` el cliente lo manda igual, con lo que muestra el formulario. En `from-prompt` lo deja afuera salvo que la persona lo haya elegido: un campo que viaja cuenta como explícito (`pte_explicit`) y le gana al texto, así que mandarlo siempre impediría que «sin subtítulos» en el prompt funcione.
+- **Booleanos en multipart:** DRF lee como `false` un booleano que no viene en un formulario multipart, sin mirar el default del modelo. En el backend eso ya no pasa con los booleanos del modelo: desde el PR #126, `VideoProjectSerializer` y `BrandKitSerializer` usan `_NOT_SENT_BOOLEANS`, que hace de cada uno un `_NotSentBooleanField` (el PR #121 lo había hecho solo para `add_subtitles`). «No enviado» es un caso propio: al crear toma el default del modelo y al editar no cambia lo que había. Al crear, un valor vacío (`""`) también cuenta como no enviado. `use_seo` no es columna: se lee solo al crear, y si no viene es `false`. `add_subtitles` tiene default `true`: en `POST /projects/` el cliente lo manda igual, con lo que muestra el formulario. En `from-prompt` lo deja afuera salvo que la persona lo haya elegido: un campo que viaja cuenta como explícito (`pte_explicit`) y le gana al texto, así que mandarlo siempre impediría que «sin subtítulos» en el prompt funcione.
 - **Idioma:** el backend responde con `LANGUAGE_CODE = "en-us"`, así que los mensajes propios de DRF llegan en inglés. La UI no los muestra tal cual: `errorMessage()`, `fieldError()` y `translateFieldError()` (`src/lib/error-messages.ts`) traducen los conocidos y caen a un texto genérico en español.
 - **Descargas:** los links firmados son de otro origen, y ahí el navegador ignora el atributo `download`. Para que el archivo se guarde en lugar de reproducirse, R2 tiene que firmar con `ResponseContentDisposition=attachment; filename="…"`. `downloadUrl()` abre esos links en una pestaña nueva para no reemplazar la app.
 - **503:** cualquier respuesta 503 muestra la página de mantenimiento (K5) hasta que la API vuelve a responder.
 - **Listas paginadas (propuesto, hueco 14):** `{ count, next, previous, results }` con `page` y `page_size` (25 por defecto), como `PageNumberPagination`.
 - **Errores:** validación de DRF `{ "campo": ["mensaje"] }`; vistas propias `{ "error": "mensaje", "required"?: "117.00" }`; permisos y 404 `{ "detail": "mensaje" }`. Propuesto: sumar `code` legible por máquina (`duration`, `resolution`, `seo`, `scheduling`, `crossposting`, `seats_exceeded`, `email_not_verified`, `account_not_connected`, `permission_denied`) y, en los errores de campo, ítems `{ "message", "code" }`.
 - **402** siempre abre el diálogo de saldo insuficiente y **403 de precios** el de límite del plan.
-- **Roles (hueco 3):** la tabla 1.7 del mapa está en `src/lib/permissions.ts`. Hoy la API solo controla que el usuario sea miembro; el contrato espera un 403 con `code: "permission_denied"` cuando el rol no alcanza.
+- **La tabla de roles, en los dos lados:** la tabla 1.7 del mapa está en `src/lib/permissions.ts` (`MATRIX`) y el backend la copia en `ROLE_MATRIX` (`back/apps/core/permissions.py`, PR #125). Lo que la UI deshabilita, la API lo rechaza con el 403 de **Roles**: `{ detail }` en español, sin `code`. Sumar `code: "permission_denied"` sigue propuesto (diferencia 17).
 
 ## Diferencias encontradas con el backend de hoy
 
@@ -53,7 +53,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | 15 | `LANGUAGE_CODE = "en-us"`: los errores propios de DRF llegan en inglés («This field is required.», «You do not have permission to perform this action.»). | `LANGUAGE_CODE = "es"` (o `es-ar`). Mientras tanto la UI traduce los conocidos y no muestra texto en inglés. |
 | 16 | El 409 de `PATCH /projects/{id}/` mientras se renderiza trae solo `{ detail }`: el código `project_rendering` de la excepción no llega al cuerpo. | `{ detail, code }`. El frontend solo manda `title`, que siempre se puede cambiar. |
 | 17 | Un 403 de permisos de DRF (`PermissionDenied`) tampoco trae código. | `code: "permission_denied"`. El frontend trata como límite del plan solo los 403 con un código de plan o con un mensaje de `PricingEngine`; el resto es un 403 de rol. |
-| 18 | Resuelto en el backend (PR #121): un `add_subtitles` que no se manda ya no se lee como `false`. Es «no enviado»: `true` al crear, sin cambios al editar. Cualquier otro booleano que falte en un formulario multipart se sigue leyendo como `false`. | Nada pendiente. El frontend lo manda en `POST /projects/` y lo deja afuera en `from-prompt` salvo que la persona lo haya elegido. |
+| 18 | Resuelto en el backend (PR #121 para `add_subtitles`, PR #126 para el resto): un booleano del modelo que un formulario multipart no manda ya no se lee como `false`. Es «no enviado»: al crear toma el default del modelo (`true` en `add_subtitles`) y al editar no cambia. Lo aplican `VideoProjectSerializer` y `BrandKitSerializer` con `_NOT_SENT_BOOLEANS`. | Nada pendiente. El frontend manda `add_subtitles` en `POST /projects/` y lo deja afuera en `from-prompt` salvo que la persona lo haya elegido. |
 | 19 | Los links de descarga firmados no fuerzan la descarga. | Firmar con `ResponseContentDisposition=attachment` (ver Convenciones). |
 | 20 | «Renderizar sin revisar» que no se puede pagar deja `metadata.auto_render_skipped` (`insufficient_funds` o `plan_limit`) y el proyecto en revisión; al re-despachar sin saldo falla con `AutoRenderNotPaid`. | Está en el contrato (`ProjectMetadata`, `KNOWN_PIPELINE_ERROR_CODES`). Falta sumar el mensaje de `AutoRenderNotPaid` a la sección 4 del mapa. |
 
@@ -87,7 +87,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | POST | `/api/v1/workspaces/:id/invitations/:memberId/resend/` | Reenvía el email de una invitación pendiente. | ❌ falta (propuesto) · hueco 13 | H2 |
 | GET | `/api/v1/invitations/:token/` | Datos públicos de una invitación: quién invita, a qué workspace y con qué rol. | ❌ falta (propuesto) · hueco 13 | A5 |
 | POST | `/api/v1/invitations/:token/accept/` | Acepta la invitación. Sin cuenta: la crea con `name` y `password`. Con cuenta: basta con la sesión iniciada. | ❌ falta (propuesto) · hueco 13 | A5 |
-| GET | `/api/v1/plans/` | Planes activos, en orden, para Precios y Uso › Planes. | ❌ falta (propuesto) · hueco 6, 12 | A6, G3, D3 (diálogo), C1 |
+| GET | `/api/v1/plans/` | Planes activos y públicos, en orden, para Precios y Uso › Planes. | ✅ existe | A6, G3, D3 (diálogo), C1 |
 | GET | `/api/v1/pricing/` | Valores de la fórmula de precios y los topes de subida, para estimar en el navegador. | ❌ falta (propuesto) · hueco 6 | C1, A6, G3, G4, D2, D1 (diálogo) |
 | POST | `/api/v1/pricing/estimate/` | Estimado del backend para una configuración: costo, descuento, saldo después y tiempo estimado. | ❌ falta (propuesto) · hueco 6, 18 | C1, D2, D4, D5 |
 | GET | `/api/v1/subscription/` | Plan actual del workspace, su renovación y el cambio pendiente si lo hay. | ❌ falta (propuesto) · hueco 12 | Barra, G1, G3, C1, E1, H2 |
@@ -99,7 +99,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/token-packages/` | Los 3 paquetes fijos, el precio de la cantidad libre y la conversión de referencia. | ❌ falta (propuesto) · hueco 12 | G4, D2 (diálogo) |
 | POST | `/api/v1/token-purchases/` | Inicia una compra de tokens y devuelve la URL del checkout del proveedor de pagos. | ❌ falta (propuesto) · hueco 12 | G4, D2 (diálogo) |
 | GET | `/api/v1/token-purchases/:id/` | Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`tokens` > 0) o el pago de una subida de plan (`plan_id`, `tokens` 0). | ❌ falta (propuesto) · hueco 12 | G5 |
-| POST | `/api/v1/projects/probe-link/` | Reconoce un link antes de crear el proyecto: de dónde es, su título y su duración. | ❌ falta (propuesto) | C1 |
+| POST | `/api/v1/projects/probe-link/` | Reconoce un link antes de crear el proyecto: de dónde es, su título y su duración. | ✅ existe | C1 |
 | GET | `/api/v1/projects/` | Proyectos del workspace, del más nuevo al más viejo. | ⚠️ existe en parte · hueco 14 | B2, J1, B1 |
 | POST | `/api/v1/projects/` | Crea un proyecto desde un archivo (multipart) o un link, reserva los tokens y arranca la ingesta. | ✅ existe | C1 |
 | POST | `/api/v1/projects/from-prompt/` | Igual que crear, más `prompt`: la IA arma la configuración al iniciar la ingesta (queda en `metadata.pte`). | ✅ existe | C1 |
@@ -108,16 +108,16 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | DELETE | `/api/v1/projects/:id/` | Borra el proyecto con su video, sus clips y sus publicaciones programadas. No devuelve lo cobrado. | ✅ existe | B2, D1, D4 (diálogo) |
 | GET | `/api/v1/projects/:id/paper-edit-data/` | Datos de la revisión: video proxy, transcripción, clips sugeridos y metadata. | ✅ existe | D2 |
 | POST | `/api/v1/projects/:id/approve-paper-edit/` | Aprueba los segmentos elegidos, reserva el costo del render y lo despacha. | ✅ existe | D2 |
-| POST | `/api/v1/projects/:id/redispatch/` | Vuelve a despachar el pipeline de un proyecto detenido, desde la última etapa terminada. No cobra. | ❌ falta (propuesto) | D1 |
-| POST | `/api/v1/projects/:id/rerender/` | Renderiza todos los clips de nuevo con otro estilo (layout, subtítulos, brand kit). Cobra el render. | ❌ falta (propuesto) · hueco 11 | D1, D4, D5 |
-| GET | `/api/v1/projects/:id/activity/` | Quién hizo qué en el proyecto y sus movimientos de tokens, del más nuevo al más viejo. | ❌ falta (propuesto) · hueco 4 | D1f |
-| POST | `/api/v1/projects/:id/clips/download/` | Arma un .zip con los clips listos (todos, o los de `clip_ids`) y devuelve la URL temporal. | ❌ falta (propuesto) · hueco 17 | D3 |
-| GET | `/api/v1/clips/:id/` | Un clip con sus datos, sus capas y dónde está publicado. | ❌ falta (propuesto) · hueco 11 | D4, E1 |
-| PATCH | `/api/v1/clips/:id/` | Cambia el título o el recorte. No renderiza: para eso está `render`. | ❌ falta (propuesto) · hueco 11 | D4, D3, D5 |
-| DELETE | `/api/v1/clips/:id/` | Borra el clip y cancela sus publicaciones programadas. | ❌ falta (propuesto) · hueco 11 | D3 |
-| POST | `/api/v1/clips/:id/render/` | Vuelve a renderizar el clip con su recorte actual y la configuración del proyecto. Cobra por la duración del clip. | ❌ falta (propuesto) · hueco 11 | D4, D5 |
-| POST | `/api/v1/clips/:id/retry/` | Reintenta el render de un clip que falló. No cobra si el error fue del sistema. | ❌ falta (propuesto) · hueco 11 | D3 |
-| GET | `/api/v1/clips/:id/download/` | Link de descarga firmado y temporal del clip renderizado. | ❌ falta (propuesto) · hueco 5 | D3, D4, D5 |
+| POST | `/api/v1/projects/:id/redispatch/` | Vuelve a despachar el pipeline de un proyecto que falló, desde la última etapa terminada. Si lo que falta se había devuelto, lo reserva de nuevo por el mismo monto. | ✅ existe | D1 |
+| POST | `/api/v1/projects/:id/rerender/` | Renderiza todos los clips de nuevo con otro estilo (layout, subtítulos, brand kit). Cobra el render. | ✅ existe | D1, D4, D5 |
+| GET | `/api/v1/projects/:id/activity/` | Quién hizo qué en el proyecto y sus movimientos de tokens, del más nuevo al más viejo. | ✅ existe | D1f |
+| POST | `/api/v1/projects/:id/clips/download/` | Arma un .zip con los clips listos (todos, o los de `clip_ids`) y devuelve la URL temporal. | ✅ existe | D3 |
+| GET | `/api/v1/clips/:id/` | Un clip con sus datos, sus capas y dónde está publicado. | ✅ existe | D4, E1 |
+| PATCH | `/api/v1/clips/:id/` | Cambia el título o el recorte. No renderiza: para eso está `render`. | ✅ existe | D4, D3, D5 |
+| DELETE | `/api/v1/clips/:id/` | Borra el clip y cancela sus publicaciones programadas. | ✅ existe | D3 |
+| POST | `/api/v1/clips/:id/render/` | Vuelve a renderizar el clip con su recorte actual y la configuración del proyecto. Cobra por la duración del clip. | ✅ existe | D4, D5 |
+| POST | `/api/v1/clips/:id/retry/` | Reintenta el render de un clip que falló. Cobra su render: su parte se devolvió cuando falló, así que el clip se paga una vez en total. | ✅ existe | D3 |
+| GET | `/api/v1/clips/:id/download/` | Link de descarga firmado y temporal del clip renderizado. | ✅ existe | D3, D4, D5 |
 | POST | `/api/v1/clips/:clipId/preview/` | Pide una vista previa gratis en 360p, o devuelve la que ya está en curso. Nunca reserva tokens. | ✅ existe | D2, D4 |
 | GET | `/api/v1/clips/:clipId/preview/` | La vista previa vigente más nueva del clip. Se consulta cada 5 s hasta `ready` o `failed`. | ✅ existe | D2, D4 |
 | GET | `/api/v1/brand-kits/` | Brand kits del workspace. | ✅ existe | F1, C1, B2, D5 |
@@ -129,10 +129,10 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/social-accounts/` | Una entrada por red (TikTok, Instagram Reels, YouTube Shorts) con su estado y sus límites. | ❌ falta (propuesto) · hueco 10 | H3, E1, B2 |
 | POST | `/api/v1/social-accounts/connect/` | Devuelve la URL de la red (vía Ayrshare) para autorizar la cuenta en una ventana aparte. | ❌ falta (propuesto) · hueco 10 | D6, H3, E1 |
 | DELETE | `/api/v1/social-accounts/:platform/` | Desconecta la cuenta de una red. Las publicaciones programadas en esa red quedan en error. | ❌ falta (propuesto) · hueco 10 | H3 |
-| GET | `/api/v1/scheduled-posts/` | Publicaciones del workspace, ordenadas por `publish_at`, con filtros por estado, red, rango y clip. | ❌ falta (propuesto) · hueco 8 | E2, D3, D4 (diálogo) |
+| GET | `/api/v1/scheduled-posts/` | Publicaciones del workspace, ordenadas por `publish_at`, con filtros por estado, red, rango y clip. | ⚠️ existe en parte · hueco 8 | E2, D3, D4 (diálogo) |
 | POST | `/api/v1/scheduled-posts/` | Publica ahora o programa un clip en una red. Con `draft: true` crea un borrador, que dispara la generación del texto con IA. | ❌ falta (propuesto) · hueco 8, 9 | E1 |
 | POST | `/api/v1/scheduled-posts/bulk/` | Crea varias publicaciones juntas (varios clips, varias redes). Todo o nada. | ❌ falta (propuesto) · hueco 8 | E1c |
-| GET | `/api/v1/scheduled-posts/:id/` | Detalle de una publicación. Se consulta cada 5 s mientras está en cola o publicando. | ❌ falta (propuesto) · hueco 8 | E2, E1 |
+| GET | `/api/v1/scheduled-posts/:id/` | Detalle de una publicación. Se consulta cada 5 s mientras está en cola o publicando. | ⚠️ existe en parte · hueco 8 | E2, E1 |
 | PATCH | `/api/v1/scheduled-posts/:id/` | Edita el texto, reprograma, o publica un borrador (`publish_at`: fecha para programar, `null` para publicar ahora). Solo antes de `QUEUED`. | ❌ falta (propuesto) · hueco 8 | E2 |
 | POST | `/api/v1/scheduled-posts/:id/cancel/` | Cancela una publicación que todavía no salió. La borra. | ❌ falta (propuesto) · hueco 8 | E2 |
 | POST | `/api/v1/scheduled-posts/:id/retry/` | Reintenta una publicación que falló (también una trabada en `PROCESSING`). | ❌ falta (propuesto) · hueco 8 | E2 |
@@ -521,13 +521,13 @@ Contrato: `src/api/contracts/billing.ts` · Hooks: `src/api/hooks/billing.ts` ·
 
 #### `GET /api/v1/plans/`
 
-Planes activos, en orden, para Precios y Uso › Planes.
+Planes activos y públicos, en orden, para Precios y Uso › Planes.
 
 | | |
 |---|---|
 | Id | `billing.plans` |
-| Backend | ❌ falta (propuesto) · hueco 6, 12 |
-| Nota | Modelo: SubscriptionPlan (apps/payments/models.py); faltan precio, descripción, orden y recomendado. |
+| Backend | ✅ existe · `back/apps/payments/views.py · PublicPlanListView + PublicPlanSerializer (apps/payments/serializers.py)` |
+| Nota | Público, sin token. Lista los planes con `is_active` e `is_public` (los cuatro sembrados por las migraciones `payments` 0005, 0007 y 0009), ordenados por `sort_order`; un plan creado en el admin no sale hasta marcarlo público. `is_public` no viaja en la respuesta. Cache de 5 min que se borra cuando un cambio de plan hace commit. Un workspace nuevo empieza en Gratis (`DEFAULT_PLAN_NAME`). |
 | Sesión | Pública |
 | Respuesta 200 | Plan[] |
 | Pantallas | A6, G3, D3 (diálogo), C1 |
@@ -695,12 +695,12 @@ Reconoce un link antes de crear el proyecto: de dónde es, su título y su durac
 | | |
 |---|---|
 | Id | `projects.probeLink` |
-| Backend | ❌ falta (propuesto) |
-| Nota | Sin número de hueco: lo pide C1 (artboard «Pegar link») y cierra el aviso del mapa de que los links no pasan por la validación de duración del plan. |
+| Backend | ✅ existe · `back/apps/videos/views_project_data.py · ProbeLinkView + services/link_probe.py · probe_link` |
+| Nota | Hosts admitidos, exactos: youtube.com (y www, m, music), youtu.be, vimeo.com (y www, player), twitch.tv (y www, m, clips, player) y drive.google.com (`LINK_HOSTS` de services/link_validation.py, los mismos que crear un proyecto y la descarga del worker). Antes de consultar nada rechaza otros esquemas, IPs, otros subdominios, usuario en la URL, puertos raros, hosts que resuelven a direcciones privadas y links que no nombran un solo video. yt-dlp lee solo los datos con los extractores de esos sitios (services/ytdlp_safe.py), sin pedidos ni redirecciones a direcciones no públicas, en un proceso aparte con entorno mínimo que se corta entero a los 25 s. `video_url` vuelve como la URL del video (`watch?v=<id>` en YouTube) y es la que hay que mandar al crear. Crear no exige el probe: la duración del plan vale igual en la descarga, y un video más largo hace fallar el proyecto con `LinkTooLongError` y la devolución de la reserva. Un link leído se guarda 10 min en la caché. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | { video_url: string } |
 | Respuesta 200 | LinkProbe |
-| Errores | **400** El link no es de un sitio soportado (`code: "unsupported"`) o no se puede bajar: privado, borrado o con restricción (`code: "unavailable"`).<br>**403** La duración supera el plan (`code: "duration"`, `limit` en segundos). La UI lo muestra junto al campo, con link a Planes. |
+| Errores | **400** El link no es una URL web (`code: "invalid"`), no es de un sitio soportado, es una IP o una dirección interna, o es una lista, un canal o un vivo (`code: "unsupported"`), o no se puede bajar: privado, borrado o con restricción (`code: "unavailable"`). Sin `video_url`: `{ video_url: [...] }`.<br>**403** La duración supera el plan (`code: "duration"`, `limit` en segundos). La UI lo muestra junto al campo, con link a Planes. También el Lector (`{ detail }`): revisar un link es parte de crear.<br>**404** El workspace de `X-Workspace-Id` no es del usuario.<br>**429** Más de 20 links por minuto del mismo usuario.<br>**502** El sitio del video respondió con un error o no se encontró su dirección (`code: "provider_error"`).<br>**503** La herramienta que lee los links no está disponible (`code: "unavailable_tool"`).<br>**504** El sitio tardó más de 25 s (`code: "timeout"`). |
 | Pantallas | C1 |
 
 #### `GET /api/v1/projects/`
@@ -729,7 +729,7 @@ Crea un proyecto desde un archivo (multipart) o un link, reserva los tokens y ar
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido (multipart) | CreateProjectRequest |
 | Respuesta 201 | CreateProjectResponse |
-| Errores | **400** Validación. En `source_file` llega el mensaje de InvalidUploadError; la UI lo traduce por código (propuesto: `{message, code}`) o por el texto. `project_type` para video completo con link o de más de 10 min. Link con resolución distinta de 720p.<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre el diálogo D2.<br>**403** El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3. |
+| Errores | **400** Validación. En `source_file` llega el mensaje de InvalidUploadError; la UI lo traduce por código (propuesto: `{message, code}`) o por el texto. `project_type` para video completo con link o de más de 10 min. Link con resolución distinta de 720p. En `video_url`, un link que no es de un host admitido, que apunta a una IP o una dirección interna, o que no nombra un solo video (una lista, un canal): las mismas reglas que `probe-link`. Se guarda la URL del video (`watch?v=<id>` en YouTube).<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre el diálogo D2.<br>**403** El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3.<br>**503** No se pudo encolar la ingesta (broker caído): `{ error, code: "IngestionNotQueued", project_id, refunded }`. Con `refunded: true` el proyecto queda `failed` con ese `pipeline_error_code` y la reserva ya volvió; con `false` no se pudo escribir y el proyecto sigue en `uploaded` con la reserva. La UI muestra el genérico de 5xx. |
 | Pantallas | C1 |
 
 #### `POST /api/v1/projects/from-prompt/`
@@ -744,7 +744,7 @@ Igual que crear, más `prompt`: la IA arma la configuración al iniciar la inges
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido (multipart) | CreateFromPromptRequest |
 | Respuesta 201 | CreateFromPromptResponse |
-| Errores | **400** `prompt` vacío ("Contanos qué querés") o más largo que el máximo; más las validaciones de crear.<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre el diálogo D2.<br>**403** El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3. |
+| Errores | **400** `prompt` vacío ("Contanos qué querés") o más largo que el máximo; más las validaciones de crear.<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre el diálogo D2.<br>**403** El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3.<br>**503** No se pudo encolar la ingesta (broker caído): `{ error, code: "IngestionNotQueued", project_id, refunded }`. Con `refunded: true` el proyecto queda `failed` con ese `pipeline_error_code` y la reserva ya volvió; con `false` no se pudo escribir y el proyecto sigue en `uploaded` con la reserva. La UI muestra el genérico de 5xx. |
 | Pantallas | C1 |
 
 #### `GET /api/v1/projects/:id/`
@@ -783,11 +783,11 @@ Borra el proyecto con su video, sus clips y sus publicaciones programadas. No de
 | | |
 |---|---|
 | Id | `projects.delete` |
-| Backend | ✅ existe · `back/apps/videos/views.py · VideoProjectViewSet.destroy (ModelViewSet)` |
-| Nota | No aplica la regla de roles (hueco 3). |
+| Backend | ✅ existe · `back/apps/videos/views.py · VideoProjectViewSet.destroy + views_clips.project_delete_decision` |
+| Nota | Nada liquida una reserva cuyo proyecto ya no existe, por eso el 409. No devuelve nada de lo cobrado. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 204 | NoContent |
-| Errores | **403** El rol no puede borrar (Lector; Editor solo los propios). |
+| Errores | **403** El rol no puede borrar (Lector; Editor solo los propios).<br>**409** `{ error, code }`: el proyecto puede estar procesando o renderizando (`project_processing`) o terminó con tokens reservados sin liquidar (`reservation_open`). El diálogo muestra el mensaje del servidor. Uno trabado del todo (ningún worker y nada en `RENDER_STUCK_AFTER_SECONDS`, sin nada entregado) se borra y devuelve lo reservado. |
 | Pantallas | B2, D1, D4 (diálogo) |
 
 #### `GET /api/v1/projects/:id/paper-edit-data/`
@@ -820,16 +820,16 @@ Aprueba los segmentos elegidos, reserva el costo del render y lo despacha.
 
 #### `POST /api/v1/projects/:id/redispatch/`
 
-Vuelve a despachar el pipeline de un proyecto detenido, desde la última etapa terminada. No cobra.
+Vuelve a despachar el pipeline de un proyecto que falló, desde la última etapa terminada. Si lo que falta se había devuelto, lo reserva de nuevo por el mismo monto.
 
 | | |
 |---|---|
 | Id | `projects.redispatch` |
-| Backend | ❌ falta (propuesto) |
-| Nota | Hoy es una acción del admin de Django (mapa §7: herramientas internas fuera del MVP). Se define para no tener que tocar el contrato cuando se exponga. |
+| Backend | ✅ existe · `back/apps/videos/views_clips.py · ProjectRedispatchView` |
+| Nota | No cobra lo que sigue pagado: un proyecto con los clips elegidos sigue gratis (su render se paga solo). Lo que se devolvió al fallar (una etapa antes de elegir los clips, o el render de un video completo) se reserva otra vez y el pipeline lo liquida como al crear. Responde `cost_details` cuando reservó. El proyecto sigue `failed` hasta que la tarea lo reabre. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 202 | Project |
-| Errores | **403** Solo Dueño y Admin.<br>**409** El proyecto ya está en curso o terminó. |
+| Errores | **402** Saldo insuficiente para volver a reservar lo devuelto: `{ error, required }`. La UI abre D2.<br>**403** Solo Dueño y Admin.<br>**409** `{ error, code }`: no está en error (`not_failed`), la moderación frenó su contenido (`moderation_blocked`, solo `UnsafeContentError`), su ingesta nunca se encoló al crearlo (`not_queued`: se crea de nuevo), sus clips ya se liquidaron y se reintentan de a uno desde Clips (`render_settled`), su video completo ya se renderizó (`use_rerender`) o no tiene reserva de creación (`no_reservation`).<br>**503** No se pudo encolar: lo reservado vuelve (el proyecto queda con `pipeline_error_code: "RedispatchNotQueued"`) y se puede probar de nuevo. |
 | Pantallas | D1 |
 
 #### `POST /api/v1/projects/:id/rerender/`
@@ -839,11 +839,12 @@ Renderiza todos los clips de nuevo con otro estilo (layout, subtítulos, brand k
 | | |
 |---|---|
 | Id | `projects.rerender` |
-| Backend | ❌ falta (propuesto) · hueco 11 |
+| Backend | ✅ existe · `back/apps/videos/views_clips.py · ProjectRerenderView` |
+| Nota | Un video completo es su único clip; en un proyecto de clips, los que se entregaron o fallaron y los `draft` que un render pagó y nunca entregó (nunca un sugerido de la revisión). Reserva `render_cost` de la suma de sus segundos y guarda el estilo en la misma transacción. `render_resolution` no cambia (se cobró al crear). Se cobra lo entregado (CLIP_RENDER). |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | RerenderRequest |
 | Respuesta 202 | PaidActionResponse |
-| Errores | **402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**409** El proyecto está procesando o renderizando. |
+| Errores | **400** Un campo del estilo inválido (por campo, como el PATCH del proyecto), o un clip más largo de lo que un render termina.<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**403** El plan no permite la resolución o la suma de segundos (`code: "resolution"` / `"duration"`). La UI abre D3.<br>**409** `{ error, code }`: el proyecto está procesando o renderizando (`project_processing`, `project_rendering`, `clip_rendering`), espera la revisión (`awaiting_approval`), tiene un render sin liquidar (`render_unsettled`), un clip con publicaciones pendientes (`posts_pending`) o no tiene clips (`no_clips`). |
 | Pantallas | D1, D4, D5 |
 
 #### `GET /api/v1/projects/:id/activity/`
@@ -853,9 +854,11 @@ Quién hizo qué en el proyecto y sus movimientos de tokens, del más nuevo al m
 | | |
 |---|---|
 | Id | `projects.activity` |
-| Backend | ❌ falta (propuesto) · hueco 4 |
+| Backend | ✅ existe · `back/apps/videos/views_project_data.py · ProjectActivityView + services/project_activity.py · build_activity` |
+| Nota | No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (las Transaction de las claves `*reservation_id` de la metadata, con `settled_at` y `reserved_amount` desde la migración 0012 de payments), fin del render (cuando se liquidó la reserva que lo pagó), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva cuya clave se borró de la metadata (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | ActivityItem[] |
+| Errores | **404** No existe o es de otro workspace. |
 | Pantallas | D1f |
 
 #### `POST /api/v1/projects/:id/clips/download/`
@@ -865,11 +868,12 @@ Arma un .zip con los clips listos (todos, o los de `clip_ids`) y devuelve la URL
 | | |
 |---|---|
 | Id | `projects.downloadAll` |
-| Backend | ❌ falta (propuesto) · hueco 17 |
+| Backend | ✅ existe · `back/apps/videos/views_project_data.py · ProjectClipsDownloadView + services/clip_download.py · build_project_zip` |
+| Nota | Se arma mientras espera el pedido: lee los tamaños antes de bajar nada, copia cada clip del almacenamiento al .zip por partes (sin comprimir: son MP4), lo guarda en `exports/zips/` y devuelve la URL firmada por 1 h, con `Content-Disposition: attachment`. Borra siempre la carpeta temporal, y cada pedido borra los .zip vencidos. Entran los clips `completed` y `published` con archivo; los ids de `clip_ids` que no son de clips listos del proyecto (de otro proyecto o workspace) se ignoran. Lo puede pedir cualquier rol (`clip.download`). |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | { clip_ids?: Id[] } |
 | Respuesta 200 | { url: string, expires_at: IsoDateTime } |
-| Errores | **409** Ningún clip está listo todavía. |
+| Errores | **400** `clip_ids` no es una lista de ids, o trae más de 50.<br>**404** No existe o es de otro workspace.<br>**409** Ningún clip está listo todavía.<br>**422** Supera el tope del .zip: `code: "zip_too_large"` (`limit` en bytes, 1 GB por defecto) o `code: "zip_too_many_clips"` (`limit` en clips, 50). La UI muestra el mensaje del servidor: elegir menos o bajarlos de a uno.<br>**429** Ya se está armando otro .zip en el mismo workspace (un lock de Redis con dueño, entre todos los workers).<br>**503** Error del almacenamiento (`code: "storage_unavailable"`) o el armado, subida incluida, pasó el tiempo máximo (`code: "zip_timeout"`, 140 s por defecto). |
 | Pantallas | D3 |
 
 ### Clips
@@ -883,8 +887,8 @@ Un clip con sus datos, sus capas y dónde está publicado.
 | | |
 |---|---|
 | Id | `clips.detail` |
-| Backend | ❌ falta (propuesto) · hueco 11 |
-| Nota | Hoy los clips solo llegan dentro del proyecto (VideoClipSerializer). |
+| Backend | ✅ existe · `back/apps/videos/views_clips.py · ClipDetailView.get + VideoClipSerializer` |
+| Nota | Los mismos campos que el clip dentro del proyecto. Los extras propuestos (`preview_url`, `thumbnail_url`, `error_code`, `posts`) todavía no llegan. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Clip |
 | Errores | **404** No existe o es de otro workspace. |
@@ -897,12 +901,12 @@ Cambia el título o el recorte. No renderiza: para eso está `render`.
 | | |
 |---|---|
 | Id | `clips.update` |
-| Backend | ❌ falta (propuesto) · hueco 11 |
-| Nota | El 409 sigue la regla que ya aplica `VideoProjectSerializer.update` al PATCH del proyecto (ProjectRenderingError): lo que el render lee no cambia debajo de él. |
+| Backend | ✅ existe · `back/apps/videos/views_clips.py · ClipDetailView.patch` |
+| Nota | El 409 sigue la regla que ya aplica `VideoProjectSerializer.update` al PATCH del proyecto (ProjectRenderingError): lo que el render lee no cambia debajo de él. Un recorte nuevo borra las vistas previas del clip (muestran el anterior). |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | UpdateClipRequest |
 | Respuesta 200 | Clip |
-| Errores | **400** Recorte inválido (fin menor o igual al inicio, o fuera del video).<br>**403** El rol no puede editar (Lector).<br>**409** El proyecto se está renderizando y el pedido cambia el recorte (`code: "project_rendering"`). Solo `title` se puede cambiar mientras tanto. La UI avisa y deja el borrador como está. |
+| Errores | **400** Por campo (`{ end_time: [...] }`): fin menor o igual al inicio, fuera del video, más largo de lo que un render termina (1800 s por defecto), título vacío o un número inválido.<br>**403** El rol no puede editar (Lector).<br>**409** El pedido cambia el recorte y el proyecto se está renderizando (o tiene un render del clip sin liquidar): `{ error, code: "project_rendering" }`; o el pipeline todavía procesa el proyecto: `code: "project_processing"`. Solo `title` se puede cambiar mientras tanto. La UI avisa y deja el borrador como está. |
 | Pantallas | D4, D3, D5 |
 
 #### `DELETE /api/v1/clips/:id/`
@@ -912,10 +916,11 @@ Borra el clip y cancela sus publicaciones programadas.
 | | |
 |---|---|
 | Id | `clips.delete` |
-| Backend | ❌ falta (propuesto) · hueco 11 |
+| Backend | ✅ existe · `back/apps/videos/views_clips.py · ClipDetailView.delete` |
+| Nota | Borra también sus capas y vistas previas, y sus archivos después del commit. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 204 | NoContent |
-| Errores | **403** El rol no puede borrar. |
+| Errores | **403** El rol no puede borrar (Lector).<br>**409** El proyecto se está renderizando o procesando (`code: "project_rendering"`): un clip entregado que se borra a mitad del render dejaría corto el cobro. O una publicación del clip se está subiendo (`code: "post_processing"`). |
 | Pantallas | D3 |
 
 #### `POST /api/v1/clips/:id/render/`
@@ -925,23 +930,25 @@ Vuelve a renderizar el clip con su recorte actual y la configuración del proyec
 | | |
 |---|---|
 | Id | `clips.render` |
-| Backend | ❌ falta (propuesto) · hueco 11 |
+| Backend | ✅ existe · `back/apps/videos/views_clips.py · ClipRenderView` |
+| Nota | Reserva `render_cost` de los segundos del clip y pone el proyecto en `rendering` hasta que el clip termina: mientras tanto no se renderiza otro clip del mismo proyecto (409 `project_rendering`). Se cobra lo entregado; si el render falla, se devuelve y un clip que ya estaba entregado vuelve a `completed` (o `published`) con su archivo de antes (CLIP_RENDER, documents/ia/06). |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 202 | PaidActionResponse |
-| Errores | **402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**403** El plan actual no permite la resolución del proyecto (`code: "resolution"`). La UI abre D3.<br>**409** El clip ya se está renderizando, o su proyecto (`code: "project_rendering"`). |
+| Errores | **400** El clip dura más de lo que un render termina (1800 s por defecto): `{ error }`.<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**403** El plan actual no permite la resolución del proyecto (`code: "resolution"`) o la duración del clip (`code: "duration"`, con `limit` en segundos). La UI abre D3.<br>**409** `{ error, code }`: el clip ya se está renderizando (`clip_rendering`), o su proyecto (`project_rendering`), o el pipeline lo procesa (`project_processing`), o espera la revisión (`awaiting_approval`: se renderiza al aprobarla), o el render anterior no se liquidó todavía (`render_unsettled`), o el clip tiene publicaciones programadas, en cola o subiéndose (`posts_pending`: el render nuevo reemplaza su archivo). |
 | Pantallas | D4, D5 |
 
 #### `POST /api/v1/clips/:id/retry/`
 
-Reintenta el render de un clip que falló. No cobra si el error fue del sistema.
+Reintenta el render de un clip que falló. Cobra su render: su parte se devolvió cuando falló, así que el clip se paga una vez en total.
 
 | | |
 |---|---|
 | Id | `clips.retry` |
-| Backend | ❌ falta (propuesto) · hueco 11 |
+| Backend | ✅ existe · `back/apps/videos/views_clips.py · ClipRetryView` |
+| Nota | El cuerpo es el clip (en `draft` hasta que su render empieza) más `final_cost` y `transaction_id`. No hay reintento gratis: el reparto por segundos entregados ya devolvió lo que el clip fallido no entregó, y el modelo no guarda por qué falló. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 202 | Clip |
-| Errores | **409** El clip no está en error. |
+| Errores | **402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**403** El plan no permite la resolución o la duración (`code`), como `render`. La UI abre D3.<br>**409** El clip no está en error (`code: "not_failed"`), o su proyecto se está renderizando o procesando (los mismos códigos que `render`). |
 | Pantallas | D3 |
 
 #### `GET /api/v1/clips/:id/download/`
@@ -951,11 +958,11 @@ Link de descarga firmado y temporal del clip renderizado.
 | | |
 |---|---|
 | Id | `clips.download` |
-| Backend | ❌ falta (propuesto) · hueco 5 |
-| Nota | `s3_object_key` no es una URL: hay que firmarla (CloudflareR2Manager.generate_presigned_url). |
+| Backend | ✅ existe · `back/apps/videos/views_project_data.py · ClipDownloadView + services/clip_download.py · clip_download` |
+| Nota | En R2 la URL firmada (1 h) pide `Content-Disposition: attachment` con `filename`, así el navegador guarda el archivo aunque sea de otro origen. En local (USE_R2=False) es la URL absoluta de /media/. `filename` es el título en minúsculas, con guiones en lugar de lo que no es letra o número, y `.mp4` («clip.mp4» si queda vacío). Lo puede pedir cualquier rol (`clip.download`). |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | { url: string, filename: string, expires_at: IsoDateTime } |
-| Errores | **409** El clip todavía no está renderizado. |
+| Errores | **404** No existe o es de otro workspace.<br>**409** El clip todavía no está renderizado.<br>**503** No se pudo firmar el link o el archivo no está en el almacenamiento (`code: "storage_unavailable"`). |
 | Pantallas | D3, D4, D5 |
 
 #### `POST /api/v1/clips/:clipId/preview/`
@@ -1123,8 +1130,8 @@ Publicaciones del workspace, ordenadas por `publish_at`, con filtros por estado,
 | | |
 |---|---|
 | Id | `social.posts` |
-| Backend | ❌ falta (propuesto) · hueco 8 |
-| Nota | Modelo: ScheduledPost. Hoy solo se crean desde el admin. |
+| Backend | ⚠️ existe en parte · hueco 8 · `back/apps/videos/views_social.py · ScheduledPostViewSet.list + ScheduledPostSerializer` |
+| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. Falta: `thumbnail_url` viene siempre `null` (los clips no tienen miniatura), `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | PostsQuery |
 | Respuesta 200 | { count: number, next: string \\| null, previous: string \\| null, results: ScheduledPost[], status_counts?: { [clave]: number } } |
@@ -1167,7 +1174,8 @@ Detalle de una publicación. Se consulta cada 5 s mientras está en cola o publi
 | | |
 |---|---|
 | Id | `social.post` |
-| Backend | ❌ falta (propuesto) · hueco 8 |
+| Backend | ⚠️ existe en parte · hueco 8 · `back/apps/videos/views_social.py · ScheduledPostViewSet.retrieve + ScheduledPostSerializer` |
+| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. Falta: `thumbnail_url` viene siempre `null` (los clips no tienen miniatura), `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | ScheduledPost |
 | Errores | **404** No existe o es de otro workspace. |
