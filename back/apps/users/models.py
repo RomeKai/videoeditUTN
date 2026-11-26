@@ -1,9 +1,12 @@
 ﻿import uuid
+from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models.functions import Upper
 from django.contrib.auth.models import AbstractUser, UserManager as DjangoUserManager
 from django.utils.translation import gettext_lazy as _
+
+from apps.users.emails import InvalidEmailDomain, normalize_email
 
 
 class UserManager(DjangoUserManager):
@@ -12,9 +15,25 @@ class UserManager(DjangoUserManager):
     in Postgres, the same function as User.Meta's constraint: two accounts can
     never match the same input, whatever Unicode does with case ("ſ" and "ı"
     turn into "S" and "I").
+
+    The domain is normalized first (apps.users.emails): "tester@ｔｅｓｔ.com"
+    signs into the account of "tester@test.com". A domain that cannot be
+    encoded is looked up as typed: only an account stored that way before
+    (migration 0008 leaves them) can match it.
     """
 
+    @classmethod
+    def normalize_email(cls, email):
+        """NFKC, IDNA and lower case for the domain. Raises InvalidEmailDomain (a ValueError)."""
+        return normalize_email(email)
+
     def get_by_natural_key(self, username):
+        try:
+            username = self.normalize_email(username)
+        except InvalidEmailDomain:
+            # An account stored before the domains were normalized, with one that
+            # cannot be encoded: it is found by its email as it was typed.
+            username = (username or '').strip()
         return self.get(**{f'{self.model.USERNAME_FIELD}__iexact': username})
 
 
@@ -73,10 +92,27 @@ class User(AbstractUser):
     def __str__(self):
         return self.email
 
-    def save(self, *args, **kwargs):
-        # The domain part of an email has no case (normalize_email lowers it).
-        self.email = type(self).objects.normalize_email(self.email)
+    def clean(self):
+        # full_clean (the admin's forms) answers a field error instead of save()'s ValueError.
+        try:
+            super().clean()
+        except InvalidEmailDomain as error:
+            raise ValidationError({'email': error.message}) from None
         if self.pending_email:
+            try:
+                self.pending_email = type(self).objects.normalize_email(self.pending_email)
+            except InvalidEmailDomain as error:
+                raise ValidationError({'pending_email': error.message}) from None
+
+    def save(self, *args, **kwargs):
+        # One spelling per domain (apps.users.emails): the constraint compares what is stored.
+        # Only an email that this save writes: an account stored before with a
+        # domain that cannot be encoded (migration 0008 leaves it) must still
+        # save its name or its password. Raises InvalidEmailDomain.
+        update_fields = kwargs.get('update_fields')
+        if update_fields is None or 'email' in update_fields:
+            self.email = type(self).objects.normalize_email(self.email)
+        if self.pending_email and (update_fields is None or 'pending_email' in update_fields):
             self.pending_email = type(self).objects.normalize_email(self.pending_email)
         # set_password() keeps the raw value in _password until the save; the
         # tokens of the old password stop refreshing, whoever changed it.

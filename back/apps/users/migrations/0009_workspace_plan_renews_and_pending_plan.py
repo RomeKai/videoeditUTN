@@ -14,7 +14,7 @@ class Migration(migrations.Migration):
         # Only SubscriptionPlan is needed: rolling payments back (its migration
         # tests do) must not take these columns away from today's Workspace.
         ("payments", "0001_initial"),
-        ("users", "0007_email_unico_sin_mayusculas"),
+        ("users", "0008_dominios_de_email_normalizados"),
     ]
 
     operations = [
