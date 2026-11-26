@@ -1,6 +1,7 @@
 ﻿import uuid
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.utils import timezone
 from django.db.models import F
 from django.db.models.functions import Coalesce
 from django.db import transaction
@@ -186,3 +187,95 @@ class Transaction(models.Model):
             # first page, and a month of it, read only this index.
             models.Index(F('wallet'), Coalesce('settled_at', 'created_at').desc(), name='payments_txn_wallet_moved'),
         ]
+
+
+class Payment(models.Model):
+    """
+    A payment through the payments provider (settings.PAYMENTS_PROVIDER): a
+    token purchase (``tokens`` > 0, no ``plan``) or the payment of a plan
+    upgrade (``plan`` set, ``tokens`` 0). Endpoints: /api/v1/token-purchases/
+    and /api/v1/subscription/change/ (views_purchases.py, views_subscription.py).
+
+    It starts ``pending`` and is settled once (services/payments.py,
+    ``settle_payment``): under a row lock, only a pending payment changes, so
+    a confirmation that arrives twice credits the tokens, or changes the plan,
+    a single time. An approved token purchase points to the DEPOSIT it wrote
+    (``credit_transaction``, one per payment).
+    """
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', _('Pending')
+        APPROVED = 'approved', _('Approved')
+        REJECTED = 'rejected', _('Rejected')
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name='payments')
+    created_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    # The plan this payment upgrades to; null for a token purchase.
+    plan = models.ForeignKey(SubscriptionPlan, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    # Which fixed package was bought (services/token_packages.py); empty for a free amount or a plan.
+    package_id = models.CharField(max_length=32, blank=True, default='')
+    tokens = models.PositiveIntegerField(default=0)
+    amount_usd = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    # The provider that took it ('simulated' or a real one) and its id for it
+    # (the checkout session): a confirmation names the payment by this pair.
+    provider = models.CharField(max_length=20)
+    provider_reference = models.CharField(max_length=255, blank=True, default='')
+    checkout_url = models.URLField(max_length=2000, blank=True, default='')
+    # Why the provider rejected it, a sentence for the person.
+    failure_reason = models.CharField(max_length=255, blank=True, default='')
+    # The Idempotency-Key of the request that started it: the same key in the
+    # same workspace answers this payment instead of starting another one.
+    idempotency_key = models.CharField(max_length=255, null=True, blank=True)
+    # RESTRICT: the deposit cannot be deleted on its own, only together with
+    # its workspace (which takes the payment too).
+    credit_transaction = models.OneToOneField(
+        Transaction, on_delete=models.RESTRICT, null=True, blank=True, related_name='payment',
+    )
+    # Available balance right after the credit.
+    balance_after = models.DecimalField(max_digits=20, decimal_places=10, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    # When the provider call that opens its checkout started (stamped again
+    # right before start_checkout). A pending payment still without a checkout
+    # twice PAYMENTS_PROVIDER_TIMEOUT_SECONDS after it lost that call.
+    checkout_started_at = models.DateTimeField(default=timezone.now)
+    settled_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            # Tokens or a plan, never both.
+            models.CheckConstraint(
+                condition=models.Q(plan__isnull=True, tokens__gt=0) | models.Q(plan__isnull=False, tokens=0),
+                name='payments_payment_tokens_or_plan',
+            ),
+            models.CheckConstraint(condition=models.Q(amount_usd__gt=0), name='payments_payment_amount_positive'),
+            # Only an approved token purchase has its credit, and it always has it.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(status='approved', plan__isnull=True, credit_transaction__isnull=False)
+                    | (~models.Q(status='approved', plan__isnull=True) & models.Q(credit_transaction__isnull=True))
+                ),
+                name='payments_payment_credit_iff_approved_tokens',
+            ),
+            models.UniqueConstraint(
+                fields=['workspace', 'idempotency_key'],
+                condition=models.Q(idempotency_key__isnull=False),
+                name='payments_payment_idempotency_key_unique',
+            ),
+            models.UniqueConstraint(
+                fields=['provider', 'provider_reference'],
+                condition=~models.Q(provider_reference=''),
+                name='payments_payment_provider_reference_unique',
+            ),
+            # At most one plan upgrade waiting for its payment per workspace.
+            models.UniqueConstraint(
+                fields=['workspace'],
+                condition=models.Q(status='pending', plan__isnull=False),
+                name='payments_payment_one_pending_plan',
+            ),
+        ]
+
+    def __str__(self):
+        return f"Payment {self.id} ({self.status})"

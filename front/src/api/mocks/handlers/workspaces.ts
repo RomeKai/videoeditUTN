@@ -182,6 +182,24 @@ export const workspacesHandlers = [
     const emails = [...new Set(body.emails.map((email) => email.toLowerCase()))];
     const repeated = emails.find((email) => info.members.some((member) => member.email.toLowerCase() === email));
     if (repeated) throw badRequest({ emails: [`${repeated} ya es miembro o tiene una invitación pendiente.`] });
+    // Like check_seat_limit: while a downgrade waits, the seats of the smaller plan count.
+    const pending = workspace.pending_plan ? db.plans.find((plan) => plan.id === workspace.pending_plan?.id) : null;
+    if (pending && workspace.pending_plan && pending.max_members < info.max && info.used + emails.length > pending.max_members) {
+      const when = new Date(workspace.pending_plan.effective_at).toLocaleDateString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
+      throw new MockHttpError(403, {
+        error: `Tu plan pasa a '${pending.name}' el ${when} y ese plan permite ${pending.max_members} miembros. Cancelá el cambio de plan para invitar más gente.`,
+        code: 'seats_exceeded',
+      });
+    }
+    // And while a plan payment waits for its checkout: once confirmed, that plan applies at once.
+    const paying = db.purchases.find((item) => item.workspace === workspace.id && item.status === 'pending' && item.plan_id);
+    const payingPlan = paying ? db.plans.find((plan) => plan.id === paying.plan_id) : null;
+    if (payingPlan && payingPlan.max_members < info.max && info.used + emails.length > payingPlan.max_members) {
+      throw new MockHttpError(403, {
+        error: `Estás pasando al plan '${payingPlan.name}', que permite ${payingPlan.max_members} miembros. Terminá o cancelá ese pago para invitar más gente.`,
+        code: 'seats_exceeded',
+      });
+    }
     if (info.used + emails.length > info.max) {
       const left = Math.max(0, info.max - info.used);
       throw new MockHttpError(403, {

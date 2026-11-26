@@ -8,6 +8,11 @@ ALLOWED_HOSTS = ["*"]  # Acepta conexiones de cualquier lado (localhost, Docker,
 # En desarrollo, permitimos que cualquiera consulte la API (ej: tu React en localhost:3000)
 CORS_ALLOW_ALL_ORIGINS = True
 
+# --- PAGOS ---
+# Sin un proveedor real, el checkout de prueba de la app web (/dev/checkout)
+# aprueba o rechaza las compras sin cobrar nada. PAYMENTS_PROVIDER= lo apaga.
+PAYMENTS_PROVIDER = env('PAYMENTS_PROVIDER', default='simulated').strip().lower()
+
 # --- EMAILS ---
 # En vez de mandar emails reales, imprímelos en la terminal.
 # Útil para probar "Reset Password" sin configurar Gmail/AWS SES.
