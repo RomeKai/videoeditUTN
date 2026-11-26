@@ -115,3 +115,37 @@ def test_user_endpoints_require_authentication(url):
     response = APIClient().generic("PATCH" if url != PASSWORD_URL else "POST", url)
 
     assert response.status_code == 401
+
+
+def test_reading_the_preferences_writes_nothing(client, user):
+    from apps.users.models import NotificationPreference
+
+    assert client.get(PREFERENCES_URL).json()["project_ready"] is True
+
+    assert not NotificationPreference.objects.filter(user=user).exists()
+
+
+def test_a_first_change_that_races_another_one_still_answers(client, user):
+    # The other request inserted the row between this one's read and its insert.
+    from unittest import mock
+
+    from django.db.models.query import QuerySet
+
+    from apps.users.models import NotificationPreference
+
+    NotificationPreference.objects.create(user=user, low_balance=False)
+    real_get = QuerySet.get
+    calls = []
+
+    def first_read_misses(self, *args, **kwargs):
+        if self.model is NotificationPreference and not calls:
+            calls.append(1)
+            raise NotificationPreference.DoesNotExist
+        return real_get(self, *args, **kwargs)
+
+    with mock.patch.object(QuerySet, "get", first_read_misses):
+        response = client.patch(PREFERENCES_URL, {"post_failed": False}, format="json")
+
+    assert response.status_code == 200
+    assert response.json()["low_balance"] is False
+    assert response.json()["post_failed"] is False

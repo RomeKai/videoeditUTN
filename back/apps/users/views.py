@@ -284,6 +284,14 @@ class PasswordChangeView(SpanishThrottleMixin, APIView):
 
 
 class NotificationPreferencesView(APIView):
+    """
+    One email switch per notification type. The row is created by the first
+    change, never by a read: a GET answers the defaults (all on) without
+    writing, so two first reads at once cannot collide. Two first changes at
+    once are handled by get_or_create, which reads the row again when its
+    insert hits the other one.
+    """
+
     permission_classes = [IsAuthenticated]
 
     def _preferences(self, user):
@@ -292,7 +300,8 @@ class NotificationPreferencesView(APIView):
 
     @extend_schema(responses={200: NotificationPreferencesSerializer, 401: UNAUTHORIZED})
     def get(self, request):
-        serializer = NotificationPreferencesSerializer(self._preferences(request.user))
+        stored = NotificationPreference.objects.filter(user=request.user).first()
+        serializer = NotificationPreferencesSerializer(stored or NotificationPreference(user=request.user))
         return Response(serializer.data)
 
     @extend_schema(
