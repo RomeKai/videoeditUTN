@@ -47,9 +47,11 @@ Para apagar: `demo down` (los datos quedan). `demo down -v` borra la base.
 
 ## 3. Qué es real y qué es mock
 
-La web corre en modo híbrido. Por defecto, la demo manda al backend real el usuario, los proyectos, los clips y los brand kits, y deja **enteros en mocks** los planes, la billetera, las redes, las publicaciones, los miembros y las notificaciones. Sale de `NEXT_PUBLIC_API_REAL` en `docker-compose.demo.yml`.
+La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario, los proyectos, los clips y los brand kits, y deja **enteros en mocks** los planes, la billetera, las redes, las publicaciones, los miembros y las notificaciones. La lista se cambia en un solo lugar: `DEMO_API_REAL` (`docker-compose.demo.yml` la pasa a `NEXT_PUBLIC_API_REAL` al construir `front`).
 
-> El contrato marca como existentes tres endpoints más: `billing.plans`, `social.posts` y `social.post`. La demo los deja en mocks a propósito. Con ellos en real, «tu plan» no coincide con ningún plan de la lista y una publicación creada en la demo no aparece en el calendario, porque crearla es un mock. Para volver a lo que dice el contrato: `DEMO_API_REAL=existing demo up -d --build front`.
+> **Por qué los planes y las publicaciones son mocks hoy.** El backend ya tiene `billing.plans`, `social.posts` y `social.post`, pero no la suscripción ni crear una publicación. Con esos tres en real, «tu plan» no coincide con ningún plan de la lista y una publicación creada en la demo no aparece en el calendario. Quedan en mocks hasta que estén los endpoints de suscripción.
+>
+> **La lista se va a ampliar.** Hay PRs en curso para billetera, movimientos y precios, para suscripción y compras, y para workspaces y miembros. Cuando se mergeen, se suman sus dominios (`billing`, `workspaces`) al valor por defecto de `DEMO_API_REAL` en `docker-compose.demo.yml`, se reconstruye con `demo up -d --build front` y se actualiza la tabla de abajo. Un dominio en la lista va entero al backend, también lo que todavía no existe ahí (responde 404): si falta algo, nombrá los endpoints uno por uno. `DEMO_API_REAL=existing` manda al backend todo lo que el contrato marca como existente.
 
 | Pantalla | Ruta | Quién responde |
 |---|---|---|
@@ -142,11 +144,11 @@ Regla práctica: con Groq, un video de 2 minutos está listo para revisar en alr
 - [ ] **Elegir el video de prueba** y ensayarlo de punta a punta en la máquina de la presentación.
 - [ ] **Decidir qué se dice** sobre lo simulado: pagos, redes, publicaciones, miembros y notificaciones.
 - [ ] **`back/docker/entrypoint.sh`** sigue sin dueño. No frena la demo, porque ni el `Dockerfile` ni los compose lo usan (las migraciones las corre `docker-compose.demo.yml`). Si alguien lo activa hoy, no arranca: espera `POSTGRES_HOST` y `POSTGRES_PORT`, que ningún compose define, y su última línea deja el contenedor vivo aunque Django se caiga.
-- [ ] **Archivos locales sin el proxy.** Con `USE_R2=False` el backend devuelve URLs `/media/...` y Django no las sirve: sin el proxy de la demo, el video de la revisión y las descargas dan 404. En desarrollo hace falta R2 o una ruta que sirva `back/media`.
+- [ ] **El video de la revisión sin el proxy.** Con `DEBUG=True` y `USE_R2=False` Django ya sirve `/media/`, así que las descargas de clips andan. Pero `proxy_url` llega como ruta relativa (`/media/...`) y el navegador la pide al origen de la web, no al de la API: sin un mismo origen (el proxy de la demo) el video de la revisión no carga. Falta que el backend la devuelva absoluta, o un rewrite en la web.
 
 ## Sin Docker
 
-Sirve para desarrollar, no para presentar: sin el proxy no se ven el video de la revisión ni las descargas (último punto de arriba).
+Sirve para desarrollar, no para presentar. Con `DEBUG=True` y `USE_R2=False`, Django sirve los archivos de `back/media` en `/media/`, y las descargas de clips andan. Dos límites: el servidor de desarrollo no responde pedidos por rango, así que adelantar o retroceder un video puede no funcionar; y el video de la revisión necesita que la web y la API estén en el mismo origen (último punto de arriba).
 
 ```bash
 # Postgres y Redis locales; después, en back/, con DEBUG=True, USE_R2=False, DATABASE_URL,
@@ -170,6 +172,7 @@ Verificado el 2026-11-26:
 - El backend con `runserver`, un worker y un beat de Celery contra Postgres y Redis locales: migraciones, `seed_demo`, login, proyectos, brand kits, aprobar la revisión y el render real de los clips.
 - La web construida en modo híbrido con la lista de la demo, detrás del nginx de `docker/demo/nginx.conf` (en un contenedor): login, las pantallas de la tabla, el video de la revisión con pedidos por rango, aprobar y renderizar desde la pantalla, conectar una red simulada, abrir «Publicar» con un clip real y una subida de 32 MB. Sin errores de consola ni respuestas 4xx o 5xx.
 - La imagen de `front/Dockerfile` construye y sirve la web.
+- Django sirve `/media/` con `DEBUG=True` y `USE_R2=False`, y no lo hace con `DEBUG` apagado ni con R2 (tests en `apps/core/tests/test_media_serving.py`).
 
 Sin verificar:
 
