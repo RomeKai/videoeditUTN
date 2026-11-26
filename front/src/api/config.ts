@@ -10,7 +10,8 @@ export type ApiMode = 'mock' | 'hybrid' | 'real';
  * - `hybrid`: MSW runs, but lets through to the backend the endpoints routed as real
  *   (`src/api/routing.ts`) and mocks the rest.
  * `NEXT_PUBLIC_API_MODE` decides; without it, the older `NEXT_PUBLIC_API_MOCKS` does (`true` → mock,
- * anything else → real).
+ * anything else → real). Both are fixed when the app is built (`env` in next.config.ts): what the
+ * environment says when the server starts changes nothing.
  */
 export function resolveApiMode(mode: string | undefined, mocks: string | undefined): ApiMode {
   const value = mode?.trim().toLowerCase();
@@ -48,17 +49,9 @@ export function backendDefaultWorkspaceId(userId: string): string {
   return `${BACKEND_DEFAULT_WORKSPACE_PREFIX}${hex.slice(-12).padStart(12, '0')}`;
 }
 
-export function isBackendDefaultWorkspace(workspaceId: string | null | undefined): boolean {
+/** Whether the id has the shape of a placeholder. What to do about it depends on the mode: see `src/api/routing.ts`. */
+export function hasBackendDefaultPrefix(workspaceId: string | null | undefined): boolean {
   return Boolean(workspaceId?.startsWith(BACKEND_DEFAULT_WORKSPACE_PREFIX));
-}
-
-/**
- * Whether a row (`workspace` of a project, a brand kit…) belongs to the active workspace: the defensive
- * check of the screens. With the placeholder the real id is not known, and the backend already scoped
- * its answer to the user's default workspace, so every row counts as the active one's.
- */
-export function isOfWorkspace(rowWorkspaceId: string | null | undefined, activeWorkspaceId: string): boolean {
-  return isBackendDefaultWorkspace(activeWorkspaceId) || rowWorkspaceId === activeWorkspaceId;
 }
 
 /**

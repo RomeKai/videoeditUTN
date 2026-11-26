@@ -107,6 +107,8 @@ export function route<E extends AnyEndpoint>(endpoint: E, resolver: Resolver<E>)
     // Hybrid mode: the endpoints routed to the real backend go out untouched (`src/api/routing.ts`).
     if (routeOf(endpoint) === 'real') {
       if (endpoint.id === 'auth.login') await noteLogin(request);
+      // The email kept for the mocked `/me` belongs to the session that is ending.
+      if (endpoint.id === 'auth.logout') rememberLoginEmail(null);
       return passthrough();
     }
     const response = await answer(endpoint, resolver, request, params as Record<string, string>);

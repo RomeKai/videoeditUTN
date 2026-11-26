@@ -36,13 +36,15 @@ export default defineConfig({
     {
       command: `npx next build && npx next start --port ${PORT}`,
       // The older variable on purpose (it must keep working); the empty mode keeps a local .env from deciding.
-      env: { NEXT_PUBLIC_API_MODE: '', NEXT_PUBLIC_API_MOCKS: 'true', NEXT_DIST_DIR: '.next-e2e' },
+      // A production build with mocks has to be asked for (`API_MOCKS_IN_BUILD`, see next.config.ts).
+      env: { NEXT_PUBLIC_API_MODE: '', NEXT_PUBLIC_API_MOCKS: 'true', API_MOCKS_IN_BUILD: 'true', NEXT_DIST_DIR: '.next-e2e' },
       url: `http://127.0.0.1:${PORT}/login`,
       reuseExistingServer: !process.env.CI,
       timeout: 300_000,
     },
     {
-      command: `npx next build && npx next start --port ${REAL_PORT}`,
+      // Built as real and started with the variables of another mode: the mode is fixed by the build, so they must change nothing.
+      command: `npx next build && NEXT_PUBLIC_API_MODE=hybrid NEXT_PUBLIC_API_MOCKS=true NEXT_PUBLIC_API_REAL=billing npx next start --port ${REAL_PORT}`,
       env: { NEXT_PUBLIC_API_MODE: '', NEXT_PUBLIC_API_MOCKS: 'false', NEXT_PUBLIC_API_URL: REAL_API_URL, NEXT_DIST_DIR: '.next-e2e-real' },
       url: `http://127.0.0.1:${REAL_PORT}/login`,
       reuseExistingServer: !process.env.CI,
@@ -52,7 +54,7 @@ export default defineConfig({
       ? [
           {
             command: `npx next build && npx next start --port ${HYBRID_PORT}`,
-            env: { NEXT_PUBLIC_API_MODE: 'hybrid', NEXT_PUBLIC_API_URL: HYBRID_API_URL, NEXT_PUBLIC_API_REAL: HYBRID_REAL, NEXT_DIST_DIR: '.next-e2e-hybrid' },
+            env: { NEXT_PUBLIC_API_MODE: 'hybrid', NEXT_PUBLIC_API_URL: HYBRID_API_URL, NEXT_PUBLIC_API_REAL: HYBRID_REAL, API_MOCKS_IN_BUILD: 'true', NEXT_DIST_DIR: '.next-e2e-hybrid' },
             url: `http://127.0.0.1:${HYBRID_PORT}/login`,
             reuseExistingServer: !process.env.CI,
             timeout: 300_000,

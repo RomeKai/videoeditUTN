@@ -1,4 +1,4 @@
-import { isOfWorkspace } from '@/api/config';
+import { isOfWorkspace } from '@/api/routing';
 import type { Project, ProjectStatusGroup } from '@/api/contracts/projects';
 import { projectStatusGroup, type ProjectStatusView } from '@/lib/project-status';
 import type { ButtonVariant, IconName } from '@/ui';

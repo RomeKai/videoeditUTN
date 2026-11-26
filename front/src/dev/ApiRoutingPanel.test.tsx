@@ -86,6 +86,24 @@ describe('panel de origen por dominio (modo híbrido)', () => {
     expect(row('Proyectos')).toHaveAttribute('data-route', 'mixed');
   });
 
+  it('el cambio de un dominio se puede quitar sin tocar los demás', async () => {
+    window.localStorage.setItem(ROUTE_OVERRIDES_KEY, JSON.stringify({ social: 'real', billing: 'real' }));
+    const onChange = vi.fn();
+    render(<ApiRoutingPanel onChange={onChange} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Quitar el cambio de Redes sociales y publicaciones' }));
+    expect(stored()).toEqual({ billing: 'real' });
+    expect(row('Redes sociales y publicaciones')).toHaveAttribute('data-route', 'mock');
+    expect(screen.queryByRole('button', { name: 'Quitar el cambio de Redes sociales y publicaciones' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Quitar el cambio de Planes/ })).toBeInTheDocument();
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('avisa si NEXT_PUBLIC_API_REAL nombra algo que no está en el contrato', () => {
+    forceRouting({ mode: 'hybrid', real: 'proyects,brandkits' });
+    render(<ApiRoutingPanel onChange={() => undefined} />);
+    expect(screen.getByRole('alert')).toHaveTextContent('nombra algo que no está en el contrato y se ignora: proyects.');
+  });
+
   it('lee el cambio guardado al abrir', () => {
     window.localStorage.setItem(ROUTE_OVERRIDES_KEY, JSON.stringify({ social: 'real' }));
     render(<ApiRoutingPanel onChange={() => undefined} />);

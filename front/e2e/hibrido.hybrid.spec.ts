@@ -7,7 +7,7 @@ import { expectClean, HYBRID_API_URL, HYBRID_REAL, settle, watch } from './helpe
  * mocked in the browser.
  *
  * It needs a backend, so it is skipped unless `E2E_HYBRID_API_URL` says where one is, with a user that
- * owns a workspace: `E2E_HYBRID_EMAIL` and `E2E_HYBRID_PASSWORD`. See "Modo híbrido" in the README.
+ * owns a workspace with at least one project and one brand kit: `E2E_HYBRID_EMAIL` and `E2E_HYBRID_PASSWORD`. See "Modo híbrido" in the README.
  * The assertions about which side answers assume the default routing (no `E2E_HYBRID_REAL`).
  */
 const EMAIL = process.env.E2E_HYBRID_EMAIL ?? '';
@@ -96,6 +96,7 @@ test.describe('Modo híbrido contra el backend real', () => {
 
     // Projects: the list the backend gives for the user's default workspace.
     const projects = await api.projects();
+    expect(projects.length, 'el usuario de prueba tiene al menos un proyecto en el backend').toBeGreaterThan(0);
     expect(answersOf(seen, 'GET', '/api/v1/projects/').at(-1)).toMatchObject({ status: 200, mock: null });
     for (const project of projects.slice(0, 3)) await expect(page.getByText(project.title).first()).toBeVisible();
 
@@ -103,6 +104,7 @@ test.describe('Modo híbrido contra el backend real', () => {
     await page.goto('/brand-kits');
     await settle(page);
     const kits = await api.brandKits();
+    expect(kits.length, 'el usuario de prueba tiene al menos un brand kit en el backend').toBeGreaterThan(0);
     expect(answersOf(seen, 'GET', '/api/v1/brand-kits/').at(-1)).toMatchObject({ status: 200, mock: null });
     for (const kit of kits.slice(0, 3)) await expect(page.getByRole('article', { name: `Brand kit ${kit.name}` })).toBeVisible();
     await expect(page.getByRole('article', { name: /^Brand kit / })).toHaveCount(kits.length);
@@ -114,6 +116,13 @@ test.describe('Modo híbrido contra el backend real', () => {
     expect(answersOf(seen, 'GET', '/api/v1/subscription/').at(-1)).toMatchObject({ mock: 'billing.subscription' });
     await expect(page.getByText('Saldo disponible')).toBeVisible();
     await expect(page.getByText('4.860').first()).toBeVisible();
+
+    // With the bridge, a workspace cannot be created: it would exist only in the mocks.
+    await page.getByRole('button', { name: /Cambiar de workspace/ }).click();
+    const create = page.getByRole('menuitem', { name: /Crear workspace/ });
+    await expect(create).toBeDisabled();
+    await expect(create).toContainText('No disponible en modo híbrido mientras /me es simulado');
+    await page.keyboard.press('Escape');
 
     // While /me is mocked no real request names a workspace: the backend uses the user's default one.
     const real = seen.filter((item) => item.mock === null);
@@ -149,7 +158,7 @@ test.describe('Modo híbrido contra el backend real', () => {
   test('un endpoint simulado acepta el id de un proyecto real', async ({ page, request }) => {
     const api = await backend(request);
     const [project] = await api.projects();
-    test.skip(!project, 'El usuario no tiene proyectos en el backend.');
+    expect(project, 'el usuario de prueba tiene al menos un proyecto en el backend').toBeDefined();
     await signIn(page);
     // `projects.activity` is proposed (mocked); the project only exists in the backend.
     const activity = await page.evaluate(
@@ -166,6 +175,7 @@ test.describe('Modo híbrido contra el backend real', () => {
   test('el panel muestra el origen de cada dominio y permite cambiarlo en este navegador', async ({ page, request }) => {
     const api = await backend(request);
     const kits = await api.brandKits();
+    expect(kits.length, 'el usuario de prueba tiene al menos un brand kit en el backend').toBeGreaterThan(0);
     const seen = record(page);
     await signIn(page);
     await page.getByRole('button', { name: /Híbrido: \d+ de 10 dominios con backend real/ }).click();

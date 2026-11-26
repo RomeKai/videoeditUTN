@@ -1,5 +1,5 @@
 import { CONTRACT } from './contracts';
-import { ALWAYS_REAL_DOMAIN, envRouteOf, routeOf, routingConfig, type Route, type RoutingConfig } from './routing';
+import { ALWAYS_REAL_DOMAIN, envRouteOf, parseRealList, routeOf, routingConfig, type Route, type RoutingConfig } from './routing';
 
 /** How one domain of the contract is routed: what the dev panel shows. */
 export interface DomainRouting {
@@ -21,6 +21,14 @@ export interface DomainRouting {
 const summarize = (real: number, total: number): Route | 'mixed' => (real === 0 ? 'mock' : real === total ? 'real' : 'mixed');
 
 export const AUTH_LOCKED_REASON = 'Siempre real en modo híbrido: el backend no acepta los tokens simulados.';
+
+/** Names of `NEXT_PUBLIC_API_REAL` that are neither a domain nor an endpoint id of the contract (a typo, most likely). */
+export function unknownRealNames(raw: string): string[] {
+  const list = parseRealList(raw);
+  const domains = new Set(CONTRACT.map((group) => group.domain.toLowerCase()));
+  const endpoints = new Set(CONTRACT.flatMap((group) => group.endpoints.map((endpoint) => endpoint.id.toLowerCase())));
+  return [...[...list.domains].filter((name) => !domains.has(name)), ...[...list.endpoints].filter((name) => !endpoints.has(name))];
+}
 
 /** One row per domain of the contract registry, in its order. */
 export function domainRouting(config: RoutingConfig = routingConfig()): DomainRouting[] {

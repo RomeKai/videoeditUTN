@@ -1,6 +1,7 @@
 import type { ZodTypeAny } from 'zod';
-import { API_URL, IDEMPOTENCY_HEADER, isBackendDefaultWorkspace, REQUEST_TIMEOUT_MS, UPLOAD_STALL_TIMEOUT_MS, WORKSPACE_HEADER } from './config';
+import { API_URL, IDEMPOTENCY_HEADER, REQUEST_TIMEOUT_MS, UPLOAD_STALL_TIMEOUT_MS, WORKSPACE_HEADER } from './config';
 import { buildPath, buildQuery, type AnyEndpoint, type ParamsOf, type QueryOf, type RequestBody, type ResponseOf } from './endpoint';
+import { isBackendDefaultWorkspace } from './routing';
 import { ApiError, ContractError, NetworkError, RequestTimeoutError, SessionExpiredError, UploadStalledError } from './errors';
 import {
   getActiveWorkspaceId,

@@ -1,7 +1,9 @@
 // @vitest-environment node
+import { http, passthrough } from 'msw';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiCall } from '../client';
-import { API_URL, backendDefaultWorkspaceId, isBackendDefaultWorkspace, isOfWorkspace, WORKSPACE_HEADER } from '../config';
+import { dropStaleBridgeWorkspace, isMeBridged } from '../bridge';
+import { API_URL, backendDefaultWorkspaceId, hasBackendDefaultPrefix, WORKSPACE_HEADER } from '../config';
 import * as auth from '../contracts/auth';
 import * as billing from '../contracts/billing';
 import * as brandKits from '../contracts/brandkits';
@@ -11,9 +13,9 @@ import * as projects from '../contracts/projects';
 import * as social from '../contracts/social';
 import * as users from '../contracts/users';
 import { ApiError, NetworkError, SessionExpiredError } from '../errors';
-import { clearRouteOverrides, forceRouting, setRouteOverride } from '../routing';
-import { getTokens, setActiveWorkspaceId, setTokens } from '../session';
-import { adoptUserFromToken, readJwt, rememberLoginEmail } from './hybrid';
+import { clearRouteOverrides, forceRouting, isBackendDefaultWorkspace, isOfWorkspace, setRouteOverride } from '../routing';
+import { getActiveWorkspaceId, getTokens, setActiveWorkspaceId, setTokens } from '../session';
+import { adoptClip, adoptUserFromToken, adoptWorkspace, readJwt, rememberLoginEmail } from './hybrid';
 import { MOCK_HEADER } from './http';
 import { PLAN_IDS, USER_IDS, WORKSPACE_IDS } from './seed';
 import { server } from './server';
@@ -95,6 +97,12 @@ describe('puente del JWT', () => {
   it('lee user_id, email y exp del payload de un token de simplejwt', () => {
     expect(readJwt(jwt())).toMatchObject({ user_id: REAL_USER, email: null });
     expect(readJwt(jwt({ email: 'ana@real.test', exp: 42 }))).toEqual({ user_id: REAL_USER, email: 'ana@real.test', exp: 42 });
+    // An empty user, or an expiry that is not a number (it would never expire), is not a session.
+    expect(readJwt(jwt({ user_id: '' }))).toBeNull();
+    expect(readJwt(jwt({ user_id: '  ' }))).toBeNull();
+    expect(readJwt(jwt({ exp: 'mañana' }))).toBeNull();
+    expect(readJwt(jwt({ exp: null }))).toBeNull();
+    expect(readJwt(jwt({ exp: undefined }))).toBeNull();
     // Numeric ids (a backend with AutoField) are read as text.
     expect(readJwt(jwt({ user_id: 7 }))?.user_id).toBe('7');
     // Accents travel as UTF-8 inside base64url.
@@ -106,7 +114,7 @@ describe('puente del JWT', () => {
     expect(readJwt('')).toBeNull();
     expect(readJwt(mockTokens(USER_IDS.lucia).access)).toBeNull();
     expect(readJwt('a.b.c')).toBeNull();
-    expect(readJwt(`x.${base64url({ sub: 'sin user_id' })}.y`)).toBeNull();
+    expect(readJwt(`x.${base64url({ sub: 'sin user_id', exp: 99 })}.y`)).toBeNull();
     expect(readJwt(`x.${base64url('texto')}.y`)).toBeNull();
   });
 
@@ -214,7 +222,7 @@ describe('modo híbrido: identidad coherente con /me simulado', () => {
     expect(other.name).not.toBe('Híbrida Real');
     // Each real user has a placeholder workspace of their own: the mocked wallet of one is not the other's.
     expect(other.active_workspace_id).not.toBe(BACKEND_DEFAULT_WORKSPACE_ID);
-    expect(isBackendDefaultWorkspace(other.active_workspace_id)).toBe(true);
+    expect(hasBackendDefaultPrefix(other.active_workspace_id)).toBe(true);
     expect(other.workspaces.map((item) => item.id)).toEqual([other.active_workspace_id]);
   });
 
@@ -235,6 +243,45 @@ describe('modo híbrido: identidad coherente con /me simulado', () => {
     expect(isOfWorkspace(REAL_WORKSPACE, BACKEND_DEFAULT_WORKSPACE_ID)).toBe(true);
     expect(isOfWorkspace(REAL_WORKSPACE, REAL_WORKSPACE)).toBe(true);
     expect(isOfWorkspace(REAL_WORKSPACE, WORKSPACE_IDS.estudio)).toBe(false);
+  });
+
+  it('fuera de híbrido el marcador no es nada: se manda como cualquier id y no afloja el filtro por workspace', async () => {
+    for (const mode of ['real', 'mock'] as const) {
+      forceRouting({ mode });
+      expect(isBackendDefaultWorkspace(BACKEND_DEFAULT_WORKSPACE_ID)).toBe(false);
+      expect(isOfWorkspace(REAL_WORKSPACE, BACKEND_DEFAULT_WORKSPACE_ID)).toBe(false);
+      expect(isMeBridged()).toBe(false);
+    }
+    // Real mode: MSW is not there; the request goes out with the header, like any other workspace id.
+    forceRouting({ mode: 'real' });
+    server.use(http.get(`${API_URL}/api/v1/projects/`, () => passthrough()));
+    backend = () => Response.json([]);
+    setActiveWorkspaceId(BACKEND_DEFAULT_WORKSPACE_ID);
+    await apiCall(projects.listProjects, {});
+    expect(backendCalls.at(-1)?.workspace).toBe(BACKEND_DEFAULT_WORKSPACE_ID);
+  });
+
+  it('un marcador que quedó guardado se olvida cuando el puente ya no se usa', () => {
+    // Hybrid with /me mocked: the bridge is in use, the placeholder stays.
+    setActiveWorkspaceId(BACKEND_DEFAULT_WORKSPACE_ID);
+    expect(isMeBridged()).toBe(true);
+    dropStaleBridgeWorkspace();
+    expect(getActiveWorkspaceId()).toBe(BACKEND_DEFAULT_WORKSPACE_ID);
+    // /me became real (the env list, the contract or a dev override): gone before anything is asked.
+    forceRouting({ mode: 'hybrid', real: 'existing,users.me' });
+    expect(isMeBridged()).toBe(false);
+    dropStaleBridgeWorkspace();
+    expect(getActiveWorkspaceId()).toBeNull();
+    // A build that is not hybrid forgets it too, and leaves a real id alone.
+    for (const mode of ['real', 'mock'] as const) {
+      forceRouting({ mode });
+      setActiveWorkspaceId(BACKEND_DEFAULT_WORKSPACE_ID);
+      dropStaleBridgeWorkspace();
+      expect(getActiveWorkspaceId()).toBeNull();
+      setActiveWorkspaceId(REAL_WORKSPACE);
+      dropStaleBridgeWorkspace();
+      expect(getActiveWorkspaceId()).toBe(REAL_WORKSPACE);
+    }
   });
 
   it('un JWT vencido recibe 401 del mock, y el cliente lo renueva contra el backend real', async () => {
@@ -348,6 +395,47 @@ describe('modo híbrido: adopción de ids del backend', () => {
     saveDb(db);
     const post = await apiCall(social.createPost, { body: { video_clip: REAL_CLIP, platform: 'YOUTUBE_SHORTS', caption: 'Hola' } });
     expect(post.clip.project_id).toBe(loadDb().projects.find((item) => item.clips.some((clip) => clip.id === REAL_CLIP))?.id);
+  });
+
+  it('los pedidos simultáneos del primer render adoptan lo mismo: los ids salen del id real, no del azar', async () => {
+    setActiveWorkspaceId(REAL_WORKSPACE);
+    // Two copies of the database, as two requests that arrive together have them.
+    const base = JSON.stringify(loadDb());
+    const adopt = () => {
+      const db = JSON.parse(base) as ReturnType<typeof loadDb>;
+      const user = adoptUserFromToken(db, getTokens()?.access ?? '', Date.now());
+      if (!user) throw new Error('sin usuario');
+      adoptWorkspace(db, user, REAL_WORKSPACE, Date.now());
+      const clip = adoptClip(db, REAL_WORKSPACE, REAL_CLIP);
+      return {
+        wallet: db.wallets.find((item) => item.workspace === REAL_WORKSPACE)?.id,
+        placeholderWallet: db.wallets.find((item) => item.workspace === BACKEND_DEFAULT_WORKSPACE_ID)?.id,
+        members: db.members.filter((item) => item.user === REAL_USER).map((item) => item.id).sort(),
+        clipProject: clip?.project.id,
+        clipTimes: [clip?.clip.start_time, clip?.clip.end_time],
+      };
+    };
+    const first = adopt();
+    const second = adopt();
+    expect(second).toEqual(first);
+    expect(first.wallet).toMatch(/^0c0a0001-/);
+    expect(first.wallet).not.toBe(first.placeholderWallet);
+    expect(first.members).toHaveLength(2);
+    expect(first.clipProject).toMatch(/^0c0a0003-/);
+    // And through the API, in parallel: one wallet, the same in every answer.
+    const wallets = await Promise.all([apiCall(billing.getWallet, {}), apiCall(billing.getWallet, {}), apiCall(billing.getSubscription, {}).then(() => apiCall(billing.getWallet, {}))]);
+    expect(new Set(wallets.map((wallet) => wallet.id))).toEqual(new Set([first.wallet]));
+  });
+
+  it('cerrar sesión olvida el email del login', async () => {
+    backend = () => new Response(null, { status: 204 });
+    rememberLoginEmail('hibrido@onecreator.test');
+    await apiCall(auth.logout, { body: { refresh: getTokens()?.refresh ?? '', all_devices: false } });
+    expect(backendCalls.at(-1)?.path).toBe('/api/v1/auth/logout/');
+    const db = loadDb();
+    db.users = db.users.filter((user) => user.id !== REAL_USER);
+    saveDb(db);
+    await expect(apiCall(users.getMe, {})).resolves.toMatchObject({ email: 'usuario-4544e2e0@backend.invalid' });
   });
 
   it('lo que no es un id del backend sigue siendo 404', async () => {

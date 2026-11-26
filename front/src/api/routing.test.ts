@@ -20,7 +20,7 @@ import {
   setRouteOverride,
   type RoutingConfig,
 } from './routing';
-import { AUTH_LOCKED_REASON, domainRouting } from './routingTable';
+import { AUTH_LOCKED_REASON, domainRouting, unknownRealNames } from './routingTable';
 
 const hybrid = (real = '', overrides: RoutingConfig['overrides'] = {}): RoutingConfig => ({ mode: 'hybrid', real, overrides });
 
@@ -115,6 +115,14 @@ describe('ruteo híbrido', () => {
     expect(matchEndpoint(ALL_ENDPOINTS, 'POST', '/api/v1/projects/probe-link/')?.id).toBe('projects.probeLink');
     expect(matchEndpoint(ALL_ENDPOINTS, 'POST', '/api/token/')?.id).toBe('auth.login');
     expect(matchEndpoint(ALL_ENDPOINTS, 'GET', '/api/v1/no-existe/')).toBeNull();
+  });
+});
+
+describe('nombres de NEXT_PUBLIC_API_REAL', () => {
+  it('avisa de lo que no es un dominio ni un endpoint del contrato', () => {
+    expect(unknownRealNames('')).toEqual([]);
+    expect(unknownRealNames('projects, BrandKits, existing, billing.plans, auth')).toEqual([]);
+    expect(unknownRealNames('proyects,brandkits,billing.planes,users.me')).toEqual(['proyects', 'billing.planes']);
   });
 });
 

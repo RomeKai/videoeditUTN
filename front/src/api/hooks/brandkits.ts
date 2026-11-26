@@ -2,7 +2,7 @@
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiCall } from '../client';
-import { isOfWorkspace } from '../config';
+import { isOfWorkspace } from '../routing';
 import * as contract from '../contracts/brandkits';
 import { keys } from '../query';
 import { getActiveWorkspaceId } from '../session';

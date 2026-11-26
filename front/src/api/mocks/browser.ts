@@ -1,7 +1,10 @@
 import { setupWorker } from 'msw/browser';
 import { API_URL } from '../config';
 import { handlers } from './handlers';
+import { dropStaleBridgeWorkspace } from '../bridge';
+import { API_REAL_LIST } from '../config';
 import { isHybrid } from '../routing';
+import { unknownRealNames } from '../routingTable';
 import { dropForeignSession, loadDb, syncSession } from './state';
 
 let started: Promise<void> | null = null;
@@ -39,6 +42,13 @@ export function startMocks(): Promise<void> {
   keepWorkerRegistered();
   const worker = setupWorker(...handlers);
   dropForeignSession();
+  // `/me` became real (or the build is no longer hybrid): the placeholder workspace of the bridge is forgotten.
+  dropStaleBridgeWorkspace();
+  if (isHybrid()) {
+    const unknown = unknownRealNames(API_REAL_LIST);
+    // A typo would silently leave that domain mocked.
+    if (unknown.length > 0) console.warn(`[híbrido] NEXT_PUBLIC_API_REAL nombra algo que no está en el contrato: ${unknown.join(', ')}. Se ignora.`);
+  }
   // Hybrid: the session comes from a real login, never from the scenario.
   if (!isHybrid()) syncSession(loadDb());
   const start = async (): Promise<void> => {

@@ -520,3 +520,11 @@
     display: none;
   }
 }
+.wsRow:disabled {
+  cursor: not-allowed;
+  background: transparent;
+}
+.wsRow:disabled .wsRowName,
+.wsRow:disabled .wsPlus {
+  color: var(--fg-muted);
+}

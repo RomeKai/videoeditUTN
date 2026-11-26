@@ -195,3 +195,19 @@
   color: var(--fg-subtle, var(--fg-muted));
   font-style: italic;
 }
+.undo {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.routingWarn {
+  margin: 0;
+  padding: 4px 10px 8px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--warn, var(--fg));
+}

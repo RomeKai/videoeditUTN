@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { clearRouteOverrides, setRouteOverride, type Route } from '@/api/routing';
-import { domainRouting, type DomainRouting } from '@/api/routingTable';
+import { API_REAL_LIST } from '@/api/config';
+import { clearRouteOverrides, routingConfig, setRouteOverride, type Route } from '@/api/routing';
+import { domainRouting, unknownRealNames, type DomainRouting } from '@/api/routingTable';
 import { Badge } from '@/ui/Badge';
 import { Button } from '@/ui/Button';
 import styles from './MockPanel.module.css';
@@ -40,11 +41,22 @@ export function ApiRoutingPanel({ onChange = reload }: { onChange?: () => void }
     setRows(domainRouting());
     onChange();
   };
+  const reset = (row: DomainRouting) => {
+    setRouteOverride(row.domain, null);
+    setRows(domainRouting());
+    onChange();
+  };
   const overridden = rows.some((row) => row.override !== null);
+  const unknown = unknownRealNames(routingConfig().real ?? API_REAL_LIST);
 
   return (
     <div className={styles.routing} role="group" aria-label="Origen de cada dominio de la API">
       <p className={`t-over ${styles.group}`}>Origen por dominio</p>
+      {unknown.length > 0 ? (
+        <p className={styles.routingWarn} role="alert">
+          <span className="code">NEXT_PUBLIC_API_REAL</span> nombra algo que no está en el contrato y se ignora: {unknown.join(', ')}.
+        </p>
+      ) : null}
       <ul className={styles.domains}>
         {rows.map((row) => (
           <li key={row.domain} className={styles.domain} data-domain={row.domain} data-route={row.route}>
@@ -55,7 +67,17 @@ export function ApiRoutingPanel({ onChange = reload }: { onChange?: () => void }
               </Badge>
             </div>
             <div className={styles.domainFoot}>
-              <span className={styles.itemDesc}>{detail(row)}</span>
+              <span className={styles.itemDesc}>
+                {detail(row)}
+                {row.override ? (
+                  <>
+                    {' '}
+                    <button type="button" className={styles.undo} onClick={() => reset(row)} aria-label={`Quitar el cambio de ${row.title}`}>
+                      Quitar el cambio
+                    </button>
+                  </>
+                ) : null}
+              </span>
               <span className={styles.switch} role="group" aria-label={`Origen de ${row.title}`}>
                 {(['real', 'mock'] as const).map((route) => (
                   <button

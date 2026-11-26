@@ -1,4 +1,4 @@
-import { backendDefaultWorkspaceId, isBackendDefaultWorkspace } from '../config';
+import { backendDefaultWorkspaceId, hasBackendDefaultPrefix } from '../config';
 import { isHybrid } from '../routing';
 import { newId, type MockClip, type MockDb, type MockProject, type MockUser, type MockWorkspace } from './db';
 import { findScenario } from './scenarios';
@@ -22,7 +22,7 @@ export interface JwtClaims {
   user_id: string;
   email: string | null;
   /** Epoch seconds. */
-  exp: number | null;
+  exp: number;
 }
 
 function decodeBase64Url(value: string): string {
@@ -32,7 +32,7 @@ function decodeBase64Url(value: string): string {
   return new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0)));
 }
 
-/** Payload of a simplejwt token, unverified. Null for anything that is not a JWT with a `user_id`. */
+/** Payload of a simplejwt token, unverified. Null for anything that is not a JWT with a `user_id` and a numeric `exp`. */
 export function readJwt(token: string | null | undefined): JwtClaims | null {
   if (!token) return null;
   const parts = token.split('.');
@@ -40,12 +40,10 @@ export function readJwt(token: string | null | undefined): JwtClaims | null {
   try {
     const payload = JSON.parse(decodeBase64Url(parts[1])) as Record<string, unknown>;
     const id = payload.user_id;
-    if (typeof id !== 'string' && typeof id !== 'number') return null;
-    return {
-      user_id: String(id),
-      email: typeof payload.email === 'string' ? payload.email : null,
-      exp: typeof payload.exp === 'number' ? payload.exp : null,
-    };
+    if ((typeof id !== 'string' && typeof id !== 'number') || String(id).trim() === '') return null;
+    // simplejwt always sets a numeric `exp`. Anything else would be a token that never expires here.
+    if (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)) return null;
+    return { user_id: String(id), email: typeof payload.email === 'string' ? payload.email : null, exp: payload.exp };
   } catch {
     return null;
   }
@@ -87,6 +85,24 @@ function lastLoginEmail(): string | null {
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (value: string | undefined): value is string => Boolean(value && UUID.test(value));
+
+/** What an adopted row is, in the first group of its id. */
+const ADOPTED = { wallet: '0c0a0001', member: '0c0a0002', clipProject: '0c0a0003' } as const;
+
+/**
+ * Id of a row made for a real one, derived from the real id (and, for a membership, from the user's too).
+ * Several requests reach the mocks at once on the first load, each with its own copy of the database: with
+ * a random id each would create a different wallet or stand-in and the last one saved would win. Derived
+ * ids make every copy create the same row.
+ */
+function adoptedId(kind: keyof typeof ADOPTED, realId: string, otherId?: string): string {
+  if (!isUuid(realId)) return newId();
+  const tail = otherId ? otherId.toLowerCase().replace(/[^0-9a-f]/g, '').slice(-12).padStart(12, '0') : realId.slice(24);
+  return `${ADOPTED[kind]}${realId.slice(8, 24)}${tail}`.toLowerCase();
+}
+
 const isEmail = (value: string | null): value is string => Boolean(value && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value));
 
 /** Plan and balance an adopted workspace starts with: the ones of the scenario in use (Plan Gratis, Saldo bajo…). */
@@ -105,7 +121,7 @@ export function adoptUserFromToken(db: MockDb, token: string, now: number): Mock
   if (!isHybrid()) return null;
   const claims = readJwt(token);
   if (!claims) return null;
-  if (claims.exp !== null && claims.exp * 1000 <= now) return null;
+  if (claims.exp * 1000 <= now) return null;
   const known = db.users.find((item) => item.id === claims.user_id);
   if (known) return known;
   const remembered = lastLoginEmail();
@@ -143,7 +159,7 @@ export function adoptWorkspace(db: MockDb, user: MockUser, id: string, now: numb
     const defaults = scenarioDefaults(db);
     workspace = {
       id,
-      name: isBackendDefaultWorkspace(id) ? 'Workspace por defecto (backend)' : 'Workspace del backend',
+      name: hasBackendDefaultPrefix(id) ? 'Workspace por defecto (backend)' : 'Workspace del backend',
       owner: user.id,
       subscription_plan: defaults.plan,
       created_at: iso(now),
@@ -151,21 +167,19 @@ export function adoptWorkspace(db: MockDb, user: MockUser, id: string, now: numb
       pending_plan: null,
     };
     db.workspaces.push(workspace);
-    db.wallets.push({ id: newId(), workspace: id, available_balance: defaults.balance, reserved_balance: 0, updated_at: iso(now) });
+    db.wallets.push({ id: adoptedId('wallet', id), workspace: id, available_balance: defaults.balance, reserved_balance: 0, updated_at: iso(now) });
     db.socialAccounts.push(...socialAccounts(id, {}, now));
   }
   // A workspace of the scenario (Estudio Norte…) is not the backend's: a real user never joins it.
   else if (SEEDED_USERS.has(workspace.owner)) return null;
   const member = db.members.some((item) => item.workspace === id && item.user === user.id && item.status === 'active');
   if (!member) {
-    db.members.push({ id: newId(), workspace: id, user: user.id, email: user.email, role: 'admin', status: 'active', joined_at: iso(now), invited_by: null, token: null });
+    db.members.push({ id: adoptedId('member', id, user.id), workspace: id, user: user.id, email: user.email, role: 'admin', status: 'active', joined_at: iso(now), invited_by: null, token: null });
   }
   return workspace;
 }
 
 const SEEDED_USERS = new Set<string>(Object.values(USER_IDS));
-
-const isUuid = (value: string | undefined): value is string => Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value));
 
 function standIn(db: MockDb, workspaceId: string, id: string, withClip: string | null): MockProject {
   const now = Date.now();
@@ -173,7 +187,8 @@ function standIn(db: MockDb, workspaceId: string, id: string, withClip: string |
   const owner = db.users.find((item) => item.id === workspace?.owner);
   const built = buildProject(
     {
-      index: 9000 + db.projects.length,
+      // Fixed: every copy of the database builds the same stand-in.
+      index: 9000,
       title: 'Proyecto del backend',
       status: 'completed',
       stage: 'completed',
@@ -218,7 +233,7 @@ export function adoptProject(db: MockDb, workspaceId: string, id: string | undef
 export function adoptClip(db: MockDb, workspaceId: string, clipId: string | undefined): { project: MockProject; clip: MockClip } | null {
   if (!isHybrid() || !isUuid(clipId)) return null;
   if (db.projects.some((item) => item.clips.some((clip) => clip.id === clipId))) return null;
-  const project = standIn(db, workspaceId, newId(), clipId);
+  const project = standIn(db, workspaceId, adoptedId('clipProject', clipId), clipId);
   const clip = project.clips[0];
   return clip ? { project, clip } : null;
 }

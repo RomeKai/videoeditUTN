@@ -1,4 +1,4 @@
-import { API_MODE, API_REAL_LIST, type ApiMode } from './config';
+import { API_MODE, API_REAL_LIST, hasBackendDefaultPrefix, type ApiMode } from './config';
 import type { AnyEndpoint } from './endpoint';
 
 /**
@@ -145,6 +145,24 @@ export function routingConfig(): RoutingConfig {
 
 export function isHybrid(): boolean {
   return (forced?.mode ?? API_MODE) === 'hybrid';
+}
+
+/**
+ * DEV BRIDGE (hybrid mode only): whether the id is the placeholder workspace of a mocked `/me`
+ * (`BACKEND_DEFAULT_WORKSPACE_PREFIX` in ./config). Outside hybrid there is no bridge: an id of that shape
+ * left in the browser is just an id the backend does not know.
+ */
+export function isBackendDefaultWorkspace(workspaceId: string | null | undefined): boolean {
+  return isHybrid() && hasBackendDefaultPrefix(workspaceId);
+}
+
+/**
+ * Whether a row (`workspace` of a project, a brand kit…) belongs to the active workspace: the defensive
+ * check of the screens. With the placeholder of hybrid mode the real id is not known, and the backend
+ * already scoped its answer to the user's default workspace, so every row counts as the active one's.
+ */
+export function isOfWorkspace(rowWorkspaceId: string | null | undefined, activeWorkspaceId: string): boolean {
+  return isBackendDefaultWorkspace(activeWorkspaceId) || rowWorkspaceId === activeWorkspaceId;
 }
 
 /** Who answers the endpoint. */

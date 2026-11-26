@@ -116,6 +116,42 @@ test.describe('Sin mocks: la sesión contra el backend', () => {
     expect(await page.evaluate(() => window.localStorage.getItem('oc.auth'))).toContain('"refresh":"r"');
   });
 
+  test('el modo queda fijo en el build: las variables del entorno al arrancar el servidor no lo cambian', async ({ page }) => {
+    // This server was started with NEXT_PUBLIC_API_MODE=hybrid and NEXT_PUBLIC_API_MOCKS=true (playwright.config.ts).
+    // If the server read them, it would render the mock gate and the browser would not: React #418.
+    await fakeApi(page);
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(message.text());
+    });
+    const html = await (await page.request.get('/login')).text();
+    // The server render already has the form: with the mocks on it would be the loading outline of the mock gate.
+    expect(html).toContain('Iniciar sesión');
+    await page.goto('/login');
+    await expect(page.getByRole('button', { name: 'Iniciar sesión' })).toBeVisible();
+    await page.waitForLoadState('networkidle');
+    expect(errors).toEqual([]);
+    // No mock worker and no dev panel.
+    expect(await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length)).toBe(0);
+    await expect(page.getByRole('button', { name: /Mocks|Híbrido/ })).toHaveCount(0);
+  });
+
+  test('un workspace marcador que dejó el modo híbrido se olvida: nada se pide sin X-Workspace-Id ni con ese id', async ({ page }) => {
+    const calls = await fakeApi(page);
+    await signedIn(page);
+    await page.addInitScript(() => {
+      if (!window.sessionStorage.getItem('sembrado')) window.localStorage.setItem('oc.workspace', '00000000-0000-4000-8000-3cfe1c5e357a');
+      window.sessionStorage.setItem('sembrado', '1');
+    });
+    await page.goto('/uso/movimientos');
+    await expect(page.getByRole('link', { name: /Saldo: 100 tokens disponibles/ })).toBeVisible();
+    const scoped = calls.filter((call) => call.path !== '/api/v1/me/' && call.path !== '/api/v1/status/' && call.path !== '/api/v1/plans/' && call.path !== '/api/v1/pricing/');
+    expect(scoped.length).toBeGreaterThan(0);
+    expect(scoped.filter((call) => call.workspace !== WS)).toEqual([]);
+    expect(await page.evaluate(() => window.localStorage.getItem('oc.workspace'))).toBe(WS);
+  });
+
   test('las rutas de desarrollo no existen', async ({ page }) => {
     await fakeApi(page);
     for (const path of ['/dev/kit', '/dev/checkout']) {

@@ -55,11 +55,14 @@ export function watch(page: Page, options: WatchOptions = {}): Problems {
     // (Hybrid: the preflight of a request the worker lets through is the browser's own, not an API answer.)
     const preflight = Boolean(options.hybrid) && request.method() === 'OPTIONS';
     if (response.url().startsWith(`${apiUrl}/api/`) && !preflight) {
+      const mocked = response.headers()[MOCK_HEADER] !== undefined;
       // Mock and hybrid: every API request goes through the MSW worker, which answers it or lets it through.
       if (!response.fromServiceWorker()) problems.failedRequests.push(`${label} · no pasó por MSW`);
+      // Mock mode: a mock answers everything. What the worker let through also "comes from the service
+      // worker", so only the mark of the mocks tells an answer of theirs from one that leaked to the network.
+      else if (!options.hybrid && !mocked) problems.failedRequests.push(`${label} · MSW lo dejó pasar a la red`);
       else if (options.hybrid) {
         const endpoint = matchEndpoint(ALL_ENDPOINTS, request.method(), new URL(response.url()).pathname);
-        const mocked = response.headers()[MOCK_HEADER] !== undefined;
         if (!endpoint) problems.failedRequests.push(`${label} · no está en el contrato`);
         else {
           const expected = routeOf(endpoint, { mode: 'hybrid', real: options.hybrid.real, overrides: {} });
