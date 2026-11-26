@@ -164,8 +164,10 @@ class ProbeLinkView(_WorkspaceView):
     """
     C1 › Pegar link. Part of creating a project: Owner, Admin and Editor
     (``project.create``). 400 ``unsupported``/``unavailable``/``invalid``,
-    403 ``duration`` over the plan, 429 too many probes, 502/503/504 when the
-    site or the tool does not answer.
+    403 ``duration`` over the plan, 400 ``duration_app`` over what the app
+    processes with any plan, 429 too many probes, 502/503/504 when the site or
+    the tool does not answer. The duration is judged by ``link_duration_rule``,
+    the rule of the download.
     """
 
     workspace_actions = {'POST': 'project.create'}
@@ -209,14 +211,28 @@ class ProbeLinkView(_WorkspaceView):
         except LinkProbeError as exc:
             return Response({"error": exc.message, "code": exc.code}, status=exc.status)
 
-        plan = workspace.subscription_plan
-        if plan is not None and info.duration_seconds > plan.max_video_duration_seconds:
+        from .tasks.shared import LinkTooLongError, link_duration_rule
+
+        limit, too_long = link_duration_rule(workspace)
+        if info.duration_seconds > limit:
             from .services.media_validation import _format_duration
 
-            limit = plan.max_video_duration_seconds
+            duration = _format_duration(info.duration_seconds)
+            if too_long is LinkTooLongError:
+                # The plan's limit: a plan with longer videos takes it.
+                return Response({
+                    "error": f"El video dura {duration} y tu plan permite hasta {_format_duration(limit)}.",
+                    "code": "duration",
+                    "limit": limit,
+                }, status=status.HTTP_403_FORBIDDEN)
+            # The app's limit: no plan takes it. A property of the link, like
+            # ``unsupported``, and like an uploaded file that is too long.
             return Response({
-                "error": f"El video dura {_format_duration(info.duration_seconds)} y tu plan permite hasta {_format_duration(limit)}.",
-                "code": "duration",
+                "error": (
+                    f"El video dura {duration} y podemos procesar videos de hasta {_format_duration(limit)}. "
+                    "Probá con uno más corto."
+                ),
+                "code": "duration_app",
                 "limit": limit,
-            }, status=status.HTTP_403_FORBIDDEN)
+            }, status=status.HTTP_400_BAD_REQUEST)
         return Response(info.as_dict())

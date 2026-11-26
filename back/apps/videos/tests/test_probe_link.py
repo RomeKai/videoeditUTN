@@ -10,7 +10,9 @@ and the download (services/link_validation.py, services/ytdlp_safe.py):
 - yt-dlp runs in a child process, with a minimal environment and its own
   process group, killed whole at the time limit;
 - the provider's text never reaches the response or the logs;
-- the plan's duration limit answers 403 ``duration``; Lector cannot probe.
+- the plan's duration limit answers 403 ``duration``, the app's (no plan
+  takes the video) 400 ``duration_app``: the rule of the download
+  (``link_duration_rule``); Lector cannot probe.
 
 The view tests mock the child (``run_worker``); the ``Real*`` tests run the
 installed yt-dlp against local HTTP servers, with no internet.
@@ -473,6 +475,51 @@ class ProbeLinkTests(APITestCase):
         self.assertEqual(response.json()['code'], 'duration')
         self.assertEqual(response.json()['limit'], 600)
         self.assertEqual(response.json()['error'], 'El video dura 45 min y tu plan permite hasta 10 min.')
+
+    @override_settings(AI_UPLOAD_MAX_DURATION_SECONDS=10800)
+    def test_without_a_plan_a_link_longer_than_the_app_processes_is_refused_without_blaming_a_plan(self):
+        self.home.subscription_plan = None
+        self.home.save()
+
+        response = self.probe(answer={'ok': {**VIDEO, 'duration': 14400}})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {
+            'error': 'El video dura 4 h 00 min y podemos procesar videos de hasta 3 h 00 min. Probá con uno más corto.',
+            'code': 'duration_app',
+            'limit': 10800,
+        })
+        self.assertNotIn('plan', response.json()['error'])
+        cache.clear()
+        self.assertEqual(self.probe(answer={'ok': {**VIDEO, 'duration': 10800}}).status_code, 200)  # the limit itself
+
+    @override_settings(AI_UPLOAD_MAX_DURATION_SECONDS=10800)
+    def test_the_probe_blames_the_limit_the_download_would(self):
+        from apps.videos.tasks.shared import LinkTooLongError, link_too_long_error
+
+        project = VideoProject.objects.create(
+            workspace=self.home, uploaded_by=self.alice, title='Link', video_url='https://www.youtube.com/watch?v=abc',
+        )
+        cases = [
+            (600, 403, 'duration', 600),            # the plan's is lower: another plan takes it
+            (10800, 400, 'duration_app', 10800),    # the plan allows what the app does: no plan takes it
+            (14400, 400, 'duration_app', 10800),    # the app's 3 h bind first
+            (None, 400, 'duration_app', 10800),     # no plan: only the app's
+        ]
+        for seconds, status, code, limit in cases:
+            with self.subTest(seconds):
+                self.home.subscription_plan = seconds and SubscriptionPlan.objects.create(
+                    name=f'Tope {seconds}', max_video_duration_seconds=seconds, max_members=5,
+                )
+                self.home.save()
+                cache.clear()
+
+                response = self.probe(answer={'ok': {**VIDEO, 'duration': 14401}})
+
+                body = response.json()
+                self.assertEqual((response.status_code, body['code'], body['limit']), (status, code, limit))
+                download_error = link_too_long_error(VideoProject.objects.get(pk=project.pk))
+                self.assertEqual(code == 'duration', download_error is LinkTooLongError)
 
     def test_roles_and_workspaces(self):
         boss = make_user('boss')

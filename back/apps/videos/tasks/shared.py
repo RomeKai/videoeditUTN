@@ -92,34 +92,34 @@ class LinkTooLargeError(ValueError):
     """The linked video's file is larger than LINK_DOWNLOAD_MAX_BYTES. Not retried."""
 
 
-def _link_duration_limits(project):
-    """``(app, plan)``: the app's AI_UPLOAD_MAX_DURATION_SECONDS and the plan's limit (None without one)."""
+def link_duration_rule(workspace):
+    """
+    ``(limit, error)`` of a link in ``workspace``: the longest video it may
+    download, and the error of a longer one. The limit is the lower of the
+    plan's ``max_video_duration_seconds`` and the app's
+    AI_UPLOAD_MAX_DURATION_SECONDS. The error is LinkTooLongError when the
+    plan's is the lower one (a plan with longer videos takes it), and
+    LinkTooLongForAppError when the app's is, both are the same or there is
+    no plan (no plan takes it). probe-link decides with it before creating
+    (403 ``duration`` or 400 ``duration_app``) and the download when the video
+    is fetched: the same rule on both paths.
+    """
     app_limit = getattr(settings, 'AI_UPLOAD_MAX_DURATION_SECONDS', 10800)
-    plan = getattr(project.workspace, 'subscription_plan', None)
-    plan_limit = plan.max_video_duration_seconds if plan is not None and plan.max_video_duration_seconds else None
-    return app_limit, plan_limit
+    plan = getattr(workspace, 'subscription_plan', None)
+    plan_limit = plan.max_video_duration_seconds if plan is not None else None
+    if plan_limit and plan_limit < app_limit:
+        return plan_limit, LinkTooLongError
+    return app_limit, LinkTooLongForAppError
 
 
 def link_duration_limit(project):
-    """
-    Longest video a link project may download: the plan's
-    ``max_video_duration_seconds`` and the app's AI_UPLOAD_MAX_DURATION_SECONDS,
-    the lower of the two. The probe tells the user before creating; this makes
-    it binding when the video is fetched.
-    """
-    app_limit, plan_limit = _link_duration_limits(project)
-    return min(app_limit, plan_limit) if plan_limit else app_limit
+    """Longest video a link project may download (``link_duration_rule``)."""
+    return link_duration_rule(project.workspace)[0]
 
 
 def link_too_long_error(project):
-    """
-    The error of a link project's video longer than ``link_duration_limit``:
-    LinkTooLongError when the plan's limit is the lower one (a plan with
-    longer videos takes it), LinkTooLongForAppError when the app's is, or
-    both are the same (no plan takes it).
-    """
-    app_limit, plan_limit = _link_duration_limits(project)
-    return LinkTooLongError if plan_limit and plan_limit < app_limit else LinkTooLongForAppError
+    """The error of a link project's video longer than ``link_duration_limit`` (``link_duration_rule``)."""
+    return link_duration_rule(project.workspace)[1]
 
 
 def download_from_youtube(url, output_folder, max_duration_seconds=None, too_long_error=LinkTooLongError):
