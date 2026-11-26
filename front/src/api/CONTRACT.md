@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**80 endpoints:** 26 existen hoy en el backend, 3 existen en parte y 51 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**80 endpoints:** 26 existen hoy en el backend, 5 existen en parte y 49 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -129,10 +129,10 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/social-accounts/` | Una entrada por red (TikTok, Instagram Reels, YouTube Shorts) con su estado y sus límites. | ❌ falta (propuesto) · hueco 10 | H3, E1, B2 |
 | POST | `/api/v1/social-accounts/connect/` | Devuelve la URL de la red (vía Ayrshare) para autorizar la cuenta en una ventana aparte. | ❌ falta (propuesto) · hueco 10 | D6, H3, E1 |
 | DELETE | `/api/v1/social-accounts/:platform/` | Desconecta la cuenta de una red. Las publicaciones programadas en esa red quedan en error. | ❌ falta (propuesto) · hueco 10 | H3 |
-| GET | `/api/v1/scheduled-posts/` | Publicaciones del workspace, ordenadas por `publish_at`, con filtros por estado, red, rango y clip. | ❌ falta (propuesto) · hueco 8 | E2, D3, D4 (diálogo) |
+| GET | `/api/v1/scheduled-posts/` | Publicaciones del workspace, ordenadas por `publish_at`, con filtros por estado, red, rango y clip. | ⚠️ existe en parte · hueco 8 | E2, D3, D4 (diálogo) |
 | POST | `/api/v1/scheduled-posts/` | Publica ahora o programa un clip en una red. Con `draft: true` crea un borrador, que dispara la generación del texto con IA. | ❌ falta (propuesto) · hueco 8, 9 | E1 |
 | POST | `/api/v1/scheduled-posts/bulk/` | Crea varias publicaciones juntas (varios clips, varias redes). Todo o nada. | ❌ falta (propuesto) · hueco 8 | E1c |
-| GET | `/api/v1/scheduled-posts/:id/` | Detalle de una publicación. Se consulta cada 5 s mientras está en cola o publicando. | ❌ falta (propuesto) · hueco 8 | E2, E1 |
+| GET | `/api/v1/scheduled-posts/:id/` | Detalle de una publicación. Se consulta cada 5 s mientras está en cola o publicando. | ⚠️ existe en parte · hueco 8 | E2, E1 |
 | PATCH | `/api/v1/scheduled-posts/:id/` | Edita el texto, reprograma, o publica un borrador (`publish_at`: fecha para programar, `null` para publicar ahora). Solo antes de `QUEUED`. | ❌ falta (propuesto) · hueco 8 | E2 |
 | POST | `/api/v1/scheduled-posts/:id/cancel/` | Cancela una publicación que todavía no salió. La borra. | ❌ falta (propuesto) · hueco 8 | E2 |
 | POST | `/api/v1/scheduled-posts/:id/retry/` | Reintenta una publicación que falló (también una trabada en `PROCESSING`). | ❌ falta (propuesto) · hueco 8 | E2 |
@@ -1130,8 +1130,8 @@ Publicaciones del workspace, ordenadas por `publish_at`, con filtros por estado,
 | | |
 |---|---|
 | Id | `social.posts` |
-| Backend | ❌ falta (propuesto) · hueco 8 |
-| Nota | Modelo: ScheduledPost. Hoy solo se crean desde el admin. |
+| Backend | ⚠️ existe en parte · hueco 8 · `back/apps/videos/views_social.py · ScheduledPostViewSet.list + ScheduledPostSerializer` |
+| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. Falta: `thumbnail_url` viene siempre `null` (los clips no tienen miniatura), `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | PostsQuery |
 | Respuesta 200 | { count: number, next: string \\| null, previous: string \\| null, results: ScheduledPost[], status_counts?: { [clave]: number } } |
@@ -1174,7 +1174,8 @@ Detalle de una publicación. Se consulta cada 5 s mientras está en cola o publi
 | | |
 |---|---|
 | Id | `social.post` |
-| Backend | ❌ falta (propuesto) · hueco 8 |
+| Backend | ⚠️ existe en parte · hueco 8 · `back/apps/videos/views_social.py · ScheduledPostViewSet.retrieve + ScheduledPostSerializer` |
+| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. Falta: `thumbnail_url` viene siempre `null` (los clips no tienen miniatura), `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | ScheduledPost |
 | Errores | **404** No existe o es de otro workspace. |

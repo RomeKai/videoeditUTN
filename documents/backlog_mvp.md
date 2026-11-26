@@ -958,12 +958,12 @@ Motor de publicación que sube el video directamente a cada API de plataforma, s
 ### DIST-03: Scheduling Engine — Celery Beat + Calendar `P0` 🟡 `partial`
 
 **Descripción:**
-`ScheduledPost` model y `dispatch\_scheduled\_posts\_batch` task existen. Falta Celery Beat y endpoints REST.
+`ScheduledPost` model y `dispatch_scheduled_posts_batch` task existen. Celery Beat ya despacha cada 5 min (servicio `beat`); desde `GET /api/v1/scheduled-posts/` la lista y el detalle existen. Faltan crear, editar, cancelar, bulk, retry y regenerar el texto (contrato `social.*`).
 
 **Criterios de Aceptación:**
 
-* \[ ] Servicio `beat` en `docker-compose.yml`.
-* \[ ] `dispatch\_scheduled\_posts\_batch` corre cada 5 min vía `CELERY\_BEAT\_SCHEDULE`.
+* \[x] Servicio `beat` en `docker-compose.yml`.
+* \[x] `dispatch\_scheduled\_posts\_batch` corre cada 5 min vía `CELERY\_BEAT\_SCHEDULE`.
 * \[ ] CRUD completo: `POST/GET/PATCH/DELETE /api/v1/scheduled-posts/`.
 * \[ ] `GET /api/v1/scheduled-posts/calendar/?from=...\&to=...` devuelve posts por día.
 * [ ] SEO metadata auto-generado al crear un scheduled post (via `SEOOptimizationService`).
