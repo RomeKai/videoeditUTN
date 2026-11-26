@@ -33,7 +33,9 @@ def check_seat_limit(workspace, user_ids, freed=0):
     crear). Con una bajada programada (``pending_plan``) cuentan los lugares
     del plan más chico de los dos: bajar se aceptó porque entraban, y tienen
     que seguir entrando cuando se aplique. Lo mismo con un pago de plan
-    pendiente: al confirmarse, su plan se aplica al momento.
+    pendiente: al confirmarse, su plan se aplica al momento. Deja de contar
+    cuando se liquida: al elegir el plan actual (lo cancela) o cuando vence
+    su checkout (PAYMENTS_CHECKOUT_TTL_SECONDS, la tarea de beat).
     """
     new = [user_id for user_id in user_ids if user_id != workspace.owner_id]
     if not new:
@@ -73,7 +75,7 @@ def check_seat_limit(workspace, user_ids, freed=0):
     if paying is not None:
         raise ValidationError(
             f"Estás pasando al plan '{paying['plan__name']}', que permite {limit} miembros. "
-            "Terminá o cancelá ese pago para invitar más gente."
+            "Para invitar a más gente, cancelá ese pago: elegí tu plan actual en Planes."
         )
     if pending is not None:
         when = timezone.localtime(pending['pending_plan_effective_at'], ZoneInfo(settings.WORKSPACE_TIME_ZONE))

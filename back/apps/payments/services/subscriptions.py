@@ -17,7 +17,10 @@ pricing page nor the price relative to the current plan:
   pending invitations, apps.users.seats) than the new plan has. While a
   downgrade waits, check_seat_limit already counts its seats.
 - Choosing the current plan cancels the scheduled downgrade and the plan
-  payment waiting for its checkout.
+  payment waiting for its checkout. A checkout nobody pays is rejected once
+  PAYMENTS_CHECKOUT_TTL_SECONDS pass (payments.expire_checkouts), so it
+  stops capping the seats; choosing that same plan again past it opens a
+  new checkout instead of handing out the expired one.
 - The plan payment waiting is read with its row locked, so a checkout that
   is still opening either lands before (and is closed at the provider) or
   finds it settled. One whose checkout never opened stops blocking after
@@ -42,7 +45,10 @@ from apps.users.seats import seats_used
 
 from ..models import Payment, SubscriptionPlan
 from .payment_providers import require_payment_provider
-from .payments import checkout_is_stale, close_checkout, fail_stale_checkout, lock_workspace, open_checkout, settle_payment
+from .payments import (
+    CHECKOUT_EXPIRED, checkout_is_expired, checkout_is_stale, close_checkout, fail_stale_checkout, lock_workspace,
+    open_checkout, settle_payment,
+)
 from .plan_periods import PLAN_FIELDS, is_paid, paid_period_end, price_of, switch_plan
 from .plans import get_default_plan_id
 
@@ -148,11 +154,12 @@ def _pending_upgrade(workspace):
 def _drop_pending_upgrade(workspace, reason, keep_plan=None):
     """
     The plan payment the workspace is waiting for: kept and returned when it
-    is for ``keep_plan`` and its checkout is open; CheckoutInProgress when
-    that same payment is still opening its checkout (unless its provider call
-    was lost: then it is failed); otherwise rejected (the person chose
-    something else) and returned second, as the locked row read again, to
-    close its checkout after the commit.
+    is for ``keep_plan`` and its checkout is open and not expired;
+    CheckoutInProgress when that same payment is still opening its checkout
+    (unless its provider call was lost: then it is failed); otherwise
+    rejected (the person chose something else, or its checkout expired) and
+    returned second, as the locked row read again, to close its checkout
+    after the commit.
     """
     pending = _pending_upgrade(workspace)
     if pending is None:
@@ -165,7 +172,9 @@ def _drop_pending_upgrade(workspace, reason, keep_plan=None):
         if not pending.checkout_url:
             raise CheckoutInProgress()
         if pending.amount_usd == keep_plan.price_usd_monthly:
-            return pending, None
+            if not checkout_is_expired(pending):
+                return pending, None
+            reason = CHECKOUT_EXPIRED
     settled, _ = settle_payment(pending.pk, approved=False, failure_reason=reason)
     return None, settled
 

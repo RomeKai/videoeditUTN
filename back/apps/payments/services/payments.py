@@ -24,9 +24,14 @@ Money rules:
   the next request, or the beat task (fail_stale_checkouts), decides it again
   on the locked row, rejects it and frees its key, so nothing stays "in
   progress" for good. A row whose checkout was stored meanwhile is left alone.
-- A confirmation for a payment already rejected (replaced, canceled, or its
-  checkout failed) changes nothing: it is logged as ``payment.late_paid`` so
-  staff can refund it by hand.
+- A checkout that opened lives PAYMENTS_CHECKOUT_TTL_SECONDS from that same
+  ``checkout_started_at``: past it, the beat task (expire_checkouts) decides
+  it again on the locked row (workspace, then payment), rejects it and closes
+  it at the provider. A row that a confirmation settled meanwhile is left
+  alone. An expired checkout is never handed out again.
+- A confirmation for a payment already rejected (replaced, canceled, expired,
+  or its checkout failed) changes nothing: it is logged as
+  ``payment.late_paid`` so staff can refund it by hand.
 
 The workspace row is locked FOR NO KEY UPDATE: it serializes plan changes and
 settlements without blocking the rows that point to the workspace.
@@ -51,6 +56,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_REJECTION = 'El proveedor de pagos rechazó el pago.'
 CHECKOUT_FAILED = 'No pudimos abrir el checkout del proveedor de pagos.'
+CHECKOUT_EXPIRED = 'El checkout venció sin que se pagara.'
 
 
 class CheckoutFailed(Exception):
@@ -137,6 +143,62 @@ def fail_stale_checkout(payment, now=None):
     return settled, settled.status == Payment.Status.REJECTED
 
 
+def checkout_expiry_cutoff(now=None):
+    """Before this moment, an open checkout outlived PAYMENTS_CHECKOUT_TTL_SECONDS."""
+    return (now or timezone.now()) - timedelta(seconds=settings.PAYMENTS_CHECKOUT_TTL_SECONDS)
+
+
+def checkout_is_expired(payment, now=None):
+    """Pending, with a checkout, and its provider call (``checkout_started_at``) started over the checkout's lifetime ago."""
+    return (
+        payment.status == Payment.Status.PENDING
+        and bool(payment.checkout_url)
+        and payment.checkout_started_at < checkout_expiry_cutoff(now)
+    )
+
+
+def expire_checkout(payment, now=None):
+    """
+    A checkout nobody paid in its lifetime: rejected and closed at the
+    provider, if the row, locked (workspace first, then payment, like
+    settle_payment), is still pending with an expired checkout. A row that a
+    confirmation settled meanwhile is left as it is; a confirmation that
+    arrives later is a late payment (``payment.late_paid``). Keeps its
+    Idempotency-Key: a replay answers this payment, rejected. Returns
+    ``(payment, expired)``; ``payment`` is None if the row is gone.
+    """
+    payment_id = getattr(payment, 'pk', payment)
+    workspace_id = Payment.objects.filter(pk=payment_id).values_list('workspace_id', flat=True).first()
+    if workspace_id is None:
+        return None, False
+    with transaction.atomic():
+        lock_workspace(workspace_id)
+        locked = Payment.objects.select_for_update().get(pk=payment_id)
+        if not checkout_is_expired(locked, now):
+            return locked, False
+        logger.info('payments.checkout_expired payment=%s provider=%s', locked.pk, locked.provider)
+        settled, _ = settle_payment(locked.pk, approved=False, failure_reason=CHECKOUT_EXPIRED)
+    if settled.status == Payment.Status.REJECTED:
+        close_checkout(settled)
+    return settled, settled.status == Payment.Status.REJECTED
+
+
+def expire_checkouts(now=None):
+    """The beat's sweep of expire_checkout. Each row is decided again under its lock. Returns how many it rejected."""
+    candidates = list(
+        Payment.objects.filter(status=Payment.Status.PENDING, checkout_started_at__lt=checkout_expiry_cutoff(now))
+        .exclude(checkout_url='')
+        .values_list('pk', flat=True)
+    )
+    expired = 0
+    for payment_id in candidates:
+        try:
+            expired += expire_checkout(payment_id, now=now)[1]
+        except Exception as exc:  # logged; the next run tries again
+            logger.error('payments.checkout_expiry_failed payment=%s error=%s', payment_id, type(exc).__name__)
+    return expired
+
+
 def fail_stale_checkouts(now=None):
     """The beat's sweep of fail_stale_checkout. Each row is decided again under its lock. Returns how many it rejected."""
     candidates = list(
@@ -218,6 +280,9 @@ def _replay(payment, tokens, package_id):
             return None
         if payment.status == Payment.Status.PENDING and not payment.checkout_url:
             raise PurchaseInProgress()
+    if checkout_is_expired(payment):
+        # Never hand out a checkout past its lifetime: the replay answers it rejected.
+        payment = expire_checkout(payment)[0] or payment
     return payment
 
 

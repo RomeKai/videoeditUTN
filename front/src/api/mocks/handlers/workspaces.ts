@@ -196,7 +196,7 @@ export const workspacesHandlers = [
     const payingPlan = paying ? db.plans.find((plan) => plan.id === paying.plan_id) : null;
     if (payingPlan && payingPlan.max_members < info.max && info.used + emails.length > payingPlan.max_members) {
       throw new MockHttpError(403, {
-        error: `Estás pasando al plan '${payingPlan.name}', que permite ${payingPlan.max_members} miembros. Terminá o cancelá ese pago para invitar más gente.`,
+        error: `Estás pasando al plan '${payingPlan.name}', que permite ${payingPlan.max_members} miembros. Para invitar a más gente, cancelá ese pago: elegí tu plan actual en Planes.`,
         code: 'seats_exceeded',
       });
     }
