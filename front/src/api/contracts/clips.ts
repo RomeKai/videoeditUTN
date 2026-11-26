@@ -133,13 +133,13 @@ export const retryClip = defineEndpoint({
     { status: 403, when: 'El plan no permite la resolución o la duración (`code`), como `render`. La UI abre D3.' },
     {
       status: 409,
-      when: 'El clip no está en error (`code: "not_failed"`), o su proyecto se está renderizando o procesando (los mismos códigos que `render`).',
+      when: 'El clip ya está en el render que pagó un click anterior, esperando o renderizándose (`code: "clip_rendering"`); no está en error (`code: "not_failed"`); o su proyecto se está renderizando o procesando (los mismos códigos que `render`).',
     },
   ],
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_clips.py · ClipRetryView',
-    note: 'El cuerpo es el clip (en `draft` hasta que su render empieza) más `final_cost` y `transaction_id`. No hay reintento gratis: el reparto por segundos entregados ya devolvió lo que el clip fallido no entregó, y el modelo no guarda por qué falló.',
+    note: 'El cuerpo es el clip (en `draft` con `render_queued: true` hasta que su render empieza) más `final_cost` y `transaction_id`. Un segundo click mientras el clip espera o se renderiza recibe 409 `clip_rendering`, no `not_failed`. No hay reintento gratis: el reparto por segundos entregados ya devolvió lo que el clip fallido no entregó, y el modelo no guarda por qué falló.',
   },
   screens: ['D3'],
 });

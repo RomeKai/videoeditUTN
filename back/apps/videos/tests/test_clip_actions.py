@@ -692,6 +692,184 @@ class ClipRetryTests(CapturedTaskFailures, ClipActionsHarness, APITestCase):
         failed.refresh_from_db()
         self.assertEqual(failed.status, FAILED)
 
+    def test_the_second_click_of_a_double_click_is_told_the_clip_renders(self):
+        _project, (_clip, failed) = self.finished()
+        first, _delay = self.post(clip_url(failed, "retry"))
+
+        again, delay = self.post(clip_url(failed, "retry"))
+
+        self.assertEqual(first.status_code, 202, first.content[:300])
+        self.assertEqual(
+            (again.status_code, again.data["code"], again.data["error"]),
+            (409, "clip_rendering", "El clip ya se está renderizando."),
+        )
+        delay.assert_not_called()
+        self.assertEqual(Transaction.objects.filter(wallet=self.wallet, status=RESERVED).count(), 1)
+
+        # Once its worker took it, too; once delivered, it is just not failed.
+        during = []
+
+        def render_and_click(clip_id, claim_token=None):
+            during.append(self.post(clip_url(failed, "retry"))[0])
+            return fake_render(clip_id, claim_token)
+
+        self.render_with(failed, side_effect=render_and_click)
+        after, _delay = self.post(clip_url(failed, "retry"))
+
+        self.assertEqual([(response.status_code, response.data["code"]) for response in during], [(409, "clip_rendering")])
+        self.assertEqual((after.status_code, after.data["code"]), (409, "not_failed"))
+        self.assertEqual(Transaction.objects.filter(wallet=self.wallet, status=RESERVED).count(), 0)
+
+    def test_a_clip_outside_the_open_render_is_still_not_failed(self):
+        # The project renders a retried clip. A delivered clip, a suggestion and
+        # a draft that the settled approval never delivered are not in it.
+        project, (clip, failed, left) = self.finished(statuses=(DONE, FAILED, FAILED))
+        VideoClip.objects.filter(pk=left.pk).update(status=DRAFT)
+        suggestion = VideoClip.objects.create(project=project, title="Sugerido", start_time=80, end_time=90)
+        self.post(clip_url(failed, "retry"))
+
+        for other in (clip, suggestion, left):
+            with self.subTest(other.title):
+                response, delay = self.post(clip_url(other, "retry"))
+                self.assertEqual((response.status_code, response.data["code"]), (409, "not_failed"))
+                delay.assert_not_called()
+        self.assertEqual(Transaction.objects.filter(wallet=self.wallet, status=RESERVED).count(), 1)
+
+
+class RenderQueuedTests(CapturedTaskFailures, ClipActionsHarness, APITestCase):
+    """
+    ``render_queued`` (VideoClipSerializer): a paid render puts its clips back
+    to DRAFT until a worker takes them. The API tells such a draft from a
+    suggestion, by the rule the worker claims by (``_whole_video_render_allowed``).
+    """
+
+    def clips_of(self, project):
+        response = self.client.get(reverse("project-detail", args=[project.pk]))
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        return {clip["id"]: (clip["status"], clip["render_queued"]) for clip in response.data["clips"]}
+
+    def assert_queued(self, project, expected):
+        """``expected``: {clip: render_queued}. For a draft, the worker would take it exactly then."""
+        project.refresh_from_db()
+        clips = self.clips_of(project)
+        self.assertEqual({pk: queued for pk, (_status, queued) in clips.items()}, {str(c.pk): q for c, q in expected.items()})
+        for clip, queued in expected.items():
+            if clips[str(clip.pk)][0] == DRAFT:
+                at_dispatch = project.pipeline_stage == PipelineStage.RENDER_DISPATCHED
+                self.assertEqual(queued, at_dispatch and _whole_video_render_allowed(project.pk, clip_id=clip.pk), clip.title)
+
+    def test_a_retried_clip_is_queued_until_its_worker_takes_it_and_a_suggestion_never(self):
+        project, (clip, failed) = self.finished()
+        suggestion = VideoClip.objects.create(project=project, title="Sugerido", start_time=60, end_time=70)
+        self.assert_queued(project, {clip: False, failed: False, suggestion: False})
+
+        response, _delay = self.post(clip_url(failed, "retry"))
+
+        self.assertEqual(response.status_code, 202, response.content[:300])
+        self.assertEqual((response.data["status"], response.data["render_queued"]), (DRAFT, True))
+        self.assertTrue(self.client.get(clip_url(failed)).data["render_queued"])
+        self.assertEqual(self.clips_of(project)[str(suggestion.pk)], (DRAFT, False))
+        self.assert_queued(project, {clip: False, failed: True, suggestion: False})
+
+        seen = []
+
+        def render_and_look(clip_id, claim_token=None):
+            seen.append(self.client.get(clip_url(failed)).data)
+            return fake_render(clip_id, claim_token)
+
+        self.render_with(failed, side_effect=render_and_look)
+
+        # Taken by the worker: its status says it renders.
+        self.assertEqual([(data["status"], data["render_queued"]) for data in seen], [(RENDERING, False)])
+        self.assert_queued(project, {clip: False, failed: False, suggestion: False})
+
+    def test_a_render_from_the_editor_and_a_rerender_queue_their_clips(self):
+        project, (clip, failed) = self.finished(statuses=(DONE, FAILED))
+        self.post(clip_url(clip, "render"))
+        self.assert_queued(project, {clip: True, failed: False})
+        self.render_with(clip)
+
+        self.post(project_url(project, "rerender"))
+
+        self.assert_queued(project, {clip: True, failed: True})
+
+    def test_a_draft_a_settled_render_left_is_not_queued(self):
+        project, (clip, left) = self.finished(statuses=(DONE, FAILED))
+        VideoClip.objects.filter(pk=left.pk).update(status=DRAFT)  # the settled approval never delivered it
+
+        self.post(clip_url(clip, "render"))
+
+        self.assert_queued(project, {clip: True, left: False})
+
+    def test_a_render_that_is_refunded_queues_nothing(self):
+        project, (clip, failed) = self.finished(statuses=(DONE, FAILED))
+        self.post(clip_url(clip, "render"))
+        rollback_reservation(self.clip_render(project).pk)  # settled while the project still reads rendering
+
+        self.assert_queued(project, {clip: False, failed: False})
+
+    def test_a_whole_video_is_queued_by_its_creation_and_by_a_rerender(self):
+        project, clip = self.whole_video(clip_status=DRAFT, creation=RESERVED)
+        VideoProject.objects.filter(pk=project.pk).update(
+            status=VideoProject.Status.RENDERING, pipeline_stage=PipelineStage.RENDER_DISPATCHED,
+        )
+        self.assert_queued(project, {clip: True})
+        VideoProject.objects.filter(pk=project.pk).update(pipeline_stage=PipelineStage.CLIPS_SELECTED)
+        self.assert_queued(project, {clip: False})  # not dispatched yet
+
+        delivered, delivered_clip = self.whole_video()
+        self.post(project_url(delivered, "rerender"))
+        self.assert_queued(delivered, {delivered_clip: True})
+
+    def test_an_approval_queues_what_it_approved_and_a_render_from_before_them_every_draft(self):
+        project, (approved, suggestion) = self.finished(statuses=(DRAFT, DRAFT))
+        approval = reserve_funds(self.wallet.id, Decimal("5.00"))
+        VideoProject.objects.filter(pk=project.pk).update(
+            status=VideoProject.Status.RENDERING, pipeline_stage=PipelineStage.RENDER_DISPATCHED,
+            metadata={**project.metadata, "render_reservation_id": str(approval.pk), "render_clip_ids": [str(approved.pk)]},
+        )
+        self.assert_queued(project, {approved: True, suggestion: False})
+
+        VideoProject.objects.filter(pk=project.pk).update(metadata={"duration": 120.0})
+        self.assert_queued(project, {approved: True, suggestion: True})
+
+    def test_one_query_per_rendering_project_whatever_its_clips(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        rendering = []
+        for _ in range(2):
+            project, clips = self.auto_render_not_paid()
+            response, _delay = self.post(project_url(project, "rerender"))
+            self.assertEqual(response.status_code, 202, response.content[:300])
+            rendering.append(clips)
+        self.finished()  # ended: nothing to read
+
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get(reverse("project-list"))
+
+        self.assertEqual(response.status_code, 200)
+        queued = [clip["render_queued"] for project in response.data for clip in project["clips"] if clip["status"] == DRAFT]
+        self.assertEqual(queued, [True] * 6)
+        reads = [query["sql"] for query in queries.captured_queries if '"payments_transaction"' in query["sql"]]
+        self.assertEqual(len(reads), 2, reads)
+        # Each clip's project is the one listed: never read again per clip.
+        projects = [query["sql"] for query in queries.captured_queries if 'FROM "videos_videoproject"' in query["sql"]]
+        self.assertEqual(len(projects), 1, projects)
+
+    def test_the_field_is_in_the_openapi_schema(self):
+        schema = self.client.get("/api/schema/?format=json").json()
+
+        components = schema["components"]["schemas"]
+        field = components["VideoClip"]["properties"]["render_queued"]
+        self.assertEqual((field["type"], field.get("readOnly")), ("boolean", True))
+        # The clip endpoints send it too: the clip, and the clip of a retry with its reservation.
+        detail = schema["paths"]["/api/v1/clips/{clip_id}/"]["get"]["responses"]["200"]
+        self.assertEqual(detail["content"]["application/json"]["schema"]["$ref"], "#/components/schemas/VideoClip")
+        retry = schema["paths"]["/api/v1/clips/{clip_id}/retry/"]["post"]["responses"]["202"]
+        retried = components[retry["content"]["application/json"]["schema"]["$ref"].rsplit("/", 1)[-1]]["properties"]
+        self.assertTrue({"render_queued", "final_cost", "transaction_id"} <= set(retried))
+
 
 class RerenderTests(CapturedTaskFailures, ClipActionsHarness, APITestCase):
     def test_a_whole_video_renders_again_with_the_new_style_and_pays_its_render(self):
@@ -1500,6 +1678,17 @@ class ConcurrentPaidRenderTests(ClipActionsHarness, APITransactionTestCase):
         delay.assert_called_once_with(str(clip.pk))
         self.assertEqual(Transaction.objects.filter(wallet=self.wallet, status=RESERVED).count(), 1)
         self.assertEqual(self.balances(), (Decimal("95.00"), Decimal("5.00")))
+
+    def test_a_double_click_on_retry_reserves_once_and_the_second_is_told_it_renders(self):
+        _project, (_clip, failed) = self.finished()
+
+        statuses, responses, delay, _ingestion = self.race(clip_url(failed, "retry"))
+
+        self.assertEqual(statuses, [202, 409])
+        refused = next(response for response in responses if response.status_code == 409)
+        self.assertEqual(refused.data["code"], "clip_rendering")
+        delay.assert_called_once_with(str(failed.pk))
+        self.assertEqual(Transaction.objects.filter(wallet=self.wallet, status=RESERVED).count(), 1)
 
     def test_a_double_click_on_retry_and_rerender_together_reserves_once(self):
         project, (_clip, failed) = self.finished()

@@ -1005,6 +1005,47 @@ def _clip_render_reserved(metadata):
     ).exists()
 
 
+def render_queued_rule(project):
+    """
+    Which DRAFT clips of ``project`` wait for a render worker: a function of
+    the clip id (the caller checks the clip is DRAFT). It is the rule
+    render_clip_task checks before it claims a clip
+    (``_whole_video_render_allowed``), read once for all the clips of the
+    project, with one query at most, and only while the project is at
+    render_dispatched: before that, a draft is a suggestion of the review or
+    waits for its dispatch.
+
+    A draft waits when a reservation still RESERVED pays for it: the creation
+    of a whole video, or a clip-by-clip render that lists it (the
+    auto-render, the approval, or a render the user asked for later,
+    CLIP_RENDER). In a project with no clip-by-clip reservation (a render
+    from before them), every draft waits. A draft that a render settled
+    before never delivered does not wait.
+    """
+    if project.pipeline_stage != PipelineStage.RENDER_DISPATCHED:
+        return lambda clip_id: False
+    metadata = project.metadata or {}
+    paid_renders = _paid_clip_renders(metadata)
+    whole = _is_whole_video(project)
+    if whole:
+        # Its creation pays the first render; one asked for later, its own.
+        paid_renders = [paid for paid in paid_renders if paid is CLIP_RENDER]
+    elif not paid_renders:
+        return lambda clip_id: True
+    linked = {paid.reservation_key: str(metadata[paid.reservation_key]) for paid in paid_renders}
+    if whole and metadata.get('reservation_id'):
+        linked['reservation_id'] = str(metadata['reservation_id'])
+    reserved = {
+        str(pk) for pk in Transaction.objects.filter(
+            pk__in=list(linked.values()), status=Transaction.Status.RESERVED,
+        ).values_list('pk', flat=True)
+    } if linked else set()
+    if linked.get('reservation_id') in reserved:
+        return lambda clip_id: True
+    paying = [paid for paid in paid_renders if linked[paid.reservation_key] in reserved]
+    return lambda clip_id: any(_pays_for(metadata, paid, clip_id) for paid in paying)
+
+
 def _reserve_auto_render(project_id, resuming=False):
     """
     The selected clips are rendered without the review, so their render is

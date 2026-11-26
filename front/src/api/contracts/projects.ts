@@ -141,6 +141,13 @@ export const Clip = z.object({
   virality_score: z.number().int(),
   ai_reasoning: z.string(),
   status: ClipStatus,
+  /**
+   * VideoClipSerializer.render_queued: `true` for a `draft` that a paid render will take (a retry, a render
+   * from the editor, a rerender, an approval, an auto-render) while it waits for a worker; `false` for a
+   * suggestion and for any other status. A `draft` with `render_queued` is "en cola", not "Sugerido".
+   * Optional until the mocks send it.
+   */
+  render_queued: z.boolean().optional(),
   created_at: IsoDateTime,
   layers: z.array(ClipLayer),
   /** Proposed (gap 5): temporary URL to play the rendered clip. */

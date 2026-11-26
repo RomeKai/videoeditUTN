@@ -7,7 +7,7 @@ import { TokenPair, refreshToken } from './auth';
 import { BrandKit, listBrandKits } from './brandkits';
 import { ClipPreview } from './clips';
 import real from './drf/responses.json';
-import { ApprovePaperEditResponse, CreateFromPromptResponse, CreateProjectResponse, PaperEditData, Project, ProjectsResponse } from './projects';
+import { ApprovePaperEditResponse, Clip, CreateFromPromptResponse, CreateProjectResponse, PaperEditData, Project, ProjectsResponse } from './projects';
 
 /**
  * Bodies as the backend of `dev` builds them (see drf/responses.json), parsed
@@ -69,6 +69,18 @@ describe('respuestas reales del backend', () => {
     const failed = Project.parse(real.project_failed_auto_render_not_paid);
     expect(failed.metadata.no_speech).toBe(true);
     expect(pipelineErrorMessage(failed.pipeline_error_code)).toMatch(/No alcanzó el saldo/);
+  });
+
+  it('un `draft` en cola de un render pago se distingue de una sugerencia (`render_queued`)', () => {
+    const review = Project.parse(real.project_in_review_auto_render_skipped);
+    expect(review.clips.map((clip) => [clip.status, clip.render_queued])).toEqual([
+      ['draft', false],
+      ['draft', false],
+    ]);
+    const suggestion = real.project_in_review_auto_render_skipped.clips[0];
+    expect(Clip.parse({ ...suggestion, render_queued: true }).render_queued).toBe(true);
+    // Optional: a body without it (the mocks) is still a clip.
+    expect(Clip.parse({ ...suggestion, render_queued: undefined }).render_queued).toBeUndefined();
   });
 });
 
