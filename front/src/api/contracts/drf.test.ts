@@ -202,7 +202,7 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
     expect(checkout.checkout_url).toMatch(/\/dev\/checkout\?compra=.+&volver=/);
     const scheduled = parse(changePlan.response, real.billing_change_plan_period_end) as ReturnType<typeof changePlan.response.parse>;
     expect(scheduled.applied).toBe('period_end');
-    expect(scheduled.subscription.pending_plan?.name).toBe('Creador');
+    expect(scheduled.subscription.pending_plan?.name).toBe('Gratis');
     expect(scheduled.subscription.pending_plan?.effective_at).toBe(scheduled.subscription.renews_at);
     const canceled = parse(changePlan.response, real.billing_change_plan_cancel) as ReturnType<typeof changePlan.response.parse>;
     expect(canceled.subscription.pending_plan).toBeNull();

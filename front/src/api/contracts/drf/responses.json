@@ -1881,7 +1881,7 @@
   "_about_billing": "Los cuerpos billing_* salieron del backend real (apps/payments/views_subscription.py y views_purchases.py, proveedor simulado), no escritos a mano.",
   "billing_subscription_free": {
     "plan": {
-      "id": "02fff83b-8dcf-41ca-baf4-bd9dc07486c0",
+      "id": "8abd95d6-4af0-4ef4-b9c6-48346bf6e6c4",
       "name": "Gratis",
       "max_video_duration_seconds": 600,
       "max_resolution": "720p",
@@ -1904,10 +1904,10 @@
   },
   "billing_change_plan_checkout": {
     "applied": "now",
-    "checkout_url": "http://localhost:3000/dev/checkout?compra=cda0571b-3496-49a8-b84c-b7efc15d81f3&volver=http%3A%2F%2Flocalhost%3A3000%2Fuso%2Fplanes",
+    "checkout_url": "http://localhost:3000/dev/checkout?compra=9e9a01ba-999a-495e-b9d0-cfcc842702e5&volver=http%3A%2F%2Flocalhost%3A3000%2Fuso%2Fplanes",
     "subscription": {
       "plan": {
-        "id": "02fff83b-8dcf-41ca-baf4-bd9dc07486c0",
+        "id": "8abd95d6-4af0-4ef4-b9c6-48346bf6e6c4",
         "name": "Gratis",
         "max_video_duration_seconds": 600,
         "max_resolution": "720p",
@@ -1934,7 +1934,7 @@
     "checkout_url": null,
     "subscription": {
       "plan": {
-        "id": "8441b974-3bc6-4cf0-adcf-30abd5b08f1e",
+        "id": "128f9ed2-0bce-4c78-9d88-955b1d7d8ca5",
         "name": "Pro",
         "max_video_duration_seconds": 10800,
         "max_resolution": "4K",
@@ -1952,11 +1952,11 @@
         "is_recommended": true
       },
       "status": "active",
-      "renews_at": "2026-12-26T18:56:33.270450Z",
+      "renews_at": "2026-12-26T21:22:37.055166Z",
       "pending_plan": {
-        "id": "93e1e466-c35d-4294-b3e8-c446258469d8",
-        "name": "Creador",
-        "effective_at": "2026-12-26T18:56:33.270450Z"
+        "id": "8abd95d6-4af0-4ef4-b9c6-48346bf6e6c4",
+        "name": "Gratis",
+        "effective_at": "2026-12-26T21:22:37.055166Z"
       }
     }
   },
@@ -1965,7 +1965,7 @@
     "checkout_url": null,
     "subscription": {
       "plan": {
-        "id": "8441b974-3bc6-4cf0-adcf-30abd5b08f1e",
+        "id": "128f9ed2-0bce-4c78-9d88-955b1d7d8ca5",
         "name": "Pro",
         "max_video_duration_seconds": 10800,
         "max_resolution": "4K",
@@ -1983,7 +1983,7 @@
         "is_recommended": true
       },
       "status": "active",
-      "renews_at": "2026-12-26T18:56:33.270450Z",
+      "renews_at": "2026-12-26T21:22:37.055166Z",
       "pending_plan": null
     }
   },
@@ -2014,58 +2014,58 @@
     "usd_to_local_rate": "1450"
   },
   "billing_token_purchase_pending": {
-    "id": "c967d03a-b078-4b5e-8a54-76be6a684586",
+    "id": "7a208f87-8c1a-47d8-8d13-5b67cb1c286a",
     "status": "pending",
     "tokens": 1000,
     "amount_usd": "10.00",
     "plan_id": null,
-    "checkout_url": "http://localhost:3000/dev/checkout?compra=c967d03a-b078-4b5e-8a54-76be6a684586&volver=http%3A%2F%2Flocalhost%3A3000%2Fuso%2Fcomprar%2Fresultado",
+    "checkout_url": "http://localhost:3000/dev/checkout?compra=7a208f87-8c1a-47d8-8d13-5b67cb1c286a&volver=http%3A%2F%2Flocalhost%3A3000%2Fuso%2Fcomprar%2Fresultado",
     "failure_reason": null,
-    "created_at": "2026-11-26T18:56:33.194199Z",
+    "created_at": "2026-11-26T21:22:37.020663Z",
     "balance_after": null
   },
   "billing_token_purchase_approved": {
-    "id": "c967d03a-b078-4b5e-8a54-76be6a684586",
+    "id": "7a208f87-8c1a-47d8-8d13-5b67cb1c286a",
     "status": "approved",
     "tokens": 1000,
     "amount_usd": "10.00",
     "plan_id": null,
     "checkout_url": null,
     "failure_reason": null,
-    "created_at": "2026-11-26T18:56:33.194199Z",
+    "created_at": "2026-11-26T21:22:37.020663Z",
     "balance_after": "1000.0000000000"
   },
   "billing_token_purchase_rejected": {
-    "id": "91460f97-7518-40be-8f5e-004ac6bdf5a0",
+    "id": "a95f3649-3e9f-4118-9809-220747abbc61",
     "status": "rejected",
     "tokens": 2500,
     "amount_usd": "25.00",
     "plan_id": null,
     "checkout_url": null,
     "failure_reason": "El banco rechazó el pago. Probá con otra tarjeta.",
-    "created_at": "2026-11-26T18:56:33.227711Z",
+    "created_at": "2026-11-26T21:22:37.033431Z",
     "balance_after": null
   },
   "billing_plan_payment_pending": {
-    "id": "cda0571b-3496-49a8-b84c-b7efc15d81f3",
+    "id": "9e9a01ba-999a-495e-b9d0-cfcc842702e5",
     "status": "pending",
     "tokens": 0,
     "amount_usd": "49.00",
-    "plan_id": "8441b974-3bc6-4cf0-adcf-30abd5b08f1e",
-    "checkout_url": "http://localhost:3000/dev/checkout?compra=cda0571b-3496-49a8-b84c-b7efc15d81f3&volver=http%3A%2F%2Flocalhost%3A3000%2Fuso%2Fplanes",
+    "plan_id": "128f9ed2-0bce-4c78-9d88-955b1d7d8ca5",
+    "checkout_url": "http://localhost:3000/dev/checkout?compra=9e9a01ba-999a-495e-b9d0-cfcc842702e5&volver=http%3A%2F%2Flocalhost%3A3000%2Fuso%2Fplanes",
     "failure_reason": null,
-    "created_at": "2026-11-26T18:56:33.258378Z",
+    "created_at": "2026-11-26T21:22:37.046003Z",
     "balance_after": null
   },
   "billing_plan_payment_approved": {
-    "id": "cda0571b-3496-49a8-b84c-b7efc15d81f3",
+    "id": "9e9a01ba-999a-495e-b9d0-cfcc842702e5",
     "status": "approved",
     "tokens": 0,
     "amount_usd": "49.00",
-    "plan_id": "8441b974-3bc6-4cf0-adcf-30abd5b08f1e",
+    "plan_id": "128f9ed2-0bce-4c78-9d88-955b1d7d8ca5",
     "checkout_url": null,
     "failure_reason": null,
-    "created_at": "2026-11-26T18:56:33.258378Z",
+    "created_at": "2026-11-26T21:22:37.046003Z",
     "balance_after": null
   }
 }

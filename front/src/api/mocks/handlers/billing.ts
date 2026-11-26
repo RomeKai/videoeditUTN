@@ -174,9 +174,10 @@ export const billingHandlers = [
       workspace.pending_plan = null;
       return { data: { applied: 'now', checkout_url: null, subscription: serializeSubscription(db, workspace) } };
     }
-    // Like the backend, the price decides: only a pricier plan is paid for; a cheaper one, or one of the same price, waits.
+    // Like the backend: every paid plan other than the current one is a purchase that applies at once
+    // (pricier, cheaper or the same price); only a free plan waits for the end of the period.
     const currentPrice = current?.price_usd_monthly ?? 0;
-    const upgrade = target.price_usd_monthly > currentPrice;
+    const purchase = target.price_usd_monthly > 0;
     // No change leaves more seats in use (members plus pending invitations) than the new plan has.
     const seatsUsed = db.members.filter((member) => member.workspace === workspace.id).length;
     if (seatsUsed > target.max_members) {
@@ -187,8 +188,8 @@ export const billingHandlers = [
         max_members: target.max_members,
       });
     }
-    if (upgrade && db.flags.planCheckout) {
-      // The upgrade needs a payment: nothing changes until the provider confirms it. The same upgrade again reuses its checkout.
+    if (purchase && db.flags.planCheckout) {
+      // The plan needs a payment: nothing changes until the provider confirms it. The same plan again reuses its checkout.
       const waiting = replacePendingUpgrade(db, workspace.id, target.id);
       if (waiting) return { data: { applied: 'now', checkout_url: waiting.checkout_url, subscription: serializeSubscription(db, workspace) } };
       const id = newId();
@@ -211,10 +212,10 @@ export const billingHandlers = [
       return { data: { applied: 'now', checkout_url: checkoutUrl, subscription: serializeSubscription(db, workspace) } };
     }
     replacePendingUpgrade(db, workspace.id, null);
-    // Downgrades wait for the end of the paid period; without one (or once it ended) there is nothing to wait for.
+    // The free plan waits for the end of the paid period; without one (or once it ended) there is nothing to wait for.
     const periodEnd = workspace.renews_at && new Date(workspace.renews_at).getTime() > now ? workspace.renews_at : null;
-    if (upgrade) {
-      // Upgrades apply right away.
+    if (purchase) {
+      // Without the checkout scenario a paid plan applies right away, with a month of its own.
       workspace.subscription_plan = target.id;
       workspace.pending_plan = null;
       workspace.renews_at = new Date(now + 30 * 24 * 3600 * 1000).toISOString();
@@ -225,7 +226,7 @@ export const billingHandlers = [
       workspace.pending_plan = null;
       workspace.renews_at = null;
     }
-    return { data: { applied: upgrade || !periodEnd ? 'now' : 'period_end', checkout_url: null, subscription: serializeSubscription(db, workspace) } };
+    return { data: { applied: purchase || !periodEnd ? 'now' : 'period_end', checkout_url: null, subscription: serializeSubscription(db, workspace) } };
   }),
 
   route(contract.getWallet, ({ db, workspace, now }) => ({ data: serializeWallet(db, workspace.id, now) })),

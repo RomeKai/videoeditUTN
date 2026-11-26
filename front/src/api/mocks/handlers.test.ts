@@ -421,22 +421,25 @@ describe('mocks', () => {
     expect((await fail(apiCall(billing.changePlan, { body: { plan_id: plan('Pro') } }))).fieldErrors.plan_id).toEqual(['Ya es tu plan actual.']);
   });
 
-  it('planes: decide el precio, y mientras una bajada espera nadie entra pasado sus lugares', async () => {
+  it('planes: todo plan pago es una compra, y mientras una bajada espera nadie entra pasado sus lugares', async () => {
     const db = loadDb();
-    const workspace = db.workspaces.find((item) => item.id === WORKSPACE_IDS.estudio);
     const pro = db.plans.find((item) => item.name === 'Pro');
-    if (!workspace || !pro) throw new Error('faltan datos');
-    // Same price, listed later: a lateral move that waits for the end of the period and moves no money.
-    db.plans.push({ ...pro, id: '44444444-4444-4444-8444-444444444444', name: 'Pro Plus', sort_order: 9, is_recommended: false, max_members: 5 });
+    if (!pro) throw new Error('faltan datos');
+    // Same price, listed later: still a purchase that applies at once (no checkout scenario here).
+    db.plans.push({ ...pro, id: '44444444-4444-4444-8444-444444444444', name: 'Pro Plus', sort_order: 9, is_recommended: false });
+    // A second free plan with 5 seats: only a free plan waits for the end of the period.
+    db.plans.push({ ...pro, id: '55555555-5555-4555-8555-555555555555', name: 'Libre', price_usd_monthly: 0, sort_order: 0, is_recommended: false, max_members: 5 });
     saveDb(db);
     const lateral = await apiCall(billing.changePlan, { body: { plan_id: '44444444-4444-4444-8444-444444444444' } });
-    expect(lateral.applied).toBe('period_end');
-    expect(lateral.checkout_url).toBeNull();
-    // Pro Plus has 5 seats and 4 are taken: one more fits, the next does not.
+    expect(lateral.applied).toBe('now');
+    expect(lateral.subscription.plan.name).toBe('Pro Plus');
+    const free = await apiCall(billing.changePlan, { body: { plan_id: '55555555-5555-4555-8555-555555555555' } });
+    expect(free.applied).toBe('period_end');
+    // Libre has 5 seats and 4 are taken: one more fits, the next does not.
     await apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['quinta@estudionorte.com'], role: 'viewer' } });
     const refused = await fail(apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['sexta@estudionorte.com'], role: 'viewer' } }));
     expect(refused.code).toBe('seats_exceeded');
-    expect(refused.message).toMatch(/^Tu plan pasa a 'Pro Plus' el .* y ese plan permite 5 miembros/);
+    expect(refused.message).toMatch(/^Tu plan pasa a 'Libre' el .* y ese plan permite 5 miembros/);
   });
 
   it('la sesión: login, credenciales incorrectas, email sin verificar y sesión vencida', async () => {

@@ -68,7 +68,7 @@ function planLine(subscription: Subscription): ReactNode {
   if (!renewsAt) return <>No se renueva ni vence.{discount || ' Los tokens se pagan aparte.'}</>;
   return (
     <>
-      Se renueva el <span className="num">{formatDate(renewsAt)}</span>.{discount}
+      Vence el <span className="num">{formatDate(renewsAt)}</span>.{discount}
     </>
   );
 }
