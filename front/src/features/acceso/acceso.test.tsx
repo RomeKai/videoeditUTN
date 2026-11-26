@@ -65,6 +65,11 @@ describe('lib', () => {
     expect(safeNext('/login?siguiente=/login')).toBeNull();
     expect(safeNext(null)).toBeNull();
     expect(safeNext('/proyectos/abc?publicar=1#clips')).toBe('/proyectos/abc?publicar=1#clips');
+    // Only the login goes back to a verification link, and only one that carries its token.
+    expect(safeNext('/verificar?token=abc&siguiente=%2Fperfil')).toBeNull();
+    expect(safeNext('/verificar?token=abc&siguiente=%2Fperfil', { verifyLink: true })).toBe('/verificar?token=abc&siguiente=%2Fperfil');
+    expect(safeNext('/verificar?email=a%40b.com', { verifyLink: true })).toBeNull();
+    expect(safeNext('/recuperar?token=abc', { verifyLink: true })).toBeNull();
   });
 
   it('safeNext rechaza lo que el navegador convertiría en otro sitio', () => {
@@ -129,6 +134,9 @@ describe('lib', () => {
   it('lee la espera de un 429 y arma la cuenta regresiva', () => {
     expect(retryAfterSeconds(new ApiError(429, 'x', { detail: 'Podés pedirlo de nuevo en 42 segundos.' }))).toBe(42);
     expect(retryAfterSeconds(new ApiError(429, 'x', { detail: 'Request was throttled. Expected available in 7 seconds.' }))).toBe(7);
+    // The backend's own 429 (apps/users/throttles.py): seconds under two minutes, minutes above.
+    expect(retryAfterSeconds(new ApiError(429, 'x', { detail: 'Demasiados intentos. Probá de nuevo en 42 segundos.' }))).toBe(42);
+    expect(retryAfterSeconds(new ApiError(429, 'x', { detail: 'Demasiados intentos. Probá de nuevo en 12 minutos.' }))).toBe(720);
     expect(retryAfterSeconds(new ApiError(429, 'x', { detail: 'Throttled' }))).toBe(60);
     expect(formatCountdown(42)).toBe('0:42');
     expect(formatCountdown(60)).toBe('1:00');
@@ -190,6 +198,16 @@ describe('A1 · Iniciar sesión', () => {
     await user.type(password(), 'contrasena');
     await user.click(screen.getByRole('button', { name: 'Iniciar sesión' }));
     await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/uso/movimientos'));
+  });
+
+  it('al entrar vuelve al link de verificación que pedía la sesión', async () => {
+    scenario('sin-sesion');
+    const user = userEvent.setup();
+    const link = '/verificar?token=cambio-de-email&siguiente=%2Fperfil';
+    show(<LoginScreen next={link} email="lucia@estudionorte.com" />);
+    await user.type(password(), 'contrasena');
+    await user.click(screen.getByRole('button', { name: 'Iniciar sesión' }));
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith(link));
   });
 
   it('ignora un «siguiente» que apunta fuera de la app', async () => {
@@ -404,6 +422,39 @@ describe('A3 · Verificar email', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Verificando tu email' })).toBeInTheDocument();
     await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/bienvenida'));
     expect(getTokens()).not.toBeNull();
+  });
+
+  it('el link de otra cuenta no cambia la sesión de este navegador', async () => {
+    scenario('estudio-norte');
+    const before = getTokens();
+    show(<VerifyEmailScreen token="abc123" />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Este link es de otra cuenta' })).toBeInTheDocument();
+    expect(screen.getByText('Este link es de otra cuenta. Cerrá la sesión y volvé a abrirlo.')).toBeInTheDocument();
+    expect(getTokens()).toEqual(before);
+    expect(nav.replace).not.toHaveBeenCalled();
+  });
+
+  it('el link de un cambio de email pide la sesión de esa cuenta', async () => {
+    scenario('sin-sesion');
+    show(<VerifyEmailScreen token="cambio-de-email" next="/perfil" />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Iniciá sesión para confirmar el email' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Iniciar sesión' })).toHaveAttribute(
+      'href',
+      `/login?siguiente=${encodeURIComponent('/verificar?token=cambio-de-email&siguiente=%2Fperfil')}`,
+    );
+    expect(getTokens()).toBeNull();
+  });
+
+  it('con la sesión de su cuenta, el link de un cambio de email lo confirma y vuelve al perfil', async () => {
+    scenario('estudio-norte');
+    const db = loadDb();
+    const lucia = db.users.find((item) => item.email === 'lucia@estudionorte.com');
+    if (!lucia) throw new Error('falta Lucía');
+    lucia.pending_email = 'lucia@nuevo.com';
+    window.localStorage.setItem('oc.mock.db', JSON.stringify(db));
+    show(<VerifyEmailScreen token="cambio-de-email" next="/perfil" />);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/perfil'));
+    expect(loadDb().users.find((item) => item.id === lucia.id)).toMatchObject({ email: 'lucia@nuevo.com', pending_email: null });
   });
 
   it('después de verificar vuelve a la página que se había pedido antes del login', async () => {

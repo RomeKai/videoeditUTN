@@ -146,6 +146,10 @@ def test_production_settings_compose_the_base_configuration():
             "ALLOWED_HOSTS": "localhost",
             "CORS_ALLOWED_ORIGINS": "https://example.invalid",
             "USE_R2": "True",
+            "NUM_PROXIES": "1",
+            "FRONTEND_URL": "https://app.example.invalid",
+            "DEFAULT_FROM_EMAIL": "no-reply@example.invalid",
+            "EMAIL_HOST": "smtp.example.invalid",
         },
     )
     settings = parse_settings_output(result)

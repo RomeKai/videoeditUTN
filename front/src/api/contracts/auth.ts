@@ -39,8 +39,8 @@ export const login = defineEndpoint({
   ],
   backend: {
     status: 'exists',
-    source: 'back/backend/urls.py · rest_framework_simplejwt TokenObtainPairView (USERNAME_FIELD = email)',
-    note: 'Hoy no distingue la cuenta sin verificar (falta el 403 propuesto, hueco 1).',
+    source: 'back/apps/users/views.py · LoginView (TokenObtainPairView de SimpleJWT, USERNAME_FIELD = email)',
+    note: 'El 429 sale de 10 pedidos por minuto por IP, o de los intentos fallidos de la cuenta: 10 cada 15 minutos desde la misma IP y 100 por hora en total. Un login correcto los reinicia. `detail` dice en castellano cuánto esperar. Hoy no distingue la cuenta sin verificar (falta el 403 propuesto, hueco 1).',
   },
   screens: ['A1', 'D9'],
 });
@@ -54,8 +54,11 @@ export const refreshToken = defineEndpoint({
   response: z.object({ access: z.string().min(1), refresh: z.string().min(1).optional() }),
   auth: false,
   workspaceScoped: false,
-  errors: [{ status: 401, when: 'Refresh vencido o inválido. La UI abre el diálogo D9 (sesión vencida).' }],
-  backend: { status: 'exists', source: 'back/backend/urls.py · TokenRefreshView; SIMPLE_JWT en backend/settings/base.py (acceso 25 min)' },
+  errors: [
+    { status: 401, when: 'Refresh vencido, inválido o revocado (rotado, o la contraseña cambió). La UI abre el diálogo D9 (sesión vencida).' },
+    { status: 429, when: 'Más de 30 renovaciones por minuto desde la misma IP.' },
+  ],
+  backend: { status: 'exists', source: 'back/apps/users/views.py · TokenRefreshThrottledView (TokenRefreshView); SIMPLE_JWT en backend/settings/base.py (acceso 25 min)' },
   screens: ['A1', 'D9'],
 });
 
@@ -87,13 +90,25 @@ export const verifyEmail = defineEndpoint({
   id: 'auth.verifyEmail',
   method: 'POST',
   path: '/api/v1/auth/verify-email/',
-  summary: 'Verifica el email con el token del link y deja la sesión iniciada.',
+  summary:
+    'Verifica el email con el token del link. El de una cuenta nueva deja la sesión iniciada; el de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta.',
   request: z.object({ token: z.string().min(1) }),
   response: TokenPair,
-  auth: false,
+  // The session goes with the link when there is one: the backend compares its account with the link's.
+  auth: 'optional',
   workspaceScoped: false,
-  errors: [{ status: 400, when: 'Token inválido o vencido. La UI ofrece reenviar el email.' }],
-  backend: { status: 'proposed', gap: 1 },
+  errors: [
+    { status: 400, when: 'Token inválido, vencido, ya usado o cancelado (error en `token`). La UI ofrece reenviar el email.' },
+    {
+      status: 403,
+      when: '`code: "other_account"`: hay una sesión de otra cuenta. `code: "login_required"`: el link de un cambio de email necesita la sesión de su cuenta. No se aplica nada; la UI muestra `detail` y, en el segundo caso, lleva a iniciar sesión y de vuelta al mismo link.',
+    },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views.py · VerifyEmailView; el token: apps/users/email_verification.py',
+    note: 'El token dice para qué es (cambio de email o registro). Hoy solo el cambio de email manda el link: el registro todavía no existe (hueco 1). El link de un cambio pasa `pending_email` a `email`; deja de servir si el cambio se cancela.',
+  },
   screens: ['A3'],
 });
 
@@ -156,7 +171,7 @@ export const logout = defineEndpoint({
   successStatus: 204,
   workspaceScoped: false,
   errors: [],
-  backend: { status: 'proposed', gap: 2, note: 'Necesita la app token_blacklist de SimpleJWT.' },
+  backend: { status: 'proposed', gap: 2, note: 'La app token_blacklist de SimpleJWT ya está instalada (la usa el cambio de contraseña).' },
   screens: ['I1', 'Barra'],
 });
 

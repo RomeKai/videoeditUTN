@@ -145,6 +145,12 @@ jobs:
           DJANGO_SETTINGS_MODULE: backend.settings.prod
           ALLOWED_HOSTS: localhost
           CORS_ALLOWED_ORIGINS: https://example.invalid
+          # prod.py refuses to start without these (proxies that add X-Forwarded-For,
+          # and email for the verification links); the check sends nothing.
+          NUM_PROXIES: "0"
+          FRONTEND_URL: https://example.invalid
+          DEFAULT_FROM_EMAIL: no-reply@example.invalid
+          EMAIL_HOST: smtp.example.invalid
         run: python manage.py check --deploy
 
       - name: Check migration drift

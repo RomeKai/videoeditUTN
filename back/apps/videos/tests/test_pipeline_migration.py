@@ -21,7 +21,7 @@ class PipelineStateMigrationTests(TransactionTestCase):
         Workspace = old_apps.get_model("users", "Workspace")
         VideoProject = old_apps.get_model("videos", "VideoProject")
         user_model = old_apps.get_model(*get_user_model()._meta.label_lower.split("."))
-        owner = user_model.objects.create(username="legacy", email="legacy@test.com")
+        owner = user_model.objects.create(username="legacy", email="legacy@test.com", password="!")
         workspace = Workspace.objects.create(name="Legacy", owner_id=owner.pk)
         project = VideoProject.objects.create(
             workspace_id=workspace.pk, title="Legacy", metadata={"max_clips": 3}

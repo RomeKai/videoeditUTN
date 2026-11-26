@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { http, HttpResponse, delay } from 'msw';
 import { API_URL } from '@/api/config';
+import { getTokens } from '@/api/session';
 import { server } from '@/api/mocks/server';
 import { loadDb } from '@/api/mocks/state';
 import { failRead, renderScreen, startMockApi } from '../uso/test-utils';
@@ -320,9 +321,13 @@ describe('I1 · Perfil', () => {
 
     await user.clear(screen.getByLabelText('Contraseña actual'));
     await user.type(screen.getByLabelText('Contraseña actual'), 'laDeSiempre');
+    const before = getTokens();
     await user.click(submit);
     expect(await screen.findByText('Contraseña cambiada')).toBeInTheDocument();
     expect(screen.queryByLabelText('Contraseña actual')).not.toBeInTheDocument();
+    // The change ends the other sessions: this browser keeps going with the pair of the answer.
+    expect(getTokens()).not.toEqual(before);
+    expect(getTokens()?.access).toMatch(/^mock-access\./);
   });
 
   it('cierra la sesión y lleva a Iniciar sesión', async () => {

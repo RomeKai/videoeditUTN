@@ -1,6 +1,8 @@
 from pathlib import Path
 import os
+import re
 import environ
+from django.core.exceptions import ImproperlyConfigured
 
 # 1. Path Configuration
 # Located in backend/settings/base.py, move up 3 levels to reach the root
@@ -29,6 +31,9 @@ DJANGO_APPS = [
 
 THIRD_PARTY_APPS = [
     'rest_framework',
+    # OutstandingToken / BlacklistedToken: a rotated refresh token stops working
+    # (BLACKLIST_AFTER_ROTATION) and a password change revokes the user's sessions.
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'drf_spectacular',
 ]
@@ -48,6 +53,8 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware', # CORS must be before Common
+    # After CORS, so the browser can read the 503 (apps.core.maintenance).
+    'apps.core.maintenance.MaintenanceModeMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -104,6 +111,24 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
+# --- MAINTENANCE (K5) ---
+# On: GET /api/v1/status/ reports it and the rest of the API answers 503
+# (apps.core.maintenance). The window (ISO 8601, UTC when it has no offset)
+# is what the maintenance page shows; it is left out unless both ends are set.
+MAINTENANCE_MODE = env.bool('MAINTENANCE_MODE', default=False)
+MAINTENANCE_STARTS_AT = env('MAINTENANCE_STARTS_AT', default='')
+MAINTENANCE_ENDS_AT = env('MAINTENANCE_ENDS_AT', default='')
+# Paths that keep answering during maintenance besides /api/v1/status/
+# (webhooks, health checks), comma-separated; each one covers what is below it.
+MAINTENANCE_EXEMPT_PATHS = env.list('MAINTENANCE_EXEMPT_PATHS', default=[])
+
+# --- EMAILS TO USERS ---
+# The links of the emails open the web app (the verification of a new email
+# goes to its /verificar page, apps.users.email_verification).
+FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:3000')
+DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='OneCreator <no-reply@onecreator.local>')
+EMAIL_VERIFICATION_MAX_AGE_SECONDS = env.int('EMAIL_VERIFICATION_MAX_AGE_SECONDS', default=24 * 3600)
+
 # --- STATIC & MEDIA ---
 STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
@@ -116,6 +141,20 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # --- CUSTOM USER MODEL ---
 AUTH_USER_MODEL = 'users.User' 
 
+# --- ATTEMPT LIMITS ---
+# A rate with a typo would only fail at the first login (a 500 inside the
+# throttle): it is checked here, when the app starts.
+_DRF_RATE = r'[1-9]\d*/(s|sec|second|m|min|minute|h|hour|d|day)'
+_WINDOW_RATE = r'[1-9]\d*/([1-9]\d*)?[smhd]'
+
+
+def _rate(variable, default, pattern=_DRF_RATE):
+    value = env(variable, default=default)
+    if not re.fullmatch(pattern, value):
+        raise ImproperlyConfigured(f'{variable}={value!r} is not a valid rate: write it like {default!r}.')
+    return value
+
+
 # --- DRF CONFIG ---
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
@@ -127,6 +166,31 @@ REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': None,
     # drf-spectacular's AutoSchema, plus the X-Workspace-Id header on scoped views.
     'DEFAULT_SCHEMA_CLASS': 'apps.core.schema.WorkspaceAutoSchema',
+    # Attempt limits of the endpoints that check a password (apps.users.throttles):
+    # per user when signed in, per IP otherwise.
+    'DEFAULT_THROTTLE_RATES': {
+        'login': _rate('THROTTLE_LOGIN', '10/min'),
+        'token_refresh': _rate('THROTTLE_TOKEN_REFRESH', '30/min'),
+        'password_change': _rate('THROTTLE_PASSWORD_CHANGE', '5/hour'),
+        # PATCH /me with a new email: checks the password and sends an email.
+        'email_change': _rate('THROTTLE_EMAIL_CHANGE', '5/hour'),
+    },
+    # Proxies in front of Django (load balancer, nginx) that add the client's
+    # address to X-Forwarded-For. The per-IP limits take the address that many
+    # hops from the end. 0 (dev, ci): REMOTE_ADDR only, X-Forwarded-For is
+    # never trusted. DRF's own default (None) trusts the whole header, which
+    # any client can forge; prod.py requires the variable.
+    'NUM_PROXIES': env.int('NUM_PROXIES', default=0),
+}
+
+# Failed logins of one account (apps.users.throttles.LoginFailureGuard): only
+# failures count and a successful login clears them. "<count>/<window>", the
+# window with an optional count in front ("10/15m" = 10 every 15 minutes).
+LOGIN_FAILURE_RATES = {
+    # From one IP.
+    'account_ip': _rate('LOGIN_FAILURES_PER_ACCOUNT_IP', '10/15m', _WINDOW_RATE),
+    # From any IP, so spreading the guesses over many addresses does not help.
+    'account': _rate('LOGIN_FAILURES_PER_ACCOUNT', '100/h', _WINDOW_RATE),
 }
 
 # --- AI CONFIG & FEATURE FLAGS ---
@@ -231,6 +295,9 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=3),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
+    # Each token carries a hash of the password: after a change, every access
+    # token issued before answers 401 (apps.users.tokens).
+    'CHECK_REVOKE_TOKEN': True,
 }
 
 # --- LOGGING (INFRA-02) ---

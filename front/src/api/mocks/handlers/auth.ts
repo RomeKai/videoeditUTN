@@ -10,7 +10,9 @@ import { clearLoggedOut, markLoggedOut, mockTokens, userIdFromToken } from '../s
  * - unknown emails answer 401, like wrong credentials;
  * - scenario "email-sin-verificar" (or an unverified user) answers 403 `email_not_verified`;
  * - the password "limite" answers 429 (too many attempts) and "caida" answers 500, to see A1's error states;
- * - tokens "invalido" / "vencido" fail in verify-email and password-reset/confirm.
+ * - tokens "invalido" / "vencido" fail in verify-email and password-reset/confirm;
+ * - verify-email with "cambio-de-email" is the link of an email change (I1): it needs the session of its account;
+ *   any other token verifies a new account, and answers 403 when the browser has another account's session.
  */
 export const authHandlers = [
   route(contract.login, ({ db, body }) => {
@@ -62,13 +64,26 @@ export const authHandlers = [
     return { data: { id, email: body.email, is_email_verified: false } };
   }),
 
-  route(contract.verifyEmail, ({ db, body }) => {
+  route(contract.verifyEmail, ({ db, body, maybeUser }) => {
     if (body.token === 'invalido' || body.token === 'vencido') {
       throw badRequest({ token: ['El link no es válido o ya venció.'] });
+    }
+    if (body.token === 'cambio-de-email') {
+      if (!maybeUser) {
+        throw new MockHttpError(403, { detail: 'Para confirmar el email nuevo, iniciá sesión con tu cuenta y volvé a abrir el link.', code: 'login_required' });
+      }
+      if (!maybeUser.pending_email) throw badRequest({ token: ['El link no es válido o ya venció.'] });
+      maybeUser.email = maybeUser.pending_email;
+      maybeUser.pending_email = null;
+      maybeUser.is_email_verified = true;
+      return { data: mockTokens(maybeUser.id) };
     }
     // The link's token names the account; in the mocks it verifies the newest unverified one.
     const user = [...db.users].reverse().find((item) => !item.is_email_verified) ?? db.users.find((item) => item.id === mid(KIND.user, 5));
     if (!user) throw badRequest({ token: ['El link no es válido o ya venció.'] });
+    if (maybeUser && maybeUser.id !== user.id) {
+      throw new MockHttpError(403, { detail: 'Este link es de otra cuenta. Cerrá la sesión y volvé a abrirlo.', code: 'other_account' });
+    }
     user.is_email_verified = true;
     db.flags.unverifiedLogin = false;
     clearLoggedOut();
