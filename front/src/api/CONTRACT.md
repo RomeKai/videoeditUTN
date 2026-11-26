@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**80 endpoints:** 48 existen hoy en el backend, 5 existen en parte y 27 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**80 endpoints:** 53 existen hoy en el backend, 5 existen en parte y 22 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -63,12 +63,12 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 |---|---|---|---|---|
 | POST | `/api/token/` | Inicia sesión con email y contraseña; devuelve el par JWT. | ✅ existe | A1, D9 |
 | POST | `/api/token/refresh/` | Renueva el token de acceso. El backend rota el refresh (ROTATE_REFRESH_TOKENS). | ✅ existe | A1, D9 |
-| POST | `/api/v1/auth/register/` | Crea la cuenta y manda el email de verificación. | ❌ falta (propuesto) · hueco 1 | A2, A5 |
+| POST | `/api/v1/auth/register/` | Crea la cuenta y manda el email de verificación. | ✅ existe | A2, A5 |
 | POST | `/api/v1/auth/verify-email/` | Verifica el email con el token del link. El de una cuenta nueva deja la sesión iniciada; el de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta. | ✅ existe | A3 |
-| POST | `/api/v1/auth/verify-email/resend/` | Reenvía el email de verificación (una vez cada 60 s). Responde 204 exista o no el email y esté o no verificado, como recuperar contraseña. | ❌ falta (propuesto) · hueco 1 | A3 |
-| POST | `/api/v1/auth/password-reset/` | Pide el link para recuperar la contraseña. Siempre responde 204, exista o no el email. | ❌ falta (propuesto) · hueco 1 | A4, D9 |
-| POST | `/api/v1/auth/password-reset/confirm/` | Define la contraseña nueva con el token del link. Responde 204 sin tokens: la UI inicia sesión con el email del link y la contraseña nueva. | ❌ falta (propuesto) · hueco 1 | A4 |
-| POST | `/api/v1/auth/logout/` | Cierra la sesión: invalida el refresh. Con `all_devices`, todos los del usuario. | ❌ falta (propuesto) · hueco 2 | I1, Barra |
+| POST | `/api/v1/auth/verify-email/resend/` | Reenvía el email de verificación (una vez cada 60 s). Responde 204 exista o no el email y esté o no verificado, como recuperar contraseña. | ✅ existe | A3 |
+| POST | `/api/v1/auth/password-reset/` | Pide el link para recuperar la contraseña. Siempre responde 204, exista o no el email. | ✅ existe | A4, D9 |
+| POST | `/api/v1/auth/password-reset/confirm/` | Define la contraseña nueva con el token del link. Responde 204 sin tokens: la UI inicia sesión con el email del link y la contraseña nueva. | ✅ existe | A4 |
+| POST | `/api/v1/auth/logout/` | Cierra la sesión: invalida el refresh. Con `all_devices`, todos los del usuario. | ✅ existe | I1, Barra |
 | GET | `/api/v1/me/` | Perfil del usuario con sus workspaces, el rol en cada uno y el workspace activo. | ✅ existe | Barra, B1, B2, J3, I1 |
 | PATCH | `/api/v1/me/` | Actualiza nombre, email, tour, uso elegido en la bienvenida y workspace activo. | ✅ existe | B1, B2, J3, I1 |
 | POST | `/api/v1/me/password/` | Cambia la contraseña y cierra las demás sesiones. Responde un par JWT nuevo: el cliente lo guarda y sigue con sesión. | ✅ existe | I1 |
@@ -174,7 +174,7 @@ Renueva el token de acceso. El backend rota el refresh (ROTATE_REFRESH_TOKENS).
 | Sesión | Pública |
 | Pedido | { refresh: string } |
 | Respuesta 200 | { access: string, refresh?: string } |
-| Errores | **401** Refresh vencido, inválido o revocado (rotado, o la contraseña cambió). La UI abre el diálogo D9 (sesión vencida).<br>**429** Más de 30 renovaciones por minuto desde la misma IP. |
+| Errores | **401** Refresh vencido, inválido o revocado (rotado, la contraseña cambió, o se cerró la sesión en todos los dispositivos: `code: "session_revoked"`). La UI abre el diálogo D9 (sesión vencida).<br>**429** Más de 30 renovaciones por minuto desde la misma IP. |
 | Pantallas | A1, D9 |
 
 #### `POST /api/v1/auth/register/`
@@ -184,12 +184,12 @@ Crea la cuenta y manda el email de verificación.
 | | |
 |---|---|
 | Id | `auth.register` |
-| Backend | ❌ falta (propuesto) · hueco 1 |
-| Nota | Decir "email ya usado" permite averiguar qué emails tienen cuenta. El mapa (A2) lo pide así; para no ayudar a enumerar, el endpoint necesita un límite de intentos por IP. Recuperar contraseña y reenviar la verificación no lo revelan. |
+| Backend | ✅ existe · `back/apps/users/views_auth.py · RegisterView (RegisterSerializer); el link: apps/users/email_verification.py · send_signup_verification` |
+| Nota | Crea la cuenta sin verificar, su workspace con el plan por defecto (la señal de User: billetera y el usuario como Admin activo; se llama "Espacio de <nombre>") y manda el link de A3 (`/verificar?token=…`, vence en 24 h). El email se guarda normalizado (dominio en punycode y minúsculas): la respuesta trae el guardado. Decir "email ya usado" permite averiguar qué emails tienen cuenta: el mapa (A2) lo pide así, y por eso el límite por IP. «Reenviar» de A3 espera 60 s desde el registro. Hasta verificar, el login igual entra (falta el 403 propuesto de `auth.login`). |
 | Sesión | Pública |
 | Pedido | RegisterRequest |
 | Respuesta 201 | RegisterResponse |
-| Errores | **400** Validación por campo (contraseña débil; email ya usado con `code: "unique"`, que la UI muestra con un link a Iniciar sesión). Se muestra debajo de cada campo. |
+| Errores | **400** Validación por campo, en castellano. Email ya usado (con cualquier escritura de su dominio): `email: [{ message, code: "unique" }]`, que la UI muestra con un link a Iniciar sesión. Contraseña que no cumple las reglas (`password`, una frase por regla). `terms_accepted` falta o no es `true`. Dominio que no se puede codificar, o dirección que el servidor de email rechaza (en `email`). Se muestra debajo de cada campo.<br>**429** Más de 20 registros por hora desde la misma IP (`THROTTLE_REGISTER`). `detail` dice en castellano cuánto esperar.<br>**502** El servidor de email no aceptó el email de verificación. No se crea nada: se puede probar de nuevo. |
 | Pantallas | A2, A5 |
 
 #### `POST /api/v1/auth/verify-email/`
@@ -200,7 +200,7 @@ Verifica el email con el token del link. El de una cuenta nueva deja la sesión 
 |---|---|
 | Id | `auth.verifyEmail` |
 | Backend | ✅ existe · `back/apps/users/views.py · VerifyEmailView; el token: apps/users/email_verification.py` |
-| Nota | El token dice para qué es (cambio de email o registro). Hoy solo el cambio de email manda el link: el registro todavía no existe (hueco 1). El link de un cambio pasa `pending_email` a `email`; deja de servir si el cambio se cancela. |
+| Nota | El token dice para qué es (cambio de email o registro). El de registro lo mandan `auth.register` y `auth.resendVerification`: verifica la cuenta y devuelve el par JWT. El link de un cambio pasa `pending_email` a `email`; deja de servir si el cambio se cancela. Los dos sirven una vez y vencen en 24 h. |
 | Sesión | Pública (manda el token si hay sesión) |
 | Pedido | { token: string } |
 | Respuesta 200 | TokenPair |
@@ -214,11 +214,12 @@ Reenvía el email de verificación (una vez cada 60 s). Responde 204 exista o no
 | | |
 |---|---|
 | Id | `auth.resendVerification` |
-| Backend | ❌ falta (propuesto) · hueco 1 |
+| Backend | ✅ existe · `back/apps/users/views_auth.py · ResendVerificationView; el envío: apps/users/tasks.py · send_account_email` |
+| Nota | Solo manda el email a una cuenta activa sin verificar. Lo manda el worker de Celery: puede tardar si la cola está ocupada. El pedido hace lo mismo con cuenta o sin ella (una consulta y una tarea), así la respuesta y su tiempo no dicen nada. |
 | Sesión | Pública |
 | Pedido | { email: string } |
 | Respuesta 204 | NoContent |
-| Errores | **429** Se pidió hace menos de 60 s. La UI deja el botón deshabilitado con la cuenta regresiva. |
+| Errores | **400** El email falta o no tiene forma de email (la UI lo revisa antes).<br>**429** Se pidió hace menos de 60 s para ese email (o se registró hace menos de 60 s), exista o no la cuenta; o más de 20 emails por hora desde la misma IP, contando los de recuperar contraseña. `detail`: "Demasiados intentos. Probá de nuevo en N segundos." La UI deja el botón deshabilitado con la cuenta regresiva.<br>**502** La cola de emails no responde. Igual para cualquier email: no dice si tiene cuenta. |
 | Pantallas | A3 |
 
 #### `POST /api/v1/auth/password-reset/`
@@ -228,11 +229,12 @@ Pide el link para recuperar la contraseña. Siempre responde 204, exista o no el
 | | |
 |---|---|
 | Id | `auth.requestPasswordReset` |
-| Backend | ❌ falta (propuesto) · hueco 1 |
-| Nota | El link del email (N2) tiene que ser `/recuperar?token=<token>&email=<email>`: con el email la pantalla dice de quién es la cuenta e inicia sesión después de guardar ("Guardar y entrar"). |
+| Backend | ✅ existe · `back/apps/users/views_auth.py · PasswordResetView; el link: apps/users/email_verification.py · send_password_reset` |
+| Nota | El link del email (N2) es `/recuperar?token=<token>&email=<email>`, con el email de la cuenta: la pantalla dice de quién es e inicia sesión después de guardar ("Guardar y entrar"). Vence en 24 h (`PASSWORD_RESET_TIMEOUT`), sirve una vez y deja de servir con cualquier cambio de contraseña. Una cuenta sin contraseña usable (login social) también lo recibe: así crea una. Lo manda el worker; el pedido hace lo mismo con cuenta o sin ella. |
 | Sesión | Pública |
 | Pedido | { email: string } |
 | Respuesta 204 | NoContent |
+| Errores | **400** El email falta o no tiene forma de email (la UI lo revisa antes).<br>**429** Se pidió hace menos de 60 s para ese email, exista o no la cuenta; o más de 20 emails por hora desde la misma IP, contando los de reenviar la verificación. La UI lo toma como enviado y muestra la espera.<br>**502** La cola de emails no responde. Igual para cualquier email. |
 | Pantallas | A4, D9 |
 
 #### `POST /api/v1/auth/password-reset/confirm/`
@@ -242,11 +244,12 @@ Define la contraseña nueva con el token del link. Responde 204 sin tokens: la U
 | | |
 |---|---|
 | Id | `auth.confirmPasswordReset` |
-| Backend | ❌ falta (propuesto) · hueco 1 |
+| Backend | ✅ existe · `back/apps/users/views_auth.py · PasswordResetConfirmView (PasswordResetTokenGenerator de Django)` |
+| Nota | Como `POST /me/password/`, cierra todas las sesiones de la cuenta (los tokens de la contraseña vieja dan 401). El link llegó al email de la cuenta, así que también la deja verificada. |
 | Sesión | Pública |
 | Pedido | { token: string, password: string } |
 | Respuesta 204 | NoContent |
-| Errores | **400** Token inválido o vencido, o contraseña débil (error en `password`). |
+| Errores | **400** Token inválido, vencido o ya usado (error en `token`: "El link no es válido o ya venció."), o contraseña que no cumple las reglas (error en `password`). El token se revisa primero.<br>**429** Más de 20 intentos por hora desde la misma IP. |
 | Pantallas | A4 |
 
 #### `POST /api/v1/auth/logout/`
@@ -256,11 +259,12 @@ Cierra la sesión: invalida el refresh. Con `all_devices`, todos los del usuario
 | | |
 |---|---|
 | Id | `auth.logout` |
-| Backend | ❌ falta (propuesto) · hueco 2 |
-| Nota | La app token_blacklist de SimpleJWT ya está instalada (la usa el cambio de contraseña). |
+| Backend | ✅ existe · `back/apps/users/views_auth.py · LogoutView; apps/users/tokens.py · revoke_sessions` |
+| Nota | Pide la sesión (Bearer) y el refresh tiene que ser de esa misma cuenta. Un refresh ya revocado responde 204: si el token de acceso había vencido, el cliente renovó el par para mandar el pedido, y `useLogout` cierra después también el refresh nuevo. Con `all_devices` se revocan todos los refresh y también los tokens de acceso ya emitidos, en el momento: en otro dispositivo el próximo pedido da 401 `code: "session_revoked"`. |
 | Sesión | JWT |
 | Pedido | { refresh: string, all_devices?: boolean } |
 | Respuesta 204 | NoContent |
+| Errores | **400** `refresh` inválido, vencido, de otro tipo o de otra cuenta que la de la sesión. No se revoca nada.<br>**429** Más de 60 por hora para el mismo usuario. |
 | Pantallas | I1, Barra |
 
 ### Usuario y perfil

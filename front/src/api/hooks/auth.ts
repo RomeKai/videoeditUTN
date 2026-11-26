@@ -25,6 +25,11 @@ export function useLogout() {
       const refresh = getTokens()?.refresh;
       if (!refresh) return;
       await apiCall(contract.logout, { body: { refresh, all_devices: allDevices } });
+      // The access token had expired: the client renewed the pair to send the request, and the backend
+      // rotated the refresh it carried (that one answers 204, already closed). The new one is this same
+      // session: it is closed too. With `allDevices` the first call already closed every one.
+      const renewed = getTokens()?.refresh;
+      if (!allDevices && renewed && renewed !== refresh) await apiCall(contract.logout, { body: { refresh: renewed } });
     },
     onSettled: () => {
       clearSession();

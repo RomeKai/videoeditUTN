@@ -18,6 +18,7 @@ import { RegisterScreen } from './RegisterScreen';
 import { VerifyEmailScreen } from './VerifyEmailScreen';
 import { WelcomeScreen } from './WelcomeScreen';
 import { ApiError } from '@/api/errors';
+import real from '@/api/contracts/drf/responses.json';
 
 const nav = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() }));
 vi.mock('next/navigation', () => ({
@@ -377,6 +378,26 @@ describe('A2 · Crear cuenta', () => {
     // No session until the email is verified.
     expect(getTokens()).toBeNull();
   });
+
+  it('con las respuestas reales del backend: email ya usado y contraseña débil a la vez, y después la cuenta', async () => {
+    scenario('sin-sesion');
+    let answer: { status: number; body: Record<string, unknown> } = real.errors.register_400_taken_and_weak;
+    server.use(http.post('http://localhost:8000/api/v1/auth/register/', () => HttpResponse.json(answer.body, { status: answer.status })));
+    const user = userEvent.setup();
+    show(<RegisterScreen />);
+    await fill(user, 'tester@test.com', '12345678');
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: 'Crear cuenta' }));
+    await waitFor(() => expect(screen.getByLabelText('Email')).toHaveAccessibleDescription(/Ya existe una cuenta con este email\./));
+    expect(password()).toHaveAccessibleDescription('Esa contraseña es muy común. Elegí otra.');
+    expect(screen.getAllByRole('link', { name: 'Iniciar sesión' }).some((link) => link.getAttribute('href') === '/login?email=tester%40test.com')).toBe(true);
+
+    answer = { status: 201, body: real.auth_register };
+    await user.clear(screen.getByLabelText('Email'));
+    await user.type(screen.getByLabelText('Email'), 'ana@example.com');
+    await user.click(screen.getByRole('button', { name: 'Crear cuenta' }));
+    await waitFor(() => expect(nav.push).toHaveBeenCalledWith('/verificar?email=ana%40example.com'));
+  });
 });
 
 describe('A3 · Verificar email', () => {
@@ -589,6 +610,38 @@ describe('A4 · Recuperar contraseña', () => {
     await user.click(screen.getByRole('button', { name: 'Guardar y entrar' }));
     expect(await screen.findByRole('heading', { level: 1, name: 'Este link ya no sirve' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Pedir otro link' })).toHaveAttribute('href', '/recuperar?email=lucia%40estudionorte.com');
+  });
+
+  it('con las respuestas reales del backend: el 429 cuenta como enviado, y el link vencido o la contraseña débil', async () => {
+    scenario('sin-sesion');
+    server.use(
+      http.post('http://localhost:8000/api/v1/auth/password-reset/', () => HttpResponse.json(real.errors.resend_429.body, { status: 429 })),
+      http.post('http://localhost:8000/api/v1/auth/password-reset/confirm/', async ({ request }) => {
+        const { token } = (await request.json()) as { token: string };
+        const answer = token === 'vencido' ? real.errors.password_reset_confirm_400_token : real.errors.password_reset_confirm_400_password;
+        return HttpResponse.json(answer.body, { status: answer.status });
+      }),
+    );
+    const user = userEvent.setup();
+    const first = show(<RecoverScreen />);
+    await user.type(screen.getByLabelText('Email'), 'lucia@estudionorte.com');
+    await user.click(screen.getByRole('button', { name: 'Mandarme el link' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('Si el email existe, te mandamos un link. Revisá tu correo.');
+    expect(screen.getByRole('button', { name: /Reenviar en (1:00|0:5\d)/ })).toBeDisabled();
+    first.unmount();
+
+    const second = show(<RecoverScreen token="abc.123" email="lucia@estudionorte.com" />);
+    await user.type(screen.getByLabelText('Contraseña nueva'), '12345678');
+    await user.type(screen.getByLabelText('Repetí la contraseña'), '12345678');
+    await user.click(screen.getByRole('button', { name: 'Guardar y entrar' }));
+    await waitFor(() => expect(screen.getByLabelText('Contraseña nueva')).toHaveAccessibleDescription('Esa contraseña es muy común. Elegí otra.'));
+    second.unmount();
+
+    show(<RecoverScreen token="vencido" email="lucia@estudionorte.com" />);
+    await user.type(screen.getByLabelText('Contraseña nueva'), 'contrasena-nueva');
+    await user.type(screen.getByLabelText('Repetí la contraseña'), 'contrasena-nueva');
+    await user.click(screen.getByRole('button', { name: 'Guardar y entrar' }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Este link ya no sirve' })).toBeInTheDocument();
   });
 });
 

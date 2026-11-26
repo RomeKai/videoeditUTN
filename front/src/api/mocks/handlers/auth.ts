@@ -12,8 +12,17 @@ import { clearLoggedOut, markLoggedOut, mockTokens, userIdFromToken } from '../s
  * - the password "limite" answers 429 (too many attempts) and "caida" answers 500, to see A1's error states;
  * - tokens "invalido" / "vencido" fail in verify-email and password-reset/confirm;
  * - verify-email with "cambio-de-email" is the link of an email change (I1): it needs the session of its account;
- *   any other token verifies a new account, and answers 403 when the browser has another account's session.
+ *   any other token verifies a new account, and answers 403 when the browser has another account's session;
+ * - resend and password reset wait 60 s per email (any case), with or without an account, like the backend;
+ * - logout with a refresh of another account answers 400 and closes nothing.
  */
+
+/** The backend's 429 (apps.users.throttles.TooManyAttempts), read by `retryAfterSeconds`. */
+function tooSoon(last: number, now: number): MockHttpError | null {
+  const wait = 60_000 - (now - last);
+  if (wait <= 0) return null;
+  return new MockHttpError(429, { detail: `Demasiados intentos. Probá de nuevo en ${Math.ceil(wait / 1000)} segundos.` });
+}
 export const authHandlers = [
   route(contract.login, ({ db, body }) => {
     if (body.password === 'limite') throw new MockHttpError(429, { detail: 'Request was throttled. Expected available in 60 seconds.' });
@@ -39,10 +48,13 @@ export const authHandlers = [
   }),
 
   route(contract.register, ({ db, body, now }) => {
+    // Like DRF, every field that fails at once.
+    const errors: Record<string, unknown[]> = {};
     if (db.users.some((item) => item.email.toLowerCase() === body.email.toLowerCase())) {
-      throw badRequest({ email: [{ message: 'Ya existe una cuenta con este email.', code: 'unique' }] });
+      errors.email = [{ message: 'Ya existe una cuenta con este email.', code: 'unique' }];
     }
-    if (/^\d+$/.test(body.password)) throw badRequest({ password: ['La contraseña no puede ser solo números.'] });
+    if (/^\d+$/.test(body.password)) errors.password = ['La contraseña no puede ser solo números.'];
+    if (Object.keys(errors).length > 0) throw badRequest(errors);
     const id = newId();
     const workspaceId = newId();
     db.users.push({
@@ -57,10 +69,12 @@ export const authHandlers = [
       active_workspace_id: workspaceId,
       notification_preferences: { project_ready: true, render_finished: true, project_failed: true, post_failed: true, low_balance: true },
     });
-    db.workspaces.push({ id: workspaceId, name: 'Mi Espacio', owner: id, subscription_plan: PLAN_IDS.free, created_at: new Date(now).toISOString(), renews_at: null, pending_plan: null });
+    // The backend names it after the first name, on the default plan, with an empty wallet.
+    db.workspaces.push({ id: workspaceId, name: `Espacio de ${body.name.trim().split(' ')[0]}`, owner: id, subscription_plan: PLAN_IDS.free, created_at: new Date(now).toISOString(), renews_at: null, pending_plan: null });
     db.members.push({ id: newId(), workspace: workspaceId, user: id, email: body.email, role: 'admin', status: 'active', joined_at: new Date(now).toISOString(), invited_by: null, token: null });
-    db.wallets.push({ id: newId(), workspace: workspaceId, available_balance: 300, reserved_balance: 0, updated_at: new Date(now).toISOString() });
-    db.resendAt[body.email] = now;
+    db.wallets.push({ id: newId(), workspace: workspaceId, available_balance: 0, reserved_balance: 0, updated_at: new Date(now).toISOString() });
+    // The verification email was just sent: «Reenviar» waits its 60 s from here.
+    db.resendAt[body.email.toLowerCase()] = now;
     return { data: { id, email: body.email, is_email_verified: false } };
   }),
 
@@ -91,16 +105,21 @@ export const authHandlers = [
   }),
 
   route(contract.resendVerification, ({ db, body, now }) => {
-    const last = db.resendAt[body.email] ?? 0;
-    if (now - last < 60_000) {
-      throw new MockHttpError(429, { detail: `Podés pedirlo de nuevo en ${Math.ceil((60_000 - (now - last)) / 1000)} segundos.` });
-    }
-    db.resendAt[body.email] = now;
+    const key = body.email.toLowerCase();
+    const wait = tooSoon(db.resendAt[key] ?? 0, now);
+    if (wait) throw wait;
+    db.resendAt[key] = now;
     return { data: undefined };
   }),
 
-  // Always 204: never says whether the email exists.
-  route(contract.requestPasswordReset, () => ({ data: undefined })),
+  // 204 whether the email exists or not; the same 429 within 60 s for any email.
+  route(contract.requestPasswordReset, ({ db, body, now }) => {
+    const key = `reset:${body.email.toLowerCase()}`;
+    const wait = tooSoon(db.resendAt[key] ?? 0, now);
+    if (wait) throw wait;
+    db.resendAt[key] = now;
+    return { data: undefined };
+  }),
 
   route(contract.confirmPasswordReset, ({ body }) => {
     if (body.token === 'invalido' || body.token === 'vencido') throw badRequest({ token: ['El link no es válido o ya venció.'] });
@@ -108,7 +127,10 @@ export const authHandlers = [
     return { data: undefined };
   }),
 
-  route(contract.logout, () => {
+  route(contract.logout, ({ body, user }) => {
+    // The session of the request is the proof: a refresh of another account closes nothing.
+    const owner = userIdFromToken(body.refresh, 'refresh');
+    if (owner && owner !== user.id) throw badRequest({ refresh: ['Ese refresh es de otra cuenta: no se cerró nada.'] });
     markLoggedOut();
     return { data: undefined };
   }),
