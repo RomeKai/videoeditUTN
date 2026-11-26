@@ -820,6 +820,7 @@ class ProjectRedispatchView(_WorkspaceScoped):
                     raise _Refused(_error(409, "El proyecto ya está en curso o terminó.", 'not_failed'))
                 amount = self._amount_to_reserve(project)
                 metadata = dict(project.metadata or {})
+                previous_chain = metadata.get(INGESTION_CHAIN_KEY)
                 updates = {}
                 if project.pipeline_error_code == REDISPATCH_NOT_QUEUED:
                     # A re-dispatch refunded before: this one queues it, so
@@ -838,7 +839,13 @@ class ProjectRedispatchView(_WorkspaceScoped):
             process_initial_ingestion.delay(str(project.pk), chain=chain)
         except Exception as exc:
             logger.error("pipeline.redispatch_not_queued project_id=%s error=%s", project.pk, type(exc).__name__)
-            if reservation is None or self._give_back(project.pk, reservation):
+            if reservation is None:
+                # Nothing was reserved: an earlier re-dispatch (a double
+                # click) reserved it and its message may be queued. Its chain
+                # goes back, or that message would run nothing either.
+                self._restore_chain(project.pk, chain, previous_chain)
+                return _error(503, "No pudimos volver a procesar el proyecto. Probá de nuevo en unos minutos.")
+            if self._give_back(project.pk, reservation):
                 return _error(503, "No pudimos volver a procesar el proyecto. Probá de nuevo en unos minutos.")
             # The message got through after all: the pipeline already took
             # the project, and the reservation pays for that run.
@@ -903,6 +910,32 @@ class ProjectRedispatchView(_WorkspaceScoped):
         if creation.status != Transaction.Status.FAILED:
             return None  # still reserved (it pays the resume) or already charged
         return creation.amount
+
+    @staticmethod
+    def _restore_chain(project_id, chain, previous):
+        """
+        Puts back the chain this request replaced, only while its own is still
+        the stored one (compare-and-set under the row lock: a later request or
+        the pipeline may have moved on). Never raises: at worst nothing runs
+        until the next re-dispatch.
+        """
+        from .tasks.ingestion import INGESTION_CHAIN_KEY
+
+        try:
+            with transaction.atomic():
+                project = VideoProject.objects.select_for_update().get(pk=project_id)
+                metadata = dict(project.metadata or {})
+                if metadata.get(INGESTION_CHAIN_KEY) != chain:
+                    return
+                if previous:
+                    metadata[INGESTION_CHAIN_KEY] = previous
+                else:
+                    metadata.pop(INGESTION_CHAIN_KEY, None)
+                VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
+        except Exception as exc:
+            logger.error(
+                "pipeline.redispatch_chain_not_restored project_id=%s error=%s", project_id, type(exc).__name__,
+            )
 
     @staticmethod
     def _give_back(project_id, reservation):

@@ -200,9 +200,9 @@ from apps.videos.services.ai.project_lock import (
 from apps.videos.tasks.ingestion import (
     APPROVED_RENDER, AUTO_RENDER, CLIP_RENDER, CLIP_RENDER_PREVIOUS_KEY, INGESTION_CHAIN_KEY,
     INGESTION_RECOVERY_REQUEUED_AT_KEY, INGESTION_RECOVERY_REQUEUES_KEY, INGESTION_RECOVERY_REQUEUES_TOTAL_KEY,
-    INGESTION_STARTED_AT_KEY, INGESTION_STUCK, PaidClipRender, _is_whole_video, _paid_clip_renders, _pays_for,
-    _queue_clip_renders, _restore_pending, _restore_rerendered_clips, new_ingestion_chain,
-    process_initial_ingestion,
+    INGESTION_STARTED_AT_KEY, INGESTION_STUCK, PaidClipRender, _hand_to_review, _is_whole_video,
+    _paid_clip_renders, _pays_for, _queue_clip_renders, _restore_pending, _restore_rerendered_clips,
+    _whole_video_settlement, new_ingestion_chain, process_initial_ingestion,
 )
 from apps.videos.tasks.render import (
     RENDER_SEGMENTS_MAX_REDELIVERIES,
@@ -220,7 +220,7 @@ from backend.celery import app as celery_app
 logger = logging.getLogger(__name__)
 
 CHARGE, REQUEUE, FAIL, REPORT, SKIP, ERROR = "charge", "requeue", "fail", "report", "skip", "error"
-CLOSE, RESTORE = "close", "restore"
+CLOSE, RESTORE, HANDOFF = "close", "restore", "handoff"
 # What a candidate is: a paper edit of before (render_video_segments), a
 # render clip by clip (an approved review or an auto-render), an ingestion
 # (process_initial_ingestion) or the clips a settled render gives back.
@@ -236,10 +236,10 @@ RENDER_RECOVERY_MAX_BACKOFF_SECONDS = 24 * 3600
 # about eight days of tries with the default threshold). Past it: report only.
 RENDER_RECOVERY_MAX_REQUEUES = 2 * RENDER_SEGMENTS_MAX_REDELIVERIES + 6
 # Actions that write: only these take the locks.
-_ACTS = (CHARGE, REQUEUE, FAIL, CLOSE, RESTORE)
+_ACTS = (CHARGE, REQUEUE, FAIL, CLOSE, RESTORE, HANDOFF)
 _RESULTS = {
     CHARGE: "charged", REQUEUE: "requeued", FAIL: "failed", CLOSE: "closed", REPORT: "reported",
-    SKIP: "skipped", RESTORE: "restored",
+    SKIP: "skipped", RESTORE: "restored", HANDOFF: "handed_off",
 }
 
 
@@ -780,7 +780,20 @@ def decide_ingestion(project, reservation, snapshot):
         # At clips_selected (charged already, or still reserved) the re-queued
         # delivery charges what is due once and hands it to the review.
         return REQUEUE, "worker_lost" if snapshot['started'] else "never_started"
-    if selected or snapshot['clips']:
+    idle_enough = snapshot['idle_s'] is None or snapshot['idle_s'] >= ingestion_fail_after()
+    why = "requeue_cap" if not requeues_left else "too_old"
+    if selected and not idle_enough:
+        # A delivery may still be alive until this window ends.
+        return REPORT, "clips_selected"
+    if selected and _is_whole_video(project):
+        # Its creation pays the render, never dispatched: failed, and settled
+        # by the pipeline's own rule (nothing delivered: returned).
+        return FAIL, why
+    if selected:
+        # Charged (or charged now) and handed to the review, without
+        # rendering: what a run without auto_render_bypass does.
+        return HANDOFF, why
+    if snapshot['clips']:
         # Its clips exist: the work was delivered, and is never refunded.
         return REPORT, "clips_selected"
     if snapshot['idle_s'] is not None and snapshot['idle_s'] < ingestion_fail_after():
@@ -808,7 +821,7 @@ def _recover_ingestion(project_id, _stuck_after=None):
     Decides again and acts under the project lock (no delivery can start
     meanwhile: one that arrives re-queues itself) and the row lock.
     """
-    from apps.payments.services.wallet_service import PaymentError, rollback_reservation
+    from apps.payments.services.wallet_service import PaymentError
 
     with project_lock(project_id, heartbeat=False):
         with transaction.atomic():
@@ -847,12 +860,15 @@ def _recover_ingestion(project_id, _stuck_after=None):
                             VideoProject.objects.filter(pk=project_id).update(metadata={
                                 **(project.metadata or {}), INGESTION_CHAIN_KEY: new_ingestion_chain(),
                             })
-                            rollback_reservation(project.metadata['reservation_id'])
+                            _settle_stuck_creation(project_id, reservation)
                 except PaymentError:
                     failed = False  # rolled back with it: nothing was written
                 if not failed:
                     # Settled or moved meanwhile (it cannot under these locks).
                     action, result = SKIP, "already_settled"
+        if action == HANDOFF and not _hand_to_review(project_id):
+            # Its own locks, outside ours; moved meanwhile (it cannot under the project lock).
+            action, result = SKIP, "not_ingesting"
     if action in _ACTS:
         logger.warning(
             "pipeline.recovery_%s project_id=%s reason=%s requeues=%d requeues_total=%d",
@@ -860,6 +876,29 @@ def _recover_ingestion(project_id, _stuck_after=None):
             snapshot['requeues_total'] + (1 if action == REQUEUE else 0),
         )
     return action, reason, snapshot, result
+
+
+def _settle_stuck_creation(project_id, reservation):
+    """
+    The creation reservation of a project the routine just failed, inside its
+    transaction: returned, or for a whole video settled by the pipeline's own
+    rule (``_whole_video_settlement``: nothing delivered, returned). Only a
+    RESERVED one; ``PaymentError`` if it was settled meanwhile.
+    """
+    from apps.payments.services.wallet_service import commit_reservation, rollback_reservation
+
+    if reservation is None or reservation['status'] != Transaction.Status.RESERVED:
+        return
+    project = VideoProject.objects.get(pk=project_id)
+    reservation_id = project.metadata['reservation_id']
+    if not _is_whole_video(project):
+        rollback_reservation(reservation_id)
+        return
+    outcome, _reason = _whole_video_settlement(project)
+    if outcome == 'rollback':
+        rollback_reservation(reservation_id)
+    elif outcome == 'commit':
+        commit_reservation(reservation_id)
 
 
 def _reserved_ids():
@@ -908,22 +947,35 @@ def _recover_restore(project_id, _stuck_after=None):
     return RESTORE, "render_settled", {'restored': restored}, "restored" if restored else "nothing_restored"
 
 
-def _restore_candidates():
+def _restore_candidates(apply=False):
     """
     Projects that ended (completed, partial or failed) with the clips a render
     asked for later found delivered (CLIP_RENDER_PREVIOUS_KEY), that render's
     reservation settled, and a clip to give back as ``_restore_pending`` reads
     it (a draft or failed one with its old file, or a published one completed
     with a new file).
+
+    The restore drops that key once nothing is left to give back, so the set
+    only holds the restores still pending; with ``apply``, a project settled
+    before that rule, with nothing pending, has it dropped here (once), so it
+    is not read on every run.
     """
     reserved = _reserved_ids()
     rows = (
         VideoProject.objects.filter(pipeline_stage__in=ENDED_STAGES, metadata__has_key=CLIP_RENDER_PREVIOUS_KEY)
-        .exclude(**{f'metadata__{CLIP_RENDER_PREVIOUS_KEY}': {}})
         .exclude(**{f'metadata__{CLIP_RENDER.reservation_key}__in': reserved})
         .order_by('created_at', 'id').values_list('pk', 'metadata')
     )
-    return [pk for pk, metadata in rows if _restore_pending(metadata)]
+    pending = []
+    for pk, metadata in rows:
+        if _restore_pending(metadata):
+            pending.append(pk)
+        elif apply:
+            try:
+                _restore_rerendered_clips(pk)  # nothing to give back: drops the key
+            except Exception as exc:  # a cleanup must never stop the run
+                logger.error("render.recovery_error project_id=%s error=%s kind=restore", pk, type(exc).__name__)
+    return pending
 
 
 def recover_stuck_renders_now(apply=False):
@@ -942,7 +994,7 @@ def recover_stuck_renders_now(apply=False):
     }
     candidates = (
         [(pk, PAPER_EDIT) for pk in _candidates()] + [(pk, CLIPS) for pk in _clip_candidates()]
-        + [(pk, INGESTION) for pk in _ingestion_candidates()] + [(pk, RESTORES) for pk in _restore_candidates()]
+        + [(pk, INGESTION) for pk in _ingestion_candidates()] + [(pk, RESTORES) for pk in _restore_candidates(apply)]
     )
     rows = []
     for project_id, kind in candidates:
@@ -989,9 +1041,9 @@ def recover_stuck_renders_now(apply=False):
     errors = sum(1 for row in rows if row['action'] == ERROR)
     logger.info(
         "render.recovery_done mode=%s candidates=%d requeue=%d charge=%d fail=%d close=%d report=%d "
-        "skip=%d errors=%d restore=%d",
+        "skip=%d errors=%d restore=%d handoff=%d",
         "apply" if apply else "dry_run", len(rows), totals[REQUEUE], totals[CHARGE],
-        totals[FAIL], totals[CLOSE], totals[REPORT], totals[SKIP], errors, totals[RESTORE],
+        totals[FAIL], totals[CLOSE], totals[REPORT], totals[SKIP], errors, totals[RESTORE], totals[HANDOFF],
     )
     return rows
 

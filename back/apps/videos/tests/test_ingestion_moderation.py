@@ -172,7 +172,7 @@ class ModerationOverrideTests(ModerationStageHarness, TestCase):
         self.run_task(project)
         ModerationOverride.objects.create(project=project, reason="Revisión humana: falso positivo")
 
-        self.run_task(project)
+        self.redispatch_task(project)  # what the admin queues when it saves the override
 
         project.refresh_from_db()
         self.mock_moderate.assert_called_once()  # only the first, blocked run

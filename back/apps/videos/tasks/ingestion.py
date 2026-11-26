@@ -148,6 +148,46 @@ def _chain_current(metadata, chain):
     """A message of ``chain`` belongs to the chain stored in the project's ``metadata``."""
     return ((metadata or {}).get(INGESTION_CHAIN_KEY) or None) == (chain or None)
 
+
+def _fail_with_new_chain(project_id, expected_stage=None):
+    """
+    ``mark_failed`` and a chain no message has, in one transaction: every
+    message sent before the failure (a copy of the delivery that failed it,
+    which a re-publish that reached the broker and still raised leaves
+    behind, or any older one) is of another chain, so only a token minted
+    afterwards (a re-dispatch, the override) reopens the project. Returns
+    whether this call failed it.
+    """
+    with transaction.atomic():
+        failed = mark_failed(project_id, expected_stage=expected_stage)
+        if failed:
+            _merge_metadata(project_id, {INGESTION_CHAIN_KEY: new_ingestion_chain()})
+    return failed
+
+
+def _hand_to_review(project_id):
+    """
+    Clips selected, no render dispatched: the ingestion work is delivered, so
+    its creation is charged, an auto-render reserved and never dispatched pays
+    for nothing and is returned, and the project waits for the review. The
+    path of a run without auto_render_bypass; recover_stuck_renders takes it
+    for one that may no longer render (too old). Guarded: only a project still
+    ingesting at clips_selected moves, so a later user action is never undone.
+    Returns whether it moved.
+    """
+    _commit_ingestion_reservation(project_id)
+    try:
+        _refund_undispatched_auto_render(project_id)
+    except DatabaseError as exc:
+        # settle_stale_reservations returns it later (not_dispatched).
+        logger.error(
+            "pipeline.auto_render_refund_failed project_id=%s error=%s", project_id, type(exc).__name__,
+        )
+    return bool(VideoProject.objects.filter(
+        pk=project_id, pipeline_stage=PipelineStage.CLIPS_SELECTED,
+        status__in=[VideoProject.Status.UPLOADED, VideoProject.Status.INGESTING],
+    ).update(status=VideoProject.Status.AWAITING_APPROVAL))
+
 _CLIP_SUGGESTION_FIELDS = {'start', 'end', 'title', 'virality_score', 'reasoning'}
 
 
@@ -1009,7 +1049,8 @@ PAID_CLIP_RENDERS = (AUTO_RENDER, APPROVED_RENDER, CLIP_RENDER)
 # The clips of a CLIP_RENDER that were delivered before it reset them to DRAFT:
 # ``{clip_id: {'status': ..., 'key': ...}}``. Their old file stays until a new
 # one replaces it. Only a new file counts as delivered, and a render of one
-# that fails gives it back as it was (``_restore_rerendered_clips``).
+# that fails gives it back as it was (``_restore_rerendered_clips``). Dropped
+# once that render is settled and nothing is left to give back.
 CLIP_RENDER_PREVIOUS_KEY = 'clip_render_previous'
 # pipeline_error_code of a failed project whose re-dispatch was refunded
 # because the broker did not take it (views_clips.ProjectRedispatchView): a
@@ -1261,6 +1302,8 @@ def _restore_rerendered_clips(project_id):
     """
     metadata = VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
     if not _restore_pending(metadata):
+        if CLIP_RENDER_PREVIOUS_KEY in metadata and not _clip_render_reserved(metadata):
+            _forget_rerendered_clips(project_id)
         return 0
     restored = 0
     with transaction.atomic():
@@ -1279,9 +1322,30 @@ def _restore_rerendered_clips(project_id):
                 restored += VideoClip.objects.filter(pk=clip_id, status=VideoClip.Status.COMPLETED).exclude(
                     s3_object_key=key,
                 ).update(status=status)
+        _forget_rerendered_clips(project_id)
     if restored:
         logger.info("render.clip_restored project_id=%s clips=%d", project_id, restored)
     return restored
+
+
+def _forget_rerendered_clips(project_id):
+    """
+    Drops CLIP_RENDER_PREVIOUS_KEY once its render is settled and nothing is
+    left to give back: no settle reads it any more (``_clip_render_settlement``
+    only while RESERVED), and recover_stuck_renders only looks at projects
+    that still have it. Decided again under the row lock: a paid render
+    reserved meanwhile writes its own and keeps it.
+    """
+    with transaction.atomic():
+        project = VideoProject.objects.select_for_update().filter(pk=project_id).first()
+        metadata = dict((project.metadata if project else None) or {})
+        if (
+            CLIP_RENDER_PREVIOUS_KEY not in metadata or _clip_render_reserved(metadata)
+            or _restore_pending(metadata)
+        ):
+            return
+        metadata.pop(CLIP_RENDER_PREVIOUS_KEY)
+        VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
 
 
 def _clip_render_charge(project, txn_amount, delivered_seconds, paid=AUTO_RENDER):
@@ -1725,7 +1789,7 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
                 # re-dispatched once the workspace has tokens. Projects
                 # dispatched before auto-render was charged have no key and
                 # resume as they started.
-                mark_failed(project_id, expected_stage=PipelineStage.RENDER_DISPATCHED)
+                _fail_with_new_chain(project_id, expected_stage=PipelineStage.RENDER_DISPATCHED)
                 record_error(project_id, 'AutoRenderNotPaid')
                 logger.warning("pipeline.redispatch_skipped project_id=%s reason=auto_render_unpaid", project_id)
                 return f"Not resumed {project_id}: its auto-render cannot be paid"
@@ -1839,23 +1903,11 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
                 _stage_dispatch_render(project_id, progress)
         else:
             # The clips exist: the ingestion work is delivered and its tokens are
-            # charged (already, if an auto-render could not be paid).
-            _commit_ingestion_reservation(project_id)
-            # An auto-render reserved by an earlier run that never dispatched
-            # (the bypass was turned off since) pays for nothing: returned.
-            try:
-                _refund_undispatched_auto_render(project_id)
-            except DatabaseError as exc:
-                # settle_stale_reservations returns it later (not_dispatched).
-                logger.error(
-                    "pipeline.auto_render_refund_failed project_id=%s error=%s", project_id, type(exc).__name__,
-                )
+            # charged (already, if an auto-render could not be paid). An
+            # auto-render reserved by an earlier run that never dispatched (the
+            # bypass was turned off since) pays for nothing: returned.
+            _hand_to_review(project_id)
             logger.info("⏳ Ingestion complete. Awaiting user approval.")
-            # Guarded: a redelivered task must not undo a later user action.
-            VideoProject.objects.filter(
-                pk=project_id,
-                status__in=[VideoProject.Status.UPLOADED, VideoProject.Status.INGESTING],
-            ).update(status=VideoProject.Status.AWAITING_APPROVAL)
 
     return f"Ingestion Success {project_id}"
 
@@ -1929,7 +1981,10 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
             # failed because of it.
             logger.warning("pipeline.fail_skipped project_id=%s reason=work_done", project_id)
         elif final:
-            failed_now = mark_failed(project_id, expected_stage=stage)
+            # With a new chain: a copy of this very delivery (a re-publish
+            # that reached the broker and raised anyway) never reopens what
+            # is refunded below.
+            failed_now = _fail_with_new_chain(project_id, expected_stage=stage)
     except (DatabaseError, VideoProject.DoesNotExist) as record_exc:
         logger.error(
             "pipeline.failure_not_recorded project_id=%s error=%s",

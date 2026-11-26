@@ -125,11 +125,24 @@ class ModerationOverrideAdmin(admin.ModelAdmin):
             from apps.videos.tasks.ingestion import INGESTION_CHAIN_KEY, new_ingestion_chain
             from apps.videos.tasks.shared import _merge_metadata
 
+            from apps.videos.services.ai.pipeline_state import PipelineConflictError
+
             project_id = str(project.pk)
             # A chain of its own: only this message reopens the project, and a
-            # copy of an older one that was only delayed runs nothing.
+            # copy of an older one that was only delayed runs nothing. Only
+            # while it is still failed: one that a re-dispatch reopened
+            # meanwhile keeps the chain that runs it.
             chain = new_ingestion_chain()
-            _merge_metadata(project_id, {INGESTION_CHAIN_KEY: chain})
+            try:
+                _merge_metadata(
+                    project_id, {INGESTION_CHAIN_KEY: chain}, expected_stage=VideoProject.PipelineStage.FAILED,
+                )
+            except PipelineConflictError:
+                self.message_user(
+                    request, "Override registrado. El proyecto ya no está en FAILED: no se re-encola.",
+                    level=messages.WARNING,
+                )
+                return
             transaction.on_commit(lambda: process_initial_ingestion.delay(project_id, chain=chain))
             if project.pipeline_error_code == INGESTION_STUCK:
                 self.message_user(request, (

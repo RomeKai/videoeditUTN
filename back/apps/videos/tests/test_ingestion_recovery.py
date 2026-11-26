@@ -317,18 +317,23 @@ class StuckIngestionRecoveryTests(StuckIngestionHarness, TestCase):
         self.assertEqual(row["action"], "requeue")
 
         self.spend_requeues(project)
-        self.age(project, fail_after() + 60)
+        self.age(project)
         row, _requeue = self.sweep(project)
-
-        self.assertEqual((row["action"], row["reason"]), ("report", "clips_selected"))
+        self.assertEqual((row["action"], row["reason"]), ("report", "clips_selected"))  # may still be alive
         txn.refresh_from_db()
         self.assertEqual(txn.status, RESERVED)
 
-        # The re-queued delivery charges it and hands it to the review.
-        self.run_requeued(project)
+        self.age(project, fail_after() + 60)
+        row, requeue = self.sweep(project)
+
+        # Its re-queues spent: handed to the review here, charged (the clips
+        # were delivered), never refunded and never rendered.
+        requeue.assert_not_called()
+        self.assertEqual((row["action"], row["reason"], row["result"]), ("handoff", "requeue_cap", "handed_off"))
         txn.refresh_from_db()
         project.refresh_from_db()
         self.assertEqual((txn.status, project.status), (CHARGED, VideoProject.Status.AWAITING_APPROVAL))
+        self.assertEqual(self.balances(), (Decimal("90.00"), Decimal("0")))
 
     def test_a_reservation_older_than_a_day_is_refunded_and_never_requeued(self):
         """No paid stage runs again for a project the user paid for days ago (the first run after a deploy)."""
@@ -590,6 +595,97 @@ class ChainTests(StuckIngestionHarness, APITestCase):
         self.assertEqual(txn.status, REFUNDED)  # the admin's re-run is not charged again
 
 
+class ChainFollowUpTests(StuckIngestionHarness, APITestCase):
+    """The second round of the review: a copy of the current chain, a re-dispatch that cannot publish, the admin."""
+
+    def client_for_user(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        client.credentials(HTTP_X_WORKSPACE_ID=str(self.workspace.pk))
+        return client
+
+    def test_a_copy_of_the_chain_that_failed_the_project_never_reopens_it(self):
+        """A re-publish that reached the broker and raised anyway leaves two copies with the same token."""
+        from apps.videos.services.ai.errors import AIAuthenticationError
+
+        for swept in (True, False):  # a chain of the sweep, and the creation's (no token)
+            with self.subTest(swept=swept):
+                project, txn = self.lost()
+                if swept:
+                    self.sweep(project)
+                chain = self.chain(project)
+                self.mock_transcribe.side_effect = AIAuthenticationError("bad key")
+                self.run_chain(project, chain)  # fails for good: refunded
+                self.mock_transcribe.side_effect = None
+                txn.refresh_from_db()
+                self.assertEqual(txn.status, REFUNDED)
+                self.mock_transcribe.reset_mock()
+
+                result = self.run_chain(project, chain)  # the other copy of the same chain
+
+                self.assertIn("Not resumed", result.result)
+                self.mock_transcribe.assert_not_called()
+                project.refresh_from_db()
+                self.assertEqual(project.status, VideoProject.Status.FAILED)
+                self.assertNotEqual(self.chain(project), chain)
+                self.assertFalse(VideoClip.objects.filter(project=project).exists())
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+
+    def test_a_redispatch_that_cannot_publish_gives_the_first_one_its_chain_back(self):
+        project, _old = self.lost()
+        self.spend_requeues(project)
+        self.age(project, fail_after() + 60)
+        self.sweep(project)  # failed and refunded
+        client = self.client_for_user()
+        with patch("apps.videos.tasks.process_initial_ingestion.delay") as delay:
+            first = client.post(reverse("project-redispatch", args=[project.pk]))
+        first_chain = delay.call_args.kwargs["chain"]
+
+        with patch("apps.videos.tasks.process_initial_ingestion.delay", side_effect=OperationalError("down")):
+            second = client.post(reverse("project-redispatch", args=[project.pk]))
+
+        self.assertEqual((first.status_code, second.status_code), (202, 503))
+        self.assertEqual(self.chain(project), first_chain)
+        self.run_chain(project, first_chain)  # the first request's message, queued: it runs
+        project.refresh_from_db()
+        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
+        self.assertEqual(Transaction.objects.get(pk=project.metadata["reservation_id"]).status, CHARGED)
+        self.assertEqual(self.balances(), (Decimal("90.00"), Decimal("0")))
+
+    def test_the_override_of_a_project_reopened_meanwhile_does_not_replace_its_chain(self):
+        from django.contrib.auth import get_user_model
+
+        from apps.videos.tasks import shared
+
+        project, _txn = self.lost()
+        self.spend_requeues(project)
+        self.age(project, fail_after() + 60)
+        self.sweep(project)
+        stored = self.chain(project)
+        admin = get_user_model().objects.create_superuser(username="adm2", email="adm2@test.com", password="pw")
+        self.client.force_login(admin)
+        real_merge = shared._merge_metadata
+
+        def reopened_first(project_id, updates, expected_stage=None):
+            # A re-dispatch's message reopened it right after the admin read it.
+            VideoProject.objects.filter(pk=project_id).update(
+                pipeline_stage=PipelineStage.UPLOADED, status=VideoProject.Status.INGESTING,
+            )
+            return real_merge(project_id, updates, expected_stage=expected_stage)
+
+        with patch.object(shared, "_merge_metadata", side_effect=reopened_first), \
+                patch("apps.videos.tasks.process_initial_ingestion.delay") as delay, \
+                self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                reverse("admin:videos_moderationoverride_add"),
+                {"project": str(project.pk), "reason": "Revisión humana"}, follow=True,
+            )
+
+        delay.assert_not_called()
+        self.assertContains(response, "ya no está en FAILED")
+        self.assertEqual(self.chain(project), stored)
+
+
 class RequeueCountTests(StuckIngestionHarness, TestCase):
     def test_a_start_after_the_last_requeue_resets_the_requeues_in_a_row(self):
         project, _txn = self.lost(status=VideoProject.Status.INGESTING)
@@ -650,23 +746,71 @@ class ChargedAtClipsSelectedTests(StuckIngestionHarness, TestCase):
         row, requeue = self.sweep(project)
 
         requeue.assert_not_called()
-        self.assertEqual((row["action"], row["reason"]), ("report", "clips_selected"))
-        txn.refresh_from_db()
-        self.assertEqual(txn.status, CHARGED)
-
-        self.run_requeued(project)
+        self.assertEqual((row["action"], row["reason"]), ("handoff", "requeue_cap"))
         project.refresh_from_db()
         txn.refresh_from_db()
         self.assertEqual((project.status, txn.status), (VideoProject.Status.AWAITING_APPROVAL, CHARGED))
-        self.assertEqual(self.balances(), (Decimal("90.00"), Decimal("0")))
+        self.assertEqual(self.balances(), (Decimal("90.00"), Decimal("0")))  # charged once, never refunded
 
-    def test_an_old_auto_render_is_only_reported_never_rendered(self):
-        project, _txn = self.charged(idle=2 * 24 * 3600, auto_render_bypass=True)
+        row, _requeue = self.sweep(project)
+        self.assertIsNone(row)  # in review: not a candidate any more
+
+    def test_an_old_auto_render_is_handed_to_the_review_without_rendering(self):
+        """An auto-render paid for days ago is not rendered now: its render goes back, the review is next."""
+        project, txn = self.charged(idle=2 * 24 * 3600, auto_render_bypass=True)
+        auto = reserve_funds(self.wallet.id, Decimal("5.00"))
+        clip_ids = [str(pk) for pk in VideoClip.objects.filter(project=project).values_list("pk", flat=True)]
+        project.refresh_from_db()
+        VideoProject.objects.filter(pk=project.pk).update(metadata={
+            **project.metadata, "auto_render_reservation_id": str(auto.id),
+            "auto_render_clip_ids": clip_ids, "auto_render_seconds": 5.0,
+        })
 
         row, requeue = self.sweep(project)
 
         requeue.assert_not_called()
-        self.assertEqual((row["action"], row["reason"]), ("report", "clips_selected"))
+        self.mock_render.assert_not_called()
+        self.assertEqual((row["action"], row["reason"], row["result"]), ("handoff", "too_old", "handed_off"))
+        project.refresh_from_db()
+        auto.refresh_from_db()
+        txn.refresh_from_db()
+        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
+        self.assertEqual((txn.status, auto.status), (CHARGED, REFUNDED))
+        self.assertNotIn("auto_render_reservation_id", project.metadata)
+        self.assertEqual(self.balances(), (Decimal("90.00"), Decimal("0")))
+
+    def test_an_old_whole_video_is_failed_and_refunded_by_its_own_rule(self):
+        """A whole video pays its render with its creation: never rendered, so returned."""
+        project, txn = self.lost(
+            stage=PipelineStage.CLIPS_SELECTED, status=VideoProject.Status.INGESTING, idle=2 * 24 * 3600,
+            project_type=VideoProject.Type.SINGLE_EDIT,
+        )
+        VideoProject.objects.filter(pk=project.pk).update(metadata={**project.metadata, "priced_duration_s": 5})
+        VideoClip.objects.create(project=project, title="Video completo", start_time=0, end_time=5)
+
+        row, requeue = self.sweep(project)
+
+        requeue.assert_not_called()
+        self.mock_render.assert_not_called()
+        self.assertEqual((row["action"], row["reason"], row["result"]), ("fail", "too_old", "failed"))
+        project.refresh_from_db()
+        txn.refresh_from_db()
+        self.assertEqual((project.status, project.pipeline_error_code), (VideoProject.Status.FAILED, "IngestionStuck"))
+        self.assertEqual(txn.status, REFUNDED)
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+
+    def test_a_recent_whole_video_is_requeued_to_render(self):
+        project, _txn = self.lost(
+            stage=PipelineStage.CLIPS_SELECTED, status=VideoProject.Status.INGESTING,
+            project_type=VideoProject.Type.SINGLE_EDIT,
+        )
+        VideoProject.objects.filter(pk=project.pk).update(metadata={**project.metadata, "priced_duration_s": 5})
+        VideoClip.objects.create(project=project, title="Video completo", start_time=0, end_time=5)
+
+        row, requeue = self.sweep(project)
+
+        self.assert_requeued_once(requeue, project)
+        self.assertEqual(row["action"], "requeue")
 
 
 class StuckIngestionThresholdTests(TestCase):
@@ -845,6 +989,27 @@ class RestoreRetryTests(ClipActionsHarness, APITestCase):
         )
         clip.refresh_from_db()
         self.assertEqual((clip.status, clip.s3_object_key), (VideoClip.Status.PUBLISHED, "videos/new-0.mp4"))
+
+    def test_the_clips_it_kept_are_forgotten_once_nothing_is_left_to_give_back(self):
+        """The set the routine reads stays bounded: only the restores still pending keep the key."""
+        project, clip = self.settled_with_a_failed_restore()
+        self.assertIn("clip_render_previous", project.metadata)
+
+        self.restore_rows(project)
+
+        project.refresh_from_db()
+        self.assertNotIn("clip_render_previous", project.metadata)
+
+        # One settled before the key was dropped, with nothing to give back:
+        # the dry run leaves it, the next run drops it, and it is no candidate.
+        gone = {str(clip.pk): {"status": "completed", "key": "videos/gone.mp4"}}
+        VideoProject.objects.filter(pk=project.pk).update(metadata={**project.metadata, "clip_render_previous": gone})
+        self.assertEqual(self.restore_rows(project, apply=False), [])
+        project.refresh_from_db()
+        self.assertIn("clip_render_previous", project.metadata)
+        self.assertEqual(self.restore_rows(project), [])
+        project.refresh_from_db()
+        self.assertNotIn("clip_render_previous", project.metadata)
 
     def test_the_dry_run_gives_nothing_back(self):
         project, clip = self.settled_with_a_failed_restore()

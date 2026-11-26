@@ -76,7 +76,8 @@ class Command(BaseCommand):
             f"summary mode={'apply' if apply else 'dry_run'} candidates={len(rows)} "
             f"requeue={totals.get('requeue', 0)} charge={totals.get('charge', 0)} "
             f"fail={totals.get('fail', 0)} close={totals.get('close', 0)} report={totals.get('report', 0)} "
-            f"skip={totals.get('skip', 0)} errors={errors} restore={totals.get('restore', 0)}"
+            f"skip={totals.get('skip', 0)} errors={errors} restore={totals.get('restore', 0)} "
+            f"handoff={totals.get('handoff', 0)}"
         )
         if errors:
             raise CommandError(f"{errors} project(s) could not be processed.")
