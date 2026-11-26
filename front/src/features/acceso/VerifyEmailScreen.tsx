@@ -79,7 +79,7 @@ export function VerifyEmailScreen({ email, token, fromLogin = false, next }: Ver
     const needsLogin = denied.code === 'login_required';
     // After signing in, the login brings the person back to this same link (with its destination).
     const after = safeNext(next);
-    const link = `/verificar?token=${encodeURIComponent(token)}${after ? `&siguiente=${encodeURIComponent(after)}` : ''}`;
+    const link = `/verificar?token=${encodeURIComponent(token ?? '')}${after ? `&siguiente=${encodeURIComponent(after)}` : ''}`;
     return (
       <Card className={cx(styles.card, styles.verify)}>
         <span className={styles.heroIcon}>
