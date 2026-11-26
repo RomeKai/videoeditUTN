@@ -3,6 +3,7 @@ import os
 import shutil
 import uuid
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 from django.conf import settings
 
@@ -35,7 +36,13 @@ def delete_upload(name, project_id=None) -> None:
     logger.info("upload.deleted project_id=%s", project_id)
 
 
-def _get_r2_client():
+# Deletes are small requests that some callers make while holding a row lock
+# (the preview cleanup): a hung connection must give up in seconds, not after
+# boto's defaults. Uploads and downloads of whole videos keep the defaults.
+DELETE_CLIENT_CONFIG = Config(connect_timeout=5, read_timeout=15, retries={'max_attempts': 2, 'mode': 'standard'})
+
+
+def _get_r2_client(config=None):
     """Creates and returns a boto3 S3 client configured for Cloudflare R2."""
     return boto3.client(
         's3',
@@ -43,6 +50,7 @@ def _get_r2_client():
         aws_access_key_id=settings.CLOUDFLARE_R2_ACCESS_KEY_ID,
         aws_secret_access_key=settings.CLOUDFLARE_R2_SECRET_ACCESS_KEY,
         region_name=settings.CLOUDFLARE_R2_REGION,
+        config=config,
     )
 
 
@@ -154,7 +162,7 @@ class CloudflareR2Manager:
                 os.remove(object_key)
             return
 
-        client = _get_r2_client()
+        client = _get_r2_client(DELETE_CLIENT_CONFIG)
         bucket = settings.CLOUDFLARE_R2_BUCKET_NAME
         try:
             client.delete_object(Bucket=bucket, Key=object_key)

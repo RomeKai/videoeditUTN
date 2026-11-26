@@ -6,12 +6,15 @@ PTE-03 · Vista previa rápida de un clip (360p, gratis, temporal).
 - Las vistas previas vencen y se borran (fila y archivo).
 """
 import os
+import threading
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
+from django.db.models.signals import pre_delete
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -248,6 +251,71 @@ def test_a_file_that_cannot_be_deleted_keeps_its_row_for_the_next_run(clip):
                side_effect=OSError("r2 down")):
         assert svc.cleanup_expired_previews_now() == 0
     assert ClipPreview.objects.filter(pk=expired.pk).exists()
+
+
+def test_cleanup_keeps_a_preview_that_became_ready_after_it_was_listed(clip, tmp_path):
+    # A render that outlives its provisional expires_at finishes while the
+    # cleanup is deleting another preview: its row is fresh again, and the
+    # cleanup had listed it as expired with no file.
+    old_file, fresh_file = tmp_path / "old.mp4", tmp_path / "fresh.mp4"
+    old_file.write_bytes(b"x")
+    fresh_file.write_bytes(b"x")
+    make_preview(clip, expires_in=-120, storage_key=str(old_file))
+    late = make_preview(clip, status=ClipPreview.Status.RENDERING, expires_in=-60)
+
+    def the_late_render_finishes(key):
+        now = timezone.now()
+        ClipPreview.objects.filter(pk=late.pk).update(
+            status=ClipPreview.Status.READY, storage_key=str(fresh_file),
+            ready_at=now, expires_at=now + timedelta(hours=1),
+        )
+
+    with patch("apps.videos.services.storage_service.CloudflareR2Manager.delete_object",
+               side_effect=the_late_render_finishes) as delete:
+        assert svc.cleanup_expired_previews_now() == 1
+
+    delete.assert_called_once_with(str(old_file))
+    late.refresh_from_db()  # still there, with its file: not orphaned in storage
+    assert (late.status, late.storage_key) == (ClipPreview.Status.READY, str(fresh_file))
+    assert svc.current_preview(clip).pk == late.pk
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_render_that_finishes_while_the_cleanup_deletes_its_row_waits_and_finds_it_gone(clip):
+    # Two real connections: the cleanup holds the row lock of the expired
+    # preview, so the READY update of its render cannot land in between and
+    # be deleted with a file nobody knows about. It waits and updates nothing
+    # (render_preview then deletes its own file).
+    late = make_preview(clip, status=ClipPreview.Status.RENDERING, expires_in=-60)
+    seen = {}
+
+    def the_late_render_finishes():
+        try:
+            now = timezone.now()
+            seen["stored"] = ClipPreview.objects.filter(pk=late.pk).update(
+                status=ClipPreview.Status.READY, storage_key="previews/late.mp4",
+                ready_at=now, expires_at=now + timedelta(hours=1),
+            )
+        finally:
+            connection.close()
+
+    render = threading.Thread(target=the_late_render_finishes)
+
+    def finish_while_the_row_is_deleted(sender, instance, **kwargs):
+        render.start()
+        render.join(timeout=1)
+        seen["waited"] = render.is_alive()
+
+    pre_delete.connect(finish_while_the_row_is_deleted, sender=ClipPreview, dispatch_uid="cleanup-race")
+    try:
+        assert svc.cleanup_expired_previews_now() == 1
+    finally:
+        pre_delete.disconnect(sender=ClipPreview, dispatch_uid="cleanup-race")
+    render.join(10)
+
+    assert not render.is_alive()
+    assert seen == {"waited": True, "stored": 0}
+    assert not ClipPreview.objects.filter(pk=late.pk).exists()
 
 
 def test_an_expired_preview_has_no_url(clip, tmp_path):
