@@ -3,7 +3,8 @@ Seeds the account of the product demo (documents/runbooks/demo.md).
 
 What it creates
     - One user, ``DEMO_EMAIL``, with a known password (printed at the end).
-    - Its workspace, renamed ``DEMO_WORKSPACE_NAME``, on the plan ``DEMO_PLAN_NAME``.
+    - Its workspace, renamed ``DEMO_WORKSPACE_NAME``, on the plan ``DEMO_PLAN_NAME`` as a
+      comp: no paid period that could end, nothing scheduled.
     - A balance of ``DEMO_BALANCE`` tokens: a top-up, never a debit.
     - One brand kit, ``DEMO_BRAND_KIT_NAME``.
     - With ``--with-projects``, two projects of EXAMPLE DATA (see below).
@@ -18,8 +19,9 @@ Safety
       command stops and changes nothing. No other user, workspace, wallet,
       brand kit or project is read for writing.
     - Idempotent: a second run creates nothing new. It only puts back what the
-      demo needs (the plan, the balance up to ``DEMO_BALANCE``, the password if
-      it changed) and keeps whatever else was edited.
+      demo needs (the plan, without the period or the downgrade a rehearsal left,
+      the balance up to ``DEMO_BALANCE``, the password if it changed) and keeps
+      whatever else was edited.
 
 The example projects (``--with-projects``)
     They let the presentation show the review and the clips without waiting
@@ -53,6 +55,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.payments.models import SubscriptionPlan, Transaction, Wallet
+from apps.payments.services.plan_periods import PLAN_FIELDS, switch_plan
 from apps.users.models import Workspace, WorkspaceMember
 from apps.videos.models import BrandKit, VideoClip, VideoProject
 
@@ -260,10 +263,17 @@ class Command(BaseCommand):
         workspace = Workspace.objects.filter(owner=user).order_by('created_at', 'id').first()
         if workspace is None:
             workspace = Workspace.objects.create(owner=user, name=DEMO_WORKSPACE_NAME, subscription_plan=plan)
-        elif workspace.name != DEMO_WORKSPACE_NAME or workspace.subscription_plan_id != plan.pk:
+        elif (
+            workspace.name != DEMO_WORKSPACE_NAME
+            or workspace.subscription_plan_id != plan.pk
+            or workspace.plan_renews_at is not None
+            or workspace.pending_plan_id is not None
+        ):
+            # Pro as a comp, like a plan set in the admin: no paid period that could end and
+            # drop it to the default plan, and nothing a rehearsal scheduled.
             workspace.name = DEMO_WORKSPACE_NAME
-            workspace.subscription_plan = plan
-            workspace.save(update_fields=['name', 'subscription_plan'])
+            switch_plan(workspace, plan)
+            workspace.save(update_fields=['name', *PLAN_FIELDS])
         member, created = WorkspaceMember.objects.get_or_create(
             workspace=workspace, user=user,
             defaults={'role': WorkspaceMember.Role.ADMIN, 'status': WorkspaceMember.Status.ACTIVE},

@@ -6,3 +6,4 @@ class PaymentsConfig(AppConfig):
 
     def ready(self):
         import apps.payments.signals # <--- IMPORTANTE
+        from . import checks  # noqa: F401  (registers the startup checks)

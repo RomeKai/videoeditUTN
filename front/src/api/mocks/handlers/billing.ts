@@ -1,9 +1,9 @@
 import * as contract from '../../contracts/billing';
-import { newId, workspaceDateTime, workspaceDay, type MockTransaction } from '../db';
-import { badRequest, conflict, dec, MockHttpError, notFound, paginate, route } from '../http';
+import { newId, workspaceDateTime, workspaceDay, type MockDb, type MockPurchase, type MockTransaction } from '../db';
+import { badRequest, dec, MockHttpError, notFound, paginate, route } from '../http';
 import { priceOf, PRICING, TOKEN_PACKAGES } from '../seed';
 import { movedAt, planOf, serializeSubscription, serializeTransaction, serializeWallet } from '../serialize';
-import { SIM, walletOf } from '../sim';
+import { SIM, tick, walletOf } from '../sim';
 
 const RANK = { '720p': 1, '1080p': 2, '4K': 3 } as const;
 
@@ -69,6 +69,36 @@ function balanceChanges(item: MockTransaction): BalanceChange[] {
   }
   if (item.status !== 'COMPLETED') return []; // a pending purchase has not moved the balance yet
   return [{ at: settled, order: 0, item, what: item.transaction_type === 'DEPOSIT' ? 'Compra' : 'Devolución', amount: item.amount }];
+}
+
+/** Like the backend (services/token_packages.py): no purchase above this many tokens. */
+const CUSTOM_MAX_TOKENS = 1_000_000;
+const REPLACED = 'Elegiste otro plan antes de pagar este.';
+const KEPT = 'Elegiste seguir con tu plan antes de pagar este.';
+
+/** Like the backend: choosing a plan rejects the upgrade payment that was waiting, unless it is for that same plan. */
+function replacePendingUpgrade(db: MockDb, workspaceId: string, keepPlanId: string | null, reason = REPLACED) {
+  let kept: MockPurchase | null = null;
+  for (const purchase of db.purchases) {
+    if (purchase.workspace !== workspaceId || purchase.status !== 'pending' || !purchase.plan_id) continue;
+    if (purchase.plan_id === keepPlanId && purchase.checkout_url) {
+      kept = purchase;
+      continue;
+    }
+    purchase.status = 'rejected';
+    purchase.failure_reason = reason;
+    purchase.checkout_url = null;
+    purchase._settleAt = null;
+  }
+  return kept;
+}
+
+function publicPurchase(purchase: MockPurchase) {
+  const { workspace: _workspace, _settleAt, _reject, ...data } = purchase;
+  void _workspace;
+  void _settleAt;
+  void _reject;
+  return data;
 }
 
 export const billingHandlers = [
@@ -137,20 +167,31 @@ export const billingHandlers = [
     if (!target) throw notFound('El plan no existe.');
     const current = planOf(db, workspace.id);
     if (current?.id === target.id) {
-      // Choosing the current plan again cancels a scheduled change.
-      if (!workspace.pending_plan) throw badRequest({ plan_id: ['Ya es tu plan actual.'] });
+      // Choosing the current plan again cancels a scheduled change and the upgrade waiting for its payment.
+      const waiting = db.purchases.some((item) => item.workspace === workspace.id && item.status === 'pending' && item.plan_id);
+      if (!workspace.pending_plan && !waiting) throw badRequest({ plan_id: ['Ya es tu plan actual.'] });
+      replacePendingUpgrade(db, workspace.id, null, KEPT);
       workspace.pending_plan = null;
       return { data: { applied: 'now', checkout_url: null, subscription: serializeSubscription(db, workspace) } };
     }
-    const upgrade = !current || target.sort_order > current.sort_order;
-    if (!upgrade) {
-      const seatsUsed = db.members.filter((member) => member.workspace === workspace.id).length;
-      if (seatsUsed > target.max_members) {
-        throw conflict(`Ocupás ${seatsUsed} lugares y el plan ${target.name} tiene ${target.max_members}. Quitá miembros o invitaciones antes de bajar.`, 'seats_exceeded');
-      }
+    // Like the backend: every paid plan other than the current one is a purchase that applies at once
+    // (pricier, cheaper or the same price); only a free plan waits for the end of the period.
+    const currentPrice = current?.price_usd_monthly ?? 0;
+    const purchase = target.price_usd_monthly > 0;
+    // No change leaves more seats in use (members plus pending invitations) than the new plan has.
+    const seatsUsed = db.members.filter((member) => member.workspace === workspace.id).length;
+    if (seatsUsed > target.max_members) {
+      throw new MockHttpError(409, {
+        error: `Ocupás ${seatsUsed} lugares y el plan ${target.name} tiene ${target.max_members}. Quitá miembros o invitaciones antes de ${target.price_usd_monthly < currentPrice ? 'bajar' : 'cambiar de plan'}.`,
+        code: 'seats_exceeded',
+        seats_used: seatsUsed,
+        max_members: target.max_members,
+      });
     }
-    if (upgrade && db.flags.planCheckout) {
-      // The upgrade needs a payment: nothing changes until the provider confirms it.
+    if (purchase && db.flags.planCheckout) {
+      // The plan needs a payment: nothing changes until the provider confirms it. The same plan again reuses its checkout.
+      const waiting = replacePendingUpgrade(db, workspace.id, target.id);
+      if (waiting) return { data: { applied: 'now', checkout_url: waiting.checkout_url, subscription: serializeSubscription(db, workspace) } };
       const id = newId();
       const returnUrl = body.return_url ?? `${new URL(request.url).origin}/uso/planes`;
       const checkoutUrl = `${new URL(returnUrl).origin}/dev/checkout?compra=${id}&volver=${encodeURIComponent(returnUrl)}`;
@@ -170,16 +211,22 @@ export const billingHandlers = [
       });
       return { data: { applied: 'now', checkout_url: checkoutUrl, subscription: serializeSubscription(db, workspace) } };
     }
-    if (upgrade) {
-      // Upgrades apply right away.
+    replacePendingUpgrade(db, workspace.id, null);
+    // The free plan waits for the end of the paid period; without one (or once it ended) there is nothing to wait for.
+    const periodEnd = workspace.renews_at && new Date(workspace.renews_at).getTime() > now ? workspace.renews_at : null;
+    if (purchase) {
+      // Without the checkout scenario a paid plan applies right away, with a month of its own.
       workspace.subscription_plan = target.id;
       workspace.pending_plan = null;
       workspace.renews_at = new Date(now + 30 * 24 * 3600 * 1000).toISOString();
+    } else if (periodEnd) {
+      workspace.pending_plan = { id: target.id, effective_at: periodEnd };
     } else {
-      // Downgrades wait for the end of the period.
-      workspace.pending_plan = { id: target.id, effective_at: workspace.renews_at ?? new Date(now + 30 * 24 * 3600 * 1000).toISOString() };
+      workspace.subscription_plan = target.id;
+      workspace.pending_plan = null;
+      workspace.renews_at = null;
     }
-    return { data: { applied: upgrade ? 'now' : 'period_end', checkout_url: null, subscription: serializeSubscription(db, workspace) } };
+    return { data: { applied: purchase || !periodEnd ? 'now' : 'period_end', checkout_url: null, subscription: serializeSubscription(db, workspace) } };
   }),
 
   route(contract.getWallet, ({ db, workspace, now }) => ({ data: serializeWallet(db, workspace.id, now) })),
@@ -272,13 +319,17 @@ export const billingHandlers = [
     if (!pack && tokens < TOKEN_PACKAGES.custom_min_tokens) {
       throw badRequest({ custom_tokens: [`El mínimo es ${TOKEN_PACKAGES.custom_min_tokens} tokens.`] });
     }
+    if (!pack && tokens > CUSTOM_MAX_TOKENS) {
+      throw badRequest({ custom_tokens: ['El máximo es 1.000.000 tokens por compra.'] });
+    }
     const id = newId();
     const origin = new URL(body.return_url).origin;
-    const purchase = {
+    const purchase: MockPurchase = {
       id,
       workspace: workspace.id,
       status: 'pending' as const,
       tokens,
+      plan_id: null,
       amount_usd: pack ? pack.price_usd : Math.round(tokens * TOKEN_PACKAGES.custom_price_per_token_usd * 100) / 100,
       // The fake provider checkout lives in the app (dev route) and comes back to return_url.
       checkout_url: `${origin}/dev/checkout?compra=${id}&volver=${encodeURIComponent(body.return_url)}`,
@@ -289,22 +340,30 @@ export const billingHandlers = [
       _reject: db.flags.rejectPayments,
     };
     db.purchases.push(purchase);
-    const { workspace: _workspace, _settleAt, _reject, ...data } = purchase;
-    void _workspace;
-    void _settleAt;
-    void _reject;
-    return { data };
+    return { data: publicPurchase(purchase) };
   }),
 
-  route(contract.getTokenPurchase, ({ db, workspace, params, now }) => {
+  route(contract.getTokenPurchase, ({ db, workspace, params, now, require }) => {
+    require('billing.manage');
     const purchase = db.purchases.find((item) => item.id === params.id && item.workspace === workspace.id);
-    if (!purchase) throw notFound();
+    if (!purchase) throw notFound('No encontramos ese pago.');
     // Coming back from the checkout without an answer yet: the "webhook" lands a few seconds later.
     if (purchase.status === 'pending' && purchase._settleAt === null) purchase._settleAt = now + SIM.purchaseMs;
-    const { workspace: _workspace, _settleAt, _reject, ...data } = purchase;
-    void _workspace;
-    void _settleAt;
-    void _reject;
-    return { data };
+    return { data: publicPurchase(purchase) };
+  }),
+
+  // The backend's simulated provider settles at once. The mock checkout page (/dev/checkout) does not call
+  // this in mock mode: it leaves the decision in the mock database and the payment settles a few seconds
+  // after the app comes back (mocks/control.ts · resolveMockPurchase).
+  route(contract.simulatePurchase, ({ db, workspace, params, body, now, require }) => {
+    require('billing.manage');
+    const purchase = db.purchases.find((item) => item.id === params.id && item.workspace === workspace.id);
+    if (!purchase) throw notFound('No encontramos ese pago.');
+    if (purchase.status === 'pending') {
+      purchase._reject = !body.approved || db.flags.rejectPayments;
+      purchase._settleAt = now;
+      tick(db, now);
+    }
+    return { data: publicPurchase(purchase) };
   }),
 ];

@@ -73,7 +73,21 @@ class WorkspaceMemberWorkspaceInline(admin.TabularInline):
 
 @admin.register(Workspace)
 class WorkspaceAdmin(admin.ModelAdmin):
-    list_display = ('name', 'owner', 'subscription_plan', 'created_at')
+    list_display = ('name', 'owner', 'subscription_plan', 'pending_plan', 'created_at')
     list_filter = ('subscription_plan',)
     search_fields = ('name', 'owner__email')
     inlines = [WorkspaceMemberWorkspaceInline]
+
+    def save_model(self, request, obj, form, change):
+        # Un plan puesto a mano es una cortesía: reemplaza la bajada programada
+        # y el período pagado del plan anterior, así la tarea
+        # apply_due_plan_changes no lo pisa ni lo baja al plan por defecto
+        # cuando ese período termina. Salvo que el staff ponga la fecha de
+        # renovación en el mismo guardado.
+        if change and 'subscription_plan' in form.changed_data:
+            obj.pending_plan = None
+            obj.pending_plan_effective_at = None
+            if 'plan_renews_at' not in form.changed_data:
+                obj.plan_renews_at = None
+                obj.plan_anchor_day = None
+        super().save_model(request, obj, form, change)

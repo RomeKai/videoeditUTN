@@ -24,6 +24,8 @@ const PIPELINE_MESSAGES: Record<string, string> = {
   // Over the app's limit (AI_UPLOAD_MAX_DURATION_SECONDS, 3 h): no plan would take it.
   LinkTooLongForAppError: 'El video del link dura más de 3 horas, el máximo que acepta OneCreator. Probá con uno más corto.',
   LinkTooLargeError: 'El video del link pesa más de lo que podemos descargar. Probá con una versión más liviana o subí el archivo.',
+  // Not in map §4 yet: the ingestion made no progress and recover_stuck_renders returned the reservation (it can be re-dispatched).
+  IngestionStuck: 'El proceso se trabó y te devolvimos los tokens. Podés intentarlo de nuevo.',
 };
 
 /** `pipeline_error_code` (class name of the exception) → message for the user (map §4). Unknown codes get the generic one. */
@@ -62,6 +64,8 @@ export function pipelineErrorTitle(code: string | null | undefined): string {
       return 'El video del link dura más de 3 horas';
     case 'LinkTooLargeError':
       return 'El video del link es muy pesado';
+    case 'IngestionStuck':
+      return 'El proceso se trabó';
     default:
       return 'Algo falló de nuestro lado';
   }
@@ -256,6 +260,8 @@ export function errorMessage(error: unknown, fallback = 'Algo falló de nuestro 
   // A write that got no answer may have been done: "try again" would be the wrong advice.
   if (error instanceof NetworkError) return error.outcomeUnknown ? OUTCOME_UNKNOWN_MESSAGE : 'No pudimos conectar';
   if (error instanceof ApiError) {
+    // 501: something this server does not offer yet (payments without a provider) says so in Spanish.
+    if (error.status === 501 && isSpanish(error.message)) return repairEncoding(error.message);
     if (error.status >= 500) return fallback;
     if (error.status === 402) return 'No te alcanza el saldo';
     if (error.isPlanLimit) return 'Tu plan no incluye esto.';

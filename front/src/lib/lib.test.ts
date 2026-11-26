@@ -191,6 +191,9 @@ describe('mensajes de error (sección 4 del mapa)', () => {
     expect(pipelineErrorMessage('SoftTimeLimitExceeded')).toMatch(/tardó demasiado/);
     expect(pipelineErrorMessage('IngestionNotQueued')).toBe('No pudimos empezar a procesar tu video y no se cobró nada. Creá el proyecto de nuevo en unos minutos.');
     expect(pipelineErrorTitle('IngestionNotQueued')).toBe('No pudimos empezar a procesar el video');
+    // recover_stuck_renders failed it and returned the reservation: it can be tried again.
+    expect(pipelineErrorMessage('IngestionStuck')).toBe('El proceso se trabó y te devolvimos los tokens. Podés intentarlo de nuevo.');
+    expect(pipelineErrorTitle('IngestionStuck')).toBe('El proceso se trabó');
     // Link projects: what the download refused, in the user's words (only the four providers the backend allows).
     expect(pipelineErrorMessage('UnsupportedLinkError')).toMatch(/un solo video público de YouTube, Vimeo, Twitch o Google Drive/);
     expect(pipelineErrorTitle('UnsupportedLinkError')).toBe('No pudimos usar este link');
@@ -231,6 +234,9 @@ describe('mensajes de error (sección 4 del mapa)', () => {
   it('da una frase para cualquier error sin filtrar textos internos', () => {
     expect(errorMessage(new NetworkError('x'))).toBe('No pudimos conectar');
     expect(errorMessage(new ApiError(500, 'x', { detail: 'Traceback (most recent call last)…' }))).toBe('Algo falló de nuestro lado. Probá de nuevo.');
+    // Payments without a provider (billing.createPurchase): the backend's sentence, not "algo falló".
+    expect(errorMessage(new ApiError(501, 'x', { error: 'Los pagos todavía no están habilitados.', code: 'payments_unavailable' }))).toBe('Los pagos todavía no están habilitados.');
+    expect(errorMessage(new ApiError(501, 'x', { detail: 'Not implemented' }))).toBe('Algo falló de nuestro lado. Probá de nuevo.');
     expect(errorMessage(new ApiError(403, 'x', { detail: 'No', code: 'permission_denied' }))).toBe('No tenés acceso a esto. Pedile a un admin del workspace.');
     expect(errorMessage(new ApiError(400, 'x', { error: 'El proyecto ya se está renderizando.' }))).toBe('El proyecto ya se está renderizando.');
     // A role 403 of the backend carries its own sentence, and it is never a plan limit (dialog D3).
