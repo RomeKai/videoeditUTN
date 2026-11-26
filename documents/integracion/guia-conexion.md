@@ -191,7 +191,7 @@ Detalle y tabla de lo que ya tiene endpoint: [01, Workspace activo y roles](../i
 
 | Área | Propuestos | En parte | Quién |
 |---|---|---|---|
-| Acceso | 6 | — | Pedro (propuesta) |
+| Acceso | — (los 6 existen) | — | Hecho (`feat/registro-recuperar-logout`) |
 | Usuario y perfil | 5 | — | Lead, en curso |
 | Workspaces, miembros e invitaciones | 13 | — | Pedro (propuesta) |
 | Planes, billetera y pagos | 12 (uno ya está en `dev`) | — | Pedro (tickets PAY) |
@@ -201,20 +201,20 @@ Detalle y tabla de lo que ya tiene endpoint: [01, Workspace activo y roles](../i
 | Redes y publicaciones | 11 | — | Pedro (propuesta) |
 | Notificaciones | 3 | — | Pedro (propuesta) |
 | Sistema | 1 | — | Lead, en curso |
-| **Total** | **63** | **3** | |
+| **Total** | **57** | **3** | |
 
-### Acceso (6) · Pedro
+### Acceso (6) · hecho
 
-Contrato `contracts/auth.ts`. Backend: app `apps/users` (modelo `User`). Al registrarse, la señal `create_default_workspace` (`back/apps/users/signals.py`) ya crea el workspace con el usuario como Admin activo, y `create_workspace_wallet` (`back/apps/payments/signals.py`) su billetera.
+Contrato `contracts/auth.ts`. Backend: `back/apps/users/views_auth.py` (y `VerifyEmailView` en `views.py`), con sus pruebas en `back/apps/users/tests/test_register.py`, `test_password_reset.py` y `test_logout.py`. El registro usa la señal `create_default_workspace` (`back/apps/users/signals.py`): workspace con el plan por defecto, el usuario como Admin activo y, por `create_workspace_wallet` (`back/apps/payments/signals.py`), su billetera.
 
-| Método y ruta | Id | Hook · mock | Pantalla | Backend | Depende de | Talla |
-|---|---|---|---|---|---|---|
-| POST `auth/register/` | `auth.register` | `useRegister` · `register` | A2, A5 (§5 A) | `User`; token de verificación; límite por IP | Emails (hueco 21), cache compartido, plan Gratis por defecto | M |
-| POST `auth/verify-email/` | `auth.verifyEmail` | `useVerifyEmail` · `verifyEmail` | A3 (§5 A) | Existe en `feat/perfil-me` (`VerifyEmailView`). El registro solo tiene que mandar el link con `make_token(user, SIGNUP)` (`apps/users/email_verification.py`): ese token verifica y devuelve el par JWT | `auth.register` | S |
-| POST `auth/verify-email/resend/` | `auth.resendVerification` | `useResendVerification` · `resendVerification` | A3 (§5 A) | 204 siempre; 429 antes de 60 s | Cache compartido (throttle), emails | S |
-| POST `auth/password-reset/` | `auth.requestPasswordReset` | `useRequestPasswordReset` · `requestPasswordReset` | A4 (§5 A), D9 (§6) | 204 siempre; link `/recuperar?token=…&email=…` | Emails (N2, §9.2) | S |
-| POST `auth/password-reset/confirm/` | `auth.confirmPasswordReset` | `useConfirmPasswordReset` · `confirmPasswordReset` | A4 (§5 A) | 204; `validate_password` | `auth.requestPasswordReset` | S |
-| POST `auth/logout/` | `auth.logout` | `useLogout` · `logout` | I1 (§5 I), Barra (§1.1) | `token_blacklist` ya está instalada en `feat/perfil-me`; `all_devices` es `revoke_refresh_tokens(user)` (`apps/users/tokens.py`) | — | S |
+| Método y ruta | Id | Hook · mock | Pantalla | Backend |
+|---|---|---|---|---|
+| POST `auth/register/` | `auth.register` | `useRegister` · `register` | A2, A5 (§5 A) | `RegisterView`. 201 sin sesión; manda el link de A3. 400 por campo (email ya usado con `code: "unique"`), 429 por IP, 502 si el email no sale |
+| POST `auth/verify-email/` | `auth.verifyEmail` | `useVerifyEmail` · `verifyEmail` | A3 (§5 A) | `VerifyEmailView`. El link del registro (`make_token(user, SIGNUP)`) verifica y devuelve el par JWT |
+| POST `auth/verify-email/resend/` | `auth.resendVerification` | `useResendVerification` · `resendVerification` | A3 (§5 A) | `ResendVerificationView`. 204 siempre; 429 antes de 60 s por email; lo manda el worker |
+| POST `auth/password-reset/` | `auth.requestPasswordReset` | `useRequestPasswordReset` · `requestPasswordReset` | A4 (§5 A), D9 (§6) | `PasswordResetView`. 204 siempre; link `/recuperar?token=…&email=…`; 429 antes de 60 s por email |
+| POST `auth/password-reset/confirm/` | `auth.confirmPasswordReset` | `useConfirmPasswordReset` · `confirmPasswordReset` | A4 (§5 A) | `PasswordResetConfirmView`. 204; reglas de contraseña en castellano; cierra todas las sesiones |
+| POST `auth/logout/` | `auth.logout` | `useLogout` · `logout` | I1 (§5 I), Barra (§1.1) | `LogoutView`. Refresh de la misma cuenta; `all_devices` revoca también los tokens de acceso (`revoke_sessions`, `apps/users/tokens.py`) |
 
 Además, hueco 1: `auth.login` existe pero no distingue la cuenta sin verificar. Falta el 403 con `code: "email_not_verified"`: un serializer propio para `TokenObtainPairView` en `back/backend/urls.py`. Talla S.
 
@@ -363,10 +363,7 @@ El criterio: qué necesita cada flujo de punta a punta para andar con el backend
 - `/me`, `/status`, perfil, contraseña y preferencias (`feat/perfil-me`);
 - modo híbrido (`feat/front-modo-mixto`, PR #134): construido, ver la sección 1.
 
-**1. Acceso y `/me`.** Sin sesión y sin `/me` no anda ni la barra.
-1. `auth.logout` (S): `token_blacklist` ya está en `feat/perfil-me`.
-2. `auth.requestPasswordReset` y `auth.confirmPasswordReset` (S).
-3. `auth.register`, `auth.verifyEmail`, `auth.resendVerification` y el 403 de `auth.login`. Necesitan el envío de emails (hueco 21) y el cache compartido para los límites.
+**1. Acceso y `/me`.** Hecho, salvo el 403 de `auth.login` para la cuenta sin verificar.
 
 **2. Workspaces, miembros e invitaciones.** El equipo es lo que vuelve real al piloto.
 1. `workspaces.list`, `workspaces.detail`, `workspaces.update` (H1).
@@ -433,8 +430,8 @@ El backlog (`documents/backlog_mvp.md`) asigna por par, no por persona: PAY-01 a
 |---|---|---|
 | **El cache no es compartido.** `base`, `dev` y `prod` no definen `CACHES`, así que cada proceso tiene su propio cache en memoria. Los límites de intentos, un guardado de `Idempotency-Key` en cache y la invalidación del cache de planes no cruzan procesos. Lo arregla `fix/creacion-robusta` (lead). | `auth.register`, `auth.resendVerification`, el 429 de `auth.login`, `social.createPost` | — |
 | **No existe el flujo de aceptar una invitación.** No hay endpoints y `WorkspaceMember` no puede guardar una invitación a un email sin cuenta. | Toda la fila de invitaciones, A5 | 13 |
-| **No hay emails transaccionales.** Ni plantillas ni envío. Las plantillas están dibujadas (N1 a N8, §9.2). | Registro, verificación, recuperar, invitación, notificaciones | 21 |
-| Resuelto en `feat/perfil-me`: `token_blacklist` instalada, y límites de intentos en el login (por IP y por cuenta, solo los fallidos), el refresh, la contraseña y el cambio de email (`apps/users/throttles.py`). El registro y el reenvío necesitan los suyos. | `auth.register`, `auth.resendVerification` | 1, 2 |
+| **Faltan emails transaccionales.** Los de cuenta ya salen, en texto, por el backend de email de Django (`apps/users/email_verification.py`: verificar, cambio de email, recuperar). Faltan los demás (N3 a N8, §9.2). | Invitación, notificaciones | 21 |
+| Resuelto: `token_blacklist` instalada, y límites de intentos en el login (por IP y por cuenta, solo los fallidos), el refresh, la contraseña, el cambio de email, el registro, el reenvío, recuperar y cerrar sesión (`apps/users/throttles.py`). | — | 1, 2 |
 | [ADR-005](../adrs/005-social-publishing-strategy.md) sigue `proposed`: el contrato asume Ayrshare, DIST-01 propone OAuth directo. | `social.accounts`, `social.connect`, `social.disconnect` | 10 |
 | No hay beat para `dispatch_scheduled_posts_batch`: no está en `CELERY_BEAT_SCHEDULE` y `docker-compose.yml` no tiene servicio `beat`. | Publicaciones programadas | 9 |
 | Resuelto en `feat/billetera-movimientos-precios`: `Transaction.project` y `Transaction.category` (`reserve_funds` los guarda al reservar, la migración 0016 en las filas viejas) y `kind` en la API. `projects.activity` sigue leyendo la metadata; `projects.detail` todavía no lo usa. | `projects.detail` | 4, 19 |
