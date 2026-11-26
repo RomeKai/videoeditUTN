@@ -21,7 +21,7 @@ class AIUsageRecordMigrationTests(TransactionTestCase):
         Workspace = old_apps.get_model("users", "Workspace")
         VideoProject = old_apps.get_model("videos", "VideoProject")
         user_model = old_apps.get_model(*get_user_model()._meta.label_lower.split("."))
-        owner = user_model.objects.create(username="legacy-usage", email="legacy-usage@test.com")
+        owner = user_model.objects.create(username="legacy-usage", email="legacy-usage@test.com", password="!")
         workspace = Workspace.objects.create(name="Legacy", owner_id=owner.pk)
         project = VideoProject.objects.create(
             workspace_id=workspace.pk, title="Legacy", metadata={"max_clips": 3}
@@ -61,7 +61,7 @@ class ReasoningTokensMigrationTests(TransactionTestCase):
         Workspace = old_apps.get_model("users", "Workspace")
         VideoProject = old_apps.get_model("videos", "VideoProject")
         user_model = old_apps.get_model(*get_user_model()._meta.label_lower.split("."))
-        owner = user_model.objects.create(username="legacy-reason", email="legacy-reason@test.com")
+        owner = user_model.objects.create(username="legacy-reason", email="legacy-reason@test.com", password="!")
         workspace = Workspace.objects.create(name="Legacy", owner_id=owner.pk)
         project = VideoProject.objects.create(workspace_id=workspace.pk, title="Legacy")
         old_apps.get_model("videos", "AIUsageRecord").objects.create(
