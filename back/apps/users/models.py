@@ -52,6 +52,10 @@ class User(AbstractUser):
     is_email_verified = models.BooleanField(default=False)
     tour_completed = models.BooleanField(default=False)
     terms_accepted_at = models.DateTimeField(null=True, blank=True)
+    # «Cerrar sesión en todos los dispositivos» (POST /auth/logout/ con all_devices):
+    # un token emitido antes de este momento ya no sirve, ni el de acceso
+    # (apps.users.tokens.SessionJWTAuthentication) ni el de refresh.
+    sessions_revoked_at = models.DateTimeField(null=True, blank=True)
 
     # --- PERFIL (I1, B1, J3) ---
     # Email nuevo que espera verificación (PATCH /me): reemplaza a `email` al abrir el link

@@ -4,7 +4,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import ErrorDetail
 
 from apps.core.workspace import role_in
-from apps.users.emails import InvalidEmailDomain
+from apps.users.emails import EMAIL_TOO_LONG, InvalidEmailDomain
 from apps.users.models import NotificationPreference, User, Workspace
 
 
@@ -52,6 +52,19 @@ def _password_rule_message(error):
         # A validator added later: its own message (write it in Spanish).
         return error.messages[0]
     return template.format(**(error.params or {}))
+
+
+def check_new_password(value, user):
+    """
+    AUTH_PASSWORD_VALIDATORS on a new password, with their sentences in
+    Spanish. `user` can be unsaved (sign-up): the similarity rule compares
+    with its name and email.
+    """
+    try:
+        validate_password(value, user=user)
+    except DjangoValidationError as exc:
+        raise serializers.ValidationError([_password_rule_message(error) for error in exc.error_list])
+    return value
 
 
 class PlanSummarySerializer(serializers.Serializer):
@@ -160,11 +173,7 @@ class PasswordChangeSerializer(serializers.Serializer):
     )
 
     def validate_new_password(self, value):
-        try:
-            validate_password(value, user=self.context['user'])
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError([_password_rule_message(error) for error in exc.error_list])
-        return value
+        return check_new_password(value, self.context['user'])
 
     def validate_current_password(self, value):
         check_current_password(self.context['user'], value)
@@ -182,3 +191,106 @@ class NotificationPreferencesSerializer(serializers.ModelSerializer):
     class Meta:
         model = NotificationPreference
         fields = ['project_ready', 'render_finished', 'project_failed', 'post_failed', 'low_balance']
+
+
+# --- Account endpoints without a session (apps.users.views_auth) ---
+
+NAME_REQUIRED = 'Escribí tu nombre.'
+EMAIL_REQUIRED = 'Escribí tu email.'
+EMAIL_INVALID = 'Revisá el email: no parece completo.'
+PASSWORD_REQUIRED = 'Elegí una contraseña.'
+TERMS_REQUIRED = 'Para crear la cuenta tenés que aceptar los términos.'
+
+_EMAIL_ERRORS = {
+    'required': EMAIL_REQUIRED,
+    'blank': EMAIL_REQUIRED,
+    'null': EMAIL_REQUIRED,
+    'invalid': EMAIL_INVALID,
+    'max_length': EMAIL_TOO_LONG,
+}
+
+
+def _normalized_email(value):
+    try:
+        return User.objects.normalize_email(value)
+    except InvalidEmailDomain as error:
+        raise serializers.ValidationError(error.message, code='invalid_domain')
+
+
+class RegisterSerializer(serializers.Serializer):
+    """
+    A2. The email is normalized (apps.users.emails) and must not belong to
+    another account under any spelling (User.Meta's constraint): that error
+    carries `code: "unique"`, the one the web app links to the login.
+    """
+
+    name = serializers.CharField(
+        max_length=150,
+        error_messages={
+            'required': NAME_REQUIRED, 'blank': NAME_REQUIRED, 'null': NAME_REQUIRED,
+            'max_length': 'El nombre puede tener hasta {max_length} caracteres.',
+        },
+    )
+    email = serializers.EmailField(max_length=254, error_messages=_EMAIL_ERRORS)
+    # Trimmed like the login's (SimpleJWT's PasswordField): what signs up is what signs in.
+    password = serializers.CharField(
+        write_only=True,
+        error_messages={'required': PASSWORD_REQUIRED, 'blank': PASSWORD_REQUIRED, 'null': PASSWORD_REQUIRED},
+    )
+    terms_accepted = serializers.BooleanField(
+        error_messages={'required': TERMS_REQUIRED, 'invalid': TERMS_REQUIRED, 'null': TERMS_REQUIRED},
+    )
+
+    def validate_email(self, value):
+        email = _normalized_email(value)
+        if email_taken(email):
+            # {message, code}: the web app tells "already taken" apart without reading the text.
+            raise serializers.ValidationError([{'message': EMAIL_TAKEN, 'code': 'unique'}])
+        return email
+
+    def validate_password(self, value):
+        # The account does not exist yet: the similarity rule compares with what was typed.
+        data = self.initial_data if hasattr(self.initial_data, 'get') else {}
+        name = data.get('name') if isinstance(data.get('name'), str) else ''
+        first_name, _, last_name = name.strip().partition(' ')
+        email = data.get('email') if isinstance(data.get('email'), str) else ''
+        return check_new_password(value, User(email=email, first_name=first_name, last_name=last_name))
+
+    def validate_terms_accepted(self, value):
+        if value is not True:
+            raise serializers.ValidationError(TERMS_REQUIRED, code='required')
+        return value
+
+
+class RegisterResponseSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    email = serializers.EmailField()
+    is_email_verified = serializers.BooleanField()
+
+
+class EmailRequestSerializer(serializers.Serializer):
+    """Resend the verification, password reset: only the email (normalized when its domain can be)."""
+
+    email = serializers.EmailField(max_length=254, error_messages=_EMAIL_ERRORS)
+
+    def validate_email(self, value):
+        try:
+            return User.objects.normalize_email(value)
+        except InvalidEmailDomain:
+            # Nobody's email (or an account of before the normalization, found as typed):
+            # the answer is the same as for any other address.
+            return value.strip()
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    token = serializers.CharField(error_messages={'required': 'Falta el token del link.', 'blank': 'Falta el token del link.'})
+    # Checked by the view once the token says whose account it is (the similarity rule needs it).
+    password = serializers.CharField(
+        write_only=True,
+        error_messages={'required': PASSWORD_REQUIRED, 'blank': PASSWORD_REQUIRED, 'null': PASSWORD_REQUIRED},
+    )
+
+
+class LogoutSerializer(serializers.Serializer):
+    refresh = serializers.CharField(error_messages={'required': 'Falta el refresh de la sesión.', 'blank': 'Falta el refresh de la sesión.'})
+    all_devices = serializers.BooleanField(required=False, default=False)

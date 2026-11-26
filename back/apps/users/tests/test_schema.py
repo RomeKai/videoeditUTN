@@ -10,6 +10,11 @@ EXPECTED = {
     ("/api/v1/me/password/", "post"): {"200", "400", "401", "429"},
     ("/api/v1/me/notification-preferences/", "get"): {"200", "401"},
     ("/api/v1/me/notification-preferences/", "patch"): {"200", "400", "401"},
+    ("/api/v1/auth/register/", "post"): {"201", "400", "429", "502"},
+    ("/api/v1/auth/verify-email/resend/", "post"): {"204", "400", "429", "502"},
+    ("/api/v1/auth/password-reset/", "post"): {"204", "400", "429", "502"},
+    ("/api/v1/auth/password-reset/confirm/", "post"): {"204", "400", "429"},
+    ("/api/v1/auth/logout/", "post"): {"204", "400", "401", "429"},
     ("/api/v1/auth/verify-email/", "post"): {"200", "400", "401", "403"},
     ("/api/v1/status/", "get"): {"200"},
     ("/api/v1/workspaces/", "get"): {"200", "401"},
@@ -39,6 +44,9 @@ def test_the_bodies_are_described(schema):
 
     assert set(components["Me"]["properties"]) >= {"pending_email", "onboarding_use_case", "onboarding", "active_workspace_id"}
     assert set(components["TokenPair"]["properties"]) == {"access", "refresh"}
+    assert set(components["RegisterResponse"]["properties"]) == {"id", "email", "is_email_verified"}
+    register = schema["paths"]["/api/v1/auth/register/"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+    assert set(components[register.rsplit("/", 1)[1]]["properties"]) == {"name", "email", "password", "terms_accepted"}
     assert set(components["SystemStatus"]["properties"]) == {"maintenance", "maintenance_window"}
     patch = schema["paths"]["/api/v1/me/"]["patch"]["requestBody"]["content"]["application/json"]["schema"]["$ref"]
     assert set(components[patch.rsplit("/", 1)[1]]["properties"]) == {

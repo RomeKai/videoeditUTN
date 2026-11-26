@@ -30,9 +30,10 @@ if 'NUM_PROXIES' not in os.environ:
 REST_FRAMEWORK = {**REST_FRAMEWORK, 'NUM_PROXIES': env.int('NUM_PROXIES')}
 
 # --- EMAIL ---
-# The change of email (apps.users.email_verification) and the alerts to ADMINS
-# send through this. Without it Django tries localhost:25: the change answers
-# an error and nothing is sent. The links open FRONTEND_URL.
+# The account emails (sign-up, change of email, password reset:
+# apps.users.email_verification) and the alerts to ADMINS send through this.
+# Without it Django tries localhost:25: the sign-up and the change answer an
+# error and nothing is sent. The links open FRONTEND_URL.
 EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
 EMAIL_HOST = env('EMAIL_HOST', default='')
 EMAIL_PORT = env.int('EMAIL_PORT', default=587)
