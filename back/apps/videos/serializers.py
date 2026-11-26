@@ -185,7 +185,9 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     def get_proxy_url(self, obj):
         if obj.proxy_r2_key:
             from apps.videos.services.storage_service import CloudflareR2Manager
-            return CloudflareR2Manager.generate_presigned_url(obj.proxy_r2_key, expiration_seconds=3600)
+            return CloudflareR2Manager.generate_presigned_url(
+                obj.proxy_r2_key, expiration_seconds=3600, request=self.context.get('request'),
+            )
         return None
 
     def validate(self, data):

@@ -136,6 +136,10 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+# Local files only (USE_R2=False): origin for the /media/ URLs built where there
+# is no request to take it from (a Celery task). Empty: those stay relative.
+# The API builds its own from the request (storage_service.absolute_media_url).
+MEDIA_PUBLIC_BASE_URL = env('MEDIA_PUBLIC_BASE_URL', default='')
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

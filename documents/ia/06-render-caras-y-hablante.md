@@ -491,6 +491,7 @@ Logs: `clips_zip.built` (clips, bytes y duración), `clips_zip.lock_fallback`, `
 | `FONTS_DIR` | `<BASE_DIR>/assets/fonts` | Fuente `Montserrat-Bold.ttf` de los subtítulos. |
 | `MEDIA_ROOT` | `<BASE_DIR>/media` | Archivos temporales del render. |
 | `USE_R2` | `False` | Sin R2, `upload_video` copia el archivo bajo `MEDIA_ROOT` y devuelve esa ruta como clave. |
+| `MEDIA_PUBLIC_BASE_URL` | vacío | Solo sin R2. `generate_presigned_url` devuelve la URL `/media/` absoluta (`absolute_media_url`): con el pedido, usa su origen (`proxy_url`, la vista previa); sin pedido (una tarea de Celery), usa este origen. Vacío, esas quedan relativas. Con `DEBUG` y sin R2, Django sirve `/media/`. |
 | `CLIP_DOWNLOAD_URL_TTL_SECONDS` | `3600` | Duración del link de descarga de un clip. Se lee con `getattr`: no está en `base.py`, igual que los cuatro siguientes. |
 | `CLIPS_ZIP_MAX_BYTES` | `1073741824` (1 GB) | Tope de lo que entra en un .zip. Más, 422 `zip_too_large`. |
 | `CLIPS_ZIP_MAX_CLIPS` | `50` | Tope de clips de un .zip. Más, 422 `zip_too_many_clips`; un `clip_ids` más largo, 400. |
