@@ -49,11 +49,11 @@ Para apagar: `demo down` (los datos quedan). `demo down -v` borra la base.
 
 ## 3. Qué es real y qué es mock
 
-La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario, los proyectos, los clips, los brand kits, la billetera (saldo, consumo, movimientos y su exportación) y los precios (fórmula y estimado), y deja **en mocks** los planes, la suscripción, comprar tokens, las redes, las publicaciones, los miembros y las notificaciones. La lista se cambia en un solo lugar: `DEMO_API_REAL` (`docker-compose.demo.yml` la pasa a `NEXT_PUBLIC_API_REAL` al construir `front`).
+La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario, los proyectos, los clips, los brand kits, la billetera (saldo, consumo, movimientos y su exportación), los precios (fórmula y estimado) y los workspaces con sus miembros (crear, renombrar, transferir y borrar un workspace; ver los miembros, cambiar un rol y quitar a alguien), y deja **en mocks** los planes, la suscripción, comprar tokens, las redes, las publicaciones, las invitaciones a un workspace y las notificaciones. La lista se cambia en un solo lugar: `DEMO_API_REAL` (`docker-compose.demo.yml` la pasa a `NEXT_PUBLIC_API_REAL` al construir `front`).
 
 > **Por qué los planes y las publicaciones son mocks hoy.** El backend ya tiene `billing.plans`, `social.posts` y `social.post`, pero no la suscripción ni crear una publicación. Con esos tres en real, «tu plan» no coincide con ningún plan de la lista y una publicación creada en la demo no aparece en el calendario. Quedan en mocks hasta que estén los endpoints de suscripción.
 >
-> **La lista se va a ampliar.** Billetera, movimientos y precios ya están (PR #153). Hay PRs en curso para suscripción y compras, y para workspaces y miembros. Cuando se mergeen, se suman sus endpoints (`billing.plans`, `billing.subscription`, `billing.changePlan`, las compras, y `workspaces`) al valor por defecto de `DEMO_API_REAL` en `docker-compose.demo.yml`, se reconstruye con `demo up -d --build front` y se actualiza la tabla de abajo. Un dominio en la lista va entero al backend, también lo que todavía no existe ahí (responde 404): si falta algo, nombrá los endpoints uno por uno. `DEMO_API_REAL=existing` manda al backend todo lo que el contrato marca como existente.
+> **La lista se va a ampliar.** Billetera, movimientos y precios ya están (PR #153), y workspaces y miembros también (PR #151). Hay PRs en curso para suscripción y compras. Cuando se mergeen, se suman sus endpoints (`billing.plans`, `billing.subscription`, `billing.changePlan` y las compras) al valor por defecto de `DEMO_API_REAL` en `docker-compose.demo.yml`, se reconstruye con `demo up -d --build front` y se actualiza la tabla de abajo. Un dominio en la lista va entero al backend, también lo que todavía no existe ahí (responde 404): si falta algo, nombrá los endpoints uno por uno. `DEMO_API_REAL=existing` manda al backend todo lo que el contrato marca como existente.
 
 | Pantalla | Ruta | Quién responde |
 |---|---|---|
@@ -69,7 +69,7 @@ La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario,
 | Planes y Comprar tokens | `/uso/planes`, `/uso/comprar` | Mock |
 | Redes sociales | `/ajustes/redes` | Mock |
 | Publicar y Publicaciones | panel «Publicar», `/publicaciones` | Mock |
-| Miembros y ajustes del workspace | `/ajustes` | Mock |
+| Ajustes del workspace, Miembros y el selector de workspace | `/ajustes`, `/ajustes/miembros`, barra superior | **Backend**: renombrar, transferir y borrar el workspace, crear otro y cambiar entre ellos, la lista de miembros, cambiar un rol y quitar a alguien. **Invitar** y **Reenviar** son mock (el backend no tiene invitaciones): **no los muestres**, lo invitado no aparece en la lista |
 | Notificaciones (la campana) | — | Mock |
 | Crear cuenta y recuperar contraseña | `/registro`, `/recuperar` | No existen en el backend: **no las muestres** |
 
@@ -146,7 +146,7 @@ Regla práctica: con Groq, un video de 2 minutos está listo para revisar en alr
 - [ ] **Keys reales** de OpenAI y Gemini, y de Groq si se usa V2, cargadas en `back/.env` de la máquina de la demo. Con cuota para los ensayos.
 - [ ] **Decidir el pipeline:** `AI_CORE_V2_ENABLED=True` (Groq, rápido) o `False` (Whisper local, lento). El piloto de V2 todavía no pasó su gate G0 ([runbook del piloto](ai-core-pilot-runbook.md), §11.1): probá el video de la demo con el que elijan.
 - [ ] **Elegir el video de prueba** y ensayarlo de punta a punta en la máquina de la presentación.
-- [ ] **Decidir qué se dice** sobre lo simulado: pagos, redes, publicaciones, miembros y notificaciones.
+- [ ] **Decidir qué se dice** sobre lo simulado: pagos, redes, publicaciones, invitaciones y notificaciones.
 - [ ] **`back/docker/entrypoint.sh`** sigue sin dueño. No frena la demo, porque ni el `Dockerfile` ni los compose lo usan (las migraciones las corre `docker-compose.demo.yml`). Si alguien lo activa hoy, no arranca: espera `POSTGRES_HOST` y `POSTGRES_PORT`, que ningún compose define, y su última línea deja el contenedor vivo aunque Django se caiga.
 
 ## Sin Docker
@@ -175,6 +175,7 @@ Verificado el 2026-11-26:
 - El backend con `runserver`, un worker y un beat de Celery contra Postgres y Redis locales: migraciones, `seed_demo`, login, proyectos, brand kits, aprobar la revisión y el render real de los clips.
 - La web construida en modo híbrido con la lista de la demo, detrás del nginx de `docker/demo/nginx.conf` (en un contenedor): login, las pantallas de la tabla, el video de la revisión con pedidos por rango, aprobar y renderizar desde la pantalla, conectar una red simulada, abrir «Publicar» con un clip real y una subida de 32 MB. Sin errores de consola ni respuestas 4xx o 5xx.
 - La imagen de `front/Dockerfile` construye y sirve la web.
+- Workspaces y miembros contra el backend, con la web construida con la lista de la demo (sin Docker ni proxy, la web y la API en puertos distintos): renombrar, crear, cambiar, transferir y borrar un workspace, y en Miembros ver la lista, cambiar un rol y quitar una invitación. Invitar y Reenviar siguen en mocks y no se reflejan en la lista.
 - Django sirve `/media/` con `DEBUG=True` y `USE_R2=False`, y no lo hace con `DEBUG` apagado ni con R2 (tests en `apps/core/tests/test_media_serving.py`).
 - El proxy sigue respondiendo después de recrear `web` y `front` con otra IP (probado con contenedores de reemplazo en una red de Docker), y `config` muestra solo dos puertos publicados, los dos en `127.0.0.1`.
 - Con archivos locales, la API devuelve las URLs de `/media/` absolutas, con el origen del pedido. Detrás del proxy de la demo quedan en `http://localhost:8080/media/...` (tests en `apps/videos/tests/test_media_urls.py`; el recorrido en el navegador se hizo antes de este cambio, con la URL relativa).
