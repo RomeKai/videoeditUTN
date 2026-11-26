@@ -144,11 +144,10 @@ Regla práctica: con Groq, un video de 2 minutos está listo para revisar en alr
 - [ ] **Elegir el video de prueba** y ensayarlo de punta a punta en la máquina de la presentación.
 - [ ] **Decidir qué se dice** sobre lo simulado: pagos, redes, publicaciones, miembros y notificaciones.
 - [ ] **`back/docker/entrypoint.sh`** sigue sin dueño. No frena la demo, porque ni el `Dockerfile` ni los compose lo usan (las migraciones las corre `docker-compose.demo.yml`). Si alguien lo activa hoy, no arranca: espera `POSTGRES_HOST` y `POSTGRES_PORT`, que ningún compose define, y su última línea deja el contenedor vivo aunque Django se caiga.
-- [ ] **El video de la revisión sin el proxy.** Con `DEBUG=True` y `USE_R2=False` Django ya sirve `/media/`, así que las descargas de clips andan. Pero `proxy_url` llega como ruta relativa (`/media/...`) y el navegador la pide al origen de la web, no al de la API: sin un mismo origen (el proxy de la demo) el video de la revisión no carga. Falta que el backend la devuelva absoluta, o un rewrite en la web.
 
 ## Sin Docker
 
-Sirve para desarrollar, no para presentar. Con `DEBUG=True` y `USE_R2=False`, Django sirve los archivos de `back/media` en `/media/`, y las descargas de clips andan. Dos límites: el servidor de desarrollo no responde pedidos por rango, así que adelantar o retroceder un video puede no funcionar; y el video de la revisión necesita que la web y la API estén en el mismo origen (último punto de arriba).
+Sirve para desarrollar, no para presentar. Con `DEBUG=True` y `USE_R2=False`, Django sirve los archivos de `back/media` en `/media/`, y la API devuelve esas URLs absolutas, con el origen del pedido (`http://localhost:8000/media/...`): el video de la revisión, la vista previa y las descargas andan aunque la web esté en otro puerto. Un límite: el servidor de desarrollo no responde pedidos por rango, así que adelantar o retroceder un video puede no funcionar. Con el proxy de la demo sí.
 
 ```bash
 # Postgres y Redis locales; después, en back/, con DEBUG=True, USE_R2=False, DATABASE_URL,
@@ -173,6 +172,7 @@ Verificado el 2026-11-26:
 - La web construida en modo híbrido con la lista de la demo, detrás del nginx de `docker/demo/nginx.conf` (en un contenedor): login, las pantallas de la tabla, el video de la revisión con pedidos por rango, aprobar y renderizar desde la pantalla, conectar una red simulada, abrir «Publicar» con un clip real y una subida de 32 MB. Sin errores de consola ni respuestas 4xx o 5xx.
 - La imagen de `front/Dockerfile` construye y sirve la web.
 - Django sirve `/media/` con `DEBUG=True` y `USE_R2=False`, y no lo hace con `DEBUG` apagado ni con R2 (tests en `apps/core/tests/test_media_serving.py`).
+- Con archivos locales, la API devuelve las URLs de `/media/` absolutas, con el origen del pedido. Detrás del proxy de la demo quedan en `http://localhost:8080/media/...` (tests en `apps/videos/tests/test_media_urls.py`; el recorrido en el navegador se hizo antes de este cambio, con la URL relativa).
 
 Sin verificar:
 
