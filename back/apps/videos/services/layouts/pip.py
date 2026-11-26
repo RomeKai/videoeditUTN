@@ -40,8 +40,8 @@ def pip_inset_box(target_w, target_h, corner=PIP_DEFAULT_CORNER):
 class PipLayout(GamingLayout):
     """
     Layout 'PiP' (Picture-in-Picture, CORE-03): the video fills the frame and
-    the camera goes in an inset in a corner (``corner``, bottom right by
-    default). Replaces the placeholder that rendered 'pip' as ``fit``.
+    the camera goes in an inset in a corner (``layout_options['pip_corner']``,
+    bottom right by default). Replaces the placeholder that rendered 'pip' as ``fit``.
 
     The inset is the camera pane of ``split`` with the inset's aspect: it
     follows the face found in ``camera_selection_position`` (the whole
@@ -59,12 +59,13 @@ class PipLayout(GamingLayout):
         bg = bg.resized(new_size=(target_w, target_h))
 
         # 2. Camera inset
-        inset = pip_inset_box(target_w, target_h, self.corner)
+        corner = self.layout_options.get('pip_corner') or self.corner
+        inset = pip_inset_box(target_w, target_h, corner)
         cam = self._camera(clip, inset.w / inset.h)
         cam = cam.resized(new_size=(inset.w, inset.h)).with_position((inset.x1, inset.y1))
 
         final = CompositeVideoClip([bg, cam], size=(target_w, target_h))
         if clip.audio:
             final = final.with_audio(clip.audio)
-        logger.info("layout.pip corner=%s facetracking=%s", self.corner, self.use_facetracking)
+        logger.info("layout.pip corner=%s facetracking=%s", corner, self.use_facetracking)
         return final

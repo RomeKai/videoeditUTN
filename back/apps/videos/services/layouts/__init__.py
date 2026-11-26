@@ -20,6 +20,6 @@ LAYOUT_REGISTRY = {
     'podcast': PodcastLayout,
 }
 
-def get_layout_strategy(layout_name, target_w, target_h, use_facetracking=False, gameplay_pos='center', camera_selection_pos='center', manual_camera_coords=None, editing_style=None, static=False):
+def get_layout_strategy(layout_name, target_w, target_h, use_facetracking=False, gameplay_pos='center', camera_selection_pos='center', manual_camera_coords=None, editing_style=None, static=False, layout_options=None):
     strategy_class = LAYOUT_REGISTRY.get(layout_name, FillLayout)
-    return strategy_class(target_w, target_h, use_facetracking=use_facetracking, gameplay_pos=gameplay_pos, camera_selection_pos=camera_selection_pos, manual_camera_coords=manual_camera_coords, editing_style=editing_style, static=static)
+    return strategy_class(target_w, target_h, use_facetracking=use_facetracking, gameplay_pos=gameplay_pos, camera_selection_pos=camera_selection_pos, manual_camera_coords=manual_camera_coords, editing_style=editing_style, static=static, layout_options=layout_options)

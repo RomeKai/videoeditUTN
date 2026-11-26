@@ -260,3 +260,16 @@ def test_static_podcast_never_tracks(rows_clip, monkeypatch):
 
     monkeypatch.setattr(FaceTracker, "track_faces", lambda *a, **k: pytest.fail("static no sigue caras"))
     get_layout_strategy("podcast", 360, 640, use_facetracking=True, static=True).apply(rows_clip)
+
+
+def test_pip_corner_comes_from_the_layout_options(synthetic_clip):
+    from apps.videos.services.layouts.pip import pip_inset_box
+
+    result = get_layout_strategy("pip", 360, 640, layout_options={"pip_corner": "top-left"}).apply(synthetic_clip)
+
+    inset = pip_inset_box(360, 640, "top-left")
+    assert result.clips[1].pos(0) == (inset.x1, inset.y1)
+
+
+def test_layout_options_default_to_empty():
+    assert get_layout_strategy("fill", 360, 640).layout_options == {}
