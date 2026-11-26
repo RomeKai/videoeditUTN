@@ -7,7 +7,6 @@ from django.db.models import Exists, OuterRef
 from rest_framework.exceptions import APIException, AuthenticationFailed, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -26,8 +25,15 @@ from apps.users.serializers import (
     VerifyEmailSerializer,
     email_taken,
 )
+from apps.users.emails import InvalidEmailDomain
 from apps.users.email_verification import EMAIL_CHANGE, send_email_change_verification, user_for_token
-from apps.users.throttles import EmailChangeThrottle, LoginFailureGuard, SpanishThrottleMixin, TooManyAttempts
+from apps.users.throttles import (
+    AttemptThrottle,
+    EmailChangeThrottle,
+    LoginFailureGuard,
+    SpanishThrottleMixin,
+    TooManyAttempts,
+)
 from apps.users.tokens import RevocableTokenRefreshSerializer, issue_token_pair
 
 
@@ -160,7 +166,7 @@ class MeView(SpanishThrottleMixin, APIView):
             200: MeSerializer,
             400: OpenApiResponse(description=(
                 'Validación por campo: `current_password` falta, no coincide o la cuenta no tiene '
-                'contraseña; `email` lo usa otra cuenta o el servidor de email rechaza esa dirección; `active_workspace_id` no es '
+                'contraseña; `email` lo usa otra cuenta, su dominio no se puede codificar o el servidor de email rechaza esa dirección; `active_workspace_id` no es '
                 'un workspace del usuario.'
             )),
             401: UNAUTHORIZED,
@@ -218,10 +224,10 @@ class MeView(SpanishThrottleMixin, APIView):
 class LoginView(SpanishThrottleMixin, TokenObtainPairView):
     """
     POST /api/token/ (SimpleJWT) with attempt limits: every request per IP
-    (ScopedRateThrottle), and the failed ones per account (LoginFailureGuard).
+    (AttemptThrottle), and the failed ones per account (LoginFailureGuard).
     """
 
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [AttemptThrottle]
     throttle_scope = 'login'
 
     def post(self, request, *args, **kwargs):
@@ -252,7 +258,7 @@ class TokenRefreshThrottledView(SpanishThrottleMixin, TokenRefreshView):
     """POST /api/token/refresh/ (SimpleJWT) with a limit per IP; a token of an old password answers 401."""
 
     serializer_class = RevocableTokenRefreshSerializer
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [AttemptThrottle]
     throttle_scope = 'token_refresh'
 
 
@@ -264,7 +270,7 @@ class PasswordChangeView(SpanishThrottleMixin, APIView):
     """
 
     permission_classes = [IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [AttemptThrottle]
     throttle_scope = 'password_change'
 
     @extend_schema(
@@ -350,7 +356,7 @@ class VerifyEmailView(APIView):
         request=VerifyEmailSerializer,
         responses={
             200: TokenPairSerializer,
-            400: OpenApiResponse(description='Link inválido, vencido, ya usado o cancelado, o el email lo tomó otra cuenta (error en `token`).'),
+            400: OpenApiResponse(description='Link inválido, vencido, ya usado o cancelado, el email lo tomó otra cuenta o su dominio no se puede codificar (error en `token`).'),
             401: UNAUTHORIZED,
             403: OpenApiResponse(description=(
                 '`code: "other_account"`: hay una sesión de otra cuenta. `code: "login_required"`: '
@@ -385,4 +391,8 @@ class VerifyEmailView(APIView):
                 user.save(update_fields=fields)
         except IntegrityError:
             raise ValidationError({'token': [EMAIL_TAKEN]})
+        except InvalidEmailDomain as error:
+            # A pending email stored before the domains were normalized, with one
+            # that cannot be encoded: nothing is applied.
+            raise ValidationError({'token': [error.message]})
         return Response(issue_token_pair(user))

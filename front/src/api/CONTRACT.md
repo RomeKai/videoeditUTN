@@ -156,7 +156,7 @@ Inicia sesión con email y contraseña; devuelve el par JWT.
 |---|---|
 | Id | `auth.login` |
 | Backend | ✅ existe · `back/apps/users/views.py · LoginView (TokenObtainPairView de SimpleJWT, USERNAME_FIELD = email)` |
-| Nota | El 429 sale de 10 pedidos por minuto por IP, o de los intentos fallidos de la cuenta: 10 cada 15 minutos desde la misma IP y 100 por hora en total. Un login correcto los reinicia. `detail` dice en castellano cuánto esperar. Hoy no distingue la cuenta sin verificar (falta el 403 propuesto, hueco 1). |
+| Nota | El email entra con cualquier escritura de su dominio (mayúsculas, letras de ancho completo, Unicode o punycode); un dominio que no se puede codificar responde 401 como cualquier email sin cuenta. Sin Redis los límites siguen, contados por proceso. El 429 sale de 10 pedidos por minuto por IP, o de los intentos fallidos de la cuenta: 10 cada 15 minutos desde la misma IP y 100 por hora en total. Un login correcto los reinicia. `detail` dice en castellano cuánto esperar. Hoy no distingue la cuenta sin verificar (falta el 403 propuesto, hueco 1). |
 | Sesión | Pública |
 | Pedido | LoginRequest |
 | Respuesta 200 | TokenPair |
@@ -204,7 +204,7 @@ Verifica el email con el token del link. El de una cuenta nueva deja la sesión 
 | Sesión | Pública (manda el token si hay sesión) |
 | Pedido | { token: string } |
 | Respuesta 200 | TokenPair |
-| Errores | **400** Token inválido, vencido, ya usado o cancelado (error en `token`). La UI ofrece reenviar el email.<br>**403** `code: "other_account"`: hay una sesión de otra cuenta. `code: "login_required"`: el link de un cambio de email necesita la sesión de su cuenta. No se aplica nada; la UI muestra `detail` y, en el segundo caso, lleva a iniciar sesión y de vuelta al mismo link. |
+| Errores | **400** Token inválido, vencido, ya usado o cancelado, o un email pendiente con un dominio que no se puede codificar (error en `token`). La UI ofrece reenviar el email.<br>**403** `code: "other_account"`: hay una sesión de otra cuenta. `code: "login_required"`: el link de un cambio de email necesita la sesión de su cuenta. No se aplica nada; la UI muestra `detail` y, en el segundo caso, lleva a iniciar sesión y de vuelta al mismo link. |
 | Pantallas | A3 |
 
 #### `POST /api/v1/auth/verify-email/resend/`
@@ -289,11 +289,11 @@ Actualiza nombre, email, tour, uso elegido en la bienvenida y workspace activo.
 |---|---|
 | Id | `users.updateMe` |
 | Backend | ✅ existe · `back/apps/users/views.py · MeView.patch (UpdateMeSerializer); el link: apps/users/email_verification.py` |
-| Nota | El email nuevo queda en `pending_email` y le llega un link a `/verificar?token=…&siguiente=/perfil` que vence en 24 h; `auth.verifyEmail` lo aplica. |
+| Nota | El backend normaliza el dominio (minúsculas, letras de ancho completo, Unicode a punycode): `ana@Mañana.com` vuelve en `pending_email` como `ana@xn--maana-pta.com`, y otra escritura de un email ya usado cuenta como usado. El email nuevo queda en `pending_email` y le llega un link a `/verificar?token=…&siguiente=/perfil` que vence en 24 h; `auth.verifyEmail` lo aplica. |
 | Sesión | JWT |
 | Pedido | UpdateMeRequest |
 | Respuesta 200 | Me |
-| Errores | **400** Validación por campo: email ya usado o rechazado por el servidor de email (error en `email`), o `email` nuevo sin `current_password`, con una incorrecta o en una cuenta sin contraseña (error en `current_password`); `active_workspace_id` de un workspace donde no es miembro activo.<br>**429** Demasiados cambios de email seguidos (5 por hora). `detail` dice en castellano cuánto esperar.<br>**502** El servidor de email no aceptó el email de verificación: no se guardó nada. No es 503, que la UI lee como mantenimiento. |
+| Errores | **400** Validación por campo: email ya usado, con un dominio que no se puede codificar ("El dominio del email no es válido. Revisá que esté bien escrito."), demasiado largo una vez codificado el dominio ("El email es demasiado largo. Probá con una dirección más corta.") o rechazado por el servidor de email (error en `email`), o `email` nuevo sin `current_password`, con una incorrecta o en una cuenta sin contraseña (error en `current_password`); `active_workspace_id` de un workspace donde no es miembro activo.<br>**429** Demasiados cambios de email seguidos (5 por hora). `detail` dice en castellano cuánto esperar.<br>**502** El servidor de email no aceptó el email de verificación: no se guardó nada. No es 503, que la UI lee como mantenimiento. |
 | Pantallas | B1, B2, J3, I1 |
 
 #### `POST /api/v1/me/password/`
