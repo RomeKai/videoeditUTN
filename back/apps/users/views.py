@@ -45,6 +45,8 @@ class EmailNotSent(APIException):
     default_code = 'email_not_sent'
 
 
+EMAIL_REFUSED = 'El servidor de email rechazó esa dirección. Revisá que esté bien escrita.'
+
 UNAUTHORIZED = OpenApiResponse(description='Sin sesión, o con un token vencido o revocado.')
 THROTTLED = OpenApiResponse(description='Demasiados intentos: `detail` dice en castellano cuánto esperar, y va Retry-After.')
 
@@ -158,7 +160,7 @@ class MeView(SpanishThrottleMixin, APIView):
             200: MeSerializer,
             400: OpenApiResponse(description=(
                 'Validación por campo: `current_password` falta, no coincide o la cuenta no tiene '
-                'contraseña; `email` lo usa otra cuenta; `active_workspace_id` no es '
+                'contraseña; `email` lo usa otra cuenta o el servidor de email rechaza esa dirección; `active_workspace_id` no es '
                 'un workspace del usuario.'
             )),
             401: UNAUTHORIZED,
@@ -197,6 +199,10 @@ class MeView(SpanishThrottleMixin, APIView):
                 if data.get('email'):
                     # A failed send rolls the change back: no pending email without its link.
                     send_email_change_verification(user)
+        except smtplib.SMTPRecipientsRefused:
+            # The server refuses that address (it does not exist, or it takes no mail): the user can fix it.
+            user.refresh_from_db()
+            raise ValidationError({'email': [EMAIL_REFUSED]})
         except (smtplib.SMTPException, OSError) as exc:
             logger.warning('email_change.send_failed user_id=%s error=%s', user.pk, type(exc).__name__)
             user.refresh_from_db()

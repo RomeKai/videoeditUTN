@@ -293,7 +293,7 @@ Actualiza nombre, email, tour, uso elegido en la bienvenida y workspace activo.
 | Sesión | JWT |
 | Pedido | UpdateMeRequest |
 | Respuesta 200 | Me |
-| Errores | **400** Validación por campo: email ya usado (error en `email`), o `email` nuevo sin `current_password`, con una incorrecta o en una cuenta sin contraseña (error en `current_password`); `active_workspace_id` de un workspace donde no es miembro activo.<br>**429** Demasiados cambios de email seguidos (5 por hora). `detail` dice en castellano cuánto esperar.<br>**502** El servidor de email no aceptó el email de verificación: no se guardó nada. No es 503, que la UI lee como mantenimiento. |
+| Errores | **400** Validación por campo: email ya usado o rechazado por el servidor de email (error en `email`), o `email` nuevo sin `current_password`, con una incorrecta o en una cuenta sin contraseña (error en `current_password`); `active_workspace_id` de un workspace donde no es miembro activo.<br>**429** Demasiados cambios de email seguidos (5 por hora). `detail` dice en castellano cuánto esperar.<br>**502** El servidor de email no aceptó el email de verificación: no se guardó nada. No es 503, que la UI lee como mantenimiento. |
 | Pantallas | B1, B2, J3, I1 |
 
 #### `POST /api/v1/me/password/`

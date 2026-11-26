@@ -93,7 +93,7 @@ export const updateMe = defineEndpoint({
   errors: [
     {
       status: 400,
-      when: 'Validación por campo: email ya usado (error en `email`), o `email` nuevo sin `current_password`, con una incorrecta o en una cuenta sin contraseña (error en `current_password`); `active_workspace_id` de un workspace donde no es miembro activo.',
+      when: 'Validación por campo: email ya usado o rechazado por el servidor de email (error en `email`), o `email` nuevo sin `current_password`, con una incorrecta o en una cuenta sin contraseña (error en `current_password`); `active_workspace_id` de un workspace donde no es miembro activo.',
     },
     { status: 429, when: 'Demasiados cambios de email seguidos (5 por hora). `detail` dice en castellano cuánto esperar.' },
     { status: 502, when: 'El servidor de email no aceptó el email de verificación: no se guardó nada. No es 503, que la UI lee como mantenimiento.' },

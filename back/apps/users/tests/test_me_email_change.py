@@ -358,3 +358,16 @@ def test_an_email_server_that_fails_saves_nothing(client, user, caplog):
     user.refresh_from_db()
     assert user.pending_email is None
     assert "SMTPServerDisconnected" in caplog.text and "secreto" not in caplog.text
+
+
+def test_an_address_the_email_server_refuses_is_a_400_on_the_email(client, user):
+    import smtplib
+
+    refused = smtplib.SMTPRecipientsRefused({NEW_EMAIL: (550, b"5.1.1 User unknown")})
+    with mock.patch("apps.users.views.send_email_change_verification", side_effect=refused):
+        response = client.patch(ME_URL, {"email": NEW_EMAIL, "current_password": PASSWORD}, format="json")
+
+    assert response.status_code == 400
+    assert response.json() == {"email": ["El servidor de email rechazó esa dirección. Revisá que esté bien escrita."]}
+    user.refresh_from_db()
+    assert user.pending_email is None
