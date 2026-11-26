@@ -102,6 +102,40 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
             context['pte_prompt'] = prompt
         return context
 
+    def destroy(self, request, *args, **kwargs):
+        """
+        Deletes the project, never with tokens still reserved: while it may
+        render or process, or with a creation or render reservation RESERVED,
+        it is a 409 (views_clips.project_delete_decision). Nothing would settle
+        that reservation once its project is gone. A project stuck for good
+        (no worker, nothing for RENDER_STUCK_AFTER_SECONDS, nothing delivered)
+        gets its open reservations returned, in the same transaction, and goes.
+        Nothing charged comes back.
+        """
+        from .views_clips import project_delete_decision
+
+        project = self.get_object()  # 404 outside the workspace; an Editor's own projects only
+        with transaction.atomic():
+            # Locked: an approval or a paid render that starts meanwhile waits for it.
+            locked = VideoProject.objects.select_for_update().get(pk=project.pk)
+            refusal, refunds = project_delete_decision(locked)
+            if refusal is not None:
+                return refusal
+            try:
+                for reservation_id in refunds:
+                    wallet_service.rollback_reservation(reservation_id)
+            except wallet_service.PaymentError:
+                # Settled meanwhile (the pipeline or a sweep): decide again.
+                transaction.set_rollback(True)
+                return Response({
+                    "error": "El proyecto tiene tokens reservados que todavía no se liquidaron. Probá de nuevo en unos minutos.",
+                    "code": "reservation_open",
+                }, status=409)
+            self.perform_destroy(locked)
+        if refunds:
+            logger.warning("project.deleted_stuck project_id=%s refunded=%d", project.pk, len(refunds))
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=False, methods=['post'], url_path='from-prompt')
     def from_prompt(self, request):
         """
