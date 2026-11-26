@@ -19,8 +19,10 @@ Un proyecto (`VideoProject`) nace en el request de creación de la API y ahí mi
 | `ProbeLinkView`, `probe_link` | [views_project_data.py](../../back/apps/videos/views_project_data.py), [services/link_probe.py](../../back/apps/videos/services/link_probe.py) | `POST /api/v1/projects/probe-link/`: sitio, título y duración de un link antes de crear ([ver abajo](#revisar-un-link-antes-de-crear-probe-link)) |
 | `validate_upload`, `MediaInfo`, `InvalidUploadError` | [services/media_validation.py](../../back/apps/videos/services/media_validation.py) | Comprueba que los bytes sean un video procesable (CORE-05) |
 | `PricingEngine.calculate_render_cost` | [payments/services/pricing_engine.py](../../back/apps/payments/services/pricing_engine.py) | Límites del plan y precio en tokens |
-| `reserve_funds`, `commit_reservation`, `rollback_reservation` | [payments/services/wallet_service.py](../../back/apps/payments/services/wallet_service.py) | Movimientos de la billetera con `select_for_update` |
+| `reserve_funds`, `commit_reservation`, `rollback_reservation` | [payments/services/wallet_service.py](../../back/apps/payments/services/wallet_service.py) | Movimientos de la billetera con `select_for_update`. `reserve_funds` guarda el proyecto y la categoría de la reserva (`project`, `category`) |
+| `price_new_project` | [services/render_pricing.py](../../back/apps/videos/services/render_pricing.py) | Precio de un proyecto nuevo, el mismo para la creación y para `POST pricing/estimate/` |
 | `Wallet`, `Transaction`, `SubscriptionPlan` | [payments/models.py](../../back/apps/payments/models.py) | Saldo, reservas y límites del plan |
+| `WalletView`, `WalletUsageView`, `TransactionListView`, `TransactionExportView`, `PricingView`, `EstimateView` | [payments/views.py](../../back/apps/payments/views.py), [payments/services/movements.py](../../back/apps/payments/services/movements.py), [payments/services/estimate.py](../../back/apps/payments/services/estimate.py) | Saldo, consumo, movimientos, precios y estimado ([ver abajo](#billetera-movimientos-y-precios)) |
 | `_record_pipeline_failure`, `_refund_ingestion_reservation`, `_work_already_done` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Devuelven la reserva cuando la ingesta falla sin entregar clips |
 
 Las tres formas usan la misma vista y el mismo serializer. `validate` exige exactamente una fuente: sin ninguna responde `Debes proporcionar un 'source_file' o una 'video_url'.` y con las dos `No puedes enviar archivo y URL al mismo tiempo.`.
@@ -47,8 +49,10 @@ El proyecto o el brand kit nuevo se guarda en ese workspace, su billetera es la 
 | Aprobar y renderizar | `approve-paper-edit` | ✓ | ✓ | ✓ | — |
 | Borrar proyectos | `DELETE projects/<id>/` | ✓ | ✓ | solo los que subió | — |
 | Crear, editar y borrar brand kits | `brand-kits/` | ✓ | ✓ | ✓ | — |
+| Ver el saldo y estimar un costo (`wallet.view`) | `GET wallet/`, `POST pricing/estimate/` | ✓ | ✓ | ✓ | ✓ |
+| Ver el consumo y los movimientos, exportarlos (`billing.manage`) | `wallet/usage/`, `transactions/`, `transactions/export/` | ✓ | ✓ | — | — |
 
-Una escritura que la vista no asigna a una acción (`workspace_actions`) queda para Dueño y Admin. Un método que la vista no tiene responde 405 para cualquier rol. Lo que el rol no permite responde 403 con un `detail` en castellano, por ejemplo `Con el rol Lector podés ver, pero no crear ni cambiar nada. Pedile acceso a un admin.`. No hay endpoints de invitación: una invitación pasa a `active` desde el admin de Django.
+Una escritura que la vista no asigna a una acción (`workspace_actions`) queda para Dueño y Admin. Un `HEAD` pide la acción del `GET`: Django lo responde con el mismo handler, así que un Lector recibe el mismo 403 (lo prueba `test_head_requests.py` para todas las vistas). Un método que la vista no tiene responde 405 para cualquier rol. Lo que el rol no permite responde 403 con un `detail` en castellano, por ejemplo `Con el rol Lector podés ver, pero no crear ni cambiar nada. Pedile acceso a un admin.`. No hay endpoints de invitación: una invitación pasa a `active` desde el admin de Django.
 
 **Lugares del plan.** `check_seat_limit` cuenta los miembros del workspace, invitaciones `pending` incluidas, y rechaza con `ValidationError` lo que no entra en `plan.max_members` (`Tu plan '<plan>' solo permite N miembros...`). Sin plan hay un solo lugar (`Este workspace no tiene un plan activo...`). La membresía del dueño en su propio workspace siempre entra. Lo usan:
 
@@ -126,7 +130,7 @@ sequenceDiagram
 4. `create` del serializer guarda el proyecto y escribe en `metadata` lo que vino del pedido (`max_clips`, `selection_criteria`, `subtitle_size`, `use_seo`) y `source_media` (`MediaInfo.as_metadata()`: `duration_s`, `width`, `height`, `mime`). También copia campos crudos del pedido a columnas (`render_layout` o su alias `layout`, posiciones de cámara, subtítulos, `use_facetracking`, `remove_silences`, `auto_render_bypass`). Con `speaker_tracking=true` y sin `render_layout` ni `layout`, deja `render_layout='active'`: seguir a quien habla es ese layout ([06](06-render-caras-y-hablante.md#flujo-layouts)). Los booleanos crudos (`speaker_tracking`, `auto_render_bypass`, `add_subtitles`, `use_facetracking`, `remove_silences`) son verdaderos con `true`, `1`, `t`, `y`, `yes` u `on` (`_raw_bool`), como en DRF. Uno vacío (`""`) cuenta como no enviado (`_raw_bool_sent`): queda el default del modelo. En un multipart, DRF lee como falso un booleano que no viaja (un checkbox sin marcar). Por eso todos los booleanos del modelo son `_NotSentBooleanField` en el serializer: el que no viaja no se envió. Al crear queda el default del modelo y un PUT lo deja como estaba (lo mismo pasa con `is_default` de un brand kit). Los números crudos que no son campos del serializer (`max_clips`, `subtitle_scale_factor`) se leen en `validate` (`_raw_number`): vacíos o `null` no cuentan, y un valor que no es un número finito es un 400 en el campo. Las posiciones de cámara y `subtitle_words_per_segment` llegan ya leídas por DRF: uno vacío en un multipart no se envió. Todo `create` corre en una transacción: si algo falla después del INSERT, no queda la fila (la reserva de tokens viene después). El rollback no llega al storage, así que `_store_upload` guarda el archivo antes del INSERT (lo mismo que haría `FileField.pre_save`) y, si el INSERT o el resto de `create` fallan, `delete_upload` lo borra por su nombre. `selection_criteria` se normaliza con `normalize_selection_criteria`.
 5. La vista calcula el precio con la duración de `metadata['source_media']['duration_s']` (truncada a entero). Solo si falta mide de nuevo con MoviePy. Ver [Precio](#precio).
 6. Desde acá, cada rechazo pasa por `_discard_new_project`: borra la fila y, con `delete_upload`, el archivo. Es lo mismo para el 403 del plan, el 400 del precio o de un link en otra resolución, el 402 y el 500 del pago. `delete_upload` borra con el storage del campo (`MEDIA_ROOT`), también con `USE_R2`: en el request el archivo no llegó a R2, eso lo hace la ingesta (`_stage_prepare_source`). Si no se puede borrar, loguea `upload.cleanup_failed` y la respuesta no cambia.
-7. `reserve_funds` bloquea la billetera con `select_for_update`, resta el costo de `available_balance`, lo suma a `reserved_balance` y crea una `Transaction` `SPEND` en `RESERVED` con la descripción `Procesamiento: <título>`. Si el workspace no tiene billetera, la vista la crea antes con `get_or_create` (con saldo 0).
+7. `reserve_funds` bloquea la billetera con `select_for_update`, resta el costo de `available_balance`, lo suma a `reserved_balance` y crea una `Transaction` `SPEND` en `RESERVED` con la descripción `Procesamiento: <título>`. Si el workspace no tiene billetera, la vista la crea antes con `get_or_create` (con saldo 0). La vista le pasa `project` y `category=project`, que quedan en la misma fila (`Transaction.project`, `Transaction.category`). Cada reserva de después hace lo mismo: la aprobación, el render automático y los renders que pide el usuario con `render`, el re-despacho con `project`. El `project_id` de `reserve_funds` es otra cosa: encola el pipeline, y ninguna vista lo pasa.
 8. En la misma transacción la vista guarda el id de la reserva en `metadata['reservation_id']`: el pipeline lo usa para devolverla ([ciclo de vida](#flujo-ciclo-de-vida-de-la-reserva)). Nunca queda una reserva sin su vínculo: si falla el `UPDATE`, se deshacen los dos y el pedido es un 500 sin nada reservado.
 9. Encola con `process_initial_ingestion.delay(project.id)` en `transaction.on_commit` (`_queue_ingestion`): el worker siempre encuentra la reserva y el vínculo. Hoy no hay `ATOMIC_REQUESTS`, así que el envío sale apenas la reserva hace commit, antes de responder. Si el request corriera dentro de otra transacción, el envío (y el manejo de su fallo, abajo) pasaría después de responder 201: el proyecto igual quedaría `failed` y devuelto.
 10. **Si el broker no toma el mensaje** (`delay` lanza, por ejemplo con el broker caído), nadie levantaría el proyecto y los tokens quedarían reservados. Log `project.ingestion_not_queued` con la clase del error. `_fail_unqueued_project` hace tres cosas en una sola transacción, con la fila del proyecto bloqueada: lo marca `failed` (solo si sigue en `uploaded`), escribe `pipeline_error_code=IngestionNotQueued` y devuelve la reserva con `rollback_reservation`. Nadie ve el proyecto fallado sin la devolución, ni devuelto y corriendo. Hay tres resultados:
@@ -387,6 +391,64 @@ Una aprobación anterior a los clips por segmento (sin `render_clip_ids`, todav�
 
 No aparece lo que no se guarda: los renombres (`project_renamed`), las ediciones y los reintentos de un clip (`clip_edited`, `clip_retried`), quién programó un post (`ScheduledPost` no tiene autor) y una reserva cuya clave ya no está en la metadata (el render automático liquidado de un proyecto que después se aprobó: la aprobación borra sus claves).
 
+## Billetera, movimientos y precios
+
+Los endpoints de `apps/payments` que muestran Uso (G1, G2) y la creación (C1). Los de la billetera trabajan en el workspace activo: uno ajeno es 404 y, sin ningún workspace, también. Los montos salen como texto decimal exacto (`"12.5000000000"`), nunca como float.
+
+| Endpoint | Rol | Qué devuelve |
+|----------|-----|--------------|
+| `GET /api/v1/wallet/` | Todos (`wallet.view`) | Saldos, `spent_this_month`, `low_balance_threshold` y cada reserva abierta con su proyecto, de la más nueva a la más vieja |
+| `GET /api/v1/wallet/usage/?month=AAAA-MM` | Dueño y Admin (`billing.manage`) | Cada día del mes (sin `month`, el actual) con lo cobrado en `projects`, `renders` y `seo` |
+| `GET /api/v1/transactions/` | Dueño y Admin | Movimientos paginados (25, hasta 100), filtros `kind`, `month` y `project`, y `totals` por tipo |
+| `GET /api/v1/transactions/export/` | Dueño y Admin | Los mismos movimientos en CSV, sin páginas |
+| `GET /api/v1/pricing/` | Público | Números de `PricingEngine` y topes de subida |
+| `POST /api/v1/pricing/estimate/` | Todos (`wallet.view`): no escribe nada | Costo, descuento, saldo después y `eta_seconds` de una configuración |
+
+**Tipo de movimiento (`kind`).** Sale del tipo y el estado de la `Transaction` (`KINDS` en `services/movements.py`):
+
+- `DEPOSIT` + `COMPLETED` es `purchase`.
+- `SPEND` + `RESERVED` es `reserved`; `SPEND` + `COMPLETED`, `charged`.
+- `SPEND` + `FAILED` es `released` («Devuelto»): la reserva volvió entera.
+- `REFUND` + `COMPLETED` es `refund`. Hoy no lo escribe nada.
+- `DEPOSIT` o `REFUND` en `PENDING` es `pending`.
+
+Una fila sin tipo no movió el saldo y no sale (una compra que falló). Un cobro parcial no tiene fila propia para lo devuelto: el `SPEND` queda con lo cobrado en `amount` y lo reservado en `reserved_amount`. La API muestra los dos, y `settled_at`.
+
+**Proyecto y categoría.** `Transaction.project` y `Transaction.category` (migración `0015` de payments) los escribe `reserve_funds` al reservar, en la misma fila. Un proyecto borrado deja `project` en null (`SET_NULL`). La categoría arma las columnas del consumo: `render` va a `renders`, `seo` a `seo` y el resto a `projects`. Hoy nada escribe `seo`: el adicional se cobra dentro de la creación, así que cuenta en `projects`.
+
+**Fechas.** El mes y los días son los de `WORKSPACE_TIME_ZONE`. Cada fila de los movimientos tiene la fecha en que movió el saldo por última vez (`MOVED_AT`, `COALESCE(settled_at, created_at)`): un cobro o una devolución cuando se liquidó, una reserva abierta o una compra cuando se hizo. La lista se ordena por esa fecha, y `month` y `totals` la usan. El consumo y `spent_this_month` también: un cobro reservado el 31 de octubre y cobrado el 1 de noviembre es de noviembre en las dos pantallas. Las filas liquidadas antes de la migración `0012` no tienen `settled_at` y usan `created_at`.
+
+**Totales.** `totals` cuenta los movimientos de cada tipo con los mismos `month` y `project`, sin `kind` ni página. Un tipo sin movimientos no aparece. `released.amount` suma también lo que devolvieron los cobros parciales (`reserved_amount − amount`), y `released.partial_count` dice cuántos son; `released.count` sigue siendo las filas devueltas, las que lista su filtro. Así lo reservado es siempre lo cobrado más lo devuelto más lo que sigue reservado.
+
+**Consultas.** La vista busca la billetera y filtra por `wallet_id`, sin unir la tabla. El índice de la migración `0015`, `(wallet, COALESCE(settled_at, created_at) DESC)`, sirve la primera página y un mes sin ordenar todo. La página son cuatro consultas (la billetera, los totales, la cantidad y las filas con `select_related` del creador y del proyecto), sea cual sea su tamaño.
+
+**CSV.** Es el libro de la billetera: una fila por cada cambio del saldo (`ledger` en `services/movements.py`), así que sus montos suman lo que hizo el saldo en el mes exportado.
+
+- Cada `SPEND` es su reserva (`Reserva`, −`reserved_amount`, en `created_at`) y, si volvió algo, su devolución (`Devuelto`, en `settled_at`): todo en una reserva que se cayó, `reserved_amount − amount` en un cobro parcial.
+- Un cobro entero no agrega fila: el saldo bajó al reservar.
+- Una compra es `Compra` y un `REFUND`, `Devolución`. Una compra pendiente no movió el saldo y no sale.
+- Con `month`, solo los cambios de ese mes. `kind` y `project` eligen las transacciones como en la lista.
+
+Columnas `fecha,concepto,proyecto,tipo,monto,estado,transaccion`: la fecha en ISO con la zona del workspace, la descripción, el título del proyecto, qué fue el cambio, el monto con su signo (dos decimales cuando alcanzan, si no todos), el tipo de la transacción hoy («Cobrado», «Devuelto»…) y su id, que une una reserva con su devolución. Un texto que empieza con `=`, `+`, `-` o `@` lleva un apóstrofo adelante, para que una planilla no lo ejecute.
+
+**Estimado.** El precio y sus rechazos son los de la creación: las dos llaman a `price_new_project`.
+
+- Un archivo se cobra por sus segundos enteros con `calculate_render_cost` y el plan del workspace. Más largo que `AI_UPLOAD_MAX_DURATION_SECONDS`, el 400 de la subida (`source_file`, `too_long`). Sin `duration_seconds`, 400.
+- Un link cuesta `LINK_FLAT_COST` más el SEO con descuento, y solo en `720p`: con otra, el 400 `{"error": …}` de la creación.
+- Un límite del plan es 403 con `code` (`duration`, `resolution` o `seo`) y `limit`. El motor lo marca en el `code` de su error.
+- `eta_seconds` es la mediana de lo que tardaron, por segundo de video, los últimos 50 proyectos de los últimos 30 días que llegaron a la revisión (`metadata['stage_durations']`, de `audio_extracted` a `clips_selected`), por la duración pedida. No cuenta la espera en la cola. Es null para un link, para 0 s y mientras ningún proyecto llegó a la revisión. La mediana queda 5 minutos en el cache por defecto (`ETA_CACHE_SECONDS`): un estimado no lee los proyectos en cada pedido.
+
+**Saldo bajo.** `low_balance_threshold` es un video promedio: 1200 s en `720p` con el descuento del plan (`LOW_BALANCE_REFERENCE_SECONDS`).
+
+**Filas de antes.** La migración `0016` de payments vincula las transacciones que ya existían con lo que guarda la metadata de cada proyecto:
+
+- Lee `reservation_id`, `render_reservation_id`, `auto_render_reservation_id`, `clip_render_reservation_id` y `replaced_reservation_ids`.
+- Solo vincula una transacción del mismo workspace y nunca pisa un vínculo: si dos proyectos nombran la misma, gana el más viejo.
+- La categoría sale de esa clave o, si no, de la descripción: `Procesamiento: …` es `project`; `Render …` y `Reintento de clip: …`, `render`. Un `DEPOSIT` es `purchase`.
+- Lo que no se puede saber queda sin proyecto y `other`. Un render automático cuyas claves borró la aprobación queda `render`, sin proyecto.
+- Una metadata que no se puede leer se saltea: la migración no se corta.
+- Corre en una sola transacción, y la `0015` crea sus índices sin `CONCURRENTLY`. Alcanza con el tamaño de hoy; con muchas filas habría que partirlas.
+
 ## Errores, reintentos y casos borde
 
 | Situación | Qué pasa | Dónde |
@@ -441,7 +503,7 @@ No aparece lo que no se guarda: los renombres (`project_renamed`), las ediciones
 **Billetera y transacción:**
 
 - `Wallet.available_balance` baja y `Wallet.reserved_balance` sube en el costo.
-- `Transaction`: `transaction_type=SPEND`, `status=RESERVED`, `amount`, `reserved_amount` (lo mismo que `amount`), `created_by` y `description=Procesamiento: <título>`.
+- `Transaction`: `transaction_type=SPEND`, `status=RESERVED`, `amount`, `reserved_amount` (lo mismo que `amount`), `created_by`, `description=Procesamiento: <título>`, `project` (el proyecto) y `category=project`.
 - Al devolver: `Transaction.status=FAILED`, `settled_at`, y el monto vuelve de `reserved_balance` a `available_balance`. Al cobrar, `status=COMPLETED` y `settled_at`. Un cobro parcial (`commit_partial_reservation`) reemplaza `amount` por lo cobrado y deja `reserved_amount` como estaba. Las filas de antes de la migración `0012` de payments tienen las dos columnas en `null`; si una de ellas se cobra en parte, `reserved_amount` se completa con el monto antes de pisarlo, así la actividad muestra la devolución.
 
 **Respuesta 201:** los campos del serializer (sin `selection_criteria` ni `use_seo`, que son de solo escritura), `cost_details.tokens_reserved`, `cost_details.transaction_id` y `message` (`Video subido. Iniciando ingesta multimodal...`). Desde `from_prompt` se suma `prompt_config`.
@@ -465,18 +527,21 @@ No aparece lo que no se guarda: los renombres (`project_renamed`), las ediciones
 | `LINK_PROBE_TIMEOUT_SECONDS` | `25` | Tope de `probe-link` para el proceso de yt-dlp; al vencer se mata y responde 504. La web espera 60 s. No está en `base.py`: se lee con `getattr` |
 | `LINK_PROBE_CACHE_SECONDS` | `600` | Cuánto se guarda en la caché un link leído. También con `getattr` |
 | `LINK_DOWNLOAD_MAX_BYTES` | `4294967296` (4 GB) | Tope del archivo que baja el worker de un link: más, `LinkTooLargeError`. También con `getattr` |
+| `WORKSPACE_TIME_ZONE` | `America/Argentina/Buenos_Aires` | Zona de los meses y los días de la billetera (consumo, filtro `month`, `spent_this_month`). Una sola para todos los workspaces. Se valida al arrancar |
+| `TOKEN_PRICE_USD` | `0.01` | Precio de referencia de un token en `GET pricing/` («≈ USD 9»). No cobra nada. Se valida al arrancar |
 
 Valores fijos en el código (no son settings):
 
 | Constante | Valor | Dónde |
 |-----------|-------|-------|
-| Extensiones y tamaño máximo | `.mp4`, `.mov`, `.avi`; 500 MB | `validate_source_file` |
+| Extensiones y tamaño máximo | `.mp4`, `.mov`, `.avi`; 500 MB | `UPLOAD_EXTENSIONS` y `UPLOAD_MAX_SIZE_BYTES` (`serializers.py`), los usa `validate_source_file` |
 | `PROBE_TIMEOUT_SECONDS` | 60 s | `media_validation.py` |
 | `_PROBE_WINDOW_BYTES` | 5 MB | `media_validation.py` |
 | `BASE_COST_PER_SECOND_720P` | 0,5 | `PricingEngine` |
 | `RESOLUTION_MULTIPLIERS` | `720p` 1,0, `1080p` 1,5, `4K` 3,0 | `PricingEngine` |
 | `FEATURE_COSTS` | `seo_optimization` 5, `ai_thumbnail` 15 | `PricingEngine` |
-| Tarifa de un proyecto por URL | 10 tokens | `VideoProjectViewSet.create` |
+| Tarifa de un proyecto por URL | 10 tokens | `PricingEngine.LINK_FLAT_COST` |
+| Mínimo de un cobro | 0,01 | `PricingEngine.MIN_COST` |
 
 Límites por plan (`SubscriptionPlan`, asignado en `Workspace.subscription_plan`): `max_video_duration_seconds`, `max_resolution`, `has_seo_optimization`, `has_thumbnail_engine` y `base_discount_rate`. `max_video_duration_seconds` y `max_members` valen al menos 1: lo dicen sus `MinValueValidator` (admin y formularios) y lo cumple la base con dos check constraints (`payments_plan_max_members_min_1` y `payments_plan_max_duration_min_1`, migración 0011).
 
