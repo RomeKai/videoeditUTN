@@ -2,6 +2,7 @@
 from .blur_pip import BlurredLayout
 from .gaming import GamingLayout
 from .pro import VersusLayout, ActiveSpeakerLayout
+from .reaction import ReactionLayout
 
 LAYOUT_REGISTRY = {
     'fill': FillLayout,
@@ -11,6 +12,7 @@ LAYOUT_REGISTRY = {
     'pip': FitLayout, 
     'versus': VersusLayout,
     'active': ActiveSpeakerLayout,
+    'reaction': ReactionLayout,
 }
 
 def get_layout_strategy(layout_name, target_w, target_h, use_facetracking=False, gameplay_pos='center', camera_selection_pos='center', manual_camera_coords=None, editing_style=None, static=False):
