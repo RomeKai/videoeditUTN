@@ -90,16 +90,24 @@ export const verifyEmail = defineEndpoint({
   id: 'auth.verifyEmail',
   method: 'POST',
   path: '/api/v1/auth/verify-email/',
-  summary: 'Verifica el email con el token del link y deja la sesión iniciada.',
+  summary:
+    'Verifica el email con el token del link. El de una cuenta nueva deja la sesión iniciada; el de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta.',
   request: z.object({ token: z.string().min(1) }),
   response: TokenPair,
-  auth: false,
+  // The session goes with the link when there is one: the backend compares its account with the link's.
+  auth: 'optional',
   workspaceScoped: false,
-  errors: [{ status: 400, when: 'Token inválido, vencido o ya usado (error en `token`). La UI ofrece reenviar el email.' }],
+  errors: [
+    { status: 400, when: 'Token inválido, vencido, ya usado o cancelado (error en `token`). La UI ofrece reenviar el email.' },
+    {
+      status: 403,
+      when: '`code: "other_account"`: hay una sesión de otra cuenta. `code: "login_required"`: el link de un cambio de email necesita la sesión de su cuenta. No se aplica nada; la UI muestra `detail` y, en el segundo caso, lleva a iniciar sesión.',
+    },
+  ],
   backend: {
     status: 'exists',
     source: 'back/apps/users/views.py · VerifyEmailView; el token: apps/users/email_verification.py',
-    note: 'Hoy solo el cambio de email (I1) manda el link: el registro todavía no existe (hueco 1). Con un `pending_email`, lo pasa a `email`; sin él, marca el email actual como verificado.',
+    note: 'El token dice para qué es (cambio de email o registro). Hoy solo el cambio de email manda el link: el registro todavía no existe (hueco 1). El link de un cambio pasa `pending_email` a `email`; deja de servir si el cambio se cancela.',
   },
   screens: ['A3'],
 });

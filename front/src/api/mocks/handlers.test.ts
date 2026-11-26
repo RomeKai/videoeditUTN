@@ -375,6 +375,13 @@ describe('mocks', () => {
     await expect(apiCall(users.getMe)).rejects.toBeInstanceOf(SessionExpiredError);
   });
 
+  it('volver al email actual (o null) cancela el cambio pendiente', async () => {
+    expect((await apiCall(users.updateMe, { body: { email: 'lucia@gmial.com', current_password: 'secreta' } })).pending_email).toBe('lucia@gmial.com');
+    expect((await apiCall(users.updateMe, { body: { email: 'Lucia@EstudioNorte.com' } })).pending_email).toBeNull();
+    await apiCall(users.updateMe, { body: { email: 'lucia@gmial.com', current_password: 'secreta' } });
+    expect((await apiCall(users.updateMe, { body: { email: null } })).pending_email).toBeNull();
+  });
+
   it('cambiar la contraseña devuelve un par nuevo que sirve para seguir con sesión', async () => {
     expect((await fail(apiCall(users.changePassword, { body: { current_password: 'incorrecta', new_password: 'unaclavelarga' } }))).fieldErrors.current_password).toEqual(['La contraseña actual no coincide.']);
     const tokens = await apiCall(users.changePassword, { body: { current_password: 'laDeSiempre', new_password: 'unaclavelarga' } });

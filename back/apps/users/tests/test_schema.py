@@ -10,7 +10,7 @@ EXPECTED = {
     ("/api/v1/me/password/", "post"): {"200", "400", "401", "429"},
     ("/api/v1/me/notification-preferences/", "get"): {"200", "401"},
     ("/api/v1/me/notification-preferences/", "patch"): {"200", "400", "401"},
-    ("/api/v1/auth/verify-email/", "post"): {"200", "400"},
+    ("/api/v1/auth/verify-email/", "post"): {"200", "400", "401", "403"},
     ("/api/v1/status/", "get"): {"200"},
 }
 

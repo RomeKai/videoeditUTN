@@ -7,6 +7,7 @@ import pytest
 from django.core import mail
 from rest_framework.test import APIClient
 
+from apps.users.email_verification import EMAIL_CHANGE, SIGNUP, make_token
 from apps.users.models import User, Workspace, WorkspaceMember
 
 pytestmark = pytest.mark.django_db
@@ -34,8 +35,12 @@ def _link_token(message):
     return query["token"][0], query["siguiente"][0], link
 
 
-def _verify(token):
-    return APIClient().post(VERIFY_URL, {"token": token}, format="json")
+def _verify(token, as_user=None):
+    """POST of the link. An email-change link needs the session of its account: `as_user`."""
+    api = APIClient()
+    if as_user is not None:
+        api.force_authenticate(user=as_user)
+    return api.post(VERIFY_URL, {"token": token}, format="json")
 
 
 def test_a_new_email_waits_for_verification_and_gets_a_link(client, user):
@@ -123,11 +128,15 @@ def test_nothing_is_saved_when_one_field_fails(client, user):
     assert user.first_name == ""
 
 
-def test_the_link_moves_the_pending_email_and_signs_in(client, user):
+def test_the_link_with_the_session_of_its_account_moves_the_pending_email(client, user):
+    tokens = APIClient().post("/api/token/", {"email": "tester@test.com", "password": PASSWORD}, format="json").json()
     client.patch(ME_URL, {"email": NEW_EMAIL, "current_password": PASSWORD}, format="json")
     token, _, _ = _link_token(mail.outbox[0])
 
-    response = _verify(token)
+    # The web app sends its session (a real JWT) with the link.
+    signed_in_here = APIClient()
+    signed_in_here.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}")
+    response = signed_in_here.post(VERIFY_URL, {"token": token}, format="json")
 
     assert response.status_code == 200
     tokens = response.json()
@@ -143,12 +152,12 @@ def test_the_link_moves_the_pending_email_and_signs_in(client, user):
     assert login.status_code == 200
 
 
-def test_a_link_works_once(client):
+def test_a_link_works_once(client, user):
     client.patch(ME_URL, {"email": NEW_EMAIL, "current_password": PASSWORD}, format="json")
     token, _, _ = _link_token(mail.outbox[0])
 
-    assert _verify(token).status_code == 200
-    again = _verify(token)
+    assert _verify(token, as_user=user).status_code == 200
+    again = _verify(token, as_user=user)
 
     assert again.status_code == 400
     assert again.json() == {"token": ["El link no es válido o ya venció."]}
@@ -160,8 +169,8 @@ def test_a_newer_change_cancels_the_older_link(client, user):
     first, _, _ = _link_token(mail.outbox[0])
     second, _, _ = _link_token(mail.outbox[1])
 
-    assert _verify(first).status_code == 400
-    assert _verify(second).status_code == 200
+    assert _verify(first, as_user=user).status_code == 400
+    assert _verify(second, as_user=user).status_code == 200
     user.refresh_from_db()
     assert user.email == "segundo@test.com"
 
@@ -171,8 +180,8 @@ def test_an_expired_or_altered_link_is_rejected(client, user):
     token, _, _ = _link_token(mail.outbox[0])
 
     with mock.patch("django.core.signing.time.time", return_value=time.time() + 25 * 3600):
-        expired = _verify(token)
-    altered = _verify(token[:-2] + ("aa" if not token.endswith("aa") else "bb"))
+        expired = _verify(token, as_user=user)
+    altered = _verify(token[:-2] + ("aa" if not token.endswith("aa") else "bb"), as_user=user)
 
     assert expired.status_code == 400
     assert altered.status_code == 400
@@ -185,12 +194,77 @@ def test_an_email_taken_after_the_link_was_sent_is_not_applied(client, user):
     token, _, _ = _link_token(mail.outbox[0])
     _other_user(NEW_EMAIL)
 
-    response = _verify(token)
+    response = _verify(token, as_user=user)
 
     assert response.status_code == 400
     assert response.json() == {"token": ["Ya existe una cuenta con este email."]}
     user.refresh_from_db()
     assert user.email == "tester@test.com"
+
+
+@pytest.mark.parametrize("cancel", ["tester@test.com", "TESTER@test.com", None])
+def test_going_back_to_the_current_email_cancels_the_change_and_its_link(client, user, cancel):
+    # A typo: the link went to an address that is not the user's.
+    client.patch(ME_URL, {"email": "tester@gmial.com", "current_password": PASSWORD}, format="json")
+    token, _, _ = _link_token(mail.outbox[0])
+
+    response = client.patch(ME_URL, {"email": cancel}, format="json")
+
+    assert response.status_code == 200
+    assert response.json()["pending_email"] is None
+    assert _verify(token, as_user=user).status_code == 400
+    user.refresh_from_db()
+    assert (user.email, user.pending_email) == ("tester@test.com", None)
+    assert len(mail.outbox) == 1
+
+
+def test_an_email_change_link_without_a_session_applies_nothing(client, user):
+    client.patch(ME_URL, {"email": NEW_EMAIL, "current_password": PASSWORD}, format="json")
+    token, _, _ = _link_token(mail.outbox[0])
+
+    # Whoever holds the inbox (a typo, a forwarded email) does not get the account.
+    response = _verify(token)
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "detail": "Para confirmar el email nuevo, iniciá sesión con tu cuenta y volvé a abrir el link.",
+        "code": "login_required",
+    }
+    assert "access" not in response.json()
+    user.refresh_from_db()
+    assert (user.email, user.pending_email) == ("tester@test.com", NEW_EMAIL)
+    # The owner can still confirm it.
+    assert _verify(token, as_user=user).status_code == 200
+
+
+@pytest.mark.parametrize("purpose", [EMAIL_CHANGE, SIGNUP])
+def test_a_link_of_another_account_never_replaces_the_session(user, purpose):
+    attacker = _other_user("atacante@test.com")
+    if purpose == EMAIL_CHANGE:
+        User.objects.filter(pk=attacker.pk).update(pending_email="otra@test.com")
+        attacker.refresh_from_db()
+    token = make_token(attacker, purpose)
+
+    response = _verify(token, as_user=user)
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "other_account"
+    assert "access" not in response.json()
+    attacker.refresh_from_db()
+    assert attacker.is_email_verified is False
+    assert attacker.email == "atacante@test.com"
+
+
+def test_a_signup_link_verifies_the_account_and_signs_in(user):
+    token = make_token(user, SIGNUP)
+
+    response = _verify(token)
+
+    assert response.status_code == 200
+    assert set(response.json()) == {"access", "refresh"}
+    user.refresh_from_db()
+    assert user.is_email_verified is True
+    assert _verify(token).status_code == 400
 
 
 def test_email_changes_are_throttled_but_other_edits_are_not(client, user):

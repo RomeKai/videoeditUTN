@@ -7,7 +7,10 @@ export const usersHandlers = [
   route(contract.getMe, ({ db, user }) => ({ data: serializeMe(db, user) })),
 
   route(contract.updateMe, ({ db, user, body }) => {
-    if (body.email !== undefined && body.email !== user.email) {
+    if (body.email === null || (body.email !== undefined && body.email.toLowerCase() === user.email.toLowerCase())) {
+      // Back to the current email: the pending change and its link are cancelled.
+      user.pending_email = null;
+    } else if (body.email !== undefined) {
       if (!body.current_password) throw badRequest({ current_password: ['Escribí tu contraseña para cambiar el email.'] });
       if (body.current_password === 'incorrecta') throw badRequest({ current_password: ['La contraseña no coincide.'] });
       if (db.users.some((item) => item.id !== user.id && item.email.toLowerCase() === body.email?.toLowerCase())) {

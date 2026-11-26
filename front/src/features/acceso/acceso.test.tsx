@@ -409,6 +409,36 @@ describe('A3 · Verificar email', () => {
     expect(getTokens()).not.toBeNull();
   });
 
+  it('el link de otra cuenta no cambia la sesión de este navegador', async () => {
+    scenario('estudio-norte');
+    const before = getTokens();
+    show(<VerifyEmailScreen token="abc123" />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Este link es de otra cuenta' })).toBeInTheDocument();
+    expect(screen.getByText('Este link es de otra cuenta. Cerrá la sesión y volvé a abrirlo.')).toBeInTheDocument();
+    expect(getTokens()).toEqual(before);
+    expect(nav.replace).not.toHaveBeenCalled();
+  });
+
+  it('el link de un cambio de email pide la sesión de esa cuenta', async () => {
+    scenario('sin-sesion');
+    show(<VerifyEmailScreen token="cambio-de-email" next="/perfil" />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Iniciá sesión para confirmar el email' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Iniciar sesión' })).toHaveAttribute('href', '/login?siguiente=%2Fperfil');
+    expect(getTokens()).toBeNull();
+  });
+
+  it('con la sesión de su cuenta, el link de un cambio de email lo confirma y vuelve al perfil', async () => {
+    scenario('estudio-norte');
+    const db = loadDb();
+    const lucia = db.users.find((item) => item.email === 'lucia@estudionorte.com');
+    if (!lucia) throw new Error('falta Lucía');
+    lucia.pending_email = 'lucia@nuevo.com';
+    window.localStorage.setItem('oc.mock.db', JSON.stringify(db));
+    show(<VerifyEmailScreen token="cambio-de-email" next="/perfil" />);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/perfil'));
+    expect(loadDb().users.find((item) => item.id === lucia.id)).toMatchObject({ email: 'lucia@nuevo.com', pending_email: null });
+  });
+
   it('después de verificar vuelve a la página que se había pedido antes del login', async () => {
     scenario('email-sin-verificar');
     // Waiting screen, reached from a login that was going to an invitation.

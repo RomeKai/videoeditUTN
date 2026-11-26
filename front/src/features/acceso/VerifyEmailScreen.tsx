@@ -73,6 +73,26 @@ export function VerifyEmailScreen({ email, token, fromLogin = false, next }: Ver
     );
   }
 
+  // The backend never swaps the session for another account's (403): say why, and apply nothing.
+  const denied = token && verify.error instanceof ApiError && verify.error.status === 403 ? verify.error : null;
+  if (denied) {
+    const needsLogin = denied.code === 'login_required';
+    return (
+      <Card className={cx(styles.card, styles.verify)}>
+        <span className={styles.heroIcon}>
+          <Icon name="warning" size={20} />
+        </span>
+        <div className={styles.title}>
+          <h1 className="t-h2">{needsLogin ? 'Iniciá sesión para confirmar el email' : 'Este link es de otra cuenta'}</h1>
+          <p className="t-small muted">{denied.message}</p>
+        </div>
+        <Link className="lnk" href={needsLogin ? `/login?siguiente=${encodeURIComponent(safeNext(next) ?? '/perfil')}` : HOME}>
+          {needsLogin ? 'Iniciar sesión' : 'Volver a OneCreator'}
+        </Link>
+      </Card>
+    );
+  }
+
   const expired = Boolean(token);
   return (
     <>

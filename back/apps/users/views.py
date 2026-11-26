@@ -24,7 +24,7 @@ from apps.users.serializers import (
     TokenPairSerializer,
     VerifyEmailSerializer,
 )
-from apps.users.email_verification import send_email_change_verification, user_for_token
+from apps.users.email_verification import EMAIL_CHANGE, send_email_change_verification, user_for_token
 from apps.users.throttles import EmailChangeThrottle, LoginEmailThrottle, SpanishThrottleMixin
 from apps.users.tokens import issue_token_pair, revoke_refresh_tokens
 
@@ -169,13 +169,14 @@ class MeView(SpanishThrottleMixin, APIView):
             user.last_workspace_id = data['active_workspace_id']
             fields.append('last_workspace')
         if 'email' in data:
-            # The current email keeps working until the new one is verified.
+            # A new email waits for its link; None (the current email, or null)
+            # cancels a pending change, and with it its link.
             user.pending_email = data['email']
             fields.append('pending_email')
         with transaction.atomic():
             if fields:
                 user.save(update_fields=fields)
-            if 'email' in data:
+            if data.get('email'):
                 # A failed send rolls the change back: no pending email without its link.
                 send_email_change_verification(user)
         return Response(_me_payload(request.user))
@@ -267,35 +268,54 @@ class NotificationPreferencesView(APIView):
 INVALID_LINK = 'El link no es válido o ya venció.'
 
 
+OTHER_ACCOUNT = 'Este link es de otra cuenta. Cerrá la sesión y volvé a abrirlo.'
+LOGIN_REQUIRED = 'Para confirmar el email nuevo, iniciá sesión con tu cuenta y volvé a abrir el link.'
+
+
 class VerifyEmailView(APIView):
     """
-    A3: the token of the verification link (apps.users.email_verification).
-    With a pending email, it becomes the account's email; without one, the
-    current email is marked as verified. Either way the answer is a new
-    session, so the link signs the user in.
+    A3: the token of a verification link (apps.users.email_verification).
+
+    The session is optional (the web app sends it when it has one) and never
+    changes hands: a link of another account than the signed-in one answers
+    403 and applies nothing, so a link cannot switch a browser into someone
+    else's account. An email-change link needs the session of its account
+    (403 without one): it moves `pending_email` to `email`. A signup link
+    verifies the account's email and signs the user in. The answer is a pair
+    of tokens of that same account.
     """
 
-    authentication_classes = []
     permission_classes = [AllowAny]
 
     @extend_schema(
         request=VerifyEmailSerializer,
         responses={
             200: TokenPairSerializer,
-            400: OpenApiResponse(description='Link inválido, vencido o ya usado, o el email lo tomó otra cuenta (error en `token`).'),
+            400: OpenApiResponse(description='Link inválido, vencido, ya usado o cancelado, o el email lo tomó otra cuenta (error en `token`).'),
+            401: UNAUTHORIZED,
+            403: OpenApiResponse(description=(
+                '`code: "other_account"`: hay una sesión de otra cuenta. `code: "login_required"`: '
+                'el link de un cambio de email necesita la sesión de su cuenta. No se aplica nada.'
+            )),
         },
     )
     def post(self, request):
         serializer = VerifyEmailSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         token = serializer.validated_data['token']
+        signed_in = request.user if request.user.is_authenticated else None
         try:
             with transaction.atomic():
-                user = user_for_token(token, queryset=User.objects.select_for_update())
-                if user is None:
+                found = user_for_token(token, queryset=User.objects.select_for_update())
+                if found is None:
                     raise ValidationError({'token': [INVALID_LINK]})
+                user, purpose = found
+                if signed_in is not None and signed_in.pk != user.pk:
+                    return Response({'detail': OTHER_ACCOUNT, 'code': 'other_account'}, status=403)
+                if purpose == EMAIL_CHANGE and signed_in is None:
+                    return Response({'detail': LOGIN_REQUIRED, 'code': 'login_required'}, status=403)
                 fields = ['is_email_verified']
-                if user.pending_email:
+                if purpose == EMAIL_CHANGE:
                     # Someone may have taken it since the link was sent.
                     if User.objects.filter(email__iexact=user.pending_email).exclude(pk=user.pk).exists():
                         raise ValidationError({'token': [EMAIL_TAKEN]})

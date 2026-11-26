@@ -64,7 +64,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | POST | `/api/token/` | Inicia sesión con email y contraseña; devuelve el par JWT. | ✅ existe | A1, D9 |
 | POST | `/api/token/refresh/` | Renueva el token de acceso. El backend rota el refresh (ROTATE_REFRESH_TOKENS). | ✅ existe | A1, D9 |
 | POST | `/api/v1/auth/register/` | Crea la cuenta y manda el email de verificación. | ❌ falta (propuesto) · hueco 1 | A2, A5 |
-| POST | `/api/v1/auth/verify-email/` | Verifica el email con el token del link y deja la sesión iniciada. | ✅ existe | A3 |
+| POST | `/api/v1/auth/verify-email/` | Verifica el email con el token del link. El de una cuenta nueva deja la sesión iniciada; el de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta. | ✅ existe | A3 |
 | POST | `/api/v1/auth/verify-email/resend/` | Reenvía el email de verificación (una vez cada 60 s). Responde 204 exista o no el email y esté o no verificado, como recuperar contraseña. | ❌ falta (propuesto) · hueco 1 | A3 |
 | POST | `/api/v1/auth/password-reset/` | Pide el link para recuperar la contraseña. Siempre responde 204, exista o no el email. | ❌ falta (propuesto) · hueco 1 | A4, D9 |
 | POST | `/api/v1/auth/password-reset/confirm/` | Define la contraseña nueva con el token del link. Responde 204 sin tokens: la UI inicia sesión con el email del link y la contraseña nueva. | ❌ falta (propuesto) · hueco 1 | A4 |
@@ -194,17 +194,17 @@ Crea la cuenta y manda el email de verificación.
 
 #### `POST /api/v1/auth/verify-email/`
 
-Verifica el email con el token del link y deja la sesión iniciada.
+Verifica el email con el token del link. El de una cuenta nueva deja la sesión iniciada; el de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta.
 
 | | |
 |---|---|
 | Id | `auth.verifyEmail` |
 | Backend | ✅ existe · `back/apps/users/views.py · VerifyEmailView; el token: apps/users/email_verification.py` |
-| Nota | Hoy solo el cambio de email (I1) manda el link: el registro todavía no existe (hueco 1). Con un `pending_email`, lo pasa a `email`; sin él, marca el email actual como verificado. |
-| Sesión | Pública |
+| Nota | El token dice para qué es (cambio de email o registro). Hoy solo el cambio de email manda el link: el registro todavía no existe (hueco 1). El link de un cambio pasa `pending_email` a `email`; deja de servir si el cambio se cancela. |
+| Sesión | Pública (manda el token si hay sesión) |
 | Pedido | { token: string } |
 | Respuesta 200 | TokenPair |
-| Errores | **400** Token inválido, vencido o ya usado (error en `token`). La UI ofrece reenviar el email. |
+| Errores | **400** Token inválido, vencido, ya usado o cancelado (error en `token`). La UI ofrece reenviar el email.<br>**403** `code: "other_account"`: hay una sesión de otra cuenta. `code: "login_required"`: el link de un cambio de email necesita la sesión de su cuenta. No se aplica nada; la UI muestra `detail` y, en el segundo caso, lleva a iniciar sesión. |
 | Pantallas | A3 |
 
 #### `POST /api/v1/auth/verify-email/resend/`
@@ -1405,7 +1405,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | Campo | Tipo |
 |---|---|
 | `name` (opcional) | string |
-| `email` (opcional) | string |
+| `email` (opcional) | string \\| null |
 | `current_password` (opcional) | string |
 | `tour_completed` (opcional) | boolean |
 | `onboarding_use_case` (opcional) | OnboardingUseCase |

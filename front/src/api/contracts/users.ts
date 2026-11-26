@@ -45,8 +45,8 @@ export type Me = z.infer<typeof Me>;
 export const UpdateMeRequest = z
   .object({
     name: z.string().min(1).max(150),
-    /** Changing it asks to verify again: the new one stays in `pending_email`. */
-    email: z.string().email(),
+    /** Changing it asks to verify again: the new one stays in `pending_email`. The current email, or null, cancels a pending change (and its link). */
+    email: z.string().email().nullable(),
     /** Required whenever `email` changes, to confirm it is the owner of the account who changes it (I1). */
     current_password: z.string().min(1),
     tour_completed: z.boolean(),

@@ -84,12 +84,13 @@ PASSWORD_REQUIRED_FOR_EMAIL = 'Escribí tu contraseña para cambiar el email.'
 class UpdateMeSerializer(serializers.Serializer):
     """
     Every field is optional. A new `email` needs `current_password` and is kept
-    in `pending_email` until its link is opened; `active_workspace_id` must be a
-    workspace the user owns or is an ACTIVE member of.
+    in `pending_email` until its link is opened; the current email (or null)
+    cancels a pending change. `active_workspace_id` must be a workspace the
+    user owns or is an ACTIVE member of.
     """
 
     name = serializers.CharField(min_length=1, max_length=150, required=False)
-    email = serializers.EmailField(max_length=254, required=False)
+    email = serializers.EmailField(max_length=254, required=False, allow_null=True)
     current_password = serializers.CharField(required=False, write_only=True)
     tour_completed = serializers.BooleanField(required=False)
     onboarding_use_case = serializers.ChoiceField(choices=User.OnboardingUseCase.choices, required=False)
@@ -102,15 +103,15 @@ class UpdateMeSerializer(serializers.Serializer):
         return value
 
     def validate(self, attrs):
-        email = attrs.get('email')
-        if email is None:
+        if 'email' not in attrs:
             return attrs
+        email = attrs['email']
         user = self.context['user']
-        email = User.objects.normalize_email(email)
-        if email.lower() == user.email.lower():
-            # Already the account's email: nothing to change or verify.
-            attrs.pop('email')
+        if email is None or User.objects.normalize_email(email).lower() == user.email.lower():
+            # Back to the account's email: the pending change (if any) is cancelled.
+            attrs['email'] = None
             return attrs
+        email = User.objects.normalize_email(email)
         # The password goes first: without it nobody learns which emails have an account.
         password = attrs.get('current_password')
         if not password and user.has_usable_password():
