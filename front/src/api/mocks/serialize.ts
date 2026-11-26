@@ -4,7 +4,7 @@ import type { Clip, Project } from '../contracts/projects';
 import type { ScheduledPost } from '../contracts/social';
 import type { Me } from '../contracts/users';
 import type { Member } from '../contracts/workspaces';
-import type { MockClip, MockDb, MockMember, MockPost, MockProject, MockTransaction, MockUser, MockWorkspace } from './db';
+import { workspaceDay, type MockClip, type MockDb, type MockMember, type MockPost, type MockProject, type MockTransaction, type MockUser, type MockWorkspace } from './db';
 import { dec } from './http';
 import { generateTranscript, PRICING } from './seed';
 import { roleIn, walletOf } from './sim';
@@ -48,19 +48,24 @@ export function serializePost(post: MockPost): ScheduledPost {
 }
 
 export function serializeTransaction(transaction: MockTransaction): Wire<Transaction> {
-  const { workspace, ...rest } = transaction;
+  const { workspace, _settled_at, ...rest } = transaction;
   void workspace;
+  void _settled_at;
   return { ...rest, amount: dec(transaction.amount, 10) };
+}
+
+/** When a charge counts as consumption: the day it was charged (`settled_at`), else its reservation (rows from before). */
+export function chargedAt(transaction: MockTransaction): string {
+  return transaction._settled_at ?? transaction.created_at;
 }
 
 export function serializeWallet(db: MockDb, workspaceId: string, now: number): Wire<Omit<Wallet, 'reservations'>> & { reservations: unknown[] } {
   const wallet = walletOf(db, workspaceId);
-  const monthStart = new Date(now);
-  monthStart.setDate(1);
-  monthStart.setHours(0, 0, 0, 0);
+  // This month in the workspace's time zone, by when each charge was charged (like the backend).
+  const month = workspaceDay(now).slice(0, 7);
   const transactions = db.transactions.filter((item) => item.workspace === workspaceId);
   const spent = transactions
-    .filter((item) => item.transaction_type === 'SPEND' && item.status === 'COMPLETED' && new Date(item.created_at) >= monthStart)
+    .filter((item) => item.transaction_type === 'SPEND' && item.status === 'COMPLETED' && workspaceDay(chargedAt(item)).startsWith(month))
     .reduce((sum, item) => sum + item.amount, 0);
   const plan = planOf(db, workspaceId);
   // "Below what an average video costs": 20 minutes at 720p with the plan's discount.
@@ -73,8 +78,10 @@ export function serializeWallet(db: MockDb, workspaceId: string, now: number): W
     updated_at: wallet.updated_at,
     spent_this_month: dec(spent),
     low_balance_threshold: dec(threshold),
+    // Newest first, like the backend.
     reservations: transactions
       .filter((item) => item.status === 'RESERVED')
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .map((item) => ({
         transaction_id: item.id,
         project_id: item.project?.id ?? null,

@@ -26,7 +26,7 @@ export const Plan = z.object({
 });
 export type Plan = z.infer<typeof Plan>;
 
-/** The numbers of PricingEngine, so the browser estimates with the same formula (map 1.5). */
+/** The numbers of PricingEngine, so the browser estimates with the same formula (map 1.5). The backend sends every Decimal as text. */
 export const Pricing = z.object({
   /** PricingEngine.BASE_COST_PER_SECOND_720P */
   base_cost_per_second_720p: Decimal,
@@ -34,19 +34,19 @@ export const Pricing = z.object({
   resolution_multipliers: z.object({ '720p': Decimal, '1080p': Decimal, '4K': Decimal }),
   /** PricingEngine.FEATURE_COSTS */
   feature_costs: z.object({ seo_optimization: Decimal, ai_thumbnail: Decimal }),
-  /** Flat price of a project created from a link (views.py: Decimal('10.0')). Links are always 720p. */
+  /** Flat price of a project created from a link (PricingEngine.LINK_FLAT_COST). Links are always 720p. */
   link_flat_cost: Decimal,
-  /** Floor of any charge (0.01). */
+  /** Floor of any charge (PricingEngine.MIN_COST, 0.01). */
   min_cost: Decimal,
-  /** Reference price of one token, for "≈ USD 9". */
+  /** Reference price of one token, for "≈ USD 9" (setting TOKEN_PRICE_USD). */
   token_price_usd: Decimal,
   /** AI_SINGLE_EDIT_MAX_DURATION_SECONDS (600). */
   single_edit_max_duration_seconds: z.number().int().positive(),
   /** AI_UPLOAD_MAX_DURATION_SECONDS (3 h): the system ceiling, above any plan. */
   upload_max_duration_seconds: z.number().int().positive(),
-  /** Upload size ceiling in bytes (serializer: 500 MB). */
+  /** Upload size ceiling in bytes (UPLOAD_MAX_SIZE_BYTES in apps/videos/serializers.py: 500 MB). */
   upload_max_size_bytes: z.number().int().positive(),
-  /** Accepted extensions (serializer: .mp4, .mov, .avi). */
+  /** Accepted extensions (UPLOAD_EXTENSIONS: .mp4, .mov, .avi). */
   upload_extensions: z.array(z.string()),
   /** MAX_SELECTION_CRITERIA_CHARS */
   selection_criteria_max_chars: z.number().int().positive(),
@@ -58,10 +58,12 @@ export type Pricing = z.infer<typeof Pricing>;
 export const EstimateRequest = z.object({
   /** 'file': priced by duration. 'link': flat price, duration unknown. */
   source: z.enum(['file', 'link']),
+  /** Needed with 'file' (400 without it); priced by its whole seconds, like the creation. At most 86400. */
   duration_seconds: z.number().nonnegative().optional(),
+  /** Default 720p. A 'link' takes only 720p (400 otherwise). */
   render_resolution: RenderResolution.optional(),
   use_seo: z.boolean().optional(),
-  /** For the ETA: how many clips at most. */
+  /** For the ETA: how many clips at most. Accepted; the time to the review does not depend on it today. */
   max_clips: z.number().int().positive().optional(),
 });
 export type EstimateRequest = z.infer<typeof EstimateRequest>;
@@ -76,7 +78,11 @@ export const Estimate = z.object({
   balance_after: Decimal,
   sufficient: z.boolean(),
   has_watermark: z.boolean(),
-  /** "Listo para revisar en ≈ X min" (gap 18). Null when it cannot be estimated. */
+  /**
+   * "Listo para revisar en ≈ X min" (gap 18): the median time the latest projects took per second of video
+   * up to the review, times this duration (only the stages, not the queue). Null for a link, for 0 s and
+   * while no project has reached the review.
+   */
   eta_seconds: z.number().int().nonnegative().nullable(),
 });
 export type Estimate = z.infer<typeof Estimate>;
@@ -97,11 +103,11 @@ export const Wallet = z.object({
   available_balance: Decimal,
   reserved_balance: Decimal,
   updated_at: IsoDateTime,
-  /** Proposed: SPEND + COMPLETED of the current month. */
+  /** SPEND + COMPLETED charged this month (by when it was charged), in the workspace's time zone. */
   spent_this_month: Decimal,
-  /** Proposed: below this the UI warns "saldo bajo" (cost of an average video, map 1.11). */
+  /** Below this the UI warns "saldo bajo": an average video, 20 min at 720p with the plan's discount (map 1.11). */
   low_balance_threshold: Decimal,
-  /** Proposed (gap 19): what is reserved, per project. */
+  /** Gap 19: each open reservation (SPEND + RESERVED) with its project, newest first. */
   reservations: z.array(
     z.object({
       transaction_id: Id,
@@ -120,8 +126,10 @@ export const TransactionType = z.enum(['DEPOSIT', 'SPEND', 'REFUND']);
 export const TransactionStatus = z.enum(['PENDING', 'RESERVED', 'COMPLETED', 'FAILED']);
 
 /**
- * What the movements table shows (map G2). Derivable from type + status today;
- * proposed as an explicit field so "devuelto" does not depend on reading FAILED.
+ * What the movements table shows (map G2). The backend derives it from type + status
+ * (apps/payments/services/movements.py · KINDS), so "devuelto" does not depend on reading FAILED:
+ * DEPOSIT+COMPLETED purchase, SPEND+RESERVED reserved, SPEND+COMPLETED charged, REFUND+COMPLETED refund,
+ * SPEND+FAILED released, DEPOSIT or REFUND + PENDING pending.
  */
 export const TransactionKind = z.enum(['purchase', 'reserved', 'charged', 'refund', 'released', 'pending']);
 export type TransactionKind = z.infer<typeof TransactionKind>;
@@ -135,12 +143,13 @@ export const Transaction = z.object({
   status: TransactionStatus,
   description: z.string(),
   created_at: IsoDateTime,
-  /** Proposed (gap 4). */
+  /** Gap 4. */
   kind: TransactionKind,
+  /** The name, never the email. */
   created_by_detail: UserRef.nullable(),
-  /** Proposed (gap 4): direct link to the project. */
+  /** Gap 4: direct link to the project. Null on a purchase and once the project is deleted. */
   project: z.object({ id: Id, title: z.string() }).nullable(),
-  /** Proposed: what the charge was for, for the usage chart. */
+  /** What the charge was for, for the usage chart. The creation is `project` (SEO included); any later render, `render`. */
   category: z.enum(['project', 'render', 'seo', 'purchase', 'other']),
 });
 export type Transaction = z.infer<typeof Transaction>;
@@ -241,7 +250,11 @@ export const getPricing = defineEndpoint({
   auth: false,
   workspaceScoped: false,
   errors: [],
-  backend: { status: 'proposed', gap: 6, note: 'Valores de PricingEngine (apps/payments/services/pricing_engine.py) y de settings.' },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views.py · PricingView + services/estimate.py · pricing_values',
+    note: 'Público, sin token. Los valores de PricingEngine (apps/payments/services/pricing_engine.py), los topes de subida de apps/videos/serializers.py y los settings `AI_SINGLE_EDIT_MAX_DURATION_SECONDS`, `AI_UPLOAD_MAX_DURATION_SECONDS`, `AI_PROMPT_MAX_CHARS` y `TOKEN_PRICE_USD`. Los decimales llegan como texto (`"0.5"`).',
+  },
   screens: ['C1', 'A6', 'G3', 'G4', 'D2', 'D1 (diálogo)'],
 });
 
@@ -252,8 +265,15 @@ export const estimateCost = defineEndpoint({
   summary: 'Estimado del backend para una configuración: costo, descuento, saldo después y tiempo estimado.',
   request: EstimateRequest,
   response: Estimate,
-  errors: [{ status: 403, when: 'El plan no permite la duración, la resolución o el SEO (`code`: `duration` | `resolution` | `seo`). La UI abre D3.' }],
-  backend: { status: 'proposed', gap: [6, 18], note: 'Envuelve PricingEngine.calculate_render_cost con el plan del workspace.' },
+  errors: [
+    { status: 400, when: 'Falta `duration_seconds` con `source: "file"`, o un link pide otra resolución que 720p (`render_resolution`). Errores por campo.' },
+    { status: 403, when: 'El plan no permite la duración, la resolución o el SEO (`code`: `duration` | `resolution` | `seo`, con `limit` en los dos primeros). La UI abre D3.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views.py · EstimateView + services/estimate.py · estimate',
+    note: 'Las mismas reglas que la creación: un archivo se cobra por sus segundos enteros con PricingEngine.calculate_render_cost y el plan del workspace; un link, precio fijo más el SEO con descuento. `discount_amount` es base + adicionales − total (incluye el redondeo). No escribe nada: lo pide cualquier rol (`wallet.view`). `eta_seconds` sale de los tiempos por etapa de los últimos proyectos que llegaron a la revisión (`metadata.stage_durations`): null para un link o mientras no hay ninguno. 404 si el usuario no tiene workspace.',
+  },
   screens: ['C1', 'D2', 'D4', 'D5'],
 });
 
@@ -311,7 +331,11 @@ export const getWallet = defineEndpoint({
   summary: 'Saldo disponible y reservado del workspace, con el detalle de lo reservado por proyecto.',
   response: Wallet,
   errors: [],
-  backend: { status: 'proposed', gap: [4, 19], note: 'Modelo: Wallet (available_balance, reserved_balance).' },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views.py · WalletView',
+    note: 'Los saldos con sus diez decimales, como texto. `reservations` tiene una fila por reserva abierta (no una suma por proyecto), con el proyecto que paga (`Transaction.project`, migración 0015 de payments; null en una reserva vieja que la 0016 no pudo vincular). `spent_this_month` y el mes van en `WORKSPACE_TIME_ZONE` (America/Argentina/Buenos_Aires) y cuentan por cuándo se cobró (`settled_at`). Lo ven todos los roles (`wallet.view`). 404 si el usuario no tiene workspace.',
+  },
   screens: ['Barra', 'G1', 'C1', 'D2', 'G4', 'D1 (diálogo)', 'D2 (diálogo)'],
 });
 
@@ -322,8 +346,15 @@ export const getUsage = defineEndpoint({
   summary: 'Consumo por día de un mes (solo lo cobrado), separado en proyectos, renders y SEO. El mes y los días son los de la zona horaria del workspace (America/Argentina/Buenos_Aires).',
   query: z.object({ month: z.string().regex(/^\d{4}-\d{2}$/).optional() }),
   response: z.array(UsageDay),
-  errors: [{ status: 403, when: 'Solo Dueño y Admin.' }],
-  backend: { status: 'proposed', gap: 4 },
+  errors: [
+    { status: 400, when: '`month` no es `AAAA-MM` (`{ month: ["Mandá el mes como AAAA-MM."] }`).' },
+    { status: 403, when: 'Solo Dueño y Admin.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views.py · WalletUsageView + services/movements.py · usage',
+    note: 'Todos los días del mes (sin `month`, el actual), en orden. Suma los SPEND + COMPLETED por el día en que se cobraron (`settled_at`, o `created_at` en filas viejas): un cobro parcial cuenta lo cobrado. Columnas por `Transaction.category`: `render` en `renders`, `seo` en `seo` y el resto en `projects`. Hoy nada escribe `seo`: el SEO se cobra dentro de la creación, así que cae en `projects` y la columna llega en 0.',
+  },
   screens: ['G1'],
 });
 
@@ -335,14 +366,22 @@ export const listTransactions = defineEndpoint({
   query: TransactionsQuery,
   response: paginated(Transaction).extend({
     /**
-     * Proposed (gap 4), always present: how many movements and how many tokens per kind, for the
+     * Gap 4, always present: how many movements and how many tokens per kind, for the
      * same month and project but ignoring `kind` and the page, so the chips can show every count
-     * at once. Kinds without movements may be absent.
+     * at once. Kinds without movements are absent.
      */
     totals: z.record(TransactionKind, TransactionKindTotal),
   }),
-  errors: [{ status: 403, when: 'Solo Dueño y Admin (Editor y Lector ven únicamente el saldo).' }],
-  backend: { status: 'proposed', gap: 4, note: 'Modelo: Transaction. Faltan el vínculo al proyecto y `kind`. Hoy el backend solo escribe DEPOSIT y SPEND: un cobro parcial (`commit_partial_reservation`) baja el monto del SPEND a lo cobrado y lo deja COMPLETED, y devuelve el resto al saldo sin escribir otra fila; una reserva que se cae queda SPEND + FAILED (`kind: "released"`, «Devuelto»). El tipo REFUND existe en el modelo pero nada lo escribe: `kind: "refund"` queda propuesto para devoluciones de algo ya cobrado.' },
+  errors: [
+    { status: 400, when: '`kind`, `month` o `project` no son válidos (errores por campo).' },
+    { status: 403, when: 'Solo Dueño y Admin, también con `project` (Editor y Lector ven únicamente el saldo).' },
+    { status: 404, when: 'La página no existe (`detail: "Página inválida."`).' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views.py · TransactionListView + TransactionSerializer (apps/payments/serializers.py) + services/movements.py',
+    note: 'De la más nueva a la más vieja; `page_size` hasta 100 (25 por defecto). `kind` sale de tipo + estado; una fila sin `kind` no movió el saldo y no sale (una compra que falló). Cada reserva queda vinculada a su proyecto con `category` desde que se reserva (`wallet_service.link_reservation`); las viejas, por la migración 0016 de payments, con lo que guardaba la metadata del proyecto. Un proyecto borrado deja `project` en null. Hoy el backend solo escribe SPEND: un cobro parcial (`commit_partial_reservation`) baja el monto del SPEND a lo cobrado y lo deja COMPLETED, y devuelve el resto al saldo sin escribir otra fila; una reserva que se cae queda SPEND + FAILED (`kind: "released"`, «Devuelto», con su proyecto). DEPOSIT llega con las compras (PAY-02) y REFUND no lo escribe nada todavía: `kind: "refund"` es para devoluciones de algo ya cobrado. Tres consultas por página, sea cual sea su tamaño.',
+  },
   screens: ['G2', 'D1f'],
 });
 
@@ -356,8 +395,15 @@ export const exportTransactions = defineEndpoint({
   query: TransactionsQuery.omit({ page: true, page_size: true }),
   response: z.string(),
   responseType: 'text',
-  errors: [{ status: 403, when: 'Solo Dueño y Admin.' }],
-  backend: { status: 'proposed', gap: 4 },
+  errors: [
+    { status: 400, when: '`kind`, `month` o `project` no son válidos (errores por campo).' },
+    { status: 403, when: 'Solo Dueño y Admin.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views.py · TransactionExportView + services/movements.py · csv_text',
+    note: 'Columnas `fecha,concepto,proyecto,tipo,monto`: la fecha en ISO con la zona del workspace (`2026-11-04T12:00:00-03:00`), la descripción, el título del proyecto, el tipo como lo nombra la pantalla («Devuelto», «Cobrado»…) y el monto exacto (dos decimales si alcanzan, si no todos). Un texto que empieza con `=`, `+`, `-` o `@` lleva un apóstrofo adelante, para que una planilla no lo ejecute. Toda la historia, sin páginas.',
+  },
   screens: ['G2'],
 });
 

@@ -1,11 +1,43 @@
 import * as contract from '../../contracts/billing';
-import { newId, workspaceDay } from '../db';
-import { badRequest, conflict, dec, forbidden, MockHttpError, notFound, paginate, route } from '../http';
+import { newId, workspaceDateTime, workspaceDay, type MockTransaction } from '../db';
+import { badRequest, conflict, dec, MockHttpError, notFound, paginate, route } from '../http';
 import { priceOf, PRICING, TOKEN_PACKAGES } from '../seed';
-import { planOf, serializeSubscription, serializeTransaction, serializeWallet } from '../serialize';
+import { chargedAt, planOf, serializeSubscription, serializeTransaction, serializeWallet } from '../serialize';
 import { SIM, walletOf } from '../sim';
 
 const RANK = { '720p': 1, '1080p': 2, '4K': 3 } as const;
+
+/** Like the backend's _format_duration: "45 s", "10 min", "1 h 30 min". */
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.floor(seconds)} s`;
+  const minutes = Math.floor(seconds / 60);
+  return minutes >= 60 ? `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')} min` : `${minutes} min`;
+}
+
+/** How the CSV names each kind (the screen's labels, KIND_META). */
+const KIND_LABEL: Record<contract.TransactionKind, string> = {
+  purchase: 'Compra', reserved: 'Reservado', charged: 'Cobrado', refund: 'Devolución', released: 'Devuelto', pending: 'Pendiente',
+};
+
+/** A text cell of the CSV: quoted, and with an apostrophe in front of what a spreadsheet would run. */
+function csvText(value: string): string {
+  const safe = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+}
+
+/** Two decimals when that is exact, else every decimal it has (the backend keeps ten). */
+function csvAmount(value: number): string {
+  return Math.round(value * 100) / 100 === value ? value.toFixed(2) : String(value);
+}
+
+function movementsOf(transactions: MockTransaction[], workspace: string, query: URLSearchParams): MockTransaction[] {
+  const month = query.get('month');
+  const project = query.get('project');
+  return transactions
+    .filter((item) => item.workspace === workspace)
+    .filter((item) => !month || workspaceDay(item.created_at).startsWith(month))
+    .filter((item) => !project || item.project?.id === project);
+}
 
 export const billingHandlers = [
   route(contract.listPlans, ({ db }) => ({ data: [...db.plans].sort((a, b) => a.sort_order - b.sort_order) })),
@@ -22,16 +54,22 @@ export const billingHandlers = [
   route(contract.estimateCost, ({ db, workspace, body }) => {
     const plan = planOf(db, workspace.id);
     const resolution = body.render_resolution ?? '720p';
+    if (body.source === 'link' && resolution !== '720p') {
+      throw badRequest({ render_resolution: ['Los proyectos por link se procesan en 720p. Para 1080p o 4K, subí el archivo.'] });
+    }
+    if (body.source === 'file' && body.duration_seconds === undefined) {
+      throw badRequest({ duration_seconds: ['Mandá la duración del archivo, en segundos.'] });
+    }
     const duration = body.duration_seconds ?? 0;
     if (plan) {
-      if (body.source === 'file' && duration > plan.max_video_duration_seconds) {
-        throw new MockHttpError(403, { error: `Video duration (${Math.floor(duration)}s) exceeds your plan limit (${plan.max_video_duration_seconds}s).`, code: 'duration', limit: plan.max_video_duration_seconds });
+      if (body.source === 'file' && Math.floor(duration) > plan.max_video_duration_seconds) {
+        throw new MockHttpError(403, { error: `Tu plan ${plan.name} permite videos de hasta ${formatDuration(plan.max_video_duration_seconds)}.`, code: 'duration', limit: plan.max_video_duration_seconds });
       }
       if (RANK[resolution] > RANK[plan.max_resolution]) {
-        throw new MockHttpError(403, { error: `Your plan '${plan.name}' does not support ${resolution} rendering.`, code: 'resolution', limit: plan.max_resolution });
+        throw new MockHttpError(403, { error: `Tu plan ${plan.name} renderiza hasta ${plan.max_resolution}.`, code: 'resolution', limit: plan.max_resolution });
       }
       if (body.use_seo && !plan.has_seo_optimization) {
-        throw new MockHttpError(403, { error: 'SEO Optimization is not allowed in your current plan.', code: 'seo' });
+        throw new MockHttpError(403, { error: `Tu plan ${plan.name} no incluye el SEO.`, code: 'seo' });
       }
     }
     const rate = plan?.base_discount_rate ?? 0;
@@ -119,7 +157,8 @@ export const billingHandlers = [
     for (const transaction of db.transactions) {
       // Only what was charged: reservations are not consumption yet and released ones never were.
       if (transaction.workspace !== workspace.id || transaction.transaction_type !== 'SPEND' || transaction.status !== 'COMPLETED') continue;
-      const day = workspaceDay(transaction.created_at);
+      // On the day it was charged, like the backend (`settled_at`).
+      const day = workspaceDay(chargedAt(transaction));
       if (!day.startsWith(month)) continue;
       const entry = byDay.get(day) ?? { projects: 0, renders: 0, seo: 0 };
       if (transaction.category === 'render') entry.renders += transaction.amount;
@@ -136,16 +175,11 @@ export const billingHandlers = [
     };
   }),
 
-  route(contract.listTransactions, ({ db, workspace, query, role }) => {
-    const project = query.get('project');
-    // Movements are for Dueño and Admin; the project's own activity tab reads them filtered by project.
-    if (!project && role !== 'owner' && role !== 'admin') throw forbidden();
+  route(contract.listTransactions, ({ db, workspace, query, require }) => {
+    // Movements are for Dueño and Admin, also those of one project (the backend's billing.manage).
+    require('billing.manage');
     const kind = query.get('kind');
-    const month = query.get('month');
-    const scoped = db.transactions
-      .filter((item) => item.workspace === workspace.id)
-      .filter((item) => !month || workspaceDay(item.created_at).startsWith(month))
-      .filter((item) => !project || item.project?.id === project);
+    const scoped = movementsOf(db.transactions, workspace.id, query);
     const totals: Record<string, { count: number; amount: number }> = {};
     for (const item of scoped) {
       const entry = (totals[item.kind] ??= { count: 0, amount: 0 });
@@ -159,14 +193,19 @@ export const billingHandlers = [
   route(contract.exportTransactions, ({ db, workspace, query, require }) => {
     require('billing.manage');
     const kind = query.get('kind');
-    const month = query.get('month');
-    const rows = db.transactions
-      .filter((item) => item.workspace === workspace.id)
+    const rows = movementsOf(db.transactions, workspace.id, query)
       .filter((item) => !kind || item.kind === kind)
-      .filter((item) => !month || workspaceDay(item.created_at).startsWith(month))
       // Same sign as the screen: what left the balance is negative, what came (back) to it is positive.
-      .map((item) => [item.created_at, `"${item.description.replace(/"/g, '""')}"`, item.kind, (item.kind === 'reserved' || item.kind === 'charged' ? -item.amount : item.amount).toFixed(2)].join(','));
-    return { data: ['fecha,concepto,tipo,monto', ...rows].join('\n'), raw: true };
+      .map((item) =>
+        [
+          workspaceDateTime(item.created_at),
+          csvText(item.description),
+          csvText(item.project?.title ?? ''),
+          KIND_LABEL[item.kind],
+          csvAmount(item.kind === 'reserved' || item.kind === 'charged' ? -item.amount : item.amount),
+        ].join(','),
+      );
+    return { data: [['fecha', 'concepto', 'proyecto', 'tipo', 'monto'].join(','), ...rows].join('\n'), raw: true };
   }),
 
   route(contract.listTokenPackages, () => ({ data: TOKEN_PACKAGES })),

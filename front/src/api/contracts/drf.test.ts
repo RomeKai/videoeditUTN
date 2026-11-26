@@ -4,6 +4,7 @@ import { approveErrorKind, errorMessage, fieldError, pipelineErrorMessage, planL
 import { describeProjectStatus } from '@/lib/project-status';
 import { ApiError } from '../errors';
 import { TokenPair, refreshToken } from './auth';
+import { estimateCost, exportTransactions, getPricing, getUsage, getWallet, listTransactions } from './billing';
 import { BrandKit, listBrandKits } from './brandkits';
 import { ClipPreview } from './clips';
 import real from './drf/responses.json';
@@ -69,6 +70,49 @@ describe('respuestas reales del backend', () => {
     const failed = Project.parse(real.project_failed_auto_render_not_paid);
     expect(failed.metadata.no_speech).toBe(true);
     expect(pipelineErrorMessage(failed.pipeline_error_code)).toMatch(/No alcanzó el saldo/);
+  });
+});
+
+describe('billetera, movimientos y precios: respuestas reales del backend', () => {
+  it('precios y estimado', () => {
+    const pricing = parse(getPricing.response, real.pricing) as typeof getPricing.response._output;
+    // Every Decimal arrives as text and is read as a number.
+    expect(pricing.base_cost_per_second_720p).toBe(0.5);
+    expect(pricing.resolution_multipliers['1080p']).toBe(1.5);
+    expect(pricing.upload_extensions).toEqual(['.mp4', '.mov', '.avi']);
+    const file = parse(estimateCost.response, real.estimate_file) as typeof estimateCost.response._output;
+    expect(file.total).toBe(133.71);
+    // Subtracted by the backend in Decimal: in floats 496.5 − 133.71 is 362.78999999999996.
+    expect(file.balance_after).toBe(362.79);
+    const link = parse(estimateCost.response, real.estimate_link) as typeof estimateCost.response._output;
+    expect(link.eta_seconds).toBeNull();
+  });
+
+  it('saldo, consumo y movimientos', () => {
+    const wallet = parse(getWallet.response, real.wallet) as typeof getWallet.response._output;
+    expect(wallet.reservations[0]).toMatchObject({ project_title: 'Entrevista con Ana', amount: 3.5 });
+    const usage = parse(getUsage.response, real.wallet_usage) as typeof getUsage.response._output;
+    expect(usage).toHaveLength(31);
+    expect(usage.find((day) => day.date === '2026-10-11')?.projects).toBe(12.5);
+    const page = parse(listTransactions.response, real.transactions_page) as typeof listTransactions.response._output;
+    const released = page.results.find((item) => item.kind === 'released');
+    // "Devuelto" keeps the link to its project.
+    expect(released?.project?.title).toBe('Podcast 12');
+    expect(page.totals.charged).toEqual({ count: 1, amount: 12.5 });
+    const csv = parse(exportTransactions.response, real.transactions_export) as string;
+    expect(csv.split('\n')[0]).toBe('fecha,concepto,proyecto,tipo,monto');
+    expect(csv).toContain(',Podcast 12,Devuelto,7.25');
+  });
+
+  it('sus errores: el límite del plan abre D3, el rol no, y los 400 van por campo', () => {
+    const plan = error('estimate_403_plan', 'billing.estimate');
+    expect(plan.isPlanLimit).toBe(true);
+    expect(planLimitKind(plan)).toBe('duration');
+    const role = error('transactions_403_role', 'billing.transactions');
+    expect(role.isPlanLimit).toBe(false);
+    expect(errorMessage(role)).toMatch(/dueño o un admin/);
+    expect(fieldError(error('estimate_400_link'), 'render_resolution')).toMatch(/720p/);
+    expect(fieldError(error('usage_400_month'), 'month')).toMatch(/AAAA-MM/);
   });
 });
 

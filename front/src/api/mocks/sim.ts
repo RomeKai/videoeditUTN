@@ -79,6 +79,7 @@ export function settleReservation(db: MockDb, transactionId: string, now: number
   wallet.updated_at = iso(now);
   transaction.status = 'COMPLETED';
   transaction.kind = 'charged';
+  transaction._settled_at = iso(now);
 }
 
 /**
@@ -103,6 +104,7 @@ export function settleReservationPartially(db: MockDb, transactionId: string, am
   transaction.amount = charged;
   transaction.status = 'COMPLETED';
   transaction.kind = 'charged';
+  transaction._settled_at = iso(now);
   return released;
 }
 
@@ -116,6 +118,7 @@ export function releaseReservation(db: MockDb, transactionId: string, now: numbe
   wallet.updated_at = iso(now);
   transaction.status = 'FAILED';
   transaction.kind = 'released';
+  transaction._settled_at = iso(now);
   return transaction.amount;
 }
 

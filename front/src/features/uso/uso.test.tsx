@@ -227,9 +227,9 @@ describe('G2 · Movimientos', () => {
     await user.click(screen.getByRole('button', { name: 'Exportar CSV' }));
     await waitFor(() => expect(download.downloadText).toHaveBeenCalledTimes(1));
     const [csv, filename] = download.downloadText.mock.calls[0] as [string, string];
-    expect(csv.split('\n')[0]).toBe('fecha,concepto,tipo,monto');
-    expect(csv).toContain('reserved');
-    expect(csv).not.toContain('charged');
+    expect(csv.split('\n')[0]).toBe('fecha,concepto,proyecto,tipo,monto');
+    expect(csv).toContain(',Reservado,');
+    expect(csv).not.toContain(',Cobrado,');
     // Lo reservado sale con el mismo signo que en la pantalla.
     expect(csv.split('\n').slice(1).every((line) => line.split(',').pop()?.startsWith('-'))).toBe(true);
     expect(filename).toMatch(/^movimientos-\d{4}-\d{2}\.csv$/);

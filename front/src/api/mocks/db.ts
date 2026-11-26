@@ -81,7 +81,8 @@ export interface MockWallet {
   updated_at: string;
 }
 
-export type MockTransaction = Transaction & { workspace: string };
+/** `_settled_at`: when the reservation was charged or returned (`settled_at` in the backend); usage counts a charge on that day. */
+export type MockTransaction = Transaction & { workspace: string; _settled_at?: string };
 
 /** How a live (user-created) project moves on. Seeded projects have no simulation: they stay as drawn. */
 export interface ProjectSim {
@@ -137,6 +138,11 @@ export const WORKSPACE_UTC_OFFSET_MS = -3 * 3600 * 1000;
 /** `YYYY-MM-DD` of a moment in the workspace's time zone. */
 export function workspaceDay(value: string | number): string {
   return new Date(new Date(value).getTime() + WORKSPACE_UTC_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/** ISO date and time of a moment in the workspace's time zone, with its offset: `2026-11-04T12:00:00-03:00`. */
+export function workspaceDateTime(value: string | number): string {
+  return `${new Date(new Date(value).getTime() + WORKSPACE_UTC_OFFSET_MS).toISOString().slice(0, 19)}-03:00`;
 }
 
 export type MockPreview = ClipPreview & { _startedAt: number };

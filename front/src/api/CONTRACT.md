@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**80 endpoints:** 33 existen hoy en el backend, 5 existen en parte y 42 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**80 endpoints:** 39 existen hoy en el backend, 5 existen en parte y 36 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -88,14 +88,14 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/invitations/:token/` | Datos públicos de una invitación: quién invita, a qué workspace y con qué rol. | ❌ falta (propuesto) · hueco 13 | A5 |
 | POST | `/api/v1/invitations/:token/accept/` | Acepta la invitación. Sin cuenta: la crea con `name` y `password`. Con cuenta: basta con la sesión iniciada. | ❌ falta (propuesto) · hueco 13 | A5 |
 | GET | `/api/v1/plans/` | Planes activos y públicos, en orden, para Precios y Uso › Planes. | ✅ existe | A6, G3, D3 (diálogo), C1 |
-| GET | `/api/v1/pricing/` | Valores de la fórmula de precios y los topes de subida, para estimar en el navegador. | ❌ falta (propuesto) · hueco 6 | C1, A6, G3, G4, D2, D1 (diálogo) |
-| POST | `/api/v1/pricing/estimate/` | Estimado del backend para una configuración: costo, descuento, saldo después y tiempo estimado. | ❌ falta (propuesto) · hueco 6, 18 | C1, D2, D4, D5 |
+| GET | `/api/v1/pricing/` | Valores de la fórmula de precios y los topes de subida, para estimar en el navegador. | ✅ existe | C1, A6, G3, G4, D2, D1 (diálogo) |
+| POST | `/api/v1/pricing/estimate/` | Estimado del backend para una configuración: costo, descuento, saldo después y tiempo estimado. | ✅ existe | C1, D2, D4, D5 |
 | GET | `/api/v1/subscription/` | Plan actual del workspace, su renovación y el cambio pendiente si lo hay. | ❌ falta (propuesto) · hueco 12 | Barra, G1, G3, C1, E1, H2 |
 | POST | `/api/v1/subscription/change/` | Cambia de plan. Subir se aplica al momento, o al volver del checkout si hay que pagar; bajar, al fin del período. Mandar el plan actual cancela un cambio programado. | ❌ falta (propuesto) · hueco 12 | G3 |
-| GET | `/api/v1/wallet/` | Saldo disponible y reservado del workspace, con el detalle de lo reservado por proyecto. | ❌ falta (propuesto) · hueco 4, 19 | Barra, G1, C1, D2, G4, D1 (diálogo), D2 (diálogo) |
-| GET | `/api/v1/wallet/usage/` | Consumo por día de un mes (solo lo cobrado), separado en proyectos, renders y SEO. El mes y los días son los de la zona horaria del workspace (America/Argentina/Buenos_Aires). | ❌ falta (propuesto) · hueco 4 | G1 |
-| GET | `/api/v1/transactions/` | Movimientos de la billetera, paginados, con filtro por tipo, mes y proyecto. `month=YYYY-MM` es el mes en la zona horaria del workspace (America/Argentina/Buenos_Aires). | ❌ falta (propuesto) · hueco 4 | G2, D1f |
-| GET | `/api/v1/transactions/export/` | Los mismos movimientos en CSV. El monto lleva el signo de lo que le hizo al saldo: negativo lo reservado y lo cobrado, positivo lo comprado y lo devuelto. | ❌ falta (propuesto) · hueco 4 | G2 |
+| GET | `/api/v1/wallet/` | Saldo disponible y reservado del workspace, con el detalle de lo reservado por proyecto. | ✅ existe | Barra, G1, C1, D2, G4, D1 (diálogo), D2 (diálogo) |
+| GET | `/api/v1/wallet/usage/` | Consumo por día de un mes (solo lo cobrado), separado en proyectos, renders y SEO. El mes y los días son los de la zona horaria del workspace (America/Argentina/Buenos_Aires). | ✅ existe | G1 |
+| GET | `/api/v1/transactions/` | Movimientos de la billetera, paginados, con filtro por tipo, mes y proyecto. `month=YYYY-MM` es el mes en la zona horaria del workspace (America/Argentina/Buenos_Aires). | ✅ existe | G2, D1f |
+| GET | `/api/v1/transactions/export/` | Los mismos movimientos en CSV. El monto lleva el signo de lo que le hizo al saldo: negativo lo reservado y lo cobrado, positivo lo comprado y lo devuelto. | ✅ existe | G2 |
 | GET | `/api/v1/token-packages/` | Los 3 paquetes fijos, el precio de la cantidad libre y la conversión de referencia. | ❌ falta (propuesto) · hueco 12 | G4, D2 (diálogo) |
 | POST | `/api/v1/token-purchases/` | Inicia una compra de tokens y devuelve la URL del checkout del proveedor de pagos. | ❌ falta (propuesto) · hueco 12 | G4, D2 (diálogo) |
 | GET | `/api/v1/token-purchases/:id/` | Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`tokens` > 0) o el pago de una subida de plan (`plan_id`, `tokens` 0). | ❌ falta (propuesto) · hueco 12 | G5 |
@@ -542,8 +542,8 @@ Valores de la fórmula de precios y los topes de subida, para estimar en el nave
 | | |
 |---|---|
 | Id | `billing.pricing` |
-| Backend | ❌ falta (propuesto) · hueco 6 |
-| Nota | Valores de PricingEngine (apps/payments/services/pricing_engine.py) y de settings. |
+| Backend | ✅ existe · `back/apps/payments/views.py · PricingView + services/estimate.py · pricing_values` |
+| Nota | Público, sin token. Los valores de PricingEngine (apps/payments/services/pricing_engine.py), los topes de subida de apps/videos/serializers.py y los settings `AI_SINGLE_EDIT_MAX_DURATION_SECONDS`, `AI_UPLOAD_MAX_DURATION_SECONDS`, `AI_PROMPT_MAX_CHARS` y `TOKEN_PRICE_USD`. Los decimales llegan como texto (`"0.5"`). |
 | Sesión | Pública |
 | Respuesta 200 | Pricing |
 | Pantallas | C1, A6, G3, G4, D2, D1 (diálogo) |
@@ -555,12 +555,12 @@ Estimado del backend para una configuración: costo, descuento, saldo después y
 | | |
 |---|---|
 | Id | `billing.estimate` |
-| Backend | ❌ falta (propuesto) · hueco 6, 18 |
-| Nota | Envuelve PricingEngine.calculate_render_cost con el plan del workspace. |
+| Backend | ✅ existe · `back/apps/payments/views.py · EstimateView + services/estimate.py · estimate` |
+| Nota | Las mismas reglas que la creación: un archivo se cobra por sus segundos enteros con PricingEngine.calculate_render_cost y el plan del workspace; un link, precio fijo más el SEO con descuento. `discount_amount` es base + adicionales − total (incluye el redondeo). No escribe nada: lo pide cualquier rol (`wallet.view`). `eta_seconds` sale de los tiempos por etapa de los últimos proyectos que llegaron a la revisión (`metadata.stage_durations`): null para un link o mientras no hay ninguno. 404 si el usuario no tiene workspace. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | EstimateRequest |
 | Respuesta 200 | Estimate |
-| Errores | **403** El plan no permite la duración, la resolución o el SEO (`code`: `duration` \| `resolution` \| `seo`). La UI abre D3. |
+| Errores | **400** Falta `duration_seconds` con `source: "file"`, o un link pide otra resolución que 720p (`render_resolution`). Errores por campo.<br>**403** El plan no permite la duración, la resolución o el SEO (`code`: `duration` \| `resolution` \| `seo`, con `limit` en los dos primeros). La UI abre D3. |
 | Pantallas | C1, D2, D4, D5 |
 
 #### `GET /api/v1/subscription/`
@@ -598,8 +598,8 @@ Saldo disponible y reservado del workspace, con el detalle de lo reservado por p
 | | |
 |---|---|
 | Id | `billing.wallet` |
-| Backend | ❌ falta (propuesto) · hueco 4, 19 |
-| Nota | Modelo: Wallet (available_balance, reserved_balance). |
+| Backend | ✅ existe · `back/apps/payments/views.py · WalletView` |
+| Nota | Los saldos con sus diez decimales, como texto. `reservations` tiene una fila por reserva abierta (no una suma por proyecto), con el proyecto que paga (`Transaction.project`, migración 0015 de payments; null en una reserva vieja que la 0016 no pudo vincular). `spent_this_month` y el mes van en `WORKSPACE_TIME_ZONE` (America/Argentina/Buenos_Aires) y cuentan por cuándo se cobró (`settled_at`). Lo ven todos los roles (`wallet.view`). 404 si el usuario no tiene workspace. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Wallet |
 | Pantallas | Barra, G1, C1, D2, G4, D1 (diálogo), D2 (diálogo) |
@@ -611,11 +611,12 @@ Consumo por día de un mes (solo lo cobrado), separado en proyectos, renders y S
 | | |
 |---|---|
 | Id | `billing.usage` |
-| Backend | ❌ falta (propuesto) · hueco 4 |
+| Backend | ✅ existe · `back/apps/payments/views.py · WalletUsageView + services/movements.py · usage` |
+| Nota | Todos los días del mes (sin `month`, el actual), en orden. Suma los SPEND + COMPLETED por el día en que se cobraron (`settled_at`, o `created_at` en filas viejas): un cobro parcial cuenta lo cobrado. Columnas por `Transaction.category`: `render` en `renders`, `seo` en `seo` y el resto en `projects`. Hoy nada escribe `seo`: el SEO se cobra dentro de la creación, así que cae en `projects` y la columna llega en 0. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | { month?: string } |
 | Respuesta 200 | UsageDay[] |
-| Errores | **403** Solo Dueño y Admin. |
+| Errores | **400** `month` no es `AAAA-MM` (`{ month: ["Mandá el mes como AAAA-MM."] }`).<br>**403** Solo Dueño y Admin. |
 | Pantallas | G1 |
 
 #### `GET /api/v1/transactions/`
@@ -625,12 +626,12 @@ Movimientos de la billetera, paginados, con filtro por tipo, mes y proyecto. `mo
 | | |
 |---|---|
 | Id | `billing.transactions` |
-| Backend | ❌ falta (propuesto) · hueco 4 |
-| Nota | Modelo: Transaction. Faltan el vínculo al proyecto y `kind`. Hoy el backend solo escribe DEPOSIT y SPEND: un cobro parcial (`commit_partial_reservation`) baja el monto del SPEND a lo cobrado y lo deja COMPLETED, y devuelve el resto al saldo sin escribir otra fila; una reserva que se cae queda SPEND + FAILED (`kind: "released"`, «Devuelto»). El tipo REFUND existe en el modelo pero nada lo escribe: `kind: "refund"` queda propuesto para devoluciones de algo ya cobrado. |
+| Backend | ✅ existe · `back/apps/payments/views.py · TransactionListView + TransactionSerializer (apps/payments/serializers.py) + services/movements.py` |
+| Nota | De la más nueva a la más vieja; `page_size` hasta 100 (25 por defecto). `kind` sale de tipo + estado; una fila sin `kind` no movió el saldo y no sale (una compra que falló). Cada reserva queda vinculada a su proyecto con `category` desde que se reserva (`wallet_service.link_reservation`); las viejas, por la migración 0016 de payments, con lo que guardaba la metadata del proyecto. Un proyecto borrado deja `project` en null. Hoy el backend solo escribe SPEND: un cobro parcial (`commit_partial_reservation`) baja el monto del SPEND a lo cobrado y lo deja COMPLETED, y devuelve el resto al saldo sin escribir otra fila; una reserva que se cae queda SPEND + FAILED (`kind: "released"`, «Devuelto», con su proyecto). DEPOSIT llega con las compras (PAY-02) y REFUND no lo escribe nada todavía: `kind: "refund"` es para devoluciones de algo ya cobrado. Tres consultas por página, sea cual sea su tamaño. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | TransactionsQuery |
 | Respuesta 200 | { count: number, next: string \\| null, previous: string \\| null, results: Transaction[], totals: { [clave]: TransactionKindTotal } } |
-| Errores | **403** Solo Dueño y Admin (Editor y Lector ven únicamente el saldo). |
+| Errores | **400** `kind`, `month` o `project` no son válidos (errores por campo).<br>**403** Solo Dueño y Admin, también con `project` (Editor y Lector ven únicamente el saldo).<br>**404** La página no existe (`detail: "Página inválida."`). |
 | Pantallas | G2, D1f |
 
 #### `GET /api/v1/transactions/export/`
@@ -640,11 +641,12 @@ Los mismos movimientos en CSV. El monto lleva el signo de lo que le hizo al sald
 | | |
 |---|---|
 | Id | `billing.exportTransactions` |
-| Backend | ❌ falta (propuesto) · hueco 4 |
+| Backend | ✅ existe · `back/apps/payments/views.py · TransactionExportView + services/movements.py · csv_text` |
+| Nota | Columnas `fecha,concepto,proyecto,tipo,monto`: la fecha en ISO con la zona del workspace (`2026-11-04T12:00:00-03:00`), la descripción, el título del proyecto, el tipo como lo nombra la pantalla («Devuelto», «Cobrado»…) y el monto exacto (dos decimales si alcanzan, si no todos). Un texto que empieza con `=`, `+`, `-` o `@` lleva un apóstrofo adelante, para que una planilla no lo ejecute. Toda la historia, sin páginas. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | { kind?: TransactionKind, month?: string, project?: Id } |
 | Respuesta 200 | texto (CSV) |
-| Errores | **403** Solo Dueño y Admin. |
+| Errores | **400** `kind`, `month` o `project` no son válidos (errores por campo).<br>**403** Solo Dueño y Admin. |
 | Pantallas | G2 |
 
 #### `GET /api/v1/token-packages/`
