@@ -811,6 +811,23 @@ export function tokenMovements(items: ReadonlyArray<ActivityItem>): ActivityItem
   return items.filter((item) => item.amount !== null && MOVEMENT_KIND[item.type]);
 }
 
+/**
+ * What came back to the balance when the project failed, read from its activity: the refunds made after
+ * its last reservation or charge. For a backend that does not send `cost` (gap 4), where the activity is
+ * the only place that says it. `null`: the last movement is still a reservation, so the refund has not
+ * been written yet (it comes right after the failure).
+ */
+export function refundAfterFailure(items: ReadonlyArray<ActivityItem>): number | null {
+  const newestFirst = tokenMovements(items).sort((a, b) => b.created_at.localeCompare(a.created_at));
+  let refunded = 0;
+  for (const item of newestFirst) {
+    if (item.type === 'tokens_refunded') refunded += Math.abs(item.amount ?? 0);
+    else if (refunded === 0 && item.type === 'tokens_reserved') return null;
+    else break;
+  }
+  return refunded;
+}
+
 export interface CostExplanation {
   lines: Array<{ key: string; label: string; note?: string; value: string }>;
   totalLabel: string;
