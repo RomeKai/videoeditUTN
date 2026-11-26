@@ -159,6 +159,31 @@ class TestAccount:
         assert demo_user().check_password(seed_demo.DEMO_PASSWORD)
         assert Workspace.objects.get(owner=user).subscription_plan.name == 'Pro'
 
+    def test_the_plan_is_a_comp_that_a_rehearsal_cannot_end(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.payments.services.subscriptions import apply_due_plan_changes
+
+        run()
+        user = demo_user()
+        workspace = Workspace.objects.get(owner=user)
+        assert (workspace.plan_renews_at, workspace.pending_plan) == (None, None)
+        # A rehearsal paid a plan and then scheduled Gratis: running the command again puts Pro back as it was.
+        soon = timezone.now() + timedelta(days=3)
+        Workspace.objects.filter(pk=workspace.pk).update(
+            plan_renews_at=soon, plan_anchor_day=5,
+            pending_plan=SubscriptionPlan.objects.get(name='Gratis'), pending_plan_effective_at=soon,
+        )
+        run()
+        workspace.refresh_from_db()
+        assert (workspace.subscription_plan.name, workspace.plan_renews_at, workspace.plan_anchor_day) == ('Pro', None, None)
+        assert (workspace.pending_plan, workspace.pending_plan_effective_at) == (None, None)
+        # Nothing ends it: the beat of a month from now leaves it on Pro.
+        assert apply_due_plan_changes(now=timezone.now() + timedelta(days=40)) == 0
+        assert Workspace.objects.get(pk=workspace.pk).subscription_plan.name == 'Pro'
+
     def test_keeps_an_edited_brand_kit(self):
         run()
         BrandKit.objects.update(accent_color='#123456')

@@ -260,6 +260,8 @@ export function errorMessage(error: unknown, fallback = 'Algo falló de nuestro 
   // A write that got no answer may have been done: "try again" would be the wrong advice.
   if (error instanceof NetworkError) return error.outcomeUnknown ? OUTCOME_UNKNOWN_MESSAGE : 'No pudimos conectar';
   if (error instanceof ApiError) {
+    // 501: something this server does not offer yet (payments without a provider) says so in Spanish.
+    if (error.status === 501 && isSpanish(error.message)) return repairEncoding(error.message);
     if (error.status >= 500) return fallback;
     if (error.status === 402) return 'No te alcanza el saldo';
     if (error.isPlanLimit) return 'Tu plan no incluye esto.';
