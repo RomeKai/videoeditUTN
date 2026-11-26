@@ -180,6 +180,17 @@ describe('B2 · Proyectos', () => {
     expect(screen.queryByRole('complementary', { name: 'Primeros pasos' })).not.toBeInTheDocument();
   });
 
+  it('plan Gratis: «Invitar a alguien» lleva a Miembros, porque el plan tiene 2 lugares', async () => {
+    startScenario('usuario-nuevo');
+    const { queryClient } = renderScreen(<ProjectsScreen />);
+    const steps = await screen.findByRole('complementary', { name: 'Primeros pasos' });
+    // The step reads the plan and the plan list: only once both arrived does it say where it goes.
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    const invite = within(steps).getByRole('link', { name: /Invitar a alguien/ });
+    expect(invite).toHaveAttribute('href', '/ajustes/miembros');
+    expect(within(invite).queryByText(/Disponible en el plan/)).not.toBeInTheDocument();
+  });
+
   it('servidor caído: banner con Reintentar', async () => {
     startScenario('servidor-caido');
     renderScreen(<ProjectsScreen />);

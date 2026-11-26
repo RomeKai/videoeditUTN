@@ -99,7 +99,9 @@ describe('C1 · Nuevo proyecto', () => {
 
     await user.upload(screen.getByLabelText('Elegir otro video'), video('entrevista-200min.mp4'));
     await waitFor(() => expect(within(screen.getByTestId('file-row')).getByRole('alert')).toHaveTextContent('El video dura más de lo que permite tu plan (máx. 3 h).'));
-    expect(within(screen.getByTestId('file-row')).getByText(/El plan Estudio acepta videos de hasta/)).toBeInTheDocument();
+    // No plan accepts more than 3 h (the upload ceiling): no plan is offered, only the plans link.
+    expect(within(screen.getByTestId('file-row')).queryByText(/acepta videos de hasta/)).not.toBeInTheDocument();
+    expect(within(screen.getByTestId('file-row')).getByRole('link', { name: 'Ver planes' })).toBeInTheDocument();
     const side = await summary();
     expect(within(side).getByLabelText('Sin estimación')).toBeInTheDocument();
     expect(within(side).getByText('Lo calculamos cuando elijas un video que entre en tu plan.')).toBeInTheDocument();
