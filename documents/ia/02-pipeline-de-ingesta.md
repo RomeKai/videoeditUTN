@@ -391,7 +391,7 @@ Correr la tarea dos veces sobre el mismo proyecto es seguro. Las piezas:
 |---------|---------|--------|
 | `PIPELINE_SOFT_TIME_LIMIT` | 7200 (2 h) | Soft limit de una corrida. Se lee al importar el módulo de tareas |
 | `PIPELINE_TIME_LIMIT` | soft + 300 | Hard limit; mata al worker que ignoró el soft |
-| `PIPELINE_LOCK_TTL` | 300 | TTL del lock. El heartbeat lo renueva cada TTL/3 |
+| `PIPELINE_LOCK_TTL` | 300 | TTL del lock. El heartbeat lo renueva cada TTL/3, desde su propio hilo: por eso el lock se crea con `thread_local=False` |
 | `CELERY_BROKER_TRANSPORT_OPTIONS['visibility_timeout']` (env `CELERY_VISIBILITY_TIMEOUT`) | 14400 (4 h) | Cuándo Redis re-entrega un mensaje sin ack. Debe superar los límites de tiempo y el TTL del lock |
 | `REDIS_URL` | `redis://redis:6379/0` | Redis del lock (el mismo que el broker) |
 | `AI_CORE_V2_ENABLED` | `False` | Master switch y kill switch de V2 |
