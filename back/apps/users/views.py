@@ -7,6 +7,8 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
+from drf_spectacular.utils import OpenApiResponse, extend_schema
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from apps.core.workspace import OWNER, ActiveWorkspace
@@ -19,11 +21,16 @@ from apps.users.serializers import (
     NotificationPreferencesSerializer,
     PasswordChangeSerializer,
     UpdateMeSerializer,
+    TokenPairSerializer,
     VerifyEmailSerializer,
 )
 from apps.users.email_verification import send_email_change_verification, user_for_token
 from apps.users.throttles import EmailChangeThrottle, LoginEmailThrottle, SpanishThrottleMixin
 from apps.users.tokens import issue_token_pair, revoke_refresh_tokens
+
+
+UNAUTHORIZED = OpenApiResponse(description='Sin sesión, o con un token vencido o revocado.')
+THROTTLED = OpenApiResponse(description='Demasiados intentos: `detail` dice en castellano cuánto esperar, y va Retry-After.')
 
 
 def _user_workspaces(user):
@@ -125,9 +132,23 @@ class MeView(SpanishThrottleMixin, APIView):
     throttle_classes = [EmailChangeThrottle]
     throttle_scope = 'email_change'
 
+    @extend_schema(responses={200: MeSerializer, 401: UNAUTHORIZED})
     def get(self, request):
         return Response(_me_payload(request.user))
 
+    @extend_schema(
+        request=UpdateMeSerializer,
+        responses={
+            200: MeSerializer,
+            400: OpenApiResponse(description=(
+                'Validación por campo: `current_password` falta, no coincide o la cuenta no tiene '
+                'contraseña; `email` lo usa otra cuenta (code unique); `active_workspace_id` no es '
+                'un workspace del usuario.'
+            )),
+            401: UNAUTHORIZED,
+            429: THROTTLED,
+        },
+    )
     def patch(self, request):
         user = request.user
         serializer = UpdateMeSerializer(data=request.data, context={'user': user})
@@ -160,6 +181,11 @@ class MeView(SpanishThrottleMixin, APIView):
         return Response(_me_payload(request.user))
 
 
+@extend_schema(responses={
+    200: TokenPairSerializer,
+    401: OpenApiResponse(description='Email o contraseña incorrectos.'),
+    429: THROTTLED,
+})
 class LoginView(SpanishThrottleMixin, TokenObtainPairView):
     """POST /api/token/ (SimpleJWT) with attempt limits: per IP and per account email."""
 
@@ -167,6 +193,11 @@ class LoginView(SpanishThrottleMixin, TokenObtainPairView):
     throttle_scope = 'login'
 
 
+@extend_schema(responses={
+    200: TokenRefreshSerializer,
+    401: OpenApiResponse(description='Refresh vencido, inválido o revocado (por ejemplo, después de cambiar la contraseña).'),
+    429: THROTTLED,
+})
 class TokenRefreshThrottledView(SpanishThrottleMixin, TokenRefreshView):
     """POST /api/token/refresh/ (SimpleJWT) with a limit per IP."""
 
@@ -185,6 +216,18 @@ class PasswordChangeView(SpanishThrottleMixin, APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'password_change'
 
+    @extend_schema(
+        request=PasswordChangeSerializer,
+        responses={
+            200: TokenPairSerializer,
+            400: OpenApiResponse(description=(
+                '`current_password` incorrecta (o la cuenta no tiene contraseña), o `new_password` '
+                'no cumple las reglas de contraseña.'
+            )),
+            401: UNAUTHORIZED,
+            429: THROTTLED,
+        },
+    )
     def post(self, request):
         serializer = PasswordChangeSerializer(data=request.data, context={'user': request.user})
         serializer.is_valid(raise_exception=True)
@@ -204,10 +247,15 @@ class NotificationPreferencesView(APIView):
         preferences, _ = NotificationPreference.objects.get_or_create(user=user)
         return preferences
 
+    @extend_schema(responses={200: NotificationPreferencesSerializer, 401: UNAUTHORIZED})
     def get(self, request):
         serializer = NotificationPreferencesSerializer(self._preferences(request.user))
         return Response(serializer.data)
 
+    @extend_schema(
+        request=NotificationPreferencesSerializer,
+        responses={200: NotificationPreferencesSerializer, 400: OpenApiResponse(description='Un valor que no es booleano.'), 401: UNAUTHORIZED},
+    )
     def patch(self, request):
         preferences = self._preferences(request.user)
         serializer = NotificationPreferencesSerializer(preferences, data=request.data, partial=True)
@@ -230,6 +278,13 @@ class VerifyEmailView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        request=VerifyEmailSerializer,
+        responses={
+            200: TokenPairSerializer,
+            400: OpenApiResponse(description='Link inválido, vencido o ya usado, o el email lo tomó otra cuenta (error en `token`).'),
+        },
+    )
     def post(self, request):
         serializer = VerifyEmailSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

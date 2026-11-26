@@ -51,6 +51,8 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware', # CORS must be before Common
+    # After CORS, so the browser can read the 503 (apps.core.maintenance).
+    'apps.core.maintenance.MaintenanceModeMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -106,6 +108,14 @@ LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
+
+# --- MAINTENANCE (K5) ---
+# On: GET /api/v1/status/ reports it and the rest of the API answers 503
+# (apps.core.maintenance). The window (ISO 8601, UTC when it has no offset)
+# is what the maintenance page shows; it is left out unless both ends are set.
+MAINTENANCE_MODE = env.bool('MAINTENANCE_MODE', default=False)
+MAINTENANCE_STARTS_AT = env('MAINTENANCE_STARTS_AT', default='')
+MAINTENANCE_ENDS_AT = env('MAINTENANCE_ENDS_AT', default='')
 
 # --- EMAILS TO USERS ---
 # The links of the emails open the web app (the verification of a new email
