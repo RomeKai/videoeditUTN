@@ -174,6 +174,10 @@ export const disconnectSocialAccount = defineEndpoint({
   screens: ['H3'],
 });
 
+/** What the read endpoints still miss (DIST-03, PR 1: only GET). */
+const PARTIAL_NOTE =
+  'Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. Falta: `thumbnail_url` viene siempre `null` (los clips no tienen miniatura), `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos.';
+
 export const listPosts = defineEndpoint({
   id: 'social.posts',
   method: 'GET',
@@ -185,7 +189,12 @@ export const listPosts = defineEndpoint({
     status_counts: z.record(PostStatus, z.number().int().nonnegative()).optional(),
   }),
   errors: [],
-  backend: { status: 'proposed', gap: 8, note: 'Modelo: ScheduledPost. Hoy solo se crean desde el admin.' },
+  backend: {
+    status: 'partial',
+    source: 'back/apps/videos/views_social.py · ScheduledPostViewSet.list + ScheduledPostSerializer',
+    gap: 8,
+    note: PARTIAL_NOTE,
+  },
   screens: ['E2', 'D3', 'D4 (diálogo)'],
 });
 
@@ -229,7 +238,12 @@ export const getPost = defineEndpoint({
   summary: 'Detalle de una publicación. Se consulta cada 5 s mientras está en cola o publicando.',
   response: ScheduledPost,
   errors: [{ status: 404, when: 'No existe o es de otro workspace.' }],
-  backend: { status: 'proposed', gap: 8 },
+  backend: {
+    status: 'partial',
+    source: 'back/apps/videos/views_social.py · ScheduledPostViewSet.retrieve + ScheduledPostSerializer',
+    gap: 8,
+    note: PARTIAL_NOTE,
+  },
   screens: ['E2', 'E1'],
 });
 
