@@ -9,11 +9,11 @@ export const Workspace = z.object({
   owner: Id,
   subscription_plan: Id.nullable(),
   created_at: IsoDateTime,
-  /** Proposed: role of the current user, so the screen does not need `/me` to decide. */
+  /** Role of the current user in this workspace, so the screen does not need `/me` to decide. The backend always sends it. */
   role: Role.optional(),
   /**
-   * Proposed, only in the detail: Dueño and Admins, so a member who cannot open
-   * Miembros knows who to ask for tokens or access (artboard R1).
+   * Only in the detail: Dueño first, then the active Admins, so a member who cannot open
+   * Miembros knows who to ask for tokens or access (artboard R1). `name` is the email when the account has no name.
    */
   admins: z.array(z.object({ id: Id, name: z.string(), role: Role })).optional(),
 });
@@ -25,13 +25,17 @@ export type MemberStatus = z.infer<typeof MemberStatus>;
 
 export const Member = z.object({
   id: Id,
-  /** Null while the invited email has no account yet. */
+  /**
+   * Null while the invited email has no account yet. Today the backend always sends it:
+   * WorkspaceMember needs a user, so an invitation without an account does not exist yet.
+   */
   user: UserRef.nullable(),
   email: z.string().email(),
   /** `owner` for Workspace.owner; otherwise WorkspaceMember.role. */
   role: Role,
   status: MemberStatus,
   joined_at: IsoDateTime,
+  /** Always null from the backend today: WorkspaceMember does not record who invited. */
   invited_by: UserRef.nullable().optional(),
 });
 export type Member = z.infer<typeof Member>;
@@ -74,7 +78,11 @@ export const listWorkspaces = defineEndpoint({
   response: z.array(Workspace),
   workspaceScoped: false,
   errors: [],
-  backend: { status: 'proposed', gap: 2, note: 'El selector (J3) usa la lista de `/me`; este listado es el recurso REST completo.' },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views_workspaces.py · WorkspaceListView.get (WorkspaceSerializer)',
+    note: 'Los workspaces propios y los de una membresía activa, del más antiguo al más nuevo, con `role`. Una invitación pendiente no aparece. El selector (J3) usa la lista de `/me`; este listado es el recurso REST completo.',
+  },
   screens: ['J3'],
 });
 
@@ -87,8 +95,12 @@ export const createWorkspace = defineEndpoint({
   response: Workspace,
   successStatus: 201,
   workspaceScoped: false,
-  errors: [{ status: 400, when: 'Nombre vacío o demasiado largo.' }],
-  backend: { status: 'proposed', gap: 2 },
+  errors: [{ status: 400, when: 'Nombre vacío (o solo espacios) o de más de 100 caracteres: `{name: [mensaje]}`.' }],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views_workspaces.py · WorkspaceListView.post (apps/users/workspaces.py · create_owned_workspace)',
+    note: 'El mismo camino que el registro: plan `DEFAULT_PLAN_NAME` (Gratis; `subscription_plan: null` si ese plan no existe), billetera en 0 y el usuario como Admin activo además de dueño. El nombre se guarda sin espacios a los costados. No hay tope de workspaces por usuario.',
+  },
   screens: ['J3', 'B1'],
 });
 
@@ -99,8 +111,12 @@ export const getWorkspace = defineEndpoint({
   summary: 'Datos del workspace.',
   response: Workspace,
   workspaceScoped: false,
-  errors: [{ status: 404, when: 'No existe o el usuario no es miembro.' }],
-  backend: { status: 'proposed', gap: 2 },
+  errors: [{ status: 404, when: 'El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos.' }],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views_workspaces.py · WorkspaceDetailView.get (WorkspaceDetailSerializer)',
+    note: 'Lo lee cualquier rol. Trae `role` y `admins`. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`.',
+  },
   screens: ['H1'],
 });
 
@@ -113,10 +129,15 @@ export const updateWorkspace = defineEndpoint({
   response: Workspace,
   workspaceScoped: false,
   errors: [
-    { status: 400, when: 'Nombre vacío o demasiado largo.' },
-    { status: 403, when: 'El rol no puede renombrar (Editor, Lector).' },
+    { status: 400, when: 'Nombre vacío (o solo espacios) o de más de 100 caracteres: `{name: [mensaje]}`.' },
+    { status: 403, when: 'El rol no puede renombrar (Editor, Lector). Solo `detail`, sin `code`.' },
+    { status: 404, when: 'El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos.' },
   ],
-  backend: { status: 'proposed', gap: [2, 3] },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views_workspaces.py · WorkspaceDetailView.patch',
+    note: 'Solo cambia `name`. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`.',
+  },
   screens: ['H1', 'B1'],
 });
 
@@ -130,10 +151,19 @@ export const deleteWorkspace = defineEndpoint({
   successStatus: 204,
   workspaceScoped: false,
   errors: [
-    { status: 400, when: '`confirm_name` no coincide con el nombre.' },
-    { status: 403, when: 'No es el Dueño.' },
+    { status: 400, when: '`confirm_name` falta o no es exactamente el nombre: `{confirm_name: [mensaje]}`.' },
+    { status: 403, when: 'No es el Dueño. Solo `detail`, sin `code`.' },
+    { status: 404, when: 'El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos.' },
+    {
+      status: 409,
+      when: 'No se borra nada: hay un proyecto subido, en ingesta o renderizando (`code: "project_processing"`), o tokens reservados sin liquidar (`code: "reservation_open"`). Cuerpo `{error, code}`, como al borrar un proyecto.',
+    },
   ],
-  backend: { status: 'proposed', gap: [2, 3] },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views_workspaces.py · WorkspaceDetailView.delete',
+    note: 'Borra para siempre el workspace con sus proyectos, clips y publicaciones, brand kits, miembros e invitaciones, y la billetera con sus movimientos: el saldo disponible se pierde. Las cuentas de los miembros no se tocan. Se puede borrar el último workspace: `/me` responde con `workspaces: []` y `active_workspace_id: null`. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`.',
+  },
   screens: ['H1'],
 });
 
@@ -146,10 +176,15 @@ export const transferWorkspace = defineEndpoint({
   response: Workspace,
   workspaceScoped: false,
   errors: [
-    { status: 400, when: 'El usuario no es miembro activo.' },
-    { status: 403, when: 'No es el Dueño.' },
+    { status: 400, when: '`new_owner_id` no es un miembro activo (una invitación pendiente no alcanza) o es el propio Dueño: `{new_owner_id: [mensaje]}`.' },
+    { status: 403, when: 'No es el Dueño. Solo `detail`, sin `code`.' },
+    { status: 404, when: 'El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos.' },
   ],
-  backend: { status: 'proposed', gap: [2, 3] },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views_workspaces.py · WorkspaceTransferView.post',
+    note: 'La respuesta trae `owner` nuevo y `role: "admin"` (el rol de quien transfirió). El plan, la billetera y los lugares no cambian. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`.',
+  },
   screens: ['H1'],
 });
 
@@ -160,8 +195,15 @@ export const listMembers = defineEndpoint({
   summary: 'Miembros e invitaciones pendientes, con los lugares usados del plan.',
   response: MembersResponse,
   workspaceScoped: false,
-  errors: [{ status: 403, when: 'Solo Dueño y Admin ven la sección (para Editor y Lector no aparece).' }],
-  backend: { status: 'proposed', gap: 13, note: 'Modelo: WorkspaceMember (apps/users/models.py).' },
+  errors: [
+    { status: 403, when: 'Solo Dueño y Admin ven la sección (para Editor y Lector no aparece). Solo `detail`, sin `code`.' },
+    { status: 404, when: 'El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views_workspaces.py · WorkspaceMembersView.get (MembersSerializer)',
+    note: 'Una fila por WorkspaceMember, de la más antigua a la más nueva; la del Dueño sale con `role: "owner"`. `seats_used` cuenta todas las filas, también las pendientes y la del Dueño; `max_members` es 1 si el workspace no tiene plan. Hoy `user` siempre viene (no hay invitaciones a emails sin cuenta) e `invited_by` es siempre null. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`.',
+  },
   screens: ['H2', 'D7', 'H1'],
 });
 
@@ -174,10 +216,15 @@ export const updateMember = defineEndpoint({
   response: Member,
   workspaceScoped: false,
   errors: [
-    { status: 400, when: 'No se puede cambiar el rol del Dueño.' },
-    { status: 403, when: 'El rol no administra miembros.' },
+    { status: 400, when: 'No se puede cambiar el rol del Dueño (solo deja de serlo al transferir), o `role` no es admin, editor ni viewer: `{role: [mensaje]}`.' },
+    { status: 403, when: 'El rol no administra miembros. Solo `detail`, sin `code`.' },
+    { status: 404, when: 'El workspace no existe para este usuario, o `memberId` no es una fila de ese workspace.' },
   ],
-  backend: { status: 'proposed', gap: [3, 13] },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views_workspaces.py · WorkspaceMemberView.patch',
+    note: 'También cambia el rol de una invitación pendiente. Un Admin puede cambiar el rol de otro Admin y el suyo. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`.',
+  },
   screens: ['H2'],
 });
 
@@ -190,10 +237,15 @@ export const removeMember = defineEndpoint({
   successStatus: 204,
   workspaceScoped: false,
   errors: [
-    { status: 400, when: 'No se puede quitar al Dueño.' },
-    { status: 403, when: 'El rol no administra miembros.' },
+    { status: 400, when: 'No se puede quitar al Dueño, lo pida un Admin o el propio Dueño (primero transfiere el workspace): `{detail}`.' },
+    { status: 403, when: 'El rol no administra miembros: un Editor o un Lector tampoco puede quitarse a sí mismo. Solo `detail`, sin `code`.' },
+    { status: 404, when: 'El workspace no existe para este usuario, o `memberId` no es una fila de ese workspace.' },
   ],
-  backend: { status: 'proposed', gap: [3, 13] },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views_workspaces.py · WorkspaceMemberView.delete',
+    note: 'Borra la fila y libera su lugar del plan; quien fue quitado pasa a recibir 404 en ese workspace. Un Admin puede quitarse a sí mismo. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`.',
+  },
   screens: ['H2'],
 });
 

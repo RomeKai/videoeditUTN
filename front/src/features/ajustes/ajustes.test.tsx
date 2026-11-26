@@ -5,7 +5,7 @@ import { http, HttpResponse, delay } from 'msw';
 import { API_URL } from '@/api/config';
 import { getTokens } from '@/api/session';
 import { server } from '@/api/mocks/server';
-import { loadDb } from '@/api/mocks/state';
+import { loadDb, saveDb } from '@/api/mocks/state';
 import { failRead, renderScreen, startMockApi } from '../uso/test-utils';
 import { GeneralSettings } from './GeneralSettings';
 import { parseEmails } from './InviteMemberDialog';
@@ -67,9 +67,29 @@ describe('H1 · General', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Guardar' })).toBeDisabled());
   });
 
-  it('borrar pide escribir el nombre del workspace', async () => {
+  it('borrar con proyectos en proceso: el servidor lo rechaza y el diálogo dice por qué', async () => {
     const user = userEvent.setup();
     renderScreen(<GeneralSettings />);
+    await user.click(await screen.findByRole('button', { name: 'Borrar el workspace…' }));
+    const dialog = await screen.findByRole('alertdialog', { name: '¿Borrar Estudio Norte?' });
+    await user.type(within(dialog).getByRole('textbox'), 'Estudio Norte');
+    await user.click(within(dialog).getByRole('button', { name: 'Borrar el workspace' }));
+    expect(await within(dialog).findByText(/Hay proyectos procesándose o renderizándose/)).toBeInTheDocument();
+    expect(loadDb().workspaces.some((workspace) => workspace.name === 'Estudio Norte')).toBe(true);
+    expect(navigation.replace).not.toHaveBeenCalled();
+  });
+
+  it('borrar pide escribir el nombre del workspace', async () => {
+    const user = userEvent.setup();
+    // Nothing in progress: a workspace with projects processing or rendering is not deleted (409).
+    const prepare = () => {
+      const db = loadDb();
+      const estudio = db.workspaces.find((workspace) => workspace.name === 'Estudio Norte')?.id;
+      db.projects = db.projects.filter((project) => project.workspace !== estudio || !['uploaded', 'ingesting', 'rendering'].includes(project.status));
+      for (const wallet of db.wallets) if (wallet.workspace === estudio) wallet.reserved_balance = 0;
+      saveDb(db);
+    };
+    renderScreen(<GeneralSettings />, { prepare });
     await user.click(await screen.findByRole('button', { name: 'Borrar el workspace…' }));
     const dialog = await screen.findByRole('alertdialog', { name: '¿Borrar Estudio Norte?' });
     const confirm = within(dialog).getByRole('button', { name: 'Borrar el workspace' });

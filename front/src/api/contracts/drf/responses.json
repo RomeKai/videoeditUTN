@@ -1,5 +1,5 @@
 {
-  "_about": "Cuerpos tal como los arma el backend de dev (VideoProjectSerializer, VideoClipSerializer, BrandKitSerializer y las vistas de apps/videos/views.py), escritos a mano a partir del código. Si un serializer cambia, se actualiza acá y el test dice qué esquema dejó de aceptarlo.",
+  "_about": "Cuerpos tal como los arma el backend de dev (VideoProjectSerializer, VideoClipSerializer, BrandKitSerializer y las vistas de apps/videos/views.py), escritos a mano a partir del código. Los de workspaces y miembros (workspace_*, members, member_*) son respuestas capturadas de apps/users/views_workspaces.py. Si un serializer cambia, se actualiza acá y el test dice qué esquema dejó de aceptarlo.",
   "token_pair": {
     "access": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU1MzYwMDB9.x",
     "refresh": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU2MjI0MDB9.y"
@@ -1313,6 +1313,144 @@
       "user": null
     }
   ],
+  "workspace_list": [
+    {
+      "id": "04df10b3-7bf7-4bb3-be49-4aca61a84f17",
+      "name": "Espacio de tester",
+      "owner": "ff676ee2-96e2-43dd-8161-8be486fd0a36",
+      "subscription_plan": "602336bf-a7ea-4006-911b-92aa3dca831f",
+      "created_at": "2026-11-26T18:38:47.179339Z",
+      "role": "owner"
+    }
+  ],
+  "workspace_create": {
+    "id": "9b4e4e3e-4d49-489c-be43-7a17d685da9f",
+    "name": "Estudio Norte",
+    "owner": "ff676ee2-96e2-43dd-8161-8be486fd0a36",
+    "subscription_plan": "4ff936be-2ab3-46e2-98d5-c68572bf263d",
+    "created_at": "2026-11-26T18:38:48.143168Z",
+    "role": "owner"
+  },
+  "workspace_detail": {
+    "id": "04df10b3-7bf7-4bb3-be49-4aca61a84f17",
+    "name": "Espacio de tester",
+    "owner": "ff676ee2-96e2-43dd-8161-8be486fd0a36",
+    "subscription_plan": "602336bf-a7ea-4006-911b-92aa3dca831f",
+    "created_at": "2026-11-26T18:38:47.179339Z",
+    "role": "editor",
+    "admins": [
+      {
+        "id": "ff676ee2-96e2-43dd-8161-8be486fd0a36",
+        "name": "tester@test.com",
+        "role": "owner"
+      },
+      {
+        "id": "f650dc0a-df55-43e6-afa8-13d9cfb7b9e1",
+        "name": "Admin",
+        "role": "admin"
+      }
+    ]
+  },
+  "workspace_update": {
+    "id": "04df10b3-7bf7-4bb3-be49-4aca61a84f17",
+    "name": "Canal de Ana",
+    "owner": "ff676ee2-96e2-43dd-8161-8be486fd0a36",
+    "subscription_plan": "602336bf-a7ea-4006-911b-92aa3dca831f",
+    "created_at": "2026-11-26T18:38:47.179339Z",
+    "role": "owner"
+  },
+  "members": {
+    "members": [
+      {
+        "id": "d7b9a926-712c-44b6-a12b-fb6c25fb7397",
+        "user": {
+          "id": "ff676ee2-96e2-43dd-8161-8be486fd0a36",
+          "name": "",
+          "email": "tester@test.com"
+        },
+        "email": "tester@test.com",
+        "role": "owner",
+        "status": "active",
+        "joined_at": "2026-11-26T18:38:47.180565Z",
+        "invited_by": null
+      },
+      {
+        "id": "74a6c6bf-7d6c-4f3d-bdc4-30efbba31980",
+        "user": {
+          "id": "f650dc0a-df55-43e6-afa8-13d9cfb7b9e1",
+          "name": "Admin",
+          "email": "admin@test.com"
+        },
+        "email": "admin@test.com",
+        "role": "admin",
+        "status": "active",
+        "joined_at": "2026-11-26T18:38:47.432822Z",
+        "invited_by": null
+      },
+      {
+        "id": "c5e713ec-663b-4fe1-995f-88f860e0fdeb",
+        "user": {
+          "id": "69ebff68-75b1-40a8-85d9-90466ab1a204",
+          "name": "Editor",
+          "email": "editor@test.com"
+        },
+        "email": "editor@test.com",
+        "role": "editor",
+        "status": "active",
+        "joined_at": "2026-11-26T18:38:47.678643Z",
+        "invited_by": null
+      },
+      {
+        "id": "719077ee-7c59-4f01-b7e3-ac522e496c7a",
+        "user": {
+          "id": "81ce6735-bc50-4807-a084-900b16ce43e1",
+          "name": "Viewer",
+          "email": "viewer@test.com"
+        },
+        "email": "viewer@test.com",
+        "role": "viewer",
+        "status": "active",
+        "joined_at": "2026-11-26T18:38:47.927258Z",
+        "invited_by": null
+      },
+      {
+        "id": "af4453fd-2ad4-41c9-8115-e95f7b2bf2bb",
+        "user": {
+          "id": "e432c13c-503b-4cd5-b249-9b4ff58a38c6",
+          "name": "Invitada",
+          "email": "invitada@test.com"
+        },
+        "email": "invitada@test.com",
+        "role": "editor",
+        "status": "pending",
+        "joined_at": "2026-11-26T18:38:48.135571Z",
+        "invited_by": null
+      }
+    ],
+    "max_members": 5,
+    "seats_used": 5
+  },
+  "member_update": {
+    "id": "719077ee-7c59-4f01-b7e3-ac522e496c7a",
+    "user": {
+      "id": "81ce6735-bc50-4807-a084-900b16ce43e1",
+      "name": "Viewer",
+      "email": "viewer@test.com"
+    },
+    "email": "viewer@test.com",
+    "role": "editor",
+    "status": "active",
+    "joined_at": "2026-11-26T18:38:47.927258Z",
+    "invited_by": null
+  },
+  "workspace_transfer": {
+    "id": "04df10b3-7bf7-4bb3-be49-4aca61a84f17",
+    "name": "Canal de Ana",
+    "owner": "f650dc0a-df55-43e6-afa8-13d9cfb7b9e1",
+    "subscription_plan": "602336bf-a7ea-4006-911b-92aa3dca831f",
+    "created_at": "2026-11-26T18:38:47.179339Z",
+    "role": "admin"
+  },
   "errors": {
     "login_401": {
       "status": 401,
@@ -1447,6 +1585,76 @@
       "status": 404,
       "body": {
         "error": "No hay vista previa vigente."
+      }
+    },
+    "workspace_403_admins": {
+      "status": 403,
+      "body": {
+        "detail": "Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin."
+      }
+    },
+    "workspace_403_owner": {
+      "status": 403,
+      "body": {
+        "detail": "Solo el dueño del espacio puede hacer esto."
+      }
+    },
+    "workspace_404": {
+      "status": 404,
+      "body": {
+        "detail": "No encontramos ese espacio de trabajo."
+      }
+    },
+    "workspace_400_name": {
+      "status": 400,
+      "body": {
+        "name": [
+          "Escribí un nombre para el espacio."
+        ]
+      }
+    },
+    "workspace_delete_400_confirm": {
+      "status": 400,
+      "body": {
+        "confirm_name": [
+          "El nombre no coincide."
+        ]
+      }
+    },
+    "member_400_owner_role": {
+      "status": 400,
+      "body": {
+        "role": [
+          "No se puede cambiar el rol del dueño."
+        ]
+      }
+    },
+    "member_400_owner_remove": {
+      "status": 400,
+      "body": {
+        "detail": "No se puede quitar al dueño del workspace."
+      }
+    },
+    "transfer_400": {
+      "status": 400,
+      "body": {
+        "new_owner_id": [
+          "Tiene que ser un miembro activo del workspace."
+        ]
+      }
+    },
+    "workspace_delete_409_processing": {
+      "status": 409,
+      "body": {
+        "error": "Hay proyectos procesándose o renderizándose en este espacio: esperá a que terminen para borrarlo.",
+        "code": "project_processing"
+      }
+    },
+    "workspace_delete_409_reserved": {
+      "status": 409,
+      "body": {
+        "error": "El espacio tiene tokens reservados que todavía no se liquidaron. Probá de nuevo en unos minutos.",
+        "code": "reservation_open"
       }
     }
   }

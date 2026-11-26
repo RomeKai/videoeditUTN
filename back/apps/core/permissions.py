@@ -4,11 +4,14 @@ Roles of the active workspace (table 1.7 of documents/producto/mapa-de-pantallas
 ROLE_MATRIX has the same actions and roles as MATRIX in
 front/src/lib/permissions.ts, so the API refuses what the UI disables.
 """
+import uuid
+
 from rest_framework import permissions
+from rest_framework.exceptions import NotFound, PermissionDenied
 
-from apps.users.models import WorkspaceMember
+from apps.users.models import Workspace, WorkspaceMember
 
-from .workspace import OWNER, resolve_active_workspace
+from .workspace import NOT_FOUND_DETAIL, OWNER, ActiveWorkspace, resolve_active_workspace, role_in
 
 ADMIN = WorkspaceMember.Role.ADMIN
 EDITOR = WorkspaceMember.Role.EDITOR
@@ -48,6 +51,38 @@ DENIED = {
     OWNER_ONLY: "Solo el dueño del espacio puede hacer esto.",
 }
 EDITOR_DELETE_DENIED = "Como Editor solo podés borrar los proyectos que subiste vos."
+
+
+def require_workspace_role(user, workspace_id, action, lock=False):
+    """
+    The ActiveWorkspace of an endpoint that names its workspace in the PATH
+    (``/workspaces/<id>/...``), once the user's role there allows ``action``
+    (a ROLE_MATRIX key).
+
+    ``X-Workspace-Id`` and the default workspace are not read: the role is the
+    one in the workspace the request changes, wherever the header points. A
+    malformed id, a workspace that does not exist, and one the user neither
+    owns nor is an ACTIVE member of are the same 404 (NOT_FOUND_DETAIL); a role
+    the matrix leaves out is a 403 with only ``detail``, like
+    WorkspaceRolePermission's.
+
+    ``lock``: inside a transaction, takes the workspace's row lock first, so
+    the role and the owner are the ones this request will change (a transfer
+    and a delete of the same workspace run one after the other).
+    """
+    try:
+        pk = workspace_id if isinstance(workspace_id, uuid.UUID) else uuid.UUID(str(workspace_id))
+    except ValueError:
+        raise NotFound(NOT_FOUND_DETAIL)
+    queryset = Workspace.objects.select_for_update() if lock else Workspace.objects.select_related('subscription_plan')
+    workspace = queryset.filter(pk=pk).first()
+    role = role_in(workspace, user) if workspace is not None else None
+    if role is None:
+        raise NotFound(NOT_FOUND_DETAIL)
+    allowed = ROLE_MATRIX[action]
+    if role not in allowed:
+        raise PermissionDenied(DENIED[allowed])
+    return ActiveWorkspace(workspace, role)
 
 
 class WorkspaceRolePermission(permissions.BasePermission):

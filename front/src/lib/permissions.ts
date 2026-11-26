@@ -1,8 +1,10 @@
 import type { Role } from '@/api/contracts/common';
 
 /**
- * Permission matrix of map 1.7. The API does not enforce roles yet (gap 3): this
- * is what the UI uses to disable actions. What a role cannot do stays visible,
+ * Permission matrix of map 1.7: the same actions and roles as ROLE_MATRIX in
+ * back/apps/core/permissions.py, which the API enforces (the workspace endpoints
+ * check the role in the workspace of the path). This is what the UI uses to
+ * disable actions, so it never offers what the API refuses. What a role cannot do stays visible,
  * disabled, with the tooltip "Pedile acceso a un admin" (except the admin
  * sections of Ajustes, which are not shown to Editor and Lector).
  */

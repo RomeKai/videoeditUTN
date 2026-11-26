@@ -86,7 +86,7 @@ Todo endpoint nuevo las cumple. Están probadas y el frontend cuenta con ellas.
 - Las vistas de proyectos y brand kits usan `ActiveWorkspaceMixin`: pone `IsAuthenticated` y `WorkspaceRolePermission`, expone `self.active_workspace` y lo pasa al serializer como `context['workspace']`.
   - Hoy vive en `back/apps/videos/views.py`. `back/apps/core/mixins.py` está vacío. Si lo necesitás en otra app, proponé moverlo a `apps/core` en un PR chico; no lo copies.
 - **El queryset filtra por el workspace activo.** Así un objeto de otro workspace da 404 solo (`get_object`), aunque el usuario sea miembro de los dos.
-- **Ojo con `/workspaces/:id/…`:** esos endpoints son `workspaceScoped: false` en el contrato. El cliente no manda el header: el workspace viene en la ruta. `WorkspaceRolePermission` mira el header (o el default), no la ruta, así que no sirve tal cual. Resolvé el rol con `role_in(workspace, request.user)` (mismo archivo): `None` es 404 con `NOT_FOUND_DETAIL`. Propuesta: un permiso chico que tome el workspace de la ruta y reuse `ROLE_MATRIX` y `DENIED`.
+- **Ojo con `/workspaces/:id/…`:** esos endpoints son `workspaceScoped: false` en el contrato. El cliente no manda el header: el workspace viene en la ruta. `WorkspaceRolePermission` mira el header (o el default), no la ruta, así que no sirve tal cual. Usá `require_workspace_role(user, workspace_id, accion, lock=False)` (`back/apps/core/permissions.py`): toma el workspace de la ruta, resuelve el rol con `role_in` y reusa `ROLE_MATRIX` y `DENIED`. Quien no es dueño ni miembro activo recibe 404 con `NOT_FOUND_DETAIL`; un rol que no alcanza, 403 con solo `detail`. Así lo hacen las vistas de `back/apps/users/views_workspaces.py`.
 
 Detalle y tabla de lo que ya tiene endpoint: [01, Workspace activo y roles](../ia/01-creacion-de-proyecto.md#workspace-activo-y-roles). Tests de referencia: `back/apps/videos/tests/test_active_workspace.py`.
 
@@ -236,6 +236,12 @@ Salen de tus dos commits (759f9f8 y f04db85), que el lead pasó con cherry-pick 
 ### Workspaces, miembros e invitaciones (13) · Pedro
 
 Contrato `contracts/workspaces.ts`. Backend: app `apps/users`, modelos `Workspace` y `WorkspaceMember`. Todos son `workspaceScoped: false`: el workspace viene en la ruta (ver la sección 2, «Ojo con `/workspaces/:id/…`»).
+
+Los nueve de workspaces y miembros (hasta `workspaces.removeMember`) ya existen en `back/apps/users/views_workspaces.py`, con sus pruebas en `back/apps/users/tests/test_workspaces_api.py`. Faltan los cuatro de invitaciones.
+
+- Crear usa `create_owned_workspace` (`back/apps/users/workspaces.py`), lo mismo que el registro.
+- Borrar responde 409 (`project_processing` o `reservation_open`) con proyectos en proceso o tokens reservados. Si no, se van en cascada proyectos, clips, publicaciones, brand kits, miembros y la billetera con sus movimientos. Los archivos en R2 no se borran, igual que al borrar un proyecto.
+- Miembros: una fila por `WorkspaceMember`; `invited_by` es siempre null hasta que exista el modelo de invitación.
 
 | Método y ruta | Id | Hook · mock | Pantalla | Backend | Depende de | Talla |
 |---|---|---|---|---|---|---|
@@ -390,7 +396,8 @@ Para no pisarnos. Lo «en curso» ya tiene rama: no lo arranques por tu lado.
 | Área | Endpoints | Quién | Rama | Estado |
 |---|---|---|---|---|
 | Acceso (lo que falta) | 6 + el 403 de `auth.login` | Pedro | — | Propuesta |
-| Workspaces, miembros e invitaciones | 13 | Pedro | — | Propuesta |
+| Workspaces y miembros | 9 | — | `feat/workspaces-y-miembros` | Hechos: existen en el backend |
+| Invitaciones | 4 | Pedro | — | Propuesta |
 | Planes, billetera y pagos (PAY-xx) | 12 | Pedro | — | Tuyos. PAY-03 ya está mergeado (PR #130) |
 | Seguimientos del PR #130: seed, `is_public`, invalidación del cache, validadores, plan Gratis por defecto | — | Lead | `fix/planes-gratis-por-defecto` | En curso (lead) |
 | Redes y publicaciones | 11 | Pedro | — | Propuesta |
