@@ -3,6 +3,7 @@ import type { CreatePostInput } from '../../contracts/social';
 import * as contract from '../../contracts/social';
 import { newId, type MockDb, type MockPost, type MockWorkspace } from '../db';
 import { badRequest, conflict, MockHttpError, notFound, paginate, route } from '../http';
+import { adoptClip } from '../hybrid';
 import { planOf, serializePost } from '../serialize';
 import { addActivity } from '../sim';
 
@@ -42,7 +43,10 @@ function createPosts(db: MockDb, workspace: MockWorkspace, inputs: CreatePostInp
   }
 
   const drafts = inputs.map((input) => {
-    const project = db.projects.find((item) => item.workspace === workspace.id && item.clips.some((clip) => clip.id === input.video_clip));
+    // Hybrid: publishing a clip of the real backend works on a stand-in of it.
+    const project =
+      db.projects.find((item) => item.workspace === workspace.id && item.clips.some((clip) => clip.id === input.video_clip)) ??
+      adoptClip(db, workspace.id, input.video_clip)?.project;
     const clip = project?.clips.find((item) => item.id === input.video_clip);
     if (!project || !clip) throw badRequest({ video_clip: ['El clip no existe.'] });
     if (clip.status !== 'completed' && clip.status !== 'published') throw badRequest({ video_clip: ['El clip todavía no está renderizado.'] });

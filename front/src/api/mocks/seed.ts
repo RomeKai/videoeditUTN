@@ -477,7 +477,7 @@ function transactionFor(project: MockProject, index: number, walletId: string): 
   };
 }
 
-function socialAccounts(workspace: string, states: Partial<Record<Platform, 'connected' | 'expired' | 'disconnected'>>, now: number): MockSocialAccount[] {
+export function socialAccounts(workspace: string, states: Partial<Record<Platform, 'connected' | 'expired' | 'disconnected'>>, now: number): MockSocialAccount[] {
   const limits: Record<Platform, MockSocialAccount['limits']> = {
     TIKTOK: { caption_max_chars: 2200, hashtags_max: 30, max_duration_seconds: 600, aspect_ratios: ['9:16'] },
     INSTAGRAM_REELS: { caption_max_chars: 2200, hashtags_max: 30, max_duration_seconds: 90, aspect_ratios: ['9:16'] },

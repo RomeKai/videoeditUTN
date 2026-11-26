@@ -2,6 +2,7 @@ import * as contract from '../../contracts/projects';
 import type { RenderResolution } from '../../contracts/common';
 import { newId, type MockDb, type MockProject, type ProjectSim } from '../db';
 import { badRequest, conflict, dec, MockHttpError, notFound, paginate, route } from '../http';
+import { adoptProject } from '../hybrid';
 import { priceOf, PRICING, stageStatusFor } from '../seed';
 import { planOf, serializeClip, serializeProject } from '../serialize';
 import { addActivity, InsufficientFunds, reserveFunds } from '../sim';
@@ -65,7 +66,8 @@ function durationFor(name: string, size: number): number {
 const truthy = (value: FormDataEntryValue | null) => typeof value === 'string' && ['true', '1', 't', 'y', 'yes', 'on'].includes(value.trim().toLowerCase());
 
 function own(db: MockDb, id: string | undefined, workspaceId: string): MockProject {
-  const project = db.projects.find((item) => item.id === id && item.workspace === workspaceId);
+  // Hybrid: a project of the real backend gets a stand-in the first time a mocked endpoint is asked about it.
+  const project = db.projects.find((item) => item.id === id && item.workspace === workspaceId) ?? adoptProject(db, workspaceId, id);
   if (!project) throw notFound();
   return project;
 }
