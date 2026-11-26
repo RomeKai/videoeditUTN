@@ -48,8 +48,8 @@ function Highlighted({ text, matches, currentIndex, offset }: { text: string; ma
   return <>{parts}</>;
 }
 
-function ClipNote({ clip, href }: { clip: Clip; href: string }) {
-  const display = describeClip(clip);
+function ClipNote({ clip, href, projectStatus }: { clip: Clip; href: string; projectStatus: Project['status'] }) {
+  const display = describeClip(clip, projectStatus);
   return (
     <aside className={styles.note} aria-label="Clip de este tramo">
       <VideoThumb ratio="9:16" xs width={40} seed={clip.id} />
@@ -368,7 +368,7 @@ export function TranscriptScreen({ projectId }: { projectId: string }) {
                   >
                     {rows}
                   </div>
-                  <ClipNote clip={group.clip} href={isWholeVideo(project) ? `${base}/resultado` : `${base}/clips`} />
+                  <ClipNote projectStatus={project.status} clip={group.clip} href={isWholeVideo(project) ? `${base}/resultado` : `${base}/clips`} />
                 </div>
               ) : (
                 <div key={group.from} className={styles.group}>

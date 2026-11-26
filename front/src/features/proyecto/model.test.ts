@@ -229,6 +229,14 @@ describe('clips', () => {
     expect(describeClip(clip('rendering'))).toMatchObject({ group: 'rendering', ready: false });
     expect(describeClip(clip('failed'))).toMatchObject({ group: 'failed', label: 'Error' });
     expect(describeClip(clip('draft'))).toMatchObject({ group: 'draft', label: 'Sugerido' });
+    // A paid render puts the clip back to `draft` until a worker takes it: that is a render under way, not a suggestion.
+    expect(describeClip({ ...clip('draft'), render_queued: true })).toMatchObject({ group: 'rendering', label: 'Renderizando', ready: false });
+    expect(describeClip({ ...clip('draft'), render_queued: true }, 'partial')).toMatchObject({ group: 'rendering' });
+    // Without the field (an older backend): a draft of a project that is rendering.
+    expect(describeClip(clip('draft'), 'rendering')).toMatchObject({ group: 'rendering', label: 'Renderizando' });
+    expect(describeClip(clip('draft'), 'awaiting_approval')).toMatchObject({ group: 'draft', label: 'Sugerido' });
+    expect(describeClip({ ...clip('draft'), render_queued: false }, 'completed')).toMatchObject({ group: 'draft' });
+    expect(clipCounts([clip('draft'), clip('completed')], 'rendering')).toMatchObject({ rendering: 1, draft: 0, ready: 1 });
     expect(describeClip(clip('completed', [post('SCHEDULED', '2026-11-26T21:00:00Z')]))).toMatchObject({ group: 'scheduled', label: 'Programado', icon: 'pub-scheduled' });
     expect(describeClip(clip('completed', [post('SCHEDULED', '2026-11-26T21:00:00Z'), post('PUBLISHED', '2026-11-23T22:30:00Z')]))).toMatchObject({
       group: 'published',

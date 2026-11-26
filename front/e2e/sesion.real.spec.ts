@@ -106,6 +106,42 @@ test.describe('Sin mocks: la sesión contra el backend', () => {
     expect(calls.filter((call) => call.path === '/api/token/refresh/')).toHaveLength(1);
   });
 
+  test('dos pestañas con el token vencido: renuevan una sola vez y ninguna ve «Sesión vencida»', async ({ context }) => {
+    // The backend rotates the refresh token and blacklists the old one: sending it twice is a 401.
+    const used: string[] = [];
+    const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' };
+    await context.route(`${REAL_API_URL}/**`, async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+      if (path === '/api/token/refresh/') {
+        const refresh = (request.postDataJSON() as { refresh: string }).refresh;
+        used.push(refresh);
+        // Slow enough for the other tab to get its own 401 meanwhile.
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        if (refresh === 'r' && used.filter((item) => item === 'r').length === 1) return route.fulfill({ headers: cors, json: { access: 'a2', refresh: 'r2' } });
+        return route.fulfill({ status: 401, headers: cors, json: { detail: 'Token is blacklisted', code: 'token_not_valid' } });
+      }
+      if (request.headers().authorization !== 'Bearer a2') return route.fulfill({ status: 401, headers: cors, json: { detail: 'Token is invalid or expired', code: 'token_not_valid' } });
+      if (path === '/api/v1/me/') return route.fulfill({ headers: cors, json: me });
+      if (path === '/api/v1/wallet/') return route.fulfill({ headers: cors, json: wallet });
+      if (path === '/api/v1/notifications/') return route.fulfill({ headers: cors, json: { unread_count: 0, results: [] } });
+      if (path === '/api/v1/status/') return route.fulfill({ headers: cors, json: { maintenance: false, maintenance_window: null } });
+      return route.fulfill({ status: 404, headers: cors, json: { detail: 'Not found.' } });
+    });
+    await context.addInitScript(() => {
+      if (!window.localStorage.getItem('oc.auth')) window.localStorage.setItem('oc.auth', JSON.stringify({ access: 'a', refresh: 'r' }));
+    });
+    const [first, second] = await Promise.all([context.newPage(), context.newPage()]);
+    await Promise.all([first.goto('/uso/movimientos'), second.goto('/uso/movimientos')]);
+    for (const tab of [first, second]) {
+      await expect(tab.getByRole('navigation', { name: 'Secciones', exact: true })).toBeVisible();
+      await expect(tab.getByRole('dialog', { name: /sesión venció/i })).toHaveCount(0);
+      expect(await tab.evaluate(() => window.localStorage.getItem('oc.auth'))).toBe(JSON.stringify({ access: 'a2', refresh: 'r2' }));
+    }
+    expect(used).toEqual(['r']);
+  });
+
   test('el backend caído al renovar no cierra la sesión', async ({ page }) => {
     await fakeApi(page, { '/api/v1/me/': 401, '/api/token/refresh/': 503 });
     await signedIn(page);

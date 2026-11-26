@@ -98,7 +98,7 @@ export function ResultScreen({ projectId }: { projectId: string }) {
     );
   }
 
-  const display = describeClip(clip);
+  const display = describeClip(clip, project.status);
   const resolution = project.metadata.render_resolution ?? '720p';
   const pixels = RESOLUTION_PIXELS[resolution]?.[project.aspect_ratio];
   const swatches = kit.data ? [kit.data.primary_color, kit.data.secondary_color, kit.data.accent_color].filter((color): color is string => Boolean(color)) : [];

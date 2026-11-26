@@ -56,7 +56,8 @@ LINK_HOSTS = {
 }
 
 INVALID_MESSAGE = "Ingresá una URL válida, empezando por https://"
-UNSUPPORTED_MESSAGE = "No reconocemos este sitio. Probá con YouTube, Vimeo u otro sitio público."
+# The providers of LINK_HOSTS, by name: no other site is downloaded.
+UNSUPPORTED_MESSAGE = "No reconocemos este sitio. Pegá un link de YouTube, Vimeo, Twitch o Google Drive."
 NOT_A_VIDEO_MESSAGE = "Pegá el link de un solo video, no de una lista, un canal o una transmisión en vivo."
 
 _HOST_CHARS = re.compile(r'[A-Za-z0-9.-]+')

@@ -1,6 +1,6 @@
 import type { Role } from '../contracts/common';
 import type { PipelineStage } from '../contracts/projects';
-import { KIND, mid, newId, type MockClip, type MockDb, type MockProject, type MockTransaction, type MockWallet } from './db';
+import { KIND, mid, newId, type MockClip, type MockDb, type MockProject, type MockTransaction, type MockWallet, type PaidRender } from './db';
 import { buildClips, PLAN_IDS, priceOf, stageStatusFor } from './seed';
 
 /** Pace of the simulated pipeline: slow enough to see each step with the 5 s polling, fast enough to click through. */
@@ -8,6 +8,8 @@ export const SIM = {
   queueMs: 3_000,
   stageMs: 6_000,
   clipMs: 4_000,
+  /** How long the clips of a paid render wait in `draft` before a worker takes them. */
+  claimMs: 1_500,
   postQueuedMs: 4_000,
   postProcessingMs: 6_000,
   purchaseMs: 3_000,
@@ -192,7 +194,7 @@ function failProject(db: MockDb, project: MockProject, code: string, now: number
   notify(db, project.workspace, { type: 'project_failed', title: `${project.title} no se pudo procesar`, body: refunded > 0 ? `Te devolvimos ${refunded} tokens.` : 'No se cobró nada.', project_id: project.id }, now);
 }
 
-function startRender(project: MockProject, now: number, sim: { failOneClip?: boolean } = {}): void {
+export function startRender(project: MockProject, now: number, sim: { failOneClip?: boolean } = {}): void {
   project.status = 'rendering';
   project.pipeline_stage = 'render_dispatched';
   project.pipeline_stage_status = stageStatusFor('clips_selected', null);
@@ -203,7 +205,7 @@ function startRender(project: MockProject, now: number, sim: { failOneClip?: boo
 const RESOLUTION_RANK = { '720p': 1, '1080p': 2, '4K': 3 } as const;
 
 /** `_reserve_auto_render`: returns why it could not be paid, or null when the reservation was made. */
-function reserveAutoRender(db: MockDb, project: MockProject, now: number): 'insufficient_funds' | 'plan_limit' | null {
+export function reserveAutoRender(db: MockDb, project: MockProject, now: number): 'insufficient_funds' | 'plan_limit' | null {
   const seconds = project.clips.reduce((sum, clip) => sum + Math.max(0, clip.end_time - clip.start_time), 0);
   const workspace = db.workspaces.find((item) => item.id === project.workspace);
   const plan = db.plans.find((item) => item.id === (workspace?.subscription_plan ?? PLAN_IDS.free));
@@ -242,6 +244,12 @@ function tickIngest(db: MockDb, project: MockProject, now: number): void {
   if (!sim) return;
   const elapsed = now - sim.startedAt;
   if (elapsed < SIM.queueMs) return;
+  // A re-dispatched project stays `failed` with its code until the task reopens it.
+  if (project.status === 'failed') {
+    project.pipeline_error_code = '';
+    project.pipeline_error_at = null;
+    project.pipeline_stage = 'uploaded';
+  }
   project.status = 'ingesting';
   project.pipeline_attempts = 1;
   let time = elapsed - SIM.queueMs;
@@ -320,6 +328,14 @@ function tickIngest(db: MockDb, project: MockProject, now: number): void {
     startRender(project, now, { failOneClip: sim.failOneClip });
     return;
   }
+  // `_commit_ingestion_reservation`: a clips project pays its processing here, before the review.
+  // (A whole video is paid by the same reservation when its render ends.)
+  const creation = db.transactions.find((item) => item.id === project.metadata.reservation_id);
+  if (creation?.status === 'RESERVED') {
+    settleReservation(db, creation.id, now);
+    if (project.cost) project.cost = { ...project.cost, state: 'charged' };
+    addActivity(db, project, 'tokens_charged', 'Cobro del procesamiento', now, { amount: -creation.amount });
+  }
   const count = Math.min(20, Math.max(1, project.metadata.max_clips ?? 8));
   const seedIndex = Math.floor(sim.startedAt % 9_000) + 500;
   project.clips = buildClips(project.id, seedIndex, duration, { count, statuses: ['draft'] }, now).map((clip) => ({ ...clip, id: newId() }));
@@ -344,12 +360,24 @@ function tickIngest(db: MockDb, project: MockProject, now: number): void {
 function tickRender(db: MockDb, project: MockProject, now: number): void {
   const sim = project._sim;
   if (!sim) return;
+  const paid = project._paidRender;
+  // A paid render leaves its clips in `draft` until a worker claims them (`render_queued`).
+  if (paid && now - sim.startedAt < SIM.claimMs) return;
+  if (paid) {
+    for (const clip of project.clips) {
+      if (!paid.clipIds.includes(clip.id) || clip.status !== 'draft') continue;
+      clip.status = 'rendering';
+      delete clip.render_queued;
+    }
+  }
   const pending = project.clips.filter((clip) => clip.status === 'rendering');
   const alreadyDone = project.clips.length - pending.length;
-  const finishedNow = Math.min(pending.length, Math.floor((now - sim.startedAt) / SIM.clipMs));
+  const finishedNow = Math.min(pending.length, Math.floor((now - sim.startedAt - (paid ? SIM.claimMs : 0)) / SIM.clipMs));
   pending.slice(0, finishedNow).forEach((clip, index) => {
     const last = alreadyDone + index === project.clips.length - 1;
-    if (sim.failOneClip && last) {
+    const fails = clip._renderFails === true;
+    delete clip._renderFails;
+    if (fails || (sim.failOneClip && last)) {
       clip.status = 'failed';
       clip.error_code = 'RenderError';
     } else {
@@ -359,6 +387,10 @@ function tickRender(db: MockDb, project: MockProject, now: number): void {
     }
   });
   if (finishedNow < pending.length) return;
+  if (project._paidRender) {
+    finishPaidRender(db, project, project._paidRender, now);
+    return;
+  }
 
   const failed = project.clips.filter((clip) => clip.status === 'failed').length;
   project.status = failed > 0 ? 'partial' : 'completed';
@@ -393,19 +425,53 @@ function tickRender(db: MockDb, project: MockProject, now: number): void {
   notify(db, project.workspace, { type: 'render_finished', title: `${project.title}: terminó el render`, body: single ? 'Tu video está listo.' : `${ready} clips listos.`, project_id: project.id }, now);
 }
 
-function tickClips(db: MockDb, project: MockProject, now: number): void {
-  for (const clip of project.clips) {
-    if (clip._renderUntil === undefined || now < clip._renderUntil) continue;
-    clip.status = clip._renderFails ? 'failed' : 'completed';
-    clip.error_code = clip._renderFails ? 'RenderError' : null;
-    if (!clip._renderFails) clip.s3_object_key = `clips/${project.id}/${clip.id}.mp4`;
-    delete clip._renderUntil;
-    delete clip._renderFails;
-    if (project.status === 'partial' && project.clips.every((item) => item.status !== 'failed')) {
-      project.status = 'completed';
-      project.pipeline_stage = 'completed';
+/**
+ * Closes a paid render (`finalize_project_render` for CLIP_RENDER): its reservation is charged by
+ * the seconds delivered (`_clip_render_charge`: amount × delivered / reserved) and the rest goes
+ * back. A clip that was already delivered and whose new render failed gets back what it had.
+ */
+function finishPaidRender(db: MockDb, project: MockProject, paid: PaidRender, now: number): void {
+  delete project._paidRender;
+  delete project._sim;
+  const clips = project.clips.filter((clip) => paid.clipIds.includes(clip.id));
+  let reserved = 0;
+  let delivered = 0;
+  for (const clip of clips) {
+    const seconds = Math.max(0, clip.end_time - clip.start_time);
+    reserved += seconds;
+    const before = paid.previous[clip.id];
+    if (clip.status === 'completed') {
+      delivered += seconds;
+      // A published clip is still published: only its file changed.
+      if (before?.status === 'published') clip.status = 'published';
+    } else if (clip.status === 'failed' && before) {
+      clip.status = before.status;
+      clip.s3_object_key = before.key;
+      clip.error_code = null;
     }
   }
+  const failed = project.clips.filter((clip) => clip.status === 'failed').length;
+  project.status = failed > 0 ? 'partial' : 'completed';
+  project.pipeline_stage = failed > 0 ? 'partial' : 'completed';
+  project.pipeline_stage_status = stageStatusFor('clips_selected', null);
+  const transaction = db.transactions.find((item) => item.id === paid.reservation);
+  const amount = transaction?.status === 'RESERVED' ? transaction.amount : 0;
+  const charge = reserved <= 0 || delivered >= reserved ? amount : round2(amount * (delivered / reserved));
+  const returned = settleReservationPartially(db, paid.reservation, charge, now);
+  addActivity(db, project, 'render_finished', 'Terminó el render', now);
+  if (amount - returned > 0) addActivity(db, project, 'tokens_charged', 'Cobro del render', now, { amount: -round2(amount - returned) });
+  if (returned > 0) addActivity(db, project, 'tokens_refunded', 'Devolución por lo que no se generó', now, { amount: round2(returned) });
+  notify(
+    db,
+    project.workspace,
+    {
+      type: 'render_finished',
+      title: `${project.title}: terminó el render`,
+      body: delivered >= reserved ? 'Tus clips están listos.' : returned > 0 ? `Parte del render falló. Te devolvimos ${round2(returned)} tokens.` : 'Parte del render falló.',
+      project_id: project.id,
+    },
+    now,
+  );
 }
 
 /** What the SEO generation "writes": the first text, and the ones "Regenerar" rotates through. */
@@ -531,7 +597,6 @@ export function tick(db: MockDb, now: number = Date.now()): void {
   for (const project of db.projects) {
     if (project._sim?.phase === 'ingest') tickIngest(db, project, now);
     if (project._sim?.phase === 'render') tickRender(db, project, now);
-    tickClips(db, project, now);
   }
   tickPosts(db, now);
   tickPurchases(db, now);

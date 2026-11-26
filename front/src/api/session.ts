@@ -43,7 +43,21 @@ export function getTokens(): TokenPair | null {
   }
 }
 
+/**
+ * Counts every time this tab stores a pair (sign in, sign out, the new pair of a password change,
+ * a renewal). A renewal that started under an older generation must not store its result: see
+ * `refreshAccessToken`. What another tab stores does not count here: its `storage` event can
+ * arrive late, after this tab already read that pair and started renewing with it, and the answer
+ * of that renewal is the valid one. Another tab's pair is recognised by comparing the stored pair.
+ */
+let tokenGeneration = 0;
+
+export function getTokenGeneration(): number {
+  return tokenGeneration;
+}
+
 export function setTokens(tokens: TokenPair | null): void {
+  tokenGeneration += 1;
   memoryTokens = tokens;
   // New tokens end the "expired" state; dropping them ends it too (there is nothing left to expire).
   expired = false;

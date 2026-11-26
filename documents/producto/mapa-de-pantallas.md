@@ -217,6 +217,10 @@ El pipeline guarda en `pipeline_error_code` el nombre de la excepción. El front
 | `AINoSpeechDetectedError` | "No encontramos voz en el video. OneCreator elige clips a partir de lo que se dice." |
 | `AIEmptySelectionError` | "No encontramos momentos que funcionen como clips. Probá con otro video o cambiá el criterio." |
 | `SoftTimeLimitExceeded` | "El video tardó demasiado en procesarse. Probá con uno más corto." |
+| `UnsupportedLinkError` | "No pudimos usar este link. Tiene que ser el link de un solo video público de YouTube, Vimeo, Twitch o Google Drive: no una lista, un canal ni una transmisión en vivo." |
+| `LinkTooLongError` | "El video del link dura más de lo que permite tu plan. Probá con uno más corto o cambiá de plan." |
+| `LinkTooLongForAppError` | "El video del link dura más de 3 horas, el máximo que acepta OneCreator. Probá con uno más corto." Pasa con cualquier plan, y el proyecto no se re-despacha (409 `duration_app`): se crea otro. |
+| `LinkTooLargeError` | "El video del link pesa más de lo que podemos descargar. Probá con una versión más liviana o subí el archivo." |
 | `ModerationUnavailableError`, `AIAuthenticationError` y cualquier otro | "Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo." |
 
 Errores al subir el archivo. `InvalidUploadError.code` llega en la respuesta 400 y se muestra junto al campo del archivo:
@@ -373,7 +377,7 @@ Otras respuestas:
   - ✅ `project_type` (`repurpose` o `single_edit`). `single_edit` solo acepta un archivo de hasta 10 min (`AI_SINGLE_EDIT_MAX_DURATION_SECONDS`); con un link o un archivo más largo da 400. No cambia después de crear.
   - ✅ `speaker_tracking=true` sin layout crea el proyecto con Quien habla (`render_layout=active`).
   - ❌ falta el endpoint de precios para el estimado.
-  - ✅ `POST /api/v1/projects/probe-link/` reconoce el link antes de crear (sitio, título y duración) y responde 403 `duration` si supera el plan. Crear no pasa por el probe, pero la descarga aplica el mismo límite: un video más largo hace fallar el proyecto (`LinkTooLongError`) y se devuelve la reserva.
+  - ✅ `POST /api/v1/projects/probe-link/` reconoce el link antes de crear (sitio, título y duración) y responde 400 `duration_app` si pasa las 3 h que procesa la app, con cualquier plan (también Gratis: ahí no se sugiere otro plan), o 403 `duration` si no las pasa pero supera el plan. Crear no pasa por el probe, pero la descarga aplica el mismo límite: un video más largo hace fallar el proyecto (`LinkTooLongError`, o `LinkTooLongForAppError` si pasa las 3 h que procesa la app con cualquier plan) y se devuelve la reserva.
   - ✅ solo se aceptan links de un video de YouTube, Vimeo, Twitch o Google Drive (hosts exactos, sin listas, canales ni vivos), nunca una IP ni una dirección interna.
 
 ### D. Proyecto
@@ -450,12 +454,12 @@ Otras respuestas:
 - **Acciones generales:** **Descargar todo** (.zip) y **Publicar varios** (selección múltiple).
 - **Estados:**
   - Renderizando: una tarjeta con esqueleto y "Renderizando…".
-  - Error: una tarjeta roja con **Reintentar**. Reintentar no cobra si el error fue nuestro.
+  - Error: una tarjeta neutra con **Reintentar** ("No se pudo generar y no se cobró. Reintentar cuesta tokens."). Reintentar es pago: cuando el clip falló se devolvió su parte del render, así que el reintento reserva de nuevo el render de ese clip y el clip se paga una vez en total. Como toda acción paga, primero muestra el diálogo de confirmar costo; sin saldo abre "No te alcanza el saldo". Mientras ese render está en curso el proyecto queda en `rendering` y no se puede empezar otro render pago del mismo proyecto.
 - **Móvil:** dos columnas; las acciones se abren en una hoja inferior.
 - **API:**
   - ✅ los clips llegan dentro del proyecto: uno por segmento aprobado en D2, cada uno con su estado (`draft` mientras espera su render, `rendering`, `completed` o `failed`). El proyecto termina `completed`, o `partial` si algún clip falló.
   - ✅ `GET /api/v1/clips/:id/download/`: link firmado y temporal que guarda el clip como archivo.
-  - ❌ falta reintentar el render de un clip.
+  - ✅ `POST /api/v1/clips/:id/retry/`: reintenta el render de un clip que falló y reserva su costo. Responde el clip más `final_cost` y `transaction_id`; 402 sin saldo y 409 si el clip no está en error o el proyecto ya está renderizando o procesando.
   - ✅ `POST /api/v1/projects/:id/clips/download/`: .zip de los clips listos, con tope de 1 GB y 50 clips.
 
 #### D4. Editor de clip — `/proyectos/:id/clips/:clipId`
@@ -798,7 +802,7 @@ Se agregaron en la segunda ronda del canvas, después de una revisión de diseñ
 6. **Clips (D3).**
    - En la pestaña Clips la cabecera no tiene acción principal, porque ya estás en los clips.
    - "Publicar varios" pasa a ser "Seleccionar". Activa un modo de selección con casillas en las tarjetas y una barra que dice "N seleccionados · Publicar · Descargar · Cancelar".
-   - Los estados "Renderizando" y "Error" ("No se pudo generar. Reintentar no gasta tokens.") se muestran en una sección "Otros estados" de la pantalla y en el sistema visual. La tarjeta de error es neutra: el rojo va solo en el ícono y la etiqueta.
+   - Los estados "Renderizando" y "Error" ("No se pudo generar y no se cobró. Reintentar cuesta tokens.") se muestran en una sección "Otros estados" de la pantalla y en el sistema visual. La tarjeta de error es neutra: el rojo va solo en el ícono y la etiqueta.
 7. **Publicar (E1).**
    - El orden es Clip → Redes → Cuándo → detalle por red.
    - En la pestaña de TikTok la privacidad va primero.

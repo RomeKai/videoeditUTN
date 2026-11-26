@@ -287,8 +287,8 @@ Contratos `contracts/projects.ts` y `contracts/clips.ts`. Backend: `apps/videos`
 
 | Método y ruta | Id | Hook · mock | Pantalla | Backend | Depende de | Talla |
 |---|---|---|---|---|---|---|
-| POST `projects/probe-link/` | `projects.probeLink` | `useProbeLink` · `probeLink` | C1 (§5 C) | Acción nueva de `VideoProjectViewSet`; valida duración contra el plan | — | M |
-| POST `projects/:id/redispatch/` | `projects.redispatch` | `useRedispatchProject` · `redispatchProject` | D1 (§5 D) | Hoy es una acción del admin; no cobra | — | S |
+| POST `projects/probe-link/` | `projects.probeLink` | `useProbeLink` · `probeLink` | C1 (§5 C) | Acción de `VideoProjectViewSet`. Valida la duración del video con la regla de la descarga: más de 3 h, el máximo de la app, es 400 `duration_app` con `limit` y con cualquier plan (ningún plan lo aceptaría); dentro de las 3 h y más que el plan, 403 `duration` con `limit` | — | M |
+| POST `projects/:id/redispatch/` | `projects.redispatch` | `useRedispatchProject` · `redispatchProject` | D1 (§5 D) | `ProjectRedispatchView`, solo Dueño y Admin. Cobra: si lo que falta se devolvió al fallar (una etapa antes de elegir los clips, o el render de un video completo), reserva de nuevo el mismo monto y responde `cost_details`; 402 sin saldo. Un proyecto con los clips ya elegidos se reanuda sin reservar (su render se paga solo). 409 con `code` si no se puede reanudar; `duration_app` si falló con `LinkTooLongForAppError` (su link pasa las 3 h: se crea otro) | — | S |
 | POST `projects/:id/rerender/` | `projects.rerender` | `useRerenderProject` · `rerenderProject` | D1, D4, D5 | Reserva y `render_clip_task` por clip | — | M |
 | GET `projects/:id/activity/` | `projects.activity` | `useProjectActivity` · `getProjectActivity` | D1 Actividad (§9.2) | Quién hizo qué y los movimientos de tokens | Vínculo `Transaction` ↔ proyecto | M |
 | POST `projects/:id/clips/download/` | `projects.downloadAll` | `useDownloadAllClips` · `downloadAllClips` | D3 (§5 D) | .zip y URL temporal (hueco 17) | `clips.download` | M |
@@ -296,7 +296,7 @@ Contratos `contracts/projects.ts` y `contracts/clips.ts`. Backend: `apps/videos`
 | PATCH `clips/:id/` | `clips.update` | `useUpdateClip` · `updateClip` | D4, D3, D5 | 409 mientras renderiza, como `ProjectRenderingError` | — | S |
 | DELETE `clips/:id/` | `clips.delete` | `useDeleteClip` · `deleteClip` | D3 (§5 D) | Cancela sus `ScheduledPost` | — | S |
 | POST `clips/:id/render/` | `clips.render` | `useRenderClip` · `renderClip` | D4, D5 | Reserva por la duración del clip | — | M |
-| POST `clips/:id/retry/` | `clips.retry` | `useRetryClip` · `retryClip` | D3 (§5 D) | No cobra si el error fue del sistema | — | M |
+| POST `clips/:id/retry/` | `clips.retry` | `useRetryClip` · `retryClip` | D3 (§5 D) | `ClipRetryView`. Cobra el render del clip (su parte se devolvió cuando falló): reserva como `clips.render` y responde el clip más `final_cost` y `transaction_id`; 402 sin saldo, 409 si no está en error o el proyecto ya renderiza. La UI confirma el costo antes | — | M |
 | GET `clips/:id/download/` | `clips.download` | `useClipDownload` · `getClipDownload` | D3, D4, D5 | `CloudflareR2Manager.generate_presigned_url` con `ResponseContentDisposition=attachment` | — | S |
 | GET `projects/` ⚠️ | `projects.list` | `useProjects` · `listProjects` | B2 (§5 B), J1, B1 | Paginación de 25, `status_group`, `search`, `status_counts`, serializer liviano (hueco 14) | — | M |
 | GET `projects/:id/` ⚠️ | `projects.detail` | `useProject` · `getProject` | D1, D3, D4, D5 | Faltan `cost`, `stage_timings`, `eta_seconds`, `duration_seconds`, `uploaded_by_detail`, `thumbnail_url` (huecos 4, 15, 18) | Vínculo `Transaction` ↔ proyecto | M |
