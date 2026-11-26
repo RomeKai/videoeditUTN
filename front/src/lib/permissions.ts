@@ -1,10 +1,16 @@
 import type { Role } from '@/api/contracts/common';
 
 /**
- * Permission matrix of map 1.7. The API does not enforce roles yet (gap 3): this
- * is what the UI uses to disable actions. What a role cannot do stays visible,
- * disabled, with the tooltip "Pedile acceso a un admin" (except the admin
- * sections of Ajustes, which are not shown to Editor and Lector).
+ * Permission matrix of map 1.7: what the UI uses to disable actions. What a role
+ * cannot do stays visible, disabled, with the tooltip "Pedile acceso a un admin"
+ * (except the admin sections of Ajustes, which are not shown to Editor and
+ * Lector).
+ *
+ * The API enforces the same table (`ROLE_MATRIX` in
+ * back/apps/core/permissions.py). `role-matrix.json` is that table, written by
+ * `python manage.py export_role_matrix`; `permissions.test.ts` compares `MATRIX`
+ * with it, and a backend test checks the file is current. Change both sides and
+ * regenerate the file in the same PR.
  */
 export type Action =
   | 'project.view'
@@ -29,7 +35,7 @@ const MAKERS: Role[] = ['owner', 'admin', 'editor'];
 const ADMINS: Role[] = ['owner', 'admin'];
 const OWNER: Role[] = ['owner'];
 
-const MATRIX: Record<Action, Role[]> = {
+export const MATRIX: Record<Action, Role[]> = {
   'project.view': ALL,
   'clip.download': ALL,
   'project.create': MAKERS,

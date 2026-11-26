@@ -71,6 +71,14 @@ export function appQueryClient(): QueryClient {
   return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 15_000 }, mutations: { retry: false } } });
 }
 
+/**
+ * A cache that dies with the screen (`gcTime: 0`): every render starts from the
+ * server, so a test never reads what the screen before it left behind.
+ */
+export function freshQueryClient(): QueryClient {
+  return new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } });
+}
+
 /** What the root layout gives every screen: theme, query cache, toasts, session, the leave guard and the billing dialogs. */
 export function AppProviders({ client, children }: { client: QueryClient; children: ReactNode }) {
   return (
@@ -92,4 +100,25 @@ export function AppProviders({ client, children }: { client: QueryClient; childr
 export function renderScreen(ui: ReactElement, { client = appQueryClient() }: { client?: QueryClient } = {}): RenderResult & { queryClient: QueryClient } {
   const view = render(<AppProviders client={client}>{ui}</AppProviders>);
   return Object.assign(view, { queryClient: client });
+}
+
+export interface ScenarioOptions {
+  /** The mock scenario to seed. It signs in the user it starts with (Lucía, or the role of the scenario). */
+  scenario?: string;
+  /** Seeds nothing: a second app over the data another render already has (another tab of the same browser). */
+  keep?: boolean;
+  /** Changes the seeded database before the screen asks for anything. */
+  prepare?: () => void;
+  /** A cache to share between renders. */
+  client?: QueryClient;
+}
+
+/** Seeds a mock scenario and renders a screen over it, inside the app's providers. */
+export function renderScenario(
+  ui: ReactElement,
+  { scenario = 'estudio-norte', keep = false, prepare, client }: ScenarioOptions = {},
+): RenderResult & { queryClient: QueryClient } {
+  if (!keep) startScenario(scenario);
+  prepare?.();
+  return renderScreen(ui, { client });
 }

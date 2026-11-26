@@ -30,7 +30,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 - **Listas paginadas (propuesto, hueco 14):** `{ count, next, previous, results }` con `page` y `page_size` (25 por defecto), como `PageNumberPagination`.
 - **Errores:** validación de DRF `{ "campo": ["mensaje"] }`; vistas propias `{ "error": "mensaje", "required"?: "117.00" }`; permisos y 404 `{ "detail": "mensaje" }`. Propuesto: sumar `code` legible por máquina (`duration`, `resolution`, `seo`, `scheduling`, `crossposting`, `seats_exceeded`, `email_not_verified`, `account_not_connected`, `permission_denied`) y, en los errores de campo, ítems `{ "message", "code" }`.
 - **402** siempre abre el diálogo de saldo insuficiente y **403 de precios** el de límite del plan.
-- **La tabla de roles, en los dos lados:** la tabla 1.7 del mapa está en `src/lib/permissions.ts` (`MATRIX`) y el backend la copia en `ROLE_MATRIX` (`back/apps/core/permissions.py`, PR #125). Lo que la UI deshabilita, la API lo rechaza con el 403 de **Roles**: `{ detail }` en español, sin `code`. Sumar `code: "permission_denied"` sigue propuesto (diferencia 17).
+- **La tabla de roles, en los dos lados:** la tabla 1.7 del mapa está en `src/lib/permissions.ts` (`MATRIX`) y el backend la copia en `ROLE_MATRIX` (`back/apps/core/permissions.py`, PR #125). Que las dos digan lo mismo lo cuida un test de cada lado contra `src/lib/role-matrix.json`, que escribe `python manage.py export_role_matrix` desde `ROLE_MATRIX`: si una tabla cambia sin la otra, falla nombrando el rol y la acción. Lo que la UI deshabilita, la API lo rechaza con el 403 de **Roles**: `{ detail }` en español, sin `code`. Sumar `code: "permission_denied"` sigue propuesto (diferencia 17).
 
 ## Diferencias encontradas con el backend de hoy
 
@@ -40,7 +40,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | 2 | El código de `InvalidUploadError` (`not_a_video`, `too_long`…) no llega en el 400: DRF solo manda el mensaje. | `{ "source_file": [{ "message", "code" }] }`. Mientras tanto el frontend reconoce el código por el texto (`uploadErrorCode()` en `src/lib/error-messages.ts`). |
 | 3 | Los 403 de `PricingEngine` traen un mensaje en inglés sin código (`Video duration (…) exceeds your plan limit`). | `code` (`duration`, `resolution`, `seo`) y `limit`. Mientras tanto se reconoce por el texto (`planLimitKind()`). |
 | 4 | El rol del modelo es `viewer` (`WorkspaceMember.Role.VIEWER`); el mapa lo llama «Lector». | El contrato usa los valores del backend (`admin`, `editor`, `viewer`) más `owner` derivado de `Workspace.owner`. «Lector» es solo la etiqueta. |
-| 5 | `POST/GET /api/v1/clips/{id}/preview/` (PTE-03) existe; el mapa (D4 y §7) todavía lo da por faltante. | Está en el contrato como existente. |
+| 5 | ~~`POST/GET /api/v1/clips/{id}/preview/` (PTE-03) figuraba fuera del MVP en el mapa (§7).~~ Resuelto: existe y el mapa lo da dentro del MVP. | Está en el contrato como existente. |
 | 6 | `VideoProjectSerializer.create` lee `subtitle_scale_factor` del pedido y lo asigna a un atributo que el modelo no tiene: se pierde. | El frontend no lo manda; el tamaño va en `subtitle_size`. |
 | 7 | `subtitle_size` se guarda en `metadata.subtitle_size` al crear, además del campo del modelo. | El frontend lee el campo `subtitle_size` del proyecto. |
 | 8 | `brand_kit_name` no viene cuando el proyecto no tiene brand kit (DRF omite el campo). | Opcional en el esquema. |
