@@ -89,7 +89,7 @@ test.describe('Uso y facturación', () => {
     await expect(page.getByRole('article', { name: 'Plan Estudio, tu plan' })).toBeVisible();
     await page.getByRole('button', { name: 'Bajar a Pro' }).click();
     const dialog = page.getByRole('alertdialog', { name: '¿Bajar a Pro?' });
-    await expect(dialog.getByText('Miembros: 5 (hoy 15)')).toBeVisible();
+    await expect(dialog.getByText('Miembros: 10 (hoy 15)')).toBeVisible();
     await dialog.getByRole('button', { name: 'Bajar a Pro' }).click();
     await expect(page.getByRole('article', { name: /^Plan Pro/ }).getByText('Próximo plan')).toBeVisible();
     await page.getByRole('link', { name: 'Resumen' }).click();
@@ -177,7 +177,7 @@ test.describe('Uso y facturación', () => {
 
 test.describe('Ajustes y cuenta', () => {
   test('miembros: invitar ocupa el último lugar y deshabilita «Invitar»', async ({ page }) => {
-    await useScenario(page, 'estudio-norte');
+    await useScenario(page, 'miembros-queda-un-lugar');
     const problems = watch(page);
     await page.goto('/ajustes');
     await settle(page);
@@ -251,7 +251,7 @@ test.describe('Ajustes y cuenta', () => {
     await page.goto('/ajustes');
     await settle(page);
     const membersRow = page.getByRole('link', { name: /Miembros/ }).filter({ hasText: 'invitación pendiente' });
-    await expect(membersRow).toContainText('4 de 5 miembros · 1 invitación pendiente');
+    await expect(membersRow).toContainText('9 de 10 miembros · 1 invitación pendiente');
     await membersRow.click();
     await expect(page).toHaveURL(/\/ajustes\/miembros$/);
     await settle(page);
