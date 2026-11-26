@@ -920,16 +920,21 @@ class ProjectRedispatchView(_WorkspaceScoped):
     @staticmethod
     def _restore_chain(project_id, chain, previous):
         """
-        Puts back the chain this request replaced, only while its own is still
-        the stored one (compare-and-set under the row lock: a later request or
-        the pipeline may have moved on). Never raises: at worst nothing runs
-        until the next re-dispatch.
+        Puts back the chain this request replaced, only while the project is
+        still failed and its own chain is still the stored one (compare-and-set
+        under the row lock, the rule of ``_give_back``): if its message got
+        through after all and a worker reopened the project, that run keeps
+        its chain. Never raises: at worst nothing runs until the next
+        re-dispatch.
         """
         from .tasks.ingestion import INGESTION_CHAIN_KEY
 
         try:
             with transaction.atomic():
                 project = VideoProject.objects.select_for_update().get(pk=project_id)
+                if project.pipeline_stage != VideoProject.PipelineStage.FAILED:
+                    logger.warning("pipeline.redispatch_chain_kept project_id=%s reason=resumed", project_id)
+                    return
                 metadata = dict(project.metadata or {})
                 if metadata.get(INGESTION_CHAIN_KEY) != chain:
                     return

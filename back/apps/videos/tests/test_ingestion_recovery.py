@@ -652,6 +652,34 @@ class ChainFollowUpTests(StuckIngestionHarness, APITestCase):
         self.assertEqual(Transaction.objects.get(pk=project.metadata["reservation_id"]).status, CHARGED)
         self.assertEqual(self.balances(), (Decimal("90.00"), Decimal("0")))
 
+    def test_a_redispatch_whose_message_got_through_keeps_the_chain_that_runs_it(self):
+        """The second publish raised after the broker took it, and a worker already reopened the project."""
+        project, _old = self.lost()
+        self.spend_requeues(project)
+        self.age(project, fail_after() + 60)
+        self.sweep(project)  # failed and refunded
+        client = self.client_for_user()
+        with patch("apps.videos.tasks.process_initial_ingestion.delay") as delay:
+            client.post(reverse("project-redispatch", args=[project.pk]))
+        first_chain = delay.call_args.kwargs["chain"]
+        seen = {}
+
+        def published_then_raised(project_id, chain=None):
+            # The worker took the message and reopened the project before the client saw the error.
+            seen["chain"] = chain
+            VideoProject.objects.filter(pk=project_id).update(
+                pipeline_stage=PipelineStage.UPLOADED, status=VideoProject.Status.INGESTING,
+            )
+            raise OperationalError("timeout after publish")
+
+        with patch("apps.videos.tasks.process_initial_ingestion.delay", side_effect=published_then_raised):
+            second = client.post(reverse("project-redispatch", args=[project.pk]))
+
+        self.assertEqual(second.status_code, 503)
+        self.assertNotEqual(seen["chain"], first_chain)
+        self.assertEqual(self.chain(project), seen["chain"])  # the reopened run keeps its own chain
+        self.assertIn("Skipped", self.run_chain(project, first_chain).result)  # the first one runs nothing
+
     def test_the_override_of_a_project_reopened_meanwhile_does_not_replace_its_chain(self):
         from django.contrib.auth import get_user_model
 
