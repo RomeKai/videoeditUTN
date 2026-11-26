@@ -95,6 +95,7 @@ const FAIL_STEP_TEXT: Record<string, string> = {
   AIEmptySelectionError: 'No encontramos momentos que funcionen como clips.',
   SoftTimeLimitExceeded: 'Tardó demasiado en procesarse.',
   AutoRenderNotPaid: 'No alcanzó el saldo para renderizar los clips que faltaban.',
+  IngestionStuck: 'El proceso se trabó y no siguió.',
 };
 
 function stageIndex(stage: string): number {

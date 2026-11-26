@@ -291,7 +291,7 @@ export function renderRoutes(): string {
   out.push('| Ruta | Para qué |');
   out.push('|---|---|');
   out.push('| `/dev/kit` | Todos los componentes del sistema visual en los dos temas, y el selector de escenarios de datos de prueba. |');
-  out.push('| `/dev/checkout` | Solo con mocks: reemplaza al checkout del proveedor de pagos (aprueba o rechaza la compra y vuelve). |');
+  out.push('| `/dev/checkout` | Solo con mocks (modos mock e hybrid): reemplaza al checkout del proveedor de pagos (aprueba o rechaza la compra y vuelve). Con `billing` en el backend decide con `billing.simulatePurchase`, el proveedor simulado (`PAYMENTS_PROVIDER=simulated`). |');
   out.push('| `/dev/conectar-red` | Solo con mocks: reemplaza a la ventana de autorización de la red social. |');
   out.push('');
   out.push('## Dominios');

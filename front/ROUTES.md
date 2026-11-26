@@ -67,7 +67,7 @@ Los artboards están en el canvas de diseño, un archivo `<nombre>.dc.html` por 
 | Ruta | Para qué |
 |---|---|
 | `/dev/kit` | Todos los componentes del sistema visual en los dos temas, y el selector de escenarios de datos de prueba. |
-| `/dev/checkout` | Solo con mocks: reemplaza al checkout del proveedor de pagos (aprueba o rechaza la compra y vuelve). |
+| `/dev/checkout` | Solo con mocks (modos mock e hybrid): reemplaza al checkout del proveedor de pagos (aprueba o rechaza la compra y vuelve). Con `billing` en el backend decide con `billing.simulatePurchase`, el proveedor simulado (`PAYMENTS_PROVIDER=simulated`). |
 | `/dev/conectar-red` | Solo con mocks: reemplaza a la ventana de autorización de la red social. |
 
 ## Dominios

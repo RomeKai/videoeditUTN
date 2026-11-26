@@ -31,6 +31,8 @@ class NullPasswordMigrationTests(TransactionTestCase):
         other = OldUser.objects.create(username="social2", email="social2@test.com", password=None)
 
         _migrate(self.migrate_to)
+        # Today's models (and the API below) need the rest of the schema.
+        call_command("migrate", verbosity=0)
 
         social = User.objects.get(pk=social.pk)
         assert social.password and not social.has_usable_password()
@@ -73,6 +75,8 @@ class CaseInsensitiveEmailMigrationTests(TransactionTestCase):
         old = OldUser.objects.create(username="mixto", email="Mixto@Ejemplo.COM", password="x", pending_email="Nuevo@Otro.COM")
 
         _migrate(self.migrate_to)
+        # Today's models (creating a user makes its workspace) need the rest of the schema.
+        call_command("migrate", verbosity=0)
 
         migrated = User.objects.get(pk=old.pk)
         assert (migrated.email, migrated.pending_email) == ("Mixto@ejemplo.com", "Nuevo@otro.com")

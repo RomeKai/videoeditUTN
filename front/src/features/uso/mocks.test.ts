@@ -148,18 +148,28 @@ describe('mocks de Uso alineados con el backend', () => {
     const creator = db.plans.find((plan) => plan.name === 'Creador');
     if (!free || !pro || !creator) throw new Error('faltan planes');
     expect((await failure(apiCall(billing.changePlan, { body: { plan_id: pro.id } }))).status).toBe(400);
-    // 4 seats fit in Creador's 5: the downgrade is scheduled, and choosing Pro again cancels it.
-    const scheduled = await apiCall(billing.changePlan, { body: { plan_id: creator.id } });
-    expect(scheduled.applied).toBe('period_end');
-    expect(scheduled.subscription.pending_plan?.name).toBe('Creador');
-    const cancelled = await apiCall(billing.changePlan, { body: { plan_id: pro.id } });
-    expect(cancelled.applied).toBe('now');
-    expect(cancelled.subscription.pending_plan).toBeNull();
     // 4 seats in use and Gratis has 2: the downgrade is rejected, nothing is scheduled.
     const rejected = await failure(apiCall(billing.changePlan, { body: { plan_id: free.id } }));
     expect(rejected.status).toBe(409);
     expect(rejected.code).toBe('seats_exceeded');
     expect((await apiCall(billing.getSubscription)).pending_plan).toBeNull();
+    // With 2 seats it fits: only the free plan waits for the end of the period, and choosing Pro again cancels it.
+    const trimmed = loadDb();
+    const workspaceId = trimmed.workspaces[0]?.id;
+    const keep = new Set(trimmed.members.filter((item) => item.workspace === workspaceId).slice(0, 2).map((item) => item.id));
+    trimmed.members = trimmed.members.filter((item) => item.workspace !== workspaceId || keep.has(item.id));
+    saveDb(trimmed);
+    const scheduled = await apiCall(billing.changePlan, { body: { plan_id: free.id } });
+    expect(scheduled.applied).toBe('period_end');
+    expect(scheduled.subscription.pending_plan?.name).toBe('Gratis');
+    const cancelled = await apiCall(billing.changePlan, { body: { plan_id: pro.id } });
+    expect(cancelled.applied).toBe('now');
+    expect(cancelled.subscription.pending_plan).toBeNull();
+    // A cheaper paid plan is a purchase: it applies at once (the checkout scenario sends it to pay first).
+    const creatorNow = await apiCall(billing.changePlan, { body: { plan_id: creator.id } });
+    expect(creatorNow.applied).toBe('now');
+    expect(creatorNow.subscription.plan.name).toBe('Creador');
+    expect(creatorNow.subscription.pending_plan).toBeNull();
   });
 
   it('cambiar el email sin la contraseña es un 400 en current_password', async () => {

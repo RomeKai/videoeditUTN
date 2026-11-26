@@ -295,29 +295,56 @@ describe('G2 · Movimientos', () => {
 });
 
 describe('G3 · Planes', () => {
-  it('marca el plan actual; bajar muestra qué se pierde, queda programado y se puede cancelar', async () => {
+  it('marca el plan actual; bajar a otro plan pago se paga y se aplica al momento', async () => {
     const user = userEvent.setup();
     renderScreen(<PlansScreen />, { scenario: 'plan-estudio' });
     const current = await screen.findByRole('article', { name: 'Plan Estudio, tu plan' });
     expect(within(current).getAllByText('Tu plan').length).toBeGreaterThan(0);
+    expect(within(current).getByText(/vence el/)).toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: /^Plan Pro/ })).getByText('Se paga y se aplica al momento.')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Bajar a Pro' }));
     const dialog = await screen.findByRole('alertdialog', { name: '¿Bajar a Pro?' });
+    expect(within(dialog).getByText(/^Se paga USD 49 por mes y se aplica al momento, cuando se confirma el pago\. Lo que queda de tu período de Estudio \(hasta el .+\) no se descuenta\.$/)).toBeInTheDocument();
     // Pro and Estudio both allow 3 h (the upload ceiling): the duration is not lost.
     expect(within(dialog).queryByText(/^Videos de hasta/)).not.toBeInTheDocument();
     expect(within(dialog).getByText('Miembros: 10 (hoy 15)')).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Bajar a Pro' }));
 
-    expect(await screen.findByText(/^Tu plan pasa a Pro el /, { selector: 'p' })).toBeInTheDocument();
+    expect(await screen.findByText('Listo: ya estás en el plan Pro.')).toBeInTheDocument();
+    expect(await screen.findByRole('article', { name: 'Plan Pro, tu plan' })).toBeInTheDocument();
+    expect(loadDb().workspaces[0]?.pending_plan).toBeNull();
+  });
+
+  it('bajar a Gratis muestra qué se pierde, queda programado para el fin del período y se puede cancelar', async () => {
+    const user = userEvent.setup();
+    renderScreen(<PlansScreen />, {
+      scenario: 'plan-estudio',
+      // Gratis has 2 seats: a team that fits in it.
+      prepare: () => {
+        const db = loadDb();
+        const keep = new Set(db.members.filter((item) => item.workspace === db.workspaces[0]?.id).slice(0, 2).map((item) => item.id));
+        db.members = db.members.filter((item) => item.workspace !== db.workspaces[0]?.id || keep.has(item.id));
+        saveDb(db);
+      },
+    });
+    await screen.findByRole('article', { name: 'Plan Estudio, tu plan' });
+    expect(within(screen.getByRole('article', { name: /^Plan Gratis/ })).getByText(/al fin del período/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Bajar a Gratis' }));
+    const dialog = await screen.findByRole('alertdialog', { name: '¿Bajar a Gratis?' });
+    expect(within(dialog).getByText(/^El cambio se aplica el .+, al fin del período\. Hasta entonces seguís con Estudio\.$/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Bajar a Gratis' }));
+
+    expect(await screen.findByText(/^Tu plan pasa a Gratis el /, { selector: 'p' })).toBeInTheDocument();
     expect(screen.getByRole('article', { name: 'Plan Estudio, tu plan' })).toBeInTheDocument();
-    expect(within(screen.getByRole('article', { name: /^Plan Pro/ })).getByText('Próximo plan')).toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: /^Plan Gratis/ })).getByText('Próximo plan')).toBeInTheDocument();
     expect(loadDb().workspaces[0]?.pending_plan).not.toBeNull();
 
     await user.click(screen.getByRole('button', { name: 'Seguir con Estudio' }));
     expect(await screen.findByText('Listo: seguís con el plan Estudio.')).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText('Próximo plan')).not.toBeInTheDocument());
     expect(loadDb().workspaces[0]?.pending_plan).toBeNull();
-    expect(screen.getByRole('button', { name: 'Bajar a Pro' })).toBeInTheDocument();
   });
 
   it('no deja bajar a un plan con menos lugares que los ocupados', async () => {

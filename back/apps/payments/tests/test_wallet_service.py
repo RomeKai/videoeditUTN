@@ -64,6 +64,33 @@ def test_reserve_on_unknown_wallet_raises_payment_error(db):
         reserve_funds(uuid.uuid4(), Decimal("1.00"))
 
 
+def test_reserve_with_a_project_id_only_reserves_and_never_queues_an_ingestion(wallet_factory):
+    """
+    A project's creation queues its own ingestion once its reservation
+    commits: a reservation that queued one too would start a second
+    ingestion of the same project. ``project_id`` is still accepted, by name
+    or in its old position, and ignored.
+    """
+    from unittest.mock import patch
+
+    from apps.videos.tasks import process_initial_ingestion, process_video_pipeline
+
+    wallet = wallet_factory("100.00")
+    project_id = uuid.uuid4()
+
+    with patch.object(process_video_pipeline, "delay") as pipeline, \
+            patch.object(process_video_pipeline, "apply_async") as pipeline_async, \
+            patch.object(process_initial_ingestion, "delay") as ingestion, \
+            patch.object(process_initial_ingestion, "apply_async") as ingestion_async:
+        by_name = reserve_funds(wallet.id, Decimal("10.00"), project_id=project_id)
+        by_position = reserve_funds(wallet.id, Decimal("5.00"), project_id)
+
+    for queued in (pipeline, pipeline_async, ingestion, ingestion_async):
+        queued.assert_not_called()
+    assert {by_name.status, by_position.status} == {Transaction.Status.RESERVED}
+    assert balances(wallet) == (Decimal("85.00"), Decimal("15.00"))
+
+
 # --- reserve + commit ------------------------------------------------------------
 
 def test_commit_clears_reserved_and_completes_transaction(wallet_factory):

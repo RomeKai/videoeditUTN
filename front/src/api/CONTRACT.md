@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**80 endpoints:** 48 existen hoy en el backend, 5 existen en parte y 27 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**81 endpoints:** 54 existen hoy en el backend, 5 existen en parte y 22 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -90,15 +90,16 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/plans/` | Planes activos y públicos, en orden, para Precios y Uso › Planes. | ✅ existe | A6, G3, D3 (diálogo), C1 |
 | GET | `/api/v1/pricing/` | Valores de la fórmula de precios y los topes de subida, para estimar en el navegador. | ✅ existe | C1, A6, G3, G4, D2, D1 (diálogo) |
 | POST | `/api/v1/pricing/estimate/` | Estimado del backend para una configuración: costo, descuento, saldo después y tiempo estimado. | ✅ existe | C1, D2, D4, D5 |
-| GET | `/api/v1/subscription/` | Plan actual del workspace, su renovación y el cambio pendiente si lo hay. | ❌ falta (propuesto) · hueco 12 | Barra, G1, G3, C1, E1, H2 |
-| POST | `/api/v1/subscription/change/` | Cambia de plan. Subir se aplica al momento, o al volver del checkout si hay que pagar; bajar, al fin del período. Mandar el plan actual cancela un cambio programado. | ❌ falta (propuesto) · hueco 12 | G3 |
+| GET | `/api/v1/subscription/` | Plan actual del workspace, su renovación y el cambio pendiente si lo hay. | ✅ existe | Barra, G1, G3, C1, E1, H2 |
+| POST | `/api/v1/subscription/change/` | Cambia de plan. Todo otro plan pago se compra: se aplica al volver del checkout, cuando se confirma el pago. Un plan gratis, al fin del período. Mandar el plan actual cancela lo programado. | ✅ existe | G3 |
 | GET | `/api/v1/wallet/` | Saldo disponible y reservado del workspace, con el detalle de lo reservado por proyecto. | ✅ existe | Barra, G1, C1, D2, G4, D1 (diálogo), D2 (diálogo) |
 | GET | `/api/v1/wallet/usage/` | Consumo por día de un mes (solo lo cobrado), separado en proyectos, renders y SEO. El mes y los días son los de la zona horaria del workspace (America/Argentina/Buenos_Aires). | ✅ existe | G1 |
 | GET | `/api/v1/transactions/` | Movimientos de la billetera, paginados, con filtro por tipo, mes y proyecto. `month=YYYY-MM` es el mes en la zona horaria del workspace (America/Argentina/Buenos_Aires). | ✅ existe | G2, D1f |
 | GET | `/api/v1/transactions/export/` | Los mismos movimientos en CSV, como libro de la billetera: una fila por cada cambio del saldo, con su signo. Sus montos suman lo que hizo el saldo en el período exportado. | ✅ existe | G2 |
-| GET | `/api/v1/token-packages/` | Los 3 paquetes fijos, el precio de la cantidad libre y la conversión de referencia. | ❌ falta (propuesto) · hueco 12 | G4, D2 (diálogo) |
-| POST | `/api/v1/token-purchases/` | Inicia una compra de tokens y devuelve la URL del checkout del proveedor de pagos. | ❌ falta (propuesto) · hueco 12 | G4, D2 (diálogo) |
-| GET | `/api/v1/token-purchases/:id/` | Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`tokens` > 0) o el pago de una subida de plan (`plan_id`, `tokens` 0). | ❌ falta (propuesto) · hueco 12 | G5 |
+| GET | `/api/v1/token-packages/` | Los 3 paquetes fijos, el precio de la cantidad libre y la conversión de referencia. | ✅ existe | G4, D2 (diálogo) |
+| POST | `/api/v1/token-purchases/` | Inicia una compra de tokens y devuelve la URL del checkout del proveedor de pagos. | ✅ existe | G4, D2 (diálogo) |
+| GET | `/api/v1/token-purchases/:id/` | Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`tokens` > 0) o el pago de una subida de plan (`plan_id`, `tokens` 0). | ✅ existe | G5 |
+| POST | `/api/v1/token-purchases/:id/simulate/` | Solo desarrollo y demo: el checkout de prueba aprueba o rechaza un pago del proveedor simulado. | ✅ existe | Checkout de prueba (/dev/checkout) |
 | POST | `/api/v1/projects/probe-link/` | Reconoce un link antes de crear el proyecto: de dónde es, su título y su duración. | ✅ existe | C1 |
 | GET | `/api/v1/projects/` | Proyectos del workspace, del más nuevo al más viejo. | ⚠️ existe en parte · hueco 14 | B2, J1, B1 |
 | POST | `/api/v1/projects/` | Crea un proyecto desde un archivo (multipart) o un link, reserva los tokens y arranca la ingesta. | ✅ existe | C1 |
@@ -577,25 +578,26 @@ Plan actual del workspace, su renovación y el cambio pendiente si lo hay.
 | | |
 |---|---|
 | Id | `billing.subscription` |
-| Backend | ❌ falta (propuesto) · hueco 12 |
-| Nota | Hoy solo existe Workspace.subscription_plan. |
+| Backend | ✅ existe · `back/apps/payments/views_subscription.py · SubscriptionView + SubscriptionSerializer (apps/payments/serializers_billing.py)` |
+| Nota | Todos los roles. `renews_at` es el fin del período pagado con el checkout: un mes calendario desde que se confirmó el pago de la subida, contado en `WORKSPACE_TIME_ZONE` y anclado al día en que empezó (31 ene → 28 feb → 31 mar). Es null en un plan gratis y en uno asignado en el admin (una cortesía, que no vence). Todavía nada cobra la renovación (PAY-02): cuando el período termina, la tarea `apply_due_plan_changes` aplica la bajada programada o, sin ninguna, pasa el workspace al plan por defecto (`DEFAULT_PLAN_NAME`). Por eso `status` es siempre `active`. Un workspace sin plan muestra el plan por defecto. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Subscription |
+| Errores | **404** El workspace no tiene plan y tampoco existe el plan por defecto (`DEFAULT_PLAN_NAME`). |
 | Pantallas | Barra, G1, G3, C1, E1, H2 |
 
 #### `POST /api/v1/subscription/change/`
 
-Cambia de plan. Subir se aplica al momento, o al volver del checkout si hay que pagar; bajar, al fin del período. Mandar el plan actual cancela un cambio programado.
+Cambia de plan. Todo otro plan pago se compra: se aplica al volver del checkout, cuando se confirma el pago. Un plan gratis, al fin del período. Mandar el plan actual cancela lo programado.
 
 | | |
 |---|---|
 | Id | `billing.changePlan` |
-| Backend | ❌ falta (propuesto) · hueco 12 |
-| Nota | Con `plan_id` igual al plan actual y un cambio programado, lo cancela (`pending_plan` vuelve a null, `applied: "now"`). Si subir necesita un pago, `checkout_url` viene con valor, el plan no cambia todavía y el proveedor vuelve a `return_url` con `compra=<id>`. |
+| Backend | ✅ existe · `back/apps/payments/views_subscription.py · ChangePlanView (apps/payments/services/subscriptions.py)` |
+| Nota | Antes de PAY-02, todo otro plan pago es una compra, sea más caro, más barato o del mismo precio: `checkout_url` viene con valor, el plan no cambia todavía y el proveedor vuelve a `return_url` (por defecto `FRONTEND_URL/uso/planes`) con `compra=<id>`; al confirmarse el pago cambia el plan una sola vez, al momento, y empieza un período pagado de un mes propio. Sin prorrateo: se cobra el mes entero del plan nuevo y lo que quedaba del período actual se pierde. Así pagar una vez nunca deja un plan pago para siempre. Pedir otra vez el mismo plan devuelve el mismo checkout; elegir otro rechaza el pago que esperaba. Solo un plan gratis (como el de `DEFAULT_PLAN_NAME`) se programa para el fin del período pagado (`applied: "period_end"`); sin período pagado se aplica al momento (`applied: "now"`). La web dice «Subir» o «Bajar» por `sort_order` (un check de Django, `payments.W002`, avisa si el orden de los planes públicos no sigue al precio) y avisa que un plan pago se paga y se aplica al momento. Mientras una bajada espera, o mientras un pago de plan espera su checkout, invitar a más gente que la que entra en ese plan se rechaza. La tarea `apply_due_plan_changes` (Celery Beat, cada 15 min) aplica las bajadas que vencieron y, si el período terminó sin nada programado, pasa al plan por defecto. Con `plan_id` igual al plan actual cancela la bajada programada y el pago de plan que esperaba su checkout (`applied: "now"`). El mock aplica todo plan pago al momento salvo en el escenario «Plan con checkout». |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | { plan_id: Id, return_url?: string } |
 | Respuesta 200 | { applied: "now" \\| "period_end", checkout_url: string \\| null, subscription: Subscription } |
-| Errores | **400** Ya es el plan actual y no hay ningún cambio programado para cancelar.<br>**403** El rol no puede cambiar el plan (solo Dueño y Admin).<br>**409** Bajar a un plan con menos lugares que los que el workspace ocupa hoy, contando invitaciones pendientes (`code: "seats_exceeded"`). No se programa nada: primero hay que quitar miembros. Es un 409 porque lo impide el estado del workspace; el mismo código en `workspaces.invite` es un 403 de límite de plan, que se resuelve subiendo de plan. |
+| Errores | **400** Ya es el plan actual y no hay nada programado ni esperando su pago (`{ plan_id: ["Ya es tu plan actual."] }`), o `return_url` no es una página de la app o pasa de 600 caracteres.<br>**403** El rol no puede cambiar el plan (solo Dueño y Admin).<br>**404** El plan no existe, está inactivo o no es público (`{ detail: "El plan no existe." }`).<br>**409** Cambiar a un plan con menos lugares que los que el workspace ocupa hoy, contando invitaciones pendientes (`code: "seats_exceeded"`, con `seats_used` y `max_members`). No se programa nada: primero hay que quitar miembros. Es un 409 porque lo impide el estado del workspace; el mismo código en `workspaces.invite` es un 403 de límite de plan, que se resuelve subiendo de plan. También 409 `code: "checkout_in_progress"`: el mismo pago todavía está abriendo su checkout (un doble envío); se reintenta en unos segundos y nada se rechaza (un intento cuyo checkout nunca abrió deja de bloquear pasado el doble de `PAYMENTS_PROVIDER_TIMEOUT_SECONDS` desde que empezó su llamada al proveedor). Y 409 `code: "plan_change_superseded"`: mientras se abría el pago se eligió otro plan (o seguir con el actual); nunca se devuelve el checkout de otro plan.<br>**501** Pasar a otro plan pago sin proveedor de pagos configurado (`code: "payments_unavailable"`). No cambia nada. No es 503: la app lee cualquier 503 como mantenimiento.<br>**502** El proveedor no abrió el checkout (`code: "checkout_failed"`). No se cobró nada. |
 | Pantallas | G3 |
 
 #### `GET /api/v1/wallet/`
@@ -663,7 +665,8 @@ Los 3 paquetes fijos, el precio de la cantidad libre y la conversión de referen
 | | |
 |---|---|
 | Id | `billing.tokenPackages` |
-| Backend | ❌ falta (propuesto) · hueco 12 |
+| Backend | ✅ existe · `back/apps/payments/views_purchases.py · TokenPackagesView (apps/payments/services/token_packages.py)` |
+| Nota | Todos los roles. El precio de un paquete sale de sus tokens y su descuento sobre `TOKEN_PRICE_USD` (0,01 USD por token, el mismo de `billing.pricing`). La conversión es de referencia (`PAYMENTS_LOCAL_CURRENCY`, `PAYMENTS_USD_TO_LOCAL_RATE`): todo pago es en USD. La cantidad libre va de 100 a 1.000.000 tokens. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | TokenPackages |
 | Pantallas | G4, D2 (diálogo) |
@@ -675,11 +678,12 @@ Inicia una compra de tokens y devuelve la URL del checkout del proveedor de pago
 | | |
 |---|---|
 | Id | `billing.createPurchase` |
-| Backend | ❌ falta (propuesto) · hueco 12 |
-| Sesión | JWT · `X-Workspace-Id` |
+| Backend | ✅ existe · `back/apps/payments/views_purchases.py · TokenPurchaseCreateView + PaymentSerializer (apps/payments/serializers_billing.py)` |
+| Nota | El proveedor es `PAYMENTS_PROVIDER`. Con `simulated` (desarrollo, y en una demo con `PAYMENTS_ALLOW_SIMULATED`) `checkout_url` es `/dev/checkout?compra=<id>&volver=<return_url>` en el origen de `return_url`, y esa página decide con `billing.simulatePurchase`. Sin proveedor, 501. La `Idempotency-Key` vale por workspace: repetida, responde la compra que ya empezó, con el mismo 201. Si el checkout no se abrió (502), o el intento quedó sin checkout más del doble de `PAYMENTS_PROVIDER_TIMEOUT_SECONDS` desde que empezó su llamada al proveedor (el proceso murió en esa llamada), la clave queda libre y el reintento con la misma clave es un intento nuevo; la tarea de beat también los rechaza. |
+| Sesión | JWT · `X-Workspace-Id` · `Idempotency-Key` (una por envío; se repite al reintentar) |
 | Pedido | { package_id?: string, custom_tokens?: number, return_url: string } |
 | Respuesta 201 | TokenPurchase |
-| Errores | **400** Cantidad por debajo del mínimo o paquete inexistente.<br>**403** El rol no puede comprar (solo Dueño y Admin). |
+| Errores | **400** Cantidad por debajo del mínimo o por encima del máximo (1.000.000), paquete inexistente, o `return_url` que no es una página de la app o pasa de 600 caracteres.<br>**403** El rol no puede comprar (solo Dueño y Admin).<br>**409** La `Idempotency-Key` ya empezó otra compra (`code: "idempotency_key_reused"`), o la compra que empezó todavía está abriendo su checkout (`code: "purchase_in_progress"`: se reintenta en unos segundos).<br>**501** No hay proveedor de pagos configurado (`code: "payments_unavailable"`). No se crea nada. No es 503: la app lee cualquier 503 como mantenimiento.<br>**502** El proveedor no abrió el checkout (`code: "checkout_failed"`). No se cobró nada. |
 | Pantallas | G4, D2 (diálogo) |
 
 #### `GET /api/v1/token-purchases/:id/`
@@ -689,12 +693,27 @@ Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`
 | | |
 |---|---|
 | Id | `billing.purchase` |
-| Backend | ❌ falta (propuesto) · hueco 12 |
-| Nota | El webhook del proveedor acredita; la pantalla consulta cada 5 s mientras está pendiente. |
+| Backend | ✅ existe · `back/apps/payments/views_purchases.py · TokenPurchaseDetailView + PaymentSerializer (apps/payments/serializers_billing.py)` |
+| Nota | La confirmación del proveedor (o `billing.simulatePurchase`) acredita una sola vez: un DEPOSIT COMPLETED de los tokens en la billetera, con `category: "purchase"` y «Compra de 1.000 tokens». La pantalla consulta cada 5 s mientras está pendiente. `plan_id` viene siempre (null en una compra de tokens). `balance_after` llega con 10 decimales, como el saldo. Un pago que el proveedor confirma después de rechazado (reemplazado, cancelado o con el checkout fallido) no cambia nada: queda en el log como `payment.late_paid` para devolverlo a mano. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Payment |
-| Errores | **404** La compra no existe en este workspace. |
+| Errores | **403** El rol no puede ver pagos (solo Dueño y Admin).<br>**404** La compra no existe en este workspace. |
 | Pantallas | G5 |
+
+#### `POST /api/v1/token-purchases/:id/simulate/`
+
+Solo desarrollo y demo: el checkout de prueba aprueba o rechaza un pago del proveedor simulado.
+
+| | |
+|---|---|
+| Id | `billing.simulatePurchase` |
+| Backend | ✅ existe · `back/apps/payments/views_purchases.py · SimulatePaymentView` |
+| Nota | Liquida el pago en el momento, como lo haría el webhook de un proveedor real, y responde el pago ya liquidado. Uno ya liquidado se responde como está: aprobar dos veces acredita una sola. Lo llama `/dev/checkout` cuando `billing` va al backend; en el modo mock la página decide en la base simulada y el pago se liquida unos segundos después de volver, como un webhook. |
+| Sesión | JWT · `X-Workspace-Id` |
+| Pedido | { approved: boolean } |
+| Respuesta 200 | Payment |
+| Errores | **403** El rol no puede pagar (solo Dueño y Admin).<br>**404** El pago no existe en este workspace, no es del proveedor simulado, o el proveedor simulado está apagado (sin `PAYMENTS_PROVIDER=simulated`, o sin `DEBUG` ni `PAYMENTS_ALLOW_SIMULATED`): fuera de desarrollo y demos el endpoint no existe. Sin `DEBUG`, también para quien no es staff ni tiene un email verificado de `PAYMENTS_SIMULATE_ALLOWED_EMAILS`. |
+| Pantallas | Checkout de prueba (/dev/checkout) |
 
 ### Proyectos
 
@@ -838,7 +857,7 @@ Vuelve a despachar el pipeline de un proyecto que falló, desde la última etapa
 |---|---|
 | Id | `projects.redispatch` |
 | Backend | ✅ existe · `back/apps/videos/views_clips.py · ProjectRedispatchView` |
-| Nota | No cobra lo que sigue pagado: un proyecto con los clips elegidos sigue gratis (su render se paga solo). Lo que se devolvió al fallar (una etapa antes de elegir los clips, o el render de un video completo) se reserva otra vez y el pipeline lo liquida como al crear. Responde `cost_details` cuando reservó. El proyecto sigue `failed` hasta que la tarea lo reabre. |
+| Nota | No cobra lo que sigue pagado: un proyecto con los clips elegidos sigue gratis (su render se paga solo). Lo que se devolvió al fallar (una etapa antes de elegir los clips, o el render de un video completo) se reserva otra vez y el pipeline lo liquida como al crear. Responde `cost_details` cuando reservó. El proyecto sigue `failed` hasta que la tarea lo reabre. Uno que falló con `IngestionStuck` (su ingesta no avanzaba y se devolvió la reserva) también reserva de nuevo y corre. Solo el mensaje de este pedido lo reabre: una copia vieja que llega tarde no corre nada. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 202 | RedispatchResponse |
 | Errores | **402** Saldo insuficiente para volver a reservar lo devuelto: `{ error, required }`. La UI abre D2.<br>**403** Solo Dueño y Admin.<br>**409** `{ error, code }`: no está en error (`not_failed`), la moderación frenó su contenido (`moderation_blocked`, solo `UnsafeContentError`), su ingesta nunca se encoló al crearlo (`not_queued`: se crea de nuevo), sus clips ya se liquidaron y se reintentan de a uno desde Clips (`render_settled`), su video completo ya se renderizó (`use_rerender`), no tiene reserva de creación (`no_reservation`) o su link dura más de las 3 h que procesa la app (`duration_app`: falló con `LinkTooLongForAppError`; se crea otro con un video más corto). Uno que falló con `LinkTooLongError` sí se re-despacha: el plan pudo cambiar.<br>**503** No se pudo encolar: lo reservado vuelve (el proyecto queda con `pipeline_error_code: "RedispatchNotQueued"`) y se puede probar de nuevo. |

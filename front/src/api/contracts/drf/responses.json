@@ -1719,6 +1719,44 @@
       "body": {
         "detail": "Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin."
       }
+    },
+    "billing_change_plan_400_current": {
+      "status": 400,
+      "body": {
+        "plan_id": [
+          "Ya es tu plan actual."
+        ]
+      }
+    },
+    "billing_change_plan_403_role": {
+      "status": 403,
+      "body": {
+        "detail": "Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin."
+      }
+    },
+    "billing_change_plan_409_seats": {
+      "status": 409,
+      "body": {
+        "error": "Ocupás 4 lugares y el plan Gratis tiene 2. Quitá miembros o invitaciones antes de bajar.",
+        "code": "seats_exceeded",
+        "seats_used": 4,
+        "max_members": 2
+      }
+    },
+    "billing_purchase_400_min": {
+      "status": 400,
+      "body": {
+        "custom_tokens": [
+          "El mínimo es 100 tokens."
+        ]
+      }
+    },
+    "billing_purchase_501_no_provider": {
+      "status": 501,
+      "body": {
+        "error": "Los pagos todavía no están habilitados.",
+        "code": "payments_unavailable"
+      }
     }
   },
   "pricing": {
@@ -2082,5 +2120,195 @@
       }
     }
   },
-  "transactions_export": "fecha,concepto,proyecto,tipo,monto,estado,transaccion\n2026-10-12T12:05:00-03:00,Render Final (Paper Edit): Podcast 12,Podcast 12,Devuelto,7.25,Devuelto,0ea55e63-7607-4774-9a77-f229348f768d\n2026-10-12T12:00:00-03:00,Render Final (Paper Edit): Podcast 12,Podcast 12,Reserva,-7.25,Devuelto,0ea55e63-7607-4774-9a77-f229348f768d\n2026-10-11T13:30:00-03:00,Render Final (Paper Edit): Entrevista con Ana,Entrevista con Ana,Devuelto,15.00,Cobrado,4e1e663b-d149-491e-bf9e-d76db682e2b0\n2026-10-11T13:00:00-03:00,Render Final (Paper Edit): Entrevista con Ana,Entrevista con Ana,Reserva,-20.00,Cobrado,4e1e663b-d149-491e-bf9e-d76db682e2b0\n2026-10-11T12:00:00-03:00,Procesamiento: Entrevista con Ana,Entrevista con Ana,Reserva,-12.50,Cobrado,b18a3ecb-3fbb-40ee-8c7a-cc18cad90b97\n2026-10-10T12:00:00-03:00,Compra de 5000 tokens,,Compra,5000.00,Compra,2624153a-de28-46b5-b443-96afe8e6b766\n"
+  "transactions_export": "fecha,concepto,proyecto,tipo,monto,estado,transaccion\n2026-10-12T12:05:00-03:00,Render Final (Paper Edit): Podcast 12,Podcast 12,Devuelto,7.25,Devuelto,0ea55e63-7607-4774-9a77-f229348f768d\n2026-10-12T12:00:00-03:00,Render Final (Paper Edit): Podcast 12,Podcast 12,Reserva,-7.25,Devuelto,0ea55e63-7607-4774-9a77-f229348f768d\n2026-10-11T13:30:00-03:00,Render Final (Paper Edit): Entrevista con Ana,Entrevista con Ana,Devuelto,15.00,Cobrado,4e1e663b-d149-491e-bf9e-d76db682e2b0\n2026-10-11T13:00:00-03:00,Render Final (Paper Edit): Entrevista con Ana,Entrevista con Ana,Reserva,-20.00,Cobrado,4e1e663b-d149-491e-bf9e-d76db682e2b0\n2026-10-11T12:00:00-03:00,Procesamiento: Entrevista con Ana,Entrevista con Ana,Reserva,-12.50,Cobrado,b18a3ecb-3fbb-40ee-8c7a-cc18cad90b97\n2026-10-10T12:00:00-03:00,Compra de 5000 tokens,,Compra,5000.00,Compra,2624153a-de28-46b5-b443-96afe8e6b766\n",
+  "_about_billing": "Los cuerpos billing_* salieron del backend real (apps/payments/views_subscription.py y views_purchases.py, proveedor simulado), no escritos a mano.",
+  "billing_subscription_free": {
+    "plan": {
+      "id": "8abd95d6-4af0-4ef4-b9c6-48346bf6e6c4",
+      "name": "Gratis",
+      "max_video_duration_seconds": 600,
+      "max_resolution": "720p",
+      "has_watermark": true,
+      "allow_scheduling": false,
+      "allow_crossposting": false,
+      "has_seo_optimization": false,
+      "has_thumbnail_engine": false,
+      "base_discount_rate": "0.00",
+      "max_members": 2,
+      "is_active": true,
+      "price_usd_monthly": "0.00",
+      "description": "Para probar con videos cortos.",
+      "sort_order": 1,
+      "is_recommended": false
+    },
+    "status": "active",
+    "renews_at": null,
+    "pending_plan": null
+  },
+  "billing_change_plan_checkout": {
+    "applied": "now",
+    "checkout_url": "http://localhost:3000/dev/checkout?compra=9e9a01ba-999a-495e-b9d0-cfcc842702e5&volver=http%3A%2F%2Flocalhost%3A3000%2Fuso%2Fplanes",
+    "subscription": {
+      "plan": {
+        "id": "8abd95d6-4af0-4ef4-b9c6-48346bf6e6c4",
+        "name": "Gratis",
+        "max_video_duration_seconds": 600,
+        "max_resolution": "720p",
+        "has_watermark": true,
+        "allow_scheduling": false,
+        "allow_crossposting": false,
+        "has_seo_optimization": false,
+        "has_thumbnail_engine": false,
+        "base_discount_rate": "0.00",
+        "max_members": 2,
+        "is_active": true,
+        "price_usd_monthly": "0.00",
+        "description": "Para probar con videos cortos.",
+        "sort_order": 1,
+        "is_recommended": false
+      },
+      "status": "active",
+      "renews_at": null,
+      "pending_plan": null
+    }
+  },
+  "billing_change_plan_period_end": {
+    "applied": "period_end",
+    "checkout_url": null,
+    "subscription": {
+      "plan": {
+        "id": "128f9ed2-0bce-4c78-9d88-955b1d7d8ca5",
+        "name": "Pro",
+        "max_video_duration_seconds": 10800,
+        "max_resolution": "4K",
+        "has_watermark": false,
+        "allow_scheduling": true,
+        "allow_crossposting": true,
+        "has_seo_optimization": true,
+        "has_thumbnail_engine": false,
+        "base_discount_rate": "0.10",
+        "max_members": 10,
+        "is_active": true,
+        "price_usd_monthly": "49.00",
+        "description": "Para equipos que publican en todas las redes.",
+        "sort_order": 3,
+        "is_recommended": true
+      },
+      "status": "active",
+      "renews_at": "2026-12-26T21:22:37.055166Z",
+      "pending_plan": {
+        "id": "8abd95d6-4af0-4ef4-b9c6-48346bf6e6c4",
+        "name": "Gratis",
+        "effective_at": "2026-12-26T21:22:37.055166Z"
+      }
+    }
+  },
+  "billing_change_plan_cancel": {
+    "applied": "now",
+    "checkout_url": null,
+    "subscription": {
+      "plan": {
+        "id": "128f9ed2-0bce-4c78-9d88-955b1d7d8ca5",
+        "name": "Pro",
+        "max_video_duration_seconds": 10800,
+        "max_resolution": "4K",
+        "has_watermark": false,
+        "allow_scheduling": true,
+        "allow_crossposting": true,
+        "has_seo_optimization": true,
+        "has_thumbnail_engine": false,
+        "base_discount_rate": "0.10",
+        "max_members": 10,
+        "is_active": true,
+        "price_usd_monthly": "49.00",
+        "description": "Para equipos que publican en todas las redes.",
+        "sort_order": 3,
+        "is_recommended": true
+      },
+      "status": "active",
+      "renews_at": "2026-12-26T21:22:37.055166Z",
+      "pending_plan": null
+    }
+  },
+  "billing_token_packages": {
+    "packages": [
+      {
+        "id": "pack-1000",
+        "tokens": 1000,
+        "price_usd": "10.00",
+        "discount_rate": "0.00"
+      },
+      {
+        "id": "pack-5000",
+        "tokens": 5000,
+        "price_usd": "45.00",
+        "discount_rate": "0.10"
+      },
+      {
+        "id": "pack-15000",
+        "tokens": 15000,
+        "price_usd": "120.00",
+        "discount_rate": "0.20"
+      }
+    ],
+    "custom_price_per_token_usd": "0.01",
+    "custom_min_tokens": 100,
+    "local_currency": "ARS",
+    "usd_to_local_rate": "1450"
+  },
+  "billing_token_purchase_pending": {
+    "id": "7a208f87-8c1a-47d8-8d13-5b67cb1c286a",
+    "status": "pending",
+    "tokens": 1000,
+    "amount_usd": "10.00",
+    "plan_id": null,
+    "checkout_url": "http://localhost:3000/dev/checkout?compra=7a208f87-8c1a-47d8-8d13-5b67cb1c286a&volver=http%3A%2F%2Flocalhost%3A3000%2Fuso%2Fcomprar%2Fresultado",
+    "failure_reason": null,
+    "created_at": "2026-11-26T21:22:37.020663Z",
+    "balance_after": null
+  },
+  "billing_token_purchase_approved": {
+    "id": "7a208f87-8c1a-47d8-8d13-5b67cb1c286a",
+    "status": "approved",
+    "tokens": 1000,
+    "amount_usd": "10.00",
+    "plan_id": null,
+    "checkout_url": null,
+    "failure_reason": null,
+    "created_at": "2026-11-26T21:22:37.020663Z",
+    "balance_after": "1000.0000000000"
+  },
+  "billing_token_purchase_rejected": {
+    "id": "a95f3649-3e9f-4118-9809-220747abbc61",
+    "status": "rejected",
+    "tokens": 2500,
+    "amount_usd": "25.00",
+    "plan_id": null,
+    "checkout_url": null,
+    "failure_reason": "El banco rechazó el pago. Probá con otra tarjeta.",
+    "created_at": "2026-11-26T21:22:37.033431Z",
+    "balance_after": null
+  },
+  "billing_plan_payment_pending": {
+    "id": "9e9a01ba-999a-495e-b9d0-cfcc842702e5",
+    "status": "pending",
+    "tokens": 0,
+    "amount_usd": "49.00",
+    "plan_id": "128f9ed2-0bce-4c78-9d88-955b1d7d8ca5",
+    "checkout_url": "http://localhost:3000/dev/checkout?compra=9e9a01ba-999a-495e-b9d0-cfcc842702e5&volver=http%3A%2F%2Flocalhost%3A3000%2Fuso%2Fplanes",
+    "failure_reason": null,
+    "created_at": "2026-11-26T21:22:37.046003Z",
+    "balance_after": null
+  },
+  "billing_plan_payment_approved": {
+    "id": "9e9a01ba-999a-495e-b9d0-cfcc842702e5",
+    "status": "approved",
+    "tokens": 0,
+    "amount_usd": "49.00",
+    "plan_id": "128f9ed2-0bce-4c78-9d88-955b1d7d8ca5",
+    "checkout_url": null,
+    "failure_reason": null,
+    "created_at": "2026-11-26T21:22:37.046003Z",
+    "balance_after": null
+  }
 }
