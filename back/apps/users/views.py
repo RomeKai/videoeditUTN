@@ -1,21 +1,25 @@
 ﻿from decimal import Decimal
 
-from django.db import transaction
-from rest_framework.permissions import IsAuthenticated
+from django.db import IntegrityError, transaction
+from rest_framework.exceptions import ValidationError
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.core.workspace import OWNER, ActiveWorkspace, resolve_active_workspace
 from apps.payments.models import Wallet
-from apps.users.models import NotificationPreference, Workspace, WorkspaceMember
+from apps.users.models import NotificationPreference, User, Workspace, WorkspaceMember
 from apps.users.serializers import (
+    EMAIL_TAKEN,
     MeSerializer,
     NotificationPreferencesSerializer,
     PasswordChangeSerializer,
     UpdateMeSerializer,
+    VerifyEmailSerializer,
 )
-from apps.users.throttles import SpanishThrottleMixin
+from apps.users.email_verification import send_email_change_verification, user_for_token
+from apps.users.throttles import EmailChangeThrottle, SpanishThrottleMixin
 from apps.users.tokens import issue_token_pair, revoke_refresh_tokens
 
 
@@ -56,29 +60,53 @@ def _me_payload(request):
         'is_email_verified': user.is_email_verified,
         'tour_completed': user.tour_completed,
         'terms_accepted_at': user.terms_accepted_at,
+        'pending_email': user.pending_email,
+        'onboarding_use_case': user.onboarding_use_case,
         'active_workspace_id': active.workspace.pk if active else None,
         'workspaces': [_workspace_summary(item) for item in _user_workspaces(user)],
     }).data
 
 
-class MeView(APIView):
+class MeView(SpanishThrottleMixin, APIView):
     """The signed-in user, their workspaces with their role in each, and the active one."""
 
     permission_classes = [IsAuthenticated]
+    # Only the PATCHes that change the email count (EmailChangeThrottle).
+    throttle_classes = [EmailChangeThrottle]
+    throttle_scope = 'email_change'
 
     def get(self, request):
         return Response(_me_payload(request))
 
     def patch(self, request):
-        serializer = UpdateMeSerializer(data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
         user = request.user
-        if 'name' in serializer.validated_data:
+        serializer = UpdateMeSerializer(data=request.data, context={'user': user})
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        fields = []
+        if 'name' in data:
             # Maps to first_name and last_name: the first word is the first name, the rest the last one.
-            user.first_name, _, user.last_name = serializer.validated_data['name'].partition(' ')
-        if 'tour_completed' in serializer.validated_data:
-            user.tour_completed = serializer.validated_data['tour_completed']
-        user.save(update_fields=['first_name', 'last_name', 'tour_completed'])
+            user.first_name, _, user.last_name = data['name'].partition(' ')
+            fields += ['first_name', 'last_name']
+        if 'tour_completed' in data:
+            user.tour_completed = data['tour_completed']
+            fields.append('tour_completed')
+        if 'onboarding_use_case' in data:
+            user.onboarding_use_case = data['onboarding_use_case']
+            fields.append('onboarding_use_case')
+        if 'active_workspace_id' in data:
+            user.last_workspace_id = data['active_workspace_id']
+            fields.append('last_workspace')
+        if 'email' in data:
+            # The current email keeps working until the new one is verified.
+            user.pending_email = data['email']
+            fields.append('pending_email')
+        with transaction.atomic():
+            if fields:
+                user.save(update_fields=fields)
+            if 'email' in data:
+                # A failed send rolls the change back: no pending email without its link.
+                send_email_change_verification(user)
         return Response(_me_payload(request))
 
 
@@ -122,3 +150,40 @@ class NotificationPreferencesView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
+
+
+INVALID_LINK = 'El link no es válido o ya venció.'
+
+
+class VerifyEmailView(APIView):
+    """
+    A3: the token of the verification link (apps.users.email_verification).
+    With a pending email, it becomes the account's email; without one, the
+    current email is marked as verified. Either way the answer is a new
+    session, so the link signs the user in.
+    """
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = VerifyEmailSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        token = serializer.validated_data['token']
+        try:
+            with transaction.atomic():
+                user = user_for_token(token, queryset=User.objects.select_for_update())
+                if user is None:
+                    raise ValidationError({'token': [INVALID_LINK]})
+                fields = ['is_email_verified']
+                if user.pending_email:
+                    # Someone may have taken it since the link was sent.
+                    if User.objects.filter(email__iexact=user.pending_email).exclude(pk=user.pk).exists():
+                        raise ValidationError({'token': [EMAIL_TAKEN]})
+                    user.email, user.pending_email = user.pending_email, None
+                    fields += ['email', 'pending_email']
+                user.is_email_verified = True
+                user.save(update_fields=fields)
+        except IntegrityError:
+            raise ValidationError({'token': [EMAIL_TAKEN]})
+        return Response(issue_token_pair(user))

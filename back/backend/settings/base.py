@@ -107,6 +107,13 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
+# --- EMAILS TO USERS ---
+# The links of the emails open the web app (the verification of a new email
+# goes to its /verificar page, apps.users.email_verification).
+FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:3000')
+DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='OneCreator <no-reply@onecreator.local>')
+EMAIL_VERIFICATION_MAX_AGE_SECONDS = env.int('EMAIL_VERIFICATION_MAX_AGE_SECONDS', default=24 * 3600)
+
 # --- STATIC & MEDIA ---
 STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
@@ -134,6 +141,8 @@ REST_FRAMEWORK = {
     # current password (apps.users.views) must not let it be guessed.
     'DEFAULT_THROTTLE_RATES': {
         'password_change': env('THROTTLE_PASSWORD_CHANGE', default='5/hour'),
+        # PATCH /me with a new email: checks the password and sends an email.
+        'email_change': env('THROTTLE_EMAIL_CHANGE', default='5/hour'),
     },
 }
 

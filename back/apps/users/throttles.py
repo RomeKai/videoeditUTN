@@ -8,6 +8,7 @@ and are counted per user in the default cache.
 import math
 
 from rest_framework.exceptions import Throttled
+from rest_framework.throttling import ScopedRateThrottle
 
 
 class TooManyAttempts(Throttled):
@@ -32,3 +33,18 @@ class SpanishThrottleMixin:
     def throttled(self, request, wait):
         raise TooManyAttempts(wait)
 
+
+class EmailChangeThrottle(ScopedRateThrottle):
+    """
+    Only counts the PATCHes of `/me` that change the email (they check the
+    password and send an email). The rest of `/me` stays unlimited: the web app
+    patches `active_workspace_id` on every workspace switch.
+    """
+
+    def allow_request(self, request, view):
+        if request.method != 'PATCH':
+            return True
+        data = request.data
+        if not hasattr(data, 'keys') or not ({'email', 'current_password'} & set(data.keys())):
+            return True
+        return super().allow_request(request, view)

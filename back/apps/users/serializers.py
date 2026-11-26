@@ -1,37 +1,10 @@
 ﻿from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
+from rest_framework.exceptions import ErrorDetail
 
-from apps.users.models import NotificationPreference
-
-
-class PlanSummarySerializer(serializers.Serializer):
-    id = serializers.UUIDField()
-    name = serializers.CharField()
-
-
-class WorkspaceSummarySerializer(serializers.Serializer):
-    id = serializers.UUIDField()
-    name = serializers.CharField()
-    role = serializers.CharField()
-    plan = PlanSummarySerializer(allow_null=True)
-    available_balance = serializers.DecimalField(max_digits=20, decimal_places=10)
-
-
-class MeSerializer(serializers.Serializer):
-    id = serializers.UUIDField()
-    email = serializers.EmailField()
-    name = serializers.CharField()
-    is_email_verified = serializers.BooleanField()
-    tour_completed = serializers.BooleanField()
-    terms_accepted_at = serializers.DateTimeField(allow_null=True)
-    active_workspace_id = serializers.UUIDField(allow_null=True)
-    workspaces = WorkspaceSummarySerializer(many=True)
-
-
-class UpdateMeSerializer(serializers.Serializer):
-    name = serializers.CharField(min_length=1, max_length=150, required=False)
-    tour_completed = serializers.BooleanField(required=False)
+from apps.core.workspace import role_in
+from apps.users.models import NotificationPreference, User, Workspace
 
 
 # A user created by social login has no usable password: nothing to confirm with.
@@ -68,6 +41,85 @@ def _password_rule_message(error):
     return template.format(**(error.params or {}))
 
 
+class PlanSummarySerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    name = serializers.CharField()
+
+
+class WorkspaceSummarySerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    name = serializers.CharField()
+    role = serializers.CharField()
+    plan = PlanSummarySerializer(allow_null=True)
+    available_balance = serializers.DecimalField(max_digits=20, decimal_places=10)
+
+
+class MeSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    email = serializers.EmailField()
+    name = serializers.CharField()
+    is_email_verified = serializers.BooleanField()
+    tour_completed = serializers.BooleanField()
+    terms_accepted_at = serializers.DateTimeField(allow_null=True)
+    pending_email = serializers.EmailField(allow_null=True)
+    onboarding_use_case = serializers.ChoiceField(choices=User.OnboardingUseCase.choices, allow_null=True)
+    active_workspace_id = serializers.UUIDField(allow_null=True)
+    workspaces = WorkspaceSummarySerializer(many=True)
+
+
+NOT_A_MEMBER = 'No sos miembro de ese workspace.'
+EMAIL_TAKEN = 'Ya existe una cuenta con este email.'
+PASSWORD_REQUIRED_FOR_EMAIL = 'Escribí tu contraseña para cambiar el email.'
+
+
+class UpdateMeSerializer(serializers.Serializer):
+    """
+    Every field is optional. A new `email` needs `current_password` and is kept
+    in `pending_email` until its link is opened; `active_workspace_id` must be a
+    workspace the user owns or is an ACTIVE member of.
+    """
+
+    name = serializers.CharField(min_length=1, max_length=150, required=False)
+    email = serializers.EmailField(max_length=254, required=False)
+    current_password = serializers.CharField(required=False, write_only=True)
+    tour_completed = serializers.BooleanField(required=False)
+    onboarding_use_case = serializers.ChoiceField(choices=User.OnboardingUseCase.choices, required=False)
+    active_workspace_id = serializers.UUIDField(required=False)
+
+    def validate_active_workspace_id(self, value):
+        workspace = Workspace.objects.filter(pk=value).first()
+        if workspace is None or role_in(workspace, self.context['user']) is None:
+            raise serializers.ValidationError(NOT_A_MEMBER)
+        return value
+
+    def validate(self, attrs):
+        email = attrs.get('email')
+        if email is None:
+            return attrs
+        user = self.context['user']
+        email = User.objects.normalize_email(email)
+        if email.lower() == user.email.lower():
+            # Already the account's email: nothing to change or verify.
+            attrs.pop('email')
+            return attrs
+        # The password goes first: without it nobody learns which emails have an account.
+        password = attrs.get('current_password')
+        if not password and user.has_usable_password():
+            raise serializers.ValidationError({'current_password': [ErrorDetail(PASSWORD_REQUIRED_FOR_EMAIL, code='required')]})
+        try:
+            check_current_password(user, password or '')
+        except serializers.ValidationError as exc:
+            raise serializers.ValidationError({'current_password': exc.detail})
+        if User.objects.filter(email__iexact=email).exclude(pk=user.pk).exists():
+            raise serializers.ValidationError({'email': [ErrorDetail(EMAIL_TAKEN, code='unique')]})
+        attrs['email'] = email
+        return attrs
+
+
+class VerifyEmailSerializer(serializers.Serializer):
+    token = serializers.CharField()
+
+
 class PasswordChangeSerializer(serializers.Serializer):
     current_password = serializers.CharField()
     new_password = serializers.CharField(
@@ -88,7 +140,7 @@ class PasswordChangeSerializer(serializers.Serializer):
 
 
 class TokenPairSerializer(serializers.Serializer):
-    """The session a password change hands back, like `/api/token/`."""
+    """A new session, like the answer of `/api/token/`."""
 
     access = serializers.CharField()
     refresh = serializers.CharField()
