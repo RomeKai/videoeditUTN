@@ -87,6 +87,8 @@ class VideoProject(models.Model):
         PIP = 'pip', 'Picture in Picture'
         VERSUS = 'versus', 'Versus (2 Personas)'
         ACTIVE = 'active', 'Speaker Dinámico'
+        REACTION = 'reaction', 'Reacción'
+        CINEMATIC = 'cinematic', 'Cinemático'
 
     class CameraSelectionPosition(models.TextChoices):
         LEFT = 'left', 'Izquierda'
