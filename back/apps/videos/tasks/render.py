@@ -91,8 +91,12 @@ def finalize_project_render(project_id):
     call checks them, so they are settled even if the project left
     render_dispatched another way.
     """
-    from apps.videos.tasks.ingestion import _settle_clip_render_reservations, _settle_whole_video_reservation
+    from apps.videos.tasks.ingestion import (
+        _restore_rerendered_clips, _settle_clip_render_reservations, _settle_whole_video_reservation,
+    )
 
+    # First: a delivered clip whose new render failed is the user's again.
+    _restore_rerendered_clips(project_id)
     stage = _close_render_fan_out(project_id)
     _settle_whole_video_reservation(project_id)
     _settle_clip_render_reservations(project_id)
@@ -129,7 +133,10 @@ def _close_render_fan_out(project_id):
         if waiting & {VideoClip.Status.DRAFT, VideoClip.Status.RENDERING}:
             return None
 
-        if VideoClip.Status.FAILED in statuses:
+        # A clip of the project left out of the render that just closed (a
+        # draft a settled render never delivered) makes it partial too: it
+        # can still be rendered from its editor or a rerender.
+        if statuses & {VideoClip.Status.FAILED, VideoClip.Status.DRAFT, VideoClip.Status.RENDERING}:
             stage, status = PipelineStage.PARTIAL, VideoProject.Status.PARTIAL
         else:
             stage, status = PipelineStage.COMPLETED, VideoProject.Status.COMPLETED

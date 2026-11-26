@@ -592,11 +592,17 @@ export const deleteProject = defineEndpoint({
   summary: 'Borra el proyecto con su video, sus clips y sus publicaciones programadas. No devuelve lo cobrado.',
   response: NoContent,
   successStatus: 204,
-  errors: [{ status: 403, when: 'El rol no puede borrar (Lector; Editor solo los propios).' }],
+  errors: [
+    { status: 403, when: 'El rol no puede borrar (Lector; Editor solo los propios).' },
+    {
+      status: 409,
+      when: '`{ error, code }`: el proyecto se está procesando o renderizando (`project_processing`) o tiene tokens reservados sin liquidar (`reservation_open`). El diálogo muestra el mensaje del servidor.',
+    },
+  ],
   backend: {
     status: 'exists',
-    source: 'back/apps/videos/views.py · VideoProjectViewSet.destroy (ModelViewSet)',
-    note: 'No aplica la regla de roles (hueco 3).',
+    source: 'back/apps/videos/views.py · VideoProjectViewSet.destroy + views_clips.project_delete_refusal',
+    note: 'Nada liquida una reserva cuyo proyecto ya no existe, por eso el 409. No devuelve nada de lo cobrado.',
   },
   screens: ['B2', 'D1', 'D4 (diálogo)'],
 });
@@ -647,9 +653,9 @@ export const redispatchProject = defineEndpoint({
     { status: 403, when: 'Solo Dueño y Admin.' },
     {
       status: 409,
-      when: '`{ error, code }`: no está en error (`not_failed`), lo frenó la moderación (`moderation_blocked`), sus clips ya se liquidaron y se reintentan de a uno desde Clips (`render_settled`), su video completo ya se renderizó (`use_rerender`) o no tiene reserva de creación (`no_reservation`).',
+      when: '`{ error, code }`: no está en error (`not_failed`), la moderación frenó su contenido (`moderation_blocked`, solo `UnsafeContentError`), su ingesta nunca se encoló al crearlo (`not_queued`: se crea de nuevo), sus clips ya se liquidaron y se reintentan de a uno desde Clips (`render_settled`), su video completo ya se renderizó (`use_rerender`) o no tiene reserva de creación (`no_reservation`).',
     },
-    { status: 503, when: 'No se pudo encolar: lo reservado vuelve y se puede probar de nuevo.' },
+    { status: 503, when: 'No se pudo encolar: lo reservado vuelve (el proyecto queda con `pipeline_error_code: "RedispatchNotQueued"`) y se puede probar de nuevo.' },
   ],
   backend: {
     status: 'exists',
@@ -673,13 +679,13 @@ export const rerenderProject = defineEndpoint({
     { status: 403, when: 'El plan no permite la resolución o la suma de segundos (`code: "resolution"` / `"duration"`). La UI abre D3.' },
     {
       status: 409,
-      when: '`{ error, code }`: el proyecto está procesando o renderizando (`project_processing`, `project_rendering`, `clip_rendering`), espera la revisión (`awaiting_approval`), tiene un render sin liquidar (`render_unsettled`) o no tiene clips (`no_clips`).',
+      when: '`{ error, code }`: el proyecto está procesando o renderizando (`project_processing`, `project_rendering`, `clip_rendering`), espera la revisión (`awaiting_approval`), tiene un render sin liquidar (`render_unsettled`), un clip con publicaciones pendientes (`posts_pending`) o no tiene clips (`no_clips`).',
     },
   ],
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_clips.py · ProjectRerenderView',
-    note: 'Un video completo es su único clip; en un proyecto de clips, los que se entregaron o fallaron (nunca un sugerido en `draft`). Reserva `render_cost` de la suma de sus segundos y guarda el estilo en la misma transacción. `render_resolution` no cambia (se cobró al crear). Se cobra lo entregado (CLIP_RENDER).',
+    note: 'Un video completo es su único clip; en un proyecto de clips, los que se entregaron o fallaron y los `draft` que un render pagó y nunca entregó (nunca un sugerido de la revisión). Reserva `render_cost` de la suma de sus segundos y guarda el estilo en la misma transacción. `render_resolution` no cambia (se cobró al crear). Se cobra lo entregado (CLIP_RENDER).',
   },
   screens: ['D1', 'D4', 'D5'],
 });

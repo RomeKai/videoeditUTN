@@ -133,6 +133,34 @@ class ClipActionsHarness:
         self.creation = creation_txn
         return project, clip
 
+    def auto_render_not_paid(self):
+        """
+        "Renderizar sin revisar" re-dispatched without tokens for it
+        (AutoRenderNotPaid): failed at render_dispatched with three DRAFT 10 s
+        clips, its auto-render settled.
+        """
+        auto = reserve_funds(self.wallet.id, Decimal("15.00"))
+        rollback_reservation(auto.id)
+        project = VideoProject.objects.create(
+            workspace=self.workspace, uploaded_by=self.user, title="Automático", source_file="videos/raw/a.mp4",
+            status=VideoProject.Status.FAILED, pipeline_stage=PipelineStage.FAILED, add_subtitles=False,
+            auto_render_bypass=True, pipeline_error_code="AutoRenderNotPaid",
+            pipeline_stage_status={name: "completed" for name in (
+                "audio_extracted", "transcribed", "moderated", "clips_selected", "render_dispatched")},
+            metadata={"duration": 120.0},
+        )
+        clips = [
+            VideoClip.objects.create(project=project, title=f"Auto {n}", start_time=n * 20, end_time=n * 20 + 10)
+            for n in range(3)
+        ]
+        VideoProject.objects.filter(pk=project.pk).update(metadata={
+            **project.metadata, "auto_render_reservation_id": str(auto.id),
+            "auto_render_clip_ids": [str(clip.pk) for clip in clips], "auto_render_seconds": 30.0,
+        })
+        fund_wallet(self.workspace, "100.00")
+        project.refresh_from_db()
+        return project, clips
+
     def post(self, url, data=None, execute=True):
         """Posts; returns (response, render_clip_task.delay)."""
         with patch(CLIP_DELAY) as delay, self.captureOnCommitCallbacks(execute=execute):
@@ -413,19 +441,40 @@ class ClipRenderTests(CapturedTaskFailures, ClipActionsHarness, APITestCase):
         # The approval was settled before: never charged again.
         self.assertEqual(Transaction.objects.get(pk=project.metadata["render_reservation_id"]).amount, Decimal("5.00"))
 
-    def test_a_render_that_fails_for_good_is_refunded(self):
+    def test_a_render_that_fails_for_good_is_refunded_and_the_clip_kept_as_it_was(self):
         project, (clip, _failed) = self.finished()
         self.post(clip_url(clip, "render"))
 
-        result = self.render_with(clip, side_effect=RuntimeError("bad encode"))
+        with patch(DELETE_OBJECT) as delete:
+            result = self.render_with(clip, side_effect=RuntimeError("bad encode"))
 
         self.assertTrue(result.failed())
         project.refresh_from_db()
         self.assertEqual(project.pipeline_stage, PipelineStage.PARTIAL)
         self.assertEqual(self.clip_render(project).status, REFUNDED)
         self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+        # The user's delivered clip, with its old file: never shown as failed.
         clip.refresh_from_db()
-        self.assertEqual(clip.status, FAILED)
+        self.assertEqual((clip.status, clip.s3_object_key), (DONE, "videos/old-0.mp4"))
+        delete.assert_not_called()
+
+    def test_a_new_render_of_a_published_clip_keeps_it_published(self):
+        project, (clip, _failed) = self.finished()
+        VideoClip.objects.filter(pk=clip.pk).update(status=VideoClip.Status.PUBLISHED)
+        self.post(clip_url(clip, "render"))
+        self.render_with(clip, side_effect=RuntimeError("bad encode"))
+        clip.refresh_from_db()
+        self.assertEqual((clip.status, clip.s3_object_key), (VideoClip.Status.PUBLISHED, "videos/old-0.mp4"))
+        self.assertEqual(self.clip_render(project).status, REFUNDED)
+
+        self.post(clip_url(clip, "render"))
+        with patch(DELETE_OBJECT):
+            self.render_with(clip)
+
+        clip.refresh_from_db()
+        self.assertEqual((clip.status, clip.s3_object_key), (VideoClip.Status.PUBLISHED, f"videos/{clip.pk}.mp4"))
+        txn = self.clip_render(project)
+        self.assertEqual((txn.status, txn.amount), (CHARGED, Decimal("5.00")))
 
     def test_without_balance_nothing_changes(self):
         project, (clip, _failed) = self.finished()
@@ -558,10 +607,28 @@ class ClipRenderTests(CapturedTaskFailures, ClipActionsHarness, APITestCase):
         self.render_with(clip)
 
         project.refresh_from_db()
-        self.assertEqual(project.pipeline_stage, PipelineStage.COMPLETED)  # closed, never left open
+        # Closed, never left open; partial: a clip of it was never delivered.
+        self.assertEqual(project.pipeline_stage, PipelineStage.PARTIAL)
         self.assertEqual(self.clip_render(project).status, CHARGED)
         left.refresh_from_db()
         self.assertEqual(left.status, DRAFT)  # not failed as unpaid either
+
+    def test_the_drafts_a_failed_auto_render_left_stay_renderable(self):
+        # The auto-render could not be paid on a re-dispatch: three drafts left.
+        project, clips = self.auto_render_not_paid()
+
+        response, _delay = self.post(clip_url(clips[0], "render"))
+        self.render_with(clips[0])
+
+        self.assertEqual(response.status_code, 202, response.content[:300])
+        project.refresh_from_db()
+        self.assertEqual((project.pipeline_stage, project.status), (PipelineStage.PARTIAL, VideoProject.Status.PARTIAL))
+        self.assertEqual(self.clip_render(project).status, CHARGED)
+        # Every clip can still be rendered: one by one, or all with a rerender.
+        rerender, delay = self.post(project_url(project, "rerender"))
+        self.assertEqual(rerender.status_code, 202, rerender.content[:300])
+        self.assertEqual(rerender.data["final_cost"], Decimal("15.00"))  # the three of them
+        self.assertEqual(sorted(call.args[0] for call in delay.call_args_list), sorted(str(clip.pk) for clip in clips))
 
     def test_the_trim_cannot_change_under_the_render(self):
         project, (clip, _failed) = self.finished()
@@ -812,7 +879,7 @@ class LostRenderTests(CapturedTaskFailures, ClipActionsHarness, APITestCase):
         self.post(project_url(project, "rerender"))
         # Delivered one, failed one, the third clip's worker never came back;
         # then the project was closed by hand without settling.
-        VideoClip.objects.filter(pk=clips[0].pk).update(status=DONE)
+        VideoClip.objects.filter(pk=clips[0].pk).update(status=DONE, s3_object_key="videos/new-0.mp4")
         VideoClip.objects.filter(pk__in=[clips[1].pk, clips[2].pk]).update(status=FAILED)
         VideoProject.objects.filter(pk=project.pk).update(pipeline_stage=PipelineStage.PARTIAL, status=VideoProject.Status.PARTIAL)
         txn = self.clip_render(project)
@@ -925,7 +992,8 @@ class RedispatchTests(ClipActionsHarness, APITestCase):
     def test_what_cannot_resume_is_a_409(self):
         cases = []
         cases.append(("not_failed", self.finished()[0]))
-        cases.append(("moderation_blocked", self.failed({"audio_extracted": "completed"}, code="ModerationBlockedError")))
+        cases.append(("moderation_blocked", self.failed({"audio_extracted": "completed"}, code="UnsafeContentError")))
+        cases.append(("not_queued", self.failed({"audio_extracted": "completed"}, code="IngestionNotQueued")))
         settled = reserve_funds(self.wallet.id, Decimal("5.00"))
         rollback_reservation(settled.id)
         approved = self.failed(
@@ -941,6 +1009,218 @@ class RedispatchTests(ClipActionsHarness, APITestCase):
                 self.assertEqual((response.status_code, response.data["code"]), (409, code))
                 delay.assert_not_called()
         self.assertFalse(Transaction.objects.filter(wallet=self.wallet, status=RESERVED).exists())
+
+
+class RedispatchMoneyRaceTests(RedispatchTests):
+    """A broker that refuses the message, and a copy of it that arrives later anyway."""
+
+    def test_a_misconfigured_moderation_is_redispatched_once_fixed(self):
+        project = self.failed({"audio_extracted": "completed", "transcribed": "completed"}, code="ModerationBlockedError")
+
+        response, delay = self.redispatch(project)
+
+        self.assertEqual(response.status_code, 202, response.content[:300])
+        delay.assert_called_once()
+        self.assertEqual(Transaction.objects.filter(wallet=self.wallet, status=RESERVED).count(), 1)
+
+    def test_a_late_copy_of_a_refused_message_never_runs_what_was_given_back(self):
+        project = self.failed({"audio_extracted": "completed"}, code="CapacityTimeoutError")
+
+        response, _delay = self.redispatch(project, fail=OperationalError("broker down"))
+
+        self.assertEqual(response.status_code, 503, response.content[:300])
+        project.refresh_from_db()
+        self.assertEqual(project.pipeline_error_code, "RedispatchNotQueued")
+        self.assertEqual(Transaction.objects.get(pk=project.metadata["reservation_id"]).status, REFUNDED)
+        # The message got to the broker after all and arrives now.
+        with patch("apps.videos.tasks.ingestion._stage_transcribe") as transcribe:
+            _run_ingestion(project.pk, attempt=1)
+        transcribe.assert_not_called()
+        project.refresh_from_db()
+        self.assertEqual((project.pipeline_stage, project.status), (PipelineStage.FAILED, VideoProject.Status.FAILED))
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+
+    def test_a_new_redispatch_pays_again_and_runs(self):
+        project = self.failed({"audio_extracted": "completed"}, code="CapacityTimeoutError")
+        self.redispatch(project, fail=OperationalError("broker down"))
+
+        response, delay = self.redispatch(project)
+
+        self.assertEqual(response.status_code, 202, response.content[:300])
+        delay.assert_called_once()
+        project.refresh_from_db()
+        # The code it had before the refused re-dispatch: the pipeline resumes it.
+        self.assertEqual(project.pipeline_error_code, "CapacityTimeoutError")
+        self.assertEqual(Transaction.objects.get(pk=project.metadata["reservation_id"]).status, RESERVED)
+        with patch("apps.videos.tasks.ingestion._stage_transcribe", side_effect=RuntimeError("stop here")), \
+                self.assertRaises(RuntimeError):
+            _run_ingestion(project.pk, attempt=1)
+        project.refresh_from_db()
+        self.assertEqual(project.status, VideoProject.Status.INGESTING)  # reopened
+
+    def test_a_message_that_got_through_keeps_the_reservation_that_pays_it(self):
+        project = self.failed({"audio_extracted": "completed"}, code="CapacityTimeoutError")
+
+        def published_then_raised(project_id):
+            # The pipeline took it (and reopened it) before the client saw the error.
+            VideoProject.objects.filter(pk=project_id).update(
+                pipeline_stage=PipelineStage.AUDIO_EXTRACTED, status=VideoProject.Status.INGESTING,
+            )
+            raise OperationalError("confirm timed out")
+
+        response, _delay = self.redispatch(project, fail=published_then_raised)
+
+        self.assertEqual(response.status_code, 202, response.content[:300])
+        project.refresh_from_db()
+        self.assertEqual(Transaction.objects.get(pk=project.metadata["reservation_id"]).status, RESERVED)
+        self.assertNotEqual(project.pipeline_error_code, "RedispatchNotQueued")
+
+
+class ProjectDeleteTests(ClipActionsHarness, APITestCase):
+    """Deleting a project never leaves tokens reserved: nothing would settle them without it."""
+
+    def delete(self, project):
+        with patch(DELETE_OBJECT):
+            return self.client.delete(reverse("project-detail", args=[project.pk]))
+
+    def test_while_a_render_is_open_it_is_refused(self):
+        project, (clip, _failed) = self.finished()
+        self.post(clip_url(clip, "render"))
+
+        response = self.delete(project)
+
+        self.assertEqual((response.status_code, response.data["code"]), (409, "project_processing"))
+        self.assertEqual(response.data["error"], "El proyecto se está procesando: esperá a que termine para borrarlo.")
+        self.assertTrue(VideoProject.objects.filter(pk=project.pk).exists())
+        self.assertEqual(self.clip_render(project).status, RESERVED)
+
+        self.render_with(clip)  # the render ends and is settled: now it can go
+        self.assertEqual(self.delete(project).status_code, 204)
+        self.assertFalse(Transaction.objects.filter(wallet=self.wallet, status=RESERVED).exists())
+
+    def test_while_it_is_processed_or_a_reservation_is_open_it_is_refused(self):
+        creation = reserve_funds(self.wallet.id, Decimal("10.00"))
+        ingesting = VideoProject.objects.create(
+            workspace=self.workspace, uploaded_by=self.user, title="Ingestando", source_file="videos/raw/i.mp4",
+            status=VideoProject.Status.INGESTING, metadata={"reservation_id": str(creation.id)},
+        )
+        failed, _clip = self.whole_video(clip_status=DONE, stage=PipelineStage.FAILED, creation=RESERVED)
+
+        for project, code in ((ingesting, "project_processing"), (failed, "reservation_open")):
+            with self.subTest(code=code):
+                response = self.delete(project)
+                self.assertEqual((response.status_code, response.data["code"]), (409, code))
+                self.assertTrue(VideoProject.objects.filter(pk=project.pk).exists())
+        self.assertEqual(Transaction.objects.filter(wallet=self.wallet, status=RESERVED).count(), 2)  # never refunded
+
+    def test_a_finished_project_is_deleted(self):
+        project, _clips = self.finished()
+
+        self.assertEqual(self.delete(project).status_code, 204)
+        self.assertFalse(VideoProject.objects.filter(pk=project.pk).exists())
+
+
+class EndedProjectRecoveryTests(CapturedTaskFailures, ClipActionsHarness, APITestCase):
+    """A project that ended while a clip rendered under a dead owner: never reserved forever."""
+
+    def stuck(self, project, clip, txn, started=None):
+        VideoClip.objects.filter(pk=clip.pk).update(status=RENDERING, render_claim_token=uuid.uuid4(), render_unfinished_starts=1)
+        past = timezone.now() - timedelta(seconds=settings.RENDER_STUCK_AFTER_SECONDS + 60)
+        Transaction.objects.filter(pk=txn.pk).update(created_at=past)
+        metadata = dict(VideoProject.objects.get(pk=project.pk).metadata)
+        metadata["render_clip_started_at"] = (started or past).isoformat()
+        VideoProject.objects.filter(pk=project.pk).update(
+            status=VideoProject.Status.FAILED, pipeline_stage=PipelineStage.FAILED,
+            pipeline_error_code="OperationalError", metadata=metadata,
+        )
+
+    def row(self, project):
+        rows = recover_stuck_renders_now(apply=True)
+        return next(row for row in rows if row["project"] == project.pk)
+
+    def test_its_dead_clip_fails_and_the_reservation_is_settled(self):
+        project, (clip, failed) = self.finished()
+        auto = reserve_funds(self.wallet.id, Decimal("5.00"))
+        VideoProject.objects.filter(pk=project.pk).update(metadata={
+            **project.metadata, "auto_render_reservation_id": str(auto.id),
+            "auto_render_clip_ids": [str(failed.pk)], "auto_render_seconds": 10.0,
+        })
+        self.stuck(project, failed, auto)
+
+        row = self.row(project)
+
+        self.assertEqual((row["action"], row["reason"], row["result"]), ("fail", "dead_clip_after_end", "failed"))
+        failed.refresh_from_db()
+        self.assertEqual(failed.status, FAILED)
+        auto.refresh_from_db()
+        self.assertEqual(auto.status, REFUNDED)  # nothing it paid for was delivered
+        project.refresh_from_db()
+        self.assertEqual((project.pipeline_stage, project.pipeline_error_code), (PipelineStage.FAILED, "OperationalError"))
+        # And the project can be rendered again.
+        response, _delay = self.post(clip_url(clip, "render"))
+        self.assertEqual(response.status_code, 202, response.content[:300])
+
+    def test_a_whole_video_creation_is_settled_too(self):
+        project, clip = self.whole_video(clip_status=DRAFT, stage=PipelineStage.FAILED, creation=RESERVED)
+        self.stuck(project, clip, self.creation)
+
+        row = self.row(project)
+
+        self.assertEqual((row["action"], row["reason"]), ("fail", "dead_clip_after_end"))
+        self.creation.refresh_from_db()
+        self.assertEqual(self.creation.status, REFUNDED)
+        clip.refresh_from_db()
+        self.assertEqual(clip.status, FAILED)
+
+    def test_a_clip_that_may_still_be_alive_is_left_alone(self):
+        project, (_clip, failed) = self.finished()
+        auto = reserve_funds(self.wallet.id, Decimal("5.00"))
+        VideoProject.objects.filter(pk=project.pk).update(metadata={
+            **project.metadata, "auto_render_reservation_id": str(auto.id),
+            "auto_render_clip_ids": [str(failed.pk)], "auto_render_seconds": 10.0,
+        })
+        self.stuck(project, failed, auto, started=timezone.now())
+
+        row = self.row(project)
+
+        self.assertEqual((row["action"], row["reason"]), ("skip", "recent"))
+        failed.refresh_from_db()
+        self.assertEqual(failed.status, RENDERING)
+        auto.refresh_from_db()
+        self.assertEqual(auto.status, RESERVED)
+
+
+class PendingPostsTests(ClipActionsHarness, APITestCase):
+    """A clip whose file a post may still publish is not rendered again under it."""
+
+    def post_for(self, clip, status):
+        return ScheduledPost.objects.create(
+            video_clip=clip, platform="TIKTOK", publish_at=timezone.now() + timedelta(hours=1), status=status,
+        )
+
+    def test_a_render_or_rerender_waits_for_its_posts(self):
+        project, (clip, _failed) = self.finished()
+        for status in (ScheduledPost.Status.SCHEDULED, ScheduledPost.Status.QUEUED, ScheduledPost.Status.PROCESSING):
+            with self.subTest(status=status):
+                post = self.post_for(clip, status)
+                render, delay = self.post(clip_url(clip, "render"))
+                rerender, _delay = self.post(project_url(project, "rerender"))
+                self.assertEqual((render.status_code, render.data["code"]), (409, "posts_pending"))
+                self.assertEqual((rerender.status_code, rerender.data["code"]), (409, "posts_pending"))
+                delay.assert_not_called()
+                post.delete()
+        clip.refresh_from_db()
+        self.assertEqual((clip.status, clip.s3_object_key), (DONE, "videos/old-0.mp4"))
+        self.assertFalse(Transaction.objects.filter(wallet=self.wallet, status=RESERVED).exists())
+
+    def test_posts_already_published_or_failed_do_not_block_it(self):
+        _project, (clip, failed) = self.finished()
+        self.post_for(clip, ScheduledPost.Status.PUBLISHED)
+        self.post_for(failed, ScheduledPost.Status.SCHEDULED)  # no file yet: nothing to publish under it
+
+        retry, _delay = self.post(clip_url(failed, "retry"))
+
+        self.assertEqual(retry.status_code, 202, retry.content[:300])
 
 
 # --- Two requests at the same time ---------------------------------------------

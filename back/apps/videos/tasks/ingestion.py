@@ -946,6 +946,15 @@ CLIP_RENDER = PaidClipRender(
     'clip_render_reservation_id', 'clip_render_clip_ids', 'clip_render_seconds', 'render.clip_',
 )
 PAID_CLIP_RENDERS = (AUTO_RENDER, APPROVED_RENDER, CLIP_RENDER)
+# The clips of a CLIP_RENDER that were delivered before it reset them to DRAFT:
+# ``{clip_id: {'status': ..., 'key': ...}}``. Their old file stays until a new
+# one replaces it. Only a new file counts as delivered, and a render of one
+# that fails gives it back as it was (``_restore_rerendered_clips``).
+CLIP_RENDER_PREVIOUS_KEY = 'clip_render_previous'
+# pipeline_error_code of a failed project whose re-dispatch was refunded
+# because the broker did not take it (views_clips.ProjectRedispatchView): a
+# late copy of that message must not run what was given back.
+REDISPATCH_NOT_QUEUED = 'RedispatchNotQueued'
 
 
 def _paid_clip_renders(metadata):
@@ -1063,7 +1072,9 @@ def _clip_render_settlement(project, paid=AUTO_RENDER):
     - No clip delivered (completed or published): ``('rollback', 0)``.
     - Otherwise ``('charge', seconds delivered)``: only what was delivered is paid.
 
-    Only the clips the reservation paid for count (its clip ids).
+    Only the clips the reservation paid for count (its clip ids). For a render
+    asked for later (CLIP_RENDER), a clip delivered before it counts only with
+    a new file (``CLIP_RENDER_PREVIOUS_KEY``).
     """
     if project.pipeline_stage not in (*TERMINAL_STAGES, PipelineStage.FAILED):
         return 'wait', 0.0
@@ -1073,17 +1084,48 @@ def _clip_render_settlement(project, paid=AUTO_RENDER):
         # Only the clips this reservation paid for: a clip rendered before (a
         # re-dispatch) or paid by another reservation is not part of it.
         clips = clips.filter(pk__in=paid_ids)
-    clips = list(clips.values_list('status', 'start_time', 'end_time'))
-    if any(status == VideoClip.Status.RENDERING for status, _start, _end in clips):
+    # A clip rendered again (CLIP_RENDER) counts only with a new file: one whose
+    # render failed is given back with its old file, delivered before and paid.
+    previous = ((project.metadata or {}).get(CLIP_RENDER_PREVIOUS_KEY) or {}) if paid is CLIP_RENDER else {}
+    clips = list(clips.values_list('pk', 'status', 'start_time', 'end_time', 's3_object_key'))
+    if any(status == VideoClip.Status.RENDERING for _pk, status, _start, _end, _key in clips):
         return 'wait', 0.0
     delivered = sum(
         max(0.0, float(end) - float(start))
-        for status, start, end in clips
+        for pk, status, start, end, key in clips
         if status in (VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED)
+        and not (str(pk) in previous and key == previous[str(pk)].get('key'))
     )
     if delivered <= 0:
         return 'rollback', 0.0
     return 'charge', delivered
+
+
+def _restore_rerendered_clips(project_id):
+    """
+    A clip that was delivered and rendered again (CLIP_RENDER) keeps what the
+    user had: if its new render failed, it goes back to COMPLETED or PUBLISHED
+    with its old file (still in storage: only a new file replaces it); if it
+    was PUBLISHED, it stays PUBLISHED with the new one. Conditional updates,
+    idempotent. The settle never counts the old file (_clip_render_settlement).
+    """
+    metadata = VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
+    previous = metadata.get(CLIP_RENDER_PREVIOUS_KEY) or {}
+    restored = 0
+    for clip_id, before in previous.items():
+        status, key = before.get('status'), before.get('key')
+        if status not in (VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED) or not key:
+            continue
+        restored += VideoClip.objects.filter(
+            pk=clip_id, status=VideoClip.Status.FAILED, s3_object_key=key,
+        ).update(status=status)
+        if status == VideoClip.Status.PUBLISHED:
+            VideoClip.objects.filter(pk=clip_id, status=VideoClip.Status.COMPLETED).exclude(
+                s3_object_key=key,
+            ).update(status=status)
+    if restored:
+        logger.info("render.clip_restored project_id=%s clips=%d", project_id, restored)
+    return restored
 
 
 def _clip_render_charge(project, txn_amount, delivered_seconds, paid=AUTO_RENDER):
@@ -1454,7 +1496,19 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
             return f"Not resumed {project_id}: its whole-video payment was refunded"
         # Manual re-dispatch of a failed project: resume where it stopped.
         stage = last_completed_stage(project)
-        reopen(project_id, stage)
+        with transaction.atomic():
+            # Read under the row lock that the reopen takes too: a re-dispatch
+            # refunded because the broker refused it (REDISPATCH_NOT_QUEUED)
+            # is never run by a late copy of its message, and one refunded
+            # after this reopen sees the project no longer failed and keeps
+            # its reservation (views_clips.ProjectRedispatchView).
+            code = VideoProject.objects.select_for_update().filter(pk=project_id).values_list(
+                'pipeline_error_code', flat=True,
+            ).first()
+            if code == REDISPATCH_NOT_QUEUED:
+                logger.warning("pipeline.redispatch_skipped project_id=%s reason=redispatch_not_queued", project_id)
+                return f"Not resumed {project_id}: its re-dispatch was refunded"
+            reopen(project_id, stage)
         progress['stage'] = stage
 
     if stage in TERMINAL_STAGES:

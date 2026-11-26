@@ -102,6 +102,25 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
             context['pte_prompt'] = prompt
         return context
 
+    def destroy(self, request, *args, **kwargs):
+        """
+        Deletes the project, never with tokens still reserved: while it renders
+        or processes, or with a creation or render reservation RESERVED, it is a
+        409 (views_clips.project_delete_refusal). Nothing would settle that
+        reservation once its project is gone. Nothing charged comes back.
+        """
+        from .views_clips import project_delete_refusal
+
+        project = self.get_object()  # 404 outside the workspace; an Editor's own projects only
+        with transaction.atomic():
+            # Locked: an approval or a paid render that starts meanwhile waits for it.
+            locked = VideoProject.objects.select_for_update().get(pk=project.pk)
+            refusal = project_delete_refusal(locked)
+            if refusal is not None:
+                return refusal
+            self.perform_destroy(locked)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=False, methods=['post'], url_path='from-prompt')
     def from_prompt(self, request):
         """

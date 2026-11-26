@@ -110,13 +110,13 @@ export const renderClip = defineEndpoint({
     },
     {
       status: 409,
-      when: '`{ error, code }`: el clip ya se está renderizando (`clip_rendering`), o su proyecto (`project_rendering`), o el pipeline lo procesa (`project_processing`), o espera la revisión (`awaiting_approval`: se renderiza al aprobarla), o el render anterior no se liquidó todavía (`render_unsettled`).',
+      when: '`{ error, code }`: el clip ya se está renderizando (`clip_rendering`), o su proyecto (`project_rendering`), o el pipeline lo procesa (`project_processing`), o espera la revisión (`awaiting_approval`: se renderiza al aprobarla), o el render anterior no se liquidó todavía (`render_unsettled`), o el clip tiene publicaciones programadas, en cola o subiéndose (`posts_pending`: el render nuevo reemplaza su archivo).',
     },
   ],
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_clips.py · ClipRenderView',
-    note: 'Reserva `render_cost` de los segundos del clip y pone el proyecto en `rendering` hasta que el clip termina: mientras tanto no se renderiza otro clip del mismo proyecto (409 `project_rendering`). Se cobra lo entregado; si el render falla, se devuelve (CLIP_RENDER, documents/ia/06).',
+    note: 'Reserva `render_cost` de los segundos del clip y pone el proyecto en `rendering` hasta que el clip termina: mientras tanto no se renderiza otro clip del mismo proyecto (409 `project_rendering`). Se cobra lo entregado; si el render falla, se devuelve y un clip que ya estaba entregado vuelve a `completed` (o `published`) con su archivo de antes (CLIP_RENDER, documents/ia/06).',
   },
   screens: ['D4', 'D5'],
 });

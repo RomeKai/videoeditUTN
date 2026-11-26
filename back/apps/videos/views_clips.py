@@ -69,9 +69,19 @@ RERENDER_FIELDS = (
     'editing_style', 'render_layout', 'aspect_ratio', 'brand_kit', 'add_subtitles', 'subtitle_color',
     'subtitle_size', 'subtitle_position', 'subtitle_words_per_segment', 'use_facetracking', 'remove_silences',
 )
-# A project stopped by moderation is re-run by an override in the admin
-# (documents/ia/03), never from here: moderating it again blocks it again.
-MODERATION_CODES = frozenset({'UnsafeContentError', 'ModerationBlockedError'})
+# A project whose content moderation blocked is re-run by an override in the
+# admin (documents/ia/03), never from here: moderating it again blocks it
+# again. ModerationBlockedError is not one: it is a bad key or an exhausted
+# quota, and the project resumes once operations fix it.
+MODERATION_CODES = frozenset({'UnsafeContentError'})
+# Failed and refunded because the broker never took its ingestion (the create
+# view): the pipeline never resumes it, so it is created again.
+INGESTION_NOT_QUEUED = 'IngestionNotQueued'
+# Where a refunded re-dispatch keeps the error code it replaced.
+REDISPATCH_PREVIOUS_CODE_KEY = 'redispatch_previous_error_code'
+# Posts that may still publish the clip's file: a render replaces that file
+# and deletes the old one.
+_PENDING_POSTS = (ScheduledPost.Status.SCHEDULED, ScheduledPost.Status.QUEUED, ScheduledPost.Status.PROCESSING)
 # Recovery counters of the previous render: a new paid render starts its own.
 _RECOVERY_KEYS = ('render_recovery_requeues', 'render_recovery_requeues_total', 'render_recovery_requeued_at')
 # Reservations of the project that a new one replaced in its key: listed so
@@ -167,6 +177,43 @@ def _render_refusal(project, clips):
     return None
 
 
+def _posts_refusal(clips):
+    """
+    The 409 of a clip with a file that a post may still publish (scheduled,
+    queued or uploading): its render would replace that file and delete the
+    old one under the post. The post is cancelled or published first.
+    """
+    with_file = [clip.pk for clip in clips if clip.s3_object_key or clip.status in _DELIVERED]
+    if with_file and ScheduledPost.objects.filter(video_clip_id__in=with_file, status__in=_PENDING_POSTS).exists():
+        return _error(409, (
+            "Este clip tiene publicaciones programadas o en curso: cancelalas o esperá a que se publiquen "
+            "antes de renderizarlo de nuevo."
+        ), 'posts_pending')
+    return None
+
+
+def project_delete_refusal(project):
+    """
+    The 409 of a project that cannot be deleted now (VideoProjectViewSet.destroy),
+    read under its row lock, or None. While it renders or processes, or with a
+    creation or render reservation still RESERVED, deleting it would leave
+    those tokens reserved for good: nothing settles a reservation without its
+    project (settle_stale_reservations only reports it as unlinked).
+    """
+    from .tasks.ingestion import PAID_CLIP_RENDERS
+
+    if project.status in (Status.RENDERING, *_PROCESSING):
+        return _error(409, "El proyecto se está procesando: esperá a que termine para borrarlo.", 'project_processing')
+    metadata = project.metadata or {}
+    keys = ['reservation_id', *(paid.reservation_key for paid in PAID_CLIP_RENDERS)]
+    ids = [str(metadata[key]) for key in keys if metadata.get(key)]
+    if ids and Transaction.objects.filter(pk__in=ids, status=Transaction.Status.RESERVED).exists():
+        return _error(409, (
+            "El proyecto tiene tokens reservados que todavía no se liquidaron. Probá de nuevo en unos minutos."
+        ), 'reservation_open')
+    return None
+
+
 def _length_refusal(clips):
     """A 400 for a clip longer than a render finishes within its soft time limit (check_segment_lengths)."""
     from .services.segments import max_render_segment_seconds
@@ -244,7 +291,7 @@ def _start_paid_render(request, project_id, pick, description, style=None):
     """
     from .services.ai.pipeline_state import PipelineStage, advance
     from .tasks import finalize_project_render
-    from .tasks.ingestion import CLIP_RENDER, _dispatch_approved_clips
+    from .tasks.ingestion import CLIP_RENDER, CLIP_RENDER_PREVIOUS_KEY, _dispatch_approved_clips
 
     # A fan-out that closed and whose settle did not run (a worker that died
     # in between) is settled first: idempotent, the pipeline's own rule.
@@ -259,7 +306,7 @@ def _start_paid_render(request, project_id, pick, description, style=None):
             clips = list(VideoClip.objects.select_for_update().filter(pk__in=ids, project_id=project_id))
             if len(clips) != len(ids):
                 raise _Refused(_error(409, "El clip ya no existe.", 'clip_gone'))
-            refusal = _render_refusal(project, clips) or _length_refusal(clips)
+            refusal = _render_refusal(project, clips) or _posts_refusal(clips) or _length_refusal(clips)
             if refusal is not None:
                 raise _Refused(refusal)
             seconds = round(sum(max(0.0, float(c.end_time) - float(c.start_time)) for c in clips), 3)
@@ -285,6 +332,12 @@ def _start_paid_render(request, project_id, pick, description, style=None):
                 CLIP_RENDER.reservation_key: str(reservation.id),
                 CLIP_RENDER.clip_ids_key: [str(pk) for pk in ids],
                 CLIP_RENDER.seconds_key: seconds,
+                # What the user had: given back if the new render fails, and
+                # never counted as delivered by this render.
+                CLIP_RENDER_PREVIOUS_KEY: {
+                    str(clip.pk): {"status": clip.status, "key": clip.s3_object_key}
+                    for clip in clips if clip.status in _DELIVERED and clip.s3_object_key
+                },
             })
             VideoProject.objects.filter(pk=project_id).update(
                 status=Status.RENDERING, metadata=metadata, pipeline_error_code='', pipeline_error_at=None,
@@ -555,10 +608,19 @@ class ProjectRerenderView(_WorkspaceScoped):
         style = {key: value for key, value in validator.validated_data.items() if key in RERENDER_FIELDS}
 
         def pick(locked):
-            clips = VideoClip.objects.filter(project_id=locked.pk).order_by('start_time', 'created_at')
+            from .tasks.ingestion import _paid_clip_renders, _pays_for
+
+            metadata = locked.metadata or {}
+            paid_renders = _paid_clip_renders(metadata)
+            clips = list(VideoClip.objects.filter(project_id=locked.pk).order_by('start_time', 'created_at'))
             if not _is_whole_video(locked):
-                clips = clips.exclude(status=ClipStatus.DRAFT)
-            clips = list(clips)
+                # Never a suggestion of a review; a draft a render paid for and
+                # never delivered (its render was settled) is one of the clips.
+                clips = [
+                    clip for clip in clips
+                    if clip.status != ClipStatus.DRAFT
+                    or any(_pays_for(metadata, paid, clip.pk) for paid in paid_renders)
+                ]
             if not clips:
                 return _error(409, "El proyecto no tiene clips para renderizar.", 'no_clips')
             return clips
@@ -585,15 +647,19 @@ class ProjectRedispatchView(_WorkspaceScoped):
     the pipeline settles it as at creation. A reservation still RESERVED is
     reused. A project with its clips selected resumes free: its render pays
     itself (the auto-render reserves again; a review waits for its approval).
-    409 when it is not failed, was stopped by moderation, its clips render one
-    by one (their render was settled: each is retried from Clips) or its whole
-    video was rendered already (``rerender/``).
+    409 when it is not failed, its content was blocked by moderation
+    (UnsafeContentError), its ingestion was never queued at creation, its clips
+    render one by one (their render was settled: each is retried from Clips)
+    or its whole video was rendered already (``rerender/``). If the broker
+    refuses the message, what was reserved goes back with REDISPATCH_NOT_QUEUED
+    (503), which the pipeline never resumes until another re-dispatch pays.
     """
 
     workspace_actions = {'POST': 'members.manage'}
 
     def post(self, request, pk):
         from .tasks import process_initial_ingestion
+        from .tasks.ingestion import REDISPATCH_NOT_QUEUED
 
         project = self.get_project(request, pk)
         reservation = None
@@ -603,12 +669,18 @@ class ProjectRedispatchView(_WorkspaceScoped):
                 if project.status != Status.FAILED or project.pipeline_stage != VideoProject.PipelineStage.FAILED:
                     raise _Refused(_error(409, "El proyecto ya está en curso o terminó.", 'not_failed'))
                 amount = self._amount_to_reserve(project)
+                metadata = dict(project.metadata or {})
+                updates = {}
+                if project.pipeline_error_code == REDISPATCH_NOT_QUEUED:
+                    # A re-dispatch refunded before: this one queues it, so
+                    # the pipeline must not skip it any more.
+                    updates['pipeline_error_code'] = metadata.pop(REDISPATCH_PREVIOUS_CODE_KEY, '') or ''
                 if amount is not None:
                     reservation = _reserve(project, amount, request.user, f"Procesamiento: {project.title}")
-                    metadata = dict(project.metadata or {})
                     metadata[REPLACED_RESERVATIONS_KEY] = _replaced(metadata, 'reservation_id')
                     metadata['reservation_id'] = str(reservation.id)
-                    VideoProject.objects.filter(pk=project.pk).update(metadata=metadata)
+                if updates or amount is not None:
+                    VideoProject.objects.filter(pk=project.pk).update(metadata=metadata, **updates)
         except _Refused as refused:
             return refused.response
 
@@ -616,9 +688,10 @@ class ProjectRedispatchView(_WorkspaceScoped):
             process_initial_ingestion.delay(str(project.pk))
         except Exception as exc:
             logger.error("pipeline.redispatch_not_queued project_id=%s error=%s", project.pk, type(exc).__name__)
-            if reservation is not None:
-                self._give_back(reservation)
-            return _error(503, "No pudimos volver a procesar el proyecto. Probá de nuevo en unos minutos.")
+            if reservation is None or self._give_back(project.pk, reservation):
+                return _error(503, "No pudimos volver a procesar el proyecto. Probá de nuevo en unos minutos.")
+            # The message got through after all: the pipeline already took
+            # the project, and the reservation pays for that run.
         logger.info("pipeline.redispatch_requested project_id=%s reserved=%s", project.pk, reservation is not None)
         project.refresh_from_db()
         data = VideoProjectSerializer(project, context={'request': request}).data
@@ -639,6 +712,11 @@ class ProjectRedispatchView(_WorkspaceScoped):
             raise _Refused(_error(
                 409, "El contenido no pasó la moderación: no se puede volver a procesar. Si creés que es un error, escribinos.",
                 'moderation_blocked',
+            ))
+        if project.pipeline_error_code == INGESTION_NOT_QUEUED:
+            # Refunded at creation and never resumed by the pipeline.
+            raise _Refused(_error(
+                409, "Este proyecto no llegó a procesarse y se devolvió lo reservado: creá uno nuevo.", 'not_queued',
             ))
         metadata = project.metadata or {}
         resume = last_completed_stage(project)
@@ -671,11 +749,34 @@ class ProjectRedispatchView(_WorkspaceScoped):
         return creation.amount
 
     @staticmethod
-    def _give_back(reservation):
-        """The pipeline could not be queued: its new reservation goes back (settle_stale_reservations if this fails)."""
+    def _give_back(project_id, reservation):
+        """
+        The pipeline could not be queued: its new reservation goes back, in one
+        transaction with REDISPATCH_NOT_QUEUED (the error code it replaces kept
+        in metadata), so a late copy of the message never runs it for free
+        (``_run_ingestion``). Under the row lock that the pipeline's reopen
+        takes: if the message got through and the pipeline already reopened the
+        project, the reservation pays for that run and stays. Returns whether
+        it gave it back. A refund that fails leaves it RESERVED for the
+        pipeline or settle_stale_reservations.
+        """
+        from .tasks.ingestion import REDISPATCH_NOT_QUEUED
+
         try:
-            wallet_service.rollback_reservation(reservation.id)
+            with transaction.atomic():
+                project = VideoProject.objects.select_for_update().get(pk=project_id)
+                if project.pipeline_stage != VideoProject.PipelineStage.FAILED:
+                    logger.warning("pipeline.redispatch_refund_skipped project_id=%s reason=resumed", project_id)
+                    return False
+                wallet_service.rollback_reservation(reservation.id)
+                metadata = dict(project.metadata or {})
+                if project.pipeline_error_code != REDISPATCH_NOT_QUEUED:
+                    metadata[REDISPATCH_PREVIOUS_CODE_KEY] = project.pipeline_error_code
+                VideoProject.objects.filter(pk=project_id).update(
+                    pipeline_error_code=REDISPATCH_NOT_QUEUED, metadata=metadata,
+                )
         except Exception as exc:
             logger.error(
                 "pipeline.redispatch_refund_failed transaction_id=%s error=%s", reservation.id, type(exc).__name__,
             )
+        return True

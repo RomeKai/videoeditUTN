@@ -101,6 +101,15 @@ Clip by clip
     A re-queue that the broker accepts clears the error code of the dispatch
     that could not queue it.
 
+    A project that ended (completed, partial or failed: it failed while a clip
+    rendered, or a settle did not run) with one of those reservations still
+    RESERVED, or a whole video with its creation still RESERVED, is never
+    re-queued: nothing renders it any more. Once idle, a paid clip still
+    RENDERING there has a dead owner and fails (``dead_clip_after_end``, the
+    project keeps its own error code), and finalize_project_render settles
+    the reservation by the usual rule (``close``, ``ended_unsettled`` when no
+    clip was left rendering).
+
 Runs every 15 minutes from CELERY_BEAT_SCHEDULE (task recover_stuck_renders)
 and from ``manage.py recover_stuck_renders``. Logs and output carry ids,
 counts and states only.
@@ -125,7 +134,7 @@ from apps.videos.services.ai.project_lock import (
     project_lock_held,
 )
 from apps.videos.tasks.ingestion import (
-    APPROVED_RENDER, AUTO_RENDER, CLIP_RENDER, _is_whole_video, _paid_clip_renders, _pays_for,
+    APPROVED_RENDER, AUTO_RENDER, CLIP_RENDER, PaidClipRender, _is_whole_video, _paid_clip_renders, _pays_for,
     _queue_clip_renders,
 )
 from apps.videos.tasks.render import (
@@ -350,14 +359,29 @@ def _candidates():
 
 # --- Clip by clip (approved reviews and auto-renders) ------------------------
 
+# Stages where the render ended (or the project failed while a clip rendered).
+ENDED_STAGES = (PipelineStage.COMPLETED, PipelineStage.PARTIAL, PipelineStage.FAILED)
+# The creation of a whole video pays its one clip (no clip ids: it pays them
+# all). Only looked at once the project ended: its first render is not
+# recovered at render_dispatched.
+WHOLE_VIDEO_CREATION = PaidClipRender('reservation_id', 'whole_video_clip_ids', 'priced_duration_s', 'pipeline.')
+# An ended project whose reservation waits for a clip left RENDERING by a dead
+# owner: that clip fails and the reservation is settled.
+DEAD_CLIP_AFTER_END = "dead_clip_after_end"
+
+
 def _paid_reserved(project):
     """
-    The clip-by-clip renders of the project (approval, auto-render) whose
-    reservation is still RESERVED, as ``[(paid, created_at)]``.
+    The clip-by-clip renders of the project (approval, auto-render, later
+    render and, once a whole video ended, its creation) whose reservation is
+    still RESERVED, as ``[(paid, created_at)]``.
     """
     metadata = project.metadata or {}
     reserved = []
-    for paid in _paid_clip_renders(metadata):
+    candidates = list(_paid_clip_renders(metadata))
+    if _is_whole_video(project) and project.pipeline_stage in ENDED_STAGES and metadata.get('reservation_id'):
+        candidates.append(WHOLE_VIDEO_CREATION)
+    for paid in candidates:
         try:
             created_at = Transaction.objects.filter(
                 pk=metadata[paid.reservation_key], status=Transaction.Status.RESERVED,
@@ -410,16 +434,25 @@ def decide_clips(project, paid_renders, snapshot, stuck_after):
     """(action, reason) for a clip-by-clip render, from its row, its reserved renders and its snapshot."""
     if project is None:
         return SKIP, "gone"
-    if _is_whole_video(project) and all(paid is not CLIP_RENDER for paid, _created in paid_renders):
+    ended = project.pipeline_stage in ENDED_STAGES
+    if not ended and _is_whole_video(project) and all(paid is not CLIP_RENDER for paid, _created in paid_renders):
         # Its first render is paid by its creation; one asked for later
         # (CLIP_RENDER) is recovered like any clip-by-clip render.
         return SKIP, "whole_video"
-    if project.pipeline_stage != PipelineStage.RENDER_DISPATCHED:
+    if not ended and project.pipeline_stage != PipelineStage.RENDER_DISPATCHED:
         return SKIP, "not_rendering"
     if not paid_renders:
         return SKIP, "reservation_settled"
     if snapshot['idle_s'] is not None and snapshot['idle_s'] < stuck_after.total_seconds():
         return SKIP, "recent"
+    if ended:
+        # The project ended (it failed while a clip rendered, or a settle did
+        # not run) with a reservation still RESERVED. Nothing renders it any
+        # more: a clip still RENDERING has a dead owner by now and fails, and
+        # the settle runs by the usual rule.
+        if snapshot['rendering']:
+            return FAIL, DEAD_CLIP_AFTER_END
+        return CLOSE, "ended_unsettled"
     if not snapshot['drafts'] and not snapshot['rendering']:
         # Every paid clip is final but the fan-out stayed open (its close failed).
         return CLOSE, "fan_out_open"
@@ -513,6 +546,10 @@ def _recover_clips(project_id, stuck_after):
                 # record rolls back and the next run tries again. A duplicate
                 # message is harmless (the clip claim is a compare-and-set).
                 _requeue_clips(project_id, snapshot['drafts'], snapshot['rendering'])
+            elif action == FAIL and reason == DEAD_CLIP_AFTER_END:
+                # Only the dead clips: a draft does not hold the settle, and
+                # the project keeps the code of the failure that ended it.
+                _fail_stuck_clips([], snapshot['rendering'])
             elif action == FAIL:
                 _fail_stuck_clips(snapshot['drafts'], snapshot['rendering'])
                 record_error(project_id, STUCK_CODE)
@@ -531,9 +568,10 @@ def _recover_clips(project_id, stuck_after):
 
 def _clip_candidates():
     """
-    Projects at render_dispatched whose approval (with ``render_clip_ids``),
-    auto-render or later render (CLIP_RENDER, apps/videos/views_clips.py)
-    reservation is still RESERVED.
+    Projects at render_dispatched, or ended, whose approval (with
+    ``render_clip_ids``), auto-render or later render (CLIP_RENDER,
+    apps/videos/views_clips.py) reservation is still RESERVED, and ended whole
+    videos whose creation still is.
     """
     reserved = [
         str(pk) for pk in Transaction.objects.filter(
@@ -548,9 +586,13 @@ def _clip_candidates():
     )
     auto_rendered = Q(**{f'metadata__{AUTO_RENDER.reservation_key}__in': reserved})
     asked_later = Q(**{f'metadata__{CLIP_RENDER.reservation_key}__in': reserved})
+    whole_video_ended = Q(
+        project_type=VideoProject.Type.SINGLE_EDIT, metadata__has_key='priced_duration_s',
+        metadata__reservation_id__in=reserved, pipeline_stage__in=ENDED_STAGES,
+    )
     return list(
-        VideoProject.objects.filter(pipeline_stage=PipelineStage.RENDER_DISPATCHED)
-        .filter(approved | auto_rendered | asked_later)
+        VideoProject.objects.filter(pipeline_stage__in=[PipelineStage.RENDER_DISPATCHED, *ENDED_STAGES])
+        .filter(approved | auto_rendered | asked_later | whole_video_ended)
         .order_by('created_at', 'id').values_list('pk', flat=True)
     )
 
