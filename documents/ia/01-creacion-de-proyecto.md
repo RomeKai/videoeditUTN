@@ -206,7 +206,7 @@ sequenceDiagram
 1. La duración de un video por URL no se conoce en el request, así que se cobra una tarifa fija de 10 tokens.
 2. Si el pedido trae `use_seo=true`, se suma el adicional `seo_optimization` calculado con `duration_seconds=0`: solo se chequea el plan para el SEO y se cobra `5 × (1 − base_discount_rate)` (ADR-013). Sin plan, se cobra 5.
 3. La reserva, `reservation_id`, el encolado y el 503 sin broker son iguales al flujo con archivo. Un rechazo después del INSERT borra la fila (no hay archivo).
-4. La URL no pasa por `validate_upload` ni por el límite de duración del plan al crear: esa duración la mira `probe-link` antes ([ver abajo](#revisar-un-link-antes-de-crear-probe-link)) y la descarga la hace obligatoria (`LinkTooLongError`, [02](02-pipeline-de-ingesta.md)). `validate_video_url` la pasa por `validate_video_link` (sin consultar DNS) y guarda la URL normalizada; un link de otro sitio o a una dirección interna da 400 en `video_url` ([links admitidos](#links-admitidos)). El archivo se baja con `download_from_youtube` en `_stage_prepare_source` (ver [02-pipeline-de-ingesta](02-pipeline-de-ingesta.md)).
+4. La URL no pasa por `validate_upload` ni por el límite de duración del plan al crear: esa duración la mira `probe-link` antes ([ver abajo](#revisar-un-link-antes-de-crear-probe-link)) y la descarga la hace obligatoria (`LinkTooLongError` si pasa el plan, `LinkTooLongForAppError` si pasa las 3 h de la app, [02](02-pipeline-de-ingesta.md)). `validate_video_url` la pasa por `validate_video_link` (sin consultar DNS) y guarda la URL normalizada; un link de otro sitio o a una dirección interna da 400 en `video_url` ([links admitidos](#links-admitidos)). El archivo se baja con `download_from_youtube` en `_stage_prepare_source` (ver [02-pipeline-de-ingesta](02-pipeline-de-ingesta.md)).
 
 ### Links admitidos
 
@@ -272,7 +272,7 @@ sequenceDiagram
 5. El hijo corre yt-dlp con `ytdlp_safe` ([links admitidos](#links-admitidos)) más `skip_download`, `socket_timeout=10` y sin reintentos, y lee solo los datos.
 6. El texto del sitio no sale del hijo: `categorize` lo reduce a `unavailable` (privado, borrado, con login o restricción), `unsupported` (sin extractor, o un pedido a una dirección no pública) o `provider_error`, más la clase de la excepción.
 7. Un resultado que no es un video (lista, canal, vivo o sin duración) da 400 `unsupported`. La `video_url` de la respuesta es la página canónica del video si es del mismo sitio; si no, el link como llegó.
-8. Con plan, una duración mayor que `max_video_duration_seconds` da 403 `{error, code: "duration", limit}` (por ejemplo `El video dura 45 min y tu plan permite hasta 10 min.`). Sin plan no hay límite. Crear no pasa por el probe, así que el límite vuelve a valer en la descarga ([02](02-pipeline-de-ingesta.md)).
+8. Con plan, una duración mayor que `max_video_duration_seconds` da 403 `{error, code: "duration", limit}` (por ejemplo `El video dura 45 min y tu plan permite hasta 10 min.`). Sin plan no hay límite. Crear no pasa por el probe, así que el límite vuelve a valer en la descarga, junto con las 3 h de la app, cada uno con su código (`LinkTooLongError` o `LinkTooLongForAppError`, [02](02-pipeline-de-ingesta.md)).
 
 | Respuesta | Cuándo |
 |-----------|--------|
@@ -454,7 +454,7 @@ No aparece lo que no se guarda: los renombres (`project_renamed`), las ediciones
 
 | Setting | Default | Efecto |
 |---------|---------|--------|
-| `AI_UPLOAD_MAX_DURATION_SECONDS` | `10800` (3 h) | Duración máxima del archivo subido; si la supera, `too_long` |
+| `AI_UPLOAD_MAX_DURATION_SECONDS` | `10800` (3 h) | Duración máxima del archivo subido; si la supera, `too_long`. También del video de un link: si la supera, `LinkTooLongForAppError` en la descarga |
 | `AI_UPLOAD_MAX_LONG_SIDE_PX` | `4096` | Lado mayor máximo del video; si lo supera, `too_large` |
 | `AI_UPLOAD_MIN_SHORT_SIDE_PX` | `240` | Lado menor mínimo del video; si no llega, `too_small` |
 | `AI_PROMPT_MAX_CHARS` | `1000` | Largo máximo de `prompt` en `from_prompt` ([04-prompt-to-edit](04-prompt-to-edit.md)) |

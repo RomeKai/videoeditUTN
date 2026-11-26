@@ -73,11 +73,31 @@ class UnsupportedLinkError(ValueError):
 
 
 class LinkTooLongError(ValueError):
-    """The linked video is longer than the plan (or the app) allows. Not retried."""
+    """
+    The linked video is longer than the plan allows (its
+    ``max_video_duration_seconds``, below the app's limit): a plan with
+    longer videos takes it. Not retried.
+    """
+
+
+class LinkTooLongForAppError(ValueError):
+    """
+    The linked video is longer than the app processes at all
+    (AI_UPLOAD_MAX_DURATION_SECONDS, 3 h by default), whatever the plan: no
+    plan takes it. Not retried.
+    """
 
 
 class LinkTooLargeError(ValueError):
     """The linked video's file is larger than LINK_DOWNLOAD_MAX_BYTES. Not retried."""
+
+
+def _link_duration_limits(project):
+    """``(app, plan)``: the app's AI_UPLOAD_MAX_DURATION_SECONDS and the plan's limit (None without one)."""
+    app_limit = getattr(settings, 'AI_UPLOAD_MAX_DURATION_SECONDS', 10800)
+    plan = getattr(project.workspace, 'subscription_plan', None)
+    plan_limit = plan.max_video_duration_seconds if plan is not None and plan.max_video_duration_seconds else None
+    return app_limit, plan_limit
 
 
 def link_duration_limit(project):
@@ -87,21 +107,30 @@ def link_duration_limit(project):
     the lower of the two. The probe tells the user before creating; this makes
     it binding when the video is fetched.
     """
-    limits = [getattr(settings, 'AI_UPLOAD_MAX_DURATION_SECONDS', 10800)]
-    plan = getattr(project.workspace, 'subscription_plan', None)
-    if plan is not None and plan.max_video_duration_seconds:
-        limits.append(plan.max_video_duration_seconds)
-    return min(limits)
+    app_limit, plan_limit = _link_duration_limits(project)
+    return min(app_limit, plan_limit) if plan_limit else app_limit
 
 
-def download_from_youtube(url, output_folder, max_duration_seconds=None):
+def link_too_long_error(project):
+    """
+    The error of a link project's video longer than ``link_duration_limit``:
+    LinkTooLongError when the plan's limit is the lower one (a plan with
+    longer videos takes it), LinkTooLongForAppError when the app's is, or
+    both are the same (no plan takes it).
+    """
+    app_limit, plan_limit = _link_duration_limits(project)
+    return LinkTooLongError if plan_limit and plan_limit < app_limit else LinkTooLongForAppError
+
+
+def download_from_youtube(url, output_folder, max_duration_seconds=None, too_long_error=LinkTooLongError):
     """
     Downloads the one video of ``url`` through ytdlp_safe: only the allowed
     sites' extractors, every hop checked again, one video that is not live,
     no request or redirect to a non-public address, at most
     LINK_DOWNLOAD_MAX_BYTES and, with ``max_duration_seconds``, nothing
-    longer (refused before downloading). Raises UnsupportedLinkError,
-    LinkTooLongError, LinkTooLargeError or yt-dlp's DownloadError.
+    longer (refused before downloading with ``too_long_error``: the one of
+    ``link_too_long_error``). Raises UnsupportedLinkError, LinkTooLongError
+    or LinkTooLongForAppError, LinkTooLargeError or yt-dlp's DownloadError.
     """
     from apps.videos.services import ytdlp_safe
     from apps.videos.services.link_validation import LinkRejected, validate_video_link
@@ -118,7 +147,7 @@ def download_from_youtube(url, output_folder, max_duration_seconds=None):
     def check_duration(info):
         duration = info.get('duration')
         if max_duration_seconds and isinstance(duration, (int, float)) and duration > max_duration_seconds:
-            raise LinkTooLongError("The linked video is longer than allowed.")
+            raise too_long_error("The linked video is longer than allowed.")
 
     try:
         return ytdlp_safe.download_video(

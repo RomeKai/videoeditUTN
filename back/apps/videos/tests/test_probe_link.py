@@ -24,20 +24,26 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 from urllib.parse import quote
 
 import pytest
 from django.core.cache import cache
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APITestCase
 
-from apps.payments.models import SubscriptionPlan
+from apps.payments.models import SubscriptionPlan, Transaction
+from apps.payments.services.wallet_service import reserve_funds
+from apps.users.models import Workspace
 from apps.videos.models import VideoProject
 from apps.videos.services import link_probe, link_probe_worker, link_validation, ytdlp_safe
+from apps.videos.services.ai.pipeline_state import PipelineStage
 from apps.videos.services.link_validation import LinkRejected, validate_video_link
 from apps.videos.tests.test_active_workspace import EDITOR, VIEWER, fund, header, home_of, join, make_user, team
+from apps.videos.tests.test_ingestion_pipeline import IngestionHarness, fund_wallet
 
 URL = reverse('project-probe-link')
 SECRET = 'SECRET_LOG_X'
@@ -564,6 +570,22 @@ class CreationAndDownloadUseTheSameRulesTests(APITestCase):
         self.assertEqual(fake.processed, [])
         self.assertFalse(_is_retryable_pipeline_error(caught.exception))
 
+    def test_the_app_duration_binds_before_downloading_with_its_own_error(self):
+        from apps.videos.tasks.shared import (
+            LinkTooLongError, LinkTooLongForAppError, _is_retryable_pipeline_error, download_from_youtube,
+        )
+
+        fake = FakeYdl({'title': 'eterno', 'duration': 10801})
+        with resolving(), patch.object(ytdlp_safe, 'GuardedYoutubeDL', fake), \
+                self.assertRaises(LinkTooLongForAppError) as caught:
+            download_from_youtube(
+                'https://www.youtube.com/watch?v=abc', self.folder,
+                max_duration_seconds=10800, too_long_error=LinkTooLongForAppError,
+            )
+        self.assertNotIsInstance(caught.exception, LinkTooLongError)  # never read as the plan's
+        self.assertEqual(fake.processed, [])
+        self.assertFalse(_is_retryable_pipeline_error(caught.exception))
+
     @override_settings(LINK_DOWNLOAD_MAX_BYTES=100)
     def test_the_size_cap_is_for_all_the_formats_together(self):
         from apps.videos.tasks.shared import LinkTooLargeError, download_from_youtube
@@ -598,8 +620,9 @@ class LinkDurationAtIngestionTests(APITestCase):
             workspace=self.home, uploaded_by=self.alice, title='Link', video_url='https://www.youtube.com/watch?v=abc',
         )
 
-    def fake_download(self, url, folder, max_duration_seconds=None):
+    def fake_download(self, url, folder, max_duration_seconds=None, too_long_error=None):
         self.limit = max_duration_seconds
+        self.too_long_error = too_long_error
         path = os.path.join(folder, 'bajado.mp4')
         with open(path, 'wb') as handle:
             handle.write(b'video')
@@ -616,7 +639,7 @@ class LinkDurationAtIngestionTests(APITestCase):
                 patch('apps.videos.tasks.ingestion._probe_video', return_value=(900.0, [640, 360])):
             with self.assertRaises(LinkTooLongError):
                 _stage_prepare_source(project.pk)
-        self.assertEqual(self.limit, 600)
+        self.assertEqual((self.limit, self.too_long_error), (600, LinkTooLongError))
         # Refused before the upload and the proxy.
         upload.assert_not_called()
         proxy.assert_not_called()
@@ -646,6 +669,100 @@ class LinkDurationAtIngestionTests(APITestCase):
         project.refresh_from_db()
         with override_settings(AI_UPLOAD_MAX_DURATION_SECONDS=10800):
             self.assertEqual(link_duration_limit(project), 10800)
+
+    @override_settings(AI_UPLOAD_MAX_DURATION_SECONDS=10800)
+    def test_the_plan_is_blamed_only_when_its_limit_is_the_lower_one(self):
+        from apps.videos.tasks.shared import LinkTooLongError, LinkTooLongForAppError, link_too_long_error
+
+        project = self.link_project()
+        cases = [
+            (600, LinkTooLongError),          # a plan with longer videos takes it
+            (10800, LinkTooLongForAppError),  # the plan allows what the app does: no plan takes it
+            (14400, LinkTooLongForAppError),  # the app's 3 h bind first
+            (None, LinkTooLongForAppError),   # no plan: only the app's limit
+        ]
+        for seconds, error in cases:
+            with self.subTest(seconds):
+                self.home.subscription_plan = seconds and SubscriptionPlan.objects.create(
+                    name=f'Plan {seconds}', max_video_duration_seconds=seconds,
+                )
+                self.home.save()
+                project.refresh_from_db()
+                self.assertIs(link_too_long_error(project), error)
+
+    @override_settings(AI_UPLOAD_MAX_DURATION_SECONDS=10800)
+    def test_a_link_longer_than_the_app_allows_fails_with_the_apps_error(self):
+        from apps.videos.tasks.ingestion import _stage_prepare_source
+        from apps.videos.tasks.shared import LinkTooLongError, LinkTooLongForAppError
+
+        self.home.subscription_plan = None
+        self.home.save()
+        project = self.link_project()
+        with patch('apps.videos.tasks.ingestion.download_from_youtube', side_effect=self.fake_download), \
+                patch('apps.videos.services.storage_service.CloudflareR2Manager.upload_video', return_value='k') as upload, \
+                patch('apps.videos.tasks.ingestion.generate_proxy_task.delay'), \
+                patch('apps.videos.tasks.ingestion._probe_video', return_value=(10801.0, [640, 360])):
+            with self.assertRaises(LinkTooLongForAppError) as caught:
+                _stage_prepare_source(project.pk)
+        self.assertNotIsInstance(caught.exception, LinkTooLongError)
+        # The download was told the app's limit and error too.
+        self.assertEqual((self.limit, self.too_long_error), (10800, LinkTooLongForAppError))
+        upload.assert_not_called()
+
+
+class LinkTooLongAtIngestionTests(IngestionHarness, TestCase):
+    """The whole pipeline: each limit fails the project with its own code, not retried, and refunded."""
+
+    def link_project(self):
+        project = VideoProject.objects.create(
+            workspace=self.workspace, uploaded_by=self.user, title='Link', video_url='https://www.youtube.com/watch?v=abc',
+        )
+        self.wallet = fund_wallet(self.workspace, '100.00')
+        self.txn = reserve_funds(self.wallet.id, Decimal('10.00'))
+        VideoProject.objects.filter(pk=project.pk).update(metadata={'reservation_id': str(self.txn.id)})
+        return project
+
+    def run_with_duration(self, project, duration):
+        def fake_download(url, folder, max_duration_seconds=None, too_long_error=None):
+            path = os.path.join(folder, f'{uuid.uuid4()}.mp4')
+            with open(path, 'wb') as handle:
+                handle.write(b'video')
+            return path
+
+        with patch('apps.videos.tasks.ingestion.download_from_youtube', side_effect=fake_download) as download, \
+                patch('apps.videos.tasks.ingestion._probe_video', return_value=(duration, [640, 360])):
+            self.run_task(project)
+        project.refresh_from_db()
+        self.txn.refresh_from_db()
+        self.wallet.refresh_from_db()
+        return download
+
+    def assert_failed_and_refunded(self, project, code, download):
+        self.assertEqual(download.call_count, 1)  # not retried
+        self.assertEqual((project.status, project.pipeline_stage), (VideoProject.Status.FAILED, PipelineStage.FAILED))
+        self.assertEqual(project.pipeline_error_code, code)
+        self.assertEqual(self.txn.status, Transaction.Status.FAILED)
+        self.assertEqual((self.wallet.available_balance, self.wallet.reserved_balance), (Decimal('100.00'), Decimal('0')))
+
+    @override_settings(AI_UPLOAD_MAX_DURATION_SECONDS=10800)
+    def test_longer_than_the_plan_is_link_too_long(self):
+        plan = SubscriptionPlan.objects.create(name='Corto', max_video_duration_seconds=600)
+        Workspace.objects.filter(pk=self.workspace.pk).update(subscription_plan=plan)
+        project = self.link_project()
+
+        download = self.run_with_duration(project, 900.0)
+
+        self.assert_failed_and_refunded(project, 'LinkTooLongError', download)
+
+    @override_settings(AI_UPLOAD_MAX_DURATION_SECONDS=10800)
+    def test_longer_than_the_app_is_its_own_code_whatever_the_plan(self):
+        plan = SubscriptionPlan.objects.create(name='Tres horas', max_video_duration_seconds=10800)
+        Workspace.objects.filter(pk=self.workspace.pk).update(subscription_plan=plan)
+        project = self.link_project()
+
+        download = self.run_with_duration(project, 10801.0)
+
+        self.assert_failed_and_refunded(project, 'LinkTooLongForAppError', download)
 
 
 # --- real yt-dlp against local servers (no internet) ------------------------------
