@@ -758,6 +758,20 @@ def test_real_yt_dlp_dns_rebinding_is_refused_at_connect(servers, monkeypatch):
     assert servers['internal_hits'] == []
 
 
+def test_only_the_http_https_and_all_proxies_are_exempt(monkeypatch):
+    monkeypatch.setattr(ytdlp_safe, '_PROXY_HOSTS', set())
+    for key in [key for key in os.environ if key.lower().endswith('_proxy')]:
+        monkeypatch.delenv(key)
+    monkeypatch.setenv('HTTPS_PROXY', 'http://proxy.test:3128')
+    monkeypatch.setenv('NO_PROXY', 'localhost,127.0.0.1,')
+    monkeypatch.setenv('FTP_PROXY', 'http://ftp-proxy.test:21')
+    monkeypatch.setenv('SOME_TOOL_PROXY', '1')
+    options = link_probe_worker.ydl_options()
+    with ytdlp_safe.GuardedYoutubeDL(options):
+        pass
+    assert ytdlp_safe._PROXY_HOSTS == {'proxy.test'}
+
+
 def test_a_configured_proxy_is_the_one_private_address_allowed(monkeypatch):
     created = []
     monkeypatch.setattr('yt_dlp.networking._helper.create_connection',

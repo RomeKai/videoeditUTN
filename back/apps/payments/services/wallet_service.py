@@ -103,6 +103,10 @@ def commit_partial_reservation(transaction_id, amount: Decimal) -> Transaction:
 
     wallet = Wallet.objects.select_for_update().get(pk=txn.wallet_id)
     released = txn.amount - amount
+    if txn.reserved_amount is None:
+        # A reservation from before migration 0012: what it reserved is kept
+        # before ``amount`` becomes what was charged (the activity shows the refund).
+        txn.reserved_amount = txn.amount
     wallet.reserved_balance -= txn.amount
     wallet.available_balance += released
     wallet.save()

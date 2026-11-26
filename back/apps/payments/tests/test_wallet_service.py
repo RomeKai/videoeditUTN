@@ -195,3 +195,16 @@ def test_a_reservation_keeps_what_it_reserved_and_when_it_was_settled(wallet_fac
         assert txn.settled_at is not None
     # The partial charge overwrites the amount; what was reserved stays.
     assert (partial.amount, partial.reserved_amount) == (Decimal("12.00"), Decimal("30.00"))
+
+
+def test_a_partial_charge_of_an_old_reservation_keeps_what_it_had_reserved(wallet_factory):
+    from apps.payments.services.wallet_service import commit_partial_reservation
+
+    wallet = wallet_factory("100.00")
+    old = reserve_funds(wallet.id, Decimal("30.00"))
+    Transaction.objects.filter(pk=old.pk).update(reserved_amount=None)  # made before migration 0012
+
+    charged = commit_partial_reservation(old.id, Decimal("12.00"))
+
+    charged.refresh_from_db()
+    assert (charged.amount, charged.reserved_amount) == (Decimal("12.00"), Decimal("30.00"))

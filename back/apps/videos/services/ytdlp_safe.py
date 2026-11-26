@@ -63,6 +63,7 @@ _GUARDED_HANDLERS = frozenset({'Urllib'})
 # Hosts of the proxies the GuardedYoutubeDL instances use: the only names a
 # socket may connect to without a public address.
 _PROXY_HOSTS = set()
+_PROXY_KEYS = frozenset({'http', 'https', 'all'})
 
 
 class BlockedRequest(RequestError):
@@ -175,7 +176,9 @@ class GuardedYoutubeDL(yt_dlp.YoutubeDL):
         install_guards()
         super().__init__(params, *args, **kwargs)
         for key, proxy in (self.proxies or {}).items():
-            if key != 'no' and isinstance(proxy, str) and proxy:
+            # Only the proxies yt-dlp's requests can go through: getproxies() also
+            # returns every other *_proxy variable (no_proxy, ftp_proxy...).
+            if key in _PROXY_KEYS and isinstance(proxy, str) and proxy:
                 host = urlsplit(proxy if '://' in proxy else f'http://{proxy}').hostname
                 if host:
                     _PROXY_HOSTS.add(host.lower())

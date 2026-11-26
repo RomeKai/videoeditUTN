@@ -436,7 +436,7 @@ No aparece lo que no se guarda: los renombres (`project_renamed`), las ediciones
 
 - `Wallet.available_balance` baja y `Wallet.reserved_balance` sube en el costo.
 - `Transaction`: `transaction_type=SPEND`, `status=RESERVED`, `amount`, `reserved_amount` (lo mismo que `amount`), `created_by` y `description=Procesamiento: <título>`.
-- Al devolver: `Transaction.status=FAILED`, `settled_at`, y el monto vuelve de `reserved_balance` a `available_balance`. Al cobrar, `status=COMPLETED` y `settled_at`. Un cobro parcial (`commit_partial_reservation`) reemplaza `amount` por lo cobrado y deja `reserved_amount` como estaba. Las filas de antes de la migración `0012` de payments tienen las dos columnas en `null`.
+- Al devolver: `Transaction.status=FAILED`, `settled_at`, y el monto vuelve de `reserved_balance` a `available_balance`. Al cobrar, `status=COMPLETED` y `settled_at`. Un cobro parcial (`commit_partial_reservation`) reemplaza `amount` por lo cobrado y deja `reserved_amount` como estaba. Las filas de antes de la migración `0012` de payments tienen las dos columnas en `null`; si una de ellas se cobra en parte, `reserved_amount` se completa con el monto antes de pisarlo, así la actividad muestra la devolución.
 
 **Respuesta 201:** los campos del serializer (sin `selection_criteria` ni `use_seo`, que son de solo escritura), `cost_details.tokens_reserved`, `cost_details.transaction_id` y `message` (`Video subido. Iniciando ingesta multimodal...`). Desde `from_prompt` se suma `prompt_config`.
 
