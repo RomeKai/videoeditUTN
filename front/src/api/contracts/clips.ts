@@ -111,8 +111,16 @@ export const getClipDownload = defineEndpoint({
   path: '/api/v1/clips/:id/download/',
   summary: 'Link de descarga firmado y temporal del clip renderizado.',
   response: z.object({ url: z.string().url(), filename: z.string(), expires_at: IsoDateTime }),
-  errors: [{ status: 409, when: 'El clip todavía no está renderizado.' }],
-  backend: { status: 'proposed', gap: 5, note: '`s3_object_key` no es una URL: hay que firmarla (CloudflareR2Manager.generate_presigned_url).' },
+  errors: [
+    { status: 404, when: 'No existe o es de otro workspace.' },
+    { status: 409, when: 'El clip todavía no está renderizado.' },
+    { status: 503, when: 'No se pudo firmar el link o el archivo no está en el almacenamiento (`code: "storage_unavailable"`).' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/videos/views_project_data.py · ClipDownloadView + services/clip_download.py · clip_download',
+    note: 'En R2 la URL firmada (1 h) pide `Content-Disposition: attachment` con `filename`, así el navegador guarda el archivo aunque sea de otro origen. En local (USE_R2=False) es la URL absoluta de /media/. `filename` es el título en minúsculas, con guiones en lugar de lo que no es letra o número, y `.mp4` («clip.mp4» si queda vacío). Lo puede pedir cualquier rol (`clip.download`).',
+  },
   screens: ['D3', 'D4', 'D5'],
 });
 

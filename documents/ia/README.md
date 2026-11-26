@@ -51,7 +51,13 @@ Rutas relativas a `back/apps/videos/` salvo indicación.
 | Módulo | Qué hace |
 |--------|----------|
 | [tasks/\_\_init\_\_.py](../../back/apps/videos/tasks/__init__.py) | Reexporta las tareas. Cada una conserva su nombre registrado `apps.videos.tasks.<nombre>` |
-| [tasks/shared.py](../../back/apps/videos/tasks/shared.py) | Helpers compartidos: descarga con yt-dlp, política de reintentos (`_is_retryable_pipeline_error`, `_retry_countdown`), `_merge_metadata`, filas de uso y helpers de capacidad |
+| [tasks/shared.py](../../back/apps/videos/tasks/shared.py) | Helpers compartidos: descarga con yt-dlp (`download_from_youtube`, que revisa el link otra vez y aplica el tope de duración del plan y de tamaño), política de reintentos (`_is_retryable_pipeline_error`, `_retry_countdown`), `_merge_metadata`, filas de uso y helpers de capacidad |
+| [views_project_data.py](../../back/apps/videos/views_project_data.py) | Lecturas y descargas: actividad del proyecto, .zip de los clips, link de un clip y `probe-link` ([01](01-creacion-de-proyecto.md#actividad-del-proyecto), [06](06-render-caras-y-hablante.md#descargas-de-clips)) |
+| [services/link_validation.py](../../back/apps/videos/services/link_validation.py) | `validate_video_link`: sitios admitidos y protección contra SSRF de los links ([01](01-creacion-de-proyecto.md#links-admitidos)) |
+| [services/ytdlp_safe.py](../../back/apps/videos/services/ytdlp_safe.py) | La única forma de correr yt-dlp: solo los extractores de los sitios admitidos, un video que no esté en vivo, cada salto revisado y ningún pedido ni redirección a una dirección no pública ([01](01-creacion-de-proyecto.md#links-admitidos)) |
+| [services/link_probe.py](../../back/apps/videos/services/link_probe.py), [services/link_probe_worker.py](../../back/apps/videos/services/link_probe_worker.py) | `probe_link`: título y duración de un link con yt-dlp en un proceso aparte, con entorno mínimo, grupo de procesos propio y tope de tiempo |
+| [services/project_activity.py](../../back/apps/videos/services/project_activity.py) | `build_activity`: actividad del proyecto armada con lo guardado |
+| [services/clip_download.py](../../back/apps/videos/services/clip_download.py) | Link firmado de un clip y .zip de los clips listos, con topes de tamaño y tiempo |
 | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | `process_initial_ingestion`: lock, Prompt-to-Edit, etapas, espera de capacidad, fallo final y reembolso |
 | [tasks/render.py](../../back/apps/videos/tasks/render.py) | `render_clip_task` (cola `render`), `finalize_project_render` y `render_video_segments` (paper edit de antes, en una sola exportación) |
 | [tasks/social.py](../../back/apps/videos/tasks/social.py) | `process_video_seo`, `dispatch_scheduled_posts_batch` y `upload_to_social_network` |

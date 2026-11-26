@@ -301,6 +301,47 @@ Parámetros del constructor de `SpeakerTrackingEngine` (sin settings, se ajustan
 - **Formato cuadrado.** Hasta la migración `0009_square_aspect_ratio` el cuadrado se guardaba como `'1:Post'`, pero el render solo conoce `'1:1'`: cualquier otro valor cae en 9:16, así que los proyectos cuadrados salían verticales. La migración convierte las filas a `'1:1'`. El serializer sigue aceptando `'1:Post'` y lo guarda como `'1:1'` (`validate_aspect_ratio` con `LEGACY_ASPECT_RATIOS`), y `ProjectConfig` hace lo mismo con lo que devuelve el parser de Prompt-to-Edit.
 - `FillLayout` y `ActiveSpeakerLayout` terminan con `resized(new_size=(target_w, target_h))`: con ancho y alto por separado MoviePy 2 podía dar un ancho impar.
 
+## Descargas de clips
+
+Un clip renderizado (`completed` o `published`, con `s3_object_key`) se baja con un link temporal; varios, en un .zip. Las dos vistas están en [views_project_data.py](../../back/apps/videos/views_project_data.py) y la lógica en [services/clip_download.py](../../back/apps/videos/services/clip_download.py). Las pueden pedir todos los roles, Lector incluido (`clip.download`), y un clip o proyecto de otro workspace da 404.
+
+**Un clip: `GET /api/v1/clips/<id>/download/`** responde `url`, `filename` y `expires_at`.
+
+- En R2 la URL firmada dura `CLIP_DOWNLOAD_URL_TTL_SECONDS` y pide `ResponseContentDisposition: attachment` con el nombre del archivo y `ResponseContentType: video/mp4`. Así el navegador guarda el archivo aunque venga de otro origen.
+- En local (`USE_R2=False`) es la URL absoluta de `/media/`. La clave tiene que estar dentro de `MEDIA_ROOT` (`local_path`): una clave que apunta afuera, o a un archivo que no está, da 503.
+- `filename` sale de `clip_filename`: el título en minúsculas, con un guion en lugar de cada tramo que no es letra ni número, y `.mp4` (`clip.mp4` si queda vacío). Es lo mismo que hace la web.
+- 409 si el clip no está renderizado; 503 `storage_unavailable` si no se puede firmar.
+
+**El proyecto: `POST /api/v1/projects/<id>/clips/download/`** con `clip_ids` opcional responde `url` y `expires_at` de un .zip. Se arma mientras espera el pedido (la web le da 180 s):
+
+```mermaid
+flowchart TD
+    A["POST clips/download"] --> B{"¿Hay clips listos (de clip_ids si vino)?"}
+    B -->|no| C["409 Ningún clip está listo todavía"]
+    B -->|sí| D{"¿Otro .zip del workspace en curso?"}
+    D -->|sí| E["429"]
+    D -->|no| F["Borra los .zip vencidos de exports/zips/"]
+    F --> G["Lee los tamaños: HEAD en R2, stat en local"]
+    G --> H{"¿Más de CLIPS_ZIP_MAX_CLIPS o de CLIPS_ZIP_MAX_BYTES?"}
+    H -->|sí| I["422 zip_too_many_clips o zip_too_large, sin bajar nada"]
+    H -->|no| J["Copia cada clip al .zip en una carpeta temporal, de a CHUNK_BYTES"]
+    J --> K{"¿Pasó CLIPS_ZIP_MAX_SECONDS o el tope de bytes?"}
+    K -->|sí| L["503 zip_timeout o 422"]
+    K -->|no| M["Guarda el .zip en exports/zips/hora/ y lo firma"]
+    M --> N["200 url y expires_at"]
+    J -->|error del almacenamiento| O["503 storage_unavailable"]
+```
+
+1. Entran los clips `completed` y `published` con archivo, por orden de creación. Los ids de `clip_ids` que no son de clips listos del proyecto (de otro proyecto u otro workspace, borradores) se ignoran; un `clip_ids` que no es una lista de ids, o que trae más de `CLIPS_ZIP_MAX_CLIPS`, da 400.
+2. `workspace_zip_lock` deja un solo .zip a la vez por workspace, entre todos los workers web: cada uno ocupa un worker y su tamaño en disco. Es un lock de Redis con token de dueño (`Lock` de redis-py, como `project_lock`) en `lock:clips-zip:workspace:<id>`, con un TTL de `CLIPS_ZIP_MAX_SECONDS` + 60 s, más largo que el armado. Solo su dueño lo suelta, así que un pedido no puede borrar el lock de otro (`clips_zip.lock_not_owned`). El cliente de Redis espera a lo sumo 2 s para conectar y 2 s por respuesta. Sin Redis usa la caché `locks` (la que avisa sus errores, ver [07](07-capacidad-costos-y-operacion.md)) si los settings la definen, o `default`, también con un token (`clips_zip.lock_fallback`). Si esa caché tampoco responde, el .zip se arma sin lock (`clips_zip.lock_unavailable`): un almacén de locks caído no rechaza las descargas.
+3. Antes de bajar nada se suman los tamaños. También se mira que la carpeta temporal tenga lugar para el .zip y 64 MB más.
+4. Cada clip pasa del almacenamiento al .zip de a `CHUNK_BYTES` (1 MB): en R2 con `get_object` e `iter_chunks`, en local leyendo el archivo. Nada se carga entero en memoria. El .zip guarda los MP4 sin comprimir (`ZIP_STORED`, con ZIP64), con nombres como los de un clip suelto: un título repetido sale `-2`, `-3`.
+5. Entre parte y parte se miran el tiempo y los bytes escritos: si se pasa de `CLIPS_ZIP_MAX_SECONDS` corta con 503 `zip_timeout`, y si los bytes superan el tope (un tamaño que mintió), con 422. El tope cubre también la subida a R2: se sube en el mismo hilo y cada parte que sale mira el reloj (`Callback`), así que una subida que se pasa se corta. El cliente de R2 de este módulo tiene timeouts cortos (5 s para conectar, 20 s de lectura) para que una lectura trabada no pase el tope.
+6. El .zip se guarda en `exports/zips/<AAAAMMDDHH>/<proyecto>-<uuid>.zip` (en local, bajo `MEDIA_ROOT`) y se firma por `CLIPS_ZIP_URL_TTL_SECONDS`, con `Content-Disposition: attachment` y el título del proyecto (`clips.zip` si queda vacío). Si la firma falla, se borra lo que se subió.
+7. La carpeta temporal se borra siempre. Cada pedido borra, antes de armar el suyo, hasta 50 .zip guardados cuyo link ya venció (la hora va primero en la clave, así que R2 los lista del más viejo al más nuevo). En R2 conviene además una regla de ciclo de vida que borre `exports/` después de un día, por si nadie pide otro .zip.
+
+Logs: `clips_zip.built` (clips, bytes y duración), `clips_zip.lock_fallback`, `clips_zip.lock_unavailable`, `clips_zip.lock_not_owned`, `clips_zip.lock_release_failed`, `clips_zip.size_failed`, `clips_zip.read_failed`, `clips_zip.store_failed`, `clips_zip.client_failed`, `clips_zip.storage_failed`, `clips_zip.no_disk`, `clips_zip.timeout`, `clips_zip.delete_failed`, `clips_zip.cleanup_failed` y `clip_download.failed`, con ids, números y la clase del error.
+
 ## Errores, reintentos y casos borde
 
 | Situación | Qué pasa | Dónde |
@@ -379,6 +420,12 @@ Parámetros del constructor de `SpeakerTrackingEngine` (sin settings, se ajustan
 | `FONTS_DIR` | `<BASE_DIR>/assets/fonts` | Fuente `Montserrat-Bold.ttf` de los subtítulos. |
 | `MEDIA_ROOT` | `<BASE_DIR>/media` | Archivos temporales del render. |
 | `USE_R2` | `False` | Sin R2, `upload_video` copia el archivo bajo `MEDIA_ROOT` y devuelve esa ruta como clave. |
+| `CLIP_DOWNLOAD_URL_TTL_SECONDS` | `3600` | Duración del link de descarga de un clip. Se lee con `getattr`: no está en `base.py`, igual que los cuatro siguientes. |
+| `CLIPS_ZIP_MAX_BYTES` | `1073741824` (1 GB) | Tope de lo que entra en un .zip. Más, 422 `zip_too_large`. |
+| `CLIPS_ZIP_MAX_CLIPS` | `50` | Tope de clips de un .zip. Más, 422 `zip_too_many_clips`; un `clip_ids` más largo, 400. |
+| `CLIPS_ZIP_MAX_SECONDS` | `140` | Tope de todo el armado: leer los clips, el .zip y su subida. La web espera 180 s. El lock del workspace dura esto más 60 s. |
+| `CLIPS_ZIP_URL_TTL_SECONDS` | `3600` | Duración del link del .zip, y edad desde la que se borra. |
+| `CLIPS_ZIP_TMP_DIR` | la carpeta temporal del sistema | Dónde se arma el .zip. |
 
 Constantes en código, sin setting: `RENDER_CLIP_MAX_RETRIES` y `RENDER_SEGMENTS_MAX_REDELIVERIES` (`tasks/render.py`); `RENDER_RECOVERY_MAX_BACKOFF_SECONDS` y `RENDER_RECOVERY_MAX_REQUEUES` (`tasks/render_recovery.py`); `PIPELINE_LOCK_RETRY_SECONDS`, `PIPELINE_LOCK_MAX_RETRIES` y `REQUEUE_NOT_PUBLISHED_PAUSE_SECONDS` (`tasks/shared.py`); `RENDER_FPS`, `RENDER_CODEC`, `RENDER_AUDIO_CODEC`, `RENDER_PRESET` y `FFMPEG_PARAMS` (`utils/moviepy_utils.py`); `RESOLUTION_HEIGHTS` y `DEFAULT_HEIGHT` (`RenderEngine`); `SAMPLING_FPS` y los parámetros de `IoUTracker` (`face_tracking.py`); `EMASmoothing(alpha=0.35)`; los parámetros de `SpeakerTrackingEngine`. Los módulos de tracking fijan `MEDIAPIPE_DISABLE_GPU=1` al importarse.
 
