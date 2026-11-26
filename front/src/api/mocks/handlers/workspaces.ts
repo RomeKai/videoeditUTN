@@ -1,6 +1,6 @@
 import * as contract from '../../contracts/workspaces';
 import { newId, PLATFORMS, type MockDb, type MockWorkspace } from '../db';
-import { badRequest, forbidden, MockHttpError, notFound, route } from '../http';
+import { badRequest, conflict, forbidden, MockHttpError, notFound, route } from '../http';
 import { PLAN_IDS } from '../seed';
 import { planOf, serializeMember, serializeWorkspace } from '../serialize';
 import { roleIn } from '../sim';
@@ -9,9 +9,21 @@ import { mockTokens } from '../state';
 function workspaceFor(db: MockDb, id: string | undefined, userId: string): { workspace: MockWorkspace; role: NonNullable<ReturnType<typeof roleIn>> } {
   const workspace = db.workspaces.find((item) => item.id === id);
   const role = workspace ? roleIn(db, workspace.id, userId) : null;
-  if (!workspace || !role) throw notFound();
+  // The backend's answer (back/apps/core/workspace.py · NOT_FOUND_DETAIL): the role is the one in the workspace of the path.
+  if (!workspace || !role) throw notFound('No encontramos ese espacio de trabajo.');
   return { workspace, role };
 }
+
+// The 403 of a role, as the backend writes it (back/apps/core/permissions.py · DENIED): only `detail`, no `code`.
+const adminsOnly = () => new MockHttpError(403, { detail: 'Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin.' });
+const ownerOnly = () => new MockHttpError(403, { detail: 'Solo el dueño del espacio puede hacer esto.' });
+const memberNotFound = () => notFound('No encontramos a ese miembro.');
+// What the backend says for a name that is empty once trimmed (the schema already refused '' and more than 100).
+const cleanName = (name: string) => {
+  const trimmed = name.trim();
+  if (!trimmed) throw badRequest({ name: ['Escribí un nombre para el espacio.'] });
+  return trimmed;
+};
 
 function seats(db: MockDb, workspaceId: string) {
   const plan = planOf(db, workspaceId);
@@ -24,15 +36,24 @@ const isAdmin = (role: string) => role === 'owner' || role === 'admin';
 
 export const workspacesHandlers = [
   route(contract.listWorkspaces, ({ db, user }) => ({
-    data: db.workspaces.filter((workspace) => roleIn(db, workspace.id, user.id)).map((workspace) => serializeWorkspace(db, workspace, user.id)),
+    data: db.workspaces
+      .filter((workspace) => roleIn(db, workspace.id, user.id))
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .map((workspace) => serializeWorkspace(db, workspace, user.id)),
   })),
 
   route(contract.createWorkspace, ({ db, user, body, now }) => {
     const created = new Date(now).toISOString();
-    const workspace: MockWorkspace = { id: newId(), name: body.name, owner: user.id, subscription_plan: PLAN_IDS.free, created_at: created, renews_at: null, pending_plan: null };
+    const name = cleanName(body.name);
+    // Like the backend (views_workspaces.py · MAX_OWNED_WORKSPACES).
+    if (db.workspaces.filter((item) => item.owner === user.id).length >= 10) {
+      throw conflict('Llegaste al máximo de 10 espacios de trabajo propios. Borrá uno para crear otro.', 'workspace_limit');
+    }
+    const workspace: MockWorkspace = { id: newId(), name, owner: user.id, subscription_plan: PLAN_IDS.free, created_at: created, renews_at: null, pending_plan: null };
     db.workspaces.push(workspace);
     db.members.push({ id: newId(), workspace: workspace.id, user: user.id, email: user.email, role: 'admin', status: 'active', joined_at: created, invited_by: null, token: null });
-    db.wallets.push({ id: newId(), workspace: workspace.id, available_balance: 300, reserved_balance: 0, updated_at: created });
+    // Empty, as the backend creates it (apps/payments/signals.py · create_workspace_wallet).
+    db.wallets.push({ id: newId(), workspace: workspace.id, available_balance: 0, reserved_balance: 0, updated_at: created });
     for (const platform of PLATFORMS) {
       db.socialAccounts.push({
         workspace: workspace.id,
@@ -54,38 +75,73 @@ export const workspacesHandlers = [
       .filter((member) => member.workspace === workspace.id && member.status === 'active' && member.user !== null)
       .map((member) => ({ member, account: db.users.find((item) => item.id === member.user) }))
       .filter(({ member, account }) => account && (member.user === workspace.owner || member.role === 'admin'))
-      .map(({ member, account }) => ({ id: member.user as string, name: account?.name ?? member.email, role: member.user === workspace.owner ? ('owner' as const) : ('admin' as const) }))
+      .map(({ member, account }) => ({ id: member.user as string, name: account?.name || member.email, role: member.user === workspace.owner ? ('owner' as const) : ('admin' as const) }))
       .sort((a, b) => Number(b.role === 'owner') - Number(a.role === 'owner'));
     return { data: { ...serializeWorkspace(db, workspace, user.id), admins } };
   }),
 
   route(contract.updateWorkspace, ({ db, user, params, body }) => {
     const { workspace, role } = workspaceFor(db, params.id, user.id);
-    if (!isAdmin(role)) throw forbidden();
-    workspace.name = body.name;
+    if (!isAdmin(role)) throw adminsOnly();
+    workspace.name = cleanName(body.name);
     return { data: serializeWorkspace(db, workspace, user.id) };
   }),
 
   route(contract.deleteWorkspace, ({ db, user, params, body }) => {
     const { workspace, role } = workspaceFor(db, params.id, user.id);
-    if (role !== 'owner') throw forbidden();
+    if (role !== 'owner') throw ownerOnly();
     if (body.confirm_name !== workspace.name) throw badRequest({ confirm_name: ['El nombre no coincide.'] });
+    // Like the backend, in its order: never the person's last workspace (first: waiting does not fix it),
+    // never with work in progress, posts going out, or tokens set aside or left.
+    if (!db.workspaces.some((item) => item.id !== workspace.id && roleIn(db, item.id, user.id))) {
+      throw conflict('Es tu único espacio de trabajo y no se puede borrar. Creá otro primero, o sumate al de alguien más.', 'last_workspace');
+    }
+    if (db.projects.some((item) => item.workspace === workspace.id && ['uploaded', 'ingesting', 'rendering'].includes(item.status))) {
+      throw conflict(
+        'Hay proyectos procesándose o renderizándose en este espacio: esperá a que terminen para borrarlo. Si alguno quedó trabado, borrá ese proyecto primero.',
+        'project_processing',
+      );
+    }
+    if (db.posts.some((item) => item.workspace === workspace.id && (item.status === 'QUEUED' || item.status === 'PROCESSING'))) {
+      throw conflict('Hay publicaciones saliendo a las redes en este momento: esperá a que terminen para borrar el espacio. Si alguna quedó trabada, se libera sola un rato después de su hora de publicación: probá de nuevo más tarde.', 'posts_in_flight');
+    }
+    const wallet = db.wallets.find((item) => item.workspace === workspace.id);
+    if (wallet && wallet.reserved_balance > 0) {
+      throw conflict('El espacio tiene tokens reservados que todavía no se liquidaron. Probá de nuevo en unos minutos.', 'reservation_open');
+    }
+    if (wallet && wallet.available_balance > 0) {
+      const left = String(wallet.available_balance);
+      throw new MockHttpError(409, {
+        error: `${wallet.available_balance === 1 ? 'Queda 1 token' : `Quedan ${left} tokens`} en este espacio y no se pueden recuperar después de borrarlo. Usalos o escribinos antes de borrarlo.`,
+        code: 'balance_left',
+        available_balance: left,
+      });
+    }
     db.workspaces = db.workspaces.filter((item) => item.id !== workspace.id);
     db.members = db.members.filter((item) => item.workspace !== workspace.id);
     db.projects = db.projects.filter((item) => item.workspace !== workspace.id);
     db.posts = db.posts.filter((item) => item.workspace !== workspace.id);
     db.brandKits = db.brandKits.filter((item) => item.workspace !== workspace.id);
+    db.wallets = db.wallets.filter((item) => item.workspace !== workspace.id);
+    db.transactions = db.transactions.filter((item) => item.workspace !== workspace.id);
     for (const item of db.users) if (item.active_workspace_id === workspace.id) item.active_workspace_id = null;
     return { data: undefined };
   }),
 
-  route(contract.transferWorkspace, ({ db, user, params, body }) => {
+  route(contract.transferWorkspace, ({ db, user, params, body, now }) => {
     const { workspace, role } = workspaceFor(db, params.id, user.id);
-    if (role !== 'owner') throw forbidden();
+    if (role !== 'owner') throw ownerOnly();
+    if (body.new_owner_id === user.id) throw badRequest({ new_owner_id: ['Ya sos el dueño de este espacio.'] });
     const target = db.members.find((member) => member.workspace === workspace.id && member.user === body.new_owner_id && member.status === 'active');
     if (!target) throw badRequest({ new_owner_id: ['Tiene que ser un miembro activo del workspace.'] });
     const previous = db.members.find((member) => member.workspace === workspace.id && member.user === user.id);
     if (previous) previous.role = 'admin';
+    // Without a row of their own, the previous owner needs a free seat to stay as Admin (the backend's 400).
+    else if (seats(db, workspace.id).used >= seats(db, workspace.id).max) {
+      throw badRequest({ detail: 'No quedan lugares en el plan para que sigas como admin después de transferir. Quitá a un miembro o cancelá una invitación, y probá de nuevo.' });
+    } else {
+      db.members.push({ id: newId(), workspace: workspace.id, user: user.id, email: user.email, role: 'admin', status: 'active', joined_at: new Date(now).toISOString(), invited_by: null, token: null });
+    }
     target.role = 'admin';
     workspace.owner = body.new_owner_id;
     return { data: serializeWorkspace(db, workspace, user.id) };
@@ -93,16 +149,16 @@ export const workspacesHandlers = [
 
   route(contract.listMembers, ({ db, user, params }) => {
     const { workspace, role } = workspaceFor(db, params.id, user.id);
-    if (!isAdmin(role)) throw forbidden();
+    if (!isAdmin(role)) throw adminsOnly();
     const info = seats(db, workspace.id);
     return { data: { members: info.members.map((member) => serializeMember(db, member)), max_members: info.max, seats_used: info.used } };
   }),
 
   route(contract.updateMember, ({ db, user, params, body }) => {
     const { workspace, role } = workspaceFor(db, params.id, user.id);
-    if (!isAdmin(role)) throw forbidden();
+    if (!isAdmin(role)) throw adminsOnly();
     const member = db.members.find((item) => item.id === params.memberId && item.workspace === workspace.id);
-    if (!member) throw notFound();
+    if (!member) throw memberNotFound();
     if (member.user === workspace.owner) throw badRequest({ role: ['No se puede cambiar el rol del dueño.'] });
     member.role = body.role;
     return { data: serializeMember(db, member) };
@@ -110,9 +166,9 @@ export const workspacesHandlers = [
 
   route(contract.removeMember, ({ db, user, params }) => {
     const { workspace, role } = workspaceFor(db, params.id, user.id);
-    if (!isAdmin(role)) throw forbidden();
+    if (!isAdmin(role)) throw adminsOnly();
     const member = db.members.find((item) => item.id === params.memberId && item.workspace === workspace.id);
-    if (!member) throw notFound();
+    if (!member) throw memberNotFound();
     if (member.user === workspace.owner) throw badRequest({ detail: 'No se puede quitar al dueño del workspace.' });
     db.members = db.members.filter((item) => item.id !== member.id);
     db.invitations = db.invitations.filter((item) => item.member !== member.id);

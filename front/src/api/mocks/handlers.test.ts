@@ -306,6 +306,93 @@ describe('mocks', () => {
     expect(bulk.code).toBe('crossposting');
   });
 
+  it('workspaces: como el backend, el rol es el del workspace de la ruta y el dueño solo cambia al transferir', async () => {
+    const id = WORKSPACE_IDS.estudio;
+    // A new workspace: the user is its owner and the wallet starts empty; the name is trimmed.
+    const created = await apiCall(workspaces.createWorkspace, { body: { name: '  Canal nuevo  ' } });
+    expect(created).toMatchObject({ name: 'Canal nuevo', owner: USER_IDS.lucia, role: 'owner' });
+    expect((await apiCall(users.getMe)).workspaces.find((item) => item.id === created.id)?.available_balance).toBe(0);
+    expect((await fail(apiCall(workspaces.createWorkspace, { body: { name: '   ' } }))).fieldErrors.name?.[0]).toBe('Escribí un nombre para el espacio.');
+    expect((await apiCall(workspaces.listWorkspaces)).at(-1)?.id).toBe(created.id);
+
+    // The owner's row: never demoted or removed through members.
+    const { members } = await apiCall(workspaces.listMembers, { params: { id } });
+    const owner = members.find((member) => member.role === 'owner');
+    const other = members.find((member) => member.status === 'active' && member.role !== 'owner' && member.user);
+    if (!owner || !other?.user) throw new Error('faltan miembros');
+    expect((await fail(apiCall(workspaces.updateMember, { params: { id, memberId: owner.id }, body: { role: 'viewer' } }))).fieldErrors.role?.[0]).toBe('No se puede cambiar el rol del dueño.');
+    expect((await fail(apiCall(workspaces.removeMember, { params: { id, memberId: owner.id } }))).message).toBe('No se puede quitar al dueño del workspace.');
+    expect((await fail(apiCall(workspaces.removeMember, { params: { id, memberId: created.id } }))).status).toBe(404);
+
+    // Delete: the exact name, and an empty workspace goes.
+    expect((await fail(apiCall(workspaces.deleteWorkspace, { params: { id: created.id }, body: { confirm_name: 'canal nuevo' } }))).fieldErrors.confirm_name?.[0]).toBe('El nombre no coincide.');
+    await apiCall(workspaces.deleteWorkspace, { params: { id: created.id }, body: { confirm_name: 'Canal nuevo' } });
+    expect((await fail(apiCall(workspaces.getWorkspace, { params: { id: created.id } }))).status).toBe(404);
+
+    // Transfer: not to oneself; the previous owner stays as Admin and stops being able to transfer or delete.
+    expect((await fail(apiCall(workspaces.transferWorkspace, { params: { id }, body: { new_owner_id: USER_IDS.lucia } }))).status).toBe(400);
+    const transferred = await apiCall(workspaces.transferWorkspace, { params: { id }, body: { new_owner_id: other.user.id } });
+    expect(transferred).toMatchObject({ owner: other.user.id, role: 'admin' });
+    const denied = await fail(apiCall(workspaces.transferWorkspace, { params: { id }, body: { new_owner_id: USER_IDS.lucia } }));
+    expect(denied.status).toBe(403);
+    // The backend's sentence, with no `code`.
+    expect(denied.code).toBeUndefined();
+    expect(denied.message).toBe('Solo el dueño del espacio puede hacer esto.');
+  });
+
+  it('borrar un workspace: nunca con publicaciones saliendo, con saldo ni si es el único', async () => {
+    const id = WORKSPACE_IDS.estudio;
+    const name = (await apiCall(workspaces.getWorkspace, { params: { id } })).name;
+    const remove = () => fail(apiCall(workspaces.deleteWorkspace, { params: { id }, body: { confirm_name: name } }));
+    const edit = (change: (db: ReturnType<typeof loadDb>) => void) => {
+      const db = loadDb();
+      change(db);
+      saveDb(db);
+    };
+    // Nothing processing, one post going out.
+    edit((db) => {
+      db.projects = db.projects.filter((project) => project.workspace !== id || !['uploaded', 'ingesting', 'rendering'].includes(project.status));
+      const post = db.posts.find((item) => item.workspace === id);
+      if (!post) throw new Error('falta una publicación');
+      post.status = 'PROCESSING';
+      for (const wallet of db.wallets) if (wallet.workspace === id) Object.assign(wallet, { available_balance: 120.5, reserved_balance: 0 });
+    });
+    expect((await remove()).code).toBe('posts_in_flight');
+    // Once none is going out (the simulation would send a due SCHEDULED one, so they end as drafts), the tokens stop it.
+    edit((db) => {
+      for (const post of db.posts) if (post.workspace === id && ['SCHEDULED', 'QUEUED', 'PROCESSING'].includes(post.status)) post.status = 'DRAFT';
+    });
+    const balance = await remove();
+    expect(balance.code).toBe('balance_left');
+    expect(balance.message).toBe('Quedan 120.5 tokens en este espacio y no se pueden recuperar después de borrarlo. Usalos o escribinos antes de borrarlo.');
+    // No other workspace to work in: that comes first, whatever else holds (the tokens are still there).
+    edit((db) => {
+      db.workspaces = db.workspaces.filter((workspace) => workspace.id === id);
+      db.members = db.members.filter((member) => member.workspace === id);
+    });
+    expect((await remove()).code).toBe('last_workspace');
+    expect(loadDb().workspaces.map((workspace) => workspace.id)).toEqual([id]);
+  });
+
+  it('crear workspaces: hasta 10 propios', async () => {
+    const owned = loadDb().workspaces.filter((workspace) => workspace.owner === USER_IDS.lucia).length;
+    for (let number = owned; number < 10; number += 1) await apiCall(workspaces.createWorkspace, { body: { name: `Espacio ${number}` } });
+    const refused = await fail(apiCall(workspaces.createWorkspace, { body: { name: 'Uno más' } }));
+    expect(refused.status).toBe(409);
+    expect(refused.code).toBe('workspace_limit');
+  });
+
+  it('borrar un workspace: nunca con proyectos en proceso', async () => {
+    signIn('todos-los-estados');
+    const me = await apiCall(users.getMe);
+    const mine = me.workspaces.find((item) => item.id === me.active_workspace_id);
+    if (!mine || mine.role !== 'owner') throw new Error('falta el workspace propio');
+    const busy = await fail(apiCall(workspaces.deleteWorkspace, { params: { id: mine.id }, body: { confirm_name: mine.name } }));
+    expect(busy.status).toBe(409);
+    expect(busy.code).toBe('project_processing');
+    await expect(apiCall(workspaces.getWorkspace, { params: { id: mine.id } })).resolves.toBeTruthy();
+  });
+
   it('los roles se aplican: el Lector no crea ni ve movimientos; el Editor no administra', async () => {
     signIn('rol-lector', 'diego');
     expect((await apiCall(users.getMe)).workspaces[0]?.role).toBe('viewer');
