@@ -202,6 +202,9 @@ Todos son estáticos: nunca llevan texto del proveedor, del usuario ni del model
 | Broker caído al encolar | `seo.dispatch_failed`; el post queda sin caption. Se reintenta con la acción del admin. | `queue_post_seo` |
 | Post con `publish_at` ya pasado | Queda fuera de la ventana `[ahora, ahora + 1 h]` y no se despacha. | `dispatch_scheduled_posts_batch` |
 | Workspace sin `ayrshare_profile_key` | `FAILED` con `Error: Ayrshare Profile Key not configured in workspace.` y `PostConfigurationError`, sin reintento. | `upload_to_social_network` |
+| El post se borró después de encolarse (con su clip, su proyecto o su workspace) | La tarea termina con `Post Deleted`, sin llamar a Ayrshare y sin fallar. Queda `publish.post_deleted` en el log. | `upload_to_social_network` |
+| El post se borró mientras Ayrshare respondía | La tarea guarda solo `status` y `error_log` (`save(update_fields=...)`), así que no vuelve a insertar la fila. Termina sin fallar y deja `publish.post_deleted` con `when=after_publishing`. | `upload_to_social_network` |
+| Se borra el workspace con un post `QUEUED` o `PROCESSING` | El borrado responde 409 `posts_in_flight`. Los `SCHEDULED` se borran con el workspace y no se publican. | `WorkspaceDetailView.delete` (`apps/users/views_workspaces.py`) |
 | Clip sin `s3_object_key` u otro error inesperado | `FAILED` con `Critical: <mensaje>` y la excepción se relanza. | `upload_to_social_network` |
 | Redis de la cache no contesta al tomar el lock | `publish.lock_unavailable` y reintento a 60, 120 y 240 s. Al agotarse, `FAILED` con `Lock unavailable after N attempts: <clase>`. Nunca publica sin lock. | `upload_to_social_network` |
 | `AyrshareAPIError` | `retry_count` + 1, `error_log` `Retry N: <mensaje>`, reintento a 60, 120 y 240 s (`max_retries=3`). Al agotarse, el post pasa a `FAILED` con `error_log` `Failed after N attempts: <mensaje>` y la excepción se propaga. | `upload_to_social_network` |

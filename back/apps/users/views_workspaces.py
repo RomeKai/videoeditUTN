@@ -12,6 +12,7 @@ Invitations (create, resend, accept) are not here.
 import logging
 import uuid
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q
 from drf_spectacular.utils import OpenApiResponse, extend_schema
@@ -19,16 +20,18 @@ from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.core.permissions import ADMIN, require_workspace_role
 from apps.core.workspace import OWNER
 from apps.payments.models import Transaction, Wallet
-from apps.users.models import Workspace, WorkspaceMember
+from apps.users.models import User, Workspace, WorkspaceMember
 from apps.users.serializers_workspaces import (
     ALREADY_OWNER,
     CONFIRM_NAME_MISMATCH,
     NEW_OWNER_NOT_ACTIVE,
+    NO_SEAT_FOR_PREVIOUS_OWNER,
     OWNER_NOT_REMOVABLE,
     OWNER_ROLE_FIXED,
     DeleteWorkspaceSerializer,
@@ -40,26 +43,58 @@ from apps.users.serializers_workspaces import (
     WorkspaceNameSerializer,
     WorkspaceSerializer,
 )
+from apps.users.throttles import SpanishThrottleMixin
 from apps.users.workspaces import create_owned_workspace
-from apps.videos.models import VideoProject
+from apps.videos.models import ScheduledPost, VideoProject
 
 logger = logging.getLogger(__name__)
 
 ACTIVE = WorkspaceMember.Status.ACTIVE
 
 MEMBER_NOT_FOUND = 'No encontramos a ese miembro.'
-WORKSPACE_BUSY = 'Hay proyectos procesándose o renderizándose en este espacio: esperá a que terminen para borrarlo.'
+WORKSPACE_BUSY = (
+    'Hay proyectos procesándose o renderizándose en este espacio: esperá a que terminen para borrarlo. '
+    'Si alguno quedó trabado, borrá ese proyecto primero.'
+)
 WORKSPACE_RESERVED = (
     'El espacio tiene tokens reservados que todavía no se liquidaron. Probá de nuevo en unos minutos.'
 )
+POSTS_IN_FLIGHT = (
+    'Hay publicaciones saliendo a las redes en este momento: esperá a que terminen para borrar el espacio.'
+)
+LAST_WORKSPACE = (
+    'Es tu único espacio de trabajo y no se puede borrar. Creá otro primero, o sumate al de alguien más.'
+)
+WORKSPACE_LIMIT = 'Llegaste al máximo de {limit} espacios de trabajo propios. Borrá uno para crear otro.'
+
+# How many workspaces one user may own (POST /workspaces/). Each is a free plan and a wallet.
+MAX_OWNED_WORKSPACES = 10
+
+
+def _tokens(amount):
+    """A balance as the user reads it: no trailing zeros, never an exponent."""
+    text = f'{amount:f}'
+    return text.rstrip('0').rstrip('.') if '.' in text else text
+
+
+def _balance_left(amount):
+    one = amount == 1
+    return (
+        f'{"Queda" if one else "Quedan"} {_tokens(amount)} {"token" if one else "tokens"} en este espacio y no se '
+        f'pueden recuperar después de borrarlo. Usalos o escribinos antes de borrarlo.'
+    )
+
 
 UNAUTHORIZED = OpenApiResponse(description='Sin sesión, o con un token vencido o revocado.')
 NOT_FOUND = OpenApiResponse(description='El workspace no existe o el usuario no es dueño ni miembro activo.')
 FORBIDDEN = OpenApiResponse(description='El rol del usuario en ese workspace no puede hacerlo: solo `detail`.')
 INVALID = OpenApiResponse(description='Validación por campo: `{campo: [mensajes]}`.')
+THROTTLED = OpenApiResponse(description='Demasiados intentos: `detail` dice en castellano cuánto esperar, y va Retry-After.')
 
 # What cannot be deleted under: a project the pipeline or a render may still touch.
 _BUSY = (VideoProject.Status.UPLOADED, VideoProject.Status.INGESTING, VideoProject.Status.RENDERING)
+# A post its task may be sending to the networks right now.
+_IN_FLIGHT = (ScheduledPost.Status.QUEUED, ScheduledPost.Status.PROCESSING)
 
 
 def _full_name(user):
@@ -117,12 +152,32 @@ def _member_or_404(workspace, member_id, lock=False):
     return member
 
 
-def _error(code_status, message, code):
-    return Response({'error': message, 'code': code}, status=code_status)
+def _error(code_status, message, code, **extra):
+    return Response({'error': message, 'code': code, **extra}, status=code_status)
 
 
-class WorkspaceListView(APIView):
+def _other_workspaces(user, workspace):
+    """Whether the user owns, or is an ACTIVE member of, a workspace other than this one."""
+    return (
+        Workspace.objects.filter(Q(owner=user) | Q(workspacemember__user=user, workspacemember__status=ACTIVE))
+        .exclude(pk=workspace.pk)
+        .exists()
+    )
+
+
+class WorkspaceCreateThrottle(ScopedRateThrottle):
+    """Only the POSTs count (scope `workspace_create`, per user): listing stays unlimited."""
+
+    def allow_request(self, request, view):
+        if request.method != 'POST':
+            return True
+        return super().allow_request(request, view)
+
+
+class WorkspaceListView(SpanishThrottleMixin, APIView):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [WorkspaceCreateThrottle]
+    throttle_scope = 'workspace_create'
 
     @extend_schema(responses={200: WorkspaceSerializer(many=True), 401: UNAUTHORIZED})
     def get(self, request):
@@ -140,13 +195,27 @@ class WorkspaceListView(APIView):
 
     @extend_schema(
         request=WorkspaceNameSerializer,
-        responses={201: WorkspaceSerializer, 400: INVALID, 401: UNAUTHORIZED},
+        responses={
+            201: WorkspaceSerializer,
+            400: INVALID,
+            401: UNAUTHORIZED,
+            409: OpenApiResponse(description='`{error, code: "workspace_limit"}`: el usuario ya es dueño del máximo de workspaces.'),
+            429: THROTTLED,
+        },
     )
     def post(self, request):
-        """A new workspace of the user's: default plan, empty wallet, the user as owner."""
+        """
+        A new workspace of the user's: default plan, empty wallet, the user as
+        owner. At most MAX_OWNED_WORKSPACES owned by one user (409
+        `workspace_limit`), and a rate per user (scope `workspace_create`).
+        """
         serializer = WorkspaceNameSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         with transaction.atomic():
+            # The user's row lock: two creations at once count one after the other.
+            User.objects.select_for_update().filter(pk=request.user.pk).first()
+            if Workspace.objects.filter(owner=request.user).count() >= MAX_OWNED_WORKSPACES:
+                return _error(409, WORKSPACE_LIMIT.format(limit=MAX_OWNED_WORKSPACES), 'workspace_limit')
             workspace = create_owned_workspace(request.user, serializer.validated_data['name'])
         logger.info('workspace.created workspace_id=%s user_id=%s', workspace.pk, request.user.pk)
         return Response(WorkspaceSerializer(_workspace_payload(workspace, OWNER)).data, status=status.HTTP_201_CREATED)
@@ -186,8 +255,10 @@ class WorkspaceDetailView(APIView):
             403: FORBIDDEN,
             404: NOT_FOUND,
             409: OpenApiResponse(description=(
-                '`{error, code}`: `project_processing` con un proyecto subido, en ingesta o renderizando; '
-                '`reservation_open` con tokens reservados sin liquidar. No se borra nada.'
+                '`{error, code}`, y no se borra nada: `project_processing` con un proyecto subido, en ingesta o '
+                'renderizando; `posts_in_flight` con una publicación en cola o saliendo; `reservation_open` con '
+                'tokens reservados sin liquidar; `balance_left` con saldo disponible (trae `available_balance`); '
+                '`last_workspace` si es el único workspace del usuario.'
             )),
         },
     )
@@ -195,17 +266,27 @@ class WorkspaceDetailView(APIView):
         """
         Deletes the workspace for good: only its owner, typing its name.
 
-        Never with work in progress or tokens set aside: a project uploaded,
-        ingesting or rendering, or a reservation still RESERVED (or a wallet
-        with reserved balance) is a 409 and nothing goes, as when deleting one
-        project (videos.views destroy). Nothing would settle those tokens once
-        the wallet is gone.
+        A 409 `{error, code}`, with nothing deleted, while any of these holds:
+
+        - `project_processing`: a project uploaded, ingesting or rendering. A
+          stuck one keeps the workspace until that project is deleted (its own
+          delete returns its reservations).
+        - `posts_in_flight`: a post QUEUED or PROCESSING. Its task may be
+          sending it to the networks right now.
+        - `reservation_open`: a reservation still RESERVED, or reserved balance.
+          Nothing would settle those tokens once the wallet is gone.
+        - `balance_left`: available balance above zero. Tokens are money and
+          are never deleted; there is no way to move them yet.
+        - `last_workspace`: the only workspace the owner owns or is an ACTIVE
+          member of. Nobody is left without a place to work.
 
         What goes with it (the models' CASCADE): its projects with their clips
-        and posts, its brand kits, its memberships and pending invitations,
-        and its wallet with its transactions. The available balance is not
-        returned or moved. `User.last_workspace` of whoever had it chosen
-        becomes null, and /me falls back to their default.
+        and posts (DRAFT, SCHEDULED, PUBLISHED and FAILED ones; a SCHEDULED post
+        is never published), its brand kits, its memberships and pending
+        invitations, and its empty wallet with its transactions.
+        `User.last_workspace` of whoever had it chosen becomes null, and /me
+        falls back to their default. The files in R2 and the Ayrshare profile
+        are not cleaned up here.
         """
         with transaction.atomic():
             active = require_workspace_role(request.user, workspace_id, 'workspace.delete', lock=True)
@@ -223,17 +304,42 @@ class WorkspaceDetailView(APIView):
                 .order_by('pk')
                 .values_list('status', flat=True)
             )
+            # The post's lock is the one its publishing task takes (tasks.social): a post
+            # the dispatcher queues meanwhile waits, and then is gone with its workspace.
+            post_statuses = list(
+                ScheduledPost.objects.select_for_update(of=('self',))
+                .filter(video_clip__project__workspace=workspace)
+                .order_by('pk')
+                .values_list('status', flat=True)
+            )
             wallet = Wallet.objects.select_for_update().filter(workspace=workspace).first()
             if any(project_status in _BUSY for project_status in statuses):
                 return _error(409, WORKSPACE_BUSY, 'project_processing')
+            if any(post_status in _IN_FLIGHT for post_status in post_statuses):
+                return _error(409, POSTS_IN_FLIGHT, 'posts_in_flight')
             if wallet is not None and (
                 wallet.reserved_balance > 0
                 or Transaction.objects.filter(wallet=wallet, status=Transaction.Status.RESERVED).exists()
             ):
                 return _error(409, WORKSPACE_RESERVED, 'reservation_open')
+            if wallet is not None and wallet.available_balance > 0:
+                return _error(
+                    409, _balance_left(wallet.available_balance), 'balance_left',
+                    available_balance=_tokens(wallet.available_balance),
+                )
+            if not _other_workspaces(request.user, workspace):
+                return _error(409, LAST_WORKSPACE, 'last_workspace')
             pk = workspace.pk
+            # Zero by the checks above; logged so the ledger that goes with the wallet leaves a trace.
+            available = _tokens(wallet.available_balance) if wallet is not None else None
+            reserved = _tokens(wallet.reserved_balance) if wallet is not None else None
+            transactions = Transaction.objects.filter(wallet=wallet).count() if wallet is not None else 0
             workspace.delete()
-        logger.warning('workspace.deleted workspace_id=%s user_id=%s', pk, request.user.pk)
+        logger.warning(
+            'workspace.deleted workspace_id=%s user_id=%s wallet_available=%s wallet_reserved=%s '
+            'wallet_transactions=%d projects=%d posts=%d',
+            pk, request.user.pk, available, reserved, transactions, len(statuses), len(post_statuses),
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -244,7 +350,10 @@ class WorkspaceTransferView(APIView):
         request=TransferWorkspaceSerializer,
         responses={
             200: WorkspaceSerializer,
-            400: OpenApiResponse(description='`new_owner_id` no es un miembro activo del workspace, o es el dueño.'),
+            400: OpenApiResponse(description=(
+                '`new_owner_id` no es un miembro activo del workspace, o es el dueño. `detail`: el dueño '
+                'anterior no tenía fila de miembro y no queda lugar en el plan para dejarlo como admin.'
+            )),
             401: UNAUTHORIZED,
             403: FORBIDDEN,
             404: NOT_FOUND,
@@ -255,7 +364,8 @@ class WorkspaceTransferView(APIView):
         Gives the workspace to another ACTIVE member: only its owner. The new
         owner's row and the previous owner's stay as ACTIVE Admin rows, so the
         previous owner is an Admin from now on. It is the only way an owner
-        stops being one.
+        stops being one. A previous owner without a membership row needs a
+        free seat of the plan for it: without one it is a 400 and nothing changes.
         """
         user = request.user
         with transaction.atomic():
@@ -273,14 +383,23 @@ class WorkspaceTransferView(APIView):
             )
             if target is None:
                 raise ValidationError({'new_owner_id': [NEW_OWNER_NOT_ACTIVE]})
-            # Before the owner changes: the owner's own row always fits the plan's seats.
-            WorkspaceMember.objects.update_or_create(
-                workspace=workspace, user=user, defaults={'role': ADMIN, 'status': ACTIVE},
-            )
-            target.role = ADMIN
-            target.save(update_fields=['role'])
+            # The owner changes first: the previous owner's row is then a member's row
+            # like any other, and goes through the plan's seats (signals.check_workspace_member_limit).
             workspace.owner_id = new_owner_id
             workspace.save(update_fields=['owner'])
+            target.role = ADMIN
+            target.save(update_fields=['role'])
+            previous = WorkspaceMember.objects.select_for_update().filter(workspace=workspace, user=user).first()
+            if previous is not None:
+                # The usual case: the row exists and keeps its seat.
+                previous.role, previous.status = ADMIN, ACTIVE
+                previous.save(update_fields=['role', 'status'])
+            else:
+                try:
+                    WorkspaceMember.objects.create(workspace=workspace, user=user, role=ADMIN, status=ACTIVE)
+                except DjangoValidationError:
+                    # No seat left for them: nothing is transferred (the transaction rolls back).
+                    raise ValidationError({'detail': NO_SEAT_FOR_PREVIOUS_OWNER})
         logger.warning(
             'workspace.transferred workspace_id=%s from_user_id=%s to_user_id=%s', workspace.pk, user.pk, new_owner_id,
         )

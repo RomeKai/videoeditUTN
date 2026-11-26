@@ -111,6 +111,25 @@ describe('sesión al hidratar', () => {
     expect(await screen.findByText('anonymous:-:sin saldo')).toBeInTheDocument();
   });
 
+  it('sin ningún workspace en `/me`, el id guardado se borra: ningún pedido nombra uno que ya no existe', async () => {
+    setTokens({ access: 'a', refresh: 'r' });
+    setActiveWorkspaceId(WS);
+    server.use(http.get(`${API_URL}/api/v1/me/`, () => HttpResponse.json({ ...me, active_workspace_id: null, workspaces: [] })));
+    render(app());
+    expect(await screen.findByText('authenticated:-:sin saldo')).toBeInTheDocument();
+    await waitFor(() => expect(getActiveWorkspaceId()).toBeNull());
+    expect(window.localStorage.getItem('oc.workspace')).toBeNull();
+  });
+
+  it('un id guardado que `/me` no trae (el workspace se borró) se cambia por el que se muestra', async () => {
+    setTokens({ access: 'a', refresh: 'r' });
+    setActiveWorkspaceId('00000000-0000-4000-8000-000000000000');
+    server.use(http.get(`${API_URL}/api/v1/me/`, () => HttpResponse.json(me)), http.get(`${API_URL}/api/v1/wallet/`, () => HttpResponse.json(wallet)));
+    render(app());
+    expect(await screen.findByText('authenticated:Estudio:100')).toBeInTheDocument();
+    expect(getActiveWorkspaceId()).toBe(WS);
+  });
+
   it('cambiar de workspace mueve la UI aunque `/me` vuelva igual, y también a uno que `/me` todavía no traía', async () => {
     const OTHER = 'c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b';
     const NEW = 'd3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b';

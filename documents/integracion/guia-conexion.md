@@ -239,8 +239,11 @@ Contrato `contracts/workspaces.ts`. Backend: app `apps/users`, modelos `Workspac
 
 Los nueve de workspaces y miembros (hasta `workspaces.removeMember`) ya existen en `back/apps/users/views_workspaces.py`, con sus pruebas en `back/apps/users/tests/test_workspaces_api.py`. Faltan los cuatro de invitaciones.
 
-- Crear usa `create_owned_workspace` (`back/apps/users/workspaces.py`), lo mismo que el registro.
-- Borrar responde 409 (`project_processing` o `reservation_open`) con proyectos en proceso o tokens reservados. Si no, se van en cascada proyectos, clips, publicaciones, brand kits, miembros y la billetera con sus movimientos. Los archivos en R2 no se borran, igual que al borrar un proyecto.
+- Crear usa `create_owned_workspace` (`back/apps/users/workspaces.py`), lo mismo que el registro. Tope de 10 workspaces propios (409 `workspace_limit`) y límite de intentos por usuario (`THROTTLE_WORKSPACE_CREATE`, scope `workspace_create`).
+- Borrar responde 409 `{error, code}` y no borra nada en estos casos, en este orden: `project_processing` (proyecto subido, en ingesta o renderizando; uno trabado se borra primero), `posts_in_flight` (publicación `QUEUED` o `PROCESSING`), `reservation_open` (tokens reservados), `balance_left` (queda saldo disponible: los tokens nunca se borran) y `last_workspace` (es el único workspace del usuario).
+- Si se borra, se van en cascada proyectos, clips, publicaciones (las `SCHEDULED` no se publican), brand kits, miembros y la billetera en cero con sus movimientos. El log `workspace.deleted` guarda las cifras finales de la billetera.
+- Pendiente: el borrado no limpia los archivos en R2 ni el perfil de Ayrshare.
+- Transferir cambia primero el dueño. Si el dueño anterior no tenía fila de miembro, la fila nueva pasa por el control de lugares del plan: sin lugar responde 400 y no transfiere.
 - Miembros: una fila por `WorkspaceMember`; `invited_by` es siempre null hasta que exista el modelo de invitación.
 
 | Método y ruta | Id | Hook · mock | Pantalla | Backend | Depende de | Talla |

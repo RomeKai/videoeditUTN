@@ -1,18 +1,20 @@
 'use client';
 
 import { usePathname, useRouter } from 'next/navigation';
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { Action } from '@/lib/permissions';
 import { GlobalLoading } from './GlobalLoading';
 import { needsWelcome, usePermissions, useSession } from './session';
 import { Button } from '@/ui/Button';
 import { NoAccessMessage, SystemScreen } from './SystemPage';
+import { CreateWorkspaceDialog } from './WorkspaceSwitcher';
 
 /**
  * Route protection for the app (everything under the `(app)` group):
  * - without a session → /login?siguiente=<where the user was going>
  * - while `/me` loads → the app's outline
  * - a brand-new account landing on Proyectos → /bienvenida (map B1)
+ * - an account with no workspace → the empty state, where it creates one
  */
 export function RequireSession({ children }: { children: ReactNode }) {
   const { status, me, refetch } = useSession();
@@ -45,10 +47,27 @@ export function RequireSession({ children }: { children: ReactNode }) {
     );
   }
   if (status !== 'authenticated' || !me) return <GlobalLoading />;
-  if (me.workspaces.length === 0) {
-    return <SystemScreen title="No tenés ningún workspace" description="Pedile a alguien que te invite al suyo, o escribinos." />;
-  }
+  if (me.workspaces.length === 0) return <NoWorkspace />;
   return <>{children}</>;
+}
+
+/** Someone removed from every workspace: they create their own (`POST /workspaces/`) and land in it. */
+function NoWorkspace() {
+  const [creating, setCreating] = useState(false);
+  return (
+    <>
+      <SystemScreen
+        title="No tenés ningún workspace"
+        description="Creá el tuyo para empezar, o pedile a alguien que te invite al suyo."
+        actions={
+          <Button variant="primary" aria-haspopup="dialog" onClick={() => setCreating(true)}>
+            Crear un espacio de trabajo
+          </Button>
+        }
+      />
+      <CreateWorkspaceDialog open={creating} onClose={() => setCreating(false)} />
+    </>
+  );
 }
 
 /** For public screens that make no sense with a session (login, register): sends the user to the app. */

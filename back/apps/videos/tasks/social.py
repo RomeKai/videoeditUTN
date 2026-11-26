@@ -154,7 +154,13 @@ def upload_to_social_network(self, post_id):
 
     try:
         with transaction.atomic():
-            post = ScheduledPost.objects.select_for_update().get(id=post_id)
+            try:
+                post = ScheduledPost.objects.select_for_update().get(id=post_id)
+            except ScheduledPost.DoesNotExist:
+                # Deleted after it was queued (with its clip, its project or its
+                # workspace): nothing to publish, and nothing to mark as failed.
+                logger.warning("publish.post_deleted post_id=%s when=before_publishing", post_id)
+                return "Post Deleted"
             if post.status == ScheduledPost.Status.PUBLISHED:
                 return "Already Published"
 
@@ -166,13 +172,13 @@ def upload_to_social_network(self, post_id):
                 logger.error(f"❌ [WORKER] Post {post_id} FAILED: No ayrshare_profile_key for workspace {workspace.id}")
                 post.status = ScheduledPost.Status.FAILED
                 post.error_log = "Error: Ayrshare Profile Key not configured in workspace."
-                post.save()
+                post.save(update_fields=['status', 'error_log'])
                 # Committed on exit of the atomic block; raised after so the task is not reported as SUCCESS.
                 missing_key = True
             else:
                 missing_key = False
                 post.status = ScheduledPost.Status.PROCESSING
-                post.save()
+                post.save(update_fields=['status'])
 
         if missing_key:
             raise PostConfigurationError(f"No ayrshare_profile_key for workspace {workspace.id}")
@@ -214,7 +220,18 @@ def upload_to_social_network(self, post_id):
         # 3. Success state
         post.status = ScheduledPost.Status.PUBLISHED
         post.error_log = f"Ayrshare ID: {response.get('id')}"
-        post.save()
+        try:
+            # Only these columns, and never an INSERT: a full save() of a row deleted
+            # while Ayrshare answered tries to insert it again and breaks on its clip.
+            # In a savepoint: the error of a row that is gone must not break an outer transaction.
+            with transaction.atomic():
+                post.save(update_fields=['status', 'error_log'])
+        except DatabaseError:
+            if ScheduledPost.objects.filter(id=post_id).exists():
+                raise
+            # Published, and its row went meanwhile: there is nowhere to record it.
+            logger.warning("publish.post_deleted post_id=%s when=after_publishing", post_id)
+            return f"Published via Ayrshare: {target_platform} (post deleted)"
         logger.info(f"✅ [WORKER] Post {post_id} published via Ayrshare.")
         
         return f"Published via Ayrshare: {target_platform}"

@@ -95,11 +95,15 @@ export const createWorkspace = defineEndpoint({
   response: Workspace,
   successStatus: 201,
   workspaceScoped: false,
-  errors: [{ status: 400, when: 'Nombre vacío (o solo espacios) o de más de 100 caracteres: `{name: [mensaje]}`.' }],
+  errors: [
+    { status: 400, when: 'Nombre vacío (o solo espacios) o de más de 100 caracteres: `{name: [mensaje]}`.' },
+    { status: 409, when: 'El usuario ya es dueño de 10 workspaces (`code: "workspace_limit"`). Los workspaces ajenos donde es miembro no cuentan.' },
+    { status: 429, when: 'Demasiadas creaciones seguidas (10 por hora por usuario; cuentan también los intentos rechazados). `detail` dice cuánto esperar.' },
+  ],
   backend: {
     status: 'exists',
     source: 'back/apps/users/views_workspaces.py · WorkspaceListView.post (apps/users/workspaces.py · create_owned_workspace)',
-    note: 'El mismo camino que el registro: plan `DEFAULT_PLAN_NAME` (Gratis; `subscription_plan: null` si ese plan no existe), billetera en 0 y el usuario como Admin activo además de dueño. El nombre se guarda sin espacios a los costados. No hay tope de workspaces por usuario.',
+    note: 'El mismo camino que el registro: plan `DEFAULT_PLAN_NAME` (Gratis; `subscription_plan: null` si ese plan no existe), billetera en 0 y el usuario como Admin activo además de dueño. El nombre se guarda sin espacios a los costados. Tope: 10 workspaces propios por usuario (`MAX_OWNED_WORKSPACES`) y un límite de intentos (`THROTTLE_WORKSPACE_CREATE`).',
   },
   screens: ['J3', 'B1'],
 });
@@ -156,13 +160,13 @@ export const deleteWorkspace = defineEndpoint({
     { status: 404, when: 'El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos.' },
     {
       status: 409,
-      when: 'No se borra nada: hay un proyecto subido, en ingesta o renderizando (`code: "project_processing"`), o tokens reservados sin liquidar (`code: "reservation_open"`). Cuerpo `{error, code}`, como al borrar un proyecto.',
+      when: 'No se borra nada. Cuerpo `{error, code}`, y el `error` se muestra tal cual. `project_processing`: hay un proyecto subido, en ingesta o renderizando (uno trabado se borra primero). `posts_in_flight`: hay una publicación en cola o saliendo. `reservation_open`: hay tokens reservados sin liquidar. `balance_left`: queda saldo disponible (trae `available_balance`); los tokens nunca se borran. `last_workspace`: es el único workspace del usuario.',
     },
   ],
   backend: {
     status: 'exists',
     source: 'back/apps/users/views_workspaces.py · WorkspaceDetailView.delete',
-    note: 'Borra para siempre el workspace con sus proyectos, clips y publicaciones, brand kits, miembros e invitaciones, y la billetera con sus movimientos: el saldo disponible se pierde. Las cuentas de los miembros no se tocan. Se puede borrar el último workspace: `/me` responde con `workspaces: []` y `active_workspace_id: null`. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`.',
+    note: 'Borra para siempre el workspace con sus proyectos, clips y publicaciones (las programadas que no salieron no se publican), brand kits, miembros e invitaciones, y la billetera, ya en cero, con sus movimientos. Las cuentas de los miembros no se tocan. No limpia los archivos en R2 ni el perfil de Ayrshare. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`.',
   },
   screens: ['H1'],
 });
@@ -176,7 +180,7 @@ export const transferWorkspace = defineEndpoint({
   response: Workspace,
   workspaceScoped: false,
   errors: [
-    { status: 400, when: '`new_owner_id` no es un miembro activo (una invitación pendiente no alcanza) o es el propio Dueño: `{new_owner_id: [mensaje]}`.' },
+    { status: 400, when: '`new_owner_id` no es un miembro activo (una invitación pendiente no alcanza) o es el propio Dueño: `{new_owner_id: [mensaje]}`. Con `detail`: el Dueño no tenía fila de miembro y no queda lugar en el plan para dejarlo como Admin.' },
     { status: 403, when: 'No es el Dueño. Solo `detail`, sin `code`.' },
     { status: 404, when: 'El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos.' },
   ],

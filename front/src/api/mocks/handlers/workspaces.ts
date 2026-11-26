@@ -44,7 +44,12 @@ export const workspacesHandlers = [
 
   route(contract.createWorkspace, ({ db, user, body, now }) => {
     const created = new Date(now).toISOString();
-    const workspace: MockWorkspace = { id: newId(), name: cleanName(body.name), owner: user.id, subscription_plan: PLAN_IDS.free, created_at: created, renews_at: null, pending_plan: null };
+    const name = cleanName(body.name);
+    // Like the backend (views_workspaces.py · MAX_OWNED_WORKSPACES).
+    if (db.workspaces.filter((item) => item.owner === user.id).length >= 10) {
+      throw conflict('Llegaste al máximo de 10 espacios de trabajo propios. Borrá uno para crear otro.', 'workspace_limit');
+    }
+    const workspace: MockWorkspace = { id: newId(), name, owner: user.id, subscription_plan: PLAN_IDS.free, created_at: created, renews_at: null, pending_plan: null };
     db.workspaces.push(workspace);
     db.members.push({ id: newId(), workspace: workspace.id, user: user.id, email: user.email, role: 'admin', status: 'active', joined_at: created, invited_by: null, token: null });
     // Empty, as the backend creates it (apps/payments/signals.py · create_workspace_wallet).
@@ -86,12 +91,31 @@ export const workspacesHandlers = [
     const { workspace, role } = workspaceFor(db, params.id, user.id);
     if (role !== 'owner') throw ownerOnly();
     if (body.confirm_name !== workspace.name) throw badRequest({ confirm_name: ['El nombre no coincide.'] });
-    // Like the backend: never with work in progress or tokens set aside.
+    // Like the backend, in its order: never with work in progress, posts going out, tokens set aside
+    // or left, and never the person's last workspace.
     if (db.projects.some((item) => item.workspace === workspace.id && ['uploaded', 'ingesting', 'rendering'].includes(item.status))) {
-      throw conflict('Hay proyectos procesándose o renderizándose en este espacio: esperá a que terminen para borrarlo.', 'project_processing');
+      throw conflict(
+        'Hay proyectos procesándose o renderizándose en este espacio: esperá a que terminen para borrarlo. Si alguno quedó trabado, borrá ese proyecto primero.',
+        'project_processing',
+      );
     }
-    if (db.wallets.some((item) => item.workspace === workspace.id && item.reserved_balance > 0)) {
+    if (db.posts.some((item) => item.workspace === workspace.id && (item.status === 'QUEUED' || item.status === 'PROCESSING'))) {
+      throw conflict('Hay publicaciones saliendo a las redes en este momento: esperá a que terminen para borrar el espacio.', 'posts_in_flight');
+    }
+    const wallet = db.wallets.find((item) => item.workspace === workspace.id);
+    if (wallet && wallet.reserved_balance > 0) {
       throw conflict('El espacio tiene tokens reservados que todavía no se liquidaron. Probá de nuevo en unos minutos.', 'reservation_open');
+    }
+    if (wallet && wallet.available_balance > 0) {
+      const left = String(wallet.available_balance);
+      throw new MockHttpError(409, {
+        error: `${wallet.available_balance === 1 ? 'Queda 1 token' : `Quedan ${left} tokens`} en este espacio y no se pueden recuperar después de borrarlo. Usalos o escribinos antes de borrarlo.`,
+        code: 'balance_left',
+        available_balance: left,
+      });
+    }
+    if (!db.workspaces.some((item) => item.id !== workspace.id && roleIn(db, item.id, user.id))) {
+      throw conflict('Es tu único espacio de trabajo y no se puede borrar. Creá otro primero, o sumate al de alguien más.', 'last_workspace');
     }
     db.workspaces = db.workspaces.filter((item) => item.id !== workspace.id);
     db.members = db.members.filter((item) => item.workspace !== workspace.id);
@@ -104,7 +128,7 @@ export const workspacesHandlers = [
     return { data: undefined };
   }),
 
-  route(contract.transferWorkspace, ({ db, user, params, body }) => {
+  route(contract.transferWorkspace, ({ db, user, params, body, now }) => {
     const { workspace, role } = workspaceFor(db, params.id, user.id);
     if (role !== 'owner') throw ownerOnly();
     if (body.new_owner_id === user.id) throw badRequest({ new_owner_id: ['Ya sos el dueño de este espacio.'] });
@@ -112,6 +136,12 @@ export const workspacesHandlers = [
     if (!target) throw badRequest({ new_owner_id: ['Tiene que ser un miembro activo del workspace.'] });
     const previous = db.members.find((member) => member.workspace === workspace.id && member.user === user.id);
     if (previous) previous.role = 'admin';
+    // Without a row of their own, the previous owner needs a free seat to stay as Admin (the backend's 400).
+    else if (seats(db, workspace.id).used >= seats(db, workspace.id).max) {
+      throw badRequest({ detail: 'No quedan lugares en el plan para que sigas como admin después de transferir. Quitá a un miembro o cancelá una invitación, y probá de nuevo.' });
+    } else {
+      db.members.push({ id: newId(), workspace: workspace.id, user: user.id, email: user.email, role: 'admin', status: 'active', joined_at: new Date(now).toISOString(), invited_by: null, token: null });
+    }
     target.role = 'admin';
     workspace.owner = body.new_owner_id;
     return { data: serializeWorkspace(db, workspace, user.id) };

@@ -23,6 +23,10 @@ ALREADY_OWNER = 'Ya sos el dueño de este espacio.'
 ROLE_INVALID = 'Elegí un rol: Admin, Editor o Lector.'
 OWNER_ROLE_FIXED = 'No se puede cambiar el rol del dueño.'
 OWNER_NOT_REMOVABLE = 'No se puede quitar al dueño del workspace.'
+NO_SEAT_FOR_PREVIOUS_OWNER = (
+    'No quedan lugares en el plan para que sigas como admin después de transferir. '
+    'Quitá a un miembro o cancelá una invitación, y probá de nuevo.'
+)
 
 
 class WorkspaceNameSerializer(serializers.Serializer):

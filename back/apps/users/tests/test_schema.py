@@ -13,7 +13,7 @@ EXPECTED = {
     ("/api/v1/auth/verify-email/", "post"): {"200", "400", "401", "403"},
     ("/api/v1/status/", "get"): {"200"},
     ("/api/v1/workspaces/", "get"): {"200", "401"},
-    ("/api/v1/workspaces/", "post"): {"201", "400", "401"},
+    ("/api/v1/workspaces/", "post"): {"201", "400", "401", "409", "429"},
     ("/api/v1/workspaces/{workspace_id}/", "get"): {"200", "401", "404"},
     ("/api/v1/workspaces/{workspace_id}/", "patch"): {"200", "400", "401", "403", "404"},
     ("/api/v1/workspaces/{workspace_id}/", "delete"): {"204", "400", "401", "403", "404", "409"},

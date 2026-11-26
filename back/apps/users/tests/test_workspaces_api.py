@@ -11,7 +11,7 @@ from apps.core.permissions import ADMINS, DENIED, OWNER_ONLY
 from apps.core.workspace import NOT_FOUND_DETAIL
 from apps.payments.models import SubscriptionPlan, Transaction, Wallet
 from apps.users.models import User, Workspace, WorkspaceMember
-from apps.videos.models import BrandKit, VideoProject
+from apps.videos.models import BrandKit, ScheduledPost, VideoClip, VideoProject
 
 pytestmark = pytest.mark.django_db
 
@@ -63,6 +63,8 @@ def team(user, workspace, plan):
         person = new_user(name)
         setattr(team, name, person)
         team.rows[name] = WorkspaceMember.objects.create(workspace=workspace, user=person, role=role, status=status)
+    # A second workspace of the owner's, newer: deleting the team's is not deleting their last one.
+    team.spare = Workspace.objects.create(name="Otro espacio de la dueña", owner=user)
     return team
 
 
@@ -200,7 +202,7 @@ def test_each_action_follows_the_role_matrix_in_the_workspace_of_the_path(team, 
     the role permissions (only `detail`), and nothing changes.
     """
     caller = getattr(team, role)
-    own = caller.owned_workspaces.exclude(pk=team.workspace.pk).first()
+    own = caller.owned_workspaces.exclude(pk=team.workspace.pk).first()  # the owner's spare one
     headers = {"HTTP_X_WORKSPACE_ID": str(own.pk)} if own else {}
     target = suffix.format(member=team.rows["invitada"].pk)
 
@@ -265,21 +267,29 @@ def test_delete_needs_the_exact_name(team):
     assert Workspace.objects.filter(pk=team.workspace.pk).exists()
 
 
-def test_delete_takes_projects_brand_kits_members_and_wallet_with_it(team):
+def test_delete_takes_projects_posts_brand_kits_members_and_wallet_with_it(team, caplog):
     workspace = team.workspace
     _project(workspace, team.editor)
     BrandKit.objects.create(workspace=workspace, name="Marca")
+    project = VideoProject.objects.get(workspace=workspace)
+    clip = VideoClip.objects.create(project=project, title="c", start_time=0, end_time=5)
+    for post_status in (ScheduledPost.Status.DRAFT, ScheduledPost.Status.SCHEDULED, ScheduledPost.Status.PUBLISHED, ScheduledPost.Status.FAILED):
+        ScheduledPost.objects.create(video_clip=clip, platform=ScheduledPost.Platform.TIKTOK, publish_at="2030-01-01T00:00:00Z", status=post_status)
     wallet = workspace.wallet
-    wallet.available_balance = Decimal("120")
-    wallet.save()
     Transaction.objects.create(wallet=wallet, amount=Decimal("5"), status=Transaction.Status.COMPLETED)
     team.viewer.last_workspace = workspace
     team.viewer.save(update_fields=["last_workspace"])
 
-    response = client_for(team.owner).delete(url(workspace), {"confirm_name": workspace.name}, format="json")
+    with caplog.at_level("WARNING", logger="apps.users.views_workspaces"):
+        response = client_for(team.owner).delete(url(workspace), {"confirm_name": workspace.name}, format="json")
 
     assert response.status_code == 204
     assert not Workspace.objects.filter(pk=workspace.pk).exists()
+    assert not ScheduledPost.objects.filter(video_clip=clip).exists()
+    # The wallet's last figures stay in the log.
+    line = next(record.getMessage() for record in caplog.records if record.getMessage().startswith("workspace.deleted"))
+    assert f"workspace_id={workspace.pk}" in line
+    assert "wallet_available=0 wallet_reserved=0 wallet_transactions=1 projects=1 posts=4" in line
     assert not VideoProject.objects.filter(workspace_id=workspace.pk).exists()
     assert not BrandKit.objects.filter(workspace_id=workspace.pk).exists()
     assert not WorkspaceMember.objects.filter(workspace_id=workspace.pk).exists()
@@ -289,8 +299,8 @@ def test_delete_takes_projects_brand_kits_members_and_wallet_with_it(team):
     assert User.objects.filter(pk__in=[team.owner.pk, team.viewer.pk]).count() == 2
     me = client_for(team.viewer).get("/api/v1/me/").json()
     assert me["active_workspace_id"] == str(team.viewer.owned_workspaces.get().pk)
-    # The owner has no workspace left: /me still answers.
-    assert client_for(team.owner).get("/api/v1/me/").json()["workspaces"] == []
+    # The owner keeps their other workspace.
+    assert [item["id"] for item in client_for(team.owner).get("/api/v1/me/").json()["workspaces"]] == [str(team.spare.pk)]
 
 
 @pytest.mark.parametrize("busy", [VideoProject.Status.UPLOADED, VideoProject.Status.INGESTING, VideoProject.Status.RENDERING])
@@ -320,6 +330,107 @@ def test_delete_is_refused_with_tokens_reserved(team, how):
     assert response.status_code == 409
     assert response.json()["code"] == "reservation_open"
     assert Workspace.objects.filter(pk=team.workspace.pk).exists()
+
+
+@pytest.mark.parametrize("in_flight", [ScheduledPost.Status.QUEUED, ScheduledPost.Status.PROCESSING])
+def test_delete_is_refused_while_a_post_is_going_out(team, in_flight):
+    clip = VideoClip.objects.create(project=_project(team.workspace, team.editor), title="c", start_time=0, end_time=5)
+    post = ScheduledPost.objects.create(video_clip=clip, platform=ScheduledPost.Platform.TIKTOK, publish_at="2030-01-01T00:00:00Z", status=in_flight)
+
+    response = client_for(team.owner).delete(url(team.workspace), {"confirm_name": team.workspace.name}, format="json")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "posts_in_flight"
+    assert Workspace.objects.filter(pk=team.workspace.pk).exists()
+    assert ScheduledPost.objects.filter(pk=post.pk).exists()
+
+
+@pytest.mark.parametrize("balance, sentence", [("120.5", "Quedan 120.5 tokens"), ("1", "Queda 1 token "), ("0.0000000001", "Quedan 0.0000000001 tokens")])
+def test_delete_never_takes_tokens_with_it(team, balance, sentence):
+    wallet = team.workspace.wallet
+    wallet.available_balance = Decimal(balance)
+    wallet.save()
+
+    response = client_for(team.owner).delete(url(team.workspace), {"confirm_name": team.workspace.name}, format="json")
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["code"] == "balance_left" and body["available_balance"] == balance
+    assert body["error"].startswith(sentence)
+    assert "no se pueden recuperar después de borrarlo" in body["error"]
+    wallet.refresh_from_db()
+    assert wallet.available_balance == Decimal(balance)
+    assert Workspace.objects.filter(pk=team.workspace.pk).exists()
+
+
+@pytest.mark.parametrize("elsewhere", [None, "pending", "active"])
+def test_the_last_workspace_is_never_deleted(team, elsewhere):
+    """The only one the owner owns or is an ACTIVE member of. A pending invitation elsewhere is not a place to work."""
+    team.spare.delete()
+    if elsewhere:
+        other = Workspace.objects.create(name="De otra", owner=new_user("jefa"))
+        WorkspaceMember.objects.create(workspace=other, user=team.owner, role=VIEWER, status=PENDING if elsewhere == "pending" else ACTIVE)
+
+    response = client_for(team.owner).delete(url(team.workspace), {"confirm_name": team.workspace.name}, format="json")
+
+    if elsewhere == "active":
+        assert response.status_code == 204
+    else:
+        assert response.status_code == 409
+        assert response.json()["code"] == "last_workspace"
+        assert "único espacio" in response.json()["error"]
+        assert Workspace.objects.filter(pk=team.workspace.pk).exists()
+
+
+def test_the_stuck_project_refusal_says_what_to_do(team):
+    _project(team.workspace, team.editor, status=VideoProject.Status.INGESTING)
+
+    response = client_for(team.owner).delete(url(team.workspace), {"confirm_name": team.workspace.name}, format="json")
+
+    assert "Si alguno quedó trabado, borrá ese proyecto primero." in response.json()["error"]
+
+
+# --- create: cap and rate ---------------------------------------------------
+
+
+def test_a_user_owns_at_most_ten_workspaces(user, workspace):
+    for number in range(9):
+        Workspace.objects.create(name=f"Espacio {number}", owner=user)
+    # Being a member of someone else's does not count.
+    WorkspaceMember.objects.create(workspace=Workspace.objects.create(name="Ajeno", owner=new_user("jefa")), user=user, role=ADMIN, status=ACTIVE)
+
+    response = client_for(user).post(LIST_URL, {"name": "El once"}, format="json")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "workspace_limit"
+    assert "máximo de 10 espacios" in response.json()["error"]
+    assert Workspace.objects.filter(owner=user).count() == 10
+    # One less and it fits again.
+    Workspace.objects.filter(owner=user, name="Espacio 0").delete()
+    assert client_for(user).post(LIST_URL, {"name": "El décimo"}, format="json").status_code == 201
+
+
+def test_creating_is_throttled_per_user_and_listing_is_not(user, workspace):
+    from unittest import mock
+
+    from rest_framework.throttling import ScopedRateThrottle
+
+    from apps.core.testing import clear_local_caches
+
+    clear_local_caches("default")
+    api = client_for(user)
+    with mock.patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"workspace_create": "2/hour"}):
+        # Refused requests count too: the limit is on attempts.
+        attempts = [api.post(LIST_URL, {"name": name}, format="json").status_code for name in ("Uno", "", "Tres")]
+        lists = [api.get(LIST_URL).status_code for _ in range(5)]
+        blocked = api.post(LIST_URL, {"name": "Tres"}, format="json")
+        other = client_for(new_user("otra")).post(LIST_URL, {"name": "De otra"}, format="json")
+
+    assert attempts == [201, 400, 429]
+    assert lists == [200] * 5
+    assert blocked.status_code == 429
+    assert blocked.json()["detail"].startswith("Demasiados intentos.")
+    assert other.status_code == 201
 
 
 # --- transfer ---------------------------------------------------------------
@@ -353,6 +464,23 @@ def test_transfer_keeps_the_old_owner_as_admin_even_without_a_membership_row(tea
     assert response.status_code == 200
     old = WorkspaceMember.objects.get(workspace=team.workspace, user=team.owner)
     assert (old.role, old.status) == (ADMIN, ACTIVE)
+
+
+def test_transfer_is_refused_when_the_old_owner_would_not_fit_the_plan(team, plan):
+    """Without a membership row, the old owner needs a seat once they stop being the owner."""
+    team.rows["owner"].delete()
+    plan.max_members = 4  # the four other rows fill it
+    plan.save()
+
+    response = client_for(team.owner).post(url(team.workspace, "transfer/"), {"new_owner_id": str(team.admin.pk)}, format="json")
+
+    assert response.status_code == 400
+    assert set(response.json()) == {"detail"}
+    assert "No quedan lugares en el plan" in response.json()["detail"]
+    team.workspace.refresh_from_db()
+    assert team.workspace.owner_id == team.owner.pk
+    assert not WorkspaceMember.objects.filter(workspace=team.workspace, user=team.owner).exists()
+    assert WorkspaceMember.objects.filter(workspace=team.workspace).count() == 4
 
 
 @pytest.mark.parametrize("target", ["invitada", "stranger", "self", "unknown", "garbage", "missing"])

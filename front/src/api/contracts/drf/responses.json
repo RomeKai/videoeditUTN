@@ -1646,7 +1646,7 @@
     "workspace_delete_409_processing": {
       "status": 409,
       "body": {
-        "error": "Hay proyectos procesándose o renderizándose en este espacio: esperá a que terminen para borrarlo.",
+        "error": "Hay proyectos procesándose o renderizándose en este espacio: esperá a que terminen para borrarlo. Si alguno quedó trabado, borrá ese proyecto primero.",
         "code": "project_processing"
       }
     },
@@ -1655,6 +1655,41 @@
       "body": {
         "error": "El espacio tiene tokens reservados que todavía no se liquidaron. Probá de nuevo en unos minutos.",
         "code": "reservation_open"
+      }
+    },
+    "workspace_delete_409_posts": {
+      "status": 409,
+      "body": {
+        "error": "Hay publicaciones saliendo a las redes en este momento: esperá a que terminen para borrar el espacio.",
+        "code": "posts_in_flight"
+      }
+    },
+    "workspace_delete_409_balance": {
+      "status": 409,
+      "body": {
+        "error": "Quedan 120.5 tokens en este espacio y no se pueden recuperar después de borrarlo. Usalos o escribinos antes de borrarlo.",
+        "code": "balance_left",
+        "available_balance": "120.5"
+      }
+    },
+    "workspace_delete_409_last": {
+      "status": 409,
+      "body": {
+        "error": "Es tu único espacio de trabajo y no se puede borrar. Creá otro primero, o sumate al de alguien más.",
+        "code": "last_workspace"
+      }
+    },
+    "workspace_create_409_limit": {
+      "status": 409,
+      "body": {
+        "error": "Llegaste al máximo de 10 espacios de trabajo propios. Borrá uno para crear otro.",
+        "code": "workspace_limit"
+      }
+    },
+    "transfer_400_seats": {
+      "status": 400,
+      "body": {
+        "detail": "No quedan lugares en el plan para que sigas como admin después de transferir. Quitá a un miembro o cancelá una invitación, y probá de nuevo."
       }
     }
   }

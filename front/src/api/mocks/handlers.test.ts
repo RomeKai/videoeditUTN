@@ -340,6 +340,49 @@ describe('mocks', () => {
     expect(denied.message).toBe('Solo el dueño del espacio puede hacer esto.');
   });
 
+  it('borrar un workspace: nunca con publicaciones saliendo, con saldo ni si es el único', async () => {
+    const id = WORKSPACE_IDS.estudio;
+    const name = (await apiCall(workspaces.getWorkspace, { params: { id } })).name;
+    const remove = () => fail(apiCall(workspaces.deleteWorkspace, { params: { id }, body: { confirm_name: name } }));
+    const edit = (change: (db: ReturnType<typeof loadDb>) => void) => {
+      const db = loadDb();
+      change(db);
+      saveDb(db);
+    };
+    // Nothing processing, one post going out.
+    edit((db) => {
+      db.projects = db.projects.filter((project) => project.workspace !== id || !['uploaded', 'ingesting', 'rendering'].includes(project.status));
+      const post = db.posts.find((item) => item.workspace === id);
+      if (!post) throw new Error('falta una publicación');
+      post.status = 'PROCESSING';
+      for (const wallet of db.wallets) if (wallet.workspace === id) Object.assign(wallet, { available_balance: 120.5, reserved_balance: 0 });
+    });
+    expect((await remove()).code).toBe('posts_in_flight');
+    // Once none is going out (the simulation would send a due SCHEDULED one, so they end as drafts), the tokens stop it.
+    edit((db) => {
+      for (const post of db.posts) if (post.workspace === id && ['SCHEDULED', 'QUEUED', 'PROCESSING'].includes(post.status)) post.status = 'DRAFT';
+    });
+    const balance = await remove();
+    expect(balance.code).toBe('balance_left');
+    expect(balance.message).toBe('Quedan 120.5 tokens en este espacio y no se pueden recuperar después de borrarlo. Usalos o escribinos antes de borrarlo.');
+    // Empty wallet, but no other workspace to work in.
+    edit((db) => {
+      for (const wallet of db.wallets) if (wallet.workspace === id) wallet.available_balance = 0;
+      db.workspaces = db.workspaces.filter((workspace) => workspace.id === id);
+      db.members = db.members.filter((member) => member.workspace === id);
+    });
+    expect((await remove()).code).toBe('last_workspace');
+    expect(loadDb().workspaces.map((workspace) => workspace.id)).toEqual([id]);
+  });
+
+  it('crear workspaces: hasta 10 propios', async () => {
+    const owned = loadDb().workspaces.filter((workspace) => workspace.owner === USER_IDS.lucia).length;
+    for (let number = owned; number < 10; number += 1) await apiCall(workspaces.createWorkspace, { body: { name: `Espacio ${number}` } });
+    const refused = await fail(apiCall(workspaces.createWorkspace, { body: { name: 'Uno más' } }));
+    expect(refused.status).toBe(409);
+    expect(refused.code).toBe('workspace_limit');
+  });
+
   it('borrar un workspace: nunca con proyectos en proceso', async () => {
     signIn('todos-los-estados');
     const me = await apiCall(users.getMe);

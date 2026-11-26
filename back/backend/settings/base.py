@@ -174,6 +174,8 @@ REST_FRAMEWORK = {
         'password_change': _rate('THROTTLE_PASSWORD_CHANGE', '5/hour'),
         # PATCH /me with a new email: checks the password and sends an email.
         'email_change': _rate('THROTTLE_EMAIL_CHANGE', '5/hour'),
+        # POST /workspaces/, per user: each one creates a workspace, a wallet and a membership.
+        'workspace_create': _rate('THROTTLE_WORKSPACE_CREATE', '10/hour'),
     },
     # Proxies in front of Django (load balancer, nginx) that add the client's
     # address to X-Forwarded-For. The per-IP limits take the address that many
