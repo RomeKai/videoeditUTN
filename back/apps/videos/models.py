@@ -1,6 +1,7 @@
 ﻿import uuid
 from django.db import models
 from django.conf import settings
+from django.core.validators import RegexValidator
 from django.utils.translation import gettext_lazy as _
 
 # --- 1. BRAND KIT ---
@@ -89,6 +90,14 @@ class VideoProject(models.Model):
         ACTIVE = 'active', 'Speaker Dinámico'
         REACTION = 'reaction', 'Reacción'
         CINEMATIC = 'cinematic', 'Cinemático'
+        PODCAST = 'podcast', 'Podcast (2 Personas)'
+        TRENDING = 'trending', 'Trending'
+
+    class PipCorner(models.TextChoices):
+        BOTTOM_RIGHT = 'bottom-right', 'Abajo a la derecha'
+        BOTTOM_LEFT = 'bottom-left', 'Abajo a la izquierda'
+        TOP_RIGHT = 'top-right', 'Arriba a la derecha'
+        TOP_LEFT = 'top-left', 'Arriba a la izquierda'
 
     class CameraSelectionPosition(models.TextChoices):
         LEFT = 'left', 'Izquierda'
@@ -128,6 +137,13 @@ class VideoProject(models.Model):
     manual_camera_x = models.FloatField(default=0.5)
     manual_camera_y = models.FloatField(default=0.2)
     manual_camera_zoom = models.FloatField(default=1.0)
+    # Options of one layout (CORE-03), read through layout_options().
+    pip_corner = models.CharField(max_length=12, choices=PipCorner.choices, default=PipCorner.BOTTOM_RIGHT)
+    trending_color = models.CharField(
+        max_length=7, default='#FF2D55',
+        validators=[RegexValidator(r'^#[0-9a-fA-F]{6}$', 'Tiene que ser un color hexadecimal, como #FF2D55.')],
+    )
+    trending_text = models.CharField(max_length=60, blank=True, default='')
     speaker_tracking = models.BooleanField(default=False)
     
     # Subtítulos Pro
@@ -176,6 +192,14 @@ class VideoProject(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.workspace.name})"
+
+    def layout_options(self):
+        """The options of one layout only (CORE-03), as get_layout_strategy takes them."""
+        return {
+            'pip_corner': self.pip_corner,
+            'trending_color': self.trending_color,
+            'trending_text': self.trending_text,
+        }
 
 
 # --- 3. CLIP ---

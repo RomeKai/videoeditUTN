@@ -907,6 +907,7 @@ def _render_final_edit(project_id, lock, attempt):
                         'zoom': project.manual_camera_zoom,
                     },
                     editing_style=project.editing_style,
+                    layout_options=project.layout_options(),
                 )
                 video_layout_processed = layout_strategy.apply(edited_clip)
 
