@@ -58,7 +58,8 @@ class FromPromptEndpointTests(TestCase):
         return self.client.post(URL, payload, format="json")
 
     def test_creates_reserves_and_dispatches_like_a_normal_upload(self):
-        res = self.post(prompt=PROMPT)
+        with self.captureOnCommitCallbacks(execute=True):  # queued once the reservation commits
+            res = self.post(prompt=PROMPT)
 
         self.assertEqual(res.status_code, 201, res.data)
         project = VideoProject.objects.get(pk=res.data["id"])

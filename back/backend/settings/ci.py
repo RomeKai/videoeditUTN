@@ -42,7 +42,12 @@ CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
         "LOCATION": "onecreator-ci",
-    }
+    },
+    # The alias for locks (base.py, apps/core/cache.py).
+    "locks": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "onecreator-ci-locks",
+    },
 }
 
 CELERY_TASK_ALWAYS_EAGER = True
