@@ -1,6 +1,12 @@
 """Changing the password ends the other sessions, keeps this one and limits the attempts."""
+from unittest import mock
+
 import pytest
 from rest_framework.test import APIClient
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from apps.users.models import User
 
 pytestmark = pytest.mark.django_db
 
@@ -112,3 +118,53 @@ def test_an_account_without_password_gets_a_clear_error(user):
     assert "red social" in response.json()["current_password"][0]
     user.refresh_from_db()
     assert not user.has_usable_password()
+
+
+def _refresh(token):
+    return APIClient().post(REFRESH_URL, {"refresh": token}, format="json")
+
+
+def test_a_password_set_anywhere_ends_the_sessions(user):
+    # The admin, the shell or a future reset: set_password and save, no profile endpoint.
+    tokens = _login()
+
+    user.set_password(NEW_PASSWORD)
+    user.save()
+
+    assert _client(tokens["access"]).get(ME_URL).status_code == 401
+    assert _refresh(tokens["refresh"]).status_code == 401
+    assert OutstandingToken.objects.filter(user=user, blacklistedtoken__isnull=True).count() == 0
+
+
+def test_a_refresh_token_of_an_old_password_never_refreshes(user):
+    # Not blacklisted: issued before token_blacklist existed, or racing the change.
+    tokens = _login()
+    OutstandingToken.objects.filter(user=user).delete()
+    from django.contrib.auth.hashers import make_password
+
+    User.objects.filter(pk=user.pk).update(password=make_password(NEW_PASSWORD))
+
+    first = _refresh(tokens["refresh"])
+    again = _refresh(tokens["refresh"])
+
+    assert first.status_code == 401
+    assert again.status_code == 401
+    assert BlacklistedToken.objects.filter(token__user=user).exists()
+
+
+def test_a_refresh_token_from_before_the_password_hash_claim_is_refused(user):
+    with mock.patch("rest_framework_simplejwt.token_blacklist.models.OutstandingToken.objects.get_or_create"):
+        old = RefreshToken.for_user(user)
+    del old["hash_password"]
+
+    assert _refresh(str(old)).status_code == 401
+
+
+def test_a_refresh_token_of_a_deleted_user_is_a_401(user, workspace):
+    tokens = _login()
+    from apps.users.models import Workspace
+
+    Workspace.objects.filter(owner=user).delete()
+    user.delete()
+
+    assert _refresh(tokens["refresh"]).status_code == 401

@@ -48,6 +48,16 @@ class User(AbstractUser):
     def __str__(self):
         return self.email
 
+    def save(self, *args, **kwargs):
+        # set_password() keeps the raw value in _password until the save; the
+        # tokens of the old password stop refreshing, whoever changed it.
+        password_changed = self._password is not None and not self._state.adding
+        super().save(*args, **kwargs)
+        if password_changed:
+            from apps.users.tokens import revoke_refresh_tokens
+
+            revoke_refresh_tokens(self)
+
 
 class Workspace(models.Model):
     """

@@ -8,7 +8,6 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from drf_spectacular.utils import OpenApiResponse, extend_schema
-from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from apps.core.workspace import OWNER, ActiveWorkspace
@@ -26,7 +25,7 @@ from apps.users.serializers import (
 )
 from apps.users.email_verification import EMAIL_CHANGE, send_email_change_verification, user_for_token
 from apps.users.throttles import EmailChangeThrottle, LoginEmailThrottle, SpanishThrottleMixin
-from apps.users.tokens import issue_token_pair, revoke_refresh_tokens
+from apps.users.tokens import RevocableTokenRefreshSerializer, issue_token_pair
 
 
 UNAUTHORIZED = OpenApiResponse(description='Sin sesión, o con un token vencido o revocado.')
@@ -195,13 +194,14 @@ class LoginView(SpanishThrottleMixin, TokenObtainPairView):
 
 
 @extend_schema(responses={
-    200: TokenRefreshSerializer,
+    200: RevocableTokenRefreshSerializer,
     401: OpenApiResponse(description='Refresh vencido, inválido o revocado (por ejemplo, después de cambiar la contraseña).'),
     429: THROTTLED,
 })
 class TokenRefreshThrottledView(SpanishThrottleMixin, TokenRefreshView):
-    """POST /api/token/refresh/ (SimpleJWT) with a limit per IP."""
+    """POST /api/token/refresh/ (SimpleJWT) with a limit per IP; a token of an old password answers 401."""
 
+    serializer_class = RevocableTokenRefreshSerializer
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'token_refresh'
 
@@ -235,8 +235,8 @@ class PasswordChangeView(SpanishThrottleMixin, APIView):
         user = request.user
         with transaction.atomic():
             user.set_password(serializer.validated_data['new_password'])
+            # User.save revokes the refresh tokens of the old password.
             user.save(update_fields=['password'])
-            revoke_refresh_tokens(user)
             tokens = issue_token_pair(user)
         return Response(tokens)
 
