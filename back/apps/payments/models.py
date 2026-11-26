@@ -1,9 +1,16 @@
 ﻿import uuid
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.db import transaction
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
 from apps.users.models import Workspace # Importamos Workspace, no User
+
+# Resolution tiers of a plan (and of `render_resolution` in the videos API).
+# One named choice set, so the OpenAPI schema has a single `ResolutionEnum`
+# (SPECTACULAR_SETTINGS['ENUM_NAME_OVERRIDES']).
+RESOLUTION_CHOICES = [('720p', '720p'), ('1080p', '1080p'), ('4K', '4K')]
+
 
 class SubscriptionPlan(models.Model):
     """
@@ -13,11 +20,15 @@ class SubscriptionPlan(models.Model):
     name = models.CharField(max_length=50, unique=True, verbose_name=_("Plan Name"))
     
     # Limits & Quality
-    max_video_duration_seconds = models.IntegerField(default=60, verbose_name=_("Max Duration (sec)"))
+    # At least 1: the pricing page parses every plan, and one 0 here or in
+    # max_members would make the whole list invalid for the frontend.
+    max_video_duration_seconds = models.IntegerField(
+        default=60, validators=[MinValueValidator(1)], verbose_name=_("Max Duration (sec)")
+    )
     max_resolution = models.CharField(
         max_length=10, 
         default='720p', 
-        choices=[('720p', '720p'), ('1080p', '1080p'), ('4K', '4K')],
+        choices=RESOLUTION_CHOICES,
         verbose_name=_("Max Resolution")
     )
     has_watermark = models.BooleanField(default=True, verbose_name=_("Has Watermark"))
@@ -37,7 +48,7 @@ class SubscriptionPlan(models.Model):
         verbose_name=_("Base Discount Rate")
     )
     
-    max_members = models.IntegerField(default=1, verbose_name=_("Max Members"))
+    max_members = models.IntegerField(default=1, validators=[MinValueValidator(1)], verbose_name=_("Max Members"))
 
     # Public pricing page (PAY-03)
     price_usd_monthly = models.DecimalField(
@@ -49,12 +60,35 @@ class SubscriptionPlan(models.Model):
     description = models.CharField(max_length=200, blank=True, default='', verbose_name=_("Description"))
     sort_order = models.IntegerField(default=0, verbose_name=_("Sort Order"))
     is_recommended = models.BooleanField(default=False, verbose_name=_("Recommended"))
+    # Listed by GET /api/v1/plans/ (with is_active). Off by default, so a plan
+    # made in the admin, or an old one ("Starter", "Free"), is not offered by mistake.
+    is_public = models.BooleanField(default=False, verbose_name=_("Public"))
 
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ['sort_order', 'name']
+        constraints = [
+            # The pricing page marks one plan as recommended, never two.
+            models.UniqueConstraint(
+                fields=['is_recommended'],
+                condition=models.Q(is_recommended=True),
+                name='payments_plan_single_recommended',
+                violation_error_message=_("Only one plan can be recommended. Unmark the other one first."),
+            ),
+            # The validators of the two limits, also for what skips them (update(), the shell).
+            models.CheckConstraint(
+                condition=models.Q(max_members__gte=1),
+                name='payments_plan_max_members_min_1',
+                violation_error_message=_("A plan allows at least 1 member."),
+            ),
+            models.CheckConstraint(
+                condition=models.Q(max_video_duration_seconds__gte=1),
+                name='payments_plan_max_duration_min_1',
+                violation_error_message=_("A plan allows videos of at least 1 second."),
+            ),
+        ]
 
     def __str__(self):
         return self.name

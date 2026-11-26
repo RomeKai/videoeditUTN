@@ -325,7 +325,18 @@ Valores fijos en el código (no son settings):
 | `FEATURE_COSTS` | `seo_optimization` 5, `ai_thumbnail` 15 | `PricingEngine` |
 | Tarifa de un proyecto por URL | 10 tokens | `VideoProjectViewSet.create` |
 
-Límites por plan (`SubscriptionPlan`, asignado en `Workspace.subscription_plan`; sin plan no hay límites ni descuento): `max_video_duration_seconds`, `max_resolution`, `has_seo_optimization`, `has_thumbnail_engine` y `base_discount_rate`.
+Límites por plan (`SubscriptionPlan`, asignado en `Workspace.subscription_plan`): `max_video_duration_seconds`, `max_resolution`, `has_seo_optimization`, `has_thumbnail_engine` y `base_discount_rate`. `max_video_duration_seconds` y `max_members` valen al menos 1: lo dicen sus `MinValueValidator` (admin y formularios) y lo cumple la base con dos check constraints (`payments_plan_max_members_min_1` y `payments_plan_max_duration_min_1`, migración 0011).
+
+**Plan de un workspace nuevo.** Empieza en el plan que nombra `DEFAULT_PLAN_NAME` (`Gratis` por defecto). Lo asigna `create_default_workspace` (users/signals.py) con `get_default_plan_id` (payments/services/plans.py), que lee solo `id` e `is_active` del plan, sin orden: así un registro anda aunque el código nuevo corra antes de una migración que agrega columnas al plan. El usuario siempre queda con su workspace. Si no hay un plan con ese nombre (`plans.default_plan_missing`), está inactivo (`plans.default_plan_inactive`) o la búsqueda falla (`plans.default_plan_lookup_failed`, con la clase del error; corre en un savepoint para no romper la transacción del registro), el workspace se crea sin plan y queda en el log. Sin plan no hay límites ni descuento: es el caso de los workspaces de antes del plan por defecto, hasta que se corre `assign_default_plan` ([ver 07](07-capacidad-costos-y-operacion.md#operación-workspaces-sin-plan)).
+
+**Los cuatro planes.** Las migraciones `payments` 0005, 0007 y 0009 los siembran y `GET /api/v1/plans/` los lista (los activos con `is_public`, en `sort_order`). Ninguno pasa de `AI_UPLOAD_MAX_DURATION_SECONDS` (10800 s), el techo de cualquier subida. `max_members` cuenta al dueño y las invitaciones pendientes (`check_workspace_member_limit`, users/signals.py): en Gratis entran el dueño y una persona más.
+
+| Plan | `max_video_duration_seconds` | `max_resolution` | `max_members` | `base_discount_rate` | Precio (USD/mes) |
+|------|------------------------------|------------------|---------------|----------------------|------------------|
+| Gratis | 600 | `720p` | 2 | 0,00 | 0 |
+| Creador | 3600 | `1080p` | 2 | 0,05 | 19 |
+| Pro (recomendado) | 10800 | `4K` | 5 | 0,10 | 49 |
+| Estudio | 10800 | `4K` | 15 | 0,20 | 129 |
 
 ## Referencias
 
