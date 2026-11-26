@@ -371,7 +371,7 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
                     {"error": "Los proyectos por link se procesan en 720p. Para 1080p o 4K, subí el archivo."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            cost_in_tokens = Decimal('10.0')
+            cost_in_tokens = PricingEngine.LINK_FLAT_COST
             # The duration of a URL video is unknown here: the requested
             # resolution and the SEO add-on are checked against the plan, and
             # only the SEO add-on is charged on top of the flat price (ADR-013).

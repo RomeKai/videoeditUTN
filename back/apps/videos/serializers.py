@@ -10,6 +10,11 @@ from .services.ai.selection_criteria import (
     normalize_selection_criteria,
 )
 
+# What an upload may be (validate_source_file). GET /api/v1/pricing/ gives
+# both to the browser, which checks a file before sending it.
+UPLOAD_EXTENSIONS = ('.mp4', '.mov', '.avi')
+UPLOAD_MAX_SIZE_BYTES = 500 * 1024 * 1024
+
 # What a raw boolean of the creation request may be to mean true (the same
 # strings DRF's BooleanField takes, 'on' included).
 _RAW_TRUE = {'true', '1', 't', 'y', 'yes', 'on'}
@@ -248,9 +253,9 @@ class VideoProjectSerializer(serializers.ModelSerializer):
 
     def validate_source_file(self, value):
         if value:
-            if not value.name.lower().endswith(('.mp4', '.mov', '.avi')):
+            if not value.name.lower().endswith(UPLOAD_EXTENSIONS):
                 raise serializers.ValidationError("Solo se permiten archivos de video (.mp4, .mov, .avi)")
-            if value.size > 500 * 1024 * 1024:
+            if value.size > UPLOAD_MAX_SIZE_BYTES:
                 raise serializers.ValidationError("El archivo es demasiado grande (Máx 500MB)")
             # CORE-05: the bytes must be a video the pipeline can process.
             from .services.media_validation import InvalidUploadError, validate_upload

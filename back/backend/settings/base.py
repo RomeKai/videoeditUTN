@@ -288,6 +288,25 @@ AI_SINGLE_EDIT_MAX_DURATION_SECONDS = env.int('AI_SINGLE_EDIT_MAX_DURATION_SECON
 # `manage.py assign_default_plan` assigns it later.
 DEFAULT_PLAN_NAME = env('DEFAULT_PLAN_NAME', default='Gratis')
 
+# The wallet (apps/payments/views.py): the months and days of the usage chart,
+# of the movements' `month` filter and of `spent_this_month` are counted in
+# this zone. One for every workspace: Workspace has no zone of its own yet.
+# Both are checked here, when the app starts, not at the first request.
+WORKSPACE_TIME_ZONE = env('WORKSPACE_TIME_ZONE', default='America/Argentina/Buenos_Aires')
+# Reference price of one token in USD, for "≈ USD 9" next to a balance
+# (GET /api/v1/pricing/). It does not charge anything.
+TOKEN_PRICE_USD = env('TOKEN_PRICE_USD', default='0.01')
+from zoneinfo import ZoneInfo
+
+try:
+    ZoneInfo(WORKSPACE_TIME_ZONE)
+except Exception as exc:
+    raise ImproperlyConfigured(
+        f'WORKSPACE_TIME_ZONE={WORKSPACE_TIME_ZONE!r} is not a time zone: write it like America/Argentina/Buenos_Aires.'
+    ) from exc
+if not re.fullmatch(r'\d+(\.\d+)?', TOKEN_PRICE_USD) or not float(TOKEN_PRICE_USD) > 0:
+    raise ImproperlyConfigured(f'TOKEN_PRICE_USD={TOKEN_PRICE_USD!r} is not a positive decimal: write it like 0.01.')
+
 # JWT Configuration
 from datetime import timedelta
 SIMPLE_JWT = {
