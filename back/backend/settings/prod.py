@@ -1,6 +1,7 @@
 import logging
 import os
 
+from django.conf import global_settings
 from django.core.exceptions import ImproperlyConfigured
 
 from .base import *  # noqa: F403
@@ -51,24 +52,34 @@ if _missing_email:
     )
 
 # --- SEGURIDAD (Hardening) ---
-# Forzar HTTPS (Descomentar cuando tengas certificado SSL en el server)
-# SECURE_SSL_REDIRECT = True
-# SESSION_COOKIE_SECURE = True
-# CSRF_COOKIE_SECURE = True
-# SECURE_BROWSER_XSS_FILTER = True
-# SECURE_CONTENT_TYPE_NOSNIFF = True
+# Django corre detrás de un reverse proxy del host que termina el TLS (ADR-006,
+# documents/runbooks/deploy-vps.md). El proxy tiene que pisar X-Forwarded-Proto
+# con el esquema real: Django confía en ese header para saber si el pedido es HTTPS.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+# False solo para probar sin certificado (p. ej. un staging por IP).
+SECURE_SSL_REDIRECT = env.bool('SECURE_SSL_REDIRECT', default=True)
+SESSION_COOKIE_SECURE = env.bool('SESSION_COOKIE_SECURE', default=True)
+CSRF_COOKIE_SECURE = env.bool('CSRF_COOKIE_SECURE', default=True)
+SECURE_CONTENT_TYPE_NOSNIFF = True
+# HSTS arranca en 0: una vez activado, los navegadores no vuelven a HTTP hasta
+# que vence. Subirlo (p. ej. 31536000) cuando el dominio y el certificado estén firmes.
+SECURE_HSTS_SECONDS = env.int('SECURE_HSTS_SECONDS', default=0)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env.bool('SECURE_HSTS_INCLUDE_SUBDOMAINS', default=False)
+SECURE_HSTS_PRELOAD = env.bool('SECURE_HSTS_PRELOAD', default=False)
 
-# --- ALMACENAMIENTO ESTÁTICO (WhiteNoise / S3) ---
-# En producción, Django no sirve archivos estáticos eficientemente.
-# Opción A: WhiteNoise (Lo más fácil para empezar en Docker)
-# INSTALLED_APPS += ["whitenoise.runserver_nostatic"]
-# MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
-# STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
-
-# Opción B: AWS S3 (Para cuando tengas el bucket creado)
-# if env('AWS_ACCESS_KEY_ID', default=None):
-#     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
-#     STATICFILES_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+# --- ARCHIVOS ESTÁTICOS (WhiteNoise) ---
+# gunicorn sirve los estáticos del admin y de la documentación de la API desde
+# STATIC_ROOT (lo llena collectstatic al arrancar web). Los videos van a R2 por
+# storage_service, no por el storage default, que queda como en base.py.
+MIDDLEWARE = [*MIDDLEWARE]  # noqa: F405
+MIDDLEWARE.insert(
+    MIDDLEWARE.index('django.middleware.security.SecurityMiddleware') + 1,
+    'whitenoise.middleware.WhiteNoiseMiddleware',
+)
+STORAGES = {
+    **global_settings.STORAGES,
+    'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
+}
 
 # --- CACHE ---
 # Without CACHE_REDIS_URL, base.py leaves a LocMem cache per process: each
