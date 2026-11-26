@@ -109,3 +109,29 @@ def test_the_token_refresh_is_limited_per_ip():
     assert answers == [401] * 30
     assert blocked.status_code == 429
     assert blocked.json()["detail"].startswith("Demasiados intentos.")
+
+
+VARIANTS = ["teſter@test.com", "tester@teſt.com", "TESTER@test.com"]
+
+
+@override_settings(LOGIN_FAILURE_RATES={"account_ip": "3/15m", "account": "3/h"})
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_another_spelling_of_a_locked_email_is_locked_too(user, no_ip_limit, variant):
+    failures = [_login(_from(f"10.0.8.{n}")).status_code for n in range(3)]
+
+    # The variant signs into the same account (iexact), so it shares the account's counters.
+    blocked = _login(_from("10.0.9.1"), email=variant, password="password")
+
+    assert failures == [401] * 3
+    assert blocked.status_code == 429
+
+
+@override_settings(LOGIN_FAILURE_RATES={"account_ip": "3/15m", "account": "3/h"})
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_failures_with_another_spelling_lock_the_account(user, no_ip_limit, variant):
+    failures = [_login(_from(f"10.0.10.{n}"), email=variant).status_code for n in range(3)]
+
+    plain = _login(_from("10.0.11.1"), password="password")
+
+    assert failures == [401] * 3
+    assert plain.status_code == 429

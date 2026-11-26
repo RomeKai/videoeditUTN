@@ -1,12 +1,17 @@
 ﻿import uuid
 from django.db import models
-from django.db.models.functions import Lower
+from django.db.models.functions import Upper
 from django.contrib.auth.models import AbstractUser, UserManager as DjangoUserManager
 from django.utils.translation import gettext_lazy as _
 
 
 class UserManager(DjangoUserManager):
-    """The email signs in whatever its case: one account per email, ignoring case (see User.Meta)."""
+    """
+    The email signs in whatever its case. `iexact` is UPPER(email) = UPPER(input)
+    in Postgres, the same function as User.Meta's constraint: two accounts can
+    never match the same input, whatever Unicode does with case ("ſ" and "ı"
+    turn into "S" and "I").
+    """
 
     def get_by_natural_key(self, username):
         return self.get(**{f'{self.model.USERNAME_FIELD}__iexact': username})
@@ -58,8 +63,10 @@ class User(AbstractUser):
 
     class Meta(AbstractUser.Meta):
         constraints = [
-            # Ana@x.com and ana@x.com are the same person: one account per email, ignoring case.
-            models.UniqueConstraint(Lower('email'), name='users_user_email_lower_unique'),
+            # Ana@x.com and ana@x.com are the same person: one account per email, ignoring
+            # case. UPPER, like the iexact lookups (login, email_taken): with LOWER,
+            # "teſter@x.com" could exist next to "tester@x.com" and both would match.
+            models.UniqueConstraint(Upper('email'), name='users_user_email_upper_unique'),
         ]
 
     def __str__(self):

@@ -10,6 +10,7 @@ import math
 import time
 
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.utils.crypto import salted_hmac
 from rest_framework.exceptions import Throttled
@@ -88,19 +89,30 @@ class LoginFailureGuard:
     - from any IP: LOGIN_FAILURE_RATES['account'] (100 an hour), so spreading
       the guesses over many addresses does not help either.
 
-    The keys are an HMAC of the email (and the IP), never the email.
+    The keys are an HMAC of the account (and the IP), never the email.
     """
 
     SALT = 'apps.users.throttles.login'
 
     def __init__(self, request, email):
-        account = email.strip().lower()
+        account = self.account_key(email)
         ip = BaseThrottle().get_ident(request) or ''
         rates = settings.LOGIN_FAILURE_RATES
         self.windows = [
             (f'login_failures:{salted_hmac(self.SALT, f"{account}|{ip}").hexdigest()}', parse_rate(rates['account_ip'])),
             (f'login_failures:{salted_hmac(self.SALT, account).hexdigest()}', parse_rate(rates['account'])),
         ]
+
+    @staticmethod
+    def account_key(email):
+        """
+        The account the login would sign into, found like the login finds it
+        (`email__iexact`): every spelling of one email ("Tester@", "teſter@")
+        shares its counters. Without an account, the typed email in upper case.
+        """
+        typed = email.strip()
+        pk = get_user_model().objects.filter(email__iexact=typed).values_list('pk', flat=True).first()
+        return f'user:{pk}' if pk is not None else f'email:{typed.upper()}'
 
     @classmethod
     def for_request(cls, request):

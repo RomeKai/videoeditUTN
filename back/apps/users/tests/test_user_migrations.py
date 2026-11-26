@@ -56,12 +56,15 @@ class CaseInsensitiveEmailMigrationTests(TransactionTestCase):
         OldUser.objects.create(username="ana3", email="ANA@test.com", password="x")
         OldUser.objects.create(username="luis1", email="luis@test.com", password="x")
         OldUser.objects.create(username="luis2", email="Luis@Test.com", password="x")
+        # Equal in upper case only: "ſ" is "S" for Postgres's UPPER.
+        OldUser.objects.create(username="sol1", email="sol@test.com", password="x")
+        OldUser.objects.create(username="sol2", email="ſol@test.com", password="x")
 
-        with pytest.raises(RuntimeError, match=r"^2 emails are used by more than one account if case is ignored \(5 accounts\)"):
+        with pytest.raises(RuntimeError, match=r"^3 emails are used by more than one account if case is ignored \(7 accounts\)"):
             _migrate(self.migrate_to)
 
         # Merged by hand, the migration goes on.
-        OldUser.objects.filter(username__in=["ana2", "ana3", "luis2"]).delete()
+        OldUser.objects.filter(username__in=["ana2", "ana3", "luis2", "sol2"]).delete()
         _migrate(self.migrate_to)
 
     def test_domains_are_lowered_and_the_constraint_holds(self):

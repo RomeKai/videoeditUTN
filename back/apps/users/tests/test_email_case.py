@@ -63,3 +63,42 @@ def test_two_confirmations_of_the_same_email_in_a_race_end_in_a_400(user):
     other.refresh_from_db()
     assert (other.email, other.pending_email) == ("otro@test.com", "bob@test.com")
     assert mail.outbox == []
+
+
+# Postgres's UPPER maps "ſ" (long s) to "S" and "ı" (dotless i) to "I"; Python's lower() keeps them.
+UNICODE_VARIANTS = ["teſter@test.com", "tester@teſt.com", "TEſTER@TEST.COM"]
+
+
+@pytest.mark.parametrize("variant", UNICODE_VARIANTS)
+def test_a_unicode_case_variant_cannot_be_a_second_account(user, variant):
+    with pytest.raises(IntegrityError), transaction.atomic():
+        User.objects.filter(pk=_user("otro", "otro@test.com").pk).update(email=variant)
+
+
+def test_a_dotless_i_variant_cannot_be_a_second_account():
+    _user("kiss", "kiss@test.com")
+
+    with pytest.raises(IntegrityError), transaction.atomic():
+        _user("kiss2", "kıss@test.com")
+
+
+def test_characters_upper_does_not_fold_stay_separate_accounts_and_the_login_works():
+    # The Kelvin sign lowers to "k" but UPPER keeps it: for the login it is another email.
+    _user("kiss", "kiss@test.com")
+    kelvin = _user("kelvin", "Kiss@test.com")
+
+    response = APIClient().post("/api/token/", {"email": "kiss@test.com", "password": "password"}, format="json")
+
+    assert response.status_code == 200
+    assert kelvin.pk != User.objects.get(email="kiss@test.com").pk
+
+
+def test_a_variant_of_another_account_is_taken_for_an_email_change(user):
+    other = _user("otro", "otro@test.com")
+    api = APIClient()
+    api.force_authenticate(user=other)
+
+    response = api.patch("/api/v1/me/", {"email": "teſter@test.com", "current_password": "password"}, format="json")
+
+    assert response.status_code == 400
+    assert response.json() == {"email": ["Ya existe una cuenta con este email."]}
