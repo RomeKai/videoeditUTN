@@ -84,11 +84,13 @@ services:
         API_MOCKS_IN_BUILD: "true"
         # El navegador le habla a la API por el proxy, en el mismo origen que la web.
         NEXT_PUBLIC_API_URL: ${DEMO_PUBLIC_URL:-http://localhost:${DEMO_PORT:-8080}}
-        # Qué va al backend real. Por defecto: usuario, proyectos, clips y brand kits.
-        # Planes, billetera, redes, publicaciones, miembros y notificaciones quedan enteros
-        # en mocks, para que cada área sea coherente (ver el runbook). DEMO_API_REAL=existing
-        # manda al backend todo lo que el contrato marca exists o partial.
-        NEXT_PUBLIC_API_REAL: ${DEMO_API_REAL:-users,system,projects,clips,brandKits.list,brandKits.create,brandKits.detail,brandKits.update,brandKits.delete,billing.wallet,billing.usage,billing.transactions,billing.exportTransactions,billing.pricing,billing.estimate}
+        # Qué va al backend real. Por defecto: usuario, proyectos, clips, brand kits, la
+        # billetera, los precios, los planes, la suscripción y las compras (con el proveedor
+        # simulado: /dev/checkout aprueba o rechaza, sin cobrar). Redes, publicaciones,
+        # miembros y notificaciones quedan enteros en mocks, para que cada área sea coherente
+        # (ver el runbook). DEMO_API_REAL=existing manda al backend todo lo que el contrato
+        # marca exists o partial.
+        NEXT_PUBLIC_API_REAL: ${DEMO_API_REAL:-users,system,projects,clips,brandKits.list,brandKits.create,brandKits.detail,brandKits.update,brandKits.delete,billing.wallet,billing.usage,billing.transactions,billing.exportTransactions,billing.pricing,billing.estimate,billing.plans,billing.subscription,billing.changePlan,billing.tokenPackages,billing.createPurchase,billing.purchase,billing.simulatePurchase}
     restart: on-failure
 
   proxy:
