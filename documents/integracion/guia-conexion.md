@@ -287,7 +287,7 @@ Contratos `contracts/projects.ts` y `contracts/clips.ts`. Backend: `apps/videos`
 
 | Método y ruta | Id | Hook · mock | Pantalla | Backend | Depende de | Talla |
 |---|---|---|---|---|---|---|
-| POST `projects/probe-link/` | `projects.probeLink` | `useProbeLink` · `probeLink` | C1 (§5 C) | Acción nueva de `VideoProjectViewSet`; valida duración contra el plan | — | M |
+| POST `projects/probe-link/` | `projects.probeLink` | `useProbeLink` · `probeLink` | C1 (§5 C) | Acción de `VideoProjectViewSet`. Valida la duración contra el plan (403 `duration`, con `limit`) y contra el máximo de la app, 3 h (400 `duration_app`, con `limit`: sin plan, o con un plan cuyo límite es igual o mayor; ningún plan lo aceptaría) | — | M |
 | POST `projects/:id/redispatch/` | `projects.redispatch` | `useRedispatchProject` · `redispatchProject` | D1 (§5 D) | `ProjectRedispatchView`, solo Dueño y Admin. Cobra: si lo que falta se devolvió al fallar (una etapa antes de elegir los clips, o el render de un video completo), reserva de nuevo el mismo monto y responde `cost_details`; 402 sin saldo. Un proyecto con los clips ya elegidos se reanuda sin reservar (su render se paga solo). 409 con `code` si no se puede reanudar | — | S |
 | POST `projects/:id/rerender/` | `projects.rerender` | `useRerenderProject` · `rerenderProject` | D1, D4, D5 | Reserva y `render_clip_task` por clip | — | M |
 | GET `projects/:id/activity/` | `projects.activity` | `useProjectActivity` · `getProjectActivity` | D1 Actividad (§9.2) | Quién hizo qué y los movimientos de tokens | Vínculo `Transaction` ↔ proyecto | M |

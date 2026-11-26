@@ -156,8 +156,10 @@ export const Clip = z.object({
   /** Proposed: poster image. */
   thumbnail_url: z.string().url().nullable().optional(),
   /**
-   * A paid render of the clip is queued: it is `draft` only until a worker takes it. Optional: older
-   * answers do not send it, and the UI falls back to "a draft of a project that is rendering".
+   * True only while the clip, in `draft`, waits for a worker in an open paid render (a render, a
+   * retry or a rerender); false otherwise, also once it is `rendering`. Read-only. The backend adds
+   * it in PR #147 (VideoClipSerializer); older backends do not send it, so it is optional and the UI
+   * falls back to "a draft of a project that is rendering".
    */
   render_queued: z.boolean().optional(),
   /** Proposed (gap 11): why the render failed (class name). The retry is paid whatever the reason (clips.retry). */
@@ -799,7 +801,7 @@ export const probeLink = defineEndpoint({
   errors: [
     {
       status: 400,
-      when: 'El link no es una URL web (`code: "invalid"`), no es de un sitio soportado, es una IP o una dirección interna, o es una lista, un canal o un vivo (`code: "unsupported"`), o no se puede bajar: privado, borrado o con restricción (`code: "unavailable"`). Sin `video_url`: `{ video_url: [...] }`.',
+      when: 'El link no es una URL web (`code: "invalid"`), no es de un sitio soportado, es una IP o una dirección interna, o es una lista, un canal o un vivo (`code: "unsupported"`), o no se puede bajar: privado, borrado o con restricción (`code: "unavailable"`), o dura más que el máximo de la app y ningún plan lo aceptaría (`code: "duration_app"`, `limit` en segundos, 10800: sin plan, o con un plan cuyo límite es igual o mayor). La UI lo dice junto al campo, sin ofrecer planes. Sin `video_url`: `{ video_url: [...] }`.',
     },
     { status: 403, when: 'La duración supera el plan (`code: "duration"`, `limit` en segundos). La UI lo muestra junto al campo, con link a Planes. También el Lector (`{ detail }`): revisar un link es parte de crear.' },
     { status: 404, when: 'El workspace de `X-Workspace-Id` no es del usuario.' },

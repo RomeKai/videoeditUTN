@@ -183,11 +183,16 @@ function Editor({ userId, clip, project, loadError }: { userId: string; clip: Cl
   };
 
   // A 409 said the project is rendering before the cache knew. It stops holding once that render ends.
+  // The render that ended may have been this clip's: a clip that waited for it in `draft` is not
+  // polled when the backend does not say `render_queued`, so it is read again here.
   const lastStatus = useRef(project.status);
   useEffect(() => {
-    if (lastStatus.current === 'rendering' && project.status !== 'rendering') setConflict(false);
+    if (lastStatus.current === 'rendering' && project.status !== 'rendering') {
+      setConflict(false);
+      void queryClient.invalidateQueries({ queryKey: keys.clips.detail(clip.id) });
+    }
     lastStatus.current = project.status;
-  }, [project.status]);
+  }, [project.status, clip.id, queryClient]);
 
   const projectRendering = project.status === 'rendering' || conflict;
   // A paid render puts the clip back to `draft` until a worker takes it: that is a render under way, not a suggestion.

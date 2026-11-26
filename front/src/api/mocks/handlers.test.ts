@@ -252,6 +252,20 @@ describe('mocks', () => {
     }
   });
 
+  it('probe-link: más largo que el plan es 403 `duration`; más largo que la app, sin plan que lo acepte, 400 `duration_app`', async () => {
+    const long = { body: { video_url: 'https://www.youtube.com/watch?v=largo' } }; // 5 h
+    // Pro takes up to the app's 3 h: no plan would take it.
+    const app = await fail(apiCall(projects.probeLink, long));
+    expect([app.status, app.code, app.data.limit]).toEqual([400, 'duration_app', 10800]);
+    expect(app.isPlanLimit).toBe(false);
+    // Gratis (10 min): another plan could, up to its own limit.
+    signIn('plan-gratis');
+    const plan = await fail(apiCall(projects.probeLink, long));
+    expect([plan.status, plan.code, plan.data.limit]).toEqual([403, 'duration', 600]);
+    const shorter = await fail(apiCall(projects.probeLink, { body: { video_url: 'https://www.youtube.com/watch?v=clase-45min' } }));
+    expect([shorter.status, shorter.code]).toEqual([403, 'duration']);
+  });
+
   it('saldo insuficiente responde 402 con lo que hacía falta', async () => {
     signIn('saldo-bajo');
     const error = await fail(apiCall(projects.createProject, { body: { source_file: new File(['x'], 'clase-30min.mp4', { type: 'video/mp4' }) } }));
