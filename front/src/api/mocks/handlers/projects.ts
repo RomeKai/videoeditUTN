@@ -247,7 +247,7 @@ export const projectsHandlers = [
     }
     // The backend's exact host list: youtube.com.evil.com is not YouTube.
     const provider = linkProvider(url);
-    if (!provider) throw new MockHttpError(400, { error: 'No reconocemos este sitio. Probá con YouTube, Vimeo u otro sitio público.', code: 'unsupported' });
+    if (!provider) throw new MockHttpError(400, { error: 'No reconocemos este sitio. Pegá un link de YouTube, Vimeo, Twitch o Google Drive.', code: 'unsupported' });
     if (/privado|borrado/i.test(url)) throw new MockHttpError(400, { error: 'No pudimos acceder a este video. Puede ser privado o haberse borrado.', code: 'unavailable' });
     const duration = /(\d+)\s*min/i.test(url) ? durationFor(url, 0) : /largo/i.test(url) ? 5 * 3600 : 2700;
     const plan = planOf(db, workspace.id);

@@ -167,6 +167,19 @@ class LinkValidationTests(SimpleTestCase):
         with resolving(PUBLIC):
             self.assertIs(socket.getaddrinfo, before)
 
+    def test_another_site_is_told_the_sites_that_work_and_only_them(self):
+        with self.assertRaises(LinkRejected) as caught:
+            validate_video_link('https://example.com/video.mp4')
+
+        message = caught.exception.message
+        self.assertEqual(
+            message, "No reconocemos este sitio. Pegá un link de YouTube, Vimeo, Twitch o Google Drive.",
+        )
+        # Every provider of LINK_HOSTS, and never a promise of any other site.
+        for provider in set(link_validation.LINK_HOSTS.values()):
+            self.assertIn(provider, message)
+        self.assertNotIn("otro sitio", message)
+
 
 class FakeYdl:
     """Stands in for GuardedYoutubeDL: answers extract_info from a list, records the calls."""
@@ -391,6 +404,9 @@ class ProbeLinkTests(APITestCase):
                 self.assertIn(response.json()['code'], ('invalid', 'unsupported'))
                 run.assert_not_called()
                 dns.assert_not_called()
+        with patch.object(link_probe, 'run_worker'):
+            response = self.client.post(URL, {'video_url': 'https://example.com/v.mp4'}, format='json')
+        self.assertEqual(response.json()['error'], link_validation.UNSUPPORTED_MESSAGE)
 
     def test_an_allowed_host_resolving_to_a_private_address_is_refused(self):
         with resolving(PRIVATE), patch.object(link_probe, 'run_worker') as run:

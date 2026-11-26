@@ -227,7 +227,7 @@ yt-dlp está hecho para bajar lo que sea que apunte una página, así que sin co
 - `GuardedYoutubeDL` revisa cada pedido de yt-dlp (`urlopen`) e `install_guards` cada redirección: si va a una IP o a un host que resuelve a una dirección no pública, se corta (`blocked non-public address`).
 - Y la dirección a la que el socket se conecta se revisa otra vez justo antes del `connect` (`_guarded_create_connection`): un nombre que responde una IP pública al chequeo y una interna a la conexión (DNS rebinding) también se corta. Por eso solo queda el handler `Urllib` de yt-dlp, cuyas conexiones pasan por esa función. El proxy configurado es la única dirección no pública permitida: el destino lo resuelve él.
 
-Un link rechazado en la descarga lanza `UnsupportedLinkError`, que no se reintenta; un host que no resuelve lanza su `OSError`, que sí. Los mensajes son en español (`No reconocemos este sitio. Probá con YouTube, Vimeo u otro sitio público.`) y el link nunca va a un log.
+Un link rechazado en la descarga lanza `UnsupportedLinkError`, que no se reintenta; un host que no resuelve lanza su `OSError`, que sí. Los mensajes son en español (`No reconocemos este sitio. Pegá un link de YouTube, Vimeo, Twitch o Google Drive.`, `UNSUPPORTED_MESSAGE`: los proveedores de `LINK_HOSTS`, ninguno más) y el link nunca va a un log.
 
 Queda abierto, para la infraestructura: ffmpeg, si yt-dlp lo usa para un stream que no baja solo, hace sus propios pedidos (lo cierra un firewall de salida en los workers). Detrás de un proxy, el DNS rebinding del destino lo tiene que frenar el proxy.
 
