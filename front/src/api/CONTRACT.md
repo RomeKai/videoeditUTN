@@ -30,7 +30,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 - **Listas paginadas (propuesto, hueco 14):** `{ count, next, previous, results }` con `page` y `page_size` (25 por defecto), como `PageNumberPagination`.
 - **Errores:** validación de DRF `{ "campo": ["mensaje"] }`; vistas propias `{ "error": "mensaje", "required"?: "117.00" }`; permisos y 404 `{ "detail": "mensaje" }`. Propuesto: sumar `code` legible por máquina (`duration`, `resolution`, `seo`, `scheduling`, `crossposting`, `seats_exceeded`, `email_not_verified`, `account_not_connected`, `permission_denied`) y, en los errores de campo, ítems `{ "message", "code" }`.
 - **402** siempre abre el diálogo de saldo insuficiente y **403 de precios** el de límite del plan.
-- **La tabla de roles, en los dos lados:** la tabla 1.7 del mapa está en `src/lib/permissions.ts` (`MATRIX`) y el backend la copia en `ROLE_MATRIX` (`back/apps/core/permissions.py`, PR #125). Lo que la UI deshabilita, la API lo rechaza con el 403 de **Roles**: `{ detail }` en español, sin `code`. Sumar `code: "permission_denied"` sigue propuesto (diferencia 17).
+- **La tabla de roles, en los dos lados:** la tabla 1.7 del mapa está en `src/lib/permissions.ts` (`MATRIX`) y el backend la copia en `ROLE_MATRIX` (`back/apps/core/permissions.py`, PR #125). Que las dos digan lo mismo lo cuida un test de cada lado contra `src/lib/role-matrix.json`, que escribe `python manage.py export_role_matrix` desde `ROLE_MATRIX`: si una tabla cambia sin la otra, falla nombrando el rol y la acción. Lo que la UI deshabilita, la API lo rechaza con el 403 de **Roles**: `{ detail }` en español, sin `code`. Sumar `code: "permission_denied"` sigue propuesto (diferencia 17).
 
 ## Diferencias encontradas con el backend de hoy
 
