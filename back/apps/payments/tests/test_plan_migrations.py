@@ -1,7 +1,7 @@
 """
-payments 0006-0013: the four seeded plans end complete and public after a rollback
+payments 0006-0014: the four seeded plans end complete and public after a rollback
 and a new migrate, an edit made in the admin stays, Estudio moves to 3 h, Gratis
-to 2 members and Creador to 5 only if nobody changed them, only one plan stays recommended, and a
+to 2 members, Creador to 5 and Pro to 10 only if nobody changed them, only one plan stays recommended, and a
 limit below 1 is raised to 1 before the check constraints.
 """
 from decimal import Decimal
@@ -20,7 +20,8 @@ AFTER_SEED = [('payments', '0006_subscriptionplan_is_public_and_limits')]
 BEFORE_FREE_SEATS = [('payments', '0008_subscriptionplan_single_recommended')]
 BEFORE_LIMIT_CHECKS = [('payments', '0009_free_plan_two_members')]
 BEFORE_CREATOR_SEATS = [('payments', '0012_transaction_settled_at_reserved_amount')]
-LATEST = [('payments', '0013_creator_plan_five_members')]
+BEFORE_PRO_SEATS = [('payments', '0013_creator_plan_five_members')]
+LATEST = [('payments', '0014_pro_plan_ten_members')]
 
 EXPECTED = {
     # name: (price, sort_order, max_video_duration_seconds)
@@ -118,7 +119,7 @@ class SeededPlansMigrationTests(TransactionTestCase):
         for name in EXPECTED:
             Plan.objects.get_or_create(name=name, defaults={'max_video_duration_seconds': 600})
         Plan.objects.filter(name='Creador').update(max_members=2)
-        Plan.objects.filter(name='Pro').update(max_members=2)  # same value, another plan: 0013 leaves it
+        Plan.objects.filter(name='Pro').update(max_members=2)  # same value, another plan: 0013 leaves it (and 0014 too)
 
         Plan = self.migrate(LATEST)
         self.assertEqual(Plan.objects.get(name='Creador').max_members, 5)
@@ -130,6 +131,24 @@ class SeededPlansMigrationTests(TransactionTestCase):
         Plan.objects.filter(name='Creador').update(max_members=3)
         Plan = self.migrate(LATEST)
         self.assertEqual(Plan.objects.get(name='Creador').max_members, 3)
+
+    def test_the_pro_plan_moves_to_ten_members_only_if_it_still_had_five(self):
+        Plan = self.migrate(BEFORE_PRO_SEATS)
+        for name in EXPECTED:
+            Plan.objects.get_or_create(name=name, defaults={'max_video_duration_seconds': 600})
+        Plan.objects.filter(name='Pro').update(max_members=5)
+        Plan.objects.filter(name='Creador').update(max_members=5)  # same value, another plan: 0014 leaves it
+
+        Plan = self.migrate(LATEST)
+        self.assertEqual(Plan.objects.get(name='Pro').max_members, 10)
+        self.assertEqual(Plan.objects.get(name='Creador').max_members, 5)
+
+        # The reverse keeps 10, and a value set in the admin stays when 0014 runs again.
+        Plan = self.migrate(BEFORE_PRO_SEATS)
+        self.assertEqual(Plan.objects.get(name='Pro').max_members, 10)
+        Plan.objects.filter(name='Pro').update(max_members=7)
+        Plan = self.migrate(LATEST)
+        self.assertEqual(Plan.objects.get(name='Pro').max_members, 7)
 
     def test_a_limit_below_one_is_raised_to_one_before_the_check_constraints(self):
         Plan = self.migrate(BEFORE_LIMIT_CHECKS)
@@ -144,11 +163,13 @@ class SeededPlansMigrationTests(TransactionTestCase):
         self.assertTrue({'payments_plan_max_members_min_1', 'payments_plan_max_duration_min_1'} <= set(constraints))
 
     def test_the_cached_public_list_is_dropped(self):
-        for start in (AFTER_SEED, BEFORE_FREE_SEATS, BEFORE_CREATOR_SEATS):  # by 0007, 0009 and 0013
+        for start in (AFTER_SEED, BEFORE_FREE_SEATS, BEFORE_CREATOR_SEATS, BEFORE_PRO_SEATS):  # by 0007, 0009, 0013 and 0014
             with self.subTest(start=start[0][1]):
                 Plan = self.migrate(start)
                 if start is BEFORE_CREATOR_SEATS:  # 0013 only drops it when it changes a plan
                     Plan.objects.update_or_create(name='Creador', defaults={'max_members': 2, 'max_video_duration_seconds': 3600})
+                if start is BEFORE_PRO_SEATS:  # 0014 too
+                    Plan.objects.update_or_create(name='Pro', defaults={'max_members': 5, 'max_video_duration_seconds': 10800})
                 cache.set(PUBLIC_PLANS_CACHE_KEY, [{'name': 'Starter'}], 60)
 
                 self.migrate(LATEST)

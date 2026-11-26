@@ -63,7 +63,7 @@ const plan = (overrides: Partial<Plan>): Plan => ({
   has_seo_optimization: true,
   has_thumbnail_engine: false,
   base_discount_rate: 0.1,
-  max_members: 5,
+  max_members: 10,
   is_active: true,
   price_usd_monthly: 49,
   description: '',
@@ -134,10 +134,11 @@ describe('utilidades de Uso', () => {
       'Videos de hasta 60 min (hoy 180 min)',
       'Resolución hasta 1080p (hoy 4K)',
       'Publicar en varias redes a la vez',
+      'Miembros: 5 (hoy 10)',
       'Descuento en tokens: 5 % (hoy 10 %)',
     ]);
     expect(planLosses(creator, pro)).toEqual([]);
-    expect(planLosses(pro, free)).toContain('Miembros: 2 (hoy 5)');
+    expect(planLosses(pro, free)).toContain('Miembros: 2 (hoy 10)');
     const features = planFeatures(free, [free, creator, pro]);
     expect(features.find((item) => item.key === 'crossposting')).toMatchObject({ included: false, availableIn: 'Pro' });
     expect(features.find((item) => item.key === 'watermark')).toMatchObject({ included: false, availableIn: 'Creador' });
@@ -281,7 +282,7 @@ describe('G3 · Planes', () => {
     const dialog = await screen.findByRole('alertdialog', { name: '¿Bajar a Pro?' });
     // Pro and Estudio both allow 3 h (the upload ceiling): the duration is not lost.
     expect(within(dialog).queryByText(/^Videos de hasta/)).not.toBeInTheDocument();
-    expect(within(dialog).getByText('Miembros: 5 (hoy 15)')).toBeInTheDocument();
+    expect(within(dialog).getByText('Miembros: 10 (hoy 15)')).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Bajar a Pro' }));
 
     expect(await screen.findByText(/^Tu plan pasa a Pro el /, { selector: 'p' })).toBeInTheDocument();

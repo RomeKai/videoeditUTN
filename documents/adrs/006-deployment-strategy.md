@@ -1,7 +1,7 @@
 # ADR-006: Estrategia de Deployment y CI/CD
 
 **Estado:** `proposed`
-**Fecha:** 2026-09-01
+**Fecha:** 2026-09-01 | 2026-11 (decisión ARCH-01)
 **Par responsable:** ⚙️ Par Engine (Dev 3 + Dev 4)
 
 ---
@@ -18,7 +18,7 @@ OneCreator tiene un `docker-compose.yml` funcional para desarrollo local con 4 s
 ### Restricciones
 
 - Budget limitado (proyecto académico con aspiración SaaS)
-- El worker necesita acceso a GPU para Whisper (o aceptar performance degradada en CPU)
+- ~~El worker necesita acceso a GPU para Whisper~~ — ya no aplica: la transcripción es remota desde [ADR-008](008-groq-whisper-migration.md)
 - El storage es Cloudflare R2 (no AWS — limita opciones de integración nativa)
 - El equipo tiene 6 devs — la infra no puede requerir un SRE dedicado
 
@@ -57,45 +57,88 @@ OneCreator tiene un `docker-compose.yml` funcional para desarrollo local con 4 s
 
 ## Decisión
 
-**PENDIENTE** — El Par Engine debe evaluar:
+**VPS sin GPU (Hetzner o DigitalOcean) con Docker Compose de producción, y CI/CD en GitHub Actions.** Decidido por el Par Engine en la revisión ARCH-01 (2026-11).
 
-1. **¿Se necesita GPU en producción?** Si sí → Fly.io o Hetzner. Si se acepta CPU → Railway/Render es viable.
-2. **¿Staging environment?** Mínimo: una rama `staging` que deploya automáticamente a un entorno separado.
-3. **CI pipeline**: GitHub Actions es la opción obvia dado que el repo ya está en GitHub.
+Respuestas a las preguntas que dejó abierta la versión original:
 
-### Recomendación preliminar
+1. **¿Se necesita GPU en producción? No.** Desde [ADR-008](008-groq-whisper-migration.md) la transcripción es remota (Groq). El worker solo renderiza (MoviePy/FFmpeg, CPU bound) y el sizing objetivo es un VPS de 2-4 vCPU y 4-8 GB. Con AICORE-10 la imagen deja de cargar Whisper/PyTorch.
+2. **¿Staging?** Sí, como un segundo stack de Compose (otro proyecto y otra base) en el mismo VPS o en uno chico aparte, desplegado al mergear en `dev`. Producción se despliega al mergear en `main`, con aprobación manual (environment protegido de GitHub).
+3. **CI:** ya resuelto por [ADR-007](007-ci-github-actions.md). El deploy (CD) se implementa en INFRA-03 (#33).
+
+### Por qué VPS + Compose
+
+| Criterio | VPS + Compose | Fly.io (sin GPU) | Railway / Render |
+|----------|---------------|------------------|------------------|
+| GPU | No hace falta | No hace falta | No hace falta |
+| Reuso de lo existente | `docker-compose.yml` y los targets `web`/`worker` del Dockerfile casi sin cambios | Hay que traducir a `fly.toml` por proceso | Un servicio por proceso, configuración propia |
+| Costo | Fijo, ~5-10 USD/mes (2-4 vCPU, 4-8 GB) | Variable por máquina y volumen | Escala rápido por servicio (20-50 USD/mes c/u) |
+| Trabajo operativo | Mayor: TLS, updates, backups | Bajo | Bajo |
+| Lock-in | Ninguno | Medio | Medio |
+
+El trabajo operativo extra se acota con: Caddy o nginx en el host para TLS automático, `restart: unless-stopped` y healthchecks en Compose, `back/scripts/backup_db.sh` para la base, y R2 para todos los archivos de usuario (el VPS no guarda videos).
+
+### Arquitectura de producción
 
 ```
-CI/CD:        GitHub Actions
-Staging:      Railway (free tier, sin GPU — acepta Whisper tiny en CPU)
-Producción:   Fly.io (web + worker) + Fly GPU Machine (worker-gpu para transcripción)
-Secretos:     Fly Secrets / GitHub Secrets (no .env en producción)
+Internet ─► reverse proxy del host (TLS) ─► web: gunicorn (127.0.0.1:8000)
+                                              │
+                    db: Postgres 15 ◄─────────┼─────────► redis: Valkey 8
+                                              │
+                         worker: celery -Q celery,render -c 2 --max-tasks-per-child=5
+                         beat:   celery beat (limpieza de previews, renders trabados)
+                                              │
+                                     Cloudflare R2 (ADR-004)
 ```
 
-### Pipeline sugerido
+Archivo: [`docker-compose.prod.yml`](../../docker-compose.prod.yml). Secretos en `back/.env.prod` en el VPS (ignorado por git) y en GitHub Secrets para el deploy; nunca en el repo.
 
-```yaml
-# .github/workflows/ci.yml (esquema)
-on: [pull_request]
-jobs:
-  lint-and-test:
-    - manage.py check --deploy
-    - manage.py makemigrations --check
-    - pytest --cov
-    - docker build --target web .
-  
-  deploy-staging:  # solo en merge a develop
-    - fly deploy --app onecreator-staging
-  
-  deploy-production:  # solo en merge a main, manual approval
-    - fly deploy --app onecreator-prod
+### Prueba de Concepto
+
+**Qué ya está validado por CI** (ADR-007, cada PR):
+
+- los targets `web` y `worker` del Dockerfile construyen;
+- `manage.py check --deploy` con `backend.settings.prod` termina sin errores.
+
+**Qué agrega la PoC** (`docker-compose.prod.yml`):
+
+- gunicorn en lugar de `runserver`, sin bind mounts del código;
+- migraciones al arrancar `web`, restart automático y healthchecks de db y redis;
+- servicio `beat`, que el compose de desarrollo no tiene: sin él no corre `CELERY_BEAT_SCHEDULE`;
+- la API publicada solo en `127.0.0.1`, detrás del reverse proxy.
+
+**Cómo correrla** (local con Docker o en el VPS):
+
+```bash
+cp back/.env.example back/.env.prod   # SECRET_KEY, ALLOWED_HOSTS, R2 y keys de IA
+export POSTGRES_PASSWORD=<una-clave>
+docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml ps          # db y redis healthy, web/worker/beat up
+curl -fsS -o /dev/null -H "Host: localhost" http://127.0.0.1:8000/admin/login/ && echo OK
+docker compose -f docker-compose.prod.yml logs worker | grep "ready"
 ```
+
+**Criterio de éxito:** los cinco servicios arriba, `/admin/login/` responde 200 por gunicorn (la API pide JWT) y el worker queda escuchando las colas `celery` y `render`.
+
+**Estado:** la configuración se validó con `docker compose config`. Falta correr la PoC de punta a punta en una máquina con Docker y acceso a internet; el resultado se anota acá.
+
+### Pendientes para pasar a `accepted`
+
+- [ ] Correr la PoC y anotar el resultado (tiempos de build, RAM en reposo de `web` y `worker`).
+- [ ] Hardening de `prod.py`: activar `SECURE_SSL_REDIRECT`, cookies seguras y HSTS detrás del proxy, y WhiteNoise para los estáticos del admin y de la documentación de la API.
+- [ ] Reemplazar los placeholders `back/docker/nginx.conf` y `supervisor.conf` (o borrarlos si se usa Caddy en el host).
+- [ ] Retirar Whisper/PyTorch de la imagen (AICORE-10, #44) para achicar la imagen y la RAM del worker.
+- [ ] Workflow de CD (INFRA-03, #33): build de imágenes, push a GHCR y deploy por SSH a staging (`dev`) y producción (`main`, con aprobación).
+
+### Recomendación preliminar original (2026-09, reemplazada)
+
+> Staging en Railway y producción en Fly.io con GPU Machine para la transcripción. Se descartó porque ADR-008 sacó la transcripción del worker: la GPU ya no hace falta.
 
 ---
 
 ## Referencias
 
 - [docker-compose.yml actual](../../docker-compose.yml)
+- [docker-compose.prod.yml (PoC)](../../docker-compose.prod.yml)
 - [Dockerfile](../../back/Dockerfile)
 - [Fly.io GPU Machines](https://fly.io/docs/gpus/)
 - [Railway](https://railway.app/)

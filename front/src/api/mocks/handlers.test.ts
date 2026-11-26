@@ -71,7 +71,7 @@ describe('mocks', () => {
     await apiCall(workspaces.getWorkspace, { params: { id: workspaceId } });
     const members = await apiCall(workspaces.listMembers, { params: { id: workspaceId } });
     expect(members.seats_used).toBe(4);
-    expect(members.max_members).toBe(5);
+    expect(members.max_members).toBe(10);
     expect((await apiCall(billing.listPlans)).map((plan) => plan.name)).toEqual(['Gratis', 'Creador', 'Pro', 'Estudio']);
     expect((await apiCall(billing.getPricing)).base_cost_per_second_720p).toBe(0.5);
     expect((await apiCall(billing.getSubscription)).plan.name).toBe('Pro');
@@ -416,10 +416,13 @@ describe('mocks', () => {
   });
 
   it('miembros: una invitación pendiente ocupa un lugar y el plan corta al llegar al límite', async () => {
+    signIn('miembros-queda-un-lugar');
     const id = WORKSPACE_IDS.estudio;
+    const before = await apiCall(workspaces.listMembers, { params: { id } });
+    expect(before.seats_used).toBe(before.max_members - 1);
     const invited = await apiCall(workspaces.inviteMembers, { params: { id }, body: { emails: ['juan@estudionorte.com'], role: 'editor' } });
     expect(invited.invited[0]?.status).toBe('pending');
-    expect((await apiCall(workspaces.listMembers, { params: { id } })).seats_used).toBe(5);
+    expect((await apiCall(workspaces.listMembers, { params: { id } })).seats_used).toBe(10);
     expect((await fail(apiCall(workspaces.inviteMembers, { params: { id }, body: { emails: ['otra@estudionorte.com'], role: 'viewer' } }))).code).toBe('seats_exceeded');
   });
 

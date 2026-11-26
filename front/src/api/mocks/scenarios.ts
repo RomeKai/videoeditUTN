@@ -77,11 +77,18 @@ export const SCENARIOS: Scenario[] = [
     hybrid: true,
   },
   {
+    id: 'miembros-queda-un-lugar',
+    label: 'Miembros: queda un lugar',
+    description: '9 miembros en el plan Pro (10 lugares): la próxima invitación ocupa el último lugar.',
+    group: 'Datos',
+    options: { seats: 'one-left' },
+  },
+  {
     id: 'miembros-al-limite',
     label: 'Miembros al límite',
-    description: '4 miembros y 1 invitación pendiente en el plan Pro (5 lugares): «Invitar» queda deshabilitado.',
+    description: '9 miembros y 1 invitación pendiente en el plan Pro (10 lugares): «Invitar» queda deshabilitado.',
     group: 'Datos',
-    options: { seatsFull: true },
+    options: { seats: 'full' },
   },
   {
     id: 'redes-vencidas',
