@@ -1,14 +1,18 @@
-# Producción en un VPS sin GPU (ADR-006). PoC de ARCH-01.
+# Producción en un VPS sin GPU (ADR-006, INFRA-03).
 #
 # Diferencias con docker-compose.yml (desarrollo):
 #   - settings de producción (backend.settings.prod) y gunicorn en lugar de runserver;
 #   - sin bind mounts del código: se corre lo que trae la imagen;
-#   - migraciones al arrancar web, restart automático y healthchecks;
+#   - migraciones y collectstatic al arrancar web, restart automático y healthchecks;
 #   - la API se publica solo en 127.0.0.1: el TLS lo termina un reverse proxy del host.
 #
-# Uso:
+# En el VPS (lo hace deploy/deploy.sh desde el workflow de CD): WEB_IMAGE y
+# WORKER_IMAGE apuntan a las imágenes publicadas en GHCR y no se construye nada.
+# Ver documents/runbooks/deploy-vps.md.
+#
+# Local, construyendo las imágenes:
 #   cp back/.env.example back/.env.prod   # completar SECRET_KEY, ALLOWED_HOSTS, R2, keys de IA
-#   docker compose -f docker-compose.prod.yml up -d --build
+#   POSTGRES_PASSWORD=... docker compose -f docker-compose.prod.yml up -d --build
 
 services:
   db:
@@ -36,24 +40,28 @@ services:
       retries: 5
 
   web:
+    image: ${WEB_IMAGE:-onecreator-web:local}
     build:
       context: ./back
       target: web
     restart: unless-stopped
     command: >
       sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
              gunicorn backend.wsgi:application
              --bind 0.0.0.0:8000
              --workers $${GUNICORN_WORKERS:-3}
              --timeout 120
              --access-logfile -"
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${WEB_PORT:-8000}:8000"
     env_file:
-      - ./back/.env.prod
+      - ${ENV_FILE:-./back/.env.prod}
     environment: &backend_env
       DJANGO_SETTINGS_MODULE: backend.settings.prod
       REDIS_URL: redis://redis:6379/0
+      # Base propia, nunca la del broker: cache.clear() es un FLUSHDB (ver base.py).
+      CACHE_REDIS_URL: redis://redis:6379/1
       DATABASE_URL: postgres://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-backend_db}
       LOG_SERVICE: web
     depends_on:
@@ -63,6 +71,7 @@ services:
         condition: service_healthy
 
   worker:
+    image: ${WORKER_IMAGE:-onecreator-worker:local}
     build:
       context: ./back
       target: worker
@@ -70,7 +79,7 @@ services:
     # Concurrencia baja: el render es CPU bound y comparte RAM con la API (ADR-003, ADR-008).
     command: celery -A backend worker -l info -Q celery,render -c ${CELERY_CONCURRENCY:-2} --max-tasks-per-child=5
     env_file:
-      - ./back/.env.prod
+      - ${ENV_FILE:-./back/.env.prod}
     environment:
       <<: *backend_env
       LOG_SERVICE: worker
@@ -82,13 +91,14 @@ services:
 
   # CELERY_BEAT_SCHEDULE (limpieza de previews, renders trabados) solo corre si hay beat.
   beat:
+    image: ${WORKER_IMAGE:-onecreator-worker:local}
     build:
       context: ./back
       target: worker
     restart: unless-stopped
     command: celery -A backend beat -l info --schedule /tmp/celerybeat-schedule
     env_file:
-      - ./back/.env.prod
+      - ${ENV_FILE:-./back/.env.prod}
     environment:
       <<: *backend_env
       LOG_SERVICE: beat

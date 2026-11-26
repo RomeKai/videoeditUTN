@@ -1095,6 +1095,27 @@ Motor de publicación que sube el video directamente a cada API de plataforma, s
 
 ---
 
+### INFRA-03: CD — GitHub Actions `P1` 🟡 `partial`
+
+> Código listo; falta el VPS y la configuración de GitHub. Ver [runbook de deploy](runbooks/deploy-vps.md).
+
+**Criterios de Aceptación:**
+
+* [x] Cada merge a `dev` despliega staging y cada merge a `main`, producción, con aprobación manual.
+* [x] Imágenes `web` y `worker` publicadas en GHCR con el tag del commit.
+* [x] Smoke test después del deploy y rollback automático a la versión anterior si falla.
+* [x] `prod.py` con HTTPS detrás del proxy (redirect, cookies seguras, HSTS por env) y estáticos con WhiteNoise.
+* [ ] VPS, environments `staging` y `production` y secrets `DEPLOY_*` creados.
+
+**Definition of Done:**
+- [x] ADR-006 actualizado con el CD
+- [x] Runbook para preparar el VPS, configurar GitHub y volver atrás
+- [ ] Primer deploy a staging verificado
+
+**Dependencia:** INFRA-01 (CI), ADR-006
+
+---
+
 ## Módulo 7 — Extras (si llegamos bien de tiempo) `P2`
 
 > Diferenciadores de producto que elevan la UX de "funcional" a "mágica". Solo se implementan si los Módulos 0-6 están completos y estables.
@@ -1221,6 +1242,7 @@ Para agencias o creadores con flujos automatizados. Si un video entra por webhoo
 |PTE-03|Preview Pipeline — Pre-render Rápido|`P1`|🔴 `missing`|
 |INFRA-01|CI/CD — GitHub Actions|`P1`|🔴 `missing`|
 |INFRA-02|Monitoring y Logging Estructurado|`P2`|🔴 `missing`|
+|INFRA-03|CD — GitHub Actions|`P1`|🟡 `partial`|
 
 **Rationale:** Layouts (CORE-03) y performance (CORE-04) comparten contexto de FFmpeg/MoviePy/Celery. PTE-03 (preview) depende de los layouts ya implementados. Tests (CORE-06) e infra (INFRA-01/02) aseguran la calidad de todo lo que produce este par y el par de IA.
 
