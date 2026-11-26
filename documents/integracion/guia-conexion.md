@@ -210,11 +210,11 @@ Contrato `contracts/auth.ts`. Backend: app `apps/users` (modelo `User`). Al regi
 | Método y ruta | Id | Hook · mock | Pantalla | Backend | Depende de | Talla |
 |---|---|---|---|---|---|---|
 | POST `auth/register/` | `auth.register` | `useRegister` · `register` | A2, A5 (§5 A) | `User`; token de verificación; límite por IP | Emails (hueco 21), cache compartido, plan Gratis por defecto | M |
-| POST `auth/verify-email/` | `auth.verifyEmail` | `useVerifyEmail` · `verifyEmail` | A3 (§5 A) | `User.is_email_verified`; devuelve el par JWT | `auth.register` | S |
+| POST `auth/verify-email/` | `auth.verifyEmail` | `useVerifyEmail` · `verifyEmail` | A3 (§5 A) | Existe en `feat/perfil-me` (`VerifyEmailView`). El registro solo tiene que mandar el link con `make_token(user, SIGNUP)` (`apps/users/email_verification.py`): ese token verifica y devuelve el par JWT | `auth.register` | S |
 | POST `auth/verify-email/resend/` | `auth.resendVerification` | `useResendVerification` · `resendVerification` | A3 (§5 A) | 204 siempre; 429 antes de 60 s | Cache compartido (throttle), emails | S |
 | POST `auth/password-reset/` | `auth.requestPasswordReset` | `useRequestPasswordReset` · `requestPasswordReset` | A4 (§5 A), D9 (§6) | 204 siempre; link `/recuperar?token=…&email=…` | Emails (N2, §9.2) | S |
 | POST `auth/password-reset/confirm/` | `auth.confirmPasswordReset` | `useConfirmPasswordReset` · `confirmPasswordReset` | A4 (§5 A) | 204; `validate_password` | `auth.requestPasswordReset` | S |
-| POST `auth/logout/` | `auth.logout` | `useLogout` · `logout` | I1 (§5 I), Barra (§1.1) | Sumar `rest_framework_simplejwt.token_blacklist` a `INSTALLED_APPS` y migrar; `all_devices` invalida todos | — | S |
+| POST `auth/logout/` | `auth.logout` | `useLogout` · `logout` | I1 (§5 I), Barra (§1.1) | `token_blacklist` ya está instalada en `feat/perfil-me`; `all_devices` es `revoke_refresh_tokens(user)` (`apps/users/tokens.py`) | — | S |
 
 Además, hueco 1: `auth.login` existe pero no distingue la cuenta sin verificar. Falta el 403 con `code: "email_not_verified"`: un serializer propio para `TokenObtainPairView` en `back/backend/urls.py`. Talla S.
 
@@ -355,7 +355,7 @@ El criterio: qué necesita cada flujo de punta a punta para andar con el backend
 - modo híbrido (`feat/front-modo-mixto`, PR #134): construido, ver la sección 1.
 
 **1. Acceso y `/me`.** Sin sesión y sin `/me` no anda ni la barra.
-1. `auth.logout` (S): sumar `token_blacklist`.
+1. `auth.logout` (S): `token_blacklist` ya está en `feat/perfil-me`.
 2. `auth.requestPasswordReset` y `auth.confirmPasswordReset` (S).
 3. `auth.register`, `auth.verifyEmail`, `auth.resendVerification` y el 403 de `auth.login`. Necesitan el envío de emails (hueco 21) y el cache compartido para los límites.
 
@@ -424,8 +424,7 @@ El backlog (`documents/backlog_mvp.md`) asigna por par, no por persona: PAY-01 a
 | **El cache no es compartido.** `base`, `dev` y `prod` no definen `CACHES`, así que cada proceso tiene su propio cache en memoria. Los límites de intentos, un guardado de `Idempotency-Key` en cache y la invalidación del cache de planes no cruzan procesos. Lo arregla `fix/creacion-robusta` (lead). | `auth.register`, `auth.resendVerification`, el 429 de `auth.login`, `social.createPost` | — |
 | **No existe el flujo de aceptar una invitación.** No hay endpoints y `WorkspaceMember` no puede guardar una invitación a un email sin cuenta. | Toda la fila de invitaciones, A5 | 13 |
 | **No hay emails transaccionales.** Ni plantillas ni envío. Las plantillas están dibujadas (N1 a N8, §9.2). | Registro, verificación, recuperar, invitación, notificaciones | 21 |
-| `rest_framework_simplejwt.token_blacklist` no está en `INSTALLED_APPS`, aunque `BLACKLIST_AFTER_ROTATION` está en `True`. | `auth.logout` | 2 |
-| No hay throttles de DRF configurados; el contrato de `auth.login` ya promete el 429. | `auth.login`, `auth.register`, `auth.resendVerification` | 1 |
+| Resuelto en `feat/perfil-me`: `token_blacklist` instalada, y límites de intentos en el login (por IP y por cuenta, solo los fallidos), el refresh, la contraseña y el cambio de email (`apps/users/throttles.py`). El registro y el reenvío necesitan los suyos. | `auth.register`, `auth.resendVerification` | 1, 2 |
 | [ADR-005](../adrs/005-social-publishing-strategy.md) sigue `proposed`: el contrato asume Ayrshare, DIST-01 propone OAuth directo. | `social.accounts`, `social.connect`, `social.disconnect` | 10 |
 | No hay beat para `dispatch_scheduled_posts_batch`: no está en `CELERY_BEAT_SCHEDULE` y `docker-compose.yml` no tiene servicio `beat`. | Publicaciones programadas | 9 |
 | `Transaction` no tiene vínculo con el proyecto ni `kind`; un `SPEND` devuelto queda `FAILED`. | `billing.wallet` (detalle), `billing.transactions`, `billing.usage`, `projects.activity`, `projects.detail` | 4, 19 |

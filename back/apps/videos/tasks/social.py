@@ -78,16 +78,17 @@ logger = logging.getLogger(__name__)
 @celery_app.task(name='apps.videos.tasks.dispatch_scheduled_posts_batch')
 def dispatch_scheduled_posts_batch():
     """
-    Orchestrator: Dispatches posts scheduled for the next hour.
-    Runs every hour via Celery Beat.
+    Orchestrator: dispatches the SCHEDULED posts due within the next hour, and
+    those already overdue (the beat or the worker was down), which go out at once.
+    Runs every 5 minutes via Celery Beat (CELERY_BEAT_SCHEDULE).
     """
     now = timezone.now()
     window_end = now + timedelta(hours=1)
     
-    # Batch query for scheduled posts in the next hour
+    # Batch query: everything due by the end of the window, overdue posts included
     scheduled_posts = ScheduledPost.objects.filter(
         status=ScheduledPost.Status.SCHEDULED,
-        publish_at__range=(now, window_end)
+        publish_at__lte=window_end
     )
     
     count = 0

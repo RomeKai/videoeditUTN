@@ -1,9 +1,6 @@
 ﻿from django.contrib import admin
 from django.urls import path, include
-from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
-    TokenRefreshView,
-)
+from apps.users.views import LoginView, TokenRefreshThrottledView
 from drf_spectacular.views import (
     SpectacularAPIView, 
     SpectacularRedocView, 
@@ -14,10 +11,13 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     
     # Authentication JWT
-    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'), # Login
-    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'), # Refrescar sesión
+    # SimpleJWT's views with attempt limits (apps.users.throttles)
+    path('api/token/', LoginView.as_view(), name='token_obtain_pair'), # Login
+    path('api/token/refresh/', TokenRefreshThrottledView.as_view(), name='token_refresh'), # Refrescar sesión
+    path('api/v1/', include('apps.users.urls')), # Prefijo v1 para versionado
+    path('api/v1/', include('apps.core.urls')),
     path('api/v1/', include('apps.videos.urls')),
-    path('api/v1/', include('apps.payments.urls')), # Prefijo v1 para versionado
+    path('api/v1/', include('apps.payments.urls')),
      # --- DOCUMENTATION ---
 
     # 1.  schema.yml/json 

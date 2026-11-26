@@ -28,7 +28,7 @@ export function LoginScreen({ next, email: initialEmail }: LoginScreenProps) {
   const [email, setEmail] = useState(initialEmail ?? '');
   const [password, setPassword] = useState('');
   const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
-  const target = safeNext(next);
+  const target = safeNext(next, { verifyLink: true });
 
   // With a session there is nothing to do here: after signing in (or when arriving already signed in)
   // go to the page that was asked for, or to the welcome when the account is brand new.

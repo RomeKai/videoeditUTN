@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**80 endpoints:** 26 existen hoy en el backend, 3 existen en parte y 51 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**80 endpoints:** 33 existen hoy en el backend, 5 existen en parte y 42 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -16,9 +16,9 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 ## Convenciones
 
 - **Base:** `NEXT_PUBLIC_API_URL` (por defecto `http://localhost:8000`). Las rutas llevan la barra final de DRF.
-- **Sesión:** `Authorization: Bearer <access>` con el JWT de `POST /api/token/`. Ante un 401 el cliente renueva una vez con `POST /api/token/refresh/` (el backend rota el refresh) y repite el pedido; si la renovación falla, abre el diálogo de sesión vencida.
+- **Sesión:** `Authorization: Bearer <access>` con el JWT de `POST /api/token/`. Ante un 401 el cliente renueva una vez con `POST /api/token/refresh/` (el backend rota el refresh) y repite el pedido; si la renovación falla, abre el diálogo de sesión vencida. Cambiar la contraseña revoca todos los tokens emitidos antes (en todos los dispositivos) y responde un par nuevo, que el cliente guarda para seguir con sesión. El login, la renovación y los endpoints que piden `current_password` tienen límite de intentos: 429 con un `detail` en castellano que dice cuánto esperar.
 - **Tiempo de espera:** un pedido sin respuesta completa en 30 s (`REQUEST_TIMEOUT_MS`) se corta y falla como error de red (`NetworkError`, con el mismo reintento y el mismo mensaje). Los que siguen trabajando en el servidor después de recibir el pedido esperan 180 s (`timeoutMs`): crear un proyecto (valida el video, lo mueve al storage, calcula el precio y reserva), guardar o duplicar un brand kit, armar el .zip y exportar los movimientos. En una subida multipart el reloj arranca cuando el archivo terminó de salir; mientras sube, se corta si pasa un minuto sin avanzar. Un pedido que cambia algo (todo lo que no es `GET`) y vence **puede haberse hecho**: `NetworkError.outcomeUnknown` lo marca, la UI dice «Puede que se haya hecho igual: revisá antes de probar de nuevo» en lugar de «No pudimos conectar», y vuelve a leer los datos.
-- **Workspace activo:** el cliente manda `X-Workspace-Id` en cada pedido con sesión, y el backend lo respeta (PR #125): las listas traen solo lo de ese workspace, y un id mal formado, inexistente o de un workspace donde el usuario no es miembro **activo** (una invitación pendiente no cuenta) responde 404 «No encontramos ese espacio de trabajo.». Sin el header usa el workspace más antiguo del usuario. Al cambiar de workspace el cliente primero sale de la pantalla y recién después cambia el id, para que ninguna pida su dato en el workspace equivocado.
+- **Workspace activo:** el cliente manda `X-Workspace-Id` en cada pedido con sesión, y el backend lo respeta (PR #125): las listas traen solo lo de ese workspace, y un id mal formado, inexistente o de un workspace donde el usuario no es miembro **activo** (una invitación pendiente no cuenta) responde 404 «No encontramos ese espacio de trabajo.». Sin el header usa el workspace más antiguo del usuario. `GET /me` no lo lee: su `active_workspace_id` es el último workspace que la persona eligió (`PATCH /me`), mientras siga teniendo acceso; si no, el más antiguo. Al cambiar de workspace el cliente primero sale de la pantalla y recién después cambia el id, para que ninguna pida su dato en el workspace equivocado.
 - **Roles:** el backend aplica la tabla 1.7 del mapa (PR #125). El Lector solo lee; el Editor crea y edita, y borra solo los proyectos que subió; redes, miembros, plan y nombre del workspace son del Dueño y los Admin. Un rol que no alcanza recibe 403 `{ detail }` con una frase en español («Con el rol Lector podés ver, pero no crear ni cambiar nada. Pedile acceso a un admin.»), sin `code`: la UI la muestra tal cual y nunca la confunde con un límite del plan (D3), que se reconoce por su `code` o por el texto de `PricingEngine`.
 - **JSON en snake_case**, como el backend. Ids UUID. Fechas ISO 8601 en UTC.
 - **Decimales:** un `DecimalField` de un serializer llega como string (`"4860.0000000000"`); un `Decimal` que la vista pone directo en la respuesta (`tokens_reserved`, `final_cost`, `required`) llega como número, porque el encoder de DRF lo pasa a float. El esquema `Decimal` acepta los dos y entrega un número.
@@ -64,16 +64,16 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | POST | `/api/token/` | Inicia sesión con email y contraseña; devuelve el par JWT. | ✅ existe | A1, D9 |
 | POST | `/api/token/refresh/` | Renueva el token de acceso. El backend rota el refresh (ROTATE_REFRESH_TOKENS). | ✅ existe | A1, D9 |
 | POST | `/api/v1/auth/register/` | Crea la cuenta y manda el email de verificación. | ❌ falta (propuesto) · hueco 1 | A2, A5 |
-| POST | `/api/v1/auth/verify-email/` | Verifica el email con el token del link y deja la sesión iniciada. | ❌ falta (propuesto) · hueco 1 | A3 |
+| POST | `/api/v1/auth/verify-email/` | Verifica el email con el token del link. El de una cuenta nueva deja la sesión iniciada; el de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta. | ✅ existe | A3 |
 | POST | `/api/v1/auth/verify-email/resend/` | Reenvía el email de verificación (una vez cada 60 s). Responde 204 exista o no el email y esté o no verificado, como recuperar contraseña. | ❌ falta (propuesto) · hueco 1 | A3 |
 | POST | `/api/v1/auth/password-reset/` | Pide el link para recuperar la contraseña. Siempre responde 204, exista o no el email. | ❌ falta (propuesto) · hueco 1 | A4, D9 |
 | POST | `/api/v1/auth/password-reset/confirm/` | Define la contraseña nueva con el token del link. Responde 204 sin tokens: la UI inicia sesión con el email del link y la contraseña nueva. | ❌ falta (propuesto) · hueco 1 | A4 |
 | POST | `/api/v1/auth/logout/` | Cierra la sesión: invalida el refresh. Con `all_devices`, todos los del usuario. | ❌ falta (propuesto) · hueco 2 | I1, Barra |
-| GET | `/api/v1/me/` | Perfil del usuario con sus workspaces, el rol en cada uno y el workspace activo. | ❌ falta (propuesto) · hueco 2 | Barra, B1, B2, J3, I1 |
-| PATCH | `/api/v1/me/` | Actualiza nombre, email, tour, uso elegido en la bienvenida y workspace activo. | ❌ falta (propuesto) · hueco 2 | B1, B2, J3, I1 |
-| POST | `/api/v1/me/password/` | Cambia la contraseña del usuario. | ❌ falta (propuesto) · hueco 2 | I1 |
-| GET | `/api/v1/me/notification-preferences/` | Qué emails recibe el usuario, por tipo. | ❌ falta (propuesto) · hueco 16 | I2 |
-| PATCH | `/api/v1/me/notification-preferences/` | Prende o apaga los emails por tipo. | ❌ falta (propuesto) · hueco 16 | I2 |
+| GET | `/api/v1/me/` | Perfil del usuario con sus workspaces, el rol en cada uno y el workspace activo. | ✅ existe | Barra, B1, B2, J3, I1 |
+| PATCH | `/api/v1/me/` | Actualiza nombre, email, tour, uso elegido en la bienvenida y workspace activo. | ✅ existe | B1, B2, J3, I1 |
+| POST | `/api/v1/me/password/` | Cambia la contraseña y cierra las demás sesiones. Responde un par JWT nuevo: el cliente lo guarda y sigue con sesión. | ✅ existe | I1 |
+| GET | `/api/v1/me/notification-preferences/` | Qué emails recibe el usuario, por tipo. | ✅ existe | I2 |
+| PATCH | `/api/v1/me/notification-preferences/` | Prende o apaga los emails por tipo. | ✅ existe | I2 |
 | GET | `/api/v1/workspaces/` | Workspaces del usuario. | ❌ falta (propuesto) · hueco 2 | J3 |
 | POST | `/api/v1/workspaces/` | Crea un workspace con el usuario como dueño (plan Gratis y billetera vacía). | ❌ falta (propuesto) · hueco 2 | J3, B1 |
 | GET | `/api/v1/workspaces/:id/` | Datos del workspace. | ❌ falta (propuesto) · hueco 2 | H1 |
@@ -129,10 +129,10 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/social-accounts/` | Una entrada por red (TikTok, Instagram Reels, YouTube Shorts) con su estado y sus límites. | ❌ falta (propuesto) · hueco 10 | H3, E1, B2 |
 | POST | `/api/v1/social-accounts/connect/` | Devuelve la URL de la red (vía Ayrshare) para autorizar la cuenta en una ventana aparte. | ❌ falta (propuesto) · hueco 10 | D6, H3, E1 |
 | DELETE | `/api/v1/social-accounts/:platform/` | Desconecta la cuenta de una red. Las publicaciones programadas en esa red quedan en error. | ❌ falta (propuesto) · hueco 10 | H3 |
-| GET | `/api/v1/scheduled-posts/` | Publicaciones del workspace, ordenadas por `publish_at`, con filtros por estado, red, rango y clip. | ❌ falta (propuesto) · hueco 8 | E2, D3, D4 (diálogo) |
+| GET | `/api/v1/scheduled-posts/` | Publicaciones del workspace, ordenadas por `publish_at`, con filtros por estado, red, rango y clip. | ⚠️ existe en parte · hueco 8 | E2, D3, D4 (diálogo) |
 | POST | `/api/v1/scheduled-posts/` | Publica ahora o programa un clip en una red. Con `draft: true` crea un borrador, que dispara la generación del texto con IA. | ❌ falta (propuesto) · hueco 8, 9 | E1 |
 | POST | `/api/v1/scheduled-posts/bulk/` | Crea varias publicaciones juntas (varios clips, varias redes). Todo o nada. | ❌ falta (propuesto) · hueco 8 | E1c |
-| GET | `/api/v1/scheduled-posts/:id/` | Detalle de una publicación. Se consulta cada 5 s mientras está en cola o publicando. | ❌ falta (propuesto) · hueco 8 | E2, E1 |
+| GET | `/api/v1/scheduled-posts/:id/` | Detalle de una publicación. Se consulta cada 5 s mientras está en cola o publicando. | ⚠️ existe en parte · hueco 8 | E2, E1 |
 | PATCH | `/api/v1/scheduled-posts/:id/` | Edita el texto, reprograma, o publica un borrador (`publish_at`: fecha para programar, `null` para publicar ahora). Solo antes de `QUEUED`. | ❌ falta (propuesto) · hueco 8 | E2 |
 | POST | `/api/v1/scheduled-posts/:id/cancel/` | Cancela una publicación que todavía no salió. La borra. | ❌ falta (propuesto) · hueco 8 | E2 |
 | POST | `/api/v1/scheduled-posts/:id/retry/` | Reintenta una publicación que falló (también una trabada en `PROCESSING`). | ❌ falta (propuesto) · hueco 8 | E2 |
@@ -140,7 +140,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/notifications/` | Las últimas 20 notificaciones del usuario en el workspace y cuántas están sin leer. | ❌ falta (propuesto) · hueco 16 | J2, Barra |
 | POST | `/api/v1/notifications/:id/read/` | Marca una notificación como leída. | ❌ falta (propuesto) · hueco 16 | J2 |
 | POST | `/api/v1/notifications/read-all/` | Marca todas como leídas. | ❌ falta (propuesto) · hueco 16 | J2 |
-| GET | `/api/v1/status/` | Si la plataforma está en mantenimiento y hasta cuándo. | ❌ falta (propuesto) | K5 |
+| GET | `/api/v1/status/` | Si la plataforma está en mantenimiento y hasta cuándo. | ✅ existe | K5 |
 
 ## Detalle por dominio
 
@@ -155,8 +155,8 @@ Inicia sesión con email y contraseña; devuelve el par JWT.
 | | |
 |---|---|
 | Id | `auth.login` |
-| Backend | ✅ existe · `back/backend/urls.py · rest_framework_simplejwt TokenObtainPairView (USERNAME_FIELD = email)` |
-| Nota | Hoy no distingue la cuenta sin verificar (falta el 403 propuesto, hueco 1). |
+| Backend | ✅ existe · `back/apps/users/views.py · LoginView (TokenObtainPairView de SimpleJWT, USERNAME_FIELD = email)` |
+| Nota | El 429 sale de 10 pedidos por minuto por IP, o de los intentos fallidos de la cuenta: 10 cada 15 minutos desde la misma IP y 100 por hora en total. Un login correcto los reinicia. `detail` dice en castellano cuánto esperar. Hoy no distingue la cuenta sin verificar (falta el 403 propuesto, hueco 1). |
 | Sesión | Pública |
 | Pedido | LoginRequest |
 | Respuesta 200 | TokenPair |
@@ -170,11 +170,11 @@ Renueva el token de acceso. El backend rota el refresh (ROTATE_REFRESH_TOKENS).
 | | |
 |---|---|
 | Id | `auth.refresh` |
-| Backend | ✅ existe · `back/backend/urls.py · TokenRefreshView; SIMPLE_JWT en backend/settings/base.py (acceso 25 min)` |
+| Backend | ✅ existe · `back/apps/users/views.py · TokenRefreshThrottledView (TokenRefreshView); SIMPLE_JWT en backend/settings/base.py (acceso 25 min)` |
 | Sesión | Pública |
 | Pedido | { refresh: string } |
 | Respuesta 200 | { access: string, refresh?: string } |
-| Errores | **401** Refresh vencido o inválido. La UI abre el diálogo D9 (sesión vencida). |
+| Errores | **401** Refresh vencido, inválido o revocado (rotado, o la contraseña cambió). La UI abre el diálogo D9 (sesión vencida).<br>**429** Más de 30 renovaciones por minuto desde la misma IP. |
 | Pantallas | A1, D9 |
 
 #### `POST /api/v1/auth/register/`
@@ -194,16 +194,17 @@ Crea la cuenta y manda el email de verificación.
 
 #### `POST /api/v1/auth/verify-email/`
 
-Verifica el email con el token del link y deja la sesión iniciada.
+Verifica el email con el token del link. El de una cuenta nueva deja la sesión iniciada; el de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta.
 
 | | |
 |---|---|
 | Id | `auth.verifyEmail` |
-| Backend | ❌ falta (propuesto) · hueco 1 |
-| Sesión | Pública |
+| Backend | ✅ existe · `back/apps/users/views.py · VerifyEmailView; el token: apps/users/email_verification.py` |
+| Nota | El token dice para qué es (cambio de email o registro). Hoy solo el cambio de email manda el link: el registro todavía no existe (hueco 1). El link de un cambio pasa `pending_email` a `email`; deja de servir si el cambio se cancela. |
+| Sesión | Pública (manda el token si hay sesión) |
 | Pedido | { token: string } |
 | Respuesta 200 | TokenPair |
-| Errores | **400** Token inválido o vencido. La UI ofrece reenviar el email. |
+| Errores | **400** Token inválido, vencido, ya usado o cancelado (error en `token`). La UI ofrece reenviar el email.<br>**403** `code: "other_account"`: hay una sesión de otra cuenta. `code: "login_required"`: el link de un cambio de email necesita la sesión de su cuenta. No se aplica nada; la UI muestra `detail` y, en el segundo caso, lleva a iniciar sesión y de vuelta al mismo link. |
 | Pantallas | A3 |
 
 #### `POST /api/v1/auth/verify-email/resend/`
@@ -256,7 +257,7 @@ Cierra la sesión: invalida el refresh. Con `all_devices`, todos los del usuario
 |---|---|
 | Id | `auth.logout` |
 | Backend | ❌ falta (propuesto) · hueco 2 |
-| Nota | Necesita la app token_blacklist de SimpleJWT. |
+| Nota | La app token_blacklist de SimpleJWT ya está instalada (la usa el cambio de contraseña). |
 | Sesión | JWT |
 | Pedido | { refresh: string, all_devices?: boolean } |
 | Respuesta 204 | NoContent |
@@ -273,8 +274,8 @@ Perfil del usuario con sus workspaces, el rol en cada uno y el workspace activo.
 | | |
 |---|---|
 | Id | `users.me` |
-| Backend | ❌ falta (propuesto) · hueco 2 |
-| Nota | Los campos salen de User, Workspace, WorkspaceMember y Wallet (apps/users/models.py). |
+| Backend | ✅ existe · `back/apps/users/views.py · MeView.get (MeSerializer)` |
+| Nota | `active_workspace_id` es el último workspace elegido (`User.last_workspace`) mientras el usuario siga siendo dueño o miembro activo; si no, el más antiguo propio. No lee `X-Workspace-Id`, así que un header viejo nunca da 404. `onboarding` sale del workspace activo; la red cuenta como conectada con el perfil de Ayrshare del workspace. |
 | Sesión | JWT |
 | Respuesta 200 | Me |
 | Errores | **401** Sin sesión: el cliente renueva el token o abre D9. |
@@ -287,25 +288,27 @@ Actualiza nombre, email, tour, uso elegido en la bienvenida y workspace activo.
 | | |
 |---|---|
 | Id | `users.updateMe` |
-| Backend | ❌ falta (propuesto) · hueco 2 |
+| Backend | ✅ existe · `back/apps/users/views.py · MeView.patch (UpdateMeSerializer); el link: apps/users/email_verification.py` |
+| Nota | El email nuevo queda en `pending_email` y le llega un link a `/verificar?token=…&siguiente=/perfil` que vence en 24 h; `auth.verifyEmail` lo aplica. |
 | Sesión | JWT |
 | Pedido | UpdateMeRequest |
 | Respuesta 200 | Me |
-| Errores | **400** Validación por campo: email ya usado, o `email` nuevo sin `current_password` o con una incorrecta (error en `current_password`). |
+| Errores | **400** Validación por campo: email ya usado o rechazado por el servidor de email (error en `email`), o `email` nuevo sin `current_password`, con una incorrecta o en una cuenta sin contraseña (error en `current_password`); `active_workspace_id` de un workspace donde no es miembro activo.<br>**429** Demasiados cambios de email seguidos (5 por hora). `detail` dice en castellano cuánto esperar.<br>**502** El servidor de email no aceptó el email de verificación: no se guardó nada. No es 503, que la UI lee como mantenimiento. |
 | Pantallas | B1, B2, J3, I1 |
 
 #### `POST /api/v1/me/password/`
 
-Cambia la contraseña del usuario.
+Cambia la contraseña y cierra las demás sesiones. Responde un par JWT nuevo: el cliente lo guarda y sigue con sesión.
 
 | | |
 |---|---|
 | Id | `users.changePassword` |
-| Backend | ❌ falta (propuesto) · hueco 2 |
+| Backend | ✅ existe · `back/apps/users/views.py · PasswordChangeView (PasswordChangeSerializer)` |
+| Nota | Todos los tokens emitidos antes dejan de andar (CHECK_REVOKE_TOKEN y token_blacklist, apps/users/tokens.py). |
 | Sesión | JWT |
 | Pedido | { current_password: string, new_password: string } |
-| Respuesta 204 | NoContent |
-| Errores | **400** Contraseña actual incorrecta (`current_password`) o nueva débil (`new_password`). |
+| Respuesta 200 | TokenPair |
+| Errores | **400** Contraseña actual incorrecta o cuenta sin contraseña (`current_password`), o nueva débil (`new_password`). Los mensajes llegan en castellano.<br>**429** Demasiados intentos seguidos (5 por hora). `detail` dice en castellano cuánto esperar. |
 | Pantallas | I1 |
 
 #### `GET /api/v1/me/notification-preferences/`
@@ -315,7 +318,7 @@ Qué emails recibe el usuario, por tipo.
 | | |
 |---|---|
 | Id | `users.notificationPreferences` |
-| Backend | ❌ falta (propuesto) · hueco 16 |
+| Backend | ✅ existe · `back/apps/users/views.py · NotificationPreferencesView.get (NotificationPreferencesSerializer)` |
 | Sesión | JWT |
 | Respuesta 200 | NotificationPreferences |
 | Pantallas | I2 |
@@ -327,7 +330,7 @@ Prende o apaga los emails por tipo.
 | | |
 |---|---|
 | Id | `users.updateNotificationPreferences` |
-| Backend | ❌ falta (propuesto) · hueco 16 |
+| Backend | ✅ existe · `back/apps/users/views.py · NotificationPreferencesView.patch (NotificationPreferencesSerializer)` |
 | Sesión | JWT |
 | Pedido | { project_ready?: boolean, render_finished?: boolean, project_failed?: boolean, post_failed?: boolean, low_balance?: boolean } |
 | Respuesta 200 | NotificationPreferences |
@@ -1130,8 +1133,8 @@ Publicaciones del workspace, ordenadas por `publish_at`, con filtros por estado,
 | | |
 |---|---|
 | Id | `social.posts` |
-| Backend | ❌ falta (propuesto) · hueco 8 |
-| Nota | Modelo: ScheduledPost. Hoy solo se crean desde el admin. |
+| Backend | ⚠️ existe en parte · hueco 8 · `back/apps/videos/views_social.py · ScheduledPostViewSet.list + ScheduledPostSerializer` |
+| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. Falta: `thumbnail_url` viene siempre `null` (los clips no tienen miniatura), `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | PostsQuery |
 | Respuesta 200 | { count: number, next: string \\| null, previous: string \\| null, results: ScheduledPost[], status_counts?: { [clave]: number } } |
@@ -1174,7 +1177,8 @@ Detalle de una publicación. Se consulta cada 5 s mientras está en cola o publi
 | | |
 |---|---|
 | Id | `social.post` |
-| Backend | ❌ falta (propuesto) · hueco 8 |
+| Backend | ⚠️ existe en parte · hueco 8 · `back/apps/videos/views_social.py · ScheduledPostViewSet.retrieve + ScheduledPostSerializer` |
+| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. Falta: `thumbnail_url` viene siempre `null` (los clips no tienen miniatura), `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | ScheduledPost |
 | Errores | **404** No existe o es de otro workspace. |
@@ -1286,8 +1290,8 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | | |
 |---|---|
 | Id | `system.status` |
-| Backend | ❌ falta (propuesto) |
-| Nota | Sin número de hueco: lo pide la pantalla K5 (horario estimado). |
+| Backend | ✅ existe · `back/apps/core/views.py · SystemStatusView; apps/core/maintenance.py` |
+| Nota | Se prende con MAINTENANCE_MODE y la ventana con MAINTENANCE_STARTS_AT / MAINTENANCE_ENDS_AT. Durante el mantenimiento este endpoint sigue en 200 y el resto de la API responde 503. |
 | Sesión | Pública |
 | Respuesta 200 | SystemStatus |
 | Errores | **503** En mantenimiento sin poder responder: la UI muestra K5 igual. |
@@ -1409,7 +1413,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | Campo | Tipo |
 |---|---|
 | `name` (opcional) | string |
-| `email` (opcional) | string |
+| `email` (opcional) | string \\| null |
 | `current_password` (opcional) | string |
 | `tour_completed` (opcional) | boolean |
 | `onboarding_use_case` (opcional) | OnboardingUseCase |
