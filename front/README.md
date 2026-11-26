@@ -5,6 +5,7 @@ App web de OneCreator: Next.js 15 (App Router), React 19 y TypeScript estricto. 
 - **Qué es cada pantalla:** [`documents/producto/mapa-de-pantallas.md`](../documents/producto/mapa-de-pantallas.md).
 - **Qué ruta tiene cada pantalla y quién la construye:** [`ROUTES.md`](ROUTES.md).
 - **Contrato de la API (para el equipo de backend):** [`src/api/CONTRACT.md`](src/api/CONTRACT.md).
+- **Cómo conectar el backend real, área por área (reglas, orden y quién hace qué):** [`documents/integracion/guia-conexion.md`](../documents/integracion/guia-conexion.md).
 - **Sistema visual:** [`documents/producto/diseno/`](../documents/producto/diseno/README.md), y todos los componentes en vivo en `/dev/kit`.
 
 ## Cómo correrlo
