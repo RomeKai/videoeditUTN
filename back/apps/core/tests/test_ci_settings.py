@@ -161,3 +161,16 @@ def test_production_settings_compose_the_base_configuration():
     assert settings["root_urlconf"] == "backend.urls"
     assert settings["debug"] is False
     assert settings["use_r2"] is True
+
+
+@pytest.mark.django_db
+def test_ci_database_sessions_give_up_on_a_lock_after_a_minute():
+    """A test stuck on a row lock fails after a minute instead of hanging CI."""
+    from django.db import connection
+
+    if os.environ.get("DJANGO_SETTINGS_MODULE") != "backend.settings.ci":
+        pytest.skip("only the CI settings set lock_timeout")
+
+    with connection.cursor() as cursor:
+        cursor.execute("SHOW lock_timeout")
+        assert cursor.fetchone()[0] == "1min"
