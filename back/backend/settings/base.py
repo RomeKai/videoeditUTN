@@ -137,13 +137,20 @@ REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': None,
     # drf-spectacular's AutoSchema, plus the X-Workspace-Id header on scoped views.
     'DEFAULT_SCHEMA_CLASS': 'apps.core.schema.WorkspaceAutoSchema',
-    # Scopes of ScopedRateThrottle, per user. The endpoints that check the
-    # current password (apps.users.views) must not let it be guessed.
+    # Attempt limits of the endpoints that check a password (apps.users.throttles):
+    # per user when signed in, per IP (or per email, login_email) otherwise.
     'DEFAULT_THROTTLE_RATES': {
+        'login': env('THROTTLE_LOGIN', default='10/min'),
+        'login_email': env('THROTTLE_LOGIN_EMAIL', default='20/hour'),
+        'token_refresh': env('THROTTLE_TOKEN_REFRESH', default='30/min'),
         'password_change': env('THROTTLE_PASSWORD_CHANGE', default='5/hour'),
         # PATCH /me with a new email: checks the password and sends an email.
         'email_change': env('THROTTLE_EMAIL_CHANGE', default='5/hour'),
     },
+    # Proxies in front of Django (load balancer, nginx). Unset, the per-IP
+    # limits use the whole X-Forwarded-For, which a client can forge: set it
+    # where the deployment knows how many proxies add their address.
+    'NUM_PROXIES': env.int('NUM_PROXIES', default=None),
 }
 
 # --- AI CONFIG & FEATURE FLAGS ---

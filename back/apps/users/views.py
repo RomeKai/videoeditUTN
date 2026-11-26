@@ -6,6 +6,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from apps.core.workspace import OWNER, ActiveWorkspace, resolve_active_workspace
 from apps.payments.models import Wallet
@@ -19,7 +20,7 @@ from apps.users.serializers import (
     VerifyEmailSerializer,
 )
 from apps.users.email_verification import send_email_change_verification, user_for_token
-from apps.users.throttles import EmailChangeThrottle, SpanishThrottleMixin
+from apps.users.throttles import EmailChangeThrottle, LoginEmailThrottle, SpanishThrottleMixin
 from apps.users.tokens import issue_token_pair, revoke_refresh_tokens
 
 
@@ -108,6 +109,20 @@ class MeView(SpanishThrottleMixin, APIView):
                 # A failed send rolls the change back: no pending email without its link.
                 send_email_change_verification(user)
         return Response(_me_payload(request))
+
+
+class LoginView(SpanishThrottleMixin, TokenObtainPairView):
+    """POST /api/token/ (SimpleJWT) with attempt limits: per IP and per account email."""
+
+    throttle_classes = [ScopedRateThrottle, LoginEmailThrottle]
+    throttle_scope = 'login'
+
+
+class TokenRefreshThrottledView(SpanishThrottleMixin, TokenRefreshView):
+    """POST /api/token/refresh/ (SimpleJWT) with a limit per IP."""
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'token_refresh'
 
 
 class PasswordChangeView(SpanishThrottleMixin, APIView):

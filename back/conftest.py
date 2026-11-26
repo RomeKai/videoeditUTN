@@ -157,6 +157,11 @@ def network_guard():
 
 @pytest.fixture(autouse=True)
 def isolate_test_effects(tmp_path, settings):
+    from django.core.cache import cache
+
+    # The DRF throttles count in the cache (per IP for the login): each test
+    # starts from zero, whatever the tests before it did.
+    cache.clear()
     checkpoint = NETWORK_GUARD.checkpoint()
     previous_media_root = settings.MEDIA_ROOT
     isolated_media_root = tmp_path / "media"
