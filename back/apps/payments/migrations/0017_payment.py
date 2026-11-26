@@ -2,6 +2,7 @@
 # services/payments.py). A new table: nothing that exists changes.
 
 import django.db.models.deletion
+import django.utils.timezone
 import uuid
 from django.conf import settings
 from django.db import migrations, models
@@ -67,6 +68,7 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("checkout_started_at", models.DateTimeField(default=django.utils.timezone.now)),
                 ("settled_at", models.DateTimeField(blank=True, null=True)),
                 (
                     "created_by",

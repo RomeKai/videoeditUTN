@@ -32,7 +32,8 @@ def check_seat_limit(workspace, user_ids, freed=0):
     workspace que se borran en el mismo guardado (el admin borra antes de
     crear). Con una bajada programada (``pending_plan``) cuentan los lugares
     del plan más chico de los dos: bajar se aceptó porque entraban, y tienen
-    que seguir entrando cuando se aplique.
+    que seguir entrando cuando se aplique. Lo mismo con un pago de plan
+    pendiente: al confirmarse, su plan se aplica al momento.
     """
     new = [user_id for user_id in user_ids if user_id != workspace.owner_id]
     if not new:
@@ -52,8 +53,28 @@ def check_seat_limit(workspace, user_ids, freed=0):
         limit = pending['pending_plan__max_members']
     else:
         pending = None
+    # A plan payment waiting for its checkout: once confirmed it applies at once, so its seats count too.
+    paying = None
+    if plan and not workspace._state.adding:
+        from apps.payments.models import Payment
+
+        paying = (
+            Payment.objects.filter(workspace_id=workspace.pk, status=Payment.Status.PENDING, plan__isnull=False)
+            .values('plan__name', 'plan__max_members')
+            .first()
+        )
+    if paying is not None and paying['plan__max_members'] < limit:
+        limit = paying['plan__max_members']
+        pending = None
+    else:
+        paying = None
     if current - freed + len(new) <= limit:
         return
+    if paying is not None:
+        raise ValidationError(
+            f"Estás pasando al plan '{paying['plan__name']}', que permite {limit} miembros. "
+            "Terminá o cancelá ese pago para invitar más gente."
+        )
     if pending is not None:
         when = timezone.localtime(pending['pending_plan_effective_at'], ZoneInfo(settings.WORKSPACE_TIME_ZONE))
         raise ValidationError(

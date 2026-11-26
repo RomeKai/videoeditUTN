@@ -39,6 +39,15 @@ class Checkout:
 
 
 class PaymentProvider:
+    """
+    ``start_checkout`` and ``cancel_checkout`` must each finish within
+    settings.PAYMENTS_PROVIDER_TIMEOUT_SECONDS, as a hard total deadline
+    (connection, retries and reading included), and raise past it. A pending
+    payment still without a checkout twice that long after its call started
+    is rejected as lost (services/payments.py, fail_stale_checkouts): a call
+    that runs longer gets its checkout closed instead of stored.
+    """
+
     name = ''
 
     def start_checkout(self, payment, return_url):

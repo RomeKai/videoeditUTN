@@ -52,12 +52,32 @@ def test_a_payment_settled_before_its_checkout_opens_gets_no_checkout(owner):
     payment = Payment.objects.create(workspace=workspace, tokens=1000, amount_usd=Decimal('10.00'), provider='simulated')
     settle_payment(payment.pk, approved=False, failure_reason='Reemplazado.')
 
-    with mock.patch.object(SimulatedProvider, 'cancel_checkout') as cancel:
+    with mock.patch.object(SimulatedProvider, 'cancel_checkout') as cancel, mock.patch.object(SimulatedProvider, 'start_checkout') as start:
         result = open_checkout(SimulatedProvider(), payment, RETURN)
 
     payment.refresh_from_db()
     assert (payment.status, payment.checkout_url) == ('rejected', '')
     assert result.status == 'rejected'
+    # Settled before its call: the provider is never asked for a checkout, so there is none to close.
+    assert (start.call_count, cancel.call_count) == (0, 0)
+
+
+@override_settings(**SIMULATED)
+def test_a_payment_settled_while_its_checkout_opens_gets_its_checkout_closed(owner):
+    user, workspace = owner
+    payment = Payment.objects.create(workspace=workspace, tokens=1000, amount_usd=Decimal('10.00'), provider='simulated')
+    original = SimulatedProvider.start_checkout
+
+    def start(self, payment, return_url):
+        checkout = original(self, payment, return_url)
+        settle_payment(payment.pk, approved=False, failure_reason='Reemplazado.')
+        return checkout
+
+    with mock.patch.object(SimulatedProvider, 'cancel_checkout') as cancel, mock.patch.object(SimulatedProvider, 'start_checkout', start):
+        result = open_checkout(SimulatedProvider(), payment, RETURN)
+
+    payment.refresh_from_db()
+    assert (payment.status, payment.checkout_url, result.status) == ('rejected', '', 'rejected')
     assert cancel.call_count == 1
 
 
@@ -253,7 +273,8 @@ def test_the_workspace_is_locked_for_no_key_update(owner, seeded_plans):
 # --- round 2 · 3. an attempt whose checkout never opened ------------------------------
 
 def stale(payment, seconds=120):
-    Payment.objects.filter(pk=payment.pk).update(created_at=timezone.now() - timedelta(seconds=seconds))
+    old = timezone.now() - timedelta(seconds=seconds)
+    Payment.objects.filter(pk=payment.pk).update(created_at=old, checkout_started_at=old)
 
 
 @override_settings(**SIMULATED, PAYMENTS_PROVIDER_TIMEOUT_SECONDS=30)
@@ -366,3 +387,125 @@ def test_a_request_replaced_while_its_checkout_opened_does_not_get_another_plans
     assert type(pro).__name__ == 'PlanChangeSuperseded'
     pending = Payment.objects.get(workspace=workspace, status='pending')
     assert pending.plan == seeded_plans['Estudio']
+
+
+# --- round 3 · 1. the sweep decides on the locked row, from when the provider call started ---
+
+def started_long_ago(payment, seconds=300):
+    old = timezone.now() - timedelta(seconds=seconds)
+    Payment.objects.filter(pk=payment.pk).update(created_at=old, checkout_started_at=old)
+
+
+@override_settings(**SIMULATED, PAYMENTS_PROVIDER_TIMEOUT_SECONDS=1)
+def test_the_sweep_skips_a_payment_whose_checkout_was_stored_after_it_was_listed(owner, seeded_plans):
+    from apps.payments.services.payments import fail_stale_checkout
+
+    _, workspace = owner
+    payment = Payment.objects.create(workspace=workspace, plan=seeded_plans['Pro'], amount_usd=Decimal('49.00'), provider='simulated')
+    started_long_ago(payment)
+    listed = Payment.objects.get(pk=payment.pk)
+    # The slow request's conditional UPDATE lands now, and its URL goes back to the browser.
+    Payment.objects.filter(pk=payment.pk, status='pending').update(checkout_url=f'{FRONT}/dev/checkout?compra={payment.pk}', provider_reference='sim_x')
+
+    with mock.patch.object(SimulatedProvider, 'cancel_checkout') as cancel:
+        fail_stale_checkout(listed)
+
+    payment.refresh_from_db()
+    assert payment.status == 'pending'
+    assert cancel.call_count == 0
+
+
+@override_settings(**SIMULATED, PAYMENTS_PROVIDER_TIMEOUT_SECONDS=1)
+def test_a_checkout_is_measured_from_when_its_provider_call_started(owner):
+    from apps.payments.services.payments import checkout_is_stale, fail_stale_checkouts
+
+    _, workspace = owner
+    # Created long ago (another provider call came first, like closing the replaced checkout).
+    payment = Payment.objects.create(workspace=workspace, tokens=1000, amount_usd=Decimal('10.00'), provider='simulated')
+    started_long_ago(payment)
+    original = SimulatedProvider.start_checkout
+    seen = {}
+
+    def start(self, payment, return_url):
+        fresh = Payment.objects.get(pk=payment.pk)
+        seen['stale'] = checkout_is_stale(fresh)
+        seen['swept'] = fail_stale_checkouts()
+        return original(self, payment, return_url)
+
+    with mock.patch.object(SimulatedProvider, 'start_checkout', start):
+        result = open_checkout(SimulatedProvider(), payment, RETURN)
+
+    assert seen == {'stale': False, 'swept': 0}
+    assert (result.status, bool(result.checkout_url)) == ('pending', True)
+
+
+@override_settings(**SIMULATED, PAYMENTS_PROVIDER_TIMEOUT_SECONDS=1)
+def test_rejecting_a_stale_payment_that_has_a_provider_reference_closes_its_checkout(owner):
+    from apps.payments.services.payments import fail_stale_checkouts
+
+    _, workspace = owner
+    payment = Payment.objects.create(workspace=workspace, tokens=1000, amount_usd=Decimal('10.00'), provider='simulated', provider_reference='sim_ref')
+    started_long_ago(payment)
+
+    with mock.patch.object(SimulatedProvider, 'cancel_checkout') as cancel:
+        assert fail_stale_checkouts() == 1
+
+    assert cancel.call_count == 1
+    assert cancel.call_args.args[0].provider_reference == 'sim_ref'
+
+
+@override_settings(**SIMULATED, PAYMENTS_PROVIDER_TIMEOUT_SECONDS=1)
+def test_a_replay_rechecks_a_lost_attempt_under_the_lock(owner):
+    from apps.payments.services import payments as payments_service
+
+    _, workspace = owner
+    payment = Payment.objects.create(
+        workspace=workspace, tokens=1000, amount_usd=Decimal('10.00'), package_id='pack-1000',
+        provider='simulated', idempotency_key='envio-1',
+    )
+    started_long_ago(payment)
+    existing = Payment.objects.get(pk=payment.pk)
+    # Its checkout was stored after the replay read it.
+    Payment.objects.filter(pk=payment.pk).update(checkout_url=f'{FRONT}/dev/checkout?compra={payment.pk}', provider_reference='sim_y')
+
+    replayed = payments_service._replay(existing, 1000, 'pack-1000')
+
+    assert replayed is not None and replayed.pk == payment.pk and replayed.checkout_url
+    payment.refresh_from_db()
+    assert (payment.status, payment.idempotency_key) == ('pending', 'envio-1')
+
+
+# --- round 3 · 2. a confirmation that won the lock keeps its key ---------------------
+
+@override_settings(**SIMULATED, PAYMENTS_PROVIDER_TIMEOUT_SECONDS=1)
+def test_a_sweep_after_a_confirmation_keeps_the_key_of_the_approved_purchase(owner):
+    from apps.payments.services.payments import fail_stale_checkout
+
+    user, workspace = owner
+    payment = Payment.objects.create(
+        workspace=workspace, created_by=user, tokens=1000, amount_usd=Decimal('10.00'), package_id='pack-1000',
+        provider='simulated', idempotency_key='k',
+    )
+    started_long_ago(payment)
+    listed = Payment.objects.get(pk=payment.pk)
+    settle_payment(payment.pk, approved=True)
+
+    fail_stale_checkout(listed)
+
+    payment.refresh_from_db()
+    assert (payment.status, payment.idempotency_key) == ('approved', 'k')
+    replay = buy(client_for(user), key='k', package_id='pack-1000').json()
+    assert (replay['id'], replay['status']) == (str(payment.pk), 'approved')
+
+
+def test_a_failed_checkout_frees_the_key_only_of_a_rejected_payment(owner):
+    from apps.payments.services.payments import _fail_checkout
+
+    _, workspace = owner
+    payment = Payment.objects.create(workspace=workspace, tokens=1000, amount_usd=Decimal('10.00'), provider='simulated', idempotency_key='k2')
+    settle_payment(payment.pk, approved=True)
+
+    _fail_checkout(payment)
+
+    payment.refresh_from_db()
+    assert (payment.status, payment.idempotency_key) == ('approved', 'k2')

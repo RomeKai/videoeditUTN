@@ -19,9 +19,11 @@ Money rules:
   still opening its checkout it answers PurchaseInProgress. A failed checkout
   frees its key, so the same key can try again.
 - An attempt whose checkout never opened (the process died inside the
-  provider call) counts as failed after twice PAYMENTS_PROVIDER_TIMEOUT_SECONDS:
-  the next request, or the beat task (fail_stale_checkouts), rejects it and
-  frees its key, so nothing stays "in progress" for good.
+  provider call) counts as failed twice PAYMENTS_PROVIDER_TIMEOUT_SECONDS
+  after that call started (``checkout_started_at``, stamped right before it):
+  the next request, or the beat task (fail_stale_checkouts), decides it again
+  on the locked row, rejects it and frees its key, so nothing stays "in
+  progress" for good. A row whose checkout was stored meanwhile is left alone.
 - A confirmation for a payment already rejected (replaced, canceled, or its
   checkout failed) changes nothing: it is logged as ``payment.late_paid`` so
   staff can refund it by hand.
@@ -39,9 +41,10 @@ from django.db import DataError, IntegrityError, transaction
 from django.utils import timezone
 
 from apps.users.models import Workspace
+from apps.users.seats import seats_used
 
 from ..models import Payment, Transaction, Wallet
-from .payment_providers import require_payment_provider
+from .payment_providers import get_payment_provider, require_payment_provider
 from .plan_periods import PLAN_FIELDS, start_paid_period
 
 logger = logging.getLogger(__name__)
@@ -73,10 +76,14 @@ def lock_workspace(workspace_id):
 
 
 def _fail_checkout(payment):
-    """The checkout did not open: the payment is rejected and frees its Idempotency-Key for a new attempt."""
+    """
+    The checkout did not open: the payment is rejected and frees its
+    Idempotency-Key for a new attempt. A payment that a confirmation settled
+    first keeps its status and its key.
+    """
     settled, _ = settle_payment(payment.pk, approved=False, failure_reason=CHECKOUT_FAILED)
-    Payment.objects.filter(pk=payment.pk).update(idempotency_key=None)
-    settled.idempotency_key = None
+    if Payment.objects.filter(pk=payment.pk, status=Payment.Status.REJECTED).update(idempotency_key=None):
+        settled.idempotency_key = None
     return settled
 
 
@@ -86,32 +93,12 @@ def stale_checkout_cutoff(now=None):
 
 
 def checkout_is_stale(payment, now=None):
+    """Pending, without a checkout, and its provider call (``checkout_started_at``) started over twice the timeout ago."""
     return (
         payment.status == Payment.Status.PENDING
         and not payment.checkout_url
-        and payment.created_at < stale_checkout_cutoff(now)
+        and payment.checkout_started_at < stale_checkout_cutoff(now)
     )
-
-
-def fail_stale_checkout(payment):
-    """An attempt whose checkout never opened: rejected, its key freed. A checkout that opens later is closed (open_checkout)."""
-    logger.warning('payments.stale_checkout_failed payment=%s provider=%s', payment.pk, payment.provider)
-    return _fail_checkout(payment)
-
-
-def fail_stale_checkouts(now=None):
-    """The beat's sweep of fail_stale_checkout. Returns how many it rejected."""
-    stale = Payment.objects.filter(
-        status=Payment.Status.PENDING, checkout_url='', created_at__lt=stale_checkout_cutoff(now),
-    ).values_list('pk', flat=True)
-    failed = 0
-    for payment in Payment.objects.filter(pk__in=list(stale)):
-        try:
-            if fail_stale_checkout(payment).status == Payment.Status.REJECTED:
-                failed += 1
-        except Exception as exc:  # logged; the next run tries again
-            logger.error('payments.stale_checkout_sweep_failed payment=%s error=%s', payment.pk, type(exc).__name__)
-    return failed
 
 
 def _close(provider, payment):
@@ -119,6 +106,61 @@ def _close(provider, payment):
         provider.cancel_checkout(payment)
     except Exception as exc:  # nothing can pay a settled payment anyway: a late payment is logged
         logger.warning('payments.cancel_checkout_failed payment=%s error=%s', payment.pk, type(exc).__name__)
+
+
+def close_checkout(payment):
+    """Close the provider's checkout of a settled payment, when its provider is the one configured. Never raises."""
+    provider = get_payment_provider()
+    if provider is not None and provider.name == payment.provider:
+        _close(provider, payment)
+
+
+def fail_stale_checkout(payment, now=None):
+    """
+    An attempt whose checkout never opened: rejected and its key freed, if the
+    row, locked (workspace first, then payment, like settle_payment), is still
+    pending without a checkout and stale. A row whose checkout was stored
+    meanwhile, or that a confirmation settled, is left as it is. Returns
+    ``(payment, failed)``. A checkout that opens later is closed (open_checkout).
+    """
+    payment_id = getattr(payment, 'pk', payment)
+    workspace_id = Payment.objects.values_list('workspace_id', flat=True).get(pk=payment_id)
+    with transaction.atomic():
+        lock_workspace(workspace_id)
+        locked = Payment.objects.select_for_update().get(pk=payment_id)
+        if not checkout_is_stale(locked, now):
+            return locked, False
+        logger.warning('payments.stale_checkout_failed payment=%s provider=%s', locked.pk, locked.provider)
+        settled = _fail_checkout(locked)
+    if settled.status == Payment.Status.REJECTED and settled.provider_reference:
+        close_checkout(settled)
+    return settled, settled.status == Payment.Status.REJECTED
+
+
+def fail_stale_checkouts(now=None):
+    """The beat's sweep of fail_stale_checkout. Each row is decided again under its lock. Returns how many it rejected."""
+    candidates = list(
+        Payment.objects.filter(
+            status=Payment.Status.PENDING, checkout_url='', checkout_started_at__lt=stale_checkout_cutoff(now),
+        ).values_list('pk', flat=True)
+    )
+    failed = 0
+    for payment_id in candidates:
+        try:
+            failed += fail_stale_checkout(payment_id, now=now)[1]
+        except Exception as exc:  # logged; the next run tries again
+            logger.error('payments.stale_checkout_sweep_failed payment=%s error=%s', payment_id, type(exc).__name__)
+    return failed
+
+
+def _pending_now(payment):
+    """What a request whose payment was settled gets instead: the workspace's plan payment pending now, or this one as it is."""
+    current = None
+    if payment.plan_id is not None:
+        current = Payment.objects.filter(
+            workspace_id=payment.workspace_id, status=Payment.Status.PENDING, plan__isnull=False,
+        ).first()
+    return current or Payment.objects.get(pk=payment.pk)
 
 
 def open_checkout(provider, payment, return_url):
@@ -129,6 +171,13 @@ def open_checkout(provider, payment, return_url):
     is closed and the payment pending now is returned instead (the
     workspace's upgrade waiting for its payment, or this one as it is).
     """
+    # Staleness counts from here: whatever came before (closing a replaced checkout) does not eat its time.
+    started_at = timezone.now()
+    if not Payment.objects.filter(pk=payment.pk, status=Payment.Status.PENDING).update(checkout_started_at=started_at):
+        # Settled before its checkout opened: nothing is asked of the provider.
+        logger.info('payments.checkout_not_started payment=%s provider=%s', payment.pk, provider.name)
+        return _pending_now(payment)
+    payment.checkout_started_at = started_at
     try:
         checkout = provider.start_checkout(payment, return_url)
     except Exception as exc:  # any provider error: the payment must not stay pending
@@ -153,12 +202,7 @@ def open_checkout(provider, payment, return_url):
         return payment
     logger.info('payments.checkout_orphaned payment=%s provider=%s', payment.pk, provider.name)
     _close(provider, payment)
-    current = None
-    if payment.plan_id is not None:
-        current = Payment.objects.filter(
-            workspace_id=payment.workspace_id, status=Payment.Status.PENDING, plan__isnull=False,
-        ).first()
-    return current or Payment.objects.get(pk=payment.pk)
+    return _pending_now(payment)
 
 
 def _replay(payment, tokens, package_id):
@@ -166,10 +210,14 @@ def _replay(payment, tokens, package_id):
     if payment.plan_id is not None or payment.tokens != tokens or payment.package_id != package_id:
         raise IdempotencyKeyReused()
     if payment.status == Payment.Status.PENDING and not payment.checkout_url:
-        if checkout_is_stale(payment):
-            fail_stale_checkout(payment)
+        if not checkout_is_stale(payment):
+            raise PurchaseInProgress()
+        # Decided again under the lock: its checkout may have been stored since it was read.
+        payment, failed = fail_stale_checkout(payment)
+        if failed:
             return None
-        raise PurchaseInProgress()
+        if payment.status == Payment.Status.PENDING and not payment.checkout_url:
+            raise PurchaseInProgress()
     return payment
 
 
@@ -262,6 +310,13 @@ def settle_payment(payment_id, *, approved, failure_reason=''):
             start_paid_period(workspace, payment.plan, now)
             workspace.save(update_fields=PLAN_FIELDS)
             payment.status = Payment.Status.APPROVED
+            used = seats_used(workspace)
+            if used > payment.plan.max_members:
+                # Members from before keep their seats; nobody new fits until some leave (check_seat_limit).
+                logger.warning(
+                    'subscription.over_member_limit workspace=%s seats_used=%s max_members=%s',
+                    workspace.pk, used, payment.plan.max_members,
+                )
         else:
             _credit(payment, now)
             payment.status = Payment.Status.APPROVED

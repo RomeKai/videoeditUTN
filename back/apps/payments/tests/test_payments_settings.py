@@ -90,3 +90,13 @@ def test_the_deploy_check_warns_about_the_simulated_provider():
 
     assert "payments.W001" in ids
     assert "payments.W001" not in clean
+
+
+@pytest.mark.parametrize("value", ["0", "-5"])
+def test_a_provider_timeout_that_is_not_positive_stops_the_start(value):
+    env = {key: item for key, item in os.environ.items() if not key.startswith("PAYMENTS_")}
+    env["PAYMENTS_PROVIDER_TIMEOUT_SECONDS"] = value
+    result = subprocess.run([sys.executable, "-c", "import django; django.setup()"], env=env, cwd=BACK, capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert "PAYMENTS_PROVIDER_TIMEOUT_SECONDS" in result.stderr

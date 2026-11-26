@@ -41,8 +41,8 @@ from apps.users.models import Workspace
 from apps.users.seats import seats_used
 
 from ..models import Payment, SubscriptionPlan
-from .payment_providers import get_payment_provider, require_payment_provider
-from .payments import checkout_is_stale, fail_stale_checkout, lock_workspace, open_checkout, settle_payment
+from .payment_providers import require_payment_provider
+from .payments import checkout_is_stale, close_checkout, fail_stale_checkout, lock_workspace, open_checkout, settle_payment
 from .plan_periods import PLAN_FIELDS, is_paid, paid_period_end, price_of, switch_plan
 from .plans import get_default_plan_id
 
@@ -158,8 +158,9 @@ def _drop_pending_upgrade(workspace, reason, keep_plan=None):
     if pending is None:
         return None, None
     if not pending.checkout_url and checkout_is_stale(pending):
-        fail_stale_checkout(pending)
-        return None, None
+        _, failed = fail_stale_checkout(pending)
+        if failed:
+            return None, None
     if keep_plan is not None and pending.plan_id == keep_plan.pk:
         if not pending.checkout_url:
             raise CheckoutInProgress()
@@ -257,13 +258,8 @@ def change_plan(workspace_id, plan_id, *, user, return_url, now=None):
 
 
 def _close_checkout(payment):
-    provider = get_payment_provider()
-    if provider is None or provider.name != payment.provider:
-        return
-    try:
-        provider.cancel_checkout(payment)
-    except Exception as exc:  # the payment is already rejected here: a late confirmation is logged
-        logger.warning('payments.cancel_checkout_failed payment=%s error=%s', payment.pk, type(exc).__name__)
+    # The payment is already rejected here: a late confirmation is logged (payment.late_paid).
+    close_checkout(payment)
 
 
 def _log_seats(workspace, plan, used):

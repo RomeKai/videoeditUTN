@@ -343,3 +343,39 @@ def test_a_confirmed_upgrade_keeps_the_anchor_day_of_its_period(owner, plans):
     workspace = reload(workspace)
     assert workspace.plan_anchor_day == 30
     assert workspace.plan_renews_at == datetime(2026, 3, 1, 2, tzinfo=dt_timezone.utc)
+
+
+# --- round 3 · 3. seats while a plan payment waits ------------------------------------
+
+@override_settings(**SIMULATED)
+def test_while_a_cheaper_plan_payment_waits_nobody_joins_past_its_seats(owner, plans):
+    user, workspace = owner
+    set_plan(workspace, plans['Pro'], renews_at=timezone.now() + timedelta(days=10))
+    for name in ('m0', 'm1', 'm2'):
+        join(reload(workspace), make_user(name))  # 4 seats; Creador has 5
+    assert change(client_for(user), plans['Creador']).json()['checkout_url']
+
+    join(reload(workspace), make_user('n0'), status=WorkspaceMember.Status.PENDING)
+    with pytest.raises(ValidationError, match="Estás pasando al plan 'Creador'.*5 miembros"):
+        join(reload(workspace), make_user('n1'), status=WorkspaceMember.Status.PENDING)
+
+    settle_payment(Payment.objects.get(workspace=workspace, status='pending').pk, approved=True)
+    workspace = reload(workspace)
+    assert workspace.subscription_plan == plans['Creador']
+    assert WorkspaceMember.objects.filter(workspace=workspace).count() == 5
+
+
+@override_settings(**SIMULATED)
+def test_a_confirmed_plan_with_fewer_seats_than_in_use_is_logged(owner, plans, caplog):
+    user, workspace = owner
+    set_plan(workspace, plans['Pro'], renews_at=timezone.now() + timedelta(days=10))
+    for name in ('m0', 'm1', 'm2'):
+        join(reload(workspace), make_user(name))
+    change(client_for(user), plans['Creador'])
+    # Staff lowered Creador's seats while the payment waited.
+    SubscriptionPlan.objects.filter(pk=plans['Creador'].pk).update(max_members=2)
+
+    settle_payment(Payment.objects.get(workspace=workspace, status='pending').pk, approved=True)
+
+    assert reload(workspace).subscription_plan == plans['Creador']
+    assert f'subscription.over_member_limit workspace={workspace.pk} seats_used=4 max_members=2' in caplog.text

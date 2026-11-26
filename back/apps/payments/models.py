@@ -1,6 +1,7 @@
 ﻿import uuid
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.utils import timezone
 from django.db.models import F
 from django.db.models.functions import Coalesce
 from django.db import transaction
@@ -235,6 +236,10 @@ class Payment(models.Model):
     # Available balance right after the credit.
     balance_after = models.DecimalField(max_digits=20, decimal_places=10, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    # When the provider call that opens its checkout started (stamped again
+    # right before start_checkout). A pending payment still without a checkout
+    # twice PAYMENTS_PROVIDER_TIMEOUT_SECONDS after it lost that call.
+    checkout_started_at = models.DateTimeField(default=timezone.now)
     settled_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
