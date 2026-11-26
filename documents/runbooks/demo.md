@@ -49,23 +49,24 @@ Para apagar: `demo down` (los datos quedan). `demo down -v` borra la base.
 
 ## 3. Qué es real y qué es mock
 
-La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario, los proyectos, los clips y los brand kits, y deja **enteros en mocks** los planes, la billetera, las redes, las publicaciones, los miembros y las notificaciones. La lista se cambia en un solo lugar: `DEMO_API_REAL` (`docker-compose.demo.yml` la pasa a `NEXT_PUBLIC_API_REAL` al construir `front`).
+La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario, los proyectos, los clips, los brand kits, la billetera (saldo, consumo, movimientos y su exportación) y los precios (fórmula y estimado), y deja **en mocks** los planes, la suscripción, comprar tokens, las redes, las publicaciones, los miembros y las notificaciones. La lista se cambia en un solo lugar: `DEMO_API_REAL` (`docker-compose.demo.yml` la pasa a `NEXT_PUBLIC_API_REAL` al construir `front`).
 
 > **Por qué los planes y las publicaciones son mocks hoy.** El backend ya tiene `billing.plans`, `social.posts` y `social.post`, pero no la suscripción ni crear una publicación. Con esos tres en real, «tu plan» no coincide con ningún plan de la lista y una publicación creada en la demo no aparece en el calendario. Quedan en mocks hasta que estén los endpoints de suscripción.
 >
-> **La lista se va a ampliar.** Hay PRs en curso para billetera, movimientos y precios, para suscripción y compras, y para workspaces y miembros. Cuando se mergeen, se suman sus dominios (`billing`, `workspaces`) al valor por defecto de `DEMO_API_REAL` en `docker-compose.demo.yml`, se reconstruye con `demo up -d --build front` y se actualiza la tabla de abajo. Un dominio en la lista va entero al backend, también lo que todavía no existe ahí (responde 404): si falta algo, nombrá los endpoints uno por uno. `DEMO_API_REAL=existing` manda al backend todo lo que el contrato marca como existente.
+> **La lista se va a ampliar.** Billetera, movimientos y precios ya están (PR #153). Hay PRs en curso para suscripción y compras, y para workspaces y miembros. Cuando se mergeen, se suman sus endpoints (`billing.plans`, `billing.subscription`, `billing.changePlan`, las compras, y `workspaces`) al valor por defecto de `DEMO_API_REAL` en `docker-compose.demo.yml`, se reconstruye con `demo up -d --build front` y se actualiza la tabla de abajo. Un dominio en la lista va entero al backend, también lo que todavía no existe ahí (responde 404): si falta algo, nombrá los endpoints uno por uno. `DEMO_API_REAL=existing` manda al backend todo lo que el contrato marca como existente.
 
 | Pantalla | Ruta | Quién responde |
 |---|---|---|
 | Iniciar sesión | `/login` | **Backend** |
 | Proyectos | `/proyectos` | **Backend** |
-| Nuevo proyecto | `/proyectos/nuevo` | **Backend** crea, valida y cobra. El costo estimado y los límites del plan que se ven antes son mock |
+| Nuevo proyecto | `/proyectos/nuevo` | **Backend** crea, valida, estima y cobra. Los límites del plan que se ven antes son mock |
 | Proyecto: resumen, transcripción, actividad | `/proyectos/:id` | **Backend** |
 | Revisión de clips | `/proyectos/:id/revision` | **Backend**, también el video y el render |
 | Clips, editor de clip y descargas | `/proyectos/:id/clips` | **Backend**. La miniatura de cada clip es un dibujo: todavía no existe en el backend |
 | Brand kits | `/brand-kits` | **Backend** (duplicar es mock) |
 | Mi cuenta y avisos por email | menú del usuario | **Backend** |
-| Saldo de la barra, Uso y facturación, Planes, Comprar tokens | `/uso` | Mock |
+| Saldo de la barra, Uso (consumo y movimientos) | `/uso` | **Backend** |
+| Planes y Comprar tokens | `/uso/planes`, `/uso/comprar` | Mock |
 | Redes sociales | `/ajustes/redes` | Mock |
 | Publicar y Publicaciones | panel «Publicar», `/publicaciones` | Mock |
 | Miembros y ajustes del workspace | `/ajustes` | Mock |
@@ -74,7 +75,7 @@ La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario,
 
 Dos cosas para tener presentes:
 
-- **El saldo que se ve es el del mock.** Arranca en 4.860, igual que el real, pero no baja cuando el backend cobra. El saldo real está en `GET /api/v1/me/`, o en el admin de Django (`http://localhost:8080/admin/`) si creaste un usuario para entrar: `demo exec web python manage.py createsuperuser`. El usuario de la demo no entra al admin.
+- **El saldo que se ve es el real** (`GET /api/v1/wallet/`): baja cuando el backend cobra y vuelve cuando devuelve. Para ver los movimientos uno por uno, Uso → Movimientos, o el admin de Django (`http://localhost:8080/admin/`) si creaste un usuario para entrar: `demo exec web python manage.py createsuperuser`. El usuario de la demo no entra al admin.
 - El botón del matraz (borde izquierdo) muestra qué dominio es real y cuál es mock. Cada respuesta de un mock lleva la cabecera `X-OC-Mock`.
 
 ## 4. El recorrido

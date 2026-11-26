@@ -88,7 +88,7 @@ services:
         # Planes, billetera, redes, publicaciones, miembros y notificaciones quedan enteros
         # en mocks, para que cada área sea coherente (ver el runbook). DEMO_API_REAL=existing
         # manda al backend todo lo que el contrato marca exists o partial.
-        NEXT_PUBLIC_API_REAL: ${DEMO_API_REAL:-users,system,projects,clips,brandKits.list,brandKits.create,brandKits.detail,brandKits.update,brandKits.delete}
+        NEXT_PUBLIC_API_REAL: ${DEMO_API_REAL:-users,system,projects,clips,brandKits.list,brandKits.create,brandKits.detail,brandKits.update,brandKits.delete,billing.wallet,billing.usage,billing.transactions,billing.exportTransactions,billing.pricing,billing.estimate}
     restart: on-failure
 
   proxy:
