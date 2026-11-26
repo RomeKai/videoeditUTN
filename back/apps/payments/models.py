@@ -1,6 +1,8 @@
 ﻿import uuid
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.db.models import F
+from django.db.models.functions import Coalesce
 from django.db import transaction
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
@@ -179,6 +181,8 @@ class Transaction(models.Model):
 
     class Meta:
         indexes = [
-            # The movements of a wallet, newest first.
-            models.Index(fields=['wallet', '-created_at'], name='payments_txn_wallet_created'),
+            # The movements of a wallet, newest first by when they last moved
+            # the balance (apps/payments/services/movements.py · MOVED_AT): the
+            # first page, and a month of it, read only this index.
+            models.Index(F('wallet'), Coalesce('settled_at', 'created_at').desc(), name='payments_txn_wallet_moved'),
         ]

@@ -66,8 +66,8 @@ class TransactionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Transaction
         fields = [
-            'id', 'wallet', 'created_by', 'amount', 'transaction_type', 'status', 'description', 'created_at',
-            'kind', 'created_by_detail', 'project', 'category',
+            'id', 'wallet', 'created_by', 'amount', 'reserved_amount', 'transaction_type', 'status', 'description',
+            'created_at', 'settled_at', 'kind', 'created_by_detail', 'project', 'category',
         ]
         read_only_fields = fields
 

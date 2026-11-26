@@ -5,6 +5,7 @@
 # 0016 fills both for the rows that already exist.
 
 import django.db.models.deletion
+import django.db.models.functions.comparison
 from django.db import migrations, models
 
 
@@ -42,10 +43,13 @@ class Migration(migrations.Migration):
                 to="videos.videoproject",
             ),
         ),
+        # Built without CONCURRENTLY: payments_transaction is small today.
         migrations.AddIndex(
             model_name="transaction",
             index=models.Index(
-                fields=["wallet", "-created_at"], name="payments_txn_wallet_created"
+                models.F("wallet"),
+                django.db.models.functions.comparison.Coalesce("settled_at", "created_at").desc(),
+                name="payments_txn_wallet_moved",
             ),
         ),
     ]

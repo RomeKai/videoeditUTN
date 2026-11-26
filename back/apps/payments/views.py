@@ -124,7 +124,7 @@ class WalletView(_WalletView):
             'available_balance': movements.money(wallet.available_balance),
             'reserved_balance': movements.money(wallet.reserved_balance),
             'updated_at': wallet.updated_at,
-            'spent_this_month': movements.money(movements.spent_in_month(workspace, *movements.current_month(now))),
+            'spent_this_month': movements.money(movements.spent_in_month(wallet.pk, *movements.current_month(now))),
             'low_balance_threshold': movements.money(low_balance_threshold(workspace.subscription_plan)),
             'reservations': [
                 {
@@ -149,7 +149,7 @@ class WalletUsageView(_WalletView):
         query = UsageQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         month = query.validated_data.get('month') or movements.current_month(timezone.now())
-        return Response(movements.usage(self.workspace(), *month))
+        return Response(movements.usage(movements.wallet_id_of(self.workspace()), *month))
 
 
 class TransactionPagination(PageNumberPagination):
@@ -180,9 +180,11 @@ class _MovementsView(_WalletView):
 
 class TransactionListView(_MovementsView, ListAPIView):
     """
-    G2: the movements, newest first, with ``kind`` and the project linked.
-    ``totals`` counts every kind under the same month and project, ignoring
-    ``kind`` and the page. Three queries whatever the page size.
+    G2: the movements, newest first by when they last moved the balance, with
+    ``kind`` and the project linked. ``totals`` counts every kind under the
+    same month and project, ignoring ``kind`` and the page; ``released`` adds
+    what partial charges gave back. Four queries whatever the page size: the
+    wallet, the totals, the count and the page.
     """
 
     serializer_class = TransactionSerializer
@@ -194,15 +196,19 @@ class TransactionListView(_MovementsView, ListAPIView):
 
     def list(self, request, *args, **kwargs):
         filters = self.filters()
-        workspace = self.workspace()
-        scoped = movements.movements(workspace, month=filters.get('month'), project=filters.get('project'))
+        wallet_id = movements.wallet_id_of(self.workspace())
+        scoped = movements.movements(wallet_id, month=filters.get('month'), project=filters.get('project'))
         self.paginator.totals = movements.totals(scoped)
-        self.queryset = movements.with_details(movements.movements(workspace, **filters))
+        self.queryset = movements.with_details(movements.movements(wallet_id, **filters))
         return super().list(request, *args, **kwargs)
 
 
 class TransactionExportView(_MovementsView):
-    """G2 › Exportar: the same movements as CSV, the whole history (no page)."""
+    """
+    G2 › Exportar: the ledger of the same movements as CSV, one row per change
+    of the balance, the whole history (no page). Its amounts add up to what the
+    balance did in the month exported (movements.ledger).
+    """
 
     @extend_schema(
         parameters=[TransactionsQuerySerializer],
@@ -210,8 +216,7 @@ class TransactionExportView(_MovementsView):
         tags=['billing'],
     )
     def get(self, request):
-        filters = self.filters()
-        rows = movements.with_details(movements.movements(self.workspace(), **filters))
-        response = HttpResponse(movements.csv_text(rows), content_type='text/csv; charset=utf-8')
+        changes = movements.ledger(movements.wallet_id_of(self.workspace()), **self.filters())
+        response = HttpResponse(movements.csv_text(changes), content_type='text/csv; charset=utf-8')
         response['Content-Disposition'] = 'attachment; filename="movimientos.csv"'
         return response
