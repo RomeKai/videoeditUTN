@@ -3,7 +3,7 @@ import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { apiCall, REFRESH_LOCK_NAME, toFormData } from './client';
+import { apiCall, REFRESH_LOCK_NAME, REFRESH_LOCK_WAIT_MS, toFormData } from './client';
 import { errorMessage } from '@/lib/error-messages';
 import { API_URL, REQUEST_TIMEOUT_MS, SLOW_REQUEST_TIMEOUT_MS, UPLOAD_STALL_TIMEOUT_MS, WORKSPACE_HEADER } from './config';
 import { exportTransactions } from './contracts/billing';
@@ -713,14 +713,32 @@ function otherTabStores(pair: { access: string; refresh: string } | null): void 
 function fakeLocks() {
   const queues = new Map<string, Promise<unknown>>();
   const names: string[] = [];
-  const request = <T,>(name: string, run: () => Promise<T>): Promise<T> => {
+  const signals: Array<AbortSignal | undefined> = [];
+  const request = <T,>(name: string, options: { signal?: AbortSignal }, run: () => Promise<T>): Promise<T> => {
     names.push(name);
+    signals.push(options.signal);
+    if (options.signal) {
+      // As the browser: a request still waiting when its signal aborts is rejected.
+      let granted = false;
+      const previous = queues.get(name) ?? Promise.resolve();
+      return new Promise<T>((resolve, reject) => {
+        options.signal?.addEventListener('abort', () => {
+          if (!granted) reject(new DOMException('Aborted', 'AbortError'));
+        });
+        const mine = previous.then(() => {
+          if (options.signal?.aborted) return undefined;
+          granted = true;
+          return run().then(resolve, reject);
+        });
+        queues.set(name, mine);
+      });
+    }
     const previous = queues.get(name) ?? Promise.resolve();
     const mine = previous.then(run, run);
     queues.set(name, mine.catch(() => undefined));
     return mine;
   };
-  return { locks: { request }, names };
+  return { locks: { request }, names, signals };
 }
 
 function deferred<T = void>() {
@@ -770,7 +788,7 @@ describe('renovar el token con varias pestañas', () => {
     );
     // The other tab holds the lock while it renews.
     const otherTab = deferred();
-    const held = locks.request(REFRESH_LOCK_NAME, () => otherTab.promise);
+    const held = locks.request(REFRESH_LOCK_NAME, {}, () => otherTab.promise);
     const call = apiCall(getThing, { params: { id: '1' } });
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(refreshes).toBe(0);
@@ -835,6 +853,72 @@ describe('renovar el token con varias pestañas', () => {
     expect(isSessionExpired()).toBe(true);
   });
 
+  it('una pestaña suspendida con el lock no cuelga a las demás: pasado el plazo, renueva sin él', async () => {
+    const { locks, signals } = fakeLocks();
+    vi.stubGlobal('navigator', { ...navigator, locks });
+    // The wait for the lock has a deadline; here it is due almost at once.
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 40);
+      return controller.signal;
+    });
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    server.use(thingNeedsToken('nuevo'), http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ access: 'nuevo', refresh: 'refresh-2' })));
+    // The other tab took the lock and never lets go.
+    void locks.request(REFRESH_LOCK_NAME, {}, () => new Promise<void>(() => undefined));
+    await expect(apiCall(getThing, { params: { id: '1' } })).resolves.toEqual({ id: 1, name: 'Ok' });
+    expect(timeout).toHaveBeenCalledWith(REFRESH_LOCK_WAIT_MS);
+    expect(REFRESH_LOCK_WAIT_MS).toBeGreaterThan(REQUEST_TIMEOUT_MS);
+    expect(signals.at(-1)).toBeInstanceOf(AbortSignal);
+    expect(getTokens()).toEqual({ access: 'nuevo', refresh: 'refresh-2' });
+    timeout.mockRestore();
+  });
+
+  it('con el lock: si un cambio de contraseña en otra pestaña llegó antes al servidor, espera su par en vez de dar la sesión por vencida', async () => {
+    const { locks } = fakeLocks();
+    vi.stubGlobal('navigator', { ...navigator, locks });
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    const expired = vi.fn();
+    const off = onSessionExpired(expired);
+    server.use(
+      thingNeedsToken('del-cambio'),
+      http.post(`${API_URL}/api/token/refresh/`, () => {
+        // POST /me/password/ takes no lock: its new pair is still on its way to the other tab.
+        setTimeout(() => otherTabStores({ access: 'del-cambio', refresh: 'refresh-del-cambio' }), 120);
+        return HttpResponse.json({ detail: 'Token is blacklisted', code: 'token_not_valid' }, { status: 401 });
+      }),
+    );
+    await expect(apiCall(getThing, { params: { id: '1' } })).resolves.toEqual({ id: 1, name: 'Ok' });
+    expect(expired).not.toHaveBeenCalled();
+    off();
+  });
+
+  it('un evento de storage que llega tarde no descarta una renovación válida', async () => {
+    // Tab A rotated refresh-1 into refresh-2. This tab read refresh-2 from storage before A's
+    // `storage` event arrived, and renews with it; the event lands while the request is in flight.
+    const unsubscribe = subscribeSession(() => undefined);
+    otherTabStores({ access: 'de-a', refresh: 'refresh-2' });
+    const refreshArrived = deferred();
+    const release = deferred();
+    server.use(
+      thingNeedsToken('acceso-3'),
+      http.post(`${API_URL}/api/token/refresh/`, async ({ request }) => {
+        expect(await request.json()).toEqual({ refresh: 'refresh-2' });
+        refreshArrived.resolve();
+        await release.promise;
+        return HttpResponse.json({ access: 'acceso-3', refresh: 'refresh-3' });
+      }),
+    );
+    const call = apiCall(getThing, { params: { id: '1' } });
+    await refreshArrived.promise;
+    window.dispatchEvent(new StorageEvent('storage', { key: AUTH_STORAGE_KEY, oldValue: JSON.stringify({ access: 'viejo', refresh: 'refresh-1' }), newValue: JSON.stringify({ access: 'de-a', refresh: 'refresh-2' }) }));
+    release.resolve();
+    await expect(call).resolves.toEqual({ id: 1, name: 'Ok' });
+    // refresh-2 is blacklisted now: keeping it would end the session at the next renewal.
+    expect(getTokens()).toEqual({ access: 'acceso-3', refresh: 'refresh-3' });
+    unsubscribe();
+  });
+
   it('si el navegador no deja pedir el lock, renueva igual', async () => {
     vi.stubGlobal('navigator', { ...navigator, locks: { request: () => Promise.reject(new DOMException('no', 'SecurityError')) } });
     setTokens({ access: 'viejo', refresh: 'refresh-1' });
@@ -896,6 +980,29 @@ describe('un par nuevo anula la renovación en vuelo', () => {
     await expect(call).resolves.toEqual({ id: 1, name: 'Ok' });
     expect(isSessionExpired()).toBe(false);
     expect(getTokens()).toEqual({ access: 'del-cambio', refresh: 'refresh-del-cambio' });
+  });
+
+  it('un par guardado en esta pestaña con el mismo refresh también gana (solo la generación lo distingue)', async () => {
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    const refreshArrived = deferred();
+    const release = deferred();
+    server.use(
+      http.get(`${API_URL}/api/v1/things/:id/`, ({ request }) =>
+        request.headers.get('Authorization') === 'Bearer guardado-después' ? HttpResponse.json({ id: 1, name: 'Ok' }) : HttpResponse.json({ detail: 'Token vencido' }, { status: 401 }),
+      ),
+      http.post(`${API_URL}/api/token/refresh/`, async () => {
+        refreshArrived.resolve();
+        await release.promise;
+        return HttpResponse.json({ access: 'tarde', refresh: 'refresh-tarde' });
+      }),
+    );
+    const call = apiCall(getThing, { params: { id: '1' } });
+    await refreshArrived.promise;
+    // Same refresh string, another access token: comparing the stored pair cannot tell it was replaced.
+    setTokens({ access: 'guardado-después', refresh: 'refresh-1' });
+    release.resolve();
+    await expect(call).resolves.toEqual({ id: 1, name: 'Ok' });
+    expect(getTokens()).toEqual({ access: 'guardado-después', refresh: 'refresh-1' });
   });
 
   it('cerrar sesión mientras se renueva: la renovación no la revive', async () => {
