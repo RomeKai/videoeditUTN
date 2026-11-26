@@ -6,6 +6,7 @@ from .reaction import ReactionLayout
 from .cinematic import CinematicLayout
 from .pip import PipLayout
 from .podcast import PodcastLayout
+from .trending import TrendingLayout
 
 LAYOUT_REGISTRY = {
     'fill': FillLayout,
@@ -18,6 +19,7 @@ LAYOUT_REGISTRY = {
     'reaction': ReactionLayout,
     'cinematic': CinematicLayout,
     'podcast': PodcastLayout,
+    'trending': TrendingLayout,
 }
 
 def get_layout_strategy(layout_name, target_w, target_h, use_facetracking=False, gameplay_pos='center', camera_selection_pos='center', manual_camera_coords=None, editing_style=None, static=False, layout_options=None):

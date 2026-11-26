@@ -273,3 +273,71 @@ def test_pip_corner_comes_from_the_layout_options(synthetic_clip):
 
 def test_layout_options_default_to_empty():
     assert get_layout_strategy("fill", 360, 640).layout_options == {}
+
+
+# --- trending ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("#00FF80", (0, 255, 128)),
+    ("#ff2d55", (255, 45, 85)),
+    ("rojo", (255, 45, 85)),  # inválido: color por defecto
+    (None, (255, 45, 85)),
+])
+def test_trending_color_parsing(value, expected):
+    from apps.videos.services.layouts.trending import parse_color
+
+    assert parse_color(value) == expected
+
+
+@pytest.mark.parametrize("target_w, target_h", [(360, 640), (360, 360), (640, 360), (1080, 1920)])
+@pytest.mark.parametrize("has_text", [True, False])
+def test_trending_geometry_is_even_and_inside(target_w, target_h, has_text):
+    from apps.videos.services.layouts.trending import trending_geometry
+
+    border, band_h, inner_w, inner_h = trending_geometry(target_w, target_h, has_text)
+    assert inner_w % 2 == 0 and inner_h % 2 == 0
+    assert border * 2 + inner_w <= target_w
+    assert border * 2 + band_h + inner_h <= target_h
+    assert (band_h > 0) == has_text
+
+
+def test_gradient_goes_from_one_color_to_the_other():
+    from apps.videos.services.layouts.trending import gradient_frame
+
+    frame = gradient_frame(400, 200, (255, 0, 0), (0, 0, 255), angle=0.0)
+    assert frame.shape == (200, 400, 3)
+    assert frame[100, 0, 0] > frame[100, -1, 0]  # rojo a la izquierda
+    assert frame[100, -1, 2] > frame[100, 0, 2]  # azul a la derecha
+
+
+@pytest.mark.parametrize("target_w, target_h", TARGETS)
+def test_trending_frames_the_video_with_the_text_above(target_w, target_h, synthetic_clip):
+    from apps.videos.services.layouts.trending import trending_geometry
+
+    options = {"trending_color": "#00FF80", "trending_text": "Lo que nadie te cuenta"}
+    result = get_layout_strategy("trending", target_w, target_h, layout_options=options).apply(synthetic_clip)
+
+    border, band_h, inner_w, inner_h = trending_geometry(target_w, target_h, True)
+    _bg, video = result.clips
+    assert tuple(video.size) == (inner_w, inner_h)
+    assert video.pos(0) == (border, border + band_h)
+    frame = result.get_frame(0.5)
+    band = frame[border:border + band_h, border:border + inner_w]
+    assert (band.min(axis=2) > 200).any()  # texto blanco
+    assert (band.max(axis=2) < 60).any()  # contorno oscuro
+
+
+def test_trending_without_text_has_no_band(synthetic_clip):
+    from apps.videos.services.layouts.trending import trending_geometry
+
+    result = get_layout_strategy("trending", 360, 640).apply(synthetic_clip)
+    border, band_h, _w, _h = trending_geometry(360, 640, False)
+    assert band_h == 0
+    assert result.clips[1].pos(0) == (border, border)
+
+
+def test_trending_gradient_turns_over_time(synthetic_clip):
+    result = get_layout_strategy("trending", 360, 640).apply(synthetic_clip)
+    bg = result.clips[0]
+    assert not (bg.get_frame(0.0) == bg.get_frame(1.5)).all()
