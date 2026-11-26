@@ -64,19 +64,35 @@ from backend.celery import app as celery_app
 
 logger = logging.getLogger(__name__)
 
+class UnsupportedLinkError(ValueError):
+    """The link is not one of the sites the app downloads from (services/link_validation.py)."""
+
+
 def download_from_youtube(url, output_folder):
     import yt_dlp
-    
+    from apps.videos.services.link_probe_worker import ALLOWED_EXTRACTORS, REFERER, USER_AGENT
+    from apps.videos.services.link_validation import LinkRejected, validate_video_link
+
+    # Also for rows saved before the creation checked the link. A host that
+    # does not resolve raises its OSError (retried); a refused one does not retry.
+    try:
+        url = validate_video_link(url, resolve=True).url
+    except LinkRejected:
+        raise UnsupportedLinkError("The link is not on an allowed site.") from None
+
     filename = f"{uuid.uuid4()}.mp4"
     output_path = os.path.join(output_folder, filename)
-    
+
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': output_path,
         'quiet': True,
         'no_warnings': True,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'referer': 'https://www.google.com/',
+        'noplaylist': True,
+        # Never the generic extractor: it would fetch whatever the page points to.
+        'allowed_extractors': ALLOWED_EXTRACTORS,
+        'user_agent': USER_AGENT,
+        'referer': REFERER,
     }
     
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:

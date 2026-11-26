@@ -369,7 +369,8 @@ Otras respuestas:
   - ✅ `project_type` (`repurpose` o `single_edit`). `single_edit` solo acepta un archivo de hasta 10 min (`AI_SINGLE_EDIT_MAX_DURATION_SECONDS`); con un link o un archivo más largo da 400. No cambia después de crear.
   - ✅ `speaker_tracking=true` sin layout crea el proyecto con Quien habla (`render_layout=active`).
   - ❌ falta el endpoint de precios para el estimado.
-  - ⚠️ los links no pasan por la validación de duración del plan (sí por la de resolución y SEO).
+  - ✅ `POST /api/v1/projects/probe-link/` reconoce el link antes de crear (sitio, título y duración) y responde 403 `duration` si supera el plan. Crear igual no exige la duración: el link sigue con su precio fijo.
+  - ✅ solo se aceptan links de YouTube, Vimeo, Twitch y Google Drive, nunca una IP ni una dirección interna.
 
 ### D. Proyecto
 
@@ -393,8 +394,9 @@ Otras respuestas:
 - **Móvil:** las pestañas pasan a un selector y la línea de tiempo queda vertical.
 - **API:**
   - ✅ `GET /api/v1/projects/:id/`, que incluye `pipeline_stage`, `pipeline_stage_status`, `pipeline_error_code` y `metadata`.
+  - ✅ `GET /api/v1/projects/:id/activity/`: la pestaña Actividad, armada con lo guardado (creación, prompt, revisión, aprobación, reservas, cobros, devoluciones, fin del render, falla y publicaciones). No trae renombres ni ediciones o reintentos de clips: no se guardan.
   - ❌ no hay tiempos por etapa.
-  - ❌ no hay vínculo directo entre el proyecto y su transacción.
+  - ❌ no hay vínculo directo entre el proyecto y su transacción (la actividad la encuentra por las claves de la metadata).
   - ❌ falta un estado "devuelto": hoy una devolución deja la transacción en `FAILED`.
 
 #### D2. Revisión de clips — `/proyectos/:id/revision`
@@ -448,9 +450,9 @@ Otras respuestas:
 - **Móvil:** dos columnas; las acciones se abren en una hoja inferior.
 - **API:**
   - ✅ los clips llegan dentro del proyecto: uno por segmento aprobado en D2, cada uno con su estado (`draft` mientras espera su render, `rendering`, `completed` o `failed`). El proyecto termina `completed`, o `partial` si algún clip falló.
-  - ❌ falta un link de descarga firmado por clip: `s3_object_key` no es una URL.
+  - ✅ `GET /api/v1/clips/:id/download/`: link firmado y temporal que guarda el clip como archivo.
   - ❌ falta reintentar el render de un clip.
-  - ❌ falta el .zip.
+  - ✅ `POST /api/v1/projects/:id/clips/download/`: .zip de los clips listos, con tope de 1 GB y 50 clips.
 
 #### D4. Editor de clip — `/proyectos/:id/clips/:clipId`
 - **Decisión del MVP:** el editor cambia **recorte y título** del clip y vuelve a renderizar con la configuración del proyecto.
@@ -736,7 +738,7 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad:
 | 2 | `GET/PATCH /me` con workspaces, rol en cada uno y workspace activo | Barra, B1, J3, I1 | P0 |
 | 3 | ~~Roles aplicados en la API (tabla 1.7)~~ Resuelto: la API aplica los roles sobre el workspace de `X-Workspace-Id` y responde 403 con el motivo | Todas | — |
 | 4 | Wallet y transacciones (`GET /wallet`, `GET /transactions`), con vínculo al proyecto y estado "devuelto" visible | Barra, D1, G1, G2 | P0 |
-| 5 | Link de descarga firmado por clip | D3, D4 | P0 |
+| 5 | ~~Link de descarga firmado por clip~~ Resuelto: `GET /clips/:id/download/` | D3, D4 | — |
 | 6 | Endpoint de precios (fórmula y planes) para el estimado | C1, A6, G3 | P0 |
 | 7 | ~~Campo `render_resolution` al crear, y alinear el render por defecto con el precio~~ Resuelto: se elige al crear y el render por defecto es 720p, como el precio | C1 | — |
 | 8 | Crear, listar, editar, cancelar y reintentar `ScheduledPost` | E1, E2 | P1 |
@@ -748,7 +750,7 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad:
 | 14 | Paginación y filtro por estado en proyectos | B2 | P1 |
 | 15 | Tiempos por etapa del pipeline | D1 | P2 |
 | 16 | Notificaciones (modelo y emails) | J2, I2 | P2 |
-| 17 | Descargar todo en .zip | D3 | P2 |
+| 17 | ~~Descargar todo en .zip~~ Resuelto: `POST /projects/:id/clips/download/` | D3 | — |
 | 18 | Tiempo estimado del proceso ("Listo para revisar en ≈ 12 min") | C1, D1 | P2 |
 | 19 | Total reservado del workspace con el detalle por proyecto | G1, barra | P1 |
 | 20 | ~~Pipeline propio para `single_edit`: un solo video de salida, sin revisión~~ Resuelto: el video entero es un solo clip que se renderiza sin revisión; solo con archivo subido | C1, D5 | — |

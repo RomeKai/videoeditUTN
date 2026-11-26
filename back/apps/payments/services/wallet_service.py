@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.utils import timezone
 from decimal import Decimal
 from ..models import Wallet, Transaction
 from apps.videos.tasks import process_video_pipeline
@@ -38,6 +39,7 @@ def reserve_funds(wallet_id, amount: Decimal, project_id=None, user=None, descri
         wallet=wallet,
         created_by=user,
         amount=amount,
+        reserved_amount=amount,
         transaction_type=Transaction.Type.SPEND,
         status=Transaction.Status.RESERVED,
         description=description
@@ -72,6 +74,7 @@ def commit_reservation(transaction_id) -> Transaction:
     wallet.save()
 
     txn.status = Transaction.Status.COMPLETED
+    txn.settled_at = timezone.now()
     txn.save()
     
     return txn
@@ -106,6 +109,7 @@ def commit_partial_reservation(transaction_id, amount: Decimal) -> Transaction:
 
     txn.amount = amount
     txn.status = Transaction.Status.COMPLETED
+    txn.settled_at = timezone.now()
     txn.save()
 
     return txn
@@ -132,6 +136,7 @@ def rollback_reservation(transaction_id) -> Transaction:
     wallet.save()
 
     txn.status = Transaction.Status.FAILED
+    txn.settled_at = timezone.now()
     txn.save()
     
     return txn

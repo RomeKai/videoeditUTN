@@ -114,3 +114,10 @@ class Transaction(models.Model):
     # reservations older than its --min-age-hours. Rows from before the column
     # existed carry the time of migration 0003.
     created_at = models.DateTimeField(auto_now_add=True)
+    # What the reservation set aside: a partial charge (commit_partial_reservation)
+    # overwrites ``amount`` with what was charged, so the project's activity
+    # tells the part returned from this one. Null on rows from before migration 0006.
+    reserved_amount = models.DecimalField(max_digits=20, decimal_places=10, null=True, blank=True)
+    # When the reservation was charged or returned (it left RESERVED). Null
+    # while it is reserved, and on rows settled before migration 0006.
+    settled_at = models.DateTimeField(null=True, blank=True)

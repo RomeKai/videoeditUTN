@@ -175,3 +175,23 @@ def test_concurrent_reserves_never_overspend(wallet_factory):
     assert wallet.available_balance == Decimal("10.00")
     assert wallet.reserved_balance == Decimal("90.00")
     assert Transaction.objects.filter(wallet_id=wallet_id).count() == 6
+
+
+# --- what the project's activity reads ---------------------------------------
+
+def test_a_reservation_keeps_what_it_reserved_and_when_it_was_settled(wallet_factory):
+    from apps.payments.services.wallet_service import commit_partial_reservation
+
+    wallet = wallet_factory("100.00")
+    reserved = reserve_funds(wallet.id, Decimal("30.00"))
+    assert (reserved.reserved_amount, reserved.settled_at) == (Decimal("30.00"), None)
+
+    charged = commit_reservation(reserve_funds(wallet.id, Decimal("10.00")).id)
+    returned = rollback_reservation(reserve_funds(wallet.id, Decimal("10.00")).id)
+    partial = commit_partial_reservation(reserved.id, Decimal("12.00"))
+
+    for txn in (charged, returned, partial):
+        txn.refresh_from_db()
+        assert txn.settled_at is not None
+    # The partial charge overwrites the amount; what was reserved stays.
+    assert (partial.amount, partial.reserved_amount) == (Decimal("12.00"), Decimal("30.00"))
