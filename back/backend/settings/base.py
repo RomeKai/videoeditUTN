@@ -118,6 +118,9 @@ USE_TZ = True
 MAINTENANCE_MODE = env.bool('MAINTENANCE_MODE', default=False)
 MAINTENANCE_STARTS_AT = env('MAINTENANCE_STARTS_AT', default='')
 MAINTENANCE_ENDS_AT = env('MAINTENANCE_ENDS_AT', default='')
+# Paths that keep answering during maintenance besides /api/v1/status/
+# (webhooks, health checks), comma-separated; each one covers what is below it.
+MAINTENANCE_EXEMPT_PATHS = env.list('MAINTENANCE_EXEMPT_PATHS', default=[])
 
 # --- EMAILS TO USERS ---
 # The links of the emails open the web app (the verification of a new email

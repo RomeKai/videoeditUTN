@@ -93,3 +93,32 @@ def test_the_browser_can_read_the_503():
 @override_settings(MAINTENANCE_MODE=True)
 def test_the_admin_keeps_working_during_maintenance():
     assert APIClient().get("/admin/login/").status_code == 200
+
+
+@pytest.mark.django_db
+@override_settings(MAINTENANCE_MODE=True)
+def test_the_status_answers_without_the_final_slash_too():
+    response = APIClient().get("/api/v1/status", follow=True)
+
+    assert response.status_code == 200
+    assert response.json()["maintenance"] is True
+
+
+@pytest.mark.django_db
+@override_settings(MAINTENANCE_MODE=True, MAINTENANCE_EXEMPT_PATHS=["/api/v1/plans/"])
+def test_exempt_paths_keep_answering_during_maintenance():
+    assert APIClient().get("/api/v1/plans/").status_code == 200
+    assert APIClient().get("/api/v1/me/").status_code == 503
+
+
+@pytest.mark.django_db
+@override_settings(MAINTENANCE_MODE=True)
+def test_the_503s_of_maintenance_are_not_logged_as_errors(caplog):
+    with caplog.at_level("INFO"):
+        response = APIClient().get("/api/v1/me/")
+
+    assert response.status_code == 503
+    assert not [record for record in caplog.records if record.levelname == "ERROR"]
+    assert [record.getMessage() for record in caplog.records if record.name == "apps.core.maintenance"] == [
+        "maintenance.rejected method=GET",
+    ]

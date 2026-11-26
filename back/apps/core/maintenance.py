@@ -5,8 +5,10 @@ With MAINTENANCE_MODE=True in the environment, `GET /api/v1/status/` says so
 (with the window of MAINTENANCE_STARTS_AT and MAINTENANCE_ENDS_AT, ISO 8601,
 when both are set) and every other `/api/` request answers 503: the web app
 shows K5 on any 503 until the API answers normally again. The admin keeps
-working.
+working, and so do the paths of MAINTENANCE_EXEMPT_PATHS (webhooks, health
+checks).
 """
+import logging
 from datetime import timezone as dt_timezone
 
 from django.conf import settings
@@ -16,6 +18,22 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 MAINTENANCE_DETAIL = 'Estamos haciendo mantenimiento. Volvé en un rato.'
+
+logger = logging.getLogger(__name__)
+
+
+def is_exempt(path):
+    """
+    The status endpoint and each MAINTENANCE_EXEMPT_PATHS entry, with or
+    without the final slash (this runs before APPEND_SLASH), and what is
+    below them.
+    """
+    path = path.rstrip('/')
+    for entry in (reverse('system-status'), *settings.MAINTENANCE_EXEMPT_PATHS):
+        entry = entry.rstrip('/')
+        if entry and (path == entry or path.startswith(f'{entry}/')):
+            return True
+    return False
 
 
 def _parse(value):
@@ -46,15 +64,14 @@ class MaintenanceModeMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
-        if (
-            settings.MAINTENANCE_MODE
-            and request.path.startswith('/api/')
-            and request.path != reverse('system-status')
-        ):
+        if settings.MAINTENANCE_MODE and request.path.startswith('/api/') and not is_exempt(request.path):
             response = JsonResponse({'detail': MAINTENANCE_DETAIL}, status=503)
             window = maintenance_window()
             now = timezone.now()
             if window and window['ends_at'] > now:
                 response['Retry-After'] = str(int((window['ends_at'] - now).total_seconds()) + 1)
+            # Expected while it lasts: INFO here instead of Django's ERROR for every 5xx.
+            logger.info('maintenance.rejected method=%s', request.method)
+            response._has_been_logged = True
             return response
         return self.get_response(request)
