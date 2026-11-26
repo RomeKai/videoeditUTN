@@ -272,10 +272,10 @@ sequenceDiagram
 5. El hijo corre yt-dlp con `ytdlp_safe` ([links admitidos](#links-admitidos)) más `skip_download`, `socket_timeout=10` y sin reintentos, y lee solo los datos.
 6. El texto del sitio no sale del hijo: `categorize` lo reduce a `unavailable` (privado, borrado, con login o restricción), `unsupported` (sin extractor, o un pedido a una dirección no pública) o `provider_error`, más la clase de la excepción.
 7. Un resultado que no es un video (lista, canal, vivo o sin duración) da 400 `unsupported`. La `video_url` de la respuesta es la página canónica del video si es del mismo sitio; si no, el link como llegó.
-8. La duración se juzga con `link_duration_rule`, la misma regla de la descarga: el tope es el menor entre `max_video_duration_seconds` del plan y `AI_UPLOAD_MAX_DURATION_SECONDS` (3 h).
-   - Si el tope es el del plan (es menor que el de la app), un video más largo da 403 `{error, code: "duration", limit}` (por ejemplo `El video dura 45 min y tu plan permite hasta 10 min.`). Otro plan lo toma.
-   - Si es el de la app (no hay plan, el plan permite lo mismo o más), da 400 `{error, code: "duration_app", limit}` (`El video dura 4 h 00 min y podemos procesar videos de hasta 3 h 00 min. Probá con uno más corto.`). Ningún plan lo toma, así que el mensaje no nombra el plan. Es 400, como `unsupported` y como un archivo subido que pasa las 3 h (`too_long`): es algo del link, no un permiso.
-   - Crear no pasa por el probe, así que la descarga vuelve a aplicar la regla, con el código que corresponde a cada caso (`LinkTooLongError` o `LinkTooLongForAppError`, [02](02-pipeline-de-ingesta.md)).
+8. La duración se juzga con `link_too_long_error`, la misma regla de la descarga, y decide la duración del video, en el orden de una subida (primero el tope de la app, después el del plan):
+   - Más larga que `AI_UPLOAD_MAX_DURATION_SECONDS` (3 h), con cualquier plan: 400 `{error, code: "duration_app", limit}` (`El video dura 4 h 00 min y podemos procesar videos de hasta 3 h 00 min. Probá con uno más corto.`). Ningún plan lo toma, así que el mensaje no nombra el plan. Es 400, como `unsupported` y como un archivo subido que pasa las 3 h (`too_long`): es algo del link, no un permiso.
+   - Dentro de las 3 h pero más larga que `max_video_duration_seconds` del plan: 403 `{error, code: "duration", limit}` (por ejemplo `El video dura 45 min y tu plan permite hasta 10 min.`). Un plan con videos más largos lo toma.
+   - Crear no pasa por el probe, así que la descarga vuelve a aplicar la regla, con el código de cada caso (`LinkTooLongForAppError` o `LinkTooLongError`, [02](02-pipeline-de-ingesta.md)).
 
 | Respuesta | Cuándo |
 |-----------|--------|
@@ -285,7 +285,7 @@ sequenceDiagram
 | 400 `unavailable` | Privado, borrado, con login o con restricción |
 | 400 `duration_app` | La duración supera las 3 h que procesa la app, con cualquier plan (`limit` en segundos) |
 | 400 `{video_url: [...]}` | Falta o pasa los 500 caracteres |
-| 403 | La duración supera el plan, y otro plan la permite (`code: "duration"`, `limit`), o el rol es Lector (`{detail}`) |
+| 403 | La duración supera el plan pero no las 3 h de la app (`code: "duration"`, `limit`), o el rol es Lector (`{detail}`) |
 | 404 | El workspace de `X-Workspace-Id` no es del usuario |
 | 429 | Más de 20 links en un minuto |
 | 502 `provider_error` | El sitio respondió con un error, o el host no resuelve |

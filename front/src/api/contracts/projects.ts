@@ -686,7 +686,7 @@ export const redispatchProject = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_clips.py · ProjectRedispatchView',
-    note: 'No cobra lo que sigue pagado: un proyecto con los clips elegidos sigue gratis (su render se paga solo). Lo que se devolvió al fallar (una etapa antes de elegir los clips, o el render de un video completo) se reserva otra vez y el pipeline lo liquida como al crear. Responde `cost_details` cuando reservó. El proyecto sigue `failed` hasta que la tarea lo reabre.',
+    note: 'No cobra lo que sigue pagado: un proyecto con los clips elegidos sigue gratis (su render se paga solo). Lo que se devolvió al fallar (una etapa antes de elegir los clips, o el render de un video completo) se reserva otra vez y el pipeline lo liquida como al crear. Responde `cost_details` cuando reservó. El proyecto sigue `failed` hasta que la tarea lo reabre. Un proyecto que falló con `LinkTooLongForAppError` (su link dura más de las 3 h que procesa la app) no se re-despacha: 409 `duration_app`, se crea otro con un video más corto. Uno con `LinkTooLongError` sí: el plan pudo cambiar.',
   },
   screens: ['D1'],
 });
@@ -782,9 +782,9 @@ export const probeLink = defineEndpoint({
   errors: [
     {
       status: 400,
-      when: 'El link no es una URL web (`code: "invalid"`), no es de un sitio soportado, es una IP o una dirección interna, o es una lista, un canal o un vivo (`code: "unsupported"`), o no se puede bajar: privado, borrado o con restricción (`code: "unavailable"`). O dura más de las 3 h que procesa la app con cualquier plan (`code: "duration_app"`, `limit` en segundos): no es culpa del plan, la UI no sugiere cambiarlo. Sin `video_url`: `{ video_url: [...] }`.',
+      when: 'El link no es una URL web (`code: "invalid"`), no es de un sitio soportado, es una IP o una dirección interna, o es una lista, un canal o un vivo (`code: "unsupported"`), o no se puede bajar: privado, borrado o con restricción (`code: "unavailable"`). Sin `video_url`: `{ video_url: [...] }`.',
     },
-    { status: 403, when: 'La duración supera el plan y otro plan la permite (`code: "duration"`, `limit` en segundos). La UI lo muestra junto al campo, con link a Planes. También el Lector (`{ detail }`): revisar un link es parte de crear.' },
+    { status: 403, when: 'La duración supera el plan (`code: "duration"`, `limit` en segundos). La UI lo muestra junto al campo, con link a Planes. También el Lector (`{ detail }`): revisar un link es parte de crear.' },
     { status: 404, when: 'El workspace de `X-Workspace-Id` no es del usuario.' },
     { status: 429, when: 'Más de 20 links por minuto del mismo usuario.' },
     { status: 502, when: 'El sitio del video respondió con un error o no se encontró su dirección (`code: "provider_error"`).' },
@@ -794,7 +794,7 @@ export const probeLink = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_project_data.py · ProbeLinkView + services/link_probe.py · probe_link',
-    note: 'Hosts admitidos, exactos: youtube.com (y www, m, music), youtu.be, vimeo.com (y www, player), twitch.tv (y www, m, clips, player) y drive.google.com (`LINK_HOSTS` de services/link_validation.py, los mismos que crear un proyecto y la descarga del worker). Antes de consultar nada rechaza otros esquemas, IPs, otros subdominios, usuario en la URL, puertos raros, hosts que resuelven a direcciones privadas y links que no nombran un solo video. yt-dlp lee solo los datos con los extractores de esos sitios (services/ytdlp_safe.py), sin pedidos ni redirecciones a direcciones no públicas, en un proceso aparte con entorno mínimo que se corta entero a los 25 s. `video_url` vuelve como la URL del video (`watch?v=<id>` en YouTube) y es la que hay que mandar al crear. Crear no exige el probe: la duración del plan vale igual en la descarga, y un video más largo hace fallar el proyecto con `LinkTooLongError` y la devolución de la reserva. Si además pasa las 3 h que procesa la app con cualquier plan (`AI_UPLOAD_MAX_DURATION_SECONDS`), el código es `LinkTooLongForAppError`: no es culpa del plan. El probe decide con la misma regla (`link_duration_rule` de tasks/shared.py): 403 `duration` o 400 `duration_app`. Un link leído se guarda 10 min en la caché.',
+    note: 'Hosts admitidos, exactos: youtube.com (y www, m, music), youtu.be, vimeo.com (y www, player), twitch.tv (y www, m, clips, player) y drive.google.com (`LINK_HOSTS` de services/link_validation.py, los mismos que crear un proyecto y la descarga del worker). Antes de consultar nada rechaza otros esquemas, IPs, otros subdominios, usuario en la URL, puertos raros, hosts que resuelven a direcciones privadas y links que no nombran un solo video. yt-dlp lee solo los datos con los extractores de esos sitios (services/ytdlp_safe.py), sin pedidos ni redirecciones a direcciones no públicas, en un proceso aparte con entorno mínimo que se corta entero a los 25 s. `video_url` vuelve como la URL del video (`watch?v=<id>` en YouTube) y es la que hay que mandar al crear. Crear no exige el probe: la duración del plan vale igual en la descarga, y un video más largo hace fallar el proyecto con `LinkTooLongError` y la devolución de la reserva. Si además pasa las 3 h que procesa la app con cualquier plan (`AI_UPLOAD_MAX_DURATION_SECONDS`), el código es `LinkTooLongForAppError`: no es culpa del plan. El probe decide con la misma regla (`link_too_long_error` de tasks/shared.py), por la duración del video: más de 3 h es 400 `duration_app` con cualquier plan; dentro de las 3 h y más que el plan, 403 `duration`. Un link leído se guarda 10 min en la caché.',
   },
   screens: ['C1'],
 });

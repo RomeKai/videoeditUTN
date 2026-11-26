@@ -89,7 +89,6 @@ from apps.videos.tasks.shared import (
     _selection_models,
     _transcription_demand,
     download_from_youtube,
-    link_duration_limit,
     link_too_long_error,
 )
 from apps.videos.tasks.render import (
@@ -246,18 +245,16 @@ def _stage_prepare_source(project_id):
     from apps.videos.services.storage_service import CloudflareR2Manager
 
     project = VideoProject.objects.select_related('workspace__subscription_plan').get(pk=project_id)
-    # A link is not priced by its duration: the plan's limit (or the app's,
-    # when it is the lower one) binds when it is fetched, with its own error.
-    link_limit = link_duration_limit(project) if project.video_url else None
-    too_long = link_too_long_error(project) if project.video_url else None
+    # A link is not priced by its duration: the app's and the plan's limits
+    # bind when it is fetched, each with its own error (link_too_long_error).
+    def duration_error(duration):
+        return link_too_long_error(duration, project.workspace)
 
     if not project.source_file and project.video_url:
         logger.info("⬇️ Downloading source from URL for project %s", project_id)
         download_dir = os.path.join(settings.MEDIA_ROOT, 'videos', 'raw', 'downloads')
         os.makedirs(download_dir, exist_ok=True)
-        local_path = download_from_youtube(
-            project.video_url, download_dir, max_duration_seconds=link_limit, too_long_error=too_long,
-        )
+        local_path = download_from_youtube(project.video_url, download_dir, duration_error=duration_error)
         try:
             with open(local_path, 'rb') as f:
                 project.source_file.save(os.path.basename(local_path), File(f), save=False)
@@ -270,12 +267,13 @@ def _stage_prepare_source(project_id):
     user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
 
     duration = resolution = None
-    if link_limit is not None:
+    if project.video_url:
         # Measured before anything else is done with it: the site may not have
         # said how long it was. Longer than allowed fails (and is refunded)
         # before the upload and the proxy.
         duration, resolution = _probe_video(source_path)
-        if duration > link_limit:
+        too_long = duration_error(duration)
+        if too_long is not None:
             raise too_long("The linked video is longer than allowed.")
 
     # A retry after a later failure inside this stage must not re-upload.

@@ -75,16 +75,16 @@ class UnsupportedLinkError(ValueError):
 class LinkTooLongError(ValueError):
     """
     The linked video is longer than the plan allows (its
-    ``max_video_duration_seconds``, below the app's limit): a plan with
-    longer videos takes it. Not retried.
+    ``max_video_duration_seconds``) and no longer than the app processes: a
+    plan with longer videos takes it. Not retried.
     """
 
 
 class LinkTooLongForAppError(ValueError):
     """
     The linked video is longer than the app processes at all
-    (AI_UPLOAD_MAX_DURATION_SECONDS, 3 h by default), whatever the plan: no
-    plan takes it. Not retried.
+    (AI_UPLOAD_MAX_DURATION_SECONDS, 3 h by default): no plan takes it. Not
+    retried, and a redispatch is refused (views_clips.ProjectRedispatchView).
     """
 
 
@@ -92,45 +92,45 @@ class LinkTooLargeError(ValueError):
     """The linked video's file is larger than LINK_DOWNLOAD_MAX_BYTES. Not retried."""
 
 
-def link_duration_rule(workspace):
-    """
-    ``(limit, error)`` of a link in ``workspace``: the longest video it may
-    download, and the error of a longer one. The limit is the lower of the
-    plan's ``max_video_duration_seconds`` and the app's
-    AI_UPLOAD_MAX_DURATION_SECONDS. The error is LinkTooLongError when the
-    plan's is the lower one (a plan with longer videos takes it), and
-    LinkTooLongForAppError when the app's is, both are the same or there is
-    no plan (no plan takes it). probe-link decides with it before creating
-    (403 ``duration`` or 400 ``duration_app``) and the download when the video
-    is fetched: the same rule on both paths.
-    """
+def link_duration_limits(workspace):
+    """``(app, plan)``: AI_UPLOAD_MAX_DURATION_SECONDS and the plan's ``max_video_duration_seconds`` (None without one)."""
     app_limit = getattr(settings, 'AI_UPLOAD_MAX_DURATION_SECONDS', 10800)
     plan = getattr(workspace, 'subscription_plan', None)
     plan_limit = plan.max_video_duration_seconds if plan is not None else None
-    if plan_limit and plan_limit < app_limit:
-        return plan_limit, LinkTooLongError
-    return app_limit, LinkTooLongForAppError
+    return app_limit, plan_limit or None
 
 
-def link_duration_limit(project):
-    """Longest video a link project may download (``link_duration_rule``)."""
-    return link_duration_rule(project.workspace)[0]
+def link_too_long_error(duration, workspace):
+    """
+    None when a link video of ``duration`` seconds fits ``workspace``, else
+    the error to raise, decided by the video's length, the order of an upload
+    (media_validation: the app's limit first, then the plan's):
+
+    - LinkTooLongForAppError: longer than the app's limit. No plan takes it.
+    - LinkTooLongError: within the app's limit, longer than the plan's. A plan
+      with longer videos takes it.
+
+    probe-link decides with it before creating (400 ``duration_app`` or 403
+    ``duration``) and the download when the video is fetched: one rule.
+    """
+    app_limit, plan_limit = link_duration_limits(workspace)
+    if duration > app_limit:
+        return LinkTooLongForAppError
+    if plan_limit and duration > plan_limit:
+        return LinkTooLongError
+    return None
 
 
-def link_too_long_error(project):
-    """The error of a link project's video longer than ``link_duration_limit`` (``link_duration_rule``)."""
-    return link_duration_rule(project.workspace)[1]
-
-
-def download_from_youtube(url, output_folder, max_duration_seconds=None, too_long_error=LinkTooLongError):
+def download_from_youtube(url, output_folder, duration_error=None):
     """
     Downloads the one video of ``url`` through ytdlp_safe: only the allowed
     sites' extractors, every hop checked again, one video that is not live,
-    no request or redirect to a non-public address, at most
-    LINK_DOWNLOAD_MAX_BYTES and, with ``max_duration_seconds``, nothing
-    longer (refused before downloading with ``too_long_error``: the one of
-    ``link_too_long_error``). Raises UnsupportedLinkError, LinkTooLongError
-    or LinkTooLongForAppError, LinkTooLargeError or yt-dlp's DownloadError.
+    no request or redirect to a non-public address and at most
+    LINK_DOWNLOAD_MAX_BYTES. With ``duration_error`` (a function of the
+    duration the site reports, ``link_too_long_error`` for a project), a video
+    it refuses is refused with its error before downloading. Raises
+    UnsupportedLinkError, LinkTooLongError, LinkTooLongForAppError,
+    LinkTooLargeError or yt-dlp's DownloadError.
     """
     from apps.videos.services import ytdlp_safe
     from apps.videos.services.link_validation import LinkRejected, validate_video_link
@@ -146,8 +146,11 @@ def download_from_youtube(url, output_folder, max_duration_seconds=None, too_lon
 
     def check_duration(info):
         duration = info.get('duration')
-        if max_duration_seconds and isinstance(duration, (int, float)) and duration > max_duration_seconds:
-            raise too_long_error("The linked video is longer than allowed.")
+        if duration_error is None or not isinstance(duration, (int, float)):
+            return
+        error = duration_error(duration)
+        if error is not None:
+            raise error("The linked video is longer than allowed.")
 
     try:
         return ytdlp_safe.download_video(

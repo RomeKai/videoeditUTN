@@ -78,6 +78,10 @@ MODERATION_CODES = frozenset({'UnsafeContentError'})
 # Failed and refunded because the broker never took its ingestion (the create
 # view): the pipeline never resumes it, so it is created again.
 INGESTION_NOT_QUEUED = 'IngestionNotQueued'
+# A link longer than the app processes with any plan (tasks/shared.py): a
+# resume downloads it and fails the same way. LinkTooLongError (over the plan)
+# is not one: the plan may have changed since.
+LINK_TOO_LONG_FOR_APP = 'LinkTooLongForAppError'
 # Where a refunded re-dispatch keeps the error code it replaced.
 REDISPATCH_PREVIOUS_CODE_KEY = 'redispatch_previous_error_code'
 # Posts that may still publish the clip's file: a render replaces that file
@@ -780,7 +784,8 @@ class ProjectRedispatchView(_WorkspaceScoped):
     reused. A project with its clips selected resumes free: its render pays
     itself (the auto-render reserves again; a review waits for its approval).
     409 when it is not failed, its content was blocked by moderation
-    (UnsafeContentError), its ingestion was never queued at creation, its clips
+    (UnsafeContentError), its ingestion was never queued at creation, its link
+    is longer than the app processes (LinkTooLongForAppError), its clips
     render one by one (their render was settled: each is retried from Clips)
     or its whole video was rendered already (``rerender/``). If the broker
     refuses the message, what was reserved goes back with REDISPATCH_NOT_QUEUED
@@ -850,6 +855,12 @@ class ProjectRedispatchView(_WorkspaceScoped):
             raise _Refused(_error(
                 409, "Este proyecto no llegó a procesarse y se devolvió lo reservado: creá uno nuevo.", 'not_queued',
             ))
+        if project.pipeline_error_code == LINK_TOO_LONG_FOR_APP:
+            # Reserving again would only fail and refund it again.
+            raise _Refused(_error(409, (
+                "El video del link dura más de lo que podemos procesar, con cualquier plan: no se puede volver "
+                "a procesar. Creá un proyecto con un video más corto."
+            ), 'duration_app'))
         metadata = project.metadata or {}
         resume = last_completed_stage(project)
         whole = _is_whole_video(project)

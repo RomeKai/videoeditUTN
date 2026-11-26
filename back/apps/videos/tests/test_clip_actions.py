@@ -1197,6 +1197,27 @@ class RedispatchTests(ClipActionsHarness, APITestCase):
                 delay.assert_not_called()
         self.assertFalse(Transaction.objects.filter(wallet=self.wallet, status=RESERVED).exists())
 
+    def test_a_link_longer_than_the_app_processes_is_not_redispatched_and_one_over_the_plan_is(self):
+        # Failed at the download, its creation refunded. Over the app's 3 h no
+        # plan takes it: reserving again would only fail and refund it again.
+        too_long = self.failed({"audio_extracted": "failed"}, code="LinkTooLongForAppError")
+
+        refused, delay = self.redispatch(too_long)
+
+        self.assertEqual((refused.status_code, refused.data["code"]), (409, "duration_app"))
+        delay.assert_not_called()
+        self.assertFalse(Transaction.objects.filter(wallet=self.wallet, status=RESERVED).exists())
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+
+        # Over the plan: the plan may have changed since, so it is reserved and queued again.
+        over_plan = self.failed({"audio_extracted": "failed"}, code="LinkTooLongError")
+
+        resumed, delay = self.redispatch(over_plan)
+
+        self.assertEqual(resumed.status_code, 202, resumed.content[:300])
+        delay.assert_called_once_with(str(over_plan.pk))
+        self.assertEqual(self.balances(), (Decimal("87.50"), Decimal("12.50")))
+
 
 class RedispatchMoneyRaceTests(RedispatchTests):
     """A broker that refuses the message, and a copy of it that arrives later anyway."""
