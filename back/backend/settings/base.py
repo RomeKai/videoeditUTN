@@ -586,6 +586,9 @@ SPECTACULAR_SETTINGS = {
     # their tiers: one enum instead of MaxResolutionEnum and RenderResolutionEnum.
     'ENUM_NAME_OVERRIDES': {
         'ResolutionEnum': 'apps.payments.models.RESOLUTION_CHOICES',
+        # The clip's status is in VideoClip and in the body of a retry
+        # (RetryClipResponse): one name, as before, instead of a hashed one.
+        'VideoClipStatusEnum': 'apps.videos.models.VideoClip.Status',
     },
     'SWAGGER_UI_SETTINGS': {
         'deepLinking': True,

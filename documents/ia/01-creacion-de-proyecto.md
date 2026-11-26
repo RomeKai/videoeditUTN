@@ -210,7 +210,7 @@ sequenceDiagram
 1. La duración de un video por URL no se conoce en el request, así que se cobra una tarifa fija de 10 tokens.
 2. Si el pedido trae `use_seo=true`, se suma el adicional `seo_optimization` calculado con `duration_seconds=0`: solo se chequea el plan para el SEO y se cobra `5 × (1 − base_discount_rate)` (ADR-013). Sin plan, se cobra 5.
 3. La reserva, `reservation_id`, el encolado y el 503 sin broker son iguales al flujo con archivo. Un rechazo después del INSERT borra la fila (no hay archivo).
-4. La URL no pasa por `validate_upload` ni por el límite de duración del plan al crear: esa duración la mira `probe-link` antes ([ver abajo](#revisar-un-link-antes-de-crear-probe-link)) y la descarga la hace obligatoria (`LinkTooLongError`, [02](02-pipeline-de-ingesta.md)). `validate_video_url` la pasa por `validate_video_link` (sin consultar DNS) y guarda la URL normalizada; un link de otro sitio o a una dirección interna da 400 en `video_url` ([links admitidos](#links-admitidos)). El archivo se baja con `download_from_youtube` en `_stage_prepare_source` (ver [02-pipeline-de-ingesta](02-pipeline-de-ingesta.md)).
+4. La URL no pasa por `validate_upload` ni por el límite de duración del plan al crear: esa duración la mira `probe-link` antes ([ver abajo](#revisar-un-link-antes-de-crear-probe-link)) y la descarga la hace obligatoria (`LinkTooLongError` si pasa el plan, `LinkTooLongForAppError` si pasa las 3 h de la app, [02](02-pipeline-de-ingesta.md)). `validate_video_url` la pasa por `validate_video_link` (sin consultar DNS) y guarda la URL normalizada; un link de otro sitio o a una dirección interna da 400 en `video_url` ([links admitidos](#links-admitidos)). El archivo se baja con `download_from_youtube` en `_stage_prepare_source` (ver [02-pipeline-de-ingesta](02-pipeline-de-ingesta.md)).
 
 ### Links admitidos
 
@@ -231,7 +231,7 @@ yt-dlp está hecho para bajar lo que sea que apunte una página, así que sin co
 - `GuardedYoutubeDL` revisa cada pedido de yt-dlp (`urlopen`) e `install_guards` cada redirección: si va a una IP o a un host que resuelve a una dirección no pública, se corta (`blocked non-public address`).
 - Y la dirección a la que el socket se conecta se revisa otra vez justo antes del `connect` (`_guarded_create_connection`): un nombre que responde una IP pública al chequeo y una interna a la conexión (DNS rebinding) también se corta. Por eso solo queda el handler `Urllib` de yt-dlp, cuyas conexiones pasan por esa función. El proxy configurado es la única dirección no pública permitida: el destino lo resuelve él.
 
-Un link rechazado en la descarga lanza `UnsupportedLinkError`, que no se reintenta; un host que no resuelve lanza su `OSError`, que sí. Los mensajes son en español (`No reconocemos este sitio. Probá con YouTube, Vimeo u otro sitio público.`) y el link nunca va a un log.
+Un link rechazado en la descarga lanza `UnsupportedLinkError`, que no se reintenta; un host que no resuelve lanza su `OSError`, que sí. Los mensajes son en español (`No reconocemos este sitio. Pegá un link de YouTube, Vimeo, Twitch o Google Drive.`, `UNSUPPORTED_MESSAGE`: los proveedores de `LINK_HOSTS`, ninguno más) y el link nunca va a un log.
 
 Queda abierto, para la infraestructura: ffmpeg, si yt-dlp lo usa para un stream que no baja solo, hace sus propios pedidos (lo cierra un firewall de salida en los workers). Detrás de un proxy, el DNS rebinding del destino lo tiene que frenar el proxy.
 
@@ -276,7 +276,10 @@ sequenceDiagram
 5. El hijo corre yt-dlp con `ytdlp_safe` ([links admitidos](#links-admitidos)) más `skip_download`, `socket_timeout=10` y sin reintentos, y lee solo los datos.
 6. El texto del sitio no sale del hijo: `categorize` lo reduce a `unavailable` (privado, borrado, con login o restricción), `unsupported` (sin extractor, o un pedido a una dirección no pública) o `provider_error`, más la clase de la excepción.
 7. Un resultado que no es un video (lista, canal, vivo o sin duración) da 400 `unsupported`. La `video_url` de la respuesta es la página canónica del video si es del mismo sitio; si no, el link como llegó.
-8. Con plan, una duración mayor que `max_video_duration_seconds` da 403 `{error, code: "duration", limit}` (por ejemplo `El video dura 45 min y tu plan permite hasta 10 min.`). Sin plan no hay límite. Crear no pasa por el probe, así que el límite vuelve a valer en la descarga ([02](02-pipeline-de-ingesta.md)).
+8. La duración se juzga con `link_too_long_error`, la misma regla de la descarga, y decide la duración del video, en el orden de una subida (primero el tope de la app, después el del plan):
+   - Más larga que `AI_UPLOAD_MAX_DURATION_SECONDS` (3 h), con cualquier plan: 400 `{error, code: "duration_app", limit}` (`El video dura 4 h 00 min y podemos procesar videos de hasta 3 h 00 min. Probá con uno más corto.`). Ningún plan lo toma, así que el mensaje no nombra el plan. Es 400, como `unsupported` y como un archivo subido que pasa las 3 h (`too_long`): es algo del link, no un permiso.
+   - Dentro de las 3 h pero más larga que `max_video_duration_seconds` del plan: 403 `{error, code: "duration", limit}` (por ejemplo `El video dura 45 min y tu plan permite hasta 10 min.`). Un plan con videos más largos lo toma.
+   - Crear no pasa por el probe, así que la descarga vuelve a aplicar la regla, con el código de cada caso (`LinkTooLongForAppError` o `LinkTooLongError`, [02](02-pipeline-de-ingesta.md)).
 
 | Respuesta | Cuándo |
 |-----------|--------|
@@ -284,8 +287,9 @@ sequenceDiagram
 | 400 `invalid` | No es una URL web |
 | 400 `unsupported` | Otro sitio, una IP, un host interno, una lista, un canal o un vivo |
 | 400 `unavailable` | Privado, borrado, con login o con restricción |
+| 400 `duration_app` | La duración supera las 3 h que procesa la app, con cualquier plan (`limit` en segundos) |
 | 400 `{video_url: [...]}` | Falta o pasa los 500 caracteres |
-| 403 | La duración supera el plan (`code: "duration"`), o el rol es Lector (`{detail}`) |
+| 403 | La duración supera el plan pero no las 3 h de la app (`code: "duration"`, `limit`), o el rol es Lector (`{detail}`) |
 | 404 | El workspace de `X-Workspace-Id` no es del usuario |
 | 429 | Más de 20 links en un minuto |
 | 502 `provider_error` | El sitio respondió con un error, o el host no resuelve |
@@ -513,7 +517,7 @@ Un texto que empieza con `=`, `+`, `-` o `@` lleva un apóstrofo adelante, para 
 
 | Setting | Default | Efecto |
 |---------|---------|--------|
-| `AI_UPLOAD_MAX_DURATION_SECONDS` | `10800` (3 h) | Duración máxima del archivo subido; si la supera, `too_long` |
+| `AI_UPLOAD_MAX_DURATION_SECONDS` | `10800` (3 h) | Duración máxima del archivo subido; si la supera, `too_long`. También del video de un link: si la supera, `LinkTooLongForAppError` en la descarga |
 | `AI_UPLOAD_MAX_LONG_SIDE_PX` | `4096` | Lado mayor máximo del video; si lo supera, `too_large` |
 | `AI_UPLOAD_MIN_SHORT_SIDE_PX` | `240` | Lado menor mínimo del video; si no llega, `too_small` |
 | `AI_PROMPT_MAX_CHARS` | `1000` | Largo máximo de `prompt` en `from_prompt` ([04-prompt-to-edit](04-prompt-to-edit.md)) |

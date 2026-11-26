@@ -252,18 +252,19 @@ describe('mocks', () => {
     }
   });
 
-  it('probe-link: más largo que el plan es 403 `duration`; más largo que la app, sin plan que lo acepte, 400 `duration_app`', async () => {
+  it('probe-link: más de 3 h es 400 `duration_app` con cualquier plan; dentro de las 3 h y más que el plan, 403 `duration`', async () => {
     const long = { body: { video_url: 'https://www.youtube.com/watch?v=largo' } }; // 5 h
-    // Pro takes up to the app's 3 h: no plan would take it.
+    // Over the app's 3 h no plan takes it: on Pro (3 h) and on Gratis (10 min) alike.
     const app = await fail(apiCall(projects.probeLink, long));
     expect([app.status, app.code, app.data.limit]).toEqual([400, 'duration_app', 10800]);
     expect(app.isPlanLimit).toBe(false);
-    // Gratis (10 min): another plan could, up to its own limit.
     signIn('plan-gratis');
-    const plan = await fail(apiCall(projects.probeLink, long));
-    expect([plan.status, plan.code, plan.data.limit]).toEqual([403, 'duration', 600]);
+    const onGratis = await fail(apiCall(projects.probeLink, long));
+    expect([onGratis.status, onGratis.code, onGratis.data.limit]).toEqual([400, 'duration_app', 10800]);
+    expect(onGratis.isPlanLimit).toBe(false);
+    // Within the 3 h and over Gratis's 10 min: a bigger plan takes it.
     const shorter = await fail(apiCall(projects.probeLink, { body: { video_url: 'https://www.youtube.com/watch?v=clase-45min' } }));
-    expect([shorter.status, shorter.code]).toEqual([403, 'duration']);
+    expect([shorter.status, shorter.code, shorter.data.limit]).toEqual([403, 'duration', 600]);
   });
 
   it('saldo insuficiente responde 402 con lo que hacía falta', async () => {

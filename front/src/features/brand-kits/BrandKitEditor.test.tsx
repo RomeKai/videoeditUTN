@@ -5,7 +5,7 @@ import { server } from '@/api/mocks/server';
 import { loadDb } from '@/api/mocks/state';
 import { EXAMPLE_IDS } from '@/dev/screens';
 import { useGuardedNavigation, type GuardedNavigation } from '@/shell/leaveGuard';
-import { idle, renderScreen } from '../publicar/testing';
+import { idle, renderScenario } from '@/testing';
 import { BrandKitEditor } from './BrandKitEditor';
 
 // These flows wait on the mocked API several times: on a busy CI runner the default 1 s / 5 s are not enough.
@@ -53,7 +53,7 @@ afterEach(async () => {
 afterAll(() => server.close());
 
 const open = async (id: string = EXAMPLE_IDS.brandKit, scenario?: string) => {
-  renderScreen(<BrandKitEditor id={id} />, { scenario });
+  renderScenario(<BrandKitEditor id={id} />, { scenario });
   return screen.findByRole('form', { name: id === 'nuevo' ? 'Nuevo brand kit' : 'Editar brand kit' });
 };
 const saveBar = () => screen.queryByRole('region', { name: 'Acciones' });
@@ -187,7 +187,7 @@ describe('F2 · Editar brand kit', () => {
       return null;
     };
     const switchWorkspace = vi.fn(() => Promise.resolve());
-    renderScreen(
+    renderScenario(
       <>
         <Shell />
         <BrandKitEditor id={EXAMPLE_IDS.brandKit} />
@@ -274,7 +274,7 @@ describe('F2 · Editar brand kit', () => {
   });
 
   it('un kit que no existe muestra el 404', async () => {
-    renderScreen(<BrandKitEditor id="00000009-0000-4000-8000-00000000ffff" />);
+    renderScenario(<BrandKitEditor id="00000009-0000-4000-8000-00000000ffff" />);
     expect(await screen.findByText(/no existe|No encontramos/i)).toBeInTheDocument();
   });
 });

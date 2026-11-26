@@ -1,0 +1,85 @@
+{
+  "roles": [
+    "owner",
+    "admin",
+    "editor",
+    "viewer"
+  ],
+  "matrix": {
+    "project.view": [
+      "owner",
+      "admin",
+      "editor",
+      "viewer"
+    ],
+    "clip.download": [
+      "owner",
+      "admin",
+      "editor",
+      "viewer"
+    ],
+    "project.create": [
+      "owner",
+      "admin",
+      "editor"
+    ],
+    "project.review": [
+      "owner",
+      "admin",
+      "editor"
+    ],
+    "project.rename": [
+      "owner",
+      "admin",
+      "editor"
+    ],
+    "project.delete": [
+      "owner",
+      "admin",
+      "editor"
+    ],
+    "clip.edit": [
+      "owner",
+      "admin",
+      "editor"
+    ],
+    "post.publish": [
+      "owner",
+      "admin",
+      "editor"
+    ],
+    "brandkit.manage": [
+      "owner",
+      "admin",
+      "editor"
+    ],
+    "social.manage": [
+      "owner",
+      "admin"
+    ],
+    "members.manage": [
+      "owner",
+      "admin"
+    ],
+    "wallet.view": [
+      "owner",
+      "admin",
+      "editor",
+      "viewer"
+    ],
+    "billing.manage": [
+      "owner",
+      "admin"
+    ],
+    "workspace.rename": [
+      "owner",
+      "admin"
+    ],
+    "workspace.delete": [
+      "owner"
+    ],
+    "workspace.transfer": [
+      "owner"
+    ]
+  }
+}

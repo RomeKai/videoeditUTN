@@ -88,9 +88,8 @@ from apps.videos.tasks.shared import (
     _selection_failure_usage,
     _selection_models,
     _transcription_demand,
-    LinkTooLongError,
     download_from_youtube,
-    link_duration_limit,
+    link_too_long_error,
 )
 from apps.videos.tasks.render import (
     finalize_project_render,
@@ -246,14 +245,16 @@ def _stage_prepare_source(project_id):
     from apps.videos.services.storage_service import CloudflareR2Manager
 
     project = VideoProject.objects.select_related('workspace__subscription_plan').get(pk=project_id)
-    # A link is not priced by its duration: the plan's limit binds when it is fetched.
-    link_limit = link_duration_limit(project) if project.video_url else None
+    # A link is not priced by its duration: the app's and the plan's limits
+    # bind when it is fetched, each with its own error (link_too_long_error).
+    def duration_error(duration):
+        return link_too_long_error(duration, project.workspace)
 
     if not project.source_file and project.video_url:
         logger.info("⬇️ Downloading source from URL for project %s", project_id)
         download_dir = os.path.join(settings.MEDIA_ROOT, 'videos', 'raw', 'downloads')
         os.makedirs(download_dir, exist_ok=True)
-        local_path = download_from_youtube(project.video_url, download_dir, max_duration_seconds=link_limit)
+        local_path = download_from_youtube(project.video_url, download_dir, duration_error=duration_error)
         try:
             with open(local_path, 'rb') as f:
                 project.source_file.save(os.path.basename(local_path), File(f), save=False)
@@ -266,13 +267,14 @@ def _stage_prepare_source(project_id):
     user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
 
     duration = resolution = None
-    if link_limit is not None:
+    if project.video_url:
         # Measured before anything else is done with it: the site may not have
         # said how long it was. Longer than allowed fails (and is refunded)
         # before the upload and the proxy.
         duration, resolution = _probe_video(source_path)
-        if duration > link_limit:
-            raise LinkTooLongError("The linked video is longer than allowed.")
+        too_long = duration_error(duration)
+        if too_long is not None:
+            raise too_long("The linked video is longer than allowed.")
 
     # A retry after a later failure inside this stage must not re-upload.
     if not project.original_r2_key:
@@ -999,6 +1001,47 @@ def _clip_render_reserved(metadata):
     return bool(reservation_id) and CLIP_RENDER in _paid_clip_renders(metadata) and Transaction.objects.filter(
         pk=reservation_id, status=Transaction.Status.RESERVED,
     ).exists()
+
+
+def render_queued_rule(project):
+    """
+    Which DRAFT clips of ``project`` wait for a render worker: a function of
+    the clip id (the caller checks the clip is DRAFT). It is the rule
+    render_clip_task checks before it claims a clip
+    (``_whole_video_render_allowed``), read once for all the clips of the
+    project, with one query at most, and only while the project is at
+    render_dispatched: before that, a draft is a suggestion of the review or
+    waits for its dispatch.
+
+    A draft waits when a reservation still RESERVED pays for it: the creation
+    of a whole video, or a clip-by-clip render that lists it (the
+    auto-render, the approval, or a render the user asked for later,
+    CLIP_RENDER). In a project with no clip-by-clip reservation (a render
+    from before them), every draft waits. A draft that a render settled
+    before never delivered does not wait.
+    """
+    if project.pipeline_stage != PipelineStage.RENDER_DISPATCHED:
+        return lambda clip_id: False
+    metadata = project.metadata or {}
+    paid_renders = _paid_clip_renders(metadata)
+    whole = _is_whole_video(project)
+    if whole:
+        # Its creation pays the first render; one asked for later, its own.
+        paid_renders = [paid for paid in paid_renders if paid is CLIP_RENDER]
+    elif not paid_renders:
+        return lambda clip_id: True
+    linked = {paid.reservation_key: str(metadata[paid.reservation_key]) for paid in paid_renders}
+    if whole and metadata.get('reservation_id'):
+        linked['reservation_id'] = str(metadata['reservation_id'])
+    reserved = {
+        str(pk) for pk in Transaction.objects.filter(
+            pk__in=list(linked.values()), status=Transaction.Status.RESERVED,
+        ).values_list('pk', flat=True)
+    } if linked else set()
+    if linked.get('reservation_id') in reserved:
+        return lambda clip_id: True
+    paying = [paid for paid in paid_renders if linked[paid.reservation_key] in reserved]
+    return lambda clip_id: any(_pays_for(metadata, paid, clip_id) for paid in paying)
 
 
 def _reserve_auto_render(project_id, resuming=False):

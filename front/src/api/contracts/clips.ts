@@ -143,7 +143,7 @@ export const retryClip = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_clips.py · ClipRetryView',
-    note: 'El cuerpo es el clip (en `draft` hasta que su render empieza) más `final_cost` y `transaction_id`. No hay reintento gratis: el reparto por segundos entregados ya devolvió lo que el clip fallido no entregó, y el modelo no guarda por qué falló.',
+    note: 'El cuerpo es el clip (en `draft` con `render_queued: true` hasta que su render empieza) más `final_cost` y `transaction_id`. Un segundo click mientras el clip espera o se renderiza recibe 409 `clip_rendering`, no `not_failed`. No hay reintento gratis: el reparto por segundos entregados ya devolvió lo que el clip fallido no entregó, y el modelo no guarda por qué falló.',
   },
   screens: ['D3'],
 });
