@@ -14,6 +14,27 @@ def _is_local() -> bool:
     return not getattr(settings, 'USE_R2', False)
 
 
+def delete_upload(name, project_id=None) -> None:
+    """
+    Deletes the upload (``source_file``) of a project that was never created.
+    The request saves it through Django's storage, under ``MEDIA_ROOT``, with
+    USE_R2 too: only the ingestion copies it to R2, so there is no R2 object
+    yet. Best effort, like ``delete_preview_files``: a file that cannot be
+    deleted is logged and left.
+    """
+    if not name:
+        return
+    from apps.videos.models import VideoProject
+
+    storage = VideoProject._meta.get_field('source_file').storage
+    try:
+        storage.delete(name)
+    except Exception as exc:
+        logger.warning("upload.cleanup_failed project_id=%s error=%s", project_id, type(exc).__name__)
+        return
+    logger.info("upload.deleted project_id=%s", project_id)
+
+
 def _get_r2_client():
     """Creates and returns a boto3 S3 client configured for Cloudflare R2."""
     return boto3.client(

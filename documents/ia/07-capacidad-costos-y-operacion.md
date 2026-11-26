@@ -284,6 +284,7 @@ No usan la cache de Django el lock por proyecto ([project_lock.py](../../back/ap
 |-------|---------------|-----------|
 | Valkey | `capacity:v1:<modelo>:<recurso>_per_<ventana>` | Hash con `tokens` y `ts`, con `EXPIRE` |
 | Valkey (cache de Django) | `<CACHE_KEY_PREFIX>:1:payments:public-plans`, `<CACHE_KEY_PREFIX>:1:lock_post_publish_<post_id>` | Lista pública de planes (1 h) y lock de publicación |
+| `VideoProject` | `pipeline_error_code` = `IngestionNotQueued` | La creación no pudo encolar la ingesta: el proyecto queda `failed` y su reserva devuelta ([01](01-creacion-de-proyecto.md)) |
 | `VideoProject.pipeline_stage_status` | `<etapa>` | `pending_capacity` mientras espera |
 | `VideoProject.metadata` | `capacity_wait` | `stage`, `since` (ISO), `planned_s`, `attempts`. Se borra al obtener lugar o al vencer |
 | `VideoProject.metadata` | `capacity_waited_s` | Segundos esperados por etapa, acumulados |
@@ -370,7 +371,8 @@ Los eventos tienen nombre estable y llevan ids, códigos y números, nunca texto
 | `llm.` | `reasoning_effort_skipped` | [llm_options.py](../../back/apps/videos/services/ai/llm_options.py) |
 | `prompt_parse.` | `completed`, `primary_failed`, `fallback_failed`, `fields_dropped`, `transient`, `retrying`, `failed`, `applied`, `capacity_timeout` | [prompt_parser.py](../../back/apps/videos/services/ai/prompt_parser.py), [prompt_validator.py](../../back/apps/videos/services/ai/prompt_validator.py) |
 | `seo.` | `dispatched`, `dispatch_failed`, `pending_capacity`, `capacity_timeout`, `input_blocked`, `output_blocked`, `no_clip_transcript`, `completed`, `persisted`, `failed`, `skipped`, `regenerate_failed` | [signals.py](../../back/apps/videos/signals.py), [tasks/social.py](../../back/apps/videos/tasks/social.py), [seo_engine.py](../../back/apps/videos/services/seo_engine.py) |
-| `upload.` | `rejected` (`code`), `probe_failed` | [media_validation.py](../../back/apps/videos/services/media_validation.py) |
+| `upload.` | `rejected` (`code`), `probe_failed`; de una creación rechazada, `deleted` y `cleanup_failed` | [media_validation.py](../../back/apps/videos/services/media_validation.py), [storage_service.py](../../back/apps/videos/services/storage_service.py) |
+| `project.` | `ingestion_not_queued` (la clase del error del broker), `not_queued_not_recorded` | [views.py](../../back/apps/videos/views.py) |
 | `cache.` | `not_shared`: prod sin `REDIS_URL` | [settings/prod.py](../../back/backend/settings/prod.py) |
 | `face_tracker.` | `mediapipe_unavailable`, `detector_unavailable`, `detector_failed`, `tracked`, `no_faces`, `failed`, `all_frames_failed` | [face_tracker.py](../../back/apps/videos/services/face_tracker.py) |
 | `speaker.` / `layout.` | `speaker.timeline`, `speaker.audio_failed`, `speaker.frames_failed`, `layout.active_speaker`, `layout.active_speaker_failed` | [speaker_engine.py](../../back/apps/videos/services/speaker_engine.py), [layouts/pro.py](../../back/apps/videos/services/layouts/pro.py) |
@@ -381,6 +383,7 @@ Los eventos tienen nombre estable y llevan ids, códigos y números, nunca texto
 | Síntoma | Qué mirar |
 |---------|-----------|
 | Un proyecto lleva mucho en "Procesando" | `pipeline_stage_status`: si una etapa está `pending_capacity`, mirar `metadata['capacity_wait']` y los logs `pipeline.pending_capacity`. Si es seguido, falta capacidad del proveedor (ampliar el tier, no subir los límites por encima del 80 %) |
+| Proyecto `failed` con `pipeline_error_code=IngestionNotQueued`, o creaciones que responden 503 | El broker no tomó la ingesta al crear (`project.ingestion_not_queued`). La reserva ya se devolvió (`pipeline.refunded`); revisar Valkey y el worker. El usuario crea el proyecto de nuevo. Si además aparece `project.not_queued_not_recorded`, correr `settle_stale_reservations` en modo reporte |
 | La lista de planes no se actualiza igual en todos los servidores, o un post se publicó dos veces | La cache no es compartida: buscar `cache.not_shared` al arrancar y que `REDIS_URL` esté en el entorno de web y worker ([cache compartida](#cache-compartida)) |
 | Proyecto `failed` con `pipeline_error_code=CapacityTimeoutError` | La espera planificada superó `AI_CAPACITY_MAX_WAIT_SECONDS`, por ejemplo por una cuota diaria agotada. Confirmar el reembolso (`pipeline.refunded`) y re-despachar cuando haya cuota |
 | Una etapa falla con `ImproperlyConfigured` que nombra `AI_CAPACITY_LIMITS` | Falta la entrada de un modelo que el pipeline llama. Correr `manage.py check` (`videos.E005`) y completar los límites |
@@ -439,7 +442,7 @@ Solo mira transacciones `RESERVED` con `created_at` de hace al menos `--min-age-
 - **Antigüedad.** El mínimo de 24 h deja afuera reservas de proyectos que siguen trabajando, por ejemplo un render que espera su reintento. Las transacciones anteriores a la migración `payments.0003` tienen como `created_at` la hora de la migración: el barrido las toma un `--min-age-hours` después del deploy.
 - **Salida.** Una línea por transacción, sin texto del usuario (ni la descripción de la transacción, que lleva el título del proyecto): `transaction`, `amount`, `age_h`, `kind` (`creation`, `render` o `-`), `project`, `stage`, `status`, `action` (`commit`, `rollback` o `report`), `reason` y `result` (`dry_run`, `reported`, `committed`, `rolled_back`, `already_settled`, `skipped` o `error=<clase>`). Al final, una línea `summary` con los totales.
 - **Errores.** Un error de pago o de base en una transacción se informa en su línea y el barrido sigue. Si hubo alguno, el comando termina con error (código 1) para que un cron lo note.
-- **Lo que queda en reporte.** Un render que sigue `RENDERING` sin worker lo maneja `recover_stuck_renders` (re-encola, falla o reporta). Una reserva sin proyecto se revisa con el workspace dueño de la billetera. La aprobación de una revisión ya no deja una: toma el proyecto, reserva y aprueba en una sola transacción, así que un proceso que muere en el medio no deja nada.
+- **Lo que queda en reporte.** Un render que sigue `RENDERING` sin worker lo maneja `recover_stuck_renders` (re-encola, falla o reporta). Una creación cuyo encolado falló ya no deja una: el request falla el proyecto y devuelve la reserva. Solo si eso también falla por un error de base (`project.not_queued_not_recorded`) puede quedar `uploaded` con la reserva tomada (`in_progress`): revisarlo y marcarlo `FAILED` a mano para que el barrido la devuelva. Una reserva sin proyecto se revisa con el workspace dueño de la billetera. La aprobación de una revisión ya no deja una: toma el proyecto, reserva y aprueba en una sola transacción, así que un proceso que muere en el medio no deja nada.
 
 ## Operación: renders trabados
 

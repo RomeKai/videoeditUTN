@@ -279,6 +279,7 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         try:
+            # A failure here leaves neither the row nor the upload (serializer.create).
             project = serializer.save(workspace=workspace, uploaded_by=user, status=VideoProject.Status.UPLOADED)
         except Exception as e:
             return Response({"error": f"Error al guardar proyecto: {str(e)}"}, status=500)
@@ -288,6 +289,8 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         cost_in_tokens = Decimal('0.0')
         duration_seconds = 0
 
+        # From here on, every refusal goes through _discard_new_project: the
+        # row goes, and so does the upload it saved.
         if project.source_file:
             try:
                 source_media = project.metadata.get('source_media') or {}
@@ -315,18 +318,18 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
                 project.metadata = {**(project.metadata or {}), 'priced_duration_s': duration_seconds}
                 
             except (PlanLimitExceededError, FeatureNotAllowedError) as e:
-                project.delete()
+                _discard_new_project(project)
                 return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
             except Exception as e:
-                project.delete()
-                logger.error(f"Error calculando costo V3: {e}")
+                _discard_new_project(project)
+                logger.error("Error calculando costo V3 project_id=%s error=%s", project.pk, type(e).__name__)
                 return Response({"error": "Error interno al procesar el presupuesto del video."}, status=status.HTTP_400_BAD_REQUEST)
         
         elif project.video_url:
             if _pricing_resolution(project) != '720p':
                 # The flat link price does not know the duration, so it cannot
                 # price a higher tier; an auto-rendered link would get it free.
-                project.delete()
+                _discard_new_project(project)
                 return Response(
                     {"error": "Los proyectos por link se procesan en 720p. Para 1080p o 4K, subí el archivo."},
                     status=status.HTTP_400_BAD_REQUEST,
@@ -347,42 +350,50 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
                     # Without add-ons the engine still returns its 0.01 floor.
                     cost_in_tokens += add_on
             except (PlanLimitExceededError, FeatureNotAllowedError) as e:
-                project.delete()
+                _discard_new_project(project)
                 return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
 
+        # The reservation and its link to the project (ADR-011 D-M5: the
+        # pipeline refunds it from metadata['reservation_id']) are one
+        # transaction, and the ingestion is queued once it commits: the worker
+        # always finds both. outcome['queued'] says how the queuing went.
+        outcome = {}
         try:
-            # Asegurar que el workspace tenga billetera (autocuración)
-            from apps.payments.models import Wallet
-            wallet, _ = Wallet.objects.get_or_create(workspace=workspace)
-            
-            tx = wallet_service.reserve_funds(
-                wallet_id=wallet.id,
-                amount=cost_in_tokens,
-                user=user,
-                description=f"Procesamiento: {project.title}"[:255]
-            )
-            
+            with transaction.atomic():
+                # Asegurar que el workspace tenga billetera (autocuración)
+                from apps.payments.models import Wallet
+                wallet, _ = Wallet.objects.get_or_create(workspace=workspace)
+
+                tx = wallet_service.reserve_funds(
+                    wallet_id=wallet.id,
+                    amount=cost_in_tokens,
+                    user=user,
+                    description=f"Procesamiento: {project.title}"[:255]
+                )
+                project.metadata = {**(project.metadata or {}), 'reservation_id': str(tx.id)}
+                VideoProject.objects.filter(pk=project.pk).update(metadata=project.metadata)
+                transaction.on_commit(lambda: _queue_ingestion(project.pk, outcome))
+
         except (wallet_service.InsufficientFundsError, ValidationError) as e:
-            project.delete()
-            if project.source_file and os.path.exists(project.source_file.path):
-                os.remove(project.source_file.path)
-            
+            _discard_new_project(project)
             return Response({
                 "error": str(e),
                 "required": cost_in_tokens
             }, status=status.HTTP_402_PAYMENT_REQUIRED)
             
         except Exception as e:
-            project.delete()
-            logger.error(f"Error reserving funds on create: {e}")
+            _discard_new_project(project)
+            logger.error("Error reserving funds on create project_id=%s error=%s", project.pk, type(e).__name__)
             return Response({"error": "Error procesando el pago."}, status=500)
 
-        # Links the reservation to the project so the pipeline can refund it when
-        # moderation stops the project (ADR-011 D-M5). Written before the task is queued.
-        project.metadata = {**(project.metadata or {}), 'reservation_id': str(tx.id)}
-        VideoProject.objects.filter(pk=project.pk).update(metadata=project.metadata)
-
-        process_initial_ingestion.delay(project.id)
+        if outcome.get('queued') is False:
+            # The broker did not take it: the project is failed and refunded
+            # (_queue_ingestion), so the request fails too and can be retried.
+            return Response({
+                "error": INGESTION_NOT_QUEUED_ERROR,
+                "code": INGESTION_NOT_QUEUED,
+                "project_id": project.id,
+            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
         response_data = serializer.data
         response_data['cost_details'] = {
@@ -392,6 +403,65 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         response_data['message'] = "Video subido. Iniciando ingesta multimodal..."
 
         return Response(response_data, status=status.HTTP_201_CREATED)
+
+
+# pipeline_error_code of a project whose ingestion could not be queued at
+# creation (the broker was down): front/src/lib/error-messages.ts translates it.
+INGESTION_NOT_QUEUED = 'IngestionNotQueued'
+INGESTION_NOT_QUEUED_ERROR = "No pudimos empezar a procesar el video y no se cobró nada. Probá de nuevo en unos minutos."
+
+
+def _discard_new_project(project):
+    """A creation refused after the INSERT: neither the row nor its upload stays."""
+    from .services.storage_service import delete_upload
+
+    upload = project.source_file.name if project.source_file else None
+    project_id = project.pk
+    project.delete()
+    delete_upload(upload, project_id)
+
+
+def _queue_ingestion(project_id, outcome):
+    """
+    Queues the ingestion of a new project once its reservation is committed,
+    and records in ``outcome['queued']`` whether a worker has it. Without the
+    message nothing would ever pick the project up, and its tokens would stay
+    reserved: it fails now (``_fail_unqueued_project``). Never raises: it runs
+    after the commit, so an error here must not undo the creation.
+    """
+    try:
+        process_initial_ingestion.delay(project_id)
+    except Exception as exc:
+        logger.error("project.ingestion_not_queued project_id=%s error=%s", project_id, type(exc).__name__)
+        outcome['queued'] = not _fail_unqueued_project(project_id)
+        return
+    outcome['queued'] = True
+
+
+def _fail_unqueued_project(project_id):
+    """
+    Fails a new project whose ingestion was not queued, with
+    INGESTION_NOT_QUEUED, and returns its reservation, like any ingestion
+    that fails without clips. Only while it is still at ``uploaded``: if the
+    message got through after all and a worker moved the project on, it stays
+    the worker's and this returns False. Never raises: a database error is
+    only logged, and settle_stale_reservations returns a reservation left on
+    a failed project.
+    """
+    from .services.ai.pipeline_state import PipelineStage, mark_failed, record_error
+    from .tasks.ingestion import _refund_ingestion_reservation
+
+    try:
+        with transaction.atomic():
+            failed_now = mark_failed(project_id, expected_stage=PipelineStage.UPLOADED)
+            if failed_now:
+                record_error(project_id, INGESTION_NOT_QUEUED)
+        if failed_now:
+            _refund_ingestion_reservation(project_id)  # idempotent, logs pipeline.refunded
+        return failed_now
+    except Exception as exc:
+        logger.error("project.not_queued_not_recorded project_id=%s error=%s", project_id, type(exc).__name__)
+        return True
 
 
 def _segment_clip_id(value):
