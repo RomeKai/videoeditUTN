@@ -1,28 +1,14 @@
-import { configure, type RenderResult } from '@testing-library/react';
-import type { ReactElement } from 'react';
+import { configure } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/api/config';
 import { server } from '@/api/mocks/server';
-import { renderScreen as renderInApp, startScenario } from '@/testing';
 
-export { startMockApi } from '@/testing';
+/** Renders a screen over a seeded mock scenario (see `@/testing`). */
+export { renderScenario as renderScreen, startMockApi } from '@/testing';
 
 // These tests render whole screens against the mocked API; on a busy machine the first answer can
 // take longer than the default second.
 configure({ asyncUtilTimeout: 5000 });
-
-/**
- * Renders a screen the way the app does (see `@/testing`) over a seeded mock
- * scenario, which also signs in the scenario's user.
- */
-export function renderScreen(
-  ui: ReactElement,
-  { scenario = 'estudio-norte', prepare }: { scenario?: string; /** Changes the seeded database before the screen asks for anything. */ prepare?: () => void } = {},
-): RenderResult {
-  startScenario(scenario);
-  prepare?.();
-  return renderInApp(ui);
-}
 
 /**
  * Makes one read of the API answer 500 while the rest (the session included)

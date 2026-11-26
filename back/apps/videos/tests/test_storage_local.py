@@ -14,7 +14,7 @@ from apps.videos.services.storage_service import CloudflareR2Manager
 
 @pytest.fixture
 def no_boto(monkeypatch):
-    def _fail():
+    def _fail(*args, **kwargs):
         raise AssertionError("Se intentó crear un cliente R2 con USE_R2=False")
     monkeypatch.setattr(storage_service, "_get_r2_client", _fail)
 
@@ -114,7 +114,7 @@ def r2_client(monkeypatch, settings):
     settings.USE_R2 = True
     settings.CLOUDFLARE_R2_BUCKET_NAME = "test-bucket"
     client = MagicMock()
-    monkeypatch.setattr(storage_service, "_get_r2_client", lambda: client)
+    monkeypatch.setattr(storage_service, "_get_r2_client", lambda config=None: client)
     return client
 
 
@@ -133,3 +133,25 @@ def test_r2_upload_without_folder(r2_client, local_file):
 def test_r2_delete_uses_bucket(r2_client):
     CloudflareR2Manager.delete_object("videos/u/x.mp4")
     r2_client.delete_object.assert_called_once_with(Bucket="test-bucket", Key="videos/u/x.mp4")
+
+
+def test_an_r2_delete_gives_up_in_seconds_but_a_transfer_keeps_the_defaults(monkeypatch, settings, local_file):
+    # The preview cleanup deletes under a row lock: a hung R2 must not hold it for minutes.
+    settings.USE_R2 = True
+    settings.CLOUDFLARE_R2_BUCKET_NAME = "bucket"
+    built = []
+
+    def fake_client(*args, **kwargs):
+        built.append(kwargs.get("config"))
+        return MagicMock()
+
+    monkeypatch.setattr(storage_service.boto3, "client", fake_client)
+
+    CloudflareR2Manager.delete_object("videos/u/clip.mp4")
+    config = built[-1]
+    assert config is not None
+    assert (config.connect_timeout, config.read_timeout) == (5, 15)
+    assert config.retries["max_attempts"] == 2
+
+    CloudflareR2Manager.upload_video(local_path=local_file, user_id="u")
+    assert built[-1] is None  # whole videos keep boto's defaults

@@ -254,23 +254,42 @@ def cleanup_expired_previews_now(limit: Optional[int] = None) -> int:
     """
     Deletes expired previews (row and file). Returns how many rows were deleted.
     A file that cannot be deleted is logged and its row kept for the next run.
+
+    Each preview is read again under its row lock before it goes: a render
+    that outlived its provisional ``expires_at`` may finish after the list was
+    read, and its READY update moves ``expires_at`` forward. Without the lock
+    this would delete that fresh row and leave its file in storage, where
+    nothing deletes it. With it, a render that finishes first is seen as not
+    expired and kept; one that finishes later waits, finds its row gone and
+    deletes its own file (``render_preview``). A row someone else holds (an
+    approval deleting it, another cleanup) is skipped.
     """
     from apps.videos.services.storage_service import CloudflareR2Manager
 
-    expired = ClipPreview.objects.filter(expires_at__lte=timezone.now()).order_by('expires_at')
+    expired = (
+        ClipPreview.objects.filter(expires_at__lte=timezone.now())
+        .order_by('expires_at').values_list('pk', flat=True)
+    )
     if limit:
         expired = expired[:limit]
     deleted = 0
-    for preview in list(expired):
-        if preview.storage_key:
-            try:
-                CloudflareR2Manager.delete_object(preview.storage_key)
-            except Exception as exc:
-                logger.warning(
-                    "preview.cleanup_failed preview_id=%s error=%s", preview.pk, type(exc).__name__,
-                )
+    for preview_id in list(expired):
+        with transaction.atomic():
+            preview = (
+                ClipPreview.objects.select_for_update(skip_locked=True)
+                .filter(pk=preview_id, expires_at__lte=timezone.now()).first()
+            )
+            if preview is None:
                 continue
-        preview.delete()
+            if preview.storage_key:
+                try:
+                    CloudflareR2Manager.delete_object(preview.storage_key)
+                except Exception as exc:
+                    logger.warning(
+                        "preview.cleanup_failed preview_id=%s error=%s", preview.pk, type(exc).__name__,
+                    )
+                    continue
+            preview.delete()
         deleted += 1
     if deleted:
         logger.info("preview.cleanup deleted=%d", deleted)

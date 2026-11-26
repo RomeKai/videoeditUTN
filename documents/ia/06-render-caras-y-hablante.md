@@ -9,6 +9,7 @@ Este documento cubre cómo se renderiza un clip: el recorte al formato y la reso
 | `render_clip_task`, `ClipRenderTask`, `_claim_clip_for_render`, `_release_clip_claim`, `_fail_owned_clip`, `_fail_unclaimed_clip` | [tasks/render.py](../../back/apps/videos/tasks/render.py) | Tarea por clip: claim con CAS y dueño (`render_claim_token`), tope de renders que no terminaron, render, limpieza de la clave vieja en R2, cierre del fan-out. |
 | `finalize_project_render` | [tasks/render.py](../../back/apps/videos/tasks/render.py) | Cierra el proyecto (`COMPLETED` o `PARTIAL`) cuando todos los clips terminaron. |
 | `ClipDetailView`, `ClipRenderView`, `ClipRetryView`, `ProjectRerenderView`, `_start_paid_render` | [views_clips.py](../../back/apps/videos/views_clips.py) | API del clip (leer, cambiar título y recorte, borrar) y los renders que pide el usuario con el proyecto terminado: reservan, vuelven el proyecto a `render_dispatched` y encolan (`CLIP_RENDER`). |
+| `render_queued_rule` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py) | Qué clips `draft` de un proyecto esperan a un worker, con la regla de `_whole_video_render_allowed`: da `render_queued` del clip en la API y el `clip_rendering` de un reintento repetido. |
 | `render_video_segments`, `_resolve_approved_segments` | [tasks/render.py](../../back/apps/videos/tasks/render.py) | Render del paper edit de antes: corta y concatena los segmentos aprobados. Solo aprobaciones sin `render_clip_ids`. |
 | `recover_stuck_renders`, `recover_stuck_renders_now` | [tasks/render_recovery.py](../../back/apps/videos/tasks/render_recovery.py) | Paper edits de antes cuya reserva del render quedó `RESERVED` sin nada que los traiga de vuelta: los re-encola, cobra los entregados o, si perdieron su worker demasiadas veces, los falla con reembolso. También los clips trabados de una revisión aprobada o un render automático (`decide_clips`): los re-encola, con el derecho a tomar los que quedaron `RENDERING`. También el comando [recover_stuck_renders](../../back/apps/videos/management/commands/recover_stuck_renders.py). |
 | `RenderEngine.render_clip`, `_get_target_resolution` | [services/render_engine.py](../../back/apps/videos/services/render_engine.py) | Subclip, layout, subtítulos, escritura, quitar silencios, subida y guardado `COMPLETED` solo si la entrega sigue siendo dueña del clip. |
@@ -148,13 +149,20 @@ El render y el cobro siguen el camino de siempre:
 
 **El reintento también cobra.** Cuando un clip falla, el reparto por segundos ya devolvió su parte. Reservar de nuevo hace que se pague una vez en total; un reintento gratis lo entregaría sin pago. El modelo no guarda por qué falló un clip, así que no hay "reintento gratis si el error fue nuestro". La respuesta es el clip más `final_cost` y `transaction_id`.
 
+**En cola, no sugerido.** Un render pago deja sus clips en `draft` hasta que un worker los toma, y `draft` es también el estado de una sugerencia de la revisión. Para separarlos, el clip de la API trae `render_queued` (`VideoClipSerializer`, solo lectura): `true` para un `draft` que un render va a tomar. Es la regla con la que `render_clip_task` toma un clip (`_whole_video_render_allowed`), leída por `render_queued_rule`:
+
+- el proyecto está en `render_dispatched`, y
+- una reserva todavía `reserved` paga el clip: la de creación de un video completo, o una reserva clip por clip que lo lista (render automático, aprobación o `CLIP_RENDER`). En un proyecto sin reservas clip por clip (un render de antes de ellas), todos sus `draft`.
+
+Es `false` para cualquier otro estado (`rendering` ya lo dice el estado), para una sugerencia y para un `draft` que un render ya liquidado nunca entregó. `render_queued_rule` se lee una vez por proyecto, con una consulta como mucho y solo si el proyecto está en `render_dispatched`: la lista de proyectos no hace una consulta por clip.
+
 **Redondeo.** Cada render se cobra por segundos enteros (`render_cost` redondea hacia arriba la suma de su render), y la parte devuelta sale de la proporción de segundos exactos. Un clip de 2,5 s de una aprobación de 5 s devuelve 1,25 al fallar y su reintento cuesta 1,50 (3 s). La diferencia es de menos de un segundo por render y se acepta.
 
 **Un render por proyecto a la vez.** Mientras un clip se renderiza, el proyecto está `rendering`: otro clip del mismo proyecto recibe 409 `project_rendering` hasta que termine.
 
 **Concurrencia.** La fila del proyecto serializa los pedidos:
 
-- Doble click: el segundo pedido espera el lock, encuentra el proyecto `rendering` y recibe 409. Queda una sola reserva y un solo mensaje.
+- Doble click: el segundo pedido espera el lock, encuentra el proyecto `rendering` y recibe 409. Queda una sola reserva y un solo mensaje. En `retry/`, el clip ya no está `failed`: antes de responder `not_failed`, un clip `rendering` o en cola para el render abierto (`render_queued_rule`) recibe `clip_rendering`. Un clip que no es de ese render sigue recibiendo `not_failed`.
 - Reintento durante un render: 409 `project_rendering`.
 - Cambiar el recorte durante el render: el PATCH del clip responde 409 `project_rendering`; el título sí cambia. El render lee los bordes del clip cuando empieza.
 - Borrar un clip durante un render: 409. Un clip entregado que se borra dejaría corto el cobro de su reserva.
@@ -163,7 +171,7 @@ El render y el cobro siguen el camino de siempre:
 
 **Leer, editar y borrar el clip** (`ClipDetailView`, `clips/:id/`):
 
-- `GET` devuelve el clip como dentro del proyecto (`VideoClipSerializer`), para cualquier rol.
+- `GET` devuelve el clip como dentro del proyecto (`VideoClipSerializer`, con `render_queued`), para cualquier rol.
 - `PATCH` cambia `title`, `start_time` y `end_time` (`clip.edit`). Nunca renderiza. El título cambia siempre: el render no lo lee. El recorte no cambia mientras el proyecto renderiza o tiene una reserva de render abierta (409 `project_rendering`), ni mientras el pipeline lo procesa (409 `project_processing`: un render automático pudo haber cobrado esos bordes). Es 400 si el fin no es mayor que el inicio, si pasa el final del video (`metadata['duration']`, medio segundo de margen) o si el clip dura más de lo que un render termina. Un recorte nuevo borra las vistas previas del clip (filas ahora, archivos después del commit).
 - `DELETE` borra el clip con sus posts programados, capas y vistas previas, y sus archivos después del commit (`clip.edit`). Es 409 mientras el proyecto renderiza o procesa, y mientras un post del clip se está subiendo (`post_processing`).
 

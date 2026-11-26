@@ -3,10 +3,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { http, HttpResponse } from 'msw';
 import { server } from '@/api/mocks/server';
 import { applyScenario } from '@/api/mocks/state';
+import { db, idle, renderScenario } from '@/testing';
 import { PublicacionesScreen } from './PublicacionesScreen';
 import { holdDraft, isRemembered, releaseDraft } from './draftRegistry';
 import { dayKey } from './posts';
-import { db, idle, renderScreen } from './testing';
 
 // These flows wait on the mocked API several times: on a busy CI runner the default 1 s / 5 s are not enough.
 configure({ asyncUtilTimeout: 5000 });
@@ -54,7 +54,7 @@ afterAll(() => server.close());
 
 const open = async (search = 'vista=lista', scenario?: string) => {
   nav.set(search);
-  const view = renderScreen(<PublicacionesScreen />, { scenario });
+  const view = renderScenario(<PublicacionesScreen />, { scenario });
   await screen.findByRole('heading', { level: 1, name: 'Publicaciones' });
   return view;
 };
