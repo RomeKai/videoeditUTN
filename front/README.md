@@ -5,6 +5,7 @@ App web de OneCreator: Next.js 15 (App Router), React 19 y TypeScript estricto. 
 - **Qué es cada pantalla:** [`documents/producto/mapa-de-pantallas.md`](../documents/producto/mapa-de-pantallas.md).
 - **Qué ruta tiene cada pantalla y quién la construye:** [`ROUTES.md`](ROUTES.md).
 - **Contrato de la API (para el equipo de backend):** [`src/api/CONTRACT.md`](src/api/CONTRACT.md).
+- **Cómo conectar el backend real, área por área (reglas, orden y quién hace qué):** [`documents/integracion/guia-conexion.md`](../documents/integracion/guia-conexion.md).
 - **Sistema visual:** [`documents/producto/diseno/`](../documents/producto/diseno/README.md), y todos los componentes en vivo en `/dev/kit`.
 
 ## Cómo correrlo
@@ -46,7 +47,7 @@ NEXT_PUBLIC_API_MOCKS=false
 NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
-Levantá el backend como dice [`back/README.md`](../back/README.md) y reiniciá `npm run dev`. Hoy el backend tiene 17 de los 79 endpoints del contrato (login, proyectos, revisión, vista previa de clip y brand kits); el resto son los huecos de la sección 8 del mapa. `src/api/CONTRACT.md` dice cuál es cuál.
+Levantá el backend como dice [`back/README.md`](../back/README.md) y reiniciá `npm run dev`. Hoy el backend tiene 14 de los 80 endpoints del contrato, y 3 más en parte (login, proyectos, revisión, vista previa de clip y brand kits). Los otros 63 son propuestos para los huecos de la sección 8 del mapa. `src/api/CONTRACT.md` dice cuál es cuál, y [`documents/integracion/guia-conexion.md`](../documents/integracion/guia-conexion.md) cómo conectarlos.
 
 ## Comandos
 
@@ -125,7 +126,7 @@ front/
   - Varias pestañas comparten la sesión: si una renueva o vuelve a iniciar sesión, las otras toman el par nuevo.
 - **Layout raíz:** `src/app/layout.tsx` es un Server Component y no importa valores (constantes, funciones) de módulos `'use client'`, solo componentes. Un valor así llega al navegador como referencia que espera el JS de ese módulo; dentro de `<head>` eso rompía la hidratación de toda la página cuando el JS llegaba tarde (error #418 de React, intermitente bajo carga). Por eso el script del tema vive en `src/lib/theme-script.ts`.
 - **Mocks y service worker:** con los mocks apagados la app da de baja el worker de MSW que haya quedado registrado en ese origen.
-- **Workspace activo:** se manda en el header `X-Workspace-Id` (propuesto; hoy el backend usa el primer workspace del usuario).
-- **Roles:** la tabla 1.7 del mapa está en `src/lib/permissions.ts`. La API todavía no la aplica; los mocks sí.
+- **Workspace activo:** se manda en el header `X-Workspace-Id` en cada pedido con sesión, y el backend lo respeta (PR #125): las listas traen solo lo de ese workspace, y uno donde el usuario no es miembro activo responde 404. Sin el header, el backend usa el workspace más antiguo del usuario.
+- **Roles:** la tabla 1.7 del mapa está en `src/lib/permissions.ts`, y el backend aplica la misma (`ROLE_MATRIX` en `back/apps/core/permissions.py`, PR #125). Un rol que no alcanza recibe 403 con un `detail` en español y sin `code`. Los mocks también la aplican; su 403 suma `code: "permission_denied"`, que el backend todavía no manda.
 - **Estimado de costo:** `estimateCost()` en `src/lib/pricing.ts` usa la misma fórmula que `PricingEngine`, con los valores de `GET /pricing/`.
 - **Sin red externa:** fuentes (Geist) e íconos van en el bundle.

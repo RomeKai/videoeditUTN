@@ -322,13 +322,12 @@ videoeditUTN/
 │       ├── ia/                      # Embeddings, VAD, audio features, scoring
 │       └── integrations/            # Ayrshare, YouTube, Twitch APIs
 │
-└── docs/                            # Documentación técnica
-    ├── architecture/overview.md     # Arquitectura del sistema
-    ├── business/payments.md         # Modelo de pagos y wallet
-    ├── ia/engines.md                # Engines de IA y scoring
-    ├── video/render_engine.md       # Motor de render y layouts
-    ├── deploy/infrastructure.md     # Infraestructura de deploy
-    └── integrations/social_auth.md  # Integración con redes sociales
+└── documents/                       # Documentación técnica
+    ├── ia/                          # Core de IA: un documento por flujo
+    ├── producto/                    # Mapa de pantallas y sistema visual
+    ├── integracion/                 # Guía para conectar la web con el backend
+    ├── adrs/                        # Decisiones de arquitectura
+    └── runbooks/                    # Operación del piloto
 ```
 
 ---
@@ -364,16 +363,14 @@ curl -X POST http://localhost:8001/api/v1/projects/ \
 
 ## Documentación Técnica
 
-Documentación detallada disponible en el directorio [`docs/`](./docs/):
+La documentación detallada está en el directorio [`documents/`](./documents/):
 
 | Documento | Descripción |
 |-----------|-------------|
-| [Arquitectura del Sistema](docs/architecture/overview.md) | Componentes, flujo de datos, decisiones de diseño |
-| [Motores de IA](docs/ia/engines.md) | Whisper, scoring models, VAD, embeddings |
-| [Motor de Render](docs/video/render_engine.md) | Pipeline de render, layouts, subtítulos |
-| [Pagos y Wallet](docs/business/payments.md) | Modelo transaccional, pricing, Stripe |
-| [Infraestructura](docs/deploy/infrastructure.md) | Docker, PostgreSQL, Redis, R2 |
-| [Integraciones](docs/integrations/social_auth.md) | Ayrshare, YouTube, Twitch |
+| [IA en OneCreator](documents/ia/README.md) | Arquitectura del core de IA y un documento por flujo: creación de proyecto, ingesta, transcripción, moderación y selección, Prompt-to-Edit, SEO y publicación, render, capacidad y costos |
+| [Mapa de pantallas](documents/producto/mapa-de-pantallas.md) | Qué es cada pantalla, roles, planes, errores y los huecos de backend |
+| [Sistema visual](documents/producto/diseno/README.md) | Tokens y componentes con los que están dibujadas las pantallas |
+| [Guía para conectar la web con el backend](documents/integracion/guia-conexion.md) | Cómo conectar cada área, reglas del backend, qué falta, orden y quién hace qué |
 
 ---
 
