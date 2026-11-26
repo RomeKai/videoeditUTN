@@ -156,6 +156,8 @@ USE_R2=False
 
 ## Ejecución con Docker
 
+> **Para la demo del producto** (backend, web en modo híbrido y datos sembrados en `http://localhost:8080`), seguí [`documents/runbooks/demo.md`](documents/runbooks/demo.md).
+
 ### Levantar todo el stack
 
 ```bash
@@ -327,7 +329,7 @@ videoeditUTN/
     ├── producto/                    # Mapa de pantallas y sistema visual
     ├── integracion/                 # Guía para conectar la web con el backend
     ├── adrs/                        # Decisiones de arquitectura
-    └── runbooks/                    # Operación del piloto
+    └── runbooks/                    # Operación del piloto y la demo del producto
 ```
 
 ---
