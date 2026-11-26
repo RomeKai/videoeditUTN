@@ -10,7 +10,7 @@ import { useBrandKits, useCreateProject, useEstimate, usePlans, usePricing, useP
 import { keys } from '@/api/query';
 import { ConfirmDialog, useBillingDialogs } from '@/dialogs';
 import { errorMessage, planLimitKind, uploadErrorCode, uploadErrorMessage } from '@/lib/error-messages';
-import { formatDuration, formatNumber, formatPercent, formatTokens } from '@/lib/format';
+import { formatDuration, formatMinutes, formatNumber, formatPercent, formatTokens } from '@/lib/format';
 import { useBeforeUnload, useDebounced, useIsMobile } from '@/lib/hooks';
 import { estimateCost, firstPlanWith, planAllowsResolution, type CostEstimate } from '@/lib/pricing';
 import { LoadError } from '@/shell/LoadError';
@@ -224,6 +224,10 @@ export function NewProjectScreen() {
         if (error instanceof ApiError && error.status === 403 && error.code === 'duration') {
           const limit = typeof error.data.limit === 'number' ? error.data.limit : current.plan?.max_video_duration_seconds;
           failure = { message: uploadErrorMessage('too_long', { maxSeconds: limit }), hint: <LongerPlanHint plan={current.plan} plans={current.plans} /> };
+        } else if (error instanceof ApiError && error.status === 400 && error.code === 'duration_app') {
+          // Over the app's own limit: no plan takes it, so no plan is offered.
+          const limit = typeof error.data.limit === 'number' ? error.data.limit : 10_800;
+          failure = { message: `El video dura más de ${formatMinutes(limit)}, el máximo que acepta OneCreator. Probá con uno más corto.` };
         } else if (error instanceof ApiError && error.status === 400) {
           failure =
             error.code === 'unavailable'

@@ -148,8 +148,8 @@ describe('H1 · General', () => {
 describe('H2 · Miembros', () => {
   it('invita por email con rol (D7) y la invitación ocupa un lugar', async () => {
     const user = userEvent.setup();
-    renderScreen(<MembersScreen />);
-    expect(await screen.findByText('4 de 5 miembros')).toBeInTheDocument();
+    renderScreen(<MembersScreen />, { scenario: 'miembros-queda-un-lugar' });
+    expect(await screen.findByText('9 de 10 miembros')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Invitar' }));
     const dialog = await screen.findByRole('dialog', { name: 'Invitar a Estudio Norte' });
     expect(within(dialog).getByText(/Queda/)).toHaveTextContent('Queda 1 lugar en el plan Pro');
@@ -176,7 +176,7 @@ describe('H2 · Miembros', () => {
     const row = (await screen.findByText('juan@ejemplo.com')).closest('tr') as HTMLElement;
     expect(within(row).getByText('Invitación pendiente')).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: /Rol de juan@ejemplo.com: Lector/ })).toBeInTheDocument();
-    expect(await screen.findByText('4 de 5 miembros · 1 invitación pendiente')).toBeInTheDocument();
+    expect(await screen.findByText('9 de 10 miembros · 1 invitación pendiente')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Invitar' })).toHaveAttribute('aria-disabled', 'true');
     // A long flow (dialog, four validations, the invitation): on a busy machine it needs more than the default 5 s.
   }, 30_000);
@@ -184,7 +184,7 @@ describe('H2 · Miembros', () => {
   it('con el plan lleno «Invitar» queda deshabilitado y explica por qué', async () => {
     const user = userEvent.setup();
     renderScreen(<MembersScreen />, { scenario: 'miembros-al-limite' });
-    expect(await screen.findByText('4 de 5 miembros · 1 invitación pendiente')).toBeInTheDocument();
+    expect(await screen.findByText('9 de 10 miembros · 1 invitación pendiente')).toBeInTheDocument();
     const invite = screen.getByRole('button', { name: 'Invitar' });
     expect(invite).toHaveAttribute('aria-disabled', 'true');
     expect(screen.getByText(/La invitación pendiente ocupa el último lugar del plan Pro/)).toBeInTheDocument();
@@ -199,7 +199,7 @@ describe('H2 · Miembros', () => {
     await user.click(await screen.findByRole('menuitem', { name: 'Quitar la invitación' }));
     const confirm = await screen.findByRole('alertdialog', { name: '¿Quitar la invitación a juan@estudionorte.com?' });
     await user.click(within(confirm).getByRole('button', { name: 'Quitar la invitación' }));
-    expect(await screen.findByText('4 de 5 miembros')).toBeInTheDocument();
+    expect(await screen.findByText('9 de 10 miembros')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole('button', { name: 'Invitar' })).not.toHaveAttribute('aria-disabled'));
   });
 
@@ -226,7 +226,7 @@ describe('H2 · Miembros', () => {
     await user.click(await screen.findByRole('menuitem', { name: 'Quitar del workspace' }));
     const confirm = await screen.findByRole('alertdialog', { name: '¿Quitar a Diego Paz de Estudio Norte?' });
     await user.click(within(confirm).getByRole('button', { name: 'Quitar del workspace' }));
-    expect(await screen.findByText('3 de 5 miembros')).toBeInTheDocument();
+    expect(await screen.findByText('3 de 10 miembros')).toBeInTheDocument();
     expect(screen.queryByText('diego@clientes.com')).not.toBeInTheDocument();
   });
 

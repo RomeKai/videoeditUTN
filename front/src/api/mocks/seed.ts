@@ -73,7 +73,7 @@ export function seedPlans(): Plan[] {
       allow_crossposting: true,
       has_seo_optimization: true,
       base_discount_rate: 0.1,
-      max_members: 5,
+      max_members: 10,
       price_usd_monthly: 49,
       description: 'Para equipos que publican en todas las redes.',
       sort_order: 3,
@@ -134,6 +134,23 @@ export const USER_IDS = {
   diego: mid(KIND.user, 4),
   nuevo: mid(KIND.user, 5),
 } as const;
+
+/**
+ * People who join Estudio Norte only to fill the plan's seats (`SeedOptions.seats`). Enough for the
+ * biggest plan (Estudio, 15 seats: 14 active minus the 4 of the base scenario).
+ */
+const SEAT_FILLERS: Array<{ name: string; email: string; role: MemberRole }> = [
+  { name: 'Valentina Acosta', email: 'valentina@estudionorte.com', role: 'editor' },
+  { name: 'Tomás Herrera', email: 'tomas@estudionorte.com', role: 'editor' },
+  { name: 'Camila Benítez', email: 'camila@estudionorte.com', role: 'editor' },
+  { name: 'Nicolás Giménez', email: 'nicolas@estudionorte.com', role: 'viewer' },
+  { name: 'Florencia Ríos', email: 'florencia@estudionorte.com', role: 'editor' },
+  { name: 'Agustín Molina', email: 'agustin@estudionorte.com', role: 'viewer' },
+  { name: 'Julieta Castro', email: 'julieta@estudionorte.com', role: 'editor' },
+  { name: 'Facundo Ortiz', email: 'facundo@estudionorte.com', role: 'viewer' },
+  { name: 'Micaela Suárez', email: 'micaela@estudionorte.com', role: 'editor' },
+  { name: 'Ignacio Vega', email: 'ignacio@estudionorte.com', role: 'viewer' },
+];
 
 export const WORKSPACE_IDS = { estudio: mid(KIND.workspace, 1), canal: mid(KIND.workspace, 2), nuevo: mid(KIND.workspace, 3) } as const;
 
@@ -356,7 +373,7 @@ export function buildProject(spec: ProjectSpec, now: number, brandKitId: string 
     // The whole video is one clip: it spans the source, has the project's title and no score.
     clips = clips.slice(0, 1).map((clip) => ({ ...clip, title: spec.title, start_time: 0, end_time: spec.durationSeconds, virality_score: 0, ai_reasoning: '' }));
   }
-  const costState = spec.costState ?? (spec.status === 'failed' ? 'refunded' : spec.status === 'completed' || spec.status === 'partial' ? 'charged' : 'reserved');
+  const costState = spec.costState ?? (spec.status === 'failed' ? 'refunded' : spec.status === 'completed' || spec.status === 'partial' || spec.status === 'awaiting_approval' ? 'charged' : 'reserved');
   const timings: MockProject['stage_timings'] = {};
   const doneIndex = INGEST_ORDER.indexOf(spec.stage) === -1 ? INGEST_ORDER.length - 1 : INGEST_ORDER.indexOf(spec.stage);
   const stageDurations = [42, 195, 38, 71, 12];
@@ -518,8 +535,12 @@ export interface SeedOptions {
   projects?: 'default' | 'none' | 'all-states' | 'many';
   brandKits?: boolean;
   social?: Partial<Record<Platform, 'connected' | 'expired' | 'disconnected'>>;
-  /** Adds a pending invitation so the plan's seats are full (H2). */
-  seatsFull?: boolean;
+  /**
+   * How full the plan's seats are in Estudio Norte (H2). Both fill it with active members up to one seat
+   * short of `max_members`, whatever the plan has. `one-left` stops there: the next invitation takes the
+   * last seat. `full` adds one pending invitation, which takes it.
+   */
+  seats?: 'one-left' | 'full';
   flags?: Partial<MockDb['flags']>;
 }
 
@@ -719,7 +740,19 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
     member(6, WORKSPACE_IDS.canal, USER_IDS.lucia, 'lucia@estudionorte.com', 'editor'),
     member(7, WORKSPACE_IDS.nuevo, USER_IDS.nuevo, 'sofia@ejemplo.com', 'admin'),
   ];
-  if (options.seatsFull) members.push(member(8, WORKSPACE_IDS.estudio, null, 'juan@estudionorte.com', 'editor', 'pending', 'valida'));
+  if (options.seats) {
+    // Counted from the plan, so the scenarios keep meaning the same when a plan changes its seats.
+    const active = members.filter((item) => item.workspace === WORKSPACE_IDS.estudio).length;
+    const missing = Math.max(0, (plan?.max_members ?? 1) - 1 - active);
+    // Fewer fillers than seats would leave the scenario short of "one left" without saying so.
+    if (missing > SEAT_FILLERS.length) throw new Error(`seed: faltan ${missing - SEAT_FILLERS.length} personas de relleno para llenar el plan`);
+    SEAT_FILLERS.slice(0, missing).forEach((filler, position) => {
+      const id = mid(KIND.user, 20 + position);
+      users.push(user(id, filler.name, filler.email, { active_workspace_id: WORKSPACE_IDS.estudio }));
+      members.push(member(20 + position, WORKSPACE_IDS.estudio, id, filler.email, filler.role));
+    });
+    if (options.seats === 'full') members.push(member(8, WORKSPACE_IDS.estudio, null, 'juan@estudionorte.com', 'editor', 'pending', 'valida'));
+  }
 
   const mainWorkspace = isNew ? WORKSPACE_IDS.nuevo : WORKSPACE_IDS.estudio;
   const kitId = mid(KIND.brandKit, 1);

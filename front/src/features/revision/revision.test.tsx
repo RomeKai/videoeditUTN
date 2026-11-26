@@ -25,6 +25,25 @@ vi.mock('next/navigation', () => ({
   useParams: () => ({}),
 }));
 
+// A backend from before `render_queued`: when on, the mocked API leaves the field out of every clip.
+const oldBackend = vi.hoisted(() => ({ on: false }));
+vi.mock('@/api/mocks/serialize', async (original) => {
+  const real = await original<typeof import('@/api/mocks/serialize')>();
+  return {
+    ...real,
+    serializeClip: (...args: Parameters<typeof real.serializeClip>) => {
+      const clip = real.serializeClip(...args);
+      if (oldBackend.on) delete clip.render_queued;
+      return clip;
+    },
+    serializeProject: (...args: Parameters<typeof real.serializeProject>) => {
+      const project = real.serializeProject(...args);
+      if (oldBackend.on) for (const clip of project.clips) delete clip.render_queued;
+      return project;
+    },
+  };
+});
+
 const REVIEW = mid(KIND.project, 3); // Podcast Ep. 42: awaiting approval, 9 suggestions
 const RENDERING = mid(KIND.project, 4); // Stream Valorant: rendering
 const READY = mid(KIND.project, 5); // Vlog Mendoza: completed, 1080p
@@ -38,6 +57,7 @@ configure({ asyncUtilTimeout: 10_000 });
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => {
+  oldBackend.on = false;
   server.resetHandlers();
   vi.clearAllMocks();
 });
@@ -551,7 +571,8 @@ describe('D4 · Editor de clip', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Renderizar' }));
     await waitFor(() => expect(router.push).toHaveBeenCalledWith(`/proyectos/${READY}/clips`));
     expect(stored()?.end_time).toBe((before?.end_time ?? 0) + 0.5);
-    expect(stored()?.status).toBe('rendering');
+    // As the backend: queued in `draft` until a worker takes it.
+    expect([stored()?.status, stored()?.render_queued]).toEqual(['draft', true]);
   });
 
   it('cambiar solo el título se guarda sin renderizar ni cobrar', async () => {
@@ -637,6 +658,60 @@ describe('D4 · Editor de clip', () => {
     renderScreen(<ClipEditorScreen projectId={READY} clipId={CLIP} />);
     await screen.findByRole('region', { name: 'Recorte del clip' });
     expect(bar()).toHaveTextContent('Sin cambios');
+  });
+
+  it('un clip con error: reintentarlo es pago, avisa cuánto cuesta y pide confirmar', async () => {
+    const user = userEvent.setup();
+    const partial = loadDb().projects.find((item) => item.title.startsWith('Charla en la UTN'));
+    const failed = partial?.clips.find((item) => item.status === 'failed');
+    if (!partial || !failed) throw new Error('falta el clip fallido');
+    renderScreen(<ClipEditorScreen projectId={partial.id} clipId={failed.id} />);
+    expect(await screen.findByText('No se pudo generar y no se cobró')).toBeInTheDocument();
+    expect(await screen.findByText(/Reintentarlo cuesta su render: [\d.,]+ tokens?\. Te mostramos el costo antes de confirmar\./)).toBeInTheDocument();
+    expect(screen.queryByText(/no gasta tokens/i)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Reintentar' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Reintentar el clip' });
+    expect(project(partial.id)?.status).toBe('partial');
+    await user.click(within(dialog).getByRole('button', { name: 'Reintentar' }));
+    expect(await screen.findByText(/^Reintentando el clip\. Reservamos [\d.,]+ tokens?;/)).toBeInTheDocument();
+    await waitFor(() => expect(loadDb().transactions.find((item) => item.description === `Reintento de clip: ${failed.title}`)?.status).toBe('RESERVED'));
+  });
+
+  it('un clip en cola de un render pago (draft con render_queued) se muestra renderizando, no como sugerido', async () => {
+    editDb((db) => {
+      const item = db.projects.find((entry) => entry.id === READY);
+      const queued = item?.clips.find((entry) => entry.id === CLIP);
+      if (!item || !queued) throw new Error('falta el clip');
+      item.status = 'rendering';
+      queued.status = 'draft';
+      queued.render_queued = true;
+    });
+    renderScreen(<ClipEditorScreen projectId={READY} clipId={CLIP} />);
+    expect(await screen.findByText('Este clip se está renderizando')).toBeInTheDocument();
+    expect(screen.queryByText('Este clip todavía no se renderizó')).not.toBeInTheDocument();
+  });
+
+  it('sin render_queued (backend anterior): al terminar el render del reintento el editor muestra el clip terminado', async () => {
+    oldBackend.on = true;
+    const user = userEvent.setup();
+    const partial = loadDb().projects.find((item) => item.title.startsWith('Charla en la UTN'));
+    const failed = partial?.clips.find((item) => item.status === 'failed');
+    if (!partial || !failed) throw new Error('falta el clip fallido');
+    renderScreen(<ClipEditorScreen projectId={partial.id} clipId={failed.id} />);
+    await user.click(await screen.findByRole('button', { name: 'Reintentar' }));
+    await user.click(within(await screen.findByRole('dialog', { name: 'Reintentar el clip' })).getByRole('button', { name: 'Reintentar' }));
+    // The clip is a plain `draft` for the screen; that its project renders is what says it is under way.
+    expect(await screen.findByText('Este clip se está renderizando')).toBeInTheDocument();
+    expect(screen.queryByText('Este clip todavía no se renderizó')).not.toBeInTheDocument();
+    // The render ends. Nothing polls the clip: only the project's own polling can bring the news.
+    editDb((db) => {
+      for (const item of db.projects) if (item._sim) item._sim.startedAt -= 600_000;
+    });
+    await waitFor(() => expect(screen.queryByText('Este clip se está renderizando')).not.toBeInTheDocument(), { timeout: 12_000 });
+    expect(await screen.findByRole('button', { name: /Volver a renderizar/ })).toBeInTheDocument();
+    expect(screen.queryByText('Este clip todavía no se renderizó')).not.toBeInTheDocument();
+    expect(screen.queryByText('No se pudo generar y no se cobró')).not.toBeInTheDocument();
+    expect(project(partial.id)?.clips.find((item) => item.id === failed.id)?.status).toBe('completed');
   });
 
   it('un clip en borrador de un proyecto en revisión no se renderiza solo', async () => {

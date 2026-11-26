@@ -1,7 +1,7 @@
 # ADR-004: Storage — Cloudflare R2
 
 **Estado:** `accepted`
-**Fecha:** 2026-07 (decisión original) | 2026-09-01 (documentación formal)
+**Fecha:** 2026-07 (decisión original) | 2026-09-01 (documentación formal) | 2026-11 (revisión ARCH-01)
 **Par responsable:** ⚙️ Par Engine (Dev 3 + Dev 4)
 
 ---
@@ -71,9 +71,27 @@ Para un SaaS de video, el egress domina los costos. Con 5TB de transferencia men
 
 ---
 
+## Revisión ARCH-01 (2026-11)
+
+**Resultado:** se mantiene `accepted`. La decisión (R2 vía API S3 con `boto3`) sigue vigente.
+
+Verificado contra `dev`:
+
+- **R2 con `boto3`:** `CloudflareR2Manager` (`services/storage_service.py`) sube, descarga, borra y firma URLs contra R2 con un cliente S3 apuntado a `CLOUDFLARE_R2_ENDPOINT_URL`.
+- **Modo desarrollo:** `USE_R2=False` guarda en `MEDIA_ROOT` como dice el ADR. CI corre con `USE_R2=False`.
+
+Diferencias con el ADR original:
+
+- **`s3_service.py` está vacío.** Toda la lógica vive en `storage_service.py`. Se corrige la referencia abajo; borrar el archivo vacío queda como limpieza aparte.
+- **No existe fallback automático a disco local si R2 no responde.** El modo local solo se elige por flag. La mitigación real es el reintento de las tareas de Celery; un fallback silencioso escondería la falla, igual que lo que descartó [ADR-008](008-groq-whisper-migration.md) para transcripción.
+- **Limpieza por TTL: parcial.** Existe `cleanup_expired_previews` (cada 15 min por Celery Beat) para las vistas previas. Falta definir la limpieza de proxys y archivos intermedios en R2; una lifecycle rule del bucket de R2 es la opción más simple.
+- **Settings de producción:** `prod.py` tiene comentado un bloque de `django-storages` para AWS S3 que no aplica a R2. Se ordena al preparar el deploy ([ADR-006](006-deployment-strategy.md)).
+
+---
+
 ## Referencias
 
 - [Código: CloudflareR2Manager](../../back/apps/videos/services/storage_service.py)
-- [Código: S3Service](../../back/apps/videos/services/s3_service.py)
+- ~~Código: S3Service~~ (`s3_service.py` está vacío; ver revisión ARCH-01)
 - [AI-DECISIONS.md #8](../../AI-DECISIONS.md) — registro original
 - [Cloudflare R2 Pricing](https://developers.cloudflare.com/r2/pricing/)

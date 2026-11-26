@@ -4,4 +4,5 @@ export * from './ConfirmCostDialog';
 export * from './ConfirmDialog';
 export * from './ConnectNetworkDialog';
 export * from './DeleteProjectDialog';
+export * from './RetryClipDialog';
 export * from './SessionExpiredDialog';

@@ -601,10 +601,20 @@ export interface ClipDisplay {
 }
 
 /** State of a clip card: its render status plus where it is published or scheduled. */
-export function describeClip(clip: Pick<Clip, 'status' | 'posts'>): ClipDisplay {
+/**
+ * A `draft` clip that is not a suggestion: a paid render of it is queued and no worker took it yet
+ * (the backend puts the clip back to `draft` when a render, a retry or a rerender is reserved).
+ * `render_queued` says so; without it, a draft of a project that is rendering is one.
+ */
+export function isRenderQueued(clip: Pick<Clip, 'status' | 'render_queued'>, projectStatus?: Project['status']): boolean {
+  return clip.status === 'draft' && (clip.render_queued === true || projectStatus === 'rendering');
+}
+
+/** `projectStatus`: the status of the clip's project, to tell a queued render from a suggestion. */
+export function describeClip(clip: Pick<Clip, 'status' | 'posts' | 'render_queued'>, projectStatus?: Project['status']): ClipDisplay {
   const posts = clip.posts ?? [];
   const ready = clip.status === 'completed' || clip.status === 'published';
-  if (clip.status === 'rendering') return { group: 'rendering', label: 'Renderizando', tone: 'info', where: null, ready };
+  if (clip.status === 'rendering' || isRenderQueued(clip, projectStatus)) return { group: 'rendering', label: 'Renderizando', tone: 'info', where: null, ready };
   if (clip.status === 'failed') return { group: 'failed', label: 'Error', tone: 'err', where: null, ready };
   if (clip.status === 'draft') return { group: 'draft', label: 'Sugerido', tone: 'neutral', where: null, ready };
   const published = posts.filter((post) => post.status === 'PUBLISHED').sort((a, b) => b.publish_at.localeCompare(a.publish_at))[0];
@@ -629,9 +639,9 @@ export function describeClip(clip: Pick<Clip, 'status' | 'posts'>): ClipDisplay 
 
 export type ClipFilter = 'all' | ClipGroup;
 
-export function clipCounts(clips: ReadonlyArray<Pick<Clip, 'status' | 'posts'>>): Record<ClipFilter, number> {
+export function clipCounts(clips: ReadonlyArray<Pick<Clip, 'status' | 'posts' | 'render_queued'>>, projectStatus?: Project['status']): Record<ClipFilter, number> {
   const counts: Record<ClipFilter, number> = { all: clips.length, ready: 0, published: 0, scheduled: 0, rendering: 0, failed: 0, draft: 0 };
-  for (const clip of clips) counts[describeClip(clip).group] += 1;
+  for (const clip of clips) counts[describeClip(clip, projectStatus).group] += 1;
   return counts;
 }
 

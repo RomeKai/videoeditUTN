@@ -16,6 +16,14 @@ const PIPELINE_MESSAGES: Record<string, string> = {
   AutoRenderNotPaid: 'No alcanzó el saldo para renderizar los clips que faltaban. Cargá tokens y volvé a intentarlo; los clips siguen ahí.',
   // Not in map §4 yet: the creation could not queue the processing (broker down); the reservation went back.
   IngestionNotQueued: 'No pudimos empezar a procesar tu video y no se cobró nada. Creá el proyecto de nuevo en unos minutos.',
+  // Link projects (back/apps/videos/tasks/shared.py · download_from_youtube): refused when the video is fetched, never retried.
+  UnsupportedLinkError:
+    'No pudimos usar este link. Tiene que ser el link de un solo video público de YouTube, Vimeo, Twitch o Google Drive: no una lista, un canal ni una transmisión en vivo.',
+  // Over the plan's limit only: another plan would take the video.
+  LinkTooLongError: 'El video del link dura más de lo que permite tu plan. Probá con uno más corto o cambiá de plan.',
+  // Over the app's limit (AI_UPLOAD_MAX_DURATION_SECONDS, 3 h): no plan would take it.
+  LinkTooLongForAppError: 'El video del link dura más de 3 horas, el máximo que acepta OneCreator. Probá con uno más corto.',
+  LinkTooLargeError: 'El video del link pesa más de lo que podemos descargar. Probá con una versión más liviana o subí el archivo.',
 };
 
 /** `pipeline_error_code` (class name of the exception) → message for the user (map §4). Unknown codes get the generic one. */
@@ -46,6 +54,14 @@ export function pipelineErrorTitle(code: string | null | undefined): string {
       return 'No alcanzó el saldo para renderizar';
     case 'IngestionNotQueued':
       return 'No pudimos empezar a procesar el video';
+    case 'UnsupportedLinkError':
+      return 'No pudimos usar este link';
+    case 'LinkTooLongError':
+      return 'El video del link es muy largo para tu plan';
+    case 'LinkTooLongForAppError':
+      return 'El video del link dura más de 3 horas';
+    case 'LinkTooLargeError':
+      return 'El video del link es muy pesado';
     default:
       return 'Algo falló de nuestro lado';
   }

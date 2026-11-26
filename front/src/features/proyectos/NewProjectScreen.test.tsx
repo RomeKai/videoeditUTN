@@ -143,7 +143,11 @@ describe('C1 · Nuevo proyecto', () => {
 
     await user.clear(input);
     await user.type(input, 'https://www.youtube.com/watch?v=largo');
-    expect(await screen.findByText('El video dura más de lo que permite tu plan (máx. 3 h).', {}, { timeout: 3000 })).toBeInTheDocument();
+    // 5 h on Pro (3 h, the app's own maximum): no plan would take it, so none is offered.
+    expect(await screen.findByText('El video dura más de 3 h, el máximo que acepta OneCreator. Probá con uno más corto.', {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.queryByText(/permite tu plan/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Todavía no podemos traer videos de ese sitio/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Ver planes' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Crear proyecto' })).toBeDisabled();
 
     await user.clear(input);
