@@ -64,7 +64,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | POST | `/api/token/` | Inicia sesión con email y contraseña; devuelve el par JWT. | ✅ existe | A1, D9 |
 | POST | `/api/token/refresh/` | Renueva el token de acceso. El backend rota el refresh (ROTATE_REFRESH_TOKENS). | ✅ existe | A1, D9 |
 | POST | `/api/v1/auth/register/` | Crea la cuenta y manda el email de verificación. | ✅ existe | A2, A5 |
-| POST | `/api/v1/auth/verify-email/` | Verifica el email con el token del link. El de una cuenta nueva deja la sesión iniciada; el de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta. | ✅ existe | A3 |
+| POST | `/api/v1/auth/verify-email/` | Verifica el email con el token del link. El de una cuenta nueva deja la sesión iniciada solo en el navegador que se registró (`signup_nonce`); en otro solo verifica. El de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta. | ✅ existe | A3 |
 | POST | `/api/v1/auth/verify-email/resend/` | Reenvía el email de verificación (una vez cada 60 s). Responde 204 exista o no el email y esté o no verificado, como recuperar contraseña. | ✅ existe | A3 |
 | POST | `/api/v1/auth/password-reset/` | Pide el link para recuperar la contraseña. Siempre responde 204, exista o no el email. | ✅ existe | A4, D9 |
 | POST | `/api/v1/auth/password-reset/confirm/` | Define la contraseña nueva con el token del link. Responde 204 sin tokens: la UI inicia sesión con el email del link y la contraseña nueva. | ✅ existe | A4 |
@@ -185,25 +185,25 @@ Crea la cuenta y manda el email de verificación.
 |---|---|
 | Id | `auth.register` |
 | Backend | ✅ existe · `back/apps/users/views_auth.py · RegisterView (RegisterSerializer); el link: apps/users/email_verification.py · send_signup_verification` |
-| Nota | Crea la cuenta sin verificar, su workspace con el plan por defecto (la señal de User: billetera y el usuario como Admin activo; se llama "Espacio de <nombre>") y manda el link de A3 (`/verificar?token=…`, vence en 24 h). El email se guarda normalizado (dominio en punycode y minúsculas): la respuesta trae el guardado. Decir "email ya usado" permite averiguar qué emails tienen cuenta: el mapa (A2) lo pide así, y por eso el límite por IP. «Reenviar» de A3 espera 60 s desde el registro. Hasta verificar, el login igual entra (falta el 403 propuesto de `auth.login`). |
+| Nota | Crea la cuenta sin verificar, su workspace con el plan por defecto (la señal de User con `create_owned_workspace`: billetera y el usuario como Admin activo; se llama "Espacio de <nombre>") y manda el link de A3 (`/verificar?token=…`, vence en 24 h). El email se guarda normalizado (dominio en punycode y minúsculas): la respuesta trae el guardado. `signup_nonce` es de este navegador: la web lo guarda y lo manda con el link (`auth.verifyEmail`); el backend guarda solo su hash. Decir "email ya usado" permite averiguar qué emails tienen cuenta: el mapa (A2) lo pide así, y por eso el límite por IP. «Reenviar» de A3 espera 60 s desde el registro. Hasta verificar, el login igual entra (falta el 403 propuesto de `auth.login`). |
 | Sesión | Pública |
 | Pedido | RegisterRequest |
 | Respuesta 201 | RegisterResponse |
-| Errores | **400** Validación por campo, en castellano. Email ya usado (con cualquier escritura de su dominio): `email: [{ message, code: "unique" }]`, que la UI muestra con un link a Iniciar sesión. Contraseña que no cumple las reglas (`password`, una frase por regla). `terms_accepted` falta o no es `true`. Dominio que no se puede codificar, o dirección que el servidor de email rechaza (en `email`). Se muestra debajo de cada campo.<br>**429** Más de 20 registros por hora desde la misma IP (`THROTTLE_REGISTER`). `detail` dice en castellano cuánto esperar.<br>**502** El servidor de email no aceptó el email de verificación. No se crea nada: se puede probar de nuevo. |
+| Errores | **400** Validación por campo, en castellano. Contraseña que no cumple las reglas (`password`, una frase por regla). `terms_accepted` falta o no es `true`. Dominio que no se puede codificar, o dirección que el servidor de email rechaza (en `email`). Email ya usado (con cualquier escritura de su dominio): `email: [{ message, code: "unique" }]`, que la UI muestra con un link a Iniciar sesión; llega solo cuando todo lo demás está bien, así un registro que no crearía nada no dice qué emails tienen cuenta. Se muestra debajo de cada campo.<br>**429** Más de 20 registros por hora desde la misma IP (`THROTTLE_REGISTER`). `detail` dice en castellano cuánto esperar.<br>**502** El servidor de email no aceptó el email de verificación. No se crea nada: se puede probar de nuevo. |
 | Pantallas | A2, A5 |
 
 #### `POST /api/v1/auth/verify-email/`
 
-Verifica el email con el token del link. El de una cuenta nueva deja la sesión iniciada; el de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta.
+Verifica el email con el token del link. El de una cuenta nueva deja la sesión iniciada solo en el navegador que se registró (`signup_nonce`); en otro solo verifica. El de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta.
 
 | | |
 |---|---|
 | Id | `auth.verifyEmail` |
 | Backend | ✅ existe · `back/apps/users/views.py · VerifyEmailView; el token: apps/users/email_verification.py` |
-| Nota | El token dice para qué es (cambio de email o registro). El de registro lo mandan `auth.register` y `auth.resendVerification`: verifica la cuenta y devuelve el par JWT. El link de un cambio pasa `pending_email` a `email`; deja de servir si el cambio se cancela. Los dos sirven una vez y vencen en 24 h. |
+| Nota | El token dice para qué es (cambio de email o registro). El de registro lo mandan `auth.register` y `auth.resendVerification`: verifica la cuenta y descarta un `pending_email` pedido antes. Devuelve el par JWT si llega el `signup_nonce` del registro (o con la sesión de esa cuenta); si no, `{ signed_in: false }` y la UI lleva a Iniciar sesión con "Tu email quedó verificado. Iniciá sesión.". Así, quien se registró con un email ajeno no le inicia la sesión a su dueño en una cuenta cuya contraseña conoce: el dueño entra recuperando la contraseña, que cierra todas las sesiones. El link de un cambio pasa `pending_email` a `email` y devuelve el par; deja de servir si el cambio se cancela. Los dos sirven una vez y vencen en 24 h. |
 | Sesión | Pública (manda el token si hay sesión) |
-| Pedido | { token: string } |
-| Respuesta 200 | TokenPair |
+| Pedido | VerifyEmailRequest |
+| Respuesta 200 | VerifyEmailResult |
 | Errores | **400** Token inválido, vencido, ya usado o cancelado, o un email pendiente con un dominio que no se puede codificar (error en `token`). La UI ofrece reenviar el email.<br>**403** `code: "other_account"`: hay una sesión de otra cuenta. `code: "login_required"`: el link de un cambio de email necesita la sesión de su cuenta. No se aplica nada; la UI muestra `detail` y, en el segundo caso, lleva a iniciar sesión y de vuelta al mismo link. |
 | Pantallas | A3 |
 
@@ -230,7 +230,7 @@ Pide el link para recuperar la contraseña. Siempre responde 204, exista o no el
 |---|---|
 | Id | `auth.requestPasswordReset` |
 | Backend | ✅ existe · `back/apps/users/views_auth.py · PasswordResetView; el link: apps/users/email_verification.py · send_password_reset` |
-| Nota | El link del email (N2) es `/recuperar?token=<token>&email=<email>`, con el email de la cuenta: la pantalla dice de quién es e inicia sesión después de guardar ("Guardar y entrar"). Vence en 24 h (`PASSWORD_RESET_TIMEOUT`), sirve una vez y deja de servir con cualquier cambio de contraseña. Una cuenta sin contraseña usable (login social) también lo recibe: así crea una. Lo manda el worker; el pedido hace lo mismo con cuenta o sin ella. |
+| Nota | El link del email (N2) es `/recuperar#token=<token>&email=<email>`, en el fragmento: el navegador no lo manda, así no queda en los logs del host de la web. La pantalla lo lee de `location.hash` y lo saca de la URL. Con el email de la cuenta dice de quién es e inicia sesión después de guardar ("Guardar y entrar"). Vence en 24 h (`PASSWORD_RESET_TIMEOUT`), sirve una vez y deja de servir con cualquier cambio de contraseña. Una cuenta sin contraseña usable (login social) también lo recibe: así crea una. Lo manda el worker; el pedido hace lo mismo con cuenta o sin ella. |
 | Sesión | Pública |
 | Pedido | { email: string } |
 | Respuesta 204 | NoContent |
@@ -245,7 +245,7 @@ Define la contraseña nueva con el token del link. Responde 204 sin tokens: la U
 |---|---|
 | Id | `auth.confirmPasswordReset` |
 | Backend | ✅ existe · `back/apps/users/views_auth.py · PasswordResetConfirmView (PasswordResetTokenGenerator de Django)` |
-| Nota | Como `POST /me/password/`, cierra todas las sesiones de la cuenta (los tokens de la contraseña vieja dan 401). El link llegó al email de la cuenta, así que también la deja verificada. |
+| Nota | Como `POST /me/password/`, cierra todas las sesiones de la cuenta (los tokens de la contraseña vieja dan 401). El link llegó al email de la cuenta, así que también la deja verificada y descarta lo que dejó quien tenía la contraseña antes: un `pending_email` y el `signup_nonce` del registro. |
 | Sesión | Pública |
 | Pedido | { token: string, password: string } |
 | Respuesta 204 | NoContent |
@@ -1383,6 +1383,13 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `id` | string |
 | `email` | string |
 | `is_email_verified` | boolean |
+| `signup_nonce` | string |
+
+**SignedOut**
+
+| Campo | Tipo |
+|---|---|
+| `signed_in` | false |
 
 **TokenPair**
 
@@ -1390,6 +1397,15 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 |---|---|
 | `access` | string |
 | `refresh` | string |
+
+**VerifyEmailRequest**
+
+| Campo | Tipo |
+|---|---|
+| `token` | string |
+| `signup_nonce` (opcional) | string |
+
+**VerifyEmailResult:** TokenPair \| SignedOut
 
 ### `users.ts`
 

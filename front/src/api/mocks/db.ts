@@ -204,6 +204,8 @@ export interface MockDb {
    * `reset:<email>`: the same for the password reset link (A4). Like the backend, with or without an account.
    */
   resendAt: Record<string, number>;
+  /** User id → the `signup_nonce` its sign-up answered (the backend keeps its hash). Only the link with it signs in. */
+  signupNonces?: Record<string, string>;
 }
 
 export const DB_VERSION = 13;

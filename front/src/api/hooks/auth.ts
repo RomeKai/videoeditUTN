@@ -42,13 +42,18 @@ export function useRegister() {
   return useMutation({ mutationFn: (body: contract.RegisterRequest) => apiCall(contract.register, { body }) });
 }
 
-/** A3: the link's token verifies the account and starts the session. */
+/**
+ * A3: the link's token verifies the account. It also starts the session when it comes with the
+ * `signup_nonce` of this browser's sign-up (or the session of that account): the answer is a pair.
+ * Otherwise it answers `{ signed_in: false }` and the person signs in with the password.
+ */
 export function useVerifyEmail() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (token: string) => apiCall(contract.verifyEmail, { body: { token } }),
-    onSuccess: async (tokens) => {
-      setTokens(tokens);
+    mutationFn: (body: contract.VerifyEmailRequest) => apiCall(contract.verifyEmail, { body }),
+    onSuccess: async (result) => {
+      if (!('access' in result)) return;
+      setTokens(result);
       await queryClient.invalidateQueries();
     },
   });

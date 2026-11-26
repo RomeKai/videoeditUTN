@@ -7,7 +7,7 @@ import { register, verifyEmail } from './auth';
 import real from './drf/responses.json';
 
 /**
- * The account bodies of drf/responses.json (auth_register and the register_*, resend_*,
+ * The account bodies of drf/responses.json (auth_register, verify_email_signed_out and the register_*, resend_*,
  * password_reset_*, logout_* and session_* errors), parsed with the contract and read with the
  * helpers the screens use. back/apps/users/tests/test_auth_contract_fixture.py builds them with the
  * real endpoints and fails when they stop matching the JSON.
@@ -22,17 +22,21 @@ const error = (key: keyof typeof real.errors, endpoint = 'x') => new ApiError(re
 
 describe('cuentas: respuestas reales del backend', () => {
   it('registro y verificación siguen el contrato', () => {
-    const created = parse(register.response, real.auth_register) as { is_email_verified: boolean };
+    const created = parse(register.response, real.auth_register) as { is_email_verified: boolean; signup_nonce: string };
     expect(created.is_email_verified).toBe(false);
-    // The link of the new account answers the same pair as the login.
-    parse(verifyEmail.response, real.token_pair);
+    expect(created.signup_nonce.length).toBeGreaterThanOrEqual(32);
+    // In the browser that signed up the link answers the same pair as the login; anywhere else, no session.
+    expect(parse(verifyEmail.response, real.token_pair)).toHaveProperty('access');
+    expect(parse(verifyEmail.response, real.verify_email_signed_out)).toEqual({ signed_in: false });
   });
 
-  it('registro: el email ya usado trae `code: "unique"` y la contraseña dice qué regla falla', () => {
-    const taken = error('register_400_taken_and_weak', 'auth.register');
+  it('registro: la contraseña dice qué regla falla; el email ya usado trae `code: "unique"` y llega solo con lo demás bien', () => {
+    const weak = error('register_400_weak', 'auth.register');
+    expect(fieldError(weak, 'password')).toBe('Esa contraseña es muy común. Elegí otra.');
+    expect(weak.fieldErrors.email).toBeUndefined();
+    const taken = error('register_400_taken', 'auth.register');
     expect(taken.fieldCodes.email).toBe('unique');
     expect(fieldError(taken, 'email')).toBe('Ya existe una cuenta con este email.');
-    expect(fieldError(taken, 'password')).toBe('Esa contraseña es muy común. Elegí otra.');
     expect(errorMessage(error('register_400_terms', 'auth.register'))).toBe('Para crear la cuenta tenés que aceptar los términos.');
   });
 

@@ -11,7 +11,11 @@
   "auth_register": {
     "id": "3b8f1e2a-6c4d-4f1a-9e7b-2d5c8a1f0e93",
     "email": "ana@example.com",
-    "is_email_verified": false
+    "is_email_verified": false,
+    "signup_nonce": "q1t3mDs8Jw0bXk2yPz7cVn4rL9aEhGu6fTiSoNbW5xY"
+  },
+  "verify_email_signed_out": {
+    "signed_in": false
   },
   "project_uploaded": {
     "id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
@@ -1477,7 +1481,7 @@
         ]
       }
     },
-    "register_400_taken_and_weak": {
+    "register_400_taken": {
       "status": 400,
       "body": {
         "email": [
@@ -1485,7 +1489,12 @@
             "message": "Ya existe una cuenta con este email.",
             "code": "unique"
           }
-        ],
+        ]
+      }
+    },
+    "register_400_weak": {
+      "status": 400,
+      "body": {
         "password": [
           "Esa contraseña es muy común. Elegí otra.",
           "La contraseña no puede ser solo números."

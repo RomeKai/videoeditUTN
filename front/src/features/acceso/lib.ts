@@ -99,6 +99,55 @@ export function takeNext(email: string | null | undefined): string | null {
   }
 }
 
+const SIGNUP_KEY = 'oc.acceso.registro';
+
+/**
+ * The `signup_nonce` of the sign-up (A2): the link of the email signs in only in the browser that
+ * has it (A3); anywhere else it only verifies. localStorage, not sessionStorage: the link usually
+ * opens in another tab of this same browser. Kept as long as the link lasts (24 h), and for the
+ * latest sign-up only.
+ */
+export function rememberSignupNonce(nonce: string): void {
+  try {
+    window.localStorage.setItem(SIGNUP_KEY, JSON.stringify({ nonce, at: Date.now() }));
+  } catch {
+    // Private mode: the link verifies and the person signs in with the password.
+  }
+}
+
+export function readSignupNonce(): string | undefined {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(SIGNUP_KEY) ?? 'null') as { nonce?: unknown; at?: unknown } | null;
+    if (!stored || typeof stored.nonce !== 'string' || !stored.nonce || typeof stored.at !== 'number') return undefined;
+    const age = Date.now() - stored.at;
+    return age >= 0 && age <= NEXT_MAX_AGE_MS ? stored.nonce : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function forgetSignupNonce(): void {
+  try {
+    window.localStorage.removeItem(SIGNUP_KEY);
+  } catch {
+    // Nothing stored.
+  }
+}
+
+/**
+ * The password reset link (A4) carries its token and email in the fragment (`/recuperar#token=…&email=…`):
+ * a browser never sends it, so it stays out of the web host's logs. Reads it and drops it from the
+ * address bar (and from the history), so it is not left behind either.
+ */
+export function takeResetLink(): { token: string; email: string } | null {
+  const hash = window.location.hash.replace(/^#/, '');
+  if (!hash) return null;
+  const params = new URLSearchParams(hash);
+  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  const token = params.get('token');
+  return token ? { token, email: params.get('email') ?? '' } : null;
+}
+
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function emailError(value: string): string | undefined {

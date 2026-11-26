@@ -12,7 +12,9 @@ import { clearLoggedOut, markLoggedOut, mockTokens, userIdFromToken } from '../s
  * - the password "limite" answers 429 (too many attempts) and "caida" answers 500, to see A1's error states;
  * - tokens "invalido" / "vencido" fail in verify-email and password-reset/confirm;
  * - verify-email with "cambio-de-email" is the link of an email change (I1): it needs the session of its account;
- *   any other token verifies a new account, and answers 403 when the browser has another account's session;
+ *   any other token verifies a new account, and answers 403 when the browser has another account's session. It
+ *   signs in only with the `signup_nonce` of that sign-up (or the session of that account): else `{ signed_in: false }`;
+ * - the sign-up says "ya existe" only when every other field is valid, like the backend;
  * - resend and password reset wait 60 s per email (any case), with or without an account, like the backend;
  * - logout with a refresh of another account answers 400 and closes nothing.
  */
@@ -48,13 +50,11 @@ export const authHandlers = [
   }),
 
   route(contract.register, ({ db, body, now }) => {
-    // Like DRF, every field that fails at once.
-    const errors: Record<string, unknown[]> = {};
+    if (/^\d+$/.test(body.password)) throw badRequest({ password: ['La contraseña no puede ser solo números.'] });
+    // Only once everything else is valid: a sign-up that would create nothing does not say which emails have an account.
     if (db.users.some((item) => item.email.toLowerCase() === body.email.toLowerCase())) {
-      errors.email = [{ message: 'Ya existe una cuenta con este email.', code: 'unique' }];
+      throw badRequest({ email: [{ message: 'Ya existe una cuenta con este email.', code: 'unique' }] });
     }
-    if (/^\d+$/.test(body.password)) errors.password = ['La contraseña no puede ser solo números.'];
-    if (Object.keys(errors).length > 0) throw badRequest(errors);
     const id = newId();
     const workspaceId = newId();
     db.users.push({
@@ -75,7 +75,9 @@ export const authHandlers = [
     db.wallets.push({ id: newId(), workspace: workspaceId, available_balance: 0, reserved_balance: 0, updated_at: new Date(now).toISOString() });
     // The verification email was just sent: «Reenviar» waits its 60 s from here.
     db.resendAt[body.email.toLowerCase()] = now;
-    return { data: { id, email: body.email, is_email_verified: false } };
+    const nonce = `nonce-${newId()}`;
+    db.signupNonces = { ...db.signupNonces, [id]: nonce };
+    return { data: { id, email: body.email, is_email_verified: false, signup_nonce: nonce } };
   }),
 
   route(contract.verifyEmail, ({ db, body, maybeUser }) => {
@@ -98,8 +100,12 @@ export const authHandlers = [
     if (maybeUser && maybeUser.id !== user.id) {
       throw new MockHttpError(403, { detail: 'Este link es de otra cuenta. Cerrá la sesión y volvé a abrirlo.', code: 'other_account' });
     }
+    const signsIn = Boolean(maybeUser) || (Boolean(body.signup_nonce) && db.signupNonces?.[user.id] === body.signup_nonce);
     user.is_email_verified = true;
+    user.pending_email = null;
+    if (db.signupNonces) delete db.signupNonces[user.id];
     db.flags.unverifiedLogin = false;
+    if (!signsIn) return { data: { signed_in: false as const } };
     clearLoggedOut();
     return { data: mockTokens(user.id) };
   }),

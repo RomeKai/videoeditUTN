@@ -18,10 +18,12 @@ export interface LoginScreenProps {
   next?: string | null;
   /** `?email=`: prefilled when coming from an invitation or from a new password. */
   email?: string | null;
+  /** `?verificado=1`: the link of the email verified the account in a browser without its session (A3). */
+  verified?: boolean;
 }
 
 /** A1 · Iniciar sesión (artboards A1-Login and M12-Movil-login). */
-export function LoginScreen({ next, email: initialEmail }: LoginScreenProps) {
+export function LoginScreen({ next, email: initialEmail, verified = false }: LoginScreenProps) {
   const router = useRouter();
   const { status, me, error: sessionError, refetch } = useSession();
   const login = useLogin();
@@ -96,6 +98,8 @@ export function LoginScreen({ next, email: initialEmail }: LoginScreenProps) {
           >
             {requestErrorMessage(sessionError)}
           </Banner>
+        ) : verified ? (
+          <Banner tone="ok">Tu email quedó verificado. Iniciá sesión.</Banner>
         ) : null}
         <Field label="Email" error={errors.email}>
           <Input
