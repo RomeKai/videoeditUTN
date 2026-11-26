@@ -71,7 +71,7 @@ La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario,
 | Publicar y Publicaciones | panel «Publicar», `/publicaciones` | Mock |
 | Miembros y ajustes del workspace | `/ajustes` | Mock |
 | Notificaciones (la campana) | — | Mock |
-| Crear cuenta, verificar el email y recuperar contraseña | `/registro`, `/verificar`, `/recuperar` | **Backend**. Los emails salen por consola (settings `dev`): el link del registro en `demo logs web`, los de reenviar y recuperar en `demo logs worker`. Copialo de ahí al navegador. Sin verificar en la demo: probalo antes |
+| Crear cuenta, verificar el email y recuperar contraseña | `/registro`, `/verificar`, `/recuperar` | **Backend**. Los emails salen por consola (settings `dev`): el link del registro en `demo logs web`, los de reenviar y recuperar en `demo logs worker`. Copialo de ahí al navegador donde creaste la cuenta: en otro, el link verifica y pide iniciar sesión. El link de recuperar lleva el token después de `#`: copialo entero. Sin verificar en la demo: probalo antes |
 
 Dos cosas para tener presentes:
 

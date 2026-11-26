@@ -264,7 +264,7 @@ Otras respuestas:
 #### A3. Verificar email — `/verificar`
 - **Qué muestra:** "Te mandamos un link a tu email", con la opción **Reenviar** (disponible cada 60 s).
 - **Al abrir el link:** la cuenta queda verificada (`is_email_verified`) y entra a la Bienvenida.
-- **API:** ✅ `POST /api/v1/auth/verify-email/` (verifica e inicia la sesión) y `POST /api/v1/auth/verify-email/resend/` (responde igual exista o no la cuenta).
+- **API:** ✅ `POST /api/v1/auth/verify-email/` (verifica; inicia la sesión en el navegador donde se creó la cuenta, y en otro lleva a Iniciar sesión) y `POST /api/v1/auth/verify-email/resend/` (responde igual exista o no la cuenta).
 
 #### A4. Recuperar contraseña — `/recuperar`
 - **Paso 1:** pedir el email.
