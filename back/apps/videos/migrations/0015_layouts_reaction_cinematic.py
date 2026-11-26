@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("videos", "0013_textos_sin_codificacion_rota"),
+        ("videos", "0014_scheduledpost_publish_fields"),
     ]
 
     operations = [

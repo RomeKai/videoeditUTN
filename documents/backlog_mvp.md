@@ -403,7 +403,7 @@ El `FaceTracker` actual usa MediaPipe Tasks con un modelo `.tflite` estático. F
 ### CORE-03: Nuevos Layouts — Podcast, Cinematic, Trending `P0` 🟢 `exists`
 
 **Descripción:**
-Había 6 layouts (`fill`, `fit`, `blurred`, `split`, `versus`, `active`) y `pip` estaba mapeado a `FitLayout` (placeholder). Ahora están `reaction`, `cinematic`, `podcast` y `trending`, y `pip` es un PiP real con la misma clave (el front ya lo dibujaba así, por eso no se creó `pip_real`). La esquina del PiP y el color y el texto de trending son columnas del proyecto (`pip_corner`, `trending_color`, `trending_text`, migración `videos/0015`). `cinematic` sigue las caras de CORE-01 en lugar de recuperar el `saliency_tracker`.
+Había 6 layouts (`fill`, `fit`, `blurred`, `split`, `versus`, `active`) y `pip` estaba mapeado a `FitLayout` (placeholder). Ahora están `reaction`, `cinematic`, `podcast` y `trending`, y `pip` es un PiP real con la misma clave (el front ya lo dibujaba así, por eso no se creó `pip_real`). La esquina del PiP y el color y el texto de trending son columnas del proyecto (`pip_corner`, `trending_color`, `trending_text`, migración `videos/0016`). `cinematic` sigue las caras de CORE-01 en lugar de recuperar el `saliency_tracker`.
 
 **Layouts nuevos a implementar:**
 

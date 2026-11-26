@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("videos", "0014_layouts_reaction_cinematic"),
+        ("videos", "0015_layouts_reaction_cinematic"),
     ]
 
     operations = [
