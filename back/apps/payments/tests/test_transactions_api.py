@@ -13,6 +13,7 @@ import csv
 import io
 from datetime import datetime
 from decimal import Decimal
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from django.db import connection
@@ -23,9 +24,9 @@ from rest_framework.test import APITestCase
 from apps.core.permissions import ADMINS, DENIED
 from apps.payments.models import Transaction
 from apps.payments.tests.test_wallet_api import (
-    COMPLETED, DEPOSIT, FAILED, PENDING, RENDER, REFUND, RESERVED, WalletHarness, local, movement,
+    COMPLETED, DEPOSIT, FAILED, PENDING, RENDER, REFUND, RESERVED, USAGE, WalletHarness, local, movement,
 )
-from apps.videos.tests.test_active_workspace import ADMIN, EDITOR, VIEWER
+from apps.videos.tests.test_active_workspace import ADMIN, EDITOR, VIEWER, header
 
 TRANSACTIONS = reverse('transaction-list')
 EXPORT = reverse('transaction-export')
@@ -254,3 +255,22 @@ class TransactionExportTests(MovementsHarness, APITestCase):
             movement(self.home, '1', project=self.project(title=f'P{number}'), user=self.carla)
 
         self.assertEqual(count(), few)
+
+
+class HeadRequestTests(MovementsHarness, APITestCase):
+    """A HEAD is a GET without body: the same 403, and the export is never built."""
+
+    def test_viewer_and_editor_get_the_403_of_get_on_head(self):
+        for role in (VIEWER, EDITOR):
+            self.as_member(role)
+            for url in (TRANSACTIONS, EXPORT, USAGE):
+                with self.subTest(role=role, url=url), patch('apps.payments.views.movements.csv_text') as csv_text:
+                    response = self.client.head(url, **header(self.team))
+                    self.assertEqual(response.status_code, 403)
+                    csv_text.assert_not_called()
+
+    def test_admin_gets_the_200_of_get(self):
+        self.as_member(ADMIN)
+        for url in (TRANSACTIONS, EXPORT, USAGE):
+            with self.subTest(url=url):
+                self.assertEqual(self.client.head(url, **header(self.team)).status_code, 200)
