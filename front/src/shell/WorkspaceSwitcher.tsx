@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent } from 'react';
 import { useCreateWorkspace } from '@/api/hooks';
+import { isBackendDefaultWorkspace } from '@/api/routing';
 import { errorMessage } from '@/lib/error-messages';
 import { formatTokens } from '@/lib/format';
 import { ROLE_LABEL } from '@/lib/permissions';
@@ -21,6 +22,9 @@ import { useSession } from './session';
 export function WorkspaceList({ onDone, onCreate }: { onDone: () => void; onCreate: () => void }) {
   const { me, workspace, switchWorkspace } = useSession();
   const toast = useToast();
+  // Hybrid dev bridge: `/me` is mocked and shows a placeholder for the backend's default workspace. A
+  // workspace created now would exist only in the mocks, and the real endpoints would answer 404 for it.
+  const bridged = isBackendDefaultWorkspace(workspace?.id);
   return (
     <>
       <p className={`t-over ${styles.wsGroup}`}>Tus workspaces</p>
@@ -60,6 +64,7 @@ export function WorkspaceList({ onDone, onCreate }: { onDone: () => void; onCrea
         type="button"
         role="menuitem"
         className={styles.wsRow}
+        disabled={bridged}
         onClick={() => {
           onDone();
           onCreate();
@@ -70,6 +75,7 @@ export function WorkspaceList({ onDone, onCreate }: { onDone: () => void; onCrea
         </span>
         <span className={styles.wsMain}>
           <span className={styles.wsRowName}>Crear workspace</span>
+          {bridged ? <span className="t-small muted">No disponible en modo híbrido mientras /me es simulado: el backend no conocería el workspace nuevo.</span> : null}
         </span>
       </button>
     </>

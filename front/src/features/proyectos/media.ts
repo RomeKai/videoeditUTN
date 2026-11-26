@@ -1,4 +1,5 @@
-import { API_MOCKS } from '@/api/config';
+import { createProject } from '@/api/contracts/projects';
+import { routeOf } from '@/api/routing';
 import type { Plan, Pricing } from '@/api/contracts/billing';
 import type { UploadErrorCode } from '@/api/contracts/projects';
 
@@ -54,7 +55,7 @@ export function probeVideoFile(file: File): Promise<MediaInfo> {
 }
 
 /**
- * Mock mode only: test files are not real videos, so the duration follows the
+ * Only while the creation of projects is mocked (mock mode, or hybrid with it mocked): test files are not real videos, so the duration follows the
  * same rule as the mocked backend ("NNmin" in the name, else by size).
  */
 export function mockDuration(name: string, size: number): number {
@@ -65,7 +66,8 @@ export function mockDuration(name: string, size: number): number {
 
 export async function readMedia(file: File): Promise<MediaInfo> {
   const info = await probeVideoFile(file);
-  if (info.duration === null && API_MOCKS) return { ...info, duration: mockDuration(file.name, file.size) };
+  // Only when the mocks create the project: a made-up duration must never reach the real backend's plan check and price.
+  if (info.duration === null && routeOf(createProject) === 'mock') return { ...info, duration: mockDuration(file.name, file.size) };
   return info;
 }
 

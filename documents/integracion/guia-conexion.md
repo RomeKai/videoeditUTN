@@ -51,16 +51,25 @@ backend: { status: 'proposed', gap: 13, note: '…' }
 3. **Regenerá el documento:** `cd front && npm run contract:doc`. Actualiza `src/api/CONTRACT.md` y `ROUTES.md`. `npm test` falla si quedó desactualizado.
 4. **Probalo:** pytest en el backend, `npm test` en el frontend y la pantalla a mano contra el backend real (sección 7).
 
-### Modo híbrido (en construcción)
+### Modo híbrido
 
-El lead lo está armando en la rama `feat/front-modo-mixto`. Cuando se mergee, el detalle va a estar en `front/README.md`. La idea:
+El backend responde una parte de la API y los mocks el resto, para conectar de a un dominio. El detalle, el puente de identidad y la tabla de qué combinaciones son coherentes están en [`front/README.md`](../../front/README.md) («Modo híbrido»). En corto:
 
-- `NEXT_PUBLIC_API_MODE=mock|hybrid|real`.
-- `NEXT_PUBLIC_API_REAL`: lista separada por comas de los dominios que van al backend real: `auth`, `users`, `workspaces`, `projects`, `clips`, `brandkits`, `billing`, `social`, `notifications`, `system`.
-- En `hybrid` sin lista, va al backend real todo endpoint marcado `exists`. El resto sigue en mocks.
-- En `hybrid`, `auth` va siempre al backend real, y `/me` tiene un puente de desarrollo hasta que exista.
+```bash
+# front/.env.development.local   (no .env.local: ese también lo lee `next build`)
+NEXT_PUBLIC_API_MODE=hybrid
+NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_API_REAL=
+```
 
-Hasta entonces, en `dev` solo existe `NEXT_PUBLIC_API_MOCKS=true|false` (todo mock o todo real) más `NEXT_PUBLIC_API_URL`.
+- `NEXT_PUBLIC_API_MODE=mock|hybrid|real`. Sin ella sigue valiendo `NEXT_PUBLIC_API_MOCKS` (`true` = mock, `false` = real).
+- `NEXT_PUBLIC_API_REAL`: lista separada por comas de lo que va al backend real. Acepta dominios del contrato (`users`, `workspaces`, `projects`, `clips`, `brandkits`, `billing`, `social`, `notifications`, `system`), ids de endpoint (`billing.plans`, `users.me`) y la palabra `existing`.
+  - **Sin lista** va al backend todo endpoint que el contrato marca `exists` **o `partial`**; el resto sigue en mocks. Pasar un endpoint a `exists` en `front/src/api/contracts/` alcanza para que deje de simularse.
+  - Un dominio en la lista va **entero**, también lo que todavía es `proposed` (responde 404 hasta que exista). Para sumar un solo endpoint a lo existente: `NEXT_PUBLIC_API_REAL=existing,users.me`.
+- `auth` va siempre al backend real en `hybrid` (el backend no acepta los tokens simulados): se entra con un usuario del backend.
+- Mientras `/me` es simulado hay un puente de desarrollo: el mock toma el `user_id` del JWT real y muestra un único workspace marcador, para el que el cliente no manda `X-Workspace-Id` (el backend usa el workspace por defecto del usuario). Cuando `/me` exista, se va solo.
+- El panel de desarrollo (el matraz) muestra cada dominio como Real, Mock o Mixto y deja cambiarlo en ese navegador. Cada respuesta de un mock lleva la cabecera `X-OC-Mock`.
+- El modo queda fijo al construir, y un build de producción que no sea `real` hay que pedirlo con `API_MOCKS_IN_BUILD=true`.
 
 ---
 
@@ -343,7 +352,7 @@ El criterio: qué necesita cada flujo de punta a punta para andar con el backend
 - cache compartido en Redis (`fix/creacion-robusta`);
 - plan Gratis por defecto y Estudio con tope de 3 h (`fix/planes-gratis-por-defecto`);
 - `/me`, `/status`, perfil, contraseña y preferencias (`feat/perfil-me`);
-- modo híbrido (`feat/front-modo-mixto`).
+- modo híbrido (`feat/front-modo-mixto`, PR #134): construido, ver la sección 1.
 
 **1. Acceso y `/me`.** Sin sesión y sin `/me` no anda ni la barra.
 1. `auth.logout` (S): `token_blacklist` ya está en `feat/perfil-me`.
@@ -391,7 +400,7 @@ Para no pisarnos. Lo «en curso» ya tiene rama: no lo arranques por tu lado.
 | Proyectos: los 2 parciales | 2 | Área del lead | — | Sin rama: coordinar |
 | Brand kits: duplicar y default único | 2 | — | — | Sin dueño |
 | Cache compartido en Redis | — | Lead | `fix/creacion-robusta` | En curso (lead) |
-| Modo híbrido | — | Lead | `feat/front-modo-mixto` | En curso (lead) |
+| Modo híbrido | — | Lead | `feat/front-modo-mixto` | Construido (PR #134) |
 
 Tu propuesta suma 45 endpoints (44 sin contar `billing.plans`, que ya está). Es una propuesta: si preferís otro reparto, se habla.
 
@@ -447,9 +456,9 @@ Un área está conectada cuando se cumple todo esto:
      ```
      Para un endpoint con sesión, sacá el token con `POST /api/token/` (`email` y `password`) y mandá `Authorization: Bearer <access>`, más `X-Workspace-Id` si el endpoint es del workspace.
   3. Fijalo en un test: sumá el cuerpo real a `front/src/api/contracts/drf/responses.json` y un caso en `drf.test.ts`. Si mañana cambia un serializer, el test dice qué esquema dejó de aceptarlo.
-- [ ] **Pasan los tests del frontend:** `npm run lint`, `npm run typecheck`, `npm test`, `npm run build` y `npm run test:e2e`. Y el smoke del modo híbrido, que suma `feat/front-modo-mixto` (el comando va a estar en `front/README.md`).
+- [ ] **Pasan los tests del frontend:** `npm run lint`, `npm run typecheck`, `npm test`, `npm run build` y `npm run test:e2e`. Y el smoke del modo híbrido contra tu backend local: `E2E_HYBRID_API_URL=… E2E_HYBRID_EMAIL=… E2E_HYBRID_PASSWORD=… npm run test:e2e -- --project=hibrido` (detalle en `front/README.md`).
 - [ ] **Pasa el backend:** `python -m pytest` y `python manage.py makemigrations --check --dry-run`, con al menos un test por endpoint que fallaba antes del cambio.
-- [ ] **Lo probaste a mano con los mocks apagados.** Hoy: `NEXT_PUBLIC_API_MOCKS=false` en `front/.env.local`. Con el modo híbrido: `NEXT_PUBLIC_API_MODE=real`, o `hybrid` con el dominio en `NEXT_PUBLIC_API_REAL`.
+- [ ] **Lo probaste a mano con los mocks apagados.** `NEXT_PUBLIC_API_MODE=real` (o el anterior `NEXT_PUBLIC_API_MOCKS=false`), o `hybrid` con el dominio en `NEXT_PUBLIC_API_REAL`, en `front/.env.development.local`.
   - Recorré cada pantalla del área con los cuatro roles (Dueño, Admin, Editor, Lector).
   - Confirmá el 403 en español, el 404 con un objeto de otro workspace y los estados de error del mapa (§4).
 - [ ] **El mock sigue diciendo la verdad.** Si el backend real respondió distinto que el mock, se corrigió primero el contrato y después el mock.
