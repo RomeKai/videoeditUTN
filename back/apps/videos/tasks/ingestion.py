@@ -1100,8 +1100,8 @@ def _reserve_auto_render(project_id, resuming=False):
             txn = wallet_service.reserve_funds(
                 wallet_id=wallet.id, amount=cost, user=project.uploaded_by,
                 description=f"Render automático: {project.title}"[:255],
+                project=project, category=Transaction.Category.RENDER,
             )
-            wallet_service.link_reservation(txn, project, Transaction.Category.RENDER)
         except (wallet_service.InsufficientFundsError, PlanLimitExceededError, FeatureNotAllowedError) as exc:
             reason = 'insufficient_funds' if isinstance(exc, wallet_service.InsufficientFundsError) else 'plan_limit'
             if not resuming:

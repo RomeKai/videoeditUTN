@@ -265,9 +265,10 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
                         wallet_id=workspace.wallet.id,
                         amount=final_cost,
                         user=request.user,
-                        description=f"Render Final (Paper Edit): {project.title}"[:255]
+                        description=f"Render Final (Paper Edit): {project.title}"[:255],
+                        project=project,
+                        category=Transaction.Category.RENDER,
                     )
-                    wallet_service.link_reservation(tx, project, Transaction.Category.RENDER)
                 except (wallet_service.InsufficientFundsError, ValidationError) as e:
                     transaction.set_rollback(True)  # the claim goes back
                     return Response({"error": str(e), "required": final_cost}, status=402)
@@ -406,9 +407,10 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
                     wallet_id=wallet.id,
                     amount=cost_in_tokens,
                     user=user,
-                    description=f"Procesamiento: {project.title}"[:255]
+                    description=f"Procesamiento: {project.title}"[:255],
+                    project=project,
+                    category=Transaction.Category.PROJECT,
                 )
-                wallet_service.link_reservation(tx, project, Transaction.Category.PROJECT)
                 project.metadata = {**(project.metadata or {}), 'reservation_id': str(tx.id)}
                 VideoProject.objects.filter(pk=project.pk).update(metadata=project.metadata)
                 transaction.on_commit(lambda: _queue_ingestion(project.pk, tx.pk, outcome))

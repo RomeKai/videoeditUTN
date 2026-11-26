@@ -110,8 +110,9 @@ class WalletTests(WalletHarness, APITestCase):
     def test_the_balances_and_each_reservation_with_its_project(self):
         project = self.project()
         wallet = Wallet.objects.get(workspace=self.home)
-        older = wallet_service.reserve_funds(wallet.id, Decimal('12.5'), description='Procesamiento: Entrevista con Ana')
-        wallet_service.link_reservation(older, project, PROJECT)
+        older = wallet_service.reserve_funds(
+            wallet.id, Decimal('12.5'), description='Procesamiento: Entrevista con Ana', project=project, category=PROJECT,
+        )
         newer = wallet_service.reserve_funds(wallet.id, Decimal('0.3333333333'), description='Render suelto')
         Transaction.objects.filter(pk=older.pk).update(created_at=timezone.now() - timedelta(minutes=5))
         # Neither a charge nor a refund is reserved.

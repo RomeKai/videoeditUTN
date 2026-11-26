@@ -350,12 +350,12 @@ def _reserve(project, amount, user, description, category=Transaction.Category.R
     """
     wallet, _ = Wallet.objects.get_or_create(workspace=project.workspace)
     try:
-        reservation = wallet_service.reserve_funds(
+        return wallet_service.reserve_funds(
             wallet_id=wallet.id, amount=amount, user=user, description=description[:255],
+            project=project, category=category,
         )
     except wallet_service.InsufficientFundsError:
         raise _Refused(_error(402, INSUFFICIENT_FUNDS, required=amount))
-    return wallet_service.link_reservation(reservation, project, category)
 
 
 def _replaced(metadata, key):

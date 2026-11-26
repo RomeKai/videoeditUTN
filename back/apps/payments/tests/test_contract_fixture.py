@@ -59,8 +59,10 @@ class ContractFixtureHarness(WalletHarness):
         )
         movement(self.home, '1000', DEPOSIT, PENDING, at=local(2026, 10, 13), description='Compra de 1000 tokens')
         wallet = Wallet.objects.get(workspace=self.home)
-        reservation = wallet_service.reserve_funds(wallet.id, Decimal('3.5'), user=self.alice, description='Render de clip: Gancho')
-        wallet_service.link_reservation(reservation, interview, Transaction.Category.RENDER)
+        wallet_service.reserve_funds(
+            wallet.id, Decimal('3.5'), user=self.alice, description='Render de clip: Gancho',
+            project=interview, category=Transaction.Category.RENDER,
+        )
 
         def body(response, status=200):
             self.assertEqual(response.status_code, status, response.content[:300])

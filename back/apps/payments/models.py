@@ -168,7 +168,7 @@ class Transaction(models.Model):
     # When the reservation was charged or returned (it left RESERVED). Null
     # while it is reserved, and on rows settled before migration 0012.
     settled_at = models.DateTimeField(null=True, blank=True)
-    # The project the reservation pays for (wallet_service.link_reservation),
+    # The project the reservation pays for (reserve_funds' ``project``),
     # for the movements and the reservations of the wallet. Null on a
     # purchase, once the project is deleted, and on old rows migration 0016
     # could not link (their metadata key was gone).
