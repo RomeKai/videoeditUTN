@@ -634,6 +634,28 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
         self.assertEqual(self.post.retry_count, upload_to_social_network.max_retries + 1)
         self.assertIn("Failed after 4 attempts", self.post.error_log)
 
+    def test_a_lock_that_cannot_be_taken_is_retried_then_fails_the_post(self):
+        """Redis down for the lock: retried with backoff, never published, and out of retries FAILED, not QUEUED."""
+        from unittest.mock import MagicMock
+
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        locks = MagicMock()
+        locks.add.side_effect = RedisConnectionError("down")
+        with patch("apps.videos.tasks.social.caches", {"locks": locks}), \
+                patch.object(upload_to_social_network, "retry", wraps=upload_to_social_network.retry) as retry, \
+                patch("apps.integrations.ayrshare_api.AyrshareClient.send_post") as send:
+            result = upload_to_social_network.apply(args=[str(self.post.id)])
+
+        self.post.refresh_from_db()
+        self.assertTrue(result.failed())
+        send.assert_not_called()
+        self.assertEqual(locks.add.call_count, upload_to_social_network.max_retries + 1)
+        self.assertEqual([call.kwargs["countdown"] for call in retry.call_args_list], [60, 120, 240])
+        self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
+        self.assertEqual(self.post.error_log, "Lock unavailable after 4 attempts: ConnectionError")
+        locks.delete.assert_not_called()
+
     def test_a_read_timeout_is_never_retried(self):
         # The request was sent: retrying could publish the clip twice.
         import requests

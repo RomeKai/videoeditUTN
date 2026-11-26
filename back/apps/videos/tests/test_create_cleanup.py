@@ -270,6 +270,35 @@ class QueueAfterCommitTests(CreationHarness, TestCase):
         self.assertEqual(self.balances(), (BALANCE, Decimal("0")))
 
 
+class FailedWhileParsingTests(CreationHarness, TestCase):
+    def test_a_project_failed_during_the_prompt_parse_is_not_shown_as_processing(self):
+        """A worker read it at uploaded; the request failed it (the broker refused the message) while it parsed."""
+        from apps.videos.tasks import ingestion
+        from apps.videos.tests.fakes import FakeRedis
+        from apps.videos.views import _fail_unqueued_project
+
+        with patch(DELAY):
+            response = self.client.post(PROJECTS, {"title": "Link", "video_url": LINK}, format="json")
+        project = VideoProject.objects.get(pk=response.data["id"])
+        reservation_id = project.metadata["reservation_id"]
+
+        def failed_by_the_request(project_id, **kwargs):
+            self.assertEqual(_fail_unqueued_project(project_id, reservation_id), "refunded")
+
+        stages = ("_stage_prepare_source", "_stage_transcribe", "_stage_moderate", "_stage_select_clips")
+        with patch(REDIS_CLIENT, return_value=FakeRedis()), \
+                patch("apps.videos.services.ai.prompt_validator.apply_prompt_to_project", side_effect=failed_by_the_request), \
+                patch.multiple(ingestion, **{name: DEFAULT_MOCK for name in stages}) as ran:
+            result = ingestion.process_initial_ingestion.apply(args=[str(project.pk)])
+
+        self.assertIn("Skipped", result.result)
+        for name in stages:
+            ran[name].assert_not_called()
+        project.refresh_from_db()
+        self.assertEqual((project.pipeline_stage, project.status), (PipelineStage.FAILED, VideoProject.Status.FAILED))
+        self.assertEqual(Transaction.objects.get(pk=reservation_id).status, Transaction.Status.FAILED)
+
+
 class BrokerDownTests(CreationHarness, TransactionTestCase):
     """TransactionTestCase: the reservation really commits, as in a request."""
 

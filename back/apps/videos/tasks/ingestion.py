@@ -1496,7 +1496,14 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
         PipelineStage.UPLOADED, PipelineStage.AUDIO_EXTRACTED,
         PipelineStage.TRANSCRIBED, PipelineStage.MODERATED,
     ):
-        VideoProject.objects.filter(pk=project_id).update(status=VideoProject.Status.INGESTING)
+        # Compare-and-set: the project may have moved since it was read (the
+        # create view fails one whose message the broker refused, while this
+        # run parsed its prompt). A blind write would leave a failed project
+        # showing as processing forever.
+        if not VideoProject.objects.filter(pk=project_id, pipeline_stage=stage).update(
+            status=VideoProject.Status.INGESTING,
+        ):
+            raise PipelineConflictError(f"Project {project_id} is no longer at stage {stage}")
 
     if stage == PipelineStage.UPLOADED:
         renew_lock()
