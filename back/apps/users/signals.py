@@ -38,12 +38,17 @@ def create_default_workspace(sender, instance, created, **kwargs):
 def check_workspace_member_limit(sender, instance, **kwargs):
     """
     Antes de guardar un nuevo miembro, verificamos si el plan del Workspace lo permite.
+    Una invitación pendiente también ocupa un lugar.
     """
-    # Si ya tiene ID, es una edición (ej: cambiar rol), no cuenta como nuevo ingreso
-    if instance.id:
+    # Una fila que ya existe es una edición (ej: cambiar rol), no un ingreso nuevo.
+    # instance.id no sirve para saberlo: el UUID tiene default y ya está antes del INSERT.
+    if not instance._state.adding:
         return
 
     workspace = instance.workspace
+    if instance.user_id == workspace.owner_id:
+        # El dueño siempre entra a su propio workspace, tenga plan o no.
+        return
     current_count = workspace.members.count()
 
     plan = workspace.subscription_plan

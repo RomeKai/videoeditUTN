@@ -7,6 +7,7 @@ Un proyecto (`VideoProject`) nace en el request de creación de la API y ahí mi
 | Componente | Archivo | Rol |
 |------------|---------|-----|
 | `VideoProjectViewSet.create` | [views.py](../../back/apps/videos/views.py) | Orquesta la creación: serializer, precio, reserva, `metadata['reservation_id']` y encolado |
+| `check_workspace_member_limit` | [users/signals.py](../../back/apps/users/signals.py) | Lugares del plan al crear un `WorkspaceMember` ([ver abajo](#workspace-activo-y-roles)) |
 | `resolve_active_workspace`, `WorkspaceRolePermission` | [core/workspace.py](../../back/apps/core/workspace.py), [core/permissions.py](../../back/apps/core/permissions.py) | Workspace activo del request (`X-Workspace-Id`) y rol que el usuario tiene ahí ([ver abajo](#workspace-activo-y-roles)) |
 | `VideoProjectViewSet.from_prompt` | [views.py](../../back/apps/videos/views.py) | Valida `prompt` y delega en `create` (ver [04-prompt-to-edit](04-prompt-to-edit.md)) |
 | `VideoProjectViewSet.get_serializer_context` | [views.py](../../back/apps/videos/views.py) | Pasa `pte_prompt` al serializer cuando la creación viene de `from_prompt` |
@@ -42,6 +43,8 @@ El proyecto o el brand kit nuevo se guarda en ese workspace, su billetera es la 
 | Crear, editar y borrar brand kits | `brand-kits/` | ✓ | ✓ | ✓ | — |
 
 Una escritura que la vista no asigna a una acción (`workspace_actions`) queda para Dueño y Admin. Un método que la vista no tiene responde 405 para cualquier rol. Lo que el rol no permite responde 403 con un `detail` en castellano, por ejemplo `Con el rol Lector podés ver, pero no crear ni cambiar nada. Pedile acceso a un admin.`. No hay endpoints de invitación: una invitación pasa a `active` desde el admin de Django.
+
+**Lugares del plan.** Antes de crear un `WorkspaceMember` (`pre_save`, con `_state.adding`), `check_workspace_member_limit` cuenta los miembros del workspace, invitaciones `pending` incluidas. Si ya llegaron a `plan.max_members`, el alta falla con `ValidationError` (`Tu plan '<plan>' solo permite N miembros...`). Sin plan hay un solo lugar (`Este workspace no tiene un plan activo...`). Cambiar el rol o el estado de un miembro que ya existe no cuenta, y la membresía del dueño en su propio workspace nunca se bloquea. El alta desde el admin que pasa el límite termina en error 500: no hay validación del formulario. `members.add()` y `bulk_create` no pasan por la señal. Un workspace nuevo no recibe plan: la señal de `User` busca `Starter`, que no existe.
 
 El esquema OpenAPI declara el header en cada operación de una vista con `WorkspaceRolePermission` (`WorkspaceAutoSchema`, en [core/schema.py](../../back/apps/core/schema.py)).
 
