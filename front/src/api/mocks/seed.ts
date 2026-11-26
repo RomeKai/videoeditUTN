@@ -744,6 +744,8 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
     // Counted from the plan, so the scenarios keep meaning the same when a plan changes its seats.
     const active = members.filter((item) => item.workspace === WORKSPACE_IDS.estudio).length;
     const missing = Math.max(0, (plan?.max_members ?? 1) - 1 - active);
+    // Fewer fillers than seats would leave the scenario short of "one left" without saying so.
+    if (missing > SEAT_FILLERS.length) throw new Error(`seed: faltan ${missing - SEAT_FILLERS.length} personas de relleno para llenar el plan`);
     SEAT_FILLERS.slice(0, missing).forEach((filler, position) => {
       const id = mid(KIND.user, 20 + position);
       users.push(user(id, filler.name, filler.email, { active_workspace_id: WORKSPACE_IDS.estudio }));
