@@ -119,11 +119,11 @@ export function nameError(value: string): string | undefined {
 
 export const TERMS_ERROR = 'Para crear la cuenta tenés que aceptar los términos.';
 
-/** Seconds the API asks to wait, from a 429 ("… in 42 seconds" / "… en 42 segundos"). */
+/** Seconds the API asks to wait, from a 429 ("… in 42 seconds" / "… en 42 segundos" / "… en 12 minutos"). */
 export function retryAfterSeconds(error: unknown, fallback = 60): number {
   if (!(error instanceof ApiError) || error.status !== 429) return fallback;
-  const match = /(\d+)\s*(?:seconds?|segundos?|s\b)/i.exec(error.message);
-  const seconds = match ? Number(match[1]) : NaN;
+  const match = /(\d+)\s*(?:(seconds?|segundos?|s\b)|minutes?|minutos?)/i.exec(error.message);
+  const seconds = match ? Number(match[1]) * (match[2] ? 1 : 60) : NaN;
   return Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 3600) : fallback;
 }
 

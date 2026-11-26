@@ -1,6 +1,7 @@
 import * as contract from '../../contracts/users';
 import { badRequest, route } from '../http';
 import { serializeMe, workspacesOf } from '../serialize';
+import { mockTokens } from '../state';
 
 export const usersHandlers = [
   route(contract.getMe, ({ db, user }) => ({ data: serializeMe(db, user) })),
@@ -27,10 +28,11 @@ export const usersHandlers = [
     return { data: serializeMe(db, user) };
   }),
 
-  route(contract.changePassword, ({ body }) => {
+  // The other sessions end; this one gets a new pair (the mock cannot revoke the old tokens).
+  route(contract.changePassword, ({ user, body }) => {
     if (body.current_password === 'incorrecta') throw badRequest({ current_password: ['La contraseña actual no coincide.'] });
     if (/^\d+$/.test(body.new_password)) throw badRequest({ new_password: ['La contraseña no puede ser solo números.'] });
-    return { data: undefined };
+    return { data: mockTokens(user.id) };
   }),
 
   route(contract.getNotificationPreferences, ({ user }) => ({ data: user.notification_preferences })),

@@ -39,8 +39,8 @@ export const login = defineEndpoint({
   ],
   backend: {
     status: 'exists',
-    source: 'back/backend/urls.py · rest_framework_simplejwt TokenObtainPairView (USERNAME_FIELD = email)',
-    note: 'Hoy no distingue la cuenta sin verificar (falta el 403 propuesto, hueco 1).',
+    source: 'back/apps/users/views.py · LoginView (TokenObtainPairView de SimpleJWT, USERNAME_FIELD = email)',
+    note: 'El 429 sale de dos límites: 10 por minuto por IP y 20 por hora por email; `detail` dice en castellano cuántos segundos esperar. Hoy no distingue la cuenta sin verificar (falta el 403 propuesto, hueco 1).',
   },
   screens: ['A1', 'D9'],
 });
@@ -54,8 +54,11 @@ export const refreshToken = defineEndpoint({
   response: z.object({ access: z.string().min(1), refresh: z.string().min(1).optional() }),
   auth: false,
   workspaceScoped: false,
-  errors: [{ status: 401, when: 'Refresh vencido o inválido. La UI abre el diálogo D9 (sesión vencida).' }],
-  backend: { status: 'exists', source: 'back/backend/urls.py · TokenRefreshView; SIMPLE_JWT en backend/settings/base.py (acceso 25 min)' },
+  errors: [
+    { status: 401, when: 'Refresh vencido, inválido o revocado (rotado, o la contraseña cambió). La UI abre el diálogo D9 (sesión vencida).' },
+    { status: 429, when: 'Más de 30 renovaciones por minuto desde la misma IP.' },
+  ],
+  backend: { status: 'exists', source: 'back/apps/users/views.py · TokenRefreshThrottledView (TokenRefreshView); SIMPLE_JWT en backend/settings/base.py (acceso 25 min)' },
   screens: ['A1', 'D9'],
 });
 
@@ -92,8 +95,12 @@ export const verifyEmail = defineEndpoint({
   response: TokenPair,
   auth: false,
   workspaceScoped: false,
-  errors: [{ status: 400, when: 'Token inválido o vencido. La UI ofrece reenviar el email.' }],
-  backend: { status: 'proposed', gap: 1 },
+  errors: [{ status: 400, when: 'Token inválido, vencido o ya usado (error en `token`). La UI ofrece reenviar el email.' }],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views.py · VerifyEmailView; el token: apps/users/email_verification.py',
+    note: 'Hoy solo el cambio de email (I1) manda el link: el registro todavía no existe (hueco 1). Con un `pending_email`, lo pasa a `email`; sin él, marca el email actual como verificado.',
+  },
   screens: ['A3'],
 });
 
@@ -156,7 +163,7 @@ export const logout = defineEndpoint({
   successStatus: 204,
   workspaceScoped: false,
   errors: [],
-  backend: { status: 'proposed', gap: 2, note: 'Necesita la app token_blacklist de SimpleJWT.' },
+  backend: { status: 'proposed', gap: 2, note: 'La app token_blacklist de SimpleJWT ya está instalada (la usa el cambio de contraseña).' },
   screens: ['I1', 'Barra'],
 });
 

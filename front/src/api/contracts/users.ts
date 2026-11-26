@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { defineEndpoint } from '../endpoint';
-import { Decimal, Id, IsoDateTime, NoContent, Role } from './common';
+import { TokenPair } from './auth';
+import { Decimal, Id, IsoDateTime, Role } from './common';
 
 /** A workspace as it appears in `/me`: enough for the switcher (J3) and the topbar. */
 export const WorkspaceSummary = z.object({
@@ -46,7 +47,7 @@ export const UpdateMeRequest = z
     name: z.string().min(1).max(150),
     /** Changing it asks to verify again: the new one stays in `pending_email`. */
     email: z.string().email(),
-    /** Proposed: required whenever `email` changes, to confirm it is the owner of the account who changes it (I1). */
+    /** Required whenever `email` changes, to confirm it is the owner of the account who changes it (I1). */
     current_password: z.string().min(1),
     tour_completed: z.boolean(),
     onboarding_use_case: OnboardingUseCase,
@@ -73,7 +74,11 @@ export const getMe = defineEndpoint({
   response: Me,
   workspaceScoped: false,
   errors: [{ status: 401, when: 'Sin sesión: el cliente renueva el token o abre D9.' }],
-  backend: { status: 'proposed', gap: 2, note: 'Los campos salen de User, Workspace, WorkspaceMember y Wallet (apps/users/models.py).' },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views.py · MeView.get (MeSerializer)',
+    note: '`active_workspace_id` es el último workspace elegido (`User.last_workspace`) mientras el usuario siga siendo dueño o miembro activo; si no, el más antiguo propio. No lee `X-Workspace-Id`, así que un header viejo nunca da 404. `onboarding` sale del workspace activo; la red cuenta como conectada con el perfil de Ayrshare del workspace.',
+  },
   screens: ['Barra', 'B1', 'B2', 'J3', 'I1'],
 });
 
@@ -85,8 +90,18 @@ export const updateMe = defineEndpoint({
   request: UpdateMeRequest,
   response: Me,
   workspaceScoped: false,
-  errors: [{ status: 400, when: 'Validación por campo: email ya usado, o `email` nuevo sin `current_password` o con una incorrecta (error en `current_password`).' }],
-  backend: { status: 'proposed', gap: 2 },
+  errors: [
+    {
+      status: 400,
+      when: 'Validación por campo: email ya usado (error en `email`), o `email` nuevo sin `current_password`, con una incorrecta o en una cuenta sin contraseña (error en `current_password`); `active_workspace_id` de un workspace donde no es miembro activo.',
+    },
+    { status: 429, when: 'Demasiados cambios de email seguidos (5 por hora). `detail` dice en castellano cuánto esperar.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views.py · MeView.patch (UpdateMeSerializer); el link: apps/users/email_verification.py',
+    note: 'El email nuevo queda en `pending_email` y le llega un link a `/verificar?token=…&siguiente=/perfil` que vence en 24 h; `auth.verifyEmail` lo aplica.',
+  },
   screens: ['B1', 'B2', 'J3', 'I1'],
 });
 
@@ -94,13 +109,19 @@ export const changePassword = defineEndpoint({
   id: 'users.changePassword',
   method: 'POST',
   path: '/api/v1/me/password/',
-  summary: 'Cambia la contraseña del usuario.',
+  summary: 'Cambia la contraseña y cierra las demás sesiones. Responde un par JWT nuevo: el cliente lo guarda y sigue con sesión.',
   request: z.object({ current_password: z.string().min(1), new_password: z.string().min(8) }),
-  response: NoContent,
-  successStatus: 204,
+  response: TokenPair,
   workspaceScoped: false,
-  errors: [{ status: 400, when: 'Contraseña actual incorrecta (`current_password`) o nueva débil (`new_password`).' }],
-  backend: { status: 'proposed', gap: 2 },
+  errors: [
+    { status: 400, when: 'Contraseña actual incorrecta o cuenta sin contraseña (`current_password`), o nueva débil (`new_password`). Los mensajes llegan en castellano.' },
+    { status: 429, when: 'Demasiados intentos seguidos (5 por hora). `detail` dice en castellano cuánto esperar.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views.py · PasswordChangeView (PasswordChangeSerializer)',
+    note: 'Todos los tokens emitidos antes dejan de andar (CHECK_REVOKE_TOKEN y token_blacklist, apps/users/tokens.py).',
+  },
   screens: ['I1'],
 });
 
@@ -112,7 +133,7 @@ export const getNotificationPreferences = defineEndpoint({
   response: NotificationPreferences,
   workspaceScoped: false,
   errors: [],
-  backend: { status: 'proposed', gap: 16 },
+  backend: { status: 'exists', source: 'back/apps/users/views.py · NotificationPreferencesView.get (NotificationPreferencesSerializer)' },
   screens: ['I2'],
 });
 
@@ -125,7 +146,7 @@ export const updateNotificationPreferences = defineEndpoint({
   response: NotificationPreferences,
   workspaceScoped: false,
   errors: [],
-  backend: { status: 'proposed', gap: 16 },
+  backend: { status: 'exists', source: 'back/apps/users/views.py · NotificationPreferencesView.patch (NotificationPreferencesSerializer)' },
   screens: ['I2'],
 });
 

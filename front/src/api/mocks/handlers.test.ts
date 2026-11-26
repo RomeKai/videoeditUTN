@@ -375,6 +375,14 @@ describe('mocks', () => {
     await expect(apiCall(users.getMe)).rejects.toBeInstanceOf(SessionExpiredError);
   });
 
+  it('cambiar la contraseña devuelve un par nuevo que sirve para seguir con sesión', async () => {
+    expect((await fail(apiCall(users.changePassword, { body: { current_password: 'incorrecta', new_password: 'unaclavelarga' } }))).fieldErrors.current_password).toEqual(['La contraseña actual no coincide.']);
+    const tokens = await apiCall(users.changePassword, { body: { current_password: 'laDeSiempre', new_password: 'unaclavelarga' } });
+    expect(auth.TokenPair.safeParse(tokens).success).toBe(true);
+    setTokens(tokens);
+    expect((await apiCall(users.getMe)).email).toBe('lucia@estudionorte.com');
+  });
+
   it('miembros: una invitación pendiente ocupa un lugar y el plan corta al llegar al límite', async () => {
     const id = WORKSPACE_IDS.estudio;
     const invited = await apiCall(workspaces.inviteMembers, { params: { id }, body: { emails: ['juan@estudionorte.com'], role: 'editor' } });

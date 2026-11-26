@@ -129,6 +129,9 @@ describe('lib', () => {
   it('lee la espera de un 429 y arma la cuenta regresiva', () => {
     expect(retryAfterSeconds(new ApiError(429, 'x', { detail: 'Podés pedirlo de nuevo en 42 segundos.' }))).toBe(42);
     expect(retryAfterSeconds(new ApiError(429, 'x', { detail: 'Request was throttled. Expected available in 7 seconds.' }))).toBe(7);
+    // The backend's own 429 (apps/users/throttles.py): seconds under two minutes, minutes above.
+    expect(retryAfterSeconds(new ApiError(429, 'x', { detail: 'Demasiados intentos. Probá de nuevo en 42 segundos.' }))).toBe(42);
+    expect(retryAfterSeconds(new ApiError(429, 'x', { detail: 'Demasiados intentos. Probá de nuevo en 12 minutos.' }))).toBe(720);
     expect(retryAfterSeconds(new ApiError(429, 'x', { detail: 'Throttled' }))).toBe(60);
     expect(formatCountdown(42)).toBe('0:42');
     expect(formatCountdown(60)).toBe('1:00');
