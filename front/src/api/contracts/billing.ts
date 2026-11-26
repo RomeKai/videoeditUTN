@@ -58,9 +58,9 @@ export type Pricing = z.infer<typeof Pricing>;
 export const EstimateRequest = z.object({
   /** 'file': priced by duration. 'link': flat price, duration unknown. */
   source: z.enum(['file', 'link']),
-  /** Needed with 'file' (400 without it); priced by its whole seconds, like the creation. At most 86400. */
+  /** Needed with 'file' (400 without it); priced by its whole seconds, like the creation. Above AI_UPLOAD_MAX_DURATION_SECONDS, the creation's 400. */
   duration_seconds: z.number().nonnegative().optional(),
-  /** Default 720p. A 'link' takes only 720p (400 otherwise). */
+  /** Default 720p. A 'link' takes only 720p (the creation's 400 otherwise). */
   render_resolution: RenderResolution.optional(),
   use_seo: z.boolean().optional(),
   /** For the ETA: how many clips at most. Accepted; the time to the review does not depend on it today. */
@@ -138,11 +138,16 @@ export const Transaction = z.object({
   id: Id,
   wallet: Id,
   created_by: Id.nullable(),
+  /** What it is now: reserved, charged (a partial charge keeps only what was charged), returned or bought. */
   amount: Decimal,
+  /** What the reservation set aside. Above `amount` on a partial charge: the difference came back. Null on a purchase and on rows from before payments 0012. */
+  reserved_amount: Decimal.nullable(),
   transaction_type: TransactionType,
   status: TransactionStatus,
   description: z.string(),
   created_at: IsoDateTime,
+  /** When it was charged or returned. Null while reserved, on a purchase and on old rows. The list is dated and ordered by `settled_at ?? created_at`. */
+  settled_at: IsoDateTime.nullable(),
   /** Gap 4. */
   kind: TransactionKind,
   /** The name, never the email. */
@@ -162,8 +167,16 @@ export const TransactionsQuery = PageQuery.extend({
 });
 export type TransactionsQuery = z.infer<typeof TransactionsQuery>;
 
-/** Count and sum of the movements of one kind, for the filter chips and the totals of G2 and G1. */
-export const TransactionKindTotal = z.object({ count: z.number().int().nonnegative(), amount: Decimal });
+/**
+ * Count and sum of the movements of one kind, for the filter chips and the totals of G2 and G1. In `released`,
+ * `amount` also has what partial charges gave back (`reserved_amount − amount`), and `partial_count` says how many;
+ * `count` stays the released rows, the ones its filter lists.
+ */
+export const TransactionKindTotal = z.object({
+  count: z.number().int().nonnegative(),
+  amount: Decimal,
+  partial_count: z.number().int().nonnegative().optional(),
+});
 export type TransactionKindTotal = z.infer<typeof TransactionKindTotal>;
 
 export const UsageDay = z.object({
@@ -266,13 +279,16 @@ export const estimateCost = defineEndpoint({
   request: EstimateRequest,
   response: Estimate,
   errors: [
-    { status: 400, when: 'Falta `duration_seconds` con `source: "file"`, o un link pide otra resolución que 720p (`render_resolution`). Errores por campo.' },
+    {
+      status: 400,
+      when: 'Los mismos de la creación: un link en otra resolución que 720p (`{ error }`) y un archivo más largo que el tope de cualquier subida (`source_file`, el texto de `too_long`). Además, `duration_seconds` falta con `source: "file"`.',
+    },
     { status: 403, when: 'El plan no permite la duración, la resolución o el SEO (`code`: `duration` | `resolution` | `seo`, con `limit` en los dos primeros). La UI abre D3.' },
   ],
   backend: {
     status: 'exists',
     source: 'back/apps/payments/views.py · EstimateView + services/estimate.py · estimate',
-    note: 'Las mismas reglas que la creación: un archivo se cobra por sus segundos enteros con PricingEngine.calculate_render_cost y el plan del workspace; un link, precio fijo más el SEO con descuento. `discount_amount` es base + adicionales − total (incluye el redondeo). No escribe nada: lo pide cualquier rol (`wallet.view`). `eta_seconds` sale de los tiempos por etapa de los últimos proyectos que llegaron a la revisión (`metadata.stage_durations`): null para un link o mientras no hay ninguno. 404 si el usuario no tiene workspace.',
+    note: 'El precio sale de la misma función que la creación (`price_new_project`, apps/videos/services/render_pricing.py): un archivo por sus segundos enteros con PricingEngine.calculate_render_cost y el plan del workspace; un link, precio fijo más el SEO con descuento. `discount_amount` es base + adicionales − total (incluye el redondeo). No escribe nada: lo pide cualquier rol (`wallet.view`). `eta_seconds` sale de los tiempos por etapa de los últimos 50 proyectos de 30 días que llegaron a la revisión (`metadata.stage_durations`), guardado 5 minutos en el cache: null para un link o mientras no hay ninguno. 404 si el usuario no tiene workspace.',
   },
   screens: ['C1', 'D2', 'D4', 'D5'],
 });
@@ -380,7 +396,7 @@ export const listTransactions = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/payments/views.py · TransactionListView + TransactionSerializer (apps/payments/serializers.py) + services/movements.py',
-    note: 'De la más nueva a la más vieja; `page_size` hasta 100 (25 por defecto). `kind` sale de tipo + estado; una fila sin `kind` no movió el saldo y no sale (una compra que falló). Cada reserva queda vinculada a su proyecto con `category` desde que se reserva (`wallet_service.link_reservation`); las viejas, por la migración 0016 de payments, con lo que guardaba la metadata del proyecto. Un proyecto borrado deja `project` en null. Hoy el backend solo escribe SPEND: un cobro parcial (`commit_partial_reservation`) baja el monto del SPEND a lo cobrado y lo deja COMPLETED, y devuelve el resto al saldo sin escribir otra fila; una reserva que se cae queda SPEND + FAILED (`kind: "released"`, «Devuelto», con su proyecto). DEPOSIT llega con las compras (PAY-02) y REFUND no lo escribe nada todavía: `kind: "refund"` es para devoluciones de algo ya cobrado. Tres consultas por página, sea cual sea su tamaño.',
+    note: 'Una fila por transacción, de la más nueva a la más vieja por cuándo movió el saldo por última vez (`settled_at ?? created_at`); `month` y `totals` usan la misma fecha, así que un cobro es del mes en que se cobró, como en `billing.usage`. `page_size` hasta 100 (25 por defecto). `kind` sale de tipo + estado; una fila sin `kind` no movió el saldo y no sale (una compra que falló). Un cobro parcial (`commit_partial_reservation`) deja el SPEND en lo cobrado (`amount`) con lo reservado en `reserved_amount`, sin otra fila para lo devuelto: `totals.released` lo suma y lo cuenta en `partial_count`. Una reserva que se cae queda SPEND + FAILED (`kind: "released"`, «Devuelto», con su proyecto). Cada reserva queda vinculada a su proyecto con `category` desde que se reserva (`reserve_funds`, `project` y `category`); las viejas, por la migración 0016 de payments. Un proyecto borrado deja `project` en null. DEPOSIT llega con las compras (PAY-02) y REFUND no lo escribe nada todavía. Cuatro consultas por página (la billetera, los totales, la cantidad y las filas), sea cual sea su tamaño.',
   },
   screens: ['G2', 'D1f'],
 });
@@ -391,7 +407,7 @@ export const exportTransactions = defineEndpoint({
   path: '/api/v1/transactions/export/',
   // The whole history is written out while the request waits.
   timeoutMs: SLOW_REQUEST_TIMEOUT_MS,
-  summary: 'Los mismos movimientos en CSV. El monto lleva el signo de lo que le hizo al saldo: negativo lo reservado y lo cobrado, positivo lo comprado y lo devuelto.',
+  summary: 'Los mismos movimientos en CSV, como libro de la billetera: una fila por cada cambio del saldo, con su signo. Sus montos suman lo que hizo el saldo en el período exportado.',
   query: TransactionsQuery.omit({ page: true, page_size: true }),
   response: z.string(),
   responseType: 'text',
@@ -401,8 +417,8 @@ export const exportTransactions = defineEndpoint({
   ],
   backend: {
     status: 'exists',
-    source: 'back/apps/payments/views.py · TransactionExportView + services/movements.py · csv_text',
-    note: 'Columnas `fecha,concepto,proyecto,tipo,monto`: la fecha en ISO con la zona del workspace (`2026-11-04T12:00:00-03:00`), la descripción, el título del proyecto, el tipo como lo nombra la pantalla («Devuelto», «Cobrado»…) y el monto exacto (dos decimales si alcanzan, si no todos). Un texto que empieza con `=`, `+`, `-` o `@` lleva un apóstrofo adelante, para que una planilla no lo ejecute. Toda la historia, sin páginas.',
+    source: 'back/apps/payments/views.py · TransactionExportView + services/movements.py · ledger, csv_text',
+    note: 'Columnas `fecha,concepto,proyecto,tipo,monto,estado,transaccion`. Cada SPEND es su reserva (`Reserva`, −`reserved_amount`, en `created_at`) y, si volvió algo, su devolución (`Devuelto`, +lo devuelto: todo en una reserva que se cayó, `reserved_amount − amount` en un cobro parcial, en `settled_at`); una compra es `Compra` y un REFUND `Devolución`, con su monto. Un cobro entero no agrega fila: ya se descontó al reservar. Una compra pendiente no movió el saldo y no sale. Con `month`, solo los cambios de ese mes; `kind` y `project` eligen las transacciones como en la lista. `estado` es el tipo de la transacción hoy («Cobrado», «Devuelto»…) y `transaccion` su id, que une una reserva con su devolución. La fecha va en ISO con la zona del workspace y el monto exacto (dos decimales si alcanzan, si no todos). Un texto que empieza con `=`, `+`, `-` o `@` lleva un apóstrofo adelante, para que una planilla no lo ejecute. Toda la historia, sin páginas.',
   },
   screens: ['G2'],
 });

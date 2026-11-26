@@ -95,7 +95,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/wallet/` | Saldo disponible y reservado del workspace, con el detalle de lo reservado por proyecto. | ✅ existe | Barra, G1, C1, D2, G4, D1 (diálogo), D2 (diálogo) |
 | GET | `/api/v1/wallet/usage/` | Consumo por día de un mes (solo lo cobrado), separado en proyectos, renders y SEO. El mes y los días son los de la zona horaria del workspace (America/Argentina/Buenos_Aires). | ✅ existe | G1 |
 | GET | `/api/v1/transactions/` | Movimientos de la billetera, paginados, con filtro por tipo, mes y proyecto. `month=YYYY-MM` es el mes en la zona horaria del workspace (America/Argentina/Buenos_Aires). | ✅ existe | G2, D1f |
-| GET | `/api/v1/transactions/export/` | Los mismos movimientos en CSV. El monto lleva el signo de lo que le hizo al saldo: negativo lo reservado y lo cobrado, positivo lo comprado y lo devuelto. | ✅ existe | G2 |
+| GET | `/api/v1/transactions/export/` | Los mismos movimientos en CSV, como libro de la billetera: una fila por cada cambio del saldo, con su signo. Sus montos suman lo que hizo el saldo en el período exportado. | ✅ existe | G2 |
 | GET | `/api/v1/token-packages/` | Los 3 paquetes fijos, el precio de la cantidad libre y la conversión de referencia. | ❌ falta (propuesto) · hueco 12 | G4, D2 (diálogo) |
 | POST | `/api/v1/token-purchases/` | Inicia una compra de tokens y devuelve la URL del checkout del proveedor de pagos. | ❌ falta (propuesto) · hueco 12 | G4, D2 (diálogo) |
 | GET | `/api/v1/token-purchases/:id/` | Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`tokens` > 0) o el pago de una subida de plan (`plan_id`, `tokens` 0). | ❌ falta (propuesto) · hueco 12 | G5 |
@@ -556,11 +556,11 @@ Estimado del backend para una configuración: costo, descuento, saldo después y
 |---|---|
 | Id | `billing.estimate` |
 | Backend | ✅ existe · `back/apps/payments/views.py · EstimateView + services/estimate.py · estimate` |
-| Nota | Las mismas reglas que la creación: un archivo se cobra por sus segundos enteros con PricingEngine.calculate_render_cost y el plan del workspace; un link, precio fijo más el SEO con descuento. `discount_amount` es base + adicionales − total (incluye el redondeo). No escribe nada: lo pide cualquier rol (`wallet.view`). `eta_seconds` sale de los tiempos por etapa de los últimos proyectos que llegaron a la revisión (`metadata.stage_durations`): null para un link o mientras no hay ninguno. 404 si el usuario no tiene workspace. |
+| Nota | El precio sale de la misma función que la creación (`price_new_project`, apps/videos/services/render_pricing.py): un archivo por sus segundos enteros con PricingEngine.calculate_render_cost y el plan del workspace; un link, precio fijo más el SEO con descuento. `discount_amount` es base + adicionales − total (incluye el redondeo). No escribe nada: lo pide cualquier rol (`wallet.view`). `eta_seconds` sale de los tiempos por etapa de los últimos 50 proyectos de 30 días que llegaron a la revisión (`metadata.stage_durations`), guardado 5 minutos en el cache: null para un link o mientras no hay ninguno. 404 si el usuario no tiene workspace. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | EstimateRequest |
 | Respuesta 200 | Estimate |
-| Errores | **400** Falta `duration_seconds` con `source: "file"`, o un link pide otra resolución que 720p (`render_resolution`). Errores por campo.<br>**403** El plan no permite la duración, la resolución o el SEO (`code`: `duration` \| `resolution` \| `seo`, con `limit` en los dos primeros). La UI abre D3. |
+| Errores | **400** Los mismos de la creación: un link en otra resolución que 720p (`{ error }`) y un archivo más largo que el tope de cualquier subida (`source_file`, el texto de `too_long`). Además, `duration_seconds` falta con `source: "file"`.<br>**403** El plan no permite la duración, la resolución o el SEO (`code`: `duration` \| `resolution` \| `seo`, con `limit` en los dos primeros). La UI abre D3. |
 | Pantallas | C1, D2, D4, D5 |
 
 #### `GET /api/v1/subscription/`
@@ -627,7 +627,7 @@ Movimientos de la billetera, paginados, con filtro por tipo, mes y proyecto. `mo
 |---|---|
 | Id | `billing.transactions` |
 | Backend | ✅ existe · `back/apps/payments/views.py · TransactionListView + TransactionSerializer (apps/payments/serializers.py) + services/movements.py` |
-| Nota | De la más nueva a la más vieja; `page_size` hasta 100 (25 por defecto). `kind` sale de tipo + estado; una fila sin `kind` no movió el saldo y no sale (una compra que falló). Cada reserva queda vinculada a su proyecto con `category` desde que se reserva (`wallet_service.link_reservation`); las viejas, por la migración 0016 de payments, con lo que guardaba la metadata del proyecto. Un proyecto borrado deja `project` en null. Hoy el backend solo escribe SPEND: un cobro parcial (`commit_partial_reservation`) baja el monto del SPEND a lo cobrado y lo deja COMPLETED, y devuelve el resto al saldo sin escribir otra fila; una reserva que se cae queda SPEND + FAILED (`kind: "released"`, «Devuelto», con su proyecto). DEPOSIT llega con las compras (PAY-02) y REFUND no lo escribe nada todavía: `kind: "refund"` es para devoluciones de algo ya cobrado. Tres consultas por página, sea cual sea su tamaño. |
+| Nota | Una fila por transacción, de la más nueva a la más vieja por cuándo movió el saldo por última vez (`settled_at ?? created_at`); `month` y `totals` usan la misma fecha, así que un cobro es del mes en que se cobró, como en `billing.usage`. `page_size` hasta 100 (25 por defecto). `kind` sale de tipo + estado; una fila sin `kind` no movió el saldo y no sale (una compra que falló). Un cobro parcial (`commit_partial_reservation`) deja el SPEND en lo cobrado (`amount`) con lo reservado en `reserved_amount`, sin otra fila para lo devuelto: `totals.released` lo suma y lo cuenta en `partial_count`. Una reserva que se cae queda SPEND + FAILED (`kind: "released"`, «Devuelto», con su proyecto). Cada reserva queda vinculada a su proyecto con `category` desde que se reserva (`reserve_funds`, `project` y `category`); las viejas, por la migración 0016 de payments. Un proyecto borrado deja `project` en null. DEPOSIT llega con las compras (PAY-02) y REFUND no lo escribe nada todavía. Cuatro consultas por página (la billetera, los totales, la cantidad y las filas), sea cual sea su tamaño. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | TransactionsQuery |
 | Respuesta 200 | { count: number, next: string \\| null, previous: string \\| null, results: Transaction[], totals: { [clave]: TransactionKindTotal } } |
@@ -636,13 +636,13 @@ Movimientos de la billetera, paginados, con filtro por tipo, mes y proyecto. `mo
 
 #### `GET /api/v1/transactions/export/`
 
-Los mismos movimientos en CSV. El monto lleva el signo de lo que le hizo al saldo: negativo lo reservado y lo cobrado, positivo lo comprado y lo devuelto.
+Los mismos movimientos en CSV, como libro de la billetera: una fila por cada cambio del saldo, con su signo. Sus montos suman lo que hizo el saldo en el período exportado.
 
 | | |
 |---|---|
 | Id | `billing.exportTransactions` |
-| Backend | ✅ existe · `back/apps/payments/views.py · TransactionExportView + services/movements.py · csv_text` |
-| Nota | Columnas `fecha,concepto,proyecto,tipo,monto`: la fecha en ISO con la zona del workspace (`2026-11-04T12:00:00-03:00`), la descripción, el título del proyecto, el tipo como lo nombra la pantalla («Devuelto», «Cobrado»…) y el monto exacto (dos decimales si alcanzan, si no todos). Un texto que empieza con `=`, `+`, `-` o `@` lleva un apóstrofo adelante, para que una planilla no lo ejecute. Toda la historia, sin páginas. |
+| Backend | ✅ existe · `back/apps/payments/views.py · TransactionExportView + services/movements.py · ledger, csv_text` |
+| Nota | Columnas `fecha,concepto,proyecto,tipo,monto,estado,transaccion`. Cada SPEND es su reserva (`Reserva`, −`reserved_amount`, en `created_at`) y, si volvió algo, su devolución (`Devuelto`, +lo devuelto: todo en una reserva que se cayó, `reserved_amount − amount` en un cobro parcial, en `settled_at`); una compra es `Compra` y un REFUND `Devolución`, con su monto. Un cobro entero no agrega fila: ya se descontó al reservar. Una compra pendiente no movió el saldo y no sale. Con `month`, solo los cambios de ese mes; `kind` y `project` eligen las transacciones como en la lista. `estado` es el tipo de la transacción hoy («Cobrado», «Devuelto»…) y `transaccion` su id, que une una reserva con su devolución. La fecha va en ISO con la zona del workspace y el monto exacto (dos decimales si alcanzan, si no todos). Un texto que empieza con `=`, `+`, `-` o `@` lleva un apóstrofo adelante, para que una planilla no lo ejecute. Toda la historia, sin páginas. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | { kind?: TransactionKind, month?: string, project?: Id } |
 | Respuesta 200 | texto (CSV) |
@@ -1619,10 +1619,12 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `wallet` | Id |
 | `created_by` | Id \\| null |
 | `amount` | Decimal |
+| `reserved_amount` | Decimal \\| null |
 | `transaction_type` | TransactionType |
 | `status` | TransactionStatus |
 | `description` | string |
 | `created_at` | IsoDateTime |
+| `settled_at` | IsoDateTime \\| null |
 | `kind` | TransactionKind |
 | `created_by_detail` | UserRef \\| null |
 | `project` | { id: Id, title: string } \\| null |
@@ -1636,6 +1638,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 |---|---|
 | `count` | number |
 | `amount` | Decimal |
+| `partial_count` (opcional) | number |
 
 **TransactionsQuery**
 

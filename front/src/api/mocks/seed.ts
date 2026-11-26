@@ -486,10 +486,13 @@ function transactionFor(project: MockProject, index: number, walletId: string): 
     wallet: walletId,
     created_by: project.uploaded_by,
     amount: cost.amount,
+    reserved_amount: cost.amount,
     transaction_type: 'SPEND',
     status: refunded ? 'FAILED' : cost.state === 'charged' ? 'COMPLETED' : 'RESERVED',
     description: `Procesamiento: ${project.title}`,
     created_at: project.created_at,
+    // Settled when the project was made: the seed keeps each one in the month of its project.
+    settled_at: cost.state === 'reserved' ? null : project.created_at,
     kind: refunded ? 'released' : cost.state === 'charged' ? 'charged' : 'reserved',
     created_by_detail: project.uploaded_by_detail ?? null,
     project: { id: project.id, title: project.title },
@@ -781,10 +784,12 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
       wallet: walletId,
       created_by: project.uploaded_by,
       amount: priceOf(Math.ceil(project.metadata.auto_render_seconds ?? 60), project.metadata.render_resolution ?? '720p', false, discount),
+      reserved_amount: priceOf(Math.ceil(project.metadata.auto_render_seconds ?? 60), project.metadata.render_resolution ?? '720p', false, discount),
       transaction_type: 'SPEND',
       status: 'RESERVED',
       description: `Render sin revisar: ${project.title}`,
       created_at: project.created_at,
+      settled_at: null,
       kind: 'reserved',
       created_by_detail: project.uploaded_by_detail ?? null,
       project: { id: project.id, title: project.title },
@@ -793,17 +798,20 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
     project._reservations.push(reservationId);
   }
   // Purchases, so Movimientos shows every kind of row the backend writes. A partial charge has no row of
-  // its own: commit_partial_reservation lowers the SPEND to what was charged and returns the rest silently.
+  // its own: commit_partial_reservation lowers the SPEND to what was charged and keeps what it reserved in
+  // reserved_amount; the rest went back to the balance.
   const purchase = (n: number, tokens: number, ageMs: number): MockTransaction => ({
     id: mid(KIND.transaction, 9000 + n),
     workspace: mainWorkspace,
     wallet: walletId,
     created_by: USER_IDS.lucia,
     amount: tokens,
+    reserved_amount: null,
     transaction_type: 'DEPOSIT',
     status: 'COMPLETED',
     description: `Compra de ${tokens} tokens`,
     created_at: iso(now - ageMs),
+    settled_at: null,
     kind: 'purchase',
     created_by_detail: { id: USER_IDS.lucia, name: 'Lucía Fernández' },
     project: null,
@@ -817,10 +825,12 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
       wallet: walletId,
       created_by: USER_IDS.lucia,
       amount: 1000,
+      reserved_amount: null,
       transaction_type: 'DEPOSIT',
       status: 'PENDING',
       description: 'Compra de 1000 tokens',
       created_at: iso(now - 3 * MIN),
+      settled_at: null,
       kind: 'pending',
       created_by_detail: { id: USER_IDS.lucia, name: 'Lucía Fernández' },
       project: null,

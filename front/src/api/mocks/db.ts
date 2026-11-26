@@ -81,8 +81,7 @@ export interface MockWallet {
   updated_at: string;
 }
 
-/** `_settled_at`: when the reservation was charged or returned (`settled_at` in the backend); usage counts a charge on that day. */
-export type MockTransaction = Transaction & { workspace: string; _settled_at?: string };
+export type MockTransaction = Transaction & { workspace: string };
 
 /** How a live (user-created) project moves on. Seeded projects have no simulation: they stay as drawn. */
 export interface ProjectSim {
@@ -204,6 +203,6 @@ export interface MockDb {
   resendAt: Record<string, number>;
 }
 
-export const DB_VERSION = 12;
+export const DB_VERSION = 13;
 
 export const PLATFORMS: Platform[] = ['TIKTOK', 'INSTAGRAM_REELS', 'YOUTUBE_SHORTS'];

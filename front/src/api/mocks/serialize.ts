@@ -10,7 +10,7 @@ import { generateTranscript, PRICING } from './seed';
 import { roleIn, walletOf } from './sim';
 
 /** Wire types: what goes on the network (decimals as strings), i.e. the *input* of the zod schemas. */
-type Wire<T> = { [K in keyof T]: T[K] extends number ? number | string : T[K] };
+type Wire<T> = { [K in keyof T]: T[K] extends number ? number | string : T[K] extends number | null ? number | string | null : T[K] };
 
 export function serializeClip(db: MockDb, clip: MockClip): Clip {
   const { _renderFails, ...rest } = clip;
@@ -48,15 +48,21 @@ export function serializePost(post: MockPost): ScheduledPost {
 }
 
 export function serializeTransaction(transaction: MockTransaction): Wire<Transaction> {
-  const { workspace, _settled_at, ...rest } = transaction;
+  const { workspace, ...rest } = transaction;
   void workspace;
-  void _settled_at;
-  return { ...rest, amount: dec(transaction.amount, 10) };
+  return {
+    ...rest,
+    amount: dec(transaction.amount, 10),
+    reserved_amount: transaction.reserved_amount === null ? null : dec(transaction.reserved_amount, 10),
+  };
 }
 
-/** When a charge counts as consumption: the day it was charged (`settled_at`), else its reservation (rows from before). */
-export function chargedAt(transaction: MockTransaction): string {
-  return transaction._settled_at ?? transaction.created_at;
+/**
+ * When a row last moved the balance (the backend's MOVED_AT): a charge or a return when it was settled, an open
+ * reservation or a purchase when it was made. The list, its month, its totals and the usage chart use it.
+ */
+export function movedAt(transaction: MockTransaction): string {
+  return transaction.settled_at ?? transaction.created_at;
 }
 
 export function serializeWallet(db: MockDb, workspaceId: string, now: number): Wire<Omit<Wallet, 'reservations'>> & { reservations: unknown[] } {
@@ -65,7 +71,7 @@ export function serializeWallet(db: MockDb, workspaceId: string, now: number): W
   const month = workspaceDay(now).slice(0, 7);
   const transactions = db.transactions.filter((item) => item.workspace === workspaceId);
   const spent = transactions
-    .filter((item) => item.transaction_type === 'SPEND' && item.status === 'COMPLETED' && workspaceDay(chargedAt(item)).startsWith(month))
+    .filter((item) => item.transaction_type === 'SPEND' && item.status === 'COMPLETED' && workspaceDay(movedAt(item)).startsWith(month))
     .reduce((sum, item) => sum + item.amount, 0);
   const plan = planOf(db, workspaceId);
   // "Below what an average video costs": 20 minutes at 720p with the plan's discount.
