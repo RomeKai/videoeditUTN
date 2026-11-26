@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useState, type ReactNode } from 'react';
+import { ApiRoutingPanel } from '@/dev/ApiRoutingPanel';
 import { ScenarioPicker } from '@/dev/ScenarioPicker';
 import {
   ConfirmCostDialog,
@@ -12,7 +13,7 @@ import {
   useBillingDialogs,
 } from '@/dialogs';
 import { notifySessionExpired } from '@/api/session';
-import { API_MOCKS } from '@/api/config';
+import { API_MOCKS, API_MODE } from '@/api/config';
 import { POST_STATUS, TRANSACTION_KIND } from '@/lib/project-status';
 import { Brand } from '@/shell/Brand';
 import { NoAccessMessage, NotFoundMessage, ServerErrorMessage } from '@/shell/SystemPage';
@@ -984,12 +985,24 @@ export default function KitPage() {
 
       <Section id="escenarios" n="00" title="Escenarios" note="Datos de prueba: elegí uno y la app se recarga con ese estado.">
         {API_MOCKS ? (
-          <Card>
-            <ScenarioPicker />
-          </Card>
+          <>
+            {API_MODE === 'hybrid' ? (
+              <>
+                <Banner tone="info" title="Modo híbrido">
+                  El backend real responde una parte de la API y los mocks el resto (<span className="code">NEXT_PUBLIC_API_MODE=hybrid</span>). El cambio de un dominio se guarda en este navegador.
+                </Banner>
+                <Card>
+                  <ApiRoutingPanel />
+                </Card>
+              </>
+            ) : null}
+            <Card>
+              <ScenarioPicker />
+            </Card>
+          </>
         ) : (
           <Banner tone="info" title="Los mocks están apagados">
-            La app está hablando con el backend real (<span className="code">NEXT_PUBLIC_API_MOCKS=false</span>).
+            La app está hablando con el backend real (<span className="code">NEXT_PUBLIC_API_MODE=real</span>).
           </Banner>
         )}
       </Section>

@@ -10,6 +10,7 @@ const config = [
       '.next/**',
       '.next-e2e/**',
       '.next-e2e-real/**',
+      '.next-e2e-hybrid/**',
       'node_modules/**',
       'public/mockServiceWorker.js',
       'playwright-report/**',

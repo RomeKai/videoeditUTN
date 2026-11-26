@@ -1,6 +1,7 @@
 import type { ZodTypeAny } from 'zod';
 import { API_URL, IDEMPOTENCY_HEADER, REQUEST_TIMEOUT_MS, UPLOAD_STALL_TIMEOUT_MS, WORKSPACE_HEADER } from './config';
 import { buildPath, buildQuery, type AnyEndpoint, type ParamsOf, type QueryOf, type RequestBody, type ResponseOf } from './endpoint';
+import { isBackendDefaultWorkspace } from './routing';
 import { ApiError, ContractError, NetworkError, RequestTimeoutError, SessionExpiredError, UploadStalledError } from './errors';
 import {
   getActiveWorkspaceId,
@@ -272,7 +273,8 @@ export async function apiCall<E extends AnyEndpoint>(endpoint: E, ...args: Args<
   }
 
   const workspaceId = endpoint.workspaceScoped === false ? null : (options.workspaceId ?? getActiveWorkspaceId());
-  if (sendsToken && workspaceId) headers[WORKSPACE_HEADER] = workspaceId;
+  // The placeholder of hybrid mode names no workspace: without the header the backend uses the user's default one.
+  if (sendsToken && workspaceId && !isBackendDefaultWorkspace(workspaceId)) headers[WORKSPACE_HEADER] = workspaceId;
   if (options.idempotencyKey) headers[IDEMPOTENCY_HEADER] = options.idempotencyKey;
 
   const url = `${API_URL}${buildPath(endpoint.path, options.params as Record<string, string> | undefined)}${buildQuery(query)}`;
