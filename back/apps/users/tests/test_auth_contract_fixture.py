@@ -1,12 +1,17 @@
 """
 The account bodies of front/src/api/contracts/drf/responses.json are the ones
-this backend gives: front/src/api/contracts/drf-cuentas.test.ts parses them with the
-contract (zod) and with the web app's error helpers. This test builds each of
-them with the real endpoints and compares. When an answer changes on purpose,
-copy the body it prints into the JSON (only the keys of AUTH_KEYS and
-AUTH_ERROR_KEYS; ids are compared by shape).
+this backend gives: front/src/api/contracts/drf-cuentas.test.ts parses them
+with the contract (zod) and with the web app's error helpers. This test builds
+each of them with the real endpoints and compares every value (like the wallet
+ones, apps/payments/tests/test_contract_fixture.py). The id of the new account
+changes on each run: it is compared as a UUID.
+
+When an answer changes on purpose, copy the new bodies into the file (only the
+keys of AUTH_KEYS and AUTH_ERROR_KEYS). The failure prints them, and so does
+``PRINT_DRF_FIXTURE=1 python -m pytest apps/users/tests/test_auth_contract_fixture.py -s``.
 """
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -101,6 +106,8 @@ def _real_bodies(user):
 def test_the_account_bodies_of_the_contract_fixture_are_the_real_ones(user):
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     real = _real_bodies(user)
+    if os.environ.get("PRINT_DRF_FIXTURE"):
+        print(json.dumps(real, ensure_ascii=False, indent=2))
 
     # The id is new each time: a UUID in both, then the fixture's.
     uuid.UUID(real["auth_register"]["id"])
