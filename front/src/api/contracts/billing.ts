@@ -424,7 +424,7 @@ export const listTokenPackages = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/payments/views_purchases.py · TokenPackagesView (apps/payments/services/token_packages.py)',
-    note: 'Todos los roles. El precio de un paquete sale de sus tokens y su descuento sobre 0,01 USD por token. La conversión es de referencia (`PAYMENTS_LOCAL_CURRENCY`, `PAYMENTS_USD_TO_LOCAL_RATE`): todo pago es en USD. La cantidad libre va de 100 a 1.000.000 tokens.',
+    note: 'Todos los roles. El precio de un paquete sale de sus tokens y su descuento sobre `TOKEN_PRICE_USD` (0,01 USD por token, el mismo de `billing.pricing`). La conversión es de referencia (`PAYMENTS_LOCAL_CURRENCY`, `PAYMENTS_USD_TO_LOCAL_RATE`): todo pago es en USD. La cantidad libre va de 100 a 1.000.000 tokens.',
   },
   screens: ['G4', 'D2 (diálogo)'],
 });
@@ -475,7 +475,7 @@ export const getTokenPurchase = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/payments/views_purchases.py · TokenPurchaseDetailView + PaymentSerializer (apps/payments/serializers_billing.py)',
-    note: 'La confirmación del proveedor (o `billing.simulatePurchase`) acredita una sola vez: un DEPOSIT COMPLETED de los tokens en la billetera, «Compra de 1.000 tokens». La pantalla consulta cada 5 s mientras está pendiente. `plan_id` viene siempre (null en una compra de tokens). `balance_after` llega con 10 decimales, como el saldo.',
+    note: 'La confirmación del proveedor (o `billing.simulatePurchase`) acredita una sola vez: un DEPOSIT COMPLETED de los tokens en la billetera, con `category: "purchase"` y «Compra de 1.000 tokens». La pantalla consulta cada 5 s mientras está pendiente. `plan_id` viene siempre (null en una compra de tokens). `balance_after` llega con 10 decimales, como el saldo.',
   },
   screens: ['G5'],
 });

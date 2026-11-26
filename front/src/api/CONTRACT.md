@@ -659,7 +659,7 @@ Los 3 paquetes fijos, el precio de la cantidad libre y la conversión de referen
 |---|---|
 | Id | `billing.tokenPackages` |
 | Backend | ✅ existe · `back/apps/payments/views_purchases.py · TokenPackagesView (apps/payments/services/token_packages.py)` |
-| Nota | Todos los roles. El precio de un paquete sale de sus tokens y su descuento sobre 0,01 USD por token. La conversión es de referencia (`PAYMENTS_LOCAL_CURRENCY`, `PAYMENTS_USD_TO_LOCAL_RATE`): todo pago es en USD. La cantidad libre va de 100 a 1.000.000 tokens. |
+| Nota | Todos los roles. El precio de un paquete sale de sus tokens y su descuento sobre `TOKEN_PRICE_USD` (0,01 USD por token, el mismo de `billing.pricing`). La conversión es de referencia (`PAYMENTS_LOCAL_CURRENCY`, `PAYMENTS_USD_TO_LOCAL_RATE`): todo pago es en USD. La cantidad libre va de 100 a 1.000.000 tokens. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | TokenPackages |
 | Pantallas | G4, D2 (diálogo) |
@@ -687,7 +687,7 @@ Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`
 |---|---|
 | Id | `billing.purchase` |
 | Backend | ✅ existe · `back/apps/payments/views_purchases.py · TokenPurchaseDetailView + PaymentSerializer (apps/payments/serializers_billing.py)` |
-| Nota | La confirmación del proveedor (o `billing.simulatePurchase`) acredita una sola vez: un DEPOSIT COMPLETED de los tokens en la billetera, «Compra de 1.000 tokens». La pantalla consulta cada 5 s mientras está pendiente. `plan_id` viene siempre (null en una compra de tokens). `balance_after` llega con 10 decimales, como el saldo. |
+| Nota | La confirmación del proveedor (o `billing.simulatePurchase`) acredita una sola vez: un DEPOSIT COMPLETED de los tokens en la billetera, con `category: "purchase"` y «Compra de 1.000 tokens». La pantalla consulta cada 5 s mientras está pendiente. `plan_id` viene siempre (null en una compra de tokens). `balance_after` llega con 10 decimales, como el saldo. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Payment |
 | Errores | **403** El rol no puede ver pagos (solo Dueño y Admin).<br>**404** La compra no existe en este workspace. |

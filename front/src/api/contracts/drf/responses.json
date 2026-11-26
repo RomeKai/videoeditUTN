@@ -1313,6 +1313,211 @@
       "user": null
     }
   ],
+  "errors": {
+    "login_401": {
+      "status": 401,
+      "body": {
+        "detail": "No active account found with the given credentials"
+      }
+    },
+    "token_401": {
+      "status": 401,
+      "body": {
+        "detail": "Given token not valid for any token type",
+        "code": "token_not_valid",
+        "messages": [
+          {
+            "token_class": "AccessToken",
+            "token_type": "access",
+            "message": "Token is invalid or expired"
+          }
+        ]
+      }
+    },
+    "create_400_upload": {
+      "status": 400,
+      "body": {
+        "source_file": [
+          "El video supera la duración máxima que podemos procesar (3 h)."
+        ]
+      }
+    },
+    "create_400_required": {
+      "status": 400,
+      "body": {
+        "non_field_errors": [
+          "Debes proporcionar un 'source_file' o una 'video_url'."
+        ]
+      }
+    },
+    "create_400_single_edit": {
+      "status": 400,
+      "body": {
+        "project_type": [
+          "Para editar el video completo, subí el archivo. Los links sirven para sacar clips."
+        ]
+      }
+    },
+    "create_400_drf_english": {
+      "status": 400,
+      "body": {
+        "title": [
+          "Ensure this field has no more than 255 characters."
+        ],
+        "aspect_ratio": [
+          "\"4:3\" is not a valid choice."
+        ]
+      }
+    },
+    "create_402": {
+      "status": 402,
+      "body": {
+        "error": "['Saldo insuficiente']",
+        "required": 555.3
+      }
+    },
+    "create_403_plan": {
+      "status": 403,
+      "body": {
+        "error": "['Video duration (4000s) exceeds your plan limit (600s).']"
+      }
+    },
+    "permission_403": {
+      "status": 403,
+      "body": {
+        "detail": "You do not have permission to perform this action."
+      }
+    },
+    "not_found_404": {
+      "status": 404,
+      "body": {
+        "detail": "No VideoProject matches the given query."
+      }
+    },
+    "approve_400_not_awaiting": {
+      "status": 400,
+      "body": {
+        "error": "El proyecto no estÃ¡ en espera de aprobaciÃ³n. Estado actual: rendering"
+      }
+    },
+    "approve_400_pricing": {
+      "status": 400,
+      "body": {
+        "error": "Error en el motor de precios: [\"Your plan 'Gratis' does not support 4K rendering.\"]"
+      }
+    },
+    "approve_400_segments": {
+      "status": 400,
+      "body": {
+        "error": "Debe proporcionar una lista de 'approved_segments'."
+      }
+    },
+    "approve_402": {
+      "status": 402,
+      "body": {
+        "error": "['Saldo insuficiente']",
+        "required": 29.25
+      }
+    },
+    "approve_409_race": {
+      "status": 409,
+      "body": {
+        "error": "El proyecto ya se está renderizando."
+      }
+    },
+    "patch_409_rendering": {
+      "status": 409,
+      "body": {
+        "detail": "El proyecto se está renderizando: esperá a que termine para cambiarlo."
+      }
+    },
+    "preview_409": {
+      "status": 409,
+      "body": {
+        "error": "El video completo se renderiza entero: no tiene vista previa."
+      }
+    },
+    "preview_429": {
+      "status": 429,
+      "body": {
+        "error": "Ya hay vistas previas en proceso en este espacio. Probá en unos segundos."
+      }
+    },
+    "preview_404": {
+      "status": 404,
+      "body": {
+        "error": "No hay vista previa vigente."
+      }
+    },
+    "estimate_403_plan": {
+      "status": 403,
+      "body": {
+        "error": "Tu plan Prueba permite videos de hasta 10 min.",
+        "limit": 600,
+        "code": "duration"
+      }
+    },
+    "estimate_400_link": {
+      "status": 400,
+      "body": {
+        "render_resolution": [
+          "Los proyectos por link se procesan en 720p. Para 1080p o 4K, subí el archivo."
+        ]
+      }
+    },
+    "usage_400_month": {
+      "status": 400,
+      "body": {
+        "month": [
+          "Mandá el mes como AAAA-MM."
+        ]
+      }
+    },
+    "transactions_403_role": {
+      "status": 403,
+      "body": {
+        "detail": "Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin."
+      }
+    },
+    "billing_change_plan_400_current": {
+      "status": 400,
+      "body": {
+        "plan_id": [
+          "Ya es tu plan actual."
+        ]
+      }
+    },
+    "billing_change_plan_403_role": {
+      "status": 403,
+      "body": {
+        "detail": "Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin."
+      }
+    },
+    "billing_change_plan_409_seats": {
+      "status": 409,
+      "body": {
+        "error": "Ocupás 4 lugares y el plan Gratis tiene 2. Quitá miembros o invitaciones antes de bajar.",
+        "code": "seats_exceeded",
+        "seats_used": 4,
+        "max_members": 2
+      }
+    },
+    "billing_purchase_400_min": {
+      "status": 400,
+      "body": {
+        "custom_tokens": [
+          "El mínimo es 100 tokens."
+        ]
+      }
+    },
+    "billing_purchase_501_no_provider": {
+      "status": 501,
+      "body": {
+        "error": "Los pagos todavía no están habilitados.",
+        "code": "payments_unavailable"
+      }
+    }
+  },
   "pricing": {
     "base_cost_per_second_720p": "0.5",
     "resolution_multipliers": {
@@ -1838,210 +2043,5 @@
     "failure_reason": null,
     "created_at": "2026-11-26T18:56:33.258378Z",
     "balance_after": null
-  },
-  "errors": {
-    "login_401": {
-      "status": 401,
-      "body": {
-        "detail": "No active account found with the given credentials"
-      }
-    },
-    "token_401": {
-      "status": 401,
-      "body": {
-        "detail": "Given token not valid for any token type",
-        "code": "token_not_valid",
-        "messages": [
-          {
-            "token_class": "AccessToken",
-            "token_type": "access",
-            "message": "Token is invalid or expired"
-          }
-        ]
-      }
-    },
-    "create_400_upload": {
-      "status": 400,
-      "body": {
-        "source_file": [
-          "El video supera la duración máxima que podemos procesar (3 h)."
-        ]
-      }
-    },
-    "create_400_required": {
-      "status": 400,
-      "body": {
-        "non_field_errors": [
-          "Debes proporcionar un 'source_file' o una 'video_url'."
-        ]
-      }
-    },
-    "create_400_single_edit": {
-      "status": 400,
-      "body": {
-        "project_type": [
-          "Para editar el video completo, subí el archivo. Los links sirven para sacar clips."
-        ]
-      }
-    },
-    "create_400_drf_english": {
-      "status": 400,
-      "body": {
-        "title": [
-          "Ensure this field has no more than 255 characters."
-        ],
-        "aspect_ratio": [
-          "\"4:3\" is not a valid choice."
-        ]
-      }
-    },
-    "create_402": {
-      "status": 402,
-      "body": {
-        "error": "['Saldo insuficiente']",
-        "required": 555.3
-      }
-    },
-    "create_403_plan": {
-      "status": 403,
-      "body": {
-        "error": "['Video duration (4000s) exceeds your plan limit (600s).']"
-      }
-    },
-    "permission_403": {
-      "status": 403,
-      "body": {
-        "detail": "You do not have permission to perform this action."
-      }
-    },
-    "not_found_404": {
-      "status": 404,
-      "body": {
-        "detail": "No VideoProject matches the given query."
-      }
-    },
-    "approve_400_not_awaiting": {
-      "status": 400,
-      "body": {
-        "error": "El proyecto no estÃ¡ en espera de aprobaciÃ³n. Estado actual: rendering"
-      }
-    },
-    "approve_400_pricing": {
-      "status": 400,
-      "body": {
-        "error": "Error en el motor de precios: [\"Your plan 'Gratis' does not support 4K rendering.\"]"
-      }
-    },
-    "approve_400_segments": {
-      "status": 400,
-      "body": {
-        "error": "Debe proporcionar una lista de 'approved_segments'."
-      }
-    },
-    "approve_402": {
-      "status": 402,
-      "body": {
-        "error": "['Saldo insuficiente']",
-        "required": 29.25
-      }
-    },
-    "approve_409_race": {
-      "status": 409,
-      "body": {
-        "error": "El proyecto ya se está renderizando."
-      }
-    },
-    "patch_409_rendering": {
-      "status": 409,
-      "body": {
-        "detail": "El proyecto se está renderizando: esperá a que termine para cambiarlo."
-      }
-    },
-    "preview_409": {
-      "status": 409,
-      "body": {
-        "error": "El video completo se renderiza entero: no tiene vista previa."
-      }
-    },
-    "preview_429": {
-      "status": 429,
-      "body": {
-        "error": "Ya hay vistas previas en proceso en este espacio. Probá en unos segundos."
-      }
-    },
-    "preview_404": {
-      "status": 404,
-      "body": {
-        "error": "No hay vista previa vigente."
-      }
-    },
-    "estimate_403_plan": {
-      "status": 403,
-      "body": {
-        "error": "Tu plan Prueba permite videos de hasta 10 min.",
-        "limit": 600,
-        "code": "duration"
-      }
-    },
-    "estimate_400_link": {
-      "status": 400,
-      "body": {
-        "render_resolution": [
-          "Los proyectos por link se procesan en 720p. Para 1080p o 4K, subí el archivo."
-        ]
-      }
-    },
-    "usage_400_month": {
-      "status": 400,
-      "body": {
-        "month": [
-          "Mandá el mes como AAAA-MM."
-        ]
-      }
-    },
-    "transactions_403_role": {
-      "status": 403,
-      "body": {
-        "detail": "Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin."
-      }
-    },
-    "billing_change_plan_400_current": {
-      "status": 400,
-      "body": {
-        "plan_id": [
-          "Ya es tu plan actual."
-        ]
-      }
-    },
-    "billing_change_plan_403_role": {
-      "status": 403,
-      "body": {
-        "detail": "Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin."
-      }
-    },
-    "billing_change_plan_409_seats": {
-      "status": 409,
-      "body": {
-        "error": "Ocupás 4 lugares y el plan Gratis tiene 2. Quitá miembros o invitaciones antes de bajar.",
-        "code": "seats_exceeded",
-        "seats_used": 4,
-        "max_members": 2
-      }
-    },
-    "billing_purchase_400_min": {
-      "status": 400,
-      "body": {
-        "custom_tokens": [
-          "El mínimo es 100 tokens."
-        ]
-      }
-    },
-    "billing_purchase_501_no_provider": {
-      "status": 501,
-      "body": {
-        "error": "Los pagos todavía no están habilitados.",
-        "code": "payments_unavailable"
-      }
-    }
   }
 }
