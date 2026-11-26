@@ -250,6 +250,8 @@ export const LAYOUT_HINTS: Record<Layout, string> = {
   pip: 'PiP: el video de fondo y la cámara en un recuadro.',
   versus: 'Versus: dos personas, una en cada mitad.',
   active: 'Quien habla: el encuadre va a la persona que está hablando.',
+  reaction: 'Reacción: el contenido arriba y la cara de quien reacciona abajo.',
+  cinematic: 'Cinemático: una franja 2.35:1 con bandas negras, como en el cine.',
 };
 
 /** Configuration of an existing project, for "Crear de nuevo" and "Duplicar configuración". */
@@ -315,7 +317,7 @@ export function sanitizeConfig(raw: unknown): ProjectConfig | null {
     selection_criteria: '',
     intelligence_level: isOneOf(['fast', 'smart'] as const, value.intelligence_level) ? value.intelligence_level : base.intelligence_level,
     editing_style: isOneOf(['dynamic', 'minimalist', 'vlog', 'hormozi'] as const, value.editing_style) ? value.editing_style : base.editing_style,
-    render_layout: isOneOf(['fill', 'fit', 'blurred', 'split', 'pip', 'versus', 'active'] as const, value.render_layout) ? value.render_layout : base.render_layout,
+    render_layout: isOneOf(['fill', 'fit', 'blurred', 'split', 'pip', 'versus', 'active', 'reaction', 'cinematic'] as const, value.render_layout) ? value.render_layout : base.render_layout,
     gameplay_position: isOneOf(positions, value.gameplay_position) ? value.gameplay_position : base.gameplay_position,
     camera_selection_position: isOneOf(positions, value.camera_selection_position) ? value.camera_selection_position : base.camera_selection_position,
     manual_camera: bool('manual_camera'),

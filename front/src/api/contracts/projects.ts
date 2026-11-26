@@ -50,7 +50,7 @@ export type IntelligenceLevel = z.infer<typeof IntelligenceLevel>;
 export const AspectRatio = z.enum(['9:16', '1:1', '16:9']);
 export type AspectRatio = z.infer<typeof AspectRatio>;
 
-export const Layout = z.enum(['fill', 'fit', 'blurred', 'split', 'pip', 'versus', 'active']);
+export const Layout = z.enum(['fill', 'fit', 'blurred', 'split', 'pip', 'versus', 'active', 'reaction', 'cinematic']);
 export type Layout = z.infer<typeof Layout>;
 
 export const Position = z.enum(['left', 'center', 'right']);

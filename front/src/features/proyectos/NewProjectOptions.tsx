@@ -374,7 +374,7 @@ const STYLES: Array<{ value: Exclude<EditingStyle, 'custom'>; description: strin
   { value: 'vlog', description: 'Ritmo relajado, subtítulos en caja y transiciones suaves.' },
   { value: 'hormozi', description: 'Subtítulos enormes en el centro, una idea por pantalla.' },
 ];
-const LAYOUTS: Layout[] = ['fill', 'fit', 'blurred', 'split', 'pip', 'versus', 'active'];
+const LAYOUTS: Layout[] = ['fill', 'fit', 'blurred', 'split', 'pip', 'versus', 'active', 'reaction', 'cinematic'];
 const POSITIONS: Array<{ value: Position; label: string }> = [
   { value: 'left', label: LABELS.position.left },
   { value: 'center', label: LABELS.position.center },

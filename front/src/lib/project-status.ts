@@ -223,6 +223,8 @@ export const LABELS = {
     pip: 'PiP',
     versus: 'Versus',
     active: 'Quien habla',
+    reaction: 'Reacción',
+    cinematic: 'Cinemático',
   },
   intelligence_level: { fast: 'Rápido', smart: 'Inteligente' },
   subtitle_size: { small: 'Chico', medium: 'Mediano', large: 'Grande' },

@@ -1936,7 +1936,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 
 **IntelligenceLevel:** "fast" \| "smart"
 
-**Layout:** "fill" \| "fit" \| "blurred" \| "split" \| "pip" \| "versus" \| "active"
+**Layout:** "fill" \| "fit" \| "blurred" \| "split" \| "pip" \| "versus" \| "active" \| "reaction" \| "cinematic"
 
 **LinkProbe**
 
