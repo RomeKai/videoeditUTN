@@ -349,7 +349,7 @@ Una aprobación anterior a los clips por segmento (sin `render_clip_ids`, todav�
 - Cada ítem tiene un id estable: `uuid5` del proyecto, el tipo y la fila de donde sale.
 - Los montos son decimales con signo, en texto (`"-20.0000000000"`): negativo es reservado o cobrado.
 - A lo sumo `MAX_ITEMS` (200).
-- Una reserva liquidada antes de la migración `0006` no tiene `settled_at` ni `reserved_amount`: se usan `created_at` y `amount`.
+- Una reserva liquidada antes de la migración `0012` de payments no tiene `settled_at` ni `reserved_amount`: se usan `created_at` y `amount`.
 
 No aparece lo que no se guarda: los renombres (`project_renamed`), las ediciones y los reintentos de un clip (`clip_edited`, `clip_retried`), quién programó un post (`ScheduledPost` no tiene autor) y una reserva cuya clave ya no está en la metadata (el render automático liquidado de un proyecto que después se aprobó: la aprobación borra sus claves).
 
@@ -405,7 +405,7 @@ No aparece lo que no se guarda: los renombres (`project_renamed`), las ediciones
 
 - `Wallet.available_balance` baja y `Wallet.reserved_balance` sube en el costo.
 - `Transaction`: `transaction_type=SPEND`, `status=RESERVED`, `amount`, `reserved_amount` (lo mismo que `amount`), `created_by` y `description=Procesamiento: <título>`.
-- Al devolver: `Transaction.status=FAILED`, `settled_at`, y el monto vuelve de `reserved_balance` a `available_balance`. Al cobrar, `status=COMPLETED` y `settled_at`. Un cobro parcial (`commit_partial_reservation`) reemplaza `amount` por lo cobrado y deja `reserved_amount` como estaba. Las filas de antes de la migración `0006` de payments tienen las dos columnas en `null`.
+- Al devolver: `Transaction.status=FAILED`, `settled_at`, y el monto vuelve de `reserved_balance` a `available_balance`. Al cobrar, `status=COMPLETED` y `settled_at`. Un cobro parcial (`commit_partial_reservation`) reemplaza `amount` por lo cobrado y deja `reserved_amount` como estaba. Las filas de antes de la migración `0012` de payments tienen las dos columnas en `null`.
 
 **Respuesta 201:** los campos del serializer (sin `selection_criteria` ni `use_seo`, que son de solo escritura), `cost_details.tokens_reserved`, `cost_details.transaction_id` y `message` (`Video subido. Iniciando ingesta multimodal...`). Desde `from_prompt` se suma `prompt_config`.
 
@@ -438,7 +438,18 @@ Valores fijos en el código (no son settings):
 | `FEATURE_COSTS` | `seo_optimization` 5, `ai_thumbnail` 15 | `PricingEngine` |
 | Tarifa de un proyecto por URL | 10 tokens | `VideoProjectViewSet.create` |
 
-Límites por plan (`SubscriptionPlan`, asignado en `Workspace.subscription_plan`; sin plan no hay límites ni descuento): `max_video_duration_seconds`, `max_resolution`, `has_seo_optimization`, `has_thumbnail_engine` y `base_discount_rate`.
+Límites por plan (`SubscriptionPlan`, asignado en `Workspace.subscription_plan`): `max_video_duration_seconds`, `max_resolution`, `has_seo_optimization`, `has_thumbnail_engine` y `base_discount_rate`. `max_video_duration_seconds` y `max_members` valen al menos 1: lo dicen sus `MinValueValidator` (admin y formularios) y lo cumple la base con dos check constraints (`payments_plan_max_members_min_1` y `payments_plan_max_duration_min_1`, migración 0011).
+
+**Plan de un workspace nuevo.** Empieza en el plan que nombra `DEFAULT_PLAN_NAME` (`Gratis` por defecto). Lo asigna `create_default_workspace` (users/signals.py) con `get_default_plan_id` (payments/services/plans.py), que lee solo `id` e `is_active` del plan, sin orden: así un registro anda aunque el código nuevo corra antes de una migración que agrega columnas al plan. El usuario siempre queda con su workspace. Si no hay un plan con ese nombre (`plans.default_plan_missing`), está inactivo (`plans.default_plan_inactive`) o la búsqueda falla (`plans.default_plan_lookup_failed`, con la clase del error; corre en un savepoint para no romper la transacción del registro), el workspace se crea sin plan y queda en el log. Sin plan no hay límites ni descuento: es el caso de los workspaces de antes del plan por defecto, hasta que se corre `assign_default_plan` ([ver 07](07-capacidad-costos-y-operacion.md#operación-workspaces-sin-plan)).
+
+**Los cuatro planes.** Las migraciones `payments` 0005, 0007 y 0009 los siembran y `GET /api/v1/plans/` los lista (los activos con `is_public`, en `sort_order`). Ninguno pasa de `AI_UPLOAD_MAX_DURATION_SECONDS` (10800 s), el techo de cualquier subida. `max_members` cuenta al dueño y las invitaciones pendientes (`check_workspace_member_limit`, users/signals.py): en Gratis entran el dueño y una persona más.
+
+| Plan | `max_video_duration_seconds` | `max_resolution` | `max_members` | `base_discount_rate` | Precio (USD/mes) |
+|------|------------------------------|------------------|---------------|----------------------|------------------|
+| Gratis | 600 | `720p` | 2 | 0,00 | 0 |
+| Creador | 3600 | `1080p` | 2 | 0,05 | 19 |
+| Pro (recomendado) | 10800 | `4K` | 5 | 0,10 | 49 |
+| Estudio | 10800 | `4K` | 15 | 0,20 | 129 |
 
 ## Referencias
 

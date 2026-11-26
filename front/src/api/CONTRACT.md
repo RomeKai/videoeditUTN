@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**80 endpoints:** 18 existen hoy en el backend, 3 existen en parte y 59 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**80 endpoints:** 19 existen hoy en el backend, 3 existen en parte y 58 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -87,7 +87,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | POST | `/api/v1/workspaces/:id/invitations/:memberId/resend/` | Reenvía el email de una invitación pendiente. | ❌ falta (propuesto) · hueco 13 | H2 |
 | GET | `/api/v1/invitations/:token/` | Datos públicos de una invitación: quién invita, a qué workspace y con qué rol. | ❌ falta (propuesto) · hueco 13 | A5 |
 | POST | `/api/v1/invitations/:token/accept/` | Acepta la invitación. Sin cuenta: la crea con `name` y `password`. Con cuenta: basta con la sesión iniciada. | ❌ falta (propuesto) · hueco 13 | A5 |
-| GET | `/api/v1/plans/` | Planes activos, en orden, para Precios y Uso › Planes. | ❌ falta (propuesto) · hueco 6, 12 | A6, G3, D3 (diálogo), C1 |
+| GET | `/api/v1/plans/` | Planes activos y públicos, en orden, para Precios y Uso › Planes. | ✅ existe | A6, G3, D3 (diálogo), C1 |
 | GET | `/api/v1/pricing/` | Valores de la fórmula de precios y los topes de subida, para estimar en el navegador. | ❌ falta (propuesto) · hueco 6 | C1, A6, G3, G4, D2, D1 (diálogo) |
 | POST | `/api/v1/pricing/estimate/` | Estimado del backend para una configuración: costo, descuento, saldo después y tiempo estimado. | ❌ falta (propuesto) · hueco 6, 18 | C1, D2, D4, D5 |
 | GET | `/api/v1/subscription/` | Plan actual del workspace, su renovación y el cambio pendiente si lo hay. | ❌ falta (propuesto) · hueco 12 | Barra, G1, G3, C1, E1, H2 |
@@ -521,13 +521,13 @@ Contrato: `src/api/contracts/billing.ts` · Hooks: `src/api/hooks/billing.ts` ·
 
 #### `GET /api/v1/plans/`
 
-Planes activos, en orden, para Precios y Uso › Planes.
+Planes activos y públicos, en orden, para Precios y Uso › Planes.
 
 | | |
 |---|---|
 | Id | `billing.plans` |
-| Backend | ❌ falta (propuesto) · hueco 6, 12 |
-| Nota | Modelo: SubscriptionPlan (apps/payments/models.py); faltan precio, descripción, orden y recomendado. |
+| Backend | ✅ existe · `back/apps/payments/views.py · PublicPlanListView + PublicPlanSerializer (apps/payments/serializers.py)` |
+| Nota | Público, sin token. Lista los planes con `is_active` e `is_public` (los cuatro sembrados por las migraciones `payments` 0005, 0007 y 0009), ordenados por `sort_order`; un plan creado en el admin no sale hasta marcarlo público. `is_public` no viaja en la respuesta. Cache de 5 min que se borra cuando un cambio de plan hace commit. Un workspace nuevo empieza en Gratis (`DEFAULT_PLAN_NAME`). |
 | Sesión | Pública |
 | Respuesta 200 | Plan[] |
 | Pantallas | A6, G3, D3 (diálogo), C1 |
@@ -854,7 +854,7 @@ Quién hizo qué en el proyecto y sus movimientos de tokens, del más nuevo al m
 |---|---|
 | Id | `projects.activity` |
 | Backend | ✅ existe · `back/apps/videos/views_project_data.py · ProjectActivityView + services/project_activity.py · build_activity` |
-| Nota | No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (las Transaction de las claves `*reservation_id` de la metadata, con `settled_at` y `reserved_amount` desde la migración 0006 de payments), fin del render (cuando se liquidó la reserva que lo pagó), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva cuya clave se borró de la metadata (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems. |
+| Nota | No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (las Transaction de las claves `*reservation_id` de la metadata, con `settled_at` y `reserved_amount` desde la migración 0012 de payments), fin del render (cuando se liquidó la reserva que lo pagó), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva cuya clave se borró de la metadata (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | ActivityItem[] |
 | Errores | **404** No existe o es de otro workspace. |

@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('payments', '0005_seed_subscription_plans'),
+        ('payments', '0011_subscriptionplan_limits_check'),
     ]
 
     operations = [
