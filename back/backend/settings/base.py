@@ -315,6 +315,9 @@ if not re.fullmatch(r'\d+(\.\d+)?', TOKEN_PRICE_USD) or not float(TOKEN_PRICE_US
 # PAYMENTS_ALLOW_SIMULATED=True (a demo); prod.py refuses it without that flag.
 PAYMENTS_PROVIDER = env('PAYMENTS_PROVIDER', default='').strip().lower()
 PAYMENTS_ALLOW_SIMULATED = env.bool('PAYMENTS_ALLOW_SIMULATED', default=False)
+# Without DEBUG (a demo on production settings) only staff and these emails may
+# approve or reject a simulated payment (POST /token-purchases/<id>/simulate/).
+PAYMENTS_SIMULATE_ALLOWED_EMAILS = env.list('PAYMENTS_SIMULATE_ALLOWED_EMAILS', default=[])
 # Reference conversion shown next to the token packages ("≈ ARS 14.500").
 # Display only: every payment is in USD.
 PAYMENTS_LOCAL_CURRENCY = env('PAYMENTS_LOCAL_CURRENCY', default='ARS')

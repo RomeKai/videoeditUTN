@@ -1,7 +1,9 @@
 # The subscription of a workspace (GET /api/v1/subscription/): the end of the
-# paid period and the downgrade scheduled for it. Every column is null on the
-# rows that exist: no workspace has a paid period or a scheduled change yet.
+# paid period (and the day it is anchored to) and the downgrade scheduled for
+# it. Every column is null on the rows that exist: no workspace has a paid
+# period or a scheduled change yet.
 
+import django.core.validators
 import django.db.models.deletion
 from django.db import migrations, models
 
@@ -36,6 +38,18 @@ class Migration(migrations.Migration):
             model_name="workspace",
             name="plan_renews_at",
             field=models.DateTimeField(blank=True, null=True),
+        ),
+        migrations.AddField(
+            model_name="workspace",
+            name="plan_anchor_day",
+            field=models.PositiveSmallIntegerField(
+                blank=True,
+                null=True,
+                validators=[
+                    django.core.validators.MinValueValidator(1),
+                    django.core.validators.MaxValueValidator(31),
+                ],
+            ),
         ),
         migrations.AddConstraint(
             model_name="workspace",

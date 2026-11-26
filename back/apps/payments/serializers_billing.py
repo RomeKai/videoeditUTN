@@ -19,6 +19,8 @@ RETURN_URL_ERRORS = {
     'max_length': 'La dirección es demasiado larga.',
 }
 RETURN_URL_OUTSIDE = 'La dirección de vuelta tiene que ser una página de la app.'
+# The checkout URL carries it encoded (up to three times longer) and has 2000 characters.
+RETURN_URL_MAX = 600
 
 
 def _origin(url):
@@ -61,7 +63,7 @@ class SubscriptionSerializer(serializers.Serializer):
 
 class ChangePlanRequestSerializer(serializers.Serializer):
     plan_id = serializers.UUIDField(error_messages={'invalid': 'Elegí un plan.', 'required': 'Elegí un plan.', 'null': 'Elegí un plan.'})
-    return_url = serializers.URLField(required=False, max_length=1000, error_messages=RETURN_URL_ERRORS)
+    return_url = serializers.URLField(required=False, max_length=RETURN_URL_MAX, error_messages=RETURN_URL_ERRORS)
 
     def validate_return_url(self, value):
         return check_return_url(value)
@@ -96,7 +98,7 @@ class CreatePurchaseRequestSerializer(serializers.Serializer):
         required=False,
         error_messages={'invalid': 'Escribí una cantidad de tokens, sin decimales.', 'max_string_length': 'La cantidad es demasiado grande.'},
     )
-    return_url = serializers.URLField(max_length=1000, error_messages={**RETURN_URL_ERRORS, 'required': 'Falta la dirección de vuelta.'})
+    return_url = serializers.URLField(max_length=RETURN_URL_MAX, error_messages={**RETURN_URL_ERRORS, 'required': 'Falta la dirección de vuelta.'})
 
     def validate_return_url(self, value):
         return check_return_url(value)

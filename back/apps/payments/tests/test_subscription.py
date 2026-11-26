@@ -9,10 +9,11 @@ from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal
 
 import pytest
+from django.core.exceptions import ValidationError
 from django.test import override_settings
 from django.utils import timezone
 
-from apps.payments.models import Payment
+from apps.payments.models import Payment, SubscriptionPlan
 from apps.payments.services.plan_periods import add_month
 from apps.payments.services.payments import settle_payment
 from apps.payments.services.subscriptions import apply_due_plan_changes
@@ -396,18 +397,34 @@ def test_the_task_applies_the_downgrades_that_are_due_once(plans):
     assert reload(due).subscription_plan == plans['Creador']
 
 
-def test_the_task_applies_a_downgrade_even_with_seats_invited_since(plans):
+def test_while_a_downgrade_waits_no_invitation_breaks_its_seats(plans):
     user, workspace = owner_with_workspace()
     set_plan(workspace, plans['Pro'], renews_at=timezone.now() - timedelta(minutes=1))
     schedule(workspace, plans['Gratis'], timezone.now() - timedelta(minutes=1))
-    join(workspace, make_user('uno'))
-    join(workspace, make_user('dos'))
+    join(reload(workspace), make_user('uno'))
+    # Gratis has 2 seats: the owner and "uno". Pro would have room, the plan it becomes does not.
+    with pytest.raises(ValidationError, match="Tu plan pasa a 'Gratis'"):
+        join(reload(workspace), make_user('dos'))
 
     assert apply_due_plan_changes() == 1
 
-    # They keep their seats; nobody new fits until some leave (check_seat_limit).
     assert reload(workspace).subscription_plan == plans['Gratis']
-    assert WorkspaceMember.objects.filter(workspace=workspace).count() == 3
+    assert WorkspaceMember.objects.filter(workspace=workspace).count() == 2
+
+
+def test_members_from_before_the_downgrade_keep_their_seats_if_the_plan_shrank(plans, caplog):
+    user, workspace = owner_with_workspace()
+    set_plan(workspace, plans['Pro'], renews_at=timezone.now() - timedelta(minutes=1))
+    join(reload(workspace), make_user('uno'))
+    schedule(workspace, plans['Gratis'], timezone.now() - timedelta(minutes=1))
+    # Staff lowered the seats of the target plan while the downgrade waited.
+    SubscriptionPlan.objects.filter(pk=plans['Gratis'].pk).update(max_members=1)
+
+    assert apply_due_plan_changes() == 1
+
+    assert reload(workspace).subscription_plan == plans['Gratis']
+    assert WorkspaceMember.objects.filter(workspace=workspace).count() == 2
+    assert f'subscription.over_member_limit workspace={workspace.pk} seats_used=2 max_members=1' in caplog.text
 
 
 def test_a_scheduled_change_always_has_its_date(owner, plans):

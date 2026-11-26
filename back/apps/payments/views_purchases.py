@@ -10,7 +10,8 @@ Token purchases and the payments of plan upgrades (gap 12, services/payments.py)
   token purchase or the payment of a plan upgrade (``plan_id``).
 - ``POST /api/v1/token-purchases/<id>/simulate/``: only for the simulated
   provider (DEBUG or PAYMENTS_ALLOW_SIMULATED): the web app's test checkout
-  (``/dev/checkout``) approves or rejects the payment. Otherwise 404.
+  (``/dev/checkout``) approves or rejects the payment. Without DEBUG, only
+  staff and the emails of PAYMENTS_SIMULATE_ALLOWED_EMAILS. Otherwise 404.
 
 All but the packages are for Owner and Admin (``billing.manage``).
 """
@@ -26,8 +27,8 @@ from .serializers_billing import (
     SimulatePaymentRequestSerializer,
     TokenPackagesSerializer,
 )
-from .services.payment_providers import SIMULATED, PaymentsUnavailable, simulated_payments_allowed
-from .services.payments import CheckoutFailed, IdempotencyKeyReused, settle_payment, start_token_purchase
+from .services.payment_providers import SIMULATED, PaymentsUnavailable, may_simulate, simulated_payments_allowed
+from .services.payments import CheckoutFailed, IdempotencyKeyReused, PurchaseInProgress, settle_payment, start_token_purchase
 from .services.token_packages import custom_price_usd, find_package, token_packages_payload
 from .views_subscription import NOT_FOUND, ROLE_DENIED, BillingView, checkout_failed, payments_unavailable
 
@@ -64,7 +65,7 @@ class TokenPurchaseCreateView(BillingView):
             201: PaymentSerializer,
             400: OpenApiResponse(description='Paquete inexistente, cantidad fuera del mínimo o el máximo, o una dirección de vuelta ajena a la app.'),
             403: ROLE_DENIED,
-            409: OpenApiResponse(description='`code: "idempotency_key_reused"`: esa clave ya empezó otra compra.'),
+            409: OpenApiResponse(description='`code: "idempotency_key_reused"`: esa clave ya empezó otra compra; `code: "purchase_in_progress"`: la compra de esa clave todavía abre su checkout.'),
             501: OpenApiResponse(description='`code: "payments_unavailable"`: no hay proveedor de pagos.'),
             502: OpenApiResponse(description='`code: "checkout_failed"`: el proveedor no abrió el checkout.'),
         },
@@ -95,6 +96,11 @@ class TokenPurchaseCreateView(BillingView):
         except IdempotencyKeyReused:
             return Response(
                 {'error': 'Esa clave ya se usó para otra compra.', 'code': 'idempotency_key_reused'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except PurchaseInProgress:
+            return Response(
+                {'error': 'Esta compra todavía se está iniciando. Probá de nuevo en unos segundos.', 'code': 'purchase_in_progress'},
                 status=status.HTTP_409_CONFLICT,
             )
         except CheckoutFailed:
@@ -128,8 +134,9 @@ class SimulatePaymentView(_PaymentView):
         tags=['billing'],
     )
     def post(self, request, payment_id):
-        # Outside development and demos this endpoint does not exist.
-        if not simulated_payments_allowed():
+        # Outside development and demos this endpoint does not exist; without DEBUG, only for staff
+        # and PAYMENTS_SIMULATE_ALLOWED_EMAILS.
+        if not simulated_payments_allowed() or not may_simulate(request.user):
             raise NotFound(PAYMENT_NOT_FOUND)
         payment = self.payment(payment_id)
         # Never a payment of a real provider, even if PAYMENTS_PROVIDER changed since.

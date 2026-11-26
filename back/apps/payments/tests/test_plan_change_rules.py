@@ -1,0 +1,265 @@
+"""
+The rules of a plan change that money depends on (services/subscriptions.py,
+plan_periods.py, apps/users/seats.py):
+
+- price, not the pricing page's order, decides what needs a payment;
+- a scheduled downgrade keeps its seat promise until it applies;
+- a paid period that ends without a renewal ends the paid plan;
+- keeping the current plan cancels an upgrade waiting for its payment;
+- the admin changing the plan drops what was scheduled;
+- the paid period is counted in the workspace's time zone, with its anchor day.
+"""
+from datetime import datetime, timedelta, timezone as dt_timezone
+from decimal import Decimal
+from unittest import mock
+
+import pytest
+from django.contrib import admin
+from django.core.checks import run_checks
+from django.core.exceptions import ValidationError
+from django.test import RequestFactory, override_settings
+from django.utils import timezone
+
+from apps.payments.models import Payment, SubscriptionPlan
+from apps.payments.services.payment_providers import SimulatedProvider
+from apps.payments.services.payments import settle_payment
+from apps.payments.services.plan_periods import add_month
+from apps.payments.services.subscriptions import apply_due_plan_changes
+from apps.users.models import Workspace, WorkspaceMember
+
+from .billing_helpers import SIMULATED, client_for, join, make_user, owner_with_workspace, set_plan
+
+pytestmark = pytest.mark.django_db
+
+CHANGE = '/api/v1/subscription/change/'
+
+
+@pytest.fixture
+def plans(seeded_plans):
+    return seeded_plans
+
+
+@pytest.fixture
+def owner(plans):
+    return owner_with_workspace()
+
+
+def change(client, plan, **extra):
+    return client.post(CHANGE, {'plan_id': str(plan.pk), **extra}, format='json')
+
+
+def reload(workspace):
+    return Workspace.objects.get(pk=workspace.pk)
+
+
+def public_plan(name, price, sort_order, max_members=10):
+    return SubscriptionPlan.objects.create(
+        name=name, price_usd_monthly=Decimal(price), sort_order=sort_order, max_members=max_members,
+        is_public=True, is_active=True,
+    )
+
+
+def schedule(workspace, plan, when):
+    Workspace.objects.filter(pk=workspace.pk).update(pending_plan=plan, pending_plan_effective_at=when)
+
+
+# --- 1. price decides ---------------------------------------------------------------
+
+@override_settings(**SIMULATED)
+def test_a_pricier_plan_earlier_in_the_page_still_needs_a_payment(owner, plans):
+    user, workspace = owner
+    # Listed before Gratis, but it costs money: it is not a free "downgrade".
+    early = public_plan('Temprano', '99.00', sort_order=0)
+
+    body = change(client_for(user), early).json()
+
+    assert body['checkout_url']
+    assert reload(workspace).subscription_plan == plans['Gratis']
+    assert Payment.objects.get(workspace=workspace).amount_usd == Decimal('99.00')
+
+
+@override_settings(**SIMULATED)
+def test_a_cheaper_plan_later_in_the_page_is_a_scheduled_downgrade(owner, plans):
+    user, workspace = owner
+    renews = timezone.now() + timedelta(days=9)
+    set_plan(workspace, plans['Pro'], renews_at=renews)
+    late = public_plan('Tardío', '5.00', sort_order=99)
+
+    body = change(client_for(user), late).json()
+
+    assert (body['applied'], body['checkout_url']) == ('period_end', None)
+    assert reload(workspace).pending_plan == late
+    assert not Payment.objects.exists()
+
+
+@override_settings(**SIMULATED)
+def test_a_plan_of_the_same_price_is_scheduled_and_moves_no_money(owner, plans):
+    user, workspace = owner
+    renews = timezone.now() + timedelta(days=9)
+    set_plan(workspace, plans['Pro'], renews_at=renews)
+    twin = public_plan('Pro Plus', '49.00', sort_order=5)
+
+    body = change(client_for(user), twin).json()
+
+    assert (body['applied'], body['checkout_url']) == ('period_end', None)
+    workspace = reload(workspace)
+    assert (workspace.subscription_plan, workspace.pending_plan, workspace.pending_plan_effective_at) == (plans['Pro'], twin, renews)
+    assert not Payment.objects.exists()
+
+
+def test_a_check_warns_when_the_order_of_public_plans_does_not_follow_their_price(plans):
+    assert 'payments.W002' not in [message.id for message in run_checks(databases=['default'])]
+
+    public_plan('Temprano', '99.00', sort_order=0)
+
+    assert 'payments.W002' in [message.id for message in run_checks(databases=['default'])]
+
+
+# --- 3. the seat promise of a scheduled downgrade -----------------------------------
+
+def test_while_a_downgrade_waits_nobody_joins_past_its_seats(owner, plans):
+    _, workspace = owner
+    set_plan(workspace, plans['Pro'], renews_at=timezone.now() + timedelta(days=5))
+    schedule(workspace, plans['Gratis'], timezone.now() + timedelta(days=5))
+    workspace = reload(workspace)
+    join(workspace, make_user('uno'))
+
+    with pytest.raises(ValidationError, match="Tu plan pasa a 'Gratis'.*2 miembros"):
+        join(workspace, make_user('dos'), status=WorkspaceMember.Status.PENDING)
+    assert WorkspaceMember.objects.filter(workspace=workspace).count() == 2
+
+    # Canceling the downgrade gives the seats of the plan back.
+    client_for(workspace.owner).post(CHANGE, {'plan_id': str(plans['Pro'].pk)}, format='json')
+    join(reload(workspace), make_user('tres'))
+    assert WorkspaceMember.objects.filter(workspace=workspace).count() == 3
+
+
+# --- 4. the end of a paid period ----------------------------------------------------
+
+def test_a_paid_period_that_ends_unrenewed_drops_to_the_default_plan_once(plans):
+    _, ended = owner_with_workspace('vencido')
+    _, running = owner_with_workspace('vigente')
+    _, assigned = owner_with_workspace('asignado')
+    now = timezone.now()
+    set_plan(ended, plans['Pro'], renews_at=now - timedelta(minutes=1))
+    set_plan(running, plans['Pro'], renews_at=now + timedelta(days=3))
+    # Put on a plan in the admin: no paid period, nothing ends.
+    set_plan(assigned, plans['Estudio'])
+
+    assert apply_due_plan_changes() == 1
+
+    ended, running, assigned = reload(ended), reload(running), reload(assigned)
+    assert (ended.subscription_plan, ended.plan_renews_at, ended.pending_plan) == (plans['Gratis'], None, None)
+    assert running.subscription_plan == plans['Pro']
+    assert assigned.subscription_plan == plans['Estudio']
+    assert apply_due_plan_changes() == 0
+
+
+def test_a_paid_period_that_ends_with_a_scheduled_downgrade_applies_the_downgrade(plans):
+    _, workspace = owner_with_workspace()
+    ended = timezone.now() - timedelta(minutes=1)
+    set_plan(workspace, plans['Pro'], renews_at=ended)
+    schedule(workspace, plans['Creador'], ended)
+
+    assert apply_due_plan_changes() == 1
+
+    assert reload(workspace).subscription_plan == plans['Creador']
+
+
+def test_without_a_default_plan_an_ended_period_keeps_the_plan(plans, caplog):
+    _, workspace = owner_with_workspace()
+    set_plan(workspace, plans['Pro'], renews_at=timezone.now() - timedelta(minutes=1))
+
+    with override_settings(DEFAULT_PLAN_NAME='No existe'):
+        assert apply_due_plan_changes() == 0
+
+    assert reload(workspace).subscription_plan == plans['Pro']
+    assert 'subscription.period_end_without_default' in caplog.text
+
+
+def test_members_from_before_keep_their_seats_when_the_plan_drops(plans, caplog):
+    _, workspace = owner_with_workspace()
+    set_plan(workspace, plans['Pro'], renews_at=timezone.now() - timedelta(minutes=1))
+    workspace = reload(workspace)
+    for name in ('uno', 'dos', 'tres'):
+        join(workspace, make_user(name))
+
+    assert apply_due_plan_changes() == 1
+
+    assert reload(workspace).subscription_plan == plans['Gratis']
+    assert WorkspaceMember.objects.filter(workspace=workspace).count() == 4
+    assert 'subscription.over_member_limit' in caplog.text
+
+
+# --- 8. keeping the current plan while an upgrade waits for its payment ------------
+
+@override_settings(**SIMULATED)
+def test_choosing_the_current_plan_cancels_the_upgrade_waiting_for_its_payment(owner, plans):
+    user, workspace = owner
+    change(client_for(user), plans['Pro'])
+    waiting = Payment.objects.get(workspace=workspace)
+
+    with mock.patch.object(SimulatedProvider, 'cancel_checkout') as cancel:
+        response = change(client_for(user), plans['Gratis'])
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body['applied'], body['checkout_url'], body['subscription']['plan']['name']) == ('now', None, 'Gratis')
+    waiting.refresh_from_db()
+    assert waiting.status == 'rejected'
+    assert cancel.call_count == 1
+    # Paid late, it changes nothing.
+    settle_payment(waiting.pk, approved=True)
+    assert reload(workspace).subscription_plan == plans['Gratis']
+
+
+# --- 9. the admin -------------------------------------------------------------------
+
+def test_changing_the_plan_in_the_admin_drops_the_scheduled_change(owner, plans):
+    _, workspace = owner
+    set_plan(workspace, plans['Pro'], renews_at=timezone.now() + timedelta(days=5))
+    schedule(workspace, plans['Creador'], timezone.now() + timedelta(days=5))
+    workspace = reload(workspace)
+    workspace.subscription_plan = plans['Estudio']
+    model_admin = admin.site._registry[Workspace]
+    request = RequestFactory().post('/admin/')
+    request.user = make_user('staff')
+
+    model_admin.save_model(request, workspace, mock.Mock(changed_data=['subscription_plan']), change=True)
+
+    workspace = reload(workspace)
+    assert (workspace.subscription_plan, workspace.pending_plan, workspace.pending_plan_effective_at) == (plans['Estudio'], None, None)
+
+
+# --- 12. the paid period, in the workspace's time zone ------------------------------
+
+@override_settings(WORKSPACE_TIME_ZONE='America/Argentina/Buenos_Aires')
+def test_a_month_is_counted_in_the_time_zone_of_the_workspace():
+    # 02:00 UTC on 31 Jan is still 30 Jan (23:00) in Buenos Aires: the period ends on its 28 Feb, 23:00.
+    start = datetime(2026, 1, 31, 2, tzinfo=dt_timezone.utc)
+
+    assert add_month(start) == datetime(2026, 3, 1, 2, tzinfo=dt_timezone.utc)
+
+
+@override_settings(WORKSPACE_TIME_ZONE='America/Argentina/Buenos_Aires')
+def test_chained_periods_come_back_to_their_anchor_day():
+    start = datetime(2026, 1, 31, 15, tzinfo=dt_timezone.utc)  # 12:00 on 31 Jan in Buenos Aires
+    february = add_month(start, anchor_day=31)
+
+    assert february == datetime(2026, 2, 28, 15, tzinfo=dt_timezone.utc)
+    assert add_month(february, anchor_day=31) == datetime(2026, 3, 31, 15, tzinfo=dt_timezone.utc)
+
+
+@override_settings(WORKSPACE_TIME_ZONE='America/Argentina/Buenos_Aires', **SIMULATED)
+def test_a_confirmed_upgrade_keeps_the_anchor_day_of_its_period(owner, plans):
+    user, workspace = owner
+    change(client_for(user), plans['Pro'])
+    payment = Payment.objects.get(workspace=workspace)
+    confirmed = datetime(2026, 1, 31, 2, tzinfo=dt_timezone.utc)  # 30 Jan in Buenos Aires
+
+    with mock.patch('apps.payments.services.payments.timezone.now', return_value=confirmed):
+        settle_payment(payment.pk, approved=True)
+
+    workspace = reload(workspace)
+    assert workspace.plan_anchor_day == 30
+    assert workspace.plan_renews_at == datetime(2026, 3, 1, 2, tzinfo=dt_timezone.utc)

@@ -3,8 +3,13 @@ from rest_framework.test import APIClient
 
 from apps.users.models import User, Workspace, WorkspaceMember
 
-# The simulated provider, allowed without DEBUG (backend.settings.ci has DEBUG off).
-SIMULATED = {'PAYMENTS_PROVIDER': 'simulated', 'PAYMENTS_ALLOW_SIMULATED': True}
+# The simulated provider, allowed without DEBUG (backend.settings.ci has DEBUG off). Without
+# DEBUG only staff and the listed emails simulate a payment: the owner of owner_with_workspace().
+SIMULATED = {
+    'PAYMENTS_PROVIDER': 'simulated',
+    'PAYMENTS_ALLOW_SIMULATED': True,
+    'PAYMENTS_SIMULATE_ALLOWED_EMAILS': ['duena@example.com'],
+}
 NO_PROVIDER = {'PAYMENTS_PROVIDER': '', 'PAYMENTS_ALLOW_SIMULATED': False}
 
 FRONT = 'http://localhost:3000'

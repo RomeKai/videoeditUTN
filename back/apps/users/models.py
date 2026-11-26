@@ -1,4 +1,5 @@
 ﻿import uuid
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models.functions import Upper
 from django.contrib.auth.models import AbstractUser, UserManager as DjangoUserManager
@@ -114,9 +115,15 @@ class Workspace(models.Model):
     )
     # Fin del período pagado del plan: lo fija la confirmación del pago de una
     # subida (apps.payments.services.payments). Null si no hay período pagado
-    # (plan gratis, o asignado en el admin). Pasada esta fecha no hay período
-    # vigente: todavía nada cobra la renovación (PAY-02).
+    # (plan gratis, o asignado en el admin). Todavía nada cobra la renovación
+    # (PAY-02): cuando pasa, la tarea apply_due_plan_changes aplica la bajada
+    # programada o pasa el workspace al plan por defecto.
     plan_renews_at = models.DateTimeField(null=True, blank=True)
+    # Día del mes (en WORKSPACE_TIME_ZONE) en que empezó el período pagado: los
+    # períodos encadenados vuelven a ese día (31 ene → 28 feb → 31 mar).
+    plan_anchor_day = models.PositiveSmallIntegerField(
+        null=True, blank=True, validators=[MinValueValidator(1), MaxValueValidator(31)],
+    )
     # Bajada de plan programada para el fin del período pagado. La aplica la
     # tarea apply_due_plan_changes (apps.payments.tasks) cuando llega la fecha.
     pending_plan = models.ForeignKey(

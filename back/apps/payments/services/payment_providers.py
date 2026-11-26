@@ -10,7 +10,8 @@ faked in that case.
 checkout is the web app's test page (``/dev/checkout``), and that page
 settles the payment through ``POST /token-purchases/<id>/simulate/``. It only
 runs with DEBUG or with PAYMENTS_ALLOW_SIMULATED=True; production settings
-refuse it without that flag (backend/settings/prod.py).
+refuse it without that flag (backend/settings/prod.py). Without DEBUG only
+staff and PAYMENTS_SIMULATE_ALLOWED_EMAILS may settle a payment (``may_simulate``).
 
 A real provider (PAY-02) implements ``PaymentProvider.start_checkout`` and,
 when its webhook confirms or rejects a payment, calls
@@ -69,6 +70,19 @@ def simulated_payments_allowed():
     return getattr(settings, 'PAYMENTS_PROVIDER', '') == SIMULATED and (
         settings.DEBUG or getattr(settings, 'PAYMENTS_ALLOW_SIMULATED', False)
     )
+
+
+def may_simulate(user):
+    """
+    Who may settle a simulated payment: anyone with DEBUG; otherwise (a demo
+    on production settings) staff and the emails of PAYMENTS_SIMULATE_ALLOWED_EMAILS.
+    """
+    if settings.DEBUG:
+        return True
+    if getattr(user, 'is_staff', False):
+        return True
+    allowed = {email.strip().lower() for email in getattr(settings, 'PAYMENTS_SIMULATE_ALLOWED_EMAILS', []) if email.strip()}
+    return bool(getattr(user, 'email', '')) and user.email.lower() in allowed
 
 
 def get_payment_provider():

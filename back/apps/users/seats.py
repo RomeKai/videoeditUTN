@@ -5,7 +5,11 @@ muestra un error en el formulario en vez de un 500, y el cambio de plan
 (apps.payments.services.subscriptions), que no deja bajar a un plan con menos
 lugares que los ocupados.
 """
+from zoneinfo import ZoneInfo
+
+from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from .models import WorkspaceMember
 
@@ -26,7 +30,9 @@ def check_seat_limit(workspace, user_ids, freed=0):
     miembro ocupa un lugar, también una invitación pendiente. La membresía del
     dueño en su propio workspace siempre entra. ``freed``: filas del
     workspace que se borran en el mismo guardado (el admin borra antes de
-    crear).
+    crear). Con una bajada programada (``pending_plan``) cuentan los lugares
+    del plan más chico de los dos: bajar se aceptó porque entraban, y tienen
+    que seguir entrando cuando se aplique.
     """
     new = [user_id for user_id in user_ids if user_id != workspace.owner_id]
     if not new:
@@ -34,8 +40,19 @@ def check_seat_limit(workspace, user_ids, freed=0):
     current = 0 if workspace._state.adding else seats_used(workspace)
     plan = workspace.subscription_plan
     limit = plan.max_members if plan else 1
+    pending = workspace.pending_plan if plan and workspace.pending_plan_id else None
+    if pending is not None and pending.max_members < limit:
+        limit = pending.max_members
+    else:
+        pending = None
     if current - freed + len(new) <= limit:
         return
+    if pending is not None:
+        when = timezone.localtime(workspace.pending_plan_effective_at, ZoneInfo(settings.WORKSPACE_TIME_ZONE))
+        raise ValidationError(
+            f"Tu plan pasa a '{pending.name}' el {when:%d/%m/%Y} y ese plan permite {limit} miembros. "
+            "Cancelá el cambio de plan para invitar más gente."
+        )
     if plan:
         raise ValidationError(
             f"Tu plan '{plan.name}' solo permite {limit} miembros. Mejora tu suscripción para invitar más gente."
