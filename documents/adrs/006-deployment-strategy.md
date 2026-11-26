@@ -102,7 +102,7 @@ Archivo: [`docker-compose.prod.yml`](../../docker-compose.prod.yml). Secretos en
 **Qué agrega la PoC** (`docker-compose.prod.yml`):
 
 - gunicorn en lugar de `runserver`, sin bind mounts del código;
-- migraciones al arrancar `web`, restart automático y healthchecks de db y redis;
+- migraciones y `collectstatic` al arrancar `web`, restart automático y healthchecks de db y redis;
 - servicio `beat`, que el compose de desarrollo no tiene: sin él no corre `CELERY_BEAT_SCHEDULE`;
 - la API publicada solo en `127.0.0.1`, detrás del reverse proxy.
 
@@ -113,7 +113,7 @@ cp back/.env.example back/.env.prod   # SECRET_KEY, ALLOWED_HOSTS, R2 y keys de 
 export POSTGRES_PASSWORD=<una-clave>
 docker compose -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.prod.yml ps          # db y redis healthy, web/worker/beat up
-curl -fsS -o /dev/null -H "Host: localhost" http://127.0.0.1:8000/admin/login/ && echo OK
+curl -fsS -o /dev/null -H "Host: localhost" -H "X-Forwarded-Proto: https" http://127.0.0.1:8000/admin/login/ && echo OK
 docker compose -f docker-compose.prod.yml logs worker | grep "ready"
 ```
 
@@ -121,13 +121,24 @@ docker compose -f docker-compose.prod.yml logs worker | grep "ready"
 
 **Estado:** la configuración se validó con `docker compose config`. Falta correr la PoC de punta a punta en una máquina con Docker y acceso a internet; el resultado se anota acá.
 
+### CD (INFRA-03)
+
+[`.github/workflows/cd.yml`](../../.github/workflows/cd.yml) corre en cada push a `dev` y a `main`:
+
+1. Construye los targets `web` y `worker` y los publica en GHCR (`ghcr.io/<owner>/onecreator-web` y `-worker`) con el tag `sha-<commit>`.
+2. Despliega con [`deploy/deploy.sh`](../../deploy/deploy.sh) por SSH: `dev` en el environment `staging` y `main` en `production`, que espera la aprobación de sus reviewers.
+3. El script hace pull, `up -d --no-build`, un smoke test contra `/api/v1/status/` y, si falla, vuelve a las imágenes del último deploy bueno. Las migraciones no se revierten: tienen que ser compatibles con la versión anterior.
+
+Cada environment es un directorio del VPS (`/opt/onecreator/staging`, `/opt/onecreator/production`) con su `.env` de Compose y su `back/.env.prod`. Sin los secrets `DEPLOY_*` el job publica las imágenes y saltea el deploy. Preparación del VPS, de GitHub y rollback manual: [runbook de deploy](../runbooks/deploy-vps.md).
+
 ### Pendientes para pasar a `accepted`
 
 - [ ] Correr la PoC y anotar el resultado (tiempos de build, RAM en reposo de `web` y `worker`).
-- [ ] Hardening de `prod.py`: activar `SECURE_SSL_REDIRECT`, cookies seguras y HSTS detrás del proxy, y WhiteNoise para los estáticos del admin y de la documentación de la API.
-- [ ] Reemplazar los placeholders `back/docker/nginx.conf` y `supervisor.conf` (o borrarlos si se usa Caddy en el host).
+- [x] Hardening de `prod.py`: `SECURE_SSL_REDIRECT`, cookies seguras y HSTS (por env, arranca en 0) detrás del proxy, y WhiteNoise para los estáticos del admin y de la documentación de la API (INFRA-03).
+- [ ] Reemplazar los placeholders `back/docker/nginx.conf` y `supervisor.conf` (o borrarlos: el runbook usa Caddy en el host).
 - [ ] Retirar Whisper/PyTorch de la imagen (AICORE-10, #44) para achicar la imagen y la RAM del worker.
-- [ ] Workflow de CD (INFRA-03, #33): build de imágenes, push a GHCR y deploy por SSH a staging (`dev`) y producción (`main`, con aprobación).
+- [x] Workflow de CD (INFRA-03, #33): build de imágenes, push a GHCR y deploy por SSH a staging (`dev`) y producción (`main`, con aprobación). Ver la sección CD.
+- [ ] Crear el VPS, los environments `staging` y `production` y sus secrets, y hacer el primer deploy ([runbook](../runbooks/deploy-vps.md), secciones 2 a 4).
 
 ### Recomendación preliminar original (2026-09, reemplazada)
 
@@ -139,6 +150,7 @@ docker compose -f docker-compose.prod.yml logs worker | grep "ready"
 
 - [docker-compose.yml actual](../../docker-compose.yml)
 - [docker-compose.prod.yml (PoC)](../../docker-compose.prod.yml)
+- [Workflow de CD](../../.github/workflows/cd.yml) y [runbook de deploy](../runbooks/deploy-vps.md)
 - [Dockerfile](../../back/Dockerfile)
 - [Fly.io GPU Machines](https://fly.io/docs/gpus/)
 - [Railway](https://railway.app/)
