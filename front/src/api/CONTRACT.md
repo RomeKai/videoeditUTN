@@ -729,7 +729,7 @@ Crea un proyecto desde un archivo (multipart) o un link, reserva los tokens y ar
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido (multipart) | CreateProjectRequest |
 | Respuesta 201 | CreateProjectResponse |
-| Errores | **400** Validación. En `source_file` llega el mensaje de InvalidUploadError; la UI lo traduce por código (propuesto: `{message, code}`) o por el texto. `project_type` para video completo con link o de más de 10 min. Link con resolución distinta de 720p. En `video_url`, un link que no es de un host admitido, que apunta a una IP o una dirección interna, o que no nombra un solo video (una lista, un canal): las mismas reglas que `probe-link`. Se guarda la URL del video (`watch?v=<id>` en YouTube).<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre el diálogo D2.<br>**403** El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3. |
+| Errores | **400** Validación. En `source_file` llega el mensaje de InvalidUploadError; la UI lo traduce por código (propuesto: `{message, code}`) o por el texto. `project_type` para video completo con link o de más de 10 min. Link con resolución distinta de 720p. En `video_url`, un link que no es de un host admitido, que apunta a una IP o una dirección interna, o que no nombra un solo video (una lista, un canal): las mismas reglas que `probe-link`. Se guarda la URL del video (`watch?v=<id>` en YouTube).<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre el diálogo D2.<br>**403** El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3.<br>**503** No se pudo encolar la ingesta (broker caído): `{ error, code: "IngestionNotQueued", project_id, refunded }`. Con `refunded: true` el proyecto queda `failed` con ese `pipeline_error_code` y la reserva ya volvió; con `false` no se pudo escribir y el proyecto sigue en `uploaded` con la reserva. La UI muestra el genérico de 5xx. |
 | Pantallas | C1 |
 
 #### `POST /api/v1/projects/from-prompt/`
@@ -744,7 +744,7 @@ Igual que crear, más `prompt`: la IA arma la configuración al iniciar la inges
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido (multipart) | CreateFromPromptRequest |
 | Respuesta 201 | CreateFromPromptResponse |
-| Errores | **400** `prompt` vacío ("Contanos qué querés") o más largo que el máximo; más las validaciones de crear.<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre el diálogo D2.<br>**403** El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3. |
+| Errores | **400** `prompt` vacío ("Contanos qué querés") o más largo que el máximo; más las validaciones de crear.<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre el diálogo D2.<br>**403** El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3.<br>**503** No se pudo encolar la ingesta (broker caído): `{ error, code: "IngestionNotQueued", project_id, refunded }`. Con `refunded: true` el proyecto queda `failed` con ese `pipeline_error_code` y la reserva ya volvió; con `false` no se pudo escribir y el proyecto sigue en `uploaded` con la reserva. La UI muestra el genérico de 5xx. |
 | Pantallas | C1 |
 
 #### `GET /api/v1/projects/:id/`

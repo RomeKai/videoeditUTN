@@ -14,6 +14,8 @@ const PIPELINE_MESSAGES: Record<string, string> = {
   SoftTimeLimitExceeded: 'El video tardó demasiado en procesarse. Probá con uno más corto.',
   // Not in map §4 yet (added by the auto-render billing): nothing was charged for the clips that were left.
   AutoRenderNotPaid: 'No alcanzó el saldo para renderizar los clips que faltaban. Cargá tokens y volvé a intentarlo; los clips siguen ahí.',
+  // Not in map §4 yet: the creation could not queue the processing (broker down); the reservation went back.
+  IngestionNotQueued: 'No pudimos empezar a procesar tu video y no se cobró nada. Creá el proyecto de nuevo en unos minutos.',
 };
 
 /** `pipeline_error_code` (class name of the exception) → message for the user (map §4). Unknown codes get the generic one. */
@@ -42,6 +44,8 @@ export function pipelineErrorTitle(code: string | null | undefined): string {
       return 'El video tardó demasiado';
     case 'AutoRenderNotPaid':
       return 'No alcanzó el saldo para renderizar';
+    case 'IngestionNotQueued':
+      return 'No pudimos empezar a procesar el video';
     default:
       return 'Algo falló de nuestro lado';
   }

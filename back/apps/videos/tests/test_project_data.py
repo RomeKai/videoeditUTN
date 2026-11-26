@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 
 from botocore.exceptions import ClientError
 from django.conf import settings
-from django.core.cache import cache
+from django.core.cache import cache, caches
 from django.db import connection
 from django.test import SimpleTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
@@ -558,13 +558,14 @@ class ProjectZipTests(ProjectDataHarness):
         project = self.project()
         self.clip(project)
         name = f'lock:clips-zip:workspace:{self.home.pk}'
+        locks = caches['locks']  # the settings define it (PR #137)
         with patch.object(clip_download, '_redis_client', return_value=DownRedis()):
-            cache.set(name, 'someone-else', 60)
+            locks.set(name, 'someone-else', 60)
             self.assertEqual(self.client.post(zip_url(project), {}, format='json').status_code, 429)
-            self.assertEqual(cache.get(name), 'someone-else')
-            cache.delete(name)
+            self.assertEqual(locks.get(name), 'someone-else')
+            locks.delete(name)
             self.assertEqual(self.client.post(zip_url(project), {}, format='json').status_code, 200)
-            self.assertIsNone(cache.get(name))
+            self.assertIsNone(locks.get(name))
 
     def test_the_fallback_uses_the_locks_cache_when_settings_define_it(self):
         project = self.project()
@@ -574,8 +575,6 @@ class ProjectZipTests(ProjectDataHarness):
             'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache', 'LOCATION': 'zip-default'},
             'locks': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache', 'LOCATION': 'zip-locks'},
         }
-        from django.core.cache import caches
-
         with override_settings(CACHES=caches_setting), \
                 patch.object(clip_download, '_redis_client', return_value=DownRedis()):
             caches['locks'].set(name, 'someone-else', 60)
@@ -583,13 +582,19 @@ class ProjectZipTests(ProjectDataHarness):
             caches['locks'].delete(name)
             caches['default'].set(name, 'only-in-default', 60)  # not the lock store any more
             self.assertEqual(self.client.post(zip_url(project), {}, format='json').status_code, 200)
+        # Settings from before PR #137, with no "locks": the default cache holds it.
+        only_default = {'default': caches_setting['default']}
+        with override_settings(CACHES=only_default), \
+                patch.object(clip_download, '_redis_client', return_value=DownRedis()):
+            caches['default'].set(name, 'someone-else', 60)
+            self.assertEqual(self.client.post(zip_url(project), {}, format='json').status_code, 429)
 
     def test_a_lock_store_that_does_not_answer_does_not_refuse_the_zip(self):
         project = self.project()
         self.clip(project)
         for broken in ({'add': MagicMock(side_effect=ConnectionError('down'))}, {'add': MagicMock(return_value=None)}):
             with self.subTest(broken), patch.object(clip_download, '_redis_client', return_value=DownRedis()), \
-                    patch.multiple(cache, **broken):
+                    patch.multiple(caches['locks'], **broken):
                 self.assertEqual(self.client.post(zip_url(project), {}, format='json').status_code, 200)
 
     def test_clip_ids_are_bounded_and_only_ready_clips_of_the_project_count(self):

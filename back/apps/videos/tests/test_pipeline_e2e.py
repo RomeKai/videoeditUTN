@@ -79,9 +79,21 @@ def fake_ai():
 
 
 @pytest.fixture
-def api(user):
+def api(user, django_capture_on_commit_callbacks):
+    """
+    The create view queues the ingestion once the reservation commits
+    (views._queue_ingestion): each POST runs its on-commit callbacks, as the
+    real commit would, so the eager ingestion still runs inside it.
+    """
     client = APIClient()
     client.force_authenticate(user=user)
+    post = client.post
+
+    def post_and_commit(*args, **kwargs):
+        with django_capture_on_commit_callbacks(execute=True):
+            return post(*args, **kwargs)
+
+    client.post = post_and_commit
     return client
 
 

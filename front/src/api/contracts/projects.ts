@@ -74,6 +74,8 @@ export const KNOWN_PIPELINE_ERROR_CODES = [
   'AIAuthenticationError',
   /** A re-dispatched auto-render whose remaining clips cannot be paid (tasks/ingestion.py). The clips stay; it can be re-dispatched with tokens. */
   'AutoRenderNotPaid',
+  /** The creation could not queue the ingestion (broker down): the project fails and its reservation goes back, together (views.py · _fail_unqueued_project). Never resumed. */
+  'IngestionNotQueued',
 ] as const;
 export type KnownPipelineErrorCode = (typeof KNOWN_PIPELINE_ERROR_CODES)[number];
 
@@ -480,6 +482,12 @@ const paymentErrors = [
   { status: 403, when: 'El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3.' },
 ];
 
+/** Creation only: the reservation was made but the broker did not take the ingestion. */
+const notQueuedError = {
+  status: 503,
+  when: 'No se pudo encolar la ingesta (broker caído): `{ error, code: "IngestionNotQueued", project_id, refunded }`. Con `refunded: true` el proyecto queda `failed` con ese `pipeline_error_code` y la reserva ya volvió; con `false` no se pudo escribir y el proyecto sigue en `uploaded` con la reserva. La UI muestra el genérico de 5xx.',
+};
+
 export const listProjects = defineEndpoint({
   id: 'projects.list',
   method: 'GET',
@@ -514,6 +522,7 @@ export const createProject = defineEndpoint({
       when: 'Validación. En `source_file` llega el mensaje de InvalidUploadError; la UI lo traduce por código (propuesto: `{message, code}`) o por el texto. `project_type` para video completo con link o de más de 10 min. Link con resolución distinta de 720p. En `video_url`, un link que no es de un host admitido, que apunta a una IP o una dirección interna, o que no nombra un solo video (una lista, un canal): las mismas reglas que `probe-link`. Se guarda la URL del video (`watch?v=<id>` en YouTube).',
     },
     ...paymentErrors,
+    notQueuedError,
   ],
   backend: {
     status: 'exists',
@@ -537,6 +546,7 @@ export const createProjectFromPrompt = defineEndpoint({
   errors: [
     { status: 400, when: '`prompt` vacío ("Contanos qué querés") o más largo que el máximo; más las validaciones de crear.' },
     ...paymentErrors,
+    notQueuedError,
   ],
   backend: {
     status: 'exists',
