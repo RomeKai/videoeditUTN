@@ -1,6 +1,8 @@
 ﻿import uuid
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.db.models import F
+from django.db.models.functions import Coalesce
 from django.db import transaction
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
@@ -130,6 +132,19 @@ class Transaction(models.Model):
         SPEND = 'SPEND', 'Gasto'
         REFUND = 'REFUND', 'Reembolso'
 
+    class Category(models.TextChoices):
+        """
+        What the movement paid for: the split of the usage chart
+        (GET /api/v1/wallet/usage/). A project's creation (SEO included, it is
+        charged with it) is PROJECT; any render the user pays for later is
+        RENDER. A DEPOSIT is PURCHASE.
+        """
+        PROJECT = 'project', 'Proyecto'
+        RENDER = 'render', 'Render'
+        SEO = 'seo', 'SEO'
+        PURCHASE = 'purchase', 'Compra'
+        OTHER = 'other', 'Otro'
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name='transactions')
     
@@ -155,3 +170,19 @@ class Transaction(models.Model):
     # When the reservation was charged or returned (it left RESERVED). Null
     # while it is reserved, and on rows settled before migration 0012.
     settled_at = models.DateTimeField(null=True, blank=True)
+    # The project the reservation pays for (reserve_funds' ``project``),
+    # for the movements and the reservations of the wallet. Null on a
+    # purchase, once the project is deleted, and on old rows migration 0016
+    # could not link (their metadata key was gone).
+    project = models.ForeignKey(
+        'videos.VideoProject', on_delete=models.SET_NULL, null=True, blank=True, related_name='transactions',
+    )
+    category = models.CharField(max_length=10, choices=Category.choices, default=Category.OTHER)
+
+    class Meta:
+        indexes = [
+            # The movements of a wallet, newest first by when they last moved
+            # the balance (apps/payments/services/movements.py · MOVED_AT): the
+            # first page, and a month of it, read only this index.
+            models.Index(F('wallet'), Coalesce('settled_at', 'created_at').desc(), name='payments_txn_wallet_moved'),
+        ]

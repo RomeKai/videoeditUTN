@@ -227,12 +227,35 @@ describe('G2 · Movimientos', () => {
     await user.click(screen.getByRole('button', { name: 'Exportar CSV' }));
     await waitFor(() => expect(download.downloadText).toHaveBeenCalledTimes(1));
     const [csv, filename] = download.downloadText.mock.calls[0] as [string, string];
-    expect(csv.split('\n')[0]).toBe('fecha,concepto,tipo,monto');
-    expect(csv).toContain('reserved');
-    expect(csv).not.toContain('charged');
-    // Lo reservado sale con el mismo signo que en la pantalla.
-    expect(csv.split('\n').slice(1).every((line) => line.split(',').pop()?.startsWith('-'))).toBe(true);
+    expect(csv.split('\n')[0]).toBe('fecha,concepto,proyecto,tipo,monto,estado,transaccion');
+    // One row per change of the balance: each open reservation took its amount.
+    expect(csv).toContain(',Reserva,');
+    expect(csv).toContain(',Reservado,');
+    expect(csv).not.toContain(',Cobrado,');
+    expect(csv.split('\n').slice(1).every((line) => line.split(',').at(-3)?.startsWith('-'))).toBe(true);
     expect(filename).toMatch(/^movimientos-\d{4}-\d{2}\.csv$/);
+  });
+
+  it('un cobro parcial dice cuánto devolvió y «Devuelto» lo suma', async () => {
+    const user = userEvent.setup();
+    renderScreen(<MovementsScreen />, {
+      prepare: () => {
+        const db = loadDb();
+        const charged = db.transactions
+          .filter((item) => item.kind === 'charged')
+          .sort((a, b) => (b.settled_at ?? b.created_at).localeCompare(a.settled_at ?? a.created_at))[0];
+        if (!charged) throw new Error('sin cobros');
+        // Reserved 15 more than it charged: commit_partial_reservation gave them back.
+        charged.reserved_amount = charged.amount + 15;
+        saveDb(db);
+      },
+    });
+    await screen.findByRole('table', { name: /Movimientos de/ });
+    await user.selectOptions(screen.getByLabelText('Filtrar por mes'), 'Todos los meses');
+    const table = await screen.findByRole('table', { name: 'Movimientos de todos los meses' });
+    expect(within(table).getByText('Devolvimos 15 de lo reservado')).toBeInTheDocument();
+    const totals = screen.getByRole('region', { name: 'Totales de todos los meses' });
+    expect(within(totals).getByText(/1 cobro parcial/)).toBeInTheDocument();
   });
 
   it('el día 1 los cobros de ayer quedan en el mes anterior y se llegan con el filtro de mes', async () => {

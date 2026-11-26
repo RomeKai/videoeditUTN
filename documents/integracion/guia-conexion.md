@@ -94,7 +94,7 @@ Detalle y tabla de lo que ya tiene endpoint: [01, Workspace activo y roles](../i
 
 - `WorkspaceRolePermission` y `ROLE_MATRIX` (`back/apps/core/permissions.py`) copian `MATRIX` de `front/src/lib/permissions.ts`, que es la tabla 1.7 del mapa. Si sumás una acción, sumala en los dos.
 - Cada vista mapea sus pedidos a acciones con `workspace_actions`: acciones del viewset (`create`, `approve_paper_edit`…) o métodos HTTP en un `APIView`.
-  - Un método seguro sin mapear es una lectura (`project.view`, todos los roles).
+  - Un método seguro sin mapear es una lectura (`project.view`, todos los roles). Un `HEAD` pide la acción del `GET`.
   - **Una escritura sin mapear queda para Dueño y Admin** (`members.manage`).
   - Un método que la vista no tiene sigue de largo: DRF responde 405, no 403.
 - Las acciones de tus áreas: `members.manage`, `workspace.rename`, `workspace.delete`, `workspace.transfer`, `billing.manage`, `wallet.view`, `social.manage` y `post.publish`.
@@ -267,14 +267,14 @@ Contrato `contracts/billing.ts`. Backend: app `apps/payments` (`SubscriptionPlan
 | Método y ruta | Id | Hook · mock | Pantalla | Backend | Depende de | Talla |
 |---|---|---|---|---|---|---|
 | GET `plans/` | `billing.plans` | `usePlans` · `listPlans` | A6, G3, C1, D3 diálogo | **Ya existe** en `dev`: `PublicPlanListView` (PR #130). Falta pasarlo a `exists` en el contrato | `fix/planes-gratis-por-defecto` | S |
-| GET `pricing/` | `billing.pricing` | `usePricing` · `getPricing` | C1, A6, G3, G4, D2, D1 diálogo | Público; constantes de `PricingEngine` y settings (`AI_UPLOAD_MAX_DURATION_SECONDS`…) | — | S |
-| POST `pricing/estimate/` | `billing.estimate` | `useEstimate` · `estimateCost` | C1, D2, D4, D5 | Envuelve `PricingEngine.calculate_render_cost` con el plan y la billetera; `eta_seconds` puede ir `null` (hueco 18) | `billing.wallet` | S |
+| GET `pricing/` | `billing.pricing` | `usePricing` · `getPricing` | C1, A6, G3, G4, D2, D1 diálogo | **Ya existe** (`feat/billetera-movimientos-precios`): `PricingView` | — | S |
+| POST `pricing/estimate/` | `billing.estimate` | `useEstimate` · `estimateCost` | C1, D2, D4, D5 | **Ya existe**: `EstimateView`; `eta_seconds` sale de los tiempos de los últimos proyectos y puede ir `null` (hueco 18) | — | S |
 | GET `subscription/` | `billing.subscription` | `useSubscription` · `getSubscription` | Barra, G1, G3, C1, E1, H2 | Hoy solo hay `Workspace.subscription_plan`; renovación y cambio pendiente piden modelo nuevo | — | M |
 | POST `subscription/change/` | `billing.changePlan` | `useChangePlan` · `changePlan` | G3 (§5 G) | Subir ya o al volver del checkout; bajar al fin del período; 409 `seats_exceeded` | `billing.subscription`, `billing.createPurchase` | L |
-| GET `wallet/` | `billing.wallet` | `useWallet` · `getWallet` | Barra, G1, C1, D2, G4, D1 y D2 diálogo | `Wallet`; el detalle de lo reservado por proyecto (hueco 19) pide el vínculo con el proyecto | Vínculo `Transaction` ↔ proyecto | M |
-| GET `wallet/usage/` | `billing.usage` | `useUsage` · `getUsage` | G1 (§5 G) | Suma por día en `America/Argentina/Buenos_Aires`, separada en proyectos, renders y SEO | `kind` en `Transaction` | M |
-| GET `transactions/` | `billing.transactions` | `useTransactions` · `listTransactions` | G2 (§5 G), D1 Actividad (§9.2) | `Transaction` + proyecto + `kind` (migración); paginado | Coordinar con el lead: las reservas se escriben en `apps/videos` | L |
-| GET `transactions/export/` | `billing.exportTransactions` | `useExportTransactions` · `exportTransactions` | G2 (§5 G) | CSV con signo | `billing.transactions` | S |
+| GET `wallet/` | `billing.wallet` | `useWallet` · `getWallet` | Barra, G1, C1, D2, G4, D1 y D2 diálogo | **Ya existe**: `WalletView`, con cada reserva y su proyecto (hueco 19) | — | M |
+| GET `wallet/usage/` | `billing.usage` | `useUsage` · `getUsage` | G1 (§5 G) | **Ya existe**: `WalletUsageView`, por día en `WORKSPACE_TIME_ZONE` | — | M |
+| GET `transactions/` | `billing.transactions` | `useTransactions` · `listTransactions` | G2 (§5 G), D1 Actividad (§9.2) | **Ya existe**: `TransactionListView`, con `Transaction.project`, `category` (migraciones 0015 y 0016 de payments) y `kind` | — | L |
+| GET `transactions/export/` | `billing.exportTransactions` | `useExportTransactions` · `exportTransactions` | G2 (§5 G) | **Ya existe**: `TransactionExportView` | — | S |
 | GET `token-packages/` | `billing.tokenPackages` | `useTokenPackages` · `listTokenPackages` | G4 (§5 G), D2 diálogo | Tres paquetes fijos y la cantidad libre: modelo nuevo o settings | — | S |
 | POST `token-purchases/` | `billing.createPurchase` | `useCreateTokenPurchase` · `createTokenPurchase` | G4 (§5 G), D2 diálogo | PAY-02: checkout de Stripe (`stripe_service.py` está vacío); modelo nuevo de compra; webhook con firma, idempotente | `billing.tokenPackages`, función de acreditar | L |
 | GET `token-purchases/:id/` | `billing.purchase` | `useTokenPurchase` · `getTokenPurchase` | G5 (§9.2) | Estado del pago; la pantalla consulta cada 5 s | `billing.createPurchase` y el webhook | S |
@@ -427,7 +427,7 @@ El backlog (`documents/backlog_mvp.md`) asigna por par, no por persona: PAY-01 a
 | Resuelto en `feat/perfil-me`: `token_blacklist` instalada, y límites de intentos en el login (por IP y por cuenta, solo los fallidos), el refresh, la contraseña y el cambio de email (`apps/users/throttles.py`). El registro y el reenvío necesitan los suyos. | `auth.register`, `auth.resendVerification` | 1, 2 |
 | [ADR-005](../adrs/005-social-publishing-strategy.md) sigue `proposed`: el contrato asume Ayrshare, DIST-01 propone OAuth directo. | `social.accounts`, `social.connect`, `social.disconnect` | 10 |
 | No hay beat para `dispatch_scheduled_posts_batch`: no está en `CELERY_BEAT_SCHEDULE` y `docker-compose.yml` no tiene servicio `beat`. | Publicaciones programadas | 9 |
-| `Transaction` no tiene vínculo con el proyecto ni `kind`; un `SPEND` devuelto queda `FAILED`. | `billing.wallet` (detalle), `billing.transactions`, `billing.usage`, `projects.activity`, `projects.detail` | 4, 19 |
+| Resuelto en `feat/billetera-movimientos-precios`: `Transaction.project` y `Transaction.category` (`reserve_funds` los guarda al reservar, la migración 0016 en las filas viejas) y `kind` en la API. `projects.activity` sigue leyendo la metadata; `projects.detail` todavía no lo usa. | `projects.detail` | 4, 19 |
 | Stripe: `stripe_service.py` está vacío y no hay función para acreditar tokens. | `billing.createPurchase`, `billing.purchase`, `billing.changePlan` | 12 |
 | `LANGUAGE_CODE = 'en-us'`: los mensajes propios de DRF llegan en inglés (el frontend los traduce). | Nada, pero tus mensajes van en español igual | — |
 

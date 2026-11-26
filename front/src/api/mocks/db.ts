@@ -139,6 +139,11 @@ export function workspaceDay(value: string | number): string {
   return new Date(new Date(value).getTime() + WORKSPACE_UTC_OFFSET_MS).toISOString().slice(0, 10);
 }
 
+/** ISO date and time of a moment in the workspace's time zone, with its offset: `2026-11-04T12:00:00-03:00`. */
+export function workspaceDateTime(value: string | number): string {
+  return `${new Date(new Date(value).getTime() + WORKSPACE_UTC_OFFSET_MS).toISOString().slice(0, 19)}-03:00`;
+}
+
 export type MockPreview = ClipPreview & { _startedAt: number };
 
 export type MockSocialAccount = SocialAccount & { workspace: string };
@@ -198,6 +203,6 @@ export interface MockDb {
   resendAt: Record<string, number>;
 }
 
-export const DB_VERSION = 13;
+export const DB_VERSION = 14;
 
 export const PLATFORMS: Platform[] = ['TIKTOK', 'INSTAGRAM_REELS', 'YOUTUBE_SHORTS'];

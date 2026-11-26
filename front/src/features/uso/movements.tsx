@@ -79,6 +79,17 @@ export function MovementAmount({ transaction, className }: { transaction: Pick<T
   return <span className={cx('num', styles.amt, meta.amountClass, className)}>{signedAmount(transaction.amount, meta.income)}</span>;
 }
 
+/** When the movement last moved the balance: a charge or a return when it was settled. The list is ordered by it. */
+export function movementDate(transaction: Pick<Transaction, 'created_at' | 'settled_at'>): string {
+  return transaction.settled_at ?? transaction.created_at;
+}
+
+/** What a partial charge gave back (`reserved_amount − amount`); 0 for anything else. */
+export function returnedPart(transaction: Pick<Transaction, 'kind' | 'amount' | 'reserved_amount'>): number {
+  if (transaction.kind !== 'charged' || transaction.reserved_amount === null) return 0;
+  return Math.max(0, Math.round((transaction.reserved_amount - transaction.amount) * 100) / 100);
+}
+
 export type KindTotals = Partial<Record<TransactionKind, TransactionKindTotal>>;
 
 export function totalOf(totals: KindTotals | undefined, kind: TransactionKind): TransactionKindTotal {
