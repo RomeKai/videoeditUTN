@@ -92,9 +92,9 @@ class PublicAccountView(SpanishThrottleMixin, APIView):
 
 class RegisterView(PublicAccountView):
     """
-    A2: creates the account, its own workspace (the post_save signal of User:
-    default plan, its wallet, the user as active Admin) and sends the
-    verification email. Until the link is opened the account is unverified;
+    A2: creates the account, its own workspace (the post_save signal of User,
+    with create_owned_workspace like POST /workspaces/: default plan, its
+    wallet, the user as active Admin) and sends the verification email. Until the link is opened the account is unverified;
     the link signs the user in (VerifyEmailView). If the email server does not
     take the email nothing is saved, as in the email change of `PATCH /me`.
     """

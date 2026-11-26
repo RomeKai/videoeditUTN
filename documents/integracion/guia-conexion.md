@@ -205,7 +205,7 @@ Detalle y tabla de lo que ya tiene endpoint: [01, Workspace activo y roles](../i
 
 ### Acceso (6) · hecho
 
-Contrato `contracts/auth.ts`. Backend: `back/apps/users/views_auth.py` (y `VerifyEmailView` en `views.py`), con sus pruebas en `back/apps/users/tests/test_register.py`, `test_password_reset.py` y `test_logout.py`. El registro usa la señal `create_default_workspace` (`back/apps/users/signals.py`): workspace con el plan por defecto, el usuario como Admin activo y, por `create_workspace_wallet` (`back/apps/payments/signals.py`), su billetera.
+Contrato `contracts/auth.ts`. Backend: `back/apps/users/views_auth.py` (y `VerifyEmailView` en `views.py`), con sus pruebas en `back/apps/users/tests/test_register.py`, `test_password_reset.py` y `test_logout.py`. El registro usa la señal `create_default_workspace` (`back/apps/users/signals.py`), que llama a `create_owned_workspace` (`back/apps/users/workspaces.py`) como `POST /workspaces/`: workspace con el plan por defecto, el usuario como Admin activo y, por `create_workspace_wallet` (`back/apps/payments/signals.py`), su billetera.
 
 | Método y ruta | Id | Hook · mock | Pantalla | Backend |
 |---|---|---|---|---|
