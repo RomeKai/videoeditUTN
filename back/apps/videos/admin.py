@@ -109,7 +109,7 @@ class ModerationOverrideAdmin(admin.ModelAdmin):
         obj.created_by = request.user
         super().save_model(request, obj, form, change)
         project = obj.project
-        from apps.videos.tasks.ingestion import INGESTION_NOT_QUEUED
+        from apps.videos.tasks.ingestion import INGESTION_NOT_QUEUED, INGESTION_STUCK
 
         if project.pipeline_error_code == INGESTION_NOT_QUEUED:
             # Refunded at creation because its ingestion was never queued: the
@@ -122,9 +122,21 @@ class ModerationOverrideAdmin(admin.ModelAdmin):
             )
         elif project.pipeline_stage == VideoProject.PipelineStage.FAILED:
             from apps.videos.tasks import process_initial_ingestion
+            from apps.videos.tasks.ingestion import INGESTION_CHAIN_KEY, new_ingestion_chain
+            from apps.videos.tasks.shared import _merge_metadata
 
             project_id = str(project.pk)
-            transaction.on_commit(lambda: process_initial_ingestion.delay(project_id))
-            self.message_user(request, "Override registrado: la ingestión se vuelve a encolar.")
+            # A chain of its own: only this message reopens the project, and a
+            # copy of an older one that was only delayed runs nothing.
+            chain = new_ingestion_chain()
+            _merge_metadata(project_id, {INGESTION_CHAIN_KEY: chain})
+            transaction.on_commit(lambda: process_initial_ingestion.delay(project_id, chain=chain))
+            if project.pipeline_error_code == INGESTION_STUCK:
+                self.message_user(request, (
+                    "Override registrado: la ingestión se vuelve a encolar. Su reserva se había devuelto "
+                    "porque se trabó (IngestionStuck): corre sin volver a cobrar."
+                ), level=messages.WARNING)
+            else:
+                self.message_user(request, "Override registrado: la ingestión se vuelve a encolar.")
         else:
             self.message_user(request, "Override registrado. El proyecto no está en FAILED: no se re-encola.")

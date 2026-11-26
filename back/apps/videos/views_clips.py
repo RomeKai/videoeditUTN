@@ -795,16 +795,24 @@ class ProjectRedispatchView(_WorkspaceScoped):
     or its whole video was rendered already (``rerender/``). If the broker
     refuses the message, what was reserved goes back with REDISPATCH_NOT_QUEUED
     (503), which the pipeline never resumes until another re-dispatch pays.
+    Each request stores a new chain (tasks/ingestion.py, INGESTION_CHAIN_KEY)
+    and sends it with its message: only that message reopens the project, so
+    the first of a double click, or an older copy that was only delayed, runs
+    nothing.
     """
 
     workspace_actions = {'POST': 'members.manage'}
 
     def post(self, request, pk):
         from .tasks import process_initial_ingestion
-        from .tasks.ingestion import REDISPATCH_NOT_QUEUED
+        from .tasks.ingestion import INGESTION_CHAIN_KEY, REDISPATCH_NOT_QUEUED, new_ingestion_chain
 
         project = self.get_project(request, pk)
         reservation = None
+        # Only this request's message reopens the project: a copy of an older
+        # one that was only delayed runs nothing (tasks/ingestion.py,
+        # INGESTION_CHAIN_KEY), and neither does the first of a double click.
+        chain = new_ingestion_chain()
         try:
             with transaction.atomic():
                 project = VideoProject.objects.select_for_update().select_related('workspace').get(pk=project.pk)
@@ -821,13 +829,13 @@ class ProjectRedispatchView(_WorkspaceScoped):
                     reservation = _reserve(project, amount, request.user, f"Procesamiento: {project.title}")
                     metadata[REPLACED_RESERVATIONS_KEY] = _replaced(metadata, 'reservation_id')
                     metadata['reservation_id'] = str(reservation.id)
-                if updates or amount is not None:
-                    VideoProject.objects.filter(pk=project.pk).update(metadata=metadata, **updates)
+                metadata[INGESTION_CHAIN_KEY] = chain
+                VideoProject.objects.filter(pk=project.pk).update(metadata=metadata, **updates)
         except _Refused as refused:
             return refused.response
 
         try:
-            process_initial_ingestion.delay(str(project.pk))
+            process_initial_ingestion.delay(str(project.pk), chain=chain)
         except Exception as exc:
             logger.error("pipeline.redispatch_not_queued project_id=%s error=%s", project.pk, type(exc).__name__)
             if reservation is None or self._give_back(project.pk, reservation):

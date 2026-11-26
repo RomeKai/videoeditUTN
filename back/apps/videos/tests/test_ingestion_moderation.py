@@ -241,7 +241,9 @@ class ModerationOverrideAdminTests(TestCase):
         override = ModerationOverride.objects.get()
         self.assertEqual(override.created_by, self.admin)
         self.assertEqual(override.reason, "Falso positivo")
-        delay.assert_called_once_with(str(self.project.pk))
+        # With a chain of its own: only this message reopens the project.
+        self.project.refresh_from_db()
+        delay.assert_called_once_with(str(self.project.pk), chain=self.project.metadata["ingestion_chain"])
 
     def test_a_project_refunded_because_it_was_never_queued_is_not_requeued(self):
         """IngestionNotQueued: the pipeline never resumes it, so the admin does not say it will."""

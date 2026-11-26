@@ -108,16 +108,45 @@ PTE_PARSE_RETRY_SECONDS = (30, 90)
 INGESTION_NOT_QUEUED = 'IngestionNotQueued'
 # pipeline_error_code of a project recover_stuck_renders failed and refunded:
 # its ingestion made no progress for too long, with no worker and no re-queue
-# left (tasks/render_recovery.py). A late copy of its message is never resumed
-# while its creation stays refunded; a re-dispatch that pays it again is.
+# left (tasks/render_recovery.py). The fail replaces its chain (below), so no
+# copy of its messages runs it again; a re-dispatch does, paying again.
 INGESTION_STUCK = 'IngestionStuck'
 # When a delivery started running the ingestion (ISO time), and how many times
-# recover_stuck_renders re-queued it and when. A re-dispatch that reopens the
-# project starts its own count.
+# recover_stuck_renders re-queued it (in a row without a start, and in all)
+# and when. A re-dispatch that reopens the project starts its own count.
 INGESTION_STARTED_AT_KEY = 'ingestion_started_at'
 INGESTION_RECOVERY_REQUEUES_KEY = 'ingestion_recovery_requeues'
+INGESTION_RECOVERY_REQUEUES_TOTAL_KEY = 'ingestion_recovery_requeues_total'
 INGESTION_RECOVERY_REQUEUED_AT_KEY = 'ingestion_recovery_requeued_at'
-INGESTION_RECOVERY_KEYS = (INGESTION_RECOVERY_REQUEUES_KEY, INGESTION_RECOVERY_REQUEUED_AT_KEY)
+INGESTION_RECOVERY_KEYS = (
+    INGESTION_RECOVERY_REQUEUES_KEY, INGESTION_RECOVERY_REQUEUES_TOTAL_KEY, INGESTION_RECOVERY_REQUEUED_AT_KEY,
+)
+# The chain of messages that may run the ingestion now. Whatever sends a new
+# message to a project that may still have an older one alive (a re-dispatch,
+# the moderation override in the admin, a re-queue of recover_stuck_renders)
+# stores a fresh token here and passes it as the task's ``chain`` kwarg, and
+# every re-publish of that delivery carries it on. A message of another chain
+# runs nothing: a copy that was only delayed (a backed-up queue, a countdown
+# held by a busy worker, the visibility timeout of a dead host) can neither
+# reopen a failed (refunded) project for free nor run stages next to the
+# current one. A message without a token (the creation's, and any queued
+# before tokens existed) is the chain of a project that has none stored yet.
+INGESTION_CHAIN_KEY = 'ingestion_chain'
+
+
+def new_ingestion_chain():
+    """A fresh chain token (see INGESTION_CHAIN_KEY)."""
+    return uuid.uuid4().hex
+
+
+def _chain_kwargs(chain):
+    """The task kwargs that carry ``chain`` on (none for the chain without a token)."""
+    return {'chain': chain} if chain else {}
+
+
+def _chain_current(metadata, chain):
+    """A message of ``chain`` belongs to the chain stored in the project's ``metadata``."""
+    return ((metadata or {}).get(INGESTION_CHAIN_KEY) or None) == (chain or None)
 
 _CLIP_SUGGESTION_FIELDS = {'start', 'end', 'title', 'virality_score', 'reasoning'}
 
@@ -380,7 +409,7 @@ class _PromptParseCapacity:
             self.gate.settle(reservation, _llm_usage_by_model(self.models, result.attempts or [result.usage]))
 
 
-def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries, parse_retries=0):
+def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries, parse_retries=0, chain=None):
     """
     Re-queues the ingestion after the capacity wait instead of blocking the
     worker. Not a failed attempt: pipeline_attempts and the usage rows are not
@@ -391,6 +420,7 @@ def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries, parse_ret
     call that keeps failing still runs out of retries (PIPELINE_MAX_RETRIES)
     even when capacity waits sit between its attempts. So does the prompt
     parser's own count (``parse_retries``): a capacity wait never refills it.
+    And so does its ``chain``: the re-queue is the same chain.
     """
     from apps.videos.services.ai.capacity import CapacityTimeoutError
 
@@ -435,7 +465,7 @@ def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries, parse_ret
     _publish_requeue(
         process_initial_ingestion,
         lambda: process_initial_ingestion.apply_async(
-            args=[str(project_id)], kwargs={'parse_retries': parse_retries},
+            args=[str(project_id)], kwargs={'parse_retries': parse_retries, **_chain_kwargs(chain)},
             countdown=countdown, retries=retries,
         ),
         "pipeline.requeue_not_published", project_id, "capacity",
@@ -1227,7 +1257,7 @@ def _restore_rerendered_clips(project_id):
     Read again under it, a draft whose new render was reserved meanwhile is
     left alone; restored, that render would skip it as already rendered and
     be refunded without rendering what the user paid for. Conditional
-    updates, idempotent.
+    updates, idempotent. Returns how many clips it changed, both kinds.
     """
     metadata = VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
     if not _restore_pending(metadata):
@@ -1246,7 +1276,7 @@ def _restore_rerendered_clips(project_id):
                 pk=clip_id, status__in=statuses, s3_object_key=key,
             ).update(status=status, render_claim_token=None, render_unfinished_starts=0)
             if status == VideoClip.Status.PUBLISHED:
-                VideoClip.objects.filter(pk=clip_id, status=VideoClip.Status.COMPLETED).exclude(
+                restored += VideoClip.objects.filter(pk=clip_id, status=VideoClip.Status.COMPLETED).exclude(
                     s3_object_key=key,
                 ).update(status=status)
     if restored:
@@ -1604,10 +1634,13 @@ def _resume_render_dispatch(project_id, progress=None):
     return f"Render re-dispatched for {project_id}: {len(clip_ids)} clips"
 
 
-def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=0):
+def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=0, chain=None):
     """
     ``progress['stage']`` always holds the stage this worker believes the project
     is at, so a failure handler can guard its writes by ownership.
+
+    ``chain`` is the token of the message (INGESTION_CHAIN_KEY): one of
+    another chain never reopens a failed project nor runs an ingestion stage.
     """
     progress = progress if progress is not None else {}
 
@@ -1619,6 +1652,7 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
     project = VideoProject.objects.get(pk=project_id)
     stage = project.pipeline_stage
     progress['stage'] = stage
+    reopened = False
 
     if stage == PipelineStage.FAILED:
         if project.pipeline_error_code == INGESTION_NOT_QUEUED:
@@ -1649,18 +1683,20 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
                 # view may have failed it after the read above.
                 logger.warning("pipeline.redispatch_skipped project_id=%s reason=%s", project_id, code)
                 return f"Not resumed {project_id}: it was refunded when its message could not be queued"
-            if code == INGESTION_STUCK and not _creation_reserved(metadata):
-                # Failed and refunded by recover_stuck_renders: a copy of its
-                # message that was still alive would run it for free. A
-                # re-dispatch reserves the creation again, and then it runs.
-                logger.warning("pipeline.redispatch_skipped project_id=%s reason=%s", project_id, code)
-                return f"Not resumed {project_id}: it was refunded when its ingestion got stuck"
+            if not _chain_current(metadata, chain):
+                # Only the message of whatever asked for this resume (a
+                # re-dispatch, the override) reopens it: a copy of an older
+                # chain that was only delayed (a re-queue of the sweep, the
+                # original message) would run what was refunded for free.
+                logger.warning("pipeline.redispatch_skipped project_id=%s reason=stale_chain", project_id)
+                return f"Not resumed {project_id}: its message belongs to a chain that was replaced"
             reopen(project_id, stage)
             if any(key in metadata for key in INGESTION_RECOVERY_KEYS):
                 # A re-dispatch is a new run: recover_stuck_renders counts its re-queues anew.
                 VideoProject.objects.filter(pk=project_id).update(metadata={
                     key: value for key, value in metadata.items() if key not in INGESTION_RECOVERY_KEYS
                 })
+        reopened = True
         progress['stage'] = stage
 
     if stage in TERMINAL_STAGES:
@@ -1694,6 +1730,14 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
                 logger.warning("pipeline.redispatch_skipped project_id=%s reason=auto_render_unpaid", project_id)
                 return f"Not resumed {project_id}: its auto-render cannot be paid"
         return _resume_render_dispatch(project_id, progress)
+
+    if not reopened and not _chain_current(project.metadata, chain):
+        # Another chain owns the ingestion now (a re-queue of the sweep, a
+        # re-dispatch): this copy runs nothing, so two chains never run stages,
+        # plan capacity waits or spend retries side by side. The token only
+        # changes under this lock or while the project is failed.
+        logger.warning("pipeline.chain_stale project_id=%s stage=%s", project_id, stage)
+        return f"Skipped {project_id}: its message belongs to a chain that was replaced"
 
     # This delivery runs the ingestion now (the lock is ours): recover_stuck_renders
     # measures "no progress" from the last start. Compare-and-set, like the status
@@ -1859,19 +1903,6 @@ def _reserve_auto_render_after_charge(project_id):
     return _reserve_auto_render(project_id)
 
 
-def _creation_reserved(metadata):
-    """The creation reservation of a project (its ``metadata``) is RESERVED."""
-    from django.core.exceptions import ValidationError
-
-    reservation_id = (metadata or {}).get('reservation_id')
-    if not reservation_id:
-        return False
-    try:
-        return Transaction.objects.filter(pk=reservation_id, status=Transaction.Status.RESERVED).exists()
-    except ValidationError:
-        return False  # not a transaction id
-
-
 def _work_already_done(project_id):
     """The project reached clips_selected (or later): its main work is delivered."""
     current = VideoProject.objects.filter(pk=project_id).values_list('pipeline_stage', flat=True).first()
@@ -1930,7 +1961,7 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
     soft_time_limit=getattr(settings, 'PIPELINE_SOFT_TIME_LIMIT', 2 * 3600),
     time_limit=getattr(settings, 'PIPELINE_TIME_LIMIT', 2 * 3600 + 300),
 )
-def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0):
+def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0, chain=None):
     """
     Multimodal Ingestion Pipeline V2 (Paper Edit V1 + Video Sync), recoverable.
     Retryable errors back off exponentially (TD-04: replaces the fixed 60s
@@ -1938,6 +1969,9 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
 
     Waiting for a busy project lock has its own counter (``lock_retries``,
     AICORE-18): lock contention never spends the retries meant for errors.
+    ``chain`` is the token of the chain the message belongs to
+    (INGESTION_CHAIN_KEY): every re-queue carries it on, and ``self.retry``
+    keeps the kwargs.
     """
     from apps.videos.services.ai.prompt_validator import PromptParseRetry
 
@@ -1949,7 +1983,7 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
     progress = {}
     try:
         with project_lock(project_id) as lock:
-            return _run_ingestion(project_id, attempt, progress, lock, parse_retries)
+            return _run_ingestion(project_id, attempt, progress, lock, parse_retries, chain=chain)
     except PromptParseRetry:
         # Re-queued, not self.retry(): the stages keep their whole retry budget.
         countdown = PTE_PARSE_RETRY_SECONDS[min(parse_retries, len(PTE_PARSE_RETRY_SECONDS) - 1)]
@@ -1964,7 +1998,7 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
             self,
             lambda: process_initial_ingestion.apply_async(
                 args=[str(project_id)],
-                kwargs={'lock_retries': lock_retries, 'parse_retries': parse_retries + 1},
+                kwargs={'lock_retries': lock_retries, 'parse_retries': parse_retries + 1, **_chain_kwargs(chain)},
                 countdown=countdown,
                 retries=self.request.retries,
             ),
@@ -1985,7 +2019,7 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
                 self,
                 lambda: process_initial_ingestion.apply_async(
                     args=[str(project_id)],
-                    kwargs={'lock_retries': lock_retries + 1, 'parse_retries': parse_retries},
+                    kwargs={'lock_retries': lock_retries + 1, 'parse_retries': parse_retries, **_chain_kwargs(chain)},
                     countdown=PIPELINE_LOCK_RETRY_SECONDS,
                     retries=self.request.retries,
                 ),
@@ -2011,7 +2045,7 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
         try:
             return _wait_for_capacity(
                 project_id, exc, attempt, progress.get('stage'), self.request.retries,
-                parse_retries,
+                parse_retries, chain,
             )
         except Reject:
             # The re-queue was not published: this message goes back to the

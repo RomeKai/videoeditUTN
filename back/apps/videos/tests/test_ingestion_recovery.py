@@ -105,6 +105,24 @@ class StuckIngestionHarness(IngestionHarness):
         row = next((row for row in rows if row["project"] == project.pk and row["kind"] == "ingestion"), None)
         return row, requeue
 
+    @staticmethod
+    def chain(project):
+        """The chain stored in the project (tasks/ingestion.py, INGESTION_CHAIN_KEY), or None."""
+        project.refresh_from_db()
+        return project.metadata.get("ingestion_chain")
+
+    def run_chain(self, project, chain):
+        """A delivery of ``chain``'s message (``run_task`` is one without a token: the creation's)."""
+        return process_initial_ingestion.apply(args=[str(project.pk)], kwargs={"chain": chain} if chain else {})
+
+    def run_requeued(self, project):
+        """The message the sweep re-queued, with the chain it stored."""
+        return self.run_chain(project, self.chain(project))
+
+    def assert_requeued_once(self, requeue, project):
+        requeue.assert_called_once_with(args=[str(project.pk)], kwargs={"chain": self.chain(project)})
+        self.assertIsNotNone(self.chain(project))
+
     def kill_at_transcription(self, project):
         """A delivery that starts, extracts the audio and dies transcribing (its message acked)."""
         self.mock_transcribe.side_effect = HardKill
@@ -144,7 +162,7 @@ class StuckIngestionRecoveryTests(StuckIngestionHarness, TestCase):
 
         row, requeue = self.sweep(project)
 
-        requeue.assert_called_once_with(args=[str(project.pk)])
+        self.assert_requeued_once(requeue, project)
         self.assertEqual((row["action"], row["reason"], row["result"]), ("requeue", "never_started", "requeued"))
         project.refresh_from_db()
         self.assertEqual(project.metadata[REQUEUES], 1)
@@ -163,8 +181,8 @@ class StuckIngestionRecoveryTests(StuckIngestionHarness, TestCase):
         project, txn = self.lost()
         self.sweep(project)
 
-        self.run_task(project)  # the re-queued message
-        self.run_task(project)  # the original, delivered late after all
+        self.run_requeued(project)  # the re-queued message
+        self.run_task(project)  # the original, delivered late after all: another chain
 
         project.refresh_from_db()
         self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
@@ -182,7 +200,7 @@ class StuckIngestionRecoveryTests(StuckIngestionHarness, TestCase):
 
         self.assertEqual((row["action"], row["reason"]), ("requeue", "worker_lost"))
         self.mock_upload.reset_mock()
-        self.run_task(project)
+        self.run_requeued(project)
         self.mock_upload.assert_not_called()  # the source is not prepared again
         txn.refresh_from_db()
         self.assertEqual(txn.status, CHARGED)
@@ -307,7 +325,7 @@ class StuckIngestionRecoveryTests(StuckIngestionHarness, TestCase):
         self.assertEqual(txn.status, RESERVED)
 
         # The re-queued delivery charges it and hands it to the review.
-        self.run_task(project)
+        self.run_requeued(project)
         txn.refresh_from_db()
         project.refresh_from_db()
         self.assertEqual((txn.status, project.status), (CHARGED, VideoProject.Status.AWAITING_APPROVAL))
@@ -342,7 +360,7 @@ class StuckIngestionRecoveryTests(StuckIngestionHarness, TestCase):
 
         row, requeue = self.sweep(project)
 
-        requeue.assert_called_once_with(args=[str(project.pk)])
+        self.assert_requeued_once(requeue, project)
         self.assertEqual(row["action"], "requeue")
 
     def test_the_beat_task_applies_it(self):
@@ -383,8 +401,11 @@ class StuckIngestionRedispatchTests(StuckIngestionHarness, APITestCase):
             response = client.post(reverse("project-redispatch", args=[project.pk]))
 
         self.assertEqual(response.status_code, 202, response.content[:300])
-        delay.assert_called_once_with(str(project.pk))
-        self.run_task(project)
+        delay.assert_called_once_with(str(project.pk), chain=self.chain(project))
+        self.run_task(project)  # a copy of an older chain: runs nothing
+        project.refresh_from_db()
+        self.assertEqual(project.status, VideoProject.Status.FAILED)
+        self.run_chain(project, delay.call_args.kwargs["chain"])
         project.refresh_from_db()
         self.assertEqual((project.status, project.pipeline_error_code), (VideoProject.Status.AWAITING_APPROVAL, ""))
         new = Transaction.objects.get(pk=project.metadata["reservation_id"])
@@ -415,9 +436,237 @@ class UnconfirmedCreationTests(CreationHarness, TransactionTestCase):
                 patch.object(process_initial_ingestion, "apply_async") as requeue:
             rows = recover_stuck_renders_now(apply=True)
 
-        requeue.assert_called_once_with(args=[str(project.pk)])
+        project.refresh_from_db()
+        requeue.assert_called_once_with(args=[str(project.pk)], kwargs={"chain": project.metadata["ingestion_chain"]})
         row = next(row for row in rows if row["project"] == project.pk)
         self.assertEqual((row["kind"], row["action"], row["reason"]), ("ingestion", "requeue", "never_started"))
+
+
+class ChainTests(StuckIngestionHarness, APITestCase):
+    """
+    One chain of messages runs the ingestion (INGESTION_CHAIN_KEY): a re-queue
+    of the sweep, a re-dispatch or the override starts a new one, and a copy of
+    an older chain that was only delayed (a backed-up queue, a countdown held
+    by a busy worker, the visibility timeout of a dead host) runs nothing.
+    """
+
+    def test_a_late_original_copy_never_reruns_a_project_its_requeue_failed_and_refunded(self):
+        """The review's scenario: the re-queued run fails for good, and then the original arrives."""
+        from apps.videos.services.ai.errors import AIAuthenticationError
+
+        project, txn = self.lost()
+        row, _requeue = self.sweep(project)
+        self.assertEqual(row["action"], "requeue")
+        self.mock_transcribe.side_effect = AIAuthenticationError("bad key")
+        self.run_requeued(project)  # fails for good: refunded
+        self.mock_transcribe.side_effect = None
+        txn.refresh_from_db()
+        self.assertEqual(txn.status, REFUNDED)
+        self.mock_transcribe.reset_mock()
+
+        result = self.run_task(project)  # the original message, only delayed
+
+        self.assertIn("Not resumed", result.result)
+        self.mock_transcribe.assert_not_called()
+        self.mock_select.assert_not_called()
+        project.refresh_from_db()
+        self.assertEqual((project.status, project.pipeline_stage), (VideoProject.Status.FAILED, PipelineStage.FAILED))
+        self.assertFalse(VideoClip.objects.filter(project=project).exists())
+        txn.refresh_from_db()
+        self.assertEqual(txn.status, REFUNDED)
+        self.assertEqual(self.balances(), (Decimal("100.00"), Decimal("0")))
+
+    def test_with_two_chains_alive_only_the_current_one_runs(self):
+        project, txn = self.lost()
+        self.sweep(project)
+        current = self.chain(project)
+
+        stale = self.run_task(project)  # the original, delivered first
+        self.assertIn("Skipped", stale.result)
+        self.mock_upload.assert_not_called()
+        self.mock_transcribe.assert_not_called()
+        project.refresh_from_db()
+        self.assertNotIn(STARTED_AT, project.metadata)  # nothing started for it
+        self.assertEqual(project.status, VideoProject.Status.UPLOADED)
+
+        self.run_chain(project, current)
+        self.run_chain(project, "an-older-chain")  # any other token runs nothing either
+
+        self.mock_transcribe.assert_called_once()
+        self.mock_select.assert_called_once()
+        project.refresh_from_db()
+        txn.refresh_from_db()
+        self.assertEqual((project.status, txn.status), (VideoProject.Status.AWAITING_APPROVAL, CHARGED))
+        self.assertEqual(self.balances(), (Decimal("90.00"), Decimal("0")))
+
+    def test_two_chains_never_plan_the_capacity_wait_or_spend_retries_twice(self):
+        from apps.videos.services.ai.capacity import CapacityUnavailable
+
+        project, _txn = self.lost(stage=PipelineStage.AUDIO_EXTRACTED, status=VideoProject.Status.INGESTING)
+        self.sweep(project)
+        current = self.chain(project)
+        self.mock_transcribe.side_effect = CapacityUnavailable(60, stage=PipelineStage.TRANSCRIBED)
+
+        with patch.object(process_initial_ingestion, "apply_async") as requeue:
+            self.run_chain(project, current)
+            self.run_task(project)  # the stale chain, waiting for capacity too
+            self.run_task(project)
+
+        # One wait planned, one re-queue, carrying the current chain on.
+        requeue.assert_called_once()
+        self.assertEqual(requeue.call_args.kwargs["kwargs"], {"parse_retries": 0, "chain": current})
+        project.refresh_from_db()
+        planned = project.metadata["capacity_wait"]["planned_s"]
+        self.assertEqual(planned, round(requeue.call_args.kwargs["countdown"], 1))
+        self.assertEqual(self.mock_transcribe.call_count, 1)
+        self.assertEqual(project.pipeline_attempts, 0)
+
+    def test_every_republish_of_a_delivery_carries_its_chain(self):
+        from apps.videos.services.ai.prompt_validator import PromptParseRetry
+
+        project, _txn = self.lost()
+        self.sweep(project)
+        current = self.chain(project)
+
+        self.hold_lock(project)  # another worker: the delivery waits for the lock
+        with patch.object(process_initial_ingestion, "apply_async") as requeue:
+            self.run_chain(project, current)
+        self.assertEqual(requeue.call_args.kwargs["kwargs"], {"lock_retries": 1, "parse_retries": 0, "chain": current})
+        self.redis.held.clear()
+
+        parse = "apps.videos.services.ai.prompt_validator.apply_prompt_to_project"
+        with patch(parse, side_effect=PromptParseRetry()), \
+                patch.object(process_initial_ingestion, "apply_async") as requeue:
+            self.run_chain(project, current)
+        self.assertEqual(requeue.call_args.kwargs["kwargs"], {"lock_retries": 0, "parse_retries": 1, "chain": current})
+
+    def test_of_a_double_redispatch_only_the_second_message_runs(self):
+        project, _old = self.lost()
+        self.spend_requeues(project)
+        self.age(project, fail_after() + 60)
+        self.sweep(project)  # failed and refunded
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        client.credentials(HTTP_X_WORKSPACE_ID=str(self.workspace.pk))
+
+        with patch("apps.videos.tasks.process_initial_ingestion.delay") as delay:
+            first = client.post(reverse("project-redispatch", args=[project.pk]))
+            second = client.post(reverse("project-redispatch", args=[project.pk]))
+
+        self.assertEqual((first.status_code, second.status_code), (202, 202))
+        chains = [call.kwargs["chain"] for call in delay.call_args_list]
+        self.assertEqual(len(set(chains)), 2)
+        self.assertIn("Not resumed", self.run_chain(project, chains[0]).result)
+        self.run_chain(project, chains[1])
+        project.refresh_from_db()
+        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
+        self.mock_transcribe.assert_called_once()
+        self.assertEqual(self.balances(), (Decimal("90.00"), Decimal("0")))  # the new reservation, charged once
+
+    def test_the_moderation_override_requeues_a_stuck_project_with_its_own_chain(self):
+        from django.contrib.auth import get_user_model
+
+        project, txn = self.lost()
+        self.spend_requeues(project)
+        self.age(project, fail_after() + 60)
+        self.sweep(project)
+        admin = get_user_model().objects.create_superuser(username="adm", email="adm@test.com", password="pw")
+        self.client.force_login(admin)
+
+        with patch("apps.videos.tasks.process_initial_ingestion.delay") as delay, \
+                self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                reverse("admin:videos_moderationoverride_add"),
+                {"project": str(project.pk), "reason": "Revisión humana"}, follow=True,
+            )
+
+        self.assertContains(response, "se vuelve a encolar")
+        self.assertContains(response, "sin volver a cobrar")
+        delay.assert_called_once_with(str(project.pk), chain=self.chain(project))
+        self.run_chain(project, delay.call_args.kwargs["chain"])
+        project.refresh_from_db()
+        self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
+        txn.refresh_from_db()
+        self.assertEqual(txn.status, REFUNDED)  # the admin's re-run is not charged again
+
+
+class RequeueCountTests(StuckIngestionHarness, TestCase):
+    def test_a_start_after_the_last_requeue_resets_the_requeues_in_a_row(self):
+        project, _txn = self.lost(status=VideoProject.Status.INGESTING)
+        moment = (timezone.now() - timedelta(seconds=stuck_after() + 60)).isoformat()
+        VideoProject.objects.filter(pk=project.pk).update(metadata={
+            **project.metadata, REQUEUES: 2, "ingestion_recovery_requeues_total": 2,
+            REQUEUED_AT: moment, STARTED_AT: moment,  # the last re-queue started, then its worker died
+        })
+
+        row, requeue = self.sweep(project)
+
+        self.assert_requeued_once(requeue, project)
+        self.assertEqual((row["action"], row["reason"]), ("requeue", "worker_lost"))
+        project.refresh_from_db()
+        self.assertEqual((project.metadata[REQUEUES], project.metadata["ingestion_recovery_requeues_total"]), (1, 3))
+
+    def test_the_total_bounds_a_delivery_that_starts_and_dies_every_time(self):
+        project, txn = self.lost(status=VideoProject.Status.INGESTING)
+        moment = (timezone.now() - timedelta(seconds=fail_after() + 60)).isoformat()
+        VideoProject.objects.filter(pk=project.pk).update(metadata={
+            **project.metadata, REQUEUES: 1,
+            "ingestion_recovery_requeues_total": render_recovery.INGESTION_RECOVERY_MAX_REQUEUES_TOTAL,
+            REQUEUED_AT: moment, STARTED_AT: moment,
+        })
+        self.age(project, fail_after() + 60)
+
+        row, requeue = self.sweep(project)
+
+        requeue.assert_not_called()
+        self.assertEqual((row["action"], row["reason"]), ("fail", "no_progress"))
+        txn.refresh_from_db()
+        self.assertEqual(txn.status, REFUNDED)
+
+
+class ChargedAtClipsSelectedTests(StuckIngestionHarness, TestCase):
+    """Charged at clips_selected and its worker died before the review: its creation is no longer RESERVED."""
+
+    def charged(self, idle=None, **fields):
+        project, txn = self.lost(
+            stage=PipelineStage.CLIPS_SELECTED, status=VideoProject.Status.INGESTING, idle=idle, **fields,
+        )
+        VideoClip.objects.create(project=project, title="Clip", start_time=0, end_time=5)
+        from apps.payments.services.wallet_service import commit_reservation
+
+        commit_reservation(txn.id)
+        return project, txn
+
+    def test_it_is_requeued_twice_charged_once_and_never_refunded(self):
+        project, txn = self.charged()
+
+        row, requeue = self.sweep(project)
+        self.assert_requeued_once(requeue, project)
+        self.assertEqual(row["action"], "requeue")
+        self.age(project)
+        row, _requeue = self.sweep(project)
+        self.assertEqual(row["action"], "requeue")
+        self.age(project, fail_after() + 60)
+        row, requeue = self.sweep(project)
+
+        requeue.assert_not_called()
+        self.assertEqual((row["action"], row["reason"]), ("report", "clips_selected"))
+        txn.refresh_from_db()
+        self.assertEqual(txn.status, CHARGED)
+
+        self.run_requeued(project)
+        project.refresh_from_db()
+        txn.refresh_from_db()
+        self.assertEqual((project.status, txn.status), (VideoProject.Status.AWAITING_APPROVAL, CHARGED))
+        self.assertEqual(self.balances(), (Decimal("90.00"), Decimal("0")))
+
+    def test_an_old_auto_render_is_only_reported_never_rendered(self):
+        project, _txn = self.charged(idle=2 * 24 * 3600, auto_render_bypass=True)
+
+        row, requeue = self.sweep(project)
+
+        requeue.assert_not_called()
+        self.assertEqual((row["action"], row["reason"]), ("report", "clips_selected"))
 
 
 class StuckIngestionThresholdTests(TestCase):
@@ -483,7 +732,7 @@ class ConcurrentStuckIngestionTests(StuckIngestionHarness, APITransactionTestCas
         with patch.object(process_initial_ingestion, "apply_async") as requeue:
             self.together(lambda: recover_stuck_renders_now(apply=True), lambda: recover_stuck_renders_now(apply=True))
 
-        requeue.assert_called_once_with(args=[str(project.pk)])
+        self.assert_requeued_once(requeue, project)
         project.refresh_from_db()
         self.assertEqual(project.metadata[REQUEUES], 1)
 
@@ -498,7 +747,7 @@ class ConcurrentStuckIngestionTests(StuckIngestionHarness, APITransactionTestCas
                 patch.object(render_recovery, "project_lock_held", return_value=False):
             self.together(lambda: recover_stuck_renders_now(apply=True), lambda: recover_stuck_renders_now(apply=True))
 
-        requeue.assert_called_once_with(args=[str(project.pk)])
+        self.assert_requeued_once(requeue, project)
         project.refresh_from_db()
         self.assertEqual(project.metadata[REQUEUES], 1)
 
@@ -574,6 +823,28 @@ class RestoreRetryTests(ClipActionsHarness, APITestCase):
         self.assertEqual((clip.status, clip.s3_object_key), (DONE, "videos/old-0.mp4"))
         # Nothing left to give back: not a candidate any more.
         self.assertEqual(self.restore_rows(project), [])
+
+    def test_a_published_clip_completed_with_its_new_file_is_published_again(self):
+        """A render of a published clip that went well, whose restore failed after the settle."""
+        project, (clip, _failed) = self.finished()
+        VideoClip.objects.filter(pk=clip.pk).update(status=VideoClip.Status.PUBLISHED)
+        self.post(clip_url(clip, "render"))
+        VideoClip.objects.filter(pk=clip.pk).update(status=DONE, s3_object_key="videos/new-0.mp4")
+        VideoProject.objects.filter(pk=project.pk).update(
+            pipeline_stage=PipelineStage.COMPLETED, status=VideoProject.Status.COMPLETED,
+        )
+        with patch.object(ingestion, "_restore_rerendered_clips", side_effect=DatabaseError("blip")), \
+                self.assertLogs("apps.videos.tasks.ingestion", level=logging.ERROR):
+            ingestion._settle_clip_render_reservations(project.pk)
+        self.assertEqual(self.clip_render(project).status, CHARGED)
+
+        rows = self.restore_rows(project)
+
+        self.assertEqual(
+            [(row["action"], row["result"], row["restored"]) for row in rows], [("restore", "restored", 1)],
+        )
+        clip.refresh_from_db()
+        self.assertEqual((clip.status, clip.s3_object_key), (VideoClip.Status.PUBLISHED, "videos/new-0.mp4"))
 
     def test_the_dry_run_gives_nothing_back(self):
         project, clip = self.settled_with_a_failed_restore()

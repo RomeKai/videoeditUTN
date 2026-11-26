@@ -8,11 +8,12 @@ stuck clips re-queued, or its fan-out closed when every paid clip is final.
 A render that never starts is re-queued with a backoff and never failed;
 past the total of re-queues it is only reported.
 
-It also finds ingestions that make no progress with their creation reserved
-(``kind=ingestion``): re-queued at most twice, then failed with
+It also finds ingestions that make no progress with their creation reserved,
+or left ingesting at clips_selected (``kind=ingestion``): re-queued with a new
+chain at most twice in a row (four in all), then failed with
 ``IngestionStuck`` and the reservation returned (never one whose clips were
 selected). And it retries the restore of the clips a settled render asked
-for later never rendered (``kind=restore``).
+for later left undone (``kind=restore``).
 
 The rules live in tasks/render_recovery.py, shared with the Celery task that
 CELERY_BEAT_SCHEDULE runs every 15 minutes. Without a beat process, run this
