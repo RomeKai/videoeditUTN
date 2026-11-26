@@ -14,7 +14,9 @@ Un proyecto (`VideoProject`) nace en el request de creación de la API y ahí mi
 | `VideoProjectViewSet.from_prompt` | [views.py](../../back/apps/videos/views.py) | Valida `prompt` y delega en `create` (ver [04-prompt-to-edit](04-prompt-to-edit.md)) |
 | `VideoProjectViewSet.get_serializer_context` | [views.py](../../back/apps/videos/views.py) | Pasa `pte_prompt` al serializer cuando la creación viene de `from_prompt` |
 | `_pricing_resolution` | [views.py](../../back/apps/videos/views.py) | Tier de resolución que se cobra: `metadata['render_resolution']` si es válido, si no `720p` |
-| `VideoProjectSerializer` | [serializers.py](../../back/apps/videos/serializers.py) | `validate`, `validate_source_file`, `validate_aspect_ratio`, `create`, `update`; campos `selection_criteria` y `use_seo` (solo escritura) |
+| `VideoProjectSerializer` | [serializers.py](../../back/apps/videos/serializers.py) | `validate`, `validate_source_file`, `validate_video_url`, `validate_aspect_ratio`, `create`, `update`; campos `selection_criteria` y `use_seo` (solo escritura) |
+| `validate_video_link`, `LINK_PROVIDERS` | [services/link_validation.py](../../back/apps/videos/services/link_validation.py) | Qué links se aceptan: sitios admitidos, sin IPs ni direcciones internas ([ver abajo](#links-admitidos)) |
+| `ProbeLinkView`, `probe_link` | [views_project_data.py](../../back/apps/videos/views_project_data.py), [services/link_probe.py](../../back/apps/videos/services/link_probe.py) | `POST /api/v1/projects/probe-link/`: sitio, título y duración de un link antes de crear ([ver abajo](#revisar-un-link-antes-de-crear-probe-link)) |
 | `validate_upload`, `MediaInfo`, `InvalidUploadError` | [services/media_validation.py](../../back/apps/videos/services/media_validation.py) | Comprueba que los bytes sean un video procesable (CORE-05) |
 | `PricingEngine.calculate_render_cost` | [payments/services/pricing_engine.py](../../back/apps/payments/services/pricing_engine.py) | Límites del plan y precio en tokens |
 | `reserve_funds`, `commit_reservation`, `rollback_reservation` | [payments/services/wallet_service.py](../../back/apps/payments/services/wallet_service.py) | Movimientos de la billetera con `select_for_update` |
@@ -176,6 +178,7 @@ sequenceDiagram
 
     C->>API: POST /api/v1/projects/ (JSON con video_url y use_seo opcional)
     API->>SER: is_valid(raise_exception=True)
+    SER->>SER: validate_video_url (sitio admitido, sin IPs ni hosts internos)
     SER->>SER: validate (una sola fuente)
     Note over SER: no hay validate_upload ni medición de duración
     API->>SER: save(workspace, uploaded_by, status uploaded)
@@ -201,7 +204,89 @@ sequenceDiagram
 1. La duración de un video por URL no se conoce en el request, así que se cobra una tarifa fija de 10 tokens.
 2. Si el pedido trae `use_seo=true`, se suma el adicional `seo_optimization` calculado con `duration_seconds=0`: solo se chequea el plan para el SEO y se cobra `5 × (1 − base_discount_rate)` (ADR-013). Sin plan, se cobra 5.
 3. La reserva, `reservation_id`, el encolado y el 503 sin broker son iguales al flujo con archivo. Un rechazo después del INSERT borra la fila (no hay archivo).
-4. La URL no pasa por `validate_upload` ni por el límite de duración del plan. El serializer declara `video_url` como `CharField`, así que tampoco valida que sea una URL. El archivo se baja con `download_from_youtube` en `_stage_prepare_source` (ver [02-pipeline-de-ingesta](02-pipeline-de-ingesta.md)).
+4. La URL no pasa por `validate_upload` ni por el límite de duración del plan al crear: esa duración la mira `probe-link` antes ([ver abajo](#revisar-un-link-antes-de-crear-probe-link)) y la descarga la hace obligatoria (`LinkTooLongError`, [02](02-pipeline-de-ingesta.md)). `validate_video_url` la pasa por `validate_video_link` (sin consultar DNS) y guarda la URL normalizada; un link de otro sitio o a una dirección interna da 400 en `video_url` ([links admitidos](#links-admitidos)). El archivo se baja con `download_from_youtube` en `_stage_prepare_source` (ver [02-pipeline-de-ingesta](02-pipeline-de-ingesta.md)).
+
+### Links admitidos
+
+yt-dlp está hecho para bajar lo que sea que apunte una página, así que sin control es un SSRF: el worker pediría `http://169.254.169.254/...`, `http://localhost:8000/admin/` o un host de la red interna. Un caso real: la página de consentimiento de YouTube (`consent.youtube.com/m?continue=<url>`) le pasa su `continue` a cualquiera de sus ~1.800 extractores, y uno de ellos pedía esa URL desde el worker. Por eso hay dos capas.
+
+**`validate_video_link`** ([services/link_validation.py](../../back/apps/videos/services/link_validation.py)) revisa el link al crear el proyecto (`validate_video_url`), en `probe-link`, justo antes de bajarlo (`download_from_youtube`, también para las filas guardadas antes de esta regla) y en cada salto que sigue yt-dlp:
+
+- Solo `http` y `https`, sin usuario ni contraseña en la URL y con el puerto por defecto (80 o 443).
+- El host es exactamente uno de `LINK_HOSTS`: `youtube.com`, `www.`, `m.` y `music.youtube.com`, `youtu.be`; `vimeo.com`, `www.` y `player.vimeo.com`; `twitch.tv`, `www.`, `m.`, `clips.` y `player.twitch.tv`; `drive.google.com`. Ningún otro subdominio (tampoco `consent.youtube.com`) y nunca una IP. Cada parte del host son solo letras, dígitos y guiones: `evil.com;.youtube.com`, `*.youtube.com` o `127.0.0.1%23.youtube.com` no pasan. La web nombra los mismos hosts (`LINK_HOSTS` de `front/src/features/proyectos/project-view.ts`).
+- El link tiene que nombrar un solo video y queda como la URL de ese video: en YouTube, `https://www.youtube.com/watch?v=<id>` (sin lista, tiempo ni parámetros; `youtu.be/<id>` y `/shorts/<id>` también); en Twitch, `www.twitch.tv/videos/<id>` o `clips.twitch.tv/<clip>`; en Vimeo, con su id numérico; en Drive, `drive.google.com/file/d/<id>/view`. Un canal, una lista, una carpeta o el canal de Twitch (que es su vivo) dan 400 `Pegá el link de un solo video...`.
+- Con `resolve=True` (probe-link, la descarga y cada salto), cada dirección a la que resuelve el host tiene que ser pública: ni loopback, privada, link-local, multicast ni reservada. Una IPv6 que lleva una IPv4 adentro (mapeada, NAT64 `64:ff9b::/96`, compatible `::/96`, 6to4 o Teredo) se juzga por esa IPv4: `64:ff9b::a00:5` es `10.0.0.5`.
+
+**`ytdlp_safe`** ([services/ytdlp_safe.py](../../back/apps/videos/services/ytdlp_safe.py)) es la única forma en que el backend corre yt-dlp, en el probe y en la descarga:
+
+- Solo corren los extractores de esos sitios (`ALLOWED_EXTRACTORS`: `youtube`, `vimeo`, `twitch:vod`, `twitch:clips`, `googledrive`). Sin el genérico, sin la página de consentimiento y sin los de canales o listas.
+- La primera lectura es con `process=False`. Un resultado que apunta a otro link se sigue a lo sumo dos veces, solo con uno de esos extractores forzado por clave, después de pasar `validate_video_link` otra vez y con la URL canónica que devuelve, no la que dio la página.
+- Tiene que quedar un solo video que no esté en vivo (`is_live`, `is_upcoming` o `post_live`). Recién ahí se procesa: el probe lee los datos y la descarga elige los formatos y baja.
+- `GuardedYoutubeDL` revisa cada pedido de yt-dlp (`urlopen`) e `install_guards` cada redirección: si va a una IP o a un host que resuelve a una dirección no pública, se corta (`blocked non-public address`).
+- Y la dirección a la que el socket se conecta se revisa otra vez justo antes del `connect` (`_guarded_create_connection`): un nombre que responde una IP pública al chequeo y una interna a la conexión (DNS rebinding) también se corta. Por eso solo queda el handler `Urllib` de yt-dlp, cuyas conexiones pasan por esa función. El proxy configurado es la única dirección no pública permitida: el destino lo resuelve él.
+
+Un link rechazado en la descarga lanza `UnsupportedLinkError`, que no se reintenta; un host que no resuelve lanza su `OSError`, que sí. Los mensajes son en español (`No reconocemos este sitio. Probá con YouTube, Vimeo u otro sitio público.`) y el link nunca va a un log.
+
+Queda abierto, para la infraestructura: ffmpeg, si yt-dlp lo usa para un stream que no baja solo, hace sus propios pedidos (lo cierra un firewall de salida en los workers). Detrás de un proxy, el DNS rebinding del destino lo tiene que frenar el proxy.
+
+## Revisar un link antes de crear (`probe-link`)
+
+`POST /api/v1/projects/probe-link/` con `{"video_url": "..."}` responde, sin bajar el video, `video_url` (normalizada), `provider` (`YouTube`, `Vimeo`, `Twitch` o `Google Drive`), `title`, `duration_seconds` y `thumbnail_url` (solo si es `https`, si no `null`). La web la usa en C1 › Pegar link y manda al crear la `video_url` que vuelve. Revisar un link es parte de crear: lo pueden hacer Dueño, Admin y Editor (`project.create`); el Lector recibe 403.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cliente
+    participant V as ProbeLinkView
+    participant LV as validate_video_link
+    participant K as Caché
+    participant W as link_probe_worker.py (proceso hijo)
+    participant S as Sitio del video
+
+    C->>V: POST projects/probe-link/ con video_url
+    V->>V: rol, máximo de 20 por minuto por usuario
+    V->>LV: validate_video_link(resolve=True)
+    alt otro esquema, otro sitio, una IP o un host privado
+        LV-->>C: 400 invalid o unsupported, sin ningún pedido afuera
+    end
+    V->>K: ¿ya se leyó este link?
+    alt en la caché
+        K-->>V: datos guardados
+    else no
+        V->>W: python -I link_probe_worker.py url, con 25 s de tope
+        W->>S: yt-dlp extract_info(download=False, process=False)
+        S-->>W: datos o error
+        W-->>V: una línea JSON: ok, o categoría y clase del error
+        V->>K: guarda los datos 10 min
+    end
+    V->>V: duración contra max_video_duration_seconds del plan
+    V-->>C: 200, o 403 duration con limit
+```
+
+1. `ProbeLinkView` valida el cuerpo (`video_url` obligatoria, hasta 500 caracteres) y cuenta los pedidos del usuario en la caché (`probe-link-rate:<id>`): pasado `PROBE_MAX_PER_MINUTE` (20) responde 429. Si la caché falla o no responde, no cuenta y deja pasar.
+2. `probe_link` pasa el link por `validate_video_link(resolve=True)`. Si no resuelve, 502 `provider_error`.
+3. Un link ya leído sale de la caché (`link-probe:v1:<sha256 de la URL>`, `LINK_PROBE_CACHE_SECONDS`).
+4. Si no, `run_worker` corre [link_probe_worker.py](../../back/apps/videos/services/link_probe_worker.py) como script aparte (`sys.executable -I`), en su propio grupo de procesos (`start_new_session`) y con un entorno mínimo (`child_environment`: `PATH`, `HOME`, el idioma, el proxy de salida y su CA). Nunca ve `SECRET_KEY`, la base de datos ni las keys de R2 o de los proveedores. Al pasar `LINK_PROBE_TIMEOUT_SECONDS` se mata el grupo entero, con lo que el hijo haya lanzado (yt-dlp puede correr un runtime de JavaScript), y la respuesta es 504 `timeout`. Su stderr va a `/dev/null`.
+5. El hijo corre yt-dlp con `ytdlp_safe` ([links admitidos](#links-admitidos)) más `skip_download`, `socket_timeout=10` y sin reintentos, y lee solo los datos.
+6. El texto del sitio no sale del hijo: `categorize` lo reduce a `unavailable` (privado, borrado, con login o restricción), `unsupported` (sin extractor, o un pedido a una dirección no pública) o `provider_error`, más la clase de la excepción.
+7. Un resultado que no es un video (lista, canal, vivo o sin duración) da 400 `unsupported`. La `video_url` de la respuesta es la página canónica del video si es del mismo sitio; si no, el link como llegó.
+8. Con plan, una duración mayor que `max_video_duration_seconds` da 403 `{error, code: "duration", limit}` (por ejemplo `El video dura 45 min y tu plan permite hasta 10 min.`). Sin plan no hay límite. Crear no pasa por el probe, así que el límite vuelve a valer en la descarga ([02](02-pipeline-de-ingesta.md)).
+
+| Respuesta | Cuándo |
+|-----------|--------|
+| 200 | El link es un video de un sitio admitido |
+| 400 `invalid` | No es una URL web |
+| 400 `unsupported` | Otro sitio, una IP, un host interno, una lista, un canal o un vivo |
+| 400 `unavailable` | Privado, borrado, con login o con restricción |
+| 400 `{video_url: [...]}` | Falta o pasa los 500 caracteres |
+| 403 | La duración supera el plan (`code: "duration"`), o el rol es Lector (`{detail}`) |
+| 404 | El workspace de `X-Workspace-Id` no es del usuario |
+| 429 | Más de 20 links en un minuto |
+| 502 `provider_error` | El sitio respondió con un error, o el host no resuelve |
+| 503 `unavailable_tool` | yt-dlp no está instalado |
+| 504 `timeout` | El sitio tardó más de `LINK_PROBE_TIMEOUT_SECONDS` |
+
+Logs: `probe_link.ok`, `probe_link.rejected` (`code`), `probe_link.failed` (`provider`, `code`, clase del error) y `probe_link.dns_failed`, con el id del usuario y nunca el link.
 
 ## Flujo: creación desde un prompt
 
@@ -272,6 +357,30 @@ flowchart TD
 
 Una aprobación anterior a los clips por segmento (sin `render_clip_ids`, todavía en curso al desplegar) la renderiza `render_video_segments` como una sola exportación y la liquida `_settle_render_reservation`: la cobra entera cuando se entrega y la devuelve si falla del todo ([06, Paper edit](06-render-caras-y-hablante.md)).
 
+## Actividad del proyecto
+
+`GET /api/v1/projects/<id>/activity/` (D1 › Actividad) dice quién hizo qué y cómo se movieron los tokens del proyecto, de lo más nuevo a lo más viejo. No hay un registro de eventos: `build_activity` ([services/project_activity.py](../../back/apps/videos/services/project_activity.py)) lo arma con lo que ya está guardado, en cinco consultas sea cual sea el tamaño del proyecto. La ven todos los roles, Lector incluido (`project.view`), con los movimientos de tokens.
+
+| Ítem (`type`) | De dónde sale | Hora | Quién (`actor`) |
+|---------------|---------------|------|-----------------|
+| `project_created` | El proyecto | `created_at` | `uploaded_by` |
+| `prompt_applied` | `metadata['pte']`: aplicado, vacío o fallido | El último `AIUsageRecord` de `prompt_parse`, si no la creación | Sistema |
+| `review_ready` | Un proyecto en revisión o con la revisión aprobada (no un video completo). Cantidad: `ai_rationale_log['suggestions_count']` | El último `AIUsageRecord` exitoso de `selection`, si no el primer clip | Sistema |
+| `review_approved` | La reserva de `metadata['render_reservation_id']`. Cantidad: `render_clip_ids` | `created_at` de la reserva | `created_by` de la reserva |
+| `tokens_reserved` | Cada `Transaction` de una clave `*reservation_id` de la metadata, del mismo workspace. Monto: `-reserved_amount` | `created_at` | `created_by` |
+| `tokens_charged` | La misma, en `COMPLETED`. Monto: `-amount` | `settled_at` | Sistema |
+| `tokens_refunded` | En `FAILED`, todo lo reservado; en `COMPLETED` con `reserved_amount` mayor que `amount`, la diferencia | `settled_at` | Sistema |
+| `render_finished` | Un proyecto `completed` o `partial`, con los clips listos y fallidos | `settled_at` de la reserva que pagó el render (aprobación, render automático o, en un video completo, la de la creación) | Sistema |
+| `project_failed` | Un proyecto `failed` | `pipeline_error_at` | Sistema |
+| `post_scheduled`, `post_published`, `post_failed` | Los `ScheduledPost` de sus clips, salvo los `DRAFT`, con `platform` | `created_at`; publicado o fallido, `updated_at` | Sistema |
+
+- Cada ítem tiene un id estable: `uuid5` del proyecto, el tipo y la fila de donde sale.
+- Los montos son decimales con signo, en texto (`"-20.0000000000"`): negativo es reservado o cobrado.
+- A lo sumo `MAX_ITEMS` (200).
+- Una reserva liquidada antes de la migración `0012` de payments no tiene `settled_at` ni `reserved_amount`: se usan `created_at` y `amount`.
+
+No aparece lo que no se guarda: los renombres (`project_renamed`), las ediciones y los reintentos de un clip (`clip_edited`, `clip_retried`), quién programó un post (`ScheduledPost` no tiene autor) y una reserva cuya clave ya no está en la metadata (el render automático liquidado de un proyecto que después se aprobó: la aprobación borra sus claves).
+
 ## Errores, reintentos y casos borde
 
 | Situación | Qué pasa | Dónde |
@@ -281,6 +390,7 @@ Una aprobación anterior a los clips por segmento (sin `render_clip_ids`, todav�
 | El rol no puede crear (Lector) | 403 `{"detail": "Con el rol Lector podés ver, pero no crear ni cambiar nada. Pedile acceso a un admin."}`. No se guarda ni se reserva nada | `WorkspaceRolePermission` |
 | `brand_kit` de otro workspace | 400 en `brand_kit` | `VideoProjectSerializer.get_fields` |
 | Sin fuente, o archivo y URL juntos | 400 con el mensaje de `validate` | `VideoProjectSerializer.validate` |
+| `video_url` de otro sitio, con otro esquema, a una IP o a un host interno | 400 en `video_url` (`No reconocemos este sitio...` o `Ingresá una URL válida...`). No se guarda ni se reserva nada | `validate_video_url`, `validate_video_link` |
 | Extensión distinta de `.mp4`, `.mov`, `.avi` | 400 `Solo se permiten archivos de video (.mp4, .mov, .avi)` | `validate_source_file` |
 | Archivo de más de 500 MB | 400 `El archivo es demasiado grande (MÃ¡x 500MB)` (sic: la `á` está mal codificada en el código) | `validate_source_file` |
 | `not_a_video` | 400 `El archivo no es un video válido. Formatos admitidos: MP4, MOV y AVI.` Lo dispara libmagic o un manifiesto de streaming. Log `upload.rejected code=not_a_video` o `code=streaming_manifest` | `validate_upload` |
@@ -325,8 +435,8 @@ Una aprobación anterior a los clips por segmento (sin `render_clip_ids`, todav�
 **Billetera y transacción:**
 
 - `Wallet.available_balance` baja y `Wallet.reserved_balance` sube en el costo.
-- `Transaction`: `transaction_type=SPEND`, `status=RESERVED`, `amount`, `created_by` y `description=Procesamiento: <título>`.
-- Al devolver: `Transaction.status=FAILED`, y el monto vuelve de `reserved_balance` a `available_balance`.
+- `Transaction`: `transaction_type=SPEND`, `status=RESERVED`, `amount`, `reserved_amount` (lo mismo que `amount`), `created_by` y `description=Procesamiento: <título>`.
+- Al devolver: `Transaction.status=FAILED`, `settled_at`, y el monto vuelve de `reserved_balance` a `available_balance`. Al cobrar, `status=COMPLETED` y `settled_at`. Un cobro parcial (`commit_partial_reservation`) reemplaza `amount` por lo cobrado y deja `reserved_amount` como estaba. Las filas de antes de la migración `0012` de payments tienen las dos columnas en `null`; si una de ellas se cobra en parte, `reserved_amount` se completa con el monto antes de pisarlo, así la actividad muestra la devolución.
 
 **Respuesta 201:** los campos del serializer (sin `selection_criteria` ni `use_seo`, que son de solo escritura), `cost_details.tokens_reserved`, `cost_details.transaction_id` y `message` (`Video subido. Iniciando ingesta multimodal...`). Desde `from_prompt` se suma `prompt_config`.
 
@@ -346,6 +456,9 @@ Una aprobación anterior a los clips por segmento (sin `render_clip_ids`, todav�
 | `AI_UPLOAD_MAX_LONG_SIDE_PX` | `4096` | Lado mayor máximo del video; si lo supera, `too_large` |
 | `AI_UPLOAD_MIN_SHORT_SIDE_PX` | `240` | Lado menor mínimo del video; si no llega, `too_small` |
 | `AI_PROMPT_MAX_CHARS` | `1000` | Largo máximo de `prompt` en `from_prompt` ([04-prompt-to-edit](04-prompt-to-edit.md)) |
+| `LINK_PROBE_TIMEOUT_SECONDS` | `25` | Tope de `probe-link` para el proceso de yt-dlp; al vencer se mata y responde 504. La web espera 60 s. No está en `base.py`: se lee con `getattr` |
+| `LINK_PROBE_CACHE_SECONDS` | `600` | Cuánto se guarda en la caché un link leído. También con `getattr` |
+| `LINK_DOWNLOAD_MAX_BYTES` | `4294967296` (4 GB) | Tope del archivo que baja el worker de un link: más, `LinkTooLargeError`. También con `getattr` |
 
 Valores fijos en el código (no son settings):
 

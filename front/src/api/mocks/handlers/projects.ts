@@ -6,6 +6,7 @@ import { adoptProject } from '../hybrid';
 import { priceOf, PRICING, stageStatusFor } from '../seed';
 import { planOf, serializeClip, serializeProject } from '../serialize';
 import { addActivity, InsufficientFunds, reserveFunds } from '../sim';
+import { linkProvider } from '@/features/proyectos/project-view';
 import { describeProjectStatus, projectStatusGroup } from '@/lib/project-status';
 
 const RANK: Record<RenderResolution, number> = { '720p': 1, '1080p': 2, '4K': 3 };
@@ -236,19 +237,13 @@ function createProject(context: Parameters<Parameters<typeof route<typeof contra
 export const projectsHandlers = [
   route(contract.probeLink, ({ db, workspace, body }) => {
     const url = body.video_url;
-    let host = '';
     try {
-      host = new URL(url).hostname.replace(/^www\./, '');
+      new URL(url);
     } catch {
       throw badRequest({ video_url: ['Ingresá una URL válida.'] });
     }
-    const providers: Array<[RegExp, string]> = [
-      [/youtube\.com|youtu\.be/, 'YouTube'],
-      [/vimeo\.com/, 'Vimeo'],
-      [/twitch\.tv/, 'Twitch'],
-      [/drive\.google\.com/, 'Google Drive'],
-    ];
-    const provider = providers.find(([pattern]) => pattern.test(host))?.[1];
+    // The backend's exact host list: youtube.com.evil.com is not YouTube.
+    const provider = linkProvider(url);
     if (!provider) throw new MockHttpError(400, { error: 'No reconocemos este sitio. Probá con YouTube, Vimeo u otro sitio público.', code: 'unsupported' });
     if (/privado|borrado/i.test(url)) throw new MockHttpError(400, { error: 'No pudimos acceder a este video. Puede ser privado o haberse borrado.', code: 'unavailable' });
     const duration = /(\d+)\s*min/i.test(url) ? durationFor(url, 0) : /largo/i.test(url) ? 5 * 3600 : 2700;
