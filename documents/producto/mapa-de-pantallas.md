@@ -284,7 +284,7 @@ Otras respuestas:
 - **Qué muestra:**
   - Una tarjeta por plan con los campos de la tabla 1.6.
   - Un ejemplo de costo: "Un video de 30 min a 720p ≈ 900 tokens".
-- **API:** ❌ no hay endpoint que liste planes.
+- **API:** ✅ `GET /api/v1/plans/`.
 
 ### B. Inicio
 
@@ -300,7 +300,7 @@ Otras respuestas:
   - Conectar una red.
   - Invitar a alguien.
   - Al cerrarla o completarla se marca `tour_completed`.
-- **API:** ⚠️ los campos existen en `User`; falta un endpoint para leer y actualizar el perfil (`/me`).
+- **API:** ✅ `GET/PATCH /api/v1/me/` lee y guarda el perfil, el tour y el uso elegido.
 
 #### B2. Proyectos — `/proyectos`
 - **Para qué:** ver todo lo que pasa en el workspace y entrar a cada proyecto.
@@ -474,9 +474,9 @@ Otras respuestas:
 - **Acciones:** **Guardar y renderizar** (muestra el costo), Descartar cambios y Descargar.
 - **Móvil:** versión simplificada, con el recorte por botones (±0,5 s) y el aviso de la sección 1.9.
 - **API:**
-  - ❌ no hay endpoint de clip: los clips solo se leen dentro del proyecto.
-  - ❌ falta volver a renderizar un clip, con su costo.
-  - ❌ la vista previa sin render (PTE-03) no existe.
+  - ✅ `GET/PATCH /api/v1/clips/:id/` lee el clip y guarda el título y el recorte.
+  - ✅ `POST /api/v1/clips/:id/render/` lo vuelve a renderizar, con su costo.
+  - ✅ `POST/GET /api/v1/clips/:id/preview/` da la vista previa gratis en 360p (PTE-03).
 
 #### D5. Resultado de "Editar el video completo" — `/proyectos/:id/resultado`
 - **Para qué:** ver y usar el video que devuelve un proyecto de tipo "Editar el video completo" (`project_type=single_edit`).
@@ -644,11 +644,11 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 #### I1. Perfil
 - **Campos:** nombre, email (cambiarlo pide verificar de nuevo), contraseña y apariencia (Sistema, Oscuro, Claro).
 - **Salir:** cerrar sesión, o cerrar sesión en todos los dispositivos.
-- **API:** ❌ (`/me`).
+- **API:** ✅ `GET/PATCH /api/v1/me/` (nombre y email) y `POST /api/v1/me/password/`. ❌ falta cerrar sesión en el servidor (`POST /auth/logout/`, hueco 2).
 
 #### I2. Notificaciones
 - **Qué muestra:** un interruptor de email por cada tipo de la sección 1.11.
-- **API:** ❌.
+- **API:** ✅ `GET/PATCH /api/v1/me/notification-preferences/`.
 
 ### J. Piezas transversales
 
@@ -738,26 +738,26 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 
 ## 8. Huecos de backend
 
-Lo que el frontend necesita y hoy no existe, en orden de prioridad:
+Lo que el frontend necesita y hoy no existe, en orden de prioridad. El detalle endpoint por endpoint, con lo que ya existe, está en `front/src/api/CONTRACT.md`:
 
 | # | Qué falta | Pantallas que bloquea | Prioridad |
 |---|---|---|---|
-| 1 | Registro, verificación de email y recuperar contraseña | A2, A3, A4 | P0 |
-| 2 | `GET/PATCH /me` con workspaces, rol en cada uno y workspace activo | Barra, B1, J3, I1 | P0 |
+| 1 | Registro, reenviar la verificación y recuperar contraseña. Existe en parte: `POST /auth/verify-email/` verifica el link, pero hoy solo lo manda el cambio de email (I1) | A2, A3, A4 | P0 |
+| 2 | ~~`GET/PATCH /me` con workspaces, rol en cada uno y workspace activo~~ Resuelto (PR #135): `GET/PATCH /me/` y `POST /me/password/`. Sigue faltando: cerrar sesión (`POST /auth/logout/`) y los endpoints de workspace (listar, crear, renombrar, borrar, transferir) | Barra, J3, H1, I1 | P0 |
 | 3 | ~~Roles aplicados en la API (tabla 1.7)~~ Resuelto: la API aplica los roles sobre el workspace de `X-Workspace-Id` y responde 403 con el motivo | Todas | — |
 | 4 | Wallet y transacciones (`GET /wallet`, `GET /transactions`), con vínculo al proyecto y estado "devuelto" visible | Barra, D1, G1, G2 | P0 |
 | 5 | ~~Link de descarga firmado por clip~~ Resuelto: `GET /clips/:id/download/` | D3, D4 | — |
-| 6 | Endpoint de precios (fórmula y planes) para el estimado | C1, A6, G3 | P0 |
+| 6 | Endpoint de precios (la fórmula) para el estimado. Los planes ya están: `GET /plans/` | C1, G3 | P0 |
 | 7 | ~~Campo `render_resolution` al crear, y alinear el render por defecto con el precio~~ Resuelto: se elige al crear y el render por defecto es 720p, como el precio | C1 | — |
-| 8 | Crear, listar, editar, cancelar y reintentar `ScheduledPost` | E1, E2 | P1 |
+| 8 | Crear, editar, cancelar y reintentar `ScheduledPost`. Listar y ver una ya existen (`GET /scheduled-posts/`), todavía sin los filtros | E1, E2 | P1 |
 | 9 | Beat que corra `dispatch_scheduled_posts_batch` | E1, E2 | P1 |
 | 10 | Conectar redes por workspace (Ayrshare) | E1, H3 | P1 |
-| 11 | Endpoint de clip: renombrar, recortar, volver a renderizar y reintentar | D3, D4 | P1 |
-| 12 | Planes, checkout y webhooks de pago (PAY-01/02/03) | G3, G4 | P1 |
+| 11 | ~~Endpoint de clip: renombrar, recortar, volver a renderizar y reintentar~~ Resuelto: `GET/PATCH/DELETE /clips/:id/`, `POST /clips/:id/render/` y `POST /clips/:id/retry/` | D3, D4 | — |
+| 12 | Suscripción, checkout y webhooks de pago (PAY-01/02/03). La lista de planes ya está: `GET /plans/` | G3, G4 | P1 |
 | 13 | Invitaciones: crear, reenviar y aceptar | A5, H2 | P1 |
 | 14 | Paginación y filtro por estado en proyectos | B2 | P1 |
 | 15 | Tiempos por etapa del pipeline | D1 | P2 |
-| 16 | Notificaciones (modelo y emails) | J2, I2 | P2 |
+| 16 | Notificaciones (modelo y emails). Las preferencias de email ya están: `GET/PATCH /me/notification-preferences/` | J2 | P2 |
 | 17 | ~~Descargar todo en .zip~~ Resuelto: `POST /projects/:id/clips/download/` | D3 | — |
 | 18 | Tiempo estimado del proceso ("Listo para revisar en ≈ 12 min") | C1, D1 | P2 |
 | 19 | Total reservado del workspace con el detalle por proyecto | G1, barra | P1 |
