@@ -7,7 +7,7 @@ import { ApiError } from '@/api/errors';
 import { workspaceDay } from '@/api/mocks/db';
 import { USER_IDS, WORKSPACE_IDS } from '@/api/mocks/seed';
 import { server } from '@/api/mocks/server';
-import { reserveFunds, settleReservationPartially, walletOf } from '@/api/mocks/sim';
+import { releaseReservation, reserveFunds, settleReservation, settleReservationPartially, walletOf } from '@/api/mocks/sim';
 import { applyScenario, loadDb, mockTokens, saveDb } from '@/api/mocks/state';
 import { setActiveWorkspaceId, setTokens } from '@/api/session';
 
@@ -20,6 +20,8 @@ beforeEach(() => {
   setTokens(mockTokens(USER_IDS.lucia));
   setActiveWorkspaceId(WORKSPACE_IDS.estudio);
 });
+
+const round = (value: number) => Math.round(value * 100) / 100;
 
 const failure = async (promise: Promise<unknown>): Promise<ApiError> => {
   const error = await promise.catch((reason: unknown) => reason);
@@ -48,10 +50,77 @@ describe('mocks de Uso alineados con el backend', () => {
     expect(page.totals.reserved?.count).toBeGreaterThan(0);
     expect(page.totals.released?.count).toBeGreaterThan(0);
     const csv = await apiCall(billing.exportTransactions, { query: {} });
-    const sign = (kind: string) => csv.split('\n').filter((line) => line.includes(`,${kind},`)).map((line) => line.split(',').pop()?.startsWith('-'));
-    expect(new Set(sign('released'))).toEqual(new Set([false]));
-    expect(new Set(sign('charged'))).toEqual(new Set([true]));
-    expect(new Set(sign('purchase'))).toEqual(new Set([false]));
+    expect(csv.split('\n')[0]).toBe('fecha,concepto,proyecto,tipo,monto,estado,transaccion');
+    // One row per change of the balance: what it was (fourth column from the end) and its amount (third).
+    const sign = (what: string) =>
+      csv
+        .split('\n')
+        .slice(1)
+        .map((line) => line.split(','))
+        .filter((cells) => cells.at(-4) === what)
+        .map((cells) => cells.at(-3)?.startsWith('-'));
+    expect(new Set(sign('Reserva'))).toEqual(new Set([true]));
+    expect(new Set(sign('Devuelto'))).toEqual(new Set([false]));
+    expect(new Set(sign('Compra'))).toEqual(new Set([false]));
+  });
+
+  it('como el backend: el CSV suma lo que hizo el saldo y «Devuelto» incluye lo que devolvió un cobro parcial', async () => {
+    const db = loadDb();
+    const wallet = walletOf(db, WORKSPACE_IDS.estudio);
+    const before = wallet.available_balance;
+    const now = Date.now();
+    const input = { workspace: WORKSPACE_IDS.estudio, userId: USER_IDS.lucia, description: 'Render', project: null, category: 'render' as const };
+    const released = reserveFunds(db, { ...input, amount: 10 }, now);
+    releaseReservation(db, released.id, now);
+    const partial = reserveFunds(db, { ...input, amount: 20 }, now);
+    settleReservationPartially(db, partial.id, 5, now);
+    const whole = reserveFunds(db, { ...input, amount: 7 }, now);
+    settleReservation(db, whole.id, now);
+    const open = reserveFunds(db, { ...input, amount: 3 }, now);
+    saveDb(db);
+    expect(round(walletOf(loadDb(), WORKSPACE_IDS.estudio).available_balance - before)).toBe(-15);
+
+    const csv = await apiCall(billing.exportTransactions, { query: {} });
+    const mine = csv.split('\n').filter((line) => [released.id, partial.id, whole.id, open.id].some((id) => line.endsWith(`,${id}`)));
+    expect(mine).toHaveLength(6); // four reservations, the whole return and the partial one
+    expect(round(mine.reduce((sum, line) => sum + Number(line.split(',').at(-3)), 0))).toBe(-15);
+    const page = await apiCall(billing.listTransactions, { query: { page_size: 100 } });
+    const row = page.results.find((item) => item.id === partial.id);
+    expect(row).toMatchObject({ kind: 'charged', amount: 5, reserved_amount: 20 });
+    expect(row?.settled_at).not.toBeNull();
+    expect(page.totals.released?.partial_count).toBeGreaterThanOrEqual(1);
+  });
+
+  it('como el backend: movimientos solo para Dueño y Admin, el CSV filtra por proyecto y el estimado valida el pedido', async () => {
+    const released = loadDb().transactions.find((item) => item.kind === 'released' && item.project);
+    if (!released?.project) throw new Error('sin reservas devueltas');
+    const csv = await apiCall(billing.exportTransactions, { query: { project: released.project.id } });
+    const rows = csv.split('\n').slice(1);
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((line) => line.includes(released.project?.title ?? '?'))).toBe(true);
+    expect(rows.some((line) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}-03:00,/.test(line) && /,Devuelto,[\d.]+,Devuelto,/.test(line))).toBe(true);
+
+    const link = await failure(apiCall(billing.estimateCost, { body: { source: 'link', render_resolution: '1080p' } }));
+    expect(link.status).toBe(400);
+    expect(link.message).toMatch(/720p/);
+    expect((await failure(apiCall(billing.estimateCost, { body: { source: 'file' } }))).fieldErrors.duration_seconds).toBeDefined();
+
+    applyScenario('rol-editor');
+    setTokens(mockTokens(USER_IDS.carla));
+    expect((await failure(apiCall(billing.listTransactions, { query: { project: released.project.id } }))).status).toBe(403);
+    expect((await apiCall(billing.estimateCost, { body: { source: 'file', duration_seconds: 60 } })).total).toBeGreaterThan(0);
+  });
+
+  it('un cobro cuenta en el consumo el día que se cobró, no el de la reserva', async () => {
+    const db = loadDb();
+    const reservation = reserveFunds(db, { workspace: WORKSPACE_IDS.estudio, amount: 40, userId: USER_IDS.lucia, description: 'Render', project: null, category: 'render' }, Date.now());
+    reservation.created_at = '2026-11-30T12:00:00.000Z';
+    settleReservationPartially(db, reservation.id, 40, Date.parse('2026-12-01T12:00:00.000Z'));
+    saveDb(db);
+    const november = await apiCall(billing.getUsage, { query: { month: '2026-11' } });
+    const december = await apiCall(billing.getUsage, { query: { month: '2026-12' } });
+    expect(december.find((day) => day.date === '2026-12-01')?.renders).toBeGreaterThanOrEqual(40);
+    expect(november.find((day) => day.date === '2026-11-30')?.renders ?? 0).toBeLessThan(40);
   });
 
   it('el mes y los días se cuentan en la zona horaria del workspace', async () => {
@@ -60,7 +129,9 @@ describe('mocks de Uso alineados con el backend', () => {
     const db = loadDb();
     const charged = db.transactions.find((item) => item.kind === 'charged');
     if (!charged) throw new Error('sin cobros');
+    // Charged at that moment: the list and the usage chart date a charge when it was settled.
     charged.created_at = '2026-12-01T02:30:00.000Z';
+    charged.settled_at = '2026-12-01T02:30:00.000Z';
     saveDb(db);
     const november = await apiCall(billing.listTransactions, { query: { month: '2026-11', kind: 'charged', page_size: 100 } });
     const december = await apiCall(billing.listTransactions, { query: { month: '2026-12', kind: 'charged', page_size: 100 } });

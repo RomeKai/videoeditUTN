@@ -57,10 +57,12 @@ export function reserveFunds(
     wallet: wallet.id,
     created_by: input.userId,
     amount: input.amount,
+    reserved_amount: input.amount,
     transaction_type: 'SPEND',
     status: 'RESERVED',
     description: input.description,
     created_at: iso(now),
+    settled_at: null,
     kind: 'reserved',
     created_by_detail: user ? { id: user.id, name: user.name } : null,
     project: input.project,
@@ -79,6 +81,7 @@ export function settleReservation(db: MockDb, transactionId: string, now: number
   wallet.updated_at = iso(now);
   transaction.status = 'COMPLETED';
   transaction.kind = 'charged';
+  transaction.settled_at = iso(now);
 }
 
 /**
@@ -103,6 +106,7 @@ export function settleReservationPartially(db: MockDb, transactionId: string, am
   transaction.amount = charged;
   transaction.status = 'COMPLETED';
   transaction.kind = 'charged';
+  transaction.settled_at = iso(now);
   return released;
 }
 
@@ -116,6 +120,7 @@ export function releaseReservation(db: MockDb, transactionId: string, now: numbe
   wallet.updated_at = iso(now);
   transaction.status = 'FAILED';
   transaction.kind = 'released';
+  transaction.settled_at = iso(now);
   return transaction.amount;
 }
 
@@ -567,10 +572,12 @@ function tickPurchases(db: MockDb, now: number): void {
       wallet: wallet.id,
       created_by: null,
       amount: purchase.tokens,
+      reserved_amount: null,
       transaction_type: 'DEPOSIT',
       status: 'COMPLETED',
       description: `Compra de ${purchase.tokens} tokens`,
       created_at: iso(now),
+      settled_at: null,
       kind: 'purchase',
       created_by_detail: null,
       project: null,

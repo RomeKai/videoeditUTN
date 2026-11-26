@@ -4,13 +4,13 @@ import type { Clip, Project } from '../contracts/projects';
 import type { ScheduledPost } from '../contracts/social';
 import type { Me } from '../contracts/users';
 import type { Member } from '../contracts/workspaces';
-import type { MockClip, MockDb, MockMember, MockPost, MockProject, MockTransaction, MockUser, MockWorkspace } from './db';
+import { workspaceDay, type MockClip, type MockDb, type MockMember, type MockPost, type MockProject, type MockTransaction, type MockUser, type MockWorkspace } from './db';
 import { dec } from './http';
 import { generateTranscript, PRICING } from './seed';
 import { roleIn, walletOf } from './sim';
 
 /** Wire types: what goes on the network (decimals as strings), i.e. the *input* of the zod schemas. */
-type Wire<T> = { [K in keyof T]: T[K] extends number ? number | string : T[K] };
+type Wire<T> = { [K in keyof T]: T[K] extends number ? number | string : T[K] extends number | null ? number | string | null : T[K] };
 
 export function serializeClip(db: MockDb, clip: MockClip): Clip {
   const { _renderFails, ...rest } = clip;
@@ -50,17 +50,28 @@ export function serializePost(post: MockPost): ScheduledPost {
 export function serializeTransaction(transaction: MockTransaction): Wire<Transaction> {
   const { workspace, ...rest } = transaction;
   void workspace;
-  return { ...rest, amount: dec(transaction.amount, 10) };
+  return {
+    ...rest,
+    amount: dec(transaction.amount, 10),
+    reserved_amount: transaction.reserved_amount === null ? null : dec(transaction.reserved_amount, 10),
+  };
+}
+
+/**
+ * When a row last moved the balance (the backend's MOVED_AT): a charge or a return when it was settled, an open
+ * reservation or a purchase when it was made. The list, its month, its totals and the usage chart use it.
+ */
+export function movedAt(transaction: MockTransaction): string {
+  return transaction.settled_at ?? transaction.created_at;
 }
 
 export function serializeWallet(db: MockDb, workspaceId: string, now: number): Wire<Omit<Wallet, 'reservations'>> & { reservations: unknown[] } {
   const wallet = walletOf(db, workspaceId);
-  const monthStart = new Date(now);
-  monthStart.setDate(1);
-  monthStart.setHours(0, 0, 0, 0);
+  // This month in the workspace's time zone, by when each charge was charged (like the backend).
+  const month = workspaceDay(now).slice(0, 7);
   const transactions = db.transactions.filter((item) => item.workspace === workspaceId);
   const spent = transactions
-    .filter((item) => item.transaction_type === 'SPEND' && item.status === 'COMPLETED' && new Date(item.created_at) >= monthStart)
+    .filter((item) => item.transaction_type === 'SPEND' && item.status === 'COMPLETED' && workspaceDay(movedAt(item)).startsWith(month))
     .reduce((sum, item) => sum + item.amount, 0);
   const plan = planOf(db, workspaceId);
   // "Below what an average video costs": 20 minutes at 720p with the plan's discount.
@@ -73,8 +84,10 @@ export function serializeWallet(db: MockDb, workspaceId: string, now: number): W
     updated_at: wallet.updated_at,
     spent_this_month: dec(spent),
     low_balance_threshold: dec(threshold),
+    // Newest first, like the backend.
     reservations: transactions
       .filter((item) => item.status === 'RESERVED')
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .map((item) => ({
         transaction_id: item.id,
         project_id: item.project?.id ?? null,

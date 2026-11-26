@@ -34,6 +34,16 @@ class PricingEngine:
         'ai_thumbnail': Decimal('15.0'),
     }
 
+    # Flat price of a project created from a link: its duration is unknown when
+    # it is priced, so it is always 720p (VideoProjectViewSet.create, ADR-013).
+    LINK_FLAT_COST = Decimal('10.0')
+
+    # Floor of any charge.
+    MIN_COST = Decimal('0.01')
+
+    # Order of the resolution tiers: a plan allows its own and the lower ones.
+    RESOLUTION_RANK = {'720p': 1, '1080p': 2, '4K': 3}
+
     @classmethod
     def calculate_render_cost(
         cls, 
@@ -54,27 +64,31 @@ class PricingEngine:
             raise ValueError("Duration cannot be negative.")
 
         # 1. VALIDATION: Tier Constraints
+        # Each error carries the limit it hit in ``code`` (duration, resolution,
+        # seo, thumbnail): the API answers it as the 403 ``code`` of the front.
         if plan:
             # A. Duration Check
             if duration_seconds > plan.max_video_duration_seconds:
                 raise PlanLimitExceededError(
-                    f"Video duration ({duration_seconds}s) exceeds your plan limit ({plan.max_video_duration_seconds}s)."
+                    f"Video duration ({duration_seconds}s) exceeds your plan limit ({plan.max_video_duration_seconds}s).",
+                    code='duration',
                 )
             
             # B. Resolution Check (Hierarchy: 4K > 1080p > 720p)
-            res_hierarchy = {'720p': 1, '1080p': 2, '4K': 3}
-            requested_rank = res_hierarchy.get(resolution, 1)
-            allowed_rank = res_hierarchy.get(plan.max_resolution, 1)
+            requested_rank = cls.RESOLUTION_RANK.get(resolution, 1)
+            allowed_rank = cls.RESOLUTION_RANK.get(plan.max_resolution, 1)
             
             if requested_rank > allowed_rank:
-                raise PlanLimitExceededError(f"Your plan '{plan.name}' does not support {resolution} rendering.")
+                raise PlanLimitExceededError(
+                    f"Your plan '{plan.name}' does not support {resolution} rendering.", code='resolution',
+                )
 
             # C. Feature Check
             if features_requested.get('seo_optimization') and not plan.has_seo_optimization:
-                raise FeatureNotAllowedError("SEO Optimization is not allowed in your current plan.")
+                raise FeatureNotAllowedError("SEO Optimization is not allowed in your current plan.", code='seo')
             
             if features_requested.get('ai_thumbnail') and not plan.has_thumbnail_engine:
-                raise FeatureNotAllowedError("IA Thumbnail Engine is not allowed in your current plan.")
+                raise FeatureNotAllowedError("IA Thumbnail Engine is not allowed in your current plan.", code='thumbnail')
 
         # 2. MATH: Base Render Cost
         res_multiplier = cls.RESOLUTION_MULTIPLIERS.get(resolution, Decimal('1.0'))
@@ -92,7 +106,7 @@ class PricingEngine:
         total_cost = (base_render_cost + add_on_cost) * (Decimal('1.0') - discount_rate)
 
         # 5. SECURITY: Guarantee positivity
-        total_cost = max(Decimal('0.01'), total_cost)
+        total_cost = max(cls.MIN_COST, total_cost)
 
         # Round to 2 decimal places for financial integrity
         return total_cost.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
