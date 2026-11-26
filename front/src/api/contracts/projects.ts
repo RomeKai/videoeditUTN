@@ -76,6 +76,12 @@ export const KNOWN_PIPELINE_ERROR_CODES = [
   'AutoRenderNotPaid',
   /** The creation could not queue the ingestion (broker down): the project fails and its reservation goes back, together (views.py · _fail_unqueued_project). Never resumed. */
   'IngestionNotQueued',
+  /** A link project whose link is not one video of YouTube, Vimeo, Twitch or Google Drive when it is fetched (tasks/shared.py · download_from_youtube). Not retried. */
+  'UnsupportedLinkError',
+  /** The linked video is longer than the plan (or the app) allows. Not retried. */
+  'LinkTooLongError',
+  /** The linked video's file is larger than LINK_DOWNLOAD_MAX_BYTES. Not retried. */
+  'LinkTooLargeError',
 ] as const;
 export type KnownPipelineErrorCode = (typeof KNOWN_PIPELINE_ERROR_CODES)[number];
 
@@ -143,7 +149,7 @@ export const Clip = z.object({
   preview_url: z.string().url().nullable().optional(),
   /** Proposed: poster image. */
   thumbnail_url: z.string().url().nullable().optional(),
-  /** Proposed (gap 11): why the render failed (class name), for "Reintentar no gasta tokens". */
+  /** Proposed (gap 11): why the render failed (class name). The retry is paid whatever the reason (clips.retry). */
   error_code: z.string().nullable().optional(),
   /** Proposed (gap 8): networks where it is published or scheduled. */
   posts: z.array(ClipPostRef).optional(),
@@ -382,6 +388,10 @@ export type CreateProjectResponse = z.infer<typeof CreateProjectResponse>;
 export const CreateFromPromptResponse = CreateProjectResponse.extend({
   prompt_config: z.object({ status: z.literal('pending'), detail: z.string() }),
 });
+
+/** Body of `POST projects/{id}/redispatch/`: the project, with `cost_details` only when it reserved again (ProjectRedispatchView). */
+export const RedispatchResponse = Project.extend({ cost_details: CostDetails.optional() });
+export type RedispatchResponse = z.infer<typeof RedispatchResponse>;
 
 export const UpdateProjectRequest = z.object({ title: z.string().min(1).max(255) }).partial();
 
@@ -656,7 +666,7 @@ export const redispatchProject = defineEndpoint({
   method: 'POST',
   path: '/api/v1/projects/:id/redispatch/',
   summary: 'Vuelve a despachar el pipeline de un proyecto que falló, desde la última etapa terminada. Si lo que falta se había devuelto, lo reserva de nuevo por el mismo monto.',
-  response: Project,
+  response: RedispatchResponse,
   successStatus: 202,
   errors: [
     { status: 402, when: 'Saldo insuficiente para volver a reservar lo devuelto: `{ error, required }`. La UI abre D2.' },

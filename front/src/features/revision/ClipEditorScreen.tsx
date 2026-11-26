@@ -6,9 +6,9 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type { RenderResolution } from '@/api/contracts/common';
 import type { Clip, Project } from '@/api/contracts/projects';
 import { ApiError } from '@/api/errors';
-import { useClip, useClipDownload, usePricing, useProject, useRenderClip, useRetryClip, useUpdateClip, useWallet } from '@/api/hooks';
+import { useClip, useClipDownload, usePricing, useProject, useRenderClip, useUpdateClip, useWallet } from '@/api/hooks';
 import { keys } from '@/api/query';
-import { ConfirmCostDialog, UnsavedChangesDialog, useBillingDialogs } from '@/dialogs';
+import { ConfirmCostDialog, UnsavedChangesDialog, useBillingDialogs, useRetryClipFlow } from '@/dialogs';
 import { cx } from '@/lib/cx';
 import { downloadUrl } from '@/lib/download';
 import { errorMessage } from '@/lib/error-messages';
@@ -124,7 +124,7 @@ function Editor({ userId, clip, project, loadError }: { userId: string; clip: Cl
   const billing = useBillingDialogs();
   const update = useUpdateClip(clip.id);
   const renderClip = useRenderClip(clip.id);
-  const retry = useRetryClip();
+  const retry = useRetryClipFlow(project);
   const queryClient = useQueryClient();
   const download = useClipDownload();
 
@@ -493,18 +493,15 @@ function Editor({ userId, clip, project, loadError }: { userId: string; clip: Cl
           <Banner
             tone="err"
             className={styles.banner}
-            title="No se pudo generar. Reintentar no gasta tokens."
+            title="No se pudo generar y no se cobró"
             action={
-              <Button
-                size="sm"
-                iconLeft="retry"
-                loading={retry.isPending}
-                onClick={() => retry.mutate(clip.id, { onError: (error) => toast.error(errorMessage(error, 'No pudimos reintentar. Probá de nuevo.')) })}
-              >
+              <Button size="sm" iconLeft="retry" loading={retry.retryingId === clip.id} onClick={() => retry.ask(clip)}>
                 Reintentar
               </Button>
             }
-          />
+          >
+            {`Reintentarlo cuesta su render${retry.estimateFor(clip) ? `: ${retry.costHint(clip)}` : ''}. Te mostramos el costo antes de confirmar.`}
+          </Banner>
         ) : clip.status === 'draft' ? (
           <Banner
             tone="info"
@@ -855,6 +852,7 @@ function Editor({ userId, clip, project, loadError }: { userId: string; clip: Cl
           error={saveError}
         />
       ) : null}
+      {retry.dialog}
       <UnsavedChangesDialog {...guard.dialog} what={<>el {changes || 'recorte'} nuevo de «{clip.title}»</>} />
     </>
   );

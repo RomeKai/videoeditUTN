@@ -639,6 +639,23 @@ describe('D4 · Editor de clip', () => {
     expect(bar()).toHaveTextContent('Sin cambios');
   });
 
+  it('un clip con error: reintentarlo es pago, avisa cuánto cuesta y pide confirmar', async () => {
+    const user = userEvent.setup();
+    const partial = loadDb().projects.find((item) => item.title.startsWith('Charla en la UTN'));
+    const failed = partial?.clips.find((item) => item.status === 'failed');
+    if (!partial || !failed) throw new Error('falta el clip fallido');
+    renderScreen(<ClipEditorScreen projectId={partial.id} clipId={failed.id} />);
+    expect(await screen.findByText('No se pudo generar y no se cobró')).toBeInTheDocument();
+    expect(await screen.findByText(/Reintentarlo cuesta su render: [\d.,]+ tokens?\. Te mostramos el costo antes de confirmar\./)).toBeInTheDocument();
+    expect(screen.queryByText(/no gasta tokens/i)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Reintentar' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Reintentar el clip' });
+    expect(project(partial.id)?.status).toBe('partial');
+    await user.click(within(dialog).getByRole('button', { name: 'Reintentar' }));
+    expect(await screen.findByText(/^Reintentando el clip\. Reservamos [\d.,]+ tokens?;/)).toBeInTheDocument();
+    await waitFor(() => expect(loadDb().transactions.find((item) => item.description === `Reintento de clip: ${failed.title}`)?.status).toBe('RESERVED'));
+  });
+
   it('un clip en borrador de un proyecto en revisión no se renderiza solo', async () => {
     const user = userEvent.setup();
     const draftClip = clipOf(3, 1);

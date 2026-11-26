@@ -217,6 +217,9 @@ El pipeline guarda en `pipeline_error_code` el nombre de la excepción. El front
 | `AINoSpeechDetectedError` | "No encontramos voz en el video. OneCreator elige clips a partir de lo que se dice." |
 | `AIEmptySelectionError` | "No encontramos momentos que funcionen como clips. Probá con otro video o cambiá el criterio." |
 | `SoftTimeLimitExceeded` | "El video tardó demasiado en procesarse. Probá con uno más corto." |
+| `UnsupportedLinkError` | "No pudimos usar este link. Tiene que ser el link de un solo video público de YouTube, Vimeo, Twitch o Google Drive: no una lista, un canal ni una transmisión en vivo." |
+| `LinkTooLongError` | "El video del link dura más de lo que permite tu plan. Probá con uno más corto o cambiá de plan." |
+| `LinkTooLargeError` | "El video del link pesa más de lo que podemos descargar. Probá con una versión más liviana o subí el archivo." |
 | `ModerationUnavailableError`, `AIAuthenticationError` y cualquier otro | "Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo." |
 
 Errores al subir el archivo. `InvalidUploadError.code` llega en la respuesta 400 y se muestra junto al campo del archivo:
@@ -446,12 +449,12 @@ Otras respuestas:
 - **Acciones generales:** **Descargar todo** (.zip) y **Publicar varios** (selección múltiple).
 - **Estados:**
   - Renderizando: una tarjeta con esqueleto y "Renderizando…".
-  - Error: una tarjeta roja con **Reintentar**. Reintentar no cobra si el error fue nuestro.
+  - Error: una tarjeta neutra con **Reintentar** ("No se pudo generar y no se cobró. Reintentar cuesta tokens."). Reintentar es pago: cuando el clip falló se devolvió su parte del render, así que el reintento reserva de nuevo el render de ese clip y el clip se paga una vez en total. Como toda acción paga, primero muestra el diálogo de confirmar costo; sin saldo abre "No te alcanza el saldo". Mientras ese render está en curso el proyecto queda en `rendering` y no se puede empezar otro render pago del mismo proyecto.
 - **Móvil:** dos columnas; las acciones se abren en una hoja inferior.
 - **API:**
   - ✅ los clips llegan dentro del proyecto: uno por segmento aprobado en D2, cada uno con su estado (`draft` mientras espera su render, `rendering`, `completed` o `failed`). El proyecto termina `completed`, o `partial` si algún clip falló.
   - ✅ `GET /api/v1/clips/:id/download/`: link firmado y temporal que guarda el clip como archivo.
-  - ❌ falta reintentar el render de un clip.
+  - ✅ `POST /api/v1/clips/:id/retry/`: reintenta el render de un clip que falló y reserva su costo. Responde el clip más `final_cost` y `transaction_id`; 402 sin saldo y 409 si el clip no está en error o el proyecto ya está renderizando o procesando.
   - ✅ `POST /api/v1/projects/:id/clips/download/`: .zip de los clips listos, con tope de 1 GB y 50 clips.
 
 #### D4. Editor de clip — `/proyectos/:id/clips/:clipId`
@@ -794,7 +797,7 @@ Se agregaron en la segunda ronda del canvas, después de una revisión de diseñ
 6. **Clips (D3).**
    - En la pestaña Clips la cabecera no tiene acción principal, porque ya estás en los clips.
    - "Publicar varios" pasa a ser "Seleccionar". Activa un modo de selección con casillas en las tarjetas y una barra que dice "N seleccionados · Publicar · Descargar · Cancelar".
-   - Los estados "Renderizando" y "Error" ("No se pudo generar. Reintentar no gasta tokens.") se muestran en una sección "Otros estados" de la pantalla y en el sistema visual. La tarjeta de error es neutra: el rojo va solo en el ícono y la etiqueta.
+   - Los estados "Renderizando" y "Error" ("No se pudo generar y no se cobró. Reintentar cuesta tokens.") se muestran en una sección "Otros estados" de la pantalla y en el sistema visual. La tarjeta de error es neutra: el rojo va solo en el ícono y la etiqueta.
 7. **Publicar (E1).**
    - El orden es Clip → Redes → Cuándo → detalle por red.
    - En la pestaña de TikTok la privacidad va primero.

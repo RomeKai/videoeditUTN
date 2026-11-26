@@ -2,9 +2,9 @@ import * as contract from '../../contracts/clips';
 import { newId, type MockClip, type MockDb, type MockProject } from '../db';
 import { badRequest, conflict, dec, MockHttpError, notFound, route } from '../http';
 import { adoptClip } from '../hybrid';
-import { priceOf } from '../seed';
-import { planOf, serializeClip } from '../serialize';
-import { addActivity, InsufficientFunds, reserveFunds, SIM, settleReservation } from '../sim';
+import { renderReservationOpen, startPaidRender } from '../render';
+import { serializeClip } from '../serialize';
+import { addActivity } from '../sim';
 import { MOCK_DOWNLOAD_URL } from './projects';
 
 function find(db: MockDb, clipId: string | undefined, workspaceId: string): { project: MockProject; clip: MockClip } {
@@ -18,8 +18,6 @@ function find(db: MockDb, clipId: string | undefined, workspaceId: string): { pr
   if (adopted) return adopted;
   throw notFound();
 }
-
-const RESOLUTION_RANK = { '720p': 1, '1080p': 2, '4K': 3 } as const;
 
 const projectRendering = () =>
   new MockHttpError(409, { detail: 'El proyecto se está renderizando: esperá a que termine para cambiarlo.', code: 'project_rendering' });
@@ -60,6 +58,13 @@ export const clipsHandlers = [
   route(contract.deleteClip, ({ db, workspace, params, require }) => {
     require('clip.edit');
     const { project, clip } = find(db, params.id, workspace.id);
+    // A delivered clip deleted in the middle of a render would leave its charge short.
+    if (['rendering', 'uploaded', 'ingesting'].includes(project.status) || clip.status === 'rendering' || renderReservationOpen(db, project)) {
+      throw conflict('El proyecto se está renderizando: esperá a que termine para borrar el clip.', 'project_rendering');
+    }
+    if (db.posts.some((post) => post.video_clip === clip.id && post.status === 'PROCESSING')) {
+      throw conflict('Una publicación de este clip se está subiendo: esperá a que termine para borrarlo.', 'post_processing');
+    }
     project.clips = project.clips.filter((item) => item.id !== clip.id);
     db.posts = db.posts.filter((post) => post.video_clip !== clip.id);
     return { data: undefined };
@@ -68,39 +73,20 @@ export const clipsHandlers = [
   route(contract.renderClip, ({ db, workspace, params, user, now, require }) => {
     require('clip.edit');
     const { project, clip } = find(db, params.id, workspace.id);
-    if (clip.status === 'rendering') throw conflict('El clip ya se está renderizando.');
-    if (project.status === 'rendering') throw projectRendering();
-    const plan = planOf(db, workspace.id);
-    const resolution = project.metadata.render_resolution ?? '720p';
-    if (plan && RESOLUTION_RANK[resolution] > RESOLUTION_RANK[plan.max_resolution]) {
-      // PricingEngine refuses a resolution above the plan's (the project was created on a higher plan).
-      throw new MockHttpError(403, { error: `Resolution ${resolution} not allowed in your plan (max ${plan.max_resolution}).`, code: 'resolution' });
-    }
-    const cost = priceOf(Math.ceil(clip.end_time - clip.start_time), project.metadata.render_resolution ?? '720p', false, plan?.base_discount_rate ?? 0);
-    let transaction;
-    try {
-      transaction = reserveFunds(db, { workspace: workspace.id, amount: cost, userId: user.id, description: `Render de clip: ${clip.title}`, project: { id: project.id, title: project.title }, category: 'render' }, now);
-    } catch (error) {
-      if (error instanceof InsufficientFunds) throw new MockHttpError(402, { error: 'Saldo insuficiente para reservar los tokens.', required: error.required });
-      throw error;
-    }
-    clip.status = 'rendering';
-    clip._renderUntil = now + SIM.clipMs * 2;
-    // The single-clip render settles when it is queued: the mock has no per-clip reservation tracking.
-    settleReservation(db, transaction.id, now);
-    addActivity(db, project, 'tokens_charged', `Cobro por renderizar «${clip.title}»`, now, { actorId: user.id, amount: -cost });
-    return { data: { message: 'Render encolado.', final_cost: dec(cost), transaction_id: transaction.id }, status: 202 };
+    const transaction = startPaidRender(db, project, [clip], { userId: user.id, description: `Render de clip: ${clip.title}`, now });
+    addActivity(db, project, 'tokens_reserved', `Reserva por renderizar «${clip.title}»`, now, { actorId: user.id, amount: -transaction.amount });
+    return { data: { message: 'Render encolado.', final_cost: dec(transaction.amount), transaction_id: transaction.id }, status: 202 };
   }),
 
+  // Paid like `render`: the share of a clip that failed went back when its render was settled.
   route(contract.retryClip, ({ db, workspace, params, user, now, require }) => {
     require('clip.edit');
     const { project, clip } = find(db, params.id, workspace.id);
-    if (clip.status !== 'failed') throw conflict('El clip no está en error.');
-    clip.status = 'rendering';
-    clip.error_code = null;
-    clip._renderUntil = now + SIM.clipMs * 2;
+    if (clip.status !== 'failed') throw conflict('El clip no está en error.', 'not_failed');
+    const transaction = startPaidRender(db, project, [clip], { userId: user.id, description: `Reintento de clip: ${clip.title}`, now });
     addActivity(db, project, 'clip_retried', `Reintentó el clip «${clip.title}»`, now, { actorId: user.id });
-    return { data: serializeClip(db, clip), status: 202 };
+    addActivity(db, project, 'tokens_reserved', `Reserva por reintentar «${clip.title}»`, now, { actorId: user.id, amount: -transaction.amount });
+    return { data: { ...serializeClip(db, clip), final_cost: dec(transaction.amount), transaction_id: transaction.id }, status: 202 };
   }),
 
   route(contract.getClipDownload, ({ db, workspace, params, now }) => {

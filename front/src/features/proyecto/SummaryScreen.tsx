@@ -447,7 +447,7 @@ function Notices({ project }: { project: Project }) {
               Este video no se puede reintentar: creá el proyecto de nuevo o volvé a renderizarlo desde Resultado.
             </>
           ) : (
-            'Podés reintentar los que fallaron: no gasta tokens.'
+            'Los clips que fallaron no se cobraron. Podés reintentarlos desde Clips: cada reintento cuesta el render de ese clip.'
           )}
         </Banner>
       ) : null}

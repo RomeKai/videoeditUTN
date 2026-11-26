@@ -2,8 +2,8 @@
 
 import { useMemo, useState } from 'react';
 import type { Clip, Project } from '@/api/contracts/projects';
-import { useDeleteClip, useDownloadAllClips, useRetryClip } from '@/api/hooks';
-import { ConfirmDialog } from '@/dialogs';
+import { useDeleteClip, useDownloadAllClips } from '@/api/hooks';
+import { ConfirmDialog, useRetryClipFlow } from '@/dialogs';
 import { downloadUrl } from '@/lib/download';
 import { errorMessage } from '@/lib/error-messages';
 import { formatDuration, plural } from '@/lib/format';
@@ -41,6 +41,8 @@ interface TileHandlers {
   onCopyLink: (clip: Clip) => void;
   onPreview: (clip: Clip) => void;
   onRetry: (clip: Clip) => void;
+  /** What the retry costs, for the hint of the action ("12,5 tokens"). */
+  retryCost: (clip: Clip) => string;
   onDelete: (clip: Clip) => void;
 }
 
@@ -65,7 +67,7 @@ function useClipActionList(project: Project, handlers: TileHandlers) {
         ...(previewBlocked ? { disabledReason: previewBlocked } : {}),
       });
     }
-    if (display.group === 'failed') actions.push({ key: 'retry', label: 'Reintentar', icon: 'retry', hint: 'No gasta tokens', onSelect: () => handlers.onRetry(clip), ...gate('clip.edit') });
+    if (display.group === 'failed') actions.push({ key: 'retry', label: 'Reintentar', icon: 'retry', hint: handlers.retryCost(clip), onSelect: () => handlers.onRetry(clip), ...gate('clip.edit') });
     if (display.group === 'draft') {
       // The review only exists while the project waits for it.
       if (project.status === 'awaiting_approval') actions.push({ key: 'review', label: 'Revisar clips', icon: 'check-circle', href: `/proyectos/${project.id}/revision` });
@@ -238,7 +240,7 @@ export function ClipsScreen({ projectId }: { projectId: string }) {
   const publish = usePublish();
   const { downloadClip, downloadingIds, copyLink } = useClipActions();
   const downloadAll = useDownloadAllClips(projectId);
-  const retryClip = useRetryClip();
+  const retryClip = useRetryClipFlow(project);
   const deleteClip = useDeleteClip();
   // Phones and touch screens have no hover: the actions open in a bottom sheet.
   const touch = useMediaQuery('(max-width: 639px), (hover: none)');
@@ -257,11 +259,9 @@ export function ClipsScreen({ projectId }: { projectId: string }) {
     onDownload: (clip) => void downloadClip(clip),
     onCopyLink: (clip) => void copyLink(`/proyectos/${projectId}/clips/${clip.id}`),
     onPreview: (clip) => setPreviewId(clip.id),
-    onRetry: (clip) =>
-      retryClip.mutate(clip.id, {
-        onSuccess: () => toast.success('Reintentando el clip. No gasta tokens.'),
-        onError: (error) => toast.error(errorMessage(error, 'No pudimos reintentar el clip.')),
-      }),
+    // Paid like a render: the cost is confirmed first (dialog D1).
+    onRetry: (clip) => retryClip.ask(clip),
+    retryCost: (clip) => retryClip.costHint(clip),
     onDelete: (clip) => setDeleteId(clip.id),
   });
 
@@ -437,7 +437,7 @@ export function ClipsScreen({ projectId }: { projectId: string }) {
                 picked={picked.includes(clip.id)}
                 onPick={(value) => setPicked((current) => (value ? [...current.filter((id) => id !== clip.id), clip.id] : current.filter((id) => id !== clip.id)))}
                 onOpenSheet={() => setSheetId(clip.id)}
-                retrying={retryClip.isPending && retryClip.variables === clip.id}
+                retrying={retryClip.retryingId === clip.id}
                 downloading={downloadingIds.includes(clip.id)}
               />
             );
@@ -453,6 +453,7 @@ export function ClipsScreen({ projectId }: { projectId: string }) {
         actions={sheetClip ? actionsFor(sheetClip, describeClip(sheetClip)) : []}
       />
       <ClipPreviewDialog clip={find(previewId)} project={project} onClose={() => setPreviewId(null)} />
+      {retryClip.dialog}
       <ConfirmDialog
         open={deleting !== null}
         onClose={() => {
