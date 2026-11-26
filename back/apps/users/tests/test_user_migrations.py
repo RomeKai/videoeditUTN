@@ -80,3 +80,93 @@ class CaseInsensitiveEmailMigrationTests(TransactionTestCase):
             User.objects.filter(pk=User.objects.create_user(username="x", email="x@test.com", password="x").pk).update(
                 email="mixto@ejemplo.com",
             )
+
+
+class NormalizedEmailDomainMigrationTests(TransactionTestCase):
+    migrate_from = [("users", "0007_email_unico_sin_mayusculas")]
+    migrate_to = [("users", "0008_dominios_de_email_normalizados")]
+
+    def tearDown(self):
+        call_command("migrate", verbosity=0)
+
+    def test_it_normalizes_what_does_not_collide_and_never_fails(self):
+        old_apps = _migrate(self.migrate_from)
+        OldUser = old_apps.get_model("users", "User")
+
+        def stored(username, email, pending_email=None):
+            return OldUser.objects.create(username=username, email=email, password="!", pending_email=pending_email).pk
+
+        plain = stored("plain", "tester@test.com")
+        collides = stored("collides", "tester@ｔｅｓｔ.com")
+        full_width = stored("ancho", "ana@ＥＪＥＭＰＬＯ.com", pending_email="Nueva@Mañana.com")
+        unicode_first = stored("uno", "ana@mañana.com")
+        # The same domain with a combining tilde: the older account takes the normalized email.
+        unicode_second = stored("dos", "ana@man\u0303ana.com")
+        invalid = stored("raro", "tester@℀.com", pending_email="otra@℀.com")
+        literal = stored("literal", "root@[127.0.0.1]")
+        # Fits as typed, not once its domain is punycode: left, not a DataError.
+        long_domain = "ana@" + ".".join(["中文测试域名" * 3] * 9) + ".com"
+        long_email = "a" * 220 + "@" + "中文测试域名" * 3 + ".com"
+        too_long = stored("largo", long_domain, pending_email=long_email)
+        only_pending = stored("pendiente", "pendiente@test.com", pending_email="otra@℀.com")
+        sharp = stored("sharp", "ana@straße.de")
+        double_s = stored("ss", "ana@strasse.de")
+
+        with self.assertLogs("apps.users.migrations.0008_dominios_de_email_normalizados", level="WARNING") as logs:
+            _migrate(self.migrate_to)
+
+        emails = dict(User.objects.values_list("pk", "email"))
+        assert emails[plain] == "tester@test.com"
+        assert emails[collides] == "tester@ｔｅｓｔ.com"
+        assert emails[full_width] == "ana@ejemplo.com"
+        assert emails[unicode_first] == "ana@xn--maana-pta.com"
+        assert emails[unicode_second] == "ana@man\u0303ana.com"
+        assert emails[invalid] == "tester@℀.com"
+        assert emails[literal] == "root@[127.0.0.1]"
+        assert emails[too_long] == long_domain
+        # "ß" is not "ss": two domains, two accounts, none left behind.
+        assert (emails[sharp], emails[double_s]) == ("ana@xn--strae-oqa.de", "ana@strasse.de")
+        pending = dict(User.objects.values_list("pk", "pending_email"))
+        assert pending[full_width] == "Nueva@xn--maana-pta.com"
+        assert pending[invalid] == "otra@℀.com"
+        assert pending[too_long] == long_email
+        assert pending[only_pending] == "otra@℀.com"
+        # How many accounts were left (collides, dos, raro, largo, pendiente), never which emails.
+        assert [record.getMessage() for record in logs.records] == ["users.email_domains_not_normalized count=5"]
+        assert "@" not in "".join(logs.output)
+
+    def test_a_row_the_database_refuses_is_left_and_the_rest_goes_on(self):
+        from unittest import mock
+
+        from django.db import DataError
+
+        old_apps = _migrate(self.migrate_from)
+        OldUser = old_apps.get_model("users", "User")
+        first = OldUser.objects.create(username="uno", email="uno@ＥＪＥＭＰＬＯ.com", password="!").pk
+        second = OldUser.objects.create(username="dos", email="dos@ＥＪＥＭＰＬＯ.com", password="!").pk
+        real_update = type(OldUser.objects.all()).update
+        refused = []
+
+        def update(queryset, **changes):
+            if changes.get("email") == "uno@ejemplo.com" and not refused:
+                refused.append(True)
+                # A real error from the database, inside the row's savepoint.
+                queryset.update(email="x" * 300)
+            return real_update(queryset, **changes)
+
+        with mock.patch.object(type(OldUser.objects.all()), "update", update), \
+                self.assertLogs("apps.users.migrations.0008_dominios_de_email_normalizados", level="WARNING") as logs:
+            _migrate(self.migrate_to)
+
+        assert refused
+        emails = dict(User.objects.values_list("pk", "email"))
+        assert emails[first] == "uno@ＥＪＥＭＰＬＯ.com"
+        assert emails[second] == "dos@ejemplo.com"
+        assert [record.getMessage() for record in logs.records] == ["users.email_domains_not_normalized count=1"]
+
+    def test_with_nothing_to_fix_it_is_silent(self):
+        old_apps = _migrate(self.migrate_from)
+        old_apps.get_model("users", "User").objects.create(username="plain", email="tester@test.com", password="!")
+
+        with self.assertNoLogs("apps.users.migrations.0008_dominios_de_email_normalizados", level="WARNING"):
+            _migrate(self.migrate_to)
