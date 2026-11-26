@@ -171,6 +171,9 @@ def test_ci_database_sessions_give_up_on_a_lock_after_a_minute():
     if os.environ.get("DJANGO_SETTINGS_MODULE") != "backend.settings.ci":
         pytest.skip("only the CI settings set lock_timeout")
 
+    expected_ms = int(os.environ.get("CI_DB_LOCK_TIMEOUT_MS", "60000"))
     with connection.cursor() as cursor:
-        cursor.execute("SHOW lock_timeout")
-        assert cursor.fetchone()[0] == "1min"
+        cursor.execute(
+            "SELECT EXTRACT(EPOCH FROM current_setting('lock_timeout')::interval) * 1000"
+        )
+        assert int(cursor.fetchone()[0]) == expected_ms > 0
