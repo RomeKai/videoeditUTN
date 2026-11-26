@@ -250,13 +250,14 @@ export const projectsHandlers = [
     }
     // The backend's exact host list: youtube.com.evil.com is not YouTube.
     const provider = linkProvider(url);
-    if (!provider) throw new MockHttpError(400, { error: 'No reconocemos este sitio. Probá con YouTube, Vimeo u otro sitio público.', code: 'unsupported' });
+    if (!provider) throw new MockHttpError(400, { error: 'No reconocemos este sitio. Pegá un link de YouTube, Vimeo, Twitch o Google Drive.', code: 'unsupported' });
     if (/privado|borrado/i.test(url)) throw new MockHttpError(400, { error: 'No pudimos acceder a este video. Puede ser privado o haberse borrado.', code: 'unavailable' });
     const duration = /(\d+)\s*min/i.test(url) ? durationFor(url, 0) : /largo/i.test(url) ? 5 * 3600 : 2700;
     const plan = planOf(db, workspace.id);
-    // Over the app's limit with no plan that would take it (no plan, or a plan at or above that limit): a 400 of its own.
+    // tasks/shared.py · link_too_long_error: the video's length decides. Over the app's limit no plan takes it,
+    // whatever the plan (Gratis too): a 400 of its own. Within it, over the plan's: a 403 (another plan takes it).
     const appLimit = PRICING.upload_max_duration_seconds;
-    if (duration > appLimit && (!plan || plan.max_video_duration_seconds >= appLimit)) {
+    if (duration > appLimit) {
       throw new MockHttpError(400, { error: 'El video dura más de 3 horas, el máximo que aceptamos. Probá con uno más corto.', code: 'duration_app', limit: appLimit });
     }
     if (plan && duration > plan.max_video_duration_seconds) {

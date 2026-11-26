@@ -31,6 +31,7 @@ import math
 from django.db import transaction
 from django.http import Http404
 from django.shortcuts import get_object_or_404
+from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import permissions, serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -77,6 +78,10 @@ MODERATION_CODES = frozenset({'UnsafeContentError'})
 # Failed and refunded because the broker never took its ingestion (the create
 # view): the pipeline never resumes it, so it is created again.
 INGESTION_NOT_QUEUED = 'IngestionNotQueued'
+# A link longer than the app processes with any plan (tasks/shared.py): a
+# resume downloads it and fails the same way. LinkTooLongError (over the plan)
+# is not one: the plan may have changed since.
+LINK_TOO_LONG_FOR_APP = 'LinkTooLongForAppError'
 # Where a refunded re-dispatch keeps the error code it replaced.
 REDISPATCH_PREVIOUS_CODE_KEY = 'redispatch_previous_error_code'
 # Posts that may still publish the clip's file: a render replaces that file
@@ -478,6 +483,13 @@ class ClipUpdateSerializer(serializers.Serializer):
         return data
 
 
+class RetryClipResponseSerializer(VideoClipSerializer):
+    """Body of ``POST clips/{id}/retry/``, for the OpenAPI schema: the clip (a queued DRAFT) and its reservation."""
+
+    final_cost = serializers.DecimalField(max_digits=20, decimal_places=10, coerce_to_string=False, read_only=True)
+    transaction_id = serializers.UUIDField(read_only=True)
+
+
 def _source_duration(project):
     """Seconds of the source video, when the pipeline or the upload measured them."""
     metadata = project.metadata or {}
@@ -512,9 +524,20 @@ class ClipDetailView(_WorkspaceScoped):
 
     workspace_actions = {'GET': 'project.view', 'PATCH': 'clip.edit', 'DELETE': 'clip.edit'}
 
+    @extend_schema(responses={
+        200: VideoClipSerializer, 404: OpenApiResponse(description='No existe o es de otro workspace.'),
+    })
     def get(self, request, clip_id):
         return Response(VideoClipSerializer(self.get_clip(request, clip_id)).data)
 
+    @extend_schema(request=ClipUpdateSerializer, responses={
+        200: VideoClipSerializer,
+        400: OpenApiResponse(description='Por campo: recorte inválido, fuera del video o más largo que un render.'),
+        409: OpenApiResponse(description=(
+            'El recorte no cambia mientras el proyecto renderiza (`project_rendering`) o se procesa '
+            '(`project_processing`).'
+        )),
+    })
     def patch(self, request, clip_id):
         found = self.get_clip(request, clip_id)
         body = ClipUpdateSerializer(data=request.data)
@@ -576,6 +599,12 @@ class ClipDetailView(_WorkspaceScoped):
                 {"end_time": [f"El clip puede durar hasta {int(max_seconds)} segundos."]}, status=400,
             ))
 
+    @extend_schema(responses={
+        204: None,
+        409: OpenApiResponse(description=(
+            'El proyecto renderiza o se procesa (`project_rendering`), o un post del clip se sube (`post_processing`).'
+        )),
+    })
     def delete(self, request, clip_id):
         from .services.clip_preview import delete_preview_files
         from .services.storage_service import CloudflareR2Manager
@@ -642,17 +671,38 @@ class ClipRetryView(_WorkspaceScoped):
     the render was returned when it failed (the settle charges only what was
     delivered), so the retry reserves its render like ``render/``: the clip is
     paid once in all. 202 with the clip plus ``final_cost`` and
-    ``transaction_id``; 409 when it is not failed or its project is busy.
+    ``transaction_id``; 409 when it is not failed or its project is busy. A
+    clip that a render already took or waits for (the second click of a
+    double click) is ``clip_rendering``, never ``not_failed``.
     """
 
     workspace_actions = {'POST': 'clip.edit'}
 
+    @extend_schema(request=None, responses={
+        202: RetryClipResponseSerializer,
+        400: OpenApiResponse(description='El clip dura más de lo que un render termina: `{ error }`.'),
+        402: OpenApiResponse(description='Saldo insuficiente: `{ error, required }`.'),
+        403: OpenApiResponse(description='El plan no permite la resolución o la duración: `{ error, code }`.'),
+        409: OpenApiResponse(description=(
+            '`{ error, code }`: `clip_rendering` (el clip ya está en un render, como el segundo click de un doble '
+            'click), `not_failed`, `project_rendering`, `project_processing`, `awaiting_approval`, '
+            '`render_unsettled` o `posts_pending`.'
+        )),
+    })
     def post(self, request, clip_id):
+        from .tasks.ingestion import render_queued_rule
+
         clip = self.get_clip(request, clip_id)
 
         def pick(project):
             current = VideoClip.objects.filter(pk=clip.pk).values_list('status', flat=True).first()
             if current != ClipStatus.FAILED:
+                # Before "not failed": the first click put it back to DRAFT
+                # for its render, which may have taken it already.
+                if current == ClipStatus.RENDERING or (
+                    current == ClipStatus.DRAFT and render_queued_rule(project)(clip.pk)
+                ):
+                    return _error(409, CLIP_RENDERING, 'clip_rendering')
                 return _error(409, "El clip no está en error.", 'not_failed')
             return [clip]
 
@@ -734,7 +784,8 @@ class ProjectRedispatchView(_WorkspaceScoped):
     reused. A project with its clips selected resumes free: its render pays
     itself (the auto-render reserves again; a review waits for its approval).
     409 when it is not failed, its content was blocked by moderation
-    (UnsafeContentError), its ingestion was never queued at creation, its clips
+    (UnsafeContentError), its ingestion was never queued at creation, its link
+    is longer than the app processes (LinkTooLongForAppError), its clips
     render one by one (their render was settled: each is retried from Clips)
     or its whole video was rendered already (``rerender/``). If the broker
     refuses the message, what was reserved goes back with REDISPATCH_NOT_QUEUED
@@ -804,6 +855,12 @@ class ProjectRedispatchView(_WorkspaceScoped):
             raise _Refused(_error(
                 409, "Este proyecto no llegó a procesarse y se devolvió lo reservado: creá uno nuevo.", 'not_queued',
             ))
+        if project.pipeline_error_code == LINK_TOO_LONG_FOR_APP:
+            # Reserving again would only fail and refund it again.
+            raise _Refused(_error(409, (
+                "El video del link dura más de lo que podemos procesar, con cualquier plan: no se puede volver "
+                "a procesar. Creá un proyecto con un video más corto."
+            ), 'duration_app'))
         metadata = project.metadata or {}
         resume = last_completed_stage(project)
         whole = _is_whole_video(project)
