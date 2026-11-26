@@ -185,7 +185,10 @@ describe('tabla por dominio (panel de desarrollo)', () => {
       const real = group.endpoints.filter((endpoint) => endpoint.backend.status !== 'proposed').length;
       expect(by[group.domain], group.domain).toMatchObject({ real, total: group.endpoints.length, route: real === 0 ? 'mock' : real === group.endpoints.length ? 'real' : 'mixed', locked: null });
     }
-    expect(by.projects).toMatchObject({ route: 'mixed', envRoute: 'mixed' });
+    // A domain that is part built, part proposed reads as mixed, taken from the registry: a fixed
+    // domain stops being mixed once the backend builds the rest of it (projects did).
+    const mixed = CONTRACT.find((group) => group.domain !== 'auth' && group.endpoints.some((e) => e.backend.status === 'proposed') && group.endpoints.some((e) => e.backend.status !== 'proposed'));
+    if (mixed) expect(by[mixed.domain], mixed.domain).toMatchObject({ route: 'mixed', envRoute: 'mixed' });
   });
 
   it('refleja la lista del env y el cambio a mano', () => {

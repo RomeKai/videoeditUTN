@@ -108,15 +108,15 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | DELETE | `/api/v1/projects/:id/` | Borra el proyecto con su video, sus clips y sus publicaciones programadas. No devuelve lo cobrado. | ✅ existe | B2, D1, D4 (diálogo) |
 | GET | `/api/v1/projects/:id/paper-edit-data/` | Datos de la revisión: video proxy, transcripción, clips sugeridos y metadata. | ✅ existe | D2 |
 | POST | `/api/v1/projects/:id/approve-paper-edit/` | Aprueba los segmentos elegidos, reserva el costo del render y lo despacha. | ✅ existe | D2 |
-| POST | `/api/v1/projects/:id/redispatch/` | Vuelve a despachar el pipeline de un proyecto detenido, desde la última etapa terminada. No cobra. | ❌ falta (propuesto) | D1 |
-| POST | `/api/v1/projects/:id/rerender/` | Renderiza todos los clips de nuevo con otro estilo (layout, subtítulos, brand kit). Cobra el render. | ❌ falta (propuesto) · hueco 11 | D1, D4, D5 |
+| POST | `/api/v1/projects/:id/redispatch/` | Vuelve a despachar el pipeline de un proyecto que falló, desde la última etapa terminada. Si lo que falta se había devuelto, lo reserva de nuevo por el mismo monto. | ✅ existe | D1 |
+| POST | `/api/v1/projects/:id/rerender/` | Renderiza todos los clips de nuevo con otro estilo (layout, subtítulos, brand kit). Cobra el render. | ✅ existe | D1, D4, D5 |
 | GET | `/api/v1/projects/:id/activity/` | Quién hizo qué en el proyecto y sus movimientos de tokens, del más nuevo al más viejo. | ✅ existe | D1f |
 | POST | `/api/v1/projects/:id/clips/download/` | Arma un .zip con los clips listos (todos, o los de `clip_ids`) y devuelve la URL temporal. | ✅ existe | D3 |
-| GET | `/api/v1/clips/:id/` | Un clip con sus datos, sus capas y dónde está publicado. | ❌ falta (propuesto) · hueco 11 | D4, E1 |
-| PATCH | `/api/v1/clips/:id/` | Cambia el título o el recorte. No renderiza: para eso está `render`. | ❌ falta (propuesto) · hueco 11 | D4, D3, D5 |
-| DELETE | `/api/v1/clips/:id/` | Borra el clip y cancela sus publicaciones programadas. | ❌ falta (propuesto) · hueco 11 | D3 |
-| POST | `/api/v1/clips/:id/render/` | Vuelve a renderizar el clip con su recorte actual y la configuración del proyecto. Cobra por la duración del clip. | ❌ falta (propuesto) · hueco 11 | D4, D5 |
-| POST | `/api/v1/clips/:id/retry/` | Reintenta el render de un clip que falló. No cobra si el error fue del sistema. | ❌ falta (propuesto) · hueco 11 | D3 |
+| GET | `/api/v1/clips/:id/` | Un clip con sus datos, sus capas y dónde está publicado. | ✅ existe | D4, E1 |
+| PATCH | `/api/v1/clips/:id/` | Cambia el título o el recorte. No renderiza: para eso está `render`. | ✅ existe | D4, D3, D5 |
+| DELETE | `/api/v1/clips/:id/` | Borra el clip y cancela sus publicaciones programadas. | ✅ existe | D3 |
+| POST | `/api/v1/clips/:id/render/` | Vuelve a renderizar el clip con su recorte actual y la configuración del proyecto. Cobra por la duración del clip. | ✅ existe | D4, D5 |
+| POST | `/api/v1/clips/:id/retry/` | Reintenta el render de un clip que falló. Cobra su render: su parte se devolvió cuando falló, así que el clip se paga una vez en total. | ✅ existe | D3 |
 | GET | `/api/v1/clips/:id/download/` | Link de descarga firmado y temporal del clip renderizado. | ✅ existe | D3, D4, D5 |
 | POST | `/api/v1/clips/:clipId/preview/` | Pide una vista previa gratis en 360p, o devuelve la que ya está en curso. Nunca reserva tokens. | ✅ existe | D2, D4 |
 | GET | `/api/v1/clips/:clipId/preview/` | La vista previa vigente más nueva del clip. Se consulta cada 5 s hasta `ready` o `failed`. | ✅ existe | D2, D4 |
@@ -786,11 +786,11 @@ Borra el proyecto con su video, sus clips y sus publicaciones programadas. No de
 | | |
 |---|---|
 | Id | `projects.delete` |
-| Backend | ✅ existe · `back/apps/videos/views.py · VideoProjectViewSet.destroy (ModelViewSet)` |
-| Nota | No aplica la regla de roles (hueco 3). |
+| Backend | ✅ existe · `back/apps/videos/views.py · VideoProjectViewSet.destroy + views_clips.project_delete_decision` |
+| Nota | Nada liquida una reserva cuyo proyecto ya no existe, por eso el 409. No devuelve nada de lo cobrado. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 204 | NoContent |
-| Errores | **403** El rol no puede borrar (Lector; Editor solo los propios). |
+| Errores | **403** El rol no puede borrar (Lector; Editor solo los propios).<br>**409** `{ error, code }`: el proyecto puede estar procesando o renderizando (`project_processing`) o terminó con tokens reservados sin liquidar (`reservation_open`). El diálogo muestra el mensaje del servidor. Uno trabado del todo (ningún worker y nada en `RENDER_STUCK_AFTER_SECONDS`, sin nada entregado) se borra y devuelve lo reservado. |
 | Pantallas | B2, D1, D4 (diálogo) |
 
 #### `GET /api/v1/projects/:id/paper-edit-data/`
@@ -823,16 +823,16 @@ Aprueba los segmentos elegidos, reserva el costo del render y lo despacha.
 
 #### `POST /api/v1/projects/:id/redispatch/`
 
-Vuelve a despachar el pipeline de un proyecto detenido, desde la última etapa terminada. No cobra.
+Vuelve a despachar el pipeline de un proyecto que falló, desde la última etapa terminada. Si lo que falta se había devuelto, lo reserva de nuevo por el mismo monto.
 
 | | |
 |---|---|
 | Id | `projects.redispatch` |
-| Backend | ❌ falta (propuesto) |
-| Nota | Hoy es una acción del admin de Django (mapa §7: herramientas internas fuera del MVP). Se define para no tener que tocar el contrato cuando se exponga. |
+| Backend | ✅ existe · `back/apps/videos/views_clips.py · ProjectRedispatchView` |
+| Nota | No cobra lo que sigue pagado: un proyecto con los clips elegidos sigue gratis (su render se paga solo). Lo que se devolvió al fallar (una etapa antes de elegir los clips, o el render de un video completo) se reserva otra vez y el pipeline lo liquida como al crear. Responde `cost_details` cuando reservó. El proyecto sigue `failed` hasta que la tarea lo reabre. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 202 | Project |
-| Errores | **403** Solo Dueño y Admin.<br>**409** El proyecto ya está en curso o terminó. |
+| Errores | **402** Saldo insuficiente para volver a reservar lo devuelto: `{ error, required }`. La UI abre D2.<br>**403** Solo Dueño y Admin.<br>**409** `{ error, code }`: no está en error (`not_failed`), la moderación frenó su contenido (`moderation_blocked`, solo `UnsafeContentError`), su ingesta nunca se encoló al crearlo (`not_queued`: se crea de nuevo), sus clips ya se liquidaron y se reintentan de a uno desde Clips (`render_settled`), su video completo ya se renderizó (`use_rerender`) o no tiene reserva de creación (`no_reservation`).<br>**503** No se pudo encolar: lo reservado vuelve (el proyecto queda con `pipeline_error_code: "RedispatchNotQueued"`) y se puede probar de nuevo. |
 | Pantallas | D1 |
 
 #### `POST /api/v1/projects/:id/rerender/`
@@ -842,11 +842,12 @@ Renderiza todos los clips de nuevo con otro estilo (layout, subtítulos, brand k
 | | |
 |---|---|
 | Id | `projects.rerender` |
-| Backend | ❌ falta (propuesto) · hueco 11 |
+| Backend | ✅ existe · `back/apps/videos/views_clips.py · ProjectRerenderView` |
+| Nota | Un video completo es su único clip; en un proyecto de clips, los que se entregaron o fallaron y los `draft` que un render pagó y nunca entregó (nunca un sugerido de la revisión). Reserva `render_cost` de la suma de sus segundos y guarda el estilo en la misma transacción. `render_resolution` no cambia (se cobró al crear). Se cobra lo entregado (CLIP_RENDER). |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | RerenderRequest |
 | Respuesta 202 | PaidActionResponse |
-| Errores | **402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**409** El proyecto está procesando o renderizando. |
+| Errores | **400** Un campo del estilo inválido (por campo, como el PATCH del proyecto), o un clip más largo de lo que un render termina.<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**403** El plan no permite la resolución o la suma de segundos (`code: "resolution"` / `"duration"`). La UI abre D3.<br>**409** `{ error, code }`: el proyecto está procesando o renderizando (`project_processing`, `project_rendering`, `clip_rendering`), espera la revisión (`awaiting_approval`), tiene un render sin liquidar (`render_unsettled`), un clip con publicaciones pendientes (`posts_pending`) o no tiene clips (`no_clips`). |
 | Pantallas | D1, D4, D5 |
 
 #### `GET /api/v1/projects/:id/activity/`
@@ -889,8 +890,8 @@ Un clip con sus datos, sus capas y dónde está publicado.
 | | |
 |---|---|
 | Id | `clips.detail` |
-| Backend | ❌ falta (propuesto) · hueco 11 |
-| Nota | Hoy los clips solo llegan dentro del proyecto (VideoClipSerializer). |
+| Backend | ✅ existe · `back/apps/videos/views_clips.py · ClipDetailView.get + VideoClipSerializer` |
+| Nota | Los mismos campos que el clip dentro del proyecto. Los extras propuestos (`preview_url`, `thumbnail_url`, `error_code`, `posts`) todavía no llegan. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Clip |
 | Errores | **404** No existe o es de otro workspace. |
@@ -903,12 +904,12 @@ Cambia el título o el recorte. No renderiza: para eso está `render`.
 | | |
 |---|---|
 | Id | `clips.update` |
-| Backend | ❌ falta (propuesto) · hueco 11 |
-| Nota | El 409 sigue la regla que ya aplica `VideoProjectSerializer.update` al PATCH del proyecto (ProjectRenderingError): lo que el render lee no cambia debajo de él. |
+| Backend | ✅ existe · `back/apps/videos/views_clips.py · ClipDetailView.patch` |
+| Nota | El 409 sigue la regla que ya aplica `VideoProjectSerializer.update` al PATCH del proyecto (ProjectRenderingError): lo que el render lee no cambia debajo de él. Un recorte nuevo borra las vistas previas del clip (muestran el anterior). |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | UpdateClipRequest |
 | Respuesta 200 | Clip |
-| Errores | **400** Recorte inválido (fin menor o igual al inicio, o fuera del video).<br>**403** El rol no puede editar (Lector).<br>**409** El proyecto se está renderizando y el pedido cambia el recorte (`code: "project_rendering"`). Solo `title` se puede cambiar mientras tanto. La UI avisa y deja el borrador como está. |
+| Errores | **400** Por campo (`{ end_time: [...] }`): fin menor o igual al inicio, fuera del video, más largo de lo que un render termina (1800 s por defecto), título vacío o un número inválido.<br>**403** El rol no puede editar (Lector).<br>**409** El pedido cambia el recorte y el proyecto se está renderizando (o tiene un render del clip sin liquidar): `{ error, code: "project_rendering" }`; o el pipeline todavía procesa el proyecto: `code: "project_processing"`. Solo `title` se puede cambiar mientras tanto. La UI avisa y deja el borrador como está. |
 | Pantallas | D4, D3, D5 |
 
 #### `DELETE /api/v1/clips/:id/`
@@ -918,10 +919,11 @@ Borra el clip y cancela sus publicaciones programadas.
 | | |
 |---|---|
 | Id | `clips.delete` |
-| Backend | ❌ falta (propuesto) · hueco 11 |
+| Backend | ✅ existe · `back/apps/videos/views_clips.py · ClipDetailView.delete` |
+| Nota | Borra también sus capas y vistas previas, y sus archivos después del commit. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 204 | NoContent |
-| Errores | **403** El rol no puede borrar. |
+| Errores | **403** El rol no puede borrar (Lector).<br>**409** El proyecto se está renderizando o procesando (`code: "project_rendering"`): un clip entregado que se borra a mitad del render dejaría corto el cobro. O una publicación del clip se está subiendo (`code: "post_processing"`). |
 | Pantallas | D3 |
 
 #### `POST /api/v1/clips/:id/render/`
@@ -931,23 +933,25 @@ Vuelve a renderizar el clip con su recorte actual y la configuración del proyec
 | | |
 |---|---|
 | Id | `clips.render` |
-| Backend | ❌ falta (propuesto) · hueco 11 |
+| Backend | ✅ existe · `back/apps/videos/views_clips.py · ClipRenderView` |
+| Nota | Reserva `render_cost` de los segundos del clip y pone el proyecto en `rendering` hasta que el clip termina: mientras tanto no se renderiza otro clip del mismo proyecto (409 `project_rendering`). Se cobra lo entregado; si el render falla, se devuelve y un clip que ya estaba entregado vuelve a `completed` (o `published`) con su archivo de antes (CLIP_RENDER, documents/ia/06). |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 202 | PaidActionResponse |
-| Errores | **402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**403** El plan actual no permite la resolución del proyecto (`code: "resolution"`). La UI abre D3.<br>**409** El clip ya se está renderizando, o su proyecto (`code: "project_rendering"`). |
+| Errores | **400** El clip dura más de lo que un render termina (1800 s por defecto): `{ error }`.<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**403** El plan actual no permite la resolución del proyecto (`code: "resolution"`) o la duración del clip (`code: "duration"`, con `limit` en segundos). La UI abre D3.<br>**409** `{ error, code }`: el clip ya se está renderizando (`clip_rendering`), o su proyecto (`project_rendering`), o el pipeline lo procesa (`project_processing`), o espera la revisión (`awaiting_approval`: se renderiza al aprobarla), o el render anterior no se liquidó todavía (`render_unsettled`), o el clip tiene publicaciones programadas, en cola o subiéndose (`posts_pending`: el render nuevo reemplaza su archivo). |
 | Pantallas | D4, D5 |
 
 #### `POST /api/v1/clips/:id/retry/`
 
-Reintenta el render de un clip que falló. No cobra si el error fue del sistema.
+Reintenta el render de un clip que falló. Cobra su render: su parte se devolvió cuando falló, así que el clip se paga una vez en total.
 
 | | |
 |---|---|
 | Id | `clips.retry` |
-| Backend | ❌ falta (propuesto) · hueco 11 |
+| Backend | ✅ existe · `back/apps/videos/views_clips.py · ClipRetryView` |
+| Nota | El cuerpo es el clip (en `draft` hasta que su render empieza) más `final_cost` y `transaction_id`. No hay reintento gratis: el reparto por segundos entregados ya devolvió lo que el clip fallido no entregó, y el modelo no guarda por qué falló. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 202 | Clip |
-| Errores | **409** El clip no está en error. |
+| Errores | **402** Saldo insuficiente: `{ error, required }`. La UI abre D2.<br>**403** El plan no permite la resolución o la duración (`code`), como `render`. La UI abre D3.<br>**409** El clip no está en error (`code: "not_failed"`), o su proyecto se está renderizando o procesando (los mismos códigos que `render`). |
 | Pantallas | D3 |
 
 #### `GET /api/v1/clips/:id/download/`
