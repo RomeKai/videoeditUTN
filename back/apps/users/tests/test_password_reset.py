@@ -1,4 +1,5 @@
 """Password reset (A4): the link by email, and the new password that ends every session."""
+import threading
 import time
 from datetime import timedelta
 from unittest import mock
@@ -6,13 +7,15 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 from django.core import mail
-from django.test import override_settings
+from django.db import connection
+from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework.throttling import ScopedRateThrottle
 
 from apps.core.structured_logging import JsonFormatter
-from apps.users.email_verification import SIGNUP, make_token, password_reset_tokens
+from apps.users import views_auth
+from apps.users.email_verification import SIGNUP, make_password_reset_token, make_token, password_reset_tokens
 from apps.users.models import User
 from apps.users.tests.test_login_throttle import REDIS_DOWN, _refused
 from apps.users.throttles import EmailAttemptThrottle
@@ -35,8 +38,8 @@ def _ask(email="tester@test.com", api=None):
 
 
 def _link(message):
-    link = next(word for word in message.body.split() if "/recuperar?" in word)
-    return link, parse_qs(urlparse(link).query)
+    link = next(word for word in message.body.split() if "/recuperar#" in word)
+    return link, parse_qs(urlparse(link).fragment)
 
 
 def _token_by_email(email="tester@test.com"):
@@ -68,7 +71,9 @@ def test_the_link_goes_to_the_account_email_with_its_token_and_email(user):
     message = mail.outbox[0]
     assert message.to == ["tester@test.com"]
     link, query = _link(message)
-    assert link.startswith("http://localhost:3000/recuperar?")
+    # In the fragment: a browser never sends it, so it stays out of the web host's access log.
+    assert link.startswith("http://localhost:3000/recuperar#")
+    assert urlparse(link).query == ""
     # The contract's link: the email lets A4 say whose account it is and sign in after saving.
     assert set(query) == {"token", "email"}
     assert query["email"] == ["tester@test.com"]
@@ -157,6 +162,38 @@ def test_an_altered_link_is_refused(user, mangle):
     token = _token_by_email()
 
     assert _confirm(mangle(token)).json() == INVALID_LINK
+
+
+def test_a_token_of_djangos_own_generator_is_not_a_reset_token(user):
+    """The salt of PasswordResetTokens: a token Django's admin flow (or any other use) makes does not pass."""
+    from django.contrib.auth.tokens import default_token_generator
+
+    forged = f"{user.pk.hex}.{default_token_generator.make_token(user)}"
+
+    assert _confirm(forged).json() == INVALID_LINK
+    user.refresh_from_db()
+    assert user.check_password(OLD_PASSWORD)
+
+
+def test_signing_in_does_not_cancel_the_link(user):
+    """The generator hashes last_login, but the JWT login never writes it."""
+    token = _token_by_email()
+    assert _login().status_code == 200
+    user.refresh_from_db()
+    assert user.last_login is None
+
+    assert _confirm(token).status_code == 204
+
+
+def test_the_new_password_drops_what_the_old_one_left_behind(user):
+    """Whoever had the password before (a squatter of the email) leaves a change of email and the sign-up's nonce."""
+    User.objects.filter(pk=user.pk).update(pending_email="ocupante@evil.com", signup_nonce_hash="x" * 64)
+    token = _token_by_email()
+
+    assert _confirm(token).status_code == 204
+
+    user.refresh_from_db()
+    assert (user.pending_email, user.signup_nonce_hash, user.is_email_verified) == (None, None, True)
 
 
 def test_other_tokens_of_the_project_are_not_reset_tokens(user):
@@ -259,3 +296,44 @@ def test_the_reset_link_lasts_what_the_setting_says(user, settings):
     later = timezone.now() + timedelta(hours=1, seconds=5)
     with mock.patch.object(password_reset_tokens, "_now", return_value=later.replace(tzinfo=None)):
         assert _confirm(token).json() == INVALID_LINK
+
+
+class ConcurrentConfirmTests(TransactionTestCase):
+    """Two requests with the same link at once: the row lock lets only one of them set a password."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="carrera", email="carrera@test.com", password=OLD_PASSWORD)
+
+    def test_exactly_one_of_two_confirms_with_the_same_link_wins(self):
+        token = make_password_reset_token(self.user)
+        both_checked = threading.Barrier(2)
+        real_check = views_auth.check_new_password
+
+        def slow_check(value, user):
+            # Past the token check, each one waits for the other. With the lock the second one is
+            # still waiting for the row, so the first gives up after a moment and saves; without it
+            # both have passed the check with the old password and both would save.
+            try:
+                both_checked.wait(timeout=1.5)
+            except threading.BrokenBarrierError:
+                pass
+            return real_check(value, user)
+
+        answers = []
+
+        def attempt(password):
+            try:
+                answers.append(_confirm(token, password=password).status_code)
+            finally:
+                connection.close()
+
+        with mock.patch.object(views_auth, "check_new_password", side_effect=slow_check):
+            threads = [threading.Thread(target=attempt, args=(password,)) for password in ("primera-Clave-2026", "segunda-Clave-2026")]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+
+        assert sorted(answers) == [204, 400]
+        self.user.refresh_from_db()
+        assert self.user.check_password("primera-Clave-2026") != self.user.check_password("segunda-Clave-2026")

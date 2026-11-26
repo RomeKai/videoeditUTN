@@ -44,7 +44,10 @@ def test_the_bodies_are_described(schema):
 
     assert set(components["Me"]["properties"]) >= {"pending_email", "onboarding_use_case", "onboarding", "active_workspace_id"}
     assert set(components["TokenPair"]["properties"]) == {"access", "refresh"}
-    assert set(components["RegisterResponse"]["properties"]) == {"id", "email", "is_email_verified"}
+    assert set(components["RegisterResponse"]["properties"]) == {"id", "email", "is_email_verified", "signup_nonce"}
+    # The link of a new account answers a pair, or {"signed_in": false} outside the browser that signed up.
+    verify = schema["paths"]["/api/v1/auth/verify-email/"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert {item["$ref"].rsplit("/", 1)[1] for item in components[verify.rsplit("/", 1)[1]]["oneOf"]} == {"TokenPair", "SignedOut"}
     register = schema["paths"]["/api/v1/auth/register/"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"]
     assert set(components[register.rsplit("/", 1)[1]]["properties"]) == {"name", "email", "password", "terms_accepted"}
     assert set(components["SystemStatus"]["properties"]) == {"maintenance", "maintenance_window"}

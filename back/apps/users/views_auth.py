@@ -32,7 +32,7 @@ from rest_framework_simplejwt.settings import api_settings
 from rest_framework_simplejwt.state import token_backend
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from apps.users.email_verification import send_signup_verification, user_for_password_reset_token
+from apps.users.email_verification import new_signup_nonce, send_signup_verification, user_for_password_reset_token
 from apps.users.models import User, Workspace
 from apps.users.serializers import (
     EMAIL_TAKEN,
@@ -84,10 +84,21 @@ class PublicAccountView(SpanishThrottleMixin, APIView):
     """
     No session: a token in the header (even an expired one) is not read, so
     it cannot answer 401 and the limits always count per IP.
+
+    The limits are checked in order and the first one that refuses ends the
+    check. DRF checks them all, so a request its IP limit refused would still
+    count in the limit of the email it names: from one IP, someone could keep
+    every address waiting its 60 s for ever without sending a single email.
+    That is why the IP limit goes first.
     """
 
     authentication_classes = []
     permission_classes = [AllowAny]
+
+    def check_throttles(self, request):
+        for throttle in self.get_throttles():
+            if not throttle.allow_request(request, self):
+                self.throttled(request, throttle.wait())
 
 
 class RegisterView(PublicAccountView):
@@ -121,6 +132,8 @@ class RegisterView(PublicAccountView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         first_name, _, last_name = data['name'].partition(' ')
+        # The link signs in only where this answer arrives (VerifyEmailView): the account keeps the hash.
+        nonce, nonce_hash = new_signup_nonce()
         try:
             with transaction.atomic():
                 user = User.objects.create_user(
@@ -131,6 +144,7 @@ class RegisterView(PublicAccountView):
                     first_name=first_name,
                     last_name=last_name.strip(),
                     terms_accepted_at=timezone.now(),
+                    signup_nonce_hash=nonce_hash,
                 )
                 # The signal names it after the username; here there is a name.
                 Workspace.objects.filter(owner=user).update(name=_workspace_name(first_name))
@@ -147,7 +161,9 @@ class RegisterView(PublicAccountView):
         # The first email is the one just sent: «Reenviar» waits its 60 s from now (A3).
         EmailAttemptThrottle.record('resend', user.email)
         logger.info('register.created user_id=%s', user.pk)
-        body = RegisterResponseSerializer({'id': user.pk, 'email': user.email, 'is_email_verified': user.is_email_verified})
+        body = RegisterResponseSerializer({
+            'id': user.pk, 'email': user.email, 'is_email_verified': user.is_email_verified, 'signup_nonce': nonce,
+        })
         return Response(body.data, status=201)
 
 
@@ -158,7 +174,8 @@ class ResendVerificationView(PublicAccountView):
     60 s per email (any spelling), and a limit per IP shared with password reset.
     """
 
-    throttle_classes = [EmailAttemptThrottle, AttemptThrottle]
+    # The IP first: a request it refuses must not count for the email (PublicAccountView).
+    throttle_classes = [AttemptThrottle, EmailAttemptThrottle]
     email_throttle_scope = 'resend'
     throttle_scope = 'auth_email'
 
@@ -186,7 +203,7 @@ class PasswordResetView(PublicAccountView):
     login) gets it too: that is how it creates one.
     """
 
-    throttle_classes = [EmailAttemptThrottle, AttemptThrottle]
+    throttle_classes = [AttemptThrottle, EmailAttemptThrottle]
     email_throttle_scope = 'password_reset'
     throttle_scope = 'auth_email'
 
@@ -212,7 +229,9 @@ class PasswordResetConfirmView(PublicAccountView):
     tokens: the web app signs in with the email of the link. Like
     `POST /me/password/`, User.save ends every session of the account (the
     tokens of the old password answer 401). The link reached the account's
-    email, so opening it also verifies that email.
+    email, so opening it also verifies that email, and what whoever had the
+    old password left behind goes: a pending change of email and the
+    sign-up's nonce.
     """
 
     throttle_classes = [AttemptThrottle]
@@ -244,8 +263,10 @@ class PasswordResetConfirmView(PublicAccountView):
                 raise ValidationError({'password': exc.detail})
             user.set_password(data['password'])
             user.is_email_verified = True
+            user.pending_email = None
+            user.signup_nonce_hash = None
             # User.save revokes the refresh tokens of the old password; the access ones fail its hash.
-            user.save(update_fields=['password', 'is_email_verified'])
+            user.save(update_fields=['password', 'is_email_verified', 'pending_email', 'signup_nonce_hash'])
         logger.info('password_reset.done user_id=%s', user.pk)
         return Response(status=204)
 

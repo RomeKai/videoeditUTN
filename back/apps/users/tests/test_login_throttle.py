@@ -45,6 +45,16 @@ def test_the_login_is_limited_per_ip(user):
     assert _login(_from("10.0.0.2"), password="password").status_code == 200
 
 
+def test_ipv6_counts_by_its_64(user):
+    """An IPv6 client can take a new address of its /64 for every request: they all share the limit."""
+    answers = [_login(_from(f"2001:db8:5:6::{n:x}"), email=f"nadie{n}@test.com").status_code for n in range(1, 11)]
+    blocked = _login(_from("2001:db8:5:6:abcd::1"), password="password")
+
+    assert answers == [401] * 10
+    assert blocked.status_code == 429
+    assert _login(_from("2001:db8:5:7::1"), password="password").status_code == 200
+
+
 def test_a_forged_x_forwarded_for_does_not_escape_the_ip_limit(user):
     # Without a proxy in front (NUM_PROXIES=0, the default outside production) the header is ignored.
     codes = [

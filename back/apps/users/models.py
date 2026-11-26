@@ -56,6 +56,10 @@ class User(AbstractUser):
     # un token emitido antes de este momento ya no sirve, ni el de acceso
     # (apps.users.tokens.SessionJWTAuthentication) ni el de refresh.
     sessions_revoked_at = models.DateTimeField(null=True, blank=True)
+    # Hash del `signup_nonce` que el registro le dio al navegador que creó la cuenta
+    # (nunca el nonce). El link de verificación inicia la sesión solo con ese nonce;
+    # sin él, solo verifica (apps.users.views.VerifyEmailView). Se borra al verificar.
+    signup_nonce_hash = models.CharField(max_length=64, null=True, blank=True)
 
     # --- PERFIL (I1, B1, J3) ---
     # Email nuevo que espera verificación (PATCH /me): reemplaza a `email` al abrir el link

@@ -10,7 +10,12 @@ Two purposes share `POST /api/v1/auth/verify-email/`:
   it to whoever owns the typo).
 - SIGNUP (A2): `POST /api/v1/auth/register/` and
   `POST /api/v1/auth/verify-email/resend/` send it to the account's email.
-  Opening it verifies that email and signs the user in, as the contract asks.
+  Opening it verifies that email. It signs the user in only in the browser
+  that signed up: the sign-up answers a `signup_nonce` (the account keeps
+  only its hash) and the web app sends it back with the link. Without it the
+  link only verifies, and the person signs in with the password. Otherwise
+  whoever signed up first with someone else's email (and so knows the
+  password) would get that person into an account the squatter still holds.
 
 The token is signed with SECRET_KEY, says its purpose, expires after
 EMAIL_VERIFICATION_MAX_AGE_SECONDS and is bound to the state of the account
@@ -20,12 +25,17 @@ link stops working.
 
 The password reset link (A4, `POST /api/v1/auth/password-reset/`) carries a
 token of Django's PasswordResetTokenGenerator, with its own salt: it expires
-after PASSWORD_RESET_TIMEOUT and is bound to the password, the email and the
-last login, so it works once and stops working after any password change.
+after PASSWORD_RESET_TIMEOUT and is bound to the password and the email, so it
+works once and stops working after any password change or change of email.
+The generator also hashes `last_login`, but the JWT login never writes it
+(SimpleJWT's UPDATE_LAST_LOGIN is off): signing in does not cancel the link.
+The token and the email go in the fragment of the link (`/recuperar#token=…`):
+a browser never sends the fragment, so they stay out of the web host's logs.
 
 No email carries anything the user typed: the address can be anyone's, and
 the official sender must not carry someone else's text to it.
 """
+import secrets
 import uuid
 from urllib.parse import urlencode
 
@@ -74,8 +84,28 @@ def user_for_token(token, queryset=None):
     return user, purpose
 
 
-def _frontend_link(path, query):
-    return f"{settings.FRONTEND_URL.rstrip('/')}{path}?{urlencode(query)}"
+def _frontend_link(path, query, fragment=False):
+    return f"{settings.FRONTEND_URL.rstrip('/')}{path}{'#' if fragment else '?'}{urlencode(query)}"
+
+
+NONCE_SALT = 'apps.users.email_verification.signup_nonce'
+
+
+def _nonce_hash(nonce):
+    return salted_hmac(NONCE_SALT, nonce, algorithm='sha256').hexdigest()
+
+
+def new_signup_nonce():
+    """`(nonce, hash)`: the nonce goes to the browser that signs up, the hash to `User.signup_nonce_hash`."""
+    nonce = secrets.token_urlsafe(32)
+    return nonce, _nonce_hash(nonce)
+
+
+def signup_nonce_matches(user, nonce):
+    """The browser that opens the link is the one that signed up."""
+    if not nonce or not isinstance(nonce, str) or not user.signup_nonce_hash:
+        return False
+    return constant_time_compare(user.signup_nonce_hash, _nonce_hash(nonce))
 
 
 def _hours(seconds):
@@ -116,7 +146,7 @@ def send_signup_verification(user):
         'Hola:\n\n'
         'Para terminar de crear tu cuenta de OneCreator, confirmá tu email con este link:\n\n'
         f'{signup_link(user)}\n\n'
-        f'El link vence en {hours} horas. Al abrirlo entrás a tu cuenta.\n\n'
+        f'El link vence en {hours} horas. Si lo abrís en el navegador donde creaste la cuenta, entrás directo.\n\n'
         'Si no creaste una cuenta, ignorá este mensaje.\n'
     )
     send_mail(
@@ -155,8 +185,8 @@ def user_for_password_reset_token(token, queryset=None):
 
 
 def password_reset_link(user):
-    """`/recuperar?token=…&email=…` (contract): with the email, A4 signs in after saving."""
-    return _frontend_link('/recuperar', {'token': make_password_reset_token(user), 'email': user.email})
+    """`/recuperar#token=…&email=…` (contract): with the email, A4 signs in after saving."""
+    return _frontend_link('/recuperar', {'token': make_password_reset_token(user), 'email': user.email}, fragment=True)
 
 
 def send_password_reset(user):

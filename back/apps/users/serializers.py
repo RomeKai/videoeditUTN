@@ -163,6 +163,15 @@ class UpdateMeSerializer(serializers.Serializer):
 
 class VerifyEmailSerializer(serializers.Serializer):
     token = serializers.CharField()
+    # The proof of the browser that signed up (RegisterView): with it the link of a new
+    # account also signs in. Optional: without it the link only verifies.
+    signup_nonce = serializers.CharField(required=False, allow_blank=True, max_length=200)
+
+
+class SignedOutSerializer(serializers.Serializer):
+    """The link verified the email but did not sign in: the person signs in with the password."""
+
+    signed_in = serializers.BooleanField()
 
 
 class PasswordChangeSerializer(serializers.Serializer):
@@ -221,7 +230,9 @@ class RegisterSerializer(serializers.Serializer):
     """
     A2. The email is normalized (apps.users.emails) and must not belong to
     another account under any spelling (User.Meta's constraint): that error
-    carries `code: "unique"`, the one the web app links to the login.
+    carries `code: "unique"`, the one the web app links to the login. It is
+    checked last, once every other field is valid: a sign-up that would not
+    create anything never says whether an email has an account.
     """
 
     name = serializers.CharField(
@@ -242,11 +253,7 @@ class RegisterSerializer(serializers.Serializer):
     )
 
     def validate_email(self, value):
-        email = _normalized_email(value)
-        if email_taken(email):
-            # {message, code}: the web app tells "already taken" apart without reading the text.
-            raise serializers.ValidationError([{'message': EMAIL_TAKEN, 'code': 'unique'}])
-        return email
+        return _normalized_email(value)
 
     def validate_password(self, value):
         # The account does not exist yet: the similarity rule compares with what was typed.
@@ -261,11 +268,20 @@ class RegisterSerializer(serializers.Serializer):
             raise serializers.ValidationError(TERMS_REQUIRED, code='required')
         return value
 
+    def validate(self, attrs):
+        # Only reached when every field passed (DRF stops at field errors).
+        if email_taken(attrs['email']):
+            # {message, code}: the web app tells "already taken" apart without reading the text.
+            raise serializers.ValidationError({'email': [{'message': EMAIL_TAKEN, 'code': 'unique'}]})
+        return attrs
+
 
 class RegisterResponseSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     email = serializers.EmailField()
     is_email_verified = serializers.BooleanField()
+    # Kept by the browser that signed up and sent with the link (VerifyEmailSerializer).
+    signup_nonce = serializers.CharField()
 
 
 class EmailRequestSerializer(serializers.Serializer):

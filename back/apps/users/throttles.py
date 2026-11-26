@@ -11,6 +11,7 @@ default cache: per user when signed in, per IP otherwise. While that cache does
 not answer they are counted in this process's memory (LocalFallbackCache,
 LoginFailureGuard), so an outage does not switch the limits off.
 """
+import ipaddress
 import math
 import time
 
@@ -80,6 +81,25 @@ class LocalFallbackCache:
 local_throttle_history = LocalFallbackCache('attempt-throttles-fallback')
 
 
+def client_ident(request):
+    """
+    Who an "IP" limit counts (DRF's get_ident: REMOTE_ADDR, or X-Forwarded-For
+    with NUM_PROXIES). An IPv6 client usually holds a whole /64 and can take a
+    new address from it for every request, so IPv6 counts by its /64. IPv4
+    (also mapped in IPv6, ``::ffff:10.0.0.1``) counts by its address.
+    """
+    ident = BaseThrottle().get_ident(request)
+    try:
+        address = ipaddress.ip_address(ident)
+    except ValueError:
+        return ident
+    if address.version == 4:
+        return ident
+    if address.ipv4_mapped is not None:
+        return str(address.ipv4_mapped)
+    return str(ipaddress.ip_network((address, 64), strict=False))
+
+
 class AttemptThrottle(ScopedRateThrottle):
     """
     ScopedRateThrottle for the endpoints whose attempts are limited: the ones
@@ -90,6 +110,9 @@ class AttemptThrottle(ScopedRateThrottle):
     """
 
     cache = local_throttle_history
+
+    def get_ident(self, request):
+        return client_ident(request)
 
 
 EMAIL_SALT = 'apps.users.throttles.email'
@@ -221,7 +244,7 @@ class LoginFailureGuard:
     def __init__(self, request, email):
         account = self.account_key(email)
         self.has_account = account.startswith('user:')
-        ip = BaseThrottle().get_ident(request) or ''
+        ip = client_ident(request) or ''
         rates = settings.LOGIN_FAILURE_RATES
         self.windows = [
             (f'login_failures:{salted_hmac(self.SALT, f"{account}|{ip}").hexdigest()}', *parse_rate(rates['account_ip'])),

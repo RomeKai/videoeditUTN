@@ -3,8 +3,9 @@ The account bodies of front/src/api/contracts/drf/responses.json are the ones
 this backend gives: front/src/api/contracts/drf-cuentas.test.ts parses them
 with the contract (zod) and with the web app's error helpers. This test builds
 each of them with the real endpoints and compares every value (like the wallet
-ones, apps/payments/tests/test_contract_fixture.py). The id of the new account
-changes on each run: it is compared as a UUID.
+ones, apps/payments/tests/test_contract_fixture.py). The id and the
+`signup_nonce` of the new account change on each run: they are compared by
+shape (a UUID, a long string).
 
 When an answer changes on purpose, copy the new bodies into the file (only the
 keys of AUTH_KEYS and AUTH_ERROR_KEYS). The failure prints them, and so does
@@ -30,9 +31,10 @@ pytestmark = pytest.mark.django_db
 
 FIXTURE = Path(__file__).resolve().parents[4] / "front" / "src" / "api" / "contracts" / "drf" / "responses.json"
 
-AUTH_KEYS = ["auth_register"]
+AUTH_KEYS = ["auth_register", "verify_email_signed_out"]
 AUTH_ERROR_KEYS = [
-    "register_400_taken_and_weak",
+    "register_400_taken",
+    "register_400_weak",
     "register_400_terms",
     "resend_429",
     "password_reset_confirm_400_token",
@@ -64,7 +66,18 @@ def _real_bodies(user):
         format="json",
     )
     assert register.status_code == 201
+    # Without the nonce of the sign-up (another browser): it only verifies.
+    signup_link = next(word for word in mail.outbox[-1].body.split() if "/verificar?" in word)
+    signed_out = APIClient().post(
+        "/api/v1/auth/verify-email/", {"token": parse_qs(urlparse(signup_link).query)["token"][0]}, format="json",
+    )
     taken = APIClient().post(
+        "/api/v1/auth/register/",
+        {"name": "Ana", "email": "TESTER@test.com", "password": "una-clave-Nueva-2026", "terms_accepted": True},
+        format="json",
+    )
+    # Weak with an email that has an account: the same answer as with any other email.
+    weak_signup = APIClient().post(
         "/api/v1/auth/register/",
         {"name": "Ana", "email": "TESTER@test.com", "password": "12345678", "terms_accepted": True},
         format="json",
@@ -79,8 +92,8 @@ def _real_bodies(user):
         resend = APIClient().post("/api/v1/auth/verify-email/resend/", {"email": "nadie@example.com"}, format="json")
     bad_link = APIClient().post("/api/v1/auth/password-reset/confirm/", {"token": "vencido", "password": "x"}, format="json")
     APIClient().post("/api/v1/auth/password-reset/", {"email": "tester@test.com"}, format="json")
-    link = next(word for word in mail.outbox[-1].body.split() if "/recuperar?" in word)
-    token = parse_qs(urlparse(link).query)["token"][0]
+    link = next(word for word in mail.outbox[-1].body.split() if "/recuperar#" in word)
+    token = parse_qs(urlparse(link).fragment)["token"][0]
     weak = APIClient().post("/api/v1/auth/password-reset/confirm/", {"token": token, "password": "12345678"}, format="json")
     mine = _login("tester@test.com")
     theirs = _login("ana@example.com", "una-clave-Nueva-2026")
@@ -90,8 +103,10 @@ def _real_bodies(user):
     revoked = _client(phone["access"]).get("/api/v1/me/")
     return {
         "auth_register": register.json(),
+        "verify_email_signed_out": signed_out.json(),
         "errors": {
-            "register_400_taken_and_weak": _error(taken),
+            "register_400_taken": _error(taken),
+            "register_400_weak": _error(weak_signup),
             "register_400_terms": _error(terms),
             "resend_429": _error(resend),
             "password_reset_confirm_400_token": _error(bad_link),
@@ -109,10 +124,12 @@ def test_the_account_bodies_of_the_contract_fixture_are_the_real_ones(user):
     if os.environ.get("PRINT_DRF_FIXTURE"):
         print(json.dumps(real, ensure_ascii=False, indent=2))
 
-    # The id is new each time: a UUID in both, then the fixture's.
-    uuid.UUID(real["auth_register"]["id"])
-    uuid.UUID(fixture["auth_register"]["id"])
+    # The id and the nonce are new each time: the same shape in both, then the fixture's.
+    for created in (real["auth_register"], fixture["auth_register"]):
+        uuid.UUID(created["id"])
+        assert isinstance(created["signup_nonce"], str) and len(created["signup_nonce"]) >= 32
     real["auth_register"]["id"] = fixture["auth_register"]["id"]
+    real["auth_register"]["signup_nonce"] = fixture["auth_register"]["signup_nonce"]
     found = {
         **{key: fixture.get(key) for key in AUTH_KEYS},
         "errors": {key: fixture.get("errors", {}).get(key) for key in AUTH_ERROR_KEYS},

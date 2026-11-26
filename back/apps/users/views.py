@@ -8,7 +8,7 @@ from rest_framework.exceptions import APIException, AuthenticationFailed, Valida
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from drf_spectacular.utils import OpenApiResponse, extend_schema
+from drf_spectacular.utils import OpenApiResponse, PolymorphicProxySerializer, extend_schema
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from apps.core.workspace import OWNER, ActiveWorkspace
@@ -20,13 +20,14 @@ from apps.users.serializers import (
     MeSerializer,
     NotificationPreferencesSerializer,
     PasswordChangeSerializer,
+    SignedOutSerializer,
     UpdateMeSerializer,
     TokenPairSerializer,
     VerifyEmailSerializer,
     email_taken,
 )
 from apps.users.emails import InvalidEmailDomain
-from apps.users.email_verification import EMAIL_CHANGE, send_email_change_verification, user_for_token
+from apps.users.email_verification import EMAIL_CHANGE, send_email_change_verification, signup_nonce_matches, user_for_token
 from apps.users.throttles import (
     AttemptThrottle,
     EmailChangeThrottle,
@@ -345,9 +346,16 @@ class VerifyEmailView(APIView):
     changes hands: a link of another account than the signed-in one answers
     403 and applies nothing, so a link cannot switch a browser into someone
     else's account. An email-change link needs the session of its account
-    (403 without one): it moves `pending_email` to `email`. A signup link
-    verifies the account's email and signs the user in. The answer is a pair
-    of tokens of that same account.
+    (403 without one): it moves `pending_email` to `email`, and the answer is
+    a pair of tokens of that same account.
+
+    A signup link verifies the account's email and drops a `pending_email`
+    asked for before (by whoever had the password then). It answers a pair of
+    tokens only in the browser that signed up (`signup_nonce`, see
+    apps.users.email_verification) or with the session of that account;
+    anywhere else `{"signed_in": false}`: the person signs in with the
+    password, and one who never chose it goes through password reset, which
+    ends every session of whoever signed up with their email.
     """
 
     permission_classes = [AllowAny]
@@ -355,7 +363,11 @@ class VerifyEmailView(APIView):
     @extend_schema(
         request=VerifyEmailSerializer,
         responses={
-            200: TokenPairSerializer,
+            200: PolymorphicProxySerializer(
+                component_name='VerifyEmailResult',
+                serializers=[TokenPairSerializer, SignedOutSerializer],
+                resource_type_field_name=None,
+            ),
             400: OpenApiResponse(description='Link inválido, vencido, ya usado o cancelado, el email lo tomó otra cuenta o su dominio no se puede codificar (error en `token`).'),
             401: UNAUTHORIZED,
             403: OpenApiResponse(description=(
@@ -368,6 +380,7 @@ class VerifyEmailView(APIView):
         serializer = VerifyEmailSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         token = serializer.validated_data['token']
+        nonce = serializer.validated_data.get('signup_nonce')
         signed_in = request.user if request.user.is_authenticated else None
         try:
             with transaction.atomic():
@@ -387,6 +400,14 @@ class VerifyEmailView(APIView):
                         raise ValidationError({'token': [EMAIL_TAKEN]})
                     user.email, user.pending_email = user.pending_email, None
                     fields += ['email', 'pending_email']
+                    signs_in = True
+                else:
+                    # The first verification: only the browser that signed up (or a session of
+                    # this account) gets one. A change of email asked for before does not survive it.
+                    signs_in = signed_in is not None or signup_nonce_matches(user, nonce)
+                    user.pending_email = None
+                    user.signup_nonce_hash = None
+                    fields += ['pending_email', 'signup_nonce_hash']
                 user.is_email_verified = True
                 user.save(update_fields=fields)
         except IntegrityError:
@@ -395,4 +416,6 @@ class VerifyEmailView(APIView):
             # A pending email stored before the domains were normalized, with one
             # that cannot be encoded: nothing is applied.
             raise ValidationError({'token': [error.message]})
+        if not signs_in:
+            return Response(SignedOutSerializer({'signed_in': False}).data)
         return Response(issue_token_pair(user))
