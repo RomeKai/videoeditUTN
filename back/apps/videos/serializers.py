@@ -229,6 +229,18 @@ class VideoProjectSerializer(serializers.ModelSerializer):
             )
         return value
 
+    def validate_video_url(self, value):
+        # Only the sites the worker downloads from, never an internal address
+        # (services/link_validation.py): what is saved here is fetched later.
+        if not value:
+            return value
+        from .services.link_validation import LinkRejected, validate_video_link
+
+        try:
+            return validate_video_link(value).url
+        except LinkRejected as exc:
+            raise serializers.ValidationError(exc.message, code=exc.code)
+
     def validate_aspect_ratio(self, value):
         from .services.ai.contracts import LEGACY_ASPECT_RATIOS
 

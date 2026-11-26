@@ -88,7 +88,9 @@ from apps.videos.tasks.shared import (
     _selection_failure_usage,
     _selection_models,
     _transcription_demand,
+    LinkTooLongError,
     download_from_youtube,
+    link_duration_limit,
 )
 from apps.videos.tasks.render import (
     finalize_project_render,
@@ -243,13 +245,15 @@ def generate_proxy_task(project_id):
 def _stage_prepare_source(project_id):
     from apps.videos.services.storage_service import CloudflareR2Manager
 
-    project = VideoProject.objects.get(pk=project_id)
+    project = VideoProject.objects.select_related('workspace__subscription_plan').get(pk=project_id)
+    # A link is not priced by its duration: the plan's limit binds when it is fetched.
+    link_limit = link_duration_limit(project) if project.video_url else None
 
     if not project.source_file and project.video_url:
         logger.info("⬇️ Downloading source from URL for project %s", project_id)
         download_dir = os.path.join(settings.MEDIA_ROOT, 'videos', 'raw', 'downloads')
         os.makedirs(download_dir, exist_ok=True)
-        local_path = download_from_youtube(project.video_url, download_dir)
+        local_path = download_from_youtube(project.video_url, download_dir, max_duration_seconds=link_limit)
         try:
             with open(local_path, 'rb') as f:
                 project.source_file.save(os.path.basename(local_path), File(f), save=False)
@@ -260,6 +264,15 @@ def _stage_prepare_source(project_id):
 
     source_path = project.source_file.path
     user_id = str(project.uploaded_by.id) if project.uploaded_by else "system"
+
+    duration = resolution = None
+    if link_limit is not None:
+        # Measured before anything else is done with it: the site may not have
+        # said how long it was. Longer than allowed fails (and is refunded)
+        # before the upload and the proxy.
+        duration, resolution = _probe_video(source_path)
+        if duration > link_limit:
+            raise LinkTooLongError("The linked video is longer than allowed.")
 
     # A retry after a later failure inside this stage must not re-upload.
     if not project.original_r2_key:
@@ -280,7 +293,8 @@ def _stage_prepare_source(project_id):
             )
             _generate_proxy(project, source_path, user_id)
 
-    duration, resolution = _probe_video(source_path)
+    if duration is None:
+        duration, resolution = _probe_video(source_path)
     if _is_whole_video(project):
         # Before transcribing it: a file that is not what was priced costs nothing more.
         _check_whole_video_source(project, duration)

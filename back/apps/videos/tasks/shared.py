@@ -64,25 +64,82 @@ from backend.celery import app as celery_app
 
 logger = logging.getLogger(__name__)
 
-def download_from_youtube(url, output_folder):
-    import yt_dlp
-    
-    filename = f"{uuid.uuid4()}.mp4"
-    output_path = os.path.join(output_folder, filename)
-    
-    ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'outtmpl': output_path,
-        'quiet': True,
-        'no_warnings': True,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'referer': 'https://www.google.com/',
-    }
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
-        
-    return output_path
+class UnsupportedLinkError(ValueError):
+    """
+    The link is not one video of the sites the app downloads from
+    (services/link_validation.py, services/ytdlp_safe.py): another site, an
+    internal address, a list, a channel or a live stream. Not retried.
+    """
+
+
+class LinkTooLongError(ValueError):
+    """The linked video is longer than the plan (or the app) allows. Not retried."""
+
+
+class LinkTooLargeError(ValueError):
+    """The linked video's file is larger than LINK_DOWNLOAD_MAX_BYTES. Not retried."""
+
+
+def link_duration_limit(project):
+    """
+    Longest video a link project may download: the plan's
+    ``max_video_duration_seconds`` and the app's AI_UPLOAD_MAX_DURATION_SECONDS,
+    the lower of the two. The probe tells the user before creating; this makes
+    it binding when the video is fetched.
+    """
+    limits = [getattr(settings, 'AI_UPLOAD_MAX_DURATION_SECONDS', 10800)]
+    plan = getattr(project.workspace, 'subscription_plan', None)
+    if plan is not None and plan.max_video_duration_seconds:
+        limits.append(plan.max_video_duration_seconds)
+    return min(limits)
+
+
+def download_from_youtube(url, output_folder, max_duration_seconds=None):
+    """
+    Downloads the one video of ``url`` through ytdlp_safe: only the allowed
+    sites' extractors, every hop checked again, one video that is not live,
+    no request or redirect to a non-public address, at most
+    LINK_DOWNLOAD_MAX_BYTES and, with ``max_duration_seconds``, nothing
+    longer (refused before downloading). Raises UnsupportedLinkError,
+    LinkTooLongError, LinkTooLargeError or yt-dlp's DownloadError.
+    """
+    from apps.videos.services import ytdlp_safe
+    from apps.videos.services.link_validation import LinkRejected, validate_video_link
+
+    # Also for rows saved before the creation checked the link. A host that
+    # does not resolve raises its OSError (retried); a refused one does not retry.
+    try:
+        url = validate_video_link(url, resolve=True).url
+    except LinkRejected:
+        raise UnsupportedLinkError("The link is not on an allowed site.") from None
+
+    output_path = os.path.join(output_folder, f"{uuid.uuid4()}.mp4")
+
+    def check_duration(info):
+        duration = info.get('duration')
+        if max_duration_seconds and isinstance(duration, (int, float)) and duration > max_duration_seconds:
+            raise LinkTooLongError("The linked video is longer than allowed.")
+
+    try:
+        return ytdlp_safe.download_video(
+            url, output_path,
+            max_filesize=getattr(settings, 'LINK_DOWNLOAD_MAX_BYTES', 4 * 1024 ** 3),
+            check_info=check_duration,
+        )
+    except ytdlp_safe.LinkRefused:
+        raise UnsupportedLinkError("The link is not one video of an allowed site.") from None
+    except ytdlp_safe.LinkTooLarge:
+        raise LinkTooLargeError("The linked video is larger than allowed.") from None
+    finally:
+        if not os.path.exists(output_path):
+            # A refused or failed download leaves no parts behind.
+            prefix = os.path.splitext(os.path.basename(output_path))[0]
+            for name in os.listdir(output_folder):
+                if name.startswith(prefix):
+                    try:
+                        os.remove(os.path.join(output_folder, name))
+                    except OSError:
+                        pass
 
 class ThirdPartyAPIError(Exception):
     """Exception raised when a social media API fails."""
@@ -183,6 +240,8 @@ _TRANSIENT_S3_ERROR_CODES = frozenset({
 _PERMANENT_DOWNLOAD_MARKERS = (
     'video unavailable', 'private video', 'sign in', 'unsupported url', 'copyright',
     'not available', 'does not exist', 'has been removed', 'members-only', 'age-restricted',
+    # ytdlp_safe refused a request or a redirect to a non-public address.
+    'blocked non-public address',
 )
 _DETERMINISTIC_OS_ERRORS = (
     FileNotFoundError, PermissionError, IsADirectoryError, NotADirectoryError, FileExistsError,
