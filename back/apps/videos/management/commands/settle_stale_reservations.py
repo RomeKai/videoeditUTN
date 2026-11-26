@@ -19,9 +19,11 @@ Rules (the same the pipeline applies, see tasks/ingestion.py and tasks/render.py
         completed, partial or failed otherwise                          -> rollback
         any other stage (clips_selected, render_dispatched...)          -> report only
     Render reservation of an approval, ``metadata['render_reservation_id']``,
-    approved clip by clip (``render_clip_ids``), and auto-render reservation,
-    ``metadata['auto_render_reservation_id']`` ("Renderizar sin revisar"),
-    with the pipeline's own rule (ingestion._clip_render_settlement):
+    approved clip by clip (``render_clip_ids``); auto-render reservation,
+    ``metadata['auto_render_reservation_id']`` ("Renderizar sin revisar");
+    and reservation of a render asked for after the project ended (a clip, a
+    retry or a rerender), ``metadata['clip_render_reservation_id']``. All
+    three with the pipeline's own rule (ingestion._clip_render_settlement):
         completed, partial or failed with clips delivered  -> commit the share
                                                               of their seconds
         completed, partial or failed, nothing delivered    -> rollback
@@ -63,8 +65,9 @@ from apps.payments.models import Transaction
 from apps.videos.models import VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import STAGE_ORDER, TERMINAL_STAGES
 from apps.videos.tasks.ingestion import (
-    APPROVED_RENDER, AUTO_RENDER, AUTO_RENDER_RESERVATION_KEY, _clip_render_charge,
-    _clip_render_settlement, _is_whole_video, _paid_clip_renders, _whole_video_settlement,
+    APPROVED_RENDER, AUTO_RENDER, AUTO_RENDER_RESERVATION_KEY, CLIP_RENDER, _clip_render_charge,
+    _clip_render_settlement, _is_whole_video, _paid_clip_renders, _restore_rerendered_clips,
+    _whole_video_settlement,
 )
 
 COMMIT, ROLLBACK, REPORT = "commit", "rollback", "report"
@@ -75,6 +78,7 @@ _LINK_KEYS = (
     ("creation", "reservation_id"),
     ("render", "render_reservation_id"),
     ("auto_render", AUTO_RENDER_RESERVATION_KEY),
+    ("clip_render", CLIP_RENDER.reservation_key),
 )
 # Only what the rules read. ``metadata`` is read for the rules (whole video),
 # never printed.
@@ -105,8 +109,8 @@ def _clips_delivered(stage):
 
 
 def _paid_clip_render(kind, project):
-    """The clip-by-clip render a reservation of ``kind`` pays for (auto-render or approval), or None."""
-    paid = {"auto_render": AUTO_RENDER, "render": APPROVED_RENDER}.get(kind)
+    """The clip-by-clip render a reservation of ``kind`` pays for (auto-render, approval or later render), or None."""
+    paid = {"auto_render": AUTO_RENDER, "render": APPROVED_RENDER, "clip_render": CLIP_RENDER}.get(kind)
     return paid if paid in _paid_clip_renders(project.metadata or {}) else None
 
 
@@ -186,6 +190,9 @@ def _settle(transaction_id, kind, project_id):
             ).exists():
                 return action, reason, "already_settled"
             raise
+    if kind == "clip_render":
+        # Settled: the clips it never rendered are the user's again, as they were.
+        _restore_rerendered_clips(project_id)
     return action, reason, "committed" if action == COMMIT else "rolled_back"
 
 

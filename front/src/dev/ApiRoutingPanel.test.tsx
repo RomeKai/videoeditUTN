@@ -41,7 +41,9 @@ describe('panel de origen por dominio (modo híbrido)', () => {
     render(<ApiRoutingPanel onChange={() => undefined} />);
     const count = existing('projects');
     expect(count).toBeGreaterThan(0);
-    expect(within(row('Proyectos')).getByText(new RegExp(`${count} de 13 endpoints van al backend: los que el contrato marca como existentes\\.`))).toBeInTheDocument();
+    // Mixed while part of the domain is still proposed; once all of it exists the row is just real.
+    const all = count === 13;
+    expect(within(row('Proyectos')).getByText(all ? '13 de 13 endpoints van al backend.' : new RegExp(`${count} de 13 endpoints van al backend: los que el contrato marca como existentes\\.`))).toBeInTheDocument();
     expect(within(row('Notificaciones')).getByText(`${existing('notifications')} de 3 endpoints van al backend.`)).toBeInTheDocument();
   });
 
