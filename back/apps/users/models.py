@@ -11,9 +11,10 @@ class User(AbstractUser):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     email = models.EmailField(_('email address'), unique=True, db_index=True)
     
-    # Login social permite password nulo
-    password = models.CharField(_('password'), max_length=128, null=True, blank=True)
-    
+    # La contraseña nunca es NULL: una cuenta de login social tiene una
+    # contraseña inutilizable (set_unusable_password). Con NULL, SimpleJWT
+    # (CHECK_REVOKE_TOKEN) no puede calcular el hash y cada pedido da 500.
+
     # --- ESTADO Y SEGURIDAD ---
     is_email_verified = models.BooleanField(default=False)
     tour_completed = models.BooleanField(default=False)
