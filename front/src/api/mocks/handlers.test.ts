@@ -529,6 +529,19 @@ describe('mocks', () => {
     expect(refused.message).toMatch(/^Tu plan pasa a 'Libre' el .* y ese plan permite 5 miembros/);
   });
 
+  it('planes: mientras un pago de plan espera su checkout, nadie entra pasado los lugares de ese plan', async () => {
+    signIn('plan-con-checkout');
+    const plans = await apiCall(billing.listPlans);
+    const creator = plans.find((item) => item.name === 'Creador');
+    if (!creator) throw new Error('falta Creador');
+    // Pro with 4 seats in use; Creador has 5.
+    expect((await apiCall(billing.changePlan, { body: { plan_id: creator.id, return_url: 'http://localhost:3000/uso/planes' } })).checkout_url).toBeTruthy();
+    await apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['quinta@estudionorte.com'], role: 'viewer' } });
+    const refused = await fail(apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['sexta@estudionorte.com'], role: 'viewer' } }));
+    expect(refused.code).toBe('seats_exceeded');
+    expect(refused.message).toMatch(/^Estás pasando al plan 'Creador', que permite 5 miembros/);
+  });
+
   it('la sesión: login, credenciales incorrectas, email sin verificar y sesión vencida', async () => {
     signIn('sin-sesion', null);
     expect((await fail(apiCall(auth.login, { body: { email: 'lucia@estudionorte.com', password: 'incorrecta' } }))).status).toBe(401);
