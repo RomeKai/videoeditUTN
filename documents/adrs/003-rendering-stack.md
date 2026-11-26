@@ -1,7 +1,7 @@
 # ADR-003: Stack de Rendering — MoviePy + FFmpeg
 
 **Estado:** `accepted`
-**Fecha:** 2026-06 (decisión original) | 2026-09-01 (documentación formal) | 2026-09-17 (análisis post-MVP y escalabilidad)
+**Fecha:** 2026-06 (decisión original) | 2026-09-01 (documentación formal) | 2026-09-17 (análisis post-MVP y escalabilidad) | 2026-11 (revisión ARCH-01)
 **Par responsable:** ⚙️ Par Engine (Dev 3 + Dev 4)
 
 ---
@@ -115,6 +115,25 @@ Frente al dilema de si aislar el rendering en un microservicio separado:
   celery -A core worker -Q render -c 1 --max-tasks-per-child=5 --loglevel=INFO
   ```
 - **Ventaja:** Si la carga de renderizado crece en producción, simplemente se despliega el contenedor de Celery con `-Q render` en una máquina con más núcleos de CPU (o GPU para aceleración por hardware `h264_nvenc`), mientras el resto del SaaS sigue corriendo en la VPS básica sin alterar la lógica de negocio.
+
+---
+
+## Revisión ARCH-01 (2026-11)
+
+**Resultado:** se mantiene `accepted`. La decisión sigue reflejando el código.
+
+Verificado contra `dev`:
+
+- **MoviePy para composición:** `render_engine.py`, `subtitle_engine.py`, `clip_preview.py` y todos los layouts de `services/layouts/` componen con MoviePy 2.x (`moviepy==2.2.1` en constraints).
+- **FFmpeg directo para lo pesado:** `utils/ffmpeg_utils.py` invoca `ffmpeg` por `subprocess` con timeout.
+- **Queue routing del addendum: implementado.** `CELERY_TASK_ROUTES` manda `render_clip_task` y `render_video_segments` a la cola `render`, y los workers consumen `-Q celery,render`.
+- **Subtítulos ASS con libass: no implementado.** `SubtitleEngine` sigue generando los subtítulos como clips de MoviePy. Sigue siendo la optimización recomendada post-MVP.
+
+Ajustes a las decisiones de seguimiento:
+
+- **"Evaluar `faster-whisper`" queda obsoleto:** desde [ADR-008](008-groq-whisper-migration.md) la transcripción es remota (Groq) y la imagen productiva retira Whisper/PyTorch (AICORE-10).
+- **Remotion:** sin cambios, solo si MoviePy se vuelve insostenible.
+- **Reemplazo futuro:** el índice de ADRs reserva el ADR-010 (PyAV) para reemplazar a este ADR. Hasta que se redacte, este ADR es la referencia vigente.
 
 ---
 
