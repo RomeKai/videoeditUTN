@@ -602,6 +602,119 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
             status=ScheduledPost.Status.QUEUED,
         )
 
+    def test_a_post_deleted_before_its_task_runs_publishes_nothing(self):
+        """Deleted with its clip, project or workspace after it was queued: no failure, no call."""
+        post_id = str(self.post.id)
+        self.post.delete()
+
+        with patch("apps.integrations.ayrshare_api.AyrshareClient.send_post") as send, \
+                self.assertLogs("apps.videos.tasks.social", level="WARNING") as logs:
+            result = upload_to_social_network.apply(args=[post_id])
+
+        self.assertTrue(result.successful())
+        self.assertEqual(result.result, "Post Deleted")
+        send.assert_not_called()
+        self.assertIn(f"publish.post_deleted post_id={post_id} when=before_publishing", logs.output[0])
+
+    def test_a_post_deleted_while_it_was_published_is_not_inserted_again(self):
+        """Its row went while Ayrshare answered: the task ends, and no row comes back."""
+        post_id = str(self.post.id)
+
+        def publish_and_delete(**kwargs):
+            ScheduledPost.objects.filter(id=post_id).delete()
+            return {"id": "ayr-1"}
+
+        with patch(
+            "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
+            return_value="https://r2/clip.mp4",
+        ), patch(
+            "apps.integrations.ayrshare_api.AyrshareClient.send_post", side_effect=publish_and_delete,
+        ), self.assertLogs("apps.videos.tasks.social", level="WARNING") as logs:
+            result = upload_to_social_network.apply(args=[post_id])
+
+        self.assertTrue(result.successful(), result.result)
+        self.assertFalse(ScheduledPost.objects.filter(id=post_id).exists())
+        self.assertTrue(any("when=after_publishing" in line for line in logs.output))
+
+    def test_publishing_only_writes_its_own_columns(self):
+        """A caption edited while the post was being sent is not overwritten by the task's copy."""
+        def publish(**kwargs):
+            ScheduledPost.objects.filter(id=self.post.id).update(retry_count=7)
+            return {"id": "ayr-1"}
+
+        with patch(
+            "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
+            return_value="https://r2/clip.mp4",
+        ), patch("apps.integrations.ayrshare_api.AyrshareClient.send_post", side_effect=publish):
+            upload_to_social_network.apply(args=[str(self.post.id)])
+
+        self.post.refresh_from_db()
+        self.assertEqual(self.post.status, ScheduledPost.Status.PUBLISHED)
+        self.assertEqual(self.post.retry_count, 7)
+
+    def test_publishing_and_failing_move_updated_at(self):
+        """The project's activity dates "Se publicó" and "Falló la publicación" with updated_at (auto_now)."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        old = timezone.now() - timedelta(days=3)
+
+        ScheduledPost.objects.filter(id=self.post.id).update(updated_at=old)
+        processing_at = []
+
+        def publish(**kwargs):
+            processing_at.append(ScheduledPost.objects.get(id=self.post.id).updated_at)
+            ScheduledPost.objects.filter(id=self.post.id).update(updated_at=old)
+            return {"id": "ayr-1"}
+
+        with patch(
+            "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
+            return_value="https://r2/clip.mp4",
+        ), patch("apps.integrations.ayrshare_api.AyrshareClient.send_post", side_effect=publish):
+            upload_to_social_network.apply(args=[str(self.post.id)])
+
+        self.post.refresh_from_db()
+        self.assertEqual(self.post.status, ScheduledPost.Status.PUBLISHED)
+        # PROCESSING and PUBLISHED each moved it.
+        self.assertGreater(processing_at[0], old + timedelta(days=2))
+        self.assertGreater(self.post.updated_at, old + timedelta(days=2))
+
+        # The failure of a workspace without its Ayrshare profile too.
+        ScheduledPost.objects.filter(id=self.post.id).update(status=ScheduledPost.Status.QUEUED, updated_at=old)
+        Workspace.objects.filter(pk=self.workspace.pk).update(ayrshare_profile_key="")
+        upload_to_social_network.apply(args=[str(self.post.id)])
+
+        self.post.refresh_from_db()
+        self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
+        self.assertGreater(self.post.updated_at, old + timedelta(days=2))
+
+    def test_a_save_that_fails_on_a_post_that_still_exists_is_not_swallowed(self):
+        """Only a deleted row is tolerated: any other database error reaches the generic handler."""
+        from django.db import DatabaseError
+
+        save = ScheduledPost.save
+
+        def failing_save(post, *args, **kwargs):
+            if post.status == ScheduledPost.Status.PUBLISHED:
+                raise DatabaseError("connection lost")
+            return save(post, *args, **kwargs)
+
+        with patch(
+            "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
+            return_value="https://r2/clip.mp4",
+        ), patch(
+            "apps.integrations.ayrshare_api.AyrshareClient.send_post", return_value={"id": "ayr-1"},
+        ), patch.object(ScheduledPost, "save", failing_save):
+            result = upload_to_social_network.apply(args=[str(self.post.id)])
+
+        self.assertTrue(result.failed())
+        self.assertIsInstance(result.result, DatabaseError)
+        self.post.refresh_from_db()
+        # The generic handler recorded it.
+        self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
+        self.assertIn("Critical: connection lost", self.post.error_log)
+
     def test_unexpected_error_is_raised_and_post_marked_failed(self):
         with patch(
             "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
@@ -700,13 +813,14 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
 
         self.assertEqual(post.call_args.kwargs["timeout"], AyrshareClient.TIMEOUT_SECONDS)
 
-    def test_missing_post_raises_the_real_error_not_unbound_local(self):
+    def test_missing_post_ends_the_task_without_an_unbound_local(self):
+        # A post that does not exist (deleted, or never there) is nothing to publish: no failure, no retry.
         result = upload_to_social_network.apply(
             args=["00000000-0000-0000-0000-000000000000"]
         )
 
-        self.assertTrue(result.failed())
-        self.assertIsInstance(result.result, ScheduledPost.DoesNotExist)
+        self.assertTrue(result.successful())
+        self.assertEqual(result.result, "Post Deleted")
 
     def test_missing_profile_key_fails_the_task_and_the_post(self):
         Workspace.objects.filter(pk=self.workspace.pk).update(ayrshare_profile_key="")

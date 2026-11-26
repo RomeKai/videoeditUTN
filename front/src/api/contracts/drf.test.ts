@@ -24,6 +24,7 @@ import { BrandKit, listBrandKits } from './brandkits';
 import { ClipPreview } from './clips';
 import real from './drf/responses.json';
 import { ApprovePaperEditResponse, CreateFromPromptResponse, CreateProjectResponse, PaperEditData, Project, ProjectsResponse } from './projects';
+import { type MembersResponse, type Workspace, createWorkspace, getWorkspace, listMembers, listWorkspaces, transferWorkspace, updateMember, updateWorkspace } from './workspaces';
 
 /**
  * Bodies as the backend of `dev` builds them (see drf/responses.json), parsed
@@ -85,6 +86,59 @@ describe('respuestas reales del backend', () => {
     const failed = Project.parse(real.project_failed_auto_render_not_paid);
     expect(failed.metadata.no_speech).toBe(true);
     expect(pipelineErrorMessage(failed.pipeline_error_code)).toMatch(/No alcanzó el saldo/);
+  });
+});
+
+describe('workspaces y miembros: respuestas reales del backend', () => {
+  it('lista, crear, detalle, renombrar y transferir', () => {
+    parse(listWorkspaces.response, real.workspace_list);
+    const created = parse(createWorkspace.response, real.workspace_create) as Workspace;
+    expect(created.role).toBe('owner');
+    const detail = parse(getWorkspace.response, real.workspace_detail) as Workspace;
+    // The owner first; an account without a name shows its email.
+    expect(detail.admins?.map((admin) => admin.role)).toEqual(['owner', 'admin']);
+    parse(updateWorkspace.response, real.workspace_update);
+    // Who transferred stays as Admin.
+    expect((parse(transferWorkspace.response, real.workspace_transfer) as Workspace).role).toBe('admin');
+  });
+
+  it('miembros: la fila del dueño sale como owner y las pendientes ocupan lugar', () => {
+    const members = parse(listMembers.response, real.members) as MembersResponse;
+    expect(members.members.map((member) => member.role)).toEqual(['owner', 'admin', 'editor', 'viewer', 'editor']);
+    expect(members.members.at(-1)?.status).toBe('pending');
+    expect(members.seats_used).toBe(members.members.length);
+    // A user without a name arrives as '' and nobody is recorded as the inviter.
+    expect(members.members[0]?.user?.name).toBe('');
+    expect(members.members[0]?.invited_by).toBeNull();
+    parse(updateMember.response, real.member_update);
+  });
+
+  it('errores: el 403 de rol dice quién puede, sin `code`; los 400 van por campo; el 409 trae `code`', () => {
+    for (const key of ['workspace_403_admins', 'workspace_403_owner'] as const) {
+      expect(error(key).code).toBeUndefined();
+      expect(error(key).isPlanLimit).toBe(false);
+      expect(errorMessage(error(key))).toBe(real.errors[key].body.detail);
+    }
+    expect(error('workspace_404').isNotFound).toBe(true);
+    expect(fieldError(error('workspace_400_name'), 'name')).toBe('Escribí un nombre para el espacio.');
+    expect(fieldError(error('workspace_delete_400_confirm'), 'confirm_name')).toBe('El nombre no coincide.');
+    expect(fieldError(error('member_400_owner_role'), 'role')).toBe('No se puede cambiar el rol del dueño.');
+    expect(fieldError(error('transfer_400'), 'new_owner_id')).toBe('Tiene que ser un miembro activo del workspace.');
+    expect(errorMessage(error('member_400_owner_remove'))).toBe('No se puede quitar al dueño del workspace.');
+    expect(error('workspace_delete_409_processing').code).toBe('project_processing');
+    expect(errorMessage(error('workspace_delete_409_processing'))).toMatch(/esperá a que terminen/);
+    expect(error('workspace_delete_409_reserved').code).toBe('reservation_open');
+    // Every refusal of the delete says why in Spanish, and that sentence is what the dialog shows.
+    for (const [key, code] of [['workspace_delete_409_posts', 'posts_in_flight'], ['workspace_delete_409_balance', 'balance_left'], ['workspace_delete_409_last', 'last_workspace']] as const) {
+      expect(error(key).isConflict).toBe(true);
+      expect(error(key).code).toBe(code);
+      expect(errorMessage(error(key))).toBe(real.errors[key].body.error);
+    }
+    expect(errorMessage(error('workspace_delete_409_balance'))).toMatch(/^Quedan 120\.5 tokens en este espacio y no se pueden recuperar/);
+    expect(errorMessage(error('workspace_delete_409_processing'))).toMatch(/Si alguno quedó trabado, borrá ese proyecto primero/);
+    expect(error('workspace_create_409_limit').code).toBe('workspace_limit');
+    expect(errorMessage(error('workspace_create_409_limit'))).toMatch(/máximo de 10 espacios/);
+    expect(errorMessage(error('transfer_400_seats'))).toMatch(/^No quedan lugares en el plan/);
   });
 });
 
