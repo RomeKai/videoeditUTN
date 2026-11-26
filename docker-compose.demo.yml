@@ -8,7 +8,11 @@
 #   - web aplica las migraciones antes de arrancar, y espera a que Postgres y Valkey respondan;
 #   - front: la web en modo híbrido (una parte va al backend real y el resto son mocks);
 #   - proxy: un nginx que deja todo en http://localhost:8080 y sirve back/media.
-# No es producción: usa runserver, DEBUG y archivos locales.
+# No es producción: usa runserver, DEBUG y archivos locales. Por eso nada se publica fuera de
+# esta máquina (127.0.0.1). Pide Docker Compose 2.24 o más nuevo, por `!override`.
+#
+# Otro puerto: DEMO_PORT=9090, y construir de nuevo (`up -d --build`). La URL pública sale de
+# ahí; DEMO_PUBLIC_URL la reemplaza entera si hiciera falta.
 
 services:
   db:
@@ -28,11 +32,16 @@ services:
   web:
     command: sh -c "python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:8000"
     restart: on-failure
+    # docker-compose.yml publica la API en todas las interfaces (8001). Acá corre con DEBUG, una
+    # cuenta de contraseña conocida y /media sin sesión: solo en esta máquina. `!override`
+    # reemplaza la lista en lugar de sumarle.
+    ports: !override
+      - "127.0.0.1:8001:8000"
     environment:
       # Un proxy delante de Django: la IP del cliente es la de X-Forwarded-For.
       - NUM_PROXIES=1
       # Los links de los emails (en dev salen por consola) abren la web por el proxy.
-      - FRONTEND_URL=${DEMO_PUBLIC_URL:-http://localhost:8080}
+      - FRONTEND_URL=${DEMO_PUBLIC_URL:-http://localhost:${DEMO_PORT:-8080}}
     depends_on:
       db:
         condition: service_healthy
@@ -69,7 +78,7 @@ services:
         # Un build de producción con mocks hay que pedirlo (front/next.config.ts).
         API_MOCKS_IN_BUILD: "true"
         # El navegador le habla a la API por el proxy, en el mismo origen que la web.
-        NEXT_PUBLIC_API_URL: ${DEMO_PUBLIC_URL:-http://localhost:8080}
+        NEXT_PUBLIC_API_URL: ${DEMO_PUBLIC_URL:-http://localhost:${DEMO_PORT:-8080}}
         # Qué va al backend real. Por defecto: usuario, proyectos, clips y brand kits.
         # Planes, billetera, redes, publicaciones, miembros y notificaciones quedan enteros
         # en mocks, para que cada área sea coherente (ver el runbook). DEMO_API_REAL=existing

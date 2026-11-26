@@ -4,11 +4,13 @@
 > **Verificado:** 2026-11-26, en una máquina de 4 vCPU y 15 GB. Qué se probó y qué no está en [la última sección](#qué-se-verificó-y-qué-no).
 > **Qué levanta:** Postgres, Valkey, la API de Django, un worker y un beat de Celery, la web en modo híbrido y un proxy. Todo queda en **http://localhost:8080**.
 
-No es producción: usa `runserver`, `DEBUG=True` y archivos en disco. Corre en la máquina desde la que se presenta.
+No es producción: usa `runserver`, `DEBUG=True`, una cuenta de contraseña conocida y archivos en disco que se sirven sin sesión. Corre en la máquina desde la que se presenta, y **solo se llega desde esa máquina**: el proxy (8080) y la API (8001) se publican en `127.0.0.1`, nada en la red.
+
+**Es HTTP en `localhost` y nada más.** No la pongas detrás de HTTPS ni de un túnel: los links de los videos locales saldrían con `http://` y el navegador los bloquearía por contenido mixto.
 
 ## 1. Requisitos
 
-- Docker con Compose 2.x, 8 GB de RAM libres y unos 10 GB de disco (la imagen del backend trae PyTorch).
+- Docker con **Compose 2.24 o más nuevo** (`docker compose version`; `docker-compose.demo.yml` usa `!override`), 8 GB de RAM libres y unos 10 GB de disco (la imagen del backend trae PyTorch).
 - Chrome, abriendo siempre `http://localhost:8080`. Los mocks son un service worker: con otra IP u otro nombre por HTTP no arrancan.
 - Un video de prueba **en un archivo**: 1 a 3 minutos, con alguien hablando claro en español.
 - `back/.env`, copiado de `back/.env.example`. Nunca se sube al repo. Lo que hay que completar:
@@ -22,12 +24,12 @@ No es producción: usa `runserver`, `DEBUG=True` y archivos en disco. Corre en l
 | `USE_R2` | Dejalo en `False`: los archivos van a `back/media` y los sirve el proxy | — |
 | `AYRSHARE_API_KEY`, `STRIPE_*`, `XAI_API_KEY` | No se usan en la demo: publicar y pagar son mocks | No |
 
-`DEBUG=True` y el resto de `back/.env.example` sirven como están. **Sin ninguna key** igual se puede mostrar todo menos el análisis en vivo: los proyectos de ejemplo y el render real no llaman a ningún proveedor.
+**Cambiá `SECRET_KEY`**: no dejes la del ejemplo, que es pública y firma las sesiones. Una nueva sale de `python3 -c "import secrets; print(secrets.token_urlsafe(50))"`. `DEBUG=True` y el resto de `back/.env.example` sirven como están. **Sin ninguna key** igual se puede mostrar todo menos el análisis en vivo: los proyectos de ejemplo y el render real no llaman a ningún proveedor.
 
 ## 2. Levantar y sembrar
 
 ```bash
-cp back/.env.example back/.env        # y completá las keys
+cp back/.env.example back/.env        # completá las keys y cambiá SECRET_KEY
 alias demo='docker compose -f docker-compose.yml -f docker-compose.demo.yml'
 
 demo up -d --build                    # la primera vez tarda: hacelo el día anterior
@@ -72,7 +74,7 @@ La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario,
 
 Dos cosas para tener presentes:
 
-- **El saldo que se ve es el del mock.** Arranca en 4.860, igual que el real, pero no baja cuando el backend cobra. El saldo real está en `http://localhost:8080/admin/` o en `GET /api/v1/me/`.
+- **El saldo que se ve es el del mock.** Arranca en 4.860, igual que el real, pero no baja cuando el backend cobra. El saldo real está en `GET /api/v1/me/`, o en el admin de Django (`http://localhost:8080/admin/`) si creaste un usuario para entrar: `demo exec web python manage.py createsuperuser`. El usuario de la demo no entra al admin.
 - El botón del matraz (borde izquierdo) muestra qué dominio es real y cuál es mock. Cada respuesta de un mock lleva la cabecera `X-OC-Mock`.
 
 ## 4. El recorrido
@@ -127,7 +129,8 @@ Regla práctica: con Groq, un video de 2 minutos está listo para revisar en alr
 | **El video no tiene voz** | El proyecto falla con «no se detectó voz». Usá un video con alguien hablando |
 | **La web dice «No pudimos conectar»** | `demo ps`: si `web` no está, `demo logs web --tail 50` y `demo up -d` |
 | **Se abrió la web con otra dirección** | Los mocks no arrancan fuera de `localhost`. Volvé a `http://localhost:8080` |
-| **Cambiaste `back/.env`** | `demo up -d --force-recreate web worker beat`. Lo que cambia en `docker-compose.demo.yml` para `front` pide `--build` |
+| **Cambiaste `back/.env`** | `demo up -d --force-recreate web worker beat`. Lo que cambia en `docker-compose.demo.yml` para `front` pide `--build`. El proxy encuentra solo a los contenedores recreados, en unos segundos |
+| **El puerto 8080 está ocupado** | `DEMO_PORT=9090 demo up -d --build`. La URL pública sale de `DEMO_PORT` y queda fija en el build de `front`: por eso el `--build`. Usá el mismo valor en cada comando `demo` (o ponelo en un `.env` en la raíz del repo) |
 
 **Si se cae el worker** (un proyecto no sale de «Procesando» o los clips no salen de «Renderizando»):
 
@@ -172,6 +175,7 @@ Verificado el 2026-11-26:
 - La web construida en modo híbrido con la lista de la demo, detrás del nginx de `docker/demo/nginx.conf` (en un contenedor): login, las pantallas de la tabla, el video de la revisión con pedidos por rango, aprobar y renderizar desde la pantalla, conectar una red simulada, abrir «Publicar» con un clip real y una subida de 32 MB. Sin errores de consola ni respuestas 4xx o 5xx.
 - La imagen de `front/Dockerfile` construye y sirve la web.
 - Django sirve `/media/` con `DEBUG=True` y `USE_R2=False`, y no lo hace con `DEBUG` apagado ni con R2 (tests en `apps/core/tests/test_media_serving.py`).
+- El proxy sigue respondiendo después de recrear `web` y `front` con otra IP (probado con contenedores de reemplazo en una red de Docker), y `config` muestra solo dos puertos publicados, los dos en `127.0.0.1`.
 - Con archivos locales, la API devuelve las URLs de `/media/` absolutas, con el origen del pedido. Detrás del proxy de la demo quedan en `http://localhost:8080/media/...` (tests en `apps/videos/tests/test_media_urls.py`; el recorrido en el navegador se hizo antes de este cambio, con la URL relativa).
 
 Sin verificar:
