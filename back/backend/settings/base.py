@@ -284,6 +284,38 @@ REDIS_URL = env('REDIS_URL', default='redis://redis:6379/0')
 # redelivered task waiting (it retries, see PIPELINE_LOCK_* in tasks.py).
 PIPELINE_LOCK_TTL = env.int('PIPELINE_LOCK_TTL', default=300)
 
+# --- CACHE ---
+# One store for every web and worker process: the public plans list
+# (payments.services.plans) and the cache.add locks (tasks/social.py) only
+# work if all of them see the same keys. Django's default LocMem is one cache
+# per process. Same Redis as the broker, under its own key prefix; cache.add
+# is a single SET NX there, so the locks are atomic. Without REDIS_URL (a
+# runserver with no Redis) it falls back to LocMem, and prod.py warns.
+# Never call cache.clear() here: django-redis runs FLUSHDB, which also empties
+# the broker's queues.
+if 'REDIS_URL' in os.environ:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': env('REDIS_URL'),
+            'KEY_PREFIX': env('CACHE_KEY_PREFIX', default='onecreator'),
+            'TIMEOUT': 300,
+            'OPTIONS': {
+                # A Redis that does not answer fails the call in seconds
+                # instead of holding the request or the task.
+                'SOCKET_CONNECT_TIMEOUT': 2,
+                'SOCKET_TIMEOUT': 2,
+            },
+        },
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'onecreator',
+        },
+    }
+
 # Redis broker visibility timeout. Tasks use acks_late, so a running task stays
 # unacked and Redis redelivers it once this timeout passes. It must be comfortably
 # greater than PIPELINE_LOCK_TTL plus the longest stage (long-video transcription,

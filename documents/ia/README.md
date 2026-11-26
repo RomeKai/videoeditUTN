@@ -217,7 +217,7 @@ Los interruptores principales. La referencia completa está en [07](07-capacidad
 | [04-prompt-to-edit.md](04-prompt-to-edit.md) | Endpoint `from-prompt`, `PromptParser`, `ConfigValidator`, reintentos y capacidad del parser, `metadata['pte']` |
 | [05-seo-y-publicacion.md](05-seo-y-publicacion.md) | `ScheduledPost`, disparo por señal, `process_video_seo`, moderación de entrada y salida, publicación |
 | [06-render-caras-y-hablante.md](06-render-caras-y-hablante.md) | Render por clip y paper edit, layouts, seguimiento de caras, detección de quién habla, resolución |
-| [07-capacidad-costos-y-operacion.md](07-capacidad-costos-y-operacion.md) | Buckets de capacidad, `AIUsageRecord` y precios, export del piloto, allowlist, chequeo de arranque, configuración completa y logs |
+| [07-capacidad-costos-y-operacion.md](07-capacidad-costos-y-operacion.md) | Buckets de capacidad, `AIUsageRecord` y precios, export del piloto, allowlist, chequeo de arranque, cache compartida, configuración completa y logs |
 
 ## Referencias
 

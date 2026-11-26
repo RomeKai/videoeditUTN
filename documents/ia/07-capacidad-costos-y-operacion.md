@@ -1,6 +1,6 @@
 # Capacidad, costos y operación
 
-Este documento cubre lo transversal del core de IA: el control de capacidad propio (token buckets en Valkey) que corre antes de cada llamada a Groq o al LLM, el registro de uso y costo (`AIUsageRecord` y la tabla de precios), el export y la evaluación del piloto, la habilitación gradual de V2, el chequeo de arranque y la referencia completa de configuración. Cierra con los eventos de log para operar y una tabla de síntomas. El procedimiento del piloto está en el [runbook](../runbooks/ai-core-pilot-runbook.md) y no se repite acá.
+Este documento cubre lo transversal del core de IA: el control de capacidad propio (token buckets en Valkey) que corre antes de cada llamada a Groq o al LLM, el registro de uso y costo (`AIUsageRecord` y la tabla de precios), el export y la evaluación del piloto, la habilitación gradual de V2, el chequeo de arranque, la cache compartida y la referencia completa de configuración. Cierra con los eventos de log para operar y una tabla de síntomas. El procedimiento del piloto está en el [runbook](../runbooks/ai-core-pilot-runbook.md) y no se repite acá.
 
 ## Componentes
 
@@ -20,6 +20,7 @@ Este documento cubre lo transversal del core de IA: el control de capacidad prop
 | Export del piloto | [export_ai_pilot_metrics.py](../../back/apps/videos/management/commands/export_ai_pilot_metrics.py) | CSV o JSONL por registro o por proyecto |
 | Evaluación de transcripción | [evaluate_ai_transcription.py](../../back/apps/videos/management/commands/evaluate_ai_transcription.py) | WER y error de timestamps contra referencias humanas |
 | Barrido de reservas | [settle_stale_reservations.py](../../back/apps/videos/management/commands/settle_stale_reservations.py) | Reporta las reservas de tokens que quedaron `RESERVED` y, con `--apply`, las cobra o las devuelve según el estado del proyecto |
+| Cache de Django | [settings/base.py](../../back/backend/settings/base.py), [settings/prod.py](../../back/backend/settings/prod.py) | `CACHES` en el Redis de `REDIS_URL` (django-redis), compartida por todos los procesos web y worker ([ver abajo](#cache-compartida)) |
 | Renders trabados | [tasks/render_recovery.py](../../back/apps/videos/tasks/render_recovery.py), [recover_stuck_renders.py](../../back/apps/videos/management/commands/recover_stuck_renders.py) | `recover_stuck_renders` (Celery Beat) y el comando del mismo nombre: re-encolan los paper edits de antes (una sola exportación) que quedaron `RENDERING` con la reserva tomada, cobran los entregados sin cobrar y fallan con reembolso los que perdieron su worker demasiadas veces; y re-encolan los clips trabados de una revisión aprobada o un render automático |
 
 ## Flujo: reserva y ajuste de capacidad
@@ -244,6 +245,19 @@ Pasos de la habilitación gradual y del rollback: [runbook §5.3](../runbooks/ai
 
 `E001` y `E002` se excluyen por modelo: un alias no se revisa también por precio. `MODERATION_MODEL` no pasa por este chequeo (su default es `omni-moderation-latest`).
 
+## Cache compartida
+
+`CACHES` de dev y prod sale de [settings/base.py](../../back/backend/settings/base.py) (`ci.py` usa su propia LocMem):
+
+- **Con `REDIS_URL`** (docker-compose lo define para `web` y `worker`): `django_redis.cache.RedisCache` en ese Redis, el mismo del broker. Claves con `KEY_PREFIX` (`CACHE_KEY_PREFIX`, `onecreator` por defecto; `make_key` queda `<prefijo>:1:<clave>`), `TIMEOUT` de 300 s y `SOCKET_CONNECT_TIMEOUT` y `SOCKET_TIMEOUT` de 2 s: un Redis que no contesta falla la llamada en segundos en vez de colgar el request o la tarea.
+- **Sin `REDIS_URL`**: una `LocMemCache` por proceso. Sirve para un `runserver` sin Redis. En prod, `prod.py` lo avisa al cargar los settings con `cache.not_shared`, por stderr porque `LOGGING` todavía no se aplicó.
+
+Quién la usa: la lista pública de planes (`payments.services.plans`, una hora) y el lock de cada publicación (`lock_post_publish_<post_id>` en `upload_to_social_network`, [05](05-seo-y-publicacion.md)). Con la LocMem de antes, cada worker de gunicorn o contenedor tenía su propia lista y su propio lock: dos entregas del mismo post en workers distintos podían publicar dos veces. En Redis, `cache.add` es un solo `SET NX PX`, así que el lock es atómico entre procesos. Si Redis no contesta, `cache.add` lanza (`IGNORE_EXCEPTIONS` está apagado a propósito): la tarea falla en vez de publicar sin lock.
+
+No usan la cache de Django el lock por proyecto ([project_lock.py](../../back/apps/videos/services/ai/project_lock.py)), los token buckets de capacidad ni el contador de alertas de tareas: van con redis-py directo a `REDIS_URL`, porque necesitan dueño, Lua o `INCR`.
+
+`cache.clear()` corre `FLUSHDB` en django-redis: con la cache en la base del broker, también vacía las colas de Celery, los locks y los buckets. No usarlo fuera de los tests.
+
 ## Errores, reintentos y casos borde
 
 | Situación | Qué pasa | Dónde |
@@ -269,6 +283,7 @@ Pasos de la habilitación gradual y del rollback: [runbook §5.3](../runbooks/ai
 | Dónde | Clave o campo | Contenido |
 |-------|---------------|-----------|
 | Valkey | `capacity:v1:<modelo>:<recurso>_per_<ventana>` | Hash con `tokens` y `ts`, con `EXPIRE` |
+| Valkey (cache de Django) | `<CACHE_KEY_PREFIX>:1:payments:public-plans`, `<CACHE_KEY_PREFIX>:1:lock_post_publish_<post_id>` | Lista pública de planes (1 h) y lock de publicación |
 | `VideoProject.pipeline_stage_status` | `<etapa>` | `pending_capacity` mientras espera |
 | `VideoProject.metadata` | `capacity_wait` | `stage`, `since` (ISO), `planned_s`, `attempts`. Se borra al obtener lugar o al vencer |
 | `VideoProject.metadata` | `capacity_waited_s` | Segundos esperados por etapa, acumulados |
@@ -309,7 +324,8 @@ Todos los settings de IA de [settings/base.py](../../back/backend/settings/base.
 | `AI_UPLOAD_MAX_DURATION_SECONDS` | `10800` | Duración máxima de una subida |
 | `AI_SINGLE_EDIT_MAX_DURATION_SECONDS` | `600` | Duración máxima de un video completo (`single_edit`): un solo render lo tiene entero |
 | `AI_UPLOAD_MAX_LONG_SIDE_PX` / `AI_UPLOAD_MIN_SHORT_SIDE_PX` | `4096` / `240` | Límites de resolución de una subida |
-| `REDIS_URL` | `redis://redis:6379/0` | Broker y result backend de Celery, locks y buckets |
+| `REDIS_URL` | `redis://redis:6379/0` | Broker y result backend de Celery, locks, buckets y cache de Django. Sin la variable, la cache es LocMem por proceso (`cache.not_shared` en prod) |
+| `CACHE_KEY_PREFIX` | `onecreator` | Prefijo de las claves de la cache. Distinto por entorno si dos comparten Redis |
 | `PIPELINE_LOCK_TTL` | `300` | TTL del lock por proyecto, renovado por heartbeat |
 | `CELERY_BROKER_TRANSPORT_OPTIONS['visibility_timeout']` (variable `CELERY_VISIBILITY_TIMEOUT`) | `14400` | Tiempo tras el cual Redis reentrega una tarea sin ack. Mayor que el lock y que la etapa más larga |
 | `PIPELINE_SOFT_TIME_LIMIT` | `7200` | Soft time limit de `process_initial_ingestion`: falla con `SoftTimeLimitExceeded` y libera el lock |
@@ -355,6 +371,7 @@ Los eventos tienen nombre estable y llevan ids, códigos y números, nunca texto
 | `prompt_parse.` | `completed`, `primary_failed`, `fallback_failed`, `fields_dropped`, `transient`, `retrying`, `failed`, `applied`, `capacity_timeout` | [prompt_parser.py](../../back/apps/videos/services/ai/prompt_parser.py), [prompt_validator.py](../../back/apps/videos/services/ai/prompt_validator.py) |
 | `seo.` | `dispatched`, `dispatch_failed`, `pending_capacity`, `capacity_timeout`, `input_blocked`, `output_blocked`, `no_clip_transcript`, `completed`, `persisted`, `failed`, `skipped`, `regenerate_failed` | [signals.py](../../back/apps/videos/signals.py), [tasks/social.py](../../back/apps/videos/tasks/social.py), [seo_engine.py](../../back/apps/videos/services/seo_engine.py) |
 | `upload.` | `rejected` (`code`), `probe_failed` | [media_validation.py](../../back/apps/videos/services/media_validation.py) |
+| `cache.` | `not_shared`: prod sin `REDIS_URL` | [settings/prod.py](../../back/backend/settings/prod.py) |
 | `face_tracker.` | `mediapipe_unavailable`, `detector_unavailable`, `detector_failed`, `tracked`, `no_faces`, `failed`, `all_frames_failed` | [face_tracker.py](../../back/apps/videos/services/face_tracker.py) |
 | `speaker.` / `layout.` | `speaker.timeline`, `speaker.audio_failed`, `speaker.frames_failed`, `layout.active_speaker`, `layout.active_speaker_failed` | [speaker_engine.py](../../back/apps/videos/services/speaker_engine.py), [layouts/pro.py](../../back/apps/videos/services/layouts/pro.py) |
 | `render.` | `dispatch_failed`, `retrying`, `release_failed`, `retry_not_queued`, `failure_not_recorded`, `skipped_unpaid`, `claim_lost`, `restarted`, `worker_lost`, `start_not_closed`, `start_not_recorded`, `orphan_not_deleted`; de la aprobación, `approved`, `approval_draft_kept`, `approval_reserve_failed`, `approval_failed`, `approval_after_commit_failed`, `redispatch_queued`, `redispatch_not_queued`, `charged` (con `whole`), `refunded`, `settle_skipped`, `settle_failed`; del paper edit de antes, `already_delivered`, `restarted`, `lock_busy_retrying`, `skipped`, `fail_skipped`, `not_persisted`, `lock_lost`, `orphan_not_deleted`, `start_not_closed`, `cleanup_failed`, `charged`, `refunded`, `settle_skipped`, `settle_failed`. También `pipeline.render_redispatched`, `pipeline.render_not_queued` y `pipeline.render_finalized`; recuperación: `recovery_requeued`, `recovery_charged`, `recovery_failed`, `recovery_closed`, `recovery_not_started`, `recovery_reported`, `recovery_error`, `recovery_done`, y `requeue_not_published` | [tasks/ingestion.py](../../back/apps/videos/tasks/ingestion.py), [tasks/render.py](../../back/apps/videos/tasks/render.py), [tasks/render_recovery.py](../../back/apps/videos/tasks/render_recovery.py) |
@@ -364,6 +381,7 @@ Los eventos tienen nombre estable y llevan ids, códigos y números, nunca texto
 | Síntoma | Qué mirar |
 |---------|-----------|
 | Un proyecto lleva mucho en "Procesando" | `pipeline_stage_status`: si una etapa está `pending_capacity`, mirar `metadata['capacity_wait']` y los logs `pipeline.pending_capacity`. Si es seguido, falta capacidad del proveedor (ampliar el tier, no subir los límites por encima del 80 %) |
+| La lista de planes no se actualiza igual en todos los servidores, o un post se publicó dos veces | La cache no es compartida: buscar `cache.not_shared` al arrancar y que `REDIS_URL` esté en el entorno de web y worker ([cache compartida](#cache-compartida)) |
 | Proyecto `failed` con `pipeline_error_code=CapacityTimeoutError` | La espera planificada superó `AI_CAPACITY_MAX_WAIT_SECONDS`, por ejemplo por una cuota diaria agotada. Confirmar el reembolso (`pipeline.refunded`) y re-despachar cuando haya cuota |
 | Una etapa falla con `ImproperlyConfigured` que nombra `AI_CAPACITY_LIMITS` | Falta la entrada de un modelo que el pipeline llama. Correr `manage.py check` (`videos.E005`) y completar los límites |
 | El deploy o `migrate` falla con un código `videos.E001` a `videos.E006` | Ver la tabla del [chequeo de arranque](#chequeo-de-arranque) |
