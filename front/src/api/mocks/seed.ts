@@ -56,7 +56,7 @@ export function seedPlans(): Plan[] {
       allow_crossposting: false,
       has_seo_optimization: true,
       base_discount_rate: 0.05,
-      max_members: 2,
+      max_members: 5,
       price_usd_monthly: 19,
       description: 'Para publicar seguido en una red.',
       sort_order: 2,

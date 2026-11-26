@@ -77,8 +77,15 @@ describe('mocks de Uso alineados con el backend', () => {
     const creator = db.plans.find((plan) => plan.name === 'Creador');
     if (!free || !pro || !creator) throw new Error('faltan planes');
     expect((await failure(apiCall(billing.changePlan, { body: { plan_id: pro.id } }))).status).toBe(400);
-    // 4 seats in use and Creador has 2: the downgrade is rejected, nothing is scheduled.
-    const rejected = await failure(apiCall(billing.changePlan, { body: { plan_id: creator.id } }));
+    // 4 seats fit in Creador's 5: the downgrade is scheduled, and choosing Pro again cancels it.
+    const scheduled = await apiCall(billing.changePlan, { body: { plan_id: creator.id } });
+    expect(scheduled.applied).toBe('period_end');
+    expect(scheduled.subscription.pending_plan?.name).toBe('Creador');
+    const cancelled = await apiCall(billing.changePlan, { body: { plan_id: pro.id } });
+    expect(cancelled.applied).toBe('now');
+    expect(cancelled.subscription.pending_plan).toBeNull();
+    // 4 seats in use and Gratis has 2: the downgrade is rejected, nothing is scheduled.
+    const rejected = await failure(apiCall(billing.changePlan, { body: { plan_id: free.id } }));
     expect(rejected.status).toBe(409);
     expect(rejected.code).toBe('seats_exceeded');
     expect((await apiCall(billing.getSubscription)).pending_plan).toBeNull();
