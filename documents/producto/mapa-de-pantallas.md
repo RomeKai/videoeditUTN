@@ -499,7 +499,7 @@ Otras respuestas:
   - ✅ un video sin voz (música, gameplay) se edita igual, sin subtítulos.
   - ✅ el archivo no se puede cambiar después de crear (400) y no hay vista previa (409): el render real sale enseguida.
   - ✅ solo se crea con archivo: por link, `POST /api/v1/projects/` da 400 en `project_type`.
-  - ❌ volver a renderizar con otro estilo (mismo hueco que D4).
+  - ✅ `POST /api/v1/projects/:id/rerender/` vuelve a renderizar los clips con otro estilo.
 
 ### E. Publicar
 
@@ -548,7 +548,8 @@ Otras respuestas:
 - **Estados:** vacío ("Todavía no programaste nada" con el botón **Ir a mis clips**).
 - **Móvil:** solo la lista, agrupada por día.
 - **API:**
-  - ❌ todo: listar, editar, cancelar y reintentar.
+  - ✅ `GET /api/v1/scheduled-posts/` (paginado, con filtros y `status_counts`) y `GET /api/v1/scheduled-posts/:id/`.
+  - ❌ editar, cancelar y reintentar.
   - ⚠️ `error_log` de la publicación guarda el texto de la excepción; hay que traducirlo a un mensaje legible.
   - ⚠️ un post puede quedar trabado en `PROCESSING` (ver la [documentación de IA](../ia/05-seo-y-publicacion.md)).
 
@@ -746,9 +747,9 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad. El detalle e
 | 3 | ~~Roles aplicados en la API (tabla 1.7)~~ Resuelto: la API aplica los roles sobre el workspace de `X-Workspace-Id` y responde 403 con el motivo | Todas | — |
 | 4 | Wallet y transacciones (`GET /wallet`, `GET /transactions`), con vínculo al proyecto y estado "devuelto" visible | Barra, D1, G1, G2 | P0 |
 | 5 | ~~Link de descarga firmado por clip~~ Resuelto: `GET /clips/:id/download/` | D3, D4 | — |
-| 6 | Endpoint de precios (la fórmula) para el estimado. Los planes ya están: `GET /plans/` | C1, G3 | P0 |
+| 6 | Endpoint de precios (la fórmula) para el estimado. Los planes ya están: `GET /plans/` | C1, A6, G3 | P0 |
 | 7 | ~~Campo `render_resolution` al crear, y alinear el render por defecto con el precio~~ Resuelto: se elige al crear y el render por defecto es 720p, como el precio | C1 | — |
-| 8 | Crear, editar, cancelar y reintentar `ScheduledPost`. Listar y ver una ya existen (`GET /scheduled-posts/`), todavía sin los filtros | E1, E2 | P1 |
+| 8 | Crear, editar, cancelar y reintentar `ScheduledPost`. Listar (con filtros) y ver una ya existen: `GET /scheduled-posts/` y `GET /scheduled-posts/:id/` | E1, E2 | P1 |
 | 9 | Beat que corra `dispatch_scheduled_posts_batch` | E1, E2 | P1 |
 | 10 | Conectar redes por workspace (Ayrshare) | E1, H3 | P1 |
 | 11 | ~~Endpoint de clip: renombrar, recortar, volver a renderizar y reintentar~~ Resuelto: `GET/PATCH/DELETE /clips/:id/`, `POST /clips/:id/render/` y `POST /clips/:id/retry/` | D3, D4 | — |

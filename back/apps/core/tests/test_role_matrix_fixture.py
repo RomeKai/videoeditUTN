@@ -8,6 +8,7 @@ import json
 import pytest
 
 from apps.core.permissions import (
+    OWNER,
     ROLE_MATRIX,
     ROLE_MATRIX_FIXTURE,
     ROLE_ORDER,
@@ -54,6 +55,14 @@ def test_matrix_differences_names_role_and_action():
 def test_export_covers_every_role_of_the_matrix():
     used = set().union(*ROLE_MATRIX.values())
     assert used <= set(ROLE_ORDER), f"ROLE_ORDER is missing {sorted(used - set(ROLE_ORDER))}"
+
+
+def test_export_covers_every_role_a_member_can_have():
+    # A role added to WorkspaceMember.Role but not to ROLE_ORDER would be exported nowhere,
+    # and the frontend's Role enum would reject it in /me at runtime.
+    from apps.users.models import WorkspaceMember
+
+    assert set(ROLE_ORDER) == {OWNER, *WorkspaceMember.Role.values}
 
 
 def test_fixture_is_current():

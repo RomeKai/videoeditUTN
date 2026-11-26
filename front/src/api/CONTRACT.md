@@ -40,7 +40,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | 2 | El código de `InvalidUploadError` (`not_a_video`, `too_long`…) no llega en el 400: DRF solo manda el mensaje. | `{ "source_file": [{ "message", "code" }] }`. Mientras tanto el frontend reconoce el código por el texto (`uploadErrorCode()` en `src/lib/error-messages.ts`). |
 | 3 | Los 403 de `PricingEngine` traen un mensaje en inglés sin código (`Video duration (…) exceeds your plan limit`). | `code` (`duration`, `resolution`, `seo`) y `limit`. Mientras tanto se reconoce por el texto (`planLimitKind()`). |
 | 4 | El rol del modelo es `viewer` (`WorkspaceMember.Role.VIEWER`); el mapa lo llama «Lector». | El contrato usa los valores del backend (`admin`, `editor`, `viewer`) más `owner` derivado de `Workspace.owner`. «Lector» es solo la etiqueta. |
-| 5 | `POST/GET /api/v1/clips/{id}/preview/` (PTE-03) existe; el mapa (§7) todavía lo lista como fuera del MVP. | Está en el contrato como existente. |
+| 5 | ~~`POST/GET /api/v1/clips/{id}/preview/` (PTE-03) figuraba fuera del MVP en el mapa (§7).~~ Resuelto: existe y el mapa lo da dentro del MVP. | Está en el contrato como existente. |
 | 6 | `VideoProjectSerializer.create` lee `subtitle_scale_factor` del pedido y lo asigna a un atributo que el modelo no tiene: se pierde. | El frontend no lo manda; el tamaño va en `subtitle_size`. |
 | 7 | `subtitle_size` se guarda en `metadata.subtitle_size` al crear, además del campo del modelo. | El frontend lee el campo `subtitle_size` del proyecto. |
 | 8 | `brand_kit_name` no viene cuando el proyecto no tiene brand kit (DRF omite el campo). | Opcional en el esquema. |
