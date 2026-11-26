@@ -129,7 +129,12 @@ describe('workspaces y miembros: respuestas reales del backend', () => {
     expect(errorMessage(error('workspace_delete_409_processing'))).toMatch(/esperá a que terminen/);
     expect(error('workspace_delete_409_reserved').code).toBe('reservation_open');
     // Every refusal of the delete says why in Spanish, and that sentence is what the dialog shows.
-    for (const [key, code] of [['workspace_delete_409_posts', 'posts_in_flight'], ['workspace_delete_409_balance', 'balance_left'], ['workspace_delete_409_last', 'last_workspace']] as const) {
+    for (const [key, code] of [
+      ['workspace_delete_409_posts', 'posts_in_flight'],
+      ['workspace_delete_409_payment', 'payment_pending'],
+      ['workspace_delete_409_balance', 'balance_left'],
+      ['workspace_delete_409_last', 'last_workspace'],
+    ] as const) {
       expect(error(key).isConflict).toBe(true);
       expect(error(key).code).toBe(code);
       expect(errorMessage(error(key))).toBe(real.errors[key].body.error);

@@ -1657,6 +1657,13 @@
         "code": "reservation_open"
       }
     },
+    "workspace_delete_409_payment": {
+      "status": 409,
+      "body": {
+        "error": "Hay un pago en curso. Esperá a que termine o cancelalo antes de borrar el espacio.",
+        "code": "payment_pending"
+      }
+    },
     "workspace_delete_409_posts": {
       "status": 409,
       "body": {

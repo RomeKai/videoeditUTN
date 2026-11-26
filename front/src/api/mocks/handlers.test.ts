@@ -340,7 +340,7 @@ describe('mocks', () => {
     expect(denied.message).toBe('Solo el dueño del espacio puede hacer esto.');
   });
 
-  it('borrar un workspace: nunca con publicaciones saliendo, con saldo ni si es el único', async () => {
+  it('borrar un workspace: nunca con publicaciones saliendo, con un pago en curso, con saldo ni si es el único', async () => {
     const id = WORKSPACE_IDS.estudio;
     const name = (await apiCall(workspaces.getWorkspace, { params: { id } })).name;
     const remove = () => fail(apiCall(workspaces.deleteWorkspace, { params: { id }, body: { confirm_name: name } }));
@@ -358,9 +358,31 @@ describe('mocks', () => {
       for (const wallet of db.wallets) if (wallet.workspace === id) Object.assign(wallet, { available_balance: 120.5, reserved_balance: 0 });
     });
     expect((await remove()).code).toBe('posts_in_flight');
-    // Once none is going out (the simulation would send a due SCHEDULED one, so they end as drafts), the tokens stop it.
+    // Once none is going out (the simulation would send a due SCHEDULED one, so they end as drafts), a payment
+    // waiting for its provider stops it: its row is what the confirmation settles.
+    const purchaseId = '7d1f3a52-6c1e-4b8a-9f0d-2e5c8b4a1f00';
     edit((db) => {
       for (const post of db.posts) if (post.workspace === id && ['SCHEDULED', 'QUEUED', 'PROCESSING'].includes(post.status)) post.status = 'DRAFT';
+      db.purchases.push({
+        id: purchaseId,
+        workspace: id,
+        status: 'pending',
+        tokens: 1000,
+        plan_id: null,
+        amount_usd: 10,
+        checkout_url: `http://localhost:3000/dev/checkout?compra=${purchaseId}`,
+        failure_reason: null,
+        created_at: new Date().toISOString(),
+        balance_after: null,
+        _settleAt: null,
+        _reject: false,
+      });
+    });
+    const paying = await remove();
+    expect([paying.status, paying.code, paying.message]).toEqual([409, 'payment_pending', 'Hay un pago en curso. Esperá a que termine o cancelalo antes de borrar el espacio.']);
+    // Once it is settled (here, rejected), the tokens stop it.
+    edit((db) => {
+      for (const purchase of db.purchases) if (purchase.id === purchaseId) Object.assign(purchase, { status: 'rejected', checkout_url: null });
     });
     const balance = await remove();
     expect(balance.code).toBe('balance_left');

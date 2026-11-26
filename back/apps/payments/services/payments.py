@@ -32,6 +32,10 @@ Money rules:
 - A confirmation for a payment already rejected (replaced, canceled, expired,
   or its checkout failed) changes nothing: it is logged as
   ``payment.late_paid`` so staff can refund it by hand.
+- Creating a token purchase locks the workspace row first, like every other
+  change of its payments: a workspace delete that holds it either ends first
+  (and the purchase finds no workspace) or sees the pending payment and
+  refuses (apps/users/views_workspaces.py).
 
 The workspace row is locked FOR NO KEY UPDATE: it serializes plan changes and
 settlements without blocking the rows that point to the workspace.
@@ -291,8 +295,9 @@ def start_token_purchase(workspace, *, user, tokens, amount_usd, package_id, ret
     A pending token purchase with the provider's checkout. Returns
     ``(payment, created)``: ``created`` is False when ``idempotency_key``
     already started this same purchase. Raises PaymentsUnavailable (no
-    provider: nothing is written), IdempotencyKeyReused, PurchaseInProgress
-    or CheckoutFailed.
+    provider: nothing is written), IdempotencyKeyReused, PurchaseInProgress,
+    CheckoutFailed or Workspace.DoesNotExist (the workspace was deleted
+    meanwhile: nothing is written).
     """
     provider = require_payment_provider()
     if idempotency_key:
@@ -302,6 +307,9 @@ def start_token_purchase(workspace, *, user, tokens, amount_usd, package_id, ret
             return replayed, False
     try:
         with transaction.atomic():
+            # The workspace's row first (Workspace.DoesNotExist once it was deleted): a delete that
+            # holds it ends before this, or sees this payment pending and refuses.
+            lock_workspace(workspace.pk)
             payment = Payment.objects.create(
                 workspace=workspace,
                 created_by=user,

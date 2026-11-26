@@ -79,6 +79,41 @@ describe('H1 · General', () => {
     expect(navigation.replace).not.toHaveBeenCalled();
   });
 
+  it('borrar con un pago en curso: el servidor lo rechaza y el diálogo dice qué hacer', async () => {
+    const user = userEvent.setup();
+    const prepare = () => {
+      const db = loadDb();
+      const estudio = db.workspaces.find((workspace) => workspace.name === 'Estudio Norte')?.id ?? '';
+      db.projects = db.projects.filter((project) => project.workspace !== estudio || !['uploaded', 'ingesting', 'rendering'].includes(project.status));
+      for (const post of db.posts) if (post.workspace === estudio && ['SCHEDULED', 'QUEUED', 'PROCESSING'].includes(post.status)) post.status = 'DRAFT';
+      for (const wallet of db.wallets) if (wallet.workspace === estudio) Object.assign(wallet, { available_balance: 0, reserved_balance: 0 });
+      const id = '5b2e8c1d-3f4a-4e6b-8c9d-0a1b2c3d4e5f';
+      db.purchases.push({
+        id,
+        workspace: estudio,
+        status: 'pending',
+        tokens: 0,
+        plan_id: db.plans.find((plan) => plan.price_usd_monthly > 0)?.id ?? null,
+        amount_usd: 49,
+        checkout_url: `http://localhost:3000/dev/checkout?compra=${id}`,
+        failure_reason: null,
+        created_at: new Date().toISOString(),
+        balance_after: null,
+        _settleAt: null,
+        _reject: false,
+      });
+      saveDb(db);
+    };
+    renderScreen(<GeneralSettings />, { prepare });
+    await user.click(await screen.findByRole('button', { name: 'Borrar el workspace…' }));
+    const dialog = await screen.findByRole('alertdialog', { name: '¿Borrar Estudio Norte?' });
+    await user.type(within(dialog).getByRole('textbox'), 'Estudio Norte');
+    await user.click(within(dialog).getByRole('button', { name: 'Borrar el workspace' }));
+    expect(await within(dialog).findByText('Hay un pago en curso. Esperá a que termine o cancelalo antes de borrar el espacio.')).toBeInTheDocument();
+    expect(loadDb().workspaces.some((workspace) => workspace.name === 'Estudio Norte')).toBe(true);
+    expect(navigation.replace).not.toHaveBeenCalled();
+  });
+
   it('borrar pide escribir el nombre del workspace', async () => {
     const user = userEvent.setup();
     // Nothing in progress: a workspace with projects processing or rendering is not deleted (409).

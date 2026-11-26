@@ -2,14 +2,18 @@
 Two requests that change the owner of one workspace at the same time run one
 after the other: require_workspace_role(lock=True) takes the workspace's row
 lock before it reads the role, so the second one sees what the first one did.
+A token purchase and a delete of its workspace also run one after the other.
 """
 import threading
+import time
 from unittest import mock
 
 from django.db import connection
+from django.test import override_settings
 from rest_framework.test import APIClient, APITransactionTestCase
 
-from apps.payments.models import SubscriptionPlan
+from apps.payments.models import Payment, SubscriptionPlan
+from apps.payments.services.payment_providers import SimulatedProvider
 from apps.users.models import User, Workspace, WorkspaceMember
 from apps.users.serializers_workspaces import TransferWorkspaceSerializer
 
@@ -140,3 +144,124 @@ class ConcurrentLastWorkspaceTests(APITransactionTestCase):
         refused = next(response for response in answers.values() if response.status_code == 409)
         assert refused.json()["code"] == "last_workspace"
         assert Workspace.objects.filter(owner=self.owner).count() == 1
+
+
+@override_settings(PAYMENTS_PROVIDER="simulated", PAYMENTS_ALLOW_SIMULATED=True)
+class ConcurrentPurchaseAndDeleteTests(APITransactionTestCase):
+    """
+    A token purchase starts while the owner deletes the workspace. Both lock
+    the workspace row first: the delete either sees the pending payment and
+    refuses, or ends first and the purchase finds no workspace. Never a 204
+    that leaves a pending payment behind or erases one.
+    """
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username="compra", email="compra@test.com", password="password")
+        self.workspace = self.owner.owned_workspaces.get()
+        # Another workspace of the owner's, so the delete is not refused as their last one.
+        Workspace.objects.create(name="Otro", owner=self.owner)
+
+    def _api(self):
+        api = APIClient()
+        api.force_authenticate(user=self.owner)
+        api.credentials(HTTP_X_WORKSPACE_ID=str(self.workspace.pk))
+        return api
+
+    def _purchase(self, answers):
+        try:
+            answers["purchase"] = self._api().post(
+                "/api/v1/token-purchases/",
+                {"package_id": "pack-1000", "return_url": "http://localhost:3000/uso/comprar/resultado"},
+                format="json",
+            ).status_code
+        except Exception as exc:  # what the view did not answer (a 500)
+            answers["purchase"] = type(exc).__name__
+        finally:
+            connection.close()
+
+    def _delete(self, answers):
+        try:
+            response = self._api().delete(
+                f"/api/v1/workspaces/{self.workspace.pk}/", {"confirm_name": self.workspace.name}, format="json",
+            )
+            answers["delete"] = (response.status_code, response.json().get("code") if response.status_code == 409 else None)
+        finally:
+            connection.close()
+
+    def _someone_waits_for_a_lock(self, timeout=10):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                )
+                if cursor.fetchone()[0]:
+                    return True
+            time.sleep(0.05)
+        return False
+
+    def _assert_no_payment_lost(self, answers):
+        payments = list(Payment.objects.filter(workspace_id=self.workspace.pk).values_list("status", flat=True))
+        if answers["delete"][0] == 204:
+            # Gone with nothing pending: the purchase never wrote its payment.
+            assert answers["purchase"] == 404, answers
+            assert not Payment.objects.exists()
+        else:
+            assert answers["delete"] == (409, "payment_pending"), answers
+            assert answers["purchase"] == 201, answers
+            assert payments == [Payment.Status.PENDING]
+            assert Workspace.objects.filter(pk=self.workspace.pk).exists()
+
+    def test_a_purchase_that_started_first_keeps_the_workspace(self):
+        in_checkout = threading.Event()
+        release = threading.Event()
+        start = SimulatedProvider.start_checkout
+
+        def slow_checkout(provider, payment, return_url):
+            # The payment is written and pending; the provider has not answered yet.
+            in_checkout.set()
+            release.wait(timeout=10)
+            return start(provider, payment, return_url)
+
+        answers = {}
+        with mock.patch.object(SimulatedProvider, "start_checkout", slow_checkout):
+            purchase = threading.Thread(target=self._purchase, args=(answers,))
+            purchase.start()
+            assert in_checkout.wait(timeout=10)
+            delete = threading.Thread(target=self._delete, args=(answers,))
+            delete.start()
+            delete.join(timeout=30)
+            release.set()
+            purchase.join(timeout=30)
+
+        assert answers["delete"] == (409, "payment_pending")
+        self._assert_no_payment_lost(answers)
+
+    def test_a_purchase_that_comes_while_the_delete_holds_the_workspace_finds_it_gone(self):
+        from apps.users import views_workspaces
+
+        delete_locked = threading.Event()
+        release = threading.Event()
+        count = views_workspaces._other_workspaces
+
+        def hold_the_lock(user, workspace):
+            # The delete holds the workspace's row lock here, and its checks are still ahead.
+            delete_locked.set()
+            release.wait(timeout=10)
+            return count(user, workspace)
+
+        answers = {}
+        with mock.patch.object(views_workspaces, "_other_workspaces", hold_the_lock):
+            delete = threading.Thread(target=self._delete, args=(answers,))
+            delete.start()
+            assert delete_locked.wait(timeout=10)
+            purchase = threading.Thread(target=self._purchase, args=(answers,))
+            purchase.start()
+            # The purchase waits for the workspace's row instead of writing its payment.
+            assert self._someone_waits_for_a_lock()
+            release.set()
+            delete.join(timeout=30)
+            purchase.join(timeout=30)
+
+        assert answers["delete"] == (204, None)
+        self._assert_no_payment_lost(answers)
