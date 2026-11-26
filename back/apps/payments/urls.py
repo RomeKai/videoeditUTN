@@ -1,5 +1,7 @@
 ﻿from django.urls import path
 
+from .views import PublicPlanListView
+
 urlpatterns = [
-    # app endpoints
+    path('plans/', PublicPlanListView.as_view(), name='public-plans'),
 ]
