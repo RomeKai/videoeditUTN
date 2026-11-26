@@ -1,10 +1,12 @@
-import { delay, http, HttpResponse, type HttpHandler } from 'msw';
+import { delay, http, HttpResponse, passthrough, type HttpHandler } from 'msw';
 import type { ZodTypeAny } from 'zod';
 import { can, type Action, type PermissionContext } from '@/lib/permissions';
 import { API_URL, IDEMPOTENCY_HEADER, WORKSPACE_HEADER } from '../config';
 import type { Role } from '../contracts/common';
 import type { AnyEndpoint, RequestBody, ResponseOf } from '../endpoint';
+import { isHybrid, routeOf } from '../routing';
 import type { MockDb, MockUser, MockWorkspace } from './db';
+import { adoptUserFromToken, adoptWorkspace, rememberLoginEmail } from './hybrid';
 import { roleIn, tick } from './sim';
 import { loadDb, saveDb, userIdFromToken } from './state';
 
@@ -72,8 +74,14 @@ function latency(): number {
   return 180;
 }
 
-function resolveWorkspace(db: MockDb, user: MockUser, request: Request): { workspace: MockWorkspace; role: Role } | null {
-  const candidates = [request.headers.get(WORKSPACE_HEADER), user.active_workspace_id];
+/** Header of every answer a mock gives: in hybrid mode it tells them from the backend's (network tab, e2e guard). */
+export const MOCK_HEADER = 'X-OC-Mock';
+
+function resolveWorkspace(db: MockDb, user: MockUser, request: Request, now: number): { workspace: MockWorkspace; role: Role } | null {
+  const sent = request.headers.get(WORKSPACE_HEADER);
+  // Hybrid: a workspace only the real backend knows (its `/me` or its workspaces are real) is adopted on first sight.
+  if (sent && isHybrid() && roleIn(db, sent, user.id) === null) adoptWorkspace(db, user, sent, now);
+  const candidates = [sent, user.active_workspace_id];
   for (const id of candidates) {
     if (!id) continue;
     const workspace = db.workspaces.find((item) => item.id === id);
@@ -96,6 +104,31 @@ function resolveWorkspace(db: MockDb, user: MockUser, request: Request): { works
 export function route<E extends AnyEndpoint>(endpoint: E, resolver: Resolver<E>): HttpHandler {
   mockedEndpointIds.add(endpoint.id);
   return METHODS[endpoint.method](`${API_URL}${endpoint.path}`, async ({ request, params }) => {
+    // Hybrid mode: the endpoints routed to the real backend go out untouched (`src/api/routing.ts`).
+    if (routeOf(endpoint) === 'real') {
+      if (endpoint.id === 'auth.login') await noteLogin(request);
+      // The email kept for the mocked `/me` belongs to the session that is ending.
+      if (endpoint.id === 'auth.logout') rememberLoginEmail(null);
+      return passthrough();
+    }
+    const response = await answer(endpoint, resolver, request, params as Record<string, string>);
+    response.headers.set(MOCK_HEADER, endpoint.id);
+    return response;
+  });
+}
+
+/** Dev bridge: the email of a real login, for the mocked `/me` (the token only carries the user id). */
+async function noteLogin(request: Request): Promise<void> {
+  try {
+    const body = (await request.clone().json()) as { email?: unknown };
+    rememberLoginEmail(typeof body.email === 'string' ? body.email : null);
+  } catch {
+    // Not JSON: the backend will say so.
+  }
+}
+
+async function answer<E extends AnyEndpoint>(endpoint: E, resolver: Resolver<E>, request: Request, params: Record<string, string>): Promise<Response> {
+  {
     await delay(latency());
     const db = loadDb();
     const now = Date.now();
@@ -110,13 +143,16 @@ export function route<E extends AnyEndpoint>(endpoint: E, resolver: Resolver<E>)
       }
 
       const header = request.headers.get('Authorization');
-      const userId = header?.startsWith('Bearer ') ? userIdFromToken(header.slice(7), 'access') : null;
-      const maybeUser = db.flags.sessionExpired ? null : (db.users.find((item) => item.id === userId) ?? null);
+      const token = header?.startsWith('Bearer ') ? header.slice(7) : null;
+      const userId = userIdFromToken(token, 'access');
+      // Hybrid: the token is a real JWT; its user is brought into the mock database (`./hybrid`).
+      const known = db.users.find((item) => item.id === userId) ?? (token ? adoptUserFromToken(db, token, now) : null);
+      const maybeUser = db.flags.sessionExpired ? null : known;
       const needsAuth = endpoint.auth === undefined || endpoint.auth === true;
       if (needsAuth && !maybeUser) {
         throw new MockHttpError(401, { detail: 'Given token not valid for any token type', code: 'token_not_valid' });
       }
-      const scoped = maybeUser ? resolveWorkspace(db, maybeUser, request) : null;
+      const scoped = maybeUser ? resolveWorkspace(db, maybeUser, request, now) : null;
 
       let body: unknown;
       let form: FormData | null = null;
@@ -149,7 +185,7 @@ export function route<E extends AnyEndpoint>(endpoint: E, resolver: Resolver<E>)
         db,
         now,
         request,
-        params: params as Record<string, string>,
+        params,
         query: new URL(request.url).searchParams,
         body: body as RequestBody<E>,
         form,
@@ -205,7 +241,7 @@ export function route<E extends AnyEndpoint>(endpoint: E, resolver: Resolver<E>)
       if (error instanceof MockHttpError) return HttpResponse.json(error.body as Record<string, unknown>, { status: error.status });
       throw error;
     }
-  });
+  }
 }
 
 /** Decimal as DRF writes it: a string with fixed places. */

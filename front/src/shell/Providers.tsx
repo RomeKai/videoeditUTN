@@ -3,6 +3,7 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import dynamic from 'next/dynamic';
 import { useEffect, useState, type ReactNode } from 'react';
+import { dropStaleBridgeWorkspace } from '@/api/bridge';
 import { API_MOCKS } from '@/api/config';
 import { createQueryClient } from '@/api/query';
 import { BillingDialogsProvider } from '@/dialogs/BillingDialogs';
@@ -16,10 +17,15 @@ import { OfflineBanner } from './OfflineBanner';
 import { SessionProvider } from './session';
 import { WorkspaceElsewhereBanner } from './WorkspaceElsewhereBanner';
 
-// Only loaded in mock mode, and only in the browser.
+// Only loaded while the mocks run (modes mock and hybrid), and only in the browser.
 const MockPanel = dynamic(() => import('@/dev/MockPanel').then((module) => module.MockPanel), { ssr: false });
 
-/** In mock mode nothing may fetch before the service worker is ready. */
+// Real mode: a placeholder workspace left in the browser by a hybrid session means nothing to the backend.
+// Forgotten as the module loads, before the first render: an effect would run after the children's, whose
+// workspace-scoped queries would already have gone out with it. (With the mocks on, `startMocks` does it.)
+if (typeof window !== 'undefined' && !API_MOCKS) dropStaleBridgeWorkspace();
+
+/** While the mocks run (modes mock and hybrid) nothing may fetch before the service worker is ready. */
 function MockGate({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(!API_MOCKS);
   useEffect(() => {

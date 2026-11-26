@@ -1,6 +1,7 @@
 import * as contract from '../../contracts/clips';
 import { newId, type MockClip, type MockDb, type MockProject } from '../db';
 import { badRequest, conflict, dec, MockHttpError, notFound, route } from '../http';
+import { adoptClip } from '../hybrid';
 import { priceOf } from '../seed';
 import { planOf, serializeClip } from '../serialize';
 import { addActivity, InsufficientFunds, reserveFunds, SIM, settleReservation } from '../sim';
@@ -12,6 +13,9 @@ function find(db: MockDb, clipId: string | undefined, workspaceId: string): { pr
     const clip = project.clips.find((item) => item.id === clipId);
     if (clip) return { project, clip };
   }
+  // Hybrid: a clip of the real backend gets a stand-in the first time a mocked endpoint is asked about it.
+  const adopted = adoptClip(db, workspaceId, clipId);
+  if (adopted) return adopted;
   throw notFound();
 }
 
