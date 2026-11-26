@@ -1119,36 +1119,65 @@ def _clip_render_settlement(project, paid=AUTO_RENDER):
     return 'charge', delivered
 
 
+def _rerendered_clips_to_restore(metadata):
+    """
+    ``(previous, statuses)`` of a project's ``metadata``: the clips a render
+    asked for later found delivered (CLIP_RENDER_PREVIOUS_KEY), and the
+    statuses they are given back from. FAILED always (that render failed);
+    DRAFT only once the reservation is no longer RESERVED (it never started
+    and was settled): while it is, the draft waits for its render.
+    """
+    previous = metadata.get(CLIP_RENDER_PREVIOUS_KEY) or {}
+    statuses = [VideoClip.Status.FAILED]
+    if previous and not _clip_render_reserved(metadata):
+        statuses.append(VideoClip.Status.DRAFT)
+    return previous, statuses
+
+
 def _restore_rerendered_clips(project_id):
     """
     A clip that was delivered and rendered again (CLIP_RENDER) keeps what the
     user had: if its new render failed, or never started and its reservation
     was settled (DRAFT, left by a project that ended), it goes back to
     COMPLETED or PUBLISHED with its old file (still in storage: only a new file
-    replaces it); if it was PUBLISHED, it stays PUBLISHED with the new one. A
-    DRAFT clip is left alone while the reservation is still RESERVED: its
-    render may still claim it. Conditional updates, idempotent. The settle
-    never counts the old file (_clip_render_settlement).
+    replaces it); if it was PUBLISHED, it stays PUBLISHED with the new one. The
+    settle never counts the old file (_clip_render_settlement).
+
+    Decided under the project row lock, the lock a paid render takes to reset
+    its clips to DRAFT and reserve (views_clips._start_paid_render): a first
+    read without the lock only skips the projects with nothing to give back.
+    Read again under it, a draft whose new render was reserved meanwhile is
+    left alone; restored, that render would skip it as already rendered and
+    be refunded without rendering what the user paid for. Conditional
+    updates, idempotent.
     """
     metadata = VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
-    previous = metadata.get(CLIP_RENDER_PREVIOUS_KEY) or {}
+    previous, statuses = _rerendered_clips_to_restore(metadata)
     if not previous:
         return 0
-    not_rendered = [VideoClip.Status.FAILED]
-    if not _clip_render_reserved(metadata):
-        not_rendered.append(VideoClip.Status.DRAFT)
+    published = [pk for pk, before in previous.items() if before.get('status') == VideoClip.Status.PUBLISHED]
+    if not (
+        VideoClip.objects.filter(pk__in=list(previous), status__in=statuses).exists()
+        or VideoClip.objects.filter(pk__in=published, status=VideoClip.Status.COMPLETED).exists()
+    ):
+        return 0
     restored = 0
-    for clip_id, before in previous.items():
-        status, key = before.get('status'), before.get('key')
-        if status not in (VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED) or not key:
-            continue
-        restored += VideoClip.objects.filter(
-            pk=clip_id, status__in=not_rendered, s3_object_key=key,
-        ).update(status=status, render_claim_token=None, render_unfinished_starts=0)
-        if status == VideoClip.Status.PUBLISHED:
-            VideoClip.objects.filter(pk=clip_id, status=VideoClip.Status.COMPLETED).exclude(
-                s3_object_key=key,
-            ).update(status=status)
+    with transaction.atomic():
+        project = VideoProject.objects.select_for_update().filter(pk=project_id).first()
+        if project is None:
+            return 0
+        previous, statuses = _rerendered_clips_to_restore(project.metadata or {})
+        for clip_id, before in previous.items():
+            status, key = before.get('status'), before.get('key')
+            if status not in (VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED) or not key:
+                continue
+            restored += VideoClip.objects.filter(
+                pk=clip_id, status__in=statuses, s3_object_key=key,
+            ).update(status=status, render_claim_token=None, render_unfinished_starts=0)
+            if status == VideoClip.Status.PUBLISHED:
+                VideoClip.objects.filter(pk=clip_id, status=VideoClip.Status.COMPLETED).exclude(
+                    s3_object_key=key,
+                ).update(status=status)
     if restored:
         logger.info("render.clip_restored project_id=%s clips=%d", project_id, restored)
     return restored

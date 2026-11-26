@@ -1255,6 +1255,67 @@ class RerenderedDraftRestoreTests(CapturedTaskFailures, ClipActionsHarness, APIT
         self.assertEqual((clip.status, clip.s3_object_key), (DONE, "videos/old-0.mp4"))
 
 
+class RestoreUnderLockTests(CapturedTaskFailures, ClipActionsHarness, APITestCase):
+    """
+    The restore of a re-rendered clip is decided under the project row lock: a
+    paid render reserved after its first read keeps its clip, and renders it.
+    """
+
+    def failed_with_a_draft_never_rendered(self):
+        """A render of the delivered clip that never started, settled when its project failed."""
+        project, (clip, _failed) = self.finished()
+        self.post(clip_url(clip, "render"), execute=False)
+        rollback_reservation(self.clip_render(project).pk)
+        VideoProject.objects.filter(pk=project.pk).update(
+            status=VideoProject.Status.FAILED, pipeline_stage=PipelineStage.FAILED,
+        )
+        return project, clip
+
+    def test_a_render_reserved_after_the_first_read_keeps_its_draft(self):
+        from apps.videos.tasks import ingestion
+
+        project, clip = self.failed_with_a_draft_never_rendered()
+        real = ingestion._rerendered_clips_to_restore
+        reads = []
+
+        def stale_first_read(metadata):
+            reads.append(1)
+            seen = real(metadata)
+            if len(reads) == 1:
+                # What the restore read first: no reservation open, the draft could go back.
+                self.assertIn(DRAFT, seen[1])
+                # Before it takes the lock, the user renders the clip again.
+                response, delay = self.post(clip_url(clip, "render"))
+                self.assertEqual(response.status_code, 202, response.content[:300])
+                delay.assert_called_once_with(str(clip.pk))
+            return seen
+
+        with patch.object(ingestion, "_rerendered_clips_to_restore", side_effect=stale_first_read):
+            ingestion._restore_rerendered_clips(project.pk)
+
+        clip.refresh_from_db()
+        self.assertEqual(clip.status, DRAFT)  # the read under the lock saw the new reservation
+        txn = self.clip_render(project)
+        self.assertEqual(txn.status, RESERVED)
+        with patch(DELETE_OBJECT), patch(RENDER_CLIP, side_effect=fake_render) as render:
+            render_clip_task.apply(args=[str(clip.pk)])
+        render.assert_called_once()  # rendered, not skipped as already rendered
+        txn.refresh_from_db()
+        self.assertEqual((txn.status, txn.amount), (CHARGED, Decimal("5.00")))
+        clip.refresh_from_db()
+        self.assertEqual((clip.status, clip.s3_object_key), (DONE, f"videos/{clip.pk}.mp4"))
+
+    def test_without_a_new_render_the_draft_still_goes_back(self):
+        from apps.videos.tasks import ingestion
+
+        project, clip = self.failed_with_a_draft_never_rendered()
+
+        self.assertEqual(ingestion._restore_rerendered_clips(project.pk), 1)
+
+        clip.refresh_from_db()
+        self.assertEqual((clip.status, clip.s3_object_key), (DONE, "videos/old-0.mp4"))
+
+
 class BothNotQueuedSkipsTests(ClipActionsHarness, APITestCase):
     """Both codes of a refunded, never-queued message keep a late copy from running (PR #137 and the re-dispatch)."""
 
