@@ -179,6 +179,9 @@ function createProject(context: Parameters<Parameters<typeof route<typeof contra
     manual_camera_x: number('manual_camera_x', 0.5),
     manual_camera_y: number('manual_camera_y', 0.2),
     manual_camera_zoom: number('manual_camera_zoom', 1),
+    pip_corner: (get('pip_corner') ?? 'bottom-right') as MockProject['pip_corner'],
+    trending_color: get('trending_color') ?? '#FF2D55',
+    trending_text: get('trending_text') ?? '',
     speaker_tracking: speakerTracking,
     // Not sent means true on create (the serializer's `_NotSentBooleanField`): only a value that travels turns subtitles off.
     add_subtitles: bool('add_subtitles', true),

@@ -89,6 +89,25 @@ export function LayoutDiagram({ layout, ratio }: { layout: Layout; ratio: Aspect
         </>
       );
       break;
+    case 'podcast':
+      shapes = (
+        <>
+          {box({ left: 2, right: 2, top: 2, height: '46%' }, styles.dgV)}
+          {box({ left: 2, right: 2, bottom: 2, height: '46%' }, styles.dgV2)}
+          {box({ left: '38%', top: '12%', width: '24%', height: wide ? '24%' : '14%', borderRadius: '50%' }, styles.dgRing)}
+          {box({ left: '38%', bottom: '12%', width: '24%', height: wide ? '24%' : '14%', borderRadius: '50%' }, styles.dgRing)}
+        </>
+      );
+      break;
+    case 'trending':
+      shapes = (
+        <>
+          {box({ inset: 0 }, styles.dgTrend)}
+          {box({ left: '12%', right: '12%', top: '5%', height: '7%' }, styles.dgText)}
+          {box({ left: '7%', right: '7%', top: '16%', bottom: '5%' }, styles.dgV)}
+        </>
+      );
+      break;
     case 'cinematic': {
       const [bandTop, bandHeight] = CINEMATIC_BAND[ratio];
       shapes = (

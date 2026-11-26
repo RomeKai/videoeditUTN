@@ -5,11 +5,11 @@ import { useId, useState, type ReactNode } from 'react';
 import type { Plan, Pricing } from '@/api/contracts/billing';
 import type { BrandKit } from '@/api/contracts/brandkits';
 import type { RenderResolution } from '@/api/contracts/common';
-import type { AspectRatio, EditingStyle, Layout, Position, ProjectType, SubtitlePosition, SubtitleSize } from '@/api/contracts/projects';
+import type { AspectRatio, EditingStyle, Layout, PipCorner, Position, ProjectType, SubtitlePosition, SubtitleSize } from '@/api/contracts/projects';
 import { formatMinutes, formatNumber, formatTokens, normalizeHex } from '@/lib/format';
 import { estimateCost, firstPlanWith, planAllowsResolution } from '@/lib/pricing';
 import { LABELS } from '@/lib/project-status';
-import { Badge, Icon, PlanLock, RadioCard, RadioGroup, SegmentedControl, Select, Slider, Stepper, Switch, Textarea, cx } from '@/ui';
+import { Badge, Icon, Input, PlanLock, RadioCard, RadioGroup, SegmentedControl, Select, Slider, Stepper, Switch, Textarea, cx } from '@/ui';
 import { CaptionSample, StyleSample } from './CaptionSample';
 import { LayoutDiagram } from './LayoutDiagram';
 import styles from './NewProject.module.css';
@@ -17,12 +17,17 @@ import {
   LAYOUT_HINTS,
   MANUAL_CAMERA_DEFAULT,
   MAX_CLIPS,
+  PIP_CORNERS,
   SUBTITLE_COLORS,
+  TRENDING_COLORS,
+  TRENDING_TEXT_MAX,
   WORDS_PER_LINE,
   followsFaces,
   hasAdvanced,
   manualCameraActive,
   styleLine,
+  usesCameraSide,
+  usesGameplayPosition,
   subtitlesSummary,
   type ProjectConfig,
 } from './new-project-config';
@@ -374,19 +379,71 @@ const STYLES: Array<{ value: Exclude<EditingStyle, 'custom'>; description: strin
   { value: 'vlog', description: 'Ritmo relajado, subtítulos en caja y transiciones suaves.' },
   { value: 'hormozi', description: 'Subtítulos enormes en el centro, una idea por pantalla.' },
 ];
-const LAYOUTS: Layout[] = ['fill', 'fit', 'blurred', 'split', 'pip', 'versus', 'active', 'reaction', 'cinematic'];
+const LAYOUTS: Layout[] = ['fill', 'fit', 'blurred', 'split', 'pip', 'versus', 'active', 'reaction', 'cinematic', 'podcast', 'trending'];
 const POSITIONS: Array<{ value: Position; label: string }> = [
   { value: 'left', label: LABELS.position.left },
   { value: 'center', label: LABELS.position.center },
   { value: 'right', label: LABELS.position.right },
 ];
 
+const ADVANCED_SUMMARY: Partial<Record<Layout, string>> = {
+  split: 'Posición del gameplay, lado de la cámara y cámara manual.',
+  reaction: 'Posición del contenido, lado de la cámara y cámara manual.',
+  pip: 'Esquina y lado de la cámara, y cámara manual.',
+  versus: 'Cámara manual: encuadra igual a las dos personas, una por mitad.',
+  podcast: 'Cámara manual: encuadra igual a las dos personas, una por mitad.',
+};
+
+/** Color and text of the Trending layout: always open, the layout is about them. */
+function TrendingOptions({ config, set }: { config: ProjectConfig; set: SetConfig }) {
+  const textId = useId();
+  return (
+    <div className={styles.adv}>
+      <div className={styles.advBody}>
+        <ControlRow label="Color del borde" description="El otro extremo del gradiente es el mismo color con otro tono.">
+          <div className={styles.colors} role="group" aria-label="Color del borde">
+            {TRENDING_COLORS.map((color) => (
+              <button
+                key={color.value}
+                type="button"
+                className={styles.colorBtn}
+                aria-pressed={config.trending_color.toLowerCase() === color.value.toLowerCase()}
+                aria-label={color.label}
+                title={color.label}
+                onClick={() => set({ trending_color: color.value })}
+              >
+                <span style={{ background: color.value }} />
+              </button>
+            ))}
+          </div>
+        </ControlRow>
+        <ControlRow label="Texto arriba del video" description={`Opcional, hasta ${TRENDING_TEXT_MAX} caracteres. Los emojis no se dibujan.`}>
+          <Input
+            id={textId}
+            aria-label="Texto arriba del video"
+            value={config.trending_text}
+            maxLength={TRENDING_TEXT_MAX}
+            placeholder="Lo que nadie te cuenta"
+            autoComplete="off"
+            onChange={(event) => set({ trending_text: event.target.value })}
+          />
+        </ControlRow>
+      </div>
+    </div>
+  );
+}
+
 function AdvancedBlock({ config, set }: { config: ProjectConfig; set: SetConfig }) {
   const [open, setOpen] = useState(false);
   const id = useId();
-  const split = config.render_layout === 'split';
+  const layout = config.render_layout;
+  const gameplay = usesGameplayPosition(layout);
+  const side = usesCameraSide(layout);
+  const pip = layout === 'pip';
   const manual = config.manual_camera;
   const atDefaults = manual && !manualCameraActive(config);
+  // Versus and Podcast frame the two halves the same way; the rest have one camera.
+  const twoPeople = layout === 'versus' || layout === 'podcast';
   return (
     <div className={styles.adv}>
       <button type="button" className={styles.advHead} aria-expanded={open} aria-controls={`${id}-body`} onClick={() => setOpen((value) => !value)}>
@@ -396,33 +453,43 @@ function AdvancedBlock({ config, set }: { config: ProjectConfig; set: SetConfig 
         <span className={styles.swText}>
           <span className={styles.rcTitle}>Avanzado</span>
           <span className={styles.rcDesc}>
-            {split ? 'Posición del gameplay, lado de la cámara y cámara manual.' : 'Cámara manual: encuadra igual a las dos personas, una por mitad.'}
+            {ADVANCED_SUMMARY[layout] ?? 'Cámara manual.'}
           </span>
         </span>
       </button>
       {open ? (
         <div className={styles.advBody} id={`${id}-body`}>
-          {split ? (
-            <>
-              <ControlRow label="Posición del gameplay">
-                <SegmentedControl ariaLabel="Posición del gameplay" value={config.gameplay_position} onChange={(value) => set({ gameplay_position: value })} options={POSITIONS} />
-              </ControlRow>
-              <ControlRow label="Lado de la cámara" description={manual ? 'La cámara manual reemplaza al lado elegido.' : 'Centro usa todo el cuadro.'}>
-                <SegmentedControl
-                  ariaLabel="Lado de la cámara"
-                  value={config.camera_selection_position}
-                  onChange={(value) => set({ camera_selection_position: value })}
-                  options={POSITIONS.map((option) => ({ ...option, disabled: manual }))}
-                />
-              </ControlRow>
-            </>
+          {pip ? (
+            <ControlRow label="Esquina de la cámara">
+              <Select
+                aria-label="Esquina de la cámara"
+                value={config.pip_corner}
+                onChange={(event) => set({ pip_corner: event.target.value as PipCorner })}
+                options={PIP_CORNERS.map((value) => ({ value, label: LABELS.pip_corner[value] }))}
+              />
+            </ControlRow>
+          ) : null}
+          {gameplay ? (
+            <ControlRow label="Posición del gameplay">
+              <SegmentedControl ariaLabel="Posición del gameplay" value={config.gameplay_position} onChange={(value) => set({ gameplay_position: value })} options={POSITIONS} />
+            </ControlRow>
+          ) : null}
+          {side ? (
+            <ControlRow label="Lado de la cámara" description={manual ? 'La cámara manual reemplaza al lado elegido.' : 'Centro usa todo el cuadro.'}>
+              <SegmentedControl
+                ariaLabel="Lado de la cámara"
+                value={config.camera_selection_position}
+                onChange={(value) => set({ camera_selection_position: value })}
+                options={POSITIONS.map((option) => ({ ...option, disabled: manual }))}
+              />
+            </ControlRow>
           ) : null}
           <ControlRow
             label="Cámara manual"
             description={
-              split
-                ? 'Elegís vos dónde está la cámara. Reemplaza al lado elegido y a Seguir caras.'
-                : 'Encuadra igual a las dos personas, una por mitad. Reemplaza a Seguir caras.'
+              twoPeople
+                ? 'Encuadra igual a las dos personas, una por mitad. Reemplaza a Seguir caras.'
+                : 'Elegís vos dónde está la cámara. Reemplaza al lado elegido y a Seguir caras.'
             }
           >
             <Switch ariaLabel="Cámara manual" checked={manual} onChange={(value) => set({ manual_camera: value })} />
@@ -578,6 +645,7 @@ export function CustomizeSection({ config, set, presetName, modified, open, onOp
               </RadioGroup>
             )}
           </Labeled>
+          {config.render_layout === 'trending' ? <TrendingOptions config={config} set={set} /> : null}
           {hasAdvanced(config.render_layout) ? <AdvancedBlock key={config.render_layout} config={config} set={set} /> : null}
           <div className={styles.field}>
             <label className={styles.fieldLabel} htmlFor={kitId}>

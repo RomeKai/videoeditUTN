@@ -225,10 +225,13 @@ export const LABELS = {
     active: 'Quien habla',
     reaction: 'Reacción',
     cinematic: 'Cinemático',
+    podcast: 'Podcast',
+    trending: 'Trending',
   },
   intelligence_level: { fast: 'Rápido', smart: 'Inteligente' },
   subtitle_size: { small: 'Chico', medium: 'Mediano', large: 'Grande' },
   subtitle_position: { top: 'Arriba', center: 'Centro', bottom: 'Abajo' },
   position: { left: 'Izquierda', center: 'Centro', right: 'Derecha' },
+  pip_corner: { 'bottom-right': 'Abajo a la derecha', 'bottom-left': 'Abajo a la izquierda', 'top-right': 'Arriba a la derecha', 'top-left': 'Arriba a la izquierda' },
   role: { owner: 'Dueño', admin: 'Admin', editor: 'Editor', viewer: 'Lector' },
 } as const;
