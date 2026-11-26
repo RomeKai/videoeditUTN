@@ -219,7 +219,7 @@ El pipeline guarda en `pipeline_error_code` el nombre de la excepción. El front
 | `SoftTimeLimitExceeded` | "El video tardó demasiado en procesarse. Probá con uno más corto." |
 | `UnsupportedLinkError` | "No pudimos usar este link. Tiene que ser el link de un solo video público de YouTube, Vimeo, Twitch o Google Drive: no una lista, un canal ni una transmisión en vivo." |
 | `LinkTooLongError` | "El video del link dura más de lo que permite tu plan. Probá con uno más corto o cambiá de plan." |
-| `LinkTooLongForAppError` | "El video del link dura más de 3 horas, el máximo que acepta OneCreator. Probá con uno más corto." |
+| `LinkTooLongForAppError` | "El video del link dura más de 3 horas, el máximo que acepta OneCreator. Probá con uno más corto." Pasa con cualquier plan, y el proyecto no se re-despacha (409 `duration_app`): se crea otro. |
 | `LinkTooLargeError` | "El video del link pesa más de lo que podemos descargar. Probá con una versión más liviana o subí el archivo." |
 | `ModerationUnavailableError`, `AIAuthenticationError` y cualquier otro | "Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo." |
 
@@ -377,7 +377,7 @@ Otras respuestas:
   - ✅ `project_type` (`repurpose` o `single_edit`). `single_edit` solo acepta un archivo de hasta 10 min (`AI_SINGLE_EDIT_MAX_DURATION_SECONDS`); con un link o un archivo más largo da 400. No cambia después de crear.
   - ✅ `speaker_tracking=true` sin layout crea el proyecto con Quien habla (`render_layout=active`).
   - ❌ falta el endpoint de precios para el estimado.
-  - ✅ `POST /api/v1/projects/probe-link/` reconoce el link antes de crear (sitio, título y duración) y responde 403 `duration` si supera el plan, o 400 `duration_app` si pasa las 3 h que procesa la app con cualquier plan (ahí no se sugiere otro plan). Crear no pasa por el probe, pero la descarga aplica el mismo límite: un video más largo hace fallar el proyecto (`LinkTooLongError`, o `LinkTooLongForAppError` si pasa las 3 h que procesa la app con cualquier plan) y se devuelve la reserva.
+  - ✅ `POST /api/v1/projects/probe-link/` reconoce el link antes de crear (sitio, título y duración) y responde 400 `duration_app` si pasa las 3 h que procesa la app, con cualquier plan (también Gratis: ahí no se sugiere otro plan), o 403 `duration` si no las pasa pero supera el plan. Crear no pasa por el probe, pero la descarga aplica el mismo límite: un video más largo hace fallar el proyecto (`LinkTooLongError`, o `LinkTooLongForAppError` si pasa las 3 h que procesa la app con cualquier plan) y se devuelve la reserva.
   - ✅ solo se aceptan links de un video de YouTube, Vimeo, Twitch o Google Drive (hosts exactos, sin listas, canales ni vivos), nunca una IP ni una dirección interna.
 
 ### D. Proyecto

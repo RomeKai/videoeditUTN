@@ -84,7 +84,7 @@ export const KNOWN_PIPELINE_ERROR_CODES = [
   'UnsupportedLinkError',
   /** The linked video is longer than the plan allows (another plan would take it). Not retried. */
   'LinkTooLongError',
-  /** The linked video is longer than the app accepts on any plan (AI_UPLOAD_MAX_DURATION_SECONDS, 3 h). Not retried. */
+  /** The linked video is longer than the app accepts on any plan (AI_UPLOAD_MAX_DURATION_SECONDS, 3 h). Not retried, and redispatch answers 409 `duration_app`. */
   'LinkTooLongForAppError',
   /** The linked video's file is larger than LINK_DOWNLOAD_MAX_BYTES. Not retried. */
   'LinkTooLargeError',
@@ -698,14 +698,14 @@ export const redispatchProject = defineEndpoint({
     { status: 403, when: 'Solo Dueño y Admin.' },
     {
       status: 409,
-      when: '`{ error, code }`: no está en error (`not_failed`), la moderación frenó su contenido (`moderation_blocked`, solo `UnsafeContentError`), su ingesta nunca se encoló al crearlo (`not_queued`: se crea de nuevo), sus clips ya se liquidaron y se reintentan de a uno desde Clips (`render_settled`), su video completo ya se renderizó (`use_rerender`) o no tiene reserva de creación (`no_reservation`).',
+      when: '`{ error, code }`: no está en error (`not_failed`), la moderación frenó su contenido (`moderation_blocked`, solo `UnsafeContentError`), su ingesta nunca se encoló al crearlo (`not_queued`: se crea de nuevo), sus clips ya se liquidaron y se reintentan de a uno desde Clips (`render_settled`), su video completo ya se renderizó (`use_rerender`), no tiene reserva de creación (`no_reservation`) o su link dura más de las 3 h que procesa la app (`duration_app`: falló con `LinkTooLongForAppError`; se crea otro con un video más corto). Uno que falló con `LinkTooLongError` sí se re-despacha: el plan pudo cambiar.',
     },
     { status: 503, when: 'No se pudo encolar: lo reservado vuelve (el proyecto queda con `pipeline_error_code: "RedispatchNotQueued"`) y se puede probar de nuevo.' },
   ],
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_clips.py · ProjectRedispatchView',
-    note: 'No cobra lo que sigue pagado: un proyecto con los clips elegidos sigue gratis (su render se paga solo). Lo que se devolvió al fallar (una etapa antes de elegir los clips, o el render de un video completo) se reserva otra vez y el pipeline lo liquida como al crear. Responde `cost_details` cuando reservó. El proyecto sigue `failed` hasta que la tarea lo reabre. Un proyecto que falló con `LinkTooLongForAppError` (su link dura más de las 3 h que procesa la app) no se re-despacha: 409 `duration_app`, se crea otro con un video más corto. Uno con `LinkTooLongError` sí: el plan pudo cambiar.',
+    note: 'No cobra lo que sigue pagado: un proyecto con los clips elegidos sigue gratis (su render se paga solo). Lo que se devolvió al fallar (una etapa antes de elegir los clips, o el render de un video completo) se reserva otra vez y el pipeline lo liquida como al crear. Responde `cost_details` cuando reservó. El proyecto sigue `failed` hasta que la tarea lo reabre.',
   },
   screens: ['D1'],
 });
@@ -801,9 +801,9 @@ export const probeLink = defineEndpoint({
   errors: [
     {
       status: 400,
-      when: 'El link no es una URL web (`code: "invalid"`), no es de un sitio soportado, es una IP o una dirección interna, o es una lista, un canal o un vivo (`code: "unsupported"`), o no se puede bajar: privado, borrado o con restricción (`code: "unavailable"`), o dura más que el máximo de la app y ningún plan lo aceptaría (`code: "duration_app"`, `limit` en segundos, 10800: sin plan, o con un plan cuyo límite es igual o mayor). La UI lo dice junto al campo, sin ofrecer planes. Sin `video_url`: `{ video_url: [...] }`.',
+      when: 'El link no es una URL web (`code: "invalid"`), no es de un sitio soportado, es una IP o una dirección interna, o es una lista, un canal o un vivo (`code: "unsupported"`), o no se puede bajar: privado, borrado o con restricción (`code: "unavailable"`), o dura más que el máximo de la app, 3 h, con cualquier plan: ningún plan lo aceptaría (`code: "duration_app"`, `limit` en segundos, 10800). Decide la duración del video, no qué tope es menor: con Gratis, un video de 4 h también es `duration_app`. La UI lo dice junto al campo, sin ofrecer planes. Sin `video_url`: `{ video_url: [...] }`.',
     },
-    { status: 403, when: 'La duración supera el plan (`code: "duration"`, `limit` en segundos). La UI lo muestra junto al campo, con link a Planes. También el Lector (`{ detail }`): revisar un link es parte de crear.' },
+    { status: 403, when: 'La duración supera el plan pero no las 3 h de la app: otro plan la permite (`code: "duration"`, `limit` en segundos). La UI lo muestra junto al campo, con link a Planes. También el Lector (`{ detail }`): revisar un link es parte de crear.' },
     { status: 404, when: 'El workspace de `X-Workspace-Id` no es del usuario.' },
     { status: 429, when: 'Más de 20 links por minuto del mismo usuario.' },
     { status: 502, when: 'El sitio del video respondió con un error o no se encontró su dirección (`code: "provider_error"`).' },
