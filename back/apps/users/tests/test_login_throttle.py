@@ -154,15 +154,68 @@ REDIS_DOWN = {
 }
 
 
-def test_with_redis_down_the_login_still_answers(user):
-    refused = mock.patch("redis.connection.Connection._connect", side_effect=ConnectionRefusedError(111, "refused"))
-    with override_settings(CACHES=REDIS_DOWN), refused:
-        failures = [_login(_from("10.0.12.1")).status_code for _ in range(12)]
-        ok = _login(_from("10.0.12.1"), password="password")
+def _refused():
+    return mock.patch("redis.connection.Connection._connect", side_effect=ConnectionRefusedError(111, "refused"))
 
-    # Every count reads as a miss: no lockout and no 500, only the password decides.
-    assert failures == [401] * 12
+
+def test_with_redis_down_the_account_limit_still_holds_in_this_process(user):
+    with override_settings(CACHES=REDIS_DOWN), _refused():
+        failures = [_login(_from("10.0.12.1")).status_code for _ in range(12)]
+        blocked = _login(_from("10.0.12.1"), password="password")
+        elsewhere = _login(_from("10.0.12.2"), password="password")
+
+    # Counted in this process's memory: no 500, and no unlimited guessing either.
+    assert failures == [401] * 10 + [429] * 2
+    assert blocked.status_code == 429
+    assert 0 < _wait_seconds(blocked) <= 15 * 60
+    # The owner still signs in from another address.
+    assert elsewhere.status_code == 200
+
+
+def test_with_redis_down_a_successful_login_clears_the_failures(user):
+    api = _from("10.0.12.3")
+    with override_settings(CACHES=REDIS_DOWN), _refused():
+        first = [_login(api).status_code for _ in range(9)]
+        ok = _login(api, password="password")
+        second = [_login(api).status_code for _ in range(10)]
+
+    assert first == [401] * 9
     assert ok.status_code == 200
+    assert second == [401] * 10
+
+
+def test_with_redis_down_the_lock_ends_with_its_window(user):
+    api = _from("10.0.12.4")
+    with override_settings(CACHES=REDIS_DOWN), _refused():
+        with mock.patch("apps.users.throttles.time.time", return_value=900 * 1000.0):
+            locked = [_login(api).status_code for _ in range(11)]
+        # The next 15-minute window: the counts of the outage do not follow.
+        with mock.patch("apps.users.throttles.time.time", return_value=900 * 1001.0):
+            later = _login(api, password="password")
+
+    assert locked == [401] * 10 + [429]
+    assert later.status_code == 200
+
+
+def test_requests_that_never_reach_the_password_check_do_not_count_with_redis_down(user):
+    api = _from("10.0.12.5")
+    with override_settings(CACHES=REDIS_DOWN), _refused():
+        invalid = [api.post(LOGIN_URL, {"email": "tester@test.com"}, format="json").status_code for _ in range(12)]
+        ok = _login(api, password="password")
+
+    assert invalid == [400] * 12
+    assert ok.status_code == 200
+
+
+def test_an_outage_is_logged_once_and_redis_is_tried_once_per_cooldown(user, caplog):
+    api = _from("10.0.12.6")
+    with override_settings(CACHES=REDIS_DOWN), _refused() as connect, caplog.at_level("INFO", logger="apps.core.cache"):
+        answers = [_login(api).status_code for _ in range(5)]
+
+    assert answers == [401] * 5
+    # Five logins, each with several cache calls: one connection attempt, one log line.
+    assert connect.call_count == 1
+    assert [r.getMessage() for r in caplog.records if r.name == "apps.core.cache"] == ["cache.unavailable error=ConnectionError"]
 
 
 def test_a_request_that_never_reached_the_password_check_does_not_count(user, no_ip_limit):

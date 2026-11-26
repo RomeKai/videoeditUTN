@@ -171,6 +171,13 @@ def isolate_test_effects(tmp_path, settings):
     configured = importlib.import_module(os.environ["DJANGO_SETTINGS_MODULE"]).CACHES
     if active_settings.CACHES == configured:
         clear_local_caches("default", "locks")
+    # An outage one test simulates (the cache's circuit breaker, the login
+    # guard's counts in memory) is over for the next one.
+    from apps.core.cache import reset_circuit_breakers
+    from apps.users.throttles import local_counts
+
+    reset_circuit_breakers()
+    local_counts.clear()
     checkpoint = NETWORK_GUARD.checkpoint()
     previous_media_root = settings.MEDIA_ROOT
     isolated_media_root = tmp_path / "media"

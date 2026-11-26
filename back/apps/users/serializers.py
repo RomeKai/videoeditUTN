@@ -4,6 +4,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import ErrorDetail
 
 from apps.core.workspace import role_in
+from apps.users.emails import INVALID_EMAIL_DOMAIN, InvalidEmailDomain
 from apps.users.models import NotificationPreference, User, Workspace
 
 
@@ -34,7 +35,14 @@ def check_current_password(user, value):
 
 
 def email_taken(email, exclude_pk=None):
-    """Another account already uses the email, ignoring case (User.Meta's constraint)."""
+    """
+    Another account already uses the email, ignoring case (User.Meta's constraint)
+    and the spelling of its domain. A domain that cannot be encoded is nobody's.
+    """
+    try:
+        email = User.objects.normalize_email(email)
+    except InvalidEmailDomain:
+        return False
     return User.objects.filter(email__iexact=email).exclude(pk=exclude_pk).exists()
 
 
@@ -107,16 +115,24 @@ class UpdateMeSerializer(serializers.Serializer):
             raise serializers.ValidationError(NOT_A_MEMBER)
         return value
 
+    def validate_email(self, value):
+        if value is None:
+            return value
+        try:
+            return User.objects.normalize_email(value)
+        except InvalidEmailDomain:
+            raise serializers.ValidationError(INVALID_EMAIL_DOMAIN, code='invalid_domain')
+
     def validate(self, attrs):
         if 'email' not in attrs:
             return attrs
         email = attrs['email']
         user = self.context['user']
-        if email is None or User.objects.normalize_email(email).lower() == user.email.lower():
+        # validate_email already normalized the domain.
+        if email is None or email.lower() == user.email.lower():
             # Back to the account's email: the pending change (if any) is cancelled.
             attrs['email'] = None
             return attrs
-        email = User.objects.normalize_email(email)
         # The password goes first: without it nobody learns which emails have an account.
         password = attrs.get('current_password')
         if not password and user.has_usable_password():

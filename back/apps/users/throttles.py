@@ -12,6 +12,7 @@ import time
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.core.cache.backends.locmem import LocMemCache
 from django.utils.crypto import salted_hmac
 from rest_framework.exceptions import Throttled
 from rest_framework.throttling import BaseThrottle, ScopedRateThrottle
@@ -79,6 +80,11 @@ def parse_rate(rate):
     return count, size * unit
 
 
+# The login guard's counters while the shared cache does not answer. One per
+# process, bounded: when it is full Django's LocMem drops a third of its keys.
+local_counts = LocMemCache('login-failures-fallback', {'OPTIONS': {'MAX_ENTRIES': 20000}})
+
+
 class LoginFailureGuard:
     """
     Failed logins of one account. Only failures count, and a successful login
@@ -95,11 +101,14 @@ class LoginFailureGuard:
     fixed (they start at multiples of their length), so right at the border
     up to twice the limit can go through in a short time.
 
-    It uses the `default` cache, which fails open: with Redis down every
-    count reads as a miss and the login only has the password check (and the
-    per-IP throttle, which fails open too). Locking everyone out during an
-    outage would be worse. The keys are an HMAC of the account (and the IP),
-    never the email.
+    It uses the `default` cache, which fails open: with Redis down (or
+    skipped by the cache's circuit breaker) a count comes back as a miss.
+    Those attempts are counted in `local_counts`, a memory of this process
+    only, so the limits still hold per process during the outage instead of
+    not at all. Its counts expire with their window like the shared ones, and
+    nobody is locked for longer than a window. When Redis answers again the
+    shared counts go on from where they were. The keys are an HMAC of the
+    account (and the IP), never the email.
     """
 
     SALT = 'apps.users.throttles.login'
@@ -119,10 +128,16 @@ class LoginFailureGuard:
         """
         The account the login would sign into, found like the login finds it
         (`email__iexact`): every spelling of one email ("Tester@", "teſter@")
-        shares its counters. Without an account, the typed email in upper case.
+        shares its counters, and so does every spelling of its domain
+        (apps.users.emails). Without an account, the typed email in upper case.
         """
-        typed = email.strip()
-        pk = get_user_model().objects.filter(email__iexact=typed).values_list('pk', flat=True).first()
+        manager = get_user_model().objects
+        try:
+            typed = manager.normalize_email(email)
+        except ValueError:
+            # A domain that cannot be encoded: no account, counted as typed.
+            typed = email.strip()
+        pk = manager.filter(email__iexact=typed).values_list('pk', flat=True).first()
         return f'user:{pk}' if pk is not None else f'email:{typed.upper()}'
 
     @classmethod
@@ -132,16 +147,25 @@ class LoginFailureGuard:
         return cls(request, email) if isinstance(email, str) and email.strip() else None
 
     @staticmethod
-    def _count(key, timeout):
-        """This attempt's number in its window, or 0 when the cache does not answer."""
+    def _count_in(store, key, timeout):
+        """This attempt's number in its window, or None when the store does not answer."""
         try:
-            cache.add(key, 0, timeout)
-            count = cache.incr(key)
+            store.add(key, 0, timeout)
+            count = store.incr(key)
         except ValueError:
             # The key expired between add and incr: this is the window's first attempt.
-            cache.add(key, 1, timeout)
+            store.add(key, 1, timeout)
             count = 1
-        return count if isinstance(count, int) else 0
+        return count if isinstance(count, int) else None
+
+    def _count(self, key, timeout):
+        """Counts in the shared cache, or in this process when it does not answer."""
+        for store in (cache, local_counts):
+            count = self._count_in(store, key, timeout)
+            if count is not None:
+                self.counted.append((store, key))
+                return count
+        return 0
 
     def reserve(self):
         """
@@ -155,18 +179,20 @@ class LoginFailureGuard:
             ends = (window + 1) * duration
             key = f'{base}:{window}'
             number = self._count(key, int(ends - now) + 1)
-            self.counted.append(key)
             if number > count:
                 waits.append(ends - now)
         return max(waits, default=0)
 
     def release(self):
         """The attempt did not reach the password check (a 400, an error): it does not count."""
-        for key in self.counted:
+        for store, key in self.counted:
             try:
-                cache.decr(key)
+                store.decr(key)
             except ValueError:
                 pass
 
     def succeeded(self):
-        cache.delete_many(self.counted)
+        # In both stores: failures counted here during an outage must not outlive a good login.
+        keys = [key for _, key in self.counted]
+        cache.delete_many(keys)
+        local_counts.delete_many(keys)

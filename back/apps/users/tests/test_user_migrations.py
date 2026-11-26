@@ -80,3 +80,50 @@ class CaseInsensitiveEmailMigrationTests(TransactionTestCase):
             User.objects.filter(pk=User.objects.create_user(username="x", email="x@test.com", password="x").pk).update(
                 email="mixto@ejemplo.com",
             )
+
+
+class NormalizedEmailDomainMigrationTests(TransactionTestCase):
+    migrate_from = [("users", "0007_email_unico_sin_mayusculas")]
+    migrate_to = [("users", "0008_dominios_de_email_normalizados")]
+
+    def tearDown(self):
+        call_command("migrate", verbosity=0)
+
+    def test_it_normalizes_what_does_not_collide_and_never_fails(self):
+        old_apps = _migrate(self.migrate_from)
+        OldUser = old_apps.get_model("users", "User")
+
+        def stored(username, email, pending_email=None):
+            return OldUser.objects.create(username=username, email=email, password="!", pending_email=pending_email).pk
+
+        plain = stored("plain", "tester@test.com")
+        collides = stored("collides", "tester@ｔｅｓｔ.com")
+        full_width = stored("ancho", "ana@ＥＪＥＭＰＬＯ.com", pending_email="Nueva@Mañana.com")
+        unicode_first = stored("uno", "ana@mañana.com")
+        # The same domain with a combining tilde: after the first one is rewritten, it collides.
+        unicode_second = stored("dos", "ana@man\u0303ana.com")
+        invalid = stored("raro", "tester@℀.com", pending_email="otra@℀.com")
+        literal = stored("literal", "root@[127.0.0.1]")
+
+        with self.assertLogs("apps.users.migrations.0008_dominios_de_email_normalizados", level="WARNING") as logs:
+            _migrate(self.migrate_to)
+
+        emails = dict(User.objects.values_list("pk", "email"))
+        assert emails[plain] == "tester@test.com"
+        assert emails[collides] == "tester@ｔｅｓｔ.com"
+        assert emails[full_width] == "ana@ejemplo.com"
+        assert {emails[unicode_first], emails[unicode_second]} == {"ana@xn--maana-pta.com", "ana@man\u0303ana.com"}
+        assert emails[invalid] == "tester@℀.com"
+        assert emails[literal] == "root@[127.0.0.1]"
+        assert User.objects.get(pk=full_width).pending_email == "Nueva@xn--maana-pta.com"
+        assert User.objects.get(pk=invalid).pending_email == "otra@℀.com"
+        # How many were left, never which emails.
+        assert [record.getMessage() for record in logs.records] == ["users.email_domains_not_normalized count=3"]
+        assert "@" not in "".join(logs.output)
+
+    def test_with_nothing_to_fix_it_is_silent(self):
+        old_apps = _migrate(self.migrate_from)
+        old_apps.get_model("users", "User").objects.create(username="plain", email="tester@test.com", password="!")
+
+        with self.assertNoLogs("apps.users.migrations.0008_dominios_de_email_normalizados", level="WARNING"):
+            _migrate(self.migrate_to)

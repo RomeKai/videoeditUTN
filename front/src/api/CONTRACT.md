@@ -156,7 +156,7 @@ Inicia sesión con email y contraseña; devuelve el par JWT.
 |---|---|
 | Id | `auth.login` |
 | Backend | ✅ existe · `back/apps/users/views.py · LoginView (TokenObtainPairView de SimpleJWT, USERNAME_FIELD = email)` |
-| Nota | El 429 sale de 10 pedidos por minuto por IP, o de los intentos fallidos de la cuenta: 10 cada 15 minutos desde la misma IP y 100 por hora en total. Un login correcto los reinicia. `detail` dice en castellano cuánto esperar. Hoy no distingue la cuenta sin verificar (falta el 403 propuesto, hueco 1). |
+| Nota | El email entra con cualquier escritura de su dominio (mayúsculas, letras de ancho completo, Unicode o punycode); un dominio que no se puede codificar responde 401 como cualquier email sin cuenta. El 429 sale de 10 pedidos por minuto por IP, o de los intentos fallidos de la cuenta: 10 cada 15 minutos desde la misma IP y 100 por hora en total. Un login correcto los reinicia. `detail` dice en castellano cuánto esperar. Hoy no distingue la cuenta sin verificar (falta el 403 propuesto, hueco 1). |
 | Sesión | Pública |
 | Pedido | LoginRequest |
 | Respuesta 200 | TokenPair |
@@ -289,11 +289,11 @@ Actualiza nombre, email, tour, uso elegido en la bienvenida y workspace activo.
 |---|---|
 | Id | `users.updateMe` |
 | Backend | ✅ existe · `back/apps/users/views.py · MeView.patch (UpdateMeSerializer); el link: apps/users/email_verification.py` |
-| Nota | El email nuevo queda en `pending_email` y le llega un link a `/verificar?token=…&siguiente=/perfil` que vence en 24 h; `auth.verifyEmail` lo aplica. |
+| Nota | El backend normaliza el dominio (minúsculas, letras de ancho completo, Unicode a punycode): `ana@Mañana.com` vuelve en `pending_email` como `ana@xn--maana-pta.com`, y otra escritura de un email ya usado cuenta como usado. El email nuevo queda en `pending_email` y le llega un link a `/verificar?token=…&siguiente=/perfil` que vence en 24 h; `auth.verifyEmail` lo aplica. |
 | Sesión | JWT |
 | Pedido | UpdateMeRequest |
 | Respuesta 200 | Me |
-| Errores | **400** Validación por campo: email ya usado o rechazado por el servidor de email (error en `email`), o `email` nuevo sin `current_password`, con una incorrecta o en una cuenta sin contraseña (error en `current_password`); `active_workspace_id` de un workspace donde no es miembro activo.<br>**429** Demasiados cambios de email seguidos (5 por hora). `detail` dice en castellano cuánto esperar.<br>**502** El servidor de email no aceptó el email de verificación: no se guardó nada. No es 503, que la UI lee como mantenimiento. |
+| Errores | **400** Validación por campo: email ya usado, con un dominio que no se puede codificar ("El dominio del email no es válido. Revisá que esté bien escrito.") o rechazado por el servidor de email (error en `email`), o `email` nuevo sin `current_password`, con una incorrecta o en una cuenta sin contraseña (error en `current_password`); `active_workspace_id` de un workspace donde no es miembro activo.<br>**429** Demasiados cambios de email seguidos (5 por hora). `detail` dice en castellano cuánto esperar.<br>**502** El servidor de email no aceptó el email de verificación: no se guardó nada. No es 503, que la UI lee como mantenimiento. |
 | Pantallas | B1, B2, J3, I1 |
 
 #### `POST /api/v1/me/password/`

@@ -93,7 +93,7 @@ export const updateMe = defineEndpoint({
   errors: [
     {
       status: 400,
-      when: 'Validación por campo: email ya usado o rechazado por el servidor de email (error en `email`), o `email` nuevo sin `current_password`, con una incorrecta o en una cuenta sin contraseña (error en `current_password`); `active_workspace_id` de un workspace donde no es miembro activo.',
+      when: 'Validación por campo: email ya usado, con un dominio que no se puede codificar ("El dominio del email no es válido. Revisá que esté bien escrito.") o rechazado por el servidor de email (error en `email`), o `email` nuevo sin `current_password`, con una incorrecta o en una cuenta sin contraseña (error en `current_password`); `active_workspace_id` de un workspace donde no es miembro activo.',
     },
     { status: 429, when: 'Demasiados cambios de email seguidos (5 por hora). `detail` dice en castellano cuánto esperar.' },
     { status: 502, when: 'El servidor de email no aceptó el email de verificación: no se guardó nada. No es 503, que la UI lee como mantenimiento.' },
@@ -101,7 +101,7 @@ export const updateMe = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/users/views.py · MeView.patch (UpdateMeSerializer); el link: apps/users/email_verification.py',
-    note: 'El email nuevo queda en `pending_email` y le llega un link a `/verificar?token=…&siguiente=/perfil` que vence en 24 h; `auth.verifyEmail` lo aplica.',
+    note: 'El backend normaliza el dominio (minúsculas, letras de ancho completo, Unicode a punycode): `ana@Mañana.com` vuelve en `pending_email` como `ana@xn--maana-pta.com`, y otra escritura de un email ya usado cuenta como usado. El email nuevo queda en `pending_email` y le llega un link a `/verificar?token=…&siguiente=/perfil` que vence en 24 h; `auth.verifyEmail` lo aplica.',
   },
   screens: ['B1', 'B2', 'J3', 'I1'],
 });

@@ -160,7 +160,7 @@ class MeView(SpanishThrottleMixin, APIView):
             200: MeSerializer,
             400: OpenApiResponse(description=(
                 'Validación por campo: `current_password` falta, no coincide o la cuenta no tiene '
-                'contraseña; `email` lo usa otra cuenta o el servidor de email rechaza esa dirección; `active_workspace_id` no es '
+                'contraseña; `email` lo usa otra cuenta, su dominio no se puede codificar o el servidor de email rechaza esa dirección; `active_workspace_id` no es '
                 'un workspace del usuario.'
             )),
             401: UNAUTHORIZED,

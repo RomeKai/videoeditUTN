@@ -1,8 +1,11 @@
 ﻿import uuid
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models.functions import Upper
 from django.contrib.auth.models import AbstractUser, UserManager as DjangoUserManager
 from django.utils.translation import gettext_lazy as _
+
+from apps.users.emails import INVALID_EMAIL_DOMAIN, InvalidEmailDomain, normalize_email
 
 
 class UserManager(DjangoUserManager):
@@ -11,9 +14,22 @@ class UserManager(DjangoUserManager):
     in Postgres, the same function as User.Meta's constraint: two accounts can
     never match the same input, whatever Unicode does with case ("ſ" and "ı"
     turn into "S" and "I").
+
+    The domain is normalized first (apps.users.emails): "tester@ｔｅｓｔ.com"
+    signs into the account of "tester@test.com". A domain that cannot be
+    encoded has no account.
     """
 
+    @classmethod
+    def normalize_email(cls, email):
+        """NFKC, IDNA and lower case for the domain. Raises InvalidEmailDomain (a ValueError)."""
+        return normalize_email(email)
+
     def get_by_natural_key(self, username):
+        try:
+            username = self.normalize_email(username)
+        except InvalidEmailDomain:
+            raise self.model.DoesNotExist() from None
         return self.get(**{f'{self.model.USERNAME_FIELD}__iexact': username})
 
 
@@ -72,8 +88,20 @@ class User(AbstractUser):
     def __str__(self):
         return self.email
 
+    def clean(self):
+        # full_clean (the admin's forms) answers a field error instead of save()'s ValueError.
+        try:
+            super().clean()
+        except InvalidEmailDomain:
+            raise ValidationError({'email': INVALID_EMAIL_DOMAIN}) from None
+        if self.pending_email:
+            try:
+                self.pending_email = type(self).objects.normalize_email(self.pending_email)
+            except InvalidEmailDomain:
+                raise ValidationError({'pending_email': INVALID_EMAIL_DOMAIN}) from None
+
     def save(self, *args, **kwargs):
-        # The domain part of an email has no case (normalize_email lowers it).
+        # One spelling per domain (apps.users.emails): the constraint compares what is stored.
         self.email = type(self).objects.normalize_email(self.email)
         if self.pending_email:
             self.pending_email = type(self).objects.normalize_email(self.pending_email)
