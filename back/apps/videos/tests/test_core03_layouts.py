@@ -182,3 +182,81 @@ def test_pip_fills_the_frame_and_insets_the_camera(target_w, target_h, synthetic
     assert tuple(cam.size) == (inset.w, inset.h)
     assert cam.pos(0) == (inset.x1, inset.y1)
     assert result.get_frame(0.5).min(axis=2).max() > 0
+
+
+# --- podcast -----------------------------------------------------------------
+
+
+def _track(track_id, x, y, size=40, times=(0.0, 0.5, 1.0)):
+    from apps.videos.services.face_tracking import Detection, FaceTrack
+
+    return FaceTrack(id=track_id, detections=[
+        Detection(t=t, x=x - size / 2, y=y - size / 2, w=size, h=size) for t in times
+    ])
+
+
+def _fake_faces(monkeypatch, *tracks):
+    from apps.videos.services.face_tracker import FaceTracker
+    from apps.videos.services.face_tracking import FaceTracks
+
+    monkeypatch.setattr(FaceTracker, "__init__", lambda self, *a, **k: None)
+    monkeypatch.setattr(
+        FaceTracker, "track_faces",
+        lambda self, clip, fps=2.0, tracker=None: FaceTracks(list(tracks), [0.0, 0.5, 1.0], tuple(clip.size)),
+    )
+
+
+def test_faces_are_split_by_the_half_they_are_in():
+    from apps.videos.services.face_tracking import FaceTracks
+    from apps.videos.services.layouts.podcast import faces_by_half
+
+    left_face, right_face = _track(1, 100, 100), _track(2, 500, 100)
+    left, right = faces_by_half(FaceTracks([left_face, right_face], [0.0], (640, 360)), 640)
+    assert left == [left_face] and right == [right_face]
+
+
+def test_follow_box_keeps_the_face_high_and_inside_its_half():
+    from apps.videos.services.layouts.camera import Box
+    from apps.videos.services.layouts.podcast import follow_box
+
+    area = Box(320, 0, 320, 360)
+    box = follow_box(330, 100, 200, 200, area)
+    assert box.x1 == 320  # no se sale de la mitad derecha
+    assert box.y1 == 100 - 80  # la cara queda al 40 % del alto del recorte
+    assert (box.w, box.h) == (200, 200)
+
+
+def test_podcast_follows_each_half_on_its_own(rows_clip, monkeypatch):
+    """La cara de la izquierda está abajo: el panel de arriba baja; la derecha no tiene caras y queda fija."""
+    _fake_faces(monkeypatch, _track(1, 160, 350))
+
+    podcast = get_layout_strategy("podcast", 360, 640, use_facetracking=True).apply(rows_clip)
+    versus = get_layout_strategy("versus", 360, 640).apply(rows_clip)
+
+    _bg, top, bottom = podcast.clips
+    _vbg, versus_top, versus_bottom = versus.clips
+    assert int(top.get_frame(0.5)[0, 0, 0]) > int(versus_top.get_frame(0.5)[0, 0, 0]) + 50
+    assert (bottom.get_frame(0.5) == versus_bottom.get_frame(0.5)).all()
+
+
+def test_podcast_without_tracking_is_versus(rows_clip, monkeypatch):
+    _fake_faces(monkeypatch, _track(1, 160, 350))
+
+    podcast = get_layout_strategy("podcast", 360, 640, use_facetracking=False).apply(rows_clip)
+    versus = get_layout_strategy("versus", 360, 640).apply(rows_clip)
+    assert (podcast.get_frame(0.5) == versus.get_frame(0.5)).all()
+
+
+def test_podcast_manual_camera_wins_over_tracking(rows_clip, monkeypatch):
+    from apps.videos.services.face_tracker import FaceTracker
+
+    monkeypatch.setattr(FaceTracker, "track_faces", lambda *a, **k: pytest.fail("la cámara manual no sigue caras"))
+    manual = {"x": 0.5, "y": 0.8, "zoom": 1.5}
+    get_layout_strategy("podcast", 360, 640, use_facetracking=True, manual_camera_coords=manual).apply(rows_clip)
+
+
+def test_static_podcast_never_tracks(rows_clip, monkeypatch):
+    from apps.videos.services.face_tracker import FaceTracker
+
+    monkeypatch.setattr(FaceTracker, "track_faces", lambda *a, **k: pytest.fail("static no sigue caras"))
+    get_layout_strategy("podcast", 360, 640, use_facetracking=True, static=True).apply(rows_clip)
