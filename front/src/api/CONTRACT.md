@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**80 endpoints:** 39 existen hoy en el backend, 5 existen en parte y 36 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**80 endpoints:** 48 existen hoy en el backend, 5 existen en parte y 27 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -74,15 +74,15 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | POST | `/api/v1/me/password/` | Cambia la contraseña y cierra las demás sesiones. Responde un par JWT nuevo: el cliente lo guarda y sigue con sesión. | ✅ existe | I1 |
 | GET | `/api/v1/me/notification-preferences/` | Qué emails recibe el usuario, por tipo. | ✅ existe | I2 |
 | PATCH | `/api/v1/me/notification-preferences/` | Prende o apaga los emails por tipo. | ✅ existe | I2 |
-| GET | `/api/v1/workspaces/` | Workspaces del usuario. | ❌ falta (propuesto) · hueco 2 | J3 |
-| POST | `/api/v1/workspaces/` | Crea un workspace con el usuario como dueño (plan Gratis y billetera vacía). | ❌ falta (propuesto) · hueco 2 | J3, B1 |
-| GET | `/api/v1/workspaces/:id/` | Datos del workspace. | ❌ falta (propuesto) · hueco 2 | H1 |
-| PATCH | `/api/v1/workspaces/:id/` | Renombra el workspace (Dueño y Admin). | ❌ falta (propuesto) · hueco 2, 3 | H1, B1 |
-| DELETE | `/api/v1/workspaces/:id/` | Borra el workspace. Solo el Dueño, escribiendo el nombre para confirmar. | ❌ falta (propuesto) · hueco 2, 3 | H1 |
-| POST | `/api/v1/workspaces/:id/transfer/` | Transfiere el workspace a otro miembro activo. El dueño anterior queda como Admin. | ❌ falta (propuesto) · hueco 2, 3 | H1 |
-| GET | `/api/v1/workspaces/:id/members/` | Miembros e invitaciones pendientes, con los lugares usados del plan. | ❌ falta (propuesto) · hueco 13 | H2, D7, H1 |
-| PATCH | `/api/v1/workspaces/:id/members/:memberId/` | Cambia el rol de un miembro. | ❌ falta (propuesto) · hueco 3, 13 | H2 |
-| DELETE | `/api/v1/workspaces/:id/members/:memberId/` | Quita a un miembro o cancela una invitación pendiente. | ❌ falta (propuesto) · hueco 3, 13 | H2 |
+| GET | `/api/v1/workspaces/` | Workspaces del usuario. | ✅ existe | J3 |
+| POST | `/api/v1/workspaces/` | Crea un workspace con el usuario como dueño (plan Gratis y billetera vacía). | ✅ existe | J3, B1 |
+| GET | `/api/v1/workspaces/:id/` | Datos del workspace. | ✅ existe | H1 |
+| PATCH | `/api/v1/workspaces/:id/` | Renombra el workspace (Dueño y Admin). | ✅ existe | H1, B1 |
+| DELETE | `/api/v1/workspaces/:id/` | Borra el workspace. Solo el Dueño, escribiendo el nombre para confirmar. | ✅ existe | H1 |
+| POST | `/api/v1/workspaces/:id/transfer/` | Transfiere el workspace a otro miembro activo. El dueño anterior queda como Admin. | ✅ existe | H1 |
+| GET | `/api/v1/workspaces/:id/members/` | Miembros e invitaciones pendientes, con los lugares usados del plan. | ✅ existe | H2, D7, H1 |
+| PATCH | `/api/v1/workspaces/:id/members/:memberId/` | Cambia el rol de un miembro. | ✅ existe | H2 |
+| DELETE | `/api/v1/workspaces/:id/members/:memberId/` | Quita a un miembro o cancela una invitación pendiente. | ✅ existe | H2 |
 | POST | `/api/v1/workspaces/:id/invitations/` | Invita por email con un rol. Crea WorkspaceMember en `pending` y manda el email. | ❌ falta (propuesto) · hueco 13 | D7, H2 |
 | POST | `/api/v1/workspaces/:id/invitations/:memberId/resend/` | Reenvía el email de una invitación pendiente. | ❌ falta (propuesto) · hueco 13 | H2 |
 | GET | `/api/v1/invitations/:token/` | Datos públicos de una invitación: quién invita, a qué workspace y con qué rol. | ❌ falta (propuesto) · hueco 13 | A5 |
@@ -347,8 +347,8 @@ Workspaces del usuario.
 | | |
 |---|---|
 | Id | `workspaces.list` |
-| Backend | ❌ falta (propuesto) · hueco 2 |
-| Nota | El selector (J3) usa la lista de `/me`; este listado es el recurso REST completo. |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceListView.get (WorkspaceSerializer)` |
+| Nota | Los workspaces propios y los de una membresía activa, del más antiguo al más nuevo, con `role`. Una invitación pendiente no aparece. El selector (J3) usa la lista de `/me`; este listado es el recurso REST completo. |
 | Sesión | JWT |
 | Respuesta 200 | Workspace[] |
 | Pantallas | J3 |
@@ -360,11 +360,12 @@ Crea un workspace con el usuario como dueño (plan Gratis y billetera vacía).
 | | |
 |---|---|
 | Id | `workspaces.create` |
-| Backend | ❌ falta (propuesto) · hueco 2 |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceListView.post (apps/users/workspaces.py · create_owned_workspace)` |
+| Nota | El mismo camino que el registro: plan `DEFAULT_PLAN_NAME` (Gratis; `subscription_plan: null` si ese plan no existe), billetera en 0 y el usuario como Admin activo además de dueño. El nombre se guarda sin espacios a los costados. Tope: 10 workspaces propios por usuario (`MAX_OWNED_WORKSPACES`) y un límite de intentos (`THROTTLE_WORKSPACE_CREATE`). |
 | Sesión | JWT |
 | Pedido | { name: string } |
 | Respuesta 201 | Workspace |
-| Errores | **400** Nombre vacío o demasiado largo. |
+| Errores | **400** Nombre vacío (o solo espacios) o de más de 100 caracteres: `{name: [mensaje]}`.<br>**409** El usuario ya es dueño de 10 workspaces (`code: "workspace_limit"`). Los workspaces ajenos donde es miembro no cuentan.<br>**429** Demasiadas creaciones seguidas (10 por hora por usuario; cuentan también los intentos rechazados). `detail` dice cuánto esperar. |
 | Pantallas | J3, B1 |
 
 #### `GET /api/v1/workspaces/:id/`
@@ -374,10 +375,11 @@ Datos del workspace.
 | | |
 |---|---|
 | Id | `workspaces.detail` |
-| Backend | ❌ falta (propuesto) · hueco 2 |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceDetailView.get (WorkspaceDetailSerializer)` |
+| Nota | Lo lee cualquier rol. Trae `role` y `admins`. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Respuesta 200 | Workspace |
-| Errores | **404** No existe o el usuario no es miembro. |
+| Errores | **404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos. |
 | Pantallas | H1 |
 
 #### `PATCH /api/v1/workspaces/:id/`
@@ -387,11 +389,12 @@ Renombra el workspace (Dueño y Admin).
 | | |
 |---|---|
 | Id | `workspaces.update` |
-| Backend | ❌ falta (propuesto) · hueco 2, 3 |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceDetailView.patch` |
+| Nota | Solo cambia `name`. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Pedido | { name: string } |
 | Respuesta 200 | Workspace |
-| Errores | **400** Nombre vacío o demasiado largo.<br>**403** El rol no puede renombrar (Editor, Lector). |
+| Errores | **400** Nombre vacío (o solo espacios) o de más de 100 caracteres: `{name: [mensaje]}`.<br>**403** El rol no puede renombrar (Editor, Lector). Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos. |
 | Pantallas | H1, B1 |
 
 #### `DELETE /api/v1/workspaces/:id/`
@@ -401,11 +404,12 @@ Borra el workspace. Solo el Dueño, escribiendo el nombre para confirmar.
 | | |
 |---|---|
 | Id | `workspaces.delete` |
-| Backend | ❌ falta (propuesto) · hueco 2, 3 |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceDetailView.delete` |
+| Nota | Borra para siempre el workspace con sus proyectos, clips y publicaciones (las programadas que no salieron no se publican), brand kits, miembros e invitaciones, y la billetera, ya en cero, con sus movimientos. Las cuentas de los miembros no se tocan. No limpia los archivos en R2 ni el perfil de Ayrshare. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Pedido | { confirm_name: string } |
 | Respuesta 204 | NoContent |
-| Errores | **400** `confirm_name` no coincide con el nombre.<br>**403** No es el Dueño. |
+| Errores | **400** `confirm_name` falta o no es exactamente el nombre: `{confirm_name: [mensaje]}`.<br>**403** No es el Dueño. Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos.<br>**409** No se borra nada. Cuerpo `{error, code}`, y el `error` se muestra tal cual. Se revisan en este orden. `last_workspace`: es el único workspace del usuario (va primero porque esperar no lo resuelve). `project_processing`: hay un proyecto subido, en ingesta o renderizando (uno trabado se borra primero). `posts_in_flight`: hay una publicación saliendo (`PROCESSING` hace menos de 10 minutos) o en cola (`QUEUED` hasta 15 minutos después de su `publish_at`); una más vieja está trabada y no frena el borrado. `reservation_open`: hay tokens reservados sin liquidar. `balance_left`: queda saldo disponible (trae `available_balance`); los tokens nunca se borran. |
 | Pantallas | H1 |
 
 #### `POST /api/v1/workspaces/:id/transfer/`
@@ -415,11 +419,12 @@ Transfiere el workspace a otro miembro activo. El dueño anterior queda como Adm
 | | |
 |---|---|
 | Id | `workspaces.transfer` |
-| Backend | ❌ falta (propuesto) · hueco 2, 3 |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceTransferView.post` |
+| Nota | La respuesta trae `owner` nuevo y `role: "admin"` (el rol de quien transfirió). El plan, la billetera y los lugares no cambian. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Pedido | { new_owner_id: Id } |
 | Respuesta 200 | Workspace |
-| Errores | **400** El usuario no es miembro activo.<br>**403** No es el Dueño. |
+| Errores | **400** `new_owner_id` no es un miembro activo (una invitación pendiente no alcanza) o es el propio Dueño: `{new_owner_id: [mensaje]}`. Con `detail`: el Dueño no tenía fila de miembro y no queda lugar en el plan para dejarlo como Admin.<br>**403** No es el Dueño. Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos. |
 | Pantallas | H1 |
 
 #### `GET /api/v1/workspaces/:id/members/`
@@ -429,11 +434,11 @@ Miembros e invitaciones pendientes, con los lugares usados del plan.
 | | |
 |---|---|
 | Id | `workspaces.members` |
-| Backend | ❌ falta (propuesto) · hueco 13 |
-| Nota | Modelo: WorkspaceMember (apps/users/models.py). |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceMembersView.get (MembersSerializer)` |
+| Nota | Una fila por WorkspaceMember, de la más antigua a la más nueva; la del Dueño sale con `role: "owner"`. `seats_used` cuenta todas las filas, también las pendientes y la del Dueño; `max_members` es 1 si el workspace no tiene plan. Hoy `user` siempre viene (no hay invitaciones a emails sin cuenta) e `invited_by` es siempre null. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Respuesta 200 | MembersResponse |
-| Errores | **403** Solo Dueño y Admin ven la sección (para Editor y Lector no aparece). |
+| Errores | **403** Solo Dueño y Admin ven la sección (para Editor y Lector no aparece). Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos. |
 | Pantallas | H2, D7, H1 |
 
 #### `PATCH /api/v1/workspaces/:id/members/:memberId/`
@@ -443,11 +448,12 @@ Cambia el rol de un miembro.
 | | |
 |---|---|
 | Id | `workspaces.updateMember` |
-| Backend | ❌ falta (propuesto) · hueco 3, 13 |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceMemberView.patch` |
+| Nota | También cambia el rol de una invitación pendiente. Un Admin puede cambiar el rol de otro Admin y el suyo. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Pedido | { role: MemberRole } |
 | Respuesta 200 | Member |
-| Errores | **400** No se puede cambiar el rol del Dueño.<br>**403** El rol no administra miembros. |
+| Errores | **400** No se puede cambiar el rol del Dueño (solo deja de serlo al transferir), o `role` no es admin, editor ni viewer: `{role: [mensaje]}`.<br>**403** El rol no administra miembros. Solo `detail`, sin `code`.<br>**404** El workspace no existe para este usuario, o `memberId` no es una fila de ese workspace. |
 | Pantallas | H2 |
 
 #### `DELETE /api/v1/workspaces/:id/members/:memberId/`
@@ -457,10 +463,11 @@ Quita a un miembro o cancela una invitación pendiente.
 | | |
 |---|---|
 | Id | `workspaces.removeMember` |
-| Backend | ❌ falta (propuesto) · hueco 3, 13 |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceMemberView.delete` |
+| Nota | Borra la fila y libera su lugar del plan; quien fue quitado pasa a recibir 404 en ese workspace. Un Admin puede quitarse a sí mismo. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Respuesta 204 | NoContent |
-| Errores | **400** No se puede quitar al Dueño.<br>**403** El rol no administra miembros. |
+| Errores | **400** No se puede quitar al Dueño, lo pida un Admin o el propio Dueño (primero transfiere el workspace): `{detail}`.<br>**403** El rol no administra miembros: un Editor o un Lector tampoco puede quitarse a sí mismo. Solo `detail`, sin `code`.<br>**404** El workspace no existe para este usuario, o `memberId` no es una fila de ese workspace. |
 | Pantallas | H2 |
 
 #### `POST /api/v1/workspaces/:id/invitations/`

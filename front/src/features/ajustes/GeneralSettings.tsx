@@ -271,7 +271,7 @@ export function GeneralSettings() {
             loading={remove.isPending}
             tone="danger"
             title={`¿Borrar ${saved}?`}
-            description="Se borran los proyectos, los clips, los brand kits y las publicaciones programadas, para todo el equipo. No se puede deshacer."
+            description="Se borran los proyectos, los clips, los brand kits y las publicaciones, para todo el equipo. Las publicaciones programadas que todavía no salieron se borran y no se van a publicar. No se puede deshacer."
             confirmLabel="Borrar el workspace"
             typeToConfirm={{
               text: saved,
@@ -285,7 +285,7 @@ export function GeneralSettings() {
           >
             {next ? null : (
               <Banner tone="warn" title="Es tu único workspace">
-                Después de borrarlo no vas a tener dónde trabajar hasta que alguien te invite al suyo.
+                No se puede borrar el único workspace que tenés. Creá otro primero.
               </Banner>
             )}
             <p className="t-small subtle">El botón se activa cuando el nombre coincide.</p>
