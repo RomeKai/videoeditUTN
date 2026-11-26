@@ -864,7 +864,7 @@ Generar un preview de baja resolución (360p, sin subtítulos complejos) antes d
 ### PAY-03: Endpoint de Planes Públicos `P0` 🟢 `exists`
 
 **Descripción:**
-El modelo `SubscriptionPlan` existe completo. El endpoint público `GET /api/v1/plans/` lista los planes activos (cache de 1 h, invalidada al editar un plan) y los cuatro planes se siembran en la migración `payments/0005`.
+El modelo `SubscriptionPlan` existe completo. El endpoint público `GET /api/v1/plans/` lista los planes activos y públicos (`is_public`; cache de 5 min que se borra cuando un cambio de plan hace commit) y los cuatro planes se siembran en las migraciones `payments/0005` y `payments/0007`. Un workspace nuevo empieza en Gratis (`DEFAULT_PLAN_NAME`); los de antes se pasan con `assign_default_plan`.
 
 **Criterios de Aceptación:**
 
@@ -875,7 +875,7 @@ El modelo `SubscriptionPlan` existe completo. El endpoint público `GET /api/v1/
 **Definition of Done:**
 - [x] Criterios de aceptación cumplidos
 - [x] Endpoint accesible sin autenticación (público)
-- [x] Response cacheada (1h TTL) para evitar queries innecesarias
+- [x] Response cacheada (5 min de TTL, borrada en el commit de cada cambio) para evitar queries innecesarias
 - [x] Schema documentado en Spectacular/Swagger
 
 **Riesgos:**

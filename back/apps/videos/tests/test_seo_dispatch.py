@@ -192,6 +192,12 @@ class CreateWithSeoTests(TestCase):
         for workspace in self.user.workspaces.all():
             wallet, _ = Wallet.objects.get_or_create(workspace=workspace)
             Wallet.objects.filter(pk=wallet.pk).update(available_balance=Decimal("100.00"))
+        # A plan with SEO and no discount, so the add-on costs its full 5. A new
+        # workspace starts on Gratis, which has no SEO.
+        with_seo = SubscriptionPlan.objects.create(
+            name="con-seo-url", has_seo_optimization=True, max_video_duration_seconds=3600,
+        )
+        Workspace.objects.filter(members=self.user).update(subscription_plan=with_seo)
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 

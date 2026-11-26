@@ -151,7 +151,7 @@ class TestCreateEndpoint:
             "duration_s": pytest.approx(2.0, abs=0.1), "width": 640, "height": 360, "mime": "video/mp4",
         }
         txn = Transaction.objects.get(pk=project.metadata["reservation_id"])
-        assert txn.amount == Decimal("1.00")  # 2 s x 0.5 tokens, no plan
+        assert txn.amount == Decimal("1.00")  # 2 s x 0.5 tokens: Gratis, the plan of a new workspace, has no discount
         ingest.assert_called_once()
 
 
