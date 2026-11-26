@@ -623,7 +623,7 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 #### H2. Miembros
 - **Tabla:** nombre, email, rol (editable por el Admin) y estado (Activo, Invitación pendiente).
 - **Acciones:** **Invitar** por email con rol, reenviar la invitación, quitar al miembro.
-- **Contador:** "4 de 5 miembros" según `max_members`.
+- **Contador:** "4 de 10 miembros" según `max_members`.
 - **API:** ❌ (el modelo existe).
 
 #### H3. Redes sociales
@@ -803,7 +803,7 @@ Se agregaron en la segunda ronda del canvas, después de una revisión de diseñ
    - El orden es Clip → Redes → Cuándo → detalle por red.
    - En la pestaña de TikTok la privacidad va primero.
    - El chequeo de requisitos queda en una línea y cuenta la privacidad de TikTok como requisito: "3 de 4 requisitos · falta elegir quién puede ver el video".
-8. **Miembros (H2).** Una invitación pendiente ocupa un lugar del plan. Con 4 miembros y 1 invitación en el plan Pro (5 lugares), "Invitar" se desactiva y explica por qué.
+8. **Miembros (H2).** Una invitación pendiente ocupa un lugar del plan. Con 9 miembros y 1 invitación en el plan Pro (10 lugares), "Invitar" se desactiva y explica por qué.
 9. **Ajustes y Perfil (H, I).** En lugar de cajas apiladas con su propio botón, una columna de filas: título y descripción a la izquierda, control a la derecha. La zona peligrosa queda aparte.
 10. **Uso (G1).** El reservado se muestra dentro de la tarjeta de saldo, con el detalle por proyecto.
 11. **Planes (A6 y G3).**

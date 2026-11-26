@@ -1,7 +1,7 @@
 import type { SocialAccount } from '@/api/contracts/social';
 import type { MembersResponse } from '@/api/contracts/workspaces';
 
-/** "4 de 5 miembros · 1 invitación pendiente" (H2 header and the phone list). */
+/** "4 de 10 miembros · 1 invitación pendiente" (H2 header and the phone list). */
 export function membersSummary(data: MembersResponse): string {
   const active = data.members.filter((member) => member.status === 'active').length;
   const pending = data.members.length - active;

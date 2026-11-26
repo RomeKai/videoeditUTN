@@ -83,6 +83,13 @@ def test_estudio_allows_three_hours_the_ceiling_of_any_upload(client):
     assert estudio['max_video_duration_seconds'] == settings.AI_UPLOAD_MAX_DURATION_SECONDS
 
 
+def test_each_plan_lists_its_seats(client):
+    # Gratis 2 (0009), Creador 5 (0013), Pro 10 (0014), Estudio 15 (0005): the seed migrations all ran.
+    seats = {plan['name']: plan['max_members'] for plan in client.get(URL).json()}
+
+    assert seats == {'Gratis': 2, 'Creador': 5, 'Pro': 10, 'Estudio': 15}
+
+
 def test_no_public_plan_promises_more_than_an_upload_can_last(client):
     longest = max(plan['max_video_duration_seconds'] for plan in client.get(URL).json())
 
