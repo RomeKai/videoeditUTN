@@ -1,6 +1,8 @@
 from pathlib import Path
 import os
+import re
 import environ
+from django.core.exceptions import ImproperlyConfigured
 
 # 1. Path Configuration
 # Located in backend/settings/base.py, move up 3 levels to reach the root
@@ -136,6 +138,20 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # --- CUSTOM USER MODEL ---
 AUTH_USER_MODEL = 'users.User' 
 
+# --- ATTEMPT LIMITS ---
+# A rate with a typo would only fail at the first login (a 500 inside the
+# throttle): it is checked here, when the app starts.
+_DRF_RATE = r'[1-9]\d*/(s|sec|second|m|min|minute|h|hour|d|day)'
+_WINDOW_RATE = r'[1-9]\d*/([1-9]\d*)?[smhd]'
+
+
+def _rate(variable, default, pattern=_DRF_RATE):
+    value = env(variable, default=default)
+    if not re.fullmatch(pattern, value):
+        raise ImproperlyConfigured(f'{variable}={value!r} is not a valid rate: write it like {default!r}.')
+    return value
+
+
 # --- DRF CONFIG ---
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
@@ -150,11 +166,11 @@ REST_FRAMEWORK = {
     # Attempt limits of the endpoints that check a password (apps.users.throttles):
     # per user when signed in, per IP otherwise.
     'DEFAULT_THROTTLE_RATES': {
-        'login': env('THROTTLE_LOGIN', default='10/min'),
-        'token_refresh': env('THROTTLE_TOKEN_REFRESH', default='30/min'),
-        'password_change': env('THROTTLE_PASSWORD_CHANGE', default='5/hour'),
+        'login': _rate('THROTTLE_LOGIN', '10/min'),
+        'token_refresh': _rate('THROTTLE_TOKEN_REFRESH', '30/min'),
+        'password_change': _rate('THROTTLE_PASSWORD_CHANGE', '5/hour'),
         # PATCH /me with a new email: checks the password and sends an email.
-        'email_change': env('THROTTLE_EMAIL_CHANGE', default='5/hour'),
+        'email_change': _rate('THROTTLE_EMAIL_CHANGE', '5/hour'),
     },
     # Proxies in front of Django (load balancer, nginx) that add the client's
     # address to X-Forwarded-For. The per-IP limits take the address that many
@@ -169,9 +185,9 @@ REST_FRAMEWORK = {
 # window with an optional count in front ("10/15m" = 10 every 15 minutes).
 LOGIN_FAILURE_RATES = {
     # From one IP.
-    'account_ip': env('LOGIN_FAILURES_PER_ACCOUNT_IP', default='10/15m'),
+    'account_ip': _rate('LOGIN_FAILURES_PER_ACCOUNT_IP', '10/15m', _WINDOW_RATE),
     # From any IP, so spreading the guesses over many addresses does not help.
-    'account': env('LOGIN_FAILURES_PER_ACCOUNT', default='100/h'),
+    'account': _rate('LOGIN_FAILURES_PER_ACCOUNT', '100/h', _WINDOW_RATE),
 }
 
 # --- AI CONFIG & FEATURE FLAGS ---
