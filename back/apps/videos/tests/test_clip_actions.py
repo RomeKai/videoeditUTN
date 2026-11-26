@@ -1546,3 +1546,63 @@ class ConcurrentPaidRenderTests(ClipActionsHarness, APITransactionTestCase):
         self.assertEqual(ingestion.call_count, 2)  # two messages, one project lock: harmless
         self.assertEqual(Transaction.objects.filter(wallet=self.wallet, status=RESERVED).count(), 1)
         self.assertEqual(self.balances(), (Decimal("87.50"), Decimal("12.50")))
+
+    def test_the_restore_holds_the_project_lock_while_a_paid_render_waits(self):
+        """
+        The restore decides and writes under the project row lock. A paid render
+        that arrives meanwhile waits for it and then finds the clip restored, so it
+        resets it to DRAFT again and renders it. Without the lock the render would
+        commit in between and the restore would put its clip back to COMPLETED.
+        """
+        from apps.videos.tasks import ingestion
+
+        project, (clip, _failed) = self.finished()
+        with patch(CLIP_DELAY):
+            self.assertEqual(self.client.post(clip_url(clip, "render"), {}, format="json").status_code, 202)
+        rollback_reservation(self.clip_render(project).pk)
+        VideoProject.objects.filter(pk=project.pk).update(
+            status=VideoProject.Status.FAILED, pipeline_stage=PipelineStage.FAILED,
+        )
+
+        real_read = ingestion._rerendered_clips_to_restore
+        reads = []
+        second_read = threading.Event()
+        render_done = threading.Event()
+        responses = []
+
+        def read(metadata):
+            if threading.current_thread().name == "restore":
+                reads.append(metadata)
+                if len(reads) == 2:  # the read under the lock: let the render try now
+                    second_read.set()
+                    render_done.wait(3)
+            return real_read(metadata)
+
+        def restore():
+            try:
+                ingestion._restore_rerendered_clips(project.pk)
+            finally:
+                connection.close()
+
+        def render():
+            client = APIClient()
+            client.force_authenticate(user=self.user)
+            client.credentials(HTTP_X_WORKSPACE_ID=str(self.workspace.pk))
+            try:
+                responses.append(client.post(clip_url(clip, "render"), {}, format="json"))
+                render_done.set()
+            finally:
+                connection.close()
+
+        with patch.object(ingestion, "_rerendered_clips_to_restore", side_effect=read), patch(CLIP_DELAY):
+            restorer = threading.Thread(target=restore, name="restore")
+            restorer.start()
+            self.assertTrue(second_read.wait(10))
+            renderer = threading.Thread(target=render, name="render")
+            renderer.start()
+            restorer.join(30)
+            renderer.join(30)
+
+        self.assertEqual([response.status_code for response in responses], [202])
+        self.assertEqual(self.clip_render(project).status, RESERVED)
+        self.assertEqual(VideoClip.objects.get(pk=clip.pk).status, DRAFT)
