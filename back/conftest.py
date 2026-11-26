@@ -157,12 +157,20 @@ def network_guard():
 
 @pytest.fixture(autouse=True)
 def isolate_test_effects(tmp_path, settings):
+    import importlib
+
+    from django.conf import settings as active_settings
+
     from apps.core.testing import clear_local_caches
 
     # The DRF throttles and the login guard count in the cache (per IP for the
     # login): each test starts from zero, whatever the tests before it did.
-    # clear_local_caches refuses anything but the LocMem of backend.settings.ci.
-    clear_local_caches("default", "locks")
+    # clear_local_caches refuses anything but the LocMem of backend.settings.ci,
+    # so a run with another settings module stops here. A test class that
+    # brings its own CACHES (override_settings) keeps them untouched.
+    configured = importlib.import_module(os.environ["DJANGO_SETTINGS_MODULE"]).CACHES
+    if active_settings.CACHES == configured:
+        clear_local_caches("default", "locks")
     checkpoint = NETWORK_GUARD.checkpoint()
     previous_media_root = settings.MEDIA_ROOT
     isolated_media_root = tmp_path / "media"
