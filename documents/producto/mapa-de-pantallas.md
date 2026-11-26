@@ -336,7 +336,8 @@ Otras respuestas:
      - Nivel de IA: Rápido o Inteligente.
   5. **Estilo:**
      - Estilo de edición, con tarjetas con ejemplo: Dinámico, Minimalista, Vlog, Hormozi.
-     - Layout (Llenar, Ajustar, Fondo desenfocado, Dividido, PiP, Versus, Quien habla). Cada uno con un dibujo esquemático.
+     - Layout (Llenar, Ajustar, Fondo desenfocado, Dividido, PiP, Versus, Quien habla, Reacción, Cinemático, Podcast, Trending). Cada uno con un dibujo esquemático.
+     - Con Trending se abren debajo el color del borde (cuatro colores) y un texto opcional arriba del video (hasta 60 caracteres; los emojis no se dibujan).
      - Brand kit: el marcado como default viene preseleccionado.
   6. **Subtítulos:** activados, tamaño, posición, color, palabras por línea. Se ve una muestra en vivo sobre un fotograma.
      - La API también acepta `subtitle_with_emojis`, pero no está en el MVP: no se muestra y el render no lo usa.
@@ -345,9 +346,12 @@ Otras respuestas:
      - Quitar silencios.
      - SEO (+5 tokens, según el plan).
      - "Renderizar sin revisar" (`auto_render_bypass`), apagado por defecto. Al apagarlo, el proyecto se detiene en la revisión. Prendido, cuando los clips están elegidos se reserva su render (mismo precio que aprobarlos) y se cobra solo lo que se entregó. Si no alcanza el saldo (`metadata.auto_render_skipped=insufficient_funds`) o supera el plan (`plan_limit`), el proyecto se detiene en la revisión con un aviso que dice por qué: "No alcanzó el saldo para renderizar sin revisar" o "Tu plan no permite renderizar estos clips sin revisar", y "Revisá y aprobá los clips que quieras".
-- **Opciones avanzadas:** posición del gameplay y cámara manual van en un bloque "Avanzado" cerrado por defecto. Se ve solo con los layouts Dividido o Versus.
+- **Opciones avanzadas:** posición del gameplay y cámara manual van en un bloque "Avanzado" cerrado por defecto. Se ve con los layouts que tienen una cámara: Dividido, Reacción, PiP, Versus y Podcast.
   - **Dividido:** posición del gameplay (izquierda, centro, derecha), lado de la cámara (izquierda, centro = todo el cuadro, derecha) y cámara manual (centro x/y y zoom). La cámara manual reemplaza al lado elegido y a Seguir caras.
   - **Versus:** solo la cámara manual, que encuadra igual a las dos personas (una por mitad). La posición del gameplay y el lado de la cámara no se muestran.
+  - **Reacción:** lo mismo que Dividido (el contenido arriba y la cara abajo, mitad y mitad).
+  - **PiP:** esquina de la cámara (abajo a la derecha por defecto), lado de la cámara y cámara manual.
+  - **Podcast:** lo mismo que Versus; con Seguir caras, cada mitad sigue a su persona por separado.
   - La cámara manual está apagada mientras tenga sus valores por defecto (x 0,5, y 0,2, zoom 1). Zoom 1 es el encuadre automático sin Seguir caras: sin Seguir caras, prender la cámara manual mueve el encuadre sin alejarlo; con Seguir caras, el zoom 1 es el del encuadre sin caras y puede verse más abierto o más cerrado. El zoom va de 1 a 4.
   - Versus en 1:1 y 16:9: cada mitad conserva al menos el 60 % de su alto y queda negro a los costados del panel. El dibujo esquemático lo muestra así.
 - **Resumen (derecha):**

@@ -68,6 +68,30 @@ describe('buildCreateBody', () => {
     expect(body).toMatchObject({ manual_camera_x: MANUAL_CAMERA_DEFAULT.x, manual_camera_y: MANUAL_CAMERA_DEFAULT.y, manual_camera_zoom: MANUAL_CAMERA_DEFAULT.zoom });
   });
 
+  it('Reacción manda lo mismo que Dividido', () => {
+    const body = buildCreateBody(file, config({ render_layout: 'reaction', gameplay_position: 'right', camera_selection_position: 'left' }));
+    expect(body).toMatchObject({ gameplay_position: 'right', camera_selection_position: 'left', manual_camera_zoom: MANUAL_CAMERA_DEFAULT.zoom });
+  });
+
+  it('PiP manda la esquina y el lado de la cámara, sin posición del gameplay', () => {
+    const body = buildCreateBody(file, config({ render_layout: 'pip', pip_corner: 'top-left', camera_selection_position: 'right' }));
+    expect(body).toMatchObject({ pip_corner: 'top-left', camera_selection_position: 'right' });
+    expect(body).not.toHaveProperty('gameplay_position');
+  });
+
+  it('Podcast manda solo la cámara manual', () => {
+    const body = buildCreateBody(file, config({ render_layout: 'podcast', manual_camera: true, manual_camera_y: 0.4 }));
+    expect(body.manual_camera_y).toBe(0.4);
+    expect(body).not.toHaveProperty('camera_selection_position');
+  });
+
+  it('Trending manda su color y su texto, sin espacios de más', () => {
+    const body = buildCreateBody(file, config({ render_layout: 'trending', trending_color: '#00C2FF', trending_text: '  Mirá esto  ' }));
+    expect(body).toMatchObject({ trending_color: '#00C2FF', trending_text: 'Mirá esto' });
+    expect(body).not.toHaveProperty('manual_camera_zoom');
+    expect(buildCreateBody(file, config({ render_layout: 'fill', trending_text: 'x' }))).not.toHaveProperty('trending_text');
+  });
+
   it('los otros layouts no mandan nada del bloque Avanzado', () => {
     const body = buildCreateBody(file, config({ render_layout: 'fill', manual_camera: true, manual_camera_zoom: 3 }));
     expect(body).not.toHaveProperty('manual_camera_zoom');
@@ -145,5 +169,22 @@ describe('titleFromFileName', () => {
   it('saca la extensión', () => {
     expect(titleFromFileName('podcast-ep42.mp4')).toBe('podcast-ep42');
     expect(titleFromFileName('.mp4')).toBe('.mp4');
+  });
+});
+
+describe('opciones de los layouts nuevos', () => {
+  it('se recuerdan saneadas', () => {
+    const restored = sanitizeConfig({ ...DEFAULT_CONFIG, render_layout: 'trending', pip_corner: 'middle', trending_color: 'rojo', trending_text: 'x'.repeat(80) });
+    expect(restored?.render_layout).toBe('trending');
+    expect(restored?.pip_corner).toBe('bottom-right');
+    expect(restored?.trending_color).toBe(DEFAULT_CONFIG.trending_color);
+    expect(restored?.trending_text).toHaveLength(60);
+  });
+
+  it('la cámara manual cuenta en Reacción, Podcast y PiP', () => {
+    for (const render_layout of ['reaction', 'podcast', 'pip'] as const) {
+      expect(manualCameraActive(config({ render_layout, manual_camera: true, manual_camera_zoom: 1.2 }))).toBe(true);
+    }
+    expect(manualCameraActive(config({ render_layout: 'trending', manual_camera: true, manual_camera_zoom: 1.2 }))).toBe(false);
   });
 });

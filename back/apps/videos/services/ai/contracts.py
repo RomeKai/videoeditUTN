@@ -138,7 +138,7 @@ class ClipSelectionResult(BaseModel):
 EditingStyleValue = Literal["dynamic", "minimalist", "vlog", "hormozi", "custom"]
 AspectRatioValue = Literal["9:16", "1:1", "16:9"]
 LEGACY_ASPECT_RATIOS = {"1:Post": "1:1"}
-LayoutValue = Literal["fill", "fit", "blurred", "split", "pip", "versus", "active"]
+LayoutValue = Literal["fill", "fit", "blurred", "split", "pip", "versus", "active", "reaction", "cinematic", "podcast", "trending"]
 PositionValue = Literal["left", "center", "right"]
 SubtitleSizeValue = Literal["small", "medium", "large"]
 SubtitlePositionValue = Literal["top", "center", "bottom"]

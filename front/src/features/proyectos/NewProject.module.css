@@ -543,6 +543,14 @@
   border: 1.5px solid var(--accent);
   border-radius: 3px;
 }
+.dgTrend {
+  background: linear-gradient(135deg, var(--accent), var(--fg-subtle));
+}
+.dgText {
+  background: var(--fg);
+  border-radius: 1px;
+  opacity: 0.8;
+}
 .adv {
   border: 1px solid var(--border);
   border-radius: var(--r-md);

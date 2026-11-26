@@ -79,9 +79,9 @@ class VersusLayout(BaseLayout):
 
         # Person A (Top) and Person B (Bottom), each centred in its pane
         panes = []
-        for box, pane_y in ((top, 0), (bottom, target_h - pane_h)):
+        for index, (box, pane_y) in enumerate(((top, 0), (bottom, target_h - pane_h))):
             w, h = pane_size(box, target_w, pane_h)
-            pane = clip.cropped(x1=box.x1, y1=box.y1, width=box.w, height=box.h)
+            pane = self._crop_pane(clip, box, index)
             pane = pane.resized(new_size=(w, h))
             panes.append(pane.with_position(((target_w - w) // 2, pane_y + (pane_h - h) // 2)))
         p1, p2 = panes
@@ -93,6 +93,10 @@ class VersusLayout(BaseLayout):
             final = final.with_audio(clip.audio)
             
         return final
+
+    def _crop_pane(self, clip, box, index):
+        """The crop of one pane (0 top, 1 bottom): fixed here, it follows a face in ``podcast``."""
+        return clip.cropped(x1=box.x1, y1=box.y1, width=box.w, height=box.h)
 
 class ActiveSpeakerLayout(BaseLayout):
     """
