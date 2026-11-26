@@ -292,6 +292,68 @@ REDIS_URL = env('REDIS_URL', default='redis://redis:6379/0')
 # redelivered task waiting (it retries, see PIPELINE_LOCK_* in tasks.py).
 PIPELINE_LOCK_TTL = env.int('PIPELINE_LOCK_TTL', default=300)
 
+# --- CACHE ---
+# One store for every web and worker process (documents/ia/07, "Cache
+# compartida"): the public plans list, throttles and the cache.add locks only
+# work if all of them see the same keys. Django's default LocMem is one cache
+# per process. CACHE_REDIS_URL is its own Redis database, never the broker's:
+# django-redis runs cache.clear() as FLUSHDB, whatever the key prefix, and
+# that would also empty the Celery queues, the project locks and the capacity
+# buckets. Two aliases (apps/core/cache.py):
+# - default fails open (a Redis that does not answer is a cache miss) and logs
+#   cache.unavailable: plans, throttles, probe caches.
+# - locks raises: a lock that cannot be taken stops the caller.
+# Without CACHE_REDIS_URL (a runserver with no Redis) both are LocMem, and
+# prod.py warns.
+CACHE_KEY_PREFIX = env('CACHE_KEY_PREFIX', default='onecreator')
+if 'CACHE_REDIS_URL' in os.environ:
+    CACHE_REDIS_URL = env('CACHE_REDIS_URL')
+    _CACHE_REDIS_OPTIONS = {
+        # A Redis that does not answer fails the call in seconds instead of
+        # holding the request or the task.
+        'SOCKET_CONNECT_TIMEOUT': 2,
+        'SOCKET_TIMEOUT': 2,
+    }
+    CACHES = {
+        'default': {
+            'BACKEND': 'apps.core.cache.FailOpenRedisCache',
+            'LOCATION': CACHE_REDIS_URL,
+            'KEY_PREFIX': CACHE_KEY_PREFIX,
+            'TIMEOUT': 300,
+            'OPTIONS': {**_CACHE_REDIS_OPTIONS, 'IGNORE_EXCEPTIONS': True},
+        },
+        'locks': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': CACHE_REDIS_URL,
+            'KEY_PREFIX': f'{CACHE_KEY_PREFIX}:locks',
+            'TIMEOUT': 300,
+            'OPTIONS': dict(_CACHE_REDIS_OPTIONS),
+        },
+    }
+else:
+    CACHE_REDIS_URL = None
+    CACHES = {
+        'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache', 'LOCATION': 'onecreator'},
+        'locks': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache', 'LOCATION': 'onecreator-locks'},
+    }
+
+
+def _redis_database(url):
+    """(host, port, db) of a redis:// URL, to tell whether two URLs are the same database."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    return (parsed.hostname, parsed.port or 6379, (parsed.path or '/0').strip('/') or '0')
+
+
+if CACHE_REDIS_URL and _redis_database(CACHE_REDIS_URL) == _redis_database(REDIS_URL):
+    import logging as _logging
+
+    # Logged while the settings load (before LOGGING applies: it goes to stderr).
+    _logging.getLogger('backend.settings').warning(
+        "cache.shares_broker_db CACHE_REDIS_URL is the broker's Redis database: cache.clear() would empty its queues"
+    )
+
 # Redis broker visibility timeout. Tasks use acks_late, so a running task stays
 # unacked and Redis redelivers it once this timeout passes. It must be comfortably
 # greater than PIPELINE_LOCK_TTL plus the longest stage (long-video transcription,

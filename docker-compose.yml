@@ -30,6 +30,8 @@ services:
     environment:
       - DJANGO_SETTINGS_MODULE=backend.settings.dev
       - REDIS_URL=redis://redis:6379/0
+      # Django cache in its own Redis database: cache.clear() is a FLUSHDB (documents/ia/07).
+      - CACHE_REDIS_URL=redis://redis:6379/1
       - LOG_SERVICE=web
       - DATABASE_URL=postgres://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-admin}@db:5432/${POSTGRES_DB:-backend_db}
     depends_on:
@@ -49,6 +51,8 @@ services:
     environment:
       - DJANGO_SETTINGS_MODULE=backend.settings.dev
       - REDIS_URL=redis://redis:6379/0
+      # Django cache in its own Redis database: cache.clear() is a FLUSHDB (documents/ia/07).
+      - CACHE_REDIS_URL=redis://redis:6379/1
       - LOG_SERVICE=worker
       - DATABASE_URL=postgres://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-admin}@db:5432/${POSTGRES_DB:-backend_db}
     depends_on:

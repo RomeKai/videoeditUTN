@@ -1,4 +1,4 @@
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.db import transaction
 
 from .models import BrandKit, ClipLayer, ModerationOverride, ScheduledPost, VideoClip, VideoProject
@@ -109,7 +109,18 @@ class ModerationOverrideAdmin(admin.ModelAdmin):
         obj.created_by = request.user
         super().save_model(request, obj, form, change)
         project = obj.project
-        if project.pipeline_stage == VideoProject.PipelineStage.FAILED:
+        from apps.videos.tasks.ingestion import INGESTION_NOT_QUEUED
+
+        if project.pipeline_error_code == INGESTION_NOT_QUEUED:
+            # Refunded at creation because its ingestion was never queued: the
+            # pipeline never resumes it (_run_ingestion), so nothing to queue.
+            self.message_user(
+                request,
+                "Override registrado. Este proyecto se devolvió al crearse porque no se pudo encolar "
+                "su ingestión: no se re-encola. El usuario tiene que crearlo de nuevo.",
+                level=messages.WARNING,
+            )
+        elif project.pipeline_stage == VideoProject.PipelineStage.FAILED:
             from apps.videos.tasks import process_initial_ingestion
 
             project_id = str(project.pk)
