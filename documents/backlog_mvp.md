@@ -799,28 +799,28 @@ Generar un preview de baja resolución (360p, sin subtítulos complejos) antes d
 
 \---
 
-### PAY-01: Watermark Injection en Render (Plan Free) `P0` 🟡 `partial`
+### PAY-01: Watermark Injection en Render (Plan Free) `P0` 🟢 `exists`
 
 **Descripción:**
-`SubscriptionPlan.has\_watermark` existe. Falta la inyección física en `RenderEngine.render\_clip()`.
+`SubscriptionPlan.has\_watermark` existe. La inyección está en `RenderEngine.render_clip()` y en la exportación de `render_video_segments`, desde `apps/videos/services/watermark.py`. Un workspace sin plan no lleva marca (igual que el resto de los límites) y la vista previa a 360p tampoco.
 
 **Criterios de Aceptación:**
 
-* \[ ] Si `plan.has\_watermark == True`, el render superpone el logo de OneCreator.
-* \[ ] Watermark: semi-transparente (40% opacity), esquina inferior derecha, 15% del ancho del video.
-* \[ ] Asset del watermark en `back/assets/watermarks/onecreator\_logo.png`.
-* \[ ] Server-side enforced — no bypasseable desde la API.
-* [ ] Test: render con y sin watermark produce archivos diferentes.
+* \[x] Si `plan.has\_watermark == True`, el render superpone el logo de OneCreator.
+* \[x] Watermark: semi-transparente (40% opacity), esquina inferior derecha, 15% del ancho del video.
+* \[x] Asset del watermark en `back/assets/watermarks/onecreator\_logo.png`.
+* \[x] Server-side enforced — no bypasseable desde la API.
+* [x] Test: render con y sin watermark produce archivos diferentes.
 
 **Definition of Done:**
-- [ ] Criterios de aceptación cumplidos
-- [ ] Watermark NO removible manipulando la API (server-side enforced)
-- [ ] Asset PNG del watermark commiteado en el repo
-- [ ] Test automatizado: hash de output difiere con/sin watermark
+- [x] Criterios de aceptación cumplidos
+- [x] Watermark NO removible manipulando la API (server-side enforced)
+- [x] Asset PNG del watermark commiteado en el repo
+- [x] Test automatizado: hash de output difiere con/sin watermark
 
 **Riesgos:**
 - 🟢 Riesgo bajo — es un overlay de imagen sobre video, MoviePy lo resuelve nativo
-- 🟡 El asset del watermark necesita ser creado (diseño gráfico)
+- 🟡 El logo commiteado es un placeholder (texto "OneCreator"); falta el diseño final, que reemplaza el PNG en la misma ruta
 
 ---
 
@@ -1231,7 +1231,7 @@ Para agencias o creadores con flujos automatizados. Si un video entra por webhoo
 
 |Issue|Título|Prioridad|Estado|
 |-|-|-|-|
-|PAY-01|Watermark Injection en Render|`P0`|🟡 `partial`|
+|PAY-01|Watermark Injection en Render|`P0`|🟢 `exists`|
 |PAY-02|Stripe Checkout — Compra de Tokens|`P1`|🔴 `missing`|
 |PAY-03|Endpoint de Planes Públicos|`P0`|🟢 `exists`|
 |DIST-01|Social Auth — OAuth Flows|`P0`|🔴 `missing`|

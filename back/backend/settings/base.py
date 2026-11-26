@@ -522,5 +522,7 @@ CLOUDFLARE_R2_ENDPOINT_URL = f"https://{CLOUDFLARE_R2_ACCOUNT_ID}.r2.cloudflares
 
 # --- ASSETS ---
 FONTS_DIR = os.path.join(BASE_DIR, 'assets', 'fonts')
+# Logo that a plan with has_watermark renders over every delivered video (PAY-01).
+WATERMARK_PATH = os.path.join(BASE_DIR, 'assets', 'watermarks', 'onecreator_logo.png')
 
 AYRSHARE_API_KEY = env('AYRSHARE_API_KEY', default=None)

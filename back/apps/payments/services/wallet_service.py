@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.utils import timezone
 from decimal import Decimal
 from ..models import Wallet, Transaction
 from apps.videos.tasks import process_video_pipeline
@@ -38,6 +39,7 @@ def reserve_funds(wallet_id, amount: Decimal, project_id=None, user=None, descri
         wallet=wallet,
         created_by=user,
         amount=amount,
+        reserved_amount=amount,
         transaction_type=Transaction.Type.SPEND,
         status=Transaction.Status.RESERVED,
         description=description
@@ -72,6 +74,7 @@ def commit_reservation(transaction_id) -> Transaction:
     wallet.save()
 
     txn.status = Transaction.Status.COMPLETED
+    txn.settled_at = timezone.now()
     txn.save()
     
     return txn
@@ -100,12 +103,17 @@ def commit_partial_reservation(transaction_id, amount: Decimal) -> Transaction:
 
     wallet = Wallet.objects.select_for_update().get(pk=txn.wallet_id)
     released = txn.amount - amount
+    if txn.reserved_amount is None:
+        # A reservation from before migration 0012: what it reserved is kept
+        # before ``amount`` becomes what was charged (the activity shows the refund).
+        txn.reserved_amount = txn.amount
     wallet.reserved_balance -= txn.amount
     wallet.available_balance += released
     wallet.save()
 
     txn.amount = amount
     txn.status = Transaction.Status.COMPLETED
+    txn.settled_at = timezone.now()
     txn.save()
 
     return txn
@@ -132,6 +140,7 @@ def rollback_reservation(transaction_id) -> Transaction:
     wallet.save()
 
     txn.status = Transaction.Status.FAILED
+    txn.settled_at = timezone.now()
     txn.save()
     
     return txn

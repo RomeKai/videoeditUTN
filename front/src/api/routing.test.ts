@@ -62,7 +62,11 @@ describe('ruteo híbrido', () => {
     }
     expect(routeOf(projects.listProjects, hybrid())).toBe('real'); // partial
     expect(routeOf(brandKits.listBrandKits, hybrid())).toBe('real'); // exists
-    expect(routeOf(projects.getProjectActivity, hybrid())).toBe('mock'); // proposed
+    // An endpoint still proposed, taken from the registry: a fixed one turns real as soon as the
+    // backend builds it (projects.getProjectActivity did).
+    const stillProposed = ALL_ENDPOINTS.find((e) => e.backend.status === 'proposed' && domainOf(e) !== 'auth');
+    expect(stillProposed, 'algún endpoint sigue propuesto').toBeDefined();
+    expect(routeOf(stillProposed!, hybrid())).toBe('mock'); // proposed
   });
 
   it('marcar un endpoint como exists en el contrato alcanza para mandarlo al backend', () => {
