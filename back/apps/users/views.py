@@ -1,6 +1,7 @@
 ﻿from decimal import Decimal
 
 from django.db import IntegrityError, transaction
+from django.db.models import Exists, OuterRef
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -8,9 +9,10 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from apps.core.workspace import OWNER, ActiveWorkspace, resolve_active_workspace
+from apps.core.workspace import OWNER, ActiveWorkspace
 from apps.payments.models import Wallet
 from apps.users.models import NotificationPreference, User, Workspace, WorkspaceMember
+from apps.videos.models import BrandKit, VideoProject
 from apps.users.serializers import (
     EMAIL_TAKEN,
     MeSerializer,
@@ -25,35 +27,81 @@ from apps.users.tokens import issue_token_pair, revoke_refresh_tokens
 
 
 def _user_workspaces(user):
-    """Every workspace the user owns or is an ACTIVE member of. Owning one wins over a membership row."""
-    found = {}
-    for workspace in Workspace.objects.filter(owner=user).select_related('subscription_plan'):
-        found[workspace.pk] = ActiveWorkspace(workspace, OWNER)
-    memberships = (
-        WorkspaceMember.objects.filter(user=user, status=WorkspaceMember.Status.ACTIVE)
-        .select_related('workspace__subscription_plan')
+    """
+    Every workspace the user owns or is an ACTIVE member of, oldest first
+    (created_at, pk), and the default one. Owning a workspace wins over a
+    membership row of it. Plans and wallets come in the same two queries.
+
+    The default follows `resolve_active_workspace` without the header: the
+    oldest owned workspace, else the oldest ACTIVE membership.
+    """
+    owned = list(
+        Workspace.objects.filter(owner=user)
+        .select_related('subscription_plan', 'wallet')
+        .order_by('created_at', 'pk')
     )
+    memberships = list(
+        WorkspaceMember.objects.filter(user=user, status=WorkspaceMember.Status.ACTIVE)
+        .select_related('workspace__subscription_plan', 'workspace__wallet')
+        .order_by('joined_at', 'pk')
+    )
+    found = {workspace.pk: ActiveWorkspace(workspace, OWNER) for workspace in owned}
     for membership in memberships:
         found.setdefault(membership.workspace_id, ActiveWorkspace(membership.workspace, membership.role))
-    return list(found.values())
+    default = owned[0] if owned else (memberships[0].workspace if memberships else None)
+    ordered = sorted(found.values(), key=lambda item: (item.workspace.created_at, item.workspace.pk))
+    return ordered, default
 
 
 def _workspace_summary(active):
     workspace = active.workspace
     plan = workspace.subscription_plan
-    wallet = Wallet.objects.filter(workspace=workspace).first()
+    try:
+        balance = workspace.wallet.available_balance
+    except Wallet.DoesNotExist:
+        balance = Decimal('0')
     return {
         'id': workspace.pk,
         'name': workspace.name,
         'role': active.role,
         'plan': {'id': plan.pk, 'name': plan.name} if plan else None,
-        'available_balance': wallet.available_balance if wallet else Decimal('0'),
+        'available_balance': balance,
     }
 
 
-def _me_payload(request):
-    user = request.user
-    active = resolve_active_workspace(request)
+def _onboarding(workspace):
+    """
+    First steps of B2 in the active workspace. A network counts as connected
+    when the workspace has its Ayrshare profile (`ayrshare_profile_key`, the
+    only link to the networks today); an invitation counts while pending.
+    """
+    if workspace is None:
+        return {'has_project': False, 'has_brand_kit': False, 'has_social_account': False, 'has_invited_member': False}
+    flags = (
+        Workspace.objects.filter(pk=workspace.pk)
+        .annotate(
+            has_project=Exists(VideoProject.objects.filter(workspace=OuterRef('pk'))),
+            has_brand_kit=Exists(BrandKit.objects.filter(workspace=OuterRef('pk'))),
+            has_invited_member=Exists(
+                WorkspaceMember.objects.filter(workspace=OuterRef('pk')).exclude(user=OuterRef('owner'))
+            ),
+        )
+        .values('has_project', 'has_brand_kit', 'has_invited_member')
+        .get()
+    )
+    return {**flags, 'has_social_account': bool(workspace.ayrshare_profile_key)}
+
+
+def _me_payload(user):
+    """
+    `active_workspace_id` is the workspace the user last chose (PATCH /me,
+    `User.last_workspace`) while they still own it or are an ACTIVE member;
+    else the default. It never depends on X-Workspace-Id: a stale header
+    cannot break the session.
+    """
+    workspaces, default = _user_workspaces(user)
+    by_id = {item.workspace.pk: item.workspace for item in workspaces}
+    active = by_id.get(user.last_workspace_id, default)
     return MeSerializer({
         'id': user.pk,
         'email': user.email,
@@ -63,13 +111,14 @@ def _me_payload(request):
         'terms_accepted_at': user.terms_accepted_at,
         'pending_email': user.pending_email,
         'onboarding_use_case': user.onboarding_use_case,
-        'active_workspace_id': active.workspace.pk if active else None,
-        'workspaces': [_workspace_summary(item) for item in _user_workspaces(user)],
+        'onboarding': _onboarding(active),
+        'active_workspace_id': active.pk if active else None,
+        'workspaces': [_workspace_summary(item) for item in workspaces],
     }).data
 
 
 class MeView(SpanishThrottleMixin, APIView):
-    """The signed-in user, their workspaces with their role in each, and the active one."""
+    """The signed-in user, their workspaces with their role in each, the active one and the first steps."""
 
     permission_classes = [IsAuthenticated]
     # Only the PATCHes that change the email count (EmailChangeThrottle).
@@ -77,7 +126,7 @@ class MeView(SpanishThrottleMixin, APIView):
     throttle_scope = 'email_change'
 
     def get(self, request):
-        return Response(_me_payload(request))
+        return Response(_me_payload(request.user))
 
     def patch(self, request):
         user = request.user
@@ -108,7 +157,7 @@ class MeView(SpanishThrottleMixin, APIView):
             if 'email' in data:
                 # A failed send rolls the change back: no pending email without its link.
                 send_email_change_verification(user)
-        return Response(_me_payload(request))
+        return Response(_me_payload(request.user))
 
 
 class LoginView(SpanishThrottleMixin, TokenObtainPairView):

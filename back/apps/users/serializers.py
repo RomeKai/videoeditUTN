@@ -54,6 +54,13 @@ class WorkspaceSummarySerializer(serializers.Serializer):
     available_balance = serializers.DecimalField(max_digits=20, decimal_places=10)
 
 
+class OnboardingSerializer(serializers.Serializer):
+    has_project = serializers.BooleanField()
+    has_brand_kit = serializers.BooleanField()
+    has_social_account = serializers.BooleanField()
+    has_invited_member = serializers.BooleanField()
+
+
 class MeSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     email = serializers.EmailField()
@@ -63,6 +70,8 @@ class MeSerializer(serializers.Serializer):
     terms_accepted_at = serializers.DateTimeField(allow_null=True)
     pending_email = serializers.EmailField(allow_null=True)
     onboarding_use_case = serializers.ChoiceField(choices=User.OnboardingUseCase.choices, allow_null=True)
+    # First-steps checklist of B2, in the active workspace.
+    onboarding = OnboardingSerializer()
     active_workspace_id = serializers.UUIDField(allow_null=True)
     workspaces = WorkspaceSummarySerializer(many=True)
 
