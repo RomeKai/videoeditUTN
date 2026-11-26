@@ -106,6 +106,18 @@ PTE_PARSE_RETRY_SECONDS = (30, 90)
 # the broker did not take its ingestion (views._fail_unqueued_project). Its
 # message may still arrive later: it is never resumed.
 INGESTION_NOT_QUEUED = 'IngestionNotQueued'
+# pipeline_error_code of a project recover_stuck_renders failed and refunded:
+# its ingestion made no progress for too long, with no worker and no re-queue
+# left (tasks/render_recovery.py). A late copy of its message is never resumed
+# while its creation stays refunded; a re-dispatch that pays it again is.
+INGESTION_STUCK = 'IngestionStuck'
+# When a delivery started running the ingestion (ISO time), and how many times
+# recover_stuck_renders re-queued it and when. A re-dispatch that reopens the
+# project starts its own count.
+INGESTION_STARTED_AT_KEY = 'ingestion_started_at'
+INGESTION_RECOVERY_REQUEUES_KEY = 'ingestion_recovery_requeues'
+INGESTION_RECOVERY_REQUEUED_AT_KEY = 'ingestion_recovery_requeued_at'
+INGESTION_RECOVERY_KEYS = (INGESTION_RECOVERY_REQUEUES_KEY, INGESTION_RECOVERY_REQUEUED_AT_KEY)
 
 _CLIP_SUGGESTION_FIELDS = {'start', 'end', 'title', 'virality_score', 'reasoning'}
 
@@ -1175,6 +1187,31 @@ def _rerendered_clips_to_restore(metadata):
     return previous, statuses
 
 
+def _restore_pending(metadata):
+    """
+    Whether ``_restore_rerendered_clips`` would give a clip back now, read
+    from a project's ``metadata`` without any lock: a clip a render asked for
+    later found delivered is in a status it is given back from with its old
+    file, or one that was PUBLISHED is COMPLETED with a new file. One query.
+    """
+    previous, statuses = _rerendered_clips_to_restore(metadata or {})
+    delivered = (VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED)
+    wanted = {
+        str(pk): before for pk, before in previous.items()
+        if before.get('status') in delivered and before.get('key')
+    }
+    if not wanted:
+        return False
+    for pk, status, key in VideoClip.objects.filter(pk__in=list(wanted)).values_list('pk', 'status', 's3_object_key'):
+        before = wanted[str(pk)]
+        if status in statuses and key == before['key']:
+            return True
+        published = before['status'] == VideoClip.Status.PUBLISHED
+        if published and status == VideoClip.Status.COMPLETED and key != before['key']:
+            return True
+    return False
+
+
 def _restore_rerendered_clips(project_id):
     """
     A clip that was delivered and rendered again (CLIP_RENDER) keeps what the
@@ -1193,14 +1230,7 @@ def _restore_rerendered_clips(project_id):
     updates, idempotent.
     """
     metadata = VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
-    previous, statuses = _rerendered_clips_to_restore(metadata)
-    if not previous:
-        return 0
-    published = [pk for pk, before in previous.items() if before.get('status') == VideoClip.Status.PUBLISHED]
-    if not (
-        VideoClip.objects.filter(pk__in=list(previous), status__in=statuses).exists()
-        or VideoClip.objects.filter(pk__in=published, status=VideoClip.Status.COMPLETED).exists()
-    ):
+    if not _restore_pending(metadata):
         return 0
     restored = 0
     with transaction.atomic():
@@ -1247,7 +1277,8 @@ def _settle_clip_render_reservations(project_id):
     try:
         _restore_rerendered_clips(project_id)
     except DatabaseError as exc:
-        # Display only: the next finalize or paid render restores them.
+        # Display only, and the settle stays: recover_stuck_renders retries the
+        # restore of a project whose render asked for later is settled.
         logger.error("render.clip_restore_failed project_id=%s error=%s", project_id, type(exc).__name__)
 
 
@@ -1609,15 +1640,27 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
             # is never run by a late copy of its message, and one refunded
             # after this reopen sees the project no longer failed and keeps
             # its reservation (views_clips.ProjectRedispatchView).
-            code = VideoProject.objects.select_for_update().filter(pk=project_id).values_list(
-                'pipeline_error_code', flat=True,
-            ).first()
+            code, metadata = VideoProject.objects.select_for_update().filter(pk=project_id).values_list(
+                'pipeline_error_code', 'metadata',
+            ).first() or ('', None)
+            metadata = metadata or {}
             if code in (REDISPATCH_NOT_QUEUED, INGESTION_NOT_QUEUED):
                 # INGESTION_NOT_QUEUED again, now under the lock: the create
                 # view may have failed it after the read above.
                 logger.warning("pipeline.redispatch_skipped project_id=%s reason=%s", project_id, code)
                 return f"Not resumed {project_id}: it was refunded when its message could not be queued"
+            if code == INGESTION_STUCK and not _creation_reserved(metadata):
+                # Failed and refunded by recover_stuck_renders: a copy of its
+                # message that was still alive would run it for free. A
+                # re-dispatch reserves the creation again, and then it runs.
+                logger.warning("pipeline.redispatch_skipped project_id=%s reason=%s", project_id, code)
+                return f"Not resumed {project_id}: it was refunded when its ingestion got stuck"
             reopen(project_id, stage)
+            if any(key in metadata for key in INGESTION_RECOVERY_KEYS):
+                # A re-dispatch is a new run: recover_stuck_renders counts its re-queues anew.
+                VideoProject.objects.filter(pk=project_id).update(metadata={
+                    key: value for key, value in metadata.items() if key not in INGESTION_RECOVERY_KEYS
+                })
         progress['stage'] = stage
 
     if stage in TERMINAL_STAGES:
@@ -1651,6 +1694,11 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
                 logger.warning("pipeline.redispatch_skipped project_id=%s reason=auto_render_unpaid", project_id)
                 return f"Not resumed {project_id}: its auto-render cannot be paid"
         return _resume_render_dispatch(project_id, progress)
+
+    # This delivery runs the ingestion now (the lock is ours): recover_stuck_renders
+    # measures "no progress" from the last start. Compare-and-set, like the status
+    # below: a project that moved meanwhile is not this run's.
+    _merge_metadata(project_id, {INGESTION_STARTED_AT_KEY: timezone.now().isoformat()}, expected_stage=stage)
 
     # Prompt-to-Edit (PTE-01b): parse and apply once, before any stage reads the
     # project settings (idempotent; a project without a prompt is untouched).
@@ -1809,6 +1857,19 @@ def _reserve_auto_render_after_charge(project_id):
     """
     _commit_ingestion_reservation(project_id)
     return _reserve_auto_render(project_id)
+
+
+def _creation_reserved(metadata):
+    """The creation reservation of a project (its ``metadata``) is RESERVED."""
+    from django.core.exceptions import ValidationError
+
+    reservation_id = (metadata or {}).get('reservation_id')
+    if not reservation_id:
+        return False
+    try:
+        return Transaction.objects.filter(pk=reservation_id, status=Transaction.Status.RESERVED).exists()
+    except ValidationError:
+        return False  # not a transaction id
 
 
 def _work_already_done(project_id):

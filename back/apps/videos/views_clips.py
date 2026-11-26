@@ -241,7 +241,8 @@ def _stuck(project, reserved_at):
     """
     No worker holds the project's lock and nothing happened for
     RENDER_STUCK_AFTER_SECONDS (longer than any task can live): no creation,
-    reservation, recorded error, capacity wait, render start or re-queue.
+    reservation, recorded error, capacity wait, ingestion or render start, or
+    re-queue of recover_stuck_renders.
     """
     from datetime import timedelta
 
@@ -249,6 +250,7 @@ def _stuck(project, reserved_at):
     from django.utils import timezone
 
     from .services.ai.project_lock import project_lock_held
+    from .tasks.ingestion import INGESTION_RECOVERY_REQUEUED_AT_KEY, INGESTION_STARTED_AT_KEY
     from .tasks.render_recovery import _when
 
     try:
@@ -258,7 +260,10 @@ def _stuck(project, reserved_at):
         return False  # Redis down: it may be running
     metadata = project.metadata or {}
     moments = [project.created_at, project.pipeline_error_at, *reserved_at]
-    for key in ('render_clip_started_at', 'render_started_at', 'render_recovery_requeued_at'):
+    for key in (
+        'render_clip_started_at', 'render_started_at', 'render_recovery_requeued_at',
+        INGESTION_STARTED_AT_KEY, INGESTION_RECOVERY_REQUEUED_AT_KEY,
+    ):
         moments.append(_when(metadata.get(key)))
     moments.append(_when((metadata.get('capacity_wait') or {}).get('since')))
     last = max(moment for moment in moments if moment)
