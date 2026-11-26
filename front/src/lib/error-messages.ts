@@ -19,8 +19,10 @@ const PIPELINE_MESSAGES: Record<string, string> = {
   // Link projects (back/apps/videos/tasks/shared.py · download_from_youtube): refused when the video is fetched, never retried.
   UnsupportedLinkError:
     'No pudimos usar este link. Tiene que ser el link de un solo video público de YouTube, Vimeo, Twitch o Google Drive: no una lista, un canal ni una transmisión en vivo.',
-  // The limit is the lower of the plan's and the app's (3 h): the code does not say which one it was.
-  LinkTooLongError: 'El video del link dura más de lo permitido para tu plan o para la app. Probá con uno más corto.',
+  // Over the plan's limit only: another plan would take the video.
+  LinkTooLongError: 'El video del link dura más de lo que permite tu plan. Probá con uno más corto o cambiá de plan.',
+  // Over the app's limit (AI_UPLOAD_MAX_DURATION_SECONDS, 3 h): no plan would take it.
+  LinkTooLongForAppError: 'El video del link dura más de 3 horas, el máximo que acepta OneCreator. Probá con uno más corto.',
   LinkTooLargeError: 'El video del link pesa más de lo que podemos descargar. Probá con una versión más liviana o subí el archivo.',
 };
 
@@ -55,7 +57,9 @@ export function pipelineErrorTitle(code: string | null | undefined): string {
     case 'UnsupportedLinkError':
       return 'No pudimos usar este link';
     case 'LinkTooLongError':
-      return 'El video del link es muy largo';
+      return 'El video del link es muy largo para tu plan';
+    case 'LinkTooLongForAppError':
+      return 'El video del link dura más de 3 horas';
     case 'LinkTooLargeError':
       return 'El video del link es muy pesado';
     default:

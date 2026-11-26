@@ -218,7 +218,8 @@ El pipeline guarda en `pipeline_error_code` el nombre de la excepción. El front
 | `AIEmptySelectionError` | "No encontramos momentos que funcionen como clips. Probá con otro video o cambiá el criterio." |
 | `SoftTimeLimitExceeded` | "El video tardó demasiado en procesarse. Probá con uno más corto." |
 | `UnsupportedLinkError` | "No pudimos usar este link. Tiene que ser el link de un solo video público de YouTube, Vimeo, Twitch o Google Drive: no una lista, un canal ni una transmisión en vivo." |
-| `LinkTooLongError` | "El video del link dura más de lo permitido para tu plan o para la app. Probá con uno más corto." |
+| `LinkTooLongError` | "El video del link dura más de lo que permite tu plan. Probá con uno más corto o cambiá de plan." |
+| `LinkTooLongForAppError` | "El video del link dura más de 3 horas, el máximo que acepta OneCreator. Probá con uno más corto." |
 | `LinkTooLargeError` | "El video del link pesa más de lo que podemos descargar. Probá con una versión más liviana o subí el archivo." |
 | `ModerationUnavailableError`, `AIAuthenticationError` y cualquier otro | "Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo." |
 

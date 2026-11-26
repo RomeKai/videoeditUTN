@@ -82,8 +82,10 @@ export const KNOWN_PIPELINE_ERROR_CODES = [
   'IngestionNotQueued',
   /** A link project whose link is not one video of YouTube, Vimeo, Twitch or Google Drive when it is fetched (tasks/shared.py · download_from_youtube). Not retried. */
   'UnsupportedLinkError',
-  /** The linked video is longer than the plan (or the app) allows. Not retried. */
+  /** The linked video is longer than the plan allows (another plan would take it). Not retried. */
   'LinkTooLongError',
+  /** The linked video is longer than the app accepts on any plan (AI_UPLOAD_MAX_DURATION_SECONDS, 3 h). Not retried. */
+  'LinkTooLongForAppError',
   /** The linked video's file is larger than LINK_DOWNLOAD_MAX_BYTES. Not retried. */
   'LinkTooLargeError',
 ] as const;
