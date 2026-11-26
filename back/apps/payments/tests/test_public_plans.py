@@ -9,6 +9,7 @@ from django.conf import settings
 from django.core.cache import cache
 from rest_framework.test import APIClient
 
+from apps.core.testing import clear_local_caches
 from apps.payments.models import SubscriptionPlan, Wallet
 from apps.payments.services.plans import (
     PUBLIC_PLANS_CACHE_KEY,
@@ -36,9 +37,10 @@ def plans(seeded_plans):
 
 @pytest.fixture(autouse=True)
 def clean_cache():
-    cache.clear()
+    # Only a LocMem cache: on Redis, clear() is a FLUSHDB (apps/core/testing.py).
+    clear_local_caches()
     yield
-    cache.clear()
+    clear_local_caches()
 
 
 @pytest.fixture

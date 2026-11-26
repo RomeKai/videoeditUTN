@@ -148,6 +148,7 @@ Resumen. Cada documento tiene su tabla completa.
 
 | Situación | Qué pasa | Dónde |
 |-----------|----------|-------|
+| El broker no toma la ingesta al crear | 503 al cliente, proyecto `failed` con `IngestionNotQueued` y la reserva de tokens devuelta | [01](01-creacion-de-proyecto.md) |
 | Error reintentable de proveedor o infraestructura | Backoff exponencial con jitter, hasta `PIPELINE_MAX_RETRIES` (5) | [02](02-pipeline-de-ingesta.md) |
 | Error no reintentable o reintentos agotados | Proyecto `failed` con `pipeline_error_code`. Si no tiene clips, se devuelve la reserva de tokens | [02](02-pipeline-de-ingesta.md) |
 | Moderación bloquea el contenido | `UnsafeContentError`, proyecto `failed` y reembolso. Un `ModerationOverride` lo libera | [03](03-transcripcion-moderacion-seleccion.md) |
@@ -217,7 +218,7 @@ Los interruptores principales. La referencia completa está en [07](07-capacidad
 | [04-prompt-to-edit.md](04-prompt-to-edit.md) | Endpoint `from-prompt`, `PromptParser`, `ConfigValidator`, reintentos y capacidad del parser, `metadata['pte']` |
 | [05-seo-y-publicacion.md](05-seo-y-publicacion.md) | `ScheduledPost`, disparo por señal, `process_video_seo`, moderación de entrada y salida, publicación |
 | [06-render-caras-y-hablante.md](06-render-caras-y-hablante.md) | Render por clip y paper edit, layouts, seguimiento de caras, detección de quién habla, resolución |
-| [07-capacidad-costos-y-operacion.md](07-capacidad-costos-y-operacion.md) | Buckets de capacidad, `AIUsageRecord` y precios, export del piloto, allowlist, chequeo de arranque, configuración completa y logs |
+| [07-capacidad-costos-y-operacion.md](07-capacidad-costos-y-operacion.md) | Buckets de capacidad, `AIUsageRecord` y precios, export del piloto, allowlist, chequeo de arranque, cache compartida, configuración completa y logs |
 
 ## Referencias
 

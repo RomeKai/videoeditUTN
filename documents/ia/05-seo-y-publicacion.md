@@ -129,7 +129,7 @@ sequenceDiagram
     participant D as dispatch_scheduled_posts_batch
     participant DB as PostgreSQL
     participant W as upload_to_social_network
-    participant C as Cache Django
+    participant C as Cache Django (locks)
     participant R2 as Cloudflare R2
     participant AY as Ayrshare
 
@@ -139,7 +139,7 @@ sequenceDiagram
         D->>DB: select_for_update y SCHEDULED a QUEUED
         D->>W: apply_async con eta igual a publish_at
     end
-    W->>C: cache.add del lock lock_post_publish (300 s)
+    W->>C: add del lock lock_post_publish (600 s)
     W->>DB: select_for_update y sale si PUBLISHED
     alt workspace sin ayrshare_profile_key
         W->>DB: FAILED y PostConfigurationError
@@ -161,7 +161,7 @@ sequenceDiagram
 
 1. **Disparo periódico.** El docstring de `dispatch_scheduled_posts_batch` dice que corre cada hora con Celery Beat. En el repo no hay `CELERY_BEAT_SCHEDULE` ni servicio `beat` en `docker-compose.yml`: el schedule se configura fuera de este código.
 2. **Ventana.** Solo toma posts `SCHEDULED` con `publish_at` en `[ahora, ahora + 1 h]`. Cada post se re-lee con `select_for_update` y pasa a `QUEUED` solo si sigue `SCHEDULED`; después se encola `upload_to_social_network` con `eta=publish_at`.
-3. **Lock de publicación.** `cache.add(f"lock_post_publish_{post_id}", ..., 300)` en la caché de Django. Si ya existe, termina con `"Locked"`. Se libera en el `finally`.
+3. **Lock de publicación.** `caches['locks'].add(f"lock_post_publish_{post_id}", ..., AyrshareClient.TIMEOUT_SECONDS[1] + 300)` (600 s) en el alias `locks` de la caché de Django, que con `CACHE_REDIS_URL` es el Redis que comparten todos los workers: ahí `add` es un `SET NX` atómico ([07](07-capacidad-costos-y-operacion.md#cache-compartida)). Si ya existe, termina con `"Locked"`. Ese alias no ignora errores: si Redis no contesta, no publica sin lock. Loguea `publish.lock_unavailable` y reintenta con `self.retry` a 60, 120 y 240 s (`max_retries=3`); al agotarse, el post pasa a `FAILED` con `error_log` `Lock unavailable after N attempts: <clase>`, en vez de quedar `QUEUED` sin tarea (el despachador solo toma `SCHEDULED`). Se libera en el `finally`; si soltarlo falla, `publish.lock_release_failed` y lo libera el TTL.
 4. **Validación.** Un post `PUBLISHED` termina (`"Already Published"`). Sin `workspace.ayrshare_profile_key` el post queda `FAILED` y se levanta `PostConfigurationError` después del commit (no se reintenta).
 5. **Media.** `CloudflareR2Manager.generate_presigned_url(video_clip.s3_object_key, expiration_seconds=3600)`. Ayrshare descarga el video desde esa URL.
 6. **Caption.** Con `generated_caption`, el texto es `compose_caption(generated_caption, generated_hashtags)`: el caption, una línea en blanco y los hashtags con `#` separados por espacio. Los hashtags se guardan sin `#` y lo ganan solo acá. Sin caption generado se usa `project.metadata['caption']` y, si tampoco existe, `Check this out! #Viral #<plataforma>`.
@@ -203,6 +203,7 @@ Todos son estáticos: nunca llevan texto del proveedor, del usuario ni del model
 | Post con `publish_at` ya pasado | Queda fuera de la ventana `[ahora, ahora + 1 h]` y no se despacha. | `dispatch_scheduled_posts_batch` |
 | Workspace sin `ayrshare_profile_key` | `FAILED` con `Error: Ayrshare Profile Key not configured in workspace.` y `PostConfigurationError`, sin reintento. | `upload_to_social_network` |
 | Clip sin `s3_object_key` u otro error inesperado | `FAILED` con `Critical: <mensaje>` y la excepción se relanza. | `upload_to_social_network` |
+| Redis de la cache no contesta al tomar el lock | `publish.lock_unavailable` y reintento a 60, 120 y 240 s. Al agotarse, `FAILED` con `Lock unavailable after N attempts: <clase>`. Nunca publica sin lock. | `upload_to_social_network` |
 | `AyrshareAPIError` | `retry_count` + 1, `error_log` `Retry N: <mensaje>`, reintento a 60, 120 y 240 s (`max_retries=3`). Al agotarse, el post pasa a `FAILED` con `error_log` `Failed after N attempts: <mensaje>` y la excepción se propaga. | `upload_to_social_network` |
 | Ayrshare no responde | `requests.post` usa `timeout=AyrshareClient.TIMEOUT_SECONDS` (10 s para conectar, 300 s para leer). Si no conecta, es `AyrshareAPIError` y se reintenta como arriba. Si conectó pero no contestó a tiempo (`ReadTimeout`), es `AyrshareOutcomeUnknownError`: el post queda `FAILED` sin reintento automático, porque pudo haberse publicado y reintentar lo duplicaría. El lock del post dura el timeout de lectura más 300 s. | `AyrshareClient.send_post`, `upload_to_social_network` |
 
@@ -215,7 +216,7 @@ Todos son estáticos: nunca llevan texto del proveedor, del usuario ni del model
   - `error_log`: códigos de SEO de la tabla anterior; en la publicación, `Ayrshare ID: <id>` al publicar, `Retry N: <mensaje>`, `Critical: <mensaje>` o el texto fijo de la profile key faltante. A diferencia de SEO, la publicación guarda el mensaje de la excepción.
   - `retry_count`: intentos fallidos contra Ayrshare.
 - **`AIUsageRecord`**: una fila por intento con `stage='seo'`, `pipeline_version='v2'` (siempre, aunque el proyecto corra en legacy), `role` `primary` o `fallback`, `attempt` igual al `pipeline_attempts` del proyecto, tokens, costo estimado y `error_code` con la clase del error. Si la llamada falla sin intentos adjuntos, una fila de cero tokens con la latencia medida a nombre de `AI_DEFAULT_LLM_MODEL`. El export del piloto las suma aparte en `seo_records`, `seo_cost_usd` y `seo_cost_complete` ([runbook](../runbooks/ai-core-pilot-runbook.md)).
-- **Redis**: `lock:seo:post:<post_id>` (600 s) y `seo:pending:<post_id>` (JSON de `SocialMetadata`, 3600 s). La caché de Django guarda `lock_post_publish_<post_id>` (300 s).
+- **Redis**: `lock:seo:post:<post_id>` (600 s) y `seo:pending:<post_id>` (JSON de `SocialMetadata`, 3600 s). El alias `locks` de la caché de Django guarda `lock_post_publish_<post_id>` (600 s).
 - **Capacidad**: reserva con `stage='seo'`, liquidada con el uso real o devuelta si la moderación cortó antes del LLM.
 - **Claves de `VideoProject.metadata` que se leen**: `use_seo`, `niche`, `caption`.
 - **Logs** (sin caption, hashtags, título ni transcripción): `seo.dispatched`, `seo.dispatch_failed`, `seo.skipped`, `seo.no_clip_transcript`, `seo.input_blocked`, `seo.output_blocked`, `seo.pending_capacity`, `seo.capacity_timeout`, `seo.completed`, `seo.primary_failed`, `seo.fallback_failed`, `seo.failed`, `seo.regenerate_failed`, `seo.persisted`, `seo.lock_not_owned`, `seo.pending_not_saved`, `seo.pending_not_cleared`.

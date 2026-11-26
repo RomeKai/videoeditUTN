@@ -1,10 +1,44 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
+from django.forms.models import BaseInlineFormSet
 from .models import User, Workspace, WorkspaceMember
+from .seats import check_seat_limit
+
+
+class SeatLimitFormSet(BaseInlineFormSet):
+    """
+    Los lugares del plan (check_seat_limit) al guardar los miembros de un
+    inline, como error del formulario: la señal pre_save solo podría responder
+    con un 500. Cuenta juntas todas las filas nuevas de un mismo workspace y
+    descuenta las que el mismo guardado borra.
+    """
+
+    def clean(self):
+        super().clean()
+        if any(self.errors):
+            return
+        workspaces, new_members, freed = {}, {}, {}
+        for form in self.forms:
+            if not getattr(form, 'cleaned_data', None):
+                continue
+            member = form.instance
+            if member.workspace_id is None:
+                continue
+            key = member.workspace_id
+            workspaces[key] = member.workspace
+            if self.can_delete and self._should_delete_form(form):
+                if not member._state.adding:
+                    freed[key] = freed.get(key, 0) + 1
+            elif member._state.adding:
+                new_members.setdefault(key, []).append(member.user_id)
+        for key, user_ids in new_members.items():
+            check_seat_limit(workspaces[key], user_ids, freed=freed.get(key, 0))
+
 
 # --- INLINE: Ver a qué Workspaces pertenece el usuario ---
 class WorkspaceMemberInline(admin.TabularInline):
     model = WorkspaceMember
+    formset = SeatLimitFormSet
     extra = 0
     fields = ('workspace', 'role', 'status', 'joined_at')
     readonly_fields = ('joined_at',)
@@ -34,6 +68,7 @@ class CustomUserAdmin(UserAdmin):
 # --- NUEVO: Administrar los Workspaces (Agencias) ---
 class WorkspaceMemberWorkspaceInline(admin.TabularInline):
     model = WorkspaceMember
+    formset = SeatLimitFormSet
     extra = 0
 
 @admin.register(Workspace)

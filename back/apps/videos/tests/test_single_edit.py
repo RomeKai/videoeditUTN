@@ -474,7 +474,8 @@ class SingleEditCreationTests(TestCase):
         probed = MediaInfo(duration_s=duration, width=1920, height=1080, mime="video/mp4")
         with tempfile.TemporaryDirectory() as media, override_settings(MEDIA_ROOT=media), \
                 patch("apps.videos.services.media_validation.validate_upload", return_value=probed), \
-                patch("apps.videos.views.process_initial_ingestion.delay") as delay:
+                patch("apps.videos.views.process_initial_ingestion.delay") as delay, \
+                self.captureOnCommitCallbacks(execute=True):  # queued once the reservation commits
             return getattr(self.client, method)(url, body, format=format), delay
 
     def upload(self, duration=100.0, **extra):
