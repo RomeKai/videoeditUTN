@@ -443,6 +443,13 @@ PREVIEW_HEIGHT = env.int('PREVIEW_HEIGHT', default=360)
 PREVIEW_TTL_SECONDS = env.int('PREVIEW_TTL_SECONDS', default=3600)
 PREVIEW_MAX_ACTIVE_PER_WORKSPACE = env.int('PREVIEW_MAX_ACTIVE_PER_WORKSPACE', default=3)
 CELERY_BEAT_SCHEDULE = {
+    # DIST-03: SCHEDULED posts due in the next hour (or already overdue) go to the
+    # worker with their publish time as ETA. Needs one beat process (docker-compose
+    # `beat`); the task is idempotent, so a second one cannot publish twice.
+    'dispatch-scheduled-posts': {
+        'task': 'apps.videos.tasks.dispatch_scheduled_posts_batch',
+        'schedule': 5 * 60,
+    },
     'cleanup-expired-previews': {
         'task': 'apps.videos.tasks.cleanup_expired_previews',
         'schedule': 15 * 60,
