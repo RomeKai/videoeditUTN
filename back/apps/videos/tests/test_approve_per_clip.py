@@ -25,7 +25,7 @@ from unittest.mock import MagicMock, patch
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
-from django.db import connection
+from django.db import IntegrityError, connection
 from django.db.models.signals import pre_delete
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -804,6 +804,48 @@ class ApprovalCommitTests(ApprovalHarness, APITransactionTestCase):
         self.assertFalse(VideoClip.objects.filter(pk=left_out.pk).exists())
         self.assertFalse(ClipPreview.objects.filter(pk=preview.pk).exists())
         self.assertFalse(os.path.exists(uploaded))  # never orphaned in storage
+
+
+    def test_a_post_created_while_the_approval_deletes_its_draft_is_never_deleted_silently(self):
+        # The admin saves a post on a draft right after the approval checked
+        # that the draft had none (it keeps the ones that do). The approval
+        # holds the row lock of the draft, so the insert waits for its commit
+        # and is then refused: the clip is gone. Never saved and then cascaded.
+        left_out = self.suggested[2]
+        outcome = {}
+
+        def create_post():
+            try:
+                ScheduledPost.objects.create(
+                    video_clip_id=left_out.pk, platform=ScheduledPost.Platform.TIKTOK,
+                    publish_at=timezone.now() + timedelta(days=1),
+                )
+                outcome["created"] = True
+            except IntegrityError:
+                outcome["refused"] = True
+            finally:
+                connection.close()
+
+        admin = threading.Thread(target=create_post)
+
+        def create_while_the_clip_is_deleted(sender, instance, **kwargs):
+            admin.start()
+            admin.join(timeout=1)
+            outcome["waited"] = admin.is_alive()
+
+        pre_delete.connect(create_while_the_clip_is_deleted, sender=VideoClip, dispatch_uid="post-race")
+        self.addCleanup(pre_delete.disconnect, sender=VideoClip, dispatch_uid="post-race")
+        response = self.post_approval([
+            {"start": 0, "end": 5, "clip_id": str(self.suggested[0].id)},
+            {"start": 10, "end": 15, "clip_id": str(self.suggested[1].id)},
+        ])
+        admin.join(10)
+
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        self.assertFalse(admin.is_alive())
+        self.assertEqual(outcome, {"waited": True, "refused": True})
+        self.assertFalse(VideoClip.objects.filter(pk=left_out.pk).exists())
+        self.assertFalse(ScheduledPost.objects.filter(video_clip_id=left_out.pk).exists())
 
 
 class StuckApprovedClipsRecoveryTests(CapturedTaskFailures, ApprovalHarness, APITestCase):
