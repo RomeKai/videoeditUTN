@@ -4,13 +4,14 @@ from .gaming import GamingLayout
 from .pro import VersusLayout, ActiveSpeakerLayout
 from .reaction import ReactionLayout
 from .cinematic import CinematicLayout
+from .pip import PipLayout
 
 LAYOUT_REGISTRY = {
     'fill': FillLayout,
     'fit': FitLayout,
     'blurred': BlurredLayout,
     'split': GamingLayout,
-    'pip': FitLayout, 
+    'pip': PipLayout,
     'versus': VersusLayout,
     'active': ActiveSpeakerLayout,
     'reaction': ReactionLayout,

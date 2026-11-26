@@ -127,3 +127,58 @@ def test_static_cinematic_never_tracks(synthetic_clip, monkeypatch):
     layout = CinematicLayout(640, 360, use_facetracking=True, static=True)
     monkeypatch.setattr(layout, "_face_path", lambda clip: pytest.fail("static no sigue caras"))
     layout.apply(synthetic_clip)
+
+
+# --- pip ---------------------------------------------------------------------
+
+
+def test_pip_is_no_longer_the_fit_placeholder():
+    from apps.videos.services.layouts import LAYOUT_REGISTRY, FitLayout, PipLayout
+
+    assert LAYOUT_REGISTRY["pip"] is PipLayout
+    assert not issubclass(PipLayout, FitLayout)
+
+
+@pytest.mark.parametrize("target_w, target_h, expected", [
+    (360, 640, (196, 474, 150, 152)),  # 9:16: 42 % del ancho, 24 % del alto
+    (360, 360, (196, 202, 150, 144)),  # 1:1: 40 % del alto
+    (640, 360, (346, 190, 268, 144)),  # 16:9
+])
+def test_pip_inset_sits_bottom_right_with_even_size(target_w, target_h, expected):
+    from apps.videos.services.layouts.pip import pip_inset_box
+
+    box = pip_inset_box(target_w, target_h)
+    assert tuple(box) == expected
+    assert box.w % 2 == 0 and box.h % 2 == 0
+    assert box.x1 + box.w <= target_w and box.y1 + box.h <= target_h
+
+
+@pytest.mark.parametrize("corner", ["bottom-right", "bottom-left", "top-right", "top-left"])
+def test_pip_inset_corners_stay_inside_the_frame(corner):
+    from apps.videos.services.layouts.pip import pip_inset_box
+
+    box = pip_inset_box(360, 640, corner)
+    assert box.x1 >= 0 and box.y1 >= 0
+    assert box.x1 + box.w <= 360 and box.y1 + box.h <= 640
+    assert (box.x1 < 180) == corner.endswith("left")
+    assert (box.y1 < 320) == corner.startswith("top")
+
+
+def test_unknown_corner_falls_back_to_bottom_right():
+    from apps.videos.services.layouts.pip import pip_inset_box
+
+    assert pip_inset_box(360, 640, "middle") == pip_inset_box(360, 640)
+
+
+@pytest.mark.parametrize("target_w, target_h", TARGETS)
+def test_pip_fills_the_frame_and_insets_the_camera(target_w, target_h, synthetic_clip):
+    from apps.videos.services.layouts.pip import pip_inset_box
+
+    result = get_layout_strategy("pip", target_w, target_h).apply(synthetic_clip)
+
+    bg, cam = result.clips
+    inset = pip_inset_box(target_w, target_h)
+    assert tuple(bg.size) == (target_w, target_h)  # sin bandas negras
+    assert tuple(cam.size) == (inset.w, inset.h)
+    assert cam.pos(0) == (inset.x1, inset.y1)
+    assert result.get_frame(0.5).min(axis=2).max() > 0
