@@ -156,7 +156,7 @@ Inicia sesión con email y contraseña; devuelve el par JWT.
 |---|---|
 | Id | `auth.login` |
 | Backend | ✅ existe · `back/apps/users/views.py · LoginView (TokenObtainPairView de SimpleJWT, USERNAME_FIELD = email)` |
-| Nota | El 429 sale de dos límites: 10 por minuto por IP y 20 por hora por email; `detail` dice en castellano cuántos segundos esperar. Hoy no distingue la cuenta sin verificar (falta el 403 propuesto, hueco 1). |
+| Nota | El 429 sale de 10 pedidos por minuto por IP, o de los intentos fallidos de la cuenta: 10 cada 15 minutos desde la misma IP y 100 por hora en total. Un login correcto los reinicia. `detail` dice en castellano cuánto esperar. Hoy no distingue la cuenta sin verificar (falta el 403 propuesto, hueco 1). |
 | Sesión | Pública |
 | Pedido | LoginRequest |
 | Respuesta 200 | TokenPair |

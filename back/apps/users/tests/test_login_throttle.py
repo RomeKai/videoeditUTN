@@ -1,8 +1,11 @@
 """Attempt limits of the login (/api/token/) and of the token refresh."""
 import re
+from unittest import mock
 
 import pytest
+from django.test import override_settings
 from rest_framework.test import APIClient
+from rest_framework.throttling import ScopedRateThrottle
 
 pytestmark = pytest.mark.django_db
 
@@ -48,14 +51,53 @@ def test_a_forged_x_forwarded_for_does_not_escape_the_ip_limit(user):
     assert codes == [401] * 10 + [429]
 
 
-def test_the_login_is_limited_per_account_from_any_ip(user):
-    answers = [_login(_from(f"10.0.1.{n}")).status_code for n in range(20)]
-    blocked = _login(_from("10.0.2.1"), email="Tester@Test.com ", password="password")
+@pytest.fixture
+def no_ip_limit():
+    """The per-IP limit (10/min) out of the way, to look at the per-account one."""
+    with mock.patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"login": "1000/min"}):
+        yield
 
-    assert answers == [401] * 20
+
+def test_successful_logins_never_lock_the_account(user):
+    answers = [_login(_from(f"10.0.1.{n}"), password="password").status_code for n in range(25)]
+
+    assert answers == [200] * 25
+
+
+def test_failures_from_one_ip_lock_the_account_only_there(user, no_ip_limit):
+    attacker = _from("10.0.4.1")
+
+    failures = [_login(attacker).status_code for _ in range(10)]
+    blocked = _login(attacker, password="password")
+
+    assert failures == [401] * 10
     assert blocked.status_code == 429
-    # Other accounts are not affected.
-    assert _login(_from("10.0.2.2"), email="otra@test.com").status_code == 401
+    assert "15 minutos" in blocked.json()["detail"]
+    # The owner, somewhere else, still signs in.
+    assert _login(_from("10.0.4.2"), password="password").status_code == 200
+    # Other accounts from the attacker's address are not affected.
+    assert _login(attacker, email="otra@test.com").status_code == 401
+
+
+def test_a_successful_login_clears_the_failures(user, no_ip_limit):
+    api = _from("10.0.5.1")
+
+    first = [_login(api).status_code for _ in range(9)]
+    assert _login(api, password="password").status_code == 200
+    second = [_login(api).status_code for _ in range(9)]
+
+    assert first == second == [401] * 9
+    assert _login(api, password="password").status_code == 200
+
+
+@override_settings(LOGIN_FAILURE_RATES={"account_ip": "10/15m", "account": "5/h"})
+def test_failures_spread_over_many_ips_lock_the_account_everywhere(user):
+    failures = [_login(_from(f"10.0.6.{n}")).status_code for n in range(5)]
+    blocked = _login(_from("10.0.7.1"), password="password")
+
+    assert failures == [401] * 5
+    assert blocked.status_code == 429
+    assert "60 minutos" in blocked.json()["detail"]
 
 
 def test_the_token_refresh_is_limited_per_ip():

@@ -148,10 +148,9 @@ REST_FRAMEWORK = {
     # drf-spectacular's AutoSchema, plus the X-Workspace-Id header on scoped views.
     'DEFAULT_SCHEMA_CLASS': 'apps.core.schema.WorkspaceAutoSchema',
     # Attempt limits of the endpoints that check a password (apps.users.throttles):
-    # per user when signed in, per IP (or per email, login_email) otherwise.
+    # per user when signed in, per IP otherwise.
     'DEFAULT_THROTTLE_RATES': {
         'login': env('THROTTLE_LOGIN', default='10/min'),
-        'login_email': env('THROTTLE_LOGIN_EMAIL', default='20/hour'),
         'token_refresh': env('THROTTLE_TOKEN_REFRESH', default='30/min'),
         'password_change': env('THROTTLE_PASSWORD_CHANGE', default='5/hour'),
         # PATCH /me with a new email: checks the password and sends an email.
@@ -163,6 +162,16 @@ REST_FRAMEWORK = {
     # never trusted. DRF's own default (None) trusts the whole header, which
     # any client can forge; prod.py requires the variable.
     'NUM_PROXIES': env.int('NUM_PROXIES', default=0),
+}
+
+# Failed logins of one account (apps.users.throttles.LoginFailureGuard): only
+# failures count and a successful login clears them. "<count>/<window>", the
+# window with an optional count in front ("10/15m" = 10 every 15 minutes).
+LOGIN_FAILURE_RATES = {
+    # From one IP.
+    'account_ip': env('LOGIN_FAILURES_PER_ACCOUNT_IP', default='10/15m'),
+    # From any IP, so spreading the guesses over many addresses does not help.
+    'account': env('LOGIN_FAILURES_PER_ACCOUNT', default='100/h'),
 }
 
 # --- AI CONFIG & FEATURE FLAGS ---

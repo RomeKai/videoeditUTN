@@ -2,7 +2,7 @@
 
 from django.db import IntegrityError, transaction
 from django.db.models import Exists, OuterRef
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import AuthenticationFailed, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -24,7 +24,7 @@ from apps.users.serializers import (
     VerifyEmailSerializer,
 )
 from apps.users.email_verification import EMAIL_CHANGE, send_email_change_verification, user_for_token
-from apps.users.throttles import EmailChangeThrottle, LoginEmailThrottle, SpanishThrottleMixin
+from apps.users.throttles import EmailChangeThrottle, LoginFailureGuard, SpanishThrottleMixin, TooManyAttempts
 from apps.users.tokens import RevocableTokenRefreshSerializer, issue_token_pair
 
 
@@ -187,10 +187,29 @@ class MeView(SpanishThrottleMixin, APIView):
     429: THROTTLED,
 })
 class LoginView(SpanishThrottleMixin, TokenObtainPairView):
-    """POST /api/token/ (SimpleJWT) with attempt limits: per IP and per account email."""
+    """
+    POST /api/token/ (SimpleJWT) with attempt limits: every request per IP
+    (ScopedRateThrottle), and the failed ones per account (LoginFailureGuard).
+    """
 
-    throttle_classes = [ScopedRateThrottle, LoginEmailThrottle]
+    throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'login'
+
+    def post(self, request, *args, **kwargs):
+        guard = LoginFailureGuard.for_request(request)
+        if guard is not None:
+            wait = guard.wait()
+            if wait:
+                raise TooManyAttempts(wait)
+        try:
+            response = super().post(request, *args, **kwargs)
+        except AuthenticationFailed:
+            if guard is not None:
+                guard.record_failure()
+            raise
+        if guard is not None:
+            guard.clear()
+        return response
 
 
 @extend_schema(responses={

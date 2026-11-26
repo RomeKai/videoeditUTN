@@ -6,11 +6,14 @@ Without them a password can be guessed as fast as the server answers. The
 rates are in REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'] and are counted in the
 default cache: per user when signed in, per IP otherwise.
 """
-import hashlib
 import math
+import time
 
+from django.conf import settings
+from django.core.cache import cache
+from django.utils.crypto import salted_hmac
 from rest_framework.exceptions import Throttled
-from rest_framework.throttling import ScopedRateThrottle, SimpleRateThrottle
+from rest_framework.throttling import BaseThrottle, ScopedRateThrottle
 
 
 class TooManyAttempts(Throttled):
@@ -54,19 +57,75 @@ class EmailChangeThrottle(ScopedRateThrottle):
         return super().allow_request(request, view)
 
 
-class LoginEmailThrottle(SimpleRateThrottle):
+RATE_UNITS = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
+
+
+def parse_rate(rate):
     """
-    Login attempts per account (the email of the request), on top of the limit
-    per IP: guessing one account's password from many addresses is limited too.
-    The cache key carries a hash of the email, not the email.
+    `"10/15m"` → `(10, 900)`: requests per window. The window is a unit
+    (s, m, h, d) with an optional count in front; `"100/h"` is one hour.
+    Raises ValueError for anything else.
+    """
+    try:
+        number, window = rate.split('/')
+        count = int(number)
+        size = int(window[:-1] or 1)
+        unit = RATE_UNITS[window[-1]]
+    except (AttributeError, ValueError, KeyError, IndexError):
+        raise ValueError(f'Invalid rate {rate!r}: use "<count>/<window>", like "10/15m" or "100/h".')
+    if count < 1 or size < 1:
+        raise ValueError(f'Invalid rate {rate!r}: the count and the window must be positive.')
+    return count, size * unit
+
+
+class LoginFailureGuard:
+    """
+    Failed logins of one account (the email of the request). Only failures
+    count, and a successful login clears them, so nobody can lock a user out
+    with requests that succeed, nor with fewer failures than the limits:
+
+    - from one IP: LOGIN_FAILURE_RATES['account_ip'] (10 every 15 minutes);
+    - from any IP: LOGIN_FAILURE_RATES['account'] (100 an hour), so spreading
+      the guesses over many addresses does not help either.
+
+    The keys are an HMAC of the email (and the IP), never the email.
     """
 
-    scope = 'login_email'
+    SALT = 'apps.users.throttles.login'
 
-    def get_cache_key(self, request, view):
+    def __init__(self, request, email):
+        account = email.strip().lower()
+        ip = BaseThrottle().get_ident(request) or ''
+        rates = settings.LOGIN_FAILURE_RATES
+        self.windows = [
+            (f'login_failures:{salted_hmac(self.SALT, f"{account}|{ip}").hexdigest()}', parse_rate(rates['account_ip'])),
+            (f'login_failures:{salted_hmac(self.SALT, account).hexdigest()}', parse_rate(rates['account'])),
+        ]
+
+    @classmethod
+    def for_request(cls, request):
         data = request.data
         email = data.get('email') if hasattr(data, 'get') else None
-        if not isinstance(email, str) or not email.strip():
-            return None
-        digest = hashlib.sha256(email.strip().lower().encode()).hexdigest()
-        return self.cache_format % {'scope': self.scope, 'ident': digest}
+        return cls(request, email) if isinstance(email, str) and email.strip() else None
+
+    @staticmethod
+    def _recent(key, duration, now):
+        return [moment for moment in cache.get(key, []) if moment > now - duration]
+
+    def wait(self):
+        """Seconds until the next attempt is allowed, or 0."""
+        now = time.time()
+        waits = []
+        for key, (count, duration) in self.windows:
+            recent = self._recent(key, duration, now)
+            if len(recent) >= count:
+                waits.append(duration - (now - recent[-count]))
+        return max(waits, default=0)
+
+    def record_failure(self):
+        now = time.time()
+        for key, (count, duration) in self.windows:
+            cache.set(key, [*self._recent(key, duration, now), now][-count:], duration)
+
+    def clear(self):
+        cache.delete_many([key for key, _ in self.windows])
