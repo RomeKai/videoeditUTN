@@ -861,22 +861,22 @@ Generar un preview de baja resolución (360p, sin subtítulos complejos) antes d
 
 ---
 
-### PAY-03: Endpoint de Planes Públicos `P0` 🟡 `partial`
+### PAY-03: Endpoint de Planes Públicos `P0` 🟢 `exists`
 
 **Descripción:**
-El modelo `SubscriptionPlan` existe completo. Falta un endpoint público que liste los planes.
+El modelo `SubscriptionPlan` existe completo. El endpoint público `GET /api/v1/plans/` lista los planes activos (cache de 1 h, invalidada al editar un plan) y los cuatro planes se siembran en la migración `payments/0005`.
 
 **Criterios de Aceptación:**
 
-* \[ ] `GET /api/v1/plans/` (público, sin auth) devuelve planes con pricing y features.
-* \[ ] Incluye: `name`, `max\_video\_duration\_seconds`, `max\_resolution`, features flags, `base\_discount\_rate`.
-* [ ] Solo planes con `is_active=True`.
+* \[x] `GET /api/v1/plans/` (público, sin auth) devuelve planes con pricing y features.
+* \[x] Incluye: `name`, `max\_video\_duration\_seconds`, `max\_resolution`, features flags, `base\_discount\_rate`.
+* [x] Solo planes con `is_active=True`.
 
 **Definition of Done:**
-- [ ] Criterios de aceptación cumplidos
-- [ ] Endpoint accesible sin autenticación (público)
-- [ ] Response cacheada (1h TTL) para evitar queries innecesarias
-- [ ] Schema documentado en Spectacular/Swagger
+- [x] Criterios de aceptación cumplidos
+- [x] Endpoint accesible sin autenticación (público)
+- [x] Response cacheada (1h TTL) para evitar queries innecesarias
+- [x] Schema documentado en Spectacular/Swagger
 
 **Riesgos:**
 - 🟢 Riesgo mínimo — es un endpoint de lectura simple
@@ -1233,7 +1233,7 @@ Para agencias o creadores con flujos automatizados. Si un video entra por webhoo
 |-|-|-|-|
 |PAY-01|Watermark Injection en Render|`P0`|🟡 `partial`|
 |PAY-02|Stripe Checkout — Compra de Tokens|`P1`|🔴 `missing`|
-|PAY-03|Endpoint de Planes Públicos|`P0`|🟡 `partial`|
+|PAY-03|Endpoint de Planes Públicos|`P0`|🟢 `exists`|
 |DIST-01|Social Auth — OAuth Flows|`P0`|🔴 `missing`|
 |DIST-02|Publishing Engine — Multi-plataforma|`P0`|🔴 `missing`|
 |DIST-03|Scheduling Engine — Celery Beat + Calendar|`P0`|🟡 `partial`|

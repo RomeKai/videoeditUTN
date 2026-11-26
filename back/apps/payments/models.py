@@ -38,8 +38,23 @@ class SubscriptionPlan(models.Model):
     )
     
     max_members = models.IntegerField(default=1, verbose_name=_("Max Members"))
+
+    # Public pricing page (PAY-03)
+    price_usd_monthly = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        default=0,
+        verbose_name=_("Monthly Price (USD)")
+    )
+    description = models.CharField(max_length=200, blank=True, default='', verbose_name=_("Description"))
+    sort_order = models.IntegerField(default=0, verbose_name=_("Sort Order"))
+    is_recommended = models.BooleanField(default=False, verbose_name=_("Recommended"))
+
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['sort_order', 'name']
 
     def __str__(self):
         return self.name

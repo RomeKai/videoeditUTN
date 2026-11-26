@@ -26,6 +26,7 @@ PROMPT = "vertical con fondo borroso, en 4K, cortá los momentos de humor"
 
 
 def plan(name, **limits):
+    SubscriptionPlan.objects.filter(name=name).delete()  # the seeded plans (payments 0005) share these names
     created = SubscriptionPlan.objects.create(name=name, **limits)
     return SubscriptionPlan.objects.get(pk=created.pk)  # Decimal fields, as in production
 
