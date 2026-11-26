@@ -15,6 +15,7 @@ const stored = () => JSON.parse(window.localStorage.getItem(ROUTE_OVERRIDES_KEY)
 // An explicit list: these tests do not depend on which endpoints the contract marks as existing today.
 beforeEach(() => forceRouting({ mode: 'hybrid', real: 'projects.list,projects.detail,brandkits' }));
 
+const total = (domain: string) => CONTRACT.find((group) => group.domain === domain)?.endpoints.length ?? 0;
 const existing = (domain: string) => CONTRACT.find((group) => group.domain === domain)?.endpoints.filter((endpoint) => endpoint.backend.status !== 'proposed').length ?? 0;
 afterEach(() => {
   forceRouting(null);
@@ -29,7 +30,7 @@ describe('panel de origen por dominio (modo híbrido)', () => {
     expect(row('Acceso')).toHaveAttribute('data-route', 'real');
     expect(within(row('Acceso')).getByText('Real', { selector: 'span' })).toBeInTheDocument();
     expect(row('Planes, billetera, movimientos, compras y precios')).toHaveAttribute('data-route', 'mock');
-    expect(within(row('Planes, billetera, movimientos, compras y precios')).getByText('0 de 12 endpoints van al backend.')).toBeInTheDocument();
+    expect(within(row('Planes, billetera, movimientos, compras y precios')).getByText(`0 de ${total('billing')} endpoints van al backend.`)).toBeInTheDocument();
     expect(row('Proyectos')).toHaveAttribute('data-route', 'mixed');
     expect(within(row('Proyectos')).getByText('Mixto')).toBeInTheDocument();
     expect(within(row('Proyectos')).getByText(/2 de 13 endpoints van al backend/)).toBeInTheDocument();

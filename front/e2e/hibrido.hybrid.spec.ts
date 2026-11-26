@@ -2,9 +2,9 @@ import { expect, test, type APIRequestContext, type Page, type Response } from '
 import { expectClean, HYBRID_API_URL, HYBRID_REAL, settle, watch } from './helpers';
 
 /**
- * Hybrid build (`NEXT_PUBLIC_API_MODE=hybrid`) against a real Django backend: the login, the projects
- * and the brand kits come from it, while billing (and everything the contract marks as proposed) is
- * mocked in the browser.
+ * Hybrid build (`NEXT_PUBLIC_API_MODE=hybrid`) against a real Django backend: the login, the projects,
+ * the brand kits and billing come from it, while everything the contract marks as proposed is mocked
+ * in the browser.
  *
  * It needs a backend, so it is skipped unless `E2E_HYBRID_API_URL` says where one is, with a user that
  * owns a workspace with at least one project and one brand kit: `E2E_HYBRID_EMAIL` and `E2E_HYBRID_PASSWORD`. See "Modo híbrido" in the README.
@@ -109,13 +109,12 @@ test.describe('Modo híbrido contra el backend real', () => {
     for (const kit of kits.slice(0, 3)) await expect(page.getByRole('article', { name: `Brand kit ${kit.name}` })).toBeVisible();
     await expect(page.getByRole('article', { name: /^Brand kit / })).toHaveCount(kits.length);
 
-    // Billing is mocked: the seeded wallet of the placeholder workspace.
+    // Billing: the wallet and the subscription are the backend's too.
     await page.goto('/uso');
     await settle(page);
-    expect(answersOf(seen, 'GET', '/api/v1/wallet/').at(-1)).toMatchObject({ status: 200, mock: 'billing.wallet' });
-    expect(answersOf(seen, 'GET', '/api/v1/subscription/').at(-1)).toMatchObject({ mock: 'billing.subscription' });
+    expect(answersOf(seen, 'GET', '/api/v1/wallet/').at(-1)).toMatchObject({ status: 200, mock: null });
+    expect(answersOf(seen, 'GET', '/api/v1/subscription/').at(-1)).toMatchObject({ status: 200, mock: null });
     await expect(page.getByText('Saldo disponible')).toBeVisible();
-    await expect(page.getByText('4.860').first()).toBeVisible();
 
     // With the bridge, a workspace cannot be created: it would exist only in the mocks.
     await page.getByRole('button', { name: /Cambiar de workspace/ }).click();
@@ -184,7 +183,7 @@ test.describe('Modo híbrido contra el backend real', () => {
     await expect(domain('auth')).toHaveAttribute('data-route', 'real');
     await expect(domain('auth').getByRole('button', { name: 'Mock' })).toBeDisabled();
     // Which endpoints exist is the contract's business: here only that nothing but auth is forced.
-    await expect(domain('billing')).not.toHaveAttribute('data-route', 'real');
+    await expect(domain('notifications')).not.toHaveAttribute('data-route', 'real');
     await expect(domain('projects')).toHaveAttribute('data-route', /real|mixed/);
     await expect(domain('brandKits')).toHaveAttribute('data-route', /real|mixed/);
     // Scenarios about the mocked session are off, with the reason.

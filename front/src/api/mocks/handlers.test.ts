@@ -386,6 +386,36 @@ describe('mocks', () => {
     expect((await apiCall(billing.getTokenPurchase, { params: { id: rejected.id } })).status).toBe('rejected');
   });
 
+  it('el checkout de prueba con billing en el backend: simulate liquida en el momento y una vez', async () => {
+    const purchase = await apiCall(billing.createTokenPurchase, { body: { custom_tokens: 2500, return_url: 'http://localhost:3000/uso/comprar/resultado' } });
+    expect(purchase.plan_id).toBeNull();
+    const approved = await apiCall(billing.simulatePurchase, { params: { id: purchase.id }, body: { approved: true } });
+    expect(approved).toMatchObject({ status: 'approved', checkout_url: null, balance_after: 4860 + 2500 });
+    // Settled already: answered as it is, nothing credited twice.
+    expect((await apiCall(billing.simulatePurchase, { params: { id: purchase.id }, body: { approved: false } })).status).toBe('approved');
+    expect((await apiCall(billing.getWallet)).available_balance).toBe(4860 + 2500);
+    expect((await fail(apiCall(billing.createTokenPurchase, { body: { custom_tokens: 1_000_001, return_url: 'http://localhost:3000/uso/comprar/resultado' } }))).fieldErrors.custom_tokens).toEqual(['El máximo es 1.000.000 tokens por compra.']);
+  });
+
+  it('planes: bajar sin período pagado se aplica al momento; la misma subida con pago reusa su checkout', async () => {
+    const plans = await apiCall(billing.listPlans);
+    const plan = (name: string) => plans.find((item) => item.name === name)?.id ?? '';
+    const db = loadDb();
+    const workspace = db.workspaces.find((item) => item.id === WORKSPACE_IDS.estudio);
+    if (!workspace) throw new Error('falta el workspace');
+    workspace.renews_at = null;
+    saveDb(db);
+    const down = await apiCall(billing.changePlan, { body: { plan_id: plan('Creador') } });
+    expect(down.applied).toBe('now');
+    expect(down.subscription.plan.name).toBe('Creador');
+
+    signIn('plan-con-checkout');
+    const first = await apiCall(billing.changePlan, { body: { plan_id: plan('Estudio'), return_url: 'http://localhost:3000/uso/planes' } });
+    const again = await apiCall(billing.changePlan, { body: { plan_id: plan('Estudio'), return_url: 'http://localhost:3000/uso/planes' } });
+    expect(again.checkout_url).toBe(first.checkout_url);
+    expect(loadDb().purchases.filter((item) => item.plan_id && item.status === 'pending')).toHaveLength(1);
+  });
+
   it('la sesión: login, credenciales incorrectas, email sin verificar y sesión vencida', async () => {
     signIn('sin-sesion', null);
     expect((await fail(apiCall(auth.login, { body: { email: 'lucia@estudionorte.com', password: 'incorrecta' } }))).status).toBe(401);

@@ -4,7 +4,21 @@ import { approveErrorKind, errorMessage, fieldError, pipelineErrorMessage, planL
 import { describeProjectStatus } from '@/lib/project-status';
 import { ApiError } from '../errors';
 import { TokenPair, refreshToken } from './auth';
-import { estimateCost, exportTransactions, getPricing, getUsage, getWallet, listTransactions } from './billing';
+import {
+  Payment,
+  Subscription,
+  TokenPackages,
+  changePlan,
+  createTokenPurchase,
+  estimateCost,
+  exportTransactions,
+  getPricing,
+  getTokenPurchase,
+  getUsage,
+  getWallet,
+  listTransactions,
+  simulatePurchase,
+} from './billing';
 import { BrandKit, listBrandKits } from './brandkits';
 import { ClipPreview } from './clips';
 import real from './drf/responses.json';
@@ -165,5 +179,50 @@ describe('errores reales del backend', () => {
     expect(error('preview_404').isNotFound).toBe(true);
     expect(errorMessage(error('preview_429'))).toBe('Ya hay vistas previas en proceso en este espacio. Probá en unos segundos.');
     expect(errorMessage(error('preview_409'))).toMatch(/no tiene vista previa/);
+  });
+});
+
+describe('suscripción y compras: respuestas reales del backend (billing_*)', () => {
+  it('suscripción y cambio de plan', () => {
+    const free = parse(Subscription, real.billing_subscription_free) as Subscription;
+    expect(free.plan.name).toBe('Gratis');
+    expect(free.renews_at).toBeNull();
+    const checkout = parse(changePlan.response, real.billing_change_plan_checkout) as ReturnType<typeof changePlan.response.parse>;
+    expect(checkout.checkout_url).toMatch(/\/dev\/checkout\?compra=.+&volver=/);
+    const scheduled = parse(changePlan.response, real.billing_change_plan_period_end) as ReturnType<typeof changePlan.response.parse>;
+    expect(scheduled.applied).toBe('period_end');
+    expect(scheduled.subscription.pending_plan?.name).toBe('Creador');
+    expect(scheduled.subscription.pending_plan?.effective_at).toBe(scheduled.subscription.renews_at);
+    const canceled = parse(changePlan.response, real.billing_change_plan_cancel) as ReturnType<typeof changePlan.response.parse>;
+    expect(canceled.subscription.pending_plan).toBeNull();
+  });
+
+  it('paquetes, compras y pagos de plan', () => {
+    const packages = parse(TokenPackages, real.billing_token_packages) as TokenPackages;
+    expect(packages.packages.map((item) => item.price_usd)).toEqual([10, 45, 120]);
+    expect(packages.usd_to_local_rate).toBe(1450);
+    const pending = parse(createTokenPurchase.response, real.billing_token_purchase_pending) as ReturnType<typeof createTokenPurchase.response.parse>;
+    expect(pending.status).toBe('pending');
+    const approved = parse(simulatePurchase.response, real.billing_token_purchase_approved) as ReturnType<typeof Payment.parse>;
+    expect(approved).toMatchObject({ status: 'approved', checkout_url: null, balance_after: 1000 });
+    const rejected = parse(getTokenPurchase.response, real.billing_token_purchase_rejected) as ReturnType<typeof Payment.parse>;
+    expect(rejected.failure_reason).toMatch(/rechazó/);
+    const planPayment = parse(Payment, real.billing_plan_payment_pending) as ReturnType<typeof Payment.parse>;
+    expect(planPayment.tokens).toBe(0);
+    expect(planPayment.plan_id).toBeTruthy();
+    parse(Payment, real.billing_plan_payment_approved);
+  });
+
+  it('errores: lugares, plan actual, rol y pagos sin proveedor', () => {
+    const seats = error('billing_change_plan_409_seats', 'billing.changePlan');
+    expect(seats.isConflict).toBe(true);
+    expect(seats.code).toBe('seats_exceeded');
+    expect(errorMessage(seats)).toBe('Ocupás 4 lugares y el plan Gratis tiene 2. Quitá miembros o invitaciones antes de bajar.');
+    expect(fieldError(error('billing_change_plan_400_current'), 'plan_id')).toBe('Ya es tu plan actual.');
+    expect(errorMessage(error('billing_change_plan_403_role'))).toBe('Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin.');
+    expect(fieldError(error('billing_purchase_400_min'), 'custom_tokens')).toBe('El mínimo es 100 tokens.');
+    const unavailable = error('billing_purchase_501_no_provider', 'billing.createPurchase');
+    expect(unavailable.code).toBe('payments_unavailable');
+    expect(errorMessage(unavailable, 'No pudimos iniciar la compra')).toBe('Los pagos todavía no están habilitados.');
   });
 });

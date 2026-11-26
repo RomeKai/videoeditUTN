@@ -283,8 +283,12 @@ export const getSubscription = defineEndpoint({
   path: '/api/v1/subscription/',
   summary: 'Plan actual del workspace, su renovación y el cambio pendiente si lo hay.',
   response: Subscription,
-  errors: [],
-  backend: { status: 'proposed', gap: 12, note: 'Hoy solo existe Workspace.subscription_plan.' },
+  errors: [{ status: 404, when: 'El workspace no tiene plan y tampoco existe el plan por defecto (`DEFAULT_PLAN_NAME`).' }],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views_subscription.py · SubscriptionView + SubscriptionSerializer (apps/payments/serializers_billing.py)',
+    note: 'Todos los roles. `status` es siempre `active`: todavía nada cobra la renovación (PAY-02), así que nada vence. `renews_at` es el fin del período pagado con el checkout (un mes desde que se confirmó el pago de la subida); es null en un plan gratis, en uno asignado en el admin, en uno al que se llegó bajando y cuando el período ya terminó. Un workspace sin plan muestra el plan por defecto.',
+  },
   screens: ['Barra', 'G1', 'G3', 'C1', 'E1', 'H2'],
 });
 
@@ -309,17 +313,20 @@ export const changePlan = defineEndpoint({
     subscription: Subscription,
   }),
   errors: [
-    { status: 400, when: 'Ya es el plan actual y no hay ningún cambio programado para cancelar.' },
+    { status: 400, when: 'Ya es el plan actual y no hay ningún cambio programado para cancelar (`{ plan_id: ["Ya es tu plan actual."] }`), o `return_url` no es una página de la app.' },
     { status: 403, when: 'El rol no puede cambiar el plan (solo Dueño y Admin).' },
+    { status: 404, when: 'El plan no existe, está inactivo o no es público (`{ detail: "El plan no existe." }`).' },
     {
       status: 409,
-      when: 'Bajar a un plan con menos lugares que los que el workspace ocupa hoy, contando invitaciones pendientes (`code: "seats_exceeded"`). No se programa nada: primero hay que quitar miembros. Es un 409 porque lo impide el estado del workspace; el mismo código en `workspaces.invite` es un 403 de límite de plan, que se resuelve subiendo de plan.',
+      when: 'Cambiar a un plan con menos lugares que los que el workspace ocupa hoy, contando invitaciones pendientes (`code: "seats_exceeded"`, con `seats_used` y `max_members`). No se programa nada: primero hay que quitar miembros. Es un 409 porque lo impide el estado del workspace; el mismo código en `workspaces.invite` es un 403 de límite de plan, que se resuelve subiendo de plan.',
     },
+    { status: 501, when: 'Subir a un plan con precio sin proveedor de pagos configurado (`code: "payments_unavailable"`). No cambia nada. No es 503: la app lee cualquier 503 como mantenimiento.' },
+    { status: 502, when: 'El proveedor no abrió el checkout (`code: "checkout_failed"`). No se cobró nada.' },
   ],
   backend: {
-    status: 'proposed',
-    gap: 12,
-    note: 'Con `plan_id` igual al plan actual y un cambio programado, lo cancela (`pending_plan` vuelve a null, `applied: "now"`). Si subir necesita un pago, `checkout_url` viene con valor, el plan no cambia todavía y el proveedor vuelve a `return_url` con `compra=<id>`.',
+    status: 'exists',
+    source: 'back/apps/payments/views_subscription.py · ChangePlanView (apps/payments/services/subscriptions.py)',
+    note: 'Subir es ir a un plan posterior en `sort_order`, como en Planes. Subir a un plan con precio siempre pide un pago: `checkout_url` viene con valor, el plan no cambia todavía y el proveedor vuelve a `return_url` (por defecto `FRONTEND_URL/uso/planes`) con `compra=<id>`; al confirmarse el pago cambia el plan una sola vez y empieza un período pagado de un mes. Pedir otra vez la misma subida devuelve el mismo checkout; elegir otro plan rechaza el pago que esperaba. Subir a un plan sin precio se aplica al momento. Bajar se programa para el fin del período pagado (`applied: "period_end"`); sin período pagado (plan asignado en el admin, o el período ya terminó) se aplica al momento (`applied: "now"`). La tarea `apply_due_plan_changes` (Celery Beat, cada 15 min) aplica las bajadas que vencieron. Con `plan_id` igual al plan actual y un cambio programado, lo cancela (`pending_plan` vuelve a null, `applied: "now"`). El mock aplica la subida al momento salvo en el escenario «Plan con checkout».',
   },
   screens: ['G3'],
 });
@@ -414,7 +421,11 @@ export const listTokenPackages = defineEndpoint({
   summary: 'Los 3 paquetes fijos, el precio de la cantidad libre y la conversión de referencia.',
   response: TokenPackages,
   errors: [],
-  backend: { status: 'proposed', gap: 12 },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views_purchases.py · TokenPackagesView (apps/payments/services/token_packages.py)',
+    note: 'Todos los roles. El precio de un paquete sale de sus tokens y su descuento sobre 0,01 USD por token. La conversión es de referencia (`PAYMENTS_LOCAL_CURRENCY`, `PAYMENTS_USD_TO_LOCAL_RATE`): todo pago es en USD. La cantidad libre va de 100 a 1.000.000 tokens.',
+  },
   screens: ['G4', 'D2 (diálogo)'],
 });
 
@@ -435,11 +446,19 @@ export const createTokenPurchase = defineEndpoint({
     }),
   response: TokenPurchase,
   successStatus: 201,
+  idempotencyKey: true,
   errors: [
-    { status: 400, when: 'Cantidad por debajo del mínimo o paquete inexistente.' },
+    { status: 400, when: 'Cantidad por debajo del mínimo o por encima del máximo (1.000.000), paquete inexistente, o `return_url` que no es una página de la app.' },
     { status: 403, when: 'El rol no puede comprar (solo Dueño y Admin).' },
+    { status: 409, when: 'La `Idempotency-Key` ya empezó otra compra (`code: "idempotency_key_reused"`).' },
+    { status: 501, when: 'No hay proveedor de pagos configurado (`code: "payments_unavailable"`). No se crea nada. No es 503: la app lee cualquier 503 como mantenimiento.' },
+    { status: 502, when: 'El proveedor no abrió el checkout (`code: "checkout_failed"`). No se cobró nada.' },
   ],
-  backend: { status: 'proposed', gap: 12 },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views_purchases.py · TokenPurchaseCreateView + PaymentSerializer (apps/payments/serializers_billing.py)',
+    note: 'El proveedor es `PAYMENTS_PROVIDER`. Con `simulated` (desarrollo, y en una demo con `PAYMENTS_ALLOW_SIMULATED`) `checkout_url` es `/dev/checkout?compra=<id>&volver=<return_url>` en el origen de `return_url`, y esa página decide con `billing.simulatePurchase`. Sin proveedor, 501. Una `Idempotency-Key` repetida responde la compra que ya empezó, con el mismo 201.',
+  },
   screens: ['G4', 'D2 (diálogo)'],
 });
 
@@ -449,9 +468,35 @@ export const getTokenPurchase = defineEndpoint({
   path: '/api/v1/token-purchases/:id/',
   summary: 'Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`tokens` > 0) o el pago de una subida de plan (`plan_id`, `tokens` 0).',
   response: Payment,
-  errors: [{ status: 404, when: 'La compra no existe en este workspace.' }],
-  backend: { status: 'proposed', gap: 12, note: 'El webhook del proveedor acredita; la pantalla consulta cada 5 s mientras está pendiente.' },
+  errors: [
+    { status: 403, when: 'El rol no puede ver pagos (solo Dueño y Admin).' },
+    { status: 404, when: 'La compra no existe en este workspace.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views_purchases.py · TokenPurchaseDetailView + PaymentSerializer (apps/payments/serializers_billing.py)',
+    note: 'La confirmación del proveedor (o `billing.simulatePurchase`) acredita una sola vez: un DEPOSIT COMPLETED de los tokens en la billetera, «Compra de 1.000 tokens». La pantalla consulta cada 5 s mientras está pendiente. `plan_id` viene siempre (null en una compra de tokens). `balance_after` llega con 10 decimales, como el saldo.',
+  },
   screens: ['G5'],
+});
+
+export const simulatePurchase = defineEndpoint({
+  id: 'billing.simulatePurchase',
+  method: 'POST',
+  path: '/api/v1/token-purchases/:id/simulate/',
+  summary: 'Solo desarrollo y demo: el checkout de prueba aprueba o rechaza un pago del proveedor simulado.',
+  request: z.object({ approved: z.boolean() }),
+  response: Payment,
+  errors: [
+    { status: 403, when: 'El rol no puede pagar (solo Dueño y Admin).' },
+    { status: 404, when: 'El pago no existe en este workspace, no es del proveedor simulado, o el proveedor simulado está apagado (sin `PAYMENTS_PROVIDER=simulated`, o sin `DEBUG` ni `PAYMENTS_ALLOW_SIMULATED`): fuera de desarrollo y demos el endpoint no existe.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views_purchases.py · SimulatePaymentView',
+    note: 'Liquida el pago en el momento, como lo haría el webhook de un proveedor real, y responde el pago ya liquidado. Uno ya liquidado se responde como está: aprobar dos veces acredita una sola. Lo llama `/dev/checkout` cuando `billing` va al backend; en el modo mock la página decide en la base simulada y el pago se liquida unos segundos después de volver, como un webhook.',
+  },
+  screens: ['Checkout de prueba (/dev/checkout)'],
 });
 
 export const billingEndpoints = [
@@ -467,4 +512,5 @@ export const billingEndpoints = [
   listTokenPackages,
   createTokenPurchase,
   getTokenPurchase,
+  simulatePurchase,
 ] as const;
