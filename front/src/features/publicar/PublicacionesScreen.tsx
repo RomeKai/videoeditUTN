@@ -512,7 +512,10 @@ export function PublicacionesScreen() {
           cancelling
             ? cancelling.status === 'DRAFT'
               ? `Se borra el borrador de «${cancelling.clip.title}» para ${NETWORK_NOUN[cancelling.platform]}. El clip no se borra.`
-              : `«${cancelling.clip.title}» no va a salir en ${NETWORK_NOUN[cancelling.platform]}. El clip no se borra y podés publicarlo de nuevo cuando quieras.`
+              : cancelling.status === 'PROCESSING'
+                ? // Stuck «Publicando»: it may have gone out already, and cancelling here does not take it off the network.
+                  `«${cancelling.clip.title}» quedó trabada publicándose y puede que ya haya salido en ${NETWORK_NOUN[cancelling.platform]}. Cancelarla la saca de OneCreator, pero no la borra de la red: fijate allá y, si salió, borrala desde ${NETWORK_NOUN[cancelling.platform]}.`
+                : `«${cancelling.clip.title}» no va a salir en ${NETWORK_NOUN[cancelling.platform]}. El clip no se borra y podés publicarlo de nuevo cuando quieras.`
             : undefined
         }
         confirmLabel={cancelling?.status === 'DRAFT' ? 'Borrar borrador' : 'Cancelar publicación'}

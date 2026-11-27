@@ -13,8 +13,18 @@ const EDITABLE = new Set(['DRAFT', 'SCHEDULED']);
 const LIVE = new Set(['SCHEDULED', 'QUEUED', 'PROCESSING', 'PUBLISHED']);
 /** A `publish_at` this close to now is "now" (NOW_TOLERANCE). */
 const NOW_TOLERANCE_MS = 60_000;
-/** A post "Publicando" whose last attempt started longer ago than this may be retried (POST_STUCK_AFTER). */
+/** A post "Publicando" whose last attempt started longer ago than this may be retried or cancelled (POST_STUCK_AFTER). */
 export const POST_STUCK_AFTER_MS = 15 * 60_000;
+/** One whose worker retry is on its way ("Retry n:"): the broker's visibility timeout plus the longest countdown. */
+export const PENDING_RETRY_STUCK_AFTER_MS = (4 * 3600 + 240) * 1000;
+const HASHTAG_MAX_CHARS = 100;
+
+/** services/scheduled_posts.is_stuck. */
+function isStuck(post: MockPost, now: number): boolean {
+  if (post.status !== 'PROCESSING') return false;
+  const after = (post.error_log ?? '').startsWith('Retry ') ? PENDING_RETRY_STUCK_AFTER_MS : POST_STUCK_AFTER_MS;
+  return now - new Date(post.updated_at).getTime() > after;
+}
 const TIKTOK_PRIVACY_MISSING = 'Elegí quién puede ver el video.';
 const SCHEDULING_DENIED = 'Tu plan no incluye programar publicaciones: publicala ahora o cambiá de plan.';
 const CROSSPOSTING_DENIED = 'Tu plan permite publicar cada clip en una sola red. Para publicarlo en varias, cambiá de plan.';
@@ -62,6 +72,7 @@ function cleanHashtags(values: string[], index?: number): string[] {
     const tag = value.trim().replace(/^#+/, '');
     if (!tag) continue;
     if (!/^[\p{L}\p{N}_]+$/u.test(tag)) throw invalid('hashtags', `«${tag.slice(0, 40)}» no es un hashtag válido: usá letras, números o guion bajo, sin espacios.`, index);
+    if (tag.length > HASHTAG_MAX_CHARS) throw invalid('hashtags', `Cada hashtag puede tener hasta ${HASHTAG_MAX_CHARS} caracteres.`, index);
     if (seen.has(tag.toLowerCase())) continue;
     seen.add(tag.toLowerCase());
     kept.push(tag);
@@ -83,7 +94,9 @@ function checkCrossposting(db: MockDb, workspace: MockWorkspace, wanted: Map<str
 }
 
 function checkAccount(db: MockDb, workspaceId: string, platform: Platform): void {
-  // The backend only knows whether the workspace has its Ayrshare profile (gap 10); the mocks know each network.
+  // On purpose not like the backend of today: the backend only knows whether the workspace has its Ayrshare
+  // profile (one 409 for every network) until connecting accounts exists (gap 10). The mocks simulate that
+  // gap: each network has its account, and the screens (E1, H3) show them one by one.
   const account = db.socialAccounts.find((item) => item.workspace === workspaceId && item.platform === platform);
   if (!account || account.status !== 'connected') {
     throw conflict(`La cuenta de ${NETWORK_NAME[platform]} está ${account?.status === 'expired' ? 'vencida' : 'sin conectar'}. Reconectala para publicar.`, 'account_not_connected');
@@ -113,6 +126,8 @@ function checkText(db: MockDb, workspaceId: string, platform: Platform, caption:
  */
 function createPosts(db: MockDb, workspace: MockWorkspace, inputs: CreatePostInput[], userId: string, now: number, many = false): MockPost[] {
   const at = (index: number) => (many ? index : undefined);
+  // As the backend: every post's own fields first (its serializer), then the repeats, then what needs the data.
+  const cleaned = inputs.map((input, index) => cleanHashtags(input.hashtags ?? [], at(index)));
   const pairs = new Set<string>();
   inputs.forEach((input, index) => {
     const pair = `${input.video_clip}:${input.platform}`;
@@ -131,7 +146,7 @@ function createPosts(db: MockDb, workspace: MockWorkspace, inputs: CreatePostInp
     if (!project || !clip) throw invalid('video_clip', 'El clip no existe.', at(index));
     if (clip.status !== 'completed' && clip.status !== 'published') throw invalid('video_clip', 'El clip todavía no está renderizado.', at(index));
     const caption = input.caption ?? '';
-    const hashtags = cleanHashtags(input.hashtags ?? [], at(index));
+    const hashtags = cleaned[index] ?? [];
     checkText(db, workspace.id, input.platform, caption, hashtags, at(index));
     const draft = Boolean(input.draft);
     let publishAt = input.publish_at ?? new Date(now).toISOString();
@@ -145,8 +160,15 @@ function createPosts(db: MockDb, workspace: MockWorkspace, inputs: CreatePostInp
     }
     // seo_requested(project): the project asked for SEO and the plan includes it, checked when the post is created.
     const plan = planOf(db, workspace.id);
-    const seo = Boolean(project.metadata.use_seo) && (!plan || plan.has_seo_optimization);
-    return { input, project, clip, seo, caption, hashtags, draft, publishAt };
+    const wantsSeo = Boolean(project.metadata.use_seo) && (!plan || plan.has_seo_optimization) && !(caption && hashtags.length > 0);
+    // Like the backend, the AI text of the same clip and network is reused instead of asked for again.
+    const reused = wantsSeo
+      ? db.posts
+          .filter((post) => post.workspace === workspace.id && post.video_clip === clip.id && post.platform === input.platform && post.generated_caption && post.generated_hashtags)
+          .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0]
+      : undefined;
+    const seo = wantsSeo && !reused;
+    return { input, project, clip, seo, reused, caption, hashtags, draft, publishAt };
   });
 
   const plan = planOf(db, workspace.id);
@@ -154,7 +176,7 @@ function createPosts(db: MockDb, workspace: MockWorkspace, inputs: CreatePostInp
   checkCrossposting(db, workspace, going);
   for (const { input, draft } of drafts) if (!draft) checkAccount(db, workspace.id, input.platform);
 
-  return drafts.map(({ input, project, clip, seo, caption, hashtags, draft, publishAt }) => {
+  return drafts.map(({ input, project, clip, seo, reused, caption, hashtags, draft, publishAt }) => {
     const immediate = !draft && new Date(publishAt).getTime() <= now + NOW_TOLERANCE_MS;
     const stamp = new Date(now).toISOString();
     const post: MockPost = {
@@ -166,14 +188,14 @@ function createPosts(db: MockDb, workspace: MockWorkspace, inputs: CreatePostInp
       status: draft ? 'DRAFT' : 'SCHEDULED',
       error_log: null,
       retry_count: 0,
-      generated_caption: null,
-      generated_hashtags: null,
+      generated_caption: reused?.generated_caption ?? null,
+      generated_hashtags: reused?.generated_hashtags ?? null,
       created_at: stamp,
       updated_at: stamp,
-      caption,
-      hashtags,
-      // The existing signal generates the SEO text when the post is created.
-      seo_status: seo ? 'pending' : 'none',
+      caption: caption || (reused?.generated_caption ?? ''),
+      hashtags: hashtags.length > 0 ? hashtags : (reused?.generated_hashtags ?? []),
+      // The backend asks for the AI text when the post is created (unless it reused one or the post brings its own).
+      seo_status: seo ? 'pending' : reused ? 'ready' : 'none',
       clip: { id: clip.id, title: clip.title, project_id: project.id, project_title: project.title, duration_seconds: Math.round((clip.end_time - clip.start_time) * 100) / 100, thumbnail_url: null },
       post_url: null,
       error_message: null,
@@ -294,15 +316,21 @@ export const socialHandlers = [
     }
     if (body.caption !== undefined) post.caption = body.caption;
     if (body.hashtags !== undefined) post.hashtags = hashtags;
+    if ((body.caption !== undefined || body.hashtags !== undefined) && post.seo_status === 'pending') {
+      // The user's text wins over a "Regenerar" on its way: the request ends and the text stays.
+      post.seo_status = post.generated_caption ? 'ready' : 'none';
+      if (post._sim) delete post._sim.regen;
+    }
     if (body.tiktok !== undefined && post.platform === 'TIKTOK') post.tiktok = body.tiktok;
     post.updated_at = stamp;
     return { data: serializePost(post) };
   }),
 
-  route(contract.cancelPost, ({ db, workspace, params, require }) => {
+  route(contract.cancelPost, ({ db, workspace, params, now, require }) => {
     require('post.publish');
     const post = ownPost(db, params.id, workspace.id);
-    refuse('cancel', post.status);
+    // A stuck post may already be public: the web app warns that cancelling does not take it off the network.
+    if (!isStuck(post, now)) refuse('cancel', post.status);
     db.posts = db.posts.filter((item) => item.id !== post.id);
     return { data: undefined };
   }),
@@ -311,8 +339,7 @@ export const socialHandlers = [
     require('post.publish');
     const post = ownPost(db, params.id, workspace.id);
     // A post "Publicando" is retried only once it is stuck: before, it may still be going out.
-    const stuck = post.status === 'PROCESSING' && now - new Date(post.updated_at).getTime() > POST_STUCK_AFTER_MS;
-    if (!stuck) refuse('retry', post.status);
+    if (!isStuck(post, now)) refuse('retry', post.status);
     const stamp = new Date(now).toISOString();
     if (post.status === 'FAILED' && SEO_FAILURE.test(post.error_log ?? '')) {
       // Its AI text failed: it never went out. Back to a draft for the user to write the text.

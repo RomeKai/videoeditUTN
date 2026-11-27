@@ -88,10 +88,11 @@ describe('E1 · Publicar', () => {
   });
 
   it('el texto llega sugerido por la IA, se puede editar y regenerar', async () => {
-    const { panel, client } = await openPanel();
+    // A clip with no TikTok post yet: its AI text is generated, not reused.
+    const { panel, client } = await openPanel([CLIPS.third]);
     expect(await within(panel).findByText('Generando texto…')).toBeInTheDocument();
     // Only the network on screen gets its helper draft; Instagram's is asked for when its tab opens.
-    await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT').map((post) => post.platform)).toEqual(['TIKTOK']));
+    await waitFor(() => expect(postsOf(CLIPS.third, 'DRAFT').map((post) => post.platform)).toEqual(['TIKTOK']));
     finishSeo();
     await client.invalidateQueries();
 
@@ -105,7 +106,7 @@ describe('E1 · Publicar', () => {
 
     fireEvent.click(within(panel).getByRole('button', { name: 'Regenerar' }));
     expect(await within(panel).findByText('Generando texto…')).toBeInTheDocument();
-    await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT').some((post) => post.seo_status === 'pending')).toBe(true));
+    await waitFor(() => expect(postsOf(CLIPS.third, 'DRAFT').some((post) => post.seo_status === 'pending')).toBe(true));
     finishSeo();
     await client.invalidateQueries();
     await waitFor(() => expect((within(panel).getByLabelText('Caption') as HTMLTextAreaElement).value).toMatch(/lo que nadie te cuenta/));

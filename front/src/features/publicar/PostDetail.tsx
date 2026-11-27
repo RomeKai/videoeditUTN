@@ -343,7 +343,7 @@ export function PostDetail({ post, siblings = [], accounts, actions, mode, onMod
               Esta pantalla se actualiza sola.
             </p>
           ) : null}
-          {isCancellable(post.status) ? (
+          {isCancellable(post) ? (
             <Button variant="ghost" size="sm" className={styles.cancelBtn} onClick={() => actions.askCancel(post)} {...actions.publishGate}>
               {post.status === 'DRAFT' ? 'Borrar el borrador' : 'Cancelar publicación'}
             </Button>

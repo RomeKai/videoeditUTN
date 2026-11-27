@@ -41,7 +41,8 @@ describe('contrato de publicar: borradores y texto con IA', () => {
   beforeEach(() => signIn('estudio-norte'));
 
   it('crear un borrador no publica nada y dispara la generación del texto', async () => {
-    const draft = await apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'TIKTOK', draft: true } });
+    // The third clip has no TikTok post yet: there is no AI text to reuse.
+    const draft = await apiCall(social.createPost, { body: { video_clip: CLIPS.third, platform: 'TIKTOK', draft: true } });
     expect(draft.status).toBe('DRAFT');
     expect(draft.seo_status).toBe('pending');
     expect(draft.caption).toBe('');
@@ -189,11 +190,67 @@ describe('contrato de publicar: como el backend', () => {
   });
 
   it('regenerar mientras otro texto está en camino no pide otro', async () => {
-    const draft = await apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'INSTAGRAM_REELS', draft: true } });
+    const draft = await apiCall(social.createPost, { body: { video_clip: CLIPS.third, platform: 'TIKTOK', draft: true } });
     expect(draft.seo_status).toBe('pending');
     const again = await apiCall(social.regeneratePostSeo, { params: { id: draft.id } });
     expect(again.seo_status).toBe('pending');
     expect(loadDb().posts.find((post) => post.id === draft.id)?._sim?.regen).toBeUndefined();
+  });
+});
+
+describe('contrato de publicar: lo que pidió la revisión del PR #184', () => {
+  beforeEach(() => signIn('estudio-norte'));
+
+  const processing = (errorLog: string | null, minutesAgo: number) => {
+    const db = loadDb();
+    const post = db.posts.find((item) => item.workspace === WORKSPACE_IDS.estudio && item.status === 'PROCESSING');
+    if (!post) throw new Error('falta una publicación publicando');
+    Object.assign(post, { error_log: errorLog, updated_at: new Date(Date.now() - minutesAgo * 60_000).toISOString() });
+    saveDb(db);
+    return post.id;
+  };
+
+  it('el lote valida primero los campos de todas las publicaciones, como el serializer del backend', async () => {
+    const error = await fail(
+      apiCall(social.createPostsBulk, {
+        body: {
+          posts: [
+            { video_clip: '00000000-0000-4000-8000-000000000000', platform: 'INSTAGRAM_REELS' },
+            { video_clip: CLIPS.second, platform: 'INSTAGRAM_REELS', hashtags: ['dos palabras'] },
+          ],
+        },
+      }),
+    );
+    // The clip of the first one does not exist, but the hashtag of the second is checked before any clip.
+    expect([error.data.index, Object.keys(error.fieldErrors)]).toEqual([1, ['hashtags']]);
+    expect((await fail(apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'TIKTOK', draft: true, hashtags: ['a'.repeat(101)] } }))).fieldErrors.hashtags?.[0]).toBe('Cada hashtag puede tener hasta 100 caracteres.');
+  });
+
+  it('el texto con IA del mismo clip y la misma red se reusa, y uno que trae su texto no pide ninguno', async () => {
+    // The seed already has an Instagram post of the first clip, with its AI text.
+    const reused = await apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'INSTAGRAM_REELS', draft: true } });
+    expect([reused.seo_status, reused.caption]).toEqual(['ready', reused.generated_caption]);
+    const own = await apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'YOUTUBE_SHORTS', draft: true, caption: 'Mío', hashtags: ['mio'] } });
+    expect(own.seo_status).toBe('none');
+  });
+
+  it('una trabada se puede cancelar; una que espera su reintento del worker, no', async () => {
+    const waiting = processing('Retry 1: upstream 502', 16);
+    expect((await fail(apiCall(social.retryPost, { params: { id: waiting } }))).code).toBe('post_in_flight');
+    expect((await fail(apiCall(social.cancelPost, { params: { id: waiting } }))).code).toBe('post_in_flight');
+    const stuck = processing(null, 16);
+    await apiCall(social.cancelPost, { params: { id: stuck } });
+    expect(loadDb().posts.some((post) => post.id === stuck)).toBe(false);
+  });
+
+  it('el texto que el usuario guarda mientras se regenera queda', async () => {
+    const draft = await apiCall(social.createPost, { body: { video_clip: CLIPS.third, platform: 'YOUTUBE_SHORTS', draft: true } });
+    advance(3000);
+    await apiCall(social.regeneratePostSeo, { params: { id: draft.id } });
+    const saved = await apiCall(social.updatePost, { params: { id: draft.id }, body: { caption: 'Lo escribí yo' } });
+    expect(saved.seo_status).toBe('ready');
+    advance(3000);
+    expect((await apiCall(social.getPost, { params: { id: draft.id } })).caption).toBe('Lo escribí yo');
   });
 });
 

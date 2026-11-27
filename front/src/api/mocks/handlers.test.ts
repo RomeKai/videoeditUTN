@@ -574,10 +574,12 @@ describe('mocks', () => {
     expect((await fail(apiCall(social.createPost, { body: { video_clip: clip.id, platform: 'YOUTUBE_SHORTS' } }))).code).toBe('account_not_connected');
     expect((await fail(apiCall(social.createPost, { body: { video_clip: clip.id, platform: 'TIKTOK' } }))).fieldErrors.tiktok).toBeTruthy();
 
+    // Like the backend, the AI text of a post of the same clip and network is reused instead of asked for again.
+    const hadText = loadDb().posts.some((item) => item.video_clip === clip.id && item.platform === 'INSTAGRAM_REELS' && item.generated_caption);
     const post = await apiCall(social.createPost, { body: { video_clip: clip.id, platform: 'INSTAGRAM_REELS', caption: 'Mirá esto' } });
     // Like the backend: "publish now" is SCHEDULED for now, and the beat queues it (here, on the next request).
     expect(post.status).toBe('SCHEDULED');
-    expect(post.seo_status).toBe('pending');
+    expect(post.seo_status).toBe(hadText ? 'ready' : 'pending');
     const late = await fail(apiCall(social.updatePost, { params: { id: post.id }, body: { caption: 'Tarde' } }));
     expect([late.status, late.code]).toEqual([409, 'post_in_flight']);
     advance(SIM.postQueuedMs + SIM.postProcessingMs + 1000);

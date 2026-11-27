@@ -3205,7 +3205,7 @@
     "updated_at": "2026-11-27T15:06:00Z",
     "caption": "",
     "hashtags": [],
-    "seo_status": "pending",
+    "seo_status": "none",
     "clip": {
       "id": "0dc70729-33ab-44f5-b453-00fef4865779",
       "title": "La remontada",
@@ -3405,7 +3405,7 @@
         "updated_at": "2026-11-27T15:06:00Z",
         "caption": "",
         "hashtags": [],
-        "seo_status": "pending",
+        "seo_status": "none",
         "clip": {
           "id": "0dc70729-33ab-44f5-b453-00fef4865779",
           "title": "La remontada",

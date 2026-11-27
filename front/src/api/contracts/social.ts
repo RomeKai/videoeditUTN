@@ -148,7 +148,12 @@ const planErrors = [
     status: 409,
     when: 'El espacio no tiene la cuenta de Ayrshare (`code: "account_not_connected"`): la UI pide conectar. O la `Idempotency-Key` ya se usó con otro cuerpo, o sus publicaciones ya no existen (`code: "idempotency_key_reused"`).',
   },
+  { status: 429, when: 'El usuario creó demasiadas publicaciones en la última hora (300; un lote cuenta cada una): `detail` dice cuánto esperar.' },
 ];
+
+/** What creating a post asks of the AI, and what it may cost. */
+const AI_TEXT_COST =
+  'El texto con IA se pide solo si el proyecto tiene SEO y la publicación no trae caption y hashtags. Si otra publicación del mismo clip y la misma red ya tiene texto de la IA (o lo tenía un borrador descartado en las últimas 24 h), se reusa y llega `seo_status: "ready"`. Cada espacio pide hasta `AI_SEO_MAX_PER_WORKSPACE_PER_HOUR` (120) textos por hora, contando los que están en camino y las llamadas ya hechas: pasado eso la publicación se crea igual, con `seo_status: "failed"` (`error_log: "seo_rate_limited"`), y el usuario la escribe o la regenera más tarde.';
 
 /** What every write of a post does not do: call the network. */
 const QUEUE_ONLY =
@@ -229,7 +234,7 @@ export const createPost = defineEndpoint({
     note:
       'Crear solo guarda: un borrador queda `DRAFT` y lo demás `SCHEDULED` (ahora, o la fecha pedida), y la publicación en la red la hace el worker después de que el beat la encola. ' +
       QUEUE_ONLY +
-      ' El clip tiene que ser del espacio activo y estar renderizado. Los límites del plan se miran en el servidor: programar pide `allow_scheduling`; sin `allow_crossposting` un clip sale en una sola red, contando sus publicaciones programadas, en cola, publicando o publicadas (no los borradores ni las fallidas). Sin plan no hay límites. La cuenta: sin `Workspace.ayrshare_profile_key` es 409 `account_not_connected` (no se sabe red por red hasta el hueco 10; un borrador no la pide). Acepta `Idempotency-Key` (hasta 255 caracteres): el backend guarda por clave y workspace, durante 24 h, qué publicaciones creó; la misma clave devuelve esas publicaciones (tal como están ahora) sin crear nada, con otro cuerpo es 409, y una respuesta de error no se guarda. Al crear el post, la señal existente genera el SEO (`seo_status: "pending"`). Si la generación falla en un borrador, sigue `DRAFT` con `seo_status: "failed"`. Pendiente: (1) una publicación en cola sin texto propio todavía puede salir antes de que llegue el de la IA, con el texto de reserva, y el publicador todavía no usa `caption`, `hashtags` ni `tiktok` (es del publicador); (2) los borradores que nadie manda no se borran solos.',
+      ' El clip tiene que ser del espacio activo y estar renderizado. Los límites del plan se miran en el servidor: programar pide `allow_scheduling`; sin `allow_crossposting` un clip sale en una sola red, contando sus publicaciones programadas, en cola, publicando o publicadas (no los borradores ni las fallidas). Sin plan no hay límites. La cuenta: sin `Workspace.ayrshare_profile_key` es 409 `account_not_connected` (no se sabe red por red hasta el hueco 10; un borrador no la pide). Acepta `Idempotency-Key` (hasta 255 caracteres): el backend guarda por clave y workspace, durante 24 h, qué publicaciones creó; la misma clave devuelve esas publicaciones (tal como están ahora) sin crear nada, con otro cuerpo es 409, y una respuesta de error no se guarda. Al crear el post se pide el SEO (`seo_status: "pending"`). ' + AI_TEXT_COST + ' Si la generación falla en un borrador, o en una publicación con caption propio, el estado no cambia y queda `seo_status: "failed"`. Pendiente: (1) una publicación en cola sin texto propio todavía puede salir antes de que llegue el de la IA, con el texto de reserva, y el publicador todavía no usa `caption`, `hashtags` ni `tiktok` (es del publicador); (2) los borradores que nadie manda no se borran solos.',
   },
   screens: ['E1'],
 });
@@ -287,7 +292,7 @@ export const updatePost = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_social.py · ScheduledPostViewSet.partial_update + services/scheduled_posts.py · update_post',
-    note: 'Solo `DRAFT` y `SCHEDULED`: un post `QUEUED` ya tiene su tarea en el broker con la hora vieja. `publish_at` con fecha programa o reprograma; `null` (o dentro de un minuto) lo deja `SCHEDULED` para ahora; sin el campo, un borrador sigue borrador. Al mandarlo se miran el clip, el plan, la cuenta y TikTok como al crear, y se borra la falla del texto del borrador. `caption` y `hashtags` vacíos vuelven a mostrar el texto de la IA. ' + QUEUE_ONLY,
+    note: 'Solo `DRAFT` y `SCHEDULED`: un post `QUEUED` ya tiene su tarea en el broker con la hora vieja. `publish_at` con fecha programa o reprograma; `null` (o dentro de un minuto) lo deja `SCHEDULED` para ahora; sin el campo, un borrador sigue borrador. Al mandarlo se miran el clip, el plan, la cuenta y TikTok como al crear, y se borra la falla del texto del borrador. `caption` y `hashtags` vacíos vuelven a mostrar el texto de la IA. Guardar el texto mientras un «Regenerar» está en camino termina ese pedido: el texto del usuario queda cuando llega el de la IA. ' + QUEUE_ONLY,
   },
   screens: ['E2'],
 });
@@ -302,12 +307,12 @@ export const cancelPost = defineEndpoint({
   errors: [
     { status: 403, when: 'El rol no publica.' },
     { status: 404, when: 'No existe o es de otro workspace.' },
-    { status: 409, when: 'Ya se está publicando (`code: "post_in_flight"`) o ya se publicó (`post_published`).' },
+    { status: 409, when: 'Se está publicando (`code: "post_in_flight"`), ya se publicó (`post_published`) o no se pudo leer el lock del worker (`post_lock_unavailable`).' },
   ],
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_social.py · ScheduledPostViewSet.cancel + services/scheduled_posts.py · cancel_post',
-    note: 'Borra `DRAFT`, `SCHEDULED`, `QUEUED` y `FAILED`. La tarea de un post `QUEUED` después no encuentra nada y termina sin publicar. Si el worker lo toma en el mismo momento, el pedido espera su lock y responde 409. ' + QUEUE_ONLY,
+    note: 'Borra `DRAFT`, `SCHEDULED`, `QUEUED` y `FAILED`, y también un `PROCESSING` trabado (la misma regla que `retryPost`): pudo haber salido, así que la UI avisa que cancelar no la borra de la red. La tarea de un post `QUEUED`, o el intento tardío de uno trabado, después no encuentra nada y termina sin publicar. Si el worker lo toma en el mismo momento, el pedido espera su lock y responde 409. Su texto con IA queda 24 h para el próximo borrador del mismo clip y la misma red. ' + QUEUE_ONLY,
   },
   screens: ['E2'],
 });
@@ -330,7 +335,7 @@ export const retryPost = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_social.py · ScheduledPostViewSet.retry + services/scheduled_posts.py · retry_post',
-    note: 'Un `FAILED`, o un `PROCESSING` trabado, vuelve a `SCHEDULED` para ahora (sin `error_log`) y lo encola el beat. Trabado: su último intento empezó (`updated_at`) hace más de 15 min y el worker no tiene el lock del post; antes es 409, para no publicarlo dos veces mientras sale. Un post trabado o que falló sin saber si salió puede estar publicado: la UI lo avisa antes de reintentar. Si lo que falló fue el texto con IA, vuelve a `DRAFT` con `seo_status: "failed"`: nunca salió y no se programa solo. ' + QUEUE_ONLY,
+    note: 'Un `FAILED`, o un `PROCESSING` trabado, vuelve a `SCHEDULED` para ahora (sin `error_log`) y lo encola el beat. Trabado: su último intento empezó (`updated_at`) hace más de 15 min y el worker no tiene el lock del post; antes es 409, para no publicarlo dos veces mientras sale. Si el worker espera un reintento (`error_log` empieza con «Retry »), está en camino aunque no tenga el lock: recién cuenta como trabado pasado el `visibility_timeout` del broker (4 h) más la espera más larga del reintento (240 s). Un post trabado o que falló sin saber si salió puede estar publicado: la UI lo avisa antes de reintentar. Si lo que falló fue el texto con IA, vuelve a `DRAFT` con `seo_status: "failed"`: nunca salió y no se programa solo. ' + QUEUE_ONLY,
   },
   screens: ['E2'],
 });
@@ -346,12 +351,15 @@ export const regeneratePostSeo = defineEndpoint({
     { status: 403, when: 'El proyecto no pidió SEO o el plan no lo incluye (`code: "seo"`), o el rol no publica.' },
     { status: 404, when: 'No existe o es de otro workspace.' },
     { status: 409, when: 'Ya está en cola o publicando (`code: "post_in_flight"`) o ya se publicó (`post_published`): su texto no cambia.' },
-    { status: 429, when: 'Demasiados pedidos del usuario (30 por hora): `detail` dice cuánto esperar.' },
+    {
+      status: 429,
+      when: 'Demasiados pedidos del usuario (30 por hora): `detail` dice cuánto esperar. O el espacio ya pidió sus textos con IA de esta hora (`code: "seo_rate_limited"`, `{error, code}`).',
+    },
   ],
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_social.py · ScheduledPostViewSet.regenerate_seo + services/scheduled_posts.py · regenerate_seo',
-    note: 'Encola `process_video_seo` con `regenerate`. Mientras tanto el post responde `seo_status: "pending"` con el texto anterior; cuando llega el nuevo reemplaza también el que escribió el usuario. Si la generación falla, el texto anterior queda y `seo_status` vuelve a `ready`. Un pedido mientras otro está en camino no encola nada (el doble clic no paga dos veces). No gasta tokens de la billetera: el SEO se cobra una vez, al crear el proyecto; el límite por usuario acota lo que se gasta en el proveedor.',
+    note: 'Encola `process_video_seo` con `regenerate`. Mientras tanto el post responde `seo_status: "pending"` con el texto anterior; cuando llega el nuevo reemplaza también el que escribió el usuario. Si la generación falla, el texto anterior queda y `seo_status` vuelve a `ready`. Un pedido mientras otro está en camino no encola nada (el doble clic no paga dos veces). No gasta tokens de la billetera: el SEO se cobra una vez, al crear el proyecto; los límites por usuario (30 por hora) y por espacio (120 textos por hora, también los que piden las publicaciones nuevas) acotan lo que se gasta en el proveedor y en la capacidad que comparte la ingesta.',
   },
   screens: ['E1'],
 });
