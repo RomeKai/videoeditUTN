@@ -94,13 +94,22 @@ class BrandKitViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         self._save_one_default(serializer, workspace.pk, workspace=workspace)
 
     def perform_update(self, serializer):
-        self._save_one_default(serializer, serializer.instance.workspace_id)
+        """A file that the update replaced or removed is deleted after the commit, unless another kit uses it."""
+        from .services import brand_kit_service
+
+        before = brand_kit_service.stored_files(serializer.instance)
+        with transaction.atomic():
+            self._save_one_default(serializer, serializer.instance.workspace_id)
+            kept = {name for _, name in brand_kit_service.stored_files(serializer.instance)}
+            brand_kit_service.delete_files_on_commit(
+                serializer.instance.pk, [(storage, name) for storage, name in before if name not in kept],
+            )
 
     @action(detail=True, methods=['post'])
     def duplicate(self, request, pk=None):
         """
-        Copies the kit and its files into the same workspace as «Copia de …»
-        (brand_kit_service.duplicate_brand_kit). The copy is never the default.
+        Copies the kit and its files into the same workspace as «Copia de …»,
+        numbered from the second one (brand_kit_service.duplicate_brand_kit). The copy is never the default.
         201 with the new kit; 502 ``brand_kit_copy_failed`` when a file could
         not be copied, and then nothing is written. Not a 503: the web app
         reads any 503 as maintenance.

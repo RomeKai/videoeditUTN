@@ -102,9 +102,10 @@ class DuplicateBrandKitTests(MediaRootHarness):
             original, copied = getattr(kit, field), getattr(copy, field)
             self.assertTrue(copied.name, field)
             self.assertNotEqual(copied.name, original.name, field)
-            # Same folder (upload_to) and extension, the same bytes.
-            self.assertEqual(copied.name.rsplit("/", 1)[0], original.name.rsplit("/", 1)[0])
-            self.assertTrue(copied.name.endswith(".bin"))
+            # The folder of each kit, the same file name (no storage suffix), the same bytes.
+            folder = original.name.split("/")[1]
+            self.assertEqual(original.name, f"assets/{folder}/{kit.pk}/{field}.bin")
+            self.assertEqual(copied.name, f"assets/{folder}/{copy.pk}/{field}.bin")
             self.assertEqual(copied.read(), field.encode())
             self.assertIn(copied.name, response.data[field])
         self.assertEqual(len(stored_files(self.media)), 10)
@@ -136,6 +137,57 @@ class DuplicateBrandKitTests(MediaRootHarness):
 
         for field in FILE_FIELDS:
             self.assertEqual(getattr(copy, field).read(), field.encode(), field)
+
+    def test_a_copy_of_a_copy_and_of_old_files_keeps_the_file_names(self):
+        # Files stored before the folder per kit: straight under upload_to.
+        kit = BrandKit.objects.create(workspace=self.home, name="Viejo")
+        storage = kit.watermark_logo.storage
+        storage.save("assets/logos/logo.png", ContentFile(b"logo"))
+        storage.save("assets/fonts/Inter-Bold.ttf", ContentFile(b"font"))
+        BrandKit.objects.filter(pk=kit.pk).update(
+            watermark_logo="assets/logos/logo.png", primary_font="assets/fonts/Inter-Bold.ttf",
+        )
+
+        first = BrandKit.objects.get(pk=self.client.post(duplicate(kit), **header(self.home)).data["id"])
+        second = BrandKit.objects.get(pk=self.client.post(duplicate(kit), **header(self.home)).data["id"])
+        nested = BrandKit.objects.get(pk=self.client.post(duplicate(first), **header(self.home)).data["id"])
+
+        for copy in (first, second, nested):
+            self.assertEqual(copy.watermark_logo.name, f"assets/logos/{copy.pk}/logo.png")
+            self.assertEqual(copy.primary_font.name, f"assets/fonts/{copy.pk}/Inter-Bold.ttf")
+            self.assertEqual(copy.watermark_logo.read(), b"logo")
+        self.assertEqual(BrandKit.objects.get(pk=kit.pk).watermark_logo.name, "assets/logos/logo.png")
+        self.assertEqual(len(stored_files(self.media)), 8)
+
+    def test_an_upload_goes_to_the_folder_of_its_kit_with_its_name(self):
+        for name in ("Uno", "Dos"):
+            response = self.client.post(
+                BRAND_KITS, {"name": name, "primary_font": ContentFile(b"font", name="Inter-Bold.ttf")},
+                format="multipart", **header(self.home),
+            )
+            self.assertEqual(response.status_code, 201, response.content[:300])
+            kit = BrandKit.objects.get(pk=response.data["id"])
+            self.assertEqual(kit.primary_font.name, f"assets/fonts/{kit.pk}/Inter-Bold.ttf")
+            self.assertTrue(response.data["primary_font"].endswith(f"/{kit.pk}/Inter-Bold.ttf"))
+
+    def test_later_copies_are_numbered_within_the_workspace(self):
+        boss = make_user("boss")
+        BrandKit.objects.create(workspace=boss.owned_workspaces.get(), name="Copia de Estudio")
+        kit = BrandKit.objects.create(workspace=self.home, name="Estudio")
+
+        names = [self.client.post(duplicate(kit), **header(self.home)).data["name"] for _ in range(3)]
+
+        self.assertEqual(names, ["Copia de Estudio", "Copia 2 de Estudio", "Copia 3 de Estudio"])
+        # A freed number is used again, and a renamed kit takes no number.
+        BrandKit.objects.filter(workspace=self.home, name="Copia 2 de Estudio").delete()
+        self.assertEqual(self.client.post(duplicate(kit), **header(self.home)).data["name"], "Copia 2 de Estudio")
+
+    def test_numbered_copies_of_a_long_name_are_cut_and_differ(self):
+        kit = BrandKit.objects.create(workspace=self.home, name="N" * 100)
+
+        names = [self.client.post(duplicate(kit), **header(self.home)).data["name"] for _ in range(2)]
+
+        self.assertEqual(names, [("Copia de " + "N" * 100)[:100], ("Copia 2 de " + "N" * 100)[:100]])
 
     def test_a_kit_of_another_workspace_is_a_404(self):
         boss = make_user("boss")
@@ -230,11 +282,25 @@ class SameNameStorageTests(MediaRootHarness):
             with open(os.path.join(self.media, getattr(kit, name).name), "rb") as stored:
                 self.assertEqual(stored.read(), name.encode(), name)
 
+    def test_a_storage_that_overwrites_still_gives_the_copy_its_own_files(self):
+        kit = self.kit_on_same_name_storage()
+
+        response = self.client.post(duplicate(kit), **header(self.home))
+
+        self.assertEqual(response.status_code, 201, response.content[:300])
+        copy = BrandKit.objects.get(pk=response.data["id"])
+        for name in FILE_FIELDS:
+            self.assertNotEqual(getattr(copy, name).name, getattr(kit, name).name, name)
+        self.assertEqual(len(stored_files(self.media)), 10)
+        self.assert_originals_intact(kit)
+
     def test_a_copy_with_the_name_of_its_original_is_refused(self):
         kit = self.kit_on_same_name_storage()
         before = stored_files(self.media)
 
-        response = self.client.post(duplicate(kit), **header(self.home))
+        # The destination is forced to be the source: the folder per kit never gives it.
+        with patch.object(brand_kit_service, "_copy_file_name", side_effect=lambda field, name, copy_id: name):
+            response = self.client.post(duplicate(kit), **header(self.home))
 
         self.assertEqual(response.status_code, 502, response.content[:300])
         self.assertEqual(response.data["code"], "brand_kit_copy_failed")
@@ -247,7 +313,11 @@ class SameNameStorageTests(MediaRootHarness):
         kit = self.kit_on_same_name_storage()
         before = stored_files(self.media)
 
-        with patch(COPY_FILE), patch.object(BrandKit.objects, "create", side_effect=IntegrityError("boom")):
+        with (
+            patch(COPY_FILE),
+            patch.object(brand_kit_service, "_copy_file_name", side_effect=lambda field, name, copy_id: name),
+            patch.object(BrandKit.objects, "create", side_effect=IntegrityError("boom")),
+        ):
             with self.assertRaises(IntegrityError):
                 brand_kit_service.duplicate_brand_kit(kit, user=self.alice)
 
@@ -263,6 +333,128 @@ class SameNameStorageTests(MediaRootHarness):
         )
 
         storage.delete.assert_called_once_with("assets/logos/a_copy.png")
+
+
+class DeleteFilesTests(MediaRootHarness):
+    """A deleted kit, and a replaced file, leave nothing in the storage; a shared file stays."""
+
+    def exists(self, name):
+        return os.path.exists(os.path.join(self.media, name))
+
+    def test_deleting_a_kit_deletes_its_files_after_the_commit(self):
+        kit = full_kit(self.home, self.alice)
+        other = full_kit(self.home, self.alice)
+        self.assertEqual(len(stored_files(self.media)), 10)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.delete(detail(kit), **header(self.home))
+            # Not before the commit: a rolled back delete keeps its files.
+            self.assertEqual(len(stored_files(self.media)), 10)
+
+        self.assertEqual(response.status_code, 204, response.content[:300])
+        self.assertEqual(len(stored_files(self.media)), 5)
+        for field in FILE_FIELDS:
+            self.assertFalse(self.exists(getattr(kit, field).name), field)
+            self.assertEqual(getattr(other, field).read(), field.encode(), field)
+
+    def test_a_copy_keeps_its_files_when_the_original_is_deleted(self):
+        kit = full_kit(self.home, self.alice)
+        copy = BrandKit.objects.get(pk=self.client.post(duplicate(kit), **header(self.home)).data["id"])
+
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.delete(detail(kit), **header(self.home))
+
+        self.assertEqual(len(stored_files(self.media)), 5)
+        for field in FILE_FIELDS:
+            self.assertEqual(getattr(copy, field).read(), field.encode(), field)
+
+    def test_a_file_that_another_kit_uses_is_kept(self):
+        # Old data and seeds: two rows on one name, also in another field.
+        kit = full_kit(self.home, self.alice)
+        boss = make_user("boss")
+        sharing = BrandKit.objects.create(
+            workspace=boss.owned_workspaces.get(), name="Comparte",
+            watermark_logo=kit.watermark_logo.name, secondary_font=kit.primary_font.name,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.client.delete(detail(kit), **header(self.home)).status_code, 204)
+
+        self.assertTrue(self.exists(kit.watermark_logo.name))
+        self.assertTrue(self.exists(kit.primary_font.name))
+        self.assertEqual(len(stored_files(self.media)), 2)
+
+        # The last kit that uses them takes them.
+        with self.captureOnCommitCallbacks(execute=True):
+            sharing.delete()
+        self.assertEqual(stored_files(self.media), [])
+
+    def test_a_storage_error_does_not_fail_the_delete_and_logs_ids_only(self):
+        kit = full_kit(self.home, self.alice)
+        pk = kit.pk
+
+        with patch.object(FileSystemStorage, "delete", side_effect=OSError("/secret/path busy")):
+            with self.assertLogs("apps.videos.services.brand_kit_service", level="WARNING") as logs:
+                with self.captureOnCommitCallbacks(execute=True):
+                    response = self.client.delete(detail(kit), **header(self.home))
+
+        self.assertEqual(response.status_code, 204, response.content[:300])
+        self.assertFalse(BrandKit.objects.filter(pk=pk).exists())
+        self.assertEqual(len(logs.output), 5)
+        for line in logs.output:
+            self.assertIn(f"brand_kit.file_cleanup_failed brand_kit_id={pk} error=OSError", line)
+            self.assertNotIn("secret", line)
+            self.assertNotIn("assets/", line)
+
+    def test_replacing_or_removing_a_file_deletes_the_old_one(self):
+        kit = full_kit(self.home, self.alice)
+        old_logo, old_intro, kept_font = kit.watermark_logo.name, kit.intro_video.name, kit.primary_font.name
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.patch(
+                detail(kit), {"watermark_logo": _png("nuevo.png"), "intro_video": "", "name": "Otro"},
+                format="multipart", **header(self.home),
+            )
+
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        kit.refresh_from_db()
+        self.assertEqual(kit.watermark_logo.name, f"assets/logos/{kit.pk}/nuevo.png")
+        self.assertFalse(kit.intro_video)
+        self.assertFalse(self.exists(old_logo))
+        self.assertFalse(self.exists(old_intro))
+        self.assertTrue(self.exists(kept_font))
+        self.assertEqual(len(stored_files(self.media)), 4)
+
+    def test_a_replaced_file_that_another_kit_uses_is_kept(self):
+        kit = full_kit(self.home, self.alice)
+        old_logo = kit.watermark_logo.name
+        BrandKit.objects.create(workspace=self.home, name="Comparte", watermark_logo=old_logo)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.patch(
+                detail(kit), {"watermark_logo": _png("nuevo.png")}, format="multipart", **header(self.home),
+            )
+
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        self.assertTrue(self.exists(old_logo))
+
+    def test_an_edit_without_files_deletes_nothing(self):
+        kit = full_kit(self.home, self.alice)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.patch(detail(kit), {"name": "Otro"}, format="multipart", **header(self.home))
+
+        self.assertEqual(len(stored_files(self.media)), 5)
+
+
+def _png(name):
+    """A 1x1 PNG: the logo is an ImageField, so the upload has to be an image."""
+    import base64
+
+    data = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+    )
+    return ContentFile(data, name=name)
 
 
 class BucketStorage(Storage):

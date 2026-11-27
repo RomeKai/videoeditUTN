@@ -5,6 +5,28 @@ from django.core.validators import RegexValidator
 from django.utils.translation import gettext_lazy as _
 
 # --- 1. BRAND KIT ---
+def _kit_file_path(folder, instance, filename):
+    """
+    Each kit keeps its files in a folder of its own, so a file keeps the name
+    it was uploaded with: two kits with a «logo.png» never make the storage
+    add a suffix. Files stored before this (``assets/logos/logo.png``) stay
+    where they are.
+    """
+    return f"{folder}/{instance.pk}/{filename}"
+
+
+def kit_font_path(instance, filename):
+    return _kit_file_path('assets/fonts', instance, filename)
+
+
+def kit_logo_path(instance, filename):
+    return _kit_file_path('assets/logos', instance, filename)
+
+
+def kit_video_path(instance, filename):
+    return _kit_file_path('assets/videos', instance, filename)
+
+
 class BrandKit(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey('users.Workspace', on_delete=models.CASCADE, related_name='brand_kits')
@@ -14,17 +36,17 @@ class BrandKit(models.Model):
     description = models.TextField(blank=True)
     
     # Fuentes y Colores
-    primary_font = models.FileField(upload_to='assets/fonts/', null=True, blank=True)
-    secondary_font = models.FileField(upload_to='assets/fonts/', null=True, blank=True)
+    primary_font = models.FileField(upload_to=kit_font_path, null=True, blank=True)
+    secondary_font = models.FileField(upload_to=kit_font_path, null=True, blank=True)
     
     primary_color = models.CharField(max_length=7, default="#FFFFFF") # Hex
     secondary_color = models.CharField(max_length=7, default="#000000")
     accent_color = models.CharField(max_length=7, default="#FFFF00")
 
     # Assets Gráficos
-    watermark_logo = models.ImageField(upload_to='assets/logos/', null=True, blank=True)
-    intro_video = models.FileField(upload_to='assets/videos/', null=True, blank=True)
-    outro_video = models.FileField(upload_to='assets/videos/', null=True, blank=True)
+    watermark_logo = models.ImageField(upload_to=kit_logo_path, null=True, blank=True)
+    intro_video = models.FileField(upload_to=kit_video_path, null=True, blank=True)
+    outro_video = models.FileField(upload_to=kit_video_path, null=True, blank=True)
     
     is_default = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
