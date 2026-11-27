@@ -127,6 +127,12 @@ def upload_to_social_network(self, post_id):
        the provider call, with the post's idempotency key.
     4. A retryable error backs off (60, 120, 240 s); a permanent one, or an
        unknown outcome, fails the post with a code and is never retried.
+
+    `publish_key_unclear` is what makes the key safe across attempts: it is
+    set before each call and cleared only by a clear answer. While an earlier
+    attempt with the current key is unclear (it may have published), the key
+    never changes, so the provider refuses a second copy; and a refusal, or
+    running out of retries, is an unknown outcome, never "try again".
     """
     from apps.integrations import social
     from apps.integrations.social import errors as codes
@@ -161,6 +167,9 @@ def upload_to_social_network(self, post_id):
         logger.warning(f"🔒 [WORKER] Aborting post {post_id}: Already running.")
         return "Locked"
 
+    # Whether an earlier attempt with the current key ended without a clear answer, and whether this
+    # attempt is inside the provider call (an unexpected error there may come after it published).
+    unclear_before, sending = False, False
     try:
         with transaction.atomic():
             try:
@@ -197,8 +206,11 @@ def upload_to_social_network(self, post_id):
                 post.save(update_fields=['status', 'error_log', 'updated_at'])
                 # Committed on exit of the atomic block; raised after so the task is not reported as SUCCESS.
             else:
+                unclear_before = post.publish_key_unclear
                 post.status = ScheduledPost.Status.PROCESSING
-                post.save(update_fields=['status', 'updated_at'])
+                # Unclear until the provider answers clearly: a worker that dies in the call leaves it set.
+                post.publish_key_unclear = True
+                post.save(update_fields=['status', 'publish_key_unclear', 'updated_at'])
             key = social.idempotency_key(post.pk, post.publish_key_version)
 
         if failure is not None:
@@ -223,19 +235,24 @@ def upload_to_social_network(self, post_id):
             idempotency_key=key,
             tiktok=tiktok,
         )
+        sending = True
         result = provider.publish(profile, request)
+        sending = False
 
         # 3. Out. A TikTok video the network still processes has no link yet (`post_url` null).
         post.status = ScheduledPost.Status.PUBLISHED
         post.post_url = result.post_url
         post.external_id = result.external_id
         post.error_log = None
+        post.publish_key_unclear = False
         try:
             # Only these columns, and never an INSERT: a full save() of a row deleted
             # while the provider answered tries to insert it again and breaks on its clip.
             # In a savepoint: the error of a row that is gone must not break an outer transaction.
             with transaction.atomic():
-                post.save(update_fields=['status', 'post_url', 'external_id', 'error_log', 'updated_at'])
+                post.save(update_fields=[
+                    'status', 'post_url', 'external_id', 'error_log', 'publish_key_unclear', 'updated_at',
+                ])
         except DatabaseError:
             if ScheduledPost.objects.filter(id=post_id).exists():
                 raise
@@ -246,21 +263,31 @@ def upload_to_social_network(self, post_id):
         return f"Published via {provider.display_name}: {post.platform}"
 
     except social.RetryableError as exc:
-        # Nothing went out (or the provider refuses this key if it did): backoff, the same key,
-        # unless the provider answered for certain that nothing went out (`key_spent`).
+        # Backoff with the same key. A new key only after a clear "nothing went out" (`key_spent`)
+        # with no earlier attempt of this key unclear: otherwise the provider could publish twice.
         attempts = self.request.retries + 1
+        if exc.maybe_sent:
+            unclear = True  # this attempt may have published
+        elif exc.key_spent and not unclear_before:
+            unclear = False
+        else:
+            unclear = unclear_before  # nothing reached the provider, or an earlier attempt is still unclear
+        new_key = exc.key_spent and not unclear_before
         logger.warning(
-            "publish.retryable post_id=%s attempt=%d code=%s detail=%s", post_id, attempts, exc.code, exc.detail,
+            "publish.retryable post_id=%s attempt=%d code=%s detail=%s unclear=%s new_key=%s",
+            post_id, attempts, exc.code, exc.detail, unclear, new_key,
         )
         # Updated by id: `post` may not be bound if the failure happened before the fetch.
-        changes = {'retry_count': F('retry_count') + 1}
-        if exc.key_spent:
+        changes = {'retry_count': F('retry_count') + 1, 'publish_key_unclear': unclear}
+        if new_key:
             changes['publish_key_version'] = F('publish_key_version') + 1
         if self.request.retries >= self.max_retries:
-            # Out of retries: FAILED, never left in PROCESSING with no task behind it.
+            # Out of retries: FAILED, never left in PROCESSING with no task behind it. If an attempt
+            # may have published, the user must check the network, not be told to try again.
+            code = codes.OUTCOME_UNKNOWN if unclear else codes.PROVIDER_UNAVAILABLE
             ScheduledPost.objects.filter(id=post_id).update(
                 status=ScheduledPost.Status.FAILED,
-                error_log=f"{codes.PROVIDER_UNAVAILABLE} (after {attempts} attempts; {exc.detail})",
+                error_log=f"{code} (after {attempts} attempts; {exc.detail})",
                 **changes,
             )
             raise
@@ -283,15 +310,14 @@ def upload_to_social_network(self, post_id):
         raise
 
     except social.PermanentError as exc:
-        code = exc.code
-        if code == codes.PROVIDER_REJECTED and self.request.retries > 0:
-            # An earlier attempt with this same key may have reached the provider, and a
-            # repeated key is refused with a code Ayrshare does not document: it may be out.
-            code = codes.OUTCOME_UNKNOWN
+        # A clear refusal of this attempt. But if an earlier attempt with the same key is unclear, the
+        # refusal may be the provider's answer to a repeated key (its code is not documented): it may be out.
+        code = codes.OUTCOME_UNKNOWN if unclear_before else exc.code
         logger.error("publish.rejected post_id=%s code=%s detail=%s", post_id, code, exc.detail)
         ScheduledPost.objects.filter(id=post_id).update(
             status=ScheduledPost.Status.FAILED,
             retry_count=F('retry_count') + 1,
+            publish_key_unclear=unclear_before,
             error_log=f"{code} ({exc.detail})" if exc.detail else code,
         )
         raise
@@ -301,10 +327,11 @@ def upload_to_social_network(self, post_id):
         raise
 
     except Exception as e:
-        logger.error("❌ [WORKER] Critical failure: %s", type(e).__name__)
+        logger.error("❌ [WORKER] Critical failure: %s sending=%s", type(e).__name__, sending)
         ScheduledPost.objects.filter(id=post_id).update(
             status=ScheduledPost.Status.FAILED,
-            error_log=f"Critical: {str(e)}",
+            # Inside the provider call the request may already have published: never "try again".
+            error_log=f"{codes.OUTCOME_UNKNOWN} (critical {type(e).__name__})" if sending else f"Critical: {str(e)}",
         )
         # Re-raised so Celery records FAILURE instead of reporting a silent SUCCESS.
         raise

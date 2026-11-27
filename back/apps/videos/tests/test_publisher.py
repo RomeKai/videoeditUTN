@@ -8,12 +8,15 @@ user's "Reintentar" can publish again.
 import threading
 from unittest.mock import MagicMock, patch
 
+from http.client import RemoteDisconnected
+
 import requests
 from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
+from urllib3.exceptions import ProtocolError
 
 from apps.integrations.models import SocialProfile
 from apps.integrations.social import (
@@ -178,13 +181,31 @@ class OutcomeTests(PublisherHarness, TestCase):
         self.assertEqual((post.status, post.error_log), (Status.FAILED, "outcome_unknown (ayrshare http=504)"))
         self.assertIn("No sabemos si se publicó", ScheduledPostSerializer(post).data["error_message"])
 
-    def test_a_refusal_after_a_retry_may_be_the_repeated_key(self):
-        """The first attempt may have reached the provider: an unexplained refusal of the same key is unknown."""
+    def test_a_refusal_after_an_unclear_attempt_may_be_the_repeated_key(self):
+        """The first attempt may have published (a 5xx that said nothing): a refusal of the same key is unknown."""
         post = self.make_post()
-        with patch(PUBLISH, side_effect=[RetryableError(detail="ayrshare ConnectionError"),
+        with patch(PUBLISH, side_effect=[RetryableError(detail="ayrshare http=502", maybe_sent=True),
                                          PermanentError("provider_rejected", "ayrshare http=400 code=999")]):
             self.run_task(post)
         self.assertEqual((post.status, post.error_log), (Status.FAILED, "outcome_unknown (ayrshare http=400 code=999)"))
+
+    def test_a_refusal_after_attempts_that_sent_nothing_is_a_refusal(self):
+        """Review of #186: retries where nothing reached the provider (the lock, no connection) prove nothing."""
+        post = self.make_post()
+        with patch(PUBLISH, side_effect=[RetryableError(detail="ayrshare ConnectTimeout"),
+                                         RetryableError(detail="ayrshare http=429"),
+                                         PermanentError("provider_rejected", "ayrshare http=400 code=999")]):
+            self.run_task(post)
+        self.assertEqual((post.status, post.error_log), (Status.FAILED, "provider_rejected (ayrshare http=400 code=999)"))
+        self.assertFalse(post.publish_key_unclear)
+
+    def test_an_unexpected_error_in_the_call_may_have_published(self):
+        """A bug after the request went out is not «try again»."""
+        post = self.make_post()
+        with patch(PUBLISH, side_effect=KeyError("postIds")):
+            self.run_task(post)
+        self.assertEqual((post.status, post.error_log), (Status.FAILED, "outcome_unknown (critical KeyError)"))
+        self.assertEqual(ScheduledPostSerializer(post).data["error_code"], "outcome_unknown")
 
     def test_a_post_that_moved_on_is_not_published_by_a_late_message(self):
         for status in (Status.DRAFT, Status.SCHEDULED, Status.FAILED):
@@ -267,10 +288,13 @@ class IdempotencyKeyTests(PublisherHarness, TestCase):
             self.run_task(post)
         api = APIClient()
         api.force_authenticate(self.user)
+        self.assertTrue(post.publish_key_unclear)
         response = api.post(reverse("scheduled-post-retry", args=[post.pk]), HTTP_X_WORKSPACE_ID=str(self.workspace.pk))
         self.assertEqual(response.status_code, 200, response.content)
         post.refresh_from_db()
-        self.assertEqual((post.status, post.publish_key_version, post.retry_count), (Status.SCHEDULED, 1, 0))
+        # A key the provider never saw: nothing is unclear about it.
+        self.assertEqual((post.status, post.publish_key_version, post.retry_count, post.publish_key_unclear),
+                         (Status.SCHEDULED, 1, 0, False))
 
         with patch(PUBLISH, return_value=PUBLISHED) as again:
             dispatch_scheduled_posts_batch()  # eager in tests: the task runs now
@@ -287,18 +311,37 @@ class IdempotencyKeyTests(PublisherHarness, TestCase):
         self.assertEqual((post.status, post.publish_key_version), (Status.DRAFT, 0))
 
 
+def ayrshare_answer(status, body=None):
+    response = MagicMock(headers={}, status_code=status)
+    if body is None:
+        response.json.side_effect = ValueError("an HTML page of the CDN")
+    else:
+        response.json.return_value = body
+    return response
+
+
+RATE_LIMITED = (429, {"status": "error", "code": 0, "message": "Too many requests"})
+TIKTOK_DOWN = (503, {"status": "error", "errors": [{"code": 531, "retryAvailable": True, "platform": "instagram"}]})
+BAD_GATEWAY = (502, None)
+
+
 class FakeAyrshare:
     """
     Ayrshare's /post as its documentation says: a key it already saw is refused
     whatever happened to the first post. ``drop_answer`` loses the answer of the
-    next accepted post (the connection is cut after Ayrshare published it).
+    next post it publishes: ``"reset"`` cuts the connection after it published,
+    ``"bad_gateway"`` answers a 502 page that says nothing. ``busy`` answers the
+    calls after that one with these (status, body) before looking at the key
+    (the rate limit, an outage).
     """
 
-    def __init__(self):
-        self.keys, self.published, self.drop_answer = set(), [], False
+    def __init__(self, drop_answer=None, busy=()):
+        self.keys, self.published, self.drop_answer, self.busy = set(), [], drop_answer, list(busy)
 
     def __call__(self, method, url, json=None, headers=None, timeout=None):
         key = json["idempotencyKey"]
+        if self.published and self.busy:
+            return ayrshare_answer(*self.busy.pop(0))
         response = MagicMock(headers={})
         if key in self.keys:
             response.status_code = 400
@@ -309,9 +352,13 @@ class FakeAyrshare:
             return response
         self.keys.add(key)
         self.published.append(key)
-        if self.drop_answer:
-            self.drop_answer = False
-            raise requests.exceptions.ConnectionError("Connection aborted.")
+        lost, self.drop_answer = self.drop_answer, None
+        if lost == "reset":
+            raise requests.exceptions.ConnectionError(
+                ProtocolError("Connection aborted.", RemoteDisconnected("Remote end closed connection")),
+            )
+        if lost == "bad_gateway":
+            return ayrshare_answer(*BAD_GATEWAY)
         response.status_code = 200
         response.json.return_value = {"status": "success", "id": f"ayr-{len(self.published)}", "errors": [], "postIds": [
             {"status": "success", "platform": "instagram", "id": "1787", "postUrl": "https://www.instagram.com/reel/x/"},
@@ -320,12 +367,15 @@ class FakeAyrshare:
 
 
 class FakeAyrshareTests(PublisherHarness, TestCase):
-    def test_a_lost_answer_is_never_published_twice_by_the_worker_but_reintentar_can(self):
-        ayrshare = FakeAyrshare()
-        ayrshare.drop_answer = True
+    def publish_against(self, ayrshare):
         post = self.make_post()
         with patch(REQUEST, side_effect=ayrshare):
             self.run_task(post)
+        return post
+
+    def test_a_lost_answer_is_never_published_twice_by_the_worker_but_reintentar_can(self):
+        ayrshare = FakeAyrshare(drop_answer="bad_gateway")
+        post = self.publish_against(ayrshare)
         # Published once; the worker's retry carried the same key and Ayrshare refused it.
         self.assertEqual(len(ayrshare.published), 1)
         self.assertEqual(post.status, Status.FAILED)
@@ -340,7 +390,75 @@ class FakeAyrshareTests(PublisherHarness, TestCase):
             dispatch_scheduled_posts_batch()
         post.refresh_from_db()
         self.assertEqual(len(ayrshare.published), 2)
-        self.assertEqual((post.status, post.external_id), (Status.PUBLISHED, "ayr-2"))
+        self.assertEqual((post.status, post.external_id, post.publish_key_unclear), (Status.PUBLISHED, "ayr-2", False))
+
+    def test_a_connection_cut_after_sending_is_never_sent_again(self):
+        """Review of #186: Ayrshare may still be publishing it (it downloads the video inside the request)."""
+        ayrshare = FakeAyrshare(drop_answer="reset")
+        post = self.publish_against(ayrshare)
+        self.assertEqual(len(ayrshare.published), 1)
+        self.assertEqual(post.retry_count, 0)
+        self.assertEqual((post.status, post.error_log), (Status.FAILED, "outcome_unknown (ayrshare ConnectionError)"))
+
+    def test_a_refusal_before_the_key_after_a_lost_answer_never_changes_the_key(self):
+        """
+        Review of #186: the first answer is lost after Ayrshare published; the next attempt is refused
+        before Ayrshare looks at the key (rate limit, or TikTok down with retryAvailable). A new key there
+        would publish a second copy: the key stays, Ayrshare refuses the third attempt as a repeat.
+        """
+        for name, busy in (("429", [RATE_LIMITED]), ("503 retryAvailable", [TIKTOK_DOWN])):
+            with self.subTest(busy=name):
+                ayrshare = FakeAyrshare(drop_answer="bad_gateway", busy=busy)
+                post = self.publish_against(ayrshare)
+                self.assertEqual(ayrshare.published, [idempotency_key(post.pk, 0)])
+                self.assertEqual(post.publish_key_version, 0)
+                self.assertEqual((post.status, post.error_log),
+                                 (Status.FAILED, "outcome_unknown (ayrshare http=400 code=999 idempotency)"))
+
+    def test_running_out_of_retries_after_a_lost_answer_is_an_unknown_outcome(self):
+        """Review of #186: never «Probá de nuevo» for a post that may be out (and «Reintentar» would duplicate it)."""
+        ayrshare = FakeAyrshare(drop_answer="bad_gateway", busy=[BAD_GATEWAY] * 3)
+        post = self.publish_against(ayrshare)
+        self.assertEqual(len(ayrshare.published), 1)
+        self.assertEqual((post.status, post.error_log),
+                         (Status.FAILED, "outcome_unknown (after 4 attempts; ayrshare http=502)"))
+        row = ScheduledPostSerializer(post).data
+        self.assertEqual(row["error_code"], "outcome_unknown")
+        self.assertIn("No sabemos si se publicó", row["error_message"])
+
+    def test_without_a_lost_answer_a_temporary_refusal_gets_a_new_key(self):
+        """The other side: nothing unclear before, Ayrshare says nothing went out and to retry: a fresh key works."""
+        ayrshare = FakeAyrshare()
+        calls = []
+
+        def down_once(*args, **kwargs):
+            calls.append(1)
+            return ayrshare_answer(*TIKTOK_DOWN) if len(calls) == 1 else ayrshare(*args, **kwargs)
+
+        post = self.make_post()
+        with patch(REQUEST, side_effect=down_once):
+            self.run_task(post)
+        self.assertEqual((post.status, post.publish_key_version, post.publish_key_unclear), (Status.PUBLISHED, 1, False))
+        self.assertEqual(ayrshare.published, [idempotency_key(post.pk, 1)])
+
+    def test_a_worker_that_dies_in_the_call_leaves_the_key_unclear(self):
+        """The mark is set before the call: a worker killed inside it (no handler runs) leaves it set."""
+        post = self.make_post()
+        with patch(PUBLISH, side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+            upload_to_social_network.apply(args=[str(post.pk)])
+        post.refresh_from_db()
+        self.assertEqual((post.status, post.publish_key_unclear), (Status.PROCESSING, True))
+
+    def test_a_redelivery_after_a_dead_worker_is_an_unknown_outcome(self):
+        """A redelivery after a crash inside the call: Ayrshare refusing the key is an unknown outcome."""
+        ayrshare = FakeAyrshare()
+        post = self.make_post(status=Status.PROCESSING)
+        ayrshare.keys.add(idempotency_key(post.pk, 0))  # the dead worker's request reached Ayrshare
+        ScheduledPost.objects.filter(pk=post.pk).update(publish_key_unclear=True)
+        with patch(REQUEST, side_effect=ayrshare):
+            self.run_task(post)
+        self.assertEqual((post.status, post.error_log),
+                         (Status.FAILED, "outcome_unknown (ayrshare http=400 code=999 idempotency)"))
 
 
 class PublishLockRaceTests(PublisherHarness, TransactionTestCase):

@@ -261,14 +261,34 @@ sequenceDiagram
 `apps.integrations.social` es lo único que habla con un servicio de publicación. El resto del backend usa sus tipos (`PublishRequest`, `PublishResult`, `Account`, `TikTokOptions`, las redes como `ScheduledPost.Platform`) y sus errores, nunca los nombres, ids ni mensajes de Ayrshare.
 
 - **Interfaz (`SocialProvider`).** `create_profile(workspace)`, `connect_url(profile, platform, return_url)`, `accounts(profile)` (una `Account` por red: `connected`, `expired` o `disconnected`, con `username` y `connected_at`), `disconnect(profile, platform)`, `delete_profile(profile)` y `publish(profile, request)`. `profile` es el `SocialProfile` del espacio. Un segundo proveedor (Upload-Post) implementa la misma interfaz: su perfil es un `username`, su link es `generate-jwt`, su publicación es multipart con el header `Idempotency-Key`, y una subida asíncrona sería un `PublishResult` pendiente con su `request_id`.
-- **Perfil (`SocialProfile`).** Uno por espacio (`OneToOneField`). `provider_ref` es la Profile-Key de Ayrshare: una credencial que nunca va a la web, ni a los logs, ni a `error_log`. La migración `0002_perfiles_desde_ayrshare_profile_key` copió las `Workspace.ayrshare_profile_key` que había. Esa columna queda sin uso y deprecada (el admin la oculta): un worker de la versión anterior todavía puede leerla durante un deploy, y se borra más adelante.
-- **Errores.** `RetryableError`: no salió nada, o el proveedor rechaza la misma clave si salió (error de conexión, 429, un 5xx sin explicación, o una respuesta con `retryAvailable`); el worker reintenta con backoff y, si el proveedor pidió esperar (`Retry-After`), espera eso, hasta 240 s (`LONGEST_RETRY_COUNTDOWN`). `PermanentError`: no salió y mandarlo igual no cambia nada; falla con su código, sin reintento. `OutcomeUnknownError`: pudo haber salido (timeout de lectura, 504, una respuesta 2xx que no se puede leer); falla con `outcome_unknown` y nunca se reintenta solo. Cada error lleva `code` y `detail` (HTTP, los códigos numéricos del proveedor o la clase de la excepción), nunca el mensaje del proveedor: puede citar el caption.
+- **Perfil (`SocialProfile`).** Uno por espacio (`OneToOneField`). `provider_ref` es la Profile-Key de Ayrshare: una credencial que nunca va a la web, ni a los logs, ni a `error_log`. La migración `0002_perfiles_desde_ayrshare_profile_key` copió las `Workspace.ayrshare_profile_key` que había. Esa columna queda sin uso y deprecada (el admin la oculta): un worker de la versión anterior todavía puede leerla durante un deploy, y se borra más adelante. Si se vuelve atrás la migración, las keys de los perfiles se copian a esa columna donde esté vacía. El admin («Perfiles de redes») nunca muestra la key: solo deja escribir una nueva (`SocialProfileForm`).
+- **Nota de deploy (perfiles).** Mientras quedan procesos de la versión anterior:
+  - una key que alguien escriba en el admin viejo (en `Workspace.ayrshare_profile_key`) después de correr `0002` no se copia: hay que cargarla de nuevo en «Perfiles de redes»;
+  - un proceso web viejo que borra un espacio con perfil no conoce la tabla y su borrado falla al confirmar (la clave foránea): responde 500 y no borra nada. Después del reinicio, borrar funciona.
+
+  No se cambió la clave foránea a `ON DELETE CASCADE` en la base porque recrearla bloquea `users_workspace` mientras corre la migración.
+- **Errores.** Cada error lleva `code` y `detail` (HTTP, los códigos numéricos del proveedor o la clase de la excepción), nunca el mensaje del proveedor: puede citar el caption.
+  - `RetryableError`: vale la pena mandarlo de nuevo, con backoff. Si el proveedor pidió esperar (`Retry-After`), espera eso, hasta 240 s (`LONGEST_RETRY_COUNTDOWN`). Hay tres casos:
+    - no llegó nada al proveedor: conexión rechazada, sin nombre, timeout al conectar, o un 429;
+    - el proveedor respondió seguro que no salió y que se puede reintentar (`key_spent`: `retryAvailable`);
+    - un 5xx que no explica qué pasó (`maybe_sent`: pudo haber salido).
+  - `PermanentError`: no salió y mandarlo igual no cambia nada. Falla con su código, sin reintento.
+  - `OutcomeUnknownError`: pudo haber salido. Falla con `outcome_unknown` y nunca se reintenta solo. Son estos casos:
+    - un timeout de lectura;
+    - una conexión cortada después de mandar el pedido (`ProtocolError`/`RemoteDisconnected`, o una respuesta cortada a la mitad): Ayrshare baja el video dentro del pedido, así que puede seguir publicándolo, y nada documenta que rechace una clave todavía en curso;
+    - un 504, con o sin cuerpo;
+    - una respuesta 2xx que no se puede leer;
+    - un error inesperado dentro de la llamada al proveedor.
 - **Clave de idempotencia.** `idempotency_key(post_id, publish_key_version)` (`onecreator-post-<id>-v<n>`). Ayrshare rechaza una clave repetida para siempre, aunque el primer post haya fallado. Por eso:
   - los reintentos automáticos mandan la misma clave: si un intento llegó y se perdió la respuesta, el siguiente es rechazado y no se publica dos veces;
-  - `retry_post` (el «Reintentar» del usuario) suma 1 a `publish_key_version`: la publicación puede volver a salir, que es lo que el usuario pidió después de que la web le avisó que un post trabado o incierto puede estar publicado;
-  - una respuesta definitiva de que no salió y se puede reintentar (`key_spent`: un 429 o un 503 con cuerpo, o `retryAvailable`) también la suma, porque la clave ya está gastada;
-  - el código del rechazo por clave repetida no está documentado: el proveedor lo reconoce por su mensaje, y un rechazo sin explicación en un reintento automático se guarda como `outcome_unknown`.
-- **Ayrshare (`AyrshareProvider`).** `POST /post` con el header `Profile-Key`, `isVideo: true` (la URL firmada no termina en `.mp4`), `idempotencyKey`, `tikTokOptions` (`visibility`: `PUBLIC_TO_EVERYONE` → `public`, `FOLLOWER_OF_CREATOR` → `followers`, `MUTUAL_FOLLOW_FRIENDS` → `friends`, `SELF_ONLY` → `private`; `disableComments`, `disableDuet` y `disableStitch` son lo contrario de `allow_*`; `isBrandOrganic` e `isBrandedContent`) y, en YouTube, `youTubeOptions` con el título (hasta 100 caracteres, sin `<` ni `>`), `visibility: "public"` (el default de Ayrshare es privado) y `shorts: true`. El éxito lo decide el cuerpo: `status` y la línea de la red en `postIds` (un 400 puede traerla en éxito; un 200 puede decir error), también dentro de `posts` cuando la respuesta viene por perfil. Una llamada sin Profile-Key actuaría sobre el perfil principal de la cuenta: sin `provider_ref` no se manda nada.
+  - `publish_key_unclear` marca que la clave actual se mandó sin una respuesta clara. El worker la prende antes de cada llamada (un worker que muere adentro la deja prendida), la apaga cuando hay una respuesta clara y la deja prendida después de un `maybe_sent`. Mientras está prendida:
+    - el worker nunca cambia la clave, ni siquiera con un `key_spent`, porque un 429 o un 503 se cortan antes de mirar la clave y no dicen nada del intento anterior;
+    - un rechazo (`PermanentError`) se guarda como `outcome_unknown`, porque puede ser el de la clave repetida;
+    - quedarse sin reintentos también es `outcome_unknown`, nunca `provider_unavailable` («Probá de nuevo»), porque un «Reintentar» con clave nueva lo duplicaría;
+  - sin nada pendiente, un `key_spent` suma 1 a `publish_key_version`, porque esa clave ya está gastada. Un 429 o un fallo al conectar no la cambian;
+  - `retry_post` (el «Reintentar» del usuario) suma 1 a `publish_key_version` y apaga la marca: la publicación puede volver a salir, que es lo que el usuario pidió después de que la web le avisó que un post trabado o incierto puede estar publicado;
+  - el código del rechazo por clave repetida no está documentado: el proveedor lo reconoce por su mensaje (`idempotency` en el detalle), y la marca cubre el resto.
+- **Ayrshare (`AyrshareProvider`).** `POST /post` con el header `Profile-Key`, `isVideo: true` (la URL firmada no termina en `.mp4`), `idempotencyKey`, `tikTokOptions` (`visibility`: `PUBLIC_TO_EVERYONE` → `public`, `FOLLOWER_OF_CREATOR` → `followers`, `MUTUAL_FOLLOW_FRIENDS` → `friends`, `SELF_ONLY` → `private`; `disableComments`, `disableDuet` y `disableStitch` son lo contrario de `allow_*`; `isBrandOrganic` e `isBrandedContent`) y, en YouTube, `youTubeOptions` con el título (hasta 100 caracteres, sin `<` ni `>`), `visibility: "public"` (el default de Ayrshare es privado) y `shorts: true`. El éxito lo decide el cuerpo: `status` y la línea de la red en `postIds` (un 400 puede traerla en éxito; un 200 puede decir error; una línea sin `status` propio en una respuesta que dice `success` es éxito), también dentro de `posts` cuando la respuesta viene por perfil. Una llamada sin Profile-Key actuaría sobre el perfil principal de la cuenta: sin `provider_ref` no se manda nada.
 
 | Código de Ayrshare | Nuestro código |
 |--------------------|----------------|
@@ -276,7 +296,10 @@ sequenceDiagram
 | 161, 129 (renovar la autorización) | `account_expired` |
 | 106 (cuota mensual, HTTP 429) | `quota_exceeded` |
 | 137 (contenido igual en las últimas 48 h) | `duplicate_content` |
-| `retryAvailable: true`, 429 sin 106, 502 o 503 con cuerpo | reintentable con clave nueva |
+| `retryAvailable: true` | reintentable con clave nueva (`key_spent`), si no hay un intento anterior sin respuesta clara |
+| HTTP 429 sin 106 | reintentable con la misma clave |
+| 504 sin código conocido | `outcome_unknown` |
+| Otro 5xx sin código conocido (con cuerpo de error o sin cuerpo) | reintentable con la misma clave (`maybe_sent`) |
 | HTTP 401 o falta `AYRSHARE_API_KEY` | `provider_not_configured` |
 | Cualquier otro rechazo | `provider_rejected` |
 
@@ -344,9 +367,10 @@ Van primero en `error_log` (`<código>` o `<código> (<detalle>)`); `ScheduledPo
 | Se borra el workspace con un post `QUEUED` o `PROCESSING` | El borrado responde 409 `posts_in_flight` mientras la tarea puede estar trabajando: `PROCESSING` con `updated_at` dentro de `POST_PROCESSING_WINDOW`, o `QUEUED` hasta `POST_QUEUED_GRACE` después de `publish_at`. Un post más viejo está trabado y no frena el borrado. Los `SCHEDULED` se borran con el workspace y no se publican. | `WorkspaceDetailView.delete` (`apps/users/views_workspaces.py`) |
 | Clip sin `s3_object_key` u otro error inesperado | `FAILED` con `Critical: <mensaje>` y la excepción se relanza. | `upload_to_social_network` |
 | Redis de la cache no contesta al tomar el lock | `publish.lock_unavailable` y reintento a 60, 120 y 240 s. Al agotarse, `FAILED` con `Lock unavailable after N attempts: <clase>`. Nunca publica sin lock. | `upload_to_social_network` |
-| `RetryableError` | `retry_count` + 1, `error_log` `Retry N: <código> (<detalle>)`, reintento a 60, 120 y 240 s (`max_retries=3`) con la misma clave de idempotencia (o una nueva si `key_spent`). Al agotarse, el post pasa a `FAILED` con `provider_unavailable (after N attempts; <detalle>)` y la excepción se propaga. | `upload_to_social_network` |
-| `PermanentError` | `retry_count` + 1 y `FAILED` con `<código> (<detalle>)`, sin reintento. Un `provider_rejected` en un reintento automático se guarda como `outcome_unknown`: el intento anterior pudo llegar y el rechazo puede ser el de la clave repetida. | `upload_to_social_network` |
-| El proveedor no responde | `requests.request` usa `timeout=PUBLISH_TIMEOUT_SECONDS` (10 s para conectar, 300 s para leer). Si no conecta, es `RetryableError` y se reintenta como arriba. Si conectó pero no contestó a tiempo (`ReadTimeout`), o contestó 504, es `OutcomeUnknownError`: el post queda `FAILED` con `outcome_unknown` sin reintento automático, porque pudo haberse publicado. El lock del post dura el timeout de lectura más 300 s. | `AyrshareProvider.publish`, `upload_to_social_network` |
+| `RetryableError` | `retry_count` + 1, `error_log` `Retry N: <código> (<detalle>)`, reintento a 60, 120 y 240 s (`max_retries=3`) con la misma clave de idempotencia (una nueva solo con `key_spent` y la marca apagada). Al agotarse, el post pasa a `FAILED` con `provider_unavailable (after N attempts; <detalle>)`, o con `outcome_unknown (after N attempts; …)` si `publish_key_unclear` quedó prendida, y la excepción se propaga. | `upload_to_social_network` |
+| `PermanentError` | `retry_count` + 1 y `FAILED` con `<código> (<detalle>)`, sin reintento. Con `publish_key_unclear` prendida de un intento anterior, `outcome_unknown`: el rechazo puede ser el de la clave repetida. Reintentos que no mandaron nada (el lock, sin conexión, 429) no la prenden. | `upload_to_social_network` |
+| El proveedor no responde | `requests.request` usa `timeout=PUBLISH_TIMEOUT_SECONDS` (10 s para conectar, 300 s para leer). Si no conecta (o se rechaza la conexión, o no resuelve el nombre), es `RetryableError` y se reintenta como arriba. Si el pedido salió y no hubo respuesta (`ReadTimeout`, una conexión cortada después de mandarlo, una respuesta cortada), o contestó 504, es `OutcomeUnknownError`: el post queda `FAILED` con `outcome_unknown` sin reintento automático, porque pudo haberse publicado o seguir publicándose. El lock del post dura el timeout de lectura más 300 s. | `AyrshareProvider.publish`, `upload_to_social_network` |
+| Un error inesperado dentro de la llamada al proveedor | `FAILED` con `outcome_unknown (critical <clase>)`: el pedido pudo haber salido. Antes de la llamada (R2, por ejemplo), sigue siendo `Critical: <mensaje>`. | `upload_to_social_network` |
 
 ## Datos que escribe
 
@@ -356,7 +380,8 @@ Van primero en `error_log` (`<código>` o `<código> (<detalle>)`); `ScheduledPo
   - `status`: transiciones del diagrama.
   - `error_log`: códigos de SEO de la tabla anterior; en la publicación, los códigos de su tabla con su detalle (nunca el mensaje del proveedor), `Retry N: …` entre intentos, `Lock unavailable after N attempts: <clase>` o `Critical: <mensaje>` ante un error inesperado. Al publicar queda vacío.
   - `post_url` y `external_id`: el link de la red (nulo mientras TikTok procesa) y el id del post en el proveedor.
-  - `publish_key_version`: la versión de la clave de idempotencia; la suben `retry_post` y una respuesta con `key_spent`.
+  - `publish_key_version`: la versión de la clave de idempotencia; la suben `retry_post` y una respuesta con `key_spent` sin un intento anterior pendiente.
+  - `publish_key_unclear`: la clave actual se mandó sin una respuesta clara todavía (ver [Capa de proveedores](#capa-de-proveedores)). La apagan una respuesta clara, un post publicado y `retry_post`.
   - `retry_count`: intentos fallidos contra el proveedor.
 - **`ScheduledPost` desde la API**: `status`, `publish_at`, `caption`, `hashtags`, `tiktok`, `seo_requested_at`, `text_edited_at`, al mandar un borrador o reintentar `error_log` vacío, y al reintentar una publicación `publish_key_version` + 1. `retry_count` no cambia.
 - **`PostIdempotencyKey`**: workspace, clave, huella del pedido y los ids de los posts que creó.

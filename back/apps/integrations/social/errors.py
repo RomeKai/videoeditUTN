@@ -1,15 +1,18 @@
 """
 Errors of the social publishing providers, by what the caller may do next.
 
-- RetryableError: nothing was published, or the provider would refuse the
-  same idempotency key if it had been: the publisher sends it again with
-  backoff. A connection error, a rate limit (429), a 5xx the provider did not
-  explain, or a definitive answer that it may be tried again.
+- RetryableError: worth sending again with backoff. Either nothing reached
+  the provider (no connection, a rate limit), or it answered for certain that
+  nothing went out and it may work later (`key_spent`), or a 5xx did not say
+  what happened (`maybe_sent`: the publisher then keeps the same idempotency
+  key until it gets a clear answer, and never tells the user to retry).
 - PermanentError: nothing was published and sending it again as it is will
   not change that. Never retried; `code` says why.
 - OutcomeUnknownError: the request may have published the post (a read
-  timeout, a 504). Never retried automatically: a person checks the network
-  and decides (the API's "Reintentar").
+  timeout, a connection cut after the request was sent, a 504). Never retried
+  automatically: the provider may still be working on it (Ayrshare downloads
+  the video inside the request), and nothing documents that it refuses a key
+  still in flight. A person checks the network and decides ("Reintentar").
 
 `code` is one of the codes below: the API maps it to a sentence in Spanish
 (serializers_social.PUBLISH_ERROR_MESSAGES). `detail` is for error_log and
@@ -56,16 +59,20 @@ class RetryableError(SocialProviderError):
     """
     ``retry_after``: seconds the provider asked to wait, if it said.
     ``key_spent``: the provider answered this request (it may have stored its
-    idempotency key), and said for certain that nothing went out: the next
+    idempotency key) and said for certain that nothing went out: the next
     attempt needs a new key, or the provider would refuse it as a repeat.
+    ``maybe_sent``: the request reached the provider and the answer did not
+    say what happened (a 5xx without an explanation): it may have published.
+    Neither: nothing reached the provider.
     """
 
     default_code = PROVIDER_UNAVAILABLE
 
-    def __init__(self, code=None, detail='', retry_after=None, key_spent=False):
+    def __init__(self, code=None, detail='', retry_after=None, key_spent=False, maybe_sent=False):
         super().__init__(code, detail)
         self.retry_after = retry_after
         self.key_spent = key_spent
+        self.maybe_sent = maybe_sent and not key_spent
 
 
 class PermanentError(SocialProviderError):

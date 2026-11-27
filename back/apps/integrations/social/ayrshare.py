@@ -39,6 +39,8 @@ from datetime import datetime, timezone as dt_timezone
 
 import requests
 from django.conf import settings
+from urllib3 import exceptions as urllib3_exceptions
+from urllib3.exceptions import ConnectTimeoutError, MaxRetryError
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -113,7 +115,7 @@ class AyrshareProvider(SocialProvider):
     def create_profile(self, workspace):
         body = {'title': profile_title(workspace), 'topHeader': LINKING_PAGE_HEADER}
         # A read timeout may have created it: unknown, not retryable.
-        data = self._call('post', '/profiles', 'create_profile', json=body, unknown_on_read_timeout=True)
+        data = self._call('post', '/profiles', 'create_profile', json=body, unknown_if_maybe_sent=True)
         ref = data.get('profileKey')
         if not isinstance(ref, str) or not ref:
             raise OutcomeUnknownError(detail='ayrshare create_profile answered no profileKey')
@@ -176,7 +178,7 @@ class AyrshareProvider(SocialProvider):
             # Public: the user asked to publish it (Ayrshare's default is private).
             payload['youTubeOptions'] = {'title': _youtube_title(request.title), 'visibility': 'public', 'shorts': True}
 
-        response = self._send('post', '/post', 'publish', key, payload, PUBLISH_TIMEOUT_SECONDS, unknown_on_read_timeout=True)
+        response = self._send('post', '/post', 'publish', key, payload, PUBLISH_TIMEOUT_SECONDS, unknown_if_maybe_sent=True)
         try:
             result = _publish_outcome(response, network)
         except SocialProviderError as exc:
@@ -190,9 +192,9 @@ class AyrshareProvider(SocialProvider):
 
     # --- HTTP ---
 
-    def _call(self, method, path, op, profile_key=None, json=None, unknown_on_read_timeout=False):
+    def _call(self, method, path, op, profile_key=None, json=None, unknown_if_maybe_sent=False):
         """A call other than publishing: its answer's body, or the error by HTTP status and Ayrshare's code."""
-        response = self._send(method, path, op, profile_key, json, ADMIN_TIMEOUT_SECONDS, unknown_on_read_timeout)
+        response = self._send(method, path, op, profile_key, json, ADMIN_TIMEOUT_SECONDS, unknown_if_maybe_sent)
         body = _json(response) or {}
         codes = _codes([body])
         if 200 <= response.status_code < 300 and body.get('status') != 'error':
@@ -203,11 +205,23 @@ class AyrshareProvider(SocialProvider):
             raise PermanentError(ACCOUNT_NOT_CONNECTED, detail)
         if response.status_code == 401:
             raise PermanentError(PROVIDER_NOT_CONFIGURED, detail)
-        if response.status_code == 429 or response.status_code >= 500:
+        if response.status_code == 429:
             raise RetryableError(PROVIDER_UNAVAILABLE, detail, retry_after=_retry_after(response))
+        if response.status_code >= 500:
+            if unknown_if_maybe_sent:
+                raise OutcomeUnknownError(detail=detail)
+            raise RetryableError(PROVIDER_UNAVAILABLE, detail, maybe_sent=True)
         raise PermanentError(PROVIDER_REJECTED, detail)
 
-    def _send(self, method, path, op, profile_key, json, timeout, unknown_on_read_timeout=False):
+    def _send(self, method, path, op, profile_key, json, timeout, unknown_if_maybe_sent=False):
+        """
+        The response, or: RetryableError when nothing reached Ayrshare (no
+        connection, no name, a proxy or TLS handshake that failed). When the
+        request may have reached it without an answer (a read timeout, a
+        connection cut after sending, a response cut halfway), OutcomeUnknownError
+        for the calls that may have done something (``unknown_if_maybe_sent``:
+        publishing, creating a profile), RetryableError(maybe_sent) for the rest.
+        """
         api_key = getattr(settings, 'AYRSHARE_API_KEY', None)
         if not api_key:
             logger.error("social.ayrshare.not_configured op=%s", op)
@@ -217,18 +231,15 @@ class AyrshareProvider(SocialProvider):
             headers['Profile-Key'] = profile_key
         try:
             response = requests.request(method, f"{BASE_URL}{path}", json=json, headers=headers, timeout=timeout)
-        except requests.exceptions.ConnectTimeout as exc:
-            # Never connected: nothing reached Ayrshare.
-            raise RetryableError(detail=f'ayrshare {type(exc).__name__}') from exc
-        except requests.exceptions.ReadTimeout as exc:
-            logger.error("social.ayrshare.no_answer op=%s error=%s", op, type(exc).__name__)
-            if unknown_on_read_timeout:
-                raise OutcomeUnknownError(detail=f'ayrshare {type(exc).__name__}') from exc
-            raise RetryableError(detail=f'ayrshare {type(exc).__name__}') from exc
         except requests.exceptions.RequestException as exc:
-            # Refused, reset or cut before an answer. If the request did reach Ayrshare, publishing
-            # it again carries the same idempotency key, which Ayrshare refuses.
-            raise RetryableError(detail=f'ayrshare {type(exc).__name__}') from exc
+            detail = f'ayrshare {type(exc).__name__}'
+            if _never_sent(exc):
+                raise RetryableError(detail=detail) from exc
+            # Sent, and then no answer: Ayrshare may have done it, or still be doing it.
+            logger.error("social.ayrshare.no_answer op=%s error=%s", op, type(exc).__name__)
+            if unknown_if_maybe_sent:
+                raise OutcomeUnknownError(detail=detail) from exc
+            raise RetryableError(detail=detail, maybe_sent=True) from exc
         logger.info("social.ayrshare.call op=%s http=%s", op, response.status_code)
         return response
 
@@ -244,9 +255,12 @@ def _publish_outcome(response, network):
         (item for item in _list(entry.get('postIds')) if isinstance(item, dict) and item.get('platform') == network),
         None,
     )
+    said = entry.get('status') or (body or {}).get('status')
     if line is not None and line.get('status') == 'success':
         return _published(entry, line)
-    said = entry.get('status') or (body or {}).get('status')
+    if line is not None and line.get('status') is None and line.get('id') and said in ('success', 'scheduled'):
+        # A line without its own status in an answer that says success: out.
+        return _published(entry, line)
     if said in ('success', 'scheduled') and line is None:
         # The request went through without a line for the network: out, with no link.
         return PublishResult(external_id=_text(entry.get('id')), post_url=None, pending=True)
@@ -266,8 +280,12 @@ def _publish_outcome(response, network):
     # The body says nothing (not JSON, an HTML page of the CDN): the HTTP status decides.
     if http == 504:
         raise OutcomeUnknownError(detail=detail)
-    if http == 429 or http >= 500:
+    if http == 429:
+        # The rate limit refuses the request before it is processed.
         raise RetryableError(detail=detail, retry_after=_retry_after(response))
+    if http >= 500:
+        # It reached Ayrshare and we do not know what it did: the same key again, until a clear answer.
+        raise RetryableError(detail=detail, maybe_sent=True)
     if http == 401:
         raise PermanentError(PROVIDER_NOT_CONFIGURED, detail)
     if 200 <= http < 300:
@@ -277,7 +295,12 @@ def _publish_outcome(response, network):
 
 
 def _rejection(http, codes, errors, detail, retry_after):
-    """Ayrshare answered that the post did not go out on the network: why, as our code."""
+    """
+    Ayrshare answered with an error. A documented code is a clear answer that
+    the post did not go out; so is a 4xx. A 5xx with an error body that no
+    code explains is not: it may have published (504: never retried; another
+    5xx: retried with the same key, which Ayrshare refuses if it did).
+    """
     if CODE_QUOTA in codes:
         return PermanentError(QUOTA_EXCEEDED, detail)
     if CODE_NOT_LINKED in codes or CODE_PROFILE_NOT_FOUND in codes:
@@ -286,12 +309,19 @@ def _rejection(http, codes, errors, detail, retry_after):
         return PermanentError(ACCOUNT_EXPIRED, detail)
     if CODE_DUPLICATE in codes:
         return PermanentError(DUPLICATE_CONTENT, detail)
-    if http == 429 or http in (502, 503) or any(item.get('retryAvailable') is True for item in errors):
-        # Nothing went out, for certain, and it may work later: retried with a new key.
-        return RetryableError(PROVIDER_UNAVAILABLE, detail, retry_after=retry_after, key_spent=True)
     if any('idempoten' in str(item.get('message') or '').lower() for item in errors):
         # The key was used before: an earlier attempt of this same post reached Ayrshare.
         return OutcomeUnknownError(detail=f'{detail} idempotency')
+    if any(item.get('retryAvailable') is True for item in errors):
+        # Ayrshare says nothing went out and it may work later: retried with a new key.
+        return RetryableError(PROVIDER_UNAVAILABLE, detail, retry_after=retry_after, key_spent=True)
+    if http == 429:
+        # The rate limit refuses the request before it is processed: nothing went out.
+        return RetryableError(PROVIDER_UNAVAILABLE, detail, retry_after=retry_after)
+    if http == 504:
+        return OutcomeUnknownError(detail=detail)
+    if http >= 500:
+        return RetryableError(PROVIDER_UNAVAILABLE, detail, maybe_sent=True)
     if http == 401:
         return PermanentError(PROVIDER_NOT_CONFIGURED, detail)
     return PermanentError(PROVIDER_REJECTED, detail)
@@ -329,6 +359,28 @@ def _youtube_title(title):
 
 
 # --- Small readers (never trust the shape of an answer) ---
+
+def _never_sent(exc):
+    """
+    Whether the request certainly never reached Ayrshare: the connection or its
+    TLS handshake or proxy failed (requests then wraps the cause in urllib3's
+    MaxRetryError), the connect timed out, or the URL was refused before
+    sending. A connection reset or closed after the request was written
+    (ProtocolError, RemoteDisconnected), a read timeout or a response cut
+    halfway may have been processed.
+    """
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
+        return True
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        reason = exc.args[0] if exc.args else None
+        return isinstance(reason, MaxRetryError) and isinstance(
+            reason.reason, (ConnectTimeoutError, urllib3_exceptions.SSLError, urllib3_exceptions.ProxyError),
+        )
+    return isinstance(exc, (
+        requests.exceptions.InvalidURL, requests.exceptions.MissingSchema,
+        requests.exceptions.InvalidSchema, requests.exceptions.InvalidHeader,
+    ))
+
 
 def _key(profile):
     """The Profile-Key, or account_not_connected: a call without one would act on the primary profile."""
