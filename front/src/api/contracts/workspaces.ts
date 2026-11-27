@@ -281,7 +281,7 @@ export const inviteMembers = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/users/views_invitations.py · WorkspaceInvitationsView.post (InviteSerializer)',
-    note: 'Todos o ninguno. Cada email es una fila `pending` que ocupa un lugar del plan desde ese momento. Los emails vuelven normalizados (el dominio en minúsculas) y sin repetidos. La respuesta nunca dice si un email tiene cuenta: `user` es null. El email lleva un link a `/invitacion/<token>` que vence a los 7 días (`INVITATION_MAX_AGE_SECONDS`) y sirve una vez; no nombra al workspace ni a quien invita (eso lo muestra A5). Si la cola de emails está caída la invitación queda creada igual, y se manda con «Reenviar». El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`.',
+    note: 'Todos o ninguno. Cada email es una fila `pending` que ocupa un lugar del plan desde ese momento. Los emails vuelven normalizados (el dominio en minúsculas) y sin repetidos. La respuesta nunca dice si un email tiene cuenta: `user` es null. El email lleva un link a `/invitacion#token=…` (el token en el fragmento) que vence a los 7 días (`INVITATION_MAX_AGE_SECONDS`) y sirve una vez; no nombra al workspace ni a quien invita (eso lo muestra A5). Si la cola de emails está caída la invitación queda creada igual, y se manda con «Reenviar». El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`.',
   },
   screens: ['D7', 'H2'],
 });
@@ -297,7 +297,7 @@ export const resendInvitation = defineEndpoint({
   errors: [
     { status: 403, when: 'El rol no administra miembros. Solo `detail`, sin `code`.' },
     { status: 404, when: 'La invitación ya se aceptó o se canceló, `memberId` no es de ese workspace, o el workspace no existe para este usuario.' },
-    { status: 429, when: 'Demasiadas invitaciones seguidas (el mismo límite que invitar). `detail` dice cuánto esperar.' },
+    { status: 429, when: 'Demasiadas invitaciones seguidas (el mismo límite que invitar), o demasiados reenvíos a esa dirección: 3 por hora, los pida quien los pida. `detail` dice cuánto esperar. El link anterior sigue sirviendo.' },
     { status: 502, when: 'No se pudo encolar el email. El link anterior ya no sirve: se reintenta en unos minutos.' },
   ],
   backend: {
@@ -308,22 +308,26 @@ export const resendInvitation = defineEndpoint({
   screens: ['H2'],
 });
 
+/** The token of the link travels in the body of a POST: a path or a query would leave it in access logs. */
+export const InvitationToken = z.object({ token: z.string().min(1) });
+
 export const getInvitation = defineEndpoint({
   id: 'workspaces.invitation',
-  method: 'GET',
-  path: '/api/v1/invitations/:token/',
-  summary: 'Datos públicos de una invitación: quién invita, a qué workspace y con qué rol.',
+  method: 'POST',
+  path: '/api/v1/invitations/preview/',
+  summary: 'Datos públicos de una invitación: quién invita, a qué workspace y con qué rol. Es una lectura: el POST solo lleva el token en el cuerpo.',
+  request: InvitationToken,
   response: InvitationPreview,
   auth: false,
   workspaceScoped: false,
   errors: [
-    { status: 404, when: 'El token no abre una invitación pendiente: no existe, venció, ya se usó o se canceló. La misma respuesta para todos. La UI muestra "Esta invitación no existe o ya no sirve".' },
+    { status: 404, when: 'El token no abre una invitación pendiente: falta, no existe, venció, ya se usó o se canceló. La misma respuesta para todos. La UI muestra "Esta invitación no existe o ya no sirve".' },
     { status: 429, when: 'Demasiados intentos desde la misma IP (60 por hora). `detail` dice cuánto esperar.' },
   ],
   backend: {
     status: 'exists',
-    source: 'back/apps/users/views_invitations.py · InvitationView.get (InvitationPreviewSerializer)',
-    note: 'No lee la sesión. `status` es siempre `pending`. `inviter_name` es el nombre de quien invitó, nunca su email. `has_account` dice si el email invitado ya tiene cuenta: solo lo ve quien tiene el link.',
+    source: 'back/apps/users/views_invitations.py · InvitationView.post (InvitationPreviewSerializer)',
+    note: 'El token va en el cuerpo y nunca en la ruta: el logger de pedidos de Django y el log de acceso del servidor web escriben las rutas, y un token ahí sería un link que sirve a la vista de quien lee logs. El link del email es `/invitacion#token=…` (en el fragmento, que el navegador no manda). No lee la sesión ni cambia nada. `status` es siempre `pending`. `inviter_name` es el nombre de quien invitó, nunca su email. `has_account` dice si el email invitado ya tiene cuenta: solo lo ve quien tiene el link.',
   },
   screens: ['A5'],
 });
@@ -331,9 +335,9 @@ export const getInvitation = defineEndpoint({
 export const acceptInvitation = defineEndpoint({
   id: 'workspaces.acceptInvitation',
   method: 'POST',
-  path: '/api/v1/invitations/:token/accept/',
-  summary: 'Acepta la invitación. Sin cuenta: la crea con `name` y `password`. Con cuenta: basta con la sesión iniciada.',
-  request: z.object({
+  path: '/api/v1/invitations/accept/',
+  summary: 'Acepta la invitación del `token`. Sin cuenta: la crea con `name` y `password`. Con cuenta: basta con la sesión iniciada.',
+  request: InvitationToken.extend({
     name: z.string().min(1).max(150).optional(),
     password: z.string().min(8).optional(),
     terms_accepted: z.boolean().optional(),
@@ -350,13 +354,13 @@ export const acceptInvitation = defineEndpoint({
     { status: 400, when: 'Sin sesión, para crear la cuenta: falta `name` o `password`, la contraseña no cumple las reglas del registro (`{password: [oraciones]}`), o `terms_accepted` no es `true`. No se crea nada y el link sigue sirviendo.' },
     { status: 401, when: 'El email ya tiene cuenta y no hay sesión (`detail`): la UI pide iniciar sesión. Con sesión, el cliente manda el token (y lo renueva si hace falta); un token que no sirve también es 401.' },
     { status: 403, when: '`{error, code: "invitation_email_mismatch"}`: la sesión es de una cuenta con otro email; la invitación solo la acepta la cuenta del email invitado. `{error, code: "seats_exceeded"}`: el plan se achicó después de invitar y ya no queda lugar.' },
-    { status: 410, when: '`{error, code: "invitation_invalid"}`: el token no existe, venció, ya se usó o la invitación se canceló. La misma respuesta para todos.' },
+    { status: 410, when: '`{error, code: "invitation_invalid"}`: el token falta, no existe, venció, ya se usó o la invitación se canceló. La misma respuesta para todos.' },
     { status: 429, when: 'Demasiados intentos desde la misma IP (20 por hora), con sesión o sin ella. `detail` dice cuánto esperar.' },
   ],
   backend: {
     status: 'exists',
     source: 'back/apps/users/views_invitations.py · InvitationAcceptView.post (AcceptInvitationSerializer)',
-    note: 'Con sesión no se lee el cuerpo. Sin sesión crea la cuenta del email invitado ya verificada (el link llegó a esa casilla), con su workspace propio como en el registro, y devuelve `tokens`. La cuenta, su workspace y la membresía se guardan juntos o no se guarda nada. El link sirve una sola vez.',
+    note: 'El token va en el cuerpo, nunca en la ruta (ver `workspaces.invitation`). Con sesión solo se lee `token`, y la cuenta queda con el email verificado. Sin sesión crea la cuenta del email invitado ya verificada (el link llegó a esa casilla), con su workspace propio como en el registro, y devuelve `tokens`. La cuenta, su workspace y la membresía se guardan juntos o no se guarda nada. El link sirve una sola vez.',
   },
   screens: ['A5'],
 });

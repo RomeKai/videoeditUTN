@@ -149,6 +149,9 @@ class InviteSerializer(serializers.Serializer):
             raise
 
     def validate_emails(self, values):
+        # Before any work per email: a long list is refused as it comes.
+        if len(values) > MAX_INVITED_EMAILS:
+            raise serializers.ValidationError(EMAILS_TOO_MANY)
         field = serializers.EmailField(max_length=254)
         found, seen = [], set()
         for value in values:
@@ -160,8 +163,6 @@ class InviteSerializer(serializers.Serializer):
                 continue
             seen.add(email.upper())
             found.append(email)
-        if len(found) > MAX_INVITED_EMAILS:
-            raise serializers.ValidationError(EMAILS_TOO_MANY)
         return found
 
 
@@ -182,9 +183,23 @@ class InvitationPreviewSerializer(serializers.Serializer):
     has_account = serializers.BooleanField()
 
 
-class AcceptInvitationSerializer(serializers.Serializer):
-    """Only read when the link creates the account; with a session the body is ignored."""
+TOKEN_REQUIRED = 'Falta el token del link.'
 
+
+class InvitationTokenSerializer(serializers.Serializer):
+    """The token of the link, in the body: never in the path, which ends up in logs."""
+
+    token = serializers.CharField(
+        max_length=200, trim_whitespace=False,
+        error_messages={key: TOKEN_REQUIRED for key in ('required', 'null', 'blank', 'invalid', 'max_length')},
+    )
+
+
+class AcceptInvitationSerializer(serializers.Serializer):
+    """Only read when the link creates the account; with a session only `token` is read."""
+
+    # Read by the view before anything else; a missing one is the 410 of any dead link.
+    token = serializers.CharField(required=False, allow_blank=True, trim_whitespace=False)
     name = serializers.CharField(
         max_length=150,
         error_messages={

@@ -14,6 +14,12 @@ message either. It works once, for INVITATION_MAX_AGE_SECONDS since it was
 issued (`invitation_sent_at`). A resend clears the hash at once and the task
 issues another; removing the pending member deletes the row.
 
+The token never travels in a URL path or query, where web servers and
+Django's request logger would write it down: the link of the email carries it
+in the fragment (`/invitacion#token=…`, which a browser never sends), and
+the web app sends it to the API in the body of a POST
+(`/invitations/preview/`, `/invitations/accept/`).
+
 The email carries nothing a user typed (no workspace name, no inviter name):
 the address can be anyone's, and the official sender must not carry someone
 else's text to it. The page of the link (A5) shows who invites and where.
@@ -26,12 +32,13 @@ from django.conf import settings
 from django.core.mail import send_mail
 from django.utils import timezone
 
+from apps.users.email_verification import _frontend_link
 from apps.users.models import WorkspaceMember
 
 PENDING = WorkspaceMember.Status.PENDING
 
-# The web app's page of an invitation (front/src/app/(public)/invitacion/[token]).
-INVITATION_PATH = '/invitacion/'
+# The web app's page of an invitation (front/src/app/(public)/invitacion): it reads `#token=`.
+INVITATION_PATH = '/invitacion'
 # What the page shows when the inviter has no name, or their account is gone. Never their email.
 INVITER_FALLBACK = 'Alguien del equipo'
 
@@ -70,7 +77,8 @@ def pending_for_token(token, queryset=None):
 
 
 def invitation_link(token):
-    return f"{settings.FRONTEND_URL.rstrip('/')}{INVITATION_PATH}{token}"
+    """`/invitacion#token=…`: in the fragment, so it stays out of the web host's logs (like the reset link)."""
+    return _frontend_link(INVITATION_PATH, {'token': token}, fragment=True)
 
 
 def inviter_name(member):

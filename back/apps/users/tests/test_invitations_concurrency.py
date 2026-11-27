@@ -5,6 +5,7 @@ the last seat, run one after the other and the second sees what the first did.
 """
 import threading
 from unittest import mock
+from urllib.parse import parse_qs, urlparse
 
 from django.conf import settings
 from django.core import mail
@@ -17,6 +18,7 @@ from apps.users.models import User, WorkspaceMember
 
 ACTIVE = WorkspaceMember.Status.ACTIVE
 PENDING = WorkspaceMember.Status.PENDING
+ACCEPT_URL = "/api/v1/invitations/accept/"
 
 
 def _body(name):
@@ -39,8 +41,8 @@ class ConcurrentInvitationTests(APITransactionTestCase):
             f"/api/v1/workspaces/{self.workspace.pk}/invitations/", {"emails": [email], "role": "editor"}, format="json",
         )
         assert response.status_code == 201
-        link = next(word for word in mail.outbox[-1].body.split() if "/invitacion/" in word)
-        return link.rsplit("/", 1)[1]
+        link = next(word for word in mail.outbox[-1].body.split() if "/invitacion#" in word)
+        return parse_qs(urlparse(link).fragment)["token"][0]
 
     def _together(self, check, *calls):
         """
@@ -77,12 +79,10 @@ class ConcurrentInvitationTests(APITransactionTestCase):
 
     def test_two_accepts_of_one_link_create_one_account_and_one_membership(self):
         token = self._invite("juana@example.com")
-        url = f"/api/v1/invitations/{token}/accept/"
-
         answers = self._together(
             "check_seat_for_accept",
-            lambda: APIClient().post(url, _body("Juana Uno"), format="json"),
-            lambda: APIClient().post(url, _body("Juana Dos"), format="json"),
+            lambda: APIClient().post(ACCEPT_URL, {**_body("Juana Uno"), "token": token}, format="json"),
+            lambda: APIClient().post(ACCEPT_URL, {**_body("Juana Dos"), "token": token}, format="json"),
         )
 
         assert sorted(answers) == [200, 410]
@@ -99,7 +99,7 @@ class ConcurrentInvitationTests(APITransactionTestCase):
         answers = self._together(
             "check_seat_for_accept",
             *[
-                (lambda token=token: APIClient().post(f"/api/v1/invitations/{token}/accept/", _body("Persona"), format="json"))
+                (lambda token=token: APIClient().post(ACCEPT_URL, {**_body("Persona"), "token": token}, format="json"))
                 for token in tokens
             ],
         )

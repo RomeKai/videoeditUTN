@@ -5,12 +5,16 @@ rules: apps.users.invitations).
 - `POST /workspaces/<id>/invitations/` and `.../<memberId>/resend/`: owner and
   admins (`members.manage`), with the workspace's row lock first, like every
   members endpoint (views_workspaces).
-- `GET /invitations/<token>/` and `POST /invitations/<token>/accept/`: the
-  link of the email, without a session or with one.
+- `POST /invitations/preview/` and `POST /invitations/accept/`: the link of
+  the email, without a session or with one. The token travels in the BODY
+  (`{token}`), never in the path: Django's request logger writes the path of
+  every 4xx and the web server's access log writes every path, so a token
+  there would be a working link in the logs.
 
-A token that never existed, an expired one, a used one and a cancelled one
-get the same answer (404 to read, 410 to accept). Nothing here logs an
-email or a token, and the task only gets the id of the row.
+A token that never existed, an expired one, a used one, a cancelled one and
+a body without one get the same answer (404 to read, 410 to accept). Nothing
+here logs an email or a token, no URL of the API carries one, and the task
+only gets the id of the row.
 """
 import logging
 import uuid
@@ -35,12 +39,13 @@ from apps.users.serializers_workspaces import (
     AcceptedInvitationSerializer,
     AcceptInvitationSerializer,
     InvitationPreviewSerializer,
+    InvitationTokenSerializer,
     InvitedSerializer,
     InviteSerializer,
     MemberSerializer,
 )
 from apps.users.tasks import send_invitation_email
-from apps.users.throttles import AttemptThrottle, SpanishThrottleMixin
+from apps.users.throttles import AttemptThrottle, SpanishThrottleMixin, email_ident
 from apps.users.tokens import issue_token_pair
 from apps.users.views import THROTTLED, UNAUTHORIZED
 from apps.users.views_auth import EMAIL_NOT_QUEUED, NO_CONTENT, EmailNotQueued, PublicAccountView, _workspace_name
@@ -77,6 +82,38 @@ class WorkspaceSendThrottle(AttemptThrottle):
         return self.cache_format % {'scope': self.scope, 'ident': f'workspace:{view.throttled_workspace_id}'}
 
 
+class RecipientThrottle(AttemptThrottle):
+    """
+    Resends to one invited address, whoever asks and from whichever workspace:
+    the limits per user and per workspace still let several admins, or one
+    with several workspaces, fill a mailbox. Keyed by the HMAC of the address
+    (throttles.email_ident, any spelling), never the address. Checked by the
+    view once it has the pending row.
+    """
+
+    scope_attr = 'recipient_throttle_scope'
+
+    def get_cache_key(self, request, view):
+        return self.cache_format % {'scope': self.scope, 'ident': email_ident(view.throttled_recipient)}
+
+
+def _token_of(request):
+    """The token of the body, or None: a body without one is answered like a token nobody has."""
+    data = request.data
+    token = data.get('token') if hasattr(data, 'get') else None
+    return token if isinstance(token, str) else None
+
+
+def _is_email_taken(error):
+    """Whether an IntegrityError is the unique constraint of User.email (an account of that email exists)."""
+    constraint = getattr(getattr(error.__cause__, 'diag', None), 'constraint_name', None)
+    return constraint in EMAIL_CONSTRAINTS
+
+
+# User.email is unique as stored (the column) and without case (User.Meta).
+EMAIL_CONSTRAINTS = frozenset({'users_user_email_key', 'users_user_email_upper_unique'})
+
+
 class IpAttemptThrottle(AttemptThrottle):
     """Per IP also with a session: the link is the secret, whoever tries it."""
 
@@ -95,6 +132,7 @@ class InvitationSendView(SpanishThrottleMixin, APIView):
     throttle_classes = [AttemptThrottle]
     throttle_scope = 'invitation_send'
     workspace_throttle_scope = 'invitation_send_workspace'
+    recipient_throttle_scope = 'invitation_resend_recipient'
 
     def check_workspace_throttle(self, request, workspace_id):
         """After the role check (without the lock): 404 and 403 come first and do not count."""
@@ -197,6 +235,11 @@ class WorkspaceInvitationResendView(InvitationSendView):
             if not member.invited_email:
                 # A pending row of before the invitations (made in the admin): its account's email.
                 member.invited_email = User.objects.values_list('email', flat=True).get(pk=member.user_id)
+            # Before the old link is touched: a refused resend changes nothing.
+            self.throttled_recipient = member.invited_email
+            throttle = RecipientThrottle()
+            if not throttle.allow_request(request, self):
+                self.throttled(request, throttle.wait())
             member.invitation_token_hash = None
             member.invitation_sent_at = None
             member.save(update_fields=['invited_email', 'invitation_token_hash', 'invitation_sent_at'])
@@ -211,23 +254,26 @@ class WorkspaceInvitationResendView(InvitationSendView):
 
 class InvitationView(PublicAccountView):
     """
-    A5: what the link shows. No session is read. Every link that does not
-    open a pending invitation right now is the same 404, so the answer does
-    not tell a made-up token from one that expired, was used or was cancelled.
+    A5: what the link shows. A POST with the token in the body, so it is in
+    no path. No session is read. Every token that does not open a pending
+    invitation right now (and a body without one) is the same 404, so the
+    answer does not tell a made-up token from one that expired, was used or
+    was cancelled.
     """
 
     throttle_classes = [AttemptThrottle]
     throttle_scope = 'invitation_read'
 
     @extend_schema(
+        request=InvitationTokenSerializer,
         responses={
             200: InvitationPreviewSerializer,
-            404: OpenApiResponse(description='El token no abre una invitación pendiente: no existe, venció, ya se usó o se canceló.'),
+            404: OpenApiResponse(description='El token no abre una invitación pendiente: falta, no existe, venció, ya se usó o se canceló.'),
             429: THROTTLED,
         },
     )
-    def get(self, request, token):
-        member = pending_for_token(token, WorkspaceMember.objects.select_related('workspace', 'invited_by'))
+    def post(self, request):
+        member = pending_for_token(_token_of(request), WorkspaceMember.objects.select_related('workspace', 'invited_by'))
         if member is None:
             raise NotFound(INVITATION_NOT_FOUND)
         body = InvitationPreviewSerializer({
@@ -247,7 +293,8 @@ class InvitationAcceptView(SpanishThrottleMixin, APIView):
     A5: accepts the invitation of the link.
 
     - With a session: only the account of the invited email (403
-      `invitation_email_mismatch` for any other). The body is not read.
+      `invitation_email_mismatch` for any other). Only `token` is read. The
+      link reached that mailbox, so the account's email is verified from now.
     - Without one: creates the account of the invited email with `name` and
       `password` (the rules of the sign-up), already verified (the link
       reached that mailbox), and answers its tokens. If the email already has
@@ -268,7 +315,7 @@ class InvitationAcceptView(SpanishThrottleMixin, APIView):
         request=AcceptInvitationSerializer,
         responses={
             200: AcceptedInvitationSerializer,
-            400: OpenApiResponse(description='Sin sesión: falta `name` o `password`, la contraseña no cumple las reglas, o `terms_accepted` no es `true`.'),
+            400: OpenApiResponse(description='El token va en el cuerpo (`token`). Sin sesión: falta `name` o `password`, la contraseña no cumple las reglas, o `terms_accepted` no es `true`.'),
             401: OpenApiResponse(description='El email de la invitación ya tiene cuenta y no hay sesión (`detail`), o el token de la sesión no sirve.'),
             403: OpenApiResponse(description=(
                 '`{error, code: "invitation_email_mismatch"}`: la sesión es de una cuenta con otro email. ' + SEATS
@@ -277,7 +324,8 @@ class InvitationAcceptView(SpanishThrottleMixin, APIView):
             429: THROTTLED,
         },
     )
-    def post(self, request, token):
+    def post(self, request):
+        token = _token_of(request)
         session_user = request.user if request.user.is_authenticated else None
         try:
             with transaction.atomic():
@@ -293,13 +341,18 @@ class InvitationAcceptView(SpanishThrottleMixin, APIView):
                 if member is None:
                     return _error(410, INVITATION_GONE, 'invitation_invalid')
                 if session_user is not None:
-                    if session_user.email.upper() != member.invited_email.upper():
+                    # Compared in the database, like the login finds an account (`iexact`).
+                    if not User.objects.filter(pk=session_user.pk, email__iexact=member.invited_email).exists():
                         logger.warning(
                             'invitation.email_mismatch member_id=%s workspace_id=%s user_id=%s',
                             member.pk, workspace.pk, session_user.pk,
                         )
                         return _error(403, OTHER_ACCOUNT, 'invitation_email_mismatch')
                     user, created = session_user, False
+                    if not user.is_email_verified:
+                        # The link reached the mailbox of this account: that is what verifying is.
+                        user.is_email_verified = True
+                        user.save(update_fields=['is_email_verified'])
                 else:
                     if User.objects.filter(email__iexact=member.invited_email).exists():
                         raise NotAuthenticated(SIGN_IN_FIRST)
@@ -323,10 +376,17 @@ class InvitationAcceptView(SpanishThrottleMixin, APIView):
                     member.status = ACTIVE
                     member.invitation_token_hash = None
                     member.invitation_sent_at = None
+                    # An active member is its account: the invited address is not kept.
+                    member.invited_email = ''
                     member.joined_at = timezone.now()
-                    member.save(update_fields=['user', 'status', 'invitation_token_hash', 'invitation_sent_at', 'joined_at'])
-        except IntegrityError:
-            # The email got its account between the check and the insert (a sign-up at the same time).
+                    member.save(update_fields=[
+                        'user', 'status', 'invitation_token_hash', 'invitation_sent_at', 'invited_email', 'joined_at',
+                    ])
+        except IntegrityError as exc:
+            # Only the email that got its account between the check and the insert (a sign-up at
+            # the same time), and only when this request was creating it. Anything else is a bug.
+            if session_user is not None or not _is_email_taken(exc):
+                raise
             raise NotAuthenticated(SIGN_IN_FIRST)
         logger.info(
             'invitation.accepted workspace_id=%s member_id=%s user_id=%s account_created=%s',

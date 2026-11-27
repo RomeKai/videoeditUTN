@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import type { InvitationPreview } from '@/api/contracts/workspaces';
 import { useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '@/api/errors';
@@ -14,7 +14,7 @@ import { LoadError } from '@/shell/LoadError';
 import { useSession } from '@/shell/session';
 import { Avatar, Badge, Banner, Button, Card, Field, Input, PasswordInput, Skeleton, SkeletonText, cx, useToast } from '@/ui';
 import styles from './acceso.module.css';
-import { HOME, nameError, newPasswordError, requestErrorMessage } from './lib';
+import { forgetInvitationToken, HOME, nameError, newPasswordError, readInvitationToken, rememberInvitationToken, requestErrorMessage, takeInvitationLink } from './lib';
 import { TermsCheckbox } from './Terms';
 
 /** What each role can do, in one sentence (matrix of map 1.7). */
@@ -26,6 +26,57 @@ const ROLE_SUMMARY: Record<InvitationPreview['role'], string> = {
 
 const sameEmail = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
+/** Where the login sends the person back to. The token is not in it: it waits in sessionStorage. */
+const INVITATION_ROUTE = '/invitacion';
+
+/**
+ * The page of the link of the email, `/invitacion#token=…`. The token comes in the fragment, which only the
+ * browser sees: it is read once, dropped from the address bar and kept for this tab (the detour through the
+ * login comes back to `/invitacion` without it). Without a token there is nothing to show but the dead-link card.
+ */
+export function InvitationPage() {
+  const [token, setToken] = useState<string | null | undefined>(undefined);
+  // Taken once: the fragment is gone after the first read (and React may run the effect twice).
+  const taken = useRef<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    if (taken.current === undefined) {
+      const fromLink = takeInvitationLink();
+      if (fromLink) rememberInvitationToken(fromLink);
+      taken.current = fromLink ?? readInvitationToken();
+    }
+    setToken(taken.current);
+    // Another link pasted in this same tab changes only the fragment: no new page load.
+    const onHashChange = () => {
+      const found = takeInvitationLink();
+      if (!found) return;
+      rememberInvitationToken(found);
+      taken.current = found;
+      setToken(found);
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  if (token === undefined) return null;
+  return token ? <InvitationScreen key={token} token={token} /> : <DeadLink />;
+}
+
+/** One card for a link that never existed, expired, was used or was cancelled: the backend does not tell them apart. */
+function DeadLink() {
+  const { status } = useSession();
+  return (
+    <StateCard badge={<Badge dot>No disponible</Badge>} title="Esta invitación no existe o ya no sirve">
+      Puede que haya vencido, que ya la hayas usado o que la hayan cancelado. Abrí de nuevo el link del email y revisá que esté completo, o pedile a quien te invitó que te mande
+      una nueva. Si ya la aceptaste,{' '}
+      <Link className="lnk" href={status === 'authenticated' ? HOME : '/login'}>
+        {status === 'authenticated' ? 'andá a tus proyectos' : 'iniciá sesión'}
+      </Link>
+      .
+    </StateCard>
+  );
+}
+
 /** A5 · Aceptar invitación (artboard A5-Invitacion). */
 export function InvitationScreen({ token }: { token: string }) {
   const { status, me } = useSession();
@@ -35,7 +86,14 @@ export function InvitationScreen({ token }: { token: string }) {
   const [sessionLost, setSessionLost] = useState(false);
   // Not read while joining: the accepted link answers 404, and every mutation refetches what is on screen.
   const invitation = useInvitation(token, { enabled: !joining });
-  const loginHref = `/login?siguiente=${encodeURIComponent(`/invitacion/${token}`)}`;
+  // Never the token: a query string ends up in the web host's logs and in the history.
+  const loginHref = `/login?siguiente=${encodeURIComponent(INVITATION_ROUTE)}`;
+
+  const dead = invitation.error instanceof ApiError && invitation.error.status === 404;
+  useEffect(() => {
+    // A dead link is not worth keeping for this tab.
+    if (dead) forgetInvitationToken();
+  }, [dead]);
 
   if (!joining && invitation.isPending) {
     return (
@@ -54,19 +112,7 @@ export function InvitationScreen({ token }: { token: string }) {
   }
 
   if (!joining && (invitation.isError || !invitation.data)) {
-    if (invitation.error instanceof ApiError && invitation.error.status === 404) {
-      // One answer for a link that never existed, expired, was used or was cancelled: the backend does not tell them apart.
-      return (
-        <StateCard badge={<Badge dot>No disponible</Badge>} title="Esta invitación no existe o ya no sirve">
-          Puede que haya vencido, que ya la hayas usado o que la hayan cancelado. Revisá que el link esté completo, o pedile a quien te invitó que te mande una nueva. Si ya la
-          aceptaste,{' '}
-          <Link className="lnk" href={status === 'authenticated' ? HOME : '/login'}>
-            {status === 'authenticated' ? 'andá a tus proyectos' : 'iniciá sesión'}
-          </Link>
-          .
-        </StateCard>
-      );
-    }
+    if (dead) return <DeadLink />;
     return (
       <Card className={styles.card}>
         <div className={styles.title}>
@@ -181,6 +227,8 @@ function useJoin(invitation: InvitationPreview) {
       switchWorkspace(workspaceId, { to: null }).catch(() => undefined),
       new Promise<void>((resolve) => window.setTimeout(resolve, joinOptions.switchTimeoutMs)),
     ]);
+    // The link is spent: nothing of it stays in this tab.
+    forgetInvitationToken();
     toast.success(`Ya sos parte de ${invitation.workspace_name}`);
     router.replace(HOME);
   };

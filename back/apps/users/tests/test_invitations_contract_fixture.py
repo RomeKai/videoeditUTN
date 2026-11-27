@@ -15,6 +15,7 @@ import os
 import uuid
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from django.conf import settings
@@ -56,8 +57,8 @@ def _error(response):
 
 
 def _token():
-    link = next(word for word in mail.outbox[-1].body.split() if "/invitacion/" in word)
-    return link.rsplit("/", 1)[1]
+    link = next(word for word in mail.outbox[-1].body.split() if "/invitacion#" in word)
+    return parse_qs(urlparse(link).fragment)["token"][0]
 
 
 def _real_bodies():
@@ -79,26 +80,26 @@ def _real_bodies():
     invited = api.post(url, {"emails": ["juana@example.com"], "role": "editor"}, format="json")
     assert invited.status_code == 201
     token = _token()
-    preview = APIClient().get(f"/api/v1/invitations/{token}/")
+    preview = APIClient().post("/api/v1/invitations/preview/", {"token": token}, format="json")
     already = api.post(url, {"emails": ["JUANA@example.com"], "role": "editor"}, format="json")
     invalid = api.post(url, {"emails": ["juana"], "role": "editor"}, format="json")
     role = api.post(url, {"emails": ["otra@example.com"], "role": "owner"}, format="json")
     denied = _client(editor).post(url, {"emails": ["otra@example.com"], "role": "editor"}, format="json")
     seats = api.post(url, {"emails": ["dos@example.com", "tres@example.com"], "role": "editor"}, format="json")
-    weak = APIClient().post(f"/api/v1/invitations/{token}/accept/", {**NEW_ACCOUNT, "password": "12345678"}, format="json")
-    other = _client(editor).post(f"/api/v1/invitations/{token}/accept/", {}, format="json")
-    accepted = APIClient().post(f"/api/v1/invitations/{token}/accept/", NEW_ACCOUNT, format="json")
+    weak = APIClient().post("/api/v1/invitations/accept/", {**NEW_ACCOUNT, "password": "12345678", "token": token}, format="json")
+    other = _client(editor).post("/api/v1/invitations/accept/", {"token": token}, format="json")
+    accepted = APIClient().post("/api/v1/invitations/accept/", {**NEW_ACCOUNT, "token": token}, format="json")
     assert accepted.status_code == 200
-    gone = APIClient().post(f"/api/v1/invitations/{token}/accept/", NEW_ACCOUNT, format="json")
-    missing = APIClient().get(f"/api/v1/invitations/{token}/")
+    gone = APIClient().post("/api/v1/invitations/accept/", {**NEW_ACCOUNT, "token": token}, format="json")
+    missing = APIClient().post("/api/v1/invitations/preview/", {"token": token}, format="json")
     resend = api.post(f"{url}{invited.json()['invited'][0]['id']}/resend/")
 
     # An email that already has an account: signed out it must sign in; signed in it accepts.
     sofia = User.objects.create_user(username="sofia", email="sofia@example.com", password="password")
     assert api.post(url, {"emails": ["sofia@example.com"], "role": "viewer"}, format="json").status_code == 201
     second = _token()
-    has_account = APIClient().post(f"/api/v1/invitations/{second}/accept/", NEW_ACCOUNT, format="json")
-    with_session = _client(sofia).post(f"/api/v1/invitations/{second}/accept/", {}, format="json")
+    has_account = APIClient().post("/api/v1/invitations/accept/", {**NEW_ACCOUNT, "token": second}, format="json")
+    with_session = _client(sofia).post("/api/v1/invitations/accept/", {"token": second}, format="json")
     return {
         "invitation_invited": invited.json(),
         "invitation_preview": preview.json(),

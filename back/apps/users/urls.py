@@ -37,6 +37,7 @@ urlpatterns = [
         'workspaces/<str:workspace_id>/invitations/<str:member_id>/resend/',
         WorkspaceInvitationResendView.as_view(), name='workspace-invitation-resend',
     ),
-    path('invitations/<str:token>/', InvitationView.as_view(), name='invitation'),
-    path('invitations/<str:token>/accept/', InvitationAcceptView.as_view(), name='invitation-accept'),
+    # The token of the link travels in the body, never in the path: paths end up in access logs.
+    path('invitations/preview/', InvitationView.as_view(), name='invitation'),
+    path('invitations/accept/', InvitationAcceptView.as_view(), name='invitation-accept'),
 ]

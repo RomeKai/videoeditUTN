@@ -6,6 +6,11 @@ from django.conf import settings
 from django.db import migrations, models
 
 
+def delete_invitations_without_account(apps, schema_editor):
+    """Reverse only. Pending invitations to emails without an account cannot exist in the previous schema."""
+    apps.get_model("users", "WorkspaceMember").objects.filter(user__isnull=True).delete()
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -61,6 +66,9 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
+        # Only for a rollback: the column goes back to NOT NULL, so the invitations
+        # without an account (the only rows with a null user) are deleted first.
+        migrations.RunPython(migrations.RunPython.noop, delete_invitations_without_account),
         migrations.AddConstraint(
             model_name="workspacemember",
             constraint=models.UniqueConstraint(

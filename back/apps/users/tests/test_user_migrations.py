@@ -174,3 +174,34 @@ class NormalizedEmailDomainMigrationTests(TransactionTestCase):
 
         with self.assertNoLogs("apps.users.migrations.0008_dominios_de_email_normalizados", level="WARNING"):
             _migrate(self.migrate_to)
+
+
+class InvitationsRollbackTests(TransactionTestCase):
+    """
+    0011 makes WorkspaceMember.user nullable for the invitations to emails
+    without an account. Going back, the column is NOT NULL again: the reverse
+    deletes those rows first, so a rollback does not stop on them.
+    """
+
+    back_to = [("users", "0010_sesiones_revocadas")]
+
+    def tearDown(self):
+        call_command("migrate", verbosity=0)
+
+    def test_going_back_deletes_the_invitations_without_an_account_and_keeps_the_members(self):
+        from apps.users.models import WorkspaceMember
+
+        owner = User.objects.create_user(username="duena", email="duena@test.com", password="password")
+        from apps.payments.models import SubscriptionPlan
+
+        workspace = owner.owned_workspaces.get()
+        workspace.subscription_plan = SubscriptionPlan.objects.create(name="Equipo de la vuelta atrás", max_members=5)
+        workspace.save(update_fields=["subscription_plan"])
+        WorkspaceMember.objects.create(workspace=workspace, status="pending", invited_email="sin-cuenta@example.com")
+
+        old_apps = _migrate(self.back_to)
+
+        OldMember = old_apps.get_model("users", "WorkspaceMember")
+        assert list(OldMember.objects.values_list("user_id", "status")) == [(owner.pk, "active")]
+        with pytest.raises(IntegrityError), transaction.atomic():
+            OldMember.objects.create(workspace_id=workspace.pk, user=None)

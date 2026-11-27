@@ -62,11 +62,11 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
 
   test('A1 → A3 → A5: verificar el email devuelve a la invitación que se había pedido', async ({ page }) => {
     await useScenario(page, 'email-sin-verificar');
-    await page.goto('/invitacion/con-cuenta');
+    await page.goto('/invitacion#token=con-cuenta');
     await page.getByRole('link', { name: 'Iniciar sesión para aceptar' }).click();
     await page.getByLabel('Contraseña', { exact: true }).fill('contrasena');
     await page.getByRole('button', { name: 'Iniciar sesión' }).click();
-    await expect(page).toHaveURL(/\/verificar\?email=sofia%40ejemplo\.com&motivo=login&siguiente=%2Finvitacion%2Fcon-cuenta$/);
+    await expect(page).toHaveURL(/\/verificar\?email=sofia%40ejemplo\.com&motivo=login&siguiente=%2Finvitacion$/);
     // This browser is the one that signed up (it kept the nonce of the sign-up): the link signs in here.
     await page.evaluate(() => {
       const db = JSON.parse(window.localStorage.getItem('oc.mock.db') ?? '{}') as { users?: Array<{ id: string }>; signupNonces?: Record<string, string> };
@@ -76,7 +76,7 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     });
     // The link of the email does not carry the destination.
     await page.goto('/verificar?token=mock-token');
-    await expect(page).toHaveURL(/\/invitacion\/con-cuenta$/);
+    await expect(page).toHaveURL(/\/invitacion$/);
     await expect(page.getByRole('button', { name: 'Aceptar invitación' })).toBeVisible();
   });
 
@@ -166,9 +166,11 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
   test('A5: sin cuenta, la crea desde la invitación y entra al workspace', async ({ page }) => {
     await useScenario(page, 'sin-sesion');
     const problems = watch(page);
-    await page.goto('/invitacion/valida');
+    await page.goto('/invitacion#token=valida');
     await settle(page);
     await expect(page.getByRole('heading', { level: 1, name: 'Lucía Fernández te invitó a Estudio Norte como Editor' })).toBeVisible();
+    // The token came in the fragment and is gone from the address bar: nothing of it is left in a URL.
+    await expect(page).toHaveURL(/\/invitacion$/);
     await expect(page.getByLabel('Email')).toBeDisabled();
     await page.getByLabel('Nombre').fill('Juan Ibáñez');
     await page.getByLabel('Contraseña', { exact: true }).fill('contrasena-segura');
@@ -178,20 +180,20 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     await expect(page.getByRole('button', { name: /Cambiar de workspace. Actual: Estudio Norte/ })).toBeVisible();
     expectClean(problems, 'la invitación');
     // The link cannot be used twice: it answers the 404 of any link that no longer works.
-    await page.goto('/invitacion/valida');
+    await page.goto('/invitacion#token=valida');
     await expect(page.getByRole('heading', { level: 1, name: 'Esta invitación no existe o ya no sirve' })).toBeVisible();
     await expect(page.getByRole('link', { name: 'andá a tus proyectos' })).toBeVisible();
   });
 
   test('A5: con cuenta, inicia sesión, vuelve a la invitación y la acepta', async ({ page }) => {
     await useScenario(page, 'sin-sesion');
-    await page.goto('/invitacion/con-cuenta');
+    await page.goto('/invitacion#token=con-cuenta');
     await page.getByRole('link', { name: 'Iniciar sesión para aceptar' }).click();
-    await expect(page).toHaveURL(/\/login\?siguiente=%2Finvitacion%2Fcon-cuenta&email=sofia%40ejemplo\.com$/);
+    await expect(page).toHaveURL(/\/login\?siguiente=%2Finvitacion&email=sofia%40ejemplo\.com$/);
     await expect(page.getByLabel('Email')).toHaveValue('sofia@ejemplo.com');
     await page.getByLabel('Contraseña', { exact: true }).fill('contrasena');
     await page.getByRole('button', { name: 'Iniciar sesión' }).click();
-    await expect(page).toHaveURL(/\/invitacion\/con-cuenta$/);
+    await expect(page).toHaveURL(/\/invitacion$/);
     await page.getByRole('button', { name: 'Aceptar invitación' }).click();
     await expect(page).toHaveURL(/\/proyectos$/);
     await expect(page.getByRole('button', { name: /Cambiar de workspace. Actual: Estudio Norte/ })).toBeVisible();
@@ -200,16 +202,16 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
   test('A5: vencida, ya usada e inexistente son la misma pantalla; con la sesión de otra cuenta avisa', async ({ page }) => {
     await useScenario(page, 'estudio-norte');
     for (const token of ['vencida', 'no-existe', 'usada']) {
-      await page.goto(`/invitacion/${token}`);
+      await page.goto(`/invitacion#token=${token}`);
       await expect(page.getByRole('heading', { level: 1, name: 'Esta invitación no existe o ya no sirve' })).toBeVisible();
     }
     await expect(page.getByRole('link', { name: 'andá a tus proyectos' })).toBeVisible();
 
-    await page.goto('/invitacion/valida');
+    await page.goto('/invitacion#token=valida');
     await expect(page.getByText('Entraste con otra cuenta')).toBeVisible();
     await page.getByRole('button', { name: 'Cerrar sesión y seguir' }).click();
     await expect(page.getByRole('button', { name: 'Crear cuenta y unirme' })).toBeVisible();
-    await page.goto('/invitacion/usada');
+    await page.goto('/invitacion#token=usada');
     await expect(page.getByRole('link', { name: 'iniciá sesión' })).toBeVisible();
   });
 

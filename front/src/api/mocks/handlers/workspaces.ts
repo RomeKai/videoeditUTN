@@ -261,8 +261,8 @@ export const workspacesHandlers = [
     return { data: undefined };
   }),
 
-  route(contract.getInvitation, ({ db, params }) => {
-    const invitation = db.invitations.find((item) => item.token === params.token);
+  route(contract.getInvitation, ({ db, body }) => {
+    const invitation = db.invitations.find((item) => item.token === body.token);
     // Like the backend: expired, used and unknown links are the same 404.
     if (!invitation || invitation.status !== 'pending') throw notFound(INVITATION_NOT_FOUND);
     const { token, member, status, ...preview } = invitation;
@@ -272,8 +272,8 @@ export const workspacesHandlers = [
     return { data: { ...preview, status: 'pending' as const } };
   }),
 
-  route(contract.acceptInvitation, ({ db, params, body, maybeUser, now }) => {
-    const invitation = db.invitations.find((item) => item.token === params.token);
+  route(contract.acceptInvitation, ({ db, body, maybeUser, now }) => {
+    const invitation = db.invitations.find((item) => item.token === body.token);
     const workspace = db.workspaces.find((item) => item.id === invitation?.workspace_id);
     if (!invitation || invitation.status !== 'pending' || !workspace) throw invitationGone();
     let account = maybeUser;

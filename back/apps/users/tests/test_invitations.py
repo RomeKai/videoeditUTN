@@ -11,6 +11,7 @@ from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 from unittest import mock
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from django.conf import settings
@@ -57,18 +58,25 @@ def resend_url(workspace, member):
     return f"{invite_url(workspace)}{member.pk}/resend/"
 
 
-def read(token):
-    return APIClient().get(f"/api/v1/invitations/{token}/")
+PREVIEW_URL = "/api/v1/invitations/preview/"
+ACCEPT_URL = "/api/v1/invitations/accept/"
 
 
-def accept(token, body=None, api=None):
-    return (api or APIClient()).post(f"/api/v1/invitations/{token}/accept/", body or {}, format="json")
+def read(token, **extra):
+    return APIClient().post(PREVIEW_URL, {"token": token}, format="json", **extra)
+
+
+def accept(token, body=None, api=None, **extra):
+    return (api or APIClient()).post(ACCEPT_URL, {**(body or {}), "token": token}, format="json", **extra)
 
 
 def token_of(message):
-    link = next(word for word in message.body.split() if "/invitacion/" in word)
-    assert link.startswith(f"{settings.FRONTEND_URL}/invitacion/")
-    return link.rsplit("/", 1)[1]
+    """The token of the link: in the fragment, which a browser never sends to the web host."""
+    link = next(word for word in message.body.split() if "/invitacion" in word)
+    url = urlparse(link)
+    assert f"{url.scheme}://{url.netloc}" == settings.FRONTEND_URL
+    assert (url.path, url.query) == ("/invitacion", "")
+    return parse_qs(url.fragment)["token"][0]
 
 
 @pytest.fixture
@@ -408,10 +416,13 @@ def test_a_bad_an_expired_a_used_and_a_revoked_link_are_the_same_404(team, setti
     assert client_for(owner).delete(f"/api/v1/workspaces/{workspace.pk}/members/{revoked.pk}/").status_code == 204
     live, live_token = invite(team, "viva@example.com")
 
-    answers = [read(token) for token in ("no-existe", "x" * 43, expired_token, used_token, revoked_token)]
+    answers = [read(token) for token in ("no-existe", "x" * 43, "", None, 7, ["a"], "y" * 500, expired_token, used_token, revoked_token)]
+    answers.append(APIClient().post(PREVIEW_URL, {}, format="json"))
+    answers.append(APIClient().post(PREVIEW_URL, ["no", "es", "un", "objeto"], format="json"))
 
     assert {(answer.status_code, answer.content) for answer in answers} == {(404, answers[0].content)}
-    gone = [accept(token, NEW_ACCOUNT) for token in ("no-existe", expired_token, used_token, revoked_token)]
+    gone = [accept(token, NEW_ACCOUNT) for token in ("no-existe", "", None, 7, expired_token, used_token, revoked_token)]
+    gone.append(APIClient().post(ACCEPT_URL, NEW_ACCOUNT, format="json"))
     assert {(answer.status_code, answer.content) for answer in gone} == {(410, gone[0].content)}
     assert gone[0].json()["code"] == "invitation_invalid"
     assert read(live_token).status_code == 200
@@ -456,7 +467,8 @@ def test_the_account_of_the_invited_email_accepts_with_its_session(team):
     assert (response.status_code, response.json()) == (200, {"workspace_id": str(workspace.pk), "tokens": None})
     member.refresh_from_db()
     assert (member.user_id, member.status, member.role) == (juana.pk, ACTIVE, "viewer")
-    assert (member.invitation_token_hash, member.invitation_sent_at) == (None, None)
+    # Nothing of the invitation is left in the row of a member.
+    assert (member.invitation_token_hash, member.invitation_sent_at, member.invited_email) == (None, None, "")
     assert client_for(juana).get(f"/api/v1/workspaces/{workspace.pk}/").json()["role"] == "viewer"
     # Once.
     assert accept(token, api=client_for(juana)).status_code == 410
@@ -535,7 +547,7 @@ def test_the_link_creates_a_verified_account_its_workspace_and_the_membership(te
     assert (juana.first_name, juana.last_name) == ("Juana", "Pérez")
     assert juana.check_password(GOOD_PASSWORD)
     member.refresh_from_db()
-    assert (member.user_id, member.status, member.invitation_token_hash) == (juana.pk, ACTIVE, None)
+    assert (member.user_id, member.status, member.invitation_token_hash, member.invited_email) == (juana.pk, ACTIVE, None, "")
     # Its own workspace, like any sign-up.
     own = Workspace.objects.get(owner=juana)
     assert own.name == "Espacio de Juana"
@@ -677,7 +689,7 @@ def test_reading_a_link_is_limited_per_ip(team):
 
     with _rates(invitation_read="3/hour"):
         answers = [read("adivinado-%d" % n).status_code for n in range(3)] + [read(token).status_code]
-        other_ip = APIClient().get(f"/api/v1/invitations/{token}/", REMOTE_ADDR="10.9.8.7")
+        other_ip = read(token, REMOTE_ADDR="10.9.8.7")
 
     assert answers == [404, 404, 404, 429]
     assert other_ip.status_code == 200
@@ -691,7 +703,7 @@ def test_accepting_is_limited_per_ip_also_with_a_session(team):
         # Different accounts from one address share the count.
         answers = [accept(f"adivinado-{n}", api=client_for(person)).status_code for n, person in enumerate(people)]
         blocked = accept(token, NEW_ACCOUNT)
-        other_ip = APIClient().post(f"/api/v1/invitations/{token}/accept/", NEW_ACCOUNT, format="json", REMOTE_ADDR="10.9.8.7")
+        other_ip = accept(token, NEW_ACCOUNT, REMOTE_ADDR="10.9.8.7")
 
     assert answers == [410, 410, 410]
     assert blocked.status_code == 429
@@ -712,33 +724,72 @@ def test_the_task_gets_only_the_id_of_the_row(team):
     assert [(call.args, call.kwargs) for call in delay.call_args_list] == [((member_id,), {}), ((member_id,), {})]
 
 
-def test_logs_carry_ids_only_never_an_email_or_a_token(team, caplog):
+def test_no_log_of_any_logger_carries_an_email_or_a_token(team, caplog):
+    """
+    Every logger, not only the app's: Django's `django.request` writes the
+    path of each 4xx and 5xx at WARNING, and the web server's access log
+    writes every path. The token is in the body, so neither has it.
+    """
     import smtplib
 
     owner, workspace = team
     intruder = new_user("intrusa")
+    new_user("concuenta")
     caplog.set_level(logging.DEBUG)
 
     member, token = invite(team, "juana.privada@example.com")
     client_for(owner).post(resend_url(workspace, member))
     second = token_of(mail.outbox[-1])
-    read(second)
-    read("un-token-inventado")
-    accept(second, NEW_ACCOUNT, api=client_for(intruder))
-    accept(second, {**NEW_ACCOUNT, "password": "12345678"})
-    accept(second, NEW_ACCOUNT)
-    accept(second, NEW_ACCOUNT)
+    paths = []
+    answers = {}
+
+    def call(name, response):
+        answers[name] = response.status_code
+        paths.append(response.wsgi_request.get_full_path())
+
+    call("read", read(second))
+    call("read_404", read(token))
+    call("accept_403", accept(second, NEW_ACCOUNT, api=client_for(intruder)))
+    call("accept_400", accept(second, {**NEW_ACCOUNT, "password": "12345678"}))
+    with mock.patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"invitation_accept": "2/hour"}):
+        call("accept_429", accept(second, NEW_ACCOUNT))
+    other, other_token = invite(team, "concuenta@test.com")
+    call("accept_401", accept(other_token, NEW_ACCOUNT))
+    SubscriptionPlan.objects.filter(pk=workspace.subscription_plan_id).update(max_members=1)
+    call("accept_403_seats", accept(second, NEW_ACCOUNT))
+    SubscriptionPlan.objects.filter(pk=workspace.subscription_plan_id).update(max_members=5)
+    call("accept", accept(second, NEW_ACCOUNT))
+    call("accept_410", accept(second, NEW_ACCOUNT))
     with mock.patch("apps.users.invitations.send_mail", side_effect=smtplib.SMTPException("juana.privada@example.com refused")):
-        other, _ = None, client_for(owner).post(invite_url(workspace), {"emails": ["otra.privada@example.com"], "role": "editor"}, format="json")
+        client_for(owner).post(invite_url(workspace), {"emails": ["otra.privada@example.com"], "role": "editor"}, format="json")
     send_invitation_email("00000000-0000-0000-0000-000000000000")
 
-    records = [record for record in caplog.records if record.name.startswith("apps.")]
-    text = "\n".join(record.getMessage() for record in records)
+    assert answers == {
+        "read": 200, "read_404": 404, "accept_403": 403, "accept_400": 400, "accept_429": 429, "accept_401": 401,
+        "accept_403_seats": 403, "accept": 200, "accept_410": 410,
+    }
+    # No URL of the API has the token: nothing for an access log to keep.
+    assert set(paths) == {PREVIEW_URL, ACCEPT_URL}
+    text = "\n".join(f"{record.name} {record.getMessage()} {record.__dict__.get('request', '')}" for record in caplog.records)
+    # Django's request logger did log the 4xx of the link, by their path.
+    for line in (f"Bad Request: {ACCEPT_URL}", f"Forbidden: {ACCEPT_URL}", f"Unauthorized: {ACCEPT_URL}", f"Gone: {ACCEPT_URL}", f"Not Found: {PREVIEW_URL}", f"Too Many Requests: {ACCEPT_URL}"):
+        assert line in text
     assert "invitation.created" in text and "invitation.resent" in text and "invitation.accepted" in text
     assert "invitation.email_mismatch" in text and "invitation_email.send_failed" in text and "SMTPException" in text
     assert str(member.pk) in text
-    for secret in ("privada", "example.com", "intrusa@", "duena@", token, second, "Juana", GOOD_PASSWORD):
+    for secret in ("privada", "example.com", "intrusa@", "duena@", "concuenta@", token, second, other_token, "Juana", GOOD_PASSWORD):
         assert secret not in text
+
+
+def test_the_api_has_no_route_with_a_token_in_its_path(team):
+    member, token = invite(team)
+
+    for url in (f"/api/v1/invitations/{token}/", f"/api/v1/invitations/{token}/accept/"):
+        assert APIClient().get(url).status_code == 404
+        assert APIClient().post(url, NEW_ACCOUNT, format="json").status_code == 404
+    assert APIClient().get(PREVIEW_URL).status_code == 405
+    member.refresh_from_db()
+    assert member.status == PENDING
 
 
 def test_the_task_sends_nothing_for_a_row_that_is_gone_or_already_active(team):
@@ -753,6 +804,104 @@ def test_the_task_sends_nothing_for_a_row_that_is_gone_or_already_active(team):
     assert not mail.outbox
     member.refresh_from_db()
     assert member.invitation_token_hash is None
+
+
+# --- Review follow-ups ---
+
+
+def test_resends_to_one_address_are_limited_whoever_asks(team):
+    owner, workspace = team
+    admin = new_user("admin")
+    WorkspaceMember.objects.create(workspace=workspace, user=admin, role=ADMIN, status=ACTIVE)
+    member, first = invite(team, "juana@example.com")
+    other, _ = invite(team, "otra@example.com")
+    # The same address invited from another workspace: one mailbox, one count.
+    elsewhere_owner = new_user("vecina")
+    elsewhere = elsewhere_owner.owned_workspaces.get()
+    elsewhere.subscription_plan = workspace.subscription_plan
+    elsewhere.save(update_fields=["subscription_plan"])
+    response = client_for(elsewhere_owner).post(invite_url(elsewhere), {"emails": ["JUANA@example.com"], "role": "editor"}, format="json")
+    twin = WorkspaceMember.objects.get(pk=response.json()["invited"][0]["id"])
+    mail.outbox.clear()
+
+    with _rates(invitation_resend_recipient="2/hour"):
+        answers = [
+            client_for(owner).post(resend_url(workspace, member)).status_code,
+            client_for(admin).post(resend_url(workspace, member)).status_code,
+        ]
+        last = token_of(mail.outbox[-1])
+        answers.append(client_for(owner).post(resend_url(workspace, member)).status_code)
+        answers.append(client_for(elsewhere_owner).post(resend_url(elsewhere, twin)).status_code)
+        another = client_for(owner).post(resend_url(workspace, other))
+
+    assert answers == [204, 204, 429, 429]
+    assert another.status_code == 204
+    assert [message.to for message in mail.outbox].count(["juana@example.com"]) == 2
+    # A refused resend changes nothing: the link sent last still works.
+    assert read(last).status_code == 200
+
+
+def test_accepting_with_a_session_verifies_the_email_of_the_account(team):
+    juana = new_user("juana", is_email_verified=False)
+    other = new_user("otra", is_email_verified=False)
+    member, token = invite(team, "juana@test.com")
+
+    # The wrong account is not verified by a link that is not for it.
+    assert accept(token, api=client_for(other)).status_code == 403
+    other.refresh_from_db()
+    assert other.is_email_verified is False
+    assert accept(token, api=client_for(juana)).status_code == 200
+    juana.refresh_from_db()
+    assert juana.is_email_verified is True
+
+
+def test_an_integrity_error_that_is_not_the_email_is_not_answered_as_sign_in_first(team):
+    from django.db import IntegrityError
+
+    juana = new_user("juana")
+    member, token = invite(team, "juana@test.com")
+    fresh, fresh_token = invite(team, "nueva@example.com")
+
+    with mock.patch("apps.users.views_invitations.check_seat_for_accept", side_effect=IntegrityError("otra restricción")):
+        with pytest.raises(IntegrityError):
+            accept(token, api=client_for(juana))
+        with pytest.raises(IntegrityError):
+            accept(fresh_token, NEW_ACCOUNT)
+
+    member.refresh_from_db()
+    assert member.status == PENDING
+    assert not User.objects.filter(email="nueva@example.com").exists()
+
+
+def test_a_sign_up_of_the_same_email_at_the_same_time_is_sign_in_first(team):
+    member, token = invite(team, "juana@example.com")
+    real_exists = User.objects.filter(email__iexact="x").exists.__func__
+
+    def blind(queryset):
+        # The check does not see the account that a sign-up is committing right now.
+        return False if "UPPER" in str(queryset.query) and "juana" in str(queryset.query).lower() else real_exists(queryset)
+
+    new_user("previa")
+    User.objects.filter(username="previa").update(email="juana@example.com")
+    with mock.patch("django.db.models.query.QuerySet.exists", blind):
+        response = accept(token, NEW_ACCOUNT)
+
+    assert response.status_code == 401
+    assert User.objects.filter(email__iexact="juana@example.com").count() == 1
+    member.refresh_from_db()
+    assert member.status == PENDING
+
+
+def test_the_cap_of_emails_is_checked_before_any_of_them_is_normalized(team):
+    from apps.users import serializers_workspaces
+
+    owner, workspace = team
+    with mock.patch.object(serializers_workspaces, "normalize_email", wraps=serializers_workspaces.normalize_email) as normalize:
+        response = client_for(owner).post(invite_url(workspace), {"emails": ["juana@example.com"] * 5000, "role": "editor"}, format="json")
+
+    assert response.status_code == 400
+    assert response.json()["emails"] == [serializers_workspaces.EMAILS_TOO_MANY]
+    assert normalize.call_count == 0
 
 
 # --- The rows the model accepts ---
