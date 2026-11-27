@@ -2,23 +2,14 @@
 Review of #184: dispatch_scheduled_posts_batch against the writes of the
 publications API, between its query and the lock of each post.
 
-Both are known faults of the dispatcher, kept here as strict xfails until its
-fix lands (it is not part of this change: the publishing path is not changed
-here). The fix is to lock and check again in one query and skip what no
-longer matches::
-
-    post_to_queue = ScheduledPost.objects.select_for_update().filter(
-        id=post.id, status=ScheduledPost.Status.SCHEDULED, publish_at__lte=window_end,
-    ).first()
-    if post_to_queue is None:
-        continue
-
-Once it lands these pass, and `strict` makes them fail until the marks go.
+The dispatcher locks each post and checks again in one query (still
+SCHEDULED and inside the window), and skips what no longer matches: a post
+cancelled or rescheduled after the batch query neither stops the run nor
+goes to the queue with its new date.
 """
 from datetime import timedelta
 from unittest.mock import patch
 
-import pytest
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
@@ -28,7 +19,6 @@ from apps.videos.tasks import dispatch_scheduled_posts_batch
 
 User = get_user_model()
 UPLOAD = "apps.videos.tasks.upload_to_social_network.apply_async"
-DISPATCHER_FIX = "dispatch_scheduled_posts_batch reads each post with .get() and no status/window filter (fix pending)"
 
 
 class DispatcherRacesTests(TestCase):
@@ -46,7 +36,6 @@ class DispatcherRacesTests(TestCase):
             for index, platform in enumerate(ScheduledPost.Platform.values)
         ]
 
-    @pytest.mark.xfail(strict=True, raises=ScheduledPost.DoesNotExist, reason=DISPATCHER_FIX)
     def test_a_post_cancelled_after_the_query_is_skipped_and_the_run_goes_on(self):
         first, second, third = self.posts
 
@@ -62,7 +51,6 @@ class DispatcherRacesTests(TestCase):
         third.refresh_from_db()
         self.assertEqual(third.status, ScheduledPost.Status.QUEUED)
 
-    @pytest.mark.xfail(strict=True, reason=DISPATCHER_FIX)
     def test_a_post_rescheduled_out_of_the_window_after_the_query_is_not_queued(self):
         first, second, _ = self.posts
         later = timezone.now() + timedelta(days=3)

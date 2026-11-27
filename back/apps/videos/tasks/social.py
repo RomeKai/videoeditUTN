@@ -95,17 +95,20 @@ def dispatch_scheduled_posts_batch():
     for post in scheduled_posts:
         with transaction.atomic():
             # Lock the row for update and check status again to prevent race conditions
-            post_to_queue = ScheduledPost.objects.select_for_update().get(id=post.id)
-            if post_to_queue.status == ScheduledPost.Status.SCHEDULED:
-                post_to_queue.status = ScheduledPost.Status.QUEUED
-                post_to_queue.save()
-                
-                # Send to worker with specific ETA
-                upload_to_social_network.apply_async(
-                    args=[post_to_queue.id],
-                    eta=post_to_queue.publish_at
-                )
-                count += 1
+            post_to_queue = ScheduledPost.objects.select_for_update().filter(
+                id=post.id, status=ScheduledPost.Status.SCHEDULED, publish_at__lte=window_end,
+            ).first()
+            if post_to_queue is None:
+                continue
+            post_to_queue.status = ScheduledPost.Status.QUEUED
+            post_to_queue.save()
+
+            # Send to worker with specific ETA
+            upload_to_social_network.apply_async(
+                args=[post_to_queue.id],
+                eta=post_to_queue.publish_at
+            )
+            count += 1
     
     logger.info(f"🚀 [DISPATCHER] Queued {count} posts for distribution.")
     return f"Queued {count} posts."
