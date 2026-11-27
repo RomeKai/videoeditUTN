@@ -102,8 +102,7 @@ class ProjectCostTests(ProjectDataHarness):
             response = self.client.get(LIST_URL)
 
         self.assertEqual(response.status_code, 200)
-        body = response.json()
-        rows = body['results'] if isinstance(body, dict) else body
+        rows = response.json()['results']
         self.assertEqual(sorted(Decimal(row['cost']['amount']) for row in rows), [10, 11, 12, 13])
         reads = [q for q in queries.captured_queries if 'payments_transaction' in q['sql']]
         self.assertEqual(len(reads), 1, [q['sql'] for q in reads])
@@ -117,11 +116,11 @@ class ProjectCostTests(ProjectDataHarness):
         with patch.object(project_summary, 'creation_reservation_id', side_effect=real) as reads:
             response = self.client.get(LIST_URL)
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(all(row['cost'] for row in response.json()))
+        self.assertTrue(all(row['cost'] for row in response.json()['results']))
         return reads.call_count
 
     def test_the_work_per_project_does_not_grow_with_the_list(self):
-        # The list is not paginated: every project used to scan all the others.
+        # Every project of the page used to scan all the others.
         few = self.reservation_id_reads(4)
         many = self.reservation_id_reads(12)  # 16 projects now
 
@@ -511,7 +510,7 @@ class EtaTests(ProjectDataHarness):
                 metadata={'priced_duration_s': 100, 'stage_durations': {'audio_extracted': 10 * number}},
             )
         with patch.object(estimate, '_review_seconds_per_second', return_value=3) as history:
-            rows = self.client.get(LIST_URL).json()
+            rows = self.client.get(LIST_URL).json()['results']
 
         self.assertEqual(sorted(row['eta_seconds'] for row in rows), [280, 290, 300])
         self.assertEqual(history.call_count, 1)

@@ -31,11 +31,14 @@ describe('B2 · Proyectos', () => {
 
     const transcribing = await rowOf('Clase 3');
     expect(within(transcribing).getByText('Transcribiendo')).toBeInTheDocument();
-    expect(within(transcribing).getByText('Paso 2 de 4')).toBeInTheDocument();
+    // 52:02 of video: the mock estimates 390 s.
+    expect(within(transcribing).getByText(/^Paso 2 de 4/)).toHaveTextContent('Paso 2 de 4 · ≈ 7 min');
 
     const waiting = await rowOf('Entrevista a Paula');
     expect(within(waiting).getByText('En espera')).toBeInTheDocument();
     expect(within(waiting).getByText('Hay mucha demanda. Arranca solo.')).toHaveAttribute('title', expect.stringContaining('no tenés que hacer nada'));
+    // Waiting for capacity has no estimate, whatever `eta_seconds` says.
+    expect(waiting).not.toHaveTextContent('≈');
 
     const failed = await rowOf('Webinar de lanzamiento');
     expect(within(failed).getByText('Error')).toBeInTheDocument();
