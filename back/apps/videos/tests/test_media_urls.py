@@ -111,7 +111,7 @@ class TestApi:
         client = client_of(project)
         expected = 'http://testserver/media/videos/raw/source.mp4'
         assert client.get(f'/api/v1/projects/{project.pk}/').data['proxy_url'] == expected
-        assert client.get('/api/v1/projects/').data[0]['proxy_url'] == expected
+        assert client.get('/api/v1/projects/').data['results'][0]['proxy_url'] == expected
 
     def test_paper_edit_data(self, project):
         response = client_of(project).get(f'/api/v1/projects/{project.pk}/paper-edit-data/')

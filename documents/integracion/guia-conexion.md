@@ -195,7 +195,7 @@ Detalle y tabla de lo que ya tiene endpoint: [01, Workspace activo y roles](../i
 | Usuario y perfil | 5 | — | Lead, en curso |
 | Workspaces, miembros e invitaciones | 13 | — | Pedro (propuesta) |
 | Planes, billetera y pagos | 12 (uno ya está en `dev`) | — | Pedro (tickets PAY) |
-| Proyectos | 5 | 2 | Lead: propuestos en curso; los parciales, sin rama |
+| Proyectos | 5 | 1 | Lead: propuestos en curso; el parcial, sin rama |
 | Clips | 6 | — | Lead, en curso |
 | Brand kits | — | — | Hecho (`feat/brand-kits-duplicar`) |
 | Redes y publicaciones | 11 | — | Pedro (propuesta) |
@@ -291,7 +291,7 @@ Contrato `contracts/billing.ts`. Backend: app `apps/payments` (`SubscriptionPlan
 
 El webhook del proveedor no está en el contrato porque el navegador no lo llama. Va igual, con su test de doble envío (PAY-02).
 
-### Proyectos (5 propuestos y 2 parciales) y Clips (6) · lead
+### Proyectos (5 propuestos y 1 parcial) y Clips (6) · lead
 
 Contratos `contracts/projects.ts` y `contracts/clips.ts`. Backend: `apps/videos`. Los propuestos los está haciendo el lead en `feat/clips-reintento-render` y `feat/proyecto-actividad-descargas`. No te metas en `VideoProjectViewSet` ni en las tareas de render sin hablar con él.
 
@@ -308,10 +308,10 @@ Contratos `contracts/projects.ts` y `contracts/clips.ts`. Backend: `apps/videos`
 | POST `clips/:id/render/` | `clips.render` | `useRenderClip` · `renderClip` | D4, D5 | Reserva por la duración del clip | — | M |
 | POST `clips/:id/retry/` | `clips.retry` | `useRetryClip` · `retryClip` | D3 (§5 D) | `ClipRetryView`. Cobra el render del clip (su parte se devolvió cuando falló): reserva como `clips.render` y responde el clip más `final_cost` y `transaction_id`; 402 sin saldo, 409 si no está en error o el proyecto ya renderiza. La UI confirma el costo antes | — | M |
 | GET `clips/:id/download/` | `clips.download` | `useClipDownload` · `getClipDownload` | D3, D4, D5 | `CloudflareR2Manager.generate_presigned_url` con `ResponseContentDisposition=attachment` | — | S |
-| GET `projects/` ⚠️ | `projects.list` | `useProjects` · `listProjects` | B2 (§5 B), J1, B1 | Paginación de 25, `status_group`, `search`, `status_counts`, serializer liviano (hueco 14) | — | M |
+| GET `projects/` | `projects.list` | `useProjects` · `listProjects` | B2 (§5 B), J1, B1 | **Ya existe**: `VideoProjectViewSet.list` con `ProjectPagination` (25 por página), `status_group`, `search`, `ordering` y `status_counts` (hueco 14). Cada fila usa `VideoProjectListSerializer`: el proyecto sin `transcript_data`, `ai_rationale_log` ni `metadata.full_text` | — | M |
 | GET `projects/:id/` ⚠️ | `projects.detail` | `useProject` · `getProject` | D1, D3, D4, D5 | Faltan `cost`, `stage_timings`, `eta_seconds`, `duration_seconds`, `uploaded_by_detail` (huecos 4, 15, 18). Ya llegan `thumbnail_url` y, en cada clip, `preview_url` y `thumbnail_url` | Vínculo `Transaction` ↔ proyecto | M |
 
-⚠️ = existe en parte. Los dos parciales son del área del lead, pero no tienen rama: coordinalo con él antes de tocarlos.
+⚠️ = existe en parte. El parcial que queda es del área del lead, pero no tiene rama: coordinalo con él antes de tocarlo.
 
 ### Brand kits · hecho
 
@@ -407,7 +407,7 @@ Para no pisarnos. Lo «en curso» ya tiene rama: no lo arranques por tu lado.
 | Notificaciones | 3 | Pedro | — | Propuesta |
 | Usuario y perfil, `/status` | 6 | Lead (desde tus commits 759f9f8 y f04db85) | `feat/perfil-me` | En curso (lead) |
 | Proyectos y clips | 11 propuestos | Lead (Franco) | `feat/clips-reintento-render`, `feat/proyecto-actividad-descargas` | En curso (lead) |
-| Proyectos: los 2 parciales | 2 | Área del lead | — | Sin rama: coordinar |
+| Proyectos: el parcial que queda (`projects.detail`) | 1 | Área del lead | — | Sin rama: coordinar |
 | Brand kits: duplicar y default único | 2 | — | `feat/brand-kits-duplicar` | Hecho |
 | Cache compartido en Redis | — | Lead | `fix/creacion-robusta` | En curso (lead) |
 | Modo híbrido | — | Lead | `feat/front-modo-mixto` | Construido (PR #134) |

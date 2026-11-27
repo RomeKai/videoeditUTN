@@ -833,7 +833,7 @@ class RenderQueuedTests(CapturedTaskFailures, ClipActionsHarness, APITestCase):
         VideoProject.objects.filter(pk=project.pk).update(metadata={"duration": 120.0})
         self.assert_queued(project, {approved: True, suggestion: True})
 
-    def test_one_query_per_rendering_project_whatever_its_clips(self):
+    def test_one_query_for_every_rendering_project_of_the_list_whatever_their_clips(self):
         from django.db import connection
         from django.test.utils import CaptureQueriesContext
 
@@ -849,13 +849,15 @@ class RenderQueuedTests(CapturedTaskFailures, ClipActionsHarness, APITestCase):
             response = self.client.get(reverse("project-list"))
 
         self.assertEqual(response.status_code, 200)
-        queued = [clip["render_queued"] for project in response.data for clip in project["clips"] if clip["status"] == DRAFT]
+        queued = [clip["render_queued"] for project in response.data["results"] for clip in project["clips"] if clip["status"] == DRAFT]
         self.assertEqual(queued, [True] * 6)
         reads = [query["sql"] for query in queries.captured_queries if '"payments_transaction"' in query["sql"]]
-        self.assertEqual(len(reads), 2, reads)
-        # Each clip's project is the one listed: never read again per clip.
+        # The reservations of both projects, read together.
+        self.assertEqual(len(reads), 1, reads)
+        # Each clip's project is the one listed: never read again per clip. The list reads the projects
+        # three times whatever the page: the counts of the filters, the total and the page.
         projects = [query["sql"] for query in queries.captured_queries if 'FROM "videos_videoproject"' in query["sql"]]
-        self.assertEqual(len(projects), 1, projects)
+        self.assertEqual(len(projects), 3, projects)
 
     def test_the_field_is_in_the_openapi_schema(self):
         schema = self.client.get("/api/schema/?format=json").json()

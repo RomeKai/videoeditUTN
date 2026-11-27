@@ -1,14 +1,12 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse } from 'msw';
+import { delay, http, HttpResponse } from 'msw';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { API_URL } from '@/api/config';
-import type { Project } from '@/api/contracts/projects';
-import { serializeProject } from '@/api/mocks/serialize';
+import real from '@/api/contracts/drf/responses.json';
 import { server } from '@/api/mocks/server';
 import { loadDb, saveDb } from '@/api/mocks/state';
 import { ProjectsScreen } from './ProjectsScreen';
-import { applyListQuery } from './project-view';
 import { allowSlowScreens, renderScreen, startScenario } from '@/testing';
 
 allowSlowScreens();
@@ -19,116 +17,137 @@ afterAll(() => server.close());
 const rows = () => within(screen.getByRole('table', { name: 'Proyectos del workspace' })).getAllByRole('row').slice(1);
 const titles = () => rows().map((row) => row.querySelector('a')?.textContent?.replace(/^(Archivo|Link[^:]*): /, '') ?? '');
 
-/** The list endpoint as the backend answers today: every project in one array, whatever the query says. */
-function answerBareArray(limit = 30): { queries: string[]; projects: Project[] } {
-  const db = loadDb();
-  const workspace = db.projects[0]?.workspace;
-  const projects = db.projects
-    .filter((project) => project.workspace === workspace)
-    .slice(0, limit)
-    .map((project) => serializeProject(db, project, { full: false })) as Project[];
-  const queries: string[] = [];
-  server.use(
-    http.get(`${API_URL}/api/v1/projects/`, ({ request }) => {
-      queries.push(new URL(request.url).search);
-      return HttpResponse.json(projects);
-    }),
-  );
-  return { queries, projects };
+/** Every GET of the list the screen makes, as its query string. */
+function watchListRequests(): string[] {
+  const asked: string[] = [];
+  server.events.on('request:start', ({ request }) => {
+    const url = new URL(request.url);
+    if (request.method === 'GET' && url.pathname === '/api/v1/projects/') asked.push(url.search);
+  });
+  return asked;
 }
+afterEach(() => server.events.removeAllListeners());
 
-describe('B2 contra el backend de hoy (un array sin paginar, que ignora la consulta)', () => {
-  it('pagina, filtra, busca y ordena en el navegador, y cuenta los filtros', async () => {
-    startScenario('muchos-proyectos');
-    const { projects } = answerBareArray(30);
-    const user = userEvent.setup();
+const EMPTY_PAGE = { count: 0, next: null, previous: null, results: [], status_counts: { all: 0, in_progress: 0, to_review: 0, ready: 0, failed: 0 } };
+
+const lastQuery = (asked: string[]) => new URLSearchParams(asked[asked.length - 1] ?? '');
+
+describe('B2 con las páginas reales del backend (drf/responses.json)', () => {
+  /** The page the backend answered to the search «clase» (test_projects_list_contract_fixture.py). */
+  function answerRealPages() {
+    server.use(http.get(`${API_URL}/api/v1/projects/`, () => HttpResponse.json(real.project_list)));
+  }
+
+  it('muestra las filas, el total y los contadores que manda el servidor', async () => {
+    startScenario('estudio-norte');
+    answerRealPages();
     renderScreen(<ProjectsScreen />);
-    await screen.findByText(/1–25 de 30 proyectos/);
-    expect(rows()).toHaveLength(25);
-
-    await user.click(screen.getByRole('button', { name: 'Siguiente' }));
-    await screen.findByText(/26–30 de 30 proyectos/);
-    expect(rows()).toHaveLength(5);
-
-    // The chips count what the browser has, since the answer brings no counts.
-    const expected = applyListQuery(projects, { group: 'all', term: '', ordering: '-created_at', page: 1, pageSize: 25 }).counts;
+    await screen.findByText(/1–3 de 3 proyectos/);
+    expect(titles()).toEqual(['CLASE 3: Finanzas personales', 'Clase 2: Ahorro', 'Clase 1: Presupuesto']);
     const filters = screen.getByRole('group', { name: 'Filtrar por estado' });
-    expect(within(filters).getByRole('button', { name: /Todos/ })).toHaveTextContent(`Todos${expected.all}`);
-    expect(within(filters).getByRole('button', { name: /Con error/ })).toHaveTextContent(`Con error${expected.failed}`);
-    expect(expected.all).toBe(30);
-    expect(expected.in_progress + expected.to_review + expected.ready + expected.failed).toBe(30);
-
-    const group = expected.ready > 0 ? ({ name: /Listos/, key: 'ready' } as const) : ({ name: /En proceso/, key: 'in_progress' } as const);
-    await user.click(within(filters).getByRole('button', { name: group.name }));
-    await waitFor(() => expect(rows()).toHaveLength(Math.min(25, expected[group.key])));
-    expect(screen.getByText(new RegExp(`de ${expected[group.key]} proyectos`))).toBeInTheDocument();
-    await user.click(within(filters).getByRole('button', { name: /Todos/ }));
-
-    const sample = projects[7]?.title ?? '';
-    await user.type(screen.getByRole('searchbox', { name: 'Buscar proyectos por título' }), sample);
-    const matching = projects.filter((project) => project.title.toLowerCase().includes(sample.toLowerCase())).length;
-    await waitFor(() => expect(rows()).toHaveLength(matching));
-    expect(titles()).toContain(sample);
-
-    await user.clear(screen.getByRole('searchbox', { name: 'Buscar proyectos por título' }));
-    await user.type(screen.getByRole('searchbox', { name: 'Buscar proyectos por título' }), 'zzzz');
-    expect(await screen.findByText('Ningún proyecto coincide con «zzzz»')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Ver todos los proyectos' }));
-    await screen.findByText(/1–25 de 30 proyectos/);
-
-    await user.click(screen.getByRole('button', { name: 'Orden: más recientes' }));
-    await user.click(screen.getByRole('menuitemradio', { name: 'Título (A–Z)' }));
-    const sorted = [...projects].sort((a, b) => a.title.localeCompare(b.title, 'es')).map((project) => project.title);
-    await waitFor(() => expect(titles()).toEqual(sorted.slice(0, 25)));
+    expect(within(filters).getByRole('button', { name: /Todos/ })).toHaveTextContent('Todos3');
+    expect(within(filters).getByRole('button', { name: /En proceso/ })).toHaveTextContent('En proceso1');
+    expect(within(filters).getByRole('button', { name: /Para revisar/ })).toHaveTextContent('Para revisar1');
+    expect(within(filters).getByRole('button', { name: /Listos/ })).toHaveTextContent('Listos1');
+    expect(within(filters).getByRole('button', { name: /Con error/ })).toHaveTextContent('Con error0');
   });
 
-  it('muestra y cuenta solo los proyectos del workspace activo, aunque el backend mande los de todos', async () => {
+  it('el proyecto en proceso dice cuánto falta para revisar (eta_seconds)', async () => {
     startScenario('estudio-norte');
-    const db = loadDb();
-    const active = db.users.find((item) => item.id === db.sessionUserId)?.active_workspace_id;
-    const own = db.projects.filter((project) => project.workspace === active);
-    const other = db.workspaces.find((workspace) => workspace.id !== active);
-    if (!active || !other || own.length === 0) throw new Error('El escenario no tiene dos workspaces');
-    // What the real list view answers: this user's projects in every workspace, whatever X-Workspace-Id says.
-    const foreign = own.slice(0, 3).map((project, index) => ({
-      ...(serializeProject(db, project, { full: false }) as Project),
-      id: `00000000-0000-4000-8000-00000000f00${index}`,
-      workspace: other.id,
-      title: `De otro workspace ${index + 1}`,
-    }));
-    const all = [...foreign, ...(own.map((project) => serializeProject(db, project, { full: false })) as Project[])];
-    server.use(http.get(`${API_URL}/api/v1/projects/`, () => HttpResponse.json(all)));
+    answerRealPages();
+    renderScreen(<ProjectsScreen />);
+    await screen.findByText(/1–3 de 3 proyectos/);
+    const [processing, review, ready] = rows() as [HTMLElement, HTMLElement, HTMLElement];
+    // 542 s.
+    expect(within(processing).getByText('≈ 9 min')).toHaveAttribute('title', 'Faltan ≈ 9 min para revisar');
+    expect(processing).toHaveTextContent('Paso 2 de 4 · ≈ 9 min');
+    expect(review).not.toHaveTextContent('≈');
+    expect(ready).not.toHaveTextContent('≈');
+  });
+});
+
+describe('B2 · el servidor pagina, filtra, busca y ordena', () => {
+  it('cada cambio de la pantalla viaja en la consulta', async () => {
+    startScenario('muchos-proyectos');
+    const asked = watchListRequests();
     const user = userEvent.setup();
     renderScreen(<ProjectsScreen />);
-    await screen.findByText(new RegExp(`1–${own.length} de ${own.length} proyectos`));
-    expect(rows()).toHaveLength(own.length);
-    expect(titles().some((title) => title.startsWith('De otro workspace'))).toBe(false);
-    const filters = screen.getByRole('group', { name: 'Filtrar por estado' });
-    expect(within(filters).getByRole('button', { name: /Todos/ })).toHaveTextContent(`Todos${own.length}`);
-    const counts = applyListQuery(all, { group: 'all', term: '', ordering: '-created_at', page: 1, pageSize: 25, workspaceId: active }).counts;
-    expect(counts.in_progress + counts.to_review + counts.ready + counts.failed).toBe(own.length);
+    await screen.findByText(/1–25 de 64 proyectos/);
+    expect(Object.fromEntries(lastQuery(asked))).toEqual({ page: '1', page_size: '25' });
 
-    await user.type(screen.getByRole('searchbox', { name: 'Buscar proyectos por título' }), 'otro workspace');
-    expect(await screen.findByText('Ningún proyecto coincide con «otro workspace»')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Siguiente' }));
+    await screen.findByText(/26–50 de 64 proyectos/);
+    expect(lastQuery(asked).get('page')).toBe('2');
+
+    const filters = screen.getByRole('group', { name: 'Filtrar por estado' });
+    const failed = Number(within(filters).getByRole('button', { name: /Con error/ }).textContent?.replace(/\D/g, ''));
+    expect(failed).toBeGreaterThan(0);
+    await user.click(within(filters).getByRole('button', { name: /Con error/ }));
+    await waitFor(() => expect(Object.fromEntries(lastQuery(asked))).toEqual({ page: '1', page_size: '25', status_group: 'failed' }));
+    await screen.findByText(new RegExp(`de ${failed} proyectos`));
+    await waitFor(() => expect(rows().every((row) => within(row).queryByText('Error') !== null)).toBe(true));
+    // The chips keep counting every filter, whatever the one chosen.
+    expect(within(filters).getByRole('button', { name: /Todos/ })).toHaveTextContent('Todos64');
+
+    await user.click(within(filters).getByRole('button', { name: /Todos/ }));
+    await screen.findByText(/1–25 de 64 proyectos/);
+    await user.click(screen.getByRole('button', { name: 'Orden: más recientes' }));
+    await user.click(screen.getByRole('menuitemradio', { name: 'Título (A–Z)' }));
+    await waitFor(() => expect(lastQuery(asked).get('ordering')).toBe('title'));
+    await waitFor(() => expect(titles()).toEqual([...titles()].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase(), 'es'))));
+
+    const sample = titles()[3] ?? '';
+    await user.type(screen.getByRole('searchbox', { name: 'Buscar proyectos por título' }), `  ${sample.toUpperCase()} `);
+    await waitFor(() => expect(lastQuery(asked).get('search')).toBe(sample.toUpperCase()));
+    await waitFor(() => expect(titles()).toContain(sample));
+    expect(rows().length).toBeLessThan(25);
+    // The counts follow the search.
+    expect(within(filters).getByRole('button', { name: /Todos/ })).toHaveTextContent(`Todos${rows().length}`);
+  });
+
+  it('una respuesta que no es una página (el array de antes) es un error, no una lista armada en el navegador', async () => {
+    startScenario('muchos-proyectos');
+    server.use(http.get(`${API_URL}/api/v1/projects/`, () => HttpResponse.json(real.project_list.results)));
+    renderScreen(<ProjectsScreen />);
+    expect(await screen.findByRole('button', { name: 'Reintentar' })).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   it('sin proyectos muestra el estado vacío', async () => {
     startScenario('muchos-proyectos');
-    server.use(http.get(`${API_URL}/api/v1/projects/`, () => HttpResponse.json([])));
+    server.use(http.get(`${API_URL}/api/v1/projects/`, () => HttpResponse.json(EMPTY_PAGE)));
     renderScreen(<ProjectsScreen />);
     expect(await screen.findByRole('heading', { name: 'Todavía no hay proyectos' })).toBeInTheDocument();
   });
-});
 
-describe('applyListQuery', () => {
-  it('acota la página pedida a la última que existe', () => {
+  it('al borrar una búsqueda sin resultados, el buscador sigue en su lugar mientras llega la lista', async () => {
     startScenario('muchos-proyectos');
-    const { projects } = answerBareArray(30);
-    const page = applyListQuery(projects, { group: 'all', term: '', ordering: 'created_at', page: 9, pageSize: 25 });
-    expect(page.page).toBe(2);
-    expect(page.results).toHaveLength(5);
-    expect(page.results[0]?.created_at.localeCompare(page.results[4]?.created_at ?? '')).toBeLessThanOrEqual(0);
-    expect(applyListQuery([], { group: 'failed', term: 'x', ordering: 'title', page: 3, pageSize: 25 })).toMatchObject({ page: 1, count: 0, results: [] });
+    const user = userEvent.setup();
+    const view = renderScreen(<ProjectsScreen />);
+    await screen.findByText(/1–25 de 64 proyectos/);
+    const box = screen.getByRole('searchbox', { name: 'Buscar proyectos por título' });
+    await user.type(box, 'zzzz');
+    expect(await screen.findByText('Ningún proyecto coincide con «zzzz»')).toBeInTheDocument();
+
+    // The first page left the cache (as it does 5 minutes after the search started), and asking for it again
+    // takes a while: meanwhile the screen still holds the page of «zzzz» (0 of 0).
+    view.queryClient.removeQueries({ type: 'inactive' });
+    let waiting = false;
+    server.use(
+      http.get(`${API_URL}/api/v1/projects/`, async () => {
+        waiting = true;
+        await delay(400);
+        return undefined; // the mock answers
+      }),
+    );
+    await user.clear(box);
+    await waitFor(() => expect(waiting).toBe(true));
+    expect(screen.queryByRole('heading', { name: 'Todavía no hay proyectos' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Ningún proyecto coincide/)).not.toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'Cargando proyectos' })).toBeInTheDocument();
+    expect(screen.getByRole('searchbox', { name: 'Buscar proyectos por título' })).toBe(box);
+    expect(box).toHaveFocus();
+    await screen.findByText(/1–25 de 64 proyectos/);
   });
 });
 
@@ -176,11 +195,7 @@ describe('B2 · una página que ya no existe (404)', () => {
 
   it('una búsqueda nueva arranca en la primera página sin pedir la página vieja', async () => {
     startScenario('muchos-proyectos');
-    const asked: string[] = [];
-    server.events.on('request:start', ({ request }) => {
-      const url = new URL(request.url);
-      if (request.method === 'GET' && url.pathname === '/api/v1/projects/') asked.push(url.search);
-    });
+    const asked = watchListRequests();
     const user = userEvent.setup();
     renderScreen(<ProjectsScreen />);
     await screen.findByText(/1–25 de 64 proyectos/);
@@ -190,7 +205,6 @@ describe('B2 · una página que ya no existe (404)', () => {
     await waitFor(() => expect(asked.some((search) => search.includes('search=1'))).toBe(true));
     await screen.findByText(/^1–/);
     expect(asked.filter((search) => search.includes('search=1')).every((search) => search.includes('page=1&'))).toBe(true);
-    server.events.removeAllListeners();
   });
 });
 
@@ -212,7 +226,7 @@ describe('B2 · vacío', () => {
   it('con el recorrido ya terminado en el servidor, «Primeros pasos» no aparece en ningún navegador', async () => {
     // Martín (rol Admin) terminó el recorrido; nothing is stored in this browser.
     startScenario('rol-admin');
-    server.use(http.get(`${API_URL}/api/v1/projects/`, () => HttpResponse.json({ count: 0, next: null, previous: null, results: [] })));
+    server.use(http.get(`${API_URL}/api/v1/projects/`, () => HttpResponse.json(EMPTY_PAGE)));
     renderScreen(<ProjectsScreen />);
     await screen.findByRole('heading', { name: 'Todavía no hay proyectos' });
     expect(screen.getAllByRole('link', { name: /«/ })).toHaveLength(3);
@@ -222,7 +236,7 @@ describe('B2 · vacío', () => {
 
   it('rol Lector: los pedidos de ejemplo se ven, deshabilitados', async () => {
     startScenario('rol-lector');
-    server.use(http.get(`${API_URL}/api/v1/projects/`, () => HttpResponse.json({ count: 0, next: null, previous: null, results: [], status_counts: { all: 0, in_progress: 0, to_review: 0, ready: 0, failed: 0 } })));
+    server.use(http.get(`${API_URL}/api/v1/projects/`, () => HttpResponse.json(EMPTY_PAGE)));
     renderScreen(<ProjectsScreen />);
     await screen.findByRole('heading', { name: 'Todavía no hay proyectos' });
     const examples = screen.getAllByRole('link', { name: /«/ });

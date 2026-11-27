@@ -85,6 +85,14 @@ export function formatMinutes(totalSeconds: number): string {
   return m === 0 ? `${h} h` : `${h} h ${m} min`;
 }
 
+/**
+ * An estimate of time left, the same wherever it shows (Nuevo proyecto, the project header, the projects
+ * list): "≈ 40 s" under a minute, "≈ 9 min" and "≈ 1 h 5 min" above.
+ */
+export function formatEta(seconds: number): string {
+  return `≈ ${formatMinutes(seconds)}`;
+}
+
 function asDate(value: DateInput): Date {
   return value instanceof Date ? value : new Date(value);
 }

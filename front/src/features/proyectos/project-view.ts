@@ -1,10 +1,9 @@
-import { isOfWorkspace } from '@/api/routing';
-import type { Project, ProjectStatusGroup } from '@/api/contracts/projects';
-import { projectStatusGroup, type ProjectStatusView } from '@/lib/project-status';
+import type { Project, ProjectListItem } from '@/api/contracts/projects';
+import type { ProjectStatusView } from '@/lib/project-status';
 import type { ButtonVariant, IconName } from '@/ui';
 
-/** What the list needs of a project (the list endpoint sends the whole serializer). */
-export type ProjectRow = Project;
+/** A project as the list endpoint sends it: without the transcript and the selection log. */
+export type ProjectRow = ProjectListItem;
 
 /**
  * The hosts the backend downloads links from, exactly (`LINK_HOSTS` of
@@ -103,57 +102,3 @@ export const ORDERINGS = [
 ] as const;
 
 export type Ordering = (typeof ORDERINGS)[number]['value'];
-
-export interface ListQuery {
-  group: ProjectStatusGroup;
-  /** Already trimmed. */
-  term: string;
-  ordering: Ordering;
-  /** 1-based. */
-  page: number;
-  pageSize: number;
-  /**
-   * Active workspace. The backend's list brings the projects of every workspace the user belongs to (it does
-   * not read X-Workspace-Id yet), so the rows and the counts keep only this one's.
-   */
-  workspaceId?: string | null;
-}
-
-export interface ListPage {
-  results: Project[];
-  /** Projects that match the filter and the search, in every page. */
-  count: number;
-  /** Per status filter, among the ones that match the search (as the paginated API counts them). */
-  counts: Record<ProjectStatusGroup, number>;
-  /** The page actually shown: the asked one, clamped to the last that exists. */
-  page: number;
-}
-
-/**
- * The list query applied in the browser, for a backend that answers every
- * project in one array and ignores page, filter, search and order (gap 14).
- * Same rules as the paginated endpoint: the search matches the title.
- */
-export function applyListQuery(projects: ReadonlyArray<Project>, query: ListQuery): ListPage {
-  const term = query.term.toLowerCase();
-  // The backend scopes the list by `X-Workspace-Id` (PR #125). Kept as a cheap defence: a project of
-  // another workspace must never show up here, whatever the list brings.
-  // (`isOfWorkspace`: in hybrid mode the active workspace can be a placeholder whose real id is not known.)
-  const workspaceId = query.workspaceId;
-  const own = workspaceId ? projects.filter((project) => isOfWorkspace(project.workspace, workspaceId)) : projects;
-  const matching = term ? own.filter((project) => project.title.toLowerCase().includes(term)) : [...own];
-  const counts: Record<ProjectStatusGroup, number> = { all: matching.length, in_progress: 0, to_review: 0, ready: 0, failed: 0 };
-  const groups = new Map<string, ProjectStatusGroup>();
-  for (const project of matching) {
-    const group = projectStatusGroup(project);
-    groups.set(project.id, group);
-    counts[group] += 1;
-  }
-  const filtered = query.group === 'all' ? matching : matching.filter((project) => groups.get(project.id) === query.group);
-  filtered.sort((a, b) =>
-    query.ordering === 'title' ? a.title.localeCompare(b.title, 'es') : query.ordering === 'created_at' ? a.created_at.localeCompare(b.created_at) : b.created_at.localeCompare(a.created_at),
-  );
-  const pages = Math.max(1, Math.ceil(filtered.length / query.pageSize));
-  const page = Math.min(Math.max(1, query.page), pages);
-  return { results: filtered.slice((page - 1) * query.pageSize, page * query.pageSize), count: filtered.length, counts, page };
-}

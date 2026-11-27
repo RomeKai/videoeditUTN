@@ -224,7 +224,9 @@ class ListsFollowTheHeaderTests(ActiveWorkspaceHarness):
     def titles(self, url, workspace, key="title"):
         response = self.client.get(url, **header(workspace))
         self.assertEqual(response.status_code, 200, response.content[:300])
-        return [item[key] for item in response.data]
+        # The projects come in pages; the brand kits, in one array.
+        rows = response.data["results"] if isinstance(response.data, dict) else response.data
+        return [item[key] for item in rows]
 
     def test_projects_of_the_header_workspace_only(self):
         self.assertEqual(self.titles(PROJECTS, self.home), ["Mío"])
@@ -334,7 +336,7 @@ class PendingInvitationTests(ActiveWorkspaceHarness):
         response = self.client.get(PROJECTS)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data, [])
+        self.assertEqual((response.data["count"], response.data["results"]), (0, []))
 
     def test_accepting_the_invitation_gives_access(self):
         self.invitation.status = ACTIVE
@@ -343,7 +345,7 @@ class PendingInvitationTests(ActiveWorkspaceHarness):
         response = self.client.get(PROJECTS, **header(self.team))
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual([item["title"] for item in response.data], ["Del equipo"])
+        self.assertEqual([item["title"] for item in response.data["results"]], ["Del equipo"])
 
 
 class ViewerTests(ActiveWorkspaceHarness):
@@ -529,7 +531,7 @@ class WithoutTheHeaderTests(ActiveWorkspaceHarness):
         self.assertEqual(balances(self.home)[1], LINK_COST)
         self.assertEqual(balances(lowest), (Decimal("100"), Decimal("0")))
         self.assertEqual(
-            sorted(item["title"] for item in self.client.get(PROJECTS).data), ["Mío", "Nuevo"],
+            sorted(item["title"] for item in self.client.get(PROJECTS).data["results"]), ["Mío", "Nuevo"],
         )
         # A blank header is no header.
         self.assertEqual(self.client.get(PROJECTS, HTTP_X_WORKSPACE_ID=" ").status_code, 200)
@@ -554,7 +556,8 @@ class WithoutTheHeaderTests(ActiveWorkspaceHarness):
         join(self.team, self.alice, EDITOR, status=PENDING)
         project_in(self.team, self.boss, "Del equipo")
 
-        self.assertEqual(self.client.get(PROJECTS).data, [])
+        listed = self.client.get(PROJECTS).data
+        self.assertEqual((listed["count"], listed["results"], listed["status_counts"]["all"]), (0, [], 0))
         response = self.create()
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data, {"error": "El usuario no tiene un Workspace asignado."})

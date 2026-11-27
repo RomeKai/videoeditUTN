@@ -26,7 +26,7 @@ import { BrandKit, duplicateBrandKit, listBrandKits, updateBrandKit } from './br
 import { ClipPreview } from './clips';
 import real from './drf/responses.json';
 import { Notification, type NotificationsResponse, listNotifications, markNotificationRead } from './notifications';
-import { ActivityItem, ApprovePaperEditResponse, CreateFromPromptResponse, CreateProjectResponse, PaperEditData, Project, ProjectsResponse, StageTiming, UploadTooLargeBody, createProject } from './projects';
+import { ActivityItem, ApprovePaperEditResponse, CreateFromPromptResponse, CreateProjectResponse, PaperEditData, Project, ProjectListItem, ProjectsResponse, StageTiming, UploadTooLargeBody, createProject } from './projects';
 import { type MembersResponse, type Workspace, createWorkspace, getWorkspace, listMembers, listWorkspaces, transferWorkspace, updateMember, updateWorkspace } from './workspaces';
 
 /**
@@ -58,11 +58,41 @@ describe('respuestas reales del backend', () => {
     parse(Project, real[key]);
   });
 
-  it('lista sin paginar (hoy) y la misma lista paginada (propuesto)', () => {
-    const today = parse(ProjectsResponse, real.project_list) as ProjectsResponse;
-    expect(today.count).toBe(5);
-    const paged = parse(ProjectsResponse, { count: 5, next: null, previous: null, results: real.project_list }) as ProjectsResponse;
-    expect(paged.results).toHaveLength(5);
+  it('lista de proyectos: la página que pide B2 y una segunda página, con sus contadores, el estimado y el costo', () => {
+    const first = parse(ProjectsResponse, real.project_list) as ProjectsResponse;
+    expect(first).toMatchObject({ count: 3, next: null, previous: null, status_counts: { all: 3, in_progress: 1, to_review: 1, ready: 1, failed: 0 } });
+    expect(first.results.map((project) => [project.status, project.eta_seconds])).toEqual([
+      ['ingesting', 542],
+      ['awaiting_approval', null],
+      ['completed', null],
+    ]);
+    expect(first.results[2]?.cost).toMatchObject({ amount: 120, state: 'charged' });
+    const second = parse(ProjectsResponse, real.project_list_page_2) as ProjectsResponse;
+    expect(second).toMatchObject({ count: 3, next: null, status_counts: first.status_counts });
+    expect(second.previous).toContain('page_size=2');
+    expect(second.results.map((project) => project.id)).toEqual([first.results[2]?.id]);
+  });
+
+  it('lista de proyectos: una fila no trae la transcripción ni el registro de la selección; el proyecto sí', () => {
+    for (const row of [...real.project_list.results, ...real.project_list_page_2.results]) {
+      expect(row).not.toHaveProperty('transcript_data');
+      expect(row).not.toHaveProperty('ai_rationale_log');
+      expect(row.metadata).not.toHaveProperty('full_text');
+      parse(ProjectListItem, row);
+      // A row is not a whole project: the detail schema asks for both fields.
+      expect(Project.safeParse(row).success).toBe(false);
+    }
+    expect(ProjectListItem.shape).not.toHaveProperty('transcript_data');
+    expect(ProjectListItem.shape).not.toHaveProperty('ai_rationale_log');
+    const detail = parse(Project, real.project_completed_auto_render) as Project;
+    expect(detail).toHaveProperty('transcript_data');
+    expect(detail).toHaveProperty('ai_rationale_log');
+  });
+
+  it('lista de proyectos: el array sin paginar de antes y una página sin contadores ya no son la respuesta', () => {
+    expect(ProjectsResponse.safeParse(real.project_list.results).success).toBe(false);
+    const { status_counts: _counts, ...bare } = real.project_list;
+    expect(ProjectsResponse.safeParse(bare).success).toBe(false);
   });
 
   it('crear, crear con prompt, revisión, aprobar, vista previa y brand kits', () => {

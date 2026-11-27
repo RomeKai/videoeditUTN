@@ -151,16 +151,44 @@ class VideoClipSerializer(serializers.ModelSerializer):
     def get_render_queued(self, clip) -> bool:
         if clip.status != VideoClip.Status.DRAFT:
             return False
-        from .tasks.ingestion import render_queued_rule
+        from .tasks.ingestion import render_queued_rules
 
-        # Read once per project for every clip this serializer sends (the
-        # project's clips, a page of projects): one query at most for each
-        # project that renders, none for the others. ``clip.project`` is the
-        # project already loaded when the clips come from ``project.clips``.
+        # Read once for every clip this serializer sends: the projects of the
+        # response (a page of the list) together, in one query at most however
+        # many of them render; a clip of any other response, its own project.
+        # ``clip.project`` is the project already loaded when the clips come
+        # from ``project.clips``.
         rules = self.context.setdefault('_render_queued_rules', {})
         if clip.project_id not in rules:
-            rules[clip.project_id] = render_queued_rule(clip.project)
+            listed = self.root.instance
+            listed = [
+                project for project in listed
+                if isinstance(project, VideoProject) and project.pk not in rules
+            ] if isinstance(listed, (list, tuple, models.QuerySet)) else []
+            if not any(project.pk == clip.project_id for project in listed):
+                listed = [clip.project]
+            rules.update(render_queued_rules(listed))
         return rules[clip.project_id](clip.pk)
+
+
+# What a row of the projects list leaves out: only the project's own screens
+# read them, and with a long video they are most of the weight of a project.
+PROJECT_LIST_OMITTED_FIELDS = ('transcript_data', 'ai_rationale_log')
+PROJECT_LIST_OMITTED_METADATA = ('full_text',)
+
+
+class ProjectsQuerySerializer(serializers.Serializer):
+    """Query of GET /projects/ (ProjectsQuery in the contract); the page is the paginator's."""
+
+    status_group = serializers.ChoiceField(
+        choices=('all', 'in_progress', 'to_review', 'ready', 'failed'), required=False,
+        help_text="Filter of the screen: en proceso, para revisar, listos (completed and partial) or con error.",
+    )
+    search = serializers.CharField(
+        required=False, allow_blank=True,
+        help_text="Part of the title, whatever the case. Plain text: % and _ match themselves.",
+    )
+    ordering = serializers.ChoiceField(choices=('-created_at', 'created_at', 'title'), required=False)
 
 
 class ProjectRenderingError(APIException):
@@ -263,8 +291,8 @@ class VideoProjectSerializer(serializers.ModelSerializer):
 
     def get_cost(self, obj) -> dict | None:
         from .services.project_summary import response_cost
-        # The reservations of every project of the response (the list is not
-        # paginated) are read once, in one query; each project then looks up its own.
+        # The reservations of every project of the response (a page of the
+        # list) are read once, in one query; each project then looks up its own.
         return response_cost(obj, self.root.instance, self.context)
 
     def get_eta_seconds(self, obj) -> int | None:
@@ -521,3 +549,24 @@ class VideoProjectSerializer(serializers.ModelSerializer):
 
         project.save()
         return project
+
+
+class VideoProjectListSerializer(VideoProjectSerializer):
+    """
+    A row of GET /projects/: the project without the transcript
+    (``transcript_data`` and ``metadata['full_text']``) and without
+    ``ai_rationale_log``. The list is asked for again every 5 s while a
+    project is processing, and no list reads them; GET /projects/{id}/ sends
+    them. The view does not load those two columns either.
+    """
+
+    class Meta(VideoProjectSerializer.Meta):
+        fields = None
+        exclude = PROJECT_LIST_OMITTED_FIELDS
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        metadata = data.get('metadata')
+        if isinstance(metadata, dict) and any(key in metadata for key in PROJECT_LIST_OMITTED_METADATA):
+            data['metadata'] = {key: value for key, value in metadata.items() if key not in PROJECT_LIST_OMITTED_METADATA}
+        return data
