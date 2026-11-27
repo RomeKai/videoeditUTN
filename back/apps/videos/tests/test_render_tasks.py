@@ -709,9 +709,9 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
         self.assertTrue(result.failed())
         self.assertIsInstance(result.result, DatabaseError)
         self.post.refresh_from_db()
-        # The generic handler recorded it.
+        # The generic handler recorded it, and the provider had published it: never «try again».
         self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
-        self.assertIn("Critical: connection lost", self.post.error_log)
+        self.assertEqual(self.post.error_log, "outcome_unknown (published, not recorded: DatabaseError)")
 
     def test_unexpected_error_is_raised_and_post_marked_failed(self):
         with patch(
