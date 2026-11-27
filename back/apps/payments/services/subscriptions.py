@@ -1,7 +1,8 @@
 """
 The subscription of a workspace (gap 12): what GET /api/v1/subscription/
-shows, the rules of POST /api/v1/subscription/change/ and what the beat task
-applies when a paid period ends.
+shows, the rules of POST /api/v1/subscription/change/ and
+/subscription/cancel-pending/, and what the beat task applies when a paid
+period ends.
 
 Before PAY-02 every move to a paid plan is a purchase, never the order of the
 pricing page nor the price relative to the current plan:
@@ -21,6 +22,13 @@ pricing page nor the price relative to the current plan:
   PAYMENTS_CHECKOUT_TTL_SECONDS pass (payments.expire_checkouts), so it
   stops capping the seats; choosing that same plan again past it opens a
   new checkout instead of handing out the expired one.
+- «Seguir con …» in Planes only ever cancels (cancel_pending_change): it
+  names what the screen showed (the current plan, the plan payment, the
+  scheduled downgrade) and changes nothing when the workspace moved on
+  meanwhile (that payment approved elsewhere, another one started). The web
+  no longer sends the current plan to change_plan for it: a stale screen
+  would send a plan that is not the current one any more, and that starts
+  a real change (a downgrade, or a new checkout).
 - The plan payment waiting is read with its row locked, so a checkout that
   is still opening either lands before (and is closed at the provider) or
   finds it settled. One whose checkout never opened stops blocking after
@@ -67,7 +75,25 @@ class PlanNotFound(PlanChangeError):
 
 
 class NothingToCancel(PlanChangeError):
-    """It is the current plan and nothing is scheduled or waiting for its payment."""
+    """
+    It is the current plan and nothing is scheduled or waiting for its payment
+    (change_plan); nothing the screen showed waits any more (cancel_pending_change).
+    """
+
+
+class PlanChanged(PlanChangeError):
+    """
+    cancel_pending_change: the current plan is not the one the screen showed (its
+    payment was approved elsewhere, say). ``plan`` is the current one, or None.
+    """
+
+    def __init__(self, plan):
+        super().__init__()
+        self.plan = plan
+
+
+class PendingChanged(PlanChangeError):
+    """cancel_pending_change: something waits that the screen did not show (another plan payment or downgrade)."""
 
 
 class CheckoutInProgress(PlanChangeError):
@@ -141,7 +167,7 @@ def subscription_payload(workspace, now=None):
 def pending_plan_payment(workspace, now=None):
     """
     The plan payment the workspace is waiting for, so Planes can say so and
-    offer to keep the current plan (which cancels it): {id, plan_id,
+    offer to keep the current plan (cancel_pending_change with its id): {id, plan_id,
     plan_name, expires_at}, or None. Read without a lock, for display only.
     ``expires_at`` is when its checkout stops being handed out, or None while
     the checkout is still opening. Left out: a payment whose checkout expired
@@ -293,6 +319,70 @@ def change_plan(workspace_id, plan_id, *, user, return_url, now=None):
         payment.pk, payment.plan_id, payment.amount_usd, provider.name,
     )
     return PlanChange(applied, payment.checkout_url, workspace)
+
+
+def _shown(payment, now):
+    """Whether GET /subscription/ shows this plan payment (pending_plan_payment): its checkout neither expired nor lost."""
+    return not checkout_is_expired(payment, now) and not checkout_is_stale(payment, now)
+
+
+def cancel_pending_change(workspace_id, *, current_plan_id, payment_id=None, pending_plan_id=None, now=None):
+    """
+    «Seguir con …» in Planes: cancel what the screen showed waiting, and never
+    change the plan. ``current_plan_id`` is the plan it showed as current;
+    ``payment_id`` and ``pending_plan_id`` the plan payment and the scheduled
+    downgrade it showed (one of them at least).
+
+    Decided on the workspace row, locked, and then on the payment's (the
+    order of settle_payment). Nothing changes, and it raises:
+    - PlanChanged: the plan is not ``current_plan_id`` any more (that payment
+      was approved elsewhere, the downgrade applied, the admin changed it);
+    - PendingChanged: something waits that the screen did not show (another
+      plan payment, a downgrade to another plan). A payment whose checkout
+      expired or was lost does not count: the screen never shows one;
+    - NothingToCancel: nothing it showed waits any more (rejected, expired or
+      canceled elsewhere);
+    - Workspace.DoesNotExist: the workspace was deleted meanwhile.
+    Otherwise it rejects that payment (its checkout is closed after the
+    commit) and drops that downgrade. Returns the workspace.
+    """
+    now = now or timezone.now()
+    rejected = None
+    with transaction.atomic():
+        workspace = lock_workspace(workspace_id)
+        plan = current_plan(workspace)
+        if plan is None or plan.pk != current_plan_id:
+            logger.info(
+                'subscription.cancel_refused workspace=%s reason=plan_changed plan=%s', workspace.pk, plan.pk if plan else None,
+            )
+            raise PlanChanged(plan)
+        waiting = _pending_upgrade(workspace)
+        cancel_payment = waiting is not None and payment_id is not None and waiting.pk == payment_id
+        cancel_downgrade = workspace.pending_plan_id is not None and workspace.pending_plan_id == pending_plan_id
+        unseen_payment = waiting is not None and not cancel_payment and _shown(waiting, now)
+        unseen_downgrade = workspace.pending_plan_id is not None and not cancel_downgrade
+        if unseen_payment or unseen_downgrade:
+            logger.info(
+                'subscription.cancel_refused workspace=%s reason=pending_changed payment=%s pending_plan=%s',
+                workspace.pk, waiting.pk if waiting else None, workspace.pending_plan_id,
+            )
+            raise PendingChanged()
+        if not cancel_payment and not cancel_downgrade:
+            logger.info('subscription.cancel_refused workspace=%s reason=nothing_to_cancel', workspace.pk)
+            raise NothingToCancel()
+        if cancel_payment:
+            rejected, _ = settle_payment(waiting.pk, approved=False, failure_reason=KEPT, notify=False)
+        if cancel_downgrade:
+            workspace.pending_plan = None
+            workspace.pending_plan_effective_at = None
+            workspace.save(update_fields=['pending_plan', 'pending_plan_effective_at'])
+        logger.info(
+            'subscription.change_canceled workspace=%s plan=%s payment=%s pending_plan=%s',
+            workspace.pk, plan.pk, rejected.pk if rejected else None, pending_plan_id if cancel_downgrade else None,
+        )
+    if rejected is not None:
+        _close_checkout(rejected)
+    return workspace
 
 
 def _close_checkout(payment):

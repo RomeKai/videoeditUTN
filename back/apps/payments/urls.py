@@ -5,7 +5,7 @@ from .views import (
     WalletView,
 )
 from .views_purchases import SimulatePaymentView, TokenPackagesView, TokenPurchaseCreateView, TokenPurchaseDetailView
-from .views_subscription import ChangePlanView, SubscriptionView
+from .views_subscription import CancelPendingChangeView, ChangePlanView, SubscriptionView
 
 urlpatterns = [
     path('plans/', PublicPlanListView.as_view(), name='public-plans'),
@@ -17,6 +17,7 @@ urlpatterns = [
     path('transactions/export/', TransactionExportView.as_view(), name='transaction-export'),
     path('subscription/', SubscriptionView.as_view(), name='subscription'),
     path('subscription/change/', ChangePlanView.as_view(), name='subscription-change'),
+    path('subscription/cancel-pending/', CancelPendingChangeView.as_view(), name='subscription-cancel-pending'),
     path('token-packages/', TokenPackagesView.as_view(), name='token-packages'),
     path('token-purchases/', TokenPurchaseCreateView.as_view(), name='token-purchases'),
     path('token-purchases/<uuid:payment_id>/', TokenPurchaseDetailView.as_view(), name='token-purchase-detail'),

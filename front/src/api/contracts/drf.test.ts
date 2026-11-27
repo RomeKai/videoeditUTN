@@ -10,6 +10,7 @@ import {
   Payment,
   Subscription,
   TokenPackages,
+  cancelPending,
   changePlan,
   createTokenPurchase,
   estimateCost,
@@ -320,6 +321,8 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
     expect(scheduled.subscription.pending_plan?.effective_at).toBe(scheduled.subscription.renews_at);
     const canceled = parse(changePlan.response, real.billing_change_plan_cancel) as ReturnType<typeof changePlan.response.parse>;
     expect(canceled.subscription.pending_plan).toBeNull();
+    const kept = parse(cancelPending.response, real.billing_cancel_pending) as ReturnType<typeof cancelPending.response.parse>;
+    expect([kept.subscription.pending_plan, kept.subscription.pending_payment]).toEqual([null, null]);
   });
 
   it('paquetes, compras y pagos de plan', () => {
@@ -343,12 +346,25 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
     expect(seats.isConflict).toBe(true);
     expect(seats.code).toBe('seats_exceeded');
     expect(errorMessage(seats)).toBe('Ocupás 4 lugares y el plan Gratis tiene 2. Quitá miembros o invitaciones antes de bajar.');
-    expect(fieldError(error('billing_change_plan_400_current'), 'plan_id')).toBe('Ya es tu plan actual.');
+    const current = error('billing_change_plan_400_current', 'billing.changePlan');
+    expect([current.status, current.code, errorMessage(current)]).toEqual([400, 'nothing_to_cancel', 'Ya es tu plan actual.']);
+    // Web builds from before the code match the field error: it stays.
+    expect(fieldError(current, 'plan_id')).toBe('Ya es tu plan actual.');
     expect(errorMessage(error('billing_change_plan_403_role'))).toBe('Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin.');
     expect(fieldError(error('billing_purchase_400_min'), 'custom_tokens')).toBe('El mínimo es 100 tokens.');
     const unavailable = error('billing_purchase_501_no_provider', 'billing.createPurchase');
     expect(unavailable.code).toBe('payments_unavailable');
     expect(errorMessage(unavailable, 'No pudimos iniciar la compra')).toBe('Los pagos todavía no están habilitados.');
+  });
+
+  it('«Seguir con»: los 409 de cancel-pending traen su code y no cambian nada', () => {
+    const changed = error('billing_cancel_pending_409_plan_changed', 'billing.cancelPending');
+    expect([changed.isConflict, changed.code, errorMessage(changed)]).toEqual([true, 'plan_changed', 'Tu plan cambió mientras tanto: ahora estás en el plan Pro. No cancelamos nada.']);
+    const pending = error('billing_cancel_pending_409_pending_changed', 'billing.cancelPending');
+    expect([pending.isConflict, pending.code]).toEqual([true, 'pending_changed']);
+    expect(errorMessage(pending)).toMatch(/^Mientras tanto cambió lo que estaba pendiente\. No cancelamos nada/);
+    const nothing = error('billing_cancel_pending_409_nothing', 'billing.cancelPending');
+    expect([nothing.isConflict, nothing.code]).toEqual([true, 'nothing_to_cancel']);
   });
 
   it('notificaciones: la lista de la campana, marcar una leída y el 404', () => {
