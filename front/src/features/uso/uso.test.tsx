@@ -591,6 +591,33 @@ describe('G3 · Planes', () => {
     expect(loadDb().purchases.find((item) => item.plan_id === creator.id)).toMatchObject({ status: 'pending' });
   });
 
+  it('mientras «Seguir con» espera su respuesta, «Subir a» y «Bajar a» no se pueden usar', async () => {
+    const PAYMENT_ID = '99999999-9999-4999-8999-999999999996';
+    const user = userEvent.setup();
+    renderScreen(<PlansScreen />, { scenario: 'plan-con-checkout', prepare: seedPendingPlanPayment(PAYMENT_ID) });
+    await screen.findByText('Estás pasando al plan Estudio: falta el pago');
+    let release = () => {};
+    const answered = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // Holds the request, then lets the mock answer it (a resolver that returns nothing passes it on).
+    server.use(
+      http.post(`${API_URL}/api/v1/subscription/cancel-pending/`, async () => {
+        await answered;
+      }),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Seguir con Pro' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Subir a Estudio' })).toBeDisabled());
+    expect(screen.getByRole('button', { name: 'Bajar a Creador' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Bajar a Gratis' })).toBeDisabled();
+
+    release();
+    expect(await screen.findByText('Listo: seguís con el plan Pro.')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Subir a Estudio' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Bajar a Creador' })).toBeEnabled();
+  });
+
   it('otro rechazo de «Seguir con» sí se muestra como error', async () => {
     const PAYMENT_ID = '88888888-8888-4888-8888-888888888889';
     const user = userEvent.setup();

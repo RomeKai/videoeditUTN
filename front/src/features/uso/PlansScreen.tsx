@@ -141,7 +141,8 @@ function Plans() {
     change.reset();
   };
   const confirm = () => {
-    if (!target) return;
+    // While «Seguir con …» is in flight the plan can still move: no change starts until it answers.
+    if (!target || cancel.isPending) return;
     change.mutate(
       { planId: target.id, returnUrl: `${window.location.origin}/uso/planes` },
       {
@@ -289,7 +290,7 @@ function Plans() {
                     </>
                   ) : isUpgrade ? (
                     <>
-                      <Button variant="primary" block onClick={() => setTarget(plan)} {...gate('billing.manage')}>
+                      <Button variant="primary" block onClick={() => setTarget(plan)} disabled={cancel.isPending} {...gate('billing.manage')}>
                         Subir a {plan.name}
                       </Button>
                       <p className={cx(styles.ctaNote, styles.ctaCenter)}>Se paga y se aplica al momento.</p>
@@ -303,7 +304,7 @@ function Plans() {
                     </>
                   ) : (
                     <>
-                      <Button variant="ghost" className={styles.down} onClick={() => setTarget(plan)} {...gate('billing.manage')}>
+                      <Button variant="ghost" className={styles.down} onClick={() => setTarget(plan)} disabled={cancel.isPending} {...gate('billing.manage')}>
                         Bajar a {plan.name}
                       </Button>
                       <p className={styles.ctaNote}>
