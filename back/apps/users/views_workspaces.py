@@ -26,6 +26,7 @@ from rest_framework.views import APIView
 
 from apps.core.permissions import ADMIN, require_workspace_role
 from apps.core.workspace import OWNER
+from apps.integrations.models import SocialProfile
 from apps.integrations.social import PUBLISH_LOCK_TTL_SECONDS
 from apps.payments.models import Payment, Transaction, Wallet
 from apps.payments.services.payments import payment_pending_message
@@ -105,6 +106,16 @@ POST_PROCESSING_WINDOW = timedelta(seconds=PUBLISH_LOCK_TTL_SECONDS)
 # QUEUED: until its task is due (`publish_at`), plus its retries for the lock
 # (60 + 120 + 240 s) and a late worker.
 POST_QUEUED_GRACE = timedelta(minutes=15)
+
+
+def _delete_orphan_social_profiles():
+    """After the delete commits: the broker may be down, and the delete already happened (the daily run retries)."""
+    from apps.integrations.tasks import delete_orphan_social_profiles
+
+    try:
+        delete_orphan_social_profiles.delay()
+    except Exception as exc:
+        logger.warning('workspace.social_profile_cleanup_not_queued error=%s', type(exc).__name__)
 
 
 def _post_in_flight(status, updated_at, publish_at, now):
@@ -330,8 +341,9 @@ class WorkspaceDetailView(APIView):
         invitations, its settled payments, and its empty wallet with its
         transactions.
         `User.last_workspace` of whoever had it chosen becomes null, and /me
-        falls back to their default. The files in R2 and the Ayrshare profile
-        are not cleaned up here.
+        falls back to their default. The files in R2 are not cleaned up here.
+        The profile at the publishing provider is deleted after the commit
+        (delete_orphan_social_profiles), without holding the delete.
         """
         # Who may delete it (the same 404 or 403), before any lock.
         workspace_pk = require_workspace_role(request.user, workspace_id, 'workspace.delete').workspace.pk
@@ -407,7 +419,13 @@ class WorkspaceDetailView(APIView):
             available = _tokens(wallet.available_balance) if wallet is not None else None
             reserved = _tokens(wallet.reserved_balance) if wallet is not None else None
             transactions = Transaction.objects.filter(wallet=wallet).count() if wallet is not None else 0
+            # Its profile at the publishing provider stays without a workspace (SocialProfile.workspace
+            # SET_NULL, after its own row lock: a connect creating it is waited for), and is deleted
+            # there after the commit (a paid slot). Best effort: never part of this transaction.
+            had_profile = SocialProfile.objects.filter(workspace=workspace).exists()
             workspace.delete()
+            if had_profile:
+                transaction.on_commit(_delete_orphan_social_profiles)
         logger.warning(
             'workspace.deleted workspace_id=%s user_id=%s wallet_available=%s wallet_reserved=%s '
             'wallet_transactions=%d projects=%d posts=%d',

@@ -2,6 +2,7 @@
 from rest_framework.routers import DefaultRouter
 from .views import ClipPreviewView, PipelineMetricsView, VideoProjectViewSet, BrandKitViewSet
 from .views_social import ScheduledPostViewSet
+from .views_social_accounts import SocialAccountConnectView, SocialAccountDetailView, SocialAccountListView
 from .views_clips import (
     ClipDetailView, ClipRenderView, ClipRetryView, ProjectRedispatchView, ProjectRerenderView,
 )
@@ -25,5 +26,8 @@ urlpatterns = [
     path('projects/<uuid:project_id>/activity/', ProjectActivityView.as_view(), name='project-activity'),
     path('projects/<uuid:project_id>/clips/download/', ProjectClipsDownloadView.as_view(), name='project-clips-download'),
     path('clips/<uuid:clip_id>/download/', ClipDownloadView.as_view(), name='clip-download'),
+    path('social-accounts/', SocialAccountListView.as_view(), name='social-account-list'),
+    path('social-accounts/connect/', SocialAccountConnectView.as_view(), name='social-account-connect'),
+    path('social-accounts/<str:platform>/', SocialAccountDetailView.as_view(), name='social-account-detail'),
     path('', include(router.urls)),
 ]

@@ -220,6 +220,8 @@ REST_FRAMEWORK = {
         'post_seo_regenerate': _rate('THROTTLE_POST_SEO_REGENERATE', '30/hour'),
         # POST /scheduled-posts/ and /bulk/, per user, counted per post (a batch of 60 is 60).
         'post_create': _rate('THROTTLE_POST_CREATE', '300/hour'),
+        # POST /social-accounts/connect/, per user: each one asks the provider for a link.
+        'social_connect': _rate('THROTTLE_SOCIAL_CONNECT', '30/hour'),
     },
     # Proxies in front of Django (load balancer, nginx) that add the client's
     # address to X-Forwarded-For. The per-IP limits take the address that many
@@ -654,6 +656,12 @@ CELERY_BEAT_SCHEDULE = {
     'apply-due-plan-changes': {
         'task': 'apps.payments.tasks.apply_due_plan_changes',
         'schedule': 15 * 60,
+    },
+    # Profiles at the publishing provider of deleted workspaces (a paid slot each). The delete
+    # queues it too; this run picks up what a failed one left. Daily at 05:10 UTC.
+    'delete-orphan-social-profiles': {
+        'task': 'apps.integrations.tasks.delete_orphan_social_profiles',
+        'schedule': crontab(hour=5, minute=10),
     },
 }
 
