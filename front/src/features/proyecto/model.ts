@@ -192,9 +192,14 @@ export function buildProcessSteps(project: StepsProject, now: number = Date.now(
       else description = 'No arranca sola: empieza cuando revises y apruebes los clips.';
     }
 
-    const startedAt = timing?.started_at ?? null;
-    let durationSeconds = timing?.duration_s ?? null;
-    if (durationSeconds === null && state === 'run' && startedAt) durationSeconds = Math.max(0, (now - new Date(startedAt).getTime()) / 1000);
+    // A stage that has not run in this attempt (pending) shows no time, even if an earlier attempt left one.
+    const startedAt = state === 'pending' ? null : (timing?.started_at ?? null);
+    let durationSeconds = state === 'pending' ? null : (timing?.duration_s ?? null);
+    if (durationSeconds === null && startedAt) {
+      // No duration: the stage did not finish. Running, it counts up; failed, it lasted until the project stopped.
+      const until = state === 'run' ? now : state === 'fail' && timing?.finished_at ? new Date(timing.finished_at).getTime() : null;
+      if (until !== null) durationSeconds = Math.max(0, (until - new Date(startedAt).getTime()) / 1000);
+    }
     const gated = key === 'render' && !single && !bypass && state === 'pending' && !failed;
     return { key, label: single && key === 'render' ? 'Editar el video' : text.label, state, stateLabel: STATE_LABEL[state], description, startedAt, durationSeconds, gated };
   });
@@ -808,6 +813,42 @@ export const MOVEMENT_KIND: Partial<Record<ActivityItem['type'], { label: string
   tokens_refunded: { label: 'Devuelto', tone: 'ok', hint: 'El trabajo falló y los tokens volvieron al saldo.' },
 };
 
+type MovementKind = { label: string; tone: StatusTone; hint: string };
+
+/** A reservation that was already settled: it is the same movement as its charge (or its refund), not another one. */
+const SETTLED_RESERVATION: Record<'charged' | 'partially_charged' | 'refunded', MovementKind & { note: string }> = {
+  charged: {
+    label: 'Reserva cobrada',
+    tone: 'neutral',
+    hint: 'Lo que se había apartado es lo que se cobró: es un solo cobro.',
+    note: 'Ya cobrada: es el mismo monto del cobro, no otro.',
+  },
+  partially_charged: {
+    label: 'Reserva cobrada en parte',
+    tone: 'neutral',
+    hint: 'De lo que se había apartado se cobró una parte y el resto volvió al saldo.',
+    note: 'Ya liquidada: se cobró una parte y el resto volvió al saldo.',
+  },
+  refunded: {
+    label: 'Reserva devuelta',
+    tone: 'neutral',
+    hint: 'Lo que se había apartado volvió al saldo: no se cobró.',
+    note: 'Ya devuelta: no se cobró.',
+  },
+};
+
+/** Whether the item is a reservation that already ended (charged or returned): its amount is not one more debit. */
+export function settledReservation(item: Pick<ActivityItem, 'type' | 'reservation_state'>): (MovementKind & { note: string }) | null {
+  if (item.type !== 'tokens_reserved') return null;
+  const state = item.reservation_state;
+  return state && state !== 'reserved' ? SETTLED_RESERVATION[state] : null;
+}
+
+/** Badge of a token movement: a settled reservation says so instead of "Reservado". */
+export function movementKind(item: Pick<ActivityItem, 'type' | 'reservation_state'>): MovementKind | null {
+  return settledReservation(item) ?? MOVEMENT_KIND[item.type] ?? null;
+}
+
 export function tokenMovements(items: ReadonlyArray<ActivityItem>): ActivityItem[] {
   return items.filter((item) => item.amount !== null && MOVEMENT_KIND[item.type]);
 }
@@ -875,6 +916,34 @@ export function explainCost(
     }
   }
   return { lines, totalLabel, total, estimate };
+}
+
+/**
+ * "Cómo se calculó" for a project without a creation cost (nothing was charged to create it) that did
+ * move tokens: a render, a retry. The formula of those is not in the project, so it adds up what its
+ * activity says: every charge, and every reservation still open. A settled reservation is not counted
+ * (its charge is), and when the backend does not say how a reservation ended, one with a later charge
+ * or refund of the same amount is taken as settled. Null without charges nor open reservations.
+ */
+export function explainMovements(items: ReadonlyArray<ActivityItem>): CostExplanation | null {
+  const movements = tokenMovements(items).sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const closes = movements.filter((item) => item.type !== 'tokens_reserved');
+  const used = new Set<string>();
+  const open = (item: ActivityItem): boolean => {
+    if (item.reservation_state) return item.reservation_state === 'reserved';
+    const match = closes.find((other) => !used.has(other.id) && other.created_at >= item.created_at && Math.abs(other.amount ?? 0) <= Math.abs(item.amount ?? 0) + 0.005);
+    if (match) used.add(match.id);
+    return !match;
+  };
+  const charges = movements.filter((item) => item.type === 'tokens_charged');
+  const reserved = movements.filter((item) => item.type === 'tokens_reserved' && open(item));
+  if (charges.length === 0 && reserved.length === 0) return null;
+  const sum = (list: ActivityItem[]) => list.reduce((total, item) => total + Math.abs(item.amount ?? 0), 0);
+  const lines = [...charges, ...reserved]
+    .sort((a, b) => a.created_at.localeCompare(b.created_at))
+    .map((item) => ({ key: item.id, label: item.description, note: item.type === 'tokens_reserved' ? 'Reservado, todavía sin cobrar' : undefined, value: formatNumber(Math.abs(item.amount ?? 0)) }));
+  const totalLabel = charges.length === 0 ? 'Total reservado' : reserved.length === 0 ? 'Total cobrado' : 'Total cobrado y reservado';
+  return { lines, totalLabel, total: formatTokens(sum(charges) + sum(reserved)), estimate: null };
 }
 
 /** Re-exported so screens import the status helper from one place. */

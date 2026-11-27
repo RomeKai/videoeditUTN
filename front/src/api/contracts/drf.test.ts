@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ZodTypeAny } from 'zod';
+import { z, type ZodTypeAny } from 'zod';
 import { approveErrorKind, errorMessage, fieldError, pipelineErrorMessage, planLimitKind, uploadErrorCode } from '@/lib/error-messages';
 import { describeProjectStatus } from '@/lib/project-status';
 import { ApiError } from '../errors';
@@ -24,7 +24,7 @@ import { BrandKit, duplicateBrandKit, listBrandKits, updateBrandKit } from './br
 import { ClipPreview } from './clips';
 import real from './drf/responses.json';
 import { Notification, type NotificationsResponse, listNotifications, markNotificationRead } from './notifications';
-import { ApprovePaperEditResponse, CreateFromPromptResponse, CreateProjectResponse, PaperEditData, Project, ProjectsResponse } from './projects';
+import { ActivityItem, ApprovePaperEditResponse, CreateFromPromptResponse, CreateProjectResponse, PaperEditData, Project, ProjectsResponse, StageTiming } from './projects';
 import { type MembersResponse, type Workspace, createWorkspace, getWorkspace, listMembers, listWorkspaces, transferWorkspace, updateMember, updateWorkspace } from './workspaces';
 
 /**
@@ -92,6 +92,19 @@ describe('respuestas reales del backend', () => {
     expect(errorMessage(failed, 'No pudimos duplicar el brand kit.')).toBe('No pudimos duplicar el brand kit.');
     expect(duplicateBrandKit.backend.status).toBe('exists');
     expect(updateBrandKit.backend.status).toBe('exists');
+  });
+
+  it('tiempos por etapa: la etapa en curso y la que falló llegan con su inicio y sin duración', () => {
+    const processing = parse(z.record(z.string(), StageTiming), real.project_stage_timings_processing) as Record<string, StageTiming>;
+    expect(processing.transcribed).toEqual({ started_at: '2026-11-27T10:00:07.200000+00:00', finished_at: null, duration_s: null });
+    const failed = parse(z.record(z.string(), StageTiming), real.project_stage_timings_failed) as Record<string, StageTiming>;
+    expect(failed.transcribed).toMatchObject({ finished_at: '2026-11-27T10:03:00+00:00', duration_s: null });
+  });
+
+  it('actividad: la reserva dice cómo terminó, y solo ella', () => {
+    const items = parse(z.array(ActivityItem), real.project_activity) as ActivityItem[];
+    expect(items.filter((item) => item.reservation_state).map((item) => [item.type, item.reservation_state, item.amount])).toEqual([['tokens_reserved', 'charged', -18]]);
+    expect(items.find((item) => item.type === 'tokens_charged')?.amount).toBe(-18);
   });
 
   it('el aviso de «renderizar sin revisar» y el error de auto-render se pueden leer', () => {

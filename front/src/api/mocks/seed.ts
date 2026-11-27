@@ -385,6 +385,9 @@ export function buildProject(spec: ProjectSpec, now: number, brandKitId: string 
       cursor += seconds * 1000;
     } else if (position === doneIndex + 1 && spec.status === 'ingesting') {
       timings[name] = { started_at: spec.running === 'pending_capacity' ? null : iso(cursor), finished_at: null, duration_s: null };
+    } else if (position === doneIndex + 1 && spec.status === 'failed' && spec.errorCode && cursor < createdAt + 6 * MIN) {
+      // Where it failed: its start, and when the project stopped (`pipeline_error_at`).
+      timings[name] = { started_at: iso(cursor), finished_at: iso(createdAt + 6 * MIN), duration_s: null };
     }
   });
   const pte = spec.prompt
@@ -926,6 +929,9 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
       };
       push('project_created', 0, 'Creó el proyecto', null);
       push('tokens_reserved', 1000, 'Reserva por el procesamiento', -(project.cost?.amount ?? 0));
+      // How that reservation ended, as the backend says it (`reservation_state`): charged with the render, returned with the failure.
+      const reservation = activity[activity.length - 1];
+      if (reservation) reservation.reservation_state = project.status === 'completed' || project.status === 'partial' ? 'charged' : project.status === 'failed' ? 'refunded' : 'reserved';
       if (project.metadata.pte) push('prompt_applied', 30_000, 'La IA aplicó la configuración del prompt', null, null);
       if (['awaiting_approval', 'rendering', 'completed', 'partial'].includes(project.status) && project.project_type === 'repurpose')
         push('review_ready', 8 * MIN, `Listo para revisar: ${project.clips.length} clips sugeridos`, null, null);

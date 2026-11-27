@@ -790,7 +790,7 @@ Detalle del proyecto con el estado del pipeline, la metadata, la transcripción 
 |---|---|
 | Id | `projects.detail` |
 | Backend | ⚠️ existe en parte · `back/apps/videos/views.py · VideoProjectViewSet.retrieve + VideoProjectSerializer` |
-| Nota | Trae `cost` (la reserva de creación: reservado, cobrado o devuelto), `stage_timings` (las etapas terminadas; `started_at` y `finished_at` en `null` en las que terminaron antes de que se guardara) y `uploaded_by_detail` (sin el email). `eta_seconds` mientras se procesa (el estimado de Nuevo proyecto menos lo que tardaron las etapas terminadas). Falta `duration_seconds` (la duración sale de `metadata.source_media`). Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura. |
+| Nota | Trae `cost` (la reserva de creación: reservado, cobrado o devuelto), `stage_timings` (las etapas terminadas, con `started_at` y `finished_at` en `null` en las que terminaron antes de que se guardara; y la etapa que arrancó y no terminó, la que está en curso o donde falló el proyecto, con `started_at` de `metadata.stage_started_at`, `duration_s` en `null` y `finished_at` solo si el proyecto falló: `pipeline_error_at`) y `uploaded_by_detail` (sin el email). `eta_seconds` mientras se procesa (el estimado de Nuevo proyecto menos lo que tardaron las etapas terminadas). Falta `duration_seconds` (la duración sale de `metadata.source_media`). Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Project |
 | Errores | **404** No existe o es de otro workspace. La UI muestra K1. |
@@ -890,7 +890,7 @@ Quién hizo qué en el proyecto y sus movimientos de tokens, del más nuevo al m
 |---|---|
 | Id | `projects.activity` |
 | Backend | ✅ existe · `back/apps/videos/views_project_data.py · ProjectActivityView + services/project_activity.py · build_activity` |
-| Nota | No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (las Transaction de las claves `*reservation_id` de la metadata, con `settled_at` y `reserved_amount` desde la migración 0012 de payments), fin del render (cuando se liquidó la reserva que lo pagó), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva cuya clave se borró de la metadata (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems. |
+| Nota | No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección; dice los clips que se sugirieron, `ai_rationale_log.suggestions_count`, no los que quedaron después de aprobar), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (las Transaction de las claves `*reservation_id` de la metadata, con `settled_at` y `reserved_amount` desde la migración 0012 de payments; cada `tokens_reserved` trae `reservation_state`, cómo terminó esa reserva: su cobro o su devolución es otro ítem del mismo movimiento, no un segundo cobro), fin del render (cuando se liquidó la reserva que lo pagó), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva cuya clave se borró de la metadata (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | ActivityItem[] |
 | Errores | **404** No existe o es de otro workspace. |
@@ -1742,6 +1742,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `description` | string |
 | `amount` | Decimal \\| null |
 | `platform` (opcional) | Platform \\| null |
+| `reservation_state` (opcional) | "reserved" \\| "charged" \\| "partially_charged" \\| "refunded" \\| null |
 
 **ApprovedSegment**
 

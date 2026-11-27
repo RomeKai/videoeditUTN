@@ -15,6 +15,7 @@ import {
   currentTab,
   describeClip,
   explainCost,
+  explainMovements,
   failedStepNumber,
   findMatches,
   foldText,
@@ -28,6 +29,8 @@ import {
   pteIgnoredLines,
   rulerTicks,
   sourceInfo,
+  movementKind,
+  settledReservation,
   tokenMovements,
 } from './model';
 
@@ -103,6 +106,41 @@ describe('línea de tiempo del proceso', () => {
     // The same map on a project that did fail is a failure.
     const failed = buildProcessSteps({ ...retrying, status: 'failed' }, NOW).find((item) => item.key === 'transcribe');
     expect(failed?.state).toBe('fail');
+  });
+
+  it('la etapa en curso muestra cuándo arrancó y cuenta lo que lleva', () => {
+    const started = new Date(NOW - 75_000).toISOString();
+    const running = {
+      ...byTitle('Clase 3'),
+      stage_timings: {
+        audio_extracted: { started_at: new Date(NOW - 120_000).toISOString(), finished_at: new Date(NOW - 78_000).toISOString(), duration_s: 42 },
+        transcribed: { started_at: started, finished_at: null, duration_s: null },
+      },
+    };
+    const step = buildProcessSteps(running, NOW).find((item) => item.key === 'transcribe');
+    expect(step).toMatchObject({ state: 'run', startedAt: started, durationSeconds: 75 });
+    expect(buildProcessSteps(running, NOW + 5_000).find((item) => item.key === 'transcribe')?.durationSeconds).toBe(80);
+    // The steps that did not start show no time, even with one left by an earlier attempt.
+    const stale = { ...running, stage_timings: { ...running.stage_timings, moderated: { started_at: started, finished_at: null, duration_s: null } } };
+    expect(buildProcessSteps(stale, NOW).find((item) => item.key === 'moderate')).toMatchObject({ state: 'pending', startedAt: null, durationSeconds: null });
+  });
+
+  it('la etapa que falló muestra cuándo arrancó y cuánto duró hasta que el proyecto se detuvo', () => {
+    const started = new Date(NOW - 600_000).toISOString();
+    const failed = {
+      ...byTitle('Webinar de lanzamiento'),
+      stage_timings: {
+        audio_extracted: { started_at: new Date(NOW - 660_000).toISOString(), finished_at: new Date(NOW - 618_000).toISOString(), duration_s: 42 },
+        transcribed: { started_at: started, finished_at: new Date(NOW - 510_000).toISOString(), duration_s: null },
+      },
+    };
+    const step = buildProcessSteps(failed, NOW).find((item) => item.state === 'fail');
+    // It does not keep counting: it stopped when the project failed.
+    expect(step).toMatchObject({ key: 'transcribe', startedAt: started, durationSeconds: 90 });
+    expect(buildProcessSteps(failed, NOW + 60_000).find((item) => item.state === 'fail')?.durationSeconds).toBe(90);
+    // Without the moment it stopped (a backend that does not know it): the start alone.
+    const open = { ...failed, stage_timings: { ...failed.stage_timings, transcribed: { started_at: started, finished_at: null, duration_s: null } } };
+    expect(buildProcessSteps(open, NOW).find((item) => item.state === 'fail')).toMatchObject({ startedAt: started, durationSeconds: null });
   });
 
   it('AutoRenderNotPaid: el render es lo que se detuvo, con su texto', () => {
@@ -335,6 +373,48 @@ describe('actividad', () => {
   it('los movimientos son los eventos con monto', () => {
     const items = [item('a', 'project_created', at(20, 9)), item('b', 'tokens_reserved', at(20, 9), -763.2), item('c', 'tokens_refunded', at(21, 9), 763.2)];
     expect(tokenMovements(items).map((entry) => entry.id)).toEqual(['b', 'c']);
+  });
+
+  it('una reserva ya liquidada no se lee como otro cobro', () => {
+    const reserved = { ...item('a', 'tokens_reserved', at(24, 11), -18), reservation_state: 'charged' as const };
+    expect(movementKind(reserved)?.label).toBe('Reserva cobrada');
+    expect(settledReservation(reserved)?.note).toBe('Ya cobrada: es el mismo monto del cobro, no otro.');
+    expect(movementKind({ ...reserved, reservation_state: 'partially_charged' })?.label).toBe('Reserva cobrada en parte');
+    expect(movementKind({ ...reserved, reservation_state: 'refunded' })?.label).toBe('Reserva devuelta');
+    // Still reserved, or a backend that does not say: the reservation as before.
+    expect(movementKind({ ...reserved, reservation_state: 'reserved' })?.label).toBe('Reservado');
+    expect(settledReservation({ ...reserved, reservation_state: null })).toBeNull();
+    expect(movementKind(item('a', 'tokens_reserved', at(24, 11), -18))?.label).toBe('Reservado');
+    // Only a reservation: a charge is a charge whatever it carries.
+    expect(movementKind({ ...item('b', 'tokens_charged', at(24, 12), -18), reservation_state: 'charged' })?.label).toBe('Cobrado');
+    expect(movementKind(item('c', 'project_created', at(24, 12)))).toBeNull();
+  });
+
+  it('sin costo de creación, «Cómo se calculó» suma los cobros y las reservas abiertas de sus movimientos', () => {
+    const reservation = (id: string, hour: number, amount: number, state: ActivityItem['reservation_state']) => ({ ...item(id, 'tokens_reserved', at(24, hour), -amount), description: 'Reserva por el render', reservation_state: state });
+    const charge = (id: string, hour: number, amount: number) => ({ ...item(id, 'tokens_charged', at(24, hour), -amount), description: 'Cobro del render' });
+    // The render of the rehearsal: reserved 18 and charged 18 is ONE charge of 18, not 36.
+    expect(explainMovements([charge('b', 12, 18), reservation('a', 11, 18, 'charged')])).toMatchObject({
+      lines: [{ label: 'Cobro del render', value: '18' }],
+      totalLabel: 'Total cobrado',
+      total: '18 tokens',
+    });
+    // A retry still rendering adds its reservation.
+    const withRetry = explainMovements([reservation('c', 13, 9, 'reserved'), charge('b', 12, 18), reservation('a', 11, 18, 'charged')]);
+    expect(withRetry).toMatchObject({ totalLabel: 'Total cobrado y reservado', total: '27 tokens' });
+    expect(withRetry?.lines.map((line) => [line.label, line.note, line.value])).toEqual([
+      ['Cobro del render', undefined, '18'],
+      ['Reserva por el render', 'Reservado, todavía sin cobrar', '9'],
+    ]);
+    expect(explainMovements([reservation('a', 11, 18, 'reserved')])).toMatchObject({ totalLabel: 'Total reservado', total: '18 tokens' });
+    // A partial charge: what was charged, not what had been set aside.
+    expect(explainMovements([item('c', 'tokens_refunded', at(24, 12), 4), charge('b', 12, 8), reservation('a', 11, 12, 'partially_charged')])).toMatchObject({ total: '8 tokens' });
+    // A backend that does not say how the reservation ended: one with a later charge or refund is taken as settled.
+    expect(explainMovements([charge('b', 12, 18), reservation('a', 11, 18, undefined)])).toMatchObject({ totalLabel: 'Total cobrado', total: '18 tokens' });
+    expect(explainMovements([reservation('c', 13, 9, undefined), charge('b', 12, 18), reservation('a', 11, 18, undefined)])).toMatchObject({ total: '27 tokens' });
+    // Everything came back, or nothing moved: nothing to explain.
+    expect(explainMovements([item('b', 'tokens_refunded', at(24, 12), 18), reservation('a', 11, 18, 'refunded')])).toBeNull();
+    expect(explainMovements([item('a', 'project_created', at(24, 11))])).toBeNull();
   });
 
   it('cada evento lleva a donde se puede seguir', () => {

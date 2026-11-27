@@ -232,7 +232,7 @@ function createProject(context: Parameters<Parameters<typeof route<typeof contra
   };
   db.projects.unshift(project);
   addActivity(db, project, 'project_created', 'Creó el proyecto', now, { actorId: user.id });
-  addActivity(db, project, 'tokens_reserved', 'Reserva por el procesamiento', now, { actorId: user.id, amount: -cost });
+  addActivity(db, project, 'tokens_reserved', 'Reserva por el procesamiento', now, { actorId: user.id, amount: -cost, transactionId: transaction.id });
   return {
     ...serializeProject(db, project, { full: true }),
     cost_details: { tokens_reserved: cost, transaction_id: transaction.id },
@@ -398,7 +398,7 @@ export const projectsHandlers = [
     project._reservations.push(transaction.id);
     project._sim = { phase: 'render', startedAt: now, failOneClip: /parcial/i.test(project.title) };
     addActivity(db, project, 'review_approved', `Aprobó ${project.clips.length} clips para renderizar`, now, { actorId: user.id });
-    addActivity(db, project, 'tokens_reserved', 'Reserva por el render', now, { actorId: user.id, amount: -cost });
+    addActivity(db, project, 'tokens_reserved', 'Reserva por el render', now, { actorId: user.id, amount: -cost, transactionId: transaction.id });
     return {
       data: { message: 'Edición aprobada. Iniciando renderizado de alta calidad...', project_id: project.id, final_cost: cost, transaction_id: transaction.id },
     };
@@ -453,7 +453,7 @@ export const projectsHandlers = [
       project.metadata = { ...project.metadata, reservation_id: reservation.id };
       project._reservations.push(reservation.id);
       if (project.cost) project.cost = { amount: reservation.amount, state: 'reserved', transaction_id: reservation.id };
-      addActivity(db, project, 'tokens_reserved', 'Reserva por volver a procesar', now, { actorId: user.id, amount: -reservation.amount });
+      addActivity(db, project, 'tokens_reserved', 'Reserva por volver a procesar', now, { actorId: user.id, amount: -reservation.amount, transactionId: reservation.id });
     }
     project._sim = { phase: 'ingest', startedAt: now };
     return answer(reservation);
@@ -474,7 +474,7 @@ export const projectsHandlers = [
       if (kit) project.brand_kit_name = kit.name;
       else delete project.brand_kit_name;
     }
-    addActivity(db, project, 'tokens_reserved', 'Reserva por renderizar todo de nuevo', now, { actorId: user.id, amount: -transaction.amount });
+    addActivity(db, project, 'tokens_reserved', 'Reserva por renderizar todo de nuevo', now, { actorId: user.id, amount: -transaction.amount, transactionId: transaction.id });
     return { data: { message: 'Render encolado.', final_cost: dec(transaction.amount), transaction_id: transaction.id }, status: 202 };
   }),
 
@@ -483,9 +483,15 @@ export const projectsHandlers = [
     const items = db.activity
       .filter((item) => item.project === project.id)
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
-      .map(({ project: _project, ...item }) => {
+      .map(({ project: _project, _transaction, ...item }) => {
         void _project;
-        return item;
+        if (item.type !== 'tokens_reserved' || !_transaction) return item;
+        // How the reservation ended, read from its transaction (services/project_activity.py · _reservation_state).
+        const transaction = db.transactions.find((entry) => entry.id === _transaction);
+        if (!transaction) return item;
+        const partial = transaction.reserved_amount !== null && transaction.reserved_amount > transaction.amount;
+        const reservation_state = transaction.status === 'COMPLETED' ? (partial ? ('partially_charged' as const) : ('charged' as const)) : transaction.status === 'FAILED' ? ('refunded' as const) : ('reserved' as const);
+        return { ...item, reservation_state };
       });
     return { data: items };
   }),

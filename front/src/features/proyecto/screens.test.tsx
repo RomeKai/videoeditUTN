@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import type { MockDb, MockProject } from '@/api/mocks/db';
 import { server } from '@/api/mocks/server';
 import { loadDb, saveDb } from '@/api/mocks/state';
+import { formatTime } from '@/lib/format';
 import { ActivityScreen } from './ActivityScreen';
 import { ClipsScreen } from './ClipsScreen';
 import { ProjectShell } from './ProjectShell';
@@ -153,6 +154,32 @@ describe('D1 · Proyecto', () => {
     open('Falló: AutoRenderNotPaid', '', 'todos-los-estados', 'carla');
     const alert = await screen.findByRole('alert');
     expect(within(alert).getByRole('button', { name: 'Comprar tokens' })).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('la etapa en curso muestra su hora de inicio y lo que lleva', async () => {
+    const started = new Date(Date.now() - 75_000);
+    open('Clase 3', '', 'todos-los-estados', 'lucia', (project) => {
+      project.stage_timings = { ...project.stage_timings, transcribed: { started_at: started.toISOString(), finished_at: null, duration_s: null } };
+    });
+    const steps = await screen.findByRole('list', { name: 'Etapas del proceso' });
+    const row = within(steps).getByText('Transcribir').closest('li');
+    if (!row) throw new Error('sin la fila');
+    expect(within(row).getByText('En curso')).toBeInTheDocument();
+    expect(within(row).getByText(formatTime(started, { seconds: true }))).toBeInTheDocument();
+    expect(within(row).getByText(/^1:1\d$/)).toBeInTheDocument();
+    expect(within(row).queryByText('—')).toBeNull();
+  });
+
+  it('la etapa que falló muestra su hora de inicio y cuánto duró', async () => {
+    const started = new Date(Date.now() - 600_000);
+    open('Webinar de lanzamiento', '', 'estudio-norte', 'lucia', (project) => {
+      project.stage_timings = { ...project.stage_timings, transcribed: { started_at: started.toISOString(), finished_at: new Date(started.getTime() + 90_000).toISOString(), duration_s: null } };
+    });
+    const steps = await screen.findByRole('list', { name: 'Etapas del proceso' });
+    const row = within(steps).getByText('Falló').closest('li');
+    if (!row) throw new Error('sin la fila');
+    expect(within(row).getByText(formatTime(started, { seconds: true }))).toBeInTheDocument();
+    expect(within(row).getByText('1:30')).toBeInTheDocument();
   });
 
   it('un reintento interno del pipeline no se muestra como falla', async () => {
@@ -633,9 +660,64 @@ describe('D1f · Actividad', () => {
     expect(screen.getAllByText(/Creó el proyecto/).length).toBe(1);
     const table = screen.getByRole('table', { name: 'Movimientos de tokens del proyecto' });
     expect(within(table).getByText('Cobrado')).toBeInTheDocument();
-    expect(within(table).getByText('Reservado')).toBeInTheDocument();
+    // The reservation of that charge says it was charged, instead of reading as a second debit.
+    expect(within(table).getByText('Reserva cobrada')).toBeInTheDocument();
+    expect(within(table).queryByText('Reservado')).toBeNull();
     expect(await screen.findByText('Total cobrado')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Ver todos los movimientos del workspace/ })).toHaveAttribute('href', '/uso/movimientos');
+  });
+
+  it('la reserva y el cobro del mismo render se leen como un solo cobro', async () => {
+    open('Vlog Mendoza', 'actividad', 'estudio-norte', 'lucia', (project, db) => {
+      // As the backend sends a paid render that finished: its reservation (settled) and its charge, both of 18.
+      const base = { project: project.id, actor: null };
+      db.activity = db.activity.filter((entry) => entry.project !== project.id);
+      db.activity.unshift(
+        { ...base, id: '00000000-0000-4000-8000-00000000a001', type: 'tokens_reserved', created_at: '2026-11-27T10:00:00Z', description: 'Reserva por el render', amount: -18, reservation_state: 'charged' },
+        { ...base, id: '00000000-0000-4000-8000-00000000a002', type: 'tokens_charged', created_at: '2026-11-27T10:02:00Z', description: 'Cobro del render', amount: -18 },
+      );
+    });
+    const table = await screen.findByRole('table', { name: 'Movimientos de tokens del proyecto' });
+    const [charge, reservation] = within(table).getAllByRole('row').slice(1);
+    if (!charge || !reservation) throw new Error('faltan filas');
+    expect(within(charge).getByText('Cobro del render')).toBeInTheDocument();
+    expect(within(charge).getByText('Cobrado')).toBeInTheDocument();
+    expect(within(charge).getByText('−18')).toBeInTheDocument();
+    expect(within(reservation).getByText('Reserva por el render')).toBeInTheDocument();
+    expect(within(reservation).getByText('Reserva cobrada')).toBeInTheDocument();
+    expect(within(reservation).getByText('Ya cobrada: es el mismo monto del cobro, no otro.')).toBeInTheDocument();
+    // One debit in the table: the reservation shows what was set aside, without the sign of a charge.
+    expect(within(table).getAllByText('−18')).toHaveLength(1);
+    expect(within(reservation).getByText('18')).toBeInTheDocument();
+  });
+
+  it('sin costo de creación pero con el cobro de un render, no dice que no tiene costo', async () => {
+    open('Vlog Mendoza', 'actividad', 'estudio-norte', 'lucia', (project, db) => {
+      // A [DEMO] project after approving its review: nothing was charged to create it, and its render was.
+      project.cost = null;
+      const base = { project: project.id, actor: null };
+      db.activity = db.activity.filter((entry) => entry.project !== project.id);
+      db.activity.unshift(
+        { ...base, id: '00000000-0000-4000-8000-00000000a001', type: 'tokens_reserved', created_at: '2026-11-27T10:00:00Z', description: 'Reserva por el render', amount: -18, reservation_state: 'charged' },
+        { ...base, id: '00000000-0000-4000-8000-00000000a002', type: 'tokens_charged', created_at: '2026-11-27T10:02:00Z', description: 'Cobro del render', amount: -18 },
+      );
+    });
+    const how = (await screen.findByRole('heading', { name: 'Cómo se calculó' })).closest('section');
+    if (!how) throw new Error('sin la tarjeta');
+    expect(await within(how).findByText('Total cobrado')).toBeInTheDocument();
+    expect(within(how).getByText('Cobro del render')).toBeInTheDocument();
+    expect(within(how).getByText('18 tokens')).toBeInTheDocument();
+    expect(within(how).getByText(/Crear este proyecto no tuvo costo/)).toBeInTheDocument();
+    expect(screen.queryByText('Este proyecto no tiene un costo asociado.')).toBeNull();
+  });
+
+  it('sin costo y sin movimientos, dice que no tiene un costo asociado', async () => {
+    open('Vlog Mendoza', 'actividad', 'estudio-norte', 'lucia', (project, db) => {
+      project.cost = null;
+      db.activity = db.activity.filter((entry) => entry.project !== project.id || entry.amount === null);
+    });
+    expect(await screen.findByText('Este proyecto no tiene un costo asociado.')).toBeInTheDocument();
+    expect(screen.getByText('Este proyecto todavía no movió tokens.')).toBeInTheDocument();
   });
 
   it('un proyecto fallido muestra la devolución', async () => {

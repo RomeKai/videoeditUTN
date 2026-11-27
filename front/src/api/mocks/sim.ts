@@ -131,7 +131,7 @@ export function addActivity(
   type: MockDb['activity'][number]['type'],
   description: string,
   now: number,
-  options: { actorId?: string | null; amount?: number | null } = {},
+  options: { actorId?: string | null; amount?: number | null; transactionId?: string } = {},
 ): void {
   const actor = options.actorId ? db.users.find((item) => item.id === options.actorId) : null;
   db.activity.unshift({
@@ -142,6 +142,7 @@ export function addActivity(
     created_at: iso(now),
     description,
     amount: options.amount ?? null,
+    ...(options.transactionId ? { _transaction: options.transactionId } : {}),
   });
 }
 
@@ -208,6 +209,10 @@ function failProject(db: MockDb, project: MockProject, code: string, now: number
   project.pipeline_error_at = iso(now);
   project.pipeline_stage_status = stageStatusFor(project.pipeline_stage, 'failed');
   project.eta_seconds = null;
+  // The stage it stopped at keeps its start and gets when it stopped (stage_timings of a failed project).
+  project.stage_timings = Object.fromEntries(
+    Object.entries(project.stage_timings ?? {}).map(([name, timing]) => [name, timing.duration_s === null && timing.started_at ? { ...timing, finished_at: iso(now) } : timing]),
+  );
   let refunded = 0;
   for (const id of project._reservations) refunded += releaseReservation(db, id, now);
   if (project.cost) project.cost = { ...project.cost, state: 'refunded' };
@@ -298,6 +303,16 @@ function tickIngest(db: MockDb, project: MockProject, now: number): void {
     const finished = FINISHED_STAGE[step] ?? 'uploaded';
     project.pipeline_stage = finished;
     project.pipeline_stage_status = stageStatusFor(finished, 'running');
+    // Like the backend: the finished stages with their times, and the one running with its start alone.
+    const stageStart = (index: number) => sim.startedAt + SIM.queueMs + (index > 0 ? wait : 0) + index * SIM.stageMs;
+    project.stage_timings = Object.fromEntries(
+      RUNNING_STAGE.slice(0, step + 1).map((name, index) => [
+        name,
+        index < step
+          ? { started_at: iso(stageStart(index)), finished_at: iso(stageStart(index) + SIM.stageMs), duration_s: SIM.stageMs / 1000 }
+          : { started_at: iso(stageStart(index)), finished_at: null, duration_s: null },
+      ]),
+    );
     if (step >= 2 && project._transcriptSeed === null) {
       project._transcriptSeed = Math.floor(sim.startedAt % 100_000);
       project.proxy_r2_key = `videos/proxy/${project.id}.mp4`;
