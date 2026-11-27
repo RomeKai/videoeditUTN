@@ -2281,7 +2281,8 @@
     },
     "status": "active",
     "renews_at": null,
-    "pending_plan": null
+    "pending_plan": null,
+    "pending_payment": null
   },
   "billing_change_plan_checkout": {
     "applied": "now",
@@ -2307,7 +2308,13 @@
       },
       "status": "active",
       "renews_at": null,
-      "pending_plan": null
+      "pending_plan": null,
+      "pending_payment": {
+        "id": "9e9a01ba-999a-495e-b9d0-cfcc842702e5",
+        "plan_id": "128f9ed2-0bce-4c78-9d88-955b1d7d8ca5",
+        "plan_name": "Pro",
+        "expires_at": "2026-11-27T21:22:37.012345Z"
+      }
     }
   },
   "billing_change_plan_period_end": {
@@ -2338,7 +2345,8 @@
         "id": "8abd95d6-4af0-4ef4-b9c6-48346bf6e6c4",
         "name": "Gratis",
         "effective_at": "2026-12-26T21:22:37.055166Z"
-      }
+      },
+      "pending_payment": null
     }
   },
   "billing_change_plan_cancel": {
@@ -2365,7 +2373,8 @@
       },
       "status": "active",
       "renews_at": "2026-12-26T21:22:37.055166Z",
-      "pending_plan": null
+      "pending_plan": null,
+      "pending_payment": null
     }
   },
   "billing_token_packages": {

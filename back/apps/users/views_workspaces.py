@@ -312,8 +312,9 @@ class WorkspaceDetailView(APIView):
           what a confirmation settles, and what a late payment is logged
           against (`payment.late_paid`): it must not go with the workspace.
           It ends when the provider settles it or when its checkout expires
-          (PAYMENTS_CHECKOUT_TTL_SECONDS): the web cannot cancel one, so the
-          sentence says to pay it or wait.
+          (PAYMENTS_CHECKOUT_TTL_SECONDS). The web cannot cancel a token
+          purchase (a plan payment it can, with «Seguir con …» in Planes),
+          so the sentence, one for both, says to pay it or wait.
         - `balance_left`: available balance above zero. Tokens are money and
           are never deleted; there is no way to move them yet.
 
