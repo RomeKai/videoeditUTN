@@ -26,6 +26,7 @@ from apps.notifications.models import Notification
 from apps.notifications.tasks import send_notification_email
 from apps.payments.models import Payment, Transaction
 from apps.payments.services.payments import settle_payment
+from apps.payments.services.wallet_service import reserve_funds
 from apps.users.models import NotificationPreference, User, Workspace, WorkspaceMember
 from apps.videos.models import VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import PipelineStage
@@ -334,6 +335,27 @@ class NoTypedTextTests(EmailHarness):
         # The bell does carry the title: that is where the difference is.
         self.assertIn(f'{self.title} está listo para revisar', [title for _, title, _ in sent()['ana']])
         self.assert_no_typed_text(6)
+
+    def test_the_email_of_one_clip_that_could_not_be_rendered_carries_no_typed_text(self):
+        # The reservation is written with the clip's title; the notice says what the activity says, without it.
+        project = self.project(
+            clips=[FAILED], status=VideoProject.Status.RENDERING, pipeline_stage=PipelineStage.RENDER_DISPATCHED,
+        )
+        clip = VideoClip.objects.get(project=project)
+        VideoClip.objects.filter(pk=clip.pk).update(title='Título secreto', s3_object_key='old-key')
+        txn = reserve_funds(self.wallet.id, Decimal('9.00'), project=project, description='Render de clip: Título secreto')
+        VideoProject.objects.filter(pk=project.pk).update(metadata={
+            'clip_render_reservation_id': str(txn.id), 'clip_render_clip_ids': [str(clip.pk)], 'clip_render_seconds': 5.0,
+            'clip_render_scope': 'clip', 'clip_render_previous': {str(clip.pk): {'status': 'completed', 'key': 'old-key'}},
+        })
+
+        self.committed(lambda: finalize_project_render(project.id))
+
+        text = 'No se pudo volver a renderizar: quedó el clip anterior. Te devolvimos 9 tokens.'
+        self.assertEqual({body for _, _, body in sent()['ana']}, {text})
+        self.assert_no_typed_text(2)
+        self.assertIn(text, mail.outbox[0].body)
+        self.assertIn(f'https://app.onecreator.test/proyectos/{project.id}/clips?espacio={self.workspace.id}\n', mail.outbox[0].body)
 
     def test_the_low_balance_email_carries_no_typed_text(self):
         row = Notification.objects.create(

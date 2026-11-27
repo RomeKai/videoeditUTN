@@ -295,6 +295,37 @@ def notify_render_finished(project_id, since=None):
     _after_commit('render_finished', build, project_id=project_id)
 
 
+def clip_render_failed_message(project, reservation):
+    """
+    (title, body) of the ``render_finished`` of one clip's render (its editor,
+    a retry) that gave nothing: ``reservation`` was returned whole. The body
+    is the text of the project's activity for that render, word for word
+    (``project_activity.refunded_render_text``): what stayed and what came
+    back. It has no title of a clip: the email carries it.
+    """
+    from apps.videos.services.project_activity import refunded_render_text
+
+    return f'{project.title[:_TITLE_ROOM]}: no se pudo renderizar un clip', refunded_render_text(project, reservation)
+
+
+def notify_clip_render_finished(project_id, reservation_id):
+    """
+    The render of one clip closed (``reservation_id`` paid it). Delivered, it
+    tells nobody: who asked for it is watching the clip, and the project
+    already told its render ended. Returned whole (the render failed, and the
+    clip went back to what it was), one ``render_finished`` with the words of
+    the activity. Call it after the settle.
+    """
+    def build():
+        project = _project(project_id)
+        reservation = Transaction.objects.filter(pk=reservation_id, status=Transaction.Status.FAILED).first()
+        if project is None or reservation is None:
+            return
+        _to_workspace(project, Kind.RENDER_FINISHED, *clip_render_failed_message(project, reservation))
+
+    _after_commit('clip_render_finished', build, project_id=project_id)
+
+
 def notify_project_failed(project_id, since=None, rendering=False, reason=None):
     """
     The project ended ``failed``. ``since``: ``timezone.now()`` taken before

@@ -290,11 +290,11 @@ def _metadata_with_render_started(metadata, now=None):
     «Renderizar» step of the process timeline (stage_timings): its start in
     ``stage_started_at`` and nothing of an earlier render (its duration and
     its end), so the step reads as running again and never shows the times
-    of the render before. Every dispatch is a new run and writes its own
-    start: the approval of the review, a render the user asks for later (a
-    clip, a retry, a rerender) and a re-dispatch at render_dispatched. Pure:
-    the caller holds the project row lock and writes the result in the update
-    it already makes.
+    of the render before. Only for a dispatch that renders the project
+    (``_metadata_for_render_dispatch`` decides): the approval of the review,
+    the auto-render, a whole video, «renderizar todo de nuevo» and a
+    re-dispatch of one of them at render_dispatched. Pure: the caller holds
+    the project row lock and writes the result in the update it already makes.
     """
     fresh = _metadata_dict(metadata)
     started = _metadata_dict(fresh.get('stage_started_at'))
@@ -307,6 +307,36 @@ def _metadata_with_render_started(metadata, now=None):
     return fresh
 
 
+def _render_times_closed(metadata):
+    """The «Renderizar» step has the end of a render (``metadata`` of the project): it describes one that closed."""
+    if not isinstance(metadata, dict):
+        return False
+    return any(
+        isinstance(metadata.get(key), dict) and RENDER_STAGE in metadata[key]
+        for key in ('stage_finished_at', 'stage_durations')
+    )
+
+
+def _metadata_for_render_dispatch(metadata, renders_project, now=None):
+    """
+    ``metadata`` for a render that is dispatched now. The «Renderizar» step
+    describes the render of the project: the approval of the review, the
+    auto-render, the whole video or «renderizar todo de nuevo»
+    (``renders_project``). Those start it again
+    (``_metadata_with_render_started``). The render of one clip (its editor,
+    a retry) leaves the times of the project's render as they are: the step
+    keeps its start, its duration and its end, and the close of that clip
+    writes nothing (``_metadata_with_render_finished`` measures no start that
+    already has its end). Only when the step has no closed render to keep (the
+    project's render never ended, or wrote no times) the clip's render starts
+    it: a start left there would be closed by this render and measured from
+    days ago. Pure, like ``_metadata_with_render_started``.
+    """
+    if renders_project or not _render_times_closed(metadata):
+        return _metadata_with_render_started(metadata, now)
+    return _metadata_dict(metadata)
+
+
 def _metadata_with_render_finished(metadata, now=None):
     """
     ``metadata`` with the end of the render that just closed: how long it took
@@ -317,9 +347,11 @@ def _metadata_with_render_finished(metadata, now=None):
     back as it is: a duration is never made up. The same when the render
     already has its end (``stage_finished_at``): every start deletes it
     (``_metadata_with_render_started``), so a start that still has one is of
-    an earlier render. That is a render reserved before the starts were
-    written, over a project whose auto-render left a start days ago: measured
-    from it, it would last days. Pure, like ``_metadata_with_render_started``.
+    an earlier render. That is the render of one clip, which leaves the times
+    of the project's render alone (``_metadata_for_render_dispatch``), or a
+    render reserved before the starts were written, over a project whose
+    auto-render left a start days ago: measured from it, it would last days.
+    Pure, like ``_metadata_with_render_started``.
     """
     now = now or timezone.now()
     if not isinstance(metadata, dict):
@@ -1175,6 +1207,25 @@ CLIP_RENDER = PaidClipRender(
     'clip_render_reservation_id', 'clip_render_clip_ids', 'clip_render_seconds', 'render.clip_',
 )
 PAID_CLIP_RENDERS = (AUTO_RENDER, APPROVED_RENDER, CLIP_RENDER)
+# What the last CLIP_RENDER renders (views_clips._start_paid_render writes it
+# with the reservation): RENDER_SCOPE_CLIP for one clip (its editor, a retry),
+# RENDER_SCOPE_PROJECT for the project («renderizar todo de nuevo», and any
+# render of a whole video: its one clip is the project). A render reserved
+# before the key existed has none and counts as the project's. It decides who
+# writes the times of the «Renderizar» step (``_metadata_for_render_dispatch``)
+# and what the bell says when it closes (finalize_project_render).
+CLIP_RENDER_SCOPE_KEY = 'clip_render_scope'
+RENDER_SCOPE_CLIP = 'clip'
+RENDER_SCOPE_PROJECT = 'project'
+# How each render closed, oldest first: ``{'reservation', 'scope', 'clips',
+# 'ready', 'failed', 'kept'}`` of the reservation that paid it, written by the
+# close of the fan-out (``_close_render_fan_out``) in the update that ends the
+# project. The clips it was for, how many ended delivered (``ready``, the
+# ones that kept the file they had included: ``kept``) and how many failed.
+# The activity of the project reads one ``render_finished`` per entry
+# (services/project_activity.py); the newest RENDER_OUTCOMES_KEPT stay.
+RENDER_OUTCOMES_KEY = 'render_outcomes'
+RENDER_OUTCOMES_KEPT = 50
 # The clips of a CLIP_RENDER that were delivered before it reset them to DRAFT:
 # ``{clip_id: {'status': ..., 'key': ...}}``. Their old file stays until a new
 # one replaces it. Only a new file counts as delivered, and a render of one
@@ -1203,6 +1254,73 @@ def _renders_per_clip(metadata):
     render_video_segments never renders, fails or settles it.
     """
     return APPROVED_RENDER in _paid_clip_renders(metadata or {})
+
+
+def _clip_scope_render_reserved(metadata):
+    """The render still RESERVED is of one clip (CLIP_RENDER_SCOPE_KEY): not the project's."""
+    return (metadata or {}).get(CLIP_RENDER_SCOPE_KEY) == RENDER_SCOPE_CLIP and _clip_render_reserved(metadata)
+
+
+def _render_outcome(project, metadata):
+    """
+    How the render that closes now ended, for RENDER_OUTCOMES_KEY: the entry
+    of the reservation still RESERVED that pays it (a render asked for later
+    first, then the approval, the auto-render and, for a whole video, its
+    creation), or None when none is. Read under the project row lock, before
+    the settle, with the clips already given back (``_restore_rerendered_clips``
+    runs first): the settle counts the same clips.
+    """
+    candidates = [(paid.reservation_key, paid) for paid in reversed(_paid_clip_renders(metadata))]
+    if _is_whole_video(project):
+        candidates.append(('reservation_id', None))
+    ids = set()
+    for key, _paid in candidates:
+        try:
+            ids.add(str(uuid.UUID(str(metadata.get(key)))))
+        except ValueError:
+            continue
+    reserved = {
+        str(pk) for pk in Transaction.objects.filter(
+            pk__in=ids, status=Transaction.Status.RESERVED,
+        ).values_list('pk', flat=True)
+    } if ids else set()
+    for key, paid in candidates:
+        reservation_id = str(metadata.get(key))
+        if reservation_id not in reserved:
+            continue
+        clips = VideoClip.objects.filter(project_id=project.pk)
+        paid_ids = metadata.get(paid.clip_ids_key) if paid is not None else None
+        if paid_ids is not None:
+            clips = clips.filter(pk__in=paid_ids)
+        previous = (metadata.get(CLIP_RENDER_PREVIOUS_KEY) or {}) if paid is CLIP_RENDER else {}
+        rows = list(clips.values_list('pk', 'status', 's3_object_key'))
+        delivered = [
+            (pk, file_key) for pk, status, file_key in rows
+            if status in (VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED)
+        ]
+        scope = metadata.get(CLIP_RENDER_SCOPE_KEY) if paid is CLIP_RENDER else None
+        return {
+            'reservation': reservation_id,
+            'scope': RENDER_SCOPE_CLIP if scope == RENDER_SCOPE_CLIP else RENDER_SCOPE_PROJECT,
+            'clips': len(rows),
+            'ready': len(delivered),
+            'failed': sum(1 for _pk, status, _key in rows if status == VideoClip.Status.FAILED),
+            'kept': sum(
+                1 for pk, file_key in delivered
+                if str(pk) in previous and file_key == (previous[str(pk)] or {}).get('key')
+            ),
+        }
+    return None
+
+
+def _metadata_with_render_outcome(metadata, outcome):
+    """``metadata`` with ``outcome`` as the newest of RENDER_OUTCOMES_KEY (one per reservation). Pure."""
+    before = metadata.get(RENDER_OUTCOMES_KEY)
+    kept = [
+        entry for entry in (before if isinstance(before, list) else [])
+        if isinstance(entry, dict) and entry.get('reservation') != outcome['reservation']
+    ]
+    return {**metadata, RENDER_OUTCOMES_KEY: [*kept, outcome][-RENDER_OUTCOMES_KEPT:]}
 
 
 def _clip_render_reserved(metadata):
@@ -1922,8 +2040,9 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
             fresh = _metadata_for_new_run(metadata)
             if stage == PipelineStage.RENDER_DISPATCHED:
                 # Nothing else writes the start of a render that resumes
-                # (_resume_render_dispatch runs no stage).
-                fresh = _metadata_with_render_started(fresh)
+                # (_resume_render_dispatch runs no stage). The render of one
+                # clip that resumes keeps the times of the project's render.
+                fresh = _metadata_for_render_dispatch(fresh, not _clip_scope_render_reserved(fresh))
             if fresh != metadata:
                 VideoProject.objects.filter(pk=project_id).update(metadata=fresh)
         reopened = True

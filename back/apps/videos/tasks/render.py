@@ -13,7 +13,9 @@ from django.conf import settings
 from django.core.files import File
 from apps.videos.models import AIUsageRecord, VideoProject, VideoClip
 from apps.payments.models import Transaction
-from apps.notifications.services import notify_project_failed, notify_render_finished
+from apps.notifications.services import (
+    notify_clip_render_finished, notify_project_failed, notify_render_finished,
+)
 from moviepy import VideoFileClip, concatenate_videoclips
 from apps.videos.services.selection_engine import GeminiFlashStrategy, SelectionEngine
 from apps.videos.services.watermark import apply_watermark, project_needs_watermark
@@ -92,25 +94,44 @@ def finalize_project_render(project_id):
     by its approval: all are settled here from where the project ended. Every
     call checks them, so they are settled even if the project left
     render_dispatched another way.
+
+    The call that closes it tells the workspace (the bell and its email): the
+    render of the project, how it ended; the render of one clip (its editor,
+    a retry), only when it gave nothing and was returned.
     """
     from apps.videos.tasks.ingestion import (
-        _restore_rerendered_clips, _settle_clip_render_reservations, _settle_whole_video_reservation,
+        RENDER_SCOPE_CLIP, _restore_rerendered_clips, _settle_clip_render_reservations,
+        _settle_whole_video_reservation,
     )
 
     refunds_since = timezone.now()
     # First: a delivered clip whose new render failed is the user's again.
     _restore_rerendered_clips(project_id)
-    stage = _close_render_fan_out(project_id)
+    closed = {}
+    stage = _close_render_fan_out(project_id, closed)
     _settle_whole_video_reservation(project_id)
     _settle_clip_render_reservations(project_id)
     if stage:
-        notify_render_finished(project_id, since=refunds_since)
+        outcome = closed.get('outcome') or {}
+        if outcome.get('scope') == RENDER_SCOPE_CLIP:
+            # The render of one clip is not the project's: the bell only says
+            # when it gave nothing (notifications.notify_clip_render_finished).
+            notify_clip_render_finished(project_id, outcome['reservation'])
+        else:
+            notify_render_finished(project_id, since=refunds_since)
     return stage
 
 
-def _close_render_fan_out(project_id):
+def _close_render_fan_out(project_id, closed=None):
+    """
+    Ends the project when no clip of the render is left to render, under the
+    project row lock, and returns the stage it ended at (None: nothing
+    closed). ``closed['outcome']`` gets how the render that closed ended
+    (``_render_outcome``), the entry it also saves in RENDER_OUTCOMES_KEY.
+    """
     from apps.videos.tasks.ingestion import (
-        APPROVED_RENDER, CLIP_RENDER, _clip_render_reserved, _metadata_with_render_finished, _renders_per_clip,
+        APPROVED_RENDER, CLIP_RENDER, _clip_render_reserved, _metadata_with_render_finished,
+        _metadata_with_render_outcome, _render_outcome, _renders_per_clip,
     )
 
     with transaction.atomic():
@@ -154,6 +175,12 @@ def _close_render_fan_out(project_id):
         # of the web app: in the write that closes it, under the same row lock.
         changes = {'status': status}
         finished = _metadata_with_render_finished(metadata)
+        # How it ended, for the activity of the project: one entry per render.
+        outcome = _render_outcome(project, metadata)
+        if outcome is not None:
+            finished = _metadata_with_render_outcome(finished, outcome)
+            if closed is not None:
+                closed['outcome'] = outcome
         if finished is not metadata:
             changes['metadata'] = finished
         VideoProject.objects.filter(pk=project_id).update(**changes)
