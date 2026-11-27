@@ -91,6 +91,18 @@ addEventListener('message', async function (event) {
 addEventListener('fetch', function (event) {
   const requestInterceptedAt = Date.now()
 
+  // [onecreator:media-bypass] Added by scripts/patch-msw-worker.mjs, do not remove.
+  // Media is never mocked, and a request rebuilt by the passthrough below loses
+  // its "Range" header. Left alone, the browser sends it as it made it.
+  if (
+    event.request.headers.has('range') ||
+    event.request.destination === 'video' ||
+    event.request.destination === 'audio' ||
+    new URL(event.request.url).pathname.startsWith('/media/')
+  ) {
+    return
+  }
+
   // Bypass navigation requests.
   if (event.request.mode === 'navigate') {
     return
