@@ -16,7 +16,11 @@ an email. What does go:
   many clips, what was returned, with the same money texts as the bell);
 - for ``low_balance``, also its title (the balance: "Te quedan 300 tokens");
 - links built from ``FRONTEND_URL`` and ids. The paths are the web app's for
-  each kind (``notificationHref`` in front/src/shell/nav.ts).
+  each kind (``notificationHref`` in front/src/shell/nav.ts), with the
+  notification's workspace in ``?espacio=<id>``: the web app moves to that
+  workspace before it shows the page (RequireSession). Without it, a member
+  who has another workspace active would open a project that is not there,
+  or buy tokens for the wrong workspace.
 
 Each email has a plain text part and a simple HTML part with the same words;
 everything that goes into the HTML is escaped.
@@ -42,8 +46,14 @@ EMAIL_KINDS = {
 }
 
 
-def frontend_url(path):
-    return f"{settings.FRONTEND_URL.rstrip('/')}{path}"
+# The query parameter RequireSession reads (front/src/shell/RequireSession.tsx).
+WORKSPACE_PARAM = 'espacio'
+
+
+def frontend_url(path, workspace_id=None):
+    """``path`` in the web app; with ``workspace_id``, in that workspace."""
+    query = f'?{WORKSPACE_PARAM}={workspace_id}' if workspace_id else ''
+    return f"{settings.FRONTEND_URL.rstrip('/')}{path}{query}"
 
 
 def wants_email(user, kind):
@@ -109,7 +119,7 @@ def _content(notification):
 def build(notification):
     """``(subject, text, html)`` of the email of ``notification`` (a kind of ``EMAIL_KINDS``)."""
     subject, paragraphs, label, path = _content(notification)
-    link = frontend_url(path)
+    link = frontend_url(path, notification.workspace_id)
     preferences = frontend_url(PREFERENCES_PATH)
     why = f'Recibís este email porque tenés activado el aviso «{EMAIL_KINDS[notification.kind]}».'
     text = (

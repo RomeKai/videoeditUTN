@@ -13,7 +13,7 @@ from django.db import connection, transaction
 
 from apps.notifications.models import Notification
 from apps.notifications.services import low_balance_message
-from apps.payments.models import LowBalanceNotice, Payment, Wallet
+from apps.payments.models import LowBalanceNotice, Payment, SubscriptionPlan, Wallet
 from apps.payments.services.estimate import low_balance_threshold
 from apps.payments.services.payments import settle_payment
 from apps.payments.services.wallet_service import (
@@ -121,6 +121,32 @@ class LowBalanceTests(EventHarness):
         self.assertEqual(sent(), {})
         self.assertFalse(self.marked())
         self.assertEqual(Wallet.objects.get(pk=self.wallet.pk).available_balance, Decimal('1000'))
+
+    def test_a_balance_raised_without_a_refund_or_a_purchase_notifies_at_its_next_fall(self):
+        """An edit in the admin does not pass through the wallet service: the mark it leaves is stale."""
+        self.spend('500')
+        Wallet.objects.filter(pk=self.wallet.pk).update(available_balance=Decimal('1000'))
+        self.assertTrue(self.marked())
+
+        self.spend('700')
+
+        self.assertEqual(self.notices(), [
+            ('Te quedan 300 tokens', 'ada'), ('Te quedan 300 tokens', 'ana'),
+            ('Te quedan 500 tokens', 'ada'), ('Te quedan 500 tokens', 'ana'),
+        ])
+        self.assertTrue(self.marked())
+
+    def test_a_plan_with_a_lower_threshold_notifies_at_the_next_fall_under_it(self):
+        self.spend('500')
+        SubscriptionPlan.objects.filter(pk=self.workspace.subscription_plan_id).update(base_discount_rate=Decimal('0.5'))
+        # 500 is above the 300 of the plan now: the web's banner is gone, and so is the fall the mark was for.
+
+        self.spend('250')
+
+        self.assertEqual(self.notices(), [
+            ('Te quedan 250 tokens', 'ada'), ('Te quedan 250 tokens', 'ana'),
+            ('Te quedan 500 tokens', 'ada'), ('Te quedan 500 tokens', 'ana'),
+        ])
 
     def test_a_fall_that_is_refunded_before_the_commit_tells_nobody(self):
         def reserve_and_refund():

@@ -16,7 +16,7 @@ class InsufficientFundsError(PaymentError):
     pass
 
 
-def track_low_balance(wallet, spending=False):
+def track_low_balance(wallet, spending=False, previous=None):
     """
     The "saldo bajo" notice (map 1.11), sent once each time the balance falls.
     A ``LowBalanceNotice`` row says the notice of this wallet is out. Call it
@@ -30,6 +30,11 @@ def track_low_balance(wallet, spending=False):
       commit. Both go back if the caller's transaction is rolled back.
     - Any change that leaves the balance at the threshold or above (a refund,
       a purchase) deletes the row: the next fall notifies again.
+    - ``previous`` (the available balance before the reservation): at the
+      threshold or above, this reservation is a new fall whatever the row
+      says. The row can be stale: the balance went up without passing through
+      here (an edit in the admin), or the plan changed and its threshold is
+      lower now.
 
     It never raises and, in a savepoint, never leaves the caller's
     transaction broken: the money step goes on without the notice.
@@ -45,9 +50,12 @@ def track_low_balance(wallet, spending=False):
             workspace = Workspace.objects.select_related('subscription_plan').filter(pk=wallet.workspace_id).first()
             if workspace is None:
                 return
-            if wallet.available_balance >= low_balance_threshold(workspace.subscription_plan):
+            threshold = low_balance_threshold(workspace.subscription_plan)
+            if wallet.available_balance >= threshold:
                 noticed.delete()
             elif spending:
+                if previous is not None and previous >= threshold:
+                    noticed.delete()
                 _, created = LowBalanceNotice.objects.get_or_create(wallet_id=wallet.pk)
                 if created:
                     from apps.notifications.services import notify_low_balance
@@ -86,9 +94,10 @@ def reserve_funds(
         )
 
     # Move funds from available to reserved
+    previous = wallet.available_balance
     wallet.available_balance -= amount
     wallet.reserved_balance += amount
-    track_low_balance(wallet, spending=True)
+    track_low_balance(wallet, spending=True, previous=previous)
     wallet.save()
 
     # Create a transaction record in RESERVED status

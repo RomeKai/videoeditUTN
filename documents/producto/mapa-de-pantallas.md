@@ -128,7 +128,7 @@ Roles del workspace: **Dueño** (`Workspace.owner`) y los de `WorkspaceMember.ro
 - El usuario puede apagar los emails por tipo en Perfil › Notificaciones.
 - Dentro de la app también se avisa cuando un pago (compra de tokens o cambio de plan) se aprueba o se rechaza, a quien lo inició. No tiene email.
 - **Saldo bajo:** se avisa cuando una reserva deja el saldo disponible por debajo del umbral que ya usa la web (`low_balance_threshold` de `GET /wallet/`: 20 minutos a 720p con el descuento del plan). Se avisa una sola vez; vuelve a avisar recién después de que el saldo sube al umbral o más y cae otra vez.
-- **Los emails no llevan nada que haya escrito un usuario:** ni el título del proyecto, ni el nombre del workspace, ni nombres de personas. Dicen qué pasó, cuánto se devolvió (con el mismo texto que la campana) y llevan el link. Solo se mandan a cuentas con el email verificado.
+- **Los emails no llevan nada que haya escrito un usuario:** ni el título del proyecto, ni el nombre del workspace, ni nombres de personas. Dicen qué pasó, cuánto se devolvió (con el mismo texto que la campana) y llevan el link. Solo se mandan a cuentas con el email verificado. Sus links llevan el workspace (`?espacio=<id>`): la web cambia a ese workspace al abrirlos, si la persona es miembro.
 - **API:** ✅ la campana: `GET /api/v1/notifications/`, `POST /notifications/:id/read/` y `POST /notifications/read-all/` (listo para revisar, render terminado, proyecto fallido, saldo bajo y pagos), y el email de cada una menos los pagos, según las preferencias. ❌ todavía no avisa de una publicación fallida (hueco 16).
 
 ---
@@ -658,6 +658,8 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 
 #### I2. Notificaciones
 - **Qué muestra:** un interruptor de email por cada tipo de la sección 1.11.
+  - «Una publicación falló» todavía no está disponible (hueco 16): su interruptor está deshabilitado y apagado, con la línea «Todavía no avisamos de las publicaciones fallidas.».
+  - Con el email sin verificar, la pantalla dice que los emails no se mandan hasta verificarlo.
 - **API:** ✅ `GET/PATCH /api/v1/me/notification-preferences/`.
 
 ### J. Piezas transversales

@@ -12,11 +12,13 @@ The emails of the notifications (apps/notifications/emails.py and tasks.py):
 """
 import logging
 import smtplib
+import threading
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.core import mail
-from django.test import override_settings
+from django.db import connection
+from django.test import TransactionTestCase, override_settings
 
 from apps.notifications import services
 from apps.notifications.emails import EMAIL_KINDS, build
@@ -30,7 +32,7 @@ from apps.videos.services.ai.pipeline_state import PipelineStage
 from apps.videos.tasks import _record_pipeline_failure, finalize_project_render
 from apps.videos.tasks.ingestion import _hand_to_review
 
-from .helpers import sent
+from .helpers import make_user, sent, team
 from .test_events import DONE, DRAFT, FAILED, EventHarness
 
 SEND = 'apps.notifications.emails.EmailMultiAlternatives.send'
@@ -98,10 +100,10 @@ class EventEmailTests(EmailHarness):
         message = self.assert_one_email_each('ana', 'edu')
         self.assertEqual(message.subject, 'Tu proyecto está listo para revisar')
         self.assertIn('Encontramos 3 clips.', message.body)
-        link = f'https://app.onecreator.test/proyectos/{project.id}/revision'
+        link = f'https://app.onecreator.test/proyectos/{project.id}/revision?espacio={self.workspace.id}'
         self.assertIn(link, message.body)
         self.assertIn(f'href="{link}"', message.alternatives[0][0])
-        self.assertIn('https://app.onecreator.test/perfil/notificaciones', message.body)
+        self.assertIn('https://app.onecreator.test/perfil/notificaciones\n', message.body)
         self.assertIn('tenés activado el aviso «El proyecto está listo para revisar»', message.body)
 
     def test_render_finished(self):
@@ -112,7 +114,7 @@ class EventEmailTests(EmailHarness):
         message = self.assert_one_email_each('ana', 'edu')
         self.assertEqual(message.subject, 'Terminó el render de tu proyecto')
         self.assertIn('2 clips listos.', message.body)
-        self.assertIn(f'https://app.onecreator.test/proyectos/{project.id}/clips', message.body)
+        self.assertIn(f'https://app.onecreator.test/proyectos/{project.id}/clips?espacio={self.workspace.id}\n', message.body)
 
     def test_a_partial_render_says_what_was_returned_like_the_bell(self):
         project = self.rendering(DONE, FAILED, reserved='9.00')
@@ -132,7 +134,7 @@ class EventEmailTests(EmailHarness):
         self.assertEqual(message.subject, 'No pudimos terminar tu proyecto')
         self.assertEqual(Notification.objects.filter(user=self.ana).get().body, 'Te devolvimos 12,50 tokens.')
         self.assertIn('Te devolvimos 12,50 tokens.', message.body)
-        self.assertIn(f'https://app.onecreator.test/proyectos/{project.id}\n', message.body)
+        self.assertIn(f'https://app.onecreator.test/proyectos/{project.id}?espacio={self.workspace.id}\n', message.body)
 
     def test_each_switch_only_turns_its_own_kind_off(self):
         NotificationPreference.objects.create(user=self.edu, project_ready=False)
@@ -343,7 +345,7 @@ class NoTypedTextTests(EmailHarness):
 
         self.assert_no_typed_text(1)
         self.assertIn('Te quedan 300 tokens', mail.outbox[0].body)
-        self.assertIn('https://app.onecreator.test/uso/comprar', mail.outbox[0].body)
+        self.assertIn(f'https://app.onecreator.test/uso/comprar?espacio={self.workspace.id}\n', mail.outbox[0].body)
 
     def test_what_goes_into_the_html_is_escaped(self):
         row = Notification(
@@ -355,3 +357,36 @@ class NoTypedTextTests(EmailHarness):
         self.assertIn('<script>alert(1)</script> & más', text)
         self.assertNotIn('<script>', html)
         self.assertIn('&lt;script&gt;alert(1)&lt;/script&gt; &amp; más', html)
+
+
+class QueuedAfterTheBellTests(TransactionTestCase):
+    """
+    With a real worker the task runs in another process: it must be queued
+    only once the notification's row is committed, or it finds no row and
+    sends nothing. (In these settings the task runs inline, so only the
+    moment it is queued shows the difference.)
+    """
+
+    def test_the_task_is_queued_once_another_connection_can_read_the_notification(self):
+        ana = make_user('ana')
+        workspace = team(ana)
+        seen = []
+
+        def from_another_connection(notification_id):
+            def read():
+                try:
+                    seen.append(Notification.objects.filter(pk=notification_id).exists())
+                finally:
+                    connection.close()
+
+            reader = threading.Thread(target=read)
+            reader.start()
+            reader.join(10)
+            seen.append(connection.in_atomic_block)
+
+        with patch(DELAY, side_effect=from_another_connection) as delay:
+            services._write(workspace, {ana.pk}, 'project_ready', 'Podcast 42 está listo para revisar', 'Encontramos 3 clips.')
+
+        self.assertEqual(delay.call_count, 1)
+        # The row is there for the worker, and the write's transaction is over.
+        self.assertEqual(seen, [True, False])
