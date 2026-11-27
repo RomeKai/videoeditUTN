@@ -173,6 +173,26 @@ describe('D1 · Proyecto', () => {
     expect(screen.queryByRole('link', { name: 'Ver planes' })).toBeNull();
   });
 
+  it('error sin `cost` (el backend de hoy): la devolución sale de la actividad del proyecto', async () => {
+    open('Falló: AINoSpeechDetectedError', '', 'todos-los-estados', 'lucia', (project, db) => {
+      const refund = db.activity.find((entry) => entry.project === project.id && entry.type === 'tokens_refunded');
+      if (!refund) throw new Error('El proyecto sembrado no tiene su devolución en la actividad');
+      refund.amount = 123;
+      project.cost = null;
+    });
+    const alert = await screen.findByRole('alert');
+    expect(await within(alert).findByText(/Te devolvimos/)).toHaveTextContent('Te devolvimos 123 tokens.');
+    expect(within(alert).getByRole('link', { name: /Ver en Movimientos/ })).toHaveAttribute('href', '/uso/movimientos');
+  });
+
+  it('la moderación no se pudo usar (ModerationBlockedError): no culpa al contenido del video', async () => {
+    open('Falló: ModerationBlockedError', '');
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText(/Algo falló de nuestro lado/)).toBeInTheDocument();
+    expect(within(alert).getByRole('link', { name: /Escribir a soporte/ })).toBeInTheDocument();
+    expect(screen.queryByText(/no cumple nuestras políticas/)).toBeNull();
+  });
+
   it('error de moderación: no dice la categoría y ofrece escribirnos', async () => {
     open('Falló: UnsafeContentError', '');
     const alert = await screen.findByRole('alert');

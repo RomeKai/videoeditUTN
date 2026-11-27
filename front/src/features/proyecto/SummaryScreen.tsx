@@ -1,9 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Project } from '@/api/contracts/projects';
-import { useBrandKit, useWallet } from '@/api/hooks';
+import { useBrandKit, useProjectActivity, useWallet } from '@/api/hooks';
 import { isModerationError, pipelineErrorMessage } from '@/lib/error-messages';
 import { formatDuration, formatTime, plural } from '@/lib/format';
 import { useIsMobile } from '@/lib/hooks';
@@ -22,6 +22,7 @@ import {
   isWholeVideo,
   pteAppliedLines,
   pteIgnoredLines,
+  refundAfterFailure,
   shortDateTime,
   sortClips,
   totalProcessSeconds,
@@ -347,11 +348,43 @@ function ClipStrip({ project }: { project: Project }) {
 
 const NETWORK_SHORT = { TIKTOK: 'TikTok', INSTAGRAM_REELS: 'Instagram', YOUTUBE_SHORTS: 'YouTube' } as const;
 
+/** How many times the activity is asked again while the refund of a failed project is not in it yet. */
+const REFUND_RETRIES = 5;
+const REFUND_RETRY_MS = 3000;
+
+/** Tokens that came back when the project failed: from `cost` when the backend sends it, from the activity otherwise. */
+function useRefunded(project: Project): number {
+  const fromActivity = !project.cost;
+  const activity = useProjectActivity(fromActivity ? project.id : null);
+  const { refetch } = activity;
+  const refunded = fromActivity && activity.data ? refundAfterFailure(activity.data) : 0;
+  // The activity may be in the cache from before the failure, and the refund is written just after it.
+  const failedAt = project.pipeline_error_at;
+  const tries = useRef(0);
+  useEffect(() => {
+    tries.current = 0;
+    if (fromActivity) void refetch();
+  }, [fromActivity, failedAt, refetch]);
+  const waiting = fromActivity && refunded === null;
+  const { dataUpdatedAt } = activity;
+  useEffect(() => {
+    if (!waiting || tries.current >= REFUND_RETRIES) return;
+    const id = window.setTimeout(() => {
+      tries.current += 1;
+      void refetch();
+    }, REFUND_RETRY_MS);
+    return () => window.clearTimeout(id);
+  }, [waiting, dataUpdatedAt, refetch]);
+  if (!fromActivity) return project.cost?.state === 'refunded' ? project.cost.amount : 0;
+  return refunded ?? 0;
+}
+
 function FailedBanner({ project }: { project: Project }) {
   const { gate, can } = usePermissions();
   const code = project.pipeline_error_code;
-  // Money is only mentioned when it is known: the backend does not send `cost` yet (gap 4).
-  const refunded = project.cost?.state === 'refunded' ? project.cost.amount : 0;
+  // Money is only mentioned when it is known. The backend does not send `cost` yet (gap 4): without it,
+  // the refund is read from the project's activity, which the backend does have.
+  const refunded = useRefunded(project);
   // Re-dispatched without tokens for what was left: the clips are still there, so there is nothing to create again.
   const unpaid = code === 'AutoRenderNotPaid';
   return (

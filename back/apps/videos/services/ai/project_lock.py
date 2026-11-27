@@ -105,7 +105,10 @@ def _heartbeat(handle, stop, interval):
 def project_lock(project_id, client=None, ttl=None, heartbeat=True):
     client = client if client is not None else get_redis_client()
     ttl = ttl or getattr(settings, "PIPELINE_LOCK_TTL", DEFAULT_LOCK_TTL_SECONDS)
-    lock = client.lock(_lock_name(project_id), timeout=ttl)
+    # thread_local=False: the heartbeat renews from its own thread. By default redis-py keeps the
+    # token per thread, so that thread would find none, die on its first renewal and let the lock
+    # expire under any run longer than the TTL.
+    lock = client.lock(_lock_name(project_id), timeout=ttl, thread_local=False)
 
     try:
         acquired = lock.acquire(blocking=False)
