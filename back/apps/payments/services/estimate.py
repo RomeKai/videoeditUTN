@@ -123,26 +123,45 @@ def _review_seconds_per_second():
     return statistics.median(ratios) if ratios else None
 
 
-def review_eta_seconds(duration_seconds):
+def review_seconds_per_second():
+    """
+    The ratio of ``_review_seconds_per_second``, or None without history. It
+    is the same for every estimate and moves slowly: it is kept in the default
+    cache for ETA_CACHE_SECONDS, so the projects are read at most once in that
+    time (a cache that does not answer is a miss, and the ratio is computed
+    again).
+    """
+    cached = cache.get(ETA_CACHE_KEY)
+    if isinstance(cached, dict) and 'ratio' in cached:
+        return cached['ratio']
+    ratio = _review_seconds_per_second()
+    cache.set(ETA_CACHE_KEY, {'ratio': ratio}, ETA_CACHE_SECONDS)
+    return ratio
+
+
+_READ_RATIO = object()
+
+
+def review_eta_seconds(duration_seconds, ratio=_READ_RATIO):
     """
     Seconds until a video of ``duration_seconds`` is ready for the review: the
     ratio of the latest projects times its duration. Only the stages' own
-    time, not the wait in the queue. None without history, or for 0 s.
+    time, not the wait in the queue. None without history, for 0 s, or for a
+    number too large to be a duration.
 
-    The ratio is the same for every estimate and moves slowly: it is kept in
-    the default cache for ETA_CACHE_SECONDS, so an estimate reads the
-    projects at most once in that time (a cache that does not answer is a
-    miss, and the ratio is computed again).
+    ``ratio``: the one ``review_seconds_per_second`` gave, for a caller that
+    estimates many videos in a row and reads it once.
     """
     if duration_seconds <= 0:
         return None
-    cached = cache.get(ETA_CACHE_KEY)
-    if isinstance(cached, dict) and 'ratio' in cached:
-        ratio = cached['ratio']
-    else:
-        ratio = _review_seconds_per_second()
-        cache.set(ETA_CACHE_KEY, {'ratio': ratio}, ETA_CACHE_SECONDS)
-    return int(round(ratio * duration_seconds)) if ratio is not None else None
+    if ratio is _READ_RATIO:
+        ratio = review_seconds_per_second()
+    if ratio is None:
+        return None
+    try:
+        return int(round(ratio * duration_seconds))
+    except (OverflowError, ValueError):
+        return None
 
 
 def estimate(workspace, *, source, duration_seconds=None, render_resolution=None, use_seo=False):

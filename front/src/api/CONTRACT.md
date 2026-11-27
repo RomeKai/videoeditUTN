@@ -104,7 +104,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/projects/` | Proyectos del workspace, del más nuevo al más viejo. | ⚠️ existe en parte · hueco 14 | B2, J1, B1 |
 | POST | `/api/v1/projects/` | Crea un proyecto desde un archivo (multipart) o un link, reserva los tokens y arranca la ingesta. | ✅ existe | C1 |
 | POST | `/api/v1/projects/from-prompt/` | Igual que crear, más `prompt`: la IA arma la configuración al iniciar la ingesta (queda en `metadata.pte`). | ✅ existe | C1 |
-| GET | `/api/v1/projects/:id/` | Detalle del proyecto con el estado del pipeline, la metadata, la transcripción y sus clips. | ⚠️ existe en parte · hueco 4, 15, 18 | D1, D1e, D1f, D3, D4, D5 |
+| GET | `/api/v1/projects/:id/` | Detalle del proyecto con el estado del pipeline, la metadata, la transcripción y sus clips. | ⚠️ existe en parte | D1, D1e, D1f, D3, D4, D5 |
 | PATCH | `/api/v1/projects/:id/` | Renombra el proyecto. | ✅ existe | B2, D1 |
 | DELETE | `/api/v1/projects/:id/` | Borra el proyecto con su video, sus clips y sus publicaciones programadas. No devuelve lo cobrado. | ✅ existe | B2, D1, D4 (diálogo) |
 | GET | `/api/v1/projects/:id/paper-edit-data/` | Datos de la revisión: video proxy, transcripción, clips sugeridos y metadata. | ✅ existe | D2 |
@@ -414,7 +414,7 @@ Borra el workspace. Solo el Dueño, escribiendo el nombre para confirmar.
 | Sesión | JWT |
 | Pedido | { confirm_name: string } |
 | Respuesta 204 | NoContent |
-| Errores | **400** `confirm_name` falta o no es exactamente el nombre: `{confirm_name: [mensaje]}`.<br>**403** No es el Dueño. Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos.<br>**409** No se borra nada. Cuerpo `{error, code}`, y el `error` se muestra tal cual. Se revisan en este orden. `last_workspace`: es el único workspace del usuario (va primero porque esperar no lo resuelve). `project_processing`: hay un proyecto subido, en ingesta o renderizando (uno trabado se borra primero). `posts_in_flight`: hay una publicación saliendo (`PROCESSING` hace menos de 10 minutos) o en cola (`QUEUED` hasta 15 minutos después de su `publish_at`); una más vieja está trabada y no frena el borrado. `reservation_open`: hay tokens reservados sin liquidar. `payment_pending`: hay una compra de tokens o un pago de plan pendiente (con el checkout abierto o abriéndose); se resuelve cuando el proveedor lo liquida o cuando vence su checkout (`PAYMENTS_CHECKOUT_TTL_SECONDS`, 24 h por defecto). La web no tiene cómo cancelarlo, así que el `error` dice pagarlo o esperar, con el plazo del setting. `balance_left`: queda saldo disponible (trae `available_balance`); los tokens nunca se borran. |
+| Errores | **400** `confirm_name` falta o no es exactamente el nombre: `{confirm_name: [mensaje]}`.<br>**403** No es el Dueño. Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos.<br>**409** No se borra nada. Cuerpo `{error, code}`, y el `error` se muestra tal cual. Se revisan en este orden. `last_workspace`: es el único workspace del usuario (va primero porque esperar no lo resuelve). `project_processing`: hay un proyecto subido, en ingesta o renderizando (uno trabado se borra primero). `posts_in_flight`: hay una publicación saliendo (`PROCESSING` hace menos de 10 minutos) o en cola (`QUEUED` hasta 15 minutos después de su `publish_at`); una más vieja está trabada y no frena el borrado. `reservation_open`: hay tokens reservados sin liquidar. `payment_pending`: hay una compra de tokens o un pago de plan pendiente (con el checkout abierto o abriéndose); se resuelve cuando el proveedor lo liquida o cuando vence su checkout (`PAYMENTS_CHECKOUT_TTL_SECONDS`, 24 h por defecto). Una compra de tokens no se puede cancelar desde la web; un pago de plan sí, con «Seguir con …» en Planes (`billing.changePlan` con el plan actual). El `error` es uno solo para los dos y dice pagarlo o esperar, con el plazo del setting. `balance_left`: queda saldo disponible (trae `available_balance`); los tokens nunca se borran. |
 | Pantallas | H1 |
 
 #### `POST /api/v1/workspaces/:id/transfer/`
@@ -583,7 +583,7 @@ Plan actual del workspace, su renovación y el cambio pendiente si lo hay.
 |---|---|
 | Id | `billing.subscription` |
 | Backend | ✅ existe · `back/apps/payments/views_subscription.py · SubscriptionView + SubscriptionSerializer (apps/payments/serializers_billing.py)` |
-| Nota | Todos los roles. `renews_at` es el fin del período pagado con el checkout: un mes calendario desde que se confirmó el pago de la subida, contado en `WORKSPACE_TIME_ZONE` y anclado al día en que empezó (31 ene → 28 feb → 31 mar). Es null en un plan gratis y en uno asignado en el admin (una cortesía, que no vence). Todavía nada cobra la renovación (PAY-02): cuando el período termina, la tarea `apply_due_plan_changes` aplica la bajada programada o, sin ninguna, pasa el workspace al plan por defecto (`DEFAULT_PLAN_NAME`). Por eso `status` es siempre `active`. Un workspace sin plan muestra el plan por defecto. |
+| Nota | Todos los roles. `renews_at` es el fin del período pagado con el checkout: un mes calendario desde que se confirmó el pago de la subida, contado en `WORKSPACE_TIME_ZONE` y anclado al día en que empezó (31 ene → 28 feb → 31 mar). Es null en un plan gratis y en uno asignado en el admin (una cortesía, que no vence). Todavía nada cobra la renovación (PAY-02): cuando el período termina, la tarea `apply_due_plan_changes` aplica la bajada programada o, sin ninguna, pasa el workspace al plan por defecto (`DEFAULT_PLAN_NAME`). Por eso `status` es siempre `active`. Un workspace sin plan muestra el plan por defecto. `pending_payment` es el pago de otro plan pago que espera su checkout (sin la URL), con `expires_at`: cuándo vence ese checkout (`PAYMENTS_CHECKOUT_TTL_SECONDS` desde que se abrió), o null mientras todavía se está abriendo. No aparece uno cuyo checkout venció, ni un intento cuya llamada al proveedor se perdió (sin checkout pasado el doble de `PAYMENTS_PROVIDER_TIMEOUT_SECONDS`). Planes lo cancela con «Seguir con …» (`billing.changePlan` con el plan actual). |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Subscription |
 | Errores | **404** El workspace no tiene plan y tampoco existe el plan por defecto (`DEFAULT_PLAN_NAME`). |
@@ -789,8 +789,8 @@ Detalle del proyecto con el estado del pipeline, la metadata, la transcripción 
 | | |
 |---|---|
 | Id | `projects.detail` |
-| Backend | ⚠️ existe en parte · hueco 4, 15, 18 · `back/apps/videos/views.py · VideoProjectViewSet.retrieve + VideoProjectSerializer` |
-| Nota | Faltan `cost` (vínculo con la transacción y estado devuelto), `stage_timings`, `eta_seconds`, `duration_seconds` y `uploaded_by_detail`. Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura. |
+| Backend | ⚠️ existe en parte · `back/apps/videos/views.py · VideoProjectViewSet.retrieve + VideoProjectSerializer` |
+| Nota | Trae `cost` (la reserva de creación: reservado, cobrado o devuelto), `stage_timings` (las etapas terminadas; `started_at` y `finished_at` en `null` en las que terminaron antes de que se guardara) y `uploaded_by_detail` (sin el email). `eta_seconds` mientras se procesa (el estimado de Nuevo proyecto menos lo que tardaron las etapas terminadas). Falta `duration_seconds` (la duración sale de `metadata.source_media`). Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Project |
 | Errores | **404** No existe o es de otro workspace. La UI muestra K1. |
@@ -1629,6 +1629,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `status` | "active" \\| "past_due" \\| "canceled" |
 | `renews_at` | IsoDateTime \\| null |
 | `pending_plan` | { id: Id, name: string, effective_at: IsoDateTime } \\| null |
+| `pending_payment` (opcional) | { id: Id, plan_id: Id, plan_name: string, expires_at: IsoDateTime \\| null } \\| null |
 
 **TokenPackage**
 
@@ -1910,10 +1911,10 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `proxy_url` | string \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
 | `uploaded_by_detail` (opcional) | UserRef \\| null |
-| `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
 | `eta_seconds` (opcional) | number \\| null |
+| `duration_seconds` (opcional) | number \\| null |
 | `cost_details` | CostDetails |
 | `message` | string |
 | `prompt_config` | { status: "pending", detail: string } |
@@ -2006,10 +2007,10 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `proxy_url` | string \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
 | `uploaded_by_detail` (opcional) | UserRef \\| null |
-| `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
 | `eta_seconds` (opcional) | number \\| null |
+| `duration_seconds` (opcional) | number \\| null |
 | `cost_details` | CostDetails |
 | `message` | string |
 
@@ -2112,10 +2113,10 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `proxy_url` | string \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
 | `uploaded_by_detail` (opcional) | UserRef \\| null |
-| `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
 | `eta_seconds` (opcional) | number \\| null |
+| `duration_seconds` (opcional) | number \\| null |
 
 **ProjectCost**
 
@@ -2229,10 +2230,10 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `proxy_url` | string \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
 | `uploaded_by_detail` (opcional) | UserRef \\| null |
-| `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
 | `eta_seconds` (opcional) | number \\| null |
+| `duration_seconds` (opcional) | number \\| null |
 | `cost_details` (opcional) | CostDetails |
 
 **RerenderRequest**

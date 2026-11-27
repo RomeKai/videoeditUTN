@@ -582,7 +582,7 @@ describe('mocks', () => {
     await apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['quinta@estudionorte.com'], role: 'viewer' } });
     const refused = await fail(apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['sexta@estudionorte.com'], role: 'viewer' } }));
     expect(refused.code).toBe('seats_exceeded');
-    expect(refused.message).toMatch(/^Estás pasando al plan 'Creador', que permite 5 miembros/);
+    expect(refused.message).toBe("Estás pasando al plan 'Creador', que permite 5 miembros. Hay un pago en curso: terminalo, o elegí «Seguir con Pro» en Planes para cancelarlo.");
   });
 
   it('la sesión: login, credenciales incorrectas, email sin verificar y sesión vencida', async () => {

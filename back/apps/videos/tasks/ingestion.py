@@ -268,6 +268,10 @@ def _record_stage_duration(project_id, stage, duration_s):
             durations = dict(metadata.get('stage_durations') or {})
             durations[str(stage)] = duration_s
             metadata['stage_durations'] = durations
+            # When it ended, for the process timeline of the web app (stage_timings).
+            finished = dict(metadata.get('stage_finished_at') or {})
+            finished[str(stage)] = timezone.now().isoformat()
+            metadata['stage_finished_at'] = finished
             VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
     except Exception as exc:  # a metric must never fail a stage
         logger.warning(
