@@ -10,7 +10,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from apps.users.models import User
+from apps.users.models import User, Workspace
 from apps.users.tests.test_login_throttle import REDIS_DOWN, _refused
 
 pytestmark = pytest.mark.django_db
@@ -133,7 +133,9 @@ def _signed_with_another_key(payload):
     return jwt.encode(payload, "otra-clave-que-no-es-la-del-servidor", algorithm="HS256")
 
 
-@pytest.mark.parametrize("case", ["rotated", "forged", "tampered", "expired", "access", "password_changed"])
+@pytest.mark.parametrize(
+    "case", ["rotated", "forged", "tampered", "expired", "access", "password_changed", "deleted_user"],
+)
 def test_a_refresh_refused_for_another_reason_keeps_saying_token_not_valid(user, case):
     """Only a token this server signed, still valid but for the revocation, says session_revoked: nothing else learns it."""
     if case == "rotated":
@@ -161,9 +163,19 @@ def test_a_refresh_refused_for_another_reason_keeps_saying_token_not_valid(user,
             token = str(old)
         elif case == "access":
             token = session["access"]
-        else:
+        elif case == "password_changed":
+            # The row as the revocation left it: saving the fixture's copy would write sessions_revoked_at back to None.
+            user.refresh_from_db()
+            assert user.sessions_revoked_at is not None
             user.set_password("una-clave-Nueva-2026")
             user.save()
+            assert User.objects.get(pk=user.pk).sessions_revoked_at is not None
+            token = session["refresh"]
+        else:
+            # Signed by this server and blacklisted by the revocation, of a user that is gone: never a 500.
+            Workspace.objects.filter(owner=user).delete()  # an owner cannot be deleted (PROTECT)
+            User.objects.filter(pk=user.pk).delete()
+            assert BlacklistedToken.objects.filter(token__jti=RefreshToken(session["refresh"], verify=False)["jti"]).exists()
             token = session["refresh"]
 
     response = _refresh(token)
