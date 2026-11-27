@@ -252,7 +252,10 @@ def _running_stage(project_id, stage, attempt):
             'duration_s': duration_s,
         },
     )
-    _record_stage_duration(project_id, stage, duration_s)
+    if stage != PipelineStage.RENDER_DISPATCHED:
+        # The render only started: it ends when its last clip does, and
+        # finalize_project_render records it (_metadata_with_render_finished).
+        _record_stage_duration(project_id, stage, duration_s)
 
 
 def _metadata_dict(value):
@@ -278,6 +281,58 @@ def _metadata_for_new_run(metadata):
     return fresh
 
 
+RENDER_STAGE = str(PipelineStage.RENDER_DISPATCHED)
+
+
+def _metadata_with_render_started(metadata, now=None):
+    """
+    ``metadata`` with the start of a render that is dispatched now, for the
+    «Renderizar» step of the process timeline (stage_timings): its start in
+    ``stage_started_at`` and nothing of an earlier render (its duration and
+    its end), so the step reads as running again and never shows the times
+    of the render before. Every dispatch is a new run and writes its own
+    start: the approval of the review, a render the user asks for later (a
+    clip, a retry, a rerender) and a re-dispatch at render_dispatched. Pure:
+    the caller holds the project row lock and writes the result in the update
+    it already makes.
+    """
+    fresh = _metadata_dict(metadata)
+    started = _metadata_dict(fresh.get('stage_started_at'))
+    started[RENDER_STAGE] = (now or timezone.now()).isoformat()
+    fresh['stage_started_at'] = started
+    for key in ('stage_durations', 'stage_finished_at'):
+        values = fresh.get(key)
+        if isinstance(values, dict) and RENDER_STAGE in values:
+            fresh[key] = {stage: value for stage, value in values.items() if stage != RENDER_STAGE}
+    return fresh
+
+
+def _metadata_with_render_finished(metadata, now=None):
+    """
+    ``metadata`` with the end of the render that just closed: how long it took
+    since its start (``stage_durations``) and when it ended
+    (``stage_finished_at``), as ``_record_stage_duration`` writes them for the
+    other stages. Without a start that can be read (a render dispatched before
+    the start was recorded), or with one in the future, ``metadata`` comes
+    back as it is: a duration is never made up. Pure, like
+    ``_metadata_with_render_started``.
+    """
+    now = now or timezone.now()
+    started = metadata.get('stage_started_at') if isinstance(metadata, dict) else None
+    value = started.get(RENDER_STAGE) if isinstance(started, dict) else None
+    try:
+        started_at = datetime.fromisoformat(value) if isinstance(value, str) else None
+        if started_at is None or timezone.is_naive(started_at) or started_at > now:
+            return metadata
+        duration_s = round((now - started_at).total_seconds(), 3)
+    except (ValueError, OverflowError):
+        return metadata
+    fresh = dict(metadata)
+    fresh['stage_durations'] = {**_metadata_dict(fresh.get('stage_durations')), RENDER_STAGE: duration_s}
+    fresh['stage_finished_at'] = {**_metadata_dict(fresh.get('stage_finished_at')), RENDER_STAGE: now.isoformat()}
+    return fresh
+
+
 def _record_stage_start(project_id, stage, attempt):
     """
     When ``stage`` started, in ``metadata['stage_started_at']``, so the process
@@ -297,8 +352,12 @@ def _record_stage_start(project_id, stage, attempt):
             started = _metadata_dict(metadata.get('stage_started_at'))
             if attempt > 1 and isinstance(started.get(str(stage)), str):
                 return
-            started[str(stage)] = timezone.now().isoformat()
-            metadata['stage_started_at'] = started
+            if str(stage) == RENDER_STAGE:
+                # A render dispatched by the pipeline (auto-render, a whole video).
+                metadata = _metadata_with_render_started(metadata)
+            else:
+                started[str(stage)] = timezone.now().isoformat()
+                metadata['stage_started_at'] = started
             VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
     except Exception as exc:  # a metric must never fail a stage
         logger.warning(
@@ -1821,6 +1880,10 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
             # re-queues anew, and the stage the old run left unfinished
             # forgets its start (the new run writes its own).
             fresh = _metadata_for_new_run(metadata)
+            if stage == PipelineStage.RENDER_DISPATCHED:
+                # Nothing else writes the start of a render that resumes
+                # (_resume_render_dispatch runs no stage).
+                fresh = _metadata_with_render_started(fresh)
             if fresh != metadata:
                 VideoProject.objects.filter(pk=project_id).update(metadata=fresh)
         reopened = True

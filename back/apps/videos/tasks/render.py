@@ -110,7 +110,7 @@ def finalize_project_render(project_id):
 
 def _close_render_fan_out(project_id):
     from apps.videos.tasks.ingestion import (
-        APPROVED_RENDER, CLIP_RENDER, _clip_render_reserved, _renders_per_clip,
+        APPROVED_RENDER, CLIP_RENDER, _clip_render_reserved, _metadata_with_render_finished, _renders_per_clip,
     )
 
     with transaction.atomic():
@@ -150,7 +150,13 @@ def _close_render_fan_out(project_id):
             advance(project_id, PipelineStage.RENDER_DISPATCHED, stage)
         except PipelineConflictError:
             return None
-        VideoProject.objects.filter(pk=project_id).update(status=status)
+        # When the render ended and how long it took, for the «Renderizar» step
+        # of the web app: in the write that closes it, under the same row lock.
+        changes = {'status': status}
+        finished = _metadata_with_render_finished(metadata)
+        if finished is not metadata:
+            changes['metadata'] = finished
+        VideoProject.objects.filter(pk=project_id).update(**changes)
 
     logger.info(
         "pipeline.render_finalized project_id=%s stage=%s", project_id, stage,
