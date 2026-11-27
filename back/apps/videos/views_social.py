@@ -174,7 +174,7 @@ class ScheduledPostViewSet(SpanishThrottleMixin, ActiveWorkspaceMixin, mixins.Li
         responses={
             201: ScheduledPostSerializer, 400: INVALID, 403: PLAN,
             409: OpenApiResponse(description=(
-                '`account_not_connected`: el espacio no tiene el perfil de Ayrshare; '
+                '`account_not_connected`: la cuenta de esa red no está conectada o está vencida; '
                 '`idempotency_key_reused`: la `Idempotency-Key` ya se usó con otro cuerpo.'
             )),
         },

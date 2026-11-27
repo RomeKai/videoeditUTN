@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # The suffix is the payload version: bump it when the payload or the filter
 # changes, so a deploy never serves what the previous code cached.
-PUBLIC_PLANS_CACHE_KEY = 'payments:public-plans:v2'
+PUBLIC_PLANS_CACHE_KEY = 'payments:public-plans:v3'  # v3: allow_social_accounts
 # Every plan change drops the entry (see invalidate_public_plans). The short TTL
 # is the safety net for a change that skips the signals, or for a request that
 # read the rows just before a commit and cached them just after it.

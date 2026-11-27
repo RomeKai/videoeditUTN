@@ -45,6 +45,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from .base import (
+    ACCOUNTS_TIMEOUT_SECONDS,
     ADMIN_TIMEOUT_SECONDS,
     INSTAGRAM_REELS,
     PLATFORMS,
@@ -61,6 +62,8 @@ from .errors import (
     ACCOUNT_EXPIRED,
     ACCOUNT_NOT_CONNECTED,
     DUPLICATE_CONTENT,
+    PROFILE_NOT_FOUND,
+    PROFILE_TITLE_TAKEN,
     PROVIDER_NOT_CONFIGURED,
     PROVIDER_REJECTED,
     PROVIDER_UNAVAILABLE,
@@ -132,7 +135,7 @@ class AyrshareProvider(SocialProvider):
         return url
 
     def accounts(self, profile):
-        data = self._call('get', '/user', 'accounts', profile_key=_key(profile))
+        data = self._call('get', '/user', 'accounts', profile_key=_key(profile), timeout=ACCOUNTS_TIMEOUT_SECONDS)
         active = {name for name in _list(data.get('activeSocialAccounts')) if isinstance(name, str)}
         entries = {
             entry.get('platform'): entry for entry in _list(data.get('displayNames')) if isinstance(entry, dict)
@@ -153,10 +156,12 @@ class AyrshareProvider(SocialProvider):
         self._call('delete', '/profiles/social', 'disconnect', profile_key=_key(profile), json={'platform': NETWORK[platform]})
 
     def delete_profile(self, profile):
+        if not getattr(profile, 'provider_ref', ''):
+            return  # nothing at the provider to delete, and no call without a key
         try:
             self._call('delete', '/profiles', 'delete_profile', profile_key=_key(profile), json={})
         except PermanentError as exc:
-            if exc.code != ACCOUNT_NOT_CONNECTED:  # 144: already gone
+            if exc.code != PROFILE_NOT_FOUND:  # 144: already gone
                 raise
 
     # --- Publishing ---
@@ -192,9 +197,9 @@ class AyrshareProvider(SocialProvider):
 
     # --- HTTP ---
 
-    def _call(self, method, path, op, profile_key=None, json=None, unknown_if_maybe_sent=False):
+    def _call(self, method, path, op, profile_key=None, json=None, unknown_if_maybe_sent=False, timeout=ADMIN_TIMEOUT_SECONDS):
         """A call other than publishing: its answer's body, or the error by HTTP status and Ayrshare's code."""
-        response = self._send(method, path, op, profile_key, json, ADMIN_TIMEOUT_SECONDS, unknown_if_maybe_sent)
+        response = self._send(method, path, op, profile_key, json, timeout, unknown_if_maybe_sent)
         body = _json(response) or {}
         codes = _codes([body])
         if 200 <= response.status_code < 300 and body.get('status') != 'error':
@@ -202,7 +207,9 @@ class AyrshareProvider(SocialProvider):
         detail = _detail(response.status_code, codes)
         logger.warning("social.ayrshare.call_failed op=%s detail=%s", op, detail)
         if CODE_PROFILE_NOT_FOUND in codes:
-            raise PermanentError(ACCOUNT_NOT_CONNECTED, detail)
+            raise PermanentError(PROFILE_NOT_FOUND, detail)
+        if CODE_TITLE_TAKEN in codes:
+            raise PermanentError(PROFILE_TITLE_TAKEN, detail)
         if response.status_code == 401:
             raise PermanentError(PROVIDER_NOT_CONFIGURED, detail)
         if response.status_code == 429:

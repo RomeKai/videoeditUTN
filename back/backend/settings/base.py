@@ -220,6 +220,8 @@ REST_FRAMEWORK = {
         'post_seo_regenerate': _rate('THROTTLE_POST_SEO_REGENERATE', '30/hour'),
         # POST /scheduled-posts/ and /bulk/, per user, counted per post (a batch of 60 is 60).
         'post_create': _rate('THROTTLE_POST_CREATE', '300/hour'),
+        # POST /social-accounts/connect/, per user: each one asks the provider for a link.
+        'social_connect': _rate('THROTTLE_SOCIAL_CONNECT', '30/hour'),
     },
     # Proxies in front of Django (load balancer, nginx) that add the client's
     # address to X-Forwarded-For. The per-IP limits take the address that many
@@ -655,6 +657,13 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.payments.tasks.apply_due_plan_changes',
         'schedule': 15 * 60,
     },
+    # Profiles at the publishing provider (a paid slot each): of deleted workspaces (the delete
+    # queues their cleanup too; this run picks up what a failed one left), and the ones no
+    # network was ever linked to after SOCIAL_UNLINKED_PROFILE_DAYS. Daily at 05:10 UTC.
+    'clean-social-profiles': {
+        'task': 'apps.integrations.tasks.clean_social_profiles',
+        'schedule': crontab(hour=5, minute=10),
+    },
 }
 
 # --- AI capacity (AICORE-11, ADR-012 D-C4) ---
@@ -733,4 +742,9 @@ SOCIAL_PROVIDER = env('SOCIAL_PROVIDER', default='ayrshare')
 # Profiles are titled "<prefix>-<workspace id>" at the provider, where titles are
 # unique per account: give each environment that shares an account its own prefix.
 SOCIAL_PROFILE_TITLE_PREFIX = env('SOCIAL_PROFILE_TITLE_PREFIX', default='onecreator')
+# Profiles at the provider are paid slots of the whole platform (Ayrshare's Launch plan has 10,
+# Business 30): connecting a new workspace stops at this many (409 social_profiles_limit).
+SOCIAL_MAX_PROFILES = env.int('SOCIAL_MAX_PROFILES', default=10)
+# A profile no network was ever linked to is deleted after this many days (clean_social_profiles).
+SOCIAL_UNLINKED_PROFILE_DAYS = env.int('SOCIAL_UNLINKED_PROFILE_DAYS', default=7)
 AYRSHARE_API_KEY = env('AYRSHARE_API_KEY', default=None)

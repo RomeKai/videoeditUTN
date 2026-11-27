@@ -95,7 +95,8 @@ CLIP_NOT_RENDERED = "El clip todavía no está renderizado."
 DATE_PAST = "La fecha ya pasó."
 SCHEDULING_DENIED = "Tu plan no incluye programar publicaciones: publicala ahora o cambiá de plan."
 CROSSPOSTING_DENIED = "Tu plan permite publicar cada clip en una sola red. Para publicarlo en varias, cambiá de plan."
-ACCOUNT_NOT_CONNECTED = "Este espacio todavía no tiene las redes conectadas. Conectá la cuenta para publicar."
+ACCOUNT_NOT_CONNECTED = "La cuenta de {network} no está conectada. Conectala para publicar."
+ACCOUNT_EXPIRED = "La cuenta de {network} está vencida. Reconectala para publicar."
 SEO_NOT_INCLUDED = "Este proyecto no tiene el texto con IA."
 DUPLICATE_PAIR = "La misma publicación (clip y red) está dos veces."
 BULK_SIZE = f"Mandá entre 1 y {BULK_MAX} publicaciones."
@@ -281,16 +282,23 @@ def _check_crossposting(plan, wanted, exclude=()):
         raise PostRefused.error(403, CROSSPOSTING_DENIED, 'crossposting')
 
 
-def _check_account(workspace):
+def _check_account(workspace, platforms):
     """
-    The workspace's profile at the publishing provider (SocialProfile), without
-    calling the provider: without it the worker would fail the post at its
-    time. Whether each network is connected is not known here (gap 10).
+    Each network of ``platforms`` connected to the workspace's profile at the
+    publishing provider, without calling the provider: by what it said the
+    last time it was read (apps.integrations.social.accounts.network_status,
+    which the networks screen and the publish panel refresh). Without it the
+    worker would fail the post at its time. Expired asks to reconnect.
     """
-    from apps.integrations.social import has_ready_profile
+    from apps.integrations.social import AccountStatus
+    from apps.integrations.social.accounts import network_status
 
-    if not has_ready_profile(workspace.pk):
-        raise PostRefused.error(409, ACCOUNT_NOT_CONNECTED, 'account_not_connected')
+    for platform in [platform for platform in Platform.values if platform in platforms]:
+        status = network_status(workspace.pk, platform)
+        if status == AccountStatus.EXPIRED:
+            raise PostRefused.error(409, ACCOUNT_EXPIRED.format(network=NETWORK[platform]), 'account_not_connected')
+        if status != AccountStatus.CONNECTED:
+            raise PostRefused.error(409, ACCOUNT_NOT_CONNECTED.format(network=NETWORK[platform]), 'account_not_connected')
 
 
 def _check_clip(clip, index=None):
@@ -543,7 +551,7 @@ def create_posts(workspace, items, *, key=None, print_=None, many=False):
             _check_scheduling(plan)
         _check_crossposting(plan, going)
         if going:
-            _check_account(workspace)
+            _check_account(workspace, {platform for platforms in going.values() for platform in platforms})
 
         posts, budget = [], None
         for clip, item, status, publish_at in plans:
@@ -627,7 +635,7 @@ def update_post(workspace, post_id, data):
             if later:
                 _check_scheduling(plan)
             _check_crossposting(plan, {clip.pk: {post.platform}}, exclude=[post.pk])
-            _check_account(workspace)
+            _check_account(workspace, {post.platform})
             post.status, post.publish_at = Status.SCHEDULED, publish_at
             fields += ['status', 'publish_at']
             if post.error_log:
@@ -702,7 +710,7 @@ def retry_post(workspace, post_id):
             _check_clip(clip)
             _check_tiktok(post.platform, post.tiktok)
             _check_crossposting(workspace.subscription_plan, {clip.pk: {post.platform}}, exclude=[post.pk])
-            _check_account(workspace)
+            _check_account(workspace, {post.platform})
             post.status, post.publish_at, post.error_log = Status.SCHEDULED, now, None
             post.publish_key_version = F('publish_key_version') + 1
             post.publish_key_unclear = False  # a key the provider never saw
@@ -712,6 +720,39 @@ def retry_post(workspace, post_id):
             post.refresh_from_db(fields=['publish_key_version'])
     logger.info("posts.retried post_id=%s from=%s to=%s", post.pk, was, post.status)
     return post
+
+
+# --- A network disconnected ---
+
+def fail_network_posts(workspace, platform):
+    """
+    DELETE /social-accounts/:platform/: the workspace's SCHEDULED and QUEUED
+    posts on that network will not go out, so they turn FAILED with
+    `account_not_connected` (the user reconnects and retries them). Drafts
+    stay as they are (sending one checks the account again); a post being
+    published (PROCESSING) or out is not touched. A QUEUED post's task then
+    finds it FAILED and publishes nothing.
+
+    The ids are read first; then the posts are locked in pk order (the order
+    the workspace delete locks them, so the two never deadlock) with their
+    status checked again under the lock: a post the dispatcher or the worker
+    took meanwhile is left to it. Only post rows are locked.
+    """
+    going = (Status.SCHEDULED, Status.QUEUED)
+    ids = list(
+        ScheduledPost.objects.filter(video_clip__project__workspace=workspace, platform=platform, status__in=going)
+        .values_list('pk', flat=True)
+    )
+    with transaction.atomic():
+        locked = list(
+            ScheduledPost.objects.select_for_update().filter(pk__in=ids, status__in=going)
+            .order_by('pk').values_list('pk', flat=True)
+        )
+        failed = ScheduledPost.objects.filter(pk__in=locked).update(
+            status=Status.FAILED, error_log='account_not_connected (disconnected)', updated_at=Now(),
+        )
+    logger.info("posts.network_disconnected workspace_id=%s platform=%s failed=%d", workspace.pk, platform, failed)
+    return failed
 
 
 # --- AI text ---

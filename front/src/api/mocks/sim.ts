@@ -2,6 +2,7 @@ import { formatNumber, formatTokens, plural } from '@/lib/format';
 import type { Role } from '../contracts/common';
 import type { PipelineStage } from '../contracts/projects';
 import { KIND, mid, newId, type MockActivity, type MockClip, type MockDb, type MockProject, type MockTransaction, type MockWallet, type PaidRender } from './db';
+import { failPublish } from './publish-errors';
 import { buildClips, PLAN_IDS, priceOf, stageStatusFor } from './seed';
 
 /** Pace of the simulated pipeline: slow enough to see each step with the 5 s polling, fast enough to click through. */
@@ -694,11 +695,8 @@ function tickPosts(db: MockDb, now: number): void {
     }
     post.updated_at = iso(now);
     if (post._sim.fails) {
-      post.status = 'FAILED';
       post.retry_count += 1;
-      post.error_log = 'AyrshareError: upstream rejected the media';
-      post.error_message = 'La red rechazó el video. Revisá que la cuenta siga conectada y volvé a intentarlo.';
-      post.error_code = 'media_rejected';
+      failPublish(post, 'provider_rejected', 'ayrshare http=400 code=138');
       notify(db, post.workspace, { type: 'post_failed', title: 'No pudimos publicar un clip', body: post.clip.title, project_id: post.clip.project_id, post_id: post.id }, now);
     } else {
       post.status = 'PUBLISHED';

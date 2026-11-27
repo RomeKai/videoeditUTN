@@ -14,6 +14,11 @@ export const Plan = z.object({
   allow_crossposting: z.boolean(),
   has_seo_optimization: z.boolean(),
   has_thumbnail_engine: z.boolean(),
+  /**
+   * Connecting the workspace's networks (`social.connect`): the paid plans. Missing from a backend older than
+   * gap 10 (a rolling deploy): unknown, so the web shows no lock and the backend decides.
+   */
+  allow_social_accounts: z.boolean().optional(),
   /** 0.10 = 10 % off tokens. */
   base_discount_rate: Decimal,
   max_members: z.number().int().positive(),

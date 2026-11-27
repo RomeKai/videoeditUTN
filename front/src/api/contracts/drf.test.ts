@@ -27,7 +27,7 @@ import { ClipPreview } from './clips';
 import real from './drf/responses.json';
 import { Notification, type NotificationsResponse, listNotifications, markNotificationRead } from './notifications';
 import { ActivityItem, ApprovePaperEditResponse, CreateFromPromptResponse, CreateProjectResponse, PaperEditData, Project, ProjectListItem, ProjectsResponse, StageTiming, UploadTooLargeBody, createProject } from './projects';
-import { ScheduledPost, createPost, createPostsBulk, listPosts, regeneratePostSeo, retryPost, updatePost } from './social';
+import { ScheduledPost, type SocialAccount, connectSocialAccount, createPost, createPostsBulk, disconnectSocialAccount, listPosts, listSocialAccounts, regeneratePostSeo, retryPost, updatePost } from './social';
 import { type MembersResponse, type Workspace, createWorkspace, getWorkspace, listMembers, listWorkspaces, transferWorkspace, updateMember, updateWorkspace } from './workspaces';
 
 /**
@@ -353,7 +353,11 @@ describe('errores reales del backend', () => {
 describe('suscripción y compras: respuestas reales del backend (billing_*)', () => {
   it('suscripción y cambio de plan', () => {
     const free = parse(Subscription, real.billing_subscription_free) as Subscription;
-    expect(free.plan.name).toBe('Gratis');
+    expect([free.plan.name, free.plan.allow_social_accounts]).toEqual(['Gratis', false]);
+    // A backend from before gap 10 (rolling deploy) does not send the flag: the plan still parses.
+    const { allow_social_accounts: _flag, ...older } = real.billing_subscription_free.plan;
+    void _flag;
+    expect((parse(Subscription, { ...real.billing_subscription_free, plan: older }) as Subscription).plan.allow_social_accounts).toBeUndefined();
     expect(free.renews_at).toBeNull();
     const checkout = parse(changePlan.response, real.billing_change_plan_checkout) as ReturnType<typeof changePlan.response.parse>;
     expect(checkout.checkout_url).toMatch(/\/dev\/checkout\?compra=.+&volver=/);
@@ -450,6 +454,36 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
     expect(list.count).toBe(8);
     expect(list.status_counts).toEqual({ DRAFT: 2, SCHEDULED: 6, QUEUED: 0, PROCESSING: 0, PUBLISHED: 0, FAILED: 0 });
     expect([createPost, createPostsBulk, updatePost, retryPost, regeneratePostSeo].map((endpoint) => endpoint.backend.status)).toEqual(['exists', 'exists', 'exists', 'exists', 'exists']);
+  });
+
+  it('redes del espacio: las tres en orden, con los límites del backend y la vuelta solo a la web', () => {
+    const none = parse(listSocialAccounts.response, real.social_accounts_none) as SocialAccount[];
+    expect(none.map((account) => [account.platform, account.status, account.tiktok])).toEqual([
+      ['TIKTOK', 'disconnected', null],
+      ['INSTAGRAM_REELS', 'disconnected', null],
+      ['YOUTUBE_SHORTS', 'disconnected', null],
+    ]);
+    const accounts = parse(listSocialAccounts.response, real.social_accounts) as SocialAccount[];
+    expect(accounts.map((account) => [account.status, account.username, account.limits.max_duration_seconds])).toEqual([
+      ['connected', '@estudionorte', 600],
+      ['expired', '@estudio.norte', 900],
+      ['disconnected', null, 180],
+    ]);
+    expect(accounts[0]?.tiktok?.privacy_options).toEqual(['PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'SELF_ONLY']);
+    expect((parse(connectSocialAccount.response, real.social_connect) as { connect_url: string }).connect_url).toMatch(/^https:\/\//);
+    expect(fieldError(error('social_400_return_url', 'social.connect'), 'return_url')).toBe('La dirección de vuelta tiene que ser de OneCreator.');
+    expect(error('social_403_connect', 'social.connect').status).toBe(403);
+    // Connecting is for the paid plans: a plan limit, with the backend's sentence; the email and the cap have their own.
+    const plan = error('social_403_plan', 'social.connect');
+    expect([plan.code, plan.isPlanLimit, planLimitKind(plan), plan.message]).toEqual(['social_accounts', true, 'social', 'Tu plan no incluye conectar redes. Pasate a un plan pago para conectar las cuentas.']);
+    const email = error('social_403_email', 'social.connect');
+    expect([email.code, email.isPlanLimit, email.message]).toEqual(['email_not_verified', false, 'Verificá tu email para conectar redes.']);
+    const cap = error('social_409_profiles_limit', 'social.connect');
+    expect([cap.status, cap.code, cap.message]).toEqual([409, 'social_profiles_limit', 'Por ahora no podemos conectar más espacios a las redes. Escribinos y lo resolvemos.']);
+    const down = error('social_503_connect', 'social.connect');
+    // A 5xx shows the screen's own sentence (D6: «No pudimos abrir la conexión.»), whatever the body says.
+    expect([down.status, down.code, errorMessage(down, 'No pudimos abrir la conexión.')]).toEqual([503, 'provider_unavailable', 'No pudimos abrir la conexión.']);
+    expect([listSocialAccounts, connectSocialAccount, disconnectSocialAccount].map((endpoint) => endpoint.backend.status)).toEqual(['exists', 'exists', 'exists']);
   });
 
   it('publicaciones: los errores traen su code, y el lote dice cuál publicación falló', () => {

@@ -1,6 +1,6 @@
 // @vitest-environment node
 // Node environment: the brand kit endpoints are multipart, and jsdom's FormData does not travel through Node's fetch.
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiCall } from '@/api/client';
 import * as brandKits from '@/api/contracts/brandkits';
 import * as social from '@/api/contracts/social';
@@ -294,5 +294,78 @@ describe('contrato de brand kits: posición del logo', () => {
     const created = await apiCall(brandKits.createBrandKit, { body: { name: 'Podcast Vender', watermark_position: 'bottom_left', watermark_logo: new File(['x'], 'logo.png', { type: 'image/png' }) } });
     expect(created.watermark_position).toBe('bottom_left');
     expect(created.watermark_logo).toMatch(/logo\.png$/);
+  });
+});
+
+describe('contrato de redes (hueco 10): los mocks como el backend', () => {
+  beforeEach(() => signIn('estudio-norte'));
+
+  const tiktok = { privacy_level: 'SELF_ONLY', allow_comment: false, allow_duet: false, allow_stitch: false, brand_organic: false, branded_content: false } as const;
+
+  it('desconectar deja en error lo programado y lo que está en cola de esa red; los borradores no cambian', async () => {
+    const db = loadDb();
+    for (const account of db.socialAccounts) if (account.workspace === WORKSPACE_IDS.estudio) account.status = 'connected';
+    saveDb(db);
+    const scheduled = await apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'TIKTOK', publish_at: new Date(Date.now() + 86_400_000).toISOString(), tiktok } });
+    const draft = await apiCall(social.createPost, { body: { video_clip: CLIPS.third, platform: 'TIKTOK', draft: true } });
+    const other = await apiCall(social.createPost, { body: { video_clip: CLIPS.third, platform: 'INSTAGRAM_REELS', publish_at: new Date(Date.now() + 86_400_000).toISOString() } });
+
+    await apiCall(social.disconnectSocialAccount, { params: { platform: 'TIKTOK' } });
+
+    const failed = await apiCall(social.getPost, { params: { id: scheduled.id } });
+    expect([failed.status, failed.error_code, failed.error_log]).toEqual(['FAILED', 'account_not_connected', 'account_not_connected (disconnected)']);
+    expect(failed.error_message).toBe('La cuenta de TikTok no está conectada. Conectala y reintentá.');
+    expect((await apiCall(social.getPost, { params: { id: draft.id } })).status).toBe('DRAFT');
+    expect((await apiCall(social.getPost, { params: { id: other.id } })).status).toBe('SCHEDULED');
+    const accounts = await apiCall(social.listSocialAccounts);
+    expect(accounts.find((account) => account.platform === 'TIKTOK')).toMatchObject({ status: 'disconnected', username: null, tiktok: null });
+  });
+
+  it('una cuenta vencida no publica, con el mensaje del backend', async () => {
+    const db = loadDb();
+    const account = db.socialAccounts.find((item) => item.workspace === WORKSPACE_IDS.estudio && item.platform === 'INSTAGRAM_REELS');
+    if (!account) throw new Error('falta la cuenta');
+    account.status = 'expired';
+    saveDb(db);
+    const refused = await fail(apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'INSTAGRAM_REELS' } }));
+    expect([refused.status, refused.code, refused.message]).toEqual([409, 'account_not_connected', 'La cuenta de Instagram Reels está vencida. Reconectala para publicar.']);
+  });
+
+  it('conectar solo vuelve a la web de OneCreator', async () => {
+    vi.stubGlobal('location', { origin: 'http://localhost:3000' });
+    try {
+      const refused = await fail(apiCall(social.connectSocialAccount, { body: { platform: 'TIKTOK', return_url: 'https://otro.test/ajustes' } }));
+      expect(refused.fieldErrors.return_url?.[0]).toBe('La dirección de vuelta tiene que ser de OneCreator.');
+      const ok = await apiCall(social.connectSocialAccount, { body: { platform: 'TIKTOK', return_url: 'http://localhost:3000/ajustes/redes' } });
+      expect(ok.connect_url).toBe('http://localhost:3000/dev/conectar-red?red=TIKTOK');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('conectar es de los planes pagos y pide el email verificado, con el code y el mensaje del backend', async () => {
+    signIn('plan-gratis');
+    const plan = await fail(apiCall(social.connectSocialAccount, { body: { platform: 'YOUTUBE_SHORTS' } }));
+    expect([plan.status, plan.code, plan.message, plan.isPlanLimit]).toEqual([403, 'social_accounts', 'Tu plan no incluye conectar redes. Pasate a un plan pago para conectar las cuentas.', true]);
+    // What is already connected stays: a Gratis workspace still publishes on it and can disconnect it.
+    await expect(apiCall(social.disconnectSocialAccount, { params: { platform: 'TIKTOK' } })).resolves.toBeUndefined();
+
+    signIn('estudio-norte');
+    const db = loadDb();
+    const lucia = db.users.find((item) => item.id === USER_IDS.lucia);
+    if (!lucia) throw new Error('falta Lucía');
+    lucia.is_email_verified = false;
+    saveDb(db);
+    const email = await fail(apiCall(social.connectSocialAccount, { body: { platform: 'YOUTUBE_SHORTS' } }));
+    expect([email.status, email.code, email.message]).toEqual([403, 'email_not_verified', 'Verificá tu email para conectar redes.']);
+  });
+
+  it('los límites de cada red son los del backend', async () => {
+    const accounts = await apiCall(social.listSocialAccounts);
+    expect(accounts.map((account) => [account.platform, account.limits.caption_max_chars, account.limits.hashtags_max, account.limits.max_duration_seconds])).toEqual([
+      ['TIKTOK', 2200, 30, 600],
+      ['INSTAGRAM_REELS', 2200, 30, 900],
+      ['YOUTUBE_SHORTS', 5000, 15, 180],
+    ]);
   });
 });

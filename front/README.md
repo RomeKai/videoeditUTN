@@ -127,7 +127,7 @@ E2E_HYBRID_EMAIL=alguien@ejemplo.com E2E_HYBRID_PASSWORD=… \
 npm run test:e2e -- --project=hibrido
 ```
 
-Arma un tercer build (`.next-e2e-hybrid`) y lo sirve en `E2E_PORT + 2` (o en `E2E_HYBRID_PORT`). El usuario tiene que existir en el backend y ser dueño de un workspace con al menos un proyecto y un brand kit (sin datos, el smoke falla en vez de pasar sin comprobar nada). Comprueba que el login, `/me`, la lista de proyectos, los brand kits y la billetera salgan del backend y las cuentas de redes del mock; que un endpoint simulado (crear una publicación) acepte el id de un clip real; crea y borra un brand kit; cambia un dominio desde el panel; y corta el backend para ver el estado de error. `E2E_HYBRID_REAL` pasa una lista a `NEXT_PUBLIC_API_REAL` (el smoke asume la lista vacía).
+Arma un tercer build (`.next-e2e-hybrid`) y lo sirve en `E2E_PORT + 2` (o en `E2E_HYBRID_PORT`). El usuario tiene que existir en el backend y ser dueño de un workspace con al menos un proyecto y un brand kit (sin datos, el smoke falla en vez de pasar sin comprobar nada). Comprueba que el login, `/me`, la lista de proyectos, los brand kits y la billetera y las cuentas de redes salgan del backend (un workspace sin perfil en el proveedor responde sus tres redes sin conectar, sin llamarlo); que el backend cree un borrador de publicación de un clip real (sin llamar a ninguna red); crea y borra un brand kit; cambia un dominio desde el panel; y corta el backend para ver el estado de error. `E2E_HYBRID_REAL` pasa una lista a `NEXT_PUBLIC_API_REAL` (el smoke asume la lista vacía).
 
 ## Comandos
 

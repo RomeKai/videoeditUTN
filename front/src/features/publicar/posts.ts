@@ -220,7 +220,7 @@ export function needsReconnect(post: Pick<ScheduledPost, 'status' | 'platform' |
   if (post.status !== 'FAILED') return false;
   const account = accountOf(accounts, post.platform);
   if (account) return account.status !== 'connected';
-  return post.error_code === 'account_not_connected';
+  return post.error_code === 'account_not_connected' || post.error_code === 'account_expired';
 }
 
 /** Readable reason of a failure; never the raw `error_log`. */

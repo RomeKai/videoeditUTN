@@ -70,9 +70,3 @@ def ready_profile(workspace_id):
     from apps.integrations.models import SocialProfile
 
     return SocialProfile.objects.filter(workspace_id=workspace_id).exclude(provider_ref='').first()
-
-
-def has_ready_profile(workspace_id):
-    from apps.integrations.models import SocialProfile
-
-    return SocialProfile.objects.filter(workspace_id=workspace_id).exclude(provider_ref='').exists()

@@ -1,5 +1,5 @@
 {
-  "_about": "Cuerpos tal como los arma el backend de dev (VideoProjectSerializer, VideoClipSerializer, BrandKitSerializer y las vistas de apps/videos/views.py), escritos a mano a partir del código. Si un serializer cambia, se actualiza acá y el test dice qué esquema dejó de aceptarlo. Los de la billetera (pricing, estimate_*, wallet*, transactions_* y sus errores) son respuestas reales: los arma back/apps/payments/tests/test_contract_fixture.py, que además compara cada valor con el backend (con el reloj fijo y los ids normalizados). Los de workspaces y miembros (workspace_*, members, members_plan_payment, member_*) son respuestas capturadas de apps/users/views_workspaces.py. Los de invitaciones (invitation_* e invite_* y sus errores) son respuestas reales: los arma y compara back/apps/users/tests/test_invitations_contract_fixture.py. La lista de proyectos (project_list y project_list_page_2) son dos respuestas reales de GET /api/v1/projects/ (la página que pide B2 con una búsqueda, y la segunda página de a 2); sus filas no traen `transcript_data`, `ai_rationale_log` ni `metadata.full_text`: las arma y compara back/apps/videos/tests/test_projects_list_contract_fixture.py.",
+  "_about": "Cuerpos tal como los arma el backend de dev (VideoProjectSerializer, VideoClipSerializer, BrandKitSerializer y las vistas de apps/videos/views.py), escritos a mano a partir del código. Si un serializer cambia, se actualiza acá y el test dice qué esquema dejó de aceptarlo. Los de la billetera (pricing, estimate_*, wallet*, transactions_* y sus errores) son respuestas reales: los arma back/apps/payments/tests/test_contract_fixture.py, que además compara cada valor con el backend (con el reloj fijo y los ids normalizados). Los de workspaces y miembros (workspace_*, members, members_plan_payment, member_*) son respuestas capturadas de apps/users/views_workspaces.py. Los de invitaciones (invitation_* e invite_* y sus errores) son respuestas reales: los arma y compara back/apps/users/tests/test_invitations_contract_fixture.py. La lista de proyectos (project_list y project_list_page_2) son dos respuestas reales de GET /api/v1/projects/ (la página que pide B2 con una búsqueda, y la segunda página de a 2); sus filas no traen `transcript_data`, `ai_rationale_log` ni `metadata.full_text`: las arma y compara back/apps/videos/tests/test_projects_list_contract_fixture.py. Los de redes (social_accounts_none, social_accounts, social_connect y los errores social_*) son respuestas reales con el proveedor reemplazado: los arma y compara back/apps/videos/tests/test_social_accounts_contract_fixture.py.",
   "token_pair": {
     "access": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU1MzYwMDB9.x",
     "refresh": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU2MjI0MDB9.y"
@@ -2132,7 +2132,7 @@
     "post_409_account_not_connected": {
       "status": 409,
       "body": {
-        "error": "Este espacio todavía no tiene las redes conectadas. Conectá la cuenta para publicar.",
+        "error": "La cuenta de YouTube Shorts no está conectada. Conectala para publicar.",
         "code": "account_not_connected"
       }
     },
@@ -2162,6 +2162,48 @@
       "body": {
         "error": "Esa clave ya se usó para otro pedido.",
         "code": "idempotency_key_reused"
+      }
+    },
+    "social_400_return_url": {
+      "status": 400,
+      "body": {
+        "return_url": [
+          "La dirección de vuelta tiene que ser de OneCreator."
+        ]
+      }
+    },
+    "social_403_connect": {
+      "status": 403,
+      "body": {
+        "detail": "Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin."
+      }
+    },
+    "social_503_connect": {
+      "status": 503,
+      "body": {
+        "error": "No pudimos hablar con Instagram Reels. Probá de nuevo en unos minutos.",
+        "code": "provider_unavailable"
+      }
+    },
+    "social_403_plan": {
+      "status": 403,
+      "body": {
+        "error": "Tu plan no incluye conectar redes. Pasate a un plan pago para conectar las cuentas.",
+        "code": "social_accounts"
+      }
+    },
+    "social_403_email": {
+      "status": 403,
+      "body": {
+        "error": "Verificá tu email para conectar redes.",
+        "code": "email_not_verified"
+      }
+    },
+    "social_409_profiles_limit": {
+      "status": 409,
+      "body": {
+        "error": "Por ahora no podemos conectar más espacios a las redes. Escribinos y lo resolvemos.",
+        "code": "social_profiles_limit"
       }
     }
   },
@@ -2539,6 +2581,7 @@
       "allow_crossposting": false,
       "has_seo_optimization": false,
       "has_thumbnail_engine": false,
+      "allow_social_accounts": false,
       "base_discount_rate": "0.00",
       "max_members": 2,
       "is_active": true,
@@ -2566,6 +2609,7 @@
         "allow_crossposting": false,
         "has_seo_optimization": false,
         "has_thumbnail_engine": false,
+        "allow_social_accounts": false,
         "base_discount_rate": "0.00",
         "max_members": 2,
         "is_active": true,
@@ -2599,6 +2643,7 @@
         "allow_crossposting": true,
         "has_seo_optimization": true,
         "has_thumbnail_engine": false,
+        "allow_social_accounts": true,
         "base_discount_rate": "0.10",
         "max_members": 10,
         "is_active": true,
@@ -2631,6 +2676,7 @@
         "allow_crossposting": true,
         "has_seo_optimization": true,
         "has_thumbnail_engine": false,
+        "allow_social_accounts": true,
         "base_discount_rate": "0.10",
         "max_members": 10,
         "is_active": true,
@@ -2657,6 +2703,7 @@
         "allow_crossposting": true,
         "has_seo_optimization": true,
         "has_thumbnail_engine": false,
+        "allow_social_accounts": true,
         "base_discount_rate": "0.10",
         "max_members": 10,
         "is_active": true,
@@ -3416,5 +3463,111 @@
       "PUBLISHED": 0,
       "FAILED": 0
     }
+  },
+  "social_accounts_none": [
+    {
+      "platform": "TIKTOK",
+      "status": "disconnected",
+      "username": null,
+      "connected_at": null,
+      "limits": {
+        "caption_max_chars": 2200,
+        "hashtags_max": 30,
+        "max_duration_seconds": 600,
+        "aspect_ratios": [
+          "9:16"
+        ]
+      },
+      "tiktok": null
+    },
+    {
+      "platform": "INSTAGRAM_REELS",
+      "status": "disconnected",
+      "username": null,
+      "connected_at": null,
+      "limits": {
+        "caption_max_chars": 2200,
+        "hashtags_max": 30,
+        "max_duration_seconds": 900,
+        "aspect_ratios": [
+          "9:16"
+        ]
+      },
+      "tiktok": null
+    },
+    {
+      "platform": "YOUTUBE_SHORTS",
+      "status": "disconnected",
+      "username": null,
+      "connected_at": null,
+      "limits": {
+        "caption_max_chars": 5000,
+        "hashtags_max": 15,
+        "max_duration_seconds": 180,
+        "aspect_ratios": [
+          "9:16"
+        ]
+      },
+      "tiktok": null
+    }
+  ],
+  "social_accounts": [
+    {
+      "platform": "TIKTOK",
+      "status": "connected",
+      "username": "@estudionorte",
+      "connected_at": "2026-11-02T02:11:53Z",
+      "limits": {
+        "caption_max_chars": 2200,
+        "hashtags_max": 30,
+        "max_duration_seconds": 600,
+        "aspect_ratios": [
+          "9:16"
+        ]
+      },
+      "tiktok": {
+        "privacy_options": [
+          "PUBLIC_TO_EVERYONE",
+          "MUTUAL_FOLLOW_FRIENDS",
+          "SELF_ONLY"
+        ],
+        "comment_disabled": false,
+        "duet_disabled": false,
+        "stitch_disabled": false
+      }
+    },
+    {
+      "platform": "INSTAGRAM_REELS",
+      "status": "expired",
+      "username": "@estudio.norte",
+      "connected_at": "2026-10-09T20:36:58Z",
+      "limits": {
+        "caption_max_chars": 2200,
+        "hashtags_max": 30,
+        "max_duration_seconds": 900,
+        "aspect_ratios": [
+          "9:16"
+        ]
+      },
+      "tiktok": null
+    },
+    {
+      "platform": "YOUTUBE_SHORTS",
+      "status": "disconnected",
+      "username": null,
+      "connected_at": null,
+      "limits": {
+        "caption_max_chars": 5000,
+        "hashtags_max": 15,
+        "max_duration_seconds": 180,
+        "aspect_ratios": [
+          "9:16"
+        ]
+      },
+      "tiktok": null
+    }
+  ],
+  "social_connect": {
+    "connect_url": "https://profile.ayrshare.com?session=ayr_ls_kJ8mQ2vX9pLn"
   }
 }

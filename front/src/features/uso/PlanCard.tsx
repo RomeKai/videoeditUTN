@@ -28,6 +28,10 @@ export function planFeatures(plan: Plan, plans: ReadonlyArray<Plan>): PlanFeatur
     { key: 'watermark', label: 'Sin marca de agua', included: !plan.has_watermark, availableIn: from((item) => !item.has_watermark) },
     { key: 'scheduling', label: 'Programar publicaciones', included: plan.allow_scheduling, availableIn: from((item) => item.allow_scheduling) },
     { key: 'crossposting', label: 'Publicar en varias redes', included: plan.allow_crossposting, availableIn: from((item) => item.allow_crossposting) },
+    // A backend that does not send the flag yet (rolling deploy): the row is left out rather than guessed.
+    ...(plan.allow_social_accounts === undefined
+      ? []
+      : [{ key: 'social', label: 'Conectar redes sociales', included: plan.allow_social_accounts, availableIn: from((item) => item.allow_social_accounts === true) }]),
     { key: 'seo', label: 'Títulos y descripciones SEO', included: plan.has_seo_optimization, availableIn: from((item) => item.has_seo_optimization) },
     { key: 'members', label: 'Miembros', included: true, value: String(plan.max_members) },
     {
@@ -49,6 +53,8 @@ export function planLosses(current: Plan, target: Plan): string[] {
   if (target.has_watermark && !current.has_watermark) losses.push('Los clips vuelven a salir con marca de agua');
   if (!target.allow_scheduling && current.allow_scheduling) losses.push('Programar publicaciones');
   if (!target.allow_crossposting && current.allow_crossposting) losses.push('Publicar en varias redes a la vez');
+  // What is connected stays and still publishes; connecting or reconnecting a network is what goes.
+  if (target.allow_social_accounts === false && current.allow_social_accounts === true) losses.push('Conectar o reconectar redes (las conectadas siguen publicando)');
   if (!target.has_seo_optimization && current.has_seo_optimization) losses.push('Títulos y descripciones SEO');
   if (target.max_members < current.max_members) losses.push(`Miembros: ${target.max_members} (hoy ${current.max_members})`);
   if (target.base_discount_rate < current.base_discount_rate) {

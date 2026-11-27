@@ -18,6 +18,7 @@ import {
   type MockTransaction,
   type MockUser,
 } from './db';
+import { NETWORK_DISPLAY, PUBLISH_ERROR_MESSAGES } from './publish-errors';
 
 /* ── Reference data ─────────────────────────────────────────────────────── */
 
@@ -38,6 +39,7 @@ export function seedPlans(): Plan[] {
       allow_scheduling: false,
       allow_crossposting: false,
       has_seo_optimization: false,
+      allow_social_accounts: false,
       base_discount_rate: 0,
       max_members: 2,
       price_usd_monthly: 0,
@@ -55,6 +57,7 @@ export function seedPlans(): Plan[] {
       allow_scheduling: true,
       allow_crossposting: false,
       has_seo_optimization: true,
+      allow_social_accounts: true,
       base_discount_rate: 0.05,
       max_members: 5,
       price_usd_monthly: 19,
@@ -72,6 +75,7 @@ export function seedPlans(): Plan[] {
       allow_scheduling: true,
       allow_crossposting: true,
       has_seo_optimization: true,
+      allow_social_accounts: true,
       base_discount_rate: 0.1,
       max_members: 10,
       price_usd_monthly: 49,
@@ -89,6 +93,7 @@ export function seedPlans(): Plan[] {
       allow_scheduling: true,
       allow_crossposting: true,
       has_seo_optimization: true,
+      allow_social_accounts: true,
       base_discount_rate: 0.2,
       max_members: 15,
       price_usd_monthly: 129,
@@ -503,12 +508,18 @@ function transactionFor(project: MockProject, index: number, walletId: string): 
   };
 }
 
+/** The limits the backend sends (views_social_accounts.account_body): its caption check, HASHTAGS_MAX and the networks' durations. */
+export const SOCIAL_LIMITS: Record<Platform, MockSocialAccount['limits']> = {
+  TIKTOK: { caption_max_chars: 2200, hashtags_max: 30, max_duration_seconds: 600, aspect_ratios: ['9:16'] },
+  INSTAGRAM_REELS: { caption_max_chars: 2200, hashtags_max: 30, max_duration_seconds: 900, aspect_ratios: ['9:16'] },
+  YOUTUBE_SHORTS: { caption_max_chars: 5000, hashtags_max: 15, max_duration_seconds: 180, aspect_ratios: ['9:16'] },
+};
+
+/**
+ * One account per network. TikTok's creator options here turn duets off, to show that state of E1.4; the backend
+ * sends a safe default today (nothing turned off), because its provider does not give them.
+ */
 export function socialAccounts(workspace: string, states: Partial<Record<Platform, 'connected' | 'expired' | 'disconnected'>>, now: number): MockSocialAccount[] {
-  const limits: Record<Platform, MockSocialAccount['limits']> = {
-    TIKTOK: { caption_max_chars: 2200, hashtags_max: 30, max_duration_seconds: 600, aspect_ratios: ['9:16'] },
-    INSTAGRAM_REELS: { caption_max_chars: 2200, hashtags_max: 30, max_duration_seconds: 90, aspect_ratios: ['9:16'] },
-    YOUTUBE_SHORTS: { caption_max_chars: 100, hashtags_max: 15, max_duration_seconds: 60, aspect_ratios: ['9:16'] },
-  };
   return PLATFORMS.map((platform) => {
     const status = states[platform] ?? 'disconnected';
     return {
@@ -517,7 +528,7 @@ export function socialAccounts(workspace: string, states: Partial<Record<Platfor
       status,
       username: status === 'disconnected' ? null : '@estudionorte',
       connected_at: status === 'disconnected' ? null : iso(now - 40 * DAY),
-      limits: limits[platform],
+      limits: SOCIAL_LIMITS[platform],
       tiktok:
         platform === 'TIKTOK' && status !== 'disconnected'
           ? {
@@ -882,7 +893,7 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
         platform: item.platform,
         publish_at: publishAt,
         status: item.status,
-        error_log: failed ? 'AyrshareError: Instagram/TikTok rejected the media (code 137)' : null,
+        error_log: failed ? 'provider_rejected (ayrshare http=400 code=138)' : null,
         retry_count: failed ? 2 : 0,
         generated_caption: 'Subimos a 3.000 metros en una hora y esto fue lo que pasó.',
         generated_hashtags: ['mendoza', 'vlog', 'montaña', 'viajes'],
@@ -893,8 +904,8 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
         seo_status: 'ready',
         clip: { id: clip.id, title: clip.title, project_id: vlog.id, project_title: vlog.title, duration_seconds: round2(clip.end_time - clip.start_time), thumbnail_url: null },
         post_url: item.status === 'PUBLISHED' ? `https://example.com/${item.platform.toLowerCase()}/post/${position + 1}` : null,
-        error_message: failed ? 'La red rechazó el video. Revisá que la cuenta siga conectada y volvé a intentarlo.' : null,
-        error_code: failed ? 'media_rejected' : null,
+        error_message: failed ? PUBLISH_ERROR_MESSAGES.provider_rejected!(NETWORK_DISPLAY[item.platform]) : null,
+        error_code: failed ? 'provider_rejected' : null,
         tiktok: item.platform === 'TIKTOK' ? { privacy_level: 'PUBLIC_TO_EVERYONE', allow_comment: true, allow_duet: false, allow_stitch: false, brand_organic: false, branded_content: false } : null,
       };
       posts.push(post);

@@ -123,7 +123,7 @@ test.describe('E1 · Publicar y E2 · Publicaciones', () => {
     // Opening a card shows its detail in the side panel.
     await page.getByRole('grid').getByRole('button', { name: /TikTok: Error/ }).click();
     const detail = page.getByRole('dialog', { name: 'Detalle de la publicación' });
-    await expect(detail.getByText('La red rechazó el video.', { exact: false })).toBeVisible();
+    await expect(detail.getByText('TikTok rechazó la publicación.', { exact: false })).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(detail).toBeHidden();
     expectClean(problems, 'calendario');

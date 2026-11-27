@@ -39,6 +39,11 @@ PROVIDER_NOT_CONFIGURED = 'provider_not_configured'
 # The request may have published the post.
 OUTCOME_UNKNOWN = 'outcome_unknown'
 
+# Of the profiles, never a post's code: the provider has no profile with that key (Ayrshare's 144),
+# and a new profile's title is taken (146: an earlier creation whose answer was lost).
+PROFILE_NOT_FOUND = 'profile_not_found'
+PROFILE_TITLE_TAKEN = 'profile_title_taken'
+
 PUBLISH_ERROR_CODES = (
     ACCOUNT_NOT_CONNECTED, ACCOUNT_EXPIRED, QUOTA_EXCEEDED, TIKTOK_OPTIONS_MISSING, DUPLICATE_CONTENT,
     PROVIDER_REJECTED, PROVIDER_UNAVAILABLE, PROVIDER_NOT_CONFIGURED, OUTCOME_UNKNOWN,

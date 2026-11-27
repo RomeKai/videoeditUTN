@@ -3,8 +3,8 @@ import { expectClean, HYBRID_API_URL, HYBRID_REAL, settle, watch } from './helpe
 
 /**
  * Hybrid build (`NEXT_PUBLIC_API_MODE=hybrid`) against a real Django backend: the login, `/me`, the
- * projects, the brand kits and billing come from it, while everything the contract marks as proposed
- * (today, the social accounts: connecting them is gap 10) is mocked in the browser.
+ * projects, the brand kits, billing and the social accounts come from it, while everything the contract marks
+ * as proposed is mocked in the browser (today nothing: the social accounts of gap 10 were the last).
  *
  * It needs a backend, so it is skipped unless `E2E_HYBRID_API_URL` says where one is, with a user that
  * owns a workspace with at least one project (more than 25 to see a second page) and one brand kit: `E2E_HYBRID_EMAIL` and `E2E_HYBRID_PASSWORD`. See "Modo híbrido" in the README.
@@ -151,7 +151,7 @@ async function checkProjectsList(page: Page, api: Awaited<ReturnType<typeof back
 
 
 test.describe('Modo híbrido contra el backend real', () => {
-  test('login, /me, proyectos, brand kits y billetera vienen del backend; las redes son simuladas', async ({ page, request }) => {
+  test('login, /me, proyectos, brand kits, billetera y redes vienen del backend', async ({ page, request }) => {
     const api = await backend(request);
     const me = await api.me();
     const active = me.workspaces.find((item) => item.id === me.active_workspace_id);
@@ -191,11 +191,12 @@ test.describe('Modo híbrido contra el backend real', () => {
     expect(answersOf(seen, 'GET', '/api/v1/subscription/').at(-1)).toMatchObject({ status: 200, mock: null });
     await expect(page.getByText('Saldo disponible')).toBeVisible();
 
-    // Social accounts are still proposed: Redes is answered by the mocks, for the same real workspace.
+    // Social accounts exist since gap 10: Redes is the backend's too, for the same workspace (a workspace without
+    // its profile at the provider answers its three networks disconnected, without calling the provider).
     await page.goto('/ajustes/redes');
     await settle(page);
     expect(answersOf(seen, 'GET', '/api/v1/social-accounts/').at(-1)).toMatchObject({
-      status: 200, mock: 'social.accounts', workspaceHeader: active?.id,
+      status: 200, mock: null, workspaceHeader: active?.id,
     });
 
     // With /me real there is no bridge: a workspace can be created (it would be the backend's).
@@ -283,8 +284,8 @@ test.describe('Modo híbrido contra el backend real', () => {
     await expect(domain('auth')).toHaveAttribute('data-route', 'real');
     await expect(domain('auth').getByRole('button', { name: 'Mock' })).toBeDisabled();
     // Which endpoints exist is the contract's business: here only that nothing but auth is forced.
-    // Social still has proposed endpoints (the accounts): never all real.
-    await expect(domain('social')).not.toHaveAttribute('data-route', 'real');
+    // Since gap 10 every social endpoint exists (the accounts too): the domain goes to the backend.
+    await expect(domain('social')).toHaveAttribute('data-route', /real|mixed/);
     await expect(domain('projects')).toHaveAttribute('data-route', /real|mixed/);
     await expect(domain('brandKits')).toHaveAttribute('data-route', /real|mixed/);
     // Scenarios about the mocked session are off, with the reason.

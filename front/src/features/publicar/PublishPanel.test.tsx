@@ -133,6 +133,12 @@ describe('E1 · Publicar', () => {
     expect(publishButton()).toBeDisabled();
   });
 
+  it('plan Gratis: una red sin conectar muestra el candado del plan que conecta, sin «Conectar»', async () => {
+    const { panel } = await openPanel([CLIPS.first], 'plan-gratis');
+    expect(within(panel).queryByRole('button', { name: /Conectar YouTube Shorts/ })).not.toBeInTheDocument();
+    expect(within(panel).getAllByText(/Disponible en el plan Creador/).length).toBeGreaterThan(0);
+  });
+
   it('plan Gratis: una sola red y «Programar» con candado', async () => {
     const { panel } = await openPanel([CLIPS.first], 'plan-gratis');
     const tiktok = within(panel).getByRole('checkbox', { name: 'Publicar en TikTok' });

@@ -103,10 +103,9 @@ def _workspace_summary(active):
 
 def _onboarding(workspace):
     """
-    First steps of B2 in the active workspace. A network counts as connected
-    when the workspace has its profile at the publishing provider
-    (SocialProfile, without calling the provider); an invitation counts while
-    pending.
+    First steps of B2 in the active workspace. A network counts when it is
+    connected by the provider's last read (SocialProfile.networks, without
+    calling the provider); an invitation counts while pending.
     """
     if workspace is None:
         return {'has_project': False, 'has_brand_kit': False, 'has_social_account': False, 'has_invited_member': False}
@@ -122,9 +121,9 @@ def _onboarding(workspace):
         .values('has_project', 'has_brand_kit', 'has_invited_member')
         .get()
     )
-    from apps.integrations.social import has_ready_profile
+    from apps.integrations.social.accounts import has_connected_network
 
-    return {**flags, 'has_social_account': has_ready_profile(workspace.pk)}
+    return {**flags, 'has_social_account': has_connected_network(workspace.pk)}
 
 
 def _me_payload(user):

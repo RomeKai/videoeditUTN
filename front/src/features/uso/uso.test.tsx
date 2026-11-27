@@ -66,6 +66,7 @@ const plan = (overrides: Partial<Plan>): Plan => ({
   allow_crossposting: true,
   has_seo_optimization: true,
   has_thumbnail_engine: false,
+  allow_social_accounts: true,
   base_discount_rate: 0.1,
   max_members: 10,
   is_active: true,
@@ -171,6 +172,13 @@ describe('utilidades de Uso', () => {
     expect(features.find((item) => item.key === 'crossposting')).toMatchObject({ included: false, availableIn: 'Pro' });
     expect(features.find((item) => item.key === 'watermark')).toMatchObject({ included: false, availableIn: 'Creador' });
     expect(features.find((item) => item.key === 'members')).toMatchObject({ included: true, value: '2' });
+    // Connecting networks: the paid plans. From a backend that does not send the flag yet, no row and no loss.
+    const gratis = { ...free, allow_social_accounts: false };
+    expect(planFeatures(gratis, [gratis, creator, pro]).find((item) => item.key === 'social')).toMatchObject({ included: false, availableIn: 'Creador' });
+    expect(planLosses(pro, gratis)).toContain('Conectar o reconectar redes (las conectadas siguen publicando)');
+    const older = { ...pro, allow_social_accounts: undefined };
+    expect(planFeatures(older, [older]).some((item) => item.key === 'social')).toBe(false);
+    expect(planLosses(pro, { ...free, allow_social_accounts: undefined })).not.toContain('Conectar o reconectar redes (las conectadas siguen publicando)');
   });
 });
 

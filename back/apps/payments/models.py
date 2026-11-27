@@ -41,6 +41,9 @@ class SubscriptionPlan(models.Model):
     allow_crossposting = models.BooleanField(default=False, verbose_name=_("Allow Crossposting"))
     has_seo_optimization = models.BooleanField(default=False, verbose_name=_("Has SEO Optimization"))
     has_thumbnail_engine = models.BooleanField(default=False, verbose_name=_("Has Thumbnail Engine"))
+    # Connecting a workspace's networks (POST /social-accounts/connect/): each one takes a paid
+    # profile at the publishing provider. db_default: the previous release inserts plans without it.
+    allow_social_accounts = models.BooleanField(default=False, db_default=False, verbose_name=_("Allow Social Accounts"))
 
     # Economics
     base_discount_rate = models.DecimalField(

@@ -48,6 +48,10 @@ class PostRacesHarness(APITransactionTestCase):
             ),
         )
         give_social_profile(self.home)
+        # Deleting the workspace then deletes its profile at the provider, after the commit: no network here.
+        unlink = patch("apps.integrations.social.ayrshare.AyrshareProvider.delete_profile")
+        unlink.start()
+        self.addCleanup(unlink.stop)
         project = VideoProject.objects.create(
             workspace=self.home, uploaded_by=self.alice, title="Entrevista", source_file="videos/raw/a.mp4",
         )

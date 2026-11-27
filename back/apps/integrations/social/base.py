@@ -31,6 +31,8 @@ PUBLISH_TIMEOUT_SECONDS = (10, 300)
 PUBLISH_LOCK_TTL_SECONDS = PUBLISH_TIMEOUT_SECONDS[1] + 300
 # Every other call (profiles, links, accounts) waits for no video.
 ADMIN_TIMEOUT_SECONDS = (10, 30)
+# Reading the accounts serves a screen: a slow provider must not hold a web worker for long.
+ACCOUNTS_TIMEOUT_SECONDS = (3, 8)
 
 # TikTok's privacy levels, as the contract and the posts store them.
 TIKTOK_PRIVACY_LEVELS = ('PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'FOLLOWER_OF_CREATOR', 'SELF_ONLY')

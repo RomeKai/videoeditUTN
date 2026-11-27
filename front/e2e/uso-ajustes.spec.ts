@@ -219,6 +219,17 @@ test.describe('Ajustes y cuenta', () => {
     expectClean(problems, 'Redes sociales');
   });
 
+  test('redes en el plan Gratis: candado en lugar de Conectar, y lo conectado se puede desconectar', async ({ page }) => {
+    await useScenario(page, 'plan-gratis');
+    const problems = watch(page);
+    await page.goto('/ajustes/redes');
+    await settle(page);
+    await expect(page.getByRole('button', { name: 'Desconectar TikTok' })).toBeVisible();
+    await expect(page.getByText(/Disponible en el plan Creador/).first()).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Conectar YouTube' })).toHaveCount(0);
+    expectClean(problems, 'Redes sociales (Gratis)');
+  });
+
   test('general: renombrar el workspace actualiza la barra', async ({ page }) => {
     await useScenario(page, 'estudio-norte');
     const problems = watch(page);
