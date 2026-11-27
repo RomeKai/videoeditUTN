@@ -50,6 +50,12 @@ class PendingPlanSerializer(serializers.Serializer):
     effective_at = serializers.DateTimeField()
 
 
+class PendingPaymentSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    plan_id = serializers.UUIDField()
+    plan_name = serializers.CharField()
+
+
 class SubscriptionSerializer(serializers.Serializer):
     """Front contract `Subscription`."""
 
@@ -59,6 +65,9 @@ class SubscriptionSerializer(serializers.Serializer):
     renews_at = serializers.DateTimeField(allow_null=True)
     # The downgrade waiting for the end of the period.
     pending_plan = PendingPlanSerializer(allow_null=True)
+    # The plan payment waiting for its checkout (choosing the current plan cancels it). No checkout URL:
+    # every role reads this.
+    pending_payment = PendingPaymentSerializer(allow_null=True)
 
 
 class ChangePlanRequestSerializer(serializers.Serializer):

@@ -134,7 +134,26 @@ def subscription_payload(workspace, now=None):
         'status': 'active',
         'renews_at': paid_period_end(workspace, now),
         'pending_plan': pending,
+        'pending_payment': pending_plan_payment(workspace, now),
     }
+
+
+def pending_plan_payment(workspace, now=None):
+    """
+    The plan payment the workspace is waiting for, so Planes can say so and
+    offer to keep the current plan (which cancels it): {id, plan_id,
+    plan_name}, or None. Read without a lock, for display only. A payment
+    whose checkout expired is left out (nothing hands it out again), and so
+    is its checkout URL: every role reads the subscription.
+    """
+    payment = (
+        Payment.objects.filter(workspace=workspace, status=Payment.Status.PENDING, plan__isnull=False)
+        .select_related('plan')
+        .first()
+    )
+    if payment is None or checkout_is_expired(payment, now):
+        return None
+    return {'id': payment.pk, 'plan_id': payment.plan_id, 'plan_name': payment.plan.name}
 
 
 def needs_payment(current, target):

@@ -58,6 +58,42 @@ def test_a_new_workspace_is_on_the_free_plan_with_nothing_to_renew(owner, plans)
     assert body['status'] == 'active'
     assert body['renews_at'] is None
     assert body['pending_plan'] is None
+    assert body['pending_payment'] is None
+
+
+@override_settings(**SIMULATED)
+def test_a_plan_payment_waiting_for_its_checkout_is_shown_without_its_url(owner, plans):
+    user, workspace = owner
+    change(client_for(user), plans['Pro'])
+    payment = Payment.objects.get(workspace=workspace, status='pending')
+
+    body = client_for(user).get(SUBSCRIPTION).json()
+
+    # Planes says a payment is waiting and offers to keep the current plan; every role reads this,
+    # so the checkout URL is not in it.
+    assert body['pending_payment'] == {'id': str(payment.pk), 'plan_id': str(plans['Pro'].pk), 'plan_name': 'Pro'}
+    assert body['plan']['name'] == 'Gratis'
+
+
+@override_settings(**SIMULATED)
+def test_keeping_the_current_plan_cancels_the_payment_it_showed(owner, plans):
+    user, workspace = owner
+    change(client_for(user), plans['Pro'])
+
+    response = change(client_for(user), plans['Gratis'])
+
+    assert response.status_code == 200
+    assert response.json()['subscription']['pending_payment'] is None
+    assert not Payment.objects.filter(workspace=workspace, status='pending').exists()
+
+
+@override_settings(**SIMULATED)
+def test_a_plan_payment_whose_checkout_expired_is_not_shown(owner, plans):
+    user, workspace = owner
+    change(client_for(user), plans['Pro'])
+    Payment.objects.filter(workspace=workspace).update(checkout_started_at=timezone.now() - timedelta(days=2))
+
+    assert client_for(user).get(SUBSCRIPTION).json()['pending_payment'] is None
 
 
 @pytest.mark.parametrize('role', [WorkspaceMember.Role.EDITOR, WorkspaceMember.Role.VIEWER])

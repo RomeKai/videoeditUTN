@@ -579,7 +579,7 @@ Plan actual del workspace, su renovación y el cambio pendiente si lo hay.
 |---|---|
 | Id | `billing.subscription` |
 | Backend | ✅ existe · `back/apps/payments/views_subscription.py · SubscriptionView + SubscriptionSerializer (apps/payments/serializers_billing.py)` |
-| Nota | Todos los roles. `renews_at` es el fin del período pagado con el checkout: un mes calendario desde que se confirmó el pago de la subida, contado en `WORKSPACE_TIME_ZONE` y anclado al día en que empezó (31 ene → 28 feb → 31 mar). Es null en un plan gratis y en uno asignado en el admin (una cortesía, que no vence). Todavía nada cobra la renovación (PAY-02): cuando el período termina, la tarea `apply_due_plan_changes` aplica la bajada programada o, sin ninguna, pasa el workspace al plan por defecto (`DEFAULT_PLAN_NAME`). Por eso `status` es siempre `active`. Un workspace sin plan muestra el plan por defecto. |
+| Nota | Todos los roles. `renews_at` es el fin del período pagado con el checkout: un mes calendario desde que se confirmó el pago de la subida, contado en `WORKSPACE_TIME_ZONE` y anclado al día en que empezó (31 ene → 28 feb → 31 mar). Es null en un plan gratis y en uno asignado en el admin (una cortesía, que no vence). Todavía nada cobra la renovación (PAY-02): cuando el período termina, la tarea `apply_due_plan_changes` aplica la bajada programada o, sin ninguna, pasa el workspace al plan por defecto (`DEFAULT_PLAN_NAME`). Por eso `status` es siempre `active`. Un workspace sin plan muestra el plan por defecto. `pending_payment` es el pago de otro plan pago que espera su checkout (sin la URL); uno cuyo checkout venció no aparece. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Subscription |
 | Errores | **404** El workspace no tiene plan y tampoco existe el plan por defecto (`DEFAULT_PLAN_NAME`). |
@@ -1603,6 +1603,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `status` | "active" \\| "past_due" \\| "canceled" |
 | `renews_at` | IsoDateTime \\| null |
 | `pending_plan` | { id: Id, name: string, effective_at: IsoDateTime } \\| null |
+| `pending_payment` (opcional) | { id: Id, plan_id: Id, plan_name: string } \\| null |
 
 **TokenPackage**
 

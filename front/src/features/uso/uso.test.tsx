@@ -383,6 +383,22 @@ describe('G3 · Planes', () => {
     expect(loadDb().purchases[0]).toMatchObject({ status: 'pending', tokens: 0 });
   });
 
+  it('un pago de plan sin terminar se avisa y «Seguir con» lo cancela', async () => {
+    const user = userEvent.setup();
+    renderScreen(<PlansScreen />, { scenario: 'plan-con-checkout' });
+    await screen.findByRole('article', { name: 'Plan Pro, tu plan' });
+    await user.click(screen.getByRole('button', { name: 'Subir a Estudio' }));
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Subir a Estudio' }));
+    await waitFor(() => expect(leaveTo).toHaveBeenCalledTimes(1));
+
+    // Back on Planes without paying: the payment is still waiting and the plan has not changed.
+    expect(await screen.findByText('Estás pasando al plan Estudio: falta el pago')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Seguir con Pro' }));
+    expect(await screen.findByText('Listo: seguís con el plan Pro.')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText(/falta el pago/)).not.toBeInTheDocument());
+    expect(loadDb().purchases[0]).toMatchObject({ status: 'rejected' });
+  });
+
   it('al volver del checkout avisa si el plan cambió o si el pago no salió', async () => {
     const PAYMENT_ID = '22222222-2222-4222-8222-222222222222';
     const seed = (status: 'approved' | 'rejected') => () => {

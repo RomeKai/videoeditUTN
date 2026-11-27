@@ -94,6 +94,11 @@ export const Subscription = z.object({
   renews_at: IsoDateTime.nullable(),
   /** Downgrade waiting for the end of the period. */
   pending_plan: z.object({ id: Id, name: z.string(), effective_at: IsoDateTime }).nullable(),
+  /**
+   * The payment of another paid plan waiting for its checkout: choosing the current plan cancels it. No
+   * checkout URL (every role reads this; `billing.purchase` has it). Optional for older backends.
+   */
+  pending_payment: z.object({ id: Id, plan_id: Id, plan_name: z.string() }).nullable().optional(),
 });
 export type Subscription = z.infer<typeof Subscription>;
 
@@ -303,7 +308,7 @@ export const getSubscription = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/payments/views_subscription.py · SubscriptionView + SubscriptionSerializer (apps/payments/serializers_billing.py)',
-    note: 'Todos los roles. `renews_at` es el fin del período pagado con el checkout: un mes calendario desde que se confirmó el pago de la subida, contado en `WORKSPACE_TIME_ZONE` y anclado al día en que empezó (31 ene → 28 feb → 31 mar). Es null en un plan gratis y en uno asignado en el admin (una cortesía, que no vence). Todavía nada cobra la renovación (PAY-02): cuando el período termina, la tarea `apply_due_plan_changes` aplica la bajada programada o, sin ninguna, pasa el workspace al plan por defecto (`DEFAULT_PLAN_NAME`). Por eso `status` es siempre `active`. Un workspace sin plan muestra el plan por defecto.',
+    note: 'Todos los roles. `renews_at` es el fin del período pagado con el checkout: un mes calendario desde que se confirmó el pago de la subida, contado en `WORKSPACE_TIME_ZONE` y anclado al día en que empezó (31 ene → 28 feb → 31 mar). Es null en un plan gratis y en uno asignado en el admin (una cortesía, que no vence). Todavía nada cobra la renovación (PAY-02): cuando el período termina, la tarea `apply_due_plan_changes` aplica la bajada programada o, sin ninguna, pasa el workspace al plan por defecto (`DEFAULT_PLAN_NAME`). Por eso `status` es siempre `active`. Un workspace sin plan muestra el plan por defecto. `pending_payment` es el pago de otro plan pago que espera su checkout (sin la URL); uno cuyo checkout venció no aparece.',
   },
   screens: ['Barra', 'G1', 'G3', 'C1', 'E1', 'H2'],
 });

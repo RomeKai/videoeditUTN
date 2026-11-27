@@ -99,6 +99,7 @@ function Plans() {
   const current = subscription.data?.plan ?? null;
   const renewsAt = subscription.data?.renews_at ?? null;
   const pending = subscription.data?.pending_plan ?? null;
+  const paying = subscription.data?.pending_payment ?? null;
   const base = pricing.data ? estimateCost({ durationSeconds: 1800, resolution: '720p' }, pricing.data, null).total : null;
   const mine = pricing.data && current ? estimateCost({ durationSeconds: 1800, resolution: '720p' }, pricing.data, current).total : null;
 
@@ -139,7 +140,7 @@ function Plans() {
       },
     );
   };
-  /** Choosing the current plan again cancels the scheduled change. */
+  /** Choosing the current plan again cancels the scheduled change and the plan payment waiting for its checkout. */
   const keepCurrent = () => {
     if (!current) return;
     change.mutate(
@@ -190,6 +191,21 @@ function Plans() {
           }
         >
           Hasta ese día seguís con {current?.name ?? 'tu plan'} y todo lo que incluye. Podés cancelar el cambio hasta entonces.
+        </Banner>
+      ) : null}
+      {paying && !pending ? (
+        <Banner
+          tone="info"
+          className={styles.notice}
+          title={`Estás pasando al plan ${paying.plan_name}: falta el pago`}
+          action={
+            <Button size="sm" variant="secondary" onClick={keepCurrent} loading={change.isPending && !target} {...gate('billing.manage')}>
+              Seguir con {current?.name ?? 'mi plan'}
+            </Button>
+          }
+        >
+          Si ya lo pagaste, el plan cambia apenas se confirme. Si no, el pago vence a las 24 h de abrirlo y seguís con{' '}
+          {current?.name ?? 'tu plan'}.
         </Banner>
       ) : null}
       {plans.isError ? <LoadError error={plans.error} onRetry={() => void plans.refetch()} className={styles.notice} fullPageForMissing={false} /> : null}
