@@ -1,7 +1,7 @@
 'use client';
 
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { DEFAULT_PAGE_SIZE } from '@/api/contracts/common';
 import type { Project, ProjectStatusGroup } from '@/api/contracts/projects';
 import { ApiError } from '@/api/errors';
@@ -33,11 +33,14 @@ import { ProjectsCards, ProjectsGrid, ProjectsTable } from './ProjectItems';
 import { ProjectsEmpty } from './ProjectsEmpty';
 import styles from './Projects.module.css';
 import { RenameProjectDialog } from './RenameProjectDialog';
-import { ORDERINGS, STATUS_FILTERS, applyListQuery, type Ordering } from './project-view';
+import { ORDERINGS, STATUS_FILTERS, type Ordering } from './project-view';
 
 type View = 'list' | 'grid';
 
-/** B2 · Proyectos: todo lo que pasa en el workspace, con buscador, filtro por estado, orden y dos vistas. */
+/**
+ * B2 · Proyectos: todo lo que pasa en el workspace, con buscador, filtro por estado, orden y dos vistas.
+ * The server pages, filters, searches, orders and counts the filters; the screen only asks.
+ */
 export function ProjectsScreen() {
   const { workspace } = useSession();
   const toast = useToast();
@@ -67,18 +70,15 @@ export function ProjectsScreen() {
     ...(ordering !== '-created_at' ? { ordering } : {}),
   });
   const data = query.data;
-  // Today's backend answers one array and ignores the query: filter, search, order and pages happen here.
-  const local = useMemo(
-    () => (data && !data.paginated ? applyListQuery(data.results, { group, term, ordering, page: askedPage, pageSize: DEFAULT_PAGE_SIZE, workspaceId }) : null),
-    [data, group, term, ordering, askedPage, workspaceId],
-  );
-  const projects = local?.results ?? data?.results ?? [];
-  const counts = local?.counts ?? data?.status_counts;
-  const count = local?.count ?? data?.count ?? 0;
-  const page = local?.page ?? askedPage;
+  const projects = data?.results ?? [];
+  const counts = data?.status_counts;
+  const count = data?.count ?? 0;
+  const page = askedPage;
   const filtered = group !== 'all' || term !== '';
   const total = counts?.all ?? count;
-  const workspaceEmpty = Boolean(data) && !filtered && total === 0;
+  // While the next page loads the previous one stays on screen (`keepPreviousData`), and its counts are the
+  // ones of the previous search: a search without results that was just cleared is not an empty workspace.
+  const workspaceEmpty = Boolean(data) && !query.isPlaceholderData && !filtered && total === 0;
   const anyInProgress = projects.some((project) => describeProjectStatus(project).inProgress);
   const order = ORDERINGS.find((item) => item.value === ordering) ?? ORDERINGS[0];
 
@@ -90,7 +90,7 @@ export function ProjectsScreen() {
       // The pages kept in memory are as outdated as the one that just disappeared.
       void queryClient.invalidateQueries({ queryKey: keys.projects.all });
       setPaging((current) => ({ scope, page: Math.max(1, (current.scope === scope ? current.page : 1) - 1) }));
-    } else if (data?.paginated && data.results.length === 0 && data.count > 0 && askedPage > 1) setPaging({ scope, page: Math.max(1, Math.ceil(data.count / DEFAULT_PAGE_SIZE)) });
+    } else if (data && data.results.length === 0 && data.count > 0 && askedPage > 1) setPaging({ scope, page: Math.max(1, Math.ceil(data.count / DEFAULT_PAGE_SIZE)) });
   }, [pastTheEnd, data, askedPage, scope, queryClient]);
 
   const pickGroup = (next: ProjectStatusGroup) => {
@@ -147,6 +147,13 @@ export function ProjectsScreen() {
     body = null;
   } else if (workspaceEmpty) {
     body = <ProjectsEmpty />;
+  } else if (projects.length === 0 && query.isPlaceholderData) {
+    // The page before this one had no rows (a search without results): rows are on their way.
+    body = (
+      <Card>
+        <SkeletonRows rows={6} label="Cargando proyectos" />
+      </Card>
+    );
   } else if (projects.length === 0) {
     body = (
       <EmptyState

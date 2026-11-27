@@ -1,7 +1,7 @@
 import type { Clip, ClipStatus, PipelineStage, PostStatus, Project } from '@/api/contracts/projects';
 import type { TransactionKind } from '@/api/contracts/billing';
 import type { IconName } from '@/ui/Icon';
-import { formatTokens, plural } from './format';
+import { formatEta, formatTokens, plural } from './format';
 import { pipelineErrorMessage } from './error-messages';
 
 export type StatusTone = 'neutral' | 'ok' | 'warn' | 'err' | 'info' | 'accent';
@@ -163,6 +163,18 @@ export function describeProjectStatus(project: ProjectLike): ProjectStatusView {
     step: { current, total: 4 },
     inProgress: true,
   };
+}
+
+/**
+ * "≈ 9 min": what is left until the review, for the list and the project header, written as Nuevo proyecto
+ * writes its estimate (`formatEta`). Only while the project waits in the queue or goes through the four steps,
+ * and only when the backend estimates it (`eta_seconds`; null for a whole-video edit and without history).
+ * Null for "En espera": nobody knows how long the wait for capacity is.
+ */
+export function etaLabel(project: Pick<Project, 'eta_seconds'>, view: Pick<ProjectStatusView, 'key' | 'step'>): string | null {
+  const eta = project.eta_seconds;
+  if (!eta || !(view.step || view.key === 'queued')) return null;
+  return formatEta(eta);
 }
 
 /** Filter groups of the projects list (map B2). */

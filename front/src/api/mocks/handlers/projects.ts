@@ -267,15 +267,18 @@ export const projectsHandlers = [
   }),
 
   route(contract.listProjects, ({ db, workspace, query }) => {
+    // As ProjectsQuerySerializer: a value that is not one of the choices is a 400, not an empty list.
     const search = (query.get('search') ?? '').trim().toLowerCase();
     const group = query.get('status_group') ?? 'all';
     const ordering = query.get('ordering') ?? '-created_at';
+    if (!contract.ProjectStatusGroup.safeParse(group).success) throw badRequest({ status_group: [`"${group}" is not a valid choice.`] });
+    if (!['-created_at', 'created_at', 'title'].includes(ordering)) throw badRequest({ ordering: [`"${ordering}" is not a valid choice.`] });
     const mine = db.projects.filter((project) => project.workspace === workspace.id).filter((project) => !search || project.title.toLowerCase().includes(search));
     const counts = { all: mine.length, in_progress: 0, to_review: 0, ready: 0, failed: 0 };
     for (const project of mine) counts[projectStatusGroup(project)] += 1;
     const filtered = mine.filter((project) => group === 'all' || projectStatusGroup(project) === group);
     filtered.sort((a, b) =>
-      ordering === 'title' ? a.title.localeCompare(b.title, 'es') : ordering === 'created_at' ? a.created_at.localeCompare(b.created_at) : b.created_at.localeCompare(a.created_at),
+      ordering === 'title' ? a.title.toLowerCase().localeCompare(b.title.toLowerCase(), 'es') || b.created_at.localeCompare(a.created_at) : ordering === 'created_at' ? a.created_at.localeCompare(b.created_at) : b.created_at.localeCompare(a.created_at),
     );
     const page = paginate(filtered, query, contract.listProjects.path);
     return { data: { ...page, results: page.results.map((project) => serializeProject(db, project, { full: false })), status_counts: counts } };

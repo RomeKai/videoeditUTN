@@ -85,7 +85,16 @@ describe('mocks', () => {
 
     const list = await apiCall(projects.listProjects, { query: { status_group: 'to_review' } });
     expect(list.results).toHaveLength(1);
-    expect(list.status_counts?.all).toBe(8);
+    expect(list.status_counts).toEqual({ all: 8, in_progress: 3, to_review: 1, ready: 3, failed: 1 });
+    // As the backend: the counts follow the search, never the filter or the page; a group that does not exist is a 400.
+    const searched = await apiCall(projects.listProjects, { query: { search: '  VLOG ', status_group: 'failed', page_size: 1 } });
+    expect(searched).toMatchObject({ count: 0, results: [], status_counts: { all: 1, ready: 1, failed: 0 } });
+    // (Plain fetch: the client does not let such a query out.)
+    for (const query of ['status_group=archived', 'ordering=-title']) {
+      const response = await fetch(`${API_URL}/api/v1/projects/?${query}`, { headers: { Authorization: `Bearer ${mockTokens(USER_IDS.lucia).access}` } });
+      expect([query, response.status]).toEqual([query, 400]);
+    }
+    expect((await fail(apiCall(projects.listProjects, { query: { page: 9 } }))).data).toEqual({ detail: 'Página inválida.' });
     const project = list.results[0];
     if (!project) throw new Error('falta el proyecto para revisar');
     const detail = await apiCall(projects.getProject, { params: { id: project.id } });
