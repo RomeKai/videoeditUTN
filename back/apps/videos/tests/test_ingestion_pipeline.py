@@ -256,6 +256,46 @@ class StageResumeTests(IngestionHarness, TestCase):
         self.assertEqual(project.status, VideoProject.Status.AWAITING_APPROVAL)
         self.assertEqual(project.pipeline_error_code, "")
 
+    def test_every_stage_records_its_start_and_a_failed_one_keeps_it(self):
+        project = self.make_project()
+        self.mock_select.side_effect = AIAuthenticationError("bad key")
+
+        self.run_task(project)
+
+        project.refresh_from_db()
+        started = project.metadata["stage_started_at"]
+        self.assertEqual(set(started), {"audio_extracted", "transcribed", "moderated", "clips_selected"})
+        # The one that failed has its start and no duration: what the timeline shows.
+        self.assertNotIn("clips_selected", project.metadata["stage_durations"])
+        from apps.videos.services.project_summary import stage_timings
+        timing = stage_timings(project)["clips_selected"]
+        self.assertEqual(timing["started_at"], started["clips_selected"])
+        self.assertIsNone(timing["duration_s"])
+        self.assertIsNotNone(timing["finished_at"])
+
+    def test_a_redispatch_forgets_the_start_the_failed_run_left(self):
+        project = self.make_project()
+        self.mock_select.side_effect = AIAuthenticationError("bad key")
+        self.run_task(project)
+        # The failed run was days ago, and something else left a start of a stage that never ran.
+        stale = "2020-01-01T00:00:00+00:00"
+        project.refresh_from_db()
+        kept = project.metadata["stage_started_at"]["transcribed"]
+        project.metadata["stage_started_at"].update({"clips_selected": stale, "render_dispatched": stale})
+        project.save(update_fields=["metadata"])
+
+        seen = []
+        self.mock_select.side_effect = lambda *args, **kwargs: (
+            seen.append(VideoProject.objects.get(pk=project.pk).metadata["stage_started_at"]) or selection_result()
+        )
+        self.redispatch_task(project)
+
+        # While the new run selects: its own start, and no start of the stage it has not reached.
+        self.assertNotEqual(seen[0]["clips_selected"], stale)
+        self.assertNotIn("render_dispatched", seen[0])
+        # The stages that had finished keep theirs.
+        self.assertEqual(seen[0]["transcribed"], kept)
+
     def test_redispatching_a_project_failed_after_selection_reaches_awaiting_approval(self):
         project = self.make_project(transcript_data=[{"text": "hi", "start": 0.0, "end": 1.0}])
         VideoClip.objects.create(project=project, title="c", start_time=0, end_time=5)

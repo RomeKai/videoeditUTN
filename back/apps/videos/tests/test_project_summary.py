@@ -18,7 +18,7 @@ from apps.videos.models import VideoProject
 from apps.videos.serializers import VideoProjectSerializer
 from apps.videos.services import project_summary
 from apps.videos.services.ai.pipeline_state import PipelineStage
-from apps.videos.tasks.ingestion import _record_stage_duration, _record_stage_start
+from apps.videos.tasks.ingestion import _metadata_for_new_run, _record_stage_duration, _record_stage_start
 from apps.videos.tests.test_active_workspace import make_user
 from apps.videos.tests.test_project_data import ProjectDataHarness, reserve
 
@@ -286,6 +286,40 @@ class StageTimingTests(ProjectDataHarness):
         project.metadata = {'stage_started_at': {'transcribed': '2026-11-27T11:00:00+00:00'}}
         timings = VideoProjectSerializer(project).data['stage_timings']
         self.assertIsNone(timings['transcribed']['finished_at'])
+
+    def test_only_the_last_stage_that_started_gets_the_moment_of_the_failure(self):
+        stopped = timezone.datetime(2026, 11, 27, 10, 3, tzinfo=dt_timezone.utc)
+        project = self.project(
+            status=VideoProject.Status.FAILED, pipeline_error_at=stopped,
+            metadata={'stage_started_at': {
+                # Left by an older run: it did not stop at this failure.
+                'moderated': '2026-11-20T08:00:00+00:00', 'transcribed': '2026-11-27T10:00:05+00:00',
+            }},
+        )
+
+        timings = VideoProjectSerializer(project).data['stage_timings']
+
+        self.assertEqual(timings['transcribed']['finished_at'], '2026-11-27T10:03:00+00:00')
+        self.assertEqual(timings['moderated'], {'started_at': '2026-11-20T08:00:00+00:00', 'finished_at': None, 'duration_s': None})
+
+    def test_a_new_run_forgets_the_unfinished_starts_and_the_recovery_counters(self):
+        metadata = {
+            'max_clips': 3, 'ingestion_recovery_requeues': 2,
+            'stage_durations': {'audio_extracted': 4.0},
+            'stage_started_at': {'audio_extracted': 'a', 'transcribed': 'b'},
+        }
+
+        fresh = _metadata_for_new_run(metadata)
+
+        self.assertEqual(fresh, {
+            'max_clips': 3, 'stage_durations': {'audio_extracted': 4.0}, 'stage_started_at': {'audio_extracted': 'a'},
+        })
+        # Nothing to forget, or starts that are not an object: as it was.
+        for same in ({'max_clips': 3}, {'stage_started_at': ['x']}, {'stage_started_at': {'a': 'x'}, 'stage_durations': {'a': 1}}):
+            self.assertEqual(_metadata_for_new_run(same), same)
+        self.assertEqual(_metadata_for_new_run({'stage_started_at': {'a': 'x'}, 'stage_durations': 'x'}), {
+            'stage_started_at': {}, 'stage_durations': 'x',
+        })
 
     def test_a_stage_that_finished_before_its_end_was_recorded_shows_the_start_it_wrote(self):
         project = self.project(metadata={

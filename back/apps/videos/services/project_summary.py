@@ -194,16 +194,19 @@ def stage_timings(project):
             'finished_at': _iso(finished_at),
             'duration_s': float(duration),
         }
-    stopped_at = project.pipeline_error_at if project.status == VideoProject.Status.FAILED else None
+    unfinished = {}
     for stage, value in started.items():
-        if str(stage) in timings:
-            continue
-        started_at = _iso(_parse(value))
-        if started_at is None:
-            continue
-        ended = stopped_at is not None and _parse(started_at) <= stopped_at
-        timings[str(stage)] = {
-            'started_at': started_at,
+        started_at = _parse(value)
+        if str(stage) not in timings and _iso(started_at) is not None:
+            unfinished[str(stage)] = started_at
+    # The failure stopped one stage: the last one that started. An older
+    # unfinished start (left by another run) does not get its end.
+    stopped_at = project.pipeline_error_at if project.status == VideoProject.Status.FAILED else None
+    last = max(unfinished, key=unfinished.get) if unfinished else None
+    for stage, started_at in unfinished.items():
+        ended = stopped_at is not None and stage == last and started_at <= stopped_at
+        timings[stage] = {
+            'started_at': _iso(started_at),
             'finished_at': _iso(stopped_at) if ended else None,
             'duration_s': None,
         }
