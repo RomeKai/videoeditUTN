@@ -11,48 +11,109 @@ There is no event log: the feed is read from what the backend already keeps.
   approved, at the time of the last successful ``selection`` AIUsageRecord.
 - ``review_approved``: the approval's reservation (``metadata
   ['render_reservation_id']``): its time and who made it.
-- ``tokens_reserved`` / ``tokens_charged`` / ``tokens_refunded``: the
-  Transactions linked in the metadata (every ``*reservation_id`` key):
-  reserved at ``created_at``, charged or returned at ``settled_at``. The
-  reservation, its charge and its refund are items of ONE movement of the
-  balance: each of the three says how the reservation ended in
-  ``reservation_state`` (``reserved``, ``charged``, ``partially_charged`` or
-  ``refunded``), so the web app shows them as one group whose amounts add up
-  to what the balance moved (a charged reservation is not a second charge;
-  the part a partial charge gave back is not income).
+- ``tokens_reserved`` / ``tokens_charged`` / ``tokens_refunded``: every
+  reservation (a SPEND Transaction) of the project: the ones linked to it
+  (``Transaction.project``) and, for a row without a project (older than
+  migration 0015 of payments, that 0016 could not link), the ones its metadata
+  names (every ``*reservation_id`` key and ``replaced_reservation_ids``, the
+  ones a later reservation replaced in its key). Only from the wallet of the
+  project's workspace, and never one linked to another project. Reserved at
+  ``created_at``, charged or returned at ``settled_at``. The reservation, its
+  charge and its refund are items of ONE movement of the balance: each of the
+  three says how the reservation ended in ``reservation_state``
+  (``reserved``, ``charged``, ``partially_charged`` or ``refunded``), so the
+  web app shows them as one group whose amounts add up to what the balance
+  moved (a charged reservation is not a second charge; the part a partial
+  charge gave back is not income). With every reservation in the feed, the
+  groups add up to what the project moved the balance in all.
 - ``render_finished``: a project that ended ``completed`` or ``partial``, at
-  the settlement of the reservation that paid the render.
+  the settlement of the last reservation that paid a render.
 - ``project_failed``: ``pipeline_error_at``.
 - ``post_scheduled`` / ``post_published`` / ``post_failed``: the
   ScheduledPosts of its clips (``created_at``, then ``updated_at``).
 
+What a reservation paid for is read from the description the code writes
+when it reserves (``Procesamiento: …``, ``Render de clip: …``…), else from
+its metadata key, else from its category. The first reservation of the
+processing is the creation's; a later one, a re-dispatch's.
+
 Not kept anywhere, so never in the feed: renames (``project_renamed``),
-clip edits and retries (``clip_edited``, ``clip_retried``), who scheduled a
-post, and a reservation whose metadata key was dropped (a settled
-auto-render once the review is approved).
+clip edits and retries (``clip_edited``, ``clip_retried``) and who scheduled
+a post.
+
+At most MAX_ITEMS items. The movements of the balance go in first, each
+group whole, in all the room but the EVENT_ROOM kept for the newest of the
+other items: the cut drops the oldest of those, so the amounts still add up
+to what the project moved. Only a project with more token items than fit
+(dozens of paid renders) loses its oldest groups, whole.
 
 Each item gets a stable id (uuid5 of the project, the kind and its source).
 Five queries whatever the size of the project.
 """
 import uuid
 from decimal import Decimal
+from typing import NamedTuple
 
-from django.db.models import Max
+from django.db.models import Max, Q
 
 from apps.payments.models import Transaction
 from apps.videos.models import AIUsageRecord, ScheduledPost, VideoClip, VideoProject
 
 _NAMESPACE = uuid.UUID('6b0c9f8e-2a51-4c7e-9a43-1d5e8f0b7c21')
 MAX_ITEMS = 200
+# Room the newest items that are not token movements (a failure, a post) keep
+# when the movements alone would fill MAX_ITEMS.
+EVENT_ROOM = 20
 
-# Metadata key of the reservation -> (what it reserved, what it charged).
-_RESERVATIONS = {
-    'reservation_id': ("Reserva por el procesamiento", "Cobro del procesamiento"),
-    'render_reservation_id': ("Reserva por el render", "Cobro del render"),
-    'auto_render_reservation_id': ("Reserva por renderizar sin revisar", "Cobro del render automático"),
+# Where views_clips.py (REPLACED_RESERVATIONS_KEY) keeps the reservations a new
+# one replaced in its key: a second clip render, a re-dispatch.
+REPLACED_KEY = 'replaced_reservation_ids'
+
+
+class _Purpose(NamedTuple):
+    """What a reservation paid for: what its reservation and its charge are called."""
+
+    reserved: str
+    charged: str
+    # It paid a render: what a partial charge gave back are the clips not generated.
+    render: bool = False
+
+
+_CREATION = _Purpose("Reserva por el procesamiento", "Cobro del procesamiento")
+_REDISPATCH = _Purpose("Reserva por volver a procesar", "Cobro del procesamiento")
+_APPROVAL = _Purpose("Reserva por el render", "Cobro del render", True)
+_AUTO_RENDER = _Purpose("Reserva por renderizar sin revisar", "Cobro del render automático", True)
+_RERENDER = _Purpose("Reserva por renderizar todo de nuevo", "Cobro del render", True)
+_CLIP_RENDER = _Purpose("Reserva por volver a renderizar", "Cobro del render", True)
+_GENERIC = _Purpose("Reserva de tokens", "Cobro de tokens")
+_PROCESSING = (_CREATION, _REDISPATCH)
+
+# The description each reservation is written with (views.py, views_clips.py, tasks/ingestion.py).
+_BY_DESCRIPTION = (
+    ('Procesamiento: ', _CREATION),
+    ('Render de los clips aprobados: ', _APPROVAL),
+    ('Render automático: ', _AUTO_RENDER),
+    ('Render con otro estilo: ', _RERENDER),
+)
+# Those of one clip end with its title.
+_CLIP_DESCRIPTIONS = (
+    ('Render de clip: ', "Reserva por renderizar «{}»"),
+    ('Reintento de clip: ', "Reserva por reintentar «{}»"),
+)
+# A row with another description (written by hand, or older): its metadata key, else its category.
+_BY_KEY = {
+    'reservation_id': _CREATION,
+    'render_reservation_id': _APPROVAL,
+    'auto_render_reservation_id': _AUTO_RENDER,
+    'clip_render_reservation_id': _CLIP_RENDER,
 }
-_GENERIC_RESERVATION = ("Reserva de tokens", "Cobro de tokens")
-_RENDER_KEYS = ('render_reservation_id', 'auto_render_reservation_id')
+# A render that does not say which one is called like the approval's: "the render".
+_BY_CATEGORY = {
+    Transaction.Category.PROJECT: _CREATION,
+    Transaction.Category.RENDER: _APPROVAL,
+}
+# What moved the balance: a reservation still open, charged or returned.
+_MOVED = (Transaction.Status.RESERVED, Transaction.Status.COMPLETED, Transaction.Status.FAILED)
 
 PLATFORM_NAMES = dict(ScheduledPost.Platform.choices)
 
@@ -81,12 +142,23 @@ def _amount(value):
     return format(Decimal(value), 'f')
 
 
+def _sort_key(item):
+    return item['created_at'], _ORDER.get(item['type'], 99)
+
+
+def _newest_first(items):
+    return sorted(items, key=_sort_key, reverse=True)
+
+
 class _Feed:
     def __init__(self, project):
         self.project = project
         self.items = []
+        # Transaction id -> its items: one movement of the balance, never split by the cut.
+        self.movements = {}
 
-    def add(self, kind, at, description, *, source='', actor=None, amount=None, platform=None, reservation_state=None):
+    def add(self, kind, at, description, *, source='', actor=None, amount=None, platform=None,
+            reservation_state=None, movement=None):
         if at is None:
             return
         item = {
@@ -102,23 +174,81 @@ class _Feed:
         if reservation_state is not None:
             item['reservation_state'] = reservation_state
         self.items.append(item)
+        if movement is not None:
+            self.movements.setdefault(movement, []).append(item)
 
     def sorted(self):
-        ordered = sorted(self.items, key=lambda item: (item['created_at'], _ORDER.get(item['type'], 99)), reverse=True)
-        return ordered[:MAX_ITEMS]
+        """
+        At most MAX_ITEMS, newest first. The movements of the balance go in
+        first, whole, the newest first, in all the room but EVENT_ROOM; the
+        other items fill what is left, the newest first.
+        """
+        money = {id(item) for items in self.movements.values() for item in items}
+        others = _newest_first(item for item in self.items if id(item) not in money)
+        room = MAX_ITEMS - min(len(others), EVENT_ROOM)
+        kept = []
+        for group in sorted(self.movements.values(), key=lambda items: max(map(_sort_key, items)), reverse=True):
+            if len(kept) + len(group) > room:
+                break
+            kept.extend(group)
+        kept.extend(others[:MAX_ITEMS - len(kept)])
+        return _newest_first(kept)
 
 
-def _linked_reservations(project):
-    """{metadata key: transaction id} of the reservations linked to the project."""
+def _uuid(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        return None
+
+
+def _linked_reservations(metadata):
+    """{metadata key: transaction id} of the reservations the project's metadata holds in a key."""
     linked = {}
-    for key, value in (project.metadata or {}).items():
-        if not key.endswith('reservation_id') or not isinstance(value, str):
-            continue
-        try:
-            linked[key] = uuid.UUID(value)
-        except ValueError:
-            continue
+    for key, value in metadata.items():
+        txn_id = _uuid(value) if key.endswith('reservation_id') else None
+        if txn_id is not None:
+            linked[key] = txn_id
     return linked
+
+
+def _replaced_reservations(metadata):
+    """The transaction ids a later reservation replaced in their key."""
+    replaced = metadata.get(REPLACED_KEY)
+    if not isinstance(replaced, list):
+        return set()
+    return {txn_id for txn_id in map(_uuid, replaced) if txn_id is not None}
+
+
+def _project_reservations(project, named):
+    """
+    The reservations of ``project``, oldest first, in one query: the ones
+    linked to it and, without a project, the ones its metadata ``named``. Only
+    from its workspace's wallet: another project's or workspace's never.
+    """
+    return list(
+        Transaction.objects.filter(
+            Q(project_id=project.pk) | Q(project__isnull=True, pk__in=named),
+            wallet__workspace_id=project.workspace_id,
+            transaction_type=Transaction.Type.SPEND,
+            status__in=_MOVED,
+        ).select_related('created_by').order_by('created_at', 'pk')
+    )
+
+
+def _purpose(txn, key):
+    description = txn.description or ''
+    for prefix, purpose in _BY_DESCRIPTION:
+        if description.startswith(prefix):
+            return purpose
+    for prefix, reserved in _CLIP_DESCRIPTIONS:
+        if description.startswith(prefix) and description[len(prefix):].strip():
+            return _Purpose(reserved.format(description[len(prefix):].strip()), "Cobro del render", True)
+    if key is not None:
+        return _BY_KEY.get(key, _GENERIC)
+    return _BY_CATEGORY.get(txn.category, _GENERIC)
 
 
 def _reservation_state(txn, reserved):
@@ -130,6 +260,37 @@ def _reservation_state(txn, reserved):
     return 'reserved'
 
 
+def _add_movement(feed, txn, purpose):
+    """The items of one reservation: its reservation and, once settled, its charge and what came back."""
+    reserved = txn.reserved_amount if txn.reserved_amount is not None else txn.amount
+    settled = txn.settled_at or txn.created_at
+    state = _reservation_state(txn, reserved)
+    source = str(txn.pk)
+    feed.add(
+        'tokens_reserved', txn.created_at, purpose.reserved, source=source, actor=txn.created_by,
+        amount=-reserved, reservation_state=state, movement=txn.pk,
+    )
+    if txn.status == Transaction.Status.COMPLETED:
+        feed.add(
+            'tokens_charged', settled, purpose.charged, source=source, amount=-txn.amount,
+            reservation_state=state, movement=txn.pk,
+        )
+        if reserved > txn.amount:
+            returned_text = (
+                "Devolución por los clips que no se generaron" if purpose.render
+                else "Devolución de la parte que no se usó"
+            )
+            feed.add(
+                'tokens_refunded', settled, returned_text, source=source, amount=reserved - txn.amount,
+                reservation_state=state, movement=txn.pk,
+            )
+    elif txn.status == Transaction.Status.FAILED:
+        feed.add(
+            'tokens_refunded', settled, "Devolución de la reserva", source=source, amount=reserved,
+            reservation_state=state, movement=txn.pk,
+        )
+
+
 def _prompt_description(pte):
     status = pte.get('status') if isinstance(pte, dict) else None
     if status == 'applied':
@@ -139,26 +300,20 @@ def _prompt_description(pte):
     return "No pudimos aplicar el prompt: el proyecto siguió con su configuración"
 
 
-def _is_whole_video(project):
-    return (
-        project.project_type == VideoProject.Type.SINGLE_EDIT
-        and (project.metadata or {}).get('priced_duration_s') is not None
-    )
+def _is_whole_video(project, metadata):
+    return project.project_type == VideoProject.Type.SINGLE_EDIT and metadata.get('priced_duration_s') is not None
 
 
 def build_activity(project):
     """The activity items of ``project`` (contract ``ActivityItem[]``), newest first."""
-    metadata = project.metadata or {}
+    metadata = project.metadata if isinstance(project.metadata, dict) else {}
     feed = _Feed(project)
     feed.add('project_created', project.created_at, "Creó el proyecto", actor=project.uploaded_by)
 
-    linked = _linked_reservations(project)
-    transactions = {
-        txn.pk: txn
-        for txn in Transaction.objects.filter(
-            pk__in=list(linked.values()), wallet__workspace_id=project.workspace_id,
-        ).select_related('created_by')
-    }
+    linked = _linked_reservations(metadata)
+    keys = {txn_id: key for key, txn_id in linked.items()}
+    transactions = _project_reservations(project, _replaced_reservations(metadata) | set(keys))
+    by_id = {txn.pk: txn for txn in transactions}
     usage = dict(
         AIUsageRecord.objects.filter(
             project_id=project.pk, success=True,
@@ -174,8 +329,8 @@ def build_activity(project):
             _prompt_description(metadata['pte']),
         )
 
-    approval = transactions.get(linked.get('render_reservation_id'))
-    whole_video = _is_whole_video(project)
+    approval = by_id.get(linked.get('render_reservation_id'))
+    whole_video = _is_whole_video(project, metadata)
     if not whole_video and (project.status == VideoProject.Status.AWAITING_APPROVAL or approval is not None):
         suggested = (project.ai_rationale_log or {}).get('suggestions_count')
         if isinstance(suggested, bool) or not isinstance(suggested, int) or suggested < 0:
@@ -196,43 +351,21 @@ def build_activity(project):
             source=str(approval.pk), actor=approval.created_by,
         )
 
-    for key, txn_id in linked.items():
-        txn = transactions.get(txn_id)
-        if txn is None:
-            continue
-        reserved_text, charged_text = _RESERVATIONS.get(key, _GENERIC_RESERVATION)
-        reserved = txn.reserved_amount if txn.reserved_amount is not None else txn.amount
-        settled = txn.settled_at or txn.created_at
-        state = _reservation_state(txn, reserved)
-        feed.add(
-            'tokens_reserved', txn.created_at, reserved_text, source=str(txn.pk), actor=txn.created_by,
-            amount=-reserved, reservation_state=state,
-        )
-        if txn.status == Transaction.Status.COMPLETED:
-            feed.add(
-                'tokens_charged', settled, charged_text, source=str(txn.pk), amount=-txn.amount, reservation_state=state,
-            )
-            if reserved > txn.amount:
-                returned_text = (
-                    "Devolución por los clips que no se generaron" if key in _RENDER_KEYS
-                    else "Devolución de la parte que no se usó"
-                )
-                feed.add(
-                    'tokens_refunded', settled, returned_text, source=str(txn.pk), amount=reserved - txn.amount,
-                    reservation_state=state,
-                )
-        elif txn.status == Transaction.Status.FAILED:
-            feed.add(
-                'tokens_refunded', settled, "Devolución de la reserva", source=str(txn.pk), amount=reserved,
-                reservation_state=state,
-            )
+    renders = []  # the reservations that paid a render
+    processed = False
+    for txn in transactions:
+        purpose = _purpose(txn, keys.get(txn.pk))
+        if purpose in _PROCESSING:
+            # Oldest first: the first one is the creation, a later one a re-dispatch.
+            purpose = _REDISPATCH if processed else _CREATION
+            processed = True
+        if purpose.render or (whole_video and purpose in _PROCESSING):
+            renders.append(txn)
+        _add_movement(feed, txn, purpose)
 
     if project.status in (VideoProject.Status.COMPLETED, VideoProject.Status.PARTIAL):
-        paying = (
-            approval
-            or transactions.get(linked.get('auto_render_reservation_id'))
-            or (transactions.get(linked.get('reservation_id')) if whole_video else None)
-        )
+        # The last render the project ended with: the clips it counts are those it left.
+        paying = max(renders, key=lambda txn: txn.settled_at or txn.created_at, default=None)
         ready = sum(1 for status, _created in clip_statuses if status in ('completed', 'published'))
         failed = sum(1 for status, _created in clip_statuses if status == 'failed')
         if whole_video:

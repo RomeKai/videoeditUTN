@@ -33,10 +33,14 @@ from rest_framework.test import APITestCase
 from apps.payments.models import Transaction, Wallet
 from apps.payments.services import wallet_service
 from apps.videos.models import AIUsageRecord, ScheduledPost, VideoClip, VideoProject
-from apps.videos.services import clip_download
+from apps.videos.services import clip_download, project_activity
 from apps.videos.services.ai.pipeline_state import PipelineStage
-from apps.videos.tests.fakes import DownRedis, FakeRedis
+from apps.videos.tests.fakes import CapturedTaskFailures, DownRedis, FakeRedis
 from apps.videos.tests.test_active_workspace import VIEWER, fund, header, home_of, join, make_user, team
+from apps.videos.tests.test_approved_segments_source import CLIP_DELAY, DELAY
+from apps.videos.tests.test_clip_actions import DELETE_OBJECT, INGESTION_DELAY, ClipActionsHarness, project_url
+from apps.videos.tests.test_clip_actions import clip_url as clip_action_url
+from apps.videos.views_clips import REPLACED_RESERVATIONS_KEY
 
 ACTIVITY_TYPES = {
     'project_created', 'prompt_applied', 'review_ready', 'review_approved', 'render_finished', 'clip_edited',
@@ -61,11 +65,27 @@ def at(minutes):
     return timezone.now() - timedelta(days=1) + timedelta(minutes=minutes)
 
 
-def reserve(workspace, amount, user, minutes):
+def reserve(workspace, amount, user, minutes, project=None, description="x"):
     wallet = Wallet.objects.get(workspace=workspace)
-    txn = wallet_service.reserve_funds(wallet_id=wallet.id, amount=Decimal(amount), user=user, description="x")
+    txn = wallet_service.reserve_funds(
+        wallet_id=wallet.id, amount=Decimal(amount), user=user, description=description, project=project,
+    )
     Transaction.objects.filter(pk=txn.pk).update(created_at=at(minutes))
     return txn
+
+
+# What the web app shows as context of a charge, without sign (front/src/features/proyecto/model.ts,
+# foldedMovement): a reservation that was charged and what a partial charge left over.
+FOLDED = {('tokens_reserved', 'charged'), ('tokens_reserved', 'partially_charged'), ('tokens_refunded', 'partially_charged')}
+
+
+def signed_total(items):
+    """What the signed amounts of the feed add up to, as the web app shows them."""
+    return sum(
+        (Decimal(item['amount']) for item in items
+         if item['amount'] is not None and (item['type'], item.get('reservation_state')) not in FOLDED),
+        Decimal('0'),
+    )
 
 
 def settle(txn, minutes):
@@ -318,6 +338,270 @@ class ProjectActivityTests(ProjectDataHarness):
 
         self.assertEqual(len(one.captured_queries), len(six.captured_queries))
         self.assertEqual(sum(item['type'] == 'post_failed' for item in items), 5)
+
+    def test_the_queries_do_not_grow_with_the_reservations(self):
+        project = self.project(status=VideoProject.Status.COMPLETED)
+        reserve(self.home, '5', self.alice, 1, project=project)
+        with CaptureQueriesContext(connection) as one:
+            self.client.get(activity_url(project))
+        replaced = []
+        for minutes in range(2, 7):
+            user = make_user(f'editor{minutes}')
+            linked = reserve(self.home, '5', user, minutes, project=project)
+            wallet_service.commit_reservation(linked.pk)
+            replaced.append(str(reserve(self.home, '1', user, minutes).pk))  # without a project: named by the metadata
+        project.metadata = {'replaced_reservation_ids': replaced}
+        project.save()
+        with CaptureQueriesContext(connection) as many:
+            items = self.client.get(activity_url(project)).json()
+
+        self.assertEqual(len(one.captured_queries), len(many.captured_queries))
+        self.assertEqual(sum(item['type'] == 'tokens_reserved' for item in items), 11)
+        self.assertEqual({item['actor']['name'] for item in items if item['type'] == 'tokens_reserved'},
+                         {'alice', *(f'editor{minutes}' for minutes in range(2, 7))})
+
+    def test_a_reservation_of_another_project_or_workspace_never_appears(self):
+        project = self.project()
+        other = self.project(title='Otro')
+        mine = reserve(self.home, '4', self.alice, 1, project=project)
+        # Linked to another project of the same workspace, even when this one's metadata names it.
+        theirs = reserve(self.home, '6', self.alice, 2, project=other)
+        # Of another workspace: linked to this project by mistake, or named by its metadata.
+        foreign_linked = reserve(self.team, '7', self.boss, 3, project=project)
+        foreign_named = reserve(self.team, '8', self.boss, 4)
+        # Of this workspace, without a project, and named by nothing.
+        reserve(self.home, '9', self.alice, 5)
+        project.metadata = {
+            'render_reservation_id': str(theirs.pk), 'clip_render_reservation_id': str(foreign_named.pk),
+            'replaced_reservation_ids': [str(theirs.pk), str(foreign_linked.pk), str(foreign_named.pk), 'no-uuid', 3],
+        }
+        project.save()
+
+        items = self.client.get(activity_url(project)).json()
+
+        self.assertEqual([(item['type'], item['amount']) for item in items], [
+            ('tokens_reserved', '-4.0000000000'), ('project_created', None),
+        ])
+        self.assertEqual(items[0]['id'], str(uuid.uuid5(project_activity._NAMESPACE, f"{project.pk}:tokens_reserved:{mine.pk}")))
+        # Nor in the other project's feed: only its own reservation.
+        theirs_items = self.client.get(activity_url(other)).json()
+        self.assertEqual([item['amount'] for item in theirs_items if item['amount']], ['-6.0000000000'])
+
+    def test_only_reservations_are_movements_of_the_project(self):
+        project = self.project()
+        wallet = Wallet.objects.get(workspace=self.home)
+        mine = reserve(self.home, '4', self.alice, 1, project=project)
+        # Rows that never were a reservation that moved the balance: a purchase, a refund and a
+        # spend still pending. Each one linked to the project, and each one only named by its metadata.
+        kinds = [
+            (Transaction.Type.DEPOSIT, Transaction.Status.COMPLETED),
+            (Transaction.Type.REFUND, Transaction.Status.COMPLETED),
+            (Transaction.Type.SPEND, Transaction.Status.PENDING),
+        ]
+        named = []
+        for minutes, (kind, status) in enumerate(kinds, start=2):
+            for linked in (project, None):
+                row = Transaction.objects.create(
+                    wallet=wallet, created_by=self.alice, amount=Decimal('9'), reserved_amount=Decimal('9'),
+                    transaction_type=kind, status=status, description='Procesamiento: Entrevista con Ana', project=linked,
+                )
+                Transaction.objects.filter(pk=row.pk).update(created_at=at(minutes), settled_at=at(minutes))
+                if linked is None:
+                    named.append(str(row.pk))
+        project.metadata = {'reservation_id': named[0], 'render_reservation_id': named[1], 'replaced_reservation_ids': named}
+        project.save()
+
+        items = self.client.get(activity_url(project)).json()
+
+        self.assertEqual([(item['type'], item['amount']) for item in items], [
+            ('tokens_reserved', '-4.0000000000'), ('project_created', None),
+        ])
+        self.assertEqual(items[0]['id'], str(uuid.uuid5(project_activity._NAMESPACE, f"{project.pk}:tokens_reserved:{mine.pk}")))
+
+    def test_a_reservation_linked_and_named_by_the_metadata_appears_once(self):
+        project = self.project()
+        txn = reserve(self.home, '10', self.alice, 1, project=project)
+        project.metadata = {'reservation_id': str(txn.pk), 'replaced_reservation_ids': [str(txn.pk), str(txn.pk)]}
+        project.save()
+
+        items = self.client.get(activity_url(project)).json()
+
+        self.assertEqual([item['type'] for item in items], ['tokens_reserved', 'project_created'])
+        self.assertEqual(items[0]['description'], 'Reserva por el procesamiento')
+
+    def test_what_each_reservation_paid_for_comes_from_what_the_code_wrote_when_it_reserved(self):
+        project = self.project(status=VideoProject.Status.COMPLETED)
+        written = [
+            ('Procesamiento: Entrevista con Ana', 'Reserva por el procesamiento', 'Cobro del procesamiento'),
+            ('Procesamiento: Entrevista con Ana', 'Reserva por volver a procesar', 'Cobro del procesamiento'),
+            # An auto-render whose keys the approval dropped: still in the feed.
+            ('Render automático: Entrevista con Ana', 'Reserva por renderizar sin revisar', 'Cobro del render automático'),
+            ('Render de los clips aprobados: Entrevista con Ana', 'Reserva por el render', 'Cobro del render'),
+            ('Render de clip: El mejor momento', 'Reserva por renderizar «El mejor momento»', 'Cobro del render'),
+            ('Reintento de clip: Final', 'Reserva por reintentar «Final»', 'Cobro del render'),
+            ('Render con otro estilo: Entrevista con Ana', 'Reserva por renderizar todo de nuevo', 'Cobro del render'),
+        ]
+        for minutes, (description, _reserved, _charged) in enumerate(written, start=1):
+            txn = reserve(self.home, '2', self.alice, minutes, project=project, description=description)
+            wallet_service.commit_reservation(txn.pk)
+            settle(txn, minutes)
+
+        items = self.client.get(activity_url(project)).json()
+
+        oldest_first = [item['description'] for item in reversed(items) if item['type'].startswith('tokens_')]
+        self.assertEqual(oldest_first, [text for _description, reserved, charged in written for text in (reserved, charged)])
+        # The render ended with the last reservation that paid one.
+        self.assertEqual([item['type'] for item in items[:3]], ['tokens_charged', 'render_finished', 'tokens_reserved'])
+
+    def test_the_cut_keeps_every_movement_of_the_balance_and_never_splits_one(self):
+        project = self.project(status=VideoProject.Status.COMPLETED)
+        clip = self.clip(project)
+        for minutes in (1, 2, 3):
+            txn = reserve(self.home, '5', self.alice, minutes, project=project)
+            wallet_service.commit_reservation(txn.pk)
+            settle(txn, minutes + 1)
+        for minutes in range(10, 16):  # newer than every reservation
+            post = ScheduledPost.objects.create(video_clip=clip, platform='TIKTOK', publish_at=at(60), status='SCHEDULED')
+            ScheduledPost.objects.filter(pk=post.pk).update(created_at=at(minutes))
+
+        with patch.object(project_activity, 'MAX_ITEMS', 8), patch.object(project_activity, 'EVENT_ROOM', 2):
+            items = self.client.get(activity_url(project)).json()
+        # The three movements (six items) and the two newest posts.
+        self.assertEqual(len(items), 8)
+        self.assertEqual(signed_total(items), Decimal('-15'))
+        self.assertEqual([item['type'] for item in items[:2]], ['post_scheduled', 'post_scheduled'])
+
+        with patch.object(project_activity, 'MAX_ITEMS', 5), patch.object(project_activity, 'EVENT_ROOM', 1):
+            items = self.client.get(activity_url(project)).json()
+        # More movements than fit: the newest ones, whole; never a reservation without its charge.
+        money = [item for item in items if item['type'].startswith('tokens_')]
+        self.assertEqual([item['type'] for item in money], ['tokens_charged', 'tokens_reserved'] * 2)
+        self.assertEqual(len(items), 5)
+
+    def test_movements_that_fill_the_cut_leave_room_for_the_newest_events(self):
+        project = self.project(status=VideoProject.Status.FAILED, pipeline_error_at=at(20))
+        for minutes in (1, 2, 3, 4):
+            txn = reserve(self.home, '5', self.alice, minutes, project=project)
+            wallet_service.commit_reservation(txn.pk)
+            settle(txn, minutes)
+
+        with patch.object(project_activity, 'MAX_ITEMS', 6), patch.object(project_activity, 'EVENT_ROOM', 2):
+            items = self.client.get(activity_url(project)).json()
+
+        # Eight token items alone would fill it: the failure and the creation keep their two places.
+        self.assertEqual([item['type'] for item in items], [
+            'project_failed', 'tokens_charged', 'tokens_reserved', 'tokens_charged', 'tokens_reserved', 'project_created',
+        ])
+        # Fewer events than the room: the movements take the rest.
+        with patch.object(project_activity, 'MAX_ITEMS', 6), patch.object(project_activity, 'EVENT_ROOM', 4):
+            items = self.client.get(activity_url(project)).json()
+        self.assertEqual([item['type'] for item in items][:2], ['project_failed', 'tokens_charged'])
+        self.assertEqual(len(items), 6)
+
+def fresh_render(clip_id, claim_token=None):
+    """What RenderEngine.render_clip saves, a new file each time: a render that left the old file delivered nothing."""
+    return VideoClip.objects.filter(pk=clip_id, render_claim_token=claim_token).update(
+        status=VideoClip.Status.COMPLETED, s3_object_key=f"videos/{clip_id}-{uuid.uuid4().hex}.mp4",
+        render_claim_token=None, render_unfinished_starts=0,
+    ) == 1
+
+
+class ProjectActivityMoneyTests(CapturedTaskFailures, ClipActionsHarness, APITestCase):
+    """The token items of the feed add up to what the project moved the balance, through the real flows."""
+
+    def setUp(self):
+        super().setUp()
+        delete = patch(DELETE_OBJECT)  # a new render deletes the clip's old file
+        delete.start()
+        self.addCleanup(delete.stop)
+
+    def test_the_signed_amounts_add_up_to_what_the_wallet_moved(self):
+        before = self.balances()[0]
+        project = VideoProject.objects.create(
+            workspace=self.workspace, uploaded_by=self.user, title="Historia", source_file="videos/raw/h.mp4",
+            original_r2_key="videos/1/original/h.mp4", add_subtitles=False,
+            status=VideoProject.Status.FAILED, pipeline_stage=PipelineStage.FAILED,
+            pipeline_stage_status={"audio_extracted": "completed", "transcribed": "failed"},
+            pipeline_error_code="CapacityTimeoutError", metadata={"duration": 120.0},
+        )
+        # Created and failed in the transcription: its creation came back. A row from before
+        # Transaction.project (migration 0015 of payments): only the metadata names it.
+        creation = wallet_service.reserve_funds(self.wallet.id, Decimal("12.50"), description="Procesamiento: Historia")
+        wallet_service.rollback_reservation(creation.id)
+        VideoProject.objects.filter(pk=project.pk).update(metadata={**project.metadata, "reservation_id": str(creation.id)})
+
+        # Re-dispatched: the processing is reserved again, and the pipeline charges it.
+        with patch(INGESTION_DELAY):
+            self.assertEqual(self.client.post(project_url(project, "redispatch")).status_code, 202)
+        project.refresh_from_db()
+        self.assertEqual(project.metadata[REPLACED_RESERVATIONS_KEY], [str(creation.pk)])
+        wallet_service.commit_reservation(project.metadata["reservation_id"])
+
+        # The review: three suggestions, two approved (10 s each). One is delivered and the other
+        # fails: the approval is charged in part.
+        VideoProject.objects.filter(pk=project.pk).update(
+            status=VideoProject.Status.AWAITING_APPROVAL, pipeline_stage=PipelineStage.CLIPS_SELECTED,
+            pipeline_error_code='', ai_rationale_log={"suggestions_count": 3},
+        )
+        first, second, _left_out = [
+            VideoClip.objects.create(project=project, title=f"Clip {n}", start_time=n * 20, end_time=n * 20 + 10)
+            for n in range(3)
+        ]
+        with patch(CLIP_DELAY), patch(DELAY), self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(reverse("project-approve-paper-edit", args=[project.pk]), {"approved_segments": [
+                {"start": 0, "end": 10, "clip_id": str(first.pk)}, {"start": 20, "end": 30, "clip_id": str(second.pk)},
+            ]}, format="json")
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        self.render_with(first, side_effect=fresh_render)
+        self.assertTrue(self.render_with(second, side_effect=RuntimeError("bad encode")).failed())
+
+        # The delivered clip, rendered again twice from the editor; the failed one, retried twice:
+        # the first retry fails (returned), the second is delivered.
+        for clip, action, outcome in (
+            (first, "render", fresh_render), (first, "render", fresh_render),
+            (second, "retry", RuntimeError("bad encode")), (second, "retry", fresh_render),
+        ):
+            response, _delay = self.post(clip_action_url(clip, action))
+            self.assertEqual(response.status_code, 202, response.content[:300])
+            self.render_with(clip, side_effect=outcome)
+
+        project.refresh_from_db()
+        self.assertEqual(project.status, VideoProject.Status.COMPLETED)
+        self.assertEqual(len(project.metadata[REPLACED_RESERVATIONS_KEY]), 4)  # the creation and three clip renders
+        moved = self.balances()[0] - before
+        # 12.50 of the processing, 5 of the approval and 5 of each delivered clip render.
+        self.assertEqual(moved, Decimal("-32.50"))
+
+        items = self.client.get(reverse('project-activity', args=[project.pk])).json()
+
+        self.assertEqual(signed_total(items), moved)
+        # Every reservation of the project, once each.
+        reservations = Transaction.objects.filter(project=project).count() + 1  # and the creation, without a project
+        self.assertEqual(reservations, 7)
+        self.assertEqual(sum(item['type'] == 'tokens_reserved' for item in items), reservations)
+        story = [(item['type'], item['description'], item['amount'], item.get('reservation_state')) for item in reversed(items)]
+        self.assertEqual(story, [
+            ('project_created', 'Creó el proyecto', None, None),
+            ('tokens_reserved', 'Reserva por el procesamiento', '-12.5000000000', 'refunded'),
+            ('tokens_refunded', 'Devolución de la reserva', '12.5000000000', 'refunded'),
+            ('tokens_reserved', 'Reserva por volver a procesar', '-12.5000000000', 'charged'),
+            ('tokens_charged', 'Cobro del procesamiento', '-12.5000000000', 'charged'),
+            ('review_ready', 'Listo para revisar: 3 clips sugeridos', None, None),
+            ('review_approved', 'Aprobó 2 clips para renderizar', None, None),
+            ('tokens_reserved', 'Reserva por el render', '-10.0000000000', 'partially_charged'),
+            ('tokens_charged', 'Cobro del render', '-5.0000000000', 'partially_charged'),
+            ('tokens_refunded', 'Devolución por los clips que no se generaron', '5.0000000000', 'partially_charged'),
+            ('tokens_reserved', 'Reserva por renderizar «Clip 0»', '-5.0000000000', 'charged'),
+            ('tokens_charged', 'Cobro del render', '-5.0000000000', 'charged'),
+            ('tokens_reserved', 'Reserva por renderizar «Clip 0»', '-5.0000000000', 'charged'),
+            ('tokens_charged', 'Cobro del render', '-5.0000000000', 'charged'),
+            ('tokens_reserved', 'Reserva por reintentar «Clip 1»', '-5.0000000000', 'refunded'),
+            ('tokens_refunded', 'Devolución de la reserva', '5.0000000000', 'refunded'),
+            ('tokens_reserved', 'Reserva por reintentar «Clip 1»', '-5.0000000000', 'charged'),
+            # The render the project ended with: the last one.
+            ('render_finished', 'Terminó el render: 2 clips listos', None, None),
+            ('tokens_charged', 'Cobro del render', '-5.0000000000', 'charged'),
+        ])
 
 
 # --- one clip -----------------------------------------------------------------

@@ -5,6 +5,7 @@ import { describeProjectStatus } from '@/lib/project-status';
 import { ApiError } from '../errors';
 import { TokenPair, refreshToken } from './auth';
 import { returnedPart } from '@/features/uso/movements';
+import { explainMovements, foldedMovement } from '@/features/proyecto/model';
 import {
   Payment,
   Subscription,
@@ -105,9 +106,21 @@ describe('respuestas reales del backend', () => {
   it('actividad: la reserva y su cobro dicen cómo terminó la reserva, y nada más', () => {
     const items = parse(z.array(ActivityItem), real.project_activity) as ActivityItem[];
     expect(items.filter((item) => item.reservation_state).map((item) => [item.type, item.reservation_state, item.amount])).toEqual([
+      ['tokens_charged', 'charged', -3],
+      ['tokens_reserved', 'charged', -3],
+      ['tokens_charged', 'charged', -5],
+      ['tokens_reserved', 'charged', -5],
       ['tokens_charged', 'charged', -18],
       ['tokens_reserved', 'charged', -18],
     ]);
+  });
+
+  it('actividad: trae todas las reservas del proyecto, y sus montos con signo suman lo que bajó el saldo', () => {
+    const items = parse(z.array(ActivityItem), real.project_activity) as ActivityItem[];
+    // The render of the approval (18) and two renders of clips after it (5 and 3): the second one does not hide the first.
+    const signed = items.filter((item) => item.amount !== null && !foldedMovement(item)).reduce((sum, item) => sum + (item.amount ?? 0), 0);
+    expect(signed).toBe(-26);
+    expect(explainMovements(items)).toMatchObject({ totalLabel: 'Total cobrado', total: '26 tokens' });
   });
 
   it('el aviso de «renderizar sin revisar» y el error de auto-render se pueden leer', () => {
