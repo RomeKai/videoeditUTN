@@ -26,14 +26,26 @@ There is no event log: the feed is read from what the backend already keeps.
   moved (a charged reservation is not a second charge; the part a partial
   charge gave back is not income). With every reservation in the feed, the
   groups add up to what the project moved the balance in all.
-- ``render_finished``: a project that ended ``completed`` or ``partial``, at
-  the settlement of the last reservation that paid a render. When that
-  reservation ended returned whole, the render delivered nothing: the item
-  says it could not be rendered and what came back, and that the clip the
-  user had is still there when it is (a render of a delivered clip that
-  failed gives it back, ``_restore_rerendered_clips``). When it was charged
-  in part and the project ended ``completed`` all the same, a clip it could
-  not generate got back the file it had: the item says so, like the bell.
+- ``render_finished``: one per render that closed, at the settlement of the
+  reservation that paid it (the approval, the auto-render, a whole video's
+  creation, «renderizar todo de nuevo», the render or the retry of a clip).
+  What it says comes from how that render ended, which the close of the
+  fan-out keeps in ``metadata['render_outcomes']`` (tasks/ingestion.py
+  RENDER_OUTCOMES_KEY): the clips it was for, how many ended delivered, how
+  many failed and how many kept the file they had. So an earlier «Terminó el
+  render» stays when a later render fails. A render of the project says
+  how many clips it left; the render of one clip names it («Terminó el
+  render de «Clip»»). When the reservation ended returned whole, the render
+  delivered nothing: the item says it could not be rendered and what came
+  back, and that the clip the user had is still there when it is (a render
+  of a delivered clip that failed gives it back,
+  ``_restore_rerendered_clips``). When it was charged in part and none of its
+  clips failed, a clip it could not generate got back the file it had: the
+  item says so, like the bell. A render that closed before the outcomes were
+  kept has none: the last one of a project that ended ``completed`` or
+  ``partial`` is told from the clips the project has now (what the feed did
+  before), an older one that was charged only says that it ended, and an
+  older one that was returned is not told.
 - ``project_failed``: ``pipeline_error_at``.
 - ``post_scheduled`` / ``post_published`` / ``post_failed``: the
   ScheduledPosts of its clips (``created_at``, then ``updated_at``).
@@ -55,7 +67,8 @@ other items: the cut drops the oldest of those, so the amounts still add up
 to what the project moved. Only a project with more token items than fit
 (dozens of paid renders) loses its oldest groups, whole.
 
-Each item gets a stable id (uuid5 of the project, the kind and its source).
+Each item gets a stable id (uuid5 of the project, the kind and its source:
+the reservation, for a ``render_finished``).
 Five queries whatever the size of the project.
 """
 import uuid
@@ -312,22 +325,52 @@ def _reserved(txn):
     return txn.reserved_amount if txn.reserved_amount is not None else txn.amount
 
 
-def _refunded_render_text(txn, key, metadata, clips, whole_video):
+# The clips each render was for and how they ended (tasks/ingestion.py writes it at the close).
+RENDER_OUTCOMES_KEY = 'render_outcomes'
+
+
+_NO_OUTCOME = {'scope': None, 'clips': 0, 'ready': 0, 'failed': 0, 'kept': 0}
+
+
+def _count(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _render_outcomes(metadata):
+    """{reservation id: its entry of RENDER_OUTCOMES_KEY}, with every count a number."""
+    entries = metadata.get(RENDER_OUTCOMES_KEY)
+    outcomes = {}
+    for entry in entries if isinstance(entries, list) else []:
+        if isinstance(entry, dict) and isinstance(entry.get('reservation'), str):
+            outcomes[entry['reservation']] = {
+                'scope': entry.get('scope'),
+                **{name: _count(entry.get(name)) for name in ('clips', 'ready', 'failed', 'kept')},
+            }
+    return outcomes
+
+
+def _clip_title(txn):
+    """The title a reservation of one clip was written with (its render, its retry), or None."""
+    description = txn.description or ''
+    for prefix, _what in _CLIP_DESCRIPTIONS:
+        if description.startswith(prefix) and description[len(prefix):].strip():
+            return description[len(prefix):].strip()
+    return None
+
+
+def _refunded_text(txn, kept, paid, whole_video, clip_failed=False):
     """
-    What ``render_finished`` says when the render the project ended with was
-    returned whole (``txn``, FAILED): it delivered nothing. The clips it was
-    for that are delivered all the same are the ones the user had before it
-    (given back as they were): only the last render asked for later says
-    which clips it was for (``clip_render_clip_ids``). All of them: "the
-    clip(s) before stayed". Only some (a rerender of a partial project: the
-    others were failed before it and still are): "the ones you had stayed".
-    A retry is of a failed clip: there was nothing to keep.
+    What ``render_finished`` says of a render returned whole (``txn``,
+    FAILED): it delivered nothing. ``kept`` of the ``paid`` clips it was for
+    are delivered all the same: the ones the user had before it, given back as
+    they were. All of them: "the clip(s) before stayed". Only some (a rerender
+    of a partial project: the others were failed before it and still are):
+    "the ones you had stayed". A retry is of a failed clip, and so is the
+    render of one clip that ended failed (``clip_failed``): there was nothing
+    to keep.
     """
     refund = f"Te devolvimos {_tokens(_reserved(txn))}."
-    paid = metadata.get('clip_render_clip_ids') if key == 'clip_render_reservation_id' else None
-    paid = [clips.get(_uuid(clip_id)) for clip_id in paid] if isinstance(paid, list) else []
-    kept = sum(1 for status in paid if status in ('completed', 'published'))
-    if kept and kept == len(paid):
+    if kept and kept == paid:
         if whole_video:
             what = "quedó el video anterior"
         else:
@@ -336,11 +379,106 @@ def _refunded_render_text(txn, key, metadata, clips, whole_video):
     if kept:
         what = "quedó el clip que ya tenías" if kept == 1 else "quedaron los clips que ya tenías"
         return f"No se pudo volver a renderizar: {what}. {refund}"
-    if (txn.description or '').startswith(_RETRY_PREFIX):
+    if (txn.description or '').startswith(_RETRY_PREFIX) or (clip_failed and not whole_video):
         return f"No se pudo renderizar el clip: sigue con error. {refund}"
     if whole_video:
         return f"El render del video falló. {refund}"
     return f"No se pudo renderizar: no se generó ningún clip. {refund}"
+
+
+def _refunded_render_text(txn, key, metadata, clips, whole_video):
+    """
+    ``_refunded_text`` of a render whose outcome was not kept (it closed
+    before RENDER_OUTCOMES_KEY), read from what the project has now: only the
+    last render asked for later says which clips it was for
+    (``clip_render_clip_ids``), and the ones delivered are the ones it kept.
+    """
+    paid = metadata.get('clip_render_clip_ids') if key == 'clip_render_reservation_id' else None
+    paid = [clips.get(_uuid(clip_id)) for clip_id in paid] if isinstance(paid, list) else []
+    kept = sum(1 for status in paid if status in ('completed', 'published'))
+    return _refunded_text(txn, kept, len(paid), whole_video)
+
+
+def _outcome_refunded_text(txn, outcome, whole_video):
+    return _refunded_text(
+        txn, outcome['kept'], outcome['clips'], whole_video,
+        clip_failed=outcome['scope'] == 'clip' and outcome['failed'] > 0,
+    )
+
+
+def refunded_render_text(project, txn):
+    """
+    The ``description`` of the ``render_finished`` of a render returned whole
+    (``txn``, a reservation of ``project``). For the bell of one clip's render
+    (notifications.clip_render_failed_message): the same words as the feed.
+    """
+    metadata = project.metadata if isinstance(project.metadata, dict) else {}
+    whole_video = _is_whole_video(project, metadata)
+    outcome = _render_outcomes(metadata).get(str(txn.pk))
+    if outcome is not None:
+        return _outcome_refunded_text(txn, outcome, whole_video)
+    key = next((key for key, txn_id in _linked_reservations(metadata).items() if txn_id == txn.pk), None)
+    clips = dict(VideoClip.objects.filter(project_id=project.pk).values_list('pk', 'status'))
+    return _refunded_render_text(txn, key, metadata, clips, whole_video)
+
+
+def _kept_text(txn):
+    """Charged in part and nothing failed: the bell's words (notifications.render_finished_message)."""
+    return (
+        "No pudimos volver a generar todos los clips: los que ya tenías quedaron como estaban. "
+        f"Te devolvimos {_tokens(_reserved(txn) - txn.amount)}."
+    )
+
+
+def _counted_text(ready, failed):
+    if failed:
+        return f"Terminó el render: {_plural(ready, 'clip listo', 'clips listos')} y {failed} con error"
+    return f"Terminó el render: {_plural(ready, 'clip listo', 'clips listos')}"
+
+
+def _finished_text(txn, outcome, whole_video):
+    """
+    What ``render_finished`` says of the render ``txn`` paid, settled, from
+    its ``outcome`` (None: it closed before the outcomes were kept, and it
+    was charged: only that it ended).
+    """
+    if txn.status == Transaction.Status.FAILED:
+        return _outcome_refunded_text(txn, outcome or _NO_OUTCOME, whole_video)
+    if whole_video:
+        return "Terminó el render del video"
+    title = _clip_title(txn)
+    if title is not None:
+        return f"Terminó el render de «{title}»"
+    partial = _reserved(txn) > txn.amount
+    if outcome is None:
+        return "Terminó el render: parte falló" if partial else "Terminó el render"
+    if partial and outcome['kept'] and not outcome['failed']:
+        return _kept_text(txn)
+    return _counted_text(outcome['ready'], outcome['failed'])
+
+
+def _last_render_text(project, paying, key, metadata, clips, whole_video):
+    """
+    What ``render_finished`` says of the last render (``paying``) of a project
+    that ended ``completed`` or ``partial``, when its outcome was not kept:
+    the clips it counts are the ones the project has now.
+    """
+    statuses = [status for _pk, status, _created in clips]
+    ready = sum(1 for status in statuses if status in ('completed', 'published'))
+    failed = sum(1 for status in statuses if status == 'failed')
+    if paying.status == Transaction.Status.FAILED:
+        # Returned whole: that render delivered nothing, whatever the project has from before.
+        return _refunded_render_text(
+            paying, key, metadata, {pk: status for pk, status, _created in clips}, whole_video,
+        )
+    if whole_video:
+        return "Terminó el render del video" if not failed else "El render del video falló"
+    if paying.status == Transaction.Status.COMPLETED and _clip_title(paying) is not None:
+        return f"Terminó el render de «{_clip_title(paying)}»"
+    if project.status == VideoProject.Status.COMPLETED and _reserved(paying) > paying.amount:
+        # Charged in part and nothing is failed: the clips it could not generate got back the file they had.
+        return _kept_text(paying)
+    return _counted_text(ready, failed)
 
 
 def _prompt_description(pte):
@@ -416,34 +554,24 @@ def build_activity(project):
             renders.append(txn)
         _add_movement(feed, txn, purpose)
 
-    if project.status in (VideoProject.Status.COMPLETED, VideoProject.Status.PARTIAL):
-        # The last render the project ended with: the clips it counts are those it left.
-        paying = max(renders, key=lambda txn: txn.settled_at or txn.created_at, default=None)
-        ready = sum(1 for status, _created in clip_statuses if status in ('completed', 'published'))
-        failed = sum(1 for status, _created in clip_statuses if status == 'failed')
-        if paying is not None and paying.status == Transaction.Status.FAILED:
-            # Returned whole: that render delivered nothing, whatever the project has from before.
-            text = _refunded_render_text(
-                paying, keys.get(paying.pk), metadata, {pk: status for pk, status, _created in clips}, whole_video,
-            )
-        elif (
-            paying is not None and not whole_video and project.status == VideoProject.Status.COMPLETED
-            and _reserved(paying) > paying.amount
-        ):
-            # Charged in part and nothing is failed: the clips it could not generate got back
-            # the file they had. The bell's words (notifications.render_finished_message).
-            text = (
-                "No pudimos volver a generar todos los clips: los que ya tenías quedaron como estaban. "
-                f"Te devolvimos {_tokens(_reserved(paying) - paying.amount)}."
-            )
-        elif whole_video:
-            text = "Terminó el render del video" if not failed else "El render del video falló"
-        elif failed:
-            text = f"Terminó el render: {_plural(ready, 'clip listo', 'clips listos')} y {failed} con error"
+    # One per render that closed. What it says is read from how it ended
+    # (RENDER_OUTCOMES_KEY); the last render of a project that ended, when it
+    # closed before the outcomes were kept, from the clips the project has now.
+    outcomes = _render_outcomes(metadata)
+    ended = project.status in (VideoProject.Status.COMPLETED, VideoProject.Status.PARTIAL)
+    last = max(renders, key=lambda txn: txn.settled_at or txn.created_at, default=None)
+    for txn in renders:
+        outcome = outcomes.get(str(txn.pk))
+        if outcome is None and txn is last and ended:
+            text = _last_render_text(project, txn, keys.get(txn.pk), metadata, clips, whole_video)
+        elif txn.status == Transaction.Status.RESERVED:
+            continue  # still rendering, or its settle is still to run
+        elif outcome is None and txn.status == Transaction.Status.FAILED:
+            # Returned and nothing says why: a project that failed before the render, most times.
+            continue
         else:
-            text = f"Terminó el render: {_plural(ready, 'clip listo', 'clips listos')}"
-        at = (paying.settled_at or paying.created_at) if paying is not None else None
-        feed.add('render_finished', at, text)
+            text = _finished_text(txn, outcome, whole_video)
+        feed.add('render_finished', txn.settled_at or txn.created_at, text, source=str(txn.pk))
 
     if project.status == VideoProject.Status.FAILED:
         feed.add('project_failed', project.pipeline_error_at or project.created_at, "El proceso falló")

@@ -107,6 +107,11 @@ export interface PaidRender {
   /** Its reservation: settled by the seconds delivered when the last clip ends. */
   reservation: string;
   clipIds: string[];
+  /**
+   * What it renders (`clip_render_scope` in the backend): one clip (its editor, a retry) or the project
+   * («renderizar todo de nuevo», and any render of a whole video). Only the project's is told by the bell when it ends.
+   */
+  scope: 'clip' | 'project';
   /** What the user had of each clip: it comes back if the new render of that clip fails. */
   previous: Record<string, { status: 'completed' | 'published'; key: string | null }>;
 }

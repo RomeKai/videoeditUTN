@@ -22,6 +22,11 @@ class Notification(models.Model):
         PAYMENT_APPROVED = 'payment_approved', 'Pago aprobado'
         PAYMENT_REJECTED = 'payment_rejected', 'Pago rechazado'
 
+    # ``reason`` of a ``render_finished`` that is of one clip's render that gave
+    # nothing (services.notify_clip_render_finished): its email does not say a
+    # render ended (emails._content).
+    CLIP_RENDER_FAILED = 'clip_render_failed'
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     # No index of its own: every read is by user and workspace (the index below starts with the user).
     user = models.ForeignKey(
@@ -31,6 +36,13 @@ class Notification(models.Model):
     kind = models.CharField(max_length=32, choices=Kind.choices)
     title = models.CharField(max_length=300)
     body = models.CharField(max_length=300, blank=True, default='')
+    # Which case of its kind it is, when the kind has more than one text for its
+    # email: a code this app writes (CLIP_RENDER_FAILED), never text. Empty: the
+    # kind's own case. Not sent to the web app: the bell shows title and body.
+    # db_default keeps the default in the database, so a worker running the
+    # previous code (which does not know the column) can still write
+    # notifications between the migration and its restart.
+    reason = models.CharField(max_length=32, blank=True, default='', db_default='')
     # Where it leads: the web app builds the path from the kind and these ids.
     project = models.ForeignKey('videos.VideoProject', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     post = models.ForeignKey('videos.ScheduledPost', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')

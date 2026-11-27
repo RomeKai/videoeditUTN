@@ -148,10 +148,34 @@ function stepTimes(timing: StageTiming | undefined, state: StageState, now: numb
   return { startedAt, durationSeconds };
 }
 
+/**
+ * The project is rendering one clip again, not the project: its «Renderizar» step still has the end of the
+ * project's render (`stage_timings.render_dispatched`). The backend deletes that end when a render of the
+ * project starts (the approval, the auto-render, a whole video, «renderizar todo de nuevo») and leaves it
+ * when the render is of one clip.
+ */
+export function clipRenderRunning(project: Pick<Project, 'status' | 'stage_timings'>): boolean {
+  const timing = project.stage_timings?.render_dispatched;
+  return project.status === 'rendering' && Boolean(timing?.finished_at) && timing?.duration_s != null;
+}
+
 type StepsProject = Pick<
   Project,
   'status' | 'pipeline_stage' | 'pipeline_stage_status' | 'pipeline_error_code' | 'clips' | 'project_type' | 'auto_render_bypass' | 'stage_timings' | 'metadata'
->;
+> &
+  Partial<Pick<Project, 'ai_rationale_log'>>;
+
+/**
+ * How many clips the selection suggested (`ai_rationale_log.suggestions_count`, what Actividad says in
+ * «Listo para revisar: N clips sugeridos»). The clips the project has are fewer once a review left some out
+ * (the approval deletes them), so «Elegir clips» counts the suggestions. Without that number (a row of the
+ * list, an older project), the clips there are.
+ */
+export function suggestedClipCount(project: Pick<StepsProject, 'ai_rationale_log' | 'clips'>): number {
+  const suggested = project.ai_rationale_log?.suggestions_count;
+  if (typeof suggested === 'number' && Number.isInteger(suggested) && suggested >= 0) return suggested;
+  return countClips(project.clips).total;
+}
 
 /**
  * Rows of the process timeline. A whole-video project has no "Elegir clips" and
@@ -175,7 +199,10 @@ export function buildProcessSteps(project: StepsProject, now: number = Date.now(
     const timing = project.stage_timings?.[stage];
     let state: StageState;
     if (key === 'render') {
-      if (project.status === 'completed') state = 'done';
+      // A render of the project starts the step again (no end until it closes). Rendering with the step
+      // still closed, what runs is the render of one clip (its editor, a retry): the project's render is
+      // done, with the times it had, and is not shown as running since then.
+      if (project.status === 'completed' || clipRenderRunning(project)) state = 'done';
       else if (project.status === 'partial') state = clips.ready > 0 ? 'done' : 'fail';
       else if (project.status === 'rendering' || (project.status === 'ingesting' && finished >= stageIndex('clips_selected'))) state = 'run';
       else state = 'pending';
@@ -196,11 +223,12 @@ export function buildProcessSteps(project: StepsProject, now: number = Date.now(
     let description = state === 'done' ? text.done : state === 'run' ? text.running : text.pending;
     if (state === 'wait') description = WAITING_TEXT;
     if (state === 'fail') description = FAIL_STEP_TEXT[project.pipeline_error_code] ?? 'Algo falló de nuestro lado.';
-    if (key === 'select' && state === 'done' && clips.total > 0) description = `Encontramos ${plural(clips.total, 'clip', 'clips')}.`;
+    const suggested = suggestedClipCount(project);
+    if (key === 'select' && state === 'done' && suggested > 0) description = `Encontramos ${plural(suggested, 'clip', 'clips')}.`;
     if (key === 'render') {
       if (single) {
         description = state === 'done' ? 'Tu video está listo.' : state === 'run' ? 'Estamos editando tu video.' : state === 'fail' ? 'El video no se pudo generar.' : 'Editamos el video completo: no hay revisión.';
-      } else if (state === 'run') description = `${clips.ready} de ${clips.total} clips listos.`;
+      } else if (state === 'run' || project.status === 'rendering') description = `${clips.ready} de ${clips.total} clips listos.`;
       else if (project.status === 'completed') description = `${clips.ready} de ${clips.total} clips listos.`;
       else if (project.status === 'partial')
         description = `${plural(clips.ready, 'clip listo', 'clips listos')} y ${clips.failed} no se ${clips.failed === 1 ? 'pudo' : 'pudieron'} generar.`;

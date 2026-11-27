@@ -1,18 +1,23 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { delay, http, HttpResponse } from 'msw';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { API_URL } from '@/api/config';
 import real from '@/api/contracts/drf/responses.json';
 import { server } from '@/api/mocks/server';
 import { loadDb, saveDb } from '@/api/mocks/state';
 import { ProjectsScreen } from './ProjectsScreen';
+import { nav } from './testing-nav';
 import { allowSlowScreens, renderScreen, startScenario } from '@/testing';
 
 allowSlowScreens();
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
+
+// The list keeps its filter, order, page and search in the URL: a URL that changes, empty before each test.
+vi.mock('next/navigation', async () => (await import('./testing-nav')).navigationMock());
+afterEach(() => nav.set(''));
 
 const rows = () => within(screen.getByRole('table', { name: 'Proyectos del workspace' })).getAllByRole('row').slice(1);
 const titles = () => rows().map((row) => row.querySelector('a')?.textContent?.replace(/^(Archivo|Link[^:]*): /, '') ?? '');
@@ -99,8 +104,9 @@ describe('B2 · el servidor pagina, filtra, busca y ordena', () => {
     const sample = titles()[3] ?? '';
     await user.type(screen.getByRole('searchbox', { name: 'Buscar proyectos por título' }), `  ${sample.toUpperCase()} `);
     await waitFor(() => expect(lastQuery(asked).get('search')).toBe(sample.toUpperCase()));
-    await waitFor(() => expect(titles()).toContain(sample));
-    expect(rows().length).toBeLessThan(25);
+    // The page before stays on screen until the search answers: wait for the shorter list.
+    await waitFor(() => expect(rows().length).toBeLessThan(25));
+    expect(titles()).toContain(sample);
     // The counts follow the search.
     expect(within(filters).getByRole('button', { name: /Todos/ })).toHaveTextContent(`Todos${rows().length}`);
   });
@@ -159,6 +165,33 @@ describe('B2 · una página que ya no existe (404)', () => {
     db.projects = db.projects.filter((project) => project.workspace !== workspace || keep.has(project.id));
     saveDb(db);
   }
+
+  it('una URL con una página muy pasada del final no pide las páginas de a una', async () => {
+    startScenario('estudio-norte');
+    const asked = watchListRequests();
+    nav.set('pagina=60');
+    renderScreen(<ProjectsScreen />);
+    expect(await screen.findByText(/1–8 de 8 proyectos/, {}, { timeout: 5000 })).toBeInTheDocument();
+    await waitFor(() => expect(nav.get()).toBe(''));
+    // The page of the URL (404) and the first one; not the 59 in between.
+    const pages = asked.map((query) => new URLSearchParams(query).get('page'));
+    expect([...new Set(pages)]).toEqual(['60', '1']);
+    expect(pages.length).toBeLessThanOrEqual(3);
+  });
+
+  it('con una página en pantalla, una muy pasada del final va a la última que esa página conoce', async () => {
+    startScenario('muchos-proyectos');
+    const asked = watchListRequests();
+    renderScreen(<ProjectsScreen />);
+    await screen.findByText(/1–25 de 64 proyectos/);
+    // Someone pastes a page number in the address bar (or follows an old link) without leaving the screen.
+    nav.set('pagina=60');
+    expect(await screen.findByText(/51–64 de 64 proyectos/, {}, { timeout: 5000 })).toBeInTheDocument();
+    expect(nav.get()).toBe('pagina=3');
+    const pages = asked.map((query) => new URLSearchParams(query).get('page'));
+    expect(pages.filter((page) => page !== '1' && page !== '60' && page !== '3')).toEqual([]);
+    expect(pages.length).toBeLessThanOrEqual(4);
+  });
 
   it('borrar la única fila de la última página vuelve a la anterior, sin error', async () => {
     startScenario('muchos-proyectos');

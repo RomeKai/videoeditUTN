@@ -594,17 +594,22 @@ class ProjectActivityMoneyTests(CapturedTaskFailures, ClipActionsHarness, APITes
             ('review_ready', 'Listo para revisar: 3 clips sugeridos', None, None),
             ('review_approved', 'Aprobó 2 clips para renderizar', None, None),
             ('tokens_reserved', 'Reserva por el render', '-10.0000000000', 'partially_charged'),
+            # One per render, each with what that render left: the approval's two clips…
+            ('render_finished', 'Terminó el render: 1 clip listo y 1 con error', None, None),
             ('tokens_charged', 'Cobro del render', '-5.0000000000', 'partially_charged'),
             ('tokens_refunded', 'Devolución por los clips que no se generaron', '5.0000000000', 'partially_charged'),
+            # …and the clip of each render asked for later.
             ('tokens_reserved', 'Reserva por renderizar «Clip 0»', '-5.0000000000', 'charged'),
+            ('render_finished', 'Terminó el render de «Clip 0»', None, None),
             ('tokens_charged', 'Cobro por renderizar «Clip 0»', '-5.0000000000', 'charged'),
             ('tokens_reserved', 'Reserva por renderizar «Clip 0»', '-5.0000000000', 'charged'),
+            ('render_finished', 'Terminó el render de «Clip 0»', None, None),
             ('tokens_charged', 'Cobro por renderizar «Clip 0»', '-5.0000000000', 'charged'),
             ('tokens_reserved', 'Reserva por reintentar «Clip 1»', '-5.0000000000', 'refunded'),
+            ('render_finished', 'No se pudo renderizar el clip: sigue con error. Te devolvimos 5 tokens.', None, None),
             ('tokens_refunded', 'Devolución de la reserva', '5.0000000000', 'refunded'),
             ('tokens_reserved', 'Reserva por reintentar «Clip 1»', '-5.0000000000', 'charged'),
-            # The render the project ended with: the last one.
-            ('render_finished', 'Terminó el render: 2 clips listos', None, None),
+            ('render_finished', 'Terminó el render de «Clip 1»', None, None),
             ('tokens_charged', 'Cobro por reintentar «Clip 1»', '-5.0000000000', 'charged'),
         ])
         # «Cómo se calculó» lists the charges by their description: the approval's and each clip's
@@ -618,9 +623,155 @@ class ProjectActivityMoneyTests(CapturedTaskFailures, ClipActionsHarness, APITes
     def activity(self, project):
         return self.client.get(reverse('project-activity', args=[project.pk])).json()
 
+    def render_items(self, project):
+        """The ``render_finished`` items, newest first."""
+        return [item for item in self.activity(project) if item['type'] == 'render_finished']
+
     def render_item(self, project):
-        (item,) = [item for item in self.activity(project) if item['type'] == 'render_finished']
-        return item
+        """The one of the last render."""
+        return self.render_items(project)[0]
+
+    def render_texts(self, project):
+        """What each render said, oldest first."""
+        return [item['description'] for item in reversed(self.render_items(project))]
+
+    def approved_and_rendered(self):
+        """A review approved through the view (two 10 s clips) and rendered: its close keeps how it ended."""
+        project = VideoProject.objects.create(
+            workspace=self.workspace, uploaded_by=self.user, title="Aprobado", source_file="videos/raw/a.mp4",
+            original_r2_key="videos/1/original/a.mp4", add_subtitles=False,
+            status=VideoProject.Status.AWAITING_APPROVAL, pipeline_stage=PipelineStage.CLIPS_SELECTED,
+            metadata={"duration": 120.0}, ai_rationale_log={"suggestions_count": 2},
+        )
+        clips = [
+            VideoClip.objects.create(project=project, title=f"Clip {n}", start_time=n * 20, end_time=n * 20 + 10)
+            for n in range(2)
+        ]
+        with patch(CLIP_DELAY), patch(DELAY), self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(reverse("project-approve-paper-edit", args=[project.pk]), {"approved_segments": [
+                {"start": clip.start_time, "end": clip.end_time, "clip_id": str(clip.pk)} for clip in clips
+            ]}, format="json")
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        for clip in clips:
+            self.render_with(clip, side_effect=fresh_render)
+        project.refresh_from_db()
+        self.assertEqual(project.status, VideoProject.Status.COMPLETED)
+        return project, clips
+
+    def test_the_render_of_the_project_is_still_told_after_a_later_render_fails(self):
+        project, (first, _second) = self.approved_and_rendered()
+        (original,) = self.render_items(project)
+        self.assertEqual(original['description'], 'Terminó el render: 2 clips listos')
+        approval = Transaction.objects.get(pk=project.metadata["render_reservation_id"])
+        # Its id is the reservation's: the same on every read, and after whatever comes later.
+        self.assertEqual(
+            original['id'], str(uuid.uuid5(project_activity._NAMESPACE, f"{project.pk}:render_finished:{approval.pk}")),
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response, _delay = self.post(clip_action_url(first, "render"))
+            self.assertEqual(response.status_code, 202, response.content[:300])
+            self.assertTrue(self.render_with(first, side_effect=RuntimeError("bad encode")).failed())
+
+        failed, kept = self.render_items(project)
+        self.assertEqual(kept, original)
+        self.assertEqual(
+            failed['description'], 'No se pudo volver a renderizar: quedó el clip anterior. Te devolvimos 5 tokens.',
+        )
+        self.assertNotEqual(failed['id'], original['id'])
+        # The bell of that clip's render says the same, word for word: its only notice.
+        from apps.notifications.models import Notification
+        bodies = list(Notification.objects.filter(user=self.user, project=project).order_by('created_at').values_list('body', flat=True))
+        self.assertEqual(bodies, [failed['description']])
+
+        # Rendered again, now delivered: a third item, and the two before as they were.
+        response, _delay = self.post(clip_action_url(first, "render"))
+        self.assertEqual(response.status_code, 202, response.content[:300])
+        self.render_with(first, side_effect=fresh_render)
+        self.assertEqual(self.render_texts(project), [
+            'Terminó el render: 2 clips listos',
+            'No se pudo volver a renderizar: quedó el clip anterior. Te devolvimos 5 tokens.',
+            'Terminó el render de «Clip 0»',
+        ])
+        self.assertEqual(self.render_items(project)[1:], [failed, original])
+
+    def test_each_kind_of_render_has_its_own_words(self):
+        # The approval, with both clips delivered.
+        project, (first, second) = self.approved_and_rendered()
+        # Everything again: one comes out and the other keeps the file it had.
+        self.post(project_url(project, "rerender"))
+        self.render_with(first, side_effect=fresh_render)
+        self.render_with(second, side_effect=RuntimeError("bad encode"))
+        # Everything again: nothing comes out.
+        self.post(project_url(project, "rerender"))
+        for clip in (first, second):
+            self.render_with(clip, side_effect=RuntimeError("bad encode"))
+        # Everything again, delivered.
+        self.post(project_url(project, "rerender"))
+        for clip in (first, second):
+            self.render_with(clip, side_effect=fresh_render)
+
+        self.assertEqual(self.render_texts(project), [
+            'Terminó el render: 2 clips listos',
+            'No pudimos volver a generar todos los clips: los que ya tenías quedaron como estaban. Te devolvimos 5 tokens.',
+            'No se pudo volver a renderizar: quedaron los clips anteriores. Te devolvimos 10 tokens.',
+            'Terminó el render: 2 clips listos',
+        ])
+        project.refresh_from_db()
+        self.assertEqual([entry['scope'] for entry in project.metadata['render_outcomes']], ['project'] * 4)
+
+    def test_a_whole_video_tells_each_of_its_renders(self):
+        project, clip = self.whole_video()
+        for outcome in (RuntimeError("bad encode"), fresh_render):
+            response, _delay = self.post(clip_action_url(clip, "render"))
+            self.assertEqual(response.status_code, 202, response.content[:300])
+            self.render_with(clip, side_effect=outcome)
+
+        self.assertEqual(self.render_texts(project), [
+            'Terminó el render del video',  # its creation, charged before the outcomes were kept
+            'No se pudo volver a renderizar: quedó el video anterior. Te devolvimos 15 tokens.',
+            'Terminó el render del video',
+        ])
+
+    def test_renders_closed_before_the_outcomes_were_kept_say_only_what_is_known(self):
+        # ``finished`` leaves an approval charged in part with nothing kept of how it ended.
+        project, (_done, failed) = self.finished((DONE, FAILED))
+        # The last render of a project that ended: told from the clips it has now, as before.
+        self.assertEqual(self.render_texts(project), ['Terminó el render: 1 clip listo y 1 con error'])
+
+        response, _delay = self.post(clip_action_url(failed, "retry"))
+        self.assertEqual(response.status_code, 202, response.content[:300])
+        self.render_with(failed, side_effect=fresh_render)
+
+        # No longer the last: what its clips were then is not known, only that part of it failed.
+        self.assertEqual(self.render_texts(project), ['Terminó el render: parte falló', 'Terminó el render de «Clip 1»'])
+
+        # An older render returned whole with nothing kept is not told: most times the project failed before it.
+        project.refresh_from_db()
+        metadata = {key: value for key, value in project.metadata.items() if key != 'render_outcomes'}
+        VideoProject.objects.filter(pk=project.pk).update(metadata=metadata)
+        Transaction.objects.filter(pk=metadata["render_reservation_id"]).update(status=Transaction.Status.FAILED)
+        self.assertEqual(self.render_texts(project), ['Terminó el render de «Clip 1»'])
+
+    def test_only_the_newest_outcomes_are_kept(self):
+        from apps.videos.tasks.ingestion import RENDER_OUTCOMES_KEPT, _metadata_with_render_outcome
+
+        metadata = {"other": 1}
+        for number in range(RENDER_OUTCOMES_KEPT + 3):
+            metadata = _metadata_with_render_outcome(metadata, {"reservation": str(number), "ready": number})
+        # Written again (a second close): once, with the newest.
+        metadata = _metadata_with_render_outcome(metadata, {"reservation": "10", "ready": 99})
+
+        kept = metadata["render_outcomes"]
+        self.assertEqual(len(kept), RENDER_OUTCOMES_KEPT)
+        self.assertEqual(kept[-1], {"reservation": "10", "ready": 99})
+        self.assertNotIn("0", [entry["reservation"] for entry in kept])
+        self.assertEqual(metadata["other"], 1)
+        # What is there is not a list (written by hand): it starts one.
+        self.assertEqual(
+            _metadata_with_render_outcome({"render_outcomes": "x"}, {"reservation": "a"})["render_outcomes"],
+            [{"reservation": "a"}],
+        )
 
     def test_a_clip_render_that_fails_says_the_clip_before_stayed_and_what_came_back(self):
         project, (first, _second) = self.finished((DONE, DONE))
@@ -644,7 +795,8 @@ class ProjectActivityMoneyTests(CapturedTaskFailures, ClipActionsHarness, APITes
         # At the refund, next to it; the event itself moves no tokens.
         self.assertEqual(parse_datetime(item['created_at']), refunded.settled_at)
         self.assertIsNone(item['amount'])
-        self.assertNotIn('Terminó el render', ' '.join(row['description'] for row in self.activity(project)))
+        # The render before it is still told: one item per render.
+        self.assertEqual(len(self.render_items(project)), 2)
 
     def test_a_rerender_of_every_clip_that_fails_says_the_clips_before_stayed(self):
         project, _clips = self.finished((DONE, DONE))
@@ -752,7 +904,7 @@ class ProjectActivityMoneyTests(CapturedTaskFailures, ClipActionsHarness, APITes
 
         self.assertEqual(
             self.render_item(project)['description'],
-            'No se pudo renderizar: no se generó ningún clip. Te devolvimos 5 tokens.',
+            'No se pudo renderizar el clip: sigue con error. Te devolvimos 5 tokens.',
         )
 
     def test_a_render_delivered_after_a_failed_one_says_it_finished(self):
@@ -762,7 +914,10 @@ class ProjectActivityMoneyTests(CapturedTaskFailures, ClipActionsHarness, APITes
             self.assertEqual(response.status_code, 202, response.content[:300])
             self.render_with(first, side_effect=outcome)
 
-        self.assertEqual(self.render_item(project)['description'], 'Terminó el render: 2 clips listos')
+        self.assertEqual(self.render_texts(project)[1:], [
+            'No se pudo volver a renderizar: quedó el clip anterior. Te devolvimos 5 tokens.',
+            f'Terminó el render de «{first.title}»',
+        ])
 
 
 # --- one clip -----------------------------------------------------------------

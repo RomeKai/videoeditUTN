@@ -371,7 +371,7 @@ def _replaced(metadata, key):
     return replaced
 
 
-def _start_paid_render(request, project_id, pick, description, style=None):
+def _start_paid_render(request, project_id, pick, description, style=None, whole_project=False):
     """
     A render the user pays for, of the clips ``pick(project)`` returns (or a
     Response that refuses it), in one transaction under the project row lock:
@@ -387,12 +387,17 @@ def _start_paid_render(request, project_id, pick, description, style=None):
        a clip that cannot be queued is queued by a resume of the pipeline, or by
        recover_stuck_renders).
 
+    ``whole_project``: it renders every clip of the project («renderizar todo
+    de nuevo»), not one. With the render of a whole video, it is the render
+    the «Renderizar» step describes and the bell tells (CLIP_RENDER_SCOPE_KEY).
+
     Returns ``(project, clips, reservation)`` or the Response that refused it.
     """
     from .services.ai.pipeline_state import PipelineStage, advance
     from .tasks import finalize_project_render
     from .tasks.ingestion import (
-        CLIP_RENDER, CLIP_RENDER_PREVIOUS_KEY, _dispatch_approved_clips, _metadata_with_render_started,
+        CLIP_RENDER, CLIP_RENDER_PREVIOUS_KEY, CLIP_RENDER_SCOPE_KEY, RENDER_SCOPE_CLIP, RENDER_SCOPE_PROJECT,
+        _dispatch_approved_clips, _is_whole_video, _metadata_for_render_dispatch,
     )
 
     # A fan-out that closed and whose settle did not run (a worker that died
@@ -431,13 +436,17 @@ def _start_paid_render(request, project_id, pick, description, style=None):
                 raise _Refused(_error(409, CLIP_RENDERING, 'clip_rendering'))
             advance(project_id, project.pipeline_stage, PipelineStage.RENDER_DISPATCHED)
             metadata = {key: value for key, value in (project.metadata or {}).items() if key not in _RECOVERY_KEYS}
-            # A new render: its own start, and nothing of the times of the one before.
-            metadata = _metadata_with_render_started(metadata)
+            # The «Renderizar» step is the render of the project: every clip
+            # again, or the one clip of a whole video, starts it again; the
+            # render of one clip leaves its times as they are.
+            scope = RENDER_SCOPE_PROJECT if whole_project or _is_whole_video(project) else RENDER_SCOPE_CLIP
+            metadata = _metadata_for_render_dispatch(metadata, scope == RENDER_SCOPE_PROJECT)
             metadata[REPLACED_RESERVATIONS_KEY] = _replaced(metadata, CLIP_RENDER.reservation_key)
             metadata.update({
                 CLIP_RENDER.reservation_key: str(reservation.id),
                 CLIP_RENDER.clip_ids_key: [str(pk) for pk in ids],
                 CLIP_RENDER.seconds_key: seconds,
+                CLIP_RENDER_SCOPE_KEY: scope,
                 # What the user had: given back if the new render fails, and
                 # never counted as delivered by this render.
                 CLIP_RENDER_PREVIOUS_KEY: {
@@ -780,6 +789,7 @@ class ProjectRerenderView(_WorkspaceScoped):
 
         started = _start_paid_render(
             request, project.pk, pick, lambda locked, clips: f"Render con otro estilo: {locked.title}", style=style,
+            whole_project=True,
         )
         if isinstance(started, Response):
             return started

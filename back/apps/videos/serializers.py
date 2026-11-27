@@ -75,6 +75,9 @@ _NOT_SENT_BOOLEANS = {
 }
 
 
+LOGO_NOT_AN_IMAGE = "El logo no es una imagen válida. Subí una imagen PNG."
+
+
 def _brand_kit_file_cap(field, what):
     """The validator of a file of the kit: a 400 on the field over its cap (apps.core.upload_limits)."""
 
@@ -97,6 +100,11 @@ class BrandKitSerializer(serializers.ModelSerializer):
         model = BrandKit
         fields = '__all__'
         read_only_fields = ('id', 'user', 'workspace')
+        extra_kwargs = {
+            # A file that is not an image (or a broken one): DRF's text is in English. In the
+            # words of the other file errors of the kit («El logo pesa más de 2 MB.»).
+            'watermark_logo': {'error_messages': {'invalid_image': LOGO_NOT_AN_IMAGE}},
+        }
 
     validate_primary_font = _brand_kit_file_cap('primary_font', 'La fuente')
     validate_secondary_font = _brand_kit_file_cap('secondary_font', 'La fuente')
@@ -173,8 +181,11 @@ class VideoClipSerializer(serializers.ModelSerializer):
 
 # What a row of the projects list leaves out: only the project's own screens
 # read them, and with a long video they are most of the weight of a project.
+# Of the metadata, also what only the backend reads and grows with the renders
+# (how each one closed, ``render_outcomes``, and what the last one renders):
+# the list is polled every few seconds.
 PROJECT_LIST_OMITTED_FIELDS = ('transcript_data', 'ai_rationale_log')
-PROJECT_LIST_OMITTED_METADATA = ('full_text',)
+PROJECT_LIST_OMITTED_METADATA = ('full_text', 'render_outcomes', 'clip_render_scope')
 
 
 class ProjectsQuerySerializer(serializers.Serializer):

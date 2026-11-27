@@ -475,7 +475,7 @@ export const projectsHandlers = [
     // A whole video is its one clip; a clips project, the clips it delivered or failed (never a suggested draft; a draft a render paid for is one of them).
     const clips = project.project_type === 'single_edit' ? project.clips : project.clips.filter((clip) => clip.status !== 'draft' || clip.render_queued);
     if (clips.length === 0) throw conflict('El proyecto no tiene clips para renderizar.', 'no_clips');
-    const transaction = startPaidRender(db, project, clips, { userId: user.id, description: `Render con otro estilo: ${project.title}`, now });
+    const transaction = startPaidRender(db, project, clips, { userId: user.id, description: `Render con otro estilo: ${project.title}`, now, wholeProject: true });
     const { brand_kit: brandKitId, ...style } = body;
     Object.assign(project, style);
     if (brandKitId !== undefined) {

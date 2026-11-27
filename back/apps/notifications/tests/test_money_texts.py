@@ -104,14 +104,20 @@ class RefundOfThisEventTests(EventHarness):
         self.committed(lambda: finalize_project_render(project.id))
         return project, ids
 
-    def render_again(self, project, clip_id, amount='5.00', previous=None):
-        """What a paid render of one clip leaves (views_clips): reserved, back to render_dispatched."""
+    def render_again(self, project, clip_id, amount='5.00', previous=None, scope=None, description=''):
+        """
+        What a paid render of one clip leaves (views_clips): reserved, back to
+        render_dispatched. ``scope``: what it says it renders (``clip`` from
+        the editor or a retry; none: reserved before the key existed).
+        """
         project.refresh_from_db()
-        txn = reserve_funds(self.wallet.id, Decimal(amount), project=project)
+        txn = reserve_funds(self.wallet.id, Decimal(amount), project=project, description=description)
         metadata = {
             **project.metadata, 'clip_render_reservation_id': str(txn.id), 'clip_render_clip_ids': [clip_id],
             'clip_render_seconds': 5.0,
         }
+        if scope:
+            metadata['clip_render_scope'] = scope
         if previous:
             metadata['clip_render_previous'] = {clip_id: previous}
         VideoProject.objects.filter(pk=project.pk).update(
@@ -168,6 +174,155 @@ class RefundOfThisEventTests(EventHarness):
             'render_finished', RENDER,
             'No pudimos volver a generar todos los clips: los que ya tenías quedaron como estaban. Te devolvimos 5 tokens.',
         ))
+
+    # --- the render of one clip (its editor, a retry): not the project's ---
+
+    def delivered(self):
+        """Two clips delivered and told: what a clip is rendered again over."""
+        project = self.project(
+            clips=[DONE, DONE], status=VideoProject.Status.RENDERING, pipeline_stage=PipelineStage.RENDER_DISPATCHED,
+        )
+        first, second = VideoClip.objects.filter(project=project).order_by('start_time')
+        VideoClip.objects.filter(pk=first.pk).update(s3_object_key='old-key')
+        VideoClip.objects.filter(pk=second.pk).update(s3_object_key='other-key')
+        self.committed(lambda: finalize_project_render(project.id))
+        self.assertEqual(self.bodies(), ['2 clips listos.'])
+        Notification.objects.all().delete()
+        return project, first
+
+    def activity_text(self, project, txn):
+        """What Actividad says of the render ``txn`` paid."""
+        from apps.videos.services.project_activity import _NAMESPACE, build_activity
+        import uuid
+
+        project.refresh_from_db()
+        item_id = str(uuid.uuid5(_NAMESPACE, f'{project.pk}:render_finished:{txn.pk}'))
+        (item,) = [item for item in build_activity(project) if item['id'] == item_id]
+        return item['description']
+
+    def test_one_clip_rendered_again_and_delivered_tells_nobody(self):
+        project, first = self.delivered()
+        txn = self.render_again(
+            project, str(first.pk), previous={'status': 'completed', 'key': 'old-key'}, scope='clip',
+            description='Render de clip: Clip 0',
+        )
+        VideoClip.objects.filter(pk=first.pk).update(status=DONE, s3_object_key='new-key')
+
+        self.assertEqual(self.committed(lambda: finalize_project_render(project.id)), PipelineStage.COMPLETED)
+
+        txn.refresh_from_db()
+        self.assertEqual(txn.status, Transaction.Status.COMPLETED)
+        # Neither «2 clips listos» again nor an email: the project's render was told when it ended.
+        self.assertEqual(sent(), {})
+        self.assertEqual(self.activity_text(project, txn), 'Terminó el render de «Clip 0»')
+
+    def test_one_clip_rendered_again_that_fails_says_what_the_activity_says(self):
+        project, first = self.delivered()
+        VideoClip.objects.filter(pk=first.pk).update(status=FAILED)
+        txn = self.render_again(
+            project, str(first.pk), amount='9.00', previous={'status': 'completed', 'key': 'old-key'}, scope='clip',
+            description='Render de clip: Clip 0',
+        )
+
+        self.assertEqual(self.committed(lambda: finalize_project_render(project.id)), PipelineStage.COMPLETED)
+
+        txn.refresh_from_db()
+        self.assertEqual(txn.status, Transaction.Status.FAILED)
+        text = 'No se pudo volver a renderizar: quedó el clip anterior. Te devolvimos 9 tokens.'
+        self.assert_everyone_got(('render_finished', 'Podcast 42: no se pudo renderizar un clip', text))
+        self.assertEqual(self.activity_text(project, txn), text)
+        # Once: a second close tells nobody again.
+        self.committed(lambda: finalize_project_render(project.id))
+        self.assertEqual(Notification.objects.count(), 3)
+
+    def test_a_close_that_finds_the_clip_failed_before_it_is_given_back_still_says_it_stayed(self):
+        # The clip fails after the close gave back what there was to give (nothing yet) and before
+        # it ends the project: that close finds it FAILED with the file it had. It is given back
+        # right after, by the settle: the clip did stay.
+        from apps.videos.tasks import ingestion
+
+        project, first = self.delivered()
+        VideoClip.objects.filter(pk=first.pk).update(status=FAILED)
+        txn = self.render_again(
+            project, str(first.pk), previous={'status': 'completed', 'key': 'old-key'}, scope='clip',
+            description='Render de clip: Clip 0',
+        )
+        restore, calls = ingestion._restore_rerendered_clips, []
+
+        def too_early_the_first_time(project_id):
+            calls.append(project_id)
+            return 0 if len(calls) == 1 else restore(project_id)
+
+        with patch.object(ingestion, '_restore_rerendered_clips', side_effect=too_early_the_first_time):
+            self.assertEqual(self.committed(lambda: finalize_project_render(project.id)), PipelineStage.PARTIAL)
+
+        first.refresh_from_db()
+        self.assertEqual((first.status, first.s3_object_key), (DONE, 'old-key'))  # given back by the settle
+        project.refresh_from_db()
+        (outcome,) = [entry for entry in project.metadata['render_outcomes'] if entry['reservation'] == str(txn.pk)]
+        self.assertEqual((outcome['kept'], outcome['failed'], outcome['ready']), (1, 0, 1))
+        text = 'No se pudo volver a renderizar: quedó el clip anterior. Te devolvimos 5 tokens.'
+        self.assertEqual(self.bodies(), [text])
+        self.assertEqual(self.activity_text(project, txn), text)
+
+    def test_a_retry_of_one_clip_that_fails_again_says_what_the_activity_says(self):
+        project, ids = self.partial()
+        Notification.objects.all().delete()
+        txn = self.render_again(project, ids[1], amount='12.50', scope='clip', description='Reintento de clip: Clip 1')
+
+        self.assertEqual(self.committed(lambda: finalize_project_render(project.id)), PipelineStage.PARTIAL)
+
+        text = 'No se pudo renderizar el clip: sigue con error. Te devolvimos 12,50 tokens.'
+        self.assert_everyone_got(('render_finished', 'Podcast 42: no se pudo renderizar un clip', text))
+        self.assertEqual(self.activity_text(project, txn), text)
+
+    def test_a_retry_of_one_clip_that_works_tells_nobody(self):
+        project, ids = self.partial()
+        Notification.objects.all().delete()
+        self.render_again(project, ids[1], scope='clip', description='Reintento de clip: Clip 1')
+        VideoClip.objects.filter(pk=ids[1]).update(status=DONE, s3_object_key='new-key')
+
+        self.assertEqual(self.committed(lambda: finalize_project_render(project.id)), PipelineStage.COMPLETED)
+
+        self.assertEqual(sent(), {})
+
+    def test_every_clip_rendered_again_is_still_told_as_the_projects_render(self):
+        project, first = self.delivered()
+        VideoClip.objects.filter(pk=first.pk).update(status=DONE, s3_object_key='new-key')
+        self.render_again(
+            project, str(first.pk), previous={'status': 'completed', 'key': 'old-key'}, scope='project',
+            description='Render con otro estilo: Podcast 42',
+        )
+
+        self.committed(lambda: finalize_project_render(project.id))
+
+        self.assert_everyone_got(('render_finished', RENDER, '2 clips listos.'))
+
+    def test_the_notice_of_one_clip_follows_the_rules_of_every_notice(self):
+        def failing_clip_render():
+            project, first = self.delivered()
+            VideoClip.objects.filter(pk=first.pk).update(status=FAILED)
+            self.render_again(project, str(first.pk), previous={'status': 'completed', 'key': 'old-key'}, scope='clip')
+            return project
+
+        # Rolled back with the close: nobody is told.
+        project = failing_clip_render()
+        self.rolled_back(lambda: finalize_project_render(project.id))
+        self.assertEqual(sent(), {})
+
+        # A bell that fails never stops the close or the refund.
+        project = failing_clip_render()
+        stage = self.assert_survives_a_broken_bell(lambda: finalize_project_render(project.id))
+        self.assertEqual(stage, PipelineStage.COMPLETED)
+        refunded = Transaction.objects.get(pk=VideoProject.objects.get(pk=project.pk).metadata['clip_render_reservation_id'])
+        self.assertEqual(refunded.status, Transaction.Status.FAILED)
+
+        # Only the newest KEPT_PER_USER of each user stay.
+        fund_wallet(self.workspace, '500.00')
+        projects = [failing_clip_render() for _ in range(services.KEPT_PER_USER + 2)]
+        for project in projects:
+            self.committed(lambda: finalize_project_render(project.id))
+        self.assertEqual(Notification.objects.filter(user=self.ana).count(), services.KEPT_PER_USER)
 
     def test_a_failure_recorded_again_later_does_not_move_the_refund(self):
         """pipeline_error_at is rewritten by a later record_error: the refund is still the event's own."""

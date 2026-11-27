@@ -89,7 +89,7 @@ def _queue_emails(kind, notification_ids):
             )
 
 
-def _write(workspace, user_ids, kind, title, body, project=None, post=None, email=True):
+def _write(workspace, user_ids, kind, title, body, project=None, post=None, email=True, reason=''):
     """
     One notification for each of ``user_ids`` who can still act in the
     workspace and, with ``email``, its email task once the rows are committed.
@@ -101,7 +101,7 @@ def _write(workspace, user_ids, kind, title, body, project=None, post=None, emai
         for user_id in targets:
             row = Notification.objects.create(
                 user_id=user_id, workspace=workspace, kind=kind, title=title[:300], body=body[:300],
-                project=project, post=post,
+                project=project, post=post, reason=reason,
             )
             created.append(row.pk)
             _prune(user_id, workspace.pk)
@@ -185,9 +185,9 @@ def _holds_tokens(project):
     ).exists()
 
 
-def _to_workspace(project, kind, title, body):
+def _to_workspace(project, kind, title, body, reason=''):
     workspace = project.workspace
-    return _write(workspace, recipients_of(workspace), kind, title, body, project=project)
+    return _write(workspace, recipients_of(workspace), kind, title, body, project=project, reason=reason)
 
 
 def project_ready_message(project):
@@ -293,6 +293,42 @@ def notify_render_finished(project_id, since=None):
         _to_workspace(project, Kind.RENDER_FINISHED, *render_finished_message(project, _returned(project, since)))
 
     _after_commit('render_finished', build, project_id=project_id)
+
+
+def clip_render_failed_message(project, reservation):
+    """
+    (title, body) of the ``render_finished`` of one clip's render (its editor,
+    a retry) that gave nothing: ``reservation`` was returned whole. The body
+    is the text of the project's activity for that render, word for word
+    (``project_activity.refunded_render_text``): what stayed and what came
+    back. It has no title of a clip: the email carries it.
+    """
+    from apps.videos.services.project_activity import refunded_render_text
+
+    return f'{project.title[:_TITLE_ROOM]}: no se pudo renderizar un clip', refunded_render_text(project, reservation)
+
+
+def notify_clip_render_finished(project_id, reservation_id):
+    """
+    The render of one clip closed (``reservation_id`` paid it). Delivered, it
+    tells nobody: who asked for it is watching the clip, and the project
+    already told its render ended. Returned whole (the render failed, and the
+    clip went back to what it was), one ``render_finished`` with the words of
+    the activity and the reason ``Notification.CLIP_RENDER_FAILED``, which
+    gives its email its own subject and text. Call it after the settle.
+    """
+    def build():
+        project = _project(project_id)
+        reservation = Transaction.objects.filter(pk=reservation_id, status=Transaction.Status.FAILED).first()
+        if project is None or reservation is None:
+            return
+        # The reason tells the email it is not a render that ended (emails._content).
+        _to_workspace(
+            project, Kind.RENDER_FINISHED, *clip_render_failed_message(project, reservation),
+            reason=Notification.CLIP_RENDER_FAILED,
+        )
+
+    _after_commit('clip_render_finished', build, project_id=project_id)
 
 
 def notify_project_failed(project_id, since=None, rendering=False, reason=None):

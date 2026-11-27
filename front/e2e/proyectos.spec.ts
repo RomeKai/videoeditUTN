@@ -62,6 +62,55 @@ test.describe('B2 · Proyectos', () => {
     expectClean(problems, 'Proyectos');
   });
 
+  test('la página, el filtro, el orden y la búsqueda quedan en la URL y vuelven al recargar', async ({ page }) => {
+    await pickScenario(page, 'muchos-proyectos');
+    const problems = watch(page);
+    await page.goto('/proyectos');
+    await settle(page);
+    await expect(page.getByText('1–25 de 64 proyectos')).toBeVisible();
+    await expect(page).toHaveURL(/\/proyectos$/);
+
+    await page.getByRole('button', { name: 'Orden: más recientes' }).click();
+    await page.getByRole('menuitemradio', { name: 'Título (A–Z)' }).click();
+    await expect(page).toHaveURL(/\/proyectos\?orden=title$/);
+    // The first project of each page, by its title: the page before stays on screen until the next one arrives.
+    const firstTitle = page.getByRole('table', { name: 'Proyectos del workspace' }).getByRole('row').nth(1).getByRole('link').first();
+    const onPageOne = await firstTitle.innerText();
+    await page.getByRole('button', { name: 'Siguiente' }).click();
+    await expect(page.getByText('26–50 de 64 proyectos')).toBeVisible();
+    await expect(page).toHaveURL(/\/proyectos\?orden=title&pagina=2$/);
+    await expect(firstTitle).not.toHaveText(onPageOne);
+    const onPageTwo = await firstTitle.innerText();
+
+    await page.reload();
+    await settle(page);
+    await expect(page.getByText('26–50 de 64 proyectos')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Orden: título (a–z)' })).toBeVisible();
+    await expect(firstTitle).toHaveText(onPageTwo);
+    await expect(page).toHaveURL(/\/proyectos\?orden=title&pagina=2$/);
+
+    // A filter and a search start on the first page; a reload keeps them too.
+    const filters = page.getByRole('group', { name: 'Filtrar por estado' });
+    await filters.getByRole('button', { name: /Listos/ }).click();
+    await expect(page).toHaveURL(/\/proyectos\?orden=title&estado=ready$/);
+    await page.getByRole('searchbox', { name: 'Buscar proyectos por título' }).fill('proyecto 1');
+    await expect(page).toHaveURL(/\/proyectos\?orden=title&estado=ready&buscar=proyecto\+1$/);
+    await page.reload();
+    await settle(page);
+    await expect(page.getByRole('searchbox', { name: 'Buscar proyectos por título' })).toHaveValue('proyecto 1');
+    await expect(filters.getByRole('button', { name: /Listos/ })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByRole('button', { name: 'Orden: título (a–z)' })).toBeVisible();
+
+    // Back to the defaults: the URL is the plain one again.
+    await page.getByRole('searchbox', { name: 'Buscar proyectos por título' }).fill('');
+    await filters.getByRole('button', { name: /Todos/ }).click();
+    await page.getByRole('button', { name: 'Orden: título (a–z)' }).click();
+    await page.getByRole('menuitemradio', { name: 'Más recientes' }).click();
+    await expect(page).toHaveURL(/\/proyectos$/);
+    await expect(page.getByText('1–25 de 64 proyectos')).toBeVisible();
+    expectClean(problems, 'Proyectos · URL');
+  });
+
   test('renombra y borra un proyecto desde su menú', async ({ page }) => {
     await pickScenario(page, 'estudio-norte');
     const problems = watch(page);
