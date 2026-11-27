@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { checkFile, checkMedia, extensionsLabel, mockDuration, readMedia } from './media';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { checkFile, checkMedia, extensionsLabel, mockDuration, probeVideoFile, readMedia } from './media';
 
 const pricing = { upload_extensions: ['.mp4', '.mov', '.avi'], upload_max_size_bytes: 500 * 1024 * 1024, upload_max_duration_seconds: 10800 };
 const pro = { max_video_duration_seconds: 10800 };
@@ -55,5 +55,36 @@ describe('extensionsLabel', () => {
   it('arma la lista en español', () => {
     expect(extensionsLabel(['.mp4', '.mov', '.avi'])).toBe('MP4, MOV o AVI');
     expect(extensionsLabel(['.mp4'])).toBe('MP4');
+  });
+});
+
+describe('probeVideoFile', () => {
+  const original = { create: URL.createObjectURL, revoke: URL.revokeObjectURL };
+  afterEach(() => {
+    vi.restoreAllMocks();
+    URL.createObjectURL = original.create;
+    URL.revokeObjectURL = original.revoke;
+  });
+
+  it('corta la carga del video antes de liberar la URL del archivo', async () => {
+    const order: string[] = [];
+    const video = document.createElement('video');
+    vi.spyOn(document, 'createElement').mockReturnValue(video);
+    const create = vi.fn(() => 'blob:prueba');
+    const revoke = vi.fn(() => void order.push('revoke'));
+    URL.createObjectURL = create;
+    URL.revokeObjectURL = revoke;
+    // jsdom does not implement load().
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(function (this: HTMLMediaElement) {
+      order.push(this.hasAttribute('src') ? 'load con src' : 'load sin src');
+    });
+
+    const probing = probeVideoFile(new File(['x'], 'clase.mp4', { type: 'video/mp4' }));
+    expect(video.getAttribute('src')).toBe('blob:prueba');
+    video.onloadedmetadata?.(new Event('loadedmetadata'));
+
+    await expect(probing).resolves.toEqual({ duration: null, width: null, height: null });
+    expect(order).toEqual(['load sin src', 'revoke']);
+    expect(revoke).toHaveBeenCalledWith('blob:prueba');
   });
 });
