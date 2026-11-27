@@ -562,10 +562,11 @@ const SEO_VARIANTS: Array<{ caption: (title: string) => string; hashtags: string
 
 function tickPosts(db: MockDb, now: number): void {
   for (const post of db.posts) {
-    // The beat: a scheduled post whose time arrived goes to the queue.
-    if (post.status === 'SCHEDULED' && new Date(post.publish_at).getTime() <= now && !post._sim) {
+    // The beat: a scheduled post whose time arrived goes to the queue. "Publish now" is one of them too
+    // (the backend leaves it SCHEDULED for dispatch_scheduled_posts_batch): it keeps its clock and its fate.
+    if (post.status === 'SCHEDULED' && new Date(post.publish_at).getTime() <= now) {
       post.status = 'QUEUED';
-      post._sim = { startedAt: now };
+      post._sim = { ...post._sim, startedAt: post._sim?.startedAt ?? now };
     }
     if (!post._sim) continue;
     const elapsed = now - post._sim.startedAt;

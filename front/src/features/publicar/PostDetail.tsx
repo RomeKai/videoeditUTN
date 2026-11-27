@@ -203,7 +203,7 @@ export function PostDetail({ post, siblings = [], accounts, actions, mode, onMod
         ) : null}
         {stuck ? (
           <Banner tone="warn" title="Está tardando más de lo normal">
-            Si sigue así, podés reintentar la publicación.
+            Si sigue así, podés reintentar la publicación. Antes, fijate en {noun} si ya salió: reintentar la publica de nuevo.
           </Banner>
         ) : null}
         {post.status === 'DRAFT' ? (

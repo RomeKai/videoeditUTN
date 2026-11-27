@@ -575,9 +575,11 @@ describe('mocks', () => {
     expect((await fail(apiCall(social.createPost, { body: { video_clip: clip.id, platform: 'TIKTOK' } }))).fieldErrors.tiktok).toBeTruthy();
 
     const post = await apiCall(social.createPost, { body: { video_clip: clip.id, platform: 'INSTAGRAM_REELS', caption: 'Mirá esto' } });
-    expect(post.status).toBe('QUEUED');
+    // Like the backend: "publish now" is SCHEDULED for now, and the beat queues it (here, on the next request).
+    expect(post.status).toBe('SCHEDULED');
     expect(post.seo_status).toBe('pending');
-    expect((await fail(apiCall(social.updatePost, { params: { id: post.id }, body: { caption: 'Tarde' } }))).status).toBe(409);
+    const late = await fail(apiCall(social.updatePost, { params: { id: post.id }, body: { caption: 'Tarde' } }));
+    expect([late.status, late.code]).toEqual([409, 'post_in_flight']);
     advance(SIM.postQueuedMs + SIM.postProcessingMs + 1000);
     const published = await apiCall(social.getPost, { params: { id: post.id } });
     expect(published.status).toBe('PUBLISHED');

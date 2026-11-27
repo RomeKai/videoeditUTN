@@ -194,8 +194,11 @@ export const isEditable = (status: PostStatus): boolean => status === 'DRAFT' ||
 /** A post that has not gone out yet can be cancelled. */
 export const isCancellable = (status: PostStatus): boolean => status === 'DRAFT' || status === 'SCHEDULED' || status === 'QUEUED' || status === 'FAILED';
 
-/** Minutes after which a post still "Publicando" is considered stuck and can be retried. */
-export const STUCK_AFTER_MS = 10 * 60_000;
+/**
+ * Minutes after which a post still "Publicando" is considered stuck and can be retried: the backend's
+ * POST_STUCK_AFTER (services/scheduled_posts.py), which answers 409 `post_in_flight` before.
+ */
+export const STUCK_AFTER_MS = 15 * 60_000;
 export function isStuck(post: Pick<ScheduledPost, 'status' | 'updated_at'>, now: number = Date.now()): boolean {
   return post.status === 'PROCESSING' && now - new Date(post.updated_at).getTime() > STUCK_AFTER_MS;
 }

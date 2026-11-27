@@ -176,7 +176,11 @@ export function PublicacionesScreen() {
     retry: (post) => {
       setBusyId(post.id);
       retry.mutate(post.id, {
-        onSuccess: () => toast.success(`Reintentando «${post.clip.title}» en ${NETWORK_NOUN[post.platform]}`),
+        onSuccess: (saved) =>
+          // A post whose AI text failed never went out: the backend gives it back as a draft, for the text.
+          saved.status === 'DRAFT'
+            ? toast.success(`«${post.clip.title}» volvió a borrador: escribí el texto y programalo.`)
+            : toast.success(`Reintentando «${post.clip.title}» en ${NETWORK_NOUN[post.platform]}`),
         onError: (error) => {
           if (error instanceof ApiError && error.code === 'account_not_connected') {
             toast.error(`La cuenta de ${NETWORK_NOUN[post.platform]} no está conectada. Reconectala para reintentar.`);
