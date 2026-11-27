@@ -369,10 +369,12 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
 
   it('notificaciones: la lista de la campana, marcar una leída y el 404', () => {
     const list = parse(listNotifications.response, real.notifications_list) as NotificationsResponse;
-    expect(list.unread_count).toBe(4);
+    expect(list.unread_count).toBe(5);
     // One of each kind the backend writes today, newest first.
-    expect(list.results.map((item) => item.type)).toEqual(['project_ready', 'payment_rejected', 'payment_approved', 'project_failed', 'render_finished']);
-    expect(list.results.map((item) => item.read_at === null)).toEqual([true, true, true, true, false]);
+    expect(list.results.map((item) => item.type)).toEqual(['low_balance', 'project_ready', 'payment_rejected', 'payment_approved', 'project_failed', 'render_finished']);
+    expect(list.results.map((item) => item.read_at === null)).toEqual([true, true, true, true, true, false]);
+    // The low balance one leads to Comprar tokens: it has no project.
+    expect([list.results[0]?.title, list.results[0]?.project_id]).toEqual(['Te quedan 300 tokens', null]);
     expect(list.results.every((item) => item.post_id === null)).toBe(true);
     const read = parse(markNotificationRead.response, real.notification_read) as Notification;
     expect(read.read_at).toBe('2026-11-04T16:00:00Z');
