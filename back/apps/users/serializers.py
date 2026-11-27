@@ -163,13 +163,13 @@ class UpdateMeSerializer(serializers.Serializer):
 
 class VerifyEmailSerializer(serializers.Serializer):
     token = serializers.CharField()
-    # The proof of the browser that signed up (RegisterView): with it the link of a new
-    # account also signs in. Optional: without it the link only verifies.
+    # The proof of the browser that signed up (RegisterView). Without it (and without a
+    # session of the account) the link of a new account changes nothing.
     signup_nonce = serializers.CharField(required=False, allow_blank=True, max_length=200)
 
 
 class SignedOutSerializer(serializers.Serializer):
-    """The link verified the email but did not sign in: the person signs in with the password."""
+    """A signup link opened outside the browser that signed up: nothing changed; sign in and open it again."""
 
     signed_in = serializers.BooleanField()
 

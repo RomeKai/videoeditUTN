@@ -349,13 +349,17 @@ class VerifyEmailView(APIView):
     (403 without one): it moves `pending_email` to `email`, and the answer is
     a pair of tokens of that same account.
 
-    A signup link verifies the account's email and drops a `pending_email`
-    asked for before (by whoever had the password then). It answers a pair of
-    tokens only in the browser that signed up (`signup_nonce`, see
-    apps.users.email_verification) or with the session of that account;
-    anywhere else `{"signed_in": false}`: the person signs in with the
-    password, and one who never chose it goes through password reset, which
-    ends every session of whoever signed up with their email.
+    A signup link works only in the browser that signed up (`signup_nonce`,
+    see apps.users.email_verification) or with the session of that account:
+    then it verifies the email, drops a `pending_email` asked for before (by
+    whoever had the password then) and answers a pair of tokens. Anywhere
+    else it changes nothing and the link keeps working: the answer is
+    `{"signed_in": false}` and the web app asks to sign in and open it again.
+    Verifying there would hand a verified account (`is_email_verified` opens
+    the simulated payments of PAYMENTS_SIMULATE_ALLOWED_EMAILS) to whoever
+    signed up with someone else's email and still has its password. The real
+    owner, who does not know that password, goes through password reset: it
+    verifies the email and ends every session of the squatter.
     """
 
     permission_classes = [AllowAny]
@@ -402,9 +406,12 @@ class VerifyEmailView(APIView):
                     fields += ['email', 'pending_email']
                     signs_in = True
                 else:
-                    # The first verification: only the browser that signed up (or a session of
-                    # this account) gets one. A change of email asked for before does not survive it.
+                    # The first verification, only in the browser that signed up (or with a session of
+                    # this account). Anywhere else nothing changes, and the link is not spent.
                     signs_in = signed_in is not None or signup_nonce_matches(user, nonce)
+                    if not signs_in:
+                        return Response(SignedOutSerializer({'signed_in': False}).data)
+                    # A change of email asked for before does not survive it.
                     user.pending_email = None
                     user.signup_nonce_hash = None
                     fields += ['pending_email', 'signup_nonce_hash']
@@ -416,6 +423,4 @@ class VerifyEmailView(APIView):
             # A pending email stored before the domains were normalized, with one
             # that cannot be encoded: nothing is applied.
             raise ValidationError({'token': [error.message]})
-        if not signs_in:
-            return Response(SignedOutSerializer({'signed_in': False}).data)
         return Response(issue_token_pair(user))

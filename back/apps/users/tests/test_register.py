@@ -1,6 +1,7 @@
 """Sign-up (A2), the link that verifies the new account (A3) and resending it."""
 import smtplib
 import time
+from datetime import timedelta
 from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
@@ -10,6 +11,7 @@ from django.core import mail
 from django.db import connection
 from django.test import override_settings
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 from kombu.exceptions import OperationalError as BrokerError
 from rest_framework.test import APIClient
 from rest_framework.throttling import ScopedRateThrottle
@@ -109,8 +111,8 @@ def test_in_the_browser_that_signed_up_the_link_verifies_and_signs_in_once(free_
 def test_a_squatter_cannot_sign_the_owner_of_the_email_into_its_account(free_plan_row):
     """
     Someone signs up with another person's email and a password of their own. The owner opens the
-    official email: the link verifies, but signs nobody in, and the squatter's password does not
-    survive the owner's password reset.
+    official email: the link changes nothing (no session, no verified account for the squatter).
+    The owner's password reset verifies the email and ends the squatter's sessions and password.
     """
     assert _register(email="victima@example.com", password="del-ocupante-2026").status_code == 201
     squatter_session = APIClient().post(LOGIN_URL, {"email": "victima@example.com", "password": "del-ocupante-2026"}, format="json").json()
@@ -121,7 +123,7 @@ def test_a_squatter_cannot_sign_the_owner_of_the_email_into_its_account(free_pla
 
     assert opened.status_code == 200
     assert opened.json() == {"signed_in": False}
-    assert User.objects.get(email="victima@example.com").is_email_verified
+    assert not User.objects.get(email="victima@example.com").is_email_verified
     # The owner signs in through password reset: every session of the squatter ends.
     assert APIClient().post("/api/v1/auth/password-reset/", {"email": "victima@example.com"}, format="json").status_code == 204
     reset_link = next(word for word in mail.outbox[-1].body.split() if "/recuperar#" in word)
@@ -132,15 +134,61 @@ def test_a_squatter_cannot_sign_the_owner_of_the_email_into_its_account(free_pla
     stale.credentials(HTTP_AUTHORIZATION=f"Bearer {squatter_session['access']}")
     assert stale.get(ME_URL).status_code == 401
     assert APIClient().post(LOGIN_URL, {"email": "victima@example.com", "password": "del-ocupante-2026"}, format="json").status_code == 401
+    assert User.objects.get(email="victima@example.com").is_email_verified
 
 
-def test_a_wrong_nonce_only_verifies(free_plan_row):
+def test_a_link_opened_without_the_nonce_changes_nothing_and_keeps_working(free_plan_row, settings):
+    """
+    The reviewer's probe: verifying there handed the squatter, still signed in with its own password,
+    a verified account, which may_simulate (simulated payments) trusts as proof of the mailbox.
+    """
+    from apps.payments.services.payment_providers import may_simulate
+
+    settings.DEBUG = False
+    settings.PAYMENTS_SIMULATE_ALLOWED_EMAILS = ["victima@example.com"]
+    assert _register(email="victima@example.com", password="del-ocupante-2026").status_code == 201
+    token = _signup_token(mail.outbox[0])[0]["token"][0]
+    account = User.objects.get(email="victima@example.com")
+    nonce_hash = account.signup_nonce_hash
+
+    opened = APIClient().post(VERIFY_URL, {"token": token}, format="json")
+
+    assert opened.json() == {"signed_in": False}
+    account.refresh_from_db()
+    assert (account.is_email_verified, account.signup_nonce_hash) == (False, nonce_hash)
+    assert may_simulate(account) is False
+    # Not spent: whoever has the password signs in and opens the same link, with the session now.
+    session = APIClient().post(LOGIN_URL, {"email": "victima@example.com", "password": "del-ocupante-2026"}, format="json").json()
+    api = APIClient()
+    api.credentials(HTTP_AUTHORIZATION=f"Bearer {session['access']}")
+    again = api.post(VERIFY_URL, {"token": token}, format="json")
+    assert set(again.json()) == {"access", "refresh"}
+    account.refresh_from_db()
+    assert account.is_email_verified and account.signup_nonce_hash is None
+
+
+def test_the_nonce_lasts_what_the_link_lasts(free_plan_row):
+    nonce = _register().json()["signup_nonce"]
+    token = _signup_token(mail.outbox[0])[0]["token"][0]
+    # Signed up longer ago than a verification link lasts (the link of a resend can be newer).
+    User.objects.filter(email="ana@example.com").update(
+        date_joined=timezone.now() - timedelta(seconds=settings.EMAIL_VERIFICATION_MAX_AGE_SECONDS + 60),
+    )
+
+    opened = APIClient().post(VERIFY_URL, {"token": token, "signup_nonce": nonce}, format="json")
+
+    assert opened.json() == {"signed_in": False}
+    assert not User.objects.get(email="ana@example.com").is_email_verified
+
+
+def test_a_wrong_nonce_changes_nothing(free_plan_row):
     _register()
     query, _ = _signup_token(mail.outbox[0])
 
     opened = APIClient().post(VERIFY_URL, {"token": query["token"][0], "signup_nonce": "otro-navegador"}, format="json")
 
     assert opened.json() == {"signed_in": False}
+    assert not User.objects.get(email="ana@example.com").is_email_verified
 
 
 def test_verifying_a_new_account_drops_a_change_of_email_asked_before(free_plan_row):

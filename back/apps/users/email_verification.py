@@ -10,12 +10,13 @@ Two purposes share `POST /api/v1/auth/verify-email/`:
   it to whoever owns the typo).
 - SIGNUP (A2): `POST /api/v1/auth/register/` and
   `POST /api/v1/auth/verify-email/resend/` send it to the account's email.
-  Opening it verifies that email. It signs the user in only in the browser
-  that signed up: the sign-up answers a `signup_nonce` (the account keeps
-  only its hash) and the web app sends it back with the link. Without it the
-  link only verifies, and the person signs in with the password. Otherwise
-  whoever signed up first with someone else's email (and so knows the
-  password) would get that person into an account the squatter still holds.
+  It works only in the browser that signed up (the sign-up answers a
+  `signup_nonce`, the account keeps only its hash, and the web app sends it
+  back with the link) or with a session of the account: it verifies the
+  email and signs the user in. Anywhere else it changes nothing: the person
+  signs in and opens it again. Otherwise whoever signed up first with
+  someone else's email (and so knows the password) would get a verified
+  account, or get its owner into an account the squatter still holds.
 
 The token is signed with SECRET_KEY, says its purpose, expires after
 EMAIL_VERIFICATION_MAX_AGE_SECONDS and is bound to the state of the account
@@ -37,12 +38,14 @@ the official sender must not carry someone else's text to it.
 """
 import secrets
 import uuid
+from datetime import timedelta
 from urllib.parse import urlencode
 
 from django.conf import settings
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.core import signing
 from django.core.mail import send_mail
+from django.utils import timezone
 from django.utils.crypto import constant_time_compare, salted_hmac
 
 from apps.users.models import User
@@ -102,8 +105,14 @@ def new_signup_nonce():
 
 
 def signup_nonce_matches(user, nonce):
-    """The browser that opens the link is the one that signed up."""
+    """
+    The browser that opens the link is the one that signed up, and recently:
+    the nonce lasts what a verification link lasts, counted from the sign-up
+    (`date_joined`). After that, signing in is the only way to verify.
+    """
     if not nonce or not isinstance(nonce, str) or not user.signup_nonce_hash:
+        return False
+    if timezone.now() - user.date_joined > timedelta(seconds=settings.EMAIL_VERIFICATION_MAX_AGE_SECONDS):
         return False
     return constant_time_compare(user.signup_nonce_hash, _nonce_hash(nonce))
 
@@ -146,7 +155,7 @@ def send_signup_verification(user):
         'Hola:\n\n'
         'Para terminar de crear tu cuenta de OneCreator, confirmá tu email con este link:\n\n'
         f'{signup_link(user)}\n\n'
-        f'El link vence en {hours} horas. Si lo abrís en el navegador donde creaste la cuenta, entrás directo.\n\n'
+        f'El link vence en {hours} horas. Abrilo en el navegador donde creaste la cuenta; en otro te vamos a pedir que inicies sesión.\n\n'
         'Si no creaste una cuenta, ignorá este mensaje.\n'
     )
     send_mail(
