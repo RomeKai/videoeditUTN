@@ -40,11 +40,27 @@ export const Member = z.object({
 });
 export type Member = z.infer<typeof Member>;
 
+/**
+ * Why `max_members` is below the current plan's: a scheduled downgrade (`pending_plan`, with the date it
+ * applies) or a plan payment waiting for its checkout (`pending_payment`, applied at once when confirmed).
+ * `plan_name` is the plan whose seats count.
+ */
+export const SeatLimit = z.union([
+  z.object({ reason: z.literal('pending_plan'), plan_name: z.string(), effective_at: IsoDateTime }),
+  z.object({ reason: z.literal('pending_payment'), plan_name: z.string(), effective_at: z.null() }),
+]);
+export type SeatLimit = z.infer<typeof SeatLimit>;
+
 export const MembersResponse = z.object({
   members: z.array(Member),
-  /** SubscriptionPlan.max_members. A pending invitation takes a seat (map 9.1.8). */
+  /**
+   * The seats inviting checks (back/apps/users/seats.py · seat_limit): SubscriptionPlan.max_members, or
+   * fewer while a plan change waits (`limited_by`). A pending invitation takes a seat (map 9.1.8).
+   */
   max_members: z.number().int().positive(),
   seats_used: z.number().int().nonnegative(),
+  /** Null when `max_members` is the current plan's. */
+  limited_by: SeatLimit.nullable(),
 });
 export type MembersResponse = z.infer<typeof MembersResponse>;
 
@@ -210,7 +226,7 @@ export const listMembers = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/users/views_workspaces.py · WorkspaceMembersView.get (MembersSerializer)',
-    note: 'Una fila por WorkspaceMember, de la más antigua a la más nueva; la del Dueño sale con `role: "owner"`. `seats_used` cuenta todas las filas, también las pendientes y la del Dueño; `max_members` es 1 si el workspace no tiene plan. En una invitación pendiente `user` es null (tenga o no cuenta ese email) y `email` es el invitado; `invited_by` es `{id, name}` de quien invitó, o null en las filas que nadie invitó. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`.',
+    note: 'Una fila por WorkspaceMember, de la más antigua a la más nueva; la del Dueño sale con `role: "owner"`. `seats_used` cuenta todas las filas, también las pendientes y la del Dueño. `max_members` es el límite que controla invitar (`seats.seat_limit`): el del plan, 1 si el workspace no tiene plan, o el del plan más chico mientras espera una bajada programada o un pago de plan; en esos dos casos `limited_by` dice cuál (`pending_plan` con su fecha, o `pending_payment`), y si no es null. En una invitación pendiente `user` es null (tenga o no cuenta ese email) y `email` es el invitado; `invited_by` es `{id, name}` de quien invitó, o null en las filas que nadie invitó. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`.',
   },
   screens: ['H2', 'D7', 'H1'],
 });

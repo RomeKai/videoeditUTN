@@ -1,10 +1,12 @@
 """
 Lugares del plan de un workspace (SubscriptionPlan.max_members). Lo usan la
 señal pre_save de WorkspaceMember (signals.py), el admin (admin.py), que así
-muestra un error en el formulario en vez de un 500, y el cambio de plan
+muestra un error en el formulario en vez de un 500, el cambio de plan
 (apps.payments.services.subscriptions), que no deja bajar a un plan con menos
-lugares que los ocupados.
+lugares que los ocupados, y Miembros (views_workspaces), que muestra el mismo
+límite que se controla al invitar (seat_limit).
 """
+from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
@@ -42,7 +44,7 @@ def check_seat_limit(workspace, user_ids, freed=0):
     if not new:
         return
     current = 0 if workspace._state.adding else seats_used(workspace)
-    limit, plan, pending, paying = _seat_limit(workspace)
+    limit, plan, pending, paying = seat_limit(workspace)
     if current - freed + len(new) <= limit:
         return
     _raise_no_seats(limit, plan, pending, paying)
@@ -63,16 +65,47 @@ def check_seat_for_accept(workspace, member):
         .exclude(pk=member.pk)
         .count()
     )
-    limit, plan, pending, paying = _seat_limit(workspace)
+    limit, plan, pending, paying = seat_limit(workspace)
     if active + 1 <= limit:
         return
     _raise_no_seats(limit, plan, pending, paying)
 
 
-def _seat_limit(workspace):
+class SeatLimit(NamedTuple):
     """
-    ``(limit, plan, pending, paying)``: los lugares que valen ahora y por qué.
-    ``pending`` o ``paying`` vienen solo cuando son ellos los que achican el límite.
+    Los lugares que valen ahora (``limit``) y por qué. ``pending`` (la bajada
+    programada) o ``paying`` (el pago de plan pendiente) vienen solo cuando son
+    ellos los que achican el límite, y nunca los dos.
+    """
+
+    limit: int
+    plan: object  # SubscriptionPlan, or None without a plan
+    pending: dict | None
+    paying: dict | None
+
+    @property
+    def limited_by(self):
+        """
+        Lo que Miembros muestra del motivo: None cuando el límite es el del plan
+        actual; si no, el plan cuyos lugares cuentan y, para una bajada, cuándo
+        se aplica.
+        """
+        if self.paying is not None:
+            return {'reason': 'pending_payment', 'plan_name': self.paying['plan__name'], 'effective_at': None}
+        if self.pending is not None:
+            return {
+                'reason': 'pending_plan',
+                'plan_name': self.pending['pending_plan__name'],
+                'effective_at': self.pending['pending_plan_effective_at'],
+            }
+        return None
+
+
+def seat_limit(workspace):
+    """
+    El límite de lugares que controlan check_seat_limit y check_seat_for_accept,
+    y que muestra Miembros: ``max_members`` del plan (uno sin plan), o menos
+    mientras una bajada programada o un pago de plan pendiente lo achican.
     """
     plan = workspace.subscription_plan
     limit = plan.max_members if plan else 1
@@ -103,7 +136,7 @@ def _seat_limit(workspace):
         pending = None
     else:
         paying = None
-    return limit, plan, pending, paying
+    return SeatLimit(limit, plan, pending, paying)
 
 
 def _raise_no_seats(limit, plan, pending, paying):

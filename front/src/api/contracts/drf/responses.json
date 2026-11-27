@@ -1,5 +1,5 @@
 {
-  "_about": "Cuerpos tal como los arma el backend de dev (VideoProjectSerializer, VideoClipSerializer, BrandKitSerializer y las vistas de apps/videos/views.py), escritos a mano a partir del código. Si un serializer cambia, se actualiza acá y el test dice qué esquema dejó de aceptarlo. Los de la billetera (pricing, estimate_*, wallet*, transactions_* y sus errores) son respuestas reales: los arma back/apps/payments/tests/test_contract_fixture.py, que además compara cada valor con el backend (con el reloj fijo y los ids normalizados). Los de workspaces y miembros (workspace_*, members, member_*) son respuestas capturadas de apps/users/views_workspaces.py. Los de invitaciones (invitation_* e invite_* y sus errores) son respuestas reales: los arma y compara back/apps/users/tests/test_invitations_contract_fixture.py.",
+  "_about": "Cuerpos tal como los arma el backend de dev (VideoProjectSerializer, VideoClipSerializer, BrandKitSerializer y las vistas de apps/videos/views.py), escritos a mano a partir del código. Si un serializer cambia, se actualiza acá y el test dice qué esquema dejó de aceptarlo. Los de la billetera (pricing, estimate_*, wallet*, transactions_* y sus errores) son respuestas reales: los arma back/apps/payments/tests/test_contract_fixture.py, que además compara cada valor con el backend (con el reloj fijo y los ids normalizados). Los de workspaces y miembros (workspace_*, members, members_plan_payment, member_*) son respuestas capturadas de apps/users/views_workspaces.py. Los de invitaciones (invitation_* e invite_* y sus errores) son respuestas reales: los arma y compara back/apps/users/tests/test_invitations_contract_fixture.py.",
   "token_pair": {
     "access": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU1MzYwMDB9.x",
     "refresh": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU2MjI0MDB9.y"
@@ -1420,73 +1420,142 @@
   "members": {
     "members": [
       {
-        "id": "d7b9a926-712c-44b6-a12b-fb6c25fb7397",
+        "id": "28695be7-3ea8-41a3-9e45-250a79464a03",
         "user": {
-          "id": "ff676ee2-96e2-43dd-8161-8be486fd0a36",
+          "id": "481c25f4-e7e0-4365-8957-28d417bc6446",
           "name": "",
           "email": "tester@test.com"
         },
         "email": "tester@test.com",
         "role": "owner",
         "status": "active",
-        "joined_at": "2026-11-26T18:38:47.180565Z",
+        "joined_at": "2026-11-27T09:41:43.320114Z",
         "invited_by": null
       },
       {
-        "id": "74a6c6bf-7d6c-4f3d-bdc4-30efbba31980",
+        "id": "19e527dd-26d9-4997-b7dc-fb9a093ccd68",
         "user": {
-          "id": "f650dc0a-df55-43e6-afa8-13d9cfb7b9e1",
+          "id": "74b83b98-6fde-4333-a38c-c1de49c96d7a",
           "name": "Admin",
           "email": "admin@test.com"
         },
         "email": "admin@test.com",
         "role": "admin",
         "status": "active",
-        "joined_at": "2026-11-26T18:38:47.432822Z",
+        "joined_at": "2026-11-27T09:41:43.339059Z",
         "invited_by": null
       },
       {
-        "id": "c5e713ec-663b-4fe1-995f-88f860e0fdeb",
+        "id": "f9d9a255-fbf3-4bc3-8cf2-4c1b40f2ffaf",
         "user": {
-          "id": "69ebff68-75b1-40a8-85d9-90466ab1a204",
+          "id": "372dcc22-960f-473a-b5f2-60dcd9c755ff",
           "name": "Editor",
           "email": "editor@test.com"
         },
         "email": "editor@test.com",
         "role": "editor",
         "status": "active",
-        "joined_at": "2026-11-26T18:38:47.678643Z",
+        "joined_at": "2026-11-27T09:41:43.348038Z",
         "invited_by": null
       },
       {
-        "id": "719077ee-7c59-4f01-b7e3-ac522e496c7a",
+        "id": "99a10ee8-7aba-470e-bd85-b2de65d7be7e",
         "user": {
-          "id": "81ce6735-bc50-4807-a084-900b16ce43e1",
+          "id": "319776b9-fd8b-42f1-8e10-1b0fa2421b49",
           "name": "Viewer",
           "email": "viewer@test.com"
         },
         "email": "viewer@test.com",
         "role": "viewer",
         "status": "active",
-        "joined_at": "2026-11-26T18:38:47.927258Z",
+        "joined_at": "2026-11-27T09:41:43.358117Z",
         "invited_by": null
       },
       {
-        "id": "af4453fd-2ad4-41c9-8115-e95f7b2bf2bb",
-        "user": {
-          "id": "e432c13c-503b-4cd5-b249-9b4ff58a38c6",
-          "name": "Invitada",
-          "email": "invitada@test.com"
-        },
+        "id": "784dca1f-8f88-4b3d-ac6e-c8ae2a8ea436",
+        "user": null,
         "email": "invitada@test.com",
         "role": "editor",
         "status": "pending",
-        "joined_at": "2026-11-26T18:38:48.135571Z",
+        "joined_at": "2026-11-27T09:41:43.369141Z",
         "invited_by": null
       }
     ],
     "max_members": 5,
-    "seats_used": 5
+    "seats_used": 5,
+    "limited_by": null
+  },
+  "members_plan_payment": {
+    "members": [
+      {
+        "id": "28695be7-3ea8-41a3-9e45-250a79464a03",
+        "user": {
+          "id": "481c25f4-e7e0-4365-8957-28d417bc6446",
+          "name": "",
+          "email": "tester@test.com"
+        },
+        "email": "tester@test.com",
+        "role": "owner",
+        "status": "active",
+        "joined_at": "2026-11-27T09:41:43.320114Z",
+        "invited_by": null
+      },
+      {
+        "id": "19e527dd-26d9-4997-b7dc-fb9a093ccd68",
+        "user": {
+          "id": "74b83b98-6fde-4333-a38c-c1de49c96d7a",
+          "name": "Admin",
+          "email": "admin@test.com"
+        },
+        "email": "admin@test.com",
+        "role": "admin",
+        "status": "active",
+        "joined_at": "2026-11-27T09:41:43.339059Z",
+        "invited_by": null
+      },
+      {
+        "id": "f9d9a255-fbf3-4bc3-8cf2-4c1b40f2ffaf",
+        "user": {
+          "id": "372dcc22-960f-473a-b5f2-60dcd9c755ff",
+          "name": "Editor",
+          "email": "editor@test.com"
+        },
+        "email": "editor@test.com",
+        "role": "editor",
+        "status": "active",
+        "joined_at": "2026-11-27T09:41:43.348038Z",
+        "invited_by": null
+      },
+      {
+        "id": "99a10ee8-7aba-470e-bd85-b2de65d7be7e",
+        "user": {
+          "id": "319776b9-fd8b-42f1-8e10-1b0fa2421b49",
+          "name": "Viewer",
+          "email": "viewer@test.com"
+        },
+        "email": "viewer@test.com",
+        "role": "viewer",
+        "status": "active",
+        "joined_at": "2026-11-27T09:41:43.358117Z",
+        "invited_by": null
+      },
+      {
+        "id": "784dca1f-8f88-4b3d-ac6e-c8ae2a8ea436",
+        "user": null,
+        "email": "invitada@test.com",
+        "role": "editor",
+        "status": "pending",
+        "joined_at": "2026-11-27T09:41:43.369141Z",
+        "invited_by": null
+      }
+    ],
+    "max_members": 5,
+    "seats_used": 5,
+    "limited_by": {
+      "reason": "pending_payment",
+      "plan_name": "Creador",
+      "effective_at": null
+    }
   },
   "member_update": {
     "id": "719077ee-7c59-4f01-b7e3-ac522e496c7a",

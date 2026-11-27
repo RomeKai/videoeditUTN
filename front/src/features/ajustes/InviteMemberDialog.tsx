@@ -10,6 +10,7 @@ import { errorMessage } from '@/lib/error-messages';
 import { ROLE_DESCRIPTION, ROLE_LABEL } from '@/lib/permissions';
 import { Button, Dialog, Field, Input, Select, useToast } from '@/ui';
 import styles from './ajustes.module.css';
+import { seatLimitReason } from './summaries';
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const ROLE_OPTIONS: MemberRole[] = ['editor', 'admin', 'viewer'];
@@ -25,7 +26,7 @@ export interface InviteMemberDialogProps {
   onClose: () => void;
   workspaceId: string;
   workspaceName: string;
-  /** Name of the workspace's plan, for "Queda 1 lugar en el plan Pro". */
+  /** Name of the workspace's plan, for "Queda 1 lugar en el plan Pro" (the plan of `limited_by` wins). */
   planName?: string | null;
   members: MembersResponse | undefined;
 }
@@ -54,7 +55,10 @@ export function InviteMemberDialog({ open, onClose, workspaceId, workspaceName, 
   const emails = parseEmails(text);
   const invalid = emails.find((email) => !EMAIL.test(email));
   const existing = emails.find((email) => members?.members.some((member) => member.email.toLowerCase() === email));
-  const plan = planName ? ` en el plan ${planName}` : ' en tu plan';
+  // While a plan change waits, its plan's seats are the ones inviting checks (and `max` already is that).
+  const limitedBy = members?.limited_by ?? null;
+  const seatsPlan = limitedBy?.plan_name ?? planName;
+  const plan = seatsPlan ? ` en el plan ${seatsPlan}` : ' en tu plan';
 
   const localError =
     emails.length === 0
@@ -156,6 +160,7 @@ export function InviteMemberDialog({ open, onClose, workspaceId, workspaceName, 
                 ? 'Esta invitación ocupa el último lugar: las pendientes también cuentan.'
                 : 'Estas invitaciones ocupan los últimos lugares: las pendientes también cuentan.'
               : 'Las invitaciones pendientes también ocupan un lugar.'}
+            {limitedBy ? ` ${seatLimitReason(limitedBy)}` : null}
           </p>
         </div>
       </form>

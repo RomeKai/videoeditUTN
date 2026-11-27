@@ -104,10 +104,24 @@ class MemberSerializer(serializers.Serializer):
     invited_by = InviterSerializer(allow_null=True)
 
 
+class SeatLimitSerializer(serializers.Serializer):
+    """Why `max_members` is below the current plan's (seats.SeatLimit.limited_by)."""
+
+    # pending_plan: a scheduled downgrade; pending_payment: a plan payment waiting for its checkout.
+    reason = serializers.ChoiceField(choices=['pending_plan', 'pending_payment'])
+    # The plan whose seats count.
+    plan_name = serializers.CharField()
+    # When the downgrade applies; null for a payment.
+    effective_at = serializers.DateTimeField(allow_null=True)
+
+
 class MembersSerializer(serializers.Serializer):
     members = MemberSerializer(many=True)
+    # The limit that inviting checks (seats.seat_limit): the plan's, or a smaller one while a change waits.
     max_members = serializers.IntegerField()
     seats_used = serializers.IntegerField()
+    # Null when max_members is the current plan's.
+    limited_by = SeatLimitSerializer(allow_null=True)
 
 
 # --- Invitations (apps.users.views_invitations) ---

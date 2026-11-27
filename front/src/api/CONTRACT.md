@@ -440,7 +440,7 @@ Miembros e invitaciones pendientes, con los lugares usados del plan.
 |---|---|
 | Id | `workspaces.members` |
 | Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceMembersView.get (MembersSerializer)` |
-| Nota | Una fila por WorkspaceMember, de la más antigua a la más nueva; la del Dueño sale con `role: "owner"`. `seats_used` cuenta todas las filas, también las pendientes y la del Dueño; `max_members` es 1 si el workspace no tiene plan. En una invitación pendiente `user` es null (tenga o no cuenta ese email) y `email` es el invitado; `invited_by` es `{id, name}` de quien invitó, o null en las filas que nadie invitó. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
+| Nota | Una fila por WorkspaceMember, de la más antigua a la más nueva; la del Dueño sale con `role: "owner"`. `seats_used` cuenta todas las filas, también las pendientes y la del Dueño. `max_members` es el límite que controla invitar (`seats.seat_limit`): el del plan, 1 si el workspace no tiene plan, o el del plan más chico mientras espera una bajada programada o un pago de plan; en esos dos casos `limited_by` dice cuál (`pending_plan` con su fecha, o `pending_payment`), y si no es null. En una invitación pendiente `user` es null (tenga o no cuenta ese email) y `email` es el invitado; `invited_by` es `{id, name}` de quien invitó, o null en las filas que nadie invitó. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Respuesta 200 | MembersResponse |
 | Errores | **403** Solo Dueño y Admin ven la sección (para Editor y Lector no aparece). Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos. |
@@ -1535,8 +1535,11 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `members` | Member[] |
 | `max_members` | number |
 | `seats_used` | number |
+| `limited_by` | SeatLimit \\| null |
 
 **MemberStatus:** "pending" \| "active"
+
+**SeatLimit:** { reason: "pending_plan", plan_name: string, effective_at: IsoDateTime } \| { reason: "pending_payment", plan_name: string, effective_at: null }
 
 **Workspace**
 
