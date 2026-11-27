@@ -682,6 +682,25 @@ describe('D4 · Editor de clip', () => {
     await waitFor(() => expect(loadDb().transactions.find((item) => item.description === `Reintento de clip: ${failed.title}`)?.status).toBe('RESERVED'));
   });
 
+  it('el reproductor muestra el render del clip cuando el backend manda preview_url', async () => {
+    editDb((db) => {
+      const clip = db.projects.find((entry) => entry.id === READY)?.clips.find((entry) => entry.id === CLIP);
+      if (!clip) throw new Error('falta el clip');
+      clip.preview_url = 'https://media.test/videos/clip.mp4?X-Amz-Expires=3600';
+    });
+    renderScreen(<ClipEditorScreen projectId={READY} clipId={CLIP} />);
+    const player = await screen.findByRole('group', { name: /^Reproductor: / });
+    await waitFor(() => expect(player.querySelector('video')).toHaveAttribute('src', 'https://media.test/videos/clip.mp4?X-Amz-Expires=3600'));
+  });
+
+  it('sin preview_url (null) el reproductor se queda con el dibujo y no arma un video', async () => {
+    expect(stored()?.preview_url).toBeNull();
+    renderScreen(<ClipEditorScreen projectId={READY} clipId={CLIP} />);
+    const player = await screen.findByRole('group', { name: /^Reproductor: / });
+    await screen.findByRole('region', { name: 'Recorte del clip' });
+    expect(player.querySelector('video')).toBeNull();
+  });
+
   it('un clip en cola de un render pago (draft con render_queued) se muestra renderizando, no como sugerido', async () => {
     editDb((db) => {
       const item = db.projects.find((entry) => entry.id === READY);

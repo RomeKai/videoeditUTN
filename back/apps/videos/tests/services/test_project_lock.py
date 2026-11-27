@@ -1,5 +1,8 @@
+import threading
 import time
 from unittest.mock import patch
+
+import redis.lock
 
 from django.test import SimpleTestCase, override_settings
 
@@ -68,6 +71,70 @@ class ProjectLockTests(SimpleTestCase):
 
         from_url.assert_called_once()
         self.assertEqual(from_url.call_args.args[0], "redis://example:6379/5")
+
+
+class _RedisPyLock(redis.lock.Lock):
+    """The lock of redis-py, with its scripts registered on this class: the real one caches them for every client."""
+
+    lua_release = None
+    lua_extend = None
+    lua_reacquire = None
+
+
+class _Script:
+    """What ``register_script`` returns: called with (keys, args, client)."""
+
+    def __init__(self, on_call=None):
+        self._on_call = on_call
+
+    def __call__(self, keys=(), args=(), client=None):
+        if self._on_call:
+            self._on_call()
+        return 1
+
+
+class _ScriptedRedis:
+    """Just enough of a client for the lock of redis-py: it takes every key and counts the renewals."""
+
+    def __init__(self):
+        self.extended = []
+
+    def lock(self, name, timeout=None, **kwargs):
+        return _RedisPyLock(self, name, timeout=timeout, **kwargs)
+
+    def register_script(self, script):
+        if script == redis.lock.Lock.LUA_EXTEND_SCRIPT:
+            return _Script(lambda: self.extended.append(threading.current_thread().name))
+        return _Script()
+
+    def set(self, name, value, nx=False, px=None):
+        return True
+
+
+class ProjectLockWithRedisPyTests(SimpleTestCase):
+    """The lock of redis-py itself: the fake lock has no notion of which thread owns the token."""
+
+    def setUp(self):
+        # redis-py registers its scripts once per class, bound to the first client: a second run
+        # in the same process would count the renewals of a client that is gone.
+        _RedisPyLock.lua_release = _RedisPyLock.lua_extend = _RedisPyLock.lua_reacquire = None
+
+    def test_heartbeat_thread_can_renew_the_lock_the_task_thread_acquired(self):
+        client = _ScriptedRedis()
+        crashes = []
+        hook = threading.excepthook
+        threading.excepthook = lambda args: crashes.append(args.exc_type.__name__)
+        try:
+            with project_lock("p1", client=client, ttl=0.3):
+                time.sleep(0.5)
+        finally:
+            threading.excepthook = hook
+
+        # By default redis-py keeps the token per thread: the heartbeat thread then finds none,
+        # dies on its first renewal and the lock expires under a stage longer than the TTL.
+        self.assertEqual(crashes, [])
+        self.assertGreaterEqual(len(client.extended), 1)
+        self.assertTrue(all(name.startswith("project-lock-heartbeat-") for name in client.extended))
 
 
 class ProjectLockHeldTests(SimpleTestCase):

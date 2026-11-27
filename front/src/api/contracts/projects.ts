@@ -153,9 +153,18 @@ export const Clip = z.object({
   status: ClipStatus,
   created_at: IsoDateTime,
   layers: z.array(ClipLayer),
-  /** Proposed (gap 5): temporary URL to play the rendered clip. */
+  /**
+   * Temporary URL that plays the rendered file (VideoClipSerializer.preview_url): a presigned GET that
+   * lasts what a download link does (CLIP_DOWNLOAD_URL_TTL_SECONDS, 1 h), or the absolute /media/ URL
+   * with local files (USE_R2=False). It is signed again on every response. Null unless the clip is
+   * `completed` or `published` and has a file. Optional for backends from before it existed.
+   */
   preview_url: z.string().url().nullable().optional(),
-  /** Proposed: poster image. */
+  /**
+   * Temporary URL of the thumbnail (a JPEG frame of the render, 360 px on the long side), with the same
+   * expiry as `preview_url`. Null when the clip has none: it was never rendered, it was rendered before
+   * thumbnails existed, or the thumbnail could not be made (it is best effort and never fails a render).
+   */
   thumbnail_url: z.string().url().nullable().optional(),
   /**
    * True only while the clip, in `draft`, waits for a worker in an open paid render (a render, a
@@ -296,9 +305,13 @@ export const Project = z.object({
   clips: z.array(Clip),
   /** Presigned URL of the proxy video (1 h), null until ingestion makes it. With local files (USE_R2=False), the absolute /media/ URL. */
   proxy_url: z.string().nullable(),
+  /**
+   * The thumbnail of the project's first clip that has one (the same temporary URL as the clip's
+   * `thumbnail_url`), null when no clip has a thumbnail. Optional for backends from before it existed.
+   */
+  thumbnail_url: z.string().url().nullable().optional(),
   /* Proposed extras */
   uploaded_by_detail: UserRef.nullable().optional(),
-  thumbnail_url: z.string().url().nullable().optional(),
   /** Source duration in seconds, whatever the origin (gap: today it is spread over metadata). */
   duration_seconds: z.number().nullable().optional(),
   cost: ProjectCost.nullable().optional(),
@@ -604,7 +617,7 @@ export const getProject = defineEndpoint({
     status: 'partial',
     source: 'back/apps/videos/views.py · VideoProjectViewSet.retrieve + VideoProjectSerializer',
     gap: [4, 15, 18],
-    note: 'Faltan `cost` (vínculo con la transacción y estado devuelto), `stage_timings`, `eta_seconds`, `duration_seconds`, `uploaded_by_detail` y `thumbnail_url`.',
+    note: 'Faltan `cost` (vínculo con la transacción y estado devuelto), `stage_timings`, `eta_seconds`, `duration_seconds` y `uploaded_by_detail`. Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura.',
   },
   screens: ['D1', 'D1e', 'D1f', 'D3', 'D4', 'D5'],
 });

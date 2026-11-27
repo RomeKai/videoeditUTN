@@ -23,6 +23,7 @@ import {
   headerStatusText,
   isWholeVideo,
   previewBlockedReason,
+  refundAfterFailure,
   pteAppliedLines,
   pteIgnoredLines,
   rulerTicks,
@@ -315,6 +316,20 @@ describe('actividad', () => {
     const days = groupActivityByDay([item('a', 'project_created', at(20, 9)), item('b', 'render_finished', at(24, 11)), item('c', 'review_approved', at(23, 11)), item('d', 'review_ready', at(23, 10))], now);
     expect(days.map((day) => day.label)).toEqual(['Hoy · mar 24 nov', 'Ayer · lun 23 nov', 'vie 20 nov 2026']);
     expect(days[1]?.items.map((entry) => entry.id)).toEqual(['c', 'd']);
+  });
+
+  it('la devolución de un proyecto que falló se lee de la actividad: lo devuelto después de la última reserva o cobro', () => {
+    // What the backend sends for a project that failed in the ingest: the newest first.
+    expect(refundAfterFailure([item('d', 'tokens_refunded', at(24, 12), 6.3), item('c', 'project_failed', at(24, 12)), item('b', 'tokens_reserved', at(24, 11), -6.3), item('a', 'project_created', at(24, 11))])).toBe(6.3);
+    // Whatever the order of the list, and only what came back after the last charge.
+    expect(
+      refundAfterFailure([item('a', 'tokens_refunded', at(20, 9), 40), item('b', 'tokens_reserved', at(21, 9), -18), item('c', 'tokens_charged', at(21, 10), -18), item('d', 'tokens_reserved', at(22, 9), -9), item('e', 'tokens_refunded', at(22, 10), 9)]),
+    ).toBe(9);
+    // Charged and nothing came back; no movements at all.
+    expect(refundAfterFailure([item('b', 'tokens_charged', at(24, 12), -18), item('a', 'tokens_reserved', at(24, 11), -18)])).toBe(0);
+    expect(refundAfterFailure([item('a', 'project_created', at(24, 11))])).toBe(0);
+    // Still reserved: the refund is not written yet.
+    expect(refundAfterFailure([item('b', 'project_failed', at(24, 12)), item('a', 'tokens_reserved', at(24, 11), -18)])).toBeNull();
   });
 
   it('los movimientos son los eventos con monto', () => {

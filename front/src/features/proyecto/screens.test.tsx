@@ -173,6 +173,26 @@ describe('D1 · Proyecto', () => {
     expect(screen.queryByRole('link', { name: 'Ver planes' })).toBeNull();
   });
 
+  it('error sin `cost` (el backend de hoy): la devolución sale de la actividad del proyecto', async () => {
+    open('Falló: AINoSpeechDetectedError', '', 'todos-los-estados', 'lucia', (project, db) => {
+      const refund = db.activity.find((entry) => entry.project === project.id && entry.type === 'tokens_refunded');
+      if (!refund) throw new Error('El proyecto sembrado no tiene su devolución en la actividad');
+      refund.amount = 123;
+      project.cost = null;
+    });
+    const alert = await screen.findByRole('alert');
+    expect(await within(alert).findByText(/Te devolvimos/)).toHaveTextContent('Te devolvimos 123 tokens.');
+    expect(within(alert).getByRole('link', { name: /Ver en Movimientos/ })).toHaveAttribute('href', '/uso/movimientos');
+  });
+
+  it('la moderación no se pudo usar (ModerationBlockedError): no culpa al contenido del video', async () => {
+    open('Falló: ModerationBlockedError', '');
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText(/Algo falló de nuestro lado/)).toBeInTheDocument();
+    expect(within(alert).getByRole('link', { name: /Escribir a soporte/ })).toBeInTheDocument();
+    expect(screen.queryByText(/no cumple nuestras políticas/)).toBeNull();
+  });
+
   it('error de moderación: no dice la categoría y ofrece escribirnos', async () => {
     open('Falló: UnsafeContentError', '');
     const alert = await screen.findByRole('alert');
@@ -274,6 +294,33 @@ describe('D3 · Clips', () => {
     expect(screen.queryByRole('link', { name: 'Ver clips' })).toBeNull();
     expect(screen.getByRole('group', { name: 'Filtrar clips por estado' })).toBeInTheDocument();
     expect(within(list).getAllByText('Programado').length).toBeGreaterThan(0);
+  });
+
+  it('con thumbnail_url la tarjeta muestra la miniatura, y al pasar el mouse reproduce preview_url', async () => {
+    const { user } = open('Vlog Mendoza', 'clips', 'estudio-norte', 'lucia', (project) => {
+      const clip = project.clips.find((item) => item.status === 'completed');
+      if (!clip) throw new Error('falta un clip listo');
+      clip.title = 'Clip con miniatura';
+      clip.thumbnail_url = 'https://media.test/videos/clip.jpg';
+      clip.preview_url = 'https://media.test/videos/clip.mp4';
+    });
+    const list = await screen.findByRole('list');
+    const tile = within(list).getByRole('heading', { name: 'Clip con miniatura' }).closest('li');
+    if (!tile) throw new Error('falta la tarjeta');
+    expect(tile.querySelector('img')).toHaveAttribute('src', 'https://media.test/videos/clip.jpg');
+    expect(tile.querySelector('video')).toBeNull();
+    await user.hover(tile);
+    expect(tile.querySelector('video')).toHaveAttribute('src', 'https://media.test/videos/clip.mp4');
+  });
+
+  it('sin miniatura ni preview_url (null) la tarjeta se queda con el dibujo', async () => {
+    const { user } = open('Vlog Mendoza', 'clips', 'estudio-norte');
+    const list = await screen.findByRole('list');
+    const tile = within(list).getAllByRole('listitem')[0];
+    if (!tile) throw new Error('falta la tarjeta');
+    await user.hover(tile);
+    expect(tile.querySelector('img')).toBeNull();
+    expect(tile.querySelector('video')).toBeNull();
   });
 
   it('filtra por estado', async () => {

@@ -410,11 +410,11 @@ Borra el workspace. Solo el Dueño, escribiendo el nombre para confirmar.
 |---|---|
 | Id | `workspaces.delete` |
 | Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceDetailView.delete` |
-| Nota | Borra para siempre el workspace con sus proyectos, clips y publicaciones (las programadas que no salieron no se publican), brand kits, miembros e invitaciones, y la billetera, ya en cero, con sus movimientos. Las cuentas de los miembros no se tocan. No limpia los archivos en R2 ni el perfil de Ayrshare. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
+| Nota | Borra para siempre el workspace con sus proyectos, clips y publicaciones (las programadas que no salieron no se publican), brand kits, miembros e invitaciones, sus pagos ya liquidados, y la billetera, ya en cero, con sus movimientos. Las cuentas de los miembros no se tocan. No limpia los archivos en R2 ni el perfil de Ayrshare. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Pedido | { confirm_name: string } |
 | Respuesta 204 | NoContent |
-| Errores | **400** `confirm_name` falta o no es exactamente el nombre: `{confirm_name: [mensaje]}`.<br>**403** No es el Dueño. Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos.<br>**409** No se borra nada. Cuerpo `{error, code}`, y el `error` se muestra tal cual. Se revisan en este orden. `last_workspace`: es el único workspace del usuario (va primero porque esperar no lo resuelve). `project_processing`: hay un proyecto subido, en ingesta o renderizando (uno trabado se borra primero). `posts_in_flight`: hay una publicación saliendo (`PROCESSING` hace menos de 10 minutos) o en cola (`QUEUED` hasta 15 minutos después de su `publish_at`); una más vieja está trabada y no frena el borrado. `reservation_open`: hay tokens reservados sin liquidar. `balance_left`: queda saldo disponible (trae `available_balance`); los tokens nunca se borran. |
+| Errores | **400** `confirm_name` falta o no es exactamente el nombre: `{confirm_name: [mensaje]}`.<br>**403** No es el Dueño. Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos.<br>**409** No se borra nada. Cuerpo `{error, code}`, y el `error` se muestra tal cual. Se revisan en este orden. `last_workspace`: es el único workspace del usuario (va primero porque esperar no lo resuelve). `project_processing`: hay un proyecto subido, en ingesta o renderizando (uno trabado se borra primero). `posts_in_flight`: hay una publicación saliendo (`PROCESSING` hace menos de 10 minutos) o en cola (`QUEUED` hasta 15 minutos después de su `publish_at`); una más vieja está trabada y no frena el borrado. `reservation_open`: hay tokens reservados sin liquidar. `payment_pending`: hay una compra de tokens o un pago de plan pendiente (con el checkout abierto o abriéndose); se resuelve cuando el proveedor lo liquida o cuando vence su checkout (`PAYMENTS_CHECKOUT_TTL_SECONDS`, 24 h por defecto). La web no tiene cómo cancelarlo, así que el `error` dice pagarlo o esperar, con el plazo del setting. `balance_left`: queda saldo disponible (trae `available_balance`); los tokens nunca se borran. |
 | Pantallas | H1 |
 
 #### `POST /api/v1/workspaces/:id/transfer/`
@@ -597,11 +597,11 @@ Cambia de plan. Todo otro plan pago se compra: se aplica al volver del checkout,
 |---|---|
 | Id | `billing.changePlan` |
 | Backend | ✅ existe · `back/apps/payments/views_subscription.py · ChangePlanView (apps/payments/services/subscriptions.py)` |
-| Nota | Antes de PAY-02, todo otro plan pago es una compra, sea más caro, más barato o del mismo precio: `checkout_url` viene con valor, el plan no cambia todavía y el proveedor vuelve a `return_url` (por defecto `FRONTEND_URL/uso/planes`) con `compra=<id>`; al confirmarse el pago cambia el plan una sola vez, al momento, y empieza un período pagado de un mes propio. Sin prorrateo: se cobra el mes entero del plan nuevo y lo que quedaba del período actual se pierde. Así pagar una vez nunca deja un plan pago para siempre. Pedir otra vez el mismo plan devuelve el mismo checkout; elegir otro rechaza el pago que esperaba. Solo un plan gratis (como el de `DEFAULT_PLAN_NAME`) se programa para el fin del período pagado (`applied: "period_end"`); sin período pagado se aplica al momento (`applied: "now"`). La web dice «Subir» o «Bajar» por `sort_order` (un check de Django, `payments.W002`, avisa si el orden de los planes públicos no sigue al precio) y avisa que un plan pago se paga y se aplica al momento. Mientras una bajada espera, o mientras un pago de plan espera su checkout, invitar a más gente que la que entra en ese plan se rechaza. La tarea `apply_due_plan_changes` (Celery Beat, cada 15 min) aplica las bajadas que vencieron y, si el período terminó sin nada programado, pasa al plan por defecto. Con `plan_id` igual al plan actual cancela la bajada programada y el pago de plan que esperaba su checkout (`applied: "now"`). El mock aplica todo plan pago al momento salvo en el escenario «Plan con checkout». |
+| Nota | Antes de PAY-02, todo otro plan pago es una compra, sea más caro, más barato o del mismo precio: `checkout_url` viene con valor, el plan no cambia todavía y el proveedor vuelve a `return_url` (por defecto `FRONTEND_URL/uso/planes`) con `compra=<id>`; al confirmarse el pago cambia el plan una sola vez, al momento, y empieza un período pagado de un mes propio. Sin prorrateo: se cobra el mes entero del plan nuevo y lo que quedaba del período actual se pierde. Así pagar una vez nunca deja un plan pago para siempre. Pedir otra vez el mismo plan devuelve el mismo checkout; elegir otro rechaza el pago que esperaba. Solo un plan gratis (como el de `DEFAULT_PLAN_NAME`) se programa para el fin del período pagado (`applied: "period_end"`); sin período pagado se aplica al momento (`applied: "now"`). La web dice «Subir» o «Bajar» por `sort_order` (un check de Django, `payments.W002`, avisa si el orden de los planes públicos no sigue al precio) y avisa que un plan pago se paga y se aplica al momento. Mientras una bajada espera, o mientras un pago de plan espera su checkout, invitar a más gente que la que entra en ese plan se rechaza. La tarea `apply_due_plan_changes` (Celery Beat, cada 15 min) aplica las bajadas que vencieron y, si el período terminó sin nada programado, pasa al plan por defecto. Con `plan_id` igual al plan actual cancela la bajada programada y el pago de plan que esperaba su checkout (`applied: "now"`). Un checkout que nadie paga vence a las 24 h de abierto (`PAYMENTS_CHECKOUT_TTL_SECONDS`): la tarea lo rechaza («El checkout venció sin que se pagara.») y lo cierra en el proveedor, y deja de limitar las invitaciones; pedir ese plan después abre otro checkout. El mock aplica todo plan pago al momento salvo en el escenario «Plan con checkout». |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | { plan_id: Id, return_url?: string } |
 | Respuesta 200 | { applied: "now" \\| "period_end", checkout_url: string \\| null, subscription: Subscription } |
-| Errores | **400** Ya es el plan actual y no hay nada programado ni esperando su pago (`{ plan_id: ["Ya es tu plan actual."] }`), o `return_url` no es una página de la app o pasa de 600 caracteres.<br>**403** El rol no puede cambiar el plan (solo Dueño y Admin).<br>**404** El plan no existe, está inactivo o no es público (`{ detail: "El plan no existe." }`).<br>**409** Cambiar a un plan con menos lugares que los que el workspace ocupa hoy, contando invitaciones pendientes (`code: "seats_exceeded"`, con `seats_used` y `max_members`). No se programa nada: primero hay que quitar miembros. Es un 409 porque lo impide el estado del workspace; el mismo código en `workspaces.invite` es un 403 de límite de plan, que se resuelve subiendo de plan. También 409 `code: "checkout_in_progress"`: el mismo pago todavía está abriendo su checkout (un doble envío); se reintenta en unos segundos y nada se rechaza (un intento cuyo checkout nunca abrió deja de bloquear pasado el doble de `PAYMENTS_PROVIDER_TIMEOUT_SECONDS` desde que empezó su llamada al proveedor). Y 409 `code: "plan_change_superseded"`: mientras se abría el pago se eligió otro plan (o seguir con el actual); nunca se devuelve el checkout de otro plan.<br>**501** Pasar a otro plan pago sin proveedor de pagos configurado (`code: "payments_unavailable"`). No cambia nada. No es 503: la app lee cualquier 503 como mantenimiento.<br>**502** El proveedor no abrió el checkout (`code: "checkout_failed"`). No se cobró nada. |
+| Errores | **400** Ya es el plan actual y no hay nada programado ni esperando su pago (`{ plan_id: ["Ya es tu plan actual."] }`), o `return_url` no es una página de la app o pasa de 600 caracteres.<br>**403** El rol no puede cambiar el plan (solo Dueño y Admin).<br>**404** El plan no existe, está inactivo o no es público (`{ detail: "El plan no existe." }`), o el workspace se borró mientras el pedido esperaba su turno (el `detail` del workspace inexistente; no cambia nada).<br>**409** Cambiar a un plan con menos lugares que los que el workspace ocupa hoy, contando invitaciones pendientes (`code: "seats_exceeded"`, con `seats_used` y `max_members`). No se programa nada: primero hay que quitar miembros. Es un 409 porque lo impide el estado del workspace; el mismo código en `workspaces.invite` es un 403 de límite de plan, que se resuelve subiendo de plan. También 409 `code: "checkout_in_progress"`: el mismo pago todavía está abriendo su checkout (un doble envío); se reintenta en unos segundos y nada se rechaza (un intento cuyo checkout nunca abrió deja de bloquear pasado el doble de `PAYMENTS_PROVIDER_TIMEOUT_SECONDS` desde que empezó su llamada al proveedor). Y 409 `code: "plan_change_superseded"`: mientras se abría el pago se eligió otro plan (o seguir con el actual); nunca se devuelve el checkout de otro plan.<br>**501** Pasar a otro plan pago sin proveedor de pagos configurado (`code: "payments_unavailable"`). No cambia nada. No es 503: la app lee cualquier 503 como mantenimiento.<br>**502** El proveedor no abrió el checkout (`code: "checkout_failed"`). No se cobró nada. |
 | Pantallas | G3 |
 
 #### `GET /api/v1/wallet/`
@@ -683,11 +683,11 @@ Inicia una compra de tokens y devuelve la URL del checkout del proveedor de pago
 |---|---|
 | Id | `billing.createPurchase` |
 | Backend | ✅ existe · `back/apps/payments/views_purchases.py · TokenPurchaseCreateView + PaymentSerializer (apps/payments/serializers_billing.py)` |
-| Nota | El proveedor es `PAYMENTS_PROVIDER`. Con `simulated` (desarrollo, y en una demo con `PAYMENTS_ALLOW_SIMULATED`) `checkout_url` es `/dev/checkout?compra=<id>&volver=<return_url>` en el origen de `return_url`, y esa página decide con `billing.simulatePurchase`. Sin proveedor, 501. La `Idempotency-Key` vale por workspace: repetida, responde la compra que ya empezó, con el mismo 201. Si el checkout no se abrió (502), o el intento quedó sin checkout más del doble de `PAYMENTS_PROVIDER_TIMEOUT_SECONDS` desde que empezó su llamada al proveedor (el proceso murió en esa llamada), la clave queda libre y el reintento con la misma clave es un intento nuevo; la tarea de beat también los rechaza. |
+| Nota | El proveedor es `PAYMENTS_PROVIDER`. Con `simulated` (desarrollo, y en una demo con `PAYMENTS_ALLOW_SIMULATED`) `checkout_url` es `/dev/checkout?compra=<id>&volver=<return_url>` en el origen de `return_url`, y esa página decide con `billing.simulatePurchase`. Sin proveedor, 501. La `Idempotency-Key` vale por workspace: repetida, responde la compra que ya empezó, con el mismo 201. Si el checkout no se abrió (502), o el intento quedó sin checkout más del doble de `PAYMENTS_PROVIDER_TIMEOUT_SECONDS` desde que empezó su llamada al proveedor (el proceso murió en esa llamada), la clave queda libre y el reintento con la misma clave es un intento nuevo; la tarea de beat también los rechaza. Un checkout que nadie paga vence a las 24 h de abierto (`PAYMENTS_CHECKOUT_TTL_SECONDS`): queda rechazado, con su clave, y repetirla responde esa compra rechazada. |
 | Sesión | JWT · `X-Workspace-Id` · `Idempotency-Key` (una por envío; se repite al reintentar) |
 | Pedido | { package_id?: string, custom_tokens?: number, return_url: string } |
 | Respuesta 201 | TokenPurchase |
-| Errores | **400** Cantidad por debajo del mínimo o por encima del máximo (1.000.000), paquete inexistente, o `return_url` que no es una página de la app o pasa de 600 caracteres.<br>**403** El rol no puede comprar (solo Dueño y Admin).<br>**409** La `Idempotency-Key` ya empezó otra compra (`code: "idempotency_key_reused"`), o la compra que empezó todavía está abriendo su checkout (`code: "purchase_in_progress"`: se reintenta en unos segundos).<br>**501** No hay proveedor de pagos configurado (`code: "payments_unavailable"`). No se crea nada. No es 503: la app lee cualquier 503 como mantenimiento.<br>**502** El proveedor no abrió el checkout (`code: "checkout_failed"`). No se cobró nada. |
+| Errores | **400** Cantidad por debajo del mínimo o por encima del máximo (1.000.000), paquete inexistente, o `return_url` que no es una página de la app o pasa de 600 caracteres.<br>**403** El rol no puede comprar (solo Dueño y Admin).<br>**404** El workspace se borró mientras el pedido esperaba su turno: no se escribe nada (el `detail` del workspace inexistente).<br>**409** La `Idempotency-Key` ya empezó otra compra (`code: "idempotency_key_reused"`), o la compra que empezó todavía está abriendo su checkout (`code: "purchase_in_progress"`: se reintenta en unos segundos).<br>**501** No hay proveedor de pagos configurado (`code: "payments_unavailable"`). No se crea nada. No es 503: la app lee cualquier 503 como mantenimiento.<br>**502** El proveedor no abrió el checkout (`code: "checkout_failed"`). No se cobró nada. |
 | Pantallas | G4, D2 (diálogo) |
 
 #### `GET /api/v1/token-purchases/:id/`
@@ -698,7 +698,7 @@ Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`
 |---|---|
 | Id | `billing.purchase` |
 | Backend | ✅ existe · `back/apps/payments/views_purchases.py · TokenPurchaseDetailView + PaymentSerializer (apps/payments/serializers_billing.py)` |
-| Nota | La confirmación del proveedor (o `billing.simulatePurchase`) acredita una sola vez: un DEPOSIT COMPLETED de los tokens en la billetera, con `category: "purchase"` y «Compra de 1.000 tokens». La pantalla consulta cada 5 s mientras está pendiente. `plan_id` viene siempre (null en una compra de tokens). `balance_after` llega con 10 decimales, como el saldo. Un pago que el proveedor confirma después de rechazado (reemplazado, cancelado o con el checkout fallido) no cambia nada: queda en el log como `payment.late_paid` para devolverlo a mano. |
+| Nota | La confirmación del proveedor (o `billing.simulatePurchase`) acredita una sola vez: un DEPOSIT COMPLETED de los tokens en la billetera, con `category: "purchase"` y «Compra de 1.000 tokens». La pantalla consulta cada 5 s mientras está pendiente. `plan_id` viene siempre (null en una compra de tokens). `balance_after` llega con 10 decimales, como el saldo. Un pago que el proveedor confirma después de rechazado (reemplazado, cancelado, vencido o con el checkout fallido) no cambia nada: queda en el log como `payment.late_paid` para devolverlo a mano. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Payment |
 | Errores | **403** El rol no puede ver pagos (solo Dueño y Admin).<br>**404** La compra no existe en este workspace. |
@@ -790,7 +790,7 @@ Detalle del proyecto con el estado del pipeline, la metadata, la transcripción 
 |---|---|
 | Id | `projects.detail` |
 | Backend | ⚠️ existe en parte · hueco 4, 15, 18 · `back/apps/videos/views.py · VideoProjectViewSet.retrieve + VideoProjectSerializer` |
-| Nota | Faltan `cost` (vínculo con la transacción y estado devuelto), `stage_timings`, `eta_seconds`, `duration_seconds`, `uploaded_by_detail` y `thumbnail_url`. |
+| Nota | Faltan `cost` (vínculo con la transacción y estado devuelto), `stage_timings`, `eta_seconds`, `duration_seconds` y `uploaded_by_detail`. Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Project |
 | Errores | **404** No existe o es de otro workspace. La UI muestra K1. |
@@ -923,7 +923,7 @@ Un clip con sus datos, sus capas y dónde está publicado.
 |---|---|
 | Id | `clips.detail` |
 | Backend | ✅ existe · `back/apps/videos/views_clips.py · ClipDetailView.get + VideoClipSerializer` |
-| Nota | Los mismos campos que el clip dentro del proyecto. Los extras propuestos (`preview_url`, `thumbnail_url`, `error_code`, `posts`) todavía no llegan. |
+| Nota | Los mismos campos que el clip dentro del proyecto, con `preview_url` (reproduce el render; `null` si el clip no está `completed` o `published`) y `thumbnail_url` (`null` si no hay miniatura): URLs temporales de 1 h. Los extras propuestos (`error_code`, `posts`) todavía no llegan. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Clip |
 | Errores | **404** No existe o es de otro workspace. |
@@ -1166,7 +1166,7 @@ Publicaciones del workspace, ordenadas por `publish_at`, con filtros por estado,
 |---|---|
 | Id | `social.posts` |
 | Backend | ⚠️ existe en parte · hueco 8 · `back/apps/videos/views_social.py · ScheduledPostViewSet.list + ScheduledPostSerializer` |
-| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. Falta: `thumbnail_url` viene siempre `null` (los clips no tienen miniatura), `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos. |
+| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. `clip.thumbnail_url` es la miniatura del clip (URL temporal de 1 h; `null` si no tiene). Falta: `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | PostsQuery |
 | Respuesta 200 | { count: number, next: string \\| null, previous: string \\| null, results: ScheduledPost[], status_counts?: { [clave]: number } } |
@@ -1210,7 +1210,7 @@ Detalle de una publicación. Se consulta cada 5 s mientras está en cola o publi
 |---|---|
 | Id | `social.post` |
 | Backend | ⚠️ existe en parte · hueco 8 · `back/apps/videos/views_social.py · ScheduledPostViewSet.retrieve + ScheduledPostSerializer` |
-| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. Falta: `thumbnail_url` viene siempre `null` (los clips no tienen miniatura), `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos. |
+| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. `clip.thumbnail_url` es la miniatura del clip (URL temporal de 1 h; `null` si no tiene). Falta: `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | ScheduledPost |
 | Errores | **404** No existe o es de otro workspace. |
@@ -1902,8 +1902,8 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `created_at` | IsoDateTime |
 | `clips` | Clip[] |
 | `proxy_url` | string \\| null |
-| `uploaded_by_detail` (opcional) | UserRef \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
+| `uploaded_by_detail` (opcional) | UserRef \\| null |
 | `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
@@ -1998,8 +1998,8 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `created_at` | IsoDateTime |
 | `clips` | Clip[] |
 | `proxy_url` | string \\| null |
-| `uploaded_by_detail` (opcional) | UserRef \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
+| `uploaded_by_detail` (opcional) | UserRef \\| null |
 | `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
@@ -2104,8 +2104,8 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `created_at` | IsoDateTime |
 | `clips` | Clip[] |
 | `proxy_url` | string \\| null |
-| `uploaded_by_detail` (opcional) | UserRef \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
+| `uploaded_by_detail` (opcional) | UserRef \\| null |
 | `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
@@ -2221,8 +2221,8 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `created_at` | IsoDateTime |
 | `clips` | Clip[] |
 | `proxy_url` | string \\| null |
-| `uploaded_by_detail` (opcional) | UserRef \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
+| `uploaded_by_detail` (opcional) | UserRef \\| null |
 | `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |

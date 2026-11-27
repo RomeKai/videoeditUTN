@@ -566,7 +566,7 @@ def render_clip_task(self, clip_id):
             )
         _record_clip_start(clip.project_id)
 
-        previous_key = clip.s3_object_key
+        previous_key, previous_thumbnail = clip.s3_object_key, clip.thumbnail_object_key
         saved = RenderEngine.render_clip(clip_id, claim_token=claim.token)
         # Saved (the clip is COMPLETED) or taken over by a redelivered copy:
         # either way this delivery no longer holds a claim.
@@ -578,7 +578,14 @@ def render_clip_task(self, clip_id):
             finalize_project_render(clip.project_id)
             return f"Clip {clip_id} not saved: another delivery took it over"
 
-        new_key = VideoClip.objects.values_list('s3_object_key', flat=True).get(pk=clip_id)
+        new_key, new_thumbnail = VideoClip.objects.values_list(
+            's3_object_key', 'thumbnail_object_key',
+        ).get(pk=clip_id)
+        if previous_thumbnail and previous_thumbnail != new_thumbnail:
+            # The thumbnail of the file this render replaced.
+            from apps.videos.services.clip_media import delete_thumbnail
+
+            delete_thumbnail(clip_id, previous_thumbnail)
         if previous_key and previous_key != new_key:
             # Re-render after a failure: do not leave the old upload orphaned in R2.
             try:

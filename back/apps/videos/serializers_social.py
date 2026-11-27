@@ -77,6 +77,8 @@ class ScheduledPostSerializer(serializers.ModelSerializer):
         },
     })
     def get_clip(self, post):
+        from .services.clip_media import thumbnail_url
+
         clip = post.video_clip
         return {
             'id': str(clip.id),
@@ -84,8 +86,8 @@ class ScheduledPostSerializer(serializers.ModelSerializer):
             'project_id': str(clip.project_id),
             'project_title': clip.project.title,
             'duration_seconds': max(clip.end_time - clip.start_time, 0.0),
-            # Clips have no thumbnail yet; the field is nullable in the contract.
-            'thumbnail_url': None,
+            # Temporary, as the clip's own (services/clip_media.py); None without a thumbnail.
+            'thumbnail_url': thumbnail_url(clip, self.context),
         }
 
     def get_error_code(self, post) -> str | None:

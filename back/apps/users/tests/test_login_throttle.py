@@ -15,6 +15,31 @@ REFRESH_URL = "/api/token/refresh/"
 WAIT_IN_SECONDS = re.compile(r"(\d+)\s*segundos?")
 
 
+# A fixed instant, 37 s into a 15-minute window (and into its hour).
+NOW = 1_800_000_037.0
+
+
+@pytest.fixture(autouse=True)
+def frozen_clocks():
+    """
+    Time does not pass during a test of this file, however slow the machine
+    is: these tests count attempts inside windows (a minute per IP, 15
+    minutes and an hour per account) and inside the 5 s cooldown of the
+    cache's circuit breaker. On a loaded runner a handful of logins (each one
+    hashes a password) took longer than a cooldown, or than the minute.
+
+    - the breaker's clock (apps.core.cache._now);
+    - DRF's throttle timer (bound to time.time when the class was defined);
+    - time.time, which LoginFailureGuard and LocMem's expiry read.
+
+    A test that needs time to move patches time.time again inside.
+    """
+    with mock.patch("apps.core.cache._now", return_value=1000.0), \
+            mock.patch.object(ScopedRateThrottle, "timer", return_value=NOW), \
+            mock.patch("time.time", return_value=NOW):
+        yield
+
+
 def _wait_seconds(response):
     """The wait the 429 announces, back in seconds (the window ends at a fixed time)."""
     number, unit = re.search(r"en (\d+) (segundos?|minutos?)", response.json()["detail"]).groups()
@@ -319,8 +344,22 @@ def test_an_outage_is_logged_once_and_redis_is_tried_once_per_cooldown(user, cap
         answers = [_login(api).status_code for _ in range(5)]
 
     assert answers == [401] * 5
-    # Five logins, each with several cache calls: one connection attempt, one log line.
+    # Five logins, each with several cache calls, all inside one cooldown (the
+    # breaker's clock is frozen): one connection attempt, one log line.
     assert connect.call_count == 1
+    assert [r.getMessage() for r in caplog.records if r.name == "apps.core.cache"] == ["cache.unavailable error=ConnectionError"]
+
+
+def test_after_the_cooldown_redis_is_tried_once_more_and_the_outage_is_not_logged_again(user, caplog, no_ip_limit):
+    api = _from("10.0.12.12")
+    with override_settings(CACHES=REDIS_DOWN), _refused() as connect, caplog.at_level("INFO", logger="apps.core.cache"):
+        first = [_login(api).status_code for _ in range(2)]
+        # The cooldown (5 s) ends: the next login's first cache call probes Redis, the rest skip it.
+        with mock.patch("apps.core.cache._now", return_value=1006.0):
+            second = [_login(api).status_code for _ in range(2)]
+
+    assert first == second == [401] * 2
+    assert connect.call_count == 2
     assert [r.getMessage() for r in caplog.records if r.name == "apps.core.cache"] == ["cache.unavailable error=ConnectionError"]
 
 

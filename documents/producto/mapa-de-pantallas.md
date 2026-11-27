@@ -212,7 +212,7 @@ El pipeline guarda en `pipeline_error_code` el nombre de la excepción. El front
 
 | `pipeline_error_code` | Mensaje |
 |---|---|
-| `UnsafeContentError`, `ModerationBlockedError` | "No podemos procesar este video porque su contenido no cumple nuestras políticas. Si creés que es un error, escribinos." |
+| `UnsafeContentError` | "No podemos procesar este video porque su contenido no cumple nuestras políticas. Si creés que es un error, escribinos." |
 | `CapacityTimeoutError` | "Hay mucha demanda en este momento y no pudimos procesar tu video. Volvé a intentarlo en unos minutos." |
 | `AINoSpeechDetectedError` | "No encontramos voz en el video. OneCreator elige clips a partir de lo que se dice." |
 | `AIEmptySelectionError` | "No encontramos momentos que funcionen como clips. Probá con otro video o cambiá el criterio." |
@@ -221,7 +221,7 @@ El pipeline guarda en `pipeline_error_code` el nombre de la excepción. El front
 | `LinkTooLongError` | "El video del link dura más de lo que permite tu plan. Probá con uno más corto o cambiá de plan." |
 | `LinkTooLongForAppError` | "El video del link dura más de 3 horas, el máximo que acepta OneCreator. Probá con uno más corto." Pasa con cualquier plan, y el proyecto no se re-despacha (409 `duration_app`): se crea otro. |
 | `LinkTooLargeError` | "El video del link pesa más de lo que podemos descargar. Probá con una versión más liviana o subí el archivo." |
-| `ModerationUnavailableError`, `AIAuthenticationError` y cualquier otro | "Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo." |
+| `ModerationBlockedError` (la moderación no se pudo usar: key inválida o sin cuota; no es por el contenido), `ModerationUnavailableError`, `AIAuthenticationError` y cualquier otro | "Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo." |
 
 Errores al subir el archivo. `InvalidUploadError.code` llega en la respuesta 400 y se muestra junto al campo del archivo:
 
