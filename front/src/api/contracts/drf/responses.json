@@ -1344,6 +1344,56 @@
   },
   "project_activity": [
     {
+      "id": "7a8b9c0d-1e2f-5a3b-8c4d-5e6f7a8b9caa",
+      "type": "tokens_charged",
+      "actor": null,
+      "created_at": "2026-11-27T10:32:00Z",
+      "description": "Cobro del render",
+      "amount": "-3.0000000000",
+      "reservation_state": "charged"
+    },
+    {
+      "id": "5b0f7c0a-2a53-5b06-8a3e-3c1d0e4f9a22",
+      "type": "render_finished",
+      "actor": null,
+      "created_at": "2026-11-27T10:32:00Z",
+      "description": "Terminó el render: 2 clips listos",
+      "amount": null
+    },
+    {
+      "id": "6f7a8b9c-0d1e-5f2a-8b3c-4d5e6f7a8b99",
+      "type": "tokens_reserved",
+      "actor": {
+        "id": "4d2c8a1e-7b3f-4e6a-9c5d-1f0a2b3c4d5e",
+        "name": "demo"
+      },
+      "created_at": "2026-11-27T10:30:00Z",
+      "description": "Reserva por renderizar «Clip 2»",
+      "amount": "-3.0000000000",
+      "reservation_state": "charged"
+    },
+    {
+      "id": "5e6f7a8b-9c0d-5e1f-8a2b-3c4d5e6f7a88",
+      "type": "tokens_charged",
+      "actor": null,
+      "created_at": "2026-11-27T10:22:00Z",
+      "description": "Cobro del render",
+      "amount": "-5.0000000000",
+      "reservation_state": "charged"
+    },
+    {
+      "id": "4d5e6f7a-8b9c-5d0e-8f1a-2b3c4d5e6f77",
+      "type": "tokens_reserved",
+      "actor": {
+        "id": "4d2c8a1e-7b3f-4e6a-9c5d-1f0a2b3c4d5e",
+        "name": "demo"
+      },
+      "created_at": "2026-11-27T10:20:00Z",
+      "description": "Reserva por renderizar «Clip 1»",
+      "amount": "-5.0000000000",
+      "reservation_state": "charged"
+    },
+    {
       "id": "0f6a0f0e-6f0e-5c55-9d3c-0d5f4d0b7a11",
       "type": "tokens_charged",
       "actor": null,
@@ -1351,14 +1401,6 @@
       "description": "Cobro del render",
       "amount": "-18.0000000000",
       "reservation_state": "charged"
-    },
-    {
-      "id": "5b0f7c0a-2a53-5b06-8a3e-3c1d0e4f9a22",
-      "type": "render_finished",
-      "actor": null,
-      "created_at": "2026-11-27T10:12:00Z",
-      "description": "Terminó el render: 2 clips listos",
-      "amount": null
     },
     {
       "id": "9c7d1e2f-3b4a-5c6d-8e9f-0a1b2c3d4e33",
