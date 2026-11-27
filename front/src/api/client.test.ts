@@ -12,7 +12,7 @@ import { createProject, createProjectFromPrompt, downloadAllClips } from './cont
 import { defineEndpoint } from './endpoint';
 import { ApiError, ContractError, NetworkError, RequestTimeoutError, SessionExpiredError, UploadStalledError, isOutcomeUnknown } from './errors';
 import { createQueryClient, shouldRetry } from './query';
-import { AUTH_STORAGE_KEY, clearSession, getActiveWorkspaceId, getTokens, isSessionExpired, onMaintenance, onSessionExpired, setActiveWorkspaceId, setTokens, subscribeSession } from './session';
+import { AUTH_STORAGE_KEY, clearSession, getActiveWorkspaceId, getTokens, isSessionExpired, notifySessionExpired, onMaintenance, onSessionExpired, setActiveWorkspaceId, setTokens, subscribeSession } from './session';
 
 const Thing = z.object({ id: z.number(), name: z.string() });
 
@@ -204,6 +204,61 @@ describe('apiCall', () => {
     );
     await expect(apiCall(getThing, { params: { id: '1' } })).rejects.toBeInstanceOf(SessionExpiredError);
     expect(expired).toHaveBeenCalledTimes(1);
+    off();
+  });
+
+  it('si no se puede renovar porque la sesión venció, lo avisa como vencida', async () => {
+    setTokens({ access: 'vencido', refresh: 'refresh-vencido' });
+    const expired = vi.fn();
+    const off = onSessionExpired(expired);
+    server.use(
+      http.get(`${API_URL}/api/v1/things/:id/`, () => HttpResponse.json({ detail: 'Token is invalid or expired', code: 'token_not_valid' }, { status: 401 })),
+      http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ detail: 'Token is invalid or expired', code: 'token_not_valid' }, { status: 401 })),
+    );
+    const error = await apiCall(getThing, { params: { id: '1' } }).catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(SessionExpiredError);
+    expect((error as SessionExpiredError).reason).toBe('expired');
+    expect(expired).toHaveBeenCalledWith('expired');
+    off();
+  });
+
+  it('un 401 `session_revoked` avisa que la sesión se cerró en todos los dispositivos, no que venció', async () => {
+    // What another device gets after «cerrar sesión en todos los dispositivos»: the access token names
+    // the reason, and the refresh token (already blacklisted) only says it is not valid.
+    setTokens({ access: 'revocado', refresh: 'refresh-revocado' });
+    const expired = vi.fn();
+    const off = onSessionExpired(expired);
+    server.use(
+      http.get(`${API_URL}/api/v1/things/:id/`, () =>
+        HttpResponse.json({ detail: 'La sesión se cerró en todos los dispositivos. Iniciá sesión de nuevo.', code: 'session_revoked' }, { status: 401 }),
+      ),
+      http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ detail: 'Token is blacklisted', code: 'token_not_valid' }, { status: 401 })),
+    );
+    const error = await apiCall(getThing, { params: { id: '1' } }).catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(SessionExpiredError);
+    expect((error as SessionExpiredError).reason).toBe('revoked');
+    expect(expired).toHaveBeenCalledTimes(1);
+    expect(expired).toHaveBeenCalledWith('revoked');
+    // Another request of the same dead session that did not learn why does not change what was said.
+    notifySessionExpired();
+    expect(expired).toHaveBeenLastCalledWith('revoked');
+    // A new session starts clean.
+    setTokens({ access: 'nuevo', refresh: 'refresh-nuevo' });
+    notifySessionExpired();
+    expect(expired).toHaveBeenLastCalledWith('expired');
+    off();
+  });
+
+  it('también cuando el que dice `session_revoked` es el refresh (el token de acceso ya había vencido)', async () => {
+    setTokens({ access: 'vencido', refresh: 'refresh-revocado' });
+    const expired = vi.fn();
+    const off = onSessionExpired(expired);
+    server.use(
+      http.get(`${API_URL}/api/v1/things/:id/`, () => HttpResponse.json({ detail: 'Token is invalid or expired', code: 'token_not_valid' }, { status: 401 })),
+      http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ detail: 'La sesión se cerró en todos los dispositivos.', code: 'session_revoked' }, { status: 401 })),
+    );
+    await expect(apiCall(getThing, { params: { id: '1' } })).rejects.toBeInstanceOf(SessionExpiredError);
+    expect(expired).toHaveBeenCalledWith('revoked');
     off();
   });
 

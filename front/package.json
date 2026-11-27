@@ -14,7 +14,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test --trace off",
-    "contract:doc": "tsx scripts/contract-doc.ts"
+    "contract:doc": "tsx scripts/contract-doc.ts",
+    "msw:init": "msw init && node scripts/patch-msw-worker.mjs",
+    "postinstall": "node -e \"require('fs').existsSync('scripts/patch-msw-worker.mjs') && require('child_process').execFileSync(process.execPath, ['scripts/patch-msw-worker.mjs'], { stdio: 'inherit' })\""
   },
   "msw": {
     "workerDirectory": [

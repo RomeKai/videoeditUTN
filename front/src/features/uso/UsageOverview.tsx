@@ -97,6 +97,8 @@ export function UsageOverview({ notice }: { notice?: ReactNode }) {
   const detail = useWorkspace(admin ? null : workspace?.id);
 
   const plan = subscription.data?.plan ?? null;
+  // Only who can open Planes (R1: Editor and Lector see the balance and nothing about the plan).
+  const paying = admin ? (subscription.data?.pending_payment ?? null) : null;
   const reservations = useMemo(() => (wallet.data ? reservationsByProject(wallet.data) : []), [wallet.data]);
   const totals = usage.data ? usageTotals(usage.data) : null;
   const previousTotal = previousUsage.data ? usageTotals(previousUsage.data).total : null;
@@ -126,6 +128,17 @@ export function UsageOverview({ notice }: { notice?: ReactNode }) {
           <span className="num">≈ {formatNumber(wallet.data.low_balance_threshold, 0)}</span>.
           {admin ? '' : ' Pedile a un admin que compre más.'}
         </Banner>
+      ) : null}
+      {paying ? (
+        <div className={cx(styles.strip, styles.notice)} role="note">
+          <span className={styles.stripIco}>
+            <Icon name="info" />
+          </span>
+          <p className="t-small">Tenés un pago pendiente para pasar al plan {paying.plan_name}.</p>
+          <Link className={cx(styles.link, 't-small', styles.nowrap)} href="/uso/planes">
+            Ver en Planes
+          </Link>
+        </div>
       ) : null}
       {wallet.isError ? <LoadError error={wallet.error} onRetry={() => void wallet.refetch()} className={styles.notice} fullPageForMissing={false} /> : null}
 

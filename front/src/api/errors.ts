@@ -191,11 +191,22 @@ export class ContractError extends Error {
   }
 }
 
+/**
+ * Why the session ended: it ran out (`expired`), or the person closed it on every device from
+ * another one (`revoked`: a 401 with `code: "session_revoked"`, apps/users/tokens.py).
+ */
+export type SessionEndReason = 'expired' | 'revoked';
+
+/** `code` of the 401 of a session closed with «cerrar sesión en todos los dispositivos». */
+export const SESSION_REVOKED_CODE = 'session_revoked';
+
 /** The refresh token is no longer valid: dialog D9 asks for the password again. */
 export class SessionExpiredError extends Error {
   readonly name = 'SessionExpiredError';
-  constructor() {
-    super('Tu sesión venció');
+  readonly reason: SessionEndReason;
+  constructor(reason: SessionEndReason = 'expired') {
+    super(reason === 'revoked' ? 'La sesión se cerró en todos los dispositivos' : 'Tu sesión venció');
+    this.reason = reason;
   }
 }
 
