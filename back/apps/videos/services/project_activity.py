@@ -13,7 +13,11 @@ There is no event log: the feed is read from what the backend already keeps.
   ['render_reservation_id']``): its time and who made it.
 - ``tokens_reserved`` / ``tokens_charged`` / ``tokens_refunded``: the
   Transactions linked in the metadata (every ``*reservation_id`` key):
-  reserved at ``created_at``, charged or returned at ``settled_at``.
+  reserved at ``created_at``, charged or returned at ``settled_at``. The
+  reservation and its charge are two items of ONE movement of the balance:
+  ``tokens_reserved`` says how it ended in ``reservation_state`` (``reserved``,
+  ``charged``, ``partially_charged`` or ``refunded``), so the web app does not
+  show a settled reservation as a second charge.
 - ``render_finished``: a project that ended ``completed`` or ``partial``, at
   the settlement of the reservation that paid the render.
 - ``project_failed``: ``pipeline_error_at``.
@@ -80,7 +84,7 @@ class _Feed:
         self.project = project
         self.items = []
 
-    def add(self, kind, at, description, *, source='', actor=None, amount=None, platform=None):
+    def add(self, kind, at, description, *, source='', actor=None, amount=None, platform=None, reservation_state=None):
         if at is None:
             return
         item = {
@@ -93,6 +97,8 @@ class _Feed:
         }
         if platform is not None:
             item['platform'] = platform
+        if reservation_state is not None:
+            item['reservation_state'] = reservation_state
         self.items.append(item)
 
     def sorted(self):
@@ -111,6 +117,15 @@ def _linked_reservations(project):
         except ValueError:
             continue
     return linked
+
+
+def _reservation_state(txn, reserved):
+    """How a reservation ended: what the web app shows next to it instead of a second charge."""
+    if txn.status == Transaction.Status.COMPLETED:
+        return 'partially_charged' if reserved > txn.amount else 'charged'
+    if txn.status == Transaction.Status.FAILED:
+        return 'refunded'
+    return 'reserved'
 
 
 def _prompt_description(pte):
@@ -161,7 +176,9 @@ def build_activity(project):
     whole_video = _is_whole_video(project)
     if not whole_video and (project.status == VideoProject.Status.AWAITING_APPROVAL or approval is not None):
         suggested = (project.ai_rationale_log or {}).get('suggestions_count')
-        if not isinstance(suggested, int):
+        if isinstance(suggested, bool) or not isinstance(suggested, int) or suggested < 0:
+            # Not recorded: the clips there are now (fewer than suggested once a
+            # review left some out, which deletes them).
             suggested = len(clip_statuses)
         first_clip = min((created for _status, created in clip_statuses), default=None)
         feed.add(
@@ -184,7 +201,10 @@ def build_activity(project):
         reserved_text, charged_text = _RESERVATIONS.get(key, _GENERIC_RESERVATION)
         reserved = txn.reserved_amount if txn.reserved_amount is not None else txn.amount
         settled = txn.settled_at or txn.created_at
-        feed.add('tokens_reserved', txn.created_at, reserved_text, source=str(txn.pk), actor=txn.created_by, amount=-reserved)
+        feed.add(
+            'tokens_reserved', txn.created_at, reserved_text, source=str(txn.pk), actor=txn.created_by,
+            amount=-reserved, reservation_state=_reservation_state(txn, reserved),
+        )
         if txn.status == Transaction.Status.COMPLETED:
             feed.add('tokens_charged', settled, charged_text, source=str(txn.pk), amount=-txn.amount)
             if reserved > txn.amount:

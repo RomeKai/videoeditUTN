@@ -178,6 +178,53 @@ class ProjectActivityTests(ProjectDataHarness):
         # Stable ids: the same feed twice has the same ids.
         self.assertEqual([item['id'] for item in self.client.get(activity_url(project)).json()], [item['id'] for item in items])
 
+    def test_a_reservation_says_how_it_ended_so_it_is_not_read_as_a_second_charge(self):
+        charged = reserve(self.home, '18', self.alice, 1)
+        wallet_service.commit_reservation(charged.pk)
+        partial = reserve(self.home, '12', self.alice, 2)
+        wallet_service.commit_partial_reservation(partial.pk, Decimal('8'))
+        refunded = reserve(self.home, '5', self.alice, 3)
+        wallet_service.rollback_reservation(refunded.pk)
+        pending = reserve(self.home, '7', self.alice, 4)
+        project = self.project(metadata={
+            'render_reservation_id': str(charged.pk), 'auto_render_reservation_id': str(partial.pk),
+            'reservation_id': str(refunded.pk), 'retry_reservation_id': str(pending.pk),
+        })
+
+        items = self.client.get(activity_url(project)).json()
+
+        states = {item['description']: item['reservation_state'] for item in items if item['type'] == 'tokens_reserved'}
+        self.assertEqual(states, {
+            'Reserva por el render': 'charged',
+            'Reserva por renderizar sin revisar': 'partially_charged',
+            'Reserva por el procesamiento': 'refunded',
+            'Reserva de tokens': 'reserved',
+        })
+        # Only a reservation carries it.
+        self.assertFalse(any('reservation_state' in item for item in items if item['type'] != 'tokens_reserved'))
+
+    def test_the_review_says_how_many_clips_were_suggested_not_how_many_are_left(self):
+        project = self.project(
+            status=VideoProject.Status.COMPLETED, pipeline_stage=PipelineStage.COMPLETED,
+            ai_rationale_log={'suggestions_count': 3},
+        )
+        approval = reserve(self.home, '12', self.alice, 15)
+        # The review approved two of the three: the one left out is deleted.
+        clips = [self.clip(project, f'Clip {n}', minutes=10) for n in range(2)]
+        project.metadata = {'render_reservation_id': str(approval.pk), 'render_clip_ids': [str(clip.pk) for clip in clips]}
+        project.save()
+
+        descriptions = [item['description'] for item in self.client.get(activity_url(project)).json()]
+
+        self.assertIn('Listo para revisar: 3 clips sugeridos', descriptions)
+        self.assertIn('Aprobó 2 clips para renderizar', descriptions)
+
+        # A count that is not one (written by hand) falls back to the clips there are.
+        for broken in (True, -1, '3'):
+            VideoProject.objects.filter(pk=project.pk).update(ai_rationale_log={'suggestions_count': broken})
+            descriptions = [item['description'] for item in self.client.get(activity_url(project)).json()]
+            self.assertIn('Listo para revisar: 2 clips sugeridos', descriptions)
+
     def test_a_project_just_created_has_only_its_creation_and_reservation(self):
         project = self.project()
         txn = reserve(self.home, '10', self.alice, 0)
