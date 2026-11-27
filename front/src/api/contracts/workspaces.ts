@@ -40,11 +40,27 @@ export const Member = z.object({
 });
 export type Member = z.infer<typeof Member>;
 
+/**
+ * Why `max_members` is below the current plan's: a scheduled downgrade (`pending_plan`, with the date it
+ * applies) or a plan payment waiting for its checkout (`pending_payment`, applied at once when confirmed).
+ * `plan_name` is the plan whose seats count.
+ */
+export const SeatLimit = z.union([
+  z.object({ reason: z.literal('pending_plan'), plan_name: z.string(), effective_at: IsoDateTime }),
+  z.object({ reason: z.literal('pending_payment'), plan_name: z.string(), effective_at: z.null() }),
+]);
+export type SeatLimit = z.infer<typeof SeatLimit>;
+
 export const MembersResponse = z.object({
   members: z.array(Member),
-  /** SubscriptionPlan.max_members. A pending invitation takes a seat (map 9.1.8). */
+  /**
+   * The seats inviting checks (back/apps/users/seats.py · seat_limit): SubscriptionPlan.max_members, or
+   * fewer while a plan change waits (`limited_by`). A pending invitation takes a seat (map 9.1.8).
+   */
   max_members: z.number().int().positive(),
   seats_used: z.number().int().nonnegative(),
+  /** Null when `max_members` is the current plan's. */
+  limited_by: SeatLimit.nullable(),
 });
 export type MembersResponse = z.infer<typeof MembersResponse>;
 
@@ -210,7 +226,7 @@ export const listMembers = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/users/views_workspaces.py · WorkspaceMembersView.get (MembersSerializer)',
-    note: 'Una fila por WorkspaceMember, de la más antigua a la más nueva; la del Dueño sale con `role: "owner"`. `seats_used` cuenta todas las filas, también las pendientes y la del Dueño; `max_members` es 1 si el workspace no tiene plan. En una invitación pendiente `user` es null (tenga o no cuenta ese email) y `email` es el invitado; `invited_by` es `{id, name}` de quien invitó, o null en las filas que nadie invitó. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`.',
+    note: 'Una fila por WorkspaceMember, de la más antigua a la más nueva; la del Dueño sale con `role: "owner"`. `seats_used` cuenta todas las filas, también las pendientes y la del Dueño. `max_members` es el límite que controla invitar (`seats.seat_limit`): el del plan, 1 si el workspace no tiene plan, o el del plan más chico mientras espera una bajada programada o un pago de plan; en esos dos casos `limited_by` dice cuál (`pending_plan` con su fecha, o `pending_payment`), y si no es null. En una invitación pendiente `user` es null (tenga o no cuenta ese email) y `email` es el invitado; `invited_by` es `{id, name}` de quien invitó, o null en las filas que nadie invitó. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`.',
   },
   screens: ['H2', 'D7', 'H1'],
 });
@@ -276,7 +292,7 @@ export const inviteMembers = defineEndpoint({
       when: 'Sin lugares en el plan (`{error, code: "seats_exceeded"}`: límite del plan, se resuelve subiendo de plan o quitando miembros; el mismo código en `billing.changePlan` es un 409 porque ahí lo que sobra son miembros). El `error` se muestra tal cual: nombra el plan, o el plan más chico de una bajada programada o de un pago en curso. O el rol no puede invitar (Editor, Lector): solo `detail`, sin `code`.',
     },
     { status: 404, when: 'El workspace no existe o el usuario no es dueño ni miembro activo. Mismo `detail` para todos los casos.' },
-    { status: 429, when: 'Demasiadas invitaciones seguidas. Invitar y reenviar cuentan juntos: 30 por hora por usuario y 60 por hora por workspace. `detail` dice cuánto esperar.' },
+    { status: 429, when: 'Demasiadas invitaciones seguidas. Invitar y reenviar cuentan juntos: 30 por hora por usuario y 60 por hora por workspace, y por dirección 4 por hora desde este workspace (cancelar y volver a invitar también cuenta) y 10 por hora desde cualquier workspace. `detail` dice cuánto esperar. No queda ninguna invitación pendiente.' },
   ],
   backend: {
     status: 'exists',
@@ -297,7 +313,7 @@ export const resendInvitation = defineEndpoint({
   errors: [
     { status: 403, when: 'El rol no administra miembros. Solo `detail`, sin `code`.' },
     { status: 404, when: 'La invitación ya se aceptó o se canceló, `memberId` no es de ese workspace, o el workspace no existe para este usuario.' },
-    { status: 429, when: 'Demasiadas invitaciones seguidas (el mismo límite que invitar), o demasiados reenvíos a esa dirección: 3 por hora, los pida quien los pida. `detail` dice cuánto esperar. El link anterior sigue sirviendo.' },
+    { status: 429, when: 'Demasiadas invitaciones seguidas, o demasiados emails a esa dirección: los mismos límites que invitar, que cuentan juntos. `detail` dice cuánto esperar. El link anterior sigue sirviendo.' },
     { status: 502, when: 'No se pudo encolar el email. El link anterior ya no sirve: se reintenta en unos minutos.' },
   ],
   backend: {

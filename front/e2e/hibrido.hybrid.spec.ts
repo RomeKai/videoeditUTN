@@ -2,9 +2,9 @@ import { expect, test, type APIRequestContext, type Page, type Response } from '
 import { expectClean, HYBRID_API_URL, HYBRID_REAL, settle, watch } from './helpers';
 
 /**
- * Hybrid build (`NEXT_PUBLIC_API_MODE=hybrid`) against a real Django backend: the login, the projects,
- * the brand kits and billing come from it, while everything the contract marks as proposed is mocked
- * in the browser.
+ * Hybrid build (`NEXT_PUBLIC_API_MODE=hybrid`) against a real Django backend: the login, `/me`, the
+ * projects, the brand kits and billing come from it, while everything the contract marks as proposed
+ * (today, most of social: the accounts and creating or changing posts) is mocked in the browser.
  *
  * It needs a backend, so it is skipped unless `E2E_HYBRID_API_URL` says where one is, with a user that
  * owns a workspace with at least one project and one brand kit: `E2E_HYBRID_EMAIL` and `E2E_HYBRID_PASSWORD`. See "Modo híbrido" in the README.
@@ -65,7 +65,8 @@ async function backend(request: APIRequestContext) {
   return {
     headers,
     userId: (JSON.parse(Buffer.from(access.split('.')[1] ?? '', 'base64url').toString()) as { user_id: string }).user_id,
-    projects: () => get<Array<{ id: string; title: string; workspace: string }>>('/api/v1/projects/'),
+    me: () => get<{ active_workspace_id: string | null; workspaces: Array<{ id: string; name: string }> }>('/api/v1/me/'),
+    projects: () => get<Array<{ id: string; title: string; workspace: string; clips: Array<{ id: string }> }>>('/api/v1/projects/'),
     brandKits: () => get<Array<{ id: string; name: string; workspace: string }>>('/api/v1/brand-kits/'),
   };
 }
@@ -81,18 +82,22 @@ async function signIn(page: Page) {
 }
 
 test.describe('Modo híbrido contra el backend real', () => {
-  test('login, proyectos y brand kits vienen del backend; la billetera es simulada', async ({ page, request }) => {
+  test('login, /me, proyectos, brand kits y billetera vienen del backend; las redes son simuladas', async ({ page, request }) => {
     const api = await backend(request);
+    const me = await api.me();
+    const active = me.workspaces.find((item) => item.id === me.active_workspace_id);
+    expect(active, 'el usuario de prueba tiene un workspace activo en el backend').toBeDefined();
     const problems = watch(page, { hybrid });
     const seen = record(page);
 
     await signIn(page);
-    // The session is the backend's: a real JWT, whose user is the one the mocked /me shows.
+    // The session is the backend's: a real JWT, and /me is the backend's too, with its workspaces.
     expect(answersOf(seen, 'POST', '/api/token/')).toMatchObject([{ status: 200, mock: null }]);
     const stored = await page.evaluate(() => JSON.parse(window.localStorage.getItem('oc.auth') ?? '{}') as { access?: string });
     expect(stored.access?.split('.')).toHaveLength(3);
-    expect(answersOf(seen, 'GET', '/api/v1/me/').every((item) => item.mock === 'users.me')).toBe(true);
-    await expect(page.getByRole('button', { name: /Cambiar de workspace. Actual: Workspace por defecto \(backend\)/ })).toBeVisible();
+    expect(answersOf(seen, 'GET', '/api/v1/me/').length).toBeGreaterThan(0);
+    expect(answersOf(seen, 'GET', '/api/v1/me/').every((item) => item.mock === null)).toBe(true);
+    await expect(page.getByRole('button', { name: `Cambiar de workspace. Actual: ${active?.name ?? ''}` })).toBeVisible();
 
     // Projects: the list the backend gives for the user's default workspace.
     const projects = await api.projects();
@@ -116,17 +121,26 @@ test.describe('Modo híbrido contra el backend real', () => {
     expect(answersOf(seen, 'GET', '/api/v1/subscription/').at(-1)).toMatchObject({ status: 200, mock: null });
     await expect(page.getByText('Saldo disponible')).toBeVisible();
 
-    // With the bridge, a workspace cannot be created: it would exist only in the mocks.
+    // Social accounts are still proposed: Redes is answered by the mocks, for the same real workspace.
+    await page.goto('/ajustes/redes');
+    await settle(page);
+    expect(answersOf(seen, 'GET', '/api/v1/social-accounts/').at(-1)).toMatchObject({
+      status: 200, mock: 'social.accounts', workspaceHeader: active?.id,
+    });
+
+    // With /me real there is no bridge: a workspace can be created (it would be the backend's).
     await page.getByRole('button', { name: /Cambiar de workspace/ }).click();
     const create = page.getByRole('menuitem', { name: /Crear workspace/ });
-    await expect(create).toBeDisabled();
-    await expect(create).toContainText('No disponible en modo híbrido mientras /me es simulado');
+    await expect(create).toBeEnabled();
+    await expect(create).not.toContainText('No disponible en modo híbrido');
     await page.keyboard.press('Escape');
 
-    // While /me is mocked no real request names a workspace: the backend uses the user's default one.
+    // Every request that names a workspace names the real one, real or mocked.
     const real = seen.filter((item) => item.mock === null);
     expect(real.length).toBeGreaterThan(2);
-    expect(real.filter((item) => item.workspaceHeader !== undefined)).toEqual([]);
+    const named = seen.filter((item) => item.workspaceHeader !== undefined);
+    expect(named.length).toBeGreaterThan(0);
+    expect(named.filter((item) => item.workspaceHeader !== active?.id)).toEqual([]);
     expect(seen.filter((item) => item.status >= 400)).toEqual([]);
     expectClean(problems, 'el recorrido híbrido');
   });
@@ -154,21 +168,27 @@ test.describe('Modo híbrido contra el backend real', () => {
     expectClean(problems, 'crear un brand kit en híbrido');
   });
 
-  test('un endpoint simulado acepta el id de un proyecto real', async ({ page, request }) => {
+  test('un endpoint simulado acepta el id de un clip real', async ({ page, request }) => {
     const api = await backend(request);
-    const [project] = await api.projects();
-    expect(project, 'el usuario de prueba tiene al menos un proyecto en el backend').toBeDefined();
+    const workspace = (await api.me()).active_workspace_id ?? '';
+    const clip = (await api.projects()).flatMap((project) => project.clips)[0];
+    expect(clip, 'el usuario de prueba tiene al menos un proyecto con clips en el backend').toBeDefined();
     await signIn(page);
-    // `projects.activity` is proposed (mocked); the project only exists in the backend.
-    const activity = await page.evaluate(
-      async ({ url, id }) => {
+    // `social.createPost` is proposed (mocked); the clip only exists in the backend. The mock takes its id
+    // (a stand-in of the clip) and gets to the next check: the mocked accounts of the workspace are not connected.
+    const created = await page.evaluate(
+      async ({ url, id, workspace }) => {
         const { access } = JSON.parse(window.localStorage.getItem('oc.auth') ?? '{}') as { access: string };
-        const response = await fetch(`${url}/api/v1/projects/${id}/activity/`, { headers: { Authorization: `Bearer ${access}` } });
-        return { status: response.status, mock: response.headers.get('x-oc-mock'), body: (await response.json()) as unknown };
+        const response = await fetch(`${url}/api/v1/scheduled-posts/`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json', 'X-Workspace-Id': workspace },
+          body: JSON.stringify({ video_clip: id, platform: 'YOUTUBE_SHORTS', draft: true }),
+        });
+        return { status: response.status, mock: response.headers.get('x-oc-mock'), body: (await response.json()) as { code?: string } };
       },
-      { url: HYBRID_API_URL, id: project?.id ?? '' },
+      { url: HYBRID_API_URL, id: clip?.id ?? '', workspace },
     );
-    expect(activity).toEqual({ status: 200, mock: 'projects.activity', body: [] });
+    expect(created).toMatchObject({ status: 409, mock: 'social.createPost', body: { code: 'account_not_connected' } });
   });
 
   test('el panel muestra el origen de cada dominio y permite cambiarlo en este navegador', async ({ page, request }) => {

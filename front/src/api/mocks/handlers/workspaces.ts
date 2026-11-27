@@ -1,4 +1,5 @@
 import * as contract from '../../contracts/workspaces';
+import type { SeatLimit } from '../../contracts/workspaces';
 import { newId, PLATFORMS, type MockDb, type MockWorkspace } from '../db';
 import { badRequest, conflict, forbidden, MockHttpError, notFound, route } from '../http';
 import { PLAN_IDS } from '../seed';
@@ -25,11 +26,29 @@ const cleanName = (name: string) => {
   return trimmed;
 };
 
-function seats(db: MockDb, workspaceId: string) {
-  const plan = planOf(db, workspaceId);
-  const members = db.members.filter((member) => member.workspace === workspaceId);
+/**
+ * The seats of a workspace like back/apps/users/seats.py · seat_limit: the plan's, or fewer while a
+ * scheduled downgrade waits, or a plan payment waits for its checkout (once confirmed it applies at once).
+ * `limitedBy` says which, only when it is that one that lowers the limit.
+ */
+function seats(db: MockDb, workspace: MockWorkspace) {
+  const plan = planOf(db, workspace.id);
+  const members = db.members.filter((member) => member.workspace === workspace.id);
+  let max = plan?.max_members ?? 1;
+  let limitedBy: SeatLimit | null = null;
+  const pending = plan && workspace.pending_plan ? db.plans.find((item) => item.id === workspace.pending_plan?.id) : null;
+  if (pending && workspace.pending_plan && pending.max_members < max) {
+    max = pending.max_members;
+    limitedBy = { reason: 'pending_plan', plan_name: pending.name, effective_at: workspace.pending_plan.effective_at };
+  }
+  const paying = plan ? db.purchases.find((item) => item.workspace === workspace.id && item.status === 'pending' && item.plan_id) : null;
+  const payingPlan = paying ? db.plans.find((item) => item.id === paying.plan_id) : null;
+  if (payingPlan && payingPlan.max_members < max) {
+    max = payingPlan.max_members;
+    limitedBy = { reason: 'pending_payment', plan_name: payingPlan.name, effective_at: null };
+  }
   // A pending invitation takes a seat (map 9.1.8).
-  return { members, plan, max: plan?.max_members ?? 1, used: members.length };
+  return { members, plan, max, used: members.length, limitedBy };
 }
 
 const isAdmin = (role: string) => role === 'owner' || role === 'admin';
@@ -146,7 +165,7 @@ export const workspacesHandlers = [
     const previous = db.members.find((member) => member.workspace === workspace.id && member.user === user.id);
     if (previous) previous.role = 'admin';
     // Without a row of their own, the previous owner needs a free seat to stay as Admin (the backend's 400).
-    else if (seats(db, workspace.id).used >= seats(db, workspace.id).max) {
+    else if (seats(db, workspace).used >= seats(db, workspace).max) {
       throw badRequest({ detail: 'No quedan lugares en el plan para que sigas como admin después de transferir. Quitá a un miembro o cancelá una invitación, y probá de nuevo.' });
     } else {
       db.members.push({ id: newId(), workspace: workspace.id, user: user.id, email: user.email, role: 'admin', status: 'active', joined_at: new Date(now).toISOString(), invited_by: null, token: null });
@@ -159,8 +178,10 @@ export const workspacesHandlers = [
   route(contract.listMembers, ({ db, user, params }) => {
     const { workspace, role } = workspaceFor(db, params.id, user.id);
     if (!isAdmin(role)) throw adminsOnly();
-    const info = seats(db, workspace.id);
-    return { data: { members: info.members.map((member) => serializeMember(db, member)), max_members: info.max, seats_used: info.used } };
+    const info = seats(db, workspace);
+    return {
+      data: { members: info.members.map((member) => serializeMember(db, member)), max_members: info.max, seats_used: info.used, limited_by: info.limitedBy },
+    };
   }),
 
   route(contract.updateMember, ({ db, user, params, body }) => {
@@ -187,26 +208,22 @@ export const workspacesHandlers = [
   route(contract.inviteMembers, ({ db, user, params, body, now }) => {
     const { workspace, role } = workspaceFor(db, params.id, user.id);
     if (!isAdmin(role)) throw forbidden();
-    const info = seats(db, workspace.id);
+    const info = seats(db, workspace);
     const emails = [...new Set(body.emails.map((email) => email.toLowerCase()))];
     if (emails.length > 10) throw badRequest({ emails: ['Podés invitar hasta 10 emails por vez.'] });
     const repeated = emails.find((email) => info.members.some((member) => member.email.toLowerCase() === email));
     if (repeated) throw badRequest({ emails: [`${repeated} ya es miembro o tiene una invitación pendiente.`] });
-    // Like check_seat_limit: while a downgrade waits, the seats of the smaller plan count.
-    const pending = workspace.pending_plan ? db.plans.find((plan) => plan.id === workspace.pending_plan?.id) : null;
-    if (pending && workspace.pending_plan && pending.max_members < info.max && info.used + emails.length > pending.max_members) {
-      const when = new Date(workspace.pending_plan.effective_at).toLocaleDateString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
+    // Like check_seat_limit: while a downgrade or a plan payment waits, the seats of the smaller plan count.
+    if (info.limitedBy?.reason === 'pending_plan' && info.used + emails.length > info.max) {
+      const when = new Date(info.limitedBy.effective_at).toLocaleDateString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
       throw new MockHttpError(403, {
-        error: `Tu plan pasa a '${pending.name}' el ${when} y ese plan permite ${pending.max_members} miembros. Cancelá el cambio de plan para invitar más gente.`,
+        error: `Tu plan pasa a '${info.limitedBy.plan_name}' el ${when} y ese plan permite ${info.max} miembros. Cancelá el cambio de plan para invitar más gente.`,
         code: 'seats_exceeded',
       });
     }
-    // And while a plan payment waits for its checkout: once confirmed, that plan applies at once.
-    const paying = db.purchases.find((item) => item.workspace === workspace.id && item.status === 'pending' && item.plan_id);
-    const payingPlan = paying ? db.plans.find((plan) => plan.id === paying.plan_id) : null;
-    if (payingPlan && payingPlan.max_members < info.max && info.used + emails.length > payingPlan.max_members) {
+    if (info.limitedBy?.reason === 'pending_payment' && info.used + emails.length > info.max) {
       throw new MockHttpError(403, {
-        error: `Estás pasando al plan '${payingPlan.name}', que permite ${payingPlan.max_members} miembros. Hay un pago en curso: terminalo, o elegí «Seguir con ${info.plan?.name ?? 'tu plan'}» en Planes para cancelarlo.`,
+        error: `Estás pasando al plan '${info.limitedBy.plan_name}', que permite ${info.max} miembros. Hay un pago en curso: terminalo, o elegí «Seguir con ${info.plan?.name ?? 'tu plan'}» en Planes para cancelarlo.`,
         code: 'seats_exceeded',
       });
     }

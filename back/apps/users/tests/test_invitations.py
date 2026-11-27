@@ -809,36 +809,141 @@ def test_the_task_sends_nothing_for_a_row_that_is_gone_or_already_active(team):
 # --- Review follow-ups ---
 
 
-def test_resends_to_one_address_are_limited_whoever_asks(team):
+def _elsewhere(team, name="vecina"):
+    """Another owner's workspace on the same plan, and its client."""
+    owner = new_user(name)
+    workspace = owner.owned_workspaces.get()
+    workspace.subscription_plan = team[1].subscription_plan
+    workspace.save(update_fields=["subscription_plan"])
+    return workspace, client_for(owner)
+
+
+def _member_url(workspace, member):
+    return f"/api/v1/workspaces/{workspace.pk}/members/{member.pk}/"
+
+
+def _mails_to(address):
+    return [message.to for message in mail.outbox].count([address])
+
+
+def test_resends_to_one_address_are_limited_whoever_asks_in_the_workspace(team):
     owner, workspace = team
     admin = new_user("admin")
     WorkspaceMember.objects.create(workspace=workspace, user=admin, role=ADMIN, status=ACTIVE)
     member, first = invite(team, "juana@example.com")
     other, _ = invite(team, "otra@example.com")
-    # The same address invited from another workspace: one mailbox, one count.
-    elsewhere_owner = new_user("vecina")
-    elsewhere = elsewhere_owner.owned_workspaces.get()
-    elsewhere.subscription_plan = workspace.subscription_plan
-    elsewhere.save(update_fields=["subscription_plan"])
-    response = client_for(elsewhere_owner).post(invite_url(elsewhere), {"emails": ["JUANA@example.com"], "role": "editor"}, format="json")
-    twin = WorkspaceMember.objects.get(pk=response.json()["invited"][0]["id"])
     mail.outbox.clear()
 
-    with _rates(invitation_resend_recipient="2/hour"):
+    # The invitation counted one: two resends fill the workspace's three.
+    with _rates(invitation_recipient_workspace="3/hour"):
         answers = [
             client_for(owner).post(resend_url(workspace, member)).status_code,
             client_for(admin).post(resend_url(workspace, member)).status_code,
         ]
         last = token_of(mail.outbox[-1])
-        answers.append(client_for(owner).post(resend_url(workspace, member)).status_code)
-        answers.append(client_for(elsewhere_owner).post(resend_url(elsewhere, twin)).status_code)
+        refused = client_for(owner).post(resend_url(workspace, member))
         another = client_for(owner).post(resend_url(workspace, other))
 
-    assert answers == [204, 204, 429, 429]
+    assert answers == [204, 204]
+    assert refused.status_code == 429 and "Demasiados intentos" in refused.json()["detail"] and refused["Retry-After"]
     assert another.status_code == 204
-    assert [message.to for message in mail.outbox].count(["juana@example.com"]) == 2
+    assert _mails_to("juana@example.com") == 2
     # A refused resend changes nothing: the link sent last still works.
     assert read(last).status_code == 200
+
+
+def test_cancelling_and_inviting_again_counts_like_a_resend(team):
+    """The review: twelve emails reached one address by cancelling the invitation and inviting it again."""
+    owner, workspace = team
+    api = client_for(owner)
+
+    answers = []
+    for _ in range(12):
+        response = api.post(invite_url(workspace), {"emails": ["Juana@Example.com"], "role": "editor"}, format="json")
+        answers.append(response.status_code)
+        if response.status_code == 201:
+            row = WorkspaceMember.objects.get(pk=response.json()["invited"][0]["id"])
+            assert api.delete(_member_url(workspace, row)).status_code == 204
+
+    # The workspace's limit per address (4 an hour): the fifth invitation is refused, whatever its spelling.
+    assert answers == [201] * 4 + [429] * 8
+    assert _mails_to("Juana@example.com") == 4
+    assert not WorkspaceMember.objects.filter(workspace=workspace, invited_email__iexact="juana@example.com").exists()
+
+
+def test_a_workspace_that_spends_its_limit_does_not_lock_out_another(team):
+    """The review: an admin of another workspace resent three times and blocked this one's resend for an hour."""
+    owner, workspace = team
+    elsewhere, neighbour = _elsewhere(team)
+    response = neighbour.post(invite_url(elsewhere), {"emails": ["juana@example.com"], "role": "editor"}, format="json")
+    twin = WorkspaceMember.objects.get(pk=response.json()["invited"][0]["id"])
+    # With the default limits (4 an hour per workspace and address): three resends, then a 429.
+    resends = [neighbour.post(resend_url(elsewhere, twin)).status_code for _ in range(4)]
+    assert resends == [204, 204, 204, 429]
+
+    member, _ = invite(team, "juana@example.com")
+    resent = client_for(owner).post(resend_url(workspace, member))
+
+    assert resent.status_code == 204
+    assert _mails_to("juana@example.com") == 6
+
+
+def test_every_workspace_together_has_a_looser_limit_per_address(team):
+    owner, workspace = team
+    elsewhere, neighbour = _elsewhere(team)
+    third, stranger = _elsewhere(team, "tercera")
+    body = {"emails": ["juana@example.com"], "role": "editor"}
+
+    with _rates(invitation_recipient_workspace="2/hour", invitation_recipient="3/hour"):
+        first = client_for(owner).post(invite_url(workspace), body, format="json")
+        member = WorkspaceMember.objects.get(pk=first.json()["invited"][0]["id"])
+        answers = [
+            client_for(owner).post(resend_url(workspace, member)).status_code,
+            neighbour.post(invite_url(elsewhere), body, format="json").status_code,
+            # The address got three: no workspace sends it a fourth this hour.
+            stranger.post(invite_url(third), body, format="json").status_code,
+        ]
+
+    assert answers == [204, 201, 429]
+    assert _mails_to("juana@example.com") == 3
+    assert not WorkspaceMember.objects.filter(workspace=third, status=PENDING).exists()
+
+
+def test_a_refused_invitation_leaves_nothing_pending_nor_counted(team):
+    owner, workspace = team
+    api = client_for(owner)
+    member, link = invite(team, "juana@example.com")
+    api.delete(_member_url(workspace, member))
+    mail.outbox.clear()
+
+    with _rates(invitation_recipient_workspace="1/hour"):
+        # All or none: Juana is over the limit, so Ana is not invited either.
+        refused = api.post(invite_url(workspace), {"emails": ["ana@example.com", "juana@example.com"], "role": "editor"}, format="json")
+        assert refused.status_code == 429
+        assert not WorkspaceMember.objects.filter(workspace=workspace, status=PENDING).exists()
+        assert not mail.outbox
+        # Ana's email did not count: she can be invited alone.
+        alone = api.post(invite_url(workspace), {"emails": ["ana@example.com"], "role": "editor"}, format="json")
+
+    assert alone.status_code == 201
+    assert [message.to for message in mail.outbox] == [["ana@example.com"]]
+    assert read(link).status_code == 404
+
+
+def test_the_limits_per_address_come_from_the_environment():
+    code = (
+        "from django.conf import settings; rates = settings.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']; "
+        "print(rates['invitation_recipient_workspace'], rates['invitation_recipient'])"
+    )
+    env = {
+        **os.environ, "DJANGO_SETTINGS_MODULE": "backend.settings.ci",
+        "THROTTLE_INVITATION_RECIPIENT_WORKSPACE": "2/hour", "THROTTLE_INVITATION_RECIPIENT": "7/day",
+    }
+
+    result = subprocess.run([sys.executable, "-c", code], env=env, cwd=BACK, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["2/hour", "7/day"]
 
 
 def test_accepting_with_a_session_verifies_the_email_of_the_account(team):

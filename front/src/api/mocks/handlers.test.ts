@@ -20,7 +20,7 @@ import { setActiveWorkspaceId, setTokens } from '../session';
 import { mockedEndpointIds } from './http';
 import { USER_IDS, WORKSPACE_IDS } from './seed';
 import { server } from './server';
-import { SIM, tick } from './sim';
+import { reservationStateOf, serveActivity, SIM, tick } from './sim';
 import { applyScenario, loadDb, mockTokens, saveDb } from './state';
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
@@ -140,11 +140,22 @@ describe('mocks', () => {
     expect(created.cost_details.tokens_reserved).toBe(270);
     expect(created.status).toBe('uploaded');
     expect((await apiCall(billing.getWallet)).available_balance).toBe(before.available_balance - 270);
+    /** [type, amount, reservation_state] of the token items of the activity, oldest first. */
+    const movements = async () =>
+      (await apiCall(projects.getProjectActivity, { params: { id: created.id } }))
+        .filter((item) => item.amount !== null)
+        .reverse()
+        .map((item) => [item.type, item.amount, item.reservation_state]);
+    expect(await movements()).toEqual([['tokens_reserved', -270, 'reserved']]);
 
     advance(SIM.queueMs + SIM.stageMs * 1.5);
     let project = await apiCall(projects.getProject, { params: { id: created.id } });
     expect(project.status).toBe('ingesting');
     expect(project.pipeline_stage).toBe('audio_extracted');
+    // The stage that is running has its start and no duration; the finished one, both.
+    expect(project.stage_timings?.transcribed).toMatchObject({ finished_at: null, duration_s: null });
+    expect(project.stage_timings?.transcribed?.started_at).toEqual(expect.any(String));
+    expect(project.stage_timings?.audio_extracted?.duration_s).toBe(SIM.stageMs / 1000);
 
     advance(SIM.stageMs * 4);
     project = await apiCall(projects.getProject, { params: { id: created.id } });
@@ -169,6 +180,43 @@ describe('mocks', () => {
     const after = await apiCall(billing.getWallet);
     expect(after.reserved_balance).toBe(before.reserved_balance);
     expect(after.available_balance).toBe(before.available_balance - 270 - approved.final_cost);
+    // Each reservation says how it ended, read from its transaction, and so does its charge.
+    expect(await movements()).toEqual([
+      ['tokens_reserved', -270, 'charged'],
+      ['tokens_charged', -270, 'charged'],
+      ['tokens_reserved', -approved.final_cost, 'charged'],
+      ['tokens_charged', -approved.final_cost, 'charged'],
+    ]);
+  });
+
+  it('la actividad dice cómo terminó cada reserva: cobrada en parte, devuelta o desconocida', () => {
+    expect(reservationStateOf({ status: 'RESERVED', amount: 20, reserved_amount: 20 })).toBe('reserved');
+    expect(reservationStateOf({ status: 'COMPLETED', amount: 20, reserved_amount: 20 })).toBe('charged');
+    expect(reservationStateOf({ status: 'COMPLETED', amount: 20, reserved_amount: null })).toBe('charged');
+    expect(reservationStateOf({ status: 'COMPLETED', amount: 8, reserved_amount: 12 })).toBe('partially_charged');
+    expect(reservationStateOf({ status: 'FAILED', amount: 20, reserved_amount: 20 })).toBe('refunded');
+
+    signIn('estudio-norte');
+    const db = loadDb();
+    const project = db.projects[0];
+    const transaction = db.transactions.find((item) => item.status === 'RESERVED' || item.status === 'COMPLETED');
+    if (!project || !transaction) throw new Error('faltan datos');
+    Object.assign(transaction, { status: 'COMPLETED', amount: 8, reserved_amount: 12 });
+    const base = { project: project.id, actor: null, created_at: '2026-11-27T10:00:00Z', description: 'x' };
+    db.activity = [
+      { ...base, id: 'a', type: 'tokens_reserved', amount: -12, _transaction: transaction.id },
+      { ...base, id: 'b', type: 'tokens_refunded', amount: 4, _transaction: transaction.id },
+      // Not a token item, a transaction that is gone, and an item of no known transaction: served as they are.
+      { ...base, id: 'c', type: 'render_finished', amount: null, _transaction: transaction.id },
+      { ...base, id: 'd', type: 'tokens_charged', amount: -8, _transaction: 'gone' },
+      { ...base, id: 'e', type: 'tokens_reserved', amount: -5 },
+    ];
+    const served = Object.fromEntries(serveActivity(db, project.id).map((item) => [item.id, item]));
+    expect(served.a?.reservation_state).toBe('partially_charged');
+    expect(served.b?.reservation_state).toBe('partially_charged');
+    for (const id of ['c', 'd', 'e']) expect(served[id]).not.toHaveProperty('reservation_state');
+    // What is only for the mock never leaves it.
+    expect(Object.values(served).some((item) => '_transaction' in item || 'project' in item)).toBe(false);
   });
 
   it('los errores de subida y del pipeline llegan como en el backend', async () => {
@@ -187,6 +235,14 @@ describe('mocks', () => {
     expect(project.status).toBe('failed');
     expect(project.pipeline_error_code).toBe('AINoSpeechDetectedError');
     expect(project.cost?.state).toBe('refunded');
+    // The reservation that came back and its refund say so: the screen shows −N and +N, never a lone +N.
+    const tokens = (await apiCall(projects.getProjectActivity, { params: { id: failing.id } })).filter((item) => item.amount !== null);
+    expect(tokens.map((item) => [item.type, item.reservation_state]).sort()).toEqual([
+      ['tokens_refunded', 'refunded'],
+      ['tokens_reserved', 'refunded'],
+    ]);
+    expect(tokens.reduce((sum, item) => sum + (item.amount ?? 0), 0)).toBe(0);
+    expect(project.stage_timings && Object.values(project.stage_timings).filter((timing) => timing.duration_s === null && timing.finished_at)).toHaveLength(1);
 
     const waiting = await upload('demanda-5min.mp4');
     advance(SIM.queueMs + SIM.stageMs * 1.2);
@@ -618,6 +674,10 @@ describe('mocks', () => {
     expect(lateral.subscription.plan.name).toBe('Pro Plus');
     const free = await apiCall(billing.changePlan, { body: { plan_id: '55555555-5555-4555-8555-555555555555' } });
     expect(free.applied).toBe('period_end');
+    // Miembros shows the seats inviting checks, and why.
+    const members = await apiCall(workspaces.listMembers, { params: { id: WORKSPACE_IDS.estudio } });
+    expect([members.max_members, members.seats_used]).toEqual([5, 4]);
+    expect(members.limited_by).toEqual({ reason: 'pending_plan', plan_name: 'Libre', effective_at: free.subscription.pending_plan?.effective_at });
     // Libre has 5 seats and 4 are taken: one more fits, the next does not.
     await apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['quinta@estudionorte.com'], role: 'viewer' } });
     const refused = await fail(apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['sexta@estudionorte.com'], role: 'viewer' } }));
@@ -631,7 +691,12 @@ describe('mocks', () => {
     const creator = plans.find((item) => item.name === 'Creador');
     if (!creator) throw new Error('falta Creador');
     // Pro with 4 seats in use; Creador has 5.
+    expect((await apiCall(workspaces.listMembers, { params: { id: WORKSPACE_IDS.estudio } })).limited_by).toBeNull();
     expect((await apiCall(billing.changePlan, { body: { plan_id: creator.id, return_url: 'http://localhost:3000/uso/planes' } })).checkout_url).toBeTruthy();
+    // Miembros shows the seats inviting checks, and why.
+    const members = await apiCall(workspaces.listMembers, { params: { id: WORKSPACE_IDS.estudio } });
+    expect([members.max_members, members.seats_used]).toEqual([5, 4]);
+    expect(members.limited_by).toEqual({ reason: 'pending_payment', plan_name: 'Creador', effective_at: null });
     await apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['quinta@estudionorte.com'], role: 'viewer' } });
     const refused = await fail(apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['sexta@estudionorte.com'], role: 'viewer' } }));
     expect(refused.code).toBe('seats_exceeded');

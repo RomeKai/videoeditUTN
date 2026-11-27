@@ -441,7 +441,7 @@ Miembros e invitaciones pendientes, con los lugares usados del plan.
 |---|---|
 | Id | `workspaces.members` |
 | Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceMembersView.get (MembersSerializer)` |
-| Nota | Una fila por WorkspaceMember, de la más antigua a la más nueva; la del Dueño sale con `role: "owner"`. `seats_used` cuenta todas las filas, también las pendientes y la del Dueño; `max_members` es 1 si el workspace no tiene plan. En una invitación pendiente `user` es null (tenga o no cuenta ese email) y `email` es el invitado; `invited_by` es `{id, name}` de quien invitó, o null en las filas que nadie invitó. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
+| Nota | Una fila por WorkspaceMember, de la más antigua a la más nueva; la del Dueño sale con `role: "owner"`. `seats_used` cuenta todas las filas, también las pendientes y la del Dueño. `max_members` es el límite que controla invitar (`seats.seat_limit`): el del plan, 1 si el workspace no tiene plan, o el del plan más chico mientras espera una bajada programada o un pago de plan; en esos dos casos `limited_by` dice cuál (`pending_plan` con su fecha, o `pending_payment`), y si no es null. En una invitación pendiente `user` es null (tenga o no cuenta ese email) y `email` es el invitado; `invited_by` es `{id, name}` de quien invitó, o null en las filas que nadie invitó. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Respuesta 200 | MembersResponse |
 | Errores | **403** Solo Dueño y Admin ven la sección (para Editor y Lector no aparece). Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos. |
@@ -488,7 +488,7 @@ Invita por email con un rol. Crea WorkspaceMember en `pending` y manda el email.
 | Sesión | JWT |
 | Pedido | InviteRequest |
 | Respuesta 201 | { invited: Member[] } |
-| Errores | **400** `{emails: [oración]}`, siempre una lista plana con una sola oración: falta, alguno no es un email, son más de 10, o alguno ya es miembro o tiene una invitación pendiente (con cualquier mayúscula). `{role: [mensaje]}`: no es admin, editor ni viewer (nadie invita a un Dueño). No se invita a ninguno.<br>**403** Sin lugares en el plan (`{error, code: "seats_exceeded"}`: límite del plan, se resuelve subiendo de plan o quitando miembros; el mismo código en `billing.changePlan` es un 409 porque ahí lo que sobra son miembros). El `error` se muestra tal cual: nombra el plan, o el plan más chico de una bajada programada o de un pago en curso. O el rol no puede invitar (Editor, Lector): solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo. Mismo `detail` para todos los casos.<br>**429** Demasiadas invitaciones seguidas. Invitar y reenviar cuentan juntos: 30 por hora por usuario y 60 por hora por workspace. `detail` dice cuánto esperar. |
+| Errores | **400** `{emails: [oración]}`, siempre una lista plana con una sola oración: falta, alguno no es un email, son más de 10, o alguno ya es miembro o tiene una invitación pendiente (con cualquier mayúscula). `{role: [mensaje]}`: no es admin, editor ni viewer (nadie invita a un Dueño). No se invita a ninguno.<br>**403** Sin lugares en el plan (`{error, code: "seats_exceeded"}`: límite del plan, se resuelve subiendo de plan o quitando miembros; el mismo código en `billing.changePlan` es un 409 porque ahí lo que sobra son miembros). El `error` se muestra tal cual: nombra el plan, o el plan más chico de una bajada programada o de un pago en curso. O el rol no puede invitar (Editor, Lector): solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo. Mismo `detail` para todos los casos.<br>**429** Demasiadas invitaciones seguidas. Invitar y reenviar cuentan juntos: 30 por hora por usuario y 60 por hora por workspace, y por dirección 4 por hora desde este workspace (cancelar y volver a invitar también cuenta) y 10 por hora desde cualquier workspace. `detail` dice cuánto esperar. No queda ninguna invitación pendiente. |
 | Pantallas | D7, H2 |
 
 #### `POST /api/v1/workspaces/:id/invitations/:memberId/resend/`
@@ -502,7 +502,7 @@ Reenvía el email de una invitación pendiente, con un link nuevo.
 | Nota | El link anterior deja de servir en el momento, y el nuevo empieza su propio vencimiento. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Respuesta 204 | NoContent |
-| Errores | **403** El rol no administra miembros. Solo `detail`, sin `code`.<br>**404** La invitación ya se aceptó o se canceló, `memberId` no es de ese workspace, o el workspace no existe para este usuario.<br>**429** Demasiadas invitaciones seguidas (el mismo límite que invitar), o demasiados reenvíos a esa dirección: 3 por hora, los pida quien los pida. `detail` dice cuánto esperar. El link anterior sigue sirviendo.<br>**502** No se pudo encolar el email. El link anterior ya no sirve: se reintenta en unos minutos. |
+| Errores | **403** El rol no administra miembros. Solo `detail`, sin `code`.<br>**404** La invitación ya se aceptó o se canceló, `memberId` no es de ese workspace, o el workspace no existe para este usuario.<br>**429** Demasiadas invitaciones seguidas, o demasiados emails a esa dirección: los mismos límites que invitar, que cuentan juntos. `detail` dice cuánto esperar. El link anterior sigue sirviendo.<br>**502** No se pudo encolar el email. El link anterior ya no sirve: se reintenta en unos minutos. |
 | Pantallas | H2 |
 
 #### `POST /api/v1/invitations/preview/`
@@ -810,7 +810,7 @@ Detalle del proyecto con el estado del pipeline, la metadata, la transcripción 
 |---|---|
 | Id | `projects.detail` |
 | Backend | ⚠️ existe en parte · `back/apps/videos/views.py · VideoProjectViewSet.retrieve + VideoProjectSerializer` |
-| Nota | Trae `cost` (la reserva de creación: reservado, cobrado o devuelto), `stage_timings` (las etapas terminadas; `started_at` y `finished_at` en `null` en las que terminaron antes de que se guardara) y `uploaded_by_detail` (sin el email). `eta_seconds` mientras se procesa (el estimado de Nuevo proyecto menos lo que tardaron las etapas terminadas). Falta `duration_seconds` (la duración sale de `metadata.source_media`). Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura. |
+| Nota | Trae `cost` (la reserva de creación: reservado, cobrado o devuelto), `stage_timings` (las etapas terminadas, con `started_at` y `finished_at` en `null` en las que terminaron antes de que se guardara; y la etapa que arrancó y no terminó, la que está en curso o donde falló el proyecto, con `started_at` de `metadata.stage_started_at`, `duration_s` en `null` y `finished_at` solo si el proyecto falló: `pipeline_error_at`) y `uploaded_by_detail` (sin el email). `eta_seconds` mientras se procesa (el estimado de Nuevo proyecto menos lo que tardaron las etapas terminadas). Falta `duration_seconds` (la duración sale de `metadata.source_media`). Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Project |
 | Errores | **404** No existe o es de otro workspace. La UI muestra K1. |
@@ -910,7 +910,7 @@ Quién hizo qué en el proyecto y sus movimientos de tokens, del más nuevo al m
 |---|---|
 | Id | `projects.activity` |
 | Backend | ✅ existe · `back/apps/videos/views_project_data.py · ProjectActivityView + services/project_activity.py · build_activity` |
-| Nota | No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (las Transaction de las claves `*reservation_id` de la metadata, con `settled_at` y `reserved_amount` desde la migración 0012 de payments), fin del render (cuando se liquidó la reserva que lo pagó), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva cuya clave se borró de la metadata (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems. |
+| Nota | No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección; dice los clips que se sugirieron, `ai_rationale_log.suggestions_count`, no los que quedaron después de aprobar), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (las Transaction de las claves `*reservation_id` de la metadata, con `settled_at` y `reserved_amount` desde la migración 0012 de payments; la reserva, su cobro y su devolución traen `reservation_state`, cómo terminó esa reserva: son ítems de un mismo movimiento del saldo, no cobros ni ingresos aparte), fin del render (cuando se liquidó la reserva que lo pagó), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva cuya clave se borró de la metadata (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | ActivityItem[] |
 | Errores | **404** No existe o es de otro workspace. |
@@ -1551,8 +1551,11 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `members` | Member[] |
 | `max_members` | number |
 | `seats_used` | number |
+| `limited_by` | SeatLimit \\| null |
 
 **MemberStatus:** "pending" \| "active"
+
+**SeatLimit:** { reason: "pending_plan", plan_name: string, effective_at: IsoDateTime } \| { reason: "pending_payment", plan_name: string, effective_at: null }
 
 **Workspace**
 
@@ -1768,6 +1771,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `description` | string |
 | `amount` | Decimal \\| null |
 | `platform` (opcional) | Platform \\| null |
+| `reservation_state` (opcional) | "reserved" \\| "charged" \\| "partially_charged" \\| "refunded" \\| null |
 
 **ApprovedSegment**
 

@@ -201,6 +201,7 @@ def _running_stage(project_id, stage, attempt):
     # status writes are guarded by it so a worker that lost ownership stays silent.
     owner_stage = STAGE_ORDER[STAGE_ORDER.index(stage) - 1]
     set_stage_status(project_id, stage, StageStatus.RUNNING, expected_stage=owner_stage)
+    _record_stage_start(project_id, stage, attempt)
     logger.info(
         "pipeline.stage_started project_id=%s stage=%s attempt=%d", project_id, stage, attempt,
         extra={'project_id': str(project_id), 'stage': str(stage), 'attempt': attempt},
@@ -254,6 +255,58 @@ def _running_stage(project_id, stage, attempt):
     _record_stage_duration(project_id, stage, duration_s)
 
 
+def _metadata_dict(value):
+    """A dict of the metadata to add a key to, or a new one when what is there is not a dict."""
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _metadata_for_new_run(metadata):
+    """
+    The metadata of a failed project that a new run reopens: without the
+    counters of recover_stuck_renders and without the starts of the stages the
+    old run did not finish (``stage_started_at`` of a stage that has no
+    ``stage_durations``). A start that stayed would make the stage of the new
+    run look days old if nothing overwrote it.
+    """
+    fresh = {key: value for key, value in metadata.items() if key not in INGESTION_RECOVERY_KEYS}
+    started = fresh.get('stage_started_at')
+    if isinstance(started, dict):
+        durations = _metadata_dict(fresh.get('stage_durations'))
+        finished = {stage: at for stage, at in started.items() if stage in durations}
+        if finished != started:
+            fresh['stage_started_at'] = finished
+    return fresh
+
+
+def _record_stage_start(project_id, stage, attempt):
+    """
+    When ``stage`` started, in ``metadata['stage_started_at']``, so the process
+    timeline of the web app shows the stage that is running, or the one that
+    failed, with its start (stage_timings). Only a Celery retry of the same
+    message (``attempt`` above 1) keeps the start that is there. Every other
+    delivery runs with attempt 1 and writes it again: a re-queue of the sweep,
+    a wait for capacity, a redelivery after a lost worker and a re-dispatch
+    (which also drops the old start when it reopens the project,
+    ``_metadata_for_new_run``). As with the durations, it must never break the
+    pipeline.
+    """
+    try:
+        with transaction.atomic():
+            project = VideoProject.objects.select_for_update().only('metadata').get(pk=project_id)
+            metadata = _metadata_dict(project.metadata)
+            started = _metadata_dict(metadata.get('stage_started_at'))
+            if attempt > 1 and isinstance(started.get(str(stage)), str):
+                return
+            started[str(stage)] = timezone.now().isoformat()
+            metadata['stage_started_at'] = started
+            VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
+    except Exception as exc:  # a metric must never fail a stage
+        logger.warning(
+            "pipeline.stage_start_not_saved project_id=%s stage=%s error=%s",
+            project_id, stage, type(exc).__name__,
+        )
+
+
 def _record_stage_duration(project_id, stage, duration_s):
     """
     INFRA-02: keeps the last successful duration of each stage in
@@ -264,12 +317,12 @@ def _record_stage_duration(project_id, stage, duration_s):
     try:
         with transaction.atomic():
             project = VideoProject.objects.select_for_update().only('metadata').get(pk=project_id)
-            metadata = dict(project.metadata or {})
-            durations = dict(metadata.get('stage_durations') or {})
+            metadata = _metadata_dict(project.metadata)
+            durations = _metadata_dict(metadata.get('stage_durations'))
             durations[str(stage)] = duration_s
             metadata['stage_durations'] = durations
             # When it ended, for the process timeline of the web app (stage_timings).
-            finished = dict(metadata.get('stage_finished_at') or {})
+            finished = _metadata_dict(metadata.get('stage_finished_at'))
             finished[str(stage)] = timezone.now().isoformat()
             metadata['stage_finished_at'] = finished
             VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
@@ -1764,11 +1817,12 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
                 logger.warning("pipeline.redispatch_skipped project_id=%s reason=stale_chain", project_id)
                 return f"Not resumed {project_id}: its message belongs to a chain that was replaced"
             reopen(project_id, stage)
-            if any(key in metadata for key in INGESTION_RECOVERY_KEYS):
-                # A re-dispatch is a new run: recover_stuck_renders counts its re-queues anew.
-                VideoProject.objects.filter(pk=project_id).update(metadata={
-                    key: value for key, value in metadata.items() if key not in INGESTION_RECOVERY_KEYS
-                })
+            # A re-dispatch is a new run: recover_stuck_renders counts its
+            # re-queues anew, and the stage the old run left unfinished
+            # forgets its start (the new run writes its own).
+            fresh = _metadata_for_new_run(metadata)
+            if fresh != metadata:
+                VideoProject.objects.filter(pk=project_id).update(metadata=fresh)
         reopened = True
         progress['stage'] = stage
 

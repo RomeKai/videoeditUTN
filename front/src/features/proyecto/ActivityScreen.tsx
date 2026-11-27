@@ -8,7 +8,7 @@ import { LoadError } from '@/shell/LoadError';
 import { usePermissions, usePlan } from '@/shell/session';
 import { Avatar, Badge, Button, Card, CardFoot, CardHead, DateTime, EmptyState, Icon, NetworkChip, Skeleton, Table, Tokens } from '@/ui';
 import styles from './ActivityScreen.module.css';
-import { MOVEMENT_KIND, activityLink, explainCost, groupActivityByDay, tokenMovements } from './model';
+import { activityLink, explainCost, allReservationsEnded, explainMovements, foldedMovement, groupActivityByDay, movementKind, tokenMovements } from './model';
 import { useCurrentProject } from './project-context';
 
 function ActivitySkeleton() {
@@ -61,6 +61,9 @@ export function ActivityScreen({ projectId }: { projectId: string }) {
   const days = groupActivityByDay(items);
   const movements = tokenMovements(items);
   const cost = explainCost(project, pricing.data, plan);
+  // Nothing was charged to create it, but it moved tokens (a render, a retry): what those add up to.
+  const movementsCost = cost ? null : explainMovements(items);
+  const shownCost = cost ?? movementsCost;
   const refunds = movements.filter((item) => item.type === 'tokens_refunded').length;
 
   return (
@@ -86,7 +89,8 @@ export function ActivityScreen({ projectId }: { projectId: string }) {
                 <ol className={styles.events}>
                   {day.items.map((item) => {
                     const link = activityLink(item, project);
-                    const movement = MOVEMENT_KIND[item.type];
+                    const movement = movementKind(item);
+                    const folded = foldedMovement(item);
                     return (
                       <li key={item.id} className={styles.event}>
                         <span className={`${styles.time} num`}>{formatTime(item.created_at)}</span>
@@ -112,7 +116,7 @@ export function ActivityScreen({ projectId }: { projectId: string }) {
                               <Badge tone={movement.tone} size="sm" dot>
                                 {movement.label}
                               </Badge>{' '}
-                              <Tokens value={item.amount} signed />
+                              {folded ? <Tokens value={Math.abs(item.amount)} className={styles.settled} /> : <Tokens value={item.amount} signed />}
                             </p>
                           ) : null}
                         </div>
@@ -154,7 +158,8 @@ export function ActivityScreen({ projectId }: { projectId: string }) {
               </thead>
               <tbody>
                 {movements.map((item) => {
-                  const kind = MOVEMENT_KIND[item.type];
+                  const kind = movementKind(item);
+                  const folded = foldedMovement(item);
                   return (
                     <tr key={item.id}>
                       <td>
@@ -163,6 +168,7 @@ export function ActivityScreen({ projectId }: { projectId: string }) {
                       <td>
                         <div className={styles.cell2}>
                           <span>{item.description}</span>
+                          {folded ? <span className="t-small muted">{folded.note}</span> : null}
                           {item.actor ? <span className="t-small muted">{item.actor.name}</span> : null}
                         </div>
                       </td>
@@ -174,7 +180,12 @@ export function ActivityScreen({ projectId }: { projectId: string }) {
                         ) : null}
                       </td>
                       <td className="right">
-                        <Tokens value={item.amount ?? 0} unit={false} signed className={styles.amount} />
+                        {folded ? (
+                          // Context of the charge of the same reservation, not one more movement: without sign.
+                          <Tokens value={Math.abs(item.amount ?? 0)} unit={false} className={`${styles.amount} ${styles.settled}`} />
+                        ) : (
+                          <Tokens value={item.amount ?? 0} unit={false} signed className={styles.amount} />
+                        )}
                       </td>
                     </tr>
                   );
@@ -198,9 +209,9 @@ export function ActivityScreen({ projectId }: { projectId: string }) {
               Cómo se calculó
             </h2>
           </CardHead>
-          {cost ? (
+          {shownCost ? (
             <dl className={styles.calc}>
-              {cost.lines.map((line) => (
+              {shownCost.lines.map((line) => (
                 <div key={line.key}>
                   <dt>
                     <span className="num">{line.label}</span>
@@ -210,13 +221,17 @@ export function ActivityScreen({ projectId }: { projectId: string }) {
                 </div>
               ))}
               <div className={styles.sum}>
-                <dt>{cost.totalLabel}</dt>
-                <dd className="num">{cost.total}</dd>
+                <dt>{shownCost.totalLabel}</dt>
+                <dd className="num">{shownCost.total}</dd>
               </div>
             </dl>
-          ) : (
+          ) : movements.length === 0 ? (
             <p className={`${styles.none} t-small muted`}>Este proyecto no tiene un costo asociado.</p>
-          )}
+          ) : allReservationsEnded(items) ? (
+            // It moved tokens and all of them came back: there is a cost history, and nothing was charged.
+            <p className={`${styles.none} t-small muted`}>No se cobró nada: lo reservado volvió al saldo.</p>
+          ) : null}
+          {movementsCost ? <p className={`${styles.calcNote} t-small muted`}>Crear este proyecto no tuvo costo. El total suma los cobros y las reservas de sus movimientos.</p> : null}
           {cost && pricing.isLoading ? (
             <p className={`${styles.none} t-small muted`} aria-busy="true">
               Cargando el detalle…
