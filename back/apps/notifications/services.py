@@ -17,7 +17,6 @@ of each recipient in that workspace are kept (what the panel shows).
 """
 import logging
 import uuid
-from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.db import transaction
@@ -36,8 +35,8 @@ Kind = Notification.Kind
 
 # What the bell shows and what is kept of each user in each workspace.
 KEPT_PER_USER = 20
-# A settlement counts as part of an event when it happened this close to it.
-_SETTLED_WINDOW = timedelta(minutes=2)
+# ``reason`` of notify_project_failed: the project's error code is AutoRenderNotPaid.
+AUTO_RENDER_UNPAID = 'auto_render_unpaid'
 _TITLE_ROOM = 255
 
 
@@ -72,7 +71,8 @@ def _prune(user_id, workspace_id):
 
 def _write(workspace, user_ids, kind, title, body, project=None, post=None):
     """One notification for each of ``user_ids`` who can still act in the workspace."""
-    targets = recipients_of(workspace) & set(user_ids)
+    # In one order: two events for the same people never wait for each other's rows (the prune deletes).
+    targets = sorted(recipients_of(workspace) & set(user_ids))
     with transaction.atomic():
         for user_id in targets:
             Notification.objects.create(
@@ -127,8 +127,14 @@ def _reservations(project):
 
 
 def _returned(project, since):
-    """Tokens that went back to the wallet for this project since ``since``."""
+    """
+    Tokens that went back to the wallet for this project since ``since``: the
+    moment the caller took right before its refund step, so a refund of an
+    earlier event is never counted again. None: the event returns nothing.
+    """
     total = Decimal('0')
+    if since is None:
+        return total
     settled = _reservations(project).filter(
         settled_at__gte=since, status__in=[Transaction.Status.FAILED, Transaction.Status.COMPLETED],
     )
@@ -139,6 +145,13 @@ def _returned(project, since):
         elif reserved > txn.amount:
             total += reserved - txn.amount
     return total
+
+
+def _holds_tokens(project):
+    """Something of the project was charged, or is still reserved: "nothing was charged" would be false."""
+    return _reservations(project).filter(
+        Q(status=Transaction.Status.COMPLETED, amount__gt=0) | Q(status=Transaction.Status.RESERVED),
+    ).exists()
 
 
 def _to_workspace(project, kind, title, body):
@@ -153,24 +166,46 @@ def project_ready_message(project):
     return f'{project.title[:_TITLE_ROOM]} está listo para revisar', found
 
 
-def render_finished_message(project):
-    """(title, body) of ``render_finished``, for a project that ended completed or partial."""
+def render_finished_message(project, returned=0):
+    """
+    (title, body) of ``render_finished``, for a project that ended completed
+    or partial. ``returned``: the tokens that close gave back. A completed
+    project that returns some had a clip rendered again that failed: the clip
+    went back to the file it had.
+    """
+    refund = f' Te devolvimos {_tokens(returned)}.' if returned > 0 else ''
     if project.status == VideoProject.Status.PARTIAL:
-        returned = _returned(project, timezone.now() - _SETTLED_WINDOW)
-        body = 'Parte del render falló.'
-        if returned > 0:
-            body += f' Te devolvimos {_tokens(returned)}.'
+        body = f'Parte del render falló.{refund}'
+    elif returned > 0:
+        body = f'No pudimos volver a generar todos los clips: los que ya tenías quedaron como estaban.{refund}'
     else:
         ready = VideoClip.objects.filter(project=project, status=VideoClip.Status.COMPLETED).count()
         body = 'Tu video está listo.' if ready <= 1 else f'{ready} clips listos.'
     return f'{project.title[:_TITLE_ROOM]}: terminó el render', body
 
 
-def project_failed_message(project_title, returned, rendering=False):
-    """(title, body) of ``project_failed``: ``returned`` tokens went back (0: nothing was charged)."""
-    body = f'Te devolvimos {_tokens(returned)}.' if returned > 0 else 'No se cobró nada.'
-    what = 'no se pudo generar' if rendering else 'no se pudo procesar'
-    return f'{project_title[:_TITLE_ROOM]} {what}', body
+def project_failed_message(project_title, returned=0, holds_tokens=False, has_clips=False, rendering=False, reason=None):
+    """
+    (title, body) of ``project_failed``. The body never says more than what
+    happened to the tokens: what went back (``returned``); "nothing was
+    charged" only when nothing of the project is charged or reserved
+    (``holds_tokens``); otherwise no money line, only that the clips are
+    still there when there are some. ``reason`` AUTO_RENDER_UNPAID has its
+    own text, the web's for that error code.
+    """
+    title = project_title[:_TITLE_ROOM]
+    if reason == AUTO_RENDER_UNPAID:
+        return (
+            f'{title}: no alcanzó el saldo para renderizar',
+            'Los clips siguen ahí. Cargá tokens y volvé a intentarlo.',
+        )
+    if returned > 0:
+        body = f'Te devolvimos {_tokens(returned)}.'
+    elif not holds_tokens:
+        body = 'No se cobró nada.'
+    else:
+        body = 'Los clips que ya estaban siguen en el proyecto.' if has_clips else ''
+    return f"{title} {'no se pudo generar' if rendering else 'no se pudo procesar'}", body
 
 
 def payment_message(approved, tokens=0, plan_name=None):
@@ -196,30 +231,38 @@ def notify_project_ready(project_id):
     _after_commit('project_ready', build, project_id=project_id)
 
 
-def notify_render_finished(project_id):
-    """The render ended: every clip delivered (``completed``) or only some (``partial``)."""
+def notify_render_finished(project_id, since=None):
+    """
+    The render ended: every clip delivered (``completed``) or only some
+    (``partial``). ``since``: ``timezone.now()`` taken before the close
+    settled its reservations, to say what it returned (None: nothing).
+    """
     def build():
         project = _project(project_id)
         if project is None or project.status not in (VideoProject.Status.COMPLETED, VideoProject.Status.PARTIAL):
             return
-        _to_workspace(project, Kind.RENDER_FINISHED, *render_finished_message(project))
+        _to_workspace(project, Kind.RENDER_FINISHED, *render_finished_message(project, _returned(project, since)))
 
     _after_commit('render_finished', build, project_id=project_id)
 
 
-def notify_project_failed(project_id, rendering=False):
+def notify_project_failed(project_id, since=None, rendering=False, reason=None):
     """
-    The project ended ``failed``, with what was returned for it. Call it after
-    the refund (or in its transaction). ``rendering``: it was the final render
-    that failed, not the processing.
+    The project ended ``failed``. ``since``: ``timezone.now()`` taken before
+    the failure returned its reservations, to say what went back (None: it
+    returns nothing). Call it after the refund, or in its transaction.
+    ``rendering``: it was the final render that failed, not the processing.
+    ``reason``: AUTO_RENDER_UNPAID for a re-dispatch that could not pay the
+    clips left to render.
     """
     def build():
         project = _project(project_id)
         if project is None or project.status != VideoProject.Status.FAILED:
             return
-        # The refund is settled after the error is recorded (pipeline_error_at).
-        since = project.pipeline_error_at or timezone.now() - _SETTLED_WINDOW
-        title, body = project_failed_message(project.title, _returned(project, since), rendering)
+        title, body = project_failed_message(
+            project.title, _returned(project, since), holds_tokens=_holds_tokens(project),
+            has_clips=VideoClip.objects.filter(project=project).exists(), rendering=rendering, reason=reason,
+        )
         _to_workspace(project, Kind.PROJECT_FAILED, title, body)
 
     _after_commit('project_failed', build, project_id=project_id)

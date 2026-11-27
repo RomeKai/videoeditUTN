@@ -862,7 +862,7 @@ def _recover_ingestion(project_id, _stuck_after=None):
                                 **(project.metadata or {}), INGESTION_CHAIN_KEY: new_ingestion_chain(),
                             })
                             _settle_stuck_creation(project_id, reservation)
-                            notify_project_failed(project_id)
+                            notify_project_failed(project_id, since=now)
                 except PaymentError:
                     failed = False  # rolled back with it: nothing was written
                 if not failed:

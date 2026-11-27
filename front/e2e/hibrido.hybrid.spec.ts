@@ -183,7 +183,8 @@ test.describe('Modo híbrido contra el backend real', () => {
     await expect(domain('auth')).toHaveAttribute('data-route', 'real');
     await expect(domain('auth').getByRole('button', { name: 'Mock' })).toBeDisabled();
     // Which endpoints exist is the contract's business: here only that nothing but auth is forced.
-    await expect(domain('notifications')).not.toHaveAttribute('data-route', 'real');
+    // Social still has proposed endpoints (connecting an account, creating a post): never all real.
+    await expect(domain('social')).not.toHaveAttribute('data-route', 'real');
     await expect(domain('projects')).toHaveAttribute('data-route', /real|mixed/);
     await expect(domain('brandKits')).toHaveAttribute('data-route', /real|mixed/);
     // Scenarios about the mocked session are off, with the reason.

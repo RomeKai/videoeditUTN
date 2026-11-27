@@ -64,7 +64,7 @@ from django.db import DatabaseError, transaction
 from django.db.models import F, Q
 from django.core.cache import cache
 from apps.videos.models import VideoProject, VideoClip, ScheduledPost
-from apps.notifications.services import notify_project_failed, notify_project_ready
+from apps.notifications.services import AUTO_RENDER_UNPAID, notify_project_failed, notify_project_ready
 from backend.celery import app as celery_app
 from celery.exceptions import Reject
 
@@ -1801,7 +1801,7 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
                 failed = _fail_with_new_chain(project_id, expected_stage=PipelineStage.RENDER_DISPATCHED)
                 record_error(project_id, 'AutoRenderNotPaid')
                 if failed:
-                    notify_project_failed(project_id)
+                    notify_project_failed(project_id, reason=AUTO_RENDER_UNPAID)
                 logger.warning("pipeline.redispatch_skipped project_id=%s reason=auto_render_unpaid", project_id)
                 return f"Not resumed {project_id}: its auto-render cannot be paid"
         return _resume_render_dispatch(project_id, progress)
@@ -2007,9 +2007,10 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
     # provider or pipeline error): the reservation goes back. Only the call that
     # failed the project refunds it, so a project another worker moved on keeps it.
     if failed_now:
+        refunds_since = timezone.now()
         _refund_ingestion_reservation(project_id)
         _settle_clip_render_reservations(project_id)
-        notify_project_failed(project_id)
+        notify_project_failed(project_id, since=refunds_since)
 
 
 # acks_late + reject_on_worker_lost: if the worker dies mid-task (OOM during

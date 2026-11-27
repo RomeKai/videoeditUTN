@@ -242,11 +242,10 @@ class PipelineFailedTests(EventHarness):
         project = self.ingesting()
         self.committed(lambda: self.fail(project))
         Notification.objects.all().delete()
-        # Dispatched again, free, and failed again: nothing new went back.
+        # Dispatched again, free, and failed again right away: nothing new went back.
         VideoProject.objects.filter(pk=project.pk).update(
             status=VideoProject.Status.INGESTING, pipeline_stage=PipelineStage.TRANSCRIBED,
         )
-        Transaction.objects.filter(project=project).update(settled_at=project.created_at)
 
         self.committed(lambda: self.fail(project))
 
@@ -351,10 +350,12 @@ class PaperEditTests(EventHarness):
 
 
 class UnpaidAutoRenderTests(IngestionHarness, TestCase):
-    def test_a_re_dispatch_that_cannot_be_paid_is_announced_as_failed(self):
+    def test_a_re_dispatch_that_cannot_be_paid_says_so_and_never_that_nothing_was_charged(self):
         wallet = fund_wallet(self.workspace, '100.00')
         self.mock_select.return_value = selection_result(count=3)
         project = self.make_project(auto_render_bypass=True)
+        creation = reserve_funds(wallet.id, Decimal('10.00'), project=project)
+        VideoProject.objects.filter(pk=project.pk).update(metadata={'reservation_id': str(creation.id)})
         self.run_task(project)
         project.refresh_from_db()
         rollback_reservation(project.metadata['auto_render_reservation_id'])
@@ -362,14 +363,20 @@ class UnpaidAutoRenderTests(IngestionHarness, TestCase):
         VideoProject.objects.filter(pk=project.pk).update(
             pipeline_stage=PipelineStage.RENDER_DISPATCHED, status=VideoProject.Status.RENDERING,
         )
-        Transaction.objects.update(settled_at=project.created_at)
 
         with self.captureOnCommitCallbacks(execute=True):
             self.run_task(project)
 
         project.refresh_from_db()
+        creation.refresh_from_db()
         self.assertEqual(project.pipeline_error_code, 'AutoRenderNotPaid')
-        self.assertEqual(sent(), {'pipe': [('project_failed', 'Pipeline no se pudo procesar', 'No se cobró nada.')]})
+        # The creation stays charged and the clips are there.
+        self.assertEqual((creation.status, creation.amount), (Transaction.Status.COMPLETED, Decimal('10')))
+        self.assertEqual(VideoClip.objects.filter(project=project).count(), 3)
+        self.assertEqual(sent(), {'pipe': [(
+            'project_failed', 'Pipeline: no alcanzó el saldo para renderizar',
+            'Los clips siguen ahí. Cargá tokens y volvé a intentarlo.',
+        )]})
 
 
 class NotQueuedTests(EventHarness):

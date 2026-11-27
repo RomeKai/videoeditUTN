@@ -23,7 +23,10 @@ class Notification(models.Model):
         PAYMENT_REJECTED = 'payment_rejected', 'Pago rechazado'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='notifications')
+    # No index of its own: every read is by user and workspace (the index below starts with the user).
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='notifications', db_index=False,
+    )
     workspace = models.ForeignKey('users.Workspace', on_delete=models.CASCADE, related_name='notifications')
     kind = models.CharField(max_length=32, choices=Kind.choices)
     title = models.CharField(max_length=300)

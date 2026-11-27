@@ -97,13 +97,14 @@ def finalize_project_render(project_id):
         _restore_rerendered_clips, _settle_clip_render_reservations, _settle_whole_video_reservation,
     )
 
+    refunds_since = timezone.now()
     # First: a delivered clip whose new render failed is the user's again.
     _restore_rerendered_clips(project_id)
     stage = _close_render_fan_out(project_id)
     _settle_whole_video_reservation(project_id)
     _settle_clip_render_reservations(project_id)
     if stage:
-        notify_render_finished(project_id)
+        notify_render_finished(project_id, since=refunds_since)
     return stage
 
 
@@ -828,9 +829,10 @@ def _fail_render(project_id, code):
     if _render_delivered(project_id):
         return
     record_error(project_id, code)
+    refunds_since = timezone.now()
     _settle_render_reservation(project_id, charge=False)
     if failed_now:
-        notify_project_failed(project_id, rendering=True)
+        notify_project_failed(project_id, since=refunds_since, rendering=True)
 
 
 def _discard_upload(project_id, key):

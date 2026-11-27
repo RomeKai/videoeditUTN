@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 import pytest
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from apps.notifications import services
@@ -75,9 +76,10 @@ class NotificationsFixtureHarness:
             services.notify_render_finished(rendered.pk)
         with event(10):
             failed = project('Charla TEDx', VideoProject.Status.FAILED)
-            VideoProject.objects.filter(pk=failed.pk).update(pipeline_error_at=NOW + timedelta(minutes=10))
-            rollback_reservation(reserve_funds(wallet.id, Decimal('12.5'), project=failed).id)
-            services.notify_project_failed(failed.pk)
+            reservation = reserve_funds(wallet.id, Decimal('12.5'), project=failed)
+            since = timezone.now()
+            rollback_reservation(reservation.id)
+            services.notify_project_failed(failed.pk, since=since)
         with event(20):
             settle_payment(purchase(1500).pk, approved=True)
         with event(30):

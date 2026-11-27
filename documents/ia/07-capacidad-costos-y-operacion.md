@@ -670,7 +670,11 @@ La campana lee `Notification` (`apps/notifications`). Solo las escribe `apps/not
 
 - Se escriben cuando la transacción del evento hace commit (`transaction.on_commit`). Un cambio que se revierte no avisa.
 - Nunca frenan el pipeline. Un error se registra como `notifications.not_created`, con ids y la clase del error.
-- El texto de un fallo dice cuánto se devolvió: suma las reservas del proyecto devueltas desde `pipeline_error_at`. Por eso se llama después de la devolución.
+- El texto dice cuánto se devolvió en ese evento. Quien llama toma la hora justo antes de devolver y la pasa en `since`: se suman las reservas del proyecto devueltas desde ahí. Una devolución anterior no se vuelve a contar.
+- «No se cobró nada.» solo aparece si el proyecto no tiene ninguna reserva cobrada ni reservada. Si quedó algo cobrado y no se devolvió nada, el texto no habla de tokens: dice que los clips siguen en el proyecto, si los hay.
+- El re-despacho sin saldo (`AutoRenderNotPaid`) tiene su propio texto: «no alcanzó el saldo para renderizar».
+- Un render que termina completo pero devuelve tokens tuvo un clip que no se pudo volver a generar: el texto lo dice, y el clip quedó con el archivo que tenía.
+- Un pago rechazado solo se avisa si lo rechazó el proveedor. No se avisa si el checkout no abrió o venció, ni si la persona eligió otro plan o seguir con el suyo (`settle_payment(..., notify=False)`).
 - Quien ya no es miembro del workspace no recibe nada.
 - Se guardan las últimas 20 por usuario y workspace (`KEPT_PER_USER`): al escribir una se borran las más viejas. No hay tarea de limpieza.
 - Todavía no se avisa de una publicación fallida ni del saldo bajo, y no se envían emails.

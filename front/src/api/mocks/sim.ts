@@ -183,9 +183,14 @@ export function notify(
   });
 }
 
-/** The body of `render_finished`, like the backend: what is ready, or that part failed and what went back. */
+/**
+ * The body of `render_finished`, like the backend: what is ready, or that part failed and what went back.
+ * A render that ends complete and still returns tokens had a clip rendered again that failed: it kept its file.
+ */
 function renderFinishedBody(ready: number, partial: boolean, returned: number): string {
-  if (partial) return returned > 0 ? `Parte del render falló. Te devolvimos ${formatTokens(round2(returned))}.` : 'Parte del render falló.';
+  const refund = returned > 0 ? ` Te devolvimos ${formatTokens(round2(returned))}.` : '';
+  if (partial) return `Parte del render falló.${refund}`;
+  if (returned > 0) return `No pudimos volver a generar todos los clips: los que ya tenías quedaron como estaban.${refund}`;
   return ready <= 1 ? 'Tu video está listo.' : `${ready} clips listos.`;
 }
 
