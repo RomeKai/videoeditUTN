@@ -8,12 +8,14 @@ clip (its editor, a retry) leaves those times as they are.
 """
 
 from datetime import datetime, timedelta
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
+from apps.payments.services.wallet_service import reserve_funds
 from apps.videos.models import VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import PipelineStage, mark_failed
 from apps.videos.services.project_summary import stage_timings
@@ -227,6 +229,55 @@ class AutoRenderTimesTests(IngestionHarness, TestCase):
         started = datetime.fromisoformat(project.metadata["stage_started_at"][RENDER])
         self.assertGreater(started, stale + timedelta(days=2))
         self.assertNotIn(RENDER, project.metadata["stage_durations"])
+
+
+    def closed_render_reopened_for_one_render(self, scope):
+        """
+        An auto-rendered project that closed (60 s), then a render the user
+        paid for (``scope``) that left it failed at render_dispatched with its
+        reservation still RESERVED: what a re-dispatch resumes.
+        """
+        project = self.run_to_render(self.make_project(auto_render_bypass=True))
+        started_ago(project, 60)
+        VideoClip.objects.filter(project=project).update(status=DONE)
+        self.assertEqual(finalize_project_render(project.id), PipelineStage.COMPLETED)
+        project.refresh_from_db()
+        closed = {key: project.metadata[key][RENDER] for key in ("stage_started_at", "stage_durations", "stage_finished_at")}
+        clip = VideoClip.objects.filter(project=project).first()
+        VideoClip.objects.filter(pk=clip.pk).update(status=VideoClip.Status.DRAFT)
+        wallet = fund_wallet(self.workspace, "100.00")
+        paid = reserve_funds(wallet.id, Decimal("5.00"), project=project)
+        VideoProject.objects.filter(pk=project.pk).update(
+            status=VideoProject.Status.RENDERING, pipeline_stage=PipelineStage.RENDER_DISPATCHED,
+            metadata={
+                **project.metadata, "clip_render_reservation_id": str(paid.id), "clip_render_clip_ids": [str(clip.pk)],
+                "clip_render_seconds": 5.0, "clip_render_scope": scope,
+            },
+        )
+        self.assertTrue(mark_failed(project.id))
+        return project, closed
+
+    def times(self, project):
+        return {key: project.metadata[key].get(RENDER) for key in ("stage_started_at", "stage_durations", "stage_finished_at")}
+
+    def test_a_redispatch_that_resumes_the_render_of_one_clip_keeps_the_times_of_the_projects_render(self):
+        project, closed = self.closed_render_reopened_for_one_render("clip")
+
+        project = self.run_to_render(project, task=self.redispatch_task)
+
+        self.assertEqual(project.pipeline_stage, PipelineStage.RENDER_DISPATCHED)
+        self.assertEqual(self.times(project), closed)
+        self.assertEqual(stage_timings(project)[RENDER]["duration_s"], closed["stage_durations"])
+
+    def test_a_redispatch_that_resumes_a_render_of_every_clip_starts_the_step_again(self):
+        project, closed = self.closed_render_reopened_for_one_render("project")
+
+        project = self.run_to_render(project, task=self.redispatch_task)
+
+        self.assertEqual(project.pipeline_stage, PipelineStage.RENDER_DISPATCHED)
+        times = self.times(project)
+        self.assertGreater(times["stage_started_at"], closed["stage_finished_at"])
+        self.assertEqual((times["stage_durations"], times["stage_finished_at"]), (None, None))
 
 
 class PaidRenderTimesTests(CapturedTaskFailures, ClipActionsHarness, APITestCase):

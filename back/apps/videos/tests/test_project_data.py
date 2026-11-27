@@ -696,7 +696,7 @@ class ProjectActivityMoneyTests(CapturedTaskFailures, ClipActionsHarness, APITes
         self.assertEqual(self.render_items(project)[1:], [failed, original])
 
     def test_each_kind_of_render_has_its_own_words(self):
-        # The approval, with one clip that failed: partial.
+        # The approval, with both clips delivered.
         project, (first, second) = self.approved_and_rendered()
         # Everything again: one comes out and the other keeps the file it had.
         self.post(project_url(project, "rerender"))

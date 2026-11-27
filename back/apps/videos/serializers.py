@@ -181,8 +181,11 @@ class VideoClipSerializer(serializers.ModelSerializer):
 
 # What a row of the projects list leaves out: only the project's own screens
 # read them, and with a long video they are most of the weight of a project.
+# Of the metadata, also what only the backend reads and grows with the renders
+# (how each one closed, ``render_outcomes``, and what the last one renders):
+# the list is polled every few seconds.
 PROJECT_LIST_OMITTED_FIELDS = ('transcript_data', 'ai_rationale_log')
-PROJECT_LIST_OMITTED_METADATA = ('full_text',)
+PROJECT_LIST_OMITTED_METADATA = ('full_text', 'render_outcomes', 'clip_render_scope')
 
 
 class ProjectsQuerySerializer(serializers.Serializer):

@@ -141,6 +141,21 @@ class PaginationTests(ListHarness):
         expected['metadata'] = {key: value for key, value in detail['metadata'].items() if key != 'full_text'}
         self.assertEqual(row, expected)
         self.assertEqual(row['metadata'], {'priced_duration_s': 90, 'source_media': {'duration_s': 90.0}})
+
+    def test_a_row_leaves_out_how_each_render_closed(self):
+        # Up to 50 entries that only the activity of the project reads: not in a list polled every 5 s.
+        outcomes = [
+            {'reservation': f'00000000-0000-0000-0000-{number:012d}', 'scope': 'clip', 'clips': 1, 'ready': 1, 'failed': 0, 'kept': 0}
+            for number in range(50)
+        ]
+        project = self.project(metadata={'render_outcomes': outcomes, 'clip_render_scope': 'clip', 'priced_duration_s': 90})
+
+        detail = self.client.get(f'{LIST_URL}{project.pk}/').json()
+        row = self.page()['results'][0]
+
+        self.assertEqual(detail['metadata']['render_outcomes'], outcomes)
+        self.assertEqual(row['metadata'], {'priced_duration_s': 90})
+        self.assertNotIn('00000000-0000-0000-0000', self.client.get(LIST_URL).content.decode())
         for field in ('id', 'workspace', 'title', 'status', 'clips', 'cost', 'eta_seconds', 'uploaded_by_detail'):
             self.assertIn(field, row)
 

@@ -1267,8 +1267,12 @@ def _render_outcome(project, metadata):
     of the reservation still RESERVED that pays it (a render asked for later
     first, then the approval, the auto-render and, for a whole video, its
     creation), or None when none is. Read under the project row lock, before
-    the settle, with the clips already given back (``_restore_rerendered_clips``
-    runs first): the settle counts the same clips.
+    the settle. A clip the render found delivered and that ended FAILED with
+    the file it had is counted as kept, not as failed: it is given back
+    (``_restore_rerendered_clips``). That restore runs in a transaction of its
+    own before the close, so another close (the pre-flight of a paid render,
+    the sweep) can end the project between the clip failing and its restore;
+    the outcome says where the clip ends, not where this close found it.
     """
     candidates = [(paid.reservation_key, paid) for paid in reversed(_paid_clip_renders(metadata))]
     if _is_whole_video(project):
@@ -1294,21 +1298,32 @@ def _render_outcome(project, metadata):
             clips = clips.filter(pk__in=paid_ids)
         previous = (metadata.get(CLIP_RENDER_PREVIOUS_KEY) or {}) if paid is CLIP_RENDER else {}
         rows = list(clips.values_list('pk', 'status', 's3_object_key'))
-        delivered = [
-            (pk, file_key) for pk, status, file_key in rows
-            if status in (VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED)
-        ]
+        done = (VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED)
+
+        def had(pk, file_key):
+            """The clip has the file it had when this render found it delivered."""
+            before = previous.get(str(pk))
+            return (
+                isinstance(before, dict) and before.get('status') in done
+                and bool(before.get('key')) and file_key == before['key']
+            )
+
+        kept = sum(
+            1 for pk, status, file_key in rows
+            if had(pk, file_key) and status in (*done, VideoClip.Status.FAILED)
+        )
+        failed = sum(
+            1 for pk, status, file_key in rows if status == VideoClip.Status.FAILED and not had(pk, file_key)
+        )
+        fresh = sum(1 for pk, status, file_key in rows if status in done and not had(pk, file_key))
         scope = metadata.get(CLIP_RENDER_SCOPE_KEY) if paid is CLIP_RENDER else None
         return {
             'reservation': reservation_id,
             'scope': RENDER_SCOPE_CLIP if scope == RENDER_SCOPE_CLIP else RENDER_SCOPE_PROJECT,
             'clips': len(rows),
-            'ready': len(delivered),
-            'failed': sum(1 for _pk, status, _key in rows if status == VideoClip.Status.FAILED),
-            'kept': sum(
-                1 for pk, file_key in delivered
-                if str(pk) in previous and file_key == (previous[str(pk)] or {}).get('key')
-            ),
+            'ready': fresh + kept,
+            'failed': failed,
+            'kept': kept,
         }
     return None
 
