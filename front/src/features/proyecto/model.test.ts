@@ -44,6 +44,29 @@ const byTitle = (title: string): Project => {
 };
 const states = (project: Project) => buildProcessSteps(project, NOW).map((step) => `${step.key}:${step.state}`);
 
+describe('«Elegir clips» después de aprobar', () => {
+  const select = (project: Project) => buildProcessSteps(project, NOW).find((step) => step.key === 'select')?.description;
+
+  it('dice cuántos clips se sugirieron, como Actividad, y no cuántos quedaron después de aprobar', () => {
+    const review = byTitle('Podcast Ep. 42');
+    const suggested = review.clips.length;
+    expect(suggested).toBeGreaterThan(2);
+    expect(select(review)).toBe(`Encontramos ${suggested} clips.`);
+    // Approved two of them: the review deletes the ones left out, and the project keeps how many were suggested.
+    const approved: Project = { ...review, status: 'completed', pipeline_stage: 'completed', clips: review.clips.slice(0, 2).map((clip) => ({ ...clip, status: 'completed' as const })), ai_rationale_log: { suggestions_count: suggested } };
+    expect(select(approved)).toBe(`Encontramos ${suggested} clips.`);
+  });
+
+  it('sin ese número (un proyecto anterior, o un valor que no es una cantidad) cuenta los clips que hay', () => {
+    const review = byTitle('Podcast Ep. 42');
+    const two = review.clips.slice(0, 2);
+    for (const log of [{}, { suggestions_count: '3' }, { suggestions_count: -1 }, { suggestions_count: 2.5 }]) {
+      expect(select({ ...review, clips: two, ai_rationale_log: log })).toBe('Encontramos 2 clips.');
+    }
+    expect(select({ ...review, clips: two, ai_rationale_log: { suggestions_count: 1 } })).toBe('Encontramos 1 clip.');
+  });
+});
+
 describe('línea de tiempo del proceso', () => {
   it('en cola: todo pendiente y el primer paso dice «En cola»', () => {
     const steps = buildProcessSteps(byTitle('En cola'), NOW);

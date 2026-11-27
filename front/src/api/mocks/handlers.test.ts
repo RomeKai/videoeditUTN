@@ -1032,7 +1032,51 @@ describe('mocks · renders pagos (views_clips.py)', () => {
     if (!failed) throw new Error('falta el clip');
     await apiCall(clips.retryClip, { params: { id: failed.id } });
     advance(SIM.clipMs * 2);
-    expect(finishedText(await activityOf(review.id))).toBe('Terminó el render: 1 clip listo y 1 con error');
+    // The render of one clip names it; the approval's item is still there, as it was.
+    const texts = (await activityOf(review.id)).filter((item) => item.type === 'render_finished').map((item) => item.description);
+    expect(texts[0]).toBe(`Terminó el render de «${failed.title}»`);
+    expect(texts[1]).toMatch(/^No se pudo renderizar: no se generó ningún clip\./);
+    expect(texts).toHaveLength(2);
+  });
+
+  it('el render de un solo clip no avisa en la campana si sale bien; si falla, la campana dice lo mismo que Actividad', async () => {
+    edit('Vlog Mendoza', (item, db) => {
+      db.posts = db.posts.filter((post) => post.clip.project_id !== item.id);
+    });
+    const project = projectByTitle('Vlog Mendoza');
+    const [first, second] = project.clips.filter((clip) => clip.status === 'completed' || clip.status === 'published');
+    if (!first || !second) throw new Error('faltan clips entregados');
+    const bell = async () => (await apiCall(notifications.listNotifications)).results.filter((item) => item.project_id === project.id && item.type === 'render_finished');
+    const before = await bell();
+    const rendersBefore = (await activityOf(project.id)).filter((item) => item.type === 'render_finished').length;
+
+    // Delivered: Actividad has its item, the bell nothing new (never «N clips listos» again).
+    await apiCall(clips.renderClip, { params: { id: second.id } });
+    advance(SIM.clipMs * 2);
+    expect(finishedText(await activityOf(project.id))).toBe(`Terminó el render de «${second.title}»`);
+    expect(await bell()).toEqual(before);
+
+    // Failed: one notice, with the words of Actividad and without the clip's title.
+    await apiCall(clips.renderClip, { params: { id: first.id } });
+    edit('Vlog Mendoza', (item) => {
+      for (const clip of item.clips) if (clip.id === first.id) clip._renderFails = true;
+    });
+    advance(SIM.clipMs * 2);
+    const said = finishedText(await activityOf(project.id));
+    expect(said).toMatch(/^No se pudo volver a renderizar: quedó el clip anterior\. Te devolvimos [\d.,]+ tokens?\.$/);
+    const after = await bell();
+    expect(after).toHaveLength(before.length + 1);
+    expect([after[0]?.title, after[0]?.body]).toEqual([`${project.title}: no se pudo renderizar un clip`, said]);
+    // One item per render: the two of this test, and the ones the project had.
+    expect((await activityOf(project.id)).filter((item) => item.type === 'render_finished')).toHaveLength(rendersBefore + 2);
+
+    // Every clip again is the project's render: the bell tells it as always.
+    edit('Vlog Mendoza', (item) => {
+      for (const clip of item.clips) delete clip._renderFails;
+    });
+    await apiCall(projects.rerenderProject, { params: { id: project.id }, body: {} });
+    advance(SIM.clipMs * (project.clips.length + 2));
+    expect((await bell())[0]?.title).toBe(`${project.title}: terminó el render`);
   });
 
   it('sin saldo el reintento responde 402 con lo que hacía falta y no cambia nada', async () => {

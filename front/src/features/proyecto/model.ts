@@ -151,7 +151,20 @@ function stepTimes(timing: StageTiming | undefined, state: StageState, now: numb
 type StepsProject = Pick<
   Project,
   'status' | 'pipeline_stage' | 'pipeline_stage_status' | 'pipeline_error_code' | 'clips' | 'project_type' | 'auto_render_bypass' | 'stage_timings' | 'metadata'
->;
+> &
+  Partial<Pick<Project, 'ai_rationale_log'>>;
+
+/**
+ * How many clips the selection suggested (`ai_rationale_log.suggestions_count`, what Actividad says in
+ * «Listo para revisar: N clips sugeridos»). The clips the project has are fewer once a review left some out
+ * (the approval deletes them), so «Elegir clips» counts the suggestions. Without that number (a row of the
+ * list, an older project), the clips there are.
+ */
+export function suggestedClipCount(project: Pick<StepsProject, 'ai_rationale_log' | 'clips'>): number {
+  const suggested = project.ai_rationale_log?.suggestions_count;
+  if (typeof suggested === 'number' && Number.isInteger(suggested) && suggested >= 0) return suggested;
+  return countClips(project.clips).total;
+}
 
 /**
  * Rows of the process timeline. A whole-video project has no "Elegir clips" and
@@ -196,7 +209,8 @@ export function buildProcessSteps(project: StepsProject, now: number = Date.now(
     let description = state === 'done' ? text.done : state === 'run' ? text.running : text.pending;
     if (state === 'wait') description = WAITING_TEXT;
     if (state === 'fail') description = FAIL_STEP_TEXT[project.pipeline_error_code] ?? 'Algo falló de nuestro lado.';
-    if (key === 'select' && state === 'done' && clips.total > 0) description = `Encontramos ${plural(clips.total, 'clip', 'clips')}.`;
+    const suggested = suggestedClipCount(project);
+    if (key === 'select' && state === 'done' && suggested > 0) description = `Encontramos ${plural(suggested, 'clip', 'clips')}.`;
     if (key === 'render') {
       if (single) {
         description = state === 'done' ? 'Tu video está listo.' : state === 'run' ? 'Estamos editando tu video.' : state === 'fail' ? 'El video no se pudo generar.' : 'Editamos el video completo: no hay revisión.';

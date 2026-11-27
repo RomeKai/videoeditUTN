@@ -52,7 +52,7 @@ export function startPaidRender(
   db: MockDb,
   project: MockProject,
   clips: MockClip[],
-  input: { userId: string; description: string; now: number },
+  input: { userId: string; description: string; now: number; wholeProject?: boolean },
 ): MockTransaction {
   refuse(db, project, clips);
   if (clips.some((clip) => clip.end_time - clip.start_time > MAX_CLIP_SECONDS)) {
@@ -97,7 +97,8 @@ export function startPaidRender(
   project.pipeline_error_code = '';
   project.pipeline_error_at = null;
   project._reservations.push(transaction.id);
-  project._paidRender = { reservation: transaction.id, clipIds: clips.map((clip) => clip.id), previous };
+  const scope = input.wholeProject || project.project_type === 'single_edit' ? 'project' : 'clip';
+  project._paidRender = { reservation: transaction.id, clipIds: clips.map((clip) => clip.id), scope, previous };
   project._sim = { phase: 'render', startedAt: input.now };
   return transaction;
 }
