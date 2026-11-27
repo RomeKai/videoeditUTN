@@ -9,9 +9,11 @@ from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal
 
 import pytest
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.test import override_settings
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from apps.payments.models import Payment, SubscriptionPlan
 from apps.payments.services.plan_periods import add_month
@@ -58,6 +60,120 @@ def test_a_new_workspace_is_on_the_free_plan_with_nothing_to_renew(owner, plans)
     assert body['status'] == 'active'
     assert body['renews_at'] is None
     assert body['pending_plan'] is None
+    assert body['pending_payment'] is None
+
+
+@override_settings(**SIMULATED)
+def test_a_plan_payment_waiting_for_its_checkout_is_shown_without_its_url(owner, plans):
+    user, workspace = owner
+    change(client_for(user), plans['Pro'])
+    payment = Payment.objects.get(workspace=workspace, status='pending')
+
+    body = client_for(user).get(SUBSCRIPTION).json()
+
+    # Planes says a payment is waiting and offers to keep the current plan; every role reads this,
+    # so the checkout URL is not in it. It expires when its checkout does.
+    expires_at = body['pending_payment'].pop('expires_at')
+    assert body['pending_payment'] == {'id': str(payment.pk), 'plan_id': str(plans['Pro'].pk), 'plan_name': 'Pro'}
+    assert parse_datetime(expires_at) == payment.checkout_started_at + timedelta(seconds=settings.PAYMENTS_CHECKOUT_TTL_SECONDS)
+    assert body['plan']['name'] == 'Gratis'
+
+
+@override_settings(**SIMULATED, PAYMENTS_CHECKOUT_TTL_SECONDS=90 * 60)
+def test_the_pending_payment_expires_with_the_checkout_lifetime_of_the_setting(owner, plans):
+    user, workspace = owner
+    change(client_for(user), plans['Pro'])
+    payment = Payment.objects.get(workspace=workspace, status='pending')
+
+    expires_at = client_for(user).get(SUBSCRIPTION).json()['pending_payment']['expires_at']
+
+    assert parse_datetime(expires_at) == payment.checkout_started_at + timedelta(minutes=90)
+
+
+@override_settings(**SIMULATED, PAYMENTS_PROVIDER_TIMEOUT_SECONDS=30)
+def test_a_plan_payment_whose_checkout_is_still_opening_has_no_expiry_yet(owner, plans):
+    user, workspace = owner
+    opening = Payment.objects.create(workspace=workspace, plan=plans['Pro'], amount_usd=Decimal('49.00'), provider='simulated')
+
+    body = client_for(user).get(SUBSCRIPTION).json()
+
+    assert body['pending_payment'] == {
+        'id': str(opening.pk), 'plan_id': str(plans['Pro'].pk), 'plan_name': 'Pro', 'expires_at': None,
+    }
+
+
+@override_settings(**SIMULATED, PAYMENTS_PROVIDER_TIMEOUT_SECONDS=30)
+def test_a_plan_payment_whose_provider_call_was_lost_is_not_shown(owner, plans):
+    user, workspace = owner
+    lost = Payment.objects.create(workspace=workspace, plan=plans['Pro'], amount_usd=Decimal('49.00'), provider='simulated')
+    old = timezone.now() - timedelta(seconds=120)
+    Payment.objects.filter(pk=lost.pk).update(created_at=old, checkout_started_at=old)
+
+    # Still pending until the beat sweeps it, but «Seguir con» would find nothing to cancel (400).
+    assert client_for(user).get(SUBSCRIPTION).json()['pending_payment'] is None
+    assert change(client_for(user), plans['Gratis']).status_code == 400
+
+
+@override_settings(**SIMULATED)
+def test_the_plan_payment_of_another_workspace_is_not_shown(owner, plans):
+    user, _ = owner
+    other, _ = owner_with_workspace('otra')
+    assert change(client_for(other), plans['Pro']).json()['checkout_url']
+
+    assert client_for(user).get(SUBSCRIPTION).json()['pending_payment'] is None
+
+
+@override_settings(**SIMULATED)
+def test_a_pending_token_purchase_is_not_a_pending_plan_payment(owner, plans):
+    user, workspace = owner
+    purchase = client_for(user).post(
+        '/api/v1/token-purchases/', {'package_id': 'pack-1000', 'return_url': f'{FRONT}/uso/comprar/resultado'}, format='json',
+    )
+    assert purchase.status_code == 201 and purchase.json()['status'] == 'pending'
+
+    response = client_for(user).get(SUBSCRIPTION)
+
+    assert response.status_code == 200
+    assert response.json()['pending_payment'] is None
+
+
+@override_settings(**SIMULATED)
+def test_a_viewer_reads_the_pending_payment_without_its_checkout_url(owner, plans):
+    user, workspace = owner
+    checkout_url = change(client_for(user), plans['Pro']).json()['checkout_url']
+    payment = Payment.objects.get(workspace=workspace, status='pending')
+    viewer = make_user('lectora')
+    join(workspace, viewer, role=WorkspaceMember.Role.VIEWER)
+
+    response = client_for(viewer, workspace).get(SUBSCRIPTION)
+
+    assert response.status_code == 200
+    assert set(response.json()['pending_payment']) == {'id', 'plan_id', 'plan_name', 'expires_at'}
+    assert response.json()['pending_payment']['id'] == str(payment.pk)
+    assert checkout_url and payment.checkout_url
+    assert payment.checkout_url not in response.content.decode()
+    assert 'checkout_url' not in response.content.decode()
+
+
+@override_settings(**SIMULATED)
+def test_keeping_the_current_plan_cancels_the_payment_it_showed(owner, plans):
+    user, workspace = owner
+    change(client_for(user), plans['Pro'])
+
+    response = change(client_for(user), plans['Gratis'])
+
+    assert response.status_code == 200
+    assert response.json()['subscription']['pending_payment'] is None
+    assert not Payment.objects.filter(workspace=workspace, status='pending').exists()
+
+
+@override_settings(**SIMULATED)
+def test_a_plan_payment_whose_checkout_expired_is_not_shown(owner, plans):
+    user, workspace = owner
+    change(client_for(user), plans['Pro'])
+    Payment.objects.filter(workspace=workspace).update(checkout_started_at=timezone.now() - timedelta(days=2))
+
+    assert client_for(user).get(SUBSCRIPTION).json()['pending_payment'] is None
 
 
 @pytest.mark.parametrize('role', [WorkspaceMember.Role.EDITOR, WorkspaceMember.Role.VIEWER])

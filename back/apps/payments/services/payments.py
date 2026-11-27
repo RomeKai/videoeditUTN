@@ -158,14 +158,31 @@ def checkout_lifetime():
 def payment_pending_message():
     """
     What a person can do about a payment that waits for its provider: pay it,
-    or wait for its checkout to expire. The web has no way to cancel one.
+    or wait for its checkout to expire. It covers token purchases too, and
+    the web has no way to cancel one of those (a plan payment has: see
+    plan_payment_pending_message).
     """
     return f'Hay un pago en curso: terminalo, o esperá a que venza ({checkout_lifetime()} después de abrirlo).'
+
+
+def plan_payment_pending_message(current_plan_name):
+    """
+    The same for a plan payment, which the web can cancel: Planes offers to
+    keep the current plan («Seguir con …»), and that rejects the payment.
+    """
+    return f'Hay un pago en curso: terminalo, o elegí «Seguir con {current_plan_name}» en Planes para cancelarlo.'
 
 
 def checkout_expiry_cutoff(now=None):
     """Before this moment, an open checkout outlived PAYMENTS_CHECKOUT_TTL_SECONDS."""
     return (now or timezone.now()) - timedelta(seconds=settings.PAYMENTS_CHECKOUT_TTL_SECONDS)
+
+
+def checkout_expires_at(payment):
+    """When an open checkout stops being handed out (see checkout_is_expired); None while it is still opening."""
+    if not payment.checkout_url:
+        return None
+    return payment.checkout_started_at + timedelta(seconds=settings.PAYMENTS_CHECKOUT_TTL_SECONDS)
 
 
 def checkout_is_expired(payment, now=None):
