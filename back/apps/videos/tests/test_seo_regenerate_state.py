@@ -19,7 +19,7 @@ from rest_framework.test import APIClient
 
 from apps.payments.models import SubscriptionPlan
 from apps.users.models import Workspace
-from apps.videos.models import ScheduledPost
+from apps.videos.models import ScheduledPost, VideoProject
 from apps.videos.services.ai.errors import AIAuthenticationError
 from apps.videos.tests.test_seo_task import CAPTION, TAGS, SeoTaskHarness, usage
 
@@ -126,6 +126,18 @@ class DraftFailureTests(SeoStateHarness, TestCase):
         self.post.refresh_from_db()
         self.assertEqual(self.post.status, Status.FAILED)
 
+    def test_a_post_with_the_users_own_caption_keeps_its_status(self):
+        # A clip without audio: the AI cannot write it, but the user already did.
+        VideoProject.objects.filter(pk=self.project.pk).update(transcript_data=None)
+        self.set_post(status=Status.SCHEDULED, caption="Lo escribí yo", seo_requested_at=timezone.now())
+
+        self.assertEqual(self.run_task(), "No Transcript")
+
+        self.post.refresh_from_db()
+        self.assertEqual((self.post.status, self.post.caption), (Status.SCHEDULED, "Lo escribí yo"))
+        body = self.seo_status()
+        self.assertEqual((body["status"], body["seo_status"], body["error_code"]), ("SCHEDULED", "failed", None))
+
     def test_a_later_text_clears_the_failure_of_the_draft(self):
         self.set_post(status=Status.DRAFT, error_log="seo_no_clip_transcript")
         self.assertEqual(self.seo_status()["seo_status"], "failed")
@@ -169,3 +181,26 @@ class StaleRequestTests(SeoStateHarness, TestCase):
             seo_requested_at=timezone.now() - seo_request_window() - timedelta(seconds=1),
         )
         self.assertEqual(self.seo_status()["seo_status"], "ready")
+
+
+class QueueMarksTheRequestTests(SeoStateHarness, TestCase):
+    def test_every_way_of_asking_marks_the_request(self):
+        """The signal, the admin action and the API all go through queue_post_seo."""
+        from apps.videos.signals import queue_post_seo
+
+        self.set_post(status=Status.DRAFT, generated_caption="Viejo", generated_hashtags=["v"])
+        with patch("apps.videos.tasks.process_video_seo.apply_async"):
+            queue_post_seo(self.post.pk, regenerate=True)
+        self.post.refresh_from_db()
+        self.assertIsNotNone(self.post.seo_requested_at)
+        self.assertEqual(self.seo_status()["seo_status"], "pending")
+
+    def test_a_post_created_already_failed_is_not_generated(self):
+        with patch("apps.videos.tasks.process_video_seo.delay") as delay, self.captureOnCommitCallbacks(execute=True):
+            post = ScheduledPost.objects.create(
+                video_clip=self.clip, platform="TIKTOK", publish_at=timezone.now(), status=Status.FAILED,
+                error_log="seo_no_clip_transcript",
+            )
+        delay.assert_not_called()
+        post.refresh_from_db()
+        self.assertIsNone(post.seo_requested_at)

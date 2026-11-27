@@ -52,6 +52,39 @@ class ScheduledPostPagination(PageNumberPagination):
         return response
 
 
+class PostCreateThrottle(AttemptThrottle):
+    """
+    THROTTLE_POST_CREATE, per user, counting each post of the request: a batch
+    of 60 uses 60. Every post may ask for an AI text, so a batch must not be
+    worth one request.
+    """
+
+    def allow_request(self, request, view):
+        self.scope = 'post_create'
+        self.rate = self.get_rate()
+        self.num_requests, self.duration = self.parse_rate(self.rate)
+        self.key = self.get_cache_key(request, view)
+        if self.key is None:
+            return True
+        self.history = self.cache.get(self.key, [])
+        self.now = self.timer()
+        while self.history and self.history[-1] <= self.now - self.duration:
+            self.history.pop()
+        cost = self.cost(request)
+        if len(self.history) + cost > self.num_requests:
+            return self.throttle_failure()
+        self.history[:0] = [self.now] * cost
+        self.cache.set(self.key, self.history, self.duration)
+        return True
+
+    @staticmethod
+    def cost(request):
+        posts = request.data.get('posts') if isinstance(request.data, dict) else None
+        if isinstance(posts, list):
+            return min(max(len(posts), 1), service.BULK_MAX)
+        return 1
+
+
 class ScheduledPostViewSet(SpanishThrottleMixin, ActiveWorkspaceMixin, mixins.ListModelMixin,
                            mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     serializer_class = ScheduledPostSerializer
@@ -113,6 +146,11 @@ class ScheduledPostViewSet(SpanishThrottleMixin, ActiveWorkspaceMixin, mixins.Li
         return super().list(request, *args, **kwargs)
 
     # --- Writes ---
+
+    def get_throttles(self):
+        if self.action in ('create', 'bulk'):
+            return [PostCreateThrottle()]
+        return super().get_throttles()
 
     def handle_exception(self, exc):
         if isinstance(exc, service.PostRefused):

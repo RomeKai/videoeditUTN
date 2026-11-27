@@ -33,11 +33,12 @@ import uuid
 from datetime import timedelta
 
 from django.conf import settings
-from django.core.cache import caches
+from django.core.cache import cache, caches
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from apps.videos.models import PostIdempotencyKey, ScheduledPost, VideoClip, VideoProject
+from apps.users.models import Workspace
+from apps.videos.models import AIUsageRecord, PostIdempotencyKey, ScheduledPost, VideoClip, VideoProject
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +60,20 @@ IDEMPOTENCY_TTL = timedelta(hours=24)
 IDEMPOTENCY_KEY_MAX = 255
 IDEMPOTENCY_HEADER = 'Idempotency-Key'
 
-# A PROCESSING post is stuck, and may be retried, when its last attempt started
-# (`updated_at`, written by upload_to_social_network when it sets PROCESSING)
-# longer ago than this. A live delivery writes it again at every attempt; between
-# two writes it holds the publishing lock for at most the slowest Ayrshare answer
-# plus 300 s (600 s) and then waits at most 240 s for its next retry, so 15 min
-# leaves room for a late worker. The lock is also checked (publish_lock_held).
+# A PROCESSING post is stuck, and may be retried or cancelled, when its last
+# attempt started (`updated_at`, written by upload_to_social_network when it sets
+# PROCESSING) longer ago than this, and no worker holds its publishing lock
+# (publish_lock_held). An attempt holds that lock for at most the slowest
+# Ayrshare answer plus 300 s (600 s), so 15 min leaves room for a slow one.
 POST_STUCK_AFTER = timedelta(minutes=15)
+# Between two attempts the worker writes `error_log` "Retry n: ..." with an
+# update() (`updated_at` does not move), drops the lock, and its retry waits for
+# a free worker slot: the countdown (60, 120, 240 s) is only a minimum, and
+# renders can hold every slot for hours. That post is a delivery on its way. It
+# counts as stuck only once the broker would have delivered its retry again
+# (CELERY_BROKER_TRANSPORT_OPTIONS['visibility_timeout']) plus the longest countdown.
+PENDING_RETRY_PREFIX = 'Retry '
+LONGEST_RETRY_COUNTDOWN = timedelta(seconds=240)
 
 # Statuses
 EDITABLE = (Status.DRAFT, Status.SCHEDULED)
@@ -87,6 +95,11 @@ KEY_REUSED = "Esa clave ya se usó para otro pedido."
 KEY_GONE = "Ese pedido ya se hizo y sus publicaciones ya no existen."
 KEY_TOO_LONG = f"{IDEMPOTENCY_HEADER} admite hasta {IDEMPOTENCY_KEY_MAX} caracteres."
 NOT_FOUND = "No encontramos esa publicación."
+SEO_LIMITED = (
+    "Este espacio pidió muchos textos con IA en la última hora. Escribilo vos, o regeneralo en un rato."
+)
+# Error code a post keeps when its AI text was not asked for because of the limit (seo_status "failed").
+SEO_LIMITED_CODE = 'seo_rate_limited'
 LOCK_UNKNOWN = "No pudimos comprobar si la publicación sigue saliendo. Probá de nuevo en unos minutos."
 
 _CONFLICTS = {
@@ -98,7 +111,10 @@ _CONFLICTS = {
         Status.FAILED: ('post_failed', "La publicación falló: reintentala o cancelala."),
     },
     'cancel': {
-        Status.PROCESSING: ('post_in_flight', "La publicación se está publicando: ya no se puede cancelar."),
+        Status.PROCESSING: (
+            'post_in_flight',
+            "La publicación se está publicando: ya no se puede cancelar. Si en unos minutos sigue igual, vas a poder cancelarla.",
+        ),
         Status.PUBLISHED: ('post_published', "La publicación ya salió: no se puede cancelar."),
     },
     'retry': {
@@ -176,8 +192,29 @@ def publish_lock_held(post_id):
     return caches['locks'].get(publish_lock_key(post_id)) is not None
 
 
+def stuck_after(post):
+    """How long a PROCESSING post waits before it counts as stuck (see POST_STUCK_AFTER)."""
+    if (post.error_log or '').startswith(PENDING_RETRY_PREFIX):
+        visibility = settings.CELERY_BROKER_TRANSPORT_OPTIONS.get('visibility_timeout', 3600)
+        return timedelta(seconds=visibility) + LONGEST_RETRY_COUNTDOWN
+    return POST_STUCK_AFTER
+
+
 def is_stuck(post, now=None):
-    return post.status == Status.PROCESSING and post.updated_at < (now or timezone.now()) - POST_STUCK_AFTER
+    return post.status == Status.PROCESSING and post.updated_at < (now or timezone.now()) - stuck_after(post)
+
+
+def _check_stuck(post, now, action):
+    """A PROCESSING post may be retried or cancelled only once it is stuck and no worker holds it: 409 otherwise."""
+    if not is_stuck(post, now):
+        raise _conflict(action, post.status)
+    try:
+        held = publish_lock_held(post.pk)
+    except Exception as exc:
+        logger.warning("posts.lock_unknown post_id=%s action=%s error=%s", post.pk, action, type(exc).__name__)
+        raise PostRefused.error(409, LOCK_UNKNOWN, 'post_lock_unavailable')
+    if held:
+        raise _conflict(action, post.status)
 
 
 # --- Checks ---
@@ -258,10 +295,76 @@ def _check_tiktok(platform, options, index=None):
         raise PostRefused.invalid('tiktok', TIKTOK_PRIVACY_MISSING, index)
 
 
-def _wants_seo(project, post):
-    from apps.videos.signals import seo_requested
+# --- AI text: what it costs ---
+#
+# Every AI text is one LLM call at the provider, free for the wallet (SEO is charged once, when the
+# project is created) and on the same capacity buckets as the ingestion of every workspace. So the API
+# asks for as few as it can: none when the post brings its own caption and hashtags, none when the
+# same clip already has one for that network (reused), and at most AI_SEO_MAX_PER_WORKSPACE_PER_HOUR
+# per workspace. The per-user limits of the views (creating, regenerating) come on top.
 
-    return not (post.generated_caption and post.generated_hashtags) and seo_requested(project)
+# A discarded draft's AI text, kept for the next draft of the same clip, network and trim (the E1
+# panel creates its drafts again every time it opens).
+AI_TEXT_CACHE_TTL = 24 * 3600
+
+
+def _ai_text_cache_key(clip, platform):
+    return f"posts:ai_text:{clip.pk}:{platform}:{clip.start_time}:{clip.end_time}"
+
+
+def remember_ai_text(post, clip):
+    """Best effort: the cache may be down, and then the next draft generates its text again."""
+    if not (post.generated_caption and post.generated_hashtags):
+        return
+    try:
+        cache.set(
+            _ai_text_cache_key(clip, post.platform),
+            {'caption': post.generated_caption, 'hashtags': post.generated_hashtags},
+            AI_TEXT_CACHE_TTL,
+        )
+    except Exception as exc:
+        logger.warning("posts.ai_text_not_kept post_id=%s error=%s", post.pk, type(exc).__name__)
+
+
+def reusable_ai_text(clip, platform):
+    """(caption, hashtags) the AI already wrote for this clip and network, or None."""
+    done = (
+        ScheduledPost.objects.filter(video_clip=clip, platform=platform, generated_caption__gt='')
+        .exclude(generated_hashtags__isnull=True)
+        .order_by('-updated_at').values_list('generated_caption', 'generated_hashtags').first()
+    )
+    if done:
+        return done
+    try:
+        kept = cache.get(_ai_text_cache_key(clip, platform))
+    except Exception:
+        kept = None
+    if isinstance(kept, dict) and kept.get('caption') and isinstance(kept.get('hashtags'), list):
+        return kept['caption'], kept['hashtags']
+    return None
+
+
+def seo_budget(workspace, now):
+    """
+    How many AI texts the workspace may still ask for this hour: the limit, less
+    the requests still on their way (`seo_requested_at` of the last hour) and
+    the LLM calls already made for it (its AIUsageRecord rows of stage `seo`,
+    one per call, which outlive a deleted post). The caller holds the
+    workspace's row lock, so two requests count one after the other.
+    """
+    since = now - timedelta(hours=1)
+    waiting = ScheduledPost.objects.filter(
+        video_clip__project__workspace=workspace, seo_requested_at__gte=since,
+    ).count()
+    made = AIUsageRecord.objects.filter(
+        stage=AIUsageRecord.Stage.SEO, role=AIUsageRecord.Role.PRIMARY,
+        project__workspace_id=workspace.pk, created_at__gte=since,
+    ).count()
+    return settings.AI_SEO_MAX_PER_WORKSPACE_PER_HOUR - waiting - made
+
+
+def _lock_workspace(workspace):
+    Workspace.objects.select_for_update(no_key=True).filter(pk=workspace.pk).values_list('pk', flat=True).first()
 
 
 # --- Idempotency-Key ---
@@ -348,12 +451,16 @@ def create_posts(workspace, items, *, key=None, print_=None, many=False):
     nothing. Returns the posts; with a key already used, the posts its first
     request created (and nothing new).
     """
+    from apps.videos.signals import queue_post_seo, seo_requested
+
     now = timezone.now()
     with transaction.atomic():
         if key:
             claim, claimed = _claim(workspace, key, print_)
             if not claimed:
                 return _replayed(workspace, claim, print_)
+        # First, as everywhere: the workspace (the AI text budget), then projects, clips and posts.
+        _lock_workspace(workspace)
 
         index_of = (lambda i: i) if many else (lambda i: None)
         pairs = set()
@@ -405,23 +512,35 @@ def create_posts(workspace, items, *, key=None, print_=None, many=False):
         if going:
             _check_account(workspace)
 
-        posts = []
+        posts, budget = [], None
         for clip, item, status, publish_at in plans:
             post = ScheduledPost(
                 video_clip=clip, platform=item['platform'], publish_at=publish_at, status=status,
                 caption=item.get('caption', ''), hashtags=item.get('hashtags', []),
                 tiktok=item.get('tiktok') if item['platform'] == Platform.TIKTOK else None,
             )
-            project = projects[clip.project_id]
-            if _wants_seo(project, post):
-                # The post_save signal queues the generation (signals.generate_seo_for_new_post).
-                post.seo_requested_at = now
+            # The API decides about the AI text here; the post_save signal leaves it alone.
+            post.seo_decided = True
+            seo = 'none'
+            if seo_requested(projects[clip.project_id]) and not (post.caption and post.hashtags):
+                reused = reusable_ai_text(clip, post.platform)
+                if reused:
+                    post.generated_caption, post.generated_hashtags = reused
+                    seo = 'reused'
+                else:
+                    if budget is None:
+                        budget = seo_budget(workspace, now)
+                    if budget > 0:
+                        budget -= 1
+                        seo = 'asked'
+                    else:
+                        post.error_log = SEO_LIMITED_CODE
+                        seo = 'limited'
             post.save()
+            if seo == 'asked':
+                queue_post_seo(post.pk)
             posts.append(post)
-            logger.info(
-                "posts.created post_id=%s clip_id=%s status=%s seo=%s",
-                post.pk, clip.pk, post.status, post.seo_requested_at is not None,
-            )
+            logger.info("posts.created post_id=%s clip_id=%s status=%s seo=%s", post.pk, clip.pk, post.status, seo)
         if key:
             claim.post_ids = [str(post.pk) for post in posts]
             claim.save(update_fields=['post_ids'])
@@ -452,6 +571,11 @@ def update_post(workspace, post_id, data):
         if 'hashtags' in data:
             post.hashtags = data['hashtags']
             fields.append('hashtags')
+        if ('caption' in data or 'hashtags' in data) and post.seo_requested_at is not None:
+            # The user's text wins over a "Regenerar" on its way: the task keeps this text
+            # (_generate_post_metadata only replaces it while the request is on).
+            post.seo_requested_at = None
+            fields.append('seo_requested_at')
         if 'tiktok' in data and post.platform == Platform.TIKTOK:
             post.tiktok = data['tiktok']
             fields.append('tiktok')
@@ -480,13 +604,26 @@ def update_post(workspace, post_id, data):
 # --- Cancel ---
 
 def cancel_post(workspace, post_id):
-    """Deletes a post that has not gone out. 409 once a worker took it (PROCESSING) or it went out."""
+    """
+    Deletes a post that has not gone out. 409 once it went out, and while a
+    worker may be sending it (PROCESSING). A stuck PROCESSING post (the rule of
+    retry_post) can be cancelled: it may already be public, so the web app
+    warns that this does not take it off the network. A late attempt of its
+    worker then finds no post and publishes nothing.
+    """
+    now = timezone.now()
     with transaction.atomic():
         post = _lock_post(workspace, post_id, with_clip=False)
-        if post.status in (Status.PROCESSING, Status.PUBLISHED):
+        if post.status == Status.PUBLISHED:
             raise _conflict('cancel', post.status)
+        if post.status == Status.PROCESSING:
+            _check_stuck(post, now, 'cancel')
         was = post.status
+        clip = post.video_clip
         post.delete()
+        # The next draft of this clip and network (the E1 panel creates them again) reuses its AI text.
+        # Kept even if this transaction rolled back: it is the text of a post that still exists.
+        remember_ai_text(post, clip)
     logger.info("posts.cancelled post_id=%s status=%s", post_id, was)
 
 
@@ -507,15 +644,7 @@ def retry_post(workspace, post_id):
         post = _lock_post(workspace, post_id, with_clip=True)
         was = post.status
         if post.status == Status.PROCESSING:
-            if not is_stuck(post, now):
-                raise _conflict('retry', post.status)
-            try:
-                held = publish_lock_held(post.pk)
-            except Exception as exc:
-                logger.warning("posts.retry_lock_unknown post_id=%s error=%s", post.pk, type(exc).__name__)
-                raise PostRefused.error(409, LOCK_UNKNOWN, 'post_lock_unavailable')
-            if held:
-                raise _conflict('retry', post.status)
+            _check_stuck(post, now, 'retry')
         elif post.status != Status.FAILED:
             raise _conflict('retry', post.status)
 
@@ -552,6 +681,7 @@ def regenerate_seo(workspace, post_id):
 
     now = timezone.now()
     with transaction.atomic():
+        _lock_workspace(workspace)
         post = _lock_post(workspace, post_id, with_clip=False)
         if post.status in _CONFLICTS['seo']:
             raise _conflict('seo', post.status)
@@ -561,8 +691,10 @@ def regenerate_seo(workspace, post_id):
         if seo_request_pending(post, now):
             logger.info("posts.seo_regenerate post_id=%s queued=False", post.pk)
             return post
-        post.seo_requested_at = now
-        post.save(update_fields=['seo_requested_at', 'updated_at'])
+        if seo_budget(workspace, now) <= 0:
+            raise PostRefused.error(429, SEO_LIMITED, SEO_LIMITED_CODE)
+        post.save(update_fields=['updated_at'])
         queue_post_seo(post.pk, regenerate=True)
+        post.refresh_from_db()
     logger.info("posts.seo_regenerate post_id=%s queued=True", post.pk)
     return post

@@ -55,7 +55,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from django.utils import timezone
 from django.db import DatabaseError, transaction
-from django.db.models import Case, F, Q, Value, When
+from django.db.models import Case, F, JSONField, Q, TextField, Value, When
 from django.core.cache import caches
 from apps.videos.models import VideoProject, VideoClip, ScheduledPost
 from backend.celery import app as celery_app
@@ -392,7 +392,8 @@ def _fail_seo_post(post_id, code):
     A failed regeneration keeps the caption it was replacing, and the post keeps
     its status: it can still be published. A DRAFT stays a DRAFT with the code
     (the API shows `seo_status: "failed"`): it was not going out, and the user
-    writes the text and sends it. Either way the API request is over
+    writes the text and sends it. A post with the user's own caption keeps its
+    status too: it does not need the AI's. Either way the API request is over
     (`seo_requested_at`).
     """
     posts = ScheduledPost.objects.filter(id=post_id).exclude(status__in=_SEO_FROZEN_STATUSES)
@@ -400,9 +401,9 @@ def _fail_seo_post(post_id, code):
         logger.warning("seo.regenerate_failed post_id=%s code=%s", post_id, code)
         posts.update(seo_requested_at=None)
         return
-    draft = ScheduledPost.Status.DRAFT
+    keeps = Q(status=ScheduledPost.Status.DRAFT) | Q(caption__gt='')
     posts.update(
-        status=Case(When(status=draft, then=Value(draft)), default=Value(ScheduledPost.Status.FAILED)),
+        status=Case(When(keeps, then=F('status')), default=Value(ScheduledPost.Status.FAILED)),
         error_log=code,
         seo_requested_at=None,
     )
@@ -510,8 +511,15 @@ def _generate_post_metadata(task, post, capacity_waited_s, regenerate=False):
 
     fields = {'generated_caption': metadata.caption, 'generated_hashtags': metadata.hashtags, 'seo_requested_at': None}
     if regenerate:
-        # "Regenerar" replaces the text the user wrote too (empty: the API shows the AI's).
-        fields.update(caption='', hashtags=[])
+        # "Regenerar" replaces the text the user wrote too (empty: the API shows the AI's), but only
+        # while its request is still on (`seo_requested_at`): a text the user saved after asking ends it
+        # (services/scheduled_posts.update_post), and that text stays. The Case reads the row before
+        # this update, so it sees the request this same statement clears.
+        asked = Q(seo_requested_at__isnull=False)
+        fields.update(
+            caption=Case(When(asked, then=Value('')), default=F('caption'), output_field=TextField()),
+            hashtags=Case(When(asked, then=Value([], output_field=JSONField())), default=F('hashtags'), output_field=JSONField()),
+        )
     stored = ScheduledPost.objects.filter(id=post.id).exclude(
         status__in=_SEO_FROZEN_STATUSES,
     ).update(**fields)

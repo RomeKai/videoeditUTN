@@ -12,13 +12,14 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from apps.payments.models import SubscriptionPlan
 from apps.users.models import Workspace, WorkspaceMember
-from apps.videos.models import PostIdempotencyKey, ScheduledPost, VideoClip, VideoProject
+from apps.videos.models import AIUsageRecord, PostIdempotencyKey, ScheduledPost, VideoClip, VideoProject
 from apps.videos.services import scheduled_posts as service
 from apps.videos.tasks import dispatch_scheduled_posts_batch
 
@@ -786,3 +787,208 @@ class RegenerateTests(PostsWriteHarness):
         bob = User.objects.create_user(username="bob", email="bob@test.com", password="pw")
         _, theirs = self.make_clip(bob.owned_workspaces.get(), "Suyo", seo=True)
         self.assertEqual(self.post_action(self.make_post(clip=theirs), "regenerate-seo").status_code, 404)
+
+
+class AiTextCostTests(PostsWriteHarness):
+    """Review of #184: creating posts must not be a way to ask for unlimited AI texts."""
+
+    def setUp(self):
+        super().setUp()
+        self.seo_clips = [self.make_clip(self.home, f"SEO {n}", seo=True)[1] for n in range(4)]
+
+    def drafts(self, clips=None, platforms=Platform.values):
+        return [
+            {"video_clip": str(clip.pk), "platform": platform, "draft": True}
+            for clip in (clips or self.seo_clips) for platform in platforms
+        ]
+
+    def bulk(self, posts):
+        return self.client.post(BULK, {"posts": posts}, format="json", **self.ws)
+
+    def asked(self):
+        """The AI texts queued: process_video_seo.delay, after the commit."""
+        return self.seo_delay.call_count
+
+    @override_settings(AI_SEO_MAX_PER_WORKSPACE_PER_HOUR=5)
+    def test_a_flood_of_drafts_asks_for_the_hourly_limit_and_no_more(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            first = self.bulk(self.drafts())  # 4 clips x 3 networks = 12 drafts
+        self.assertEqual(first.status_code, 201, first.content)
+        statuses = [row["seo_status"] for row in first.json()["posts"]]
+        self.assertEqual((statuses.count("pending"), statuses.count("failed")), (5, 7))
+        self.assertEqual(self.asked(), 5)
+        limited = next(row for row in first.json()["posts"] if row["seo_status"] == "failed")
+        self.assertEqual(limited["status"], "DRAFT")
+
+        more = [self.make_clip(self.home, f"Otro {n}", seo=True)[1] for n in range(2)]
+        with self.captureOnCommitCallbacks(execute=True):
+            second = self.bulk(self.drafts(more))
+        self.assertEqual({row["seo_status"] for row in second.json()["posts"]}, {"failed"})
+        self.assertEqual(self.asked(), 5)
+
+    @override_settings(AI_SEO_MAX_PER_WORKSPACE_PER_HOUR=3)
+    def test_the_calls_already_made_count_even_when_their_posts_were_deleted(self):
+        # A create-then-cancel loop: each generation that ran left its usage row; its post is gone.
+        for _ in range(3):
+            AIUsageRecord.objects.create(
+                project=self.seo_clips[0].project, stage=AIUsageRecord.Stage.SEO, role=AIUsageRecord.Role.PRIMARY,
+                pipeline_version="v2", attempt=0, provider="gemini", model="m", success=True, latency_seconds=1,
+            )
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.create(video_clip=str(self.seo_clips[1].pk), draft=True)
+        self.assertEqual(response.json()["seo_status"], "failed")
+        self.assertEqual(self.asked(), 0)
+        # An hour later they no longer count.
+        AIUsageRecord.objects.update(created_at=timezone.now() - timedelta(hours=1, minutes=1))
+        with self.captureOnCommitCallbacks(execute=True):
+            again = self.create(video_clip=str(self.seo_clips[1].pk), platform=Platform.YOUTUBE_SHORTS, draft=True)
+        self.assertEqual(again.json()["seo_status"], "pending")
+
+    def test_the_ai_text_of_the_same_clip_and_network_is_reused(self):
+        clip = self.seo_clips[0]
+        self.make_post(clip=clip, status=Status.PUBLISHED, generated_caption="Ya escrito", generated_hashtags=["uno"])
+        with self.captureOnCommitCallbacks(execute=True):
+            same = self.create(video_clip=str(clip.pk), draft=True)
+            other = self.create(video_clip=str(clip.pk), platform=Platform.YOUTUBE_SHORTS, draft=True)
+        self.assertEqual((same.json()["seo_status"], same.json()["caption"]), ("ready", "Ya escrito"))
+        self.assertEqual(other.json()["seo_status"], "pending")
+        self.assertEqual(self.asked(), 1)
+
+    def test_a_discarded_draft_leaves_its_text_for_the_next_one(self):
+        clip = self.seo_clips[0]
+        with self.captureOnCommitCallbacks(execute=True):
+            draft = self.create(video_clip=str(clip.pk), draft=True).json()
+        ScheduledPost.objects.filter(pk=draft["id"]).update(
+            generated_caption="Del borrador", generated_hashtags=["dos"], seo_requested_at=None,
+        )
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.post_action(ScheduledPost.objects.get(pk=draft["id"]), "cancel").status_code, 204)
+            again = self.create(video_clip=str(clip.pk), draft=True).json()
+        self.assertEqual((again["seo_status"], again["caption"]), ("ready", "Del borrador"))
+        self.assertEqual(self.asked(), 1)  # only the first one
+
+    def test_a_post_that_brings_its_own_text_asks_for_none(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.create(video_clip=str(self.seo_clips[0].pk), draft=True, caption="Mío", hashtags=["mio"])
+        self.assertEqual(response.json()["seo_status"], "none")
+        self.assertEqual(self.asked(), 0)
+        # A caption alone still gets its hashtags from the AI.
+        with self.captureOnCommitCallbacks(execute=True):
+            self.create(video_clip=str(self.seo_clips[0].pk), platform=Platform.YOUTUBE_SHORTS, draft=True, caption="Mío")
+        self.assertEqual(self.asked(), 1)
+
+    @override_settings(AI_SEO_MAX_PER_WORKSPACE_PER_HOUR=1)
+    def test_regenerating_past_the_limit_is_a_429(self):
+        posts = [
+            self.make_post(clip=clip, status=Status.DRAFT, generated_caption="Viejo", generated_hashtags=["v"])
+            for clip in self.seo_clips[:2]
+        ]
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.post_action(posts[0], "regenerate-seo").status_code, 202)
+            refused = self.post_action(posts[1], "regenerate-seo")
+        self.assertEqual((refused.status_code, refused.json()["code"]), (429, "seo_rate_limited"))
+        self.assertEqual(self.seo_apply_async.call_count, 1)
+
+    def test_each_user_creates_a_limited_number_of_posts_counted_one_by_one(self):
+        from rest_framework.throttling import SimpleRateThrottle
+
+        clips = [self.make_clip(self.home, f"Sin SEO {n}")[1] for n in range(6)]
+        with patch.dict(SimpleRateThrottle.THROTTLE_RATES, {"post_create": "5/hour"}):
+            batch = self.bulk(self.drafts(clips[:4], platforms=[Platform.TIKTOK]))
+            self.assertEqual(batch.status_code, 201)
+            self.assertEqual(self.create(video_clip=str(clips[4].pk), draft=True).status_code, 201)
+            blocked = self.create(video_clip=str(clips[5].pk), draft=True)
+            self.assertEqual(blocked.status_code, 429)
+            self.assertTrue(blocked.json()["detail"].startswith("Demasiados intentos."))
+            # A batch that does not fit is refused whole.
+            self.client.force_authenticate(self.member(WorkspaceMember.Role.EDITOR))
+            self.assertEqual(self.bulk(self.drafts(clips, platforms=[Platform.YOUTUBE_SHORTS])).status_code, 429)
+            self.assertEqual(self.create(video_clip=str(clips[5].pk), draft=True).status_code, 201)
+
+
+class PendingRetryTests(PostsWriteHarness):
+    """Review of #184: a worker retry still on its way is not a stuck post."""
+
+    def processing(self, minutes, error_log):
+        post = self.make_post(status=Status.PROCESSING, publish_at=timezone.now() - timedelta(hours=1), error_log=error_log)
+        ScheduledPost.objects.filter(pk=post.pk).update(updated_at=timezone.now() - timedelta(minutes=minutes))
+        return post
+
+    def test_a_post_waiting_for_its_worker_retry_is_not_retried_nor_cancelled(self):
+        post = self.processing(16, "Retry 1: upstream 502")
+        for name in ("retry", "cancel"):
+            with self.subTest(action=name):
+                response = self.post_action(post, name)
+                self.assertEqual((response.status_code, response.json()["code"]), (409, "post_in_flight"))
+        post.refresh_from_db()
+        self.assertEqual(post.status, Status.PROCESSING)
+
+    def test_once_the_broker_would_have_delivered_it_again_it_is_stuck(self):
+        from django.conf import settings
+
+        visibility = settings.CELERY_BROKER_TRANSPORT_OPTIONS["visibility_timeout"] / 60
+        post = self.processing(visibility + 4 + 1, "Retry 2: upstream 502")
+        self.assertEqual(self.post_action(post, "retry").status_code, 200)
+
+    def test_the_longest_countdown_is_the_workers(self):
+        from apps.videos.tasks import upload_to_social_network
+
+        longest = 60 * 2 ** (upload_to_social_network.max_retries - 1)
+        self.assertEqual(service.LONGEST_RETRY_COUNTDOWN.total_seconds(), longest)
+
+
+class StuckCancelTests(PostsWriteHarness):
+    """Review of #184: a stuck post can be taken out of OneCreator (it may already be public)."""
+
+    def test_a_stuck_post_can_be_cancelled_and_its_late_task_publishes_nothing(self):
+        from apps.videos.tasks import upload_to_social_network
+
+        post = self.make_post(status=Status.PROCESSING, publish_at=timezone.now() - timedelta(hours=2))
+        ScheduledPost.objects.filter(pk=post.pk).update(updated_at=timezone.now() - service.POST_STUCK_AFTER - timedelta(minutes=1))
+
+        self.assertEqual(self.post_action(post, "cancel").status_code, 204)
+
+        self.assertEqual(upload_to_social_network.apply(args=[post.pk]).get(), "Post Deleted")
+        self.send_post.assert_not_called()
+
+    def test_not_while_a_worker_holds_it(self):
+        from django.core.cache import caches
+
+        post = self.make_post(status=Status.PROCESSING)
+        ScheduledPost.objects.filter(pk=post.pk).update(updated_at=timezone.now() - service.POST_STUCK_AFTER - timedelta(minutes=1))
+        caches["locks"].add(service.publish_lock_key(post.pk), "locked", 600)
+        response = self.post_action(post, "cancel")
+        self.assertEqual((response.status_code, response.json()["code"]), (409, "post_in_flight"))
+
+
+class TextWinsOverRegenerateTests(PostsWriteHarness):
+    """Review of #184: a text the user saves after "Regenerar" is not wiped by the answer."""
+
+    def test_a_text_saved_while_a_regeneration_is_on_its_way_stays(self):
+        from apps.videos.tests.test_seo_task import CAPTION, TAGS, generated
+
+        _, clip = self.make_clip(self.home, "Con SEO", seo=True)
+        VideoProject.objects.filter(pk=clip.project_id).update(transcript_data=[{"start": 1, "end": 2, "text": "hola"}])
+        post = self.make_post(clip=clip, status=Status.DRAFT, generated_caption="Viejo", generated_hashtags=["viejo"])
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.post_action(post, "regenerate-seo").json()["seo_status"], "pending")
+        saved = self.patch_post(post, caption="Lo escribí después", hashtags=["mio"])
+        self.assertEqual((saved.status_code, saved.json()["caption"]), (200, "Lo escribí después"))
+
+        from apps.videos.tasks import process_video_seo
+        from apps.videos.tests.fakes import FakeRedis
+
+        with patch("apps.core.security.AI_Security_Shield.check_content_safety"), \
+                patch("apps.videos.services.ai.project_lock.get_redis_client", return_value=FakeRedis()), \
+                patch("apps.videos.services.seo_engine.SEOOptimizationService") as seo:
+            seo.return_value.generate_metadata.return_value = generated()
+            process_video_seo.push_request(retries=0)
+            try:
+                self.assertEqual(process_video_seo.run(str(post.pk), regenerate=True), "SEO Success")
+            finally:
+                process_video_seo.pop_request()
+
+        body = self.client.get(detail(post), **self.ws).json()
+        self.assertEqual((body["caption"], body["hashtags"]), ("Lo escribí después", ["mio"]))
+        self.assertEqual((body["generated_caption"], body["generated_hashtags"]), (CAPTION, TAGS))
+        self.assertEqual(body["seo_status"], "ready")

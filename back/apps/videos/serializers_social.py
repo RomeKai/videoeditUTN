@@ -13,7 +13,6 @@ from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from .models import ScheduledPost
-from .signals import seo_requested
 
 # Codes process_video_seo writes to error_log when the generation fails.
 SEO_ERROR_MESSAGES = {
@@ -21,6 +20,7 @@ SEO_ERROR_MESSAGES = {
     'content_blocked': "No pudimos generar el texto de este clip. Escribilo vos.",
     'generated_content_blocked': "El texto generado no pasó la revisión. Escribilo vos.",
     'capacity_timeout': "La generación del texto tardó demasiado. Probá de nuevo en unos minutos.",
+    'seo_rate_limited': "Este espacio pidió muchos textos con IA en la última hora. Escribilo vos, o regeneralo en un rato.",
 }
 SEO_ERROR_FALLBACK = "No pudimos generar el texto. Escribilo vos."
 PUBLISH_ERROR_CODE = 'publish_failed'
@@ -64,17 +64,19 @@ class ScheduledPostSerializer(serializers.ModelSerializer):
         from .services.scheduled_posts import seo_request_pending
 
         going_out = post.status in (ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED)
-        if not going_out and seo_request_pending(post):
-            # Asked for (created, or "Regenerar") and not answered yet: the previous text stays meanwhile.
+        if going_out:
+            # Its text is final: SEO never changes a post going out or out.
+            return 'ready' if post.generated_caption and post.generated_hashtags is not None else 'none'
+        if seo_request_pending(post):
+            # Asked for (signals.queue_post_seo) and not answered yet: the previous text stays meanwhile.
             return 'pending'
         if post.generated_caption and post.generated_hashtags is not None:
             return 'ready'
-        # A draft keeps being a draft when its text fails (process_video_seo's _fail_seo_post).
-        if post.status in (ScheduledPost.Status.FAILED, ScheduledPost.Status.DRAFT) and _seo_error_code(post):
+        # A draft, or a post with the user's own text, keeps its status when its text fails
+        # (process_video_seo's _fail_seo_post); a limited request leaves the code too.
+        if _seo_error_code(post):
             return 'failed'
-        if going_out:
-            return 'none'  # the signal never generates for a post already going out
-        return 'pending' if seo_requested(post.video_clip.project) else 'none'
+        return 'none'
 
     @extend_schema_field({
         'type': 'object',

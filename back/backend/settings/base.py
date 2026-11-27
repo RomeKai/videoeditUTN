@@ -216,6 +216,8 @@ REST_FRAMEWORK = {
         'invitation_accept': _rate('THROTTLE_INVITATION_ACCEPT', '20/hour'),
         # POST /scheduled-posts/:id/regenerate-seo/, per user: each one may pay an LLM call.
         'post_seo_regenerate': _rate('THROTTLE_POST_SEO_REGENERATE', '30/hour'),
+        # POST /scheduled-posts/ and /bulk/, per user, counted per post (a batch of 60 is 60).
+        'post_create': _rate('THROTTLE_POST_CREATE', '300/hour'),
     },
     # Proxies in front of Django (load balancer, nginx) that add the client's
     # address to X-Forwarded-For. The per-IP limits take the address that many
@@ -671,6 +673,10 @@ AI_SEO_LANGUAGE = env('AI_SEO_LANGUAGE', default='es')
 AI_SEO_CAPTION_MAX_CHARS = env.json('AI_SEO_CAPTION_MAX_CHARS', default={
     'TIKTOK': 2200, 'INSTAGRAM_REELS': 2200, 'YOUTUBE_SHORTS': 5000,
 })
+# Most AI texts the publications API asks for per workspace in one hour (creating posts and
+# "Regenerar"): each one is an LLM call, free for the wallet, on the capacity the ingestion of
+# every workspace shares (apps/videos/services/scheduled_posts.py · seo_budget).
+AI_SEO_MAX_PER_WORKSPACE_PER_HOUR = env.int('AI_SEO_MAX_PER_WORKSPACE_PER_HOUR', default=120)
 
 SPECTACULAR_SETTINGS = {
     'TITLE': 'OneCreator API',
