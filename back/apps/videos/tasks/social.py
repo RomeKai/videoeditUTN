@@ -169,7 +169,8 @@ def upload_to_social_network(self, post_id):
 
     # Whether an earlier attempt with the current key ended without a clear answer, and whether this
     # attempt is inside the provider call (an unexpected error there may come after it published).
-    unclear_before, sending = False, False
+    # sending: inside the provider call. published: the provider answered that it went out.
+    unclear_before, sending, published = False, False, False
     try:
         with transaction.atomic():
             try:
@@ -237,7 +238,7 @@ def upload_to_social_network(self, post_id):
         )
         sending = True
         result = provider.publish(profile, request)
-        sending = False
+        sending, published = False, True
 
         # 3. Out. A TikTok video the network still processes has no link yet (`post_url` null).
         post.status = ScheduledPost.Status.PUBLISHED
@@ -327,12 +328,19 @@ def upload_to_social_network(self, post_id):
         raise
 
     except Exception as e:
-        logger.error("❌ [WORKER] Critical failure: %s sending=%s", type(e).__name__, sending)
-        ScheduledPost.objects.filter(id=post_id).update(
-            status=ScheduledPost.Status.FAILED,
-            # Inside the provider call the request may already have published: never "try again".
-            error_log=f"{codes.OUTCOME_UNKNOWN} (critical {type(e).__name__})" if sending else f"Critical: {str(e)}",
+        logger.error(
+            "❌ [WORKER] Critical failure: %s sending=%s published=%s", type(e).__name__, sending, published,
         )
+        if published:
+            # Out, and only recording it failed (the row is still there): never "try again", or the
+            # user's retry publishes a second copy. publish_key_unclear stays set from before the call.
+            error_log = f"{codes.OUTCOME_UNKNOWN} (published, not recorded: {type(e).__name__})"
+        elif sending:
+            # Inside the provider call the request may already have published: never "try again".
+            error_log = f"{codes.OUTCOME_UNKNOWN} (critical {type(e).__name__})"
+        else:
+            error_log = f"Critical: {str(e)}"
+        ScheduledPost.objects.filter(id=post_id).update(status=ScheduledPost.Status.FAILED, error_log=error_log)
         # Re-raised so Celery records FAILURE instead of reporting a silent SUCCESS.
         raise
 
