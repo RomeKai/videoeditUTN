@@ -12,7 +12,7 @@ from http.client import RemoteDisconnected
 
 import requests
 from django.contrib.auth import get_user_model
-from django.db import connection
+from django.db import DatabaseError, connection
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
@@ -205,6 +205,24 @@ class OutcomeTests(PublisherHarness, TestCase):
         with patch(PUBLISH, side_effect=KeyError("postIds")):
             self.run_task(post)
         self.assertEqual((post.status, post.error_log), (Status.FAILED, "outcome_unknown (critical KeyError)"))
+        self.assertEqual(ScheduledPostSerializer(post).data["error_code"], "outcome_unknown")
+
+    def test_a_post_that_went_out_and_could_not_be_recorded_is_not_try_again(self):
+        """Review of #186: published, then saving PUBLISHED fails with the row still there."""
+        post = self.make_post()
+        real_save = ScheduledPost.save
+
+        def save(instance, *args, **kwargs):
+            if "post_url" in (kwargs.get("update_fields") or ()):
+                raise DatabaseError("connection lost")
+            return real_save(instance, *args, **kwargs)
+
+        with patch(PUBLISH, return_value=PUBLISHED), patch.object(ScheduledPost, "save", save):
+            self.run_task(post)
+        self.assertEqual(
+            (post.status, post.error_log), (Status.FAILED, "outcome_unknown (published, not recorded: DatabaseError)"),
+        )
+        self.assertTrue(post.publish_key_unclear)
         self.assertEqual(ScheduledPostSerializer(post).data["error_code"], "outcome_unknown")
 
     def test_a_post_that_moved_on_is_not_published_by_a_late_message(self):
