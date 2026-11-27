@@ -159,6 +159,51 @@ export function takeResetLink(): { token: string; email: string } | null {
   return token ? { token, email: params.get('email') ?? '' } : null;
 }
 
+const INVITATION_KEY = 'oc.acceso.invitacion';
+
+/**
+ * The invitation link (A5) carries its token in the fragment (`/invitacion#token=…`), like the reset link:
+ * a browser never sends it, so it stays out of the web host's logs, and the API gets it in a POST body.
+ * Reads it and drops it from the address bar (and from the history).
+ */
+export function takeInvitationLink(): string | null {
+  const hash = window.location.hash.replace(/^#/, '');
+  if (!hash) return null;
+  const token = new URLSearchParams(hash).get('token');
+  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  return token || null;
+}
+
+/**
+ * Keeps the token while the person signs in and comes back to `/invitacion` (which no longer has it in
+ * its URL), and across a reload. sessionStorage: this tab only, gone when it closes, and never in
+ * `?siguiente=`, which would put it in the login's URL and in the web host's logs.
+ */
+export function rememberInvitationToken(token: string): void {
+  try {
+    window.sessionStorage.setItem(INVITATION_KEY, token);
+  } catch {
+    // Private mode: after signing in, the person opens the link of the email again.
+  }
+}
+
+export function readInvitationToken(): string | null {
+  try {
+    return window.sessionStorage.getItem(INVITATION_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Once the link is spent or turned out to be dead. */
+export function forgetInvitationToken(): void {
+  try {
+    window.sessionStorage.removeItem(INVITATION_KEY);
+  } catch {
+    // Nothing stored.
+  }
+}
+
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function emailError(value: string): string | undefined {

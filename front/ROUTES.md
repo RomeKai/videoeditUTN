@@ -12,7 +12,7 @@ Los artboards están en el canvas de diseño, un archivo `<nombre>.dc.html` por 
 | A2 | Crear cuenta | `/registro` | `src/app/(public)/registro/page.tsx` | `A2-Registro` | acceso | Pública | Todos |
 | A3 | Verificar email | `/verificar` | `src/app/(public)/verificar/page.tsx` | `A3-Verificar-email` | acceso | Pública | Todos |
 | A4 | Recuperar contraseña | `/recuperar` | `src/app/(public)/recuperar/page.tsx` | `A4-Recuperar` | acceso | Pública | Todos |
-| A5 | Aceptar invitación | `/invitacion/[token]` | `src/app/(public)/invitacion/[token]/page.tsx` | `A5-Invitacion` | acceso | Pública | Todos |
+| A5 | Aceptar invitación | `/invitacion` | `src/app/(public)/invitacion/page.tsx` | `A5-Invitacion` | acceso | Pública | Todos |
 | A6 | Precios | `/precios` | `src/app/(public)/precios/page.tsx` | `A6-Precios` | uso | Pública | Todos |
 | B1 | Bienvenida | `/bienvenida` | `src/app/(onboarding)/bienvenida/page.tsx` | `B1b-Bienvenida-paso1`, `B1-Bienvenida`, `B1c-Bienvenida-paso3` | acceso | Primera vez (con sesión, sin barra) | Todos |
 | B2 | Proyectos | `/proyectos` | `src/app/(app)/proyectos/page.tsx` | `B2-Proyectos`, `B2b-Proyectos-vacio`, `B2c-Proyectos-grilla`, `M1-Movil-proyectos` | proyectos | App (con sesión) | Todos |

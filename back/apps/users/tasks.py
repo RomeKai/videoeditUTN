@@ -74,3 +74,41 @@ def send_account_email(kind, user_id):
         logger.warning('account_email.send_failed kind=%s user_id=%s error=%s', kind, user.pk, type(exc).__name__)
         return
     logger.info('account_email.sent kind=%s user_id=%s', kind, user.pk)
+
+
+@shared_task(name='apps.users.tasks.send_invitation_email', ignore_result=True)
+def send_invitation_email(member_id):
+    """
+    Issues the token of a pending invitation and emails its link
+    (apps.users.invitations). Only the id of the row travels in the message:
+    the token is created here and only its hash is saved, so neither the
+    queue nor the database ever has a working link, and the address is read
+    from the row. A token issued before (a resend) stops working. Nothing is
+    sent for a row that is gone or already accepted. A failed send is logged
+    with the row id and the error class; an admin can resend.
+    """
+    from django.db import transaction
+    from django.utils import timezone
+
+    from apps.users.invitations import new_token, send_invitation
+    from apps.users.models import WorkspaceMember
+
+    token, hashed = new_token()
+    with transaction.atomic():
+        member = (
+            WorkspaceMember.objects.select_for_update()
+            .filter(pk=member_id, status=WorkspaceMember.Status.PENDING)
+            .first()
+        )
+        if member is None or not member.invited_email:
+            logger.info('invitation_email.skipped reason=not_pending member_id=%s', member_id)
+            return
+        member.invitation_token_hash = hashed
+        member.invitation_sent_at = timezone.now()
+        member.save(update_fields=['invitation_token_hash', 'invitation_sent_at'])
+    try:
+        send_invitation(member, token)
+    except (smtplib.SMTPException, OSError) as exc:
+        logger.warning('invitation_email.send_failed member_id=%s error=%s', member.pk, type(exc).__name__)
+        return
+    logger.info('invitation_email.sent member_id=%s workspace_id=%s', member.pk, member.workspace_id)

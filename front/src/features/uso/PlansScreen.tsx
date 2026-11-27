@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import type { Plan } from '@/api/contracts/billing';
+import { isApiError } from '@/api/errors';
 import { useChangePlan, useMembers, usePlans, usePricing, useSubscription, useTokenPurchase } from '@/api/hooks';
 import { keys } from '@/api/query';
 import { ConfirmDialog } from '@/dialogs';
@@ -92,7 +93,16 @@ function Plans() {
   const { can, gate } = usePermissions();
   const admin = can('billing.manage');
   const plans = usePlans();
-  const subscription = useSubscription();
+  // What this screen offers depends on a payment that can settle anywhere else (the checkout in another
+  // tab, the provider): coming back to the tab reads the subscription again, however fresh it looks.
+  const subscription = useSubscription({ alwaysOnFocus: true });
+  const { refetch: refetchSubscription } = subscription;
+  useEffect(() => {
+    // The query follows the tab's visibility. A window that was only behind another one gets `focus` alone.
+    const onFocus = () => void refetchSubscription({ cancelRefetch: false });
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [refetchSubscription]);
   const pricing = usePricing();
   const members = useMembers(workspace?.id, { enabled: can('members.manage') });
   const change = useChangePlan();
@@ -159,8 +169,12 @@ function Plans() {
       {
         onSuccess: () => toast.success(`Listo: seguís con el plan ${current.name}.`),
         onError: (error) => {
-          toast.error(errorMessage(error, 'No pudimos cancelar el cambio'));
-          // The refusal can mean the screen is behind (the payment already settled): read it again.
+          // 400 on `plan_id` (ChangePlanView, «Ya es tu plan actual.»): there was nothing left to cancel. The
+          // payment settled somewhere else (rejected or expired in another tab) and the person already has
+          // what they asked for, so it is not an error: the screen just catches up.
+          const settled = isApiError(error) && error.status === 400 && Boolean(error.fieldErrors.plan_id);
+          if (!settled) toast.error(errorMessage(error, 'No pudimos cancelar el cambio'));
+          // Any other refusal can also mean the screen is behind: read it again.
           void queryClient.invalidateQueries({ queryKey: keys.billing.all });
         },
       },

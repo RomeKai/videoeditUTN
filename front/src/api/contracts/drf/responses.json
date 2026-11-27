@@ -1,5 +1,5 @@
 {
-  "_about": "Cuerpos tal como los arma el backend de dev (VideoProjectSerializer, VideoClipSerializer, BrandKitSerializer y las vistas de apps/videos/views.py), escritos a mano a partir del código. Si un serializer cambia, se actualiza acá y el test dice qué esquema dejó de aceptarlo. Los de la billetera (pricing, estimate_*, wallet*, transactions_* y sus errores) son respuestas reales: los arma back/apps/payments/tests/test_contract_fixture.py, que además compara cada valor con el backend (con el reloj fijo y los ids normalizados). Los de workspaces y miembros (workspace_*, members, member_*) son respuestas capturadas de apps/users/views_workspaces.py.",
+  "_about": "Cuerpos tal como los arma el backend de dev (VideoProjectSerializer, VideoClipSerializer, BrandKitSerializer y las vistas de apps/videos/views.py), escritos a mano a partir del código. Si un serializer cambia, se actualiza acá y el test dice qué esquema dejó de aceptarlo. Los de la billetera (pricing, estimate_*, wallet*, transactions_* y sus errores) son respuestas reales: los arma back/apps/payments/tests/test_contract_fixture.py, que además compara cada valor con el backend (con el reloj fijo y los ids normalizados). Los de workspaces y miembros (workspace_*, members, member_*) son respuestas capturadas de apps/users/views_workspaces.py. Los de invitaciones (invitation_* e invite_* y sus errores) son respuestas reales: los arma y compara back/apps/users/tests/test_invitations_contract_fixture.py.",
   "token_pair": {
     "access": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU1MzYwMDB9.x",
     "refresh": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU2MjI0MDB9.y"
@@ -1423,7 +1423,7 @@
     "id": "c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a77",
     "name": "Copia de Estudio Norte",
     "description": "",
-    "primary_font": "http://localhost:8000/media/assets/fonts/Inter_a1B2c3D.ttf",
+    "primary_font": "http://localhost:8000/media/assets/fonts/c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a77/Inter.ttf",
     "secondary_font": null,
     "primary_color": "#FFFFFF",
     "secondary_color": "#000",
@@ -1592,6 +1592,42 @@
     "subscription_plan": "602336bf-a7ea-4006-911b-92aa3dca831f",
     "created_at": "2026-11-26T18:38:47.179339Z",
     "role": "admin"
+  },
+  "invitation_invited": {
+    "invited": [
+      {
+        "id": "4b1937c1-9922-4df4-89d6-3fda20c0eb2b",
+        "user": null,
+        "email": "juana@example.com",
+        "role": "editor",
+        "status": "pending",
+        "joined_at": "2026-11-27T06:48:39.712678Z",
+        "invited_by": {
+          "id": "3a1ff98d-970f-4b0d-9c11-fc9b5e03fe64",
+          "name": "Dana Dueña"
+        }
+      }
+    ]
+  },
+  "invitation_preview": {
+    "workspace_id": "bb803959-ccf3-46bd-9a66-322937e18b30",
+    "workspace_name": "Estudio Norte",
+    "inviter_name": "Dana Dueña",
+    "role": "editor",
+    "email": "juana@example.com",
+    "status": "pending",
+    "has_account": false
+  },
+  "invitation_accepted_new_account": {
+    "workspace_id": "bb803959-ccf3-46bd-9a66-322937e18b30",
+    "tokens": {
+      "access": "eyJhbGciOiJIUzI1NiJ9.acceso.firma",
+      "refresh": "eyJhbGciOiJIUzI1NiJ9.refresh.firma"
+    }
+  },
+  "invitation_accepted_session": {
+    "workspace_id": "bb803959-ccf3-46bd-9a66-322937e18b30",
+    "tokens": null
   },
   "errors": {
     "brand_kit_copy_failed": {
@@ -1978,6 +2014,84 @@
       "body": {
         "error": "Los pagos todavía no están habilitados.",
         "code": "payments_unavailable"
+      }
+    },
+    "invite_400_already_member": {
+      "status": 400,
+      "body": {
+        "emails": [
+          "JUANA@example.com ya es miembro o tiene una invitación pendiente."
+        ]
+      }
+    },
+    "invite_400_invalid_email": {
+      "status": 400,
+      "body": {
+        "emails": [
+          "«juana» no es un email válido."
+        ]
+      }
+    },
+    "invite_400_role": {
+      "status": 400,
+      "body": {
+        "role": [
+          "Elegí un rol: Admin, Editor o Lector."
+        ]
+      }
+    },
+    "invite_403_seats": {
+      "status": 403,
+      "body": {
+        "error": "Tu plan 'Equipo' solo permite 4 miembros. Mejora tu suscripción para invitar más gente.",
+        "code": "seats_exceeded"
+      }
+    },
+    "invite_403_role": {
+      "status": 403,
+      "body": {
+        "detail": "Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin."
+      }
+    },
+    "invitation_resend_404": {
+      "status": 404,
+      "body": {
+        "detail": "La invitación ya no está pendiente."
+      }
+    },
+    "invitation_404": {
+      "status": 404,
+      "body": {
+        "detail": "Esta invitación no existe o ya no sirve."
+      }
+    },
+    "invitation_accept_400_weak": {
+      "status": 400,
+      "body": {
+        "password": [
+          "Esa contraseña es muy común. Elegí otra.",
+          "La contraseña no puede ser solo números."
+        ]
+      }
+    },
+    "invitation_accept_401_has_account": {
+      "status": 401,
+      "body": {
+        "detail": "Ya existe una cuenta con el email de la invitación. Iniciá sesión con ese email para aceptarla."
+      }
+    },
+    "invitation_accept_403_other_account": {
+      "status": 403,
+      "body": {
+        "error": "Esta invitación es para otro email. Cerrá sesión y entrá con la cuenta de ese email para aceptarla.",
+        "code": "invitation_email_mismatch"
+      }
+    },
+    "invitation_accept_410": {
+      "status": 410,
+      "body": {
+        "error": "La invitación venció, ya se usó o se canceló. Pedile a quien te invitó que te mande una nueva.",
+        "code": "invitation_invalid"
       }
     },
     "notification_404": {

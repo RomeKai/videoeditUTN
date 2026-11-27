@@ -103,7 +103,12 @@ describe('mocks', () => {
     expect(posts.results.length).toBe(8);
     expect((await apiCall(notifications.listNotifications)).unread_count).toBe(2);
     expect((await apiCall(system.getSystemStatus)).maintenance).toBe(false);
-    expect((await apiCall(workspaces.getInvitation, { params: { token: 'vencida' } })).status).toBe('expired');
+    expect((await apiCall(workspaces.getInvitation, { body: { token: 'valida' } })).status).toBe('pending');
+    // Like the backend: an expired, a used and an unknown link are the same 404.
+    for (const token of ['vencida', 'usada', 'no-existe']) {
+      const gone = await fail(apiCall(workspaces.getInvitation, { body: { token } }));
+      expect([gone.status, gone.message]).toEqual([404, 'Esta invitación no existe o ya no sirve.']);
+    }
   });
 
   it('notificaciones: leer una o todas solo toca las propias del workspace activo, como el backend', async () => {
@@ -311,12 +316,36 @@ describe('mocks', () => {
 
   it('una invitación se acepta con la sesión iniciada (el token viaja aunque el endpoint sea público)', async () => {
     signIn('estudio-norte', 'nuevo');
-    const accepted = await apiCall(workspaces.acceptInvitation, { params: { token: 'con-cuenta' }, body: {} });
+    const accepted = await apiCall(workspaces.acceptInvitation, { body: { token: 'con-cuenta' } });
     expect(accepted.tokens).toBeNull();
     expect((await apiCall(users.getMe)).workspaces.map((workspace) => workspace.name)).toContain('Estudio Norte');
-    // Without a session the same invitation asks to sign in.
+    // Used once: the link is dead for everybody, with the backend's 410 and code.
+    const used = await fail(apiCall(workspaces.acceptInvitation, { body: { token: 'con-cuenta' } }));
+    expect([used.status, used.code]).toEqual([410, 'invitation_invalid']);
+    expect((await fail(apiCall(workspaces.getInvitation, { body: { token: 'con-cuenta' } }))).status).toBe(404);
+  });
+
+  it('una invitación es de su email: sin sesión pide entrar, y otra cuenta no la acepta', async () => {
     signIn('estudio-norte', null);
-    expect((await fail(apiCall(workspaces.acceptInvitation, { params: { token: 'con-cuenta' }, body: {} }))).status).toBe(401);
+    expect((await fail(apiCall(workspaces.acceptInvitation, { body: { token: 'con-cuenta' } }))).status).toBe(401);
+    signIn('estudio-norte', 'lucia');
+    const other = await fail(apiCall(workspaces.acceptInvitation, { body: { token: 'con-cuenta' } }));
+    expect([other.status, other.code]).toEqual([403, 'invitation_email_mismatch']);
+    expect((await apiCall(workspaces.getInvitation, { body: { token: 'con-cuenta' } })).status).toBe('pending');
+  });
+
+  it('invitar no dice de quién es la cuenta, y reenviar cambia el link', async () => {
+    signIn('estudio-norte', 'lucia');
+    // sofia@ejemplo.com has an account: the pending row still comes without `user`.
+    const { invited } = await apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['nadie@ejemplo.com'], role: 'editor' } });
+    expect(invited[0]?.user).toBeNull();
+    const db = loadDb();
+    const before = db.invitations.find((item) => item.member === invited[0]?.id)?.token ?? '';
+    await apiCall(workspaces.resendInvitation, { params: { id: WORKSPACE_IDS.estudio, memberId: invited[0]?.id ?? '' } });
+    expect((await fail(apiCall(workspaces.getInvitation, { body: { token: before } }))).status).toBe(404);
+    const after = loadDb().invitations.find((item) => item.member === invited[0]?.id)?.token ?? '';
+    expect(after).not.toBe(before);
+    expect((await apiCall(workspaces.getInvitation, { body: { token: after } })).email).toBe('nadie@ejemplo.com');
   });
 
   it('probe-link reconoce solo los hosts exactos del backend', async () => {
@@ -691,6 +720,10 @@ describe('mocks', () => {
     const copy = await apiCall(brandKits.duplicateBrandKit, { params: { id: other.id } });
     expect(copy.name).toBe(`Copia de ${other.name}`);
     expect(copy.is_default).toBe(false);
+    // Later copies are numbered.
+    const second = await apiCall(brandKits.duplicateBrandKit, { params: { id: other.id } });
+    expect(second.name).toBe(`Copia 2 de ${other.name}`);
+    await apiCall(brandKits.deleteBrandKit, { params: { id: second.id } });
     // As the backend: every file of the copy is its own (another name), and the rest is the same.
     const withFiles = kits.find((kit) => kit.watermark_logo && kit.primary_font);
     if (!withFiles) throw new Error('falta un kit con archivos');
@@ -699,8 +732,9 @@ describe('mocks', () => {
       if (withFiles[field] === null) expect(twin[field]).toBeNull();
       else {
         expect(twin[field]).not.toBe(withFiles[field]);
-        expect(twin[field]?.split('.').pop()).toBe(withFiles[field]?.split('.').pop());
-        expect(twin[field]?.split('/').slice(0, -1)).toEqual(withFiles[field]?.split('/').slice(0, -1));
+        // The folder of the copy, the same file name: no storage suffix.
+        expect(twin[field]?.split('/').slice(0, -1)).toEqual([...(withFiles[field]?.split('/').slice(0, -1) ?? []), twin.id]);
+        expect(twin[field]?.split('/').pop()).toBe(withFiles[field]?.split('/').pop());
       }
     }
     expect({ ...twin, id: '', name: '', user: null, created_at: '', is_default: false, primary_font: null, secondary_font: null, watermark_logo: null, intro_video: null, outro_video: null }).toEqual({

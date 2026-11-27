@@ -49,6 +49,8 @@ import {
   draftFrom,
   fileName,
   fontLabel,
+  storedFileName,
+  storedFontLabel,
   isHex,
   kitColor,
   loadableUrl,
@@ -228,7 +230,7 @@ function BumperTile({
         <span className={styles.rowLabel}>{title}</span>
         {has ? (
           <>
-            <span className={`t-small muted ${styles.fname}`}>{file ? file.name : fileName(url)}</span>
+            <span className={`t-small muted ${styles.fname}`}>{file ? file.name : storedFileName(url)}</span>
             <span className="t-label subtle num">
               {file ? [duration !== null ? formatDuration(Math.round(duration)) : null, formatBytes(file.size)].filter(Boolean).join(' · ') : 'Guardado'}
             </span>
@@ -375,7 +377,7 @@ function EditorForm({ kit }: { kit: BrandKit | null }) {
     accent: isHex(colors.accent) ? colors.accent : kitColor(source, 'accent_color'),
   };
   const title = draft.name.trim() || (isNew ? 'Nuevo brand kit' : source.name);
-  const fontName = primaryFont.file ? fontLabel(primaryFont.file.name) : fontLabel(primaryFont.url);
+  const fontName = primaryFont.file ? fontLabel(primaryFont.file.name) : storedFontLabel(primaryFont.url);
 
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -429,7 +431,7 @@ function EditorForm({ kit }: { kit: BrandKit | null }) {
   const fontRow = (field: 'primary_font' | 'secondary_font', label: string, family: string | undefined, emptyHint: string) => {
     const { file, url } = currentFile(source, draft, field);
     const has = Boolean(file || url);
-    const name = file ? file.name : fileName(url);
+    const name = file ? file.name : storedFileName(url);
     return (
       <div className={styles.frow}>
         <span className={cx(styles.faa, !has && styles.faaEmpty)} style={{ fontFamily: family ? `'${family}', var(--font)` : undefined }} aria-hidden="true">
@@ -549,7 +551,7 @@ function EditorForm({ kit }: { kit: BrandKit | null }) {
                     <span className={styles.fmeta}>
                       {hasLogo ? (
                         <>
-                          <span className={cx(styles.strong, styles.fname)}>{logo.file ? logo.file.name : fileName(logo.url)}</span>
+                          <span className={cx(styles.strong, styles.fname)}>{logo.file ? logo.file.name : storedFileName(logo.url)}</span>
                           <span className="t-label subtle num">{logo.file ? formatBytes(logo.file.size) : 'Guardado'}</span>
                         </>
                       ) : (

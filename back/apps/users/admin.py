@@ -38,6 +38,8 @@ class SeatLimitFormSet(BaseInlineFormSet):
 # --- INLINE: Ver a qué Workspaces pertenece el usuario ---
 class WorkspaceMemberInline(admin.TabularInline):
     model = WorkspaceMember
+    # WorkspaceMember.invited_by is the other key to User.
+    fk_name = 'user'
     formset = SeatLimitFormSet
     extra = 0
     fields = ('workspace', 'role', 'status', 'joined_at')
@@ -70,6 +72,7 @@ class WorkspaceMemberWorkspaceInline(admin.TabularInline):
     model = WorkspaceMember
     formset = SeatLimitFormSet
     extra = 0
+    raw_id_fields = ('user', 'invited_by')
 
 @admin.register(Workspace)
 class WorkspaceAdmin(admin.ModelAdmin):

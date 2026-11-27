@@ -3,6 +3,8 @@
  * active workspace. Everything goes through here so the HTTP client, the auth
  * provider and the mocks agree on one source.
  */
+import type { SessionEndReason } from './errors';
+
 export interface TokenPair {
   access: string;
   refresh: string;
@@ -159,9 +161,10 @@ export function isWorkspaceHeld(): boolean {
   return heldWorkspace !== null;
 }
 
-type ExpiredListener = () => void;
+type ExpiredListener = (reason: SessionEndReason) => void;
 const expiredListeners = new Set<ExpiredListener>();
 let expired = false;
+let expiredReason: SessionEndReason = 'expired';
 
 /** Fired when the refresh token is rejected: opens the "Sesión vencida" dialog (D9). */
 export function onSessionExpired(listener: ExpiredListener): () => void {
@@ -173,9 +176,12 @@ export function onSessionExpired(listener: ExpiredListener): () => void {
  * The session could not be renewed. From here on authenticated calls fail at
  * once (no more requests with a dead token) until new tokens are stored.
  */
-export function notifySessionExpired(): void {
+export function notifySessionExpired(reason: SessionEndReason = 'expired'): void {
+  // The requests in flight find the same dead session one after another, and not all of them learn
+  // why (only a 401 `session_revoked` says it): the one that knows is not overwritten by the rest.
+  expiredReason = expired && expiredReason === 'revoked' ? 'revoked' : reason;
   expired = true;
-  for (const listener of expiredListeners) listener();
+  for (const listener of expiredListeners) listener(expiredReason);
 }
 
 export function isSessionExpired(): boolean {

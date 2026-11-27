@@ -95,7 +95,14 @@ describe('F1 · Brand kits', () => {
 
   it('backend real: duplicar muestra la copia que responde, con sus archivos propios y sin ser default', async () => {
     const posted: string[] = [];
-    const copy = { ...real.brand_kit_duplicate, workspace: String(db().workspaces[0]?.id), name: 'Copia de Gaming nocturno' };
+    // A copy made before each kit had its folder: the storage added a suffix to its files.
+    const copy = {
+      ...real.brand_kit_duplicate,
+      workspace: String(db().workspaces[0]?.id),
+      name: 'Copia de Gaming nocturno',
+      primary_font: 'http://localhost:8000/media/assets/fonts/fuente_ZxKsE0r.ttf',
+      watermark_logo: 'http://localhost:8000/media/assets/logos/logo_vCHttht.png',
+    };
     server.use(
       http.post('http://localhost:8000/api/v1/brand-kits/:id/duplicate/', ({ params }) => {
         posted.push(String(params.id));
@@ -110,8 +117,9 @@ describe('F1 · Brand kits', () => {
     const added = await card('Copia de Gaming nocturno');
     expect(within(added).queryByText('Por defecto')).not.toBeInTheDocument();
     expect(within(added).getByRole('link', { name: 'Copia de Gaming nocturno' })).toHaveAttribute('href', `/brand-kits/${copy.id}`);
-    // The font it shows is the copy's own file.
-    expect(within(added).getByText('Inter a1B2c3D')).toBeInTheDocument();
+    // The names it shows are the ones the files were uploaded with, without the storage suffix.
+    expect(within(added).getByText('fuente')).toBeInTheDocument();
+    expect(within(added).getByText('logo.png')).toBeInTheDocument();
   });
 
   it('backend real: si no se pudieron copiar los archivos (502), avisa y no agrega nada', async () => {

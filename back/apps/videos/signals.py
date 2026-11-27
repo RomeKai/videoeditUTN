@@ -7,10 +7,10 @@ are known. Only for projects that asked (and paid) for SEO.
 import logging
 
 from django.db import transaction
-from django.db.models.signals import post_save
+from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
-from .models import ScheduledPost
+from .models import BrandKit, ScheduledPost
 
 logger = logging.getLogger(__name__)
 
@@ -61,3 +61,14 @@ def generate_seo_for_new_post(sender, instance, created, raw=False, **kwargs):
     if not seo_requested(instance.video_clip.project):
         return
     queue_post_seo(instance.pk)
+
+
+@receiver(post_delete, sender=BrandKit)
+def delete_brand_kit_files(sender, instance, **kwargs):
+    """
+    A deleted kit takes its files with it, once the delete commits. A signal,
+    so it also covers the admin and the cascade of a deleted workspace.
+    """
+    from .services import brand_kit_service
+
+    brand_kit_service.delete_files_on_commit(instance.pk, brand_kit_service.stored_files(instance))

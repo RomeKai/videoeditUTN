@@ -27,11 +27,16 @@ export function useEstimate(input: contract.EstimateRequest | null) {
   });
 }
 
-export function useSubscription({ enabled = true }: { enabled?: boolean } = {}) {
+/**
+ * `alwaysOnFocus`: read it again every time the tab comes back, even when it was just read. For the
+ * screen where a stale answer misleads (Planes: a payment settled in another tab).
+ */
+export function useSubscription({ enabled = true, alwaysOnFocus = false }: { enabled?: boolean; alwaysOnFocus?: boolean } = {}) {
   return useScopedQuery({
     queryKey: keys.billing.subscription,
     queryFn: ({ signal }) => apiCall(contract.getSubscription, { signal }),
     enabled,
+    ...(alwaysOnFocus ? { refetchOnWindowFocus: 'always' as const } : {}),
   });
 }
 

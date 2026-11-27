@@ -71,10 +71,17 @@ El esquema OpenAPI declara el header en cada operación de una vista con `Worksp
 - Borrar el default tampoco promueve otro kit. Los proyectos nuevos salen sin kit preseleccionado.
 - Un pedido que no manda `is_default` no toca el default de nadie.
 
+**Archivos.** Cada kit guarda sus archivos en una carpeta propia (`upload_to`: `assets/fonts/<id del kit>/`, `assets/logos/<id del kit>/`, `assets/videos/<id del kit>/`), así el archivo conserva el nombre con el que se subió. Los archivos guardados antes siguen en `assets/fonts/`, `assets/logos/` y `assets/videos/`: no se mueven.
+
+- Borrar un kit borra sus archivos después del commit (`signals.delete_brand_kit_files` → `brand_kit_service.delete_files_on_commit`). También al borrar el workspace o desde el admin.
+- `PATCH` que reemplaza o quita un archivo borra el anterior igual (`BrandKitViewSet.perform_update`). Antes de guardar bloquea la fila del kit y la vuelve a leer: un pedido que cargó el kit antes de que otro reemplazara un archivo no vuelve a escribir el nombre viejo. Orden de bloqueos: la fila del workspace y después la del kit.
+- Un archivo que otro kit todavía usa no se borra (datos viejos o seeds pueden compartir nombre).
+- Un error del storage no falla el pedido: queda `brand_kit.file_cleanup_failed` con el id del kit y la clase del error.
+
 **Duplicar.** `POST brand-kits/<id>/duplicate/` (`brandkit.manage`, sin cuerpo) llama a `brand_kit_service.duplicate_brand_kit`:
 
-1. Copia cada archivo (fuentes, logo, intro, outro) a un nombre nuevo de su storage con `storage_service.copy_stored_file`. Un `FileSystemStorage` copia el archivo bajo `MEDIA_ROOT`; cualquier otro storage es un bucket y se copia del lado del servidor con `CloudflareR2Manager.copy_object` (`CopyObject`). Hoy los archivos de un kit viven en `MEDIA_ROOT`, también con `USE_R2=True`. Si el storage devuelve el mismo nombre del original (uno que sobrescribe), `copy_stored_file` no copia nada y lanza `StoredFileCopyError`: los dos kits no comparten archivo.
-2. Crea la fila al final: «Copia de {nombre}» (cortado a 100 caracteres, el nombre no es único), mismo workspace, `user` de quien la pide, `is_default=False`. Los demás campos se copian todos, también los que se agreguen al modelo.
+1. Copia cada archivo (fuentes, logo, intro, outro) a la carpeta del kit nuevo, con el mismo nombre de archivo (`assets/logos/<id del kit>/logo.png`), con `storage_service.copy_stored_file`. La carpeta es nueva: el storage no agrega sufijo y el nombre nunca es el del original. Un `FileSystemStorage` copia el archivo bajo `MEDIA_ROOT`; cualquier otro storage es un bucket y se copia del lado del servidor con `CloudflareR2Manager.copy_object` (`CopyObject`). Hoy los archivos de un kit viven en `MEDIA_ROOT`, también con `USE_R2=True`. Si el destino fuera el nombre del original, `copy_stored_file` no copia nada y lanza `StoredFileCopyError`: los dos kits no comparten archivo.
+2. Crea la fila al final, con la fila del workspace bloqueada. El nombre lo da `brand_kit_service.copy_name`: «Copia de {nombre}», o «Copia 2 de {nombre}», «Copia 3 de {nombre}»… si el workspace ya tiene ese nombre (cortado a 100 caracteres). Mismo workspace, `user` de quien la pide, `is_default=False`. Los demás campos se copian todos, también los que se agreguen al modelo.
 3. Responde 201 con el kit nuevo.
 
 | Caso | Respuesta |

@@ -173,7 +173,7 @@ flowchart TD
 
 **Rutas:**
 
-- **Público:** `/login`, `/registro`, `/verificar`, `/recuperar`, `/invitacion/:token`, `/precios`.
+- **Público:** `/login`, `/registro`, `/verificar`, `/recuperar`, `/invitacion` (el token va en `#token=…`), `/precios`.
 - **Primera vez:** `/bienvenida`.
 - **Proyectos:** `/proyectos`, `/proyectos/nuevo`, `/proyectos/:id`, `/proyectos/:id/revision`, `/proyectos/:id/clips`, `/proyectos/:id/clips/:clipId`.
 - **Resto:** `/publicaciones`, `/brand-kits`, `/brand-kits/:id`, `/uso`, `/ajustes/*`, `/perfil/*`.
@@ -273,12 +273,13 @@ Otras respuestas:
 - **Paso 2:** desde el link, elegir una contraseña nueva.
 - **API:** ✅ `POST /api/v1/auth/password-reset/` y `POST /api/v1/auth/password-reset/confirm/`. Guardar cierra todas las sesiones de la cuenta.
 
-#### A5. Aceptar invitación — `/invitacion/:token`
+#### A5. Aceptar invitación — `/invitacion#token=…`
 - **Qué muestra:** "Juan te invitó a *Estudio Norte* como Editor".
 - **Si no tiene cuenta:** crea la cuenta ahí mismo.
 - **Si tiene cuenta:** inicia sesión.
-- **Estados:** invitación vencida o ya usada.
-- **API:** ❌. Existe `WorkspaceMember.status=pending`, pero no hay endpoints.
+- **Estados:** la invitación no existe o ya no sirve (vencida, ya usada o cancelada: una sola pantalla, porque la API responde lo mismo para todas); sesión de otra cuenta.
+- **Link:** `/invitacion#token=…`. El token va en el fragmento y la pantalla lo saca de la barra de direcciones: no queda en logs ni en el historial.
+- **API:** ✅ `POST /api/v1/invitations/preview/` y `POST /api/v1/invitations/accept/`, con el token en el cuerpo. La invitación es del email invitado: solo la acepta su cuenta, o la cuenta que se crea ahí con ese email.
 
 #### A6. Precios — `/precios`
 - **Para qué:** comparar planes antes y después de registrarse. Es la misma pantalla que Uso › Planes, sin la barra de la app.
@@ -560,7 +561,7 @@ Otras respuestas:
 - **Qué muestra:** tarjetas con los colores, el logo y el nombre de cada kit, y una marca "Por defecto".
 - **Acciones:** crear, duplicar, marcar como default y borrar.
 - **Vacío:** "Creá tu brand kit para que todos tus clips salgan con tu marca".
-- **API:** ✅ `GET/POST/PATCH/DELETE /api/v1/brand-kits/` y `POST /api/v1/brand-kits/:id/duplicate/` (copia el kit con sus archivos como «Copia de …»; la copia nunca es default).
+- **API:** ✅ `GET/POST/PATCH/DELETE /api/v1/brand-kits/` y `POST /api/v1/brand-kits/:id/duplicate/` (copia el kit con sus archivos como «Copia de …», y desde la segunda «Copia 2 de …», «Copia 3 de …»; la copia nunca es default).
 
 #### F2. Editar brand kit — `/brand-kits/:id`
 - **Campos:**
@@ -757,7 +758,7 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad. El detalle e
 | 10 | Conectar redes por workspace (Ayrshare) | E1, H3 | P1 |
 | 11 | ~~Endpoint de clip: renombrar, recortar, volver a renderizar y reintentar~~ Resuelto: `GET/PATCH/DELETE /clips/:id/`, `POST /clips/:id/render/` y `POST /clips/:id/retry/` | D3, D4 | — |
 | 12 | Suscripción, checkout y webhooks de pago (PAY-01/02/03). La lista de planes ya está: `GET /plans/` | G3, G4 | P1 |
-| 13 | Invitaciones: crear, reenviar y aceptar | A5, H2 | P1 |
+| 13 | ~~Invitaciones: crear, reenviar y aceptar~~ Resuelto: `POST /workspaces/:id/invitations/`, `.../invitations/:memberId/resend/`, `POST /invitations/preview/` y `POST /invitations/accept/` | A5, H2 | — |
 | 14 | Paginación y filtro por estado en proyectos | B2 | P1 |
 | 15 | Tiempos por etapa del pipeline | D1 | P2 |
 | 16 | Notificaciones: falta avisar de una publicación fallida y del saldo bajo, y los emails (hueco 21). La campana ya está (`GET /notifications/`, `POST /notifications/:id/read/`, `POST /notifications/read-all/`) con listo para revisar, render terminado, proyecto fallido y pagos; las preferencias de email también: `GET/PATCH /me/notification-preferences/` | J2 | P2 |
