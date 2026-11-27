@@ -94,12 +94,27 @@ class BrandKitViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         self._save_one_default(serializer, workspace.pk, workspace=workspace)
 
     def perform_update(self, serializer):
-        """A file that the update replaced or removed is deleted after the commit, unless another kit uses it."""
+        """
+        A file that the update replaced or removed is deleted after the commit,
+        unless another kit uses it.
+
+        The kit row is locked and read again before saving: ``save()`` writes
+        every column, so a request that loaded the kit before another one
+        replaced a file would write the old name back, of a file that is
+        already deleted. Lock order: the workspace row, then the kit.
+        """
         from .services import brand_kit_service
 
-        before = brand_kit_service.stored_files(serializer.instance)
+        instance = serializer.instance
         with transaction.atomic():
-            self._save_one_default(serializer, serializer.instance.workspace_id)
+            if serializer.validated_data.get('is_default') is True:
+                brand_kit_service.lock_workspace_default(instance.workspace_id)
+            try:
+                instance.refresh_from_db(from_queryset=BrandKit.objects.select_for_update())
+            except BrandKit.DoesNotExist:
+                raise exceptions.NotFound()  # deleted by another request meanwhile
+            before = brand_kit_service.stored_files(instance)
+            self._save_one_default(serializer, instance.workspace_id)
             kept = {name for _, name in brand_kit_service.stored_files(serializer.instance)}
             brand_kit_service.delete_files_on_commit(
                 serializer.instance.pk, [(storage, name) for storage, name in before if name not in kept],

@@ -618,6 +618,86 @@ class ConcurrentDefaultTests(TransactionTestCase):
         )
 
 
+class ConcurrentFilesTests(TransactionTestCase):
+    def setUp(self):
+        self.media = tempfile.mkdtemp(prefix="brand-kits-")
+        self.addCleanup(shutil.rmtree, self.media, ignore_errors=True)
+        settings = override_settings(MEDIA_ROOT=self.media)
+        settings.enable()
+        self.addCleanup(settings.disable)
+        self.alice = make_user("alice")
+        self.home = self.alice.owned_workspaces.get()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.alice)
+
+    def test_an_edit_loaded_before_a_file_was_replaced_does_not_write_the_old_file_back(self):
+        from apps.videos.views import BrandKitViewSet
+
+        kit = full_kit(self.home, self.alice)
+        old_logo = kit.watermark_logo.name
+        real_get_object, calls = BrandKitViewSet.get_object, []
+
+        def load_then_another_request_replaces_the_logo(view):
+            loaded = real_get_object(view)
+            calls.append(1)
+            if len(calls) == 1:
+                # Request B, whole, between A's read and A's save: it commits and deletes the old logo.
+                response = self.client.patch(
+                    detail(kit), {"watermark_logo": _png("nuevo.png")}, format="multipart", **header(self.home),
+                )
+                self.assertEqual(response.status_code, 200, response.content[:300])
+            return loaded
+
+        with patch.object(BrandKitViewSet, "get_object", load_then_another_request_replaces_the_logo):
+            response = self.client.patch(detail(kit), {"name": "Otro"}, format="json", **header(self.home))
+
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        kit.refresh_from_db()
+        self.assertEqual(kit.name, "Otro")
+        self.assertEqual(kit.watermark_logo.name, f"assets/logos/{kit.pk}/nuevo.png")
+        self.assertIn("nuevo.png", response.data["watermark_logo"])
+        self.assertFalse(os.path.exists(os.path.join(self.media, old_logo)))
+        # Every file the row names is there, and nothing else: no orphan.
+        self.assertEqual(
+            stored_files(self.media),
+            sorted(os.path.join(self.media, getattr(kit, field).name) for field in FILE_FIELDS),
+        )
+        self.assertEqual(self.client.post(duplicate(kit), **header(self.home)).status_code, 201)
+
+    def test_two_duplicates_at_once_get_different_names(self):
+        """Without the workspace lock both would read the names before either copy exists."""
+        import time
+
+        kit = BrandKit.objects.create(workspace=self.home, name="Estudio")
+        barrier = threading.Barrier(2)
+        results = []
+        real_copy_name = brand_kit_service.copy_name
+
+        def slow_copy_name(source):
+            name = real_copy_name(source)
+            time.sleep(0.5)  # the other request gets here meanwhile, unless it waits for the lock
+            return name
+
+        def copy():
+            try:
+                client = APIClient()
+                client.force_authenticate(user=self.alice)
+                barrier.wait(timeout=10)
+                response = client.post(duplicate(kit), **header(self.home))
+                results.append((response.status_code, response.data.get("name")))
+            finally:
+                connections.close_all()
+
+        with patch.object(brand_kit_service, "copy_name", side_effect=slow_copy_name):
+            threads = [threading.Thread(target=copy) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+
+        self.assertEqual(sorted(results), [(201, "Copia 2 de Estudio"), (201, "Copia de Estudio")])
+
+
 BEFORE = [("videos", "0018_clip_thumbnail_object_key")]
 AFTER = [("videos", "0019_un_solo_brand_kit_default")]
 

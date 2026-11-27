@@ -74,7 +74,7 @@ El esquema OpenAPI declara el header en cada operación de una vista con `Worksp
 **Archivos.** Cada kit guarda sus archivos en una carpeta propia (`upload_to`: `assets/fonts/<id del kit>/`, `assets/logos/<id del kit>/`, `assets/videos/<id del kit>/`), así el archivo conserva el nombre con el que se subió. Los archivos guardados antes siguen en `assets/fonts/`, `assets/logos/` y `assets/videos/`: no se mueven.
 
 - Borrar un kit borra sus archivos después del commit (`signals.delete_brand_kit_files` → `brand_kit_service.delete_files_on_commit`). También al borrar el workspace o desde el admin.
-- `PATCH` que reemplaza o quita un archivo borra el anterior igual (`BrandKitViewSet.perform_update`).
+- `PATCH` que reemplaza o quita un archivo borra el anterior igual (`BrandKitViewSet.perform_update`). Antes de guardar bloquea la fila del kit y la vuelve a leer: un pedido que cargó el kit antes de que otro reemplazara un archivo no vuelve a escribir el nombre viejo. Orden de bloqueos: la fila del workspace y después la del kit.
 - Un archivo que otro kit todavía usa no se borra (datos viejos o seeds pueden compartir nombre).
 - Un error del storage no falla el pedido: queda `brand_kit.file_cleanup_failed` con el id del kit y la clase del error.
 
