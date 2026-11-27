@@ -30,8 +30,8 @@ def _other_user(email="otro@test.com"):
 
 
 def _link_token(message):
-    link = next(word for word in message.body.split() if "/verificar?" in word)
-    query = parse_qs(urlparse(link).query)
+    link = next(word for word in message.body.split() if "/verificar#" in word)
+    query = parse_qs(urlparse(link).fragment)
     return query["token"][0], query["siguiente"][0], link
 
 
@@ -56,7 +56,9 @@ def test_a_new_email_waits_for_verification_and_gets_a_link(client, user):
     message = mail.outbox[0]
     assert message.to == [NEW_EMAIL]
     token, next_page, link = _link_token(message)
-    assert link.startswith("http://localhost:3000/verificar?")
+    # In the fragment, which a browser never sends: the token stays out of the web host's access log.
+    assert link.startswith("http://localhost:3000/verificar#")
+    assert urlparse(link).query == ""
     assert next_page == "/perfil"
     assert token
     assert "vence en 24 horas" in message.body

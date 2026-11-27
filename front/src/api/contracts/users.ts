@@ -101,7 +101,7 @@ export const updateMe = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/users/views.py · MeView.patch (UpdateMeSerializer); el link: apps/users/email_verification.py',
-    note: 'El backend normaliza el dominio (minúsculas, letras de ancho completo, Unicode a punycode): `ana@Mañana.com` vuelve en `pending_email` como `ana@xn--maana-pta.com`, y otra escritura de un email ya usado cuenta como usado. El email nuevo queda en `pending_email` y le llega un link a `/verificar?token=…&siguiente=/perfil` que vence en 24 h; `auth.verifyEmail` lo aplica.',
+    note: 'El backend normaliza el dominio (minúsculas, letras de ancho completo, Unicode a punycode): `ana@Mañana.com` vuelve en `pending_email` como `ana@xn--maana-pta.com`, y otra escritura de un email ya usado cuenta como usado. El email nuevo queda en `pending_email` y le llega un link a `/verificar#token=…&siguiente=/perfil` (en el fragmento, que no llega al log de accesos) que vence en 24 h; `auth.verifyEmail` lo aplica.',
   },
   screens: ['B1', 'B2', 'J3', 'I1'],
 });

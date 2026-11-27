@@ -9,29 +9,69 @@ import { useSession } from '@/shell/session';
 import { Banner, Button, Card, Field, Icon, Input, Num, Skeleton, cx, useToast } from '@/ui';
 import styles from './acceso.module.css';
 import {
+  dropQueryToken,
   emailError,
   forgetSignupNonce,
+  forgetVerifyLink,
   formatCountdown,
   HOME,
   readSignupNonce,
+  readVerifyLink,
   rememberNext,
+  rememberVerifyLink,
   requestErrorMessage,
   retryAfterSeconds,
   safeNext,
   takeNext,
+  takeVerifyLink,
   useCooldown,
+  VERIFY_ROUTE,
+  type VerifyLink,
 } from './lib';
 
-/** The same link, to open it again after signing in (with its destination, when it has one). */
-function linkAgain(token: string, next: string | null | undefined): string {
-  const after = safeNext(next);
-  return `/verificar?token=${encodeURIComponent(token)}${after ? `&siguiente=${encodeURIComponent(after)}` : ''}`;
+/** Where the login comes back to after signing in. Never the token: a query string ends up in the web host's logs and in the history. */
+const BACK_TO_LINK = encodeURIComponent(VERIFY_ROUTE);
+
+/**
+ * The page of A3, `/verificar`. The link of the email brings its token in the fragment (`#token=…`, and
+ * `&siguiente=…` in an email change), which only the browser sees: it is read once and dropped from the
+ * address bar. A link sent before that has it in the query (`?token=…`): it is read too, the fragment first.
+ * Coming back from the login (bare `/verificar`), the link is the one this tab kept. The waiting screen
+ * (`?email=`) checks no link, and forgets one an earlier visit left.
+ */
+export function VerifyEmailPage({ email, token, fromLogin, next }: VerifyEmailScreenProps) {
+  const [link, setLink] = useState<VerifyLink | null | undefined>(undefined);
+  // Taken once: the fragment is gone after the first read (and React may run the effect twice).
+  const taken = useRef<VerifyLink | null | undefined>(undefined);
+
+  useEffect(() => {
+    if (taken.current === undefined) {
+      const fromLink = takeVerifyLink();
+      const fromQuery = token ? { token, next: next ?? null } : null;
+      if (fromQuery) dropQueryToken();
+      taken.current = fromLink ?? fromQuery ?? (email ? null : readVerifyLink());
+      if (!taken.current) forgetVerifyLink();
+    }
+    setLink(taken.current);
+    // Another link pasted in this same tab changes only the fragment: no new page load.
+    const onHashChange = () => {
+      const found = takeVerifyLink();
+      if (!found) return;
+      taken.current = found;
+      setLink(found);
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, [email, next, token]);
+
+  if (link === undefined) return null;
+  return <VerifyEmailScreen key={link?.token ?? ''} email={email} token={link?.token} fromLogin={fromLogin} next={link ? link.next : next} />;
 }
 
 export interface VerifyEmailScreenProps {
   /** `?email=`: the account waiting for verification (comes from A2 or from a login that answered "sin verificar"). */
   email?: string | null;
-  /** `?token=`: the link of the email. Verifies the account and goes into the welcome. */
+  /** The token of the link of the email (`VerifyEmailPage` reads it). Verifies the account and goes into the welcome. */
   token?: string | null;
   /** `?motivo=login`: the user tried to sign in with an unverified account. */
   fromLogin?: boolean;
@@ -57,13 +97,23 @@ export function VerifyEmailScreen({ email, token, fromLogin = false, next }: Ver
   // Opened outside the browser that signed up: nothing changed. With a session the same link verifies.
   const signedOut = verify.isSuccess && !('access' in verify.data);
   useEffect(() => {
-    if (signedOut && token) router.replace(`/login?motivo=verificar&siguiente=${encodeURIComponent(linkAgain(token, next))}`);
+    if (!signedOut || !token) return;
+    // The login comes back to `/verificar`, and the link waits in this tab.
+    rememberVerifyLink({ token, next: next ?? null });
+    router.replace(`/login?motivo=verificar&siguiente=${BACK_TO_LINK}`);
   }, [next, router, signedOut, token]);
 
   // Verified: back to the page that was asked for (kept while waiting for the email), or into the welcome.
   // The remembered page is only for the account it was stored for, so this waits to know who signed in;
   // if the profile does not load, the link's own email is the only clue.
   const verified = verify.isSuccess && !signedOut;
+  // A 403 `login_required` keeps the link for after the login; verified, dead or of another account, it goes.
+  const needsLogin = Boolean(token) && verify.error instanceof ApiError && verify.error.status === 403 && verify.error.code === 'login_required';
+  const spent = verified || (verify.error instanceof ApiError && !needsLogin);
+  useEffect(() => {
+    if (needsLogin && token) rememberVerifyLink({ token, next: next ?? null });
+    else if (spent) forgetVerifyLink();
+  }, [needsLogin, next, spent, token]);
   const verifiedEmail = me?.email ?? (status === 'error' ? (email ?? '') : null);
   const left = useRef(false);
   useEffect(() => {
@@ -101,9 +151,7 @@ export function VerifyEmailScreen({ email, token, fromLogin = false, next }: Ver
   // The backend never swaps the session for another account's (403): say why, and apply nothing.
   const denied = token && verify.error instanceof ApiError && verify.error.status === 403 ? verify.error : null;
   if (denied) {
-    const needsLogin = denied.code === 'login_required';
-    // After signing in, the login brings the person back to this same link (with its destination).
-    const link = linkAgain(token ?? '', next);
+    // After signing in, the login brings the person back to this same link (kept for this tab, with its destination).
     return (
       <Card className={cx(styles.card, styles.verify)}>
         <span className={styles.heroIcon}>
@@ -113,7 +161,7 @@ export function VerifyEmailScreen({ email, token, fromLogin = false, next }: Ver
           <h1 className="t-h2">{needsLogin ? 'Iniciá sesión para confirmar el email' : 'Este link es de otra cuenta'}</h1>
           <p className="t-small muted">{denied.message}</p>
         </div>
-        <Link className="lnk" href={needsLogin ? `/login?siguiente=${encodeURIComponent(link)}` : HOME}>
+        <Link className="lnk" href={needsLogin ? `/login?siguiente=${BACK_TO_LINK}` : HOME}>
           {needsLogin ? 'Iniciar sesión' : 'Volver a OneCreator'}
         </Link>
       </Card>

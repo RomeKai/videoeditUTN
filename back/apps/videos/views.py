@@ -724,7 +724,7 @@ def _approve_clips(project_id, segments, total_duration, reservation_id, outcome
     from .services.clip_preview import delete_preview_files
     from .tasks.ingestion import (
         APPROVED_RENDER, AUTO_RENDER, _dispatch_approved_clips, _mark_render_dispatched,
-        _refund_undispatched_auto_render,
+        _metadata_with_render_started, _refund_undispatched_auto_render,
     )
 
     outcome = outcome if outcome is not None else {}
@@ -795,7 +795,8 @@ def _approve_clips(project_id, segments, total_duration, reservation_id, outcome
 
         _mark_render_dispatched(project_id)
         metadata = {
-            **(project.metadata or {}),
+            # The render starts now: its start, for the «Renderizar» step.
+            **_metadata_with_render_started(project.metadata),
             'final_duration': total_duration,
             # Settled by the seconds the clips deliver (finalize_project_render).
             APPROVED_RENDER.reservation_key: str(reservation_id),

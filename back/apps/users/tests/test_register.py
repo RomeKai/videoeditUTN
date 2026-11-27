@@ -42,8 +42,8 @@ def _register(api=None, **changes):
 
 
 def _signup_token(message):
-    link = next(word for word in message.body.split() if "/verificar?" in word)
-    query = parse_qs(urlparse(link).query)
+    link = next(word for word in message.body.split() if "/verificar#" in word)
+    query = parse_qs(urlparse(link).fragment)
     return query, link
 
 
@@ -79,7 +79,9 @@ def test_signing_up_creates_the_account_its_workspace_and_sends_the_link(free_pl
     message = mail.outbox[0]
     assert message.to == ["ana@example.com"]
     query, link = _signup_token(message)
-    assert link.startswith("http://localhost:3000/verificar?")
+    # In the fragment, which a browser never sends: the token stays out of the web host's access log.
+    assert link.startswith("http://localhost:3000/verificar#")
+    assert urlparse(link).query == ""
     # No `siguiente`: A3 goes to the page it remembered or to the welcome.
     assert set(query) == {"token"}
     assert "vence en 24 horas" in message.body

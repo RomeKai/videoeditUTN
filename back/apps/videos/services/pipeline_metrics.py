@@ -5,6 +5,8 @@ Computed from the database over the projects created in a time window:
 
 - ``stages``: per pipeline stage (and the web proxy), how many runs and the
   p50 / p95 / max duration in seconds, from ``metadata['stage_durations']``.
+  ``render_dispatched`` is the whole render, from its dispatch to the close
+  of the fan-out (``finalize_project_render``), not how long dispatching took.
 - ``projects``: how many projects there are per status.
 - ``failures``: failed projects per static ``pipeline_error_code``.
 - ``failure_rate``: failed / finished (completed, awaiting approval or failed).

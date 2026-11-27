@@ -456,6 +456,7 @@ type ConfigProject = Pick<
   | 'remove_silences'
   | 'auto_render_bypass'
   | 'status'
+  | 'pipeline_stage_status'
 >;
 
 export function subtitlesSummary(project: Pick<Project, 'add_subtitles' | 'subtitle_size' | 'subtitle_position' | 'subtitle_color' | 'subtitle_words_per_segment'>): string {
@@ -480,7 +481,8 @@ export interface ConfigGroup {
 /** The applied configuration in the three groups of the artboard: Salida, Estilo and IA. */
 export function buildConfigGroups(project: ConfigProject): ConfigGroup[] {
   const single = isWholeVideo(project);
-  const past = !['uploaded', 'ingesting'].includes(project.status);
+  // The review is reached once the clips are chosen: a project that failed before that never stopped there.
+  const reachedReview = project.status === 'failed' ? project.pipeline_stage_status?.clips_selected === 'completed' : !['uploaded', 'ingesting'].includes(project.status);
   const yes = (value: boolean) => (value ? 'Sí' : 'No');
   const output: ConfigItem[] = [
     { key: 'type', label: 'Qué hacer', value: LABELS.project_type[project.project_type] },
@@ -498,7 +500,7 @@ export function buildConfigGroups(project: ConfigProject): ConfigGroup[] {
     ai.push({
       key: 'bypass',
       label: 'Renderizar sin revisar',
-      value: project.auto_render_bypass ? 'Sí: renderiza apenas elige los clips' : past ? 'No: se detuvo en la revisión' : 'No: se detiene en la revisión',
+      value: project.auto_render_bypass ? 'Sí: renderiza apenas elige los clips' : reachedReview ? 'No: se detuvo en la revisión' : 'No: se detiene en la revisión',
       wide: true,
     });
   }
