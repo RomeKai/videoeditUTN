@@ -36,7 +36,7 @@ function Networks() {
   // Connecting is for the paid plans (`allow_social_accounts`); what is connected stays and can be disconnected.
   // Locked only once the plan is known: without it, the backend decides (and D6 shows its answer).
   const mayConnect = !planInfo.plan || planInfo.allows('social');
-  const planWithIt = firstPlanWith(plans.data ?? [], (plan) => plan.allow_social_accounts)?.name ?? 'Creador';
+  const planWithIt = firstPlanWith(plans.data ?? [], (plan) => plan.allow_social_accounts === true)?.name ?? 'Creador';
   const [connecting, setConnecting] = useState<Platform | null>(null);
   const [disconnecting, setDisconnecting] = useState<Platform | null>(null);
   const target = disconnecting ? NETWORKS[disconnecting].shortName : '';

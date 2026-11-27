@@ -58,6 +58,20 @@ describe('D6 · Conectar red social', () => {
     expect(open).not.toHaveBeenCalled();
   });
 
+  it('sin `allow_social_accounts` en el plan (backend anterior) no hay candado: decide el backend', async () => {
+    const { queryClient } = renderScenario(<ConnectNetworkDialog platform="YOUTUBE_SHORTS" onClose={vi.fn()} />, {
+      scenario: 'plan-gratis',
+      prepare: () =>
+        editDb((db) => {
+          for (const plan of db.plans) delete plan.allow_social_accounts;
+        }),
+    });
+    // Once the plan (Gratis, without the flag) is read, the dialog still offers to continue.
+    await waitFor(() => expect(queryClient.getQueriesData({ queryKey: keys.billing.subscription }).some(([, data]) => data !== undefined)).toBe(true));
+    expect(await screen.findByRole('button', { name: 'Continuar en YouTube' })).toBeInTheDocument();
+    expect(screen.queryByText(/Tu plan no incluye conectar redes/)).not.toBeInTheDocument();
+  });
+
   it('sin el email verificado muestra el mensaje del backend', async () => {
     const open = vi.spyOn(window, 'open');
     const user = userEvent.setup();

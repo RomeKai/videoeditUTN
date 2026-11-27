@@ -27,7 +27,8 @@ class SocialProfile(models.Model):
     network: a read that still says "connected" right after it (the provider
     keeps its answer up to 60 s) is not believed. `linked_at` is the first read
     that showed a linked network: a profile without it for
-    SOCIAL_UNLINKED_PROFILE_DAYS is deleted (clean_social_profiles).
+    SOCIAL_UNLINKED_PROFILE_DAYS is deleted (clean_social_profiles), unless a
+    connect link was asked for lately (`connect_requested_at`).
 
     Deleting the workspace marks the row (`orphaned_at`) and leaves it without
     the workspace (`workspace` null): the profile at the provider, a paid slot,
@@ -52,6 +53,7 @@ class SocialProfile(models.Model):
     networks_read_at = models.DateTimeField(null=True, blank=True)
     disconnected_at = models.JSONField(null=True, blank=True)
     linked_at = models.DateTimeField(null=True, blank=True)
+    connect_requested_at = models.DateTimeField(null=True, blank=True)
     orphaned_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

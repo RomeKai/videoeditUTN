@@ -232,7 +232,7 @@ export function usePermissions(): Permissions {
 export interface PlanInfo {
   plan: Plan | null;
   isLoading: boolean;
-  /** Feature flags of the plan, false while loading. */
+  /** Feature flags of the plan, false while loading. A flag the backend does not send yet counts as allowed (it decides). */
   allows: (feature: PlanFeature) => boolean;
 }
 
@@ -253,7 +253,7 @@ export function usePlan(): PlanInfo {
     () => ({
       plan,
       isLoading: subscription.isLoading,
-      allows: (feature) => (plan ? Boolean(plan[PLAN_FLAG[feature]]) : false),
+      allows: (feature) => (plan ? plan[PLAN_FLAG[feature]] !== false : false),
     }),
     [plan, subscription.isLoading],
   );

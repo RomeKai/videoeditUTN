@@ -90,6 +90,16 @@ Después, una de dos:
 - Una fila sin key (una creación cuya respuesta se perdió) se borra sin llamar a Ayrshare (evento `social.orphan_without_ref`): si el perfil llegó a crearse, sigue ahí ocupando un lugar. Se busca por su título, como en «Perfil con el título tomado», y se borra en el panel.
 - Desconectar una red sin borrar el perfil: desde Ajustes › Redes sociales, o `DELETE /api/v1/social-accounts/<red>/`.
 
+## Antes de volver atrás las migraciones
+
+Volver atrás `integrations.0003_redes_por_espacio` borra las filas de perfiles sin espacio, porque la columna vuelve a ser `NOT NULL`. Si la limpieza de un espacio borrado todavía no corrió, su perfil queda en Ayrshare sin ninguna fila que lo recuerde: un lugar pago perdido. Antes de volver atrás:
+
+```
+python manage.py shell -c "from apps.integrations.tasks import clean_social_profiles; print(clean_social_profiles())"
+```
+
+Tiene que decir `'orphans_kept': 0`. Si queda alguno (Ayrshare no respondió), correrlo de nuevo en unos minutos, o borrar ese perfil en el panel de Ayrshare buscándolo por su título (`<prefijo>-<id del espacio>`).
+
 ## Sin confirmar en la documentación de Ayrshare
 
 Para revisar en esta prueba:

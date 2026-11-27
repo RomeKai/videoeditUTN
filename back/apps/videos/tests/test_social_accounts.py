@@ -183,6 +183,25 @@ class ListTests(SocialAccountsHarness, TestCase):
         asked.assert_not_called()
         self.assertEqual([row["status"] for row in response.json()], ["connected", "disconnected", "disconnected"])
 
+    def test_with_the_cache_down_each_request_reads_the_provider(self):
+        """
+        Review of #187: production's fail-open cache answers None (it does not raise) while
+        Redis is down; that is not "another read is on its way", or no new link is ever seen.
+        """
+        give_social_profile(self.workspace)
+
+        class RedisDown:
+            def get(self, *args, **kwargs):
+                return None
+
+            add = set = delete = get
+
+        with patch("apps.integrations.social.accounts.cache", RedisDown()), \
+                patch(f"{PROVIDER}.accounts", return_value=linked(TIKTOK="connected")) as asked:
+            response = self.call("get", LIST)
+        asked.assert_called_once()
+        self.assertEqual((response.status_code, response.json()[0]["status"]), (200, "connected"))
+
     def test_reading_the_accounts_waits_little(self):
         from apps.integrations.social.ayrshare import AyrshareProvider
         from apps.integrations.social.base import ACCOUNTS_TIMEOUT_SECONDS
@@ -705,6 +724,56 @@ class CleanupSafetyTests(SocialAccountsHarness, TestCase):
         self.assertFalse(SocialProfile.objects.filter(provider_ref="ABANDONED").exists())
         self.assertIsNotNone(SocialProfile.objects.get(provider_ref="LINKED-AT-THE-PROVIDER").linked_at)
         self.assertTrue(SocialProfile.objects.filter(provider_ref="RECENT").exists())
+
+    def test_a_profile_someone_is_linking_is_not_deleted(self):
+        """Review of #187: a link asked for in the last hour may be in use (the provider's list lags 60 s)."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.integrations.tasks import clean_social_profiles
+
+        give_social_profile(self.workspace, "LINKING")
+        SocialProfile.objects.filter(workspace=self.workspace).update(
+            created_at=timezone.now() - timedelta(days=8), networks={},
+        )
+        with patch(f"{PROVIDER}.connect_url", return_value=LINK):
+            self.assertEqual(self.call("post", CONNECT, {"platform": "TIKTOK"}).status_code, 200)
+        with patch(f"{PROVIDER}.accounts", return_value=linked()) as asked, \
+                patch(f"{PROVIDER}.delete_profile") as delete_profile:
+            result = clean_social_profiles.apply().get()
+        self.assertEqual((result["unlinked"], result["unlinked_kept"]), (0, 0))
+        asked.assert_not_called()
+        delete_profile.assert_not_called()
+        self.assertTrue(SocialProfile.objects.filter(provider_ref="LINKING").exists())
+
+        # Past the hour, an abandoned link is cleaned like any other.
+        SocialProfile.objects.filter(provider_ref="LINKING").update(connect_requested_at=timezone.now() - timedelta(hours=2))
+        with patch(f"{PROVIDER}.accounts", return_value=linked()), patch(f"{PROVIDER}.delete_profile"):
+            self.assertEqual(clean_social_profiles.apply().get()["unlinked"], 1)
+
+    def test_a_connect_that_waited_for_a_deleted_row_claims_a_new_one(self):
+        """Review of #187: the cleanup deleted the row while the connect waited for its lock: not a 404."""
+        from apps.integrations.social import accounts as social_accounts
+
+        give_social_profile(self.workspace, "CLEANED")
+        real_filter = SocialProfile.objects.select_for_update
+        deleted = []
+
+        def cleanup_meanwhile(*args, **kwargs):
+            # The first lock taken by the connect lands after the cleanup deleted the row.
+            if not deleted:
+                SocialProfile.objects.filter(provider_ref="CLEANED").delete()
+                deleted.append(True)
+            return real_filter(*args, **kwargs)
+
+        with patch.object(SocialProfile.objects, "select_for_update", side_effect=cleanup_meanwhile), \
+                patch(f"{PROVIDER}.create_profile", return_value=CreatedProfile(ref="NEW-KEY", provider_id="r2")) as create, \
+                patch(f"{PROVIDER}.connect_url", return_value=LINK):
+            profile = social_accounts.ensure_profile(self.workspace)
+        create.assert_called_once()
+        self.assertEqual((profile.provider_ref, self.profile().provider_ref), ("NEW-KEY", "NEW-KEY"))
+        self.assertIsNotNone(self.profile().connect_requested_at)
 
     def test_a_read_with_a_linked_network_marks_the_profile_linked(self):
         give_social_profile(self.workspace)

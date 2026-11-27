@@ -99,7 +99,7 @@ export function ConnectNetworkDialog({ platform, onClose }: ConnectNetworkDialog
         }
       >
         <p className="t-small">Tu plan no incluye conectar redes. Lo que ya está conectado sigue publicando.</p>
-        <PlanLock plan={firstPlanWith(plans.data ?? [], (plan) => plan.allow_social_accounts)?.name ?? 'Creador'} />
+        <PlanLock plan={firstPlanWith(plans.data ?? [], (plan) => plan.allow_social_accounts === true)?.name ?? 'Creador'} />
       </Dialog>
     );
   }

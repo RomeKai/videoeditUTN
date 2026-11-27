@@ -354,6 +354,10 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
   it('suscripción y cambio de plan', () => {
     const free = parse(Subscription, real.billing_subscription_free) as Subscription;
     expect([free.plan.name, free.plan.allow_social_accounts]).toEqual(['Gratis', false]);
+    // A backend from before gap 10 (rolling deploy) does not send the flag: the plan still parses.
+    const { allow_social_accounts: _flag, ...older } = real.billing_subscription_free.plan;
+    void _flag;
+    expect((parse(Subscription, { ...real.billing_subscription_free, plan: older }) as Subscription).plan.allow_social_accounts).toBeUndefined();
     expect(free.renews_at).toBeNull();
     const checkout = parse(changePlan.response, real.billing_change_plan_checkout) as ReturnType<typeof changePlan.response.parse>;
     expect(checkout.checkout_url).toMatch(/\/dev\/checkout\?compra=.+&volver=/);

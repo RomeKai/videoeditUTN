@@ -1630,7 +1630,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `allow_crossposting` | boolean |
 | `has_seo_optimization` | boolean |
 | `has_thumbnail_engine` | boolean |
-| `allow_social_accounts` | boolean |
+| `allow_social_accounts` (opcional) | boolean |
 | `base_discount_rate` | Decimal |
 | `max_members` | number |
 | `is_active` | boolean |

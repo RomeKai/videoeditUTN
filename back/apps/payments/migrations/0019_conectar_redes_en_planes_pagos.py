@@ -13,6 +13,16 @@ def allow_social_accounts(SubscriptionPlan, using='default'):
     return SubscriptionPlan.objects.using(using).filter(name__in=PAID_PLANS).update(allow_social_accounts=True)
 
 
+def short_lock_wait(apps, schema_editor):
+    """
+    First in either direction. payments_subscriptionplan is read on every
+    workspace request (select_related): adding the column waits at most 5 s for
+    its lock and fails, instead of queueing every request behind a long reader.
+    """
+    if schema_editor.connection.vendor == 'postgresql':
+        schema_editor.execute("SET LOCAL lock_timeout = '5s'", params=None)
+
+
 def forwards(apps, schema_editor):
     using = schema_editor.connection.alias
     if not allow_social_accounts(apps.get_model('payments', 'SubscriptionPlan'), using=using):
@@ -33,10 +43,13 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RunPython(short_lock_wait, migrations.RunPython.noop),
         migrations.AddField(
             model_name="subscriptionplan",
             name="allow_social_accounts",
             field=models.BooleanField(db_default=False, default=False, verbose_name="Allow Social Accounts"),
         ),
         migrations.RunPython(forwards, migrations.RunPython.noop),
+        # Going back, this one runs first.
+        migrations.RunPython(migrations.RunPython.noop, short_lock_wait),
     ]

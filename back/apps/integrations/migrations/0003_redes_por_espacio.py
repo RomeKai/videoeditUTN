@@ -6,8 +6,9 @@ gone (SET_NULL), and one row per provider profile.
 `workspace` becoming nullable is done by hand on PostgreSQL: Django's AlterField
 drops and re-adds the foreign key, which takes an ACCESS EXCLUSIVE lock on
 users_workspace while old containers still serve. Only the column changes
-(on_delete lives in Django), under a short lock_timeout: a long transaction on
-the table makes the migration fail fast instead of queueing every request.
+(on_delete lives in Django). Every statement, in either direction, runs under a
+short lock_timeout (the first operation sets it): a long transaction on the
+tables makes the migration fail fast instead of queueing every request behind it.
 
 Before the unique constraint, rows that share a provider profile (two
 workspaces with the same legacy ayrshare_profile_key: each one could publish
@@ -20,19 +21,23 @@ from django.db import migrations, models
 LOCK = "SET LOCAL lock_timeout = '5s'"
 
 
+def short_lock_wait(apps, schema_editor):
+    """First in either direction: every statement of the migration (one transaction) waits at most 5 s for its lock."""
+    if schema_editor.connection.vendor == 'postgresql':
+        schema_editor.execute(LOCK, params=None)
+
+
 class NullableWorkspace(migrations.AlterField):
     """AlterField that, on PostgreSQL, only drops (or sets) NOT NULL on the column."""
 
     def database_forwards(self, app_label, schema_editor, from_state, to_state):
         if schema_editor.connection.vendor != 'postgresql':
             return super().database_forwards(app_label, schema_editor, from_state, to_state)
-        schema_editor.execute(LOCK, params=None)
         schema_editor.execute('ALTER TABLE integrations_socialprofile ALTER COLUMN workspace_id DROP NOT NULL', params=None)
 
     def database_backwards(self, app_label, schema_editor, from_state, to_state):
         if schema_editor.connection.vendor != 'postgresql':
             return super().database_backwards(app_label, schema_editor, from_state, to_state)
-        schema_editor.execute(LOCK, params=None)
         schema_editor.execute('DELETE FROM integrations_socialprofile WHERE workspace_id IS NULL', params=None)
         schema_editor.execute('ALTER TABLE integrations_socialprofile ALTER COLUMN workspace_id SET NOT NULL', params=None)
 
@@ -60,6 +65,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RunPython(short_lock_wait, migrations.RunPython.noop),
         migrations.AddField(model_name="socialprofile", name="networks", field=models.JSONField(blank=True, null=True)),
         migrations.AddField(model_name="socialprofile", name="networks_read_at", field=models.DateTimeField(blank=True, null=True)),
         migrations.AddField(model_name="socialprofile", name="disconnected_at", field=models.JSONField(blank=True, null=True)),
@@ -85,4 +91,6 @@ class Migration(migrations.Migration):
                 name="integrations_one_row_per_provider_profile",
             ),
         ),
+        # Going back, this one runs first.
+        migrations.RunPython(migrations.RunPython.noop, short_lock_wait),
     ]

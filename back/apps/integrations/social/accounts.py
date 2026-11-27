@@ -24,6 +24,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.core.cache import cache
 from django.db import IntegrityError, connection, transaction
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -47,6 +48,9 @@ ACCOUNTS_READING_SECONDS = 30
 ACCOUNTS_LAST_SECONDS = 24 * 3600
 # A network OneCreator just unlinked: a read that still says "connected" is the provider's old answer.
 DISCONNECT_GRACE = timedelta(seconds=60)
+# A profile whose connect link was asked for this recently may be being linked right now (the
+# provider keeps its list of accounts up to 60 s): the cleanup of never-linked profiles skips it.
+CONNECT_IN_PROGRESS = timedelta(hours=1)
 
 # Namespace of the advisory lock around creating a profile: the global cap counts one creation at a time.
 PROFILES_LOCK_NAMESPACE = zlib.crc32(b'integrations.social.profiles') - 2 ** 31
@@ -127,44 +131,66 @@ def ensure_profile(workspace):
     second request waits there and then finds the profile made. A failed
     creation leaves the row without its ref, and the next connect tries again.
     Creating one waits for the others (an advisory lock) and counts the
-    profiles first: never more than SOCIAL_MAX_PROFILES.
+    profiles first: never more than SOCIAL_MAX_PROFILES. Each call marks the
+    row (`connect_requested_at`): a link is on its way. A row deleted while
+    this waited for its lock (the cleanup of a never-linked profile) is
+    claimed again, once.
     """
     from apps.integrations.models import SocialProfile
 
     provider = provider_for_new_profiles()  # an unknown SOCIAL_PROVIDER fails before any row
-    try:
-        with transaction.atomic():
-            SocialProfile.objects.get_or_create(workspace_id=workspace.pk, defaults={'provider': provider.name})
-    except IntegrityError as exc:
-        raise WorkspaceGone() from exc
-    with transaction.atomic():
-        profile = SocialProfile.objects.select_for_update().filter(workspace_id=workspace.pk).first()
-        if profile is None:
-            raise WorkspaceGone()
-        if profile.provider_ref:
-            return profile
-        _lock_profile_creation()
-        if SocialProfile.objects.exclude(provider_ref='').count() >= settings.SOCIAL_MAX_PROFILES:
-            logger.error("social.profiles_limit workspace_id=%s limit=%s", workspace.pk, settings.SOCIAL_MAX_PROFILES)
-            raise ConnectRefused(409, 'social_profiles_limit', PROFILES_LIMIT)
+    for attempt in (1, 2):
         try:
-            created = provider_for(profile).create_profile(workspace)
-        except PermanentError as exc:
-            if exc.code == PROFILE_TITLE_TAKEN:
-                # A creation whose answer was lost made it: its key is only in the provider's dashboard.
-                logger.error("social.profile_title_taken workspace_id=%s detail=%s", workspace.pk, exc.detail)
-                raise ConnectRefused(409, PROFILE_TITLE_TAKEN, TITLE_TAKEN) from exc
-            raise
-        profile.provider_ref, profile.provider_id = created.ref, created.provider_id
-        # Nothing linked yet: the API knows it without asking.
-        profile.networks, profile.networks_read_at = {}, timezone.now()
-        profile.save(update_fields=['provider_ref', 'provider_id', 'networks', 'networks_read_at', 'updated_at'])
+            with transaction.atomic():
+                SocialProfile.objects.get_or_create(workspace_id=workspace.pk, defaults={'provider': provider.name})
+        except IntegrityError as exc:
+            raise WorkspaceGone() from exc
+        with transaction.atomic():
+            profile = SocialProfile.objects.select_for_update().filter(workspace_id=workspace.pk).first()
+            if profile is None:
+                if attempt == 1:
+                    # Deleted while this waited for its lock (the cleanup of a never-linked profile): claim it again.
+                    continue
+                raise WorkspaceGone()
+            # A link is on its way: the cleanup of never-linked profiles leaves this one alone for a while.
+            profile.connect_requested_at = timezone.now()
+            profile.save(update_fields=['connect_requested_at', 'updated_at'])
+            if profile.provider_ref:
+                return profile
+            _create_at_provider(workspace, profile)
+        break
     logger.info(
         "social.profile_created workspace_id=%s provider=%s provider_id=%s",
         workspace.pk, profile.provider, profile.provider_id,
     )
     _mirror_legacy_key(workspace.pk, profile)
     return profile
+
+
+def _create_at_provider(workspace, profile):
+    """
+    Creates the profile at the provider and keeps its key on ``profile``. Called
+    under the row's lock, in ensure_profile's transaction: waits for the other
+    creations (an advisory lock) and counts the profiles first.
+    """
+    from apps.integrations.models import SocialProfile
+
+    _lock_profile_creation()
+    if SocialProfile.objects.exclude(provider_ref='').count() >= settings.SOCIAL_MAX_PROFILES:
+        logger.error("social.profiles_limit workspace_id=%s limit=%s", workspace.pk, settings.SOCIAL_MAX_PROFILES)
+        raise ConnectRefused(409, 'social_profiles_limit', PROFILES_LIMIT)
+    try:
+        created = provider_for(profile).create_profile(workspace)
+    except PermanentError as exc:
+        if exc.code == PROFILE_TITLE_TAKEN:
+            # A creation whose answer was lost made it: its key is only in the provider's dashboard.
+            logger.error("social.profile_title_taken workspace_id=%s detail=%s", workspace.pk, exc.detail)
+            raise ConnectRefused(409, PROFILE_TITLE_TAKEN, TITLE_TAKEN) from exc
+        raise
+    profile.provider_ref, profile.provider_id = created.ref, created.provider_id
+    # Nothing linked yet: the API knows it without asking.
+    profile.networks, profile.networks_read_at = {}, timezone.now()
+    profile.save(update_fields=['provider_ref', 'provider_id', 'networks', 'networks_read_at', 'updated_at'])
 
 
 def _mirror_legacy_key(workspace_id, profile):
@@ -262,9 +288,11 @@ def accounts(workspace, fresh=False):
             raise RetryableError(failed, 'a recent read failed')
     reading = _key(workspace.pk, 'accounts_reading')
     try:
-        mine = cache.add(reading, 1, ACCOUNTS_READING_SECONDS)
+        # False only when another read holds the key. The fail-open cache of production answers None,
+        # without raising, while Redis is down: without the cache there is nobody to share the read with.
+        mine = cache.add(reading, 1, ACCOUNTS_READING_SECONDS) is not False
     except Exception:
-        mine = True  # without the cache, nobody to share the read with
+        mine = True
     if not mine:
         last = _last_known(profile)
         if last is not None:
@@ -438,22 +466,27 @@ def delete_orphan_profiles():
 def delete_unlinked_profiles():
     """
     Profiles of live workspaces that no network was ever linked to, older than
-    SOCIAL_UNLINKED_PROFILE_DAYS (an abandoned "Conectar"): the provider is
-    asked first, and one with any account linked is kept (and marked linked).
+    SOCIAL_UNLINKED_PROFILE_DAYS (an abandoned "Conectar"), and with no link
+    asked for in the last CONNECT_IN_PROGRESS (someone may be linking it right
+    now): the provider is asked first, and one with any account linked is kept
+    (and marked linked).
     The workspace makes a new one the next time it connects. Returns (deleted, kept).
     """
     from apps.integrations.models import SocialProfile
 
-    since = timezone.now() - timedelta(days=settings.SOCIAL_UNLINKED_PROFILE_DAYS)
+    now = timezone.now()
+    since = now - timedelta(days=settings.SOCIAL_UNLINKED_PROFILE_DAYS)
+    # Someone asked for a link lately: they may be linking it right now (the provider's list lags).
+    connecting = Q(connect_requested_at__gte=now - CONNECT_IN_PROGRESS)
     deleted = kept = 0
     candidates = SocialProfile.objects.filter(
         workspace__isnull=False, linked_at__isnull=True, created_at__lt=since,
-    ).exclude(provider_ref='').values_list('pk', flat=True)
+    ).exclude(provider_ref='').exclude(connecting).values_list('pk', flat=True)
     for profile_id in list(candidates):
         with transaction.atomic():
             profile = (
                 SocialProfile.objects.select_for_update(skip_locked=True)
-                .filter(pk=profile_id, linked_at__isnull=True).exclude(provider_ref='').first()
+                .filter(pk=profile_id, linked_at__isnull=True).exclude(provider_ref='').exclude(connecting).first()
             )
             if profile is None:
                 continue

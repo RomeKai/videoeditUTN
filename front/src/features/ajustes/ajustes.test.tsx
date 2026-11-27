@@ -447,6 +447,19 @@ describe('H3 · Redes sociales', () => {
     expect(screen.queryByRole('button', { name: /^Reconectar/ })).not.toBeInTheDocument();
   });
 
+  it('un backend que todavía no manda `allow_social_accounts` no muestra el candado: decide el backend', async () => {
+    renderScreen(<NetworksScreen />, {
+      scenario: 'plan-gratis',
+      prepare: () => {
+        const db = loadDb();
+        for (const plan of db.plans) delete plan.allow_social_accounts;
+        saveDb(db);
+      },
+    });
+    expect(await screen.findByRole('button', { name: 'Conectar YouTube' })).toBeInTheDocument();
+    expect(screen.queryByText(/Disponible en el plan/)).not.toBeInTheDocument();
+  });
+
   it('no se muestra a un Lector', async () => {
     renderScreen(<NetworksScreen />, { scenario: 'rol-lector' });
     expect(await screen.findByRole('heading', { name: /No tenés acceso a esto/ })).toBeInTheDocument();

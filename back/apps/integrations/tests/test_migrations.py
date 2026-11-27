@@ -101,6 +101,10 @@ class NetworksPerWorkspaceMigrationTests(TransactionTestCase):
             _migrate(self.after)
         text = "\n".join(statements).upper()
         self.assertIn("SET LOCAL LOCK_TIMEOUT = '5S'", text)
+        # Before the first statement that takes a lock (the AddFields of the columns).
+        upper = [sql.upper() for sql in statements]
+        first_alter = next(index for index, sql in enumerate(upper) if sql.startswith("ALTER TABLE"))
+        self.assertLess(next(index for index, sql in enumerate(upper) if "LOCK_TIMEOUT" in sql), first_alter)
         self.assertIn('ALTER COLUMN WORKSPACE_ID DROP NOT NULL', text)
         # Re-creating the foreign key takes ACCESS EXCLUSIVE on users_workspace while old containers serve.
         self.assertNotIn("FOREIGN KEY", text)

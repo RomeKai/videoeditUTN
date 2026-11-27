@@ -71,7 +71,7 @@ function allowsMore(kind: PlanLimitKind, current: Plan | null): (plan: Plan) => 
       case 'crossposting':
         return plan.allow_crossposting;
       case 'social':
-        return plan.allow_social_accounts;
+        return plan.allow_social_accounts === true;
       case 'seats':
         return plan.max_members > (current?.max_members ?? 1);
       default:

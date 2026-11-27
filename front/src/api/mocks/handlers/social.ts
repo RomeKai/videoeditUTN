@@ -244,7 +244,7 @@ export const socialHandlers = [
     }
     // check_can_connect: a paid plan (`allow_social_accounts`; no plan, no limits) and a verified email.
     const plan = planOf(db, workspace.id);
-    if (plan && !plan.allow_social_accounts) throw new MockHttpError(403, { error: CONNECT_PLAN_DENIED, code: 'social_accounts' });
+    if (plan && plan.allow_social_accounts === false) throw new MockHttpError(403, { error: CONNECT_PLAN_DENIED, code: 'social_accounts' });
     if (!user.is_email_verified) throw new MockHttpError(403, { error: CONNECT_EMAIL_NOT_VERIFIED, code: 'email_not_verified' });
     // The fake authorization window of the network lives in the app (dev route).
     const origin = app ?? (body.return_url ? new URL(body.return_url).origin : (request.headers.get('Origin') ?? 'http://localhost:3000'));

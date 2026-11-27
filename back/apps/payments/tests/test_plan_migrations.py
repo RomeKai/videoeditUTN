@@ -175,3 +175,27 @@ class SeededPlansMigrationTests(TransactionTestCase):
                 self.migrate(LATEST)
 
                 self.assertIsNone(cache.get(PUBLIC_PLANS_CACHE_KEY))
+
+
+class SocialAccountsFlagMigrationTests(TransactionTestCase):
+    """Review of #187: 0019 adds a column to a table every workspace request reads; it must not queue them."""
+
+    def tearDown(self):
+        call_command('migrate', verbosity=0)
+        clear_local_caches()
+
+    def test_the_lock_wait_is_short_from_the_first_statement(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest("the statements are PostgreSQL's")
+        MigrationExecutor(connection).migrate([('payments', '0018_low_balance_notice')])
+        statements = []
+
+        def keep(execute, sql, params, many, context):
+            statements.append(str(sql).upper())
+            return execute(sql, params, many, context)
+
+        with connection.execute_wrapper(keep):
+            MigrationExecutor(connection).migrate([('payments', '0019_conectar_redes_en_planes_pagos')])
+        first_alter = next(index for index, sql in enumerate(statements) if sql.startswith('ALTER TABLE'))
+        timeout = next(index for index, sql in enumerate(statements) if 'LOCK_TIMEOUT' in sql)
+        self.assertLess(timeout, first_alter)
