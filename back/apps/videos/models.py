@@ -29,6 +29,18 @@ class BrandKit(models.Model):
     is_default = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        constraints = [
+            # One default per workspace at most (none is valid). The views keep
+            # it with a lock (BrandKitViewSet._save_one_default); this is the
+            # last line against any other writer.
+            models.UniqueConstraint(
+                fields=['workspace'],
+                condition=models.Q(is_default=True),
+                name='one_default_brand_kit_per_workspace',
+            ),
+        ]
+
     def __str__(self):
         return f"{self.name} ({self.workspace.name})"
 

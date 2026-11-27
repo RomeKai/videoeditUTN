@@ -7,6 +7,8 @@ from django.test import override_settings
 from rest_framework.test import APIClient
 from rest_framework.throttling import ScopedRateThrottle
 
+from .clocks import frozen_clocks
+
 pytestmark = pytest.mark.django_db
 
 LOGIN_URL = "/api/token/"
@@ -15,28 +17,10 @@ REFRESH_URL = "/api/token/refresh/"
 WAIT_IN_SECONDS = re.compile(r"(\d+)\s*segundos?")
 
 
-# A fixed instant, 37 s into a 15-minute window (and into its hour).
-NOW = 1_800_000_037.0
-
-
 @pytest.fixture(autouse=True)
-def frozen_clocks():
-    """
-    Time does not pass during a test of this file, however slow the machine
-    is: these tests count attempts inside windows (a minute per IP, 15
-    minutes and an hour per account) and inside the 5 s cooldown of the
-    cache's circuit breaker. On a loaded runner a handful of logins (each one
-    hashes a password) took longer than a cooldown, or than the minute.
-
-    - the breaker's clock (apps.core.cache._now);
-    - DRF's throttle timer (bound to time.time when the class was defined);
-    - time.time, which LoginFailureGuard and LocMem's expiry read.
-
-    A test that needs time to move patches time.time again inside.
-    """
-    with mock.patch("apps.core.cache._now", return_value=1000.0), \
-            mock.patch.object(ScopedRateThrottle, "timer", return_value=NOW), \
-            mock.patch("time.time", return_value=NOW):
+def frozen():
+    """Time does not pass during a test of this file (clocks.frozen_clocks)."""
+    with frozen_clocks():
         yield
 
 
@@ -68,6 +52,28 @@ def test_the_login_is_limited_per_ip(user):
     assert int(blocked["Retry-After"]) > 0
     # Another address still signs in.
     assert _login(_from("10.0.0.2"), password="password").status_code == 200
+
+
+def test_ipv6_counts_by_its_64(user):
+    """An IPv6 client can take a new address of its /64 for every request: they all share the limit."""
+    answers = [_login(_from(f"2001:db8:5:6::{n:x}"), email=f"nadie{n}@test.com").status_code for n in range(1, 11)]
+    blocked = _login(_from("2001:db8:5:6:abcd::1"), password="password")
+
+    assert answers == [401] * 10
+    assert blocked.status_code == 429
+    assert _login(_from("2001:db8:5:7::1"), password="password").status_code == 200
+
+
+@override_settings(LOGIN_FAILURE_RATES={"account_ip": "3/15m", "account": "100/h"})
+def test_the_failures_of_an_account_from_one_ipv6_64_share_their_window(user, no_ip_limit):
+    """LoginFailureGuard counts per account and IP: an IPv6 client cannot reset it with a new address of its /64."""
+    failures = [_login(_from(f"2001:db8:7:8::{n}")).status_code for n in range(1, 4)]
+    neighbour = _login(_from("2001:db8:7:8:ffff::1"), password="password")
+    elsewhere = _login(_from("2001:db8:7:9::1"), password="password")
+
+    assert failures == [401] * 3
+    assert neighbour.status_code == 429
+    assert elsewhere.status_code == 200
 
 
 def test_a_forged_x_forwarded_for_does_not_escape_the_ip_limit(user):

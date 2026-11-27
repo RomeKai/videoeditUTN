@@ -21,7 +21,18 @@ export const RegisterResponse = z.object({
   id: z.string().uuid(),
   email: z.string().email(),
   is_email_verified: z.boolean(),
+  /** Kept by this browser and sent with the link of the email: only here does the link work without a session. */
+  signup_nonce: z.string().min(1),
 });
+
+/** A link of a new account opened outside the browser that signed up: nothing changed; sign in and open it again. */
+export const SignedOut = z.object({ signed_in: z.literal(false) });
+
+export const VerifyEmailRequest = z.object({ token: z.string().min(1), signup_nonce: z.string().min(1).optional() });
+export type VerifyEmailRequest = z.infer<typeof VerifyEmailRequest>;
+
+export const VerifyEmailResult = z.union([TokenPair, SignedOut]);
+export type VerifyEmailResult = z.infer<typeof VerifyEmailResult>;
 
 export const login = defineEndpoint({
   id: 'auth.login',
@@ -55,7 +66,10 @@ export const refreshToken = defineEndpoint({
   auth: false,
   workspaceScoped: false,
   errors: [
-    { status: 401, when: 'Refresh vencido, inválido o revocado (rotado, o la contraseña cambió). La UI abre el diálogo D9 (sesión vencida).' },
+    {
+      status: 401,
+      when: 'Refresh vencido, inválido o revocado (rotado, la contraseña cambió, o se cerró la sesión en todos los dispositivos: `code: "session_revoked"`). La UI abre el diálogo D9 (sesión vencida).',
+    },
     { status: 429, when: 'Más de 30 renovaciones por minuto desde la misma IP.' },
   ],
   backend: { status: 'exists', source: 'back/apps/users/views.py · TokenRefreshThrottledView (TokenRefreshView); SIMPLE_JWT en backend/settings/base.py (acceso 25 min)' },
@@ -75,13 +89,15 @@ export const register = defineEndpoint({
   errors: [
     {
       status: 400,
-      when: 'Validación por campo (contraseña débil; email ya usado con `code: "unique"`, que la UI muestra con un link a Iniciar sesión). Se muestra debajo de cada campo.',
+      when: 'Validación por campo, en castellano. Contraseña que no cumple las reglas (`password`, una frase por regla). `terms_accepted` falta o no es `true`. Dominio que no se puede codificar, o dirección que el servidor de email rechaza (en `email`). Email ya usado (con cualquier escritura de su dominio): `email: [{ message, code: "unique" }]`, que la UI muestra con un link a Iniciar sesión; llega solo cuando todo lo demás está bien, así un registro que no crearía nada no dice qué emails tienen cuenta. Se muestra debajo de cada campo.',
     },
+    { status: 429, when: 'Más de 20 registros por hora desde la misma IP (`THROTTLE_REGISTER`). `detail` dice en castellano cuánto esperar.' },
+    { status: 502, when: 'El servidor de email no aceptó el email de verificación. No se crea nada: se puede probar de nuevo.' },
   ],
   backend: {
-    status: 'proposed',
-    gap: 1,
-    note: 'Decir "email ya usado" permite averiguar qué emails tienen cuenta. El mapa (A2) lo pide así; para no ayudar a enumerar, el endpoint necesita un límite de intentos por IP. Recuperar contraseña y reenviar la verificación no lo revelan.',
+    status: 'exists',
+    source: 'back/apps/users/views_auth.py · RegisterView (RegisterSerializer); el link: apps/users/email_verification.py · send_signup_verification',
+    note: 'Crea la cuenta sin verificar, su workspace con el plan por defecto (la señal de User con `create_owned_workspace`: billetera y el usuario como Admin activo; se llama "Espacio de <nombre>") y manda el link de A3 (`/verificar?token=…`, vence en 24 h). El email se guarda normalizado (dominio en punycode y minúsculas): la respuesta trae el guardado. `signup_nonce` es de este navegador: la web lo guarda y lo manda con el link (`auth.verifyEmail`); el backend guarda solo su hash. Decir "email ya usado" permite averiguar qué emails tienen cuenta: el mapa (A2) lo pide así, y por eso el límite por IP. «Reenviar» de A3 espera 60 s desde el registro. Hasta verificar, el login igual entra (falta el 403 propuesto de `auth.login`).',
   },
   screens: ['A2', 'A5'],
 });
@@ -91,9 +107,9 @@ export const verifyEmail = defineEndpoint({
   method: 'POST',
   path: '/api/v1/auth/verify-email/',
   summary:
-    'Verifica el email con el token del link. El de una cuenta nueva deja la sesión iniciada; el de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta.',
-  request: z.object({ token: z.string().min(1) }),
-  response: TokenPair,
+    'Verifica el email con el token del link. El de una cuenta nueva verifica e inicia la sesión en el navegador que se registró (`signup_nonce`) o con la sesión de esa cuenta; en otro no cambia nada. El de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta.',
+  request: VerifyEmailRequest,
+  response: VerifyEmailResult,
   // The session goes with the link when there is one: the backend compares its account with the link's.
   auth: 'optional',
   workspaceScoped: false,
@@ -107,7 +123,7 @@ export const verifyEmail = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/users/views.py · VerifyEmailView; el token: apps/users/email_verification.py',
-    note: 'El token dice para qué es (cambio de email o registro). Hoy solo el cambio de email manda el link: el registro todavía no existe (hueco 1). El link de un cambio pasa `pending_email` a `email`; deja de servir si el cambio se cancela.',
+    note: 'El token dice para qué es (cambio de email o registro). El de registro lo mandan `auth.register` y `auth.resendVerification`. Con el `signup_nonce` del registro (vale 24 h desde el registro) o con la sesión de esa cuenta, verifica, descarta un `pending_email` pedido antes y devuelve el par JWT. Si no, responde `{ signed_in: false }`, no cambia nada y el link sigue sirviendo: la UI lleva a `/login?motivo=verificar&siguiente=<el link>` ("Iniciá sesión para terminar de verificar tu email") y, con la sesión, el mismo link verifica. Así, quien se registró con un email ajeno no consigue una cuenta verificada (`may_simulate` de los pagos simulados confía en `is_email_verified`) ni le inicia la sesión a su dueño: el dueño, que no sabe esa contraseña, entra recuperándola, lo que verifica el email y cierra las sesiones del ocupante. Por eso el login tiene que seguir dejando entrar a una cuenta sin verificar: el 403 propuesto de `auth.login` rompería este camino. El link de un cambio pasa `pending_email` a `email` y devuelve el par; deja de servir si el cambio se cancela. Los dos sirven una vez y vencen en 24 h.',
   },
   screens: ['A3'],
 });
@@ -122,8 +138,19 @@ export const resendVerification = defineEndpoint({
   successStatus: 204,
   auth: false,
   workspaceScoped: false,
-  errors: [{ status: 429, when: 'Se pidió hace menos de 60 s. La UI deja el botón deshabilitado con la cuenta regresiva.' }],
-  backend: { status: 'proposed', gap: 1 },
+  errors: [
+    { status: 400, when: 'El email falta o no tiene forma de email (la UI lo revisa antes).' },
+    {
+      status: 429,
+      when: 'Se pidió hace menos de 60 s para ese email (o se registró hace menos de 60 s), exista o no la cuenta; o más de 20 emails por hora desde la misma IP, contando los de recuperar contraseña. `detail`: "Demasiados intentos. Probá de nuevo en N segundos." La UI deja el botón deshabilitado con la cuenta regresiva.',
+    },
+    { status: 502, when: 'La cola de emails no responde. Igual para cualquier email: no dice si tiene cuenta.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views_auth.py · ResendVerificationView; el envío: apps/users/tasks.py · send_account_email',
+    note: 'Solo manda el email a una cuenta activa sin verificar. Lo manda el worker de Celery: puede tardar si la cola está ocupada. El pedido hace lo mismo con cuenta o sin ella (una consulta y una tarea), así la respuesta y su tiempo no dicen nada.',
+  },
   screens: ['A3'],
 });
 
@@ -137,11 +164,18 @@ export const requestPasswordReset = defineEndpoint({
   successStatus: 204,
   auth: false,
   workspaceScoped: false,
-  errors: [],
+  errors: [
+    { status: 400, when: 'El email falta o no tiene forma de email (la UI lo revisa antes).' },
+    {
+      status: 429,
+      when: 'Se pidió hace menos de 60 s para ese email, exista o no la cuenta; o más de 20 emails por hora desde la misma IP, contando los de reenviar la verificación. La UI lo toma como enviado y muestra la espera.',
+    },
+    { status: 502, when: 'La cola de emails no responde. Igual para cualquier email.' },
+  ],
   backend: {
-    status: 'proposed',
-    gap: 1,
-    note: 'El link del email (N2) tiene que ser `/recuperar?token=<token>&email=<email>`: con el email la pantalla dice de quién es la cuenta e inicia sesión después de guardar ("Guardar y entrar").',
+    status: 'exists',
+    source: 'back/apps/users/views_auth.py · PasswordResetView; el link: apps/users/email_verification.py · send_password_reset',
+    note: 'El link del email (N2) es `/recuperar#token=<token>&email=<email>`, en el fragmento: el navegador no lo manda, así no queda en los logs del host de la web. La pantalla lo lee de `location.hash` y lo saca de la URL. Con el email de la cuenta dice de quién es e inicia sesión después de guardar ("Guardar y entrar"). Vence en 24 h (`PASSWORD_RESET_TIMEOUT`), sirve una vez y deja de servir con cualquier cambio de contraseña. Una cuenta sin contraseña usable (login social) también lo recibe: así crea una. Lo manda el worker; el pedido hace lo mismo con cuenta o sin ella.',
   },
   screens: ['A4', 'D9'],
 });
@@ -156,8 +190,18 @@ export const confirmPasswordReset = defineEndpoint({
   successStatus: 204,
   auth: false,
   workspaceScoped: false,
-  errors: [{ status: 400, when: 'Token inválido o vencido, o contraseña débil (error en `password`).' }],
-  backend: { status: 'proposed', gap: 1 },
+  errors: [
+    {
+      status: 400,
+      when: 'Token inválido, vencido o ya usado (error en `token`: "El link no es válido o ya venció."), o contraseña que no cumple las reglas (error en `password`). El token se revisa primero.',
+    },
+    { status: 429, when: 'Más de 20 intentos por hora desde la misma IP.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views_auth.py · PasswordResetConfirmView (PasswordResetTokenGenerator de Django)',
+    note: 'Como `POST /me/password/`, cierra todas las sesiones de la cuenta (los tokens de la contraseña vieja dan 401). El link llegó al email de la cuenta, así que también la deja verificada y descarta lo que dejó quien tenía la contraseña antes: un `pending_email` y el `signup_nonce` del registro.',
+  },
   screens: ['A4'],
 });
 
@@ -170,8 +214,15 @@ export const logout = defineEndpoint({
   response: NoContent,
   successStatus: 204,
   workspaceScoped: false,
-  errors: [],
-  backend: { status: 'proposed', gap: 2, note: 'La app token_blacklist de SimpleJWT ya está instalada (la usa el cambio de contraseña).' },
+  errors: [
+    { status: 400, when: '`refresh` inválido, vencido, de otro tipo o de otra cuenta que la de la sesión. No se revoca nada.' },
+    { status: 429, when: 'Más de 60 por hora para el mismo usuario.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/users/views_auth.py · LogoutView; apps/users/tokens.py · revoke_sessions',
+    note: 'Pide la sesión (Bearer) y el refresh tiene que ser de esa misma cuenta. Un refresh ya revocado responde 204: si el token de acceso había vencido, el cliente renovó el par para mandar el pedido, y `useLogout` cierra después también el refresh nuevo. Con `all_devices` se revocan todos los refresh y también los tokens de acceso ya emitidos, en el momento: en otro dispositivo el próximo pedido da 401 `code: "session_revoked"`.',
+  },
   screens: ['I1', 'Barra'],
 });
 

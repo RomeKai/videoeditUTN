@@ -21,9 +21,9 @@ export function useBrandKit(id: string | null | undefined) {
 }
 
 /**
- * Only one default kit per workspace (map F2). The backend does not enforce it yet, so after
- * marking one the others that still say default are unmarked from here. With a backend that
- * already does it (or the mocks) the fresh list has no other default and nothing is sent.
+ * Only one default kit per workspace (map F2). The backend keeps it since `feat/brand-kits-duplicar`
+ * (marking one unmarks the others in the same transaction), and so do the mocks: the fresh list has
+ * no other default and nothing is sent. This stays as a net for a backend older than that.
  *
  * Only kits of the active workspace. The backend scopes the list by `X-Workspace-Id` since PR #125,
  * so the comparison below is defensive: each workspace keeps its own default, and a kit of another

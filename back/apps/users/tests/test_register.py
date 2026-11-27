@@ -1,0 +1,534 @@
+"""Sign-up (A2), the link that verifies the new account (A3) and resending it."""
+import smtplib
+import time
+from datetime import timedelta
+from unittest import mock
+from urllib.parse import parse_qs, urlparse
+
+import pytest
+from django.conf import settings
+from django.core import mail
+from django.db import connection
+from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
+from kombu.exceptions import OperationalError as BrokerError
+from rest_framework.test import APIClient
+from rest_framework.throttling import ScopedRateThrottle
+
+from apps.core.structured_logging import JsonFormatter
+from apps.payments.models import SubscriptionPlan, Wallet
+from apps.users import tasks
+from apps.users.email_verification import SIGNUP, make_token
+from apps.users.models import User, Workspace, WorkspaceMember
+from apps.users.tests.test_login_throttle import REDIS_DOWN, _refused
+from apps.users.throttles import EmailAttemptThrottle
+
+pytestmark = pytest.mark.django_db
+
+REGISTER_URL = "/api/v1/auth/register/"
+RESET_URL = "/api/v1/auth/password-reset/"
+VERIFY_URL = "/api/v1/auth/verify-email/"
+RESEND_URL = "/api/v1/auth/verify-email/resend/"
+LOGIN_URL = "/api/token/"
+ME_URL = "/api/v1/me/"
+PASSWORD = "una-clave-Nueva-2026"
+TAKEN = [{"message": "Ya existe una cuenta con este email.", "code": "unique"}]
+
+
+def _register(api=None, **changes):
+    body = {"name": "Ana Gómez", "email": "ana@example.com", "password": PASSWORD, "terms_accepted": True, **changes}
+    return (api or APIClient()).post(REGISTER_URL, {k: v for k, v in body.items() if v is not None}, format="json")
+
+
+def _signup_token(message):
+    link = next(word for word in message.body.split() if "/verificar?" in word)
+    query = parse_qs(urlparse(link).query)
+    return query, link
+
+
+@pytest.fixture
+def free_plan_row(db):
+    plan, _ = SubscriptionPlan.objects.get_or_create(name=settings.DEFAULT_PLAN_NAME)
+    return plan
+
+
+def test_signing_up_creates_the_account_its_workspace_and_sends_the_link(free_plan_row):
+    response = _register()
+
+    assert response.status_code == 201
+    body = response.json()
+    user = User.objects.get(email="ana@example.com")
+    nonce = body.pop("signup_nonce")
+    assert body == {"id": str(user.pk), "email": "ana@example.com", "is_email_verified": False}
+    # The account keeps only the hash of what this browser got.
+    assert len(nonce) >= 32 and user.signup_nonce_hash and nonce not in user.signup_nonce_hash
+    assert (user.first_name, user.last_name) == ("Ana", "Gómez")
+    assert user.check_password(PASSWORD)
+    assert user.terms_accepted_at is not None
+    assert not user.is_email_verified
+    # The sign-up path of User (signals): own workspace on the default plan, its wallet, the user as active Admin.
+    workspace = Workspace.objects.get(owner=user)
+    assert workspace.name == "Espacio de Ana"
+    assert workspace.subscription_plan == free_plan_row
+    assert Wallet.objects.filter(workspace=workspace).exists()
+    assert WorkspaceMember.objects.filter(
+        workspace=workspace, user=user, role=WorkspaceMember.Role.ADMIN, status=WorkspaceMember.Status.ACTIVE,
+    ).exists()
+    assert len(mail.outbox) == 1
+    message = mail.outbox[0]
+    assert message.to == ["ana@example.com"]
+    query, link = _signup_token(message)
+    assert link.startswith("http://localhost:3000/verificar?")
+    # No `siguiente`: A3 goes to the page it remembered or to the welcome.
+    assert set(query) == {"token"}
+    assert "vence en 24 horas" in message.body
+    # Nothing the person typed travels in the official email.
+    assert "Ana" not in message.body and "Gómez" not in message.body
+
+
+def test_in_the_browser_that_signed_up_the_link_verifies_and_signs_in_once(free_plan_row):
+    nonce = _register().json()["signup_nonce"]
+    query, _ = _signup_token(mail.outbox[0])
+
+    verified = APIClient().post(VERIFY_URL, {"token": query["token"][0], "signup_nonce": nonce}, format="json")
+
+    assert verified.status_code == 200
+    tokens = verified.json()
+    assert set(tokens) == {"access", "refresh"}
+    api = APIClient()
+    api.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}")
+    me = api.get(ME_URL).json()
+    assert me["email"] == "ana@example.com"
+    assert me["is_email_verified"] is True
+    # Used once: the account is verified, the link no longer matches it, and the nonce is gone.
+    again = APIClient().post(VERIFY_URL, {"token": query["token"][0], "signup_nonce": nonce}, format="json")
+    assert again.status_code == 400
+    assert again.json() == {"token": ["El link no es válido o ya venció."]}
+    assert User.objects.get(email="ana@example.com").signup_nonce_hash is None
+
+
+def test_a_squatter_cannot_sign_the_owner_of_the_email_into_its_account(free_plan_row):
+    """
+    Someone signs up with another person's email and a password of their own. The owner opens the
+    official email: the link changes nothing (no session, no verified account for the squatter).
+    The owner's password reset verifies the email and ends the squatter's sessions and password.
+    """
+    assert _register(email="victima@example.com", password="del-ocupante-2026").status_code == 201
+    squatter_session = APIClient().post(LOGIN_URL, {"email": "victima@example.com", "password": "del-ocupante-2026"}, format="json").json()
+    query, _ = _signup_token(mail.outbox[0])
+
+    # The owner's browser: no nonce of that sign-up, no session.
+    opened = APIClient().post(VERIFY_URL, {"token": query["token"][0]}, format="json")
+
+    assert opened.status_code == 200
+    assert opened.json() == {"signed_in": False}
+    assert not User.objects.get(email="victima@example.com").is_email_verified
+    # The owner signs in through password reset: every session of the squatter ends.
+    assert APIClient().post("/api/v1/auth/password-reset/", {"email": "victima@example.com"}, format="json").status_code == 204
+    reset_link = next(word for word in mail.outbox[-1].body.split() if "/recuperar#" in word)
+    reset_token = parse_qs(urlparse(reset_link).fragment)["token"][0]
+    confirmed = APIClient().post("/api/v1/auth/password-reset/confirm/", {"token": reset_token, "password": "de-la-duena-2026"}, format="json")
+    assert confirmed.status_code == 204
+    stale = APIClient()
+    stale.credentials(HTTP_AUTHORIZATION=f"Bearer {squatter_session['access']}")
+    assert stale.get(ME_URL).status_code == 401
+    assert APIClient().post(LOGIN_URL, {"email": "victima@example.com", "password": "del-ocupante-2026"}, format="json").status_code == 401
+    assert User.objects.get(email="victima@example.com").is_email_verified
+
+
+def test_a_link_opened_without_the_nonce_changes_nothing_and_keeps_working(free_plan_row, settings):
+    """
+    The reviewer's probe: verifying there handed the squatter, still signed in with its own password,
+    a verified account, which may_simulate (simulated payments) trusts as proof of the mailbox.
+    """
+    from apps.payments.services.payment_providers import may_simulate
+
+    settings.DEBUG = False
+    settings.PAYMENTS_SIMULATE_ALLOWED_EMAILS = ["victima@example.com"]
+    assert _register(email="victima@example.com", password="del-ocupante-2026").status_code == 201
+    token = _signup_token(mail.outbox[0])[0]["token"][0]
+    account = User.objects.get(email="victima@example.com")
+    nonce_hash = account.signup_nonce_hash
+
+    opened = APIClient().post(VERIFY_URL, {"token": token}, format="json")
+
+    assert opened.json() == {"signed_in": False}
+    account.refresh_from_db()
+    assert (account.is_email_verified, account.signup_nonce_hash) == (False, nonce_hash)
+    assert may_simulate(account) is False
+    # Not spent: whoever has the password signs in and opens the same link, with the session now.
+    session = APIClient().post(LOGIN_URL, {"email": "victima@example.com", "password": "del-ocupante-2026"}, format="json").json()
+    api = APIClient()
+    api.credentials(HTTP_AUTHORIZATION=f"Bearer {session['access']}")
+    again = api.post(VERIFY_URL, {"token": token}, format="json")
+    assert set(again.json()) == {"access", "refresh"}
+    account.refresh_from_db()
+    assert account.is_email_verified and account.signup_nonce_hash is None
+
+
+def test_the_nonce_lasts_what_the_link_lasts(free_plan_row):
+    nonce = _register().json()["signup_nonce"]
+    token = _signup_token(mail.outbox[0])[0]["token"][0]
+    # Signed up longer ago than a verification link lasts (the link of a resend can be newer).
+    User.objects.filter(email="ana@example.com").update(
+        date_joined=timezone.now() - timedelta(seconds=settings.EMAIL_VERIFICATION_MAX_AGE_SECONDS + 60),
+    )
+
+    opened = APIClient().post(VERIFY_URL, {"token": token, "signup_nonce": nonce}, format="json")
+
+    assert opened.json() == {"signed_in": False}
+    assert not User.objects.get(email="ana@example.com").is_email_verified
+
+
+def test_a_wrong_nonce_changes_nothing(free_plan_row):
+    _register()
+    query, _ = _signup_token(mail.outbox[0])
+
+    opened = APIClient().post(VERIFY_URL, {"token": query["token"][0], "signup_nonce": "otro-navegador"}, format="json")
+
+    assert opened.json() == {"signed_in": False}
+    assert not User.objects.get(email="ana@example.com").is_email_verified
+
+
+def test_verifying_a_new_account_drops_a_change_of_email_asked_before(free_plan_row):
+    nonce = _register().json()["signup_nonce"]
+    # Whoever has the password asks for another email before the link is opened (a resent link has it).
+    User.objects.filter(email="ana@example.com").update(pending_email="ocupante@example.com")
+    token = make_token(User.objects.get(email="ana@example.com"), SIGNUP)
+
+    APIClient().post(VERIFY_URL, {"token": token, "signup_nonce": nonce}, format="json")
+
+    account = User.objects.get(email="ana@example.com")
+    assert account.is_email_verified and account.pending_email is None
+
+
+@pytest.mark.parametrize("email", ["TESTER@test.com", "tester@ＴＥＳＴ.com", "Tester@TEST.COM"])
+def test_an_email_with_an_account_under_any_spelling_is_refused(user, email):
+    response = _register(email=email)
+
+    assert response.status_code == 400
+    assert response.json() == {"email": TAKEN}
+    assert User.objects.count() == 1
+    assert mail.outbox == []
+
+
+@pytest.mark.parametrize("changes", [
+    {"password": "1"},
+    {"terms_accepted": False},
+    {"name": ""},
+    {"password": "12345678", "terms_accepted": False},
+])
+def test_a_sign_up_that_creates_nothing_never_says_whether_the_email_has_an_account(user, changes):
+    taken = _register(email="tester@test.com", **changes)
+    free = _register(email="nadie@test.com", **changes)
+
+    assert taken.status_code == free.status_code == 400
+    assert taken.json() == free.json()
+    assert "email" not in taken.json()
+    assert User.objects.count() == 1 and mail.outbox == []
+
+
+def test_two_sign_ups_of_one_email_at_once_end_in_the_unique_error(free_plan_row, user):
+    """The second one passed the check before the first committed: the constraint stops it, as a 400."""
+    with mock.patch("apps.users.serializers.email_taken", return_value=False):
+        response = _register(email="TESTER@test.com")
+
+    assert response.status_code == 400
+    assert response.json() == {"email": TAKEN}
+    assert User.objects.count() == 1
+    assert mail.outbox == []
+
+
+def test_a_unicode_domain_and_its_punycode_are_the_same_email(free_plan_row):
+    assert _register(email="ana@mañana.com").status_code == 201
+    assert User.objects.get().email == "ana@xn--maana-pta.com"
+
+    assert _register(email="ana@xn--MAANA-pta.com").json() == {"email": TAKEN}
+
+
+def test_the_email_is_stored_normalized_and_signs_in_with_any_spelling(free_plan_row):
+    assert _register(email="Ana@ＥＸＡＭＰＬＥ.com").status_code == 201
+
+    assert User.objects.get().email == "Ana@example.com"
+    login = APIClient().post(LOGIN_URL, {"email": "ana@example.com", "password": PASSWORD}, format="json")
+    assert login.status_code == 200
+
+
+@pytest.mark.parametrize("terms", [False, None, "no"])
+def test_the_terms_must_be_accepted(terms):
+    response = _register(terms_accepted=terms)
+
+    assert response.status_code == 400
+    assert response.json() == {"terms_accepted": ["Para crear la cuenta tenés que aceptar los términos."]}
+    assert not User.objects.exists()
+
+
+@pytest.mark.parametrize(
+    "changes, errors",
+    [
+        ({"password": "12345678"}, ["Esa contraseña es muy común. Elegí otra.", "La contraseña no puede ser solo números."]),
+        ({"password": "corta"}, ["La contraseña tiene que tener 8 caracteres como mínimo."]),
+        ({"email": "anagomez@example.com", "password": "anagomez@example"}, ["La contraseña se parece demasiado a tu nombre o a tu email."]),
+    ],
+)
+def test_weak_passwords_get_the_rules_in_spanish(changes, errors):
+    response = _register(**changes)
+
+    assert response.status_code == 400
+    assert response.json() == {"password": errors}
+    assert not User.objects.exists()
+
+
+def test_every_field_says_what_is_wrong_in_spanish():
+    response = APIClient().post(REGISTER_URL, {"name": "", "email": "no-es-un-email"}, format="json")
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "name": ["Escribí tu nombre."],
+        "email": ["Revisá el email: no parece completo."],
+        "password": ["Elegí una contraseña."],
+        "terms_accepted": ["Para crear la cuenta tenés que aceptar los términos."],
+    }
+
+
+def test_a_domain_that_cannot_be_encoded_is_a_field_error():
+    response = _register(email="ana@℀.com")
+
+    assert response.status_code == 400
+    assert response.json() == {"email": ["El dominio del email no es válido. Revisá que esté bien escrito."]}
+
+
+def test_an_email_server_that_fails_saves_nothing(free_plan_row, caplog):
+    with mock.patch("apps.users.email_verification.send_mail", side_effect=smtplib.SMTPServerDisconnected("caído")), \
+            caplog.at_level("WARNING", logger="apps.users.views_auth"):
+        response = _register()
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "No pudimos mandar el email de verificación. Probá de nuevo en unos minutos."
+    assert not User.objects.exists()
+    assert not Workspace.objects.exists()
+    assert [record.getMessage() for record in caplog.records if record.name == "apps.users.views_auth"] == [
+        "register.send_failed error=SMTPServerDisconnected",
+    ]
+
+
+def test_an_address_the_email_server_refuses_is_a_field_error(free_plan_row):
+    refused = smtplib.SMTPRecipientsRefused({"ana@example.com": (550, b"no such user")})
+    with mock.patch("apps.users.email_verification.send_mail", side_effect=refused):
+        response = _register()
+
+    assert response.status_code == 400
+    assert response.json() == {"email": ["El servidor de email rechazó esa dirección. Revisá que esté bien escrita."]}
+    assert not User.objects.exists()
+
+
+def test_a_token_in_the_header_is_not_read(free_plan_row):
+    api = APIClient()
+    api.credentials(HTTP_AUTHORIZATION="Bearer vencido")
+
+    assert _register(api).status_code == 201
+
+
+def test_ipv6_neighbours_of_one_64_share_the_limit_and_ipv4_does_not(free_plan_row):
+    with mock.patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"register": "1/hour"}):
+        first = _register(APIClient(REMOTE_ADDR="2001:db8:1:2::1"), email="a1@example.com")
+        neighbour = _register(APIClient(REMOTE_ADDR="2001:db8:1:2:ffff::9"), email="a2@example.com")
+        other_64 = _register(APIClient(REMOTE_ADDR="2001:db8:1:3::1"), email="a3@example.com")
+        ipv4 = [_register(APIClient(REMOTE_ADDR=f"10.1.2.{n}"), email=f"b{n}@example.com").status_code for n in (1, 2)]
+        mapped = _register(APIClient(REMOTE_ADDR="::ffff:10.1.2.1"), email="b9@example.com")
+
+    assert (first.status_code, neighbour.status_code, other_64.status_code) == (201, 429, 201)
+    assert ipv4 == [201, 201]
+    # An IPv4 address written as IPv6 is the same client.
+    assert mapped.status_code == 429
+
+
+def test_signing_up_is_limited_per_ip(free_plan_row):
+    with mock.patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"register": "3/hour"}):
+        answers = [_register(APIClient(REMOTE_ADDR="10.1.0.1"), email=f"ana{n}@example.com").status_code for n in range(3)]
+        # Also the ones that only learn the email is taken.
+        blocked = _register(APIClient(REMOTE_ADDR="10.1.0.1"), email="ana0@example.com")
+        elsewhere = _register(APIClient(REMOTE_ADDR="10.1.0.2"), email="otra@example.com")
+
+    assert answers == [201] * 3
+    assert blocked.status_code == 429
+    assert blocked.json()["detail"].startswith("Demasiados intentos. Probá de nuevo en ")
+    assert int(blocked["Retry-After"]) > 0
+    assert elsewhere.status_code == 201
+
+
+def test_with_redis_down_signing_up_is_still_limited(free_plan_row):
+    api = APIClient(REMOTE_ADDR="10.1.0.3")
+    with mock.patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"register": "3/hour"}), \
+            override_settings(CACHES=REDIS_DOWN), _refused():
+        answers = [_register(api, email=f"ana{n}@example.com").status_code for n in range(4)]
+
+    assert answers == [201] * 3 + [429]
+
+
+# --- Resend the verification ---
+
+
+def _resend(email, api=None):
+    return (api or APIClient()).post(RESEND_URL, {"email": email}, format="json")
+
+
+def _unverified(email="nuevo@example.com"):
+    return User.objects.create_user(username=email, email=email, password=PASSWORD)
+
+
+def test_resend_mails_a_new_link_to_an_unverified_account():
+    account = _unverified()
+
+    response = _resend("NUEVO@example.com")
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert len(mail.outbox) == 1
+    assert mail.outbox[0].to == [account.email]
+    query, _ = _signup_token(mail.outbox[0])
+    verified = APIClient().post(VERIFY_URL, {"token": query["token"][0]}, format="json")
+    assert verified.status_code == 200
+
+
+def test_resend_answers_204_and_mails_nothing_without_an_unverified_account(user):
+    User.objects.filter(pk=user.pk).update(is_email_verified=True)
+
+    verified = _resend("tester@test.com")
+    unknown = _resend("nadie@test.com")
+
+    assert (verified.status_code, unknown.status_code) == (204, 204)
+    assert mail.outbox == []
+
+
+def test_the_request_does_the_same_work_with_or_without_an_account(user):
+    """One query and one queued task either way; the email is sent by the worker, never in the request."""
+    answers = []
+    with mock.patch.object(tasks.send_account_email, "delay") as queued:
+        for url in (RESEND_URL, "/api/v1/auth/password-reset/"):
+            for email in ("TESTER@test.com", "nadie@test.com"):
+                with CaptureQueriesContext(connection) as queries:
+                    response = APIClient().post(url, {"email": email}, format="json")
+                answers.append((response.status_code, response.content, response.get("Content-Type"), len(queries)))
+
+    assert answers == [(204, b"", None, 1)] * 4
+    # Only the id goes to the queue, never the address.
+    assert [call.args for call in queued.call_args_list] == [
+        ("resend_verification", str(user.pk)),
+        ("resend_verification", None),
+        ("password_reset", str(user.pk)),
+        ("password_reset", None),
+    ]
+    assert mail.outbox == []
+
+
+def test_resend_is_once_every_60_seconds_per_email_with_or_without_an_account():
+    _unverified()
+    start = time.time()
+    with mock.patch.object(EmailAttemptThrottle, "timer", return_value=start):
+        first = [_resend(email).status_code for email in ("nuevo@example.com", "nadie@example.com")]
+        # Any spelling of the same address shares the wait.
+        again = [_resend(email) for email in ("Nuevo@EXAMPLE.com", "nadie@ｅｘａｍｐｌｅ.com")]
+    with mock.patch.object(EmailAttemptThrottle, "timer", return_value=start + 61):
+        later = [_resend(email).status_code for email in ("nuevo@example.com", "nadie@example.com")]
+
+    assert first == [204, 204]
+    assert [response.status_code for response in again] == [429, 429]
+    assert again[0].json() == again[1].json() == {"detail": "Demasiados intentos. Probá de nuevo en 60 segundos."}
+    assert later == [204, 204]
+    assert len(mail.outbox) == 2
+
+
+def test_after_signing_up_resend_waits_its_60_seconds(free_plan_row):
+    _register()
+
+    response = _resend("ana@example.com")
+
+    assert response.status_code == 429
+    assert len(mail.outbox) == 1
+
+
+def test_requests_an_ip_limit_refused_do_not_make_the_email_wait(user):
+    """From an IP over its limit, asking for someone's email again and again keeps nobody waiting."""
+    start = time.time()
+    with mock.patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"auth_email": "1/hour"}):
+        attacker = APIClient(REMOTE_ADDR="10.9.9.9")
+        with mock.patch.object(EmailAttemptThrottle, "timer", return_value=start):
+            assert attacker.post(RESET_URL, {"email": "otra@test.com"}, format="json").status_code == 204
+        refused = []
+        for minute in range(1, 4):
+            with mock.patch.object(ScopedRateThrottle, "timer", return_value=start + 61 * minute):
+                refused.append(attacker.post(RESET_URL, {"email": "tester@test.com"}, format="json").status_code)
+                refused.append(_resend("tester@test.com", attacker).status_code)
+        with mock.patch.object(ScopedRateThrottle, "timer", return_value=start + 61 * 3 + 30):
+            owner = APIClient(REMOTE_ADDR="10.8.8.8").post(RESET_URL, {"email": "tester@test.com"}, format="json")
+            owner_resend = _resend("tester@test.com", APIClient(REMOTE_ADDR="10.8.8.7"))
+
+    assert refused == [429] * 6
+    assert owner.status_code == 204
+    assert owner_resend.status_code == 204
+    assert [message.to for message in mail.outbox] == [["tester@test.com"], ["tester@test.com"]]
+
+
+def test_one_ip_cannot_send_emails_to_many_addresses():
+    with mock.patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"auth_email": "3/hour"}):
+        api = APIClient(REMOTE_ADDR="10.1.1.1")
+        answers = [_resend(f"nadie{n}@example.com", api).status_code for n in range(2)]
+        # Shared with password reset.
+        answers.append(api.post("/api/v1/auth/password-reset/", {"email": "otro@example.com"}, format="json").status_code)
+        answers.append(_resend("ultimo@example.com", api).status_code)
+
+    assert answers == [204, 204, 204, 429]
+
+
+def test_with_redis_down_resend_is_still_limited():
+    with override_settings(CACHES=REDIS_DOWN), _refused():
+        answers = [_resend("nadie@example.com").status_code for _ in range(2)]
+
+    assert answers == [204, 429]
+
+
+def test_a_queue_that_does_not_answer_is_the_same_502_for_every_email(user):
+    with mock.patch.object(tasks.send_account_email, "delay", side_effect=BrokerError("down")):
+        answers = [_resend(email) for email in ("tester@test.com", "nadie@test.com")]
+
+    assert [response.status_code for response in answers] == [502, 502]
+    assert answers[0].json() == answers[1].json() == {"detail": "No pudimos mandar el email. Probá de nuevo en unos minutos."}
+
+
+def test_a_failed_send_in_the_worker_is_logged_without_the_email(caplog):
+    account = _unverified()
+    with mock.patch("apps.users.email_verification.send_mail", side_effect=smtplib.SMTPServerDisconnected("caído")), \
+            caplog.at_level("INFO", logger="apps.users.tasks"):
+        response = _resend(account.email)
+
+    assert response.status_code == 204
+    assert [record.getMessage() for record in caplog.records if record.name == "apps.users.tasks"] == [
+        f"account_email.send_failed kind=resend_verification user_id={account.pk} error=SMTPServerDisconnected",
+    ]
+
+
+def logged(caplog):
+    """Every record as production writes it (JsonFormatter: message and extras, Celery's `data` included)."""
+    return "\n".join(JsonFormatter().format(record) for record in caplog.records)
+
+
+def test_nothing_logs_the_email_or_the_link(free_plan_row, caplog):
+    _unverified("pendiente@example.com")
+    with caplog.at_level("DEBUG"):
+        _register()
+        token = _signup_token(mail.outbox[0])[0]["token"][0]
+        APIClient().post(VERIFY_URL, {"token": token}, format="json")
+        _resend("ana@example.com")
+        _resend("nadie@example.com")
+        _resend("pendiente@example.com")
+
+    text = logged(caplog)
+    # The worker's lines are there (the task ran), without the address.
+    assert "send_account_email" in text
+    assert "account_email.sent kind=resend_verification" in text
+    for secret in ("ana@example.com", "nadie@example.com", "pendiente@example.com", token):
+        assert secret not in text
+    resent = _signup_token(mail.outbox[-1])[0]["token"][0]
+    assert resent not in text

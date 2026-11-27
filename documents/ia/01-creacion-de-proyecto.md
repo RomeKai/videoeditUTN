@@ -48,7 +48,7 @@ El proyecto o el brand kit nuevo se guarda en ese workspace, su billetera es la 
 | Editar proyectos | `PATCH` y `PUT projects/<id>/` | ✓ | ✓ | ✓ | — |
 | Aprobar y renderizar | `approve-paper-edit` | ✓ | ✓ | ✓ | — |
 | Borrar proyectos | `DELETE projects/<id>/` | ✓ | ✓ | solo los que subió | — |
-| Crear, editar y borrar brand kits | `brand-kits/` | ✓ | ✓ | ✓ | — |
+| Crear, editar, duplicar y borrar brand kits | `brand-kits/`, `brand-kits/<id>/duplicate/` | ✓ | ✓ | ✓ | — |
 | Ver el saldo y estimar un costo (`wallet.view`) | `GET wallet/`, `POST pricing/estimate/` | ✓ | ✓ | ✓ | ✓ |
 | Ver el consumo y los movimientos, exportarlos (`billing.manage`) | `wallet/usage/`, `transactions/`, `transactions/export/` | ✓ | ✓ | — | — |
 
@@ -62,6 +62,28 @@ Una escritura que la vista no asigna a una acción (`workspace_actions`) queda p
 Pendiente: `members.add()` y `bulk_create` no pasan por la señal (hoy no los usa nadie), contar y crear no es atómico (dos altas a la vez pueden pasar el límite por uno) y `loaddata` también corre la señal.
 
 El esquema OpenAPI declara el header en cada operación de una vista con `WorkspaceRolePermission` (`WorkspaceAutoSchema`, en [core/schema.py](../../back/apps/core/schema.py)).
+
+## Brand kits: default único y duplicar
+
+**Un solo default por workspace.** `BrandKitViewSet._save_one_default` guarda el kit en `perform_create` y `perform_update`. Con `is_default: true` abre una transacción, bloquea la fila del workspace (`brand_kit_service.lock_workspace_default`), desmarca los demás (`demote_other_defaults`) y guarda. Dos pedidos a la vez corren uno después del otro y gana el último. La restricción única parcial `one_default_brand_kit_per_workspace` es la última línea para quien escriba sin pasar por la vista. La migración `0019_un_solo_brand_kit_default` deja antes un solo default (el kit más viejo) donde había varios.
+
+- `is_default: false` sobre el default se acepta: el workspace queda sin default.
+- Borrar el default tampoco promueve otro kit. Los proyectos nuevos salen sin kit preseleccionado.
+- Un pedido que no manda `is_default` no toca el default de nadie.
+
+**Duplicar.** `POST brand-kits/<id>/duplicate/` (`brandkit.manage`, sin cuerpo) llama a `brand_kit_service.duplicate_brand_kit`:
+
+1. Copia cada archivo (fuentes, logo, intro, outro) a un nombre nuevo de su storage con `storage_service.copy_stored_file`. Un `FileSystemStorage` copia el archivo bajo `MEDIA_ROOT`; cualquier otro storage es un bucket y se copia del lado del servidor con `CloudflareR2Manager.copy_object` (`CopyObject`). Hoy los archivos de un kit viven en `MEDIA_ROOT`, también con `USE_R2=True`.
+2. Crea la fila al final: «Copia de {nombre}» (cortado a 100 caracteres, el nombre no es único), mismo workspace, `user` de quien la pide, `is_default=False`. Los demás campos se copian todos, también los que se agreguen al modelo.
+3. Responde 201 con el kit nuevo.
+
+| Caso | Respuesta |
+|------|-----------|
+| Kit de otro workspace | 404 |
+| Lector | 403 `{detail}` |
+| Falla la copia de un archivo (o el archivo original no está) | 502 `{"error", "code": "brand_kit_copy_failed"}`. Se borran las copias ya hechas y no se crea la fila. No es 503: la web lee cualquier 503 como mantenimiento |
+
+Los dos kits no comparten archivos: borrar o reemplazar los de uno no toca los del otro. Borrar un kit no borra sus archivos del storage (igual que antes).
 
 ## Flujo: creación con archivo
 

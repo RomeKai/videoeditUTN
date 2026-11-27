@@ -65,7 +65,7 @@ La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario,
 | Proyecto: resumen, transcripción, actividad | `/proyectos/:id` | **Backend** |
 | Revisión de clips | `/proyectos/:id/revision` | **Backend**, también el video y el render |
 | Clips, editor de clip y descargas | `/proyectos/:id/clips` | **Backend**. La miniatura de cada clip es un dibujo: todavía no existe en el backend |
-| Brand kits | `/brand-kits` | **Backend** (duplicar es mock) |
+| Brand kits | `/brand-kits` | **Backend**, también duplicar (copia los archivos) |
 | Mi cuenta y avisos por email | menú del usuario | **Backend** |
 | Saldo de la barra, Uso (consumo y movimientos) | `/uso` | **Backend** |
 | Planes y Comprar tokens | `/uso/planes`, `/uso/comprar` | **Backend**, con el proveedor simulado: no se cobra nada |
@@ -74,7 +74,7 @@ La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario,
 | Publicar y Publicaciones | panel «Publicar», `/publicaciones` | Mock |
 | Ajustes del workspace, Miembros y el selector de workspace | `/ajustes`, `/ajustes/miembros`, barra superior | **Backend**: renombrar, transferir y borrar el workspace, crear otro y cambiar entre ellos, la lista de miembros, cambiar un rol y quitar a alguien. **Invitar** y **Reenviar** son mock (el backend no tiene invitaciones): **no los muestres**, lo invitado no aparece en la lista |
 | Notificaciones (la campana) | — | Mock |
-| Crear cuenta y recuperar contraseña | `/registro`, `/recuperar` | No existen en el backend: **no las muestres** |
+| Crear cuenta, verificar el email y recuperar contraseña | `/registro`, `/verificar`, `/recuperar` | **Backend**. Los emails salen por consola (settings `dev`): el link del registro en `demo logs web`, los de reenviar y recuperar en `demo logs worker`. Copialo de ahí al navegador donde creaste la cuenta: en otro, el link pide iniciar sesión y verifica después. El link de recuperar lleva el token después de `#`: copialo entero. Sin verificar en la demo: probalo antes |
 
 Dos cosas para tener presentes:
 
