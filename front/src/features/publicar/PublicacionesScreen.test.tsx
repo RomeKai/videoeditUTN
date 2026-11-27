@@ -59,6 +59,36 @@ const open = async (search = 'vista=lista', scenario?: string) => {
   return view;
 };
 const table = () => screen.findByRole('table', { name: 'Publicaciones por día' });
+/**
+ * The seed is relative to "now", and so is the week grid: it shows 08–21 plus the hours of whatever falls outside.
+ * The dragging tests pin the clock (local time, so the same wall clock in any time zone) to cover the three shapes.
+ */
+const CLOCKS: Array<[string, Date]> = [
+  ['en horario central', new Date(2026, 10, 25, 10, 0, 0)], // card on Thursday 14:00, rows above and below
+  ['en la última fila', new Date(2026, 10, 27, 19, 33, 0)], // card on Saturday 23:33: it can only go up
+  ['sola en una fila de madrugada', new Date(2026, 10, 27, 20, 9, 0)], // card on Sunday 00:09: moving it removes that row
+];
+const pinClock = (date: Date) => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(date);
+};
+afterEach(() => vi.useRealTimers());
+
+/**
+ * The cell of a day and hour, read from the grid as it is now. The grid adds and removes hour rows as cards move,
+ * and React may replace the cells when it does: a cell kept from before the move can be a node that is gone.
+ */
+const cellAt = (grid: HTMLElement, at: Date): HTMLElement => {
+  const hour = `${String(at.getHours()).padStart(2, '0')}:00`;
+  const row = within(grid)
+    .getAllByRole('rowheader')
+    .findIndex((header) => header.textContent?.startsWith(hour));
+  expect(row, `la fila de las ${hour}`).toBeGreaterThanOrEqual(0);
+  const column = (at.getDay() + 6) % 7; // Monday first
+  expect(within(grid).getAllByRole('columnheader')[column + 1]).toHaveTextContent(String(at.getDate()));
+  return within(grid).getAllByRole('gridcell')[row * 7 + column] as HTMLElement;
+};
+
 const postWith = (status: string) => db().posts.find((post) => post.status === status);
 const rowOf = async (title: string, network: string) => {
   const rows = within(await table()).getAllByRole('row');
@@ -241,7 +271,8 @@ describe('E2 · Publicaciones · calendario', () => {
     expect(await within(detail).findByText('La red rechazó el video. Revisá que la cuenta siga conectada y volvé a intentarlo.')).toBeInTheDocument();
   });
 
-  it('arrastrar una programada a otra celda la reprograma', async () => {
+  it.each(CLOCKS)('arrastrar una programada a otra celda la reprograma (%s)', async (_, clock) => {
+    pinClock(clock);
     // The seed is the same on every run: read where the scheduled post is, then open that week.
     applyScenario('estudio-norte');
     const scheduled = postWith('SCHEDULED');
@@ -252,20 +283,25 @@ describe('E2 · Publicaciones · calendario', () => {
     expect(card).toHaveAttribute('draggable', 'true');
     const cells = within(grid).getAllByRole('gridcell');
     const from = cells.indexOf(card.closest('[role="gridcell"]') as HTMLElement);
+    expect(cells[from]).toBe(cellAt(grid, at));
     // One row below: same day, an hour later (or an hour earlier when the card is on the last row).
     const step = cells[from + 7] ? 1 : -1;
     const target = cells[from + 7 * step] as HTMLElement;
+    const expected = new Date(at.getTime() + step * 3_600_000);
+    expect(target).toBe(cellAt(grid, expected));
     const dataTransfer = { setData: vi.fn(), effectAllowed: '', dropEffect: '' };
     fireEvent.dragStart(card, { dataTransfer });
     fireEvent.dragOver(target, { dataTransfer });
     fireEvent.drop(target, { dataTransfer });
     expect(await screen.findByText(new RegExp(`«${scheduled?.clip.title}» pasó al`))).toBeInTheDocument();
+    // The card is in the cell of its new day and hour, wherever the grid has that row now.
+    await waitFor(() => expect(within(cellAt(grid, expected)).getByRole('button', { name: new RegExp(`${scheduled?.clip.title}\\. TikTok: Programado`) })).toBeInTheDocument());
     const moved = new Date(db().posts.find((post) => post.id === scheduled?.id)?.publish_at ?? 0);
-    const expected = new Date(at.getTime() + step * 3_600_000);
     expect([dayKey(moved), moved.getHours(), moved.getMinutes()]).toEqual([dayKey(expected), expected.getHours(), expected.getMinutes()]);
   });
 
-  it('la ficha se mueve al soltarla, no se puede arrastrar otra mientras se guarda, y vuelve a su lugar si falla', async () => {
+  it.each(CLOCKS)('la ficha se mueve al soltarla, no se puede arrastrar otra mientras se guarda, y vuelve a su lugar si falla (%s)', async (_, clock) => {
+    pinClock(clock);
     applyScenario('estudio-norte');
     const scheduled = postWith('SCHEDULED');
     const at = new Date(scheduled?.publish_at ?? 0);
@@ -286,18 +322,23 @@ describe('E2 · Publicaciones · calendario', () => {
     const from = cells.indexOf(card.closest('[role="gridcell"]') as HTMLElement);
     const step = cells[from + 7] ? 1 : -1;
     const target = cells[from + 7 * step] as HTMLElement;
+    const expected = new Date(at.getTime() + step * 3_600_000);
+    expect(cells[from]).toBe(cellAt(grid, at));
+    expect(target).toBe(cellAt(grid, expected));
     const dataTransfer = { setData: vi.fn(), effectAllowed: '', dropEffect: '' };
     fireEvent.dragStart(card, { dataTransfer });
     fireEvent.dragOver(target, { dataTransfer });
     fireEvent.drop(target, { dataTransfer });
 
     // Before the server answers: the card is already in its new cell, and nothing can be dragged.
-    await waitFor(() => expect(within(target).getByRole('button', { name })).toBeInTheDocument());
-    expect(within(target).getByRole('button', { name })).toHaveAttribute('draggable', 'false');
+    await waitFor(() => expect(within(cellAt(grid, expected)).getByRole('button', { name })).toBeInTheDocument());
+    expect(within(grid).getAllByRole('button', { name })).toHaveLength(1);
+    expect(within(cellAt(grid, expected)).getByRole('button', { name })).toHaveAttribute('draggable', 'false');
 
     release();
     expect(await screen.findByText('No pudimos reprogramar la publicación.')).toBeInTheDocument();
-    await waitFor(() => expect(within(cells[from] as HTMLElement).getByRole('button', { name })).toHaveAttribute('draggable', 'true'));
+    await waitFor(() => expect(within(cellAt(grid, at)).getByRole('button', { name })).toHaveAttribute('draggable', 'true'));
+    expect(within(grid).getAllByRole('button', { name })).toHaveLength(1);
     expect(db().posts.find((post) => post.id === scheduled?.id)?.publish_at).toBe(saved);
   });
 
