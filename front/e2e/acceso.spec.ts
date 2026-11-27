@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { WORKSPACE_IDS } from '../src/api/mocks/seed';
 import { expectClean, settle, useScenario, watch } from './helpers';
 
 async function signIn(page: Page, email: string, password = 'contrasena') {
@@ -25,6 +26,51 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     await expect(page).toHaveURL(/\/login\?siguiente=%2Fuso%2Fmovimientos$/);
     await signIn(page, 'lucia@estudionorte.com');
     await expect(page).toHaveURL(/\/uso\/movimientos$/);
+  });
+
+  test('A1: un link con su workspace (`?espacio=`) abre en ese workspace después de entrar, sin pedir nada en el anterior', async ({ page }) => {
+    await useScenario(page, 'sin-sesion');
+    const asked: string[] = [];
+    page.on('request', (request) => {
+      const workspace = request.headers()['x-workspace-id'];
+      if (workspace) asked.push(workspace);
+    });
+    // The link of a notification email of Canal de Martín. Lucía's last workspace is Estudio Norte.
+    const link = `/uso/movimientos?espacio=${WORKSPACE_IDS.canal}`;
+    await page.goto(link);
+    await expect(page).toHaveURL(new RegExp(`/login\\?siguiente=${encodeURIComponent(link)}$`));
+    await signIn(page, 'lucia@estudionorte.com');
+    await expect(page).toHaveURL(/\/uso\/movimientos$/);
+    await expect(page.getByRole('button', { name: /Cambiar de workspace. Actual: Canal de Martín/ })).toBeVisible();
+    await settle(page);
+    expect(asked.length).toBeGreaterThan(0);
+    expect([...new Set(asked)]).toEqual([WORKSPACE_IDS.canal]);
+    // It stays there after a reload, with the parameter gone.
+    await page.reload();
+    await expect(page.getByRole('button', { name: /Cambiar de workspace. Actual: Canal de Martín/ })).toBeVisible();
+    await expect(page).toHaveURL(/\/uso\/movimientos$/);
+  });
+
+  test('con sesión, el link de otro workspace cambia a ese antes de mostrar la página; el de uno ajeno avisa', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    await page.goto('/proyectos');
+    await expect(page.getByRole('button', { name: /Cambiar de workspace. Actual: Estudio Norte/ })).toBeVisible();
+    await settle(page);
+    const asked: string[] = [];
+    page.on('request', (request) => {
+      const workspace = request.headers()['x-workspace-id'];
+      if (workspace) asked.push(workspace);
+    });
+    await page.goto(`/proyectos?espacio=${WORKSPACE_IDS.canal}`);
+    await expect(page.getByRole('button', { name: /Cambiar de workspace. Actual: Canal de Martín/ })).toBeVisible();
+    await expect(page).toHaveURL(/\/proyectos$/);
+    await settle(page);
+    expect([...new Set(asked)]).toEqual([WORKSPACE_IDS.canal]);
+
+    await page.goto('/proyectos?espacio=0c8f6b1e-4d3a-4b52-9a7e-2f1d5e6c7a80');
+    await expect(page.getByText('Ese link es de un espacio de trabajo al que no tenés acceso. Seguís en el tuyo.')).toBeVisible();
+    await expect(page.getByRole('button', { name: /Cambiar de workspace. Actual: Canal de Martín/ })).toBeVisible();
+    await expect(page).toHaveURL(/\/proyectos$/);
   });
 
   test('A1: credenciales incorrectas, y con sesión el login manda a la app', async ({ page }) => {

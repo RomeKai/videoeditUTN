@@ -14,8 +14,12 @@ import styles from './ajustes.module.css';
 
 type PreferenceKey = keyof NotificationPreferences;
 
-/** One switch per case of map 1.11. `when` completes "te avisamos por email cuando …". */
-export const NOTIFICATION_TYPES: Array<{ key: PreferenceKey; label: string; description: string; when: string }> = [
+/**
+ * One switch per case of map 1.11. `when` completes "te avisamos por email cuando …".
+ * `unavailable`: the backend does not write that notification yet, neither in the bell nor by
+ * email. Its switch is shown off and disabled with this line, so the screen promises nothing.
+ */
+export const NOTIFICATION_TYPES: Array<{ key: PreferenceKey; label: string; description: string; when: string; unavailable?: string }> = [
   {
     key: 'project_ready',
     label: 'El proyecto está listo para revisar',
@@ -24,7 +28,14 @@ export const NOTIFICATION_TYPES: Array<{ key: PreferenceKey; label: string; desc
   },
   { key: 'render_finished', label: 'El render terminó', description: 'Los clips que aprobaste ya se pueden descargar o publicar.', when: 'termina un render' },
   { key: 'project_failed', label: 'El proyecto falló', description: 'Te contamos qué pasó y cuántos tokens te devolvimos.', when: 'un proyecto falla' },
-  { key: 'post_failed', label: 'Una publicación falló', description: 'Un clip no se pudo publicar en una de tus redes.', when: 'una publicación falla' },
+  {
+    key: 'post_failed',
+    label: 'Una publicación falló',
+    description: 'Un clip no se pudo publicar en una de tus redes.',
+    when: 'una publicación falla',
+    // Gap 16: nothing writes `post_failed` yet (back/apps/notifications/services.py).
+    unavailable: 'Todavía no avisamos de las publicaciones fallidas.',
+  },
   { key: 'low_balance', label: 'Te queda poco saldo', description: 'El saldo está por debajo de lo que cuesta un video promedio.', when: 'te queda poco saldo' },
 ];
 
@@ -81,7 +92,14 @@ export function NotificationsScreen() {
           <h2 className="t-h3" id={titleId}>
             Emails que querés recibir
           </h2>
-          <p className="t-small muted">{me ? `Llegan a ${me.email}. ` : ''}Vienen todos activados y cada cambio se guarda solo.</p>
+          <p className="t-small muted">
+            {me
+              ? me.is_email_verified
+                ? `Llegan a ${me.email}. `
+                : `Todavía no verificaste ${me.email}: hasta que lo hagas no te mandamos estos emails. `
+              : ''}
+            Vienen todos activados y cada cambio se guarda solo.
+          </p>
         </div>
       </div>
       {preferences.isError ? <LoadError error={preferences.error} onRetry={() => void preferences.refetch()} className={styles.mem} /> : null}
@@ -91,11 +109,15 @@ export function NotificationsScreen() {
             <div className={styles.label}>
               <span>{type.label}</span>
               <span className={styles.desc}>{type.description}</span>
+              {type.unavailable ? <span className={styles.desc}>{type.unavailable}</span> : null}
             </div>
             <span className={styles.swHit}>
               <Switch
-                checked={optimistic[type.key] ?? preferences.data[type.key]}
-                onChange={(checked) => toggle(type.key, type.when, checked)}
+                checked={type.unavailable ? false : (optimistic[type.key] ?? preferences.data[type.key])}
+                onChange={(checked) => {
+                  if (!type.unavailable) toggle(type.key, type.when, checked);
+                }}
+                disabled={Boolean(type.unavailable)}
                 ariaLabel={`Email: ${type.label}`}
               />
             </span>
@@ -115,7 +137,7 @@ export function NotificationsScreen() {
           ))}
         </div>
       )}
-      <p className={styles.note}>En la app estos avisos aparecen siempre en la campana, aunque apagues el email.</p>
+      <p className={styles.note}>En la app, los avisos que ya están disponibles aparecen siempre en la campana, aunque apagues el email.</p>
     </section>
   );
 }

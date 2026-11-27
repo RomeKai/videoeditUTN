@@ -127,7 +127,9 @@ Roles del workspace: **Dueño** (`Workspace.owner`) y los de `WorkspaceMember.ro
   - El saldo está por debajo de lo que cuesta un video promedio.
 - El usuario puede apagar los emails por tipo en Perfil › Notificaciones.
 - Dentro de la app también se avisa cuando un pago (compra de tokens o cambio de plan) se aprueba o se rechaza, a quien lo inició. No tiene email.
-- **API:** ✅ la campana: `GET /api/v1/notifications/`, `POST /notifications/:id/read/` y `POST /notifications/read-all/` (listo para revisar, render terminado, proyecto fallido y pagos). ❌ todavía no avisa de una publicación fallida ni del saldo bajo, y no hay envío de emails (huecos 16 y 21).
+- **Saldo bajo:** se avisa cuando una reserva deja el saldo disponible por debajo del umbral que ya usa la web (`low_balance_threshold` de `GET /wallet/`: 20 minutos a 720p con el descuento del plan). Se avisa una sola vez; vuelve a avisar recién después de que el saldo sube al umbral o más y cae otra vez.
+- **Los emails no llevan nada que haya escrito un usuario:** ni el título del proyecto, ni el nombre del workspace, ni nombres de personas. Dicen qué pasó, cuánto se devolvió (con el mismo texto que la campana) y llevan el link. Solo se mandan a cuentas con el email verificado. Sus links llevan el workspace (`?espacio=<id>`): la web cambia a ese workspace al abrirlos, si la persona es miembro.
+- **API:** ✅ la campana: `GET /api/v1/notifications/`, `POST /notifications/:id/read/` y `POST /notifications/read-all/` (listo para revisar, render terminado, proyecto fallido, saldo bajo y pagos), y el email de cada una menos los pagos, según las preferencias. ❌ todavía no avisa de una publicación fallida (hueco 16).
 
 ---
 
@@ -660,6 +662,8 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 
 #### I2. Notificaciones
 - **Qué muestra:** un interruptor de email por cada tipo de la sección 1.11.
+  - «Una publicación falló» todavía no está disponible (hueco 16): su interruptor está deshabilitado y apagado, con la línea «Todavía no avisamos de las publicaciones fallidas.».
+  - Con el email sin verificar, la pantalla dice que los emails no se mandan hasta verificarlo.
 - **API:** ✅ `GET/PATCH /api/v1/me/notification-preferences/`.
 
 ### J. Piezas transversales
@@ -672,7 +676,8 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 #### J2. Notificaciones (campana)
 - Un panel con las últimas 20, con un punto en las no leídas y "Marcar todo como leído".
 - Cada notificación lleva a su proyecto o publicación; la de un pago, a Uso › Movimientos.
-- **Quién las recibe:** las de un proyecto, el dueño y los miembros activos del workspace; la de un pago, quien lo inició.
+- La de saldo bajo lleva a Uso › Comprar tokens.
+- **Quién las recibe:** las de un proyecto, el dueño y los miembros activos del workspace; la de saldo bajo, el dueño y los admins (los que pueden comprar tokens); la de un pago, quien lo inició.
 - **API:** ✅ `GET /api/v1/notifications/`, `POST /api/v1/notifications/:id/read/` y `POST /api/v1/notifications/read-all/`.
 
 #### J3. Selector de workspace
@@ -770,12 +775,12 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad. El detalle e
 | 13 | ~~Invitaciones: crear, reenviar y aceptar~~ Resuelto: `POST /workspaces/:id/invitations/`, `.../invitations/:memberId/resend/`, `POST /invitations/preview/` y `POST /invitations/accept/` | A5, H2 | — |
 | 14 | ~~Paginación y filtro por estado en proyectos~~ Resuelto: `GET /projects/` pagina de a 25, con `status_group`, `search`, `ordering` y `status_counts` | B2 | — |
 | 15 | Tiempos por etapa del pipeline | D1 | P2 |
-| 16 | Notificaciones: falta avisar de una publicación fallida y del saldo bajo, y los emails (hueco 21). La campana ya está (`GET /notifications/`, `POST /notifications/:id/read/`, `POST /notifications/read-all/`) con listo para revisar, render terminado, proyecto fallido y pagos; las preferencias de email también: `GET/PATCH /me/notification-preferences/` | J2 | P2 |
+| 16 | Notificaciones: falta avisar de una publicación fallida. La campana ya está (`GET /notifications/`, `POST /notifications/:id/read/`, `POST /notifications/read-all/`) con listo para revisar, render terminado, proyecto fallido, saldo bajo y pagos; las preferencias de email también: `GET/PATCH /me/notification-preferences/` | J2 | P2 |
 | 17 | ~~Descargar todo en .zip~~ Resuelto: `POST /projects/:id/clips/download/` | D3 | — |
 | 18 | Tiempo estimado del proceso ("Listo para revisar en ≈ 12 min") | C1, D1 | P2 |
 | 19 | Total reservado del workspace con el detalle por proyecto | G1, barra | P1 |
 | 20 | ~~Pipeline propio para `single_edit`: un solo video de salida, sin revisión~~ Resuelto: el video entero es un solo clip que se renderiza sin revisión; solo con archivo subido | C1, D5 | — |
-| 21 | Plantillas de los emails transaccionales y su envío (verificar, recuperar, invitación, listo para revisar, render terminado, fallo con devolución, publicación fallida, saldo bajo) | A2–A5, J2, I2 | P1 |
+| 21 | ✅ Envío de los emails transaccionales en texto y HTML simple (verificar, recuperar, invitación, listo para revisar, render terminado, fallo con devolución, saldo bajo). Falta el de publicación fallida (con el hueco 16) y las plantillas con el diseño de N1 a N8 | A2–A5, J2, I2 | P1 |
 | 22 | Tope de peso del archivo al subir: hoy no hay ninguno (los límites de `media_validation` son de duración y resolución) | C1 | P2 |
 
 ---

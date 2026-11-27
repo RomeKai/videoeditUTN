@@ -2,10 +2,11 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError } from '@/api/errors';
 import { useLogin } from '@/api/hooks';
 import { AuthCard } from '@/shell/PublicShell';
+import { splitWorkspaceLink } from '@/shell/RequireSession';
 import { needsWelcome, useSession } from '@/shell/session';
 import { Banner, Button, Field, Input, PasswordInput, cx } from '@/ui';
 import styles from './acceso.module.css';
@@ -25,7 +26,7 @@ export interface LoginScreenProps {
 /** A1 · Iniciar sesión (artboards A1-Login and M12-Movil-login). */
 export function LoginScreen({ next, email: initialEmail, verifyPending = false }: LoginScreenProps) {
   const router = useRouter();
-  const { status, me, error: sessionError, refetch } = useSession();
+  const { status, me, error: sessionError, refetch, switchWorkspace } = useSession();
   const login = useLogin();
   const [email, setEmail] = useState(initialEmail ?? '');
   const [password, setPassword] = useState('');
@@ -34,10 +35,22 @@ export function LoginScreen({ next, email: initialEmail, verifyPending = false }
 
   // With a session there is nothing to do here: after signing in (or when arriving already signed in)
   // go to the page that was asked for, or to the welcome when the account is brand new.
+  // A link with its workspace (`?espacio=`, the emails of the notifications): the workspace changes
+  // here, before the page of the link is asked for, so that page never loads in the previous one.
+  // A workspace that is not the person's stays in the link: the app says so on arrival.
+  const leaving = useRef(false);
   useEffect(() => {
-    if (status !== 'authenticated' || !me) return;
+    if (status !== 'authenticated' || !me || leaving.current) return;
+    const link = target ? splitWorkspaceLink(target) : null;
+    if (link?.workspaceId && me.workspaces.some((item) => item.id === link.workspaceId)) {
+      leaving.current = true;
+      void switchWorkspace(link.workspaceId, { to: null })
+        .catch(() => undefined)
+        .then(() => router.replace(link.rest));
+      return;
+    }
     router.replace(target ?? (needsWelcome(me) ? '/bienvenida' : HOME));
-  }, [me, router, status, target]);
+  }, [me, router, status, switchWorkspace, target]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
