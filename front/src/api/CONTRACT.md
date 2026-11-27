@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**81 endpoints:** 63 existen hoy en el backend, 5 existen en parte y 13 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**81 endpoints:** 65 existen hoy en el backend, 4 existen en parte y 12 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -45,7 +45,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | 7 | `subtitle_size` se guarda en `metadata.subtitle_size` al crear, además del campo del modelo. | El frontend lee el campo `subtitle_size` del proyecto. |
 | 8 | `brand_kit_name` no viene cuando el proyecto no tiene brand kit (DRF omite el campo). | Opcional en el esquema. |
 | 9 | Un `SPEND` devuelto queda `FAILED`; no hay estado «devuelto» ni vínculo proyecto ↔ transacción. | `Transaction.kind` (`released`, `refund`…), `Transaction.project` y `Project.cost { amount, state, transaction_id }`. |
-| 10 | `BrandKit.is_default` no es único por workspace. | Al marcar uno, el backend desmarca el resto. |
+| 10 | ~~`BrandKit.is_default` no era único por workspace.~~ Resuelto en el backend: marcar un kit desmarca el resto en la misma transacción, y la base lo cuida con una restricción única parcial. | Nada pendiente. `demoteOtherDefaults()` queda como red para un backend anterior. |
 | 11 | Los links no pasan por la validación de duración del plan. | `POST /projects/probe-link/` (propuesto) reconoce el link y responde 403 si supera el plan. |
 | 12 | `error_log` de una publicación guarda el texto de la excepción. | `error_message` legible y `error_code`; `error_log` no se muestra. |
 | 13 | `approve-paper-edit` responde 400 `{ error }` para un proyecto que ya no está en revisión («…no está en espera de aprobación. Estado actual: rendering») y para un límite del plan («Error en el motor de precios: …»). El 409 solo sale en la carrera de dos aprobaciones. | Propuesto: 409 con `code: "not_awaiting_approval"` y 403 con `code` (`duration`, `resolution`). Mientras tanto `approveErrorKind()` los reconoce por el texto: el primero avisa y lleva a Clips, el segundo abre el diálogo de límite del plan. |
@@ -104,7 +104,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/projects/` | Proyectos del workspace, del más nuevo al más viejo. | ⚠️ existe en parte · hueco 14 | B2, J1, B1 |
 | POST | `/api/v1/projects/` | Crea un proyecto desde un archivo (multipart) o un link, reserva los tokens y arranca la ingesta. | ✅ existe | C1 |
 | POST | `/api/v1/projects/from-prompt/` | Igual que crear, más `prompt`: la IA arma la configuración al iniciar la ingesta (queda en `metadata.pte`). | ✅ existe | C1 |
-| GET | `/api/v1/projects/:id/` | Detalle del proyecto con el estado del pipeline, la metadata, la transcripción y sus clips. | ⚠️ existe en parte · hueco 4, 15, 18 | D1, D1e, D1f, D3, D4, D5 |
+| GET | `/api/v1/projects/:id/` | Detalle del proyecto con el estado del pipeline, la metadata, la transcripción y sus clips. | ⚠️ existe en parte | D1, D1e, D1f, D3, D4, D5 |
 | PATCH | `/api/v1/projects/:id/` | Renombra el proyecto. | ✅ existe | B2, D1 |
 | DELETE | `/api/v1/projects/:id/` | Borra el proyecto con su video, sus clips y sus publicaciones programadas. No devuelve lo cobrado. | ✅ existe | B2, D1, D4 (diálogo) |
 | GET | `/api/v1/projects/:id/paper-edit-data/` | Datos de la revisión: video proxy, transcripción, clips sugeridos y metadata. | ✅ existe | D2 |
@@ -124,9 +124,9 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/brand-kits/` | Brand kits del workspace. | ✅ existe | F1, C1, B2, D5 |
 | POST | `/api/v1/brand-kits/` | Crea un brand kit (multipart por las fuentes, el logo y los videos). | ✅ existe | F1, F2 |
 | GET | `/api/v1/brand-kits/:id/` | Un brand kit. | ✅ existe | F2 |
-| PATCH | `/api/v1/brand-kits/:id/` | Edita un brand kit. Con `is_default: true` pasa a ser el default del workspace. | ⚠️ existe en parte | F1, F2 |
+| PATCH | `/api/v1/brand-kits/:id/` | Edita un brand kit. Con `is_default: true` pasa a ser el default del workspace. | ✅ existe | F1, F2 |
 | DELETE | `/api/v1/brand-kits/:id/` | Borra un brand kit. Los proyectos que lo usaban quedan sin kit (SET_NULL). | ✅ existe | F1, F2 |
-| POST | `/api/v1/brand-kits/:id/duplicate/` | Copia un brand kit con sus archivos ("Copia de …"). La copia nunca es default. | ❌ falta (propuesto) | F1 |
+| POST | `/api/v1/brand-kits/:id/duplicate/` | Copia un brand kit con sus archivos ("Copia de …"). La copia nunca es default. | ✅ existe | F1 |
 | GET | `/api/v1/social-accounts/` | Una entrada por red (TikTok, Instagram Reels, YouTube Shorts) con su estado y sus límites. | ❌ falta (propuesto) · hueco 10 | H3, E1, B2 |
 | POST | `/api/v1/social-accounts/connect/` | Devuelve la URL de la red (vía Ayrshare) para autorizar la cuenta en una ventana aparte. | ❌ falta (propuesto) · hueco 10 | D6, H3, E1 |
 | DELETE | `/api/v1/social-accounts/:platform/` | Desconecta la cuenta de una red. Las publicaciones programadas en esa red quedan en error. | ❌ falta (propuesto) · hueco 10 | H3 |
@@ -414,7 +414,7 @@ Borra el workspace. Solo el Dueño, escribiendo el nombre para confirmar.
 | Sesión | JWT |
 | Pedido | { confirm_name: string } |
 | Respuesta 204 | NoContent |
-| Errores | **400** `confirm_name` falta o no es exactamente el nombre: `{confirm_name: [mensaje]}`.<br>**403** No es el Dueño. Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos.<br>**409** No se borra nada. Cuerpo `{error, code}`, y el `error` se muestra tal cual. Se revisan en este orden. `last_workspace`: es el único workspace del usuario (va primero porque esperar no lo resuelve). `project_processing`: hay un proyecto subido, en ingesta o renderizando (uno trabado se borra primero). `posts_in_flight`: hay una publicación saliendo (`PROCESSING` hace menos de 10 minutos) o en cola (`QUEUED` hasta 15 minutos después de su `publish_at`); una más vieja está trabada y no frena el borrado. `reservation_open`: hay tokens reservados sin liquidar. `payment_pending`: hay una compra de tokens o un pago de plan pendiente (con el checkout abierto o abriéndose); se resuelve cuando el proveedor lo liquida o cuando vence su checkout (`PAYMENTS_CHECKOUT_TTL_SECONDS`, 24 h por defecto). La web no tiene cómo cancelarlo, así que el `error` dice pagarlo o esperar, con el plazo del setting. `balance_left`: queda saldo disponible (trae `available_balance`); los tokens nunca se borran. |
+| Errores | **400** `confirm_name` falta o no es exactamente el nombre: `{confirm_name: [mensaje]}`.<br>**403** No es el Dueño. Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos.<br>**409** No se borra nada. Cuerpo `{error, code}`, y el `error` se muestra tal cual. Se revisan en este orden. `last_workspace`: es el único workspace del usuario (va primero porque esperar no lo resuelve). `project_processing`: hay un proyecto subido, en ingesta o renderizando (uno trabado se borra primero). `posts_in_flight`: hay una publicación saliendo (`PROCESSING` hace menos de 10 minutos) o en cola (`QUEUED` hasta 15 minutos después de su `publish_at`); una más vieja está trabada y no frena el borrado. `reservation_open`: hay tokens reservados sin liquidar. `payment_pending`: hay una compra de tokens o un pago de plan pendiente (con el checkout abierto o abriéndose); se resuelve cuando el proveedor lo liquida o cuando vence su checkout (`PAYMENTS_CHECKOUT_TTL_SECONDS`, 24 h por defecto). Una compra de tokens no se puede cancelar desde la web; un pago de plan sí, con «Seguir con …» en Planes (`billing.changePlan` con el plan actual). El `error` es uno solo para los dos y dice pagarlo o esperar, con el plazo del setting. `balance_left`: queda saldo disponible (trae `available_balance`); los tokens nunca se borran. |
 | Pantallas | H1 |
 
 #### `POST /api/v1/workspaces/:id/transfer/`
@@ -586,7 +586,7 @@ Plan actual del workspace, su renovación y el cambio pendiente si lo hay.
 |---|---|
 | Id | `billing.subscription` |
 | Backend | ✅ existe · `back/apps/payments/views_subscription.py · SubscriptionView + SubscriptionSerializer (apps/payments/serializers_billing.py)` |
-| Nota | Todos los roles. `renews_at` es el fin del período pagado con el checkout: un mes calendario desde que se confirmó el pago de la subida, contado en `WORKSPACE_TIME_ZONE` y anclado al día en que empezó (31 ene → 28 feb → 31 mar). Es null en un plan gratis y en uno asignado en el admin (una cortesía, que no vence). Todavía nada cobra la renovación (PAY-02): cuando el período termina, la tarea `apply_due_plan_changes` aplica la bajada programada o, sin ninguna, pasa el workspace al plan por defecto (`DEFAULT_PLAN_NAME`). Por eso `status` es siempre `active`. Un workspace sin plan muestra el plan por defecto. |
+| Nota | Todos los roles. `renews_at` es el fin del período pagado con el checkout: un mes calendario desde que se confirmó el pago de la subida, contado en `WORKSPACE_TIME_ZONE` y anclado al día en que empezó (31 ene → 28 feb → 31 mar). Es null en un plan gratis y en uno asignado en el admin (una cortesía, que no vence). Todavía nada cobra la renovación (PAY-02): cuando el período termina, la tarea `apply_due_plan_changes` aplica la bajada programada o, sin ninguna, pasa el workspace al plan por defecto (`DEFAULT_PLAN_NAME`). Por eso `status` es siempre `active`. Un workspace sin plan muestra el plan por defecto. `pending_payment` es el pago de otro plan pago que espera su checkout (sin la URL), con `expires_at`: cuándo vence ese checkout (`PAYMENTS_CHECKOUT_TTL_SECONDS` desde que se abrió), o null mientras todavía se está abriendo. No aparece uno cuyo checkout venció, ni un intento cuya llamada al proveedor se perdió (sin checkout pasado el doble de `PAYMENTS_PROVIDER_TIMEOUT_SECONDS`). Planes lo cancela con «Seguir con …» (`billing.changePlan` con el plan actual). |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Subscription |
 | Errores | **404** El workspace no tiene plan y tampoco existe el plan por defecto (`DEFAULT_PLAN_NAME`). |
@@ -792,8 +792,8 @@ Detalle del proyecto con el estado del pipeline, la metadata, la transcripción 
 | | |
 |---|---|
 | Id | `projects.detail` |
-| Backend | ⚠️ existe en parte · hueco 4, 15, 18 · `back/apps/videos/views.py · VideoProjectViewSet.retrieve + VideoProjectSerializer` |
-| Nota | Faltan `cost` (vínculo con la transacción y estado devuelto), `stage_timings`, `eta_seconds`, `duration_seconds` y `uploaded_by_detail`. Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura. |
+| Backend | ⚠️ existe en parte · `back/apps/videos/views.py · VideoProjectViewSet.retrieve + VideoProjectSerializer` |
+| Nota | Trae `cost` (la reserva de creación: reservado, cobrado o devuelto), `stage_timings` (las etapas terminadas; `started_at` y `finished_at` en `null` en las que terminaron antes de que se guardara) y `uploaded_by_detail` (sin el email). `eta_seconds` mientras se procesa (el estimado de Nuevo proyecto menos lo que tardaron las etapas terminadas). Falta `duration_seconds` (la duración sale de `metadata.source_media`). Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Project |
 | Errores | **404** No existe o es de otro workspace. La UI muestra K1. |
@@ -1082,12 +1082,12 @@ Edita un brand kit. Con `is_default: true` pasa a ser el default del workspace.
 | | |
 |---|---|
 | Id | `brandKits.update` |
-| Backend | ⚠️ existe en parte · `back/apps/videos/views.py · BrandKitViewSet.partial_update` |
-| Nota | El backend no garantiza un solo default por workspace: al marcar uno debería desmarcar el resto (mapa F2). |
+| Backend | ✅ existe · `back/apps/videos/views.py · BrandKitViewSet.perform_update/_save_one_default + brand_kit_service` |
+| Nota | Un solo default por workspace, garantizado en el backend. `is_default: true` desmarca el default anterior en la misma transacción, con la fila del workspace bloqueada: dos pedidos a la vez terminan con uno solo (gana el último). Crear un kit con `is_default: true` hace lo mismo. Además hay una restricción única parcial en la base (`one_default_brand_kit_per_workspace`). `is_default: false` sobre el kit default se acepta y deja al workspace sin default, igual que borrarlo: ningún otro kit se promueve solo y los proyectos nuevos salen sin kit preseleccionado. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido (multipart) | { name?: string, description?: string, primary_color?: HexColor, secondary_color?: HexColor, accent_color?: HexColor, primary_font?: unknown \\| "", secondary_font?: unknown \\| "", watermark_logo?: unknown \\| "", intro_video?: unknown \\| "", outro_video?: unknown \\| "", is_default?: boolean, watermark_position?: WatermarkPosition } |
 | Respuesta 200 | BrandKit |
-| Errores | **400** Validación por campo.<br>**403** El rol no puede crear ni editar brand kits (Lector). |
+| Errores | **400** Validación por campo.<br>**403** El rol no puede crear ni editar brand kits (Lector).<br>**404** No existe o es de otro workspace. |
 | Pantallas | F1, F2 |
 
 #### `DELETE /api/v1/brand-kits/:id/`
@@ -1098,6 +1098,7 @@ Borra un brand kit. Los proyectos que lo usaban quedan sin kit (SET_NULL).
 |---|---|
 | Id | `brandKits.delete` |
 | Backend | ✅ existe · `back/apps/videos/views.py · BrandKitViewSet.destroy` |
+| Nota | Borrar el kit default deja al workspace sin default: ningún otro kit se promueve solo. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 204 | NoContent |
 | Errores | **403** El rol no puede crear ni editar brand kits (Lector). |
@@ -1110,11 +1111,11 @@ Copia un brand kit con sus archivos ("Copia de …"). La copia nunca es default.
 | | |
 |---|---|
 | Id | `brandKits.duplicate` |
-| Backend | ❌ falta (propuesto) |
-| Nota | Sin número de hueco: el mapa (F1) pide duplicar y los archivos no se pueden copiar desde el navegador. |
+| Backend | ✅ existe · `back/apps/videos/views.py · BrandKitViewSet.duplicate + back/apps/videos/services/brand_kit_service.py · duplicate_brand_kit` |
+| Nota | Sin cuerpo. La copia queda en el workspace activo, a nombre de quien la pide, como «Copia de {nombre}» (cortado a 100 caracteres; el nombre no es único, así que duplicar dos veces da dos kits con el mismo nombre). Copia todos los campos y cada archivo (fuentes, logo, intro, outro) a un nombre nuevo del almacenamiento: los dos kits no comparten archivos. Nunca es default. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 201 | BrandKit |
-| Errores | **403** El rol no puede crear ni editar brand kits (Lector). |
+| Errores | **403** El rol no puede crear ni editar brand kits (Lector).<br>**404** No existe o es de otro workspace.<br>**502** No se pudo copiar un archivo del kit (`code: "brand_kit_copy_failed"`). No se crea nada: ni el kit ni archivos sueltos. No es 503: la app lee cualquier 503 como mantenimiento. |
 | Pantallas | F1 |
 
 ### Redes sociales y publicaciones
@@ -1626,6 +1627,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `status` | "active" \\| "past_due" \\| "canceled" |
 | `renews_at` | IsoDateTime \\| null |
 | `pending_plan` | { id: Id, name: string, effective_at: IsoDateTime } \\| null |
+| `pending_payment` (opcional) | { id: Id, plan_id: Id, plan_name: string, expires_at: IsoDateTime \\| null } \\| null |
 
 **TokenPackage**
 
@@ -1907,10 +1909,10 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `proxy_url` | string \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
 | `uploaded_by_detail` (opcional) | UserRef \\| null |
-| `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
 | `eta_seconds` (opcional) | number \\| null |
+| `duration_seconds` (opcional) | number \\| null |
 | `cost_details` | CostDetails |
 | `message` | string |
 | `prompt_config` | { status: "pending", detail: string } |
@@ -2003,10 +2005,10 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `proxy_url` | string \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
 | `uploaded_by_detail` (opcional) | UserRef \\| null |
-| `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
 | `eta_seconds` (opcional) | number \\| null |
+| `duration_seconds` (opcional) | number \\| null |
 | `cost_details` | CostDetails |
 | `message` | string |
 
@@ -2109,10 +2111,10 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `proxy_url` | string \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
 | `uploaded_by_detail` (opcional) | UserRef \\| null |
-| `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
 | `eta_seconds` (opcional) | number \\| null |
+| `duration_seconds` (opcional) | number \\| null |
 
 **ProjectCost**
 
@@ -2226,10 +2228,10 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `proxy_url` | string \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
 | `uploaded_by_detail` (opcional) | UserRef \\| null |
-| `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
 | `eta_seconds` (opcional) | number \\| null |
+| `duration_seconds` (opcional) | number \\| null |
 | `cost_details` (opcional) | CostDetails |
 
 **RerenderRequest**

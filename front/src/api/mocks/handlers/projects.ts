@@ -364,7 +364,7 @@ export const projectsHandlers = [
     const cost = priceOf(seconds, resolution, false, plan?.base_discount_rate ?? 0);
     let transaction;
     try {
-      transaction = reserveFunds(db, { workspace: workspace.id, amount: cost, userId: user.id, description: `Render Final (Paper Edit): ${project.title}`, project: { id: project.id, title: project.title }, category: 'render' }, now);
+      transaction = reserveFunds(db, { workspace: workspace.id, amount: cost, userId: user.id, description: `Render de los clips aprobados: ${project.title}`, project: { id: project.id, title: project.title }, category: 'render' }, now);
     } catch (error) {
       payment(error);
     }

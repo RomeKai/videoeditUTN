@@ -73,6 +73,54 @@ def absolute_media_url(path: str, request=None) -> str:
     return f"{base}/{path.lstrip('/')}" if base else path
 
 
+class StoredFileCopyError(Exception):
+    """A stored file could not be copied (missing source, storage down)."""
+
+
+def copy_stored_file(storage, source_name: str, dest_name: str) -> None:
+    """
+    Copies a file kept by a Django storage (a ``FileField``) to another name
+    in the same storage, without passing through the request: the two rows
+    then own separate objects.
+
+    A ``FileSystemStorage`` (what the model file fields use today, with
+    USE_R2 too) copies the file under ``MEDIA_ROOT``. Any other storage is a
+    bucket: the copy is a server-side ``CopyObject``, so the bytes never come
+    to this process. Raises ``StoredFileCopyError``; a partial local copy is
+    removed.
+
+    The destination must be another name. A storage that hands back the same
+    name (one that overwrites, like ``S3Boto3Storage`` with
+    ``file_overwrite=True``) would leave both rows on one object, so it is an
+    error and nothing is copied.
+    """
+    from django.core.files.storage import FileSystemStorage
+
+    if dest_name == source_name:
+        raise StoredFileCopyError("SameName")
+
+    if isinstance(storage, FileSystemStorage):
+        source, dest = storage.path(source_name), storage.path(dest_name)
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copyfile(source, dest)
+        except OSError as exc:
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+            raise StoredFileCopyError(type(exc).__name__) from exc
+        return
+
+    bucket = getattr(storage, 'bucket_name', None) or settings.CLOUDFLARE_R2_BUCKET_NAME
+    location = (getattr(storage, 'location', '') or '').strip('/')
+    source_key, dest_key = (f"{location}/{name}" if location else name for name in (source_name, dest_name))
+    try:
+        CloudflareR2Manager.copy_object(source_key, dest_key, bucket=bucket)
+    except Exception as exc:  # botocore: ClientError, timeouts, connection errors
+        raise StoredFileCopyError(type(exc).__name__) from exc
+
+
 class CloudflareR2Manager:
     """
     Static manager for all Cloudflare R2 operations.
@@ -191,3 +239,20 @@ class CloudflareR2Manager:
         except ClientError as e:
             logger.error(f"❌ [R2] Delete failed for {object_key}: {type(e).__name__}")
             raise
+
+    @staticmethod
+    def copy_object(source_key: str, dest_key: str, bucket: str = None) -> None:
+        """
+        Copies an object to another key of the same bucket, server side
+        (``CopyObject``): nothing is downloaded. With USE_R2=False the keys
+        are local paths and the file is copied.
+        """
+        if _is_local():
+            os.makedirs(os.path.dirname(dest_key) or '.', exist_ok=True)
+            shutil.copyfile(source_key, dest_key)
+            return
+
+        bucket = bucket or settings.CLOUDFLARE_R2_BUCKET_NAME
+        client = _get_r2_client(DELETE_CLIENT_CONFIG)
+        client.copy_object(Bucket=bucket, Key=dest_key, CopySource={'Bucket': bucket, 'Key': source_key})
+        logger.info("r2.copied")

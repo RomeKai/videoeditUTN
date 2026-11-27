@@ -2,6 +2,7 @@ import { cleanup, configure, fireEvent, screen, waitFor, within } from '@testing
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/api/mocks/server';
+import real from '@/api/contracts/drf/responses.json';
 import { db, idle, renderScenario } from '@/testing';
 import { BrandKitsScreen } from './BrandKitsScreen';
 
@@ -90,6 +91,62 @@ describe('F1 · Brand kits', () => {
     stale = false;
     await waitFor(async () => expect(within(await card('Gaming nocturno')).getByText('Por defecto')).toBeInTheDocument());
     expect(within(await card('Estudio Norte')).queryByText('Por defecto')).not.toBeInTheDocument();
+  });
+
+  it('backend real: duplicar muestra la copia que responde, con sus archivos propios y sin ser default', async () => {
+    const posted: string[] = [];
+    const copy = { ...real.brand_kit_duplicate, workspace: String(db().workspaces[0]?.id), name: 'Copia de Gaming nocturno' };
+    server.use(
+      http.post('http://localhost:8000/api/v1/brand-kits/:id/duplicate/', ({ params }) => {
+        posted.push(String(params.id));
+        return HttpResponse.json(copy, { status: 201 });
+      }),
+      http.get('http://localhost:8000/api/v1/brand-kits/', () => HttpResponse.json(posted.length ? [...kits(), copy] : kits())),
+    );
+    await open();
+    fireEvent.click(await menuItem('Gaming nocturno', 'Duplicar'));
+    expect(await screen.findByText('Se creó «Copia de Gaming nocturno»')).toBeInTheDocument();
+    expect(posted).toEqual([kits().find((kit) => kit.name === 'Gaming nocturno')?.id]);
+    const added = await card('Copia de Gaming nocturno');
+    expect(within(added).queryByText('Por defecto')).not.toBeInTheDocument();
+    expect(within(added).getByRole('link', { name: 'Copia de Gaming nocturno' })).toHaveAttribute('href', `/brand-kits/${copy.id}`);
+    // The font it shows is the copy's own file.
+    expect(within(added).getByText('Inter a1B2c3D')).toBeInTheDocument();
+  });
+
+  it('backend real: si no se pudieron copiar los archivos (502), avisa y no agrega nada', async () => {
+    const { status, body } = real.errors.brand_kit_copy_failed;
+    server.use(http.post('http://localhost:8000/api/v1/brand-kits/:id/duplicate/', () => HttpResponse.json(body, { status })));
+    await open();
+    const before = kits().length;
+    fireEvent.click(await menuItem('Gaming nocturno', 'Duplicar'));
+    expect(await screen.findByText('No pudimos duplicar el brand kit.')).toBeInTheDocument();
+    expect(screen.queryByRole('article', { name: 'Brand kit Copia de Gaming nocturno' })).not.toBeInTheDocument();
+    expect(kits()).toHaveLength(before);
+    // Not the maintenance page: the screen is still there.
+    expect(screen.getByRole('heading', { level: 1, name: 'Brand kits' })).toBeInTheDocument();
+  });
+
+  it('backend real: «Usar por defecto» es un solo PATCH, porque el backend desmarca el anterior', async () => {
+    const patched: Array<{ id: string; body: unknown }> = [];
+    let marked: string | null = null;
+    const list = () => kits().map((kit) => (marked ? { ...kit, is_default: kit.id === marked } : kit));
+    server.use(
+      http.patch('http://localhost:8000/api/v1/brand-kits/:id/', async ({ params, request }) => {
+        patched.push({ id: String(params.id), body: Object.fromEntries(await request.formData()) });
+        marked = String(params.id);
+        return HttpResponse.json(list().find((kit) => kit.id === marked));
+      }),
+      http.get('http://localhost:8000/api/v1/brand-kits/', () => HttpResponse.json(list())),
+    );
+    await open();
+    const second = kits().find((kit) => kit.name === 'Gaming nocturno');
+    fireEvent.click(await menuItem('Gaming nocturno', 'Usar por defecto'));
+    expect(await screen.findByText('«Gaming nocturno» es ahora el kit por defecto')).toBeInTheDocument();
+    await waitFor(async () => expect(within(await card('Gaming nocturno')).getByText('Por defecto')).toBeInTheDocument());
+    expect(within(await card('Estudio Norte')).queryByText('Por defecto')).not.toBeInTheDocument();
+    await pause(300);
+    expect(patched).toEqual([{ id: second?.id, body: { is_default: 'true' } }]);
   });
 
   it('un color guardado como texto libre no rompe la tarjeta: se normaliza antes de pintarlo', async () => {

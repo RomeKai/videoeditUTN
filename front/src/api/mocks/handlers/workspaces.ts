@@ -29,7 +29,7 @@ function seats(db: MockDb, workspaceId: string) {
   const plan = planOf(db, workspaceId);
   const members = db.members.filter((member) => member.workspace === workspaceId);
   // A pending invitation takes a seat (map 9.1.8).
-  return { members, max: plan?.max_members ?? 1, used: members.length };
+  return { members, plan, max: plan?.max_members ?? 1, used: members.length };
 }
 
 const isAdmin = (role: string) => role === 'owner' || role === 'admin';
@@ -206,7 +206,7 @@ export const workspacesHandlers = [
     const payingPlan = paying ? db.plans.find((plan) => plan.id === paying.plan_id) : null;
     if (payingPlan && payingPlan.max_members < info.max && info.used + emails.length > payingPlan.max_members) {
       throw new MockHttpError(403, {
-        error: `Estás pasando al plan '${payingPlan.name}', que permite ${payingPlan.max_members} miembros. Hay un pago en curso: terminalo, o esperá a que venza (24 h después de abrirlo).`,
+        error: `Estás pasando al plan '${payingPlan.name}', que permite ${payingPlan.max_members} miembros. Hay un pago en curso: terminalo, o elegí «Seguir con ${info.plan?.name ?? 'tu plan'}» en Planes para cancelarlo.`,
         code: 'seats_exceeded',
       });
     }

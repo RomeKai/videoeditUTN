@@ -111,11 +111,11 @@ export const updateBrandKit = defineEndpoint({
   request: BrandKitInput.partial(),
   bodyType: 'multipart',
   response: BrandKit,
-  errors: [{ status: 400, when: 'Validación por campo.' }, roleError],
+  errors: [{ status: 400, when: 'Validación por campo.' }, roleError, { status: 404, when: 'No existe o es de otro workspace.' }],
   backend: {
-    status: 'partial',
-    source: 'back/apps/videos/views.py · BrandKitViewSet.partial_update',
-    note: 'El backend no garantiza un solo default por workspace: al marcar uno debería desmarcar el resto (mapa F2).',
+    status: 'exists',
+    source: 'back/apps/videos/views.py · BrandKitViewSet.perform_update/_save_one_default + brand_kit_service',
+    note: 'Un solo default por workspace, garantizado en el backend. `is_default: true` desmarca el default anterior en la misma transacción, con la fila del workspace bloqueada: dos pedidos a la vez terminan con uno solo (gana el último). Crear un kit con `is_default: true` hace lo mismo. Además hay una restricción única parcial en la base (`one_default_brand_kit_per_workspace`). `is_default: false` sobre el kit default se acepta y deja al workspace sin default, igual que borrarlo: ningún otro kit se promueve solo y los proyectos nuevos salen sin kit preseleccionado.',
   },
   screens: ['F1', 'F2'],
 });
@@ -128,7 +128,11 @@ export const deleteBrandKit = defineEndpoint({
   response: NoContent,
   successStatus: 204,
   errors: [roleError],
-  backend: { status: 'exists', source: 'back/apps/videos/views.py · BrandKitViewSet.destroy' },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/videos/views.py · BrandKitViewSet.destroy',
+    note: 'Borrar el kit default deja al workspace sin default: ningún otro kit se promueve solo.',
+  },
   screens: ['F1', 'F2'],
 });
 
@@ -141,8 +145,16 @@ export const duplicateBrandKit = defineEndpoint({
   summary: 'Copia un brand kit con sus archivos ("Copia de …"). La copia nunca es default.',
   response: BrandKit,
   successStatus: 201,
-  errors: [roleError],
-  backend: { status: 'proposed', note: 'Sin número de hueco: el mapa (F1) pide duplicar y los archivos no se pueden copiar desde el navegador.' },
+  errors: [
+    roleError,
+    { status: 404, when: 'No existe o es de otro workspace.' },
+    { status: 502, when: 'No se pudo copiar un archivo del kit (`code: "brand_kit_copy_failed"`). No se crea nada: ni el kit ni archivos sueltos. No es 503: la app lee cualquier 503 como mantenimiento.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/videos/views.py · BrandKitViewSet.duplicate + back/apps/videos/services/brand_kit_service.py · duplicate_brand_kit',
+    note: 'Sin cuerpo. La copia queda en el workspace activo, a nombre de quien la pide, como «Copia de {nombre}» (cortado a 100 caracteres; el nombre no es único, así que duplicar dos veces da dos kits con el mismo nombre). Copia todos los campos y cada archivo (fuentes, logo, intro, outro) a un nombre nuevo del almacenamiento: los dos kits no comparten archivos. Nunca es default.',
+  },
   screens: ['F1'],
 });
 

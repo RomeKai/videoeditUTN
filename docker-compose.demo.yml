@@ -91,7 +91,7 @@ services:
         # invitaciones y notificaciones quedan enteros en mocks, para que cada área sea
         # coherente (ver el runbook). DEMO_API_REAL=existing manda al backend todo lo que el
         # contrato marca exists o partial.
-        NEXT_PUBLIC_API_REAL: ${DEMO_API_REAL:-users,system,projects,clips,brandKits.list,brandKits.create,brandKits.detail,brandKits.update,brandKits.delete,billing.wallet,billing.usage,billing.transactions,billing.exportTransactions,billing.pricing,billing.estimate,billing.plans,billing.subscription,billing.changePlan,billing.tokenPackages,billing.createPurchase,billing.purchase,billing.simulatePurchase,workspaces.list,workspaces.create,workspaces.detail,workspaces.update,workspaces.delete,workspaces.transfer,workspaces.members,workspaces.updateMember,workspaces.removeMember,workspaces.invite,workspaces.resendInvitation,workspaces.invitation,workspaces.acceptInvitation}
+        NEXT_PUBLIC_API_REAL: ${DEMO_API_REAL:-users,system,projects,clips,brandKits.list,brandKits.create,brandKits.detail,brandKits.update,brandKits.delete,brandKits.duplicate,billing.wallet,billing.usage,billing.transactions,billing.exportTransactions,billing.pricing,billing.estimate,billing.plans,billing.subscription,billing.changePlan,billing.tokenPackages,billing.createPurchase,billing.purchase,billing.simulatePurchase,workspaces.list,workspaces.create,workspaces.detail,workspaces.update,workspaces.delete,workspaces.transfer,workspaces.members,workspaces.updateMember,workspaces.removeMember,workspaces.invite,workspaces.resendInvitation,workspaces.invitation,workspaces.acceptInvitation}
     restart: on-failure
 
   proxy:
