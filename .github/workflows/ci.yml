@@ -73,6 +73,9 @@ jobs:
             back/requirements/constraints-ci.txt
 
       - name: Install system dependencies
+        # Normally about a minute: a stalled download fails here instead of
+        # using up the whole job's timeout.
+        timeout-minutes: 10
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
@@ -84,6 +87,9 @@ jobs:
             libmagic1
 
       - name: Install Python dependencies
+        # Normally about a minute: a stalled download fails here instead of
+        # using up the whole job's timeout.
+        timeout-minutes: 10
         run: |
           python -m pip install --upgrade \
             --constraint requirements/constraints-ci.txt \
@@ -230,6 +236,9 @@ jobs:
           cache-dependency-path: front/package-lock.json
 
       - name: Install dependencies
+        # Normally about a minute: a stalled download fails here instead of
+        # using up the whole job's timeout.
+        timeout-minutes: 10
         run: npm ci
 
       - name: Lint
