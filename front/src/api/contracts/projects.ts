@@ -329,11 +329,18 @@ export const Project = z.object({
    * minus what its finished stages took). Null otherwise and for a whole-video edit. Optional for older backends.
    */
   eta_seconds: z.number().int().nonnegative().nullable().optional(),
-  /* Proposed extras */
-  /** Source duration in seconds, whatever the origin (gap: today it is spread over metadata). */
+  /** Proposed, not sent yet: source duration in seconds, whatever the origin (today it is spread over metadata). */
   duration_seconds: z.number().nullable().optional(),
 });
 export type Project = z.infer<typeof Project>;
+
+/**
+ * A row of the projects list (VideoProjectListSerializer): the project without the transcript (`transcript_data`
+ * and `metadata.full_text`) and without `ai_rationale_log`. Only the project's own screens read them, from
+ * `GET /projects/:id/`; with a long video they are most of the weight of a project.
+ */
+export const ProjectListItem = Project.omit({ transcript_data: true, ai_rationale_log: true });
+export type ProjectListItem = z.infer<typeof ProjectListItem>;
 
 /** Filter of the projects list (map B2). */
 export const ProjectStatusGroup = z.enum(['all', 'in_progress', 'to_review', 'ready', 'failed']);
@@ -341,28 +348,25 @@ export type ProjectStatusGroup = z.infer<typeof ProjectStatusGroup>;
 
 export const ProjectsQuery = PageQuery.extend({
   status_group: ProjectStatusGroup.optional(),
-  /** Matches the title. */
+  /** Part of the title, whatever the case. Plain text: `%` and `_` match themselves. */
   search: z.string().optional(),
+  /** Newest first (`-created_at`) when absent. `title` ignores the case. */
   ordering: z.enum(['-created_at', 'created_at', 'title']).optional(),
 });
 export type ProjectsQuery = z.infer<typeof ProjectsQuery>;
 
-const ProjectsPage = paginated(Project).extend({
-  /** Proposed: how many projects fall in each filter, for the chips. */
-  status_counts: z.record(ProjectStatusGroup, z.number().int().nonnegative()).optional(),
+/** How many projects fall in each filter, for the chips: under the same search, whatever the filter and the page asked for. */
+export const ProjectStatusCounts = z.object({
+  all: z.number().int().nonnegative(),
+  in_progress: z.number().int().nonnegative(),
+  to_review: z.number().int().nonnegative(),
+  ready: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
 });
+export type ProjectStatusCounts = z.infer<typeof ProjectStatusCounts>;
 
-/**
- * Today the backend answers a bare array (no pagination class). The contract is
- * the paginated shape; the bare array is accepted and wrapped so the list works
- * against the current backend too.
- */
-export const ProjectsResponse = z.union([ProjectsPage, z.array(Project)]).transform((value) =>
-  Array.isArray(value)
-    ? // `paginated: false`: the backend ignored page, filter, search and order, so the screen applies them itself.
-      { count: value.length, next: null, previous: null, results: value, status_counts: undefined, paginated: false as const }
-    : { ...value, paginated: true as const },
-);
+/** A page of projects (ProjectPagination): 25 unless `page_size` says otherwise, 100 at most. */
+export const ProjectsResponse = paginated(ProjectListItem).extend({ status_counts: ProjectStatusCounts });
 export type ProjectsResponse = z.infer<typeof ProjectsResponse>;
 
 const FileField = z.custom<Blob>((value) => typeof Blob !== 'undefined' && value instanceof Blob, 'Archivo inválido');
@@ -565,12 +569,14 @@ export const listProjects = defineEndpoint({
   summary: 'Proyectos del workspace, del más nuevo al más viejo.',
   query: ProjectsQuery,
   response: ProjectsResponse,
-  errors: [],
+  errors: [
+    { status: 400, when: 'Un `status_group` o un `ordering` que no existe, o una búsqueda con un carácter nulo: `{ campo: [mensaje] }`.' },
+    { status: 404, when: 'Una página que no existe: `{ detail: "Página inválida." }`. B2 retrocede hasta una que exista.' },
+  ],
   backend: {
-    status: 'partial',
-    source: 'back/apps/videos/views.py · VideoProjectViewSet.list + VideoProjectSerializer',
-    gap: 14,
-    note: 'Hoy devuelve un array sin paginar y sin filtros. Desde el PR #125 lee `X-Workspace-Id` y trae solo los proyectos del workspace activo (404 si el usuario no es miembro activo); B2 igual filtra por `workspace` en el navegador, como defensa. Propuesto: paginación de 25, `status_group`, `search`, `status_counts` y los campos extra del proyecto.',
+    status: 'exists',
+    source: 'back/apps/videos/views.py · VideoProjectViewSet.list + ProjectPagination + ProjectsQuerySerializer + VideoProjectListSerializer',
+    note: 'Solo los proyectos del workspace activo (`X-Workspace-Id`; 404 si el usuario no es miembro activo). Páginas de 25 (`page_size` hasta 100). `status_group` agrupa los estados como los filtros de B2: `in_progress` (uploaded, ingesting, rendering), `to_review` (awaiting_approval), `ready` (completed, partial) y `failed`. `search` busca en el título sin distinguir mayúsculas. `status_counts` cuenta cada filtro con la misma búsqueda, sin importar el filtro ni la página pedidos. Cada fila es el proyecto sin `transcript_data`, `ai_rationale_log` ni `metadata.full_text` (`ProjectListItem`): esos van solo en `GET /projects/:id/`. Las consultas a la base no crecen con la página. De los campos extra del proyecto solo falta `duration_seconds`: la pantalla lee la duración de `metadata`.',
   },
   screens: ['B2', 'J1', 'B1'],
 });

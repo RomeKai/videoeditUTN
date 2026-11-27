@@ -1,32 +1,109 @@
 'use client';
 
-import { usePathname, useRouter } from 'next/navigation';
-import { useEffect, useState, type ReactNode } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Action } from '@/lib/permissions';
 import { GlobalLoading } from './GlobalLoading';
 import { needsWelcome, usePermissions, useSession } from './session';
 import { Button } from '@/ui/Button';
+import { useToast } from '@/ui';
 import { NoAccessMessage, SystemScreen } from './SystemPage';
 import { CreateWorkspaceDialog } from './WorkspaceSwitcher';
 
 /**
+ * `?espacio=<workspace id>`: the workspace a link belongs to. The emails of the notifications carry
+ * it (back/apps/notifications/emails.py · WORKSPACE_PARAM): whoever opens one may have another
+ * workspace active, where the project of the link does not exist and "Comprar tokens" would buy
+ * for the wrong one.
+ */
+export const WORKSPACE_PARAM = 'espacio';
+
+/** What the notice says when the link names a workspace the person is not in (any more). */
+export const NOT_IN_WORKSPACE = 'Ese link es de un espacio de trabajo al que no tenés acceso. Seguís en el tuyo.';
+
+/**
+ * A path inside the app (`/uso/comprar?espacio=<id>&compra=ok`) split into the workspace it names
+ * and the same path without the parameter. `workspaceId` is null when it names none.
+ */
+export function splitWorkspaceLink(target: string): { workspaceId: string | null; rest: string } {
+  const [beforeHash = '', ...hash] = target.split('#');
+  const [path = '', ...search] = beforeHash.split('?');
+  const query = new URLSearchParams(search.join('?'));
+  const workspaceId = query.get(WORKSPACE_PARAM);
+  if (workspaceId === null) return { workspaceId: null, rest: target };
+  query.delete(WORKSPACE_PARAM);
+  const left = query.toString();
+  return { workspaceId: workspaceId || null, rest: `${path}${left ? `?${left}` : ''}${hash.length ? `#${hash.join('#')}` : ''}` };
+}
+
+/**
  * Route protection for the app (everything under the `(app)` group):
- * - without a session → /login?siguiente=<where the user was going>
+ * - without a session → /login?siguiente=<where the user was going, with its query>
  * - while `/me` loads → the app's outline
+ * - a link of another workspace of the user (`?espacio=`) → that workspace becomes the active one
+ *   before the page is shown, and the parameter leaves the URL
  * - a brand-new account landing on Proyectos → /bienvenida (map B1)
  * - an account with no workspace → the empty state, where it creates one
  */
 export function RequireSession({ children }: { children: ReactNode }) {
-  const { status, me, refetch } = useSession();
+  // `useSearchParams` needs a boundary to keep the pages prerendered. Nothing is lost: before the
+  // browser knows the session, this only ever renders the app's outline.
+  return (
+    <Suspense fallback={<GlobalLoading />}>
+      <Gate>{children}</Gate>
+    </Suspense>
+  );
+}
+
+function Gate({ children }: { children: ReactNode }) {
+  const { status, me, workspace, switchWorkspace, refetch } = useSession();
   const router = useRouter();
+  const toast = useToast();
   const pathname = usePathname() ?? '/proyectos';
+  // From the router, not from `window.location`: while a client navigation renders (the login
+  // sending the person to the link they asked for) the browser's URL is still the previous page's.
+  const search = useSearchParams()?.toString() ?? '';
 
   useEffect(() => {
     if (status === 'anonymous') {
-      const next = pathname && pathname !== '/proyectos' ? `?siguiente=${encodeURIComponent(pathname)}` : '';
+      const target = `${pathname}${search ? `?${search}` : ''}`;
+      const next = target && target !== '/proyectos' ? `?siguiente=${encodeURIComponent(target)}` : '';
       router.replace(`/login${next}`);
     }
-  }, [pathname, router, status]);
+  }, [pathname, router, search, status]);
+
+  const here = `${pathname}${search ? `?${search}` : ''}`;
+  const link = status === 'authenticated' && me ? splitWorkspaceLink(here) : null;
+  const linked = link?.workspaceId ?? null;
+  // The workspace of the link, when it is one of the user's.
+  const wanted = linked && me?.workspaces.some((item) => item.id === linked) ? linked : null;
+  const rest = link?.rest ?? here;
+  // The link already took the person there: switching by hand afterwards is not undone.
+  const [arrived, setArrived] = useState<string | null>(null);
+  const switching = useRef<string | null>(null);
+  const moving = wanted !== null && arrived !== wanted && workspace?.id !== wanted;
+
+  useEffect(() => {
+    if (linked === null || arrived === linked) return;
+    const clean = () => router.replace(`${rest}${window.location.hash}`);
+    if (wanted === null) {
+      // Not one of theirs (removed since the email, or someone else's link): say so instead of
+      // showing the page of another workspace as if it were the link's.
+      setArrived(linked);
+      toast.error(NOT_IN_WORKSPACE);
+      clean();
+      return;
+    }
+    if (workspace?.id === wanted) {
+      setArrived(wanted);
+      clean();
+      return;
+    }
+    if (switching.current === wanted) return;
+    switching.current = wanted;
+    // `to: null`: the person is already on the page of the link.
+    void switchWorkspace(wanted, { to: null }).catch(() => undefined);
+  }, [arrived, linked, rest, router, switchWorkspace, toast, wanted, workspace?.id]);
 
   useEffect(() => {
     if (status === 'authenticated' && me && pathname === '/proyectos' && needsWelcome(me)) router.replace('/bienvenida');
@@ -46,7 +123,7 @@ export function RequireSession({ children }: { children: ReactNode }) {
       />
     );
   }
-  if (status !== 'authenticated' || !me) return <GlobalLoading />;
+  if (status !== 'authenticated' || !me || moving) return <GlobalLoading />;
   if (me.workspaces.length === 0) return <NoWorkspace />;
   return <>{children}</>;
 }

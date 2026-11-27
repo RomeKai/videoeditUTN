@@ -127,7 +127,9 @@ Roles del workspace: **Dueño** (`Workspace.owner`) y los de `WorkspaceMember.ro
   - El saldo está por debajo de lo que cuesta un video promedio.
 - El usuario puede apagar los emails por tipo en Perfil › Notificaciones.
 - Dentro de la app también se avisa cuando un pago (compra de tokens o cambio de plan) se aprueba o se rechaza, a quien lo inició. No tiene email.
-- **API:** ✅ la campana: `GET /api/v1/notifications/`, `POST /notifications/:id/read/` y `POST /notifications/read-all/` (listo para revisar, render terminado, proyecto fallido y pagos). ❌ todavía no avisa de una publicación fallida ni del saldo bajo, y no hay envío de emails (huecos 16 y 21).
+- **Saldo bajo:** se avisa cuando una reserva deja el saldo disponible por debajo del umbral que ya usa la web (`low_balance_threshold` de `GET /wallet/`: 20 minutos a 720p con el descuento del plan). Se avisa una sola vez; vuelve a avisar recién después de que el saldo sube al umbral o más y cae otra vez.
+- **Los emails no llevan nada que haya escrito un usuario:** ni el título del proyecto, ni el nombre del workspace, ni nombres de personas. Dicen qué pasó, cuánto se devolvió (con el mismo texto que la campana) y llevan el link. Solo se mandan a cuentas con el email verificado. Sus links llevan el workspace (`?espacio=<id>`): la web cambia a ese workspace al abrirlos, si la persona es miembro.
+- **API:** ✅ la campana: `GET /api/v1/notifications/`, `POST /notifications/:id/read/` y `POST /notifications/read-all/` (listo para revisar, render terminado, proyecto fallido, saldo bajo y pagos), y el email de cada una menos los pagos, según las preferencias. ❌ todavía no avisa de una publicación fallida (hueco 16).
 
 ---
 
@@ -310,6 +312,8 @@ Otras respuestas:
 - **Qué muestra:** una **lista** de proyectos (la vista principal), con:
   - Miniatura, título, estado (sección 3), origen (archivo o link), duración, cantidad de clips, quién lo creó y fecha relativa.
   - Arriba: buscador, filtro por estado (Todos, En proceso, Para revisar, Listos, Con error) y orden (recientes).
+  - De a 25 por página. El servidor pagina, filtra, busca y ordena; cada filtro muestra cuántos proyectos tiene con la búsqueda actual.
+  - Un proyecto en cola o en proceso muestra cuánto falta para revisar ("≈ 9 min") cuando hay un estimado.
 - **Vista de grilla:** existe como alternativa y se recuerda por usuario en el navegador.
 - **Acciones por fila:** abrir, renombrar, borrar (según rol).
 - **Estados:**
@@ -317,8 +321,10 @@ Otras respuestas:
   - Los proyectos en proceso se actualizan cada 5 s.
 - **Móvil:** tarjetas apiladas; filtros en un menú.
 - **API:**
-  - ✅ `GET /api/v1/projects/`, ordenado por fecha y sin paginación.
-  - ❌ falta paginar (25 por página) y filtrar por estado del lado del servidor.
+  - ✅ `GET /api/v1/projects/`: páginas de 25 (`page`, `page_size` hasta 100), del más nuevo al más viejo.
+  - ✅ `status_group` filtra por estado (`in_progress`, `to_review`, `ready`, `failed`), `search` busca en el título sin distinguir mayúsculas y `ordering` cambia el orden.
+  - ✅ `status_counts` trae cuántos proyectos hay en cada filtro con la misma búsqueda.
+  - ✅ Cada fila es el proyecto sin la transcripción ni el registro de la selección, que solo van en `GET /api/v1/projects/:id/`.
 
 ### C. Crear
 
@@ -657,6 +663,8 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 
 #### I2. Notificaciones
 - **Qué muestra:** un interruptor de email por cada tipo de la sección 1.11.
+  - «Una publicación falló» todavía no está disponible (hueco 16): su interruptor está deshabilitado y apagado, con la línea «Todavía no avisamos de las publicaciones fallidas.».
+  - Con el email sin verificar, la pantalla dice que los emails no se mandan hasta verificarlo.
 - **API:** ✅ `GET/PATCH /api/v1/me/notification-preferences/`.
 
 ### J. Piezas transversales
@@ -669,7 +677,8 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 #### J2. Notificaciones (campana)
 - Un panel con las últimas 20, con un punto en las no leídas y "Marcar todo como leído".
 - Cada notificación lleva a su proyecto o publicación; la de un pago, a Uso › Movimientos.
-- **Quién las recibe:** las de un proyecto, el dueño y los miembros activos del workspace; la de un pago, quien lo inició.
+- La de saldo bajo lleva a Uso › Comprar tokens.
+- **Quién las recibe:** las de un proyecto, el dueño y los miembros activos del workspace; la de saldo bajo, el dueño y los admins (los que pueden comprar tokens); la de un pago, quien lo inició.
 - **API:** ✅ `GET /api/v1/notifications/`, `POST /api/v1/notifications/:id/read/` y `POST /api/v1/notifications/read-all/`.
 
 #### J3. Selector de workspace
@@ -765,14 +774,14 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad. El detalle e
 | 11 | ~~Endpoint de clip: renombrar, recortar, volver a renderizar y reintentar~~ Resuelto: `GET/PATCH/DELETE /clips/:id/`, `POST /clips/:id/render/` y `POST /clips/:id/retry/` | D3, D4 | — |
 | 12 | Suscripción, checkout y webhooks de pago (PAY-01/02/03). La lista de planes ya está: `GET /plans/` | G3, G4 | P1 |
 | 13 | ~~Invitaciones: crear, reenviar y aceptar~~ Resuelto: `POST /workspaces/:id/invitations/`, `.../invitations/:memberId/resend/`, `POST /invitations/preview/` y `POST /invitations/accept/` | A5, H2 | — |
-| 14 | Paginación y filtro por estado en proyectos | B2 | P1 |
+| 14 | ~~Paginación y filtro por estado en proyectos~~ Resuelto: `GET /projects/` pagina de a 25, con `status_group`, `search`, `ordering` y `status_counts` | B2 | — |
 | 15 | Tiempos por etapa del pipeline | D1 | P2 |
-| 16 | Notificaciones: falta avisar de una publicación fallida y del saldo bajo, y los emails (hueco 21). La campana ya está (`GET /notifications/`, `POST /notifications/:id/read/`, `POST /notifications/read-all/`) con listo para revisar, render terminado, proyecto fallido y pagos; las preferencias de email también: `GET/PATCH /me/notification-preferences/` | J2 | P2 |
+| 16 | Notificaciones: falta avisar de una publicación fallida. La campana ya está (`GET /notifications/`, `POST /notifications/:id/read/`, `POST /notifications/read-all/`) con listo para revisar, render terminado, proyecto fallido, saldo bajo y pagos; las preferencias de email también: `GET/PATCH /me/notification-preferences/` | J2 | P2 |
 | 17 | ~~Descargar todo en .zip~~ Resuelto: `POST /projects/:id/clips/download/` | D3 | — |
 | 18 | Tiempo estimado del proceso ("Listo para revisar en ≈ 12 min") | C1, D1 | P2 |
 | 19 | Total reservado del workspace con el detalle por proyecto | G1, barra | P1 |
 | 20 | ~~Pipeline propio para `single_edit`: un solo video de salida, sin revisión~~ Resuelto: el video entero es un solo clip que se renderiza sin revisión; solo con archivo subido | C1, D5 | — |
-| 21 | Plantillas de los emails transaccionales y su envío (verificar, recuperar, invitación, listo para revisar, render terminado, fallo con devolución, publicación fallida, saldo bajo) | A2–A5, J2, I2 | P1 |
+| 21 | ✅ Envío de los emails transaccionales en texto y HTML simple (verificar, recuperar, invitación, listo para revisar, render terminado, fallo con devolución, saldo bajo). Falta el de publicación fallida (con el hueco 16) y las plantillas con el diseño de N1 a N8 | A2–A5, J2, I2 | P1 |
 | 22 | Tope de peso del archivo al subir: hoy no hay ninguno (los límites de `media_validation` son de duración y resolución) | C1 | P2 |
 
 ---
@@ -797,7 +806,7 @@ Se agregaron en la segunda ronda del canvas, después de una revisión de diseñ
    - Una fila "Punto de partida" con "Mi última configuración" (la regla de recordar de C1) más Podcast, Gaming, Clase y Vlog. Cada preset define estilo, layout, subtítulos e inteligencia.
    - Estilo, Subtítulos e Inteligencia quedan plegados bajo "Personalizar", con el valor actual a la vista.
    - Ninguna opción del spec se quitó: solo se plegó.
-2. **Tiempo estimado.** El resumen de C1 y la cabecera de D1 muestran "Listo para revisar en ≈ X min". Necesita el hueco 18.
+2. **Tiempo estimado.** El resumen de C1 y la cabecera de D1 muestran "Listo para revisar en ≈ X min". Necesita el hueco 18. La cabecera lo muestra también mientras el proyecto está en cola, y la lista de proyectos (B2) lo resume como "≈ X min". El mismo estimado se escribe igual en las tres pantallas: en segundos por debajo del minuto ("≈ 40 s") y en minutos desde ahí.
 3. **Lista de proyectos (B2).**
    - Filas de alto fijo (72 px).
    - El estado va en una sola línea: la etiqueta de la sección 3 más un texto corto ("Hay mucha demanda. Arranca solo.", "Te devolvimos 1.755 tokens"). El texto completo de la sección 3 queda en el tooltip y en la pantalla del proyecto.

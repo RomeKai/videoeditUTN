@@ -58,6 +58,12 @@ const backendFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) 
   return backend(request);
 });
 
+/** What the backend answers to a list: a page for the projects, an array for the rest (the brand kits). */
+const emptyList = (request: Request) =>
+  new URL(request.url).pathname === '/api/v1/projects/'
+    ? Response.json({ count: 0, next: null, previous: null, results: [], status_counts: { all: 0, in_progress: 0, to_review: 0, ready: 0, failed: 0 } })
+    : Response.json([]);
+
 const originalFetch = globalThis.fetch;
 beforeAll(() => {
   globalThis.fetch = backendFetch as typeof fetch;
@@ -134,7 +140,7 @@ describe('modo híbrido: ruteo de los pedidos', () => {
         ? Response.json([
             { id: '93c89170-c470-406f-8a8f-600ffb6a9371', workspace: REAL_WORKSPACE, user: null, name: 'Kit del backend', description: '', primary_font: null, secondary_font: null, primary_color: '#FFFFFF', secondary_color: '#000000', accent_color: '#FFFF00', watermark_logo: null, intro_video: null, outro_video: null, is_default: false, created_at: '2026-11-26T12:22:04.754098Z' },
           ])
-        : Response.json([]);
+        : emptyList(request);
     const kits = await apiCall(brandKits.listBrandKits, {});
     expect(kits.map((kit) => kit.name)).toEqual(['Kit del backend']);
     const list = await apiCall(projects.listProjects, {});
@@ -227,7 +233,7 @@ describe('modo híbrido: identidad coherente con /me simulado', () => {
   });
 
   it('con el workspace de reemplazo activo el cliente no manda X-Workspace-Id: el backend usa el workspace por defecto', async () => {
-    backend = () => Response.json([]);
+    backend = emptyList;
     setActiveWorkspaceId(BACKEND_DEFAULT_WORKSPACE_ID);
     await apiCall(projects.listProjects, {});
     await apiCall(brandKits.listBrandKits, {});
@@ -255,7 +261,7 @@ describe('modo híbrido: identidad coherente con /me simulado', () => {
     // Real mode: MSW is not there; the request goes out with the header, like any other workspace id.
     forceRouting({ mode: 'real' });
     server.use(http.get(`${API_URL}/api/v1/projects/`, () => passthrough()));
-    backend = () => Response.json([]);
+    backend = emptyList;
     setActiveWorkspaceId(BACKEND_DEFAULT_WORKSPACE_ID);
     await apiCall(projects.listProjects, {});
     expect(backendCalls.at(-1)?.workspace).toBe(BACKEND_DEFAULT_WORKSPACE_ID);

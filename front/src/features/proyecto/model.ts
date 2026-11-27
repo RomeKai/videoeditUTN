@@ -5,7 +5,7 @@ import { groupTranscript, type TranscriptLine } from '@/lib/download';
 import { autoRenderSkippedMessage } from '@/lib/error-messages';
 import { formatDuration, formatMinutes, formatNumber, formatRelative, formatTime, formatTokens, plural } from '@/lib/format';
 import { estimateCost, type CostEstimate } from '@/lib/pricing';
-import { countClips, describeProjectStatus, LABELS, type ProjectStatusView, type StatusTone } from '@/lib/project-status';
+import { countClips, describeProjectStatus, etaLabel, LABELS, type ProjectStatusView, type StatusTone } from '@/lib/project-status';
 import type { IconName } from '@/ui/Icon';
 import type { StageState } from '@/ui/StageStepper';
 
@@ -268,10 +268,11 @@ type HeaderProject = Pick<Project, 'status' | 'pipeline_error_at' | 'eta_seconds
 
 /** Line under the title: the text of map §3, with the estimate, the wait or when it failed. */
 export function headerStatusText(project: HeaderProject, view: ProjectStatusView, now: number = Date.now()): string {
-  if (view.step) {
-    const eta = project.eta_seconds;
+  // While it goes through the steps, and in the queue too: the estimate counts the stages from the first one.
+  const eta = etaLabel(project, view);
+  if (eta) {
     const goal = isWholeVideo(project) ? 'para terminar' : 'para revisar';
-    return eta ? `${view.text} · faltan ≈ ${formatMinutes(Math.max(60, eta))} ${goal}` : view.text;
+    return `${view.text.replace(/\.$/, '')} · faltan ${eta} ${goal}`;
   }
   if (view.key === 'waiting') {
     const finishedAt = Object.values(project.stage_timings ?? {})

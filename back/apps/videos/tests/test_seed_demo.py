@@ -418,7 +418,7 @@ class TestExampleProjects:
         review = VideoProject.objects.get(status='awaiting_approval')
 
         listed = client.get('/api/v1/projects/')
-        assert {project['title'] for project in listed.data} == set(seed_demo.FIXTURES.values())
+        assert {project['title'] for project in listed.data['results']} == set(seed_demo.FIXTURES.values())
         paper = client.get(f'/api/v1/projects/{review.pk}/paper-edit-data/')
         assert paper.status_code == 200
         assert paper.data['proxy_url'] == 'http://testserver/media/demo/review/source.mp4'
@@ -427,7 +427,7 @@ class TestExampleProjects:
         download = client.get(f'/api/v1/clips/{clip.pk}/download/')
         assert download.status_code == 200
         assert download.data['url'].endswith('/media/demo/clips/clip-1.mp4')
-        finished = next(project for project in listed.data if project['status'] == 'completed')
+        finished = next(project for project in listed.data['results'] if project['status'] == 'completed')
         shown = next(row for row in finished['clips'] if row['id'] == str(clip.pk))
         assert shown['preview_url'] == 'http://testserver/media/demo/clips/clip-1.mp4'
         assert shown['thumbnail_url'] == 'http://testserver/media/demo/clips/clip-1.jpg'

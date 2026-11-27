@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import type { Project } from '@/api/contracts/projects';
+import type { ProjectListItem as Project } from '@/api/contracts/projects';
 import { plural } from '@/lib/format';
 import { describeProjectStatus } from '@/lib/project-status';
 import { usePermissions } from '@/shell/session';

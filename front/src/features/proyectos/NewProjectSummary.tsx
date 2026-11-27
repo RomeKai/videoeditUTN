@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useId, useState, type ReactNode } from 'react';
-import { formatBytes, formatMinutes, formatNumber, formatTokens } from '@/lib/format';
+import { formatBytes, formatEta, formatMinutes, formatNumber, formatTokens } from '@/lib/format';
 import { Banner, Button, Card, CardHead, Icon, ProgressBar, cx } from '@/ui';
 import styles from './NewProject.module.css';
 
@@ -167,7 +167,7 @@ function Eta({ seconds }: { seconds: number | null }) {
         <Icon name="clock" size={14} />
       </span>
       <span>
-        Listo para revisar en <span className={cx('num', styles.strong)}>≈ {formatMinutes(seconds)}</span>
+        Listo para revisar en <span className={cx('num', styles.strong)}>{formatEta(seconds)}</span>
       </span>
     </p>
   );

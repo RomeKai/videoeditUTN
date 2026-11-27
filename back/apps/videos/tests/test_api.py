@@ -68,20 +68,19 @@ class PrivateVideoProjectAPITests(APITestCase):
         """Asegura que se puede obtener la lista de proyectos propios."""
         res = self.client.get(PROJECTS_URL)
 
-        self.assertEqual(len(res.data), 1) 
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(len(res.data['results']), 1)
 
-        self.assertEqual(res.data[0]['title'], 'Mi Primer Clip')
+        self.assertEqual(res.data['results'][0]['title'], 'Mi Primer Clip')
 
-        self.assertNotIn(self.project_other.title, [item['title'] for item in res.data])
+        self.assertNotIn(self.project_other.title, [item['title'] for item in res.data['results']])
         
     def test_projects_limited_to_user(self):
         """Asegura que el usuario NO puede ver los proyectos de otros."""
         res = self.client.get(PROJECTS_URL)
         
         # 1. El proyecto secreto NO debe aparecer en la lista
-        # CÓDIGO CORREGIDO (Línea 70 aproximada):
-        # Eliminamos ['results'] porque ahora res.data es la lista directa
-        self.assertNotIn(self.project_other.title, [item['title'] for item in res.data])
+        self.assertNotIn(self.project_other.title, [item['title'] for item in res.data['results']])
 
         # Continúa en apps/videos/tests/test_api.py
 
