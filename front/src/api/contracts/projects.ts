@@ -88,6 +88,8 @@ export const KNOWN_PIPELINE_ERROR_CODES = [
   'LinkTooLongForAppError',
   /** The linked video's file is larger than LINK_DOWNLOAD_MAX_BYTES. Not retried. */
   'LinkTooLargeError',
+  /** The ingestion made no progress (its message was lost or its worker died) and recover_stuck_renders failed it and returned its reservation (tasks/render_recovery.py). It can be re-dispatched: it reserves again and runs. */
+  'IngestionStuck',
 ] as const;
 export type KnownPipelineErrorCode = (typeof KNOWN_PIPELINE_ERROR_CODES)[number];
 
@@ -705,7 +707,7 @@ export const redispatchProject = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_clips.py · ProjectRedispatchView',
-    note: 'No cobra lo que sigue pagado: un proyecto con los clips elegidos sigue gratis (su render se paga solo). Lo que se devolvió al fallar (una etapa antes de elegir los clips, o el render de un video completo) se reserva otra vez y el pipeline lo liquida como al crear. Responde `cost_details` cuando reservó. El proyecto sigue `failed` hasta que la tarea lo reabre.',
+    note: 'No cobra lo que sigue pagado: un proyecto con los clips elegidos sigue gratis (su render se paga solo). Lo que se devolvió al fallar (una etapa antes de elegir los clips, o el render de un video completo) se reserva otra vez y el pipeline lo liquida como al crear. Responde `cost_details` cuando reservó. El proyecto sigue `failed` hasta que la tarea lo reabre. Uno que falló con `IngestionStuck` (su ingesta no avanzaba y se devolvió la reserva) también reserva de nuevo y corre. Solo el mensaje de este pedido lo reabre: una copia vieja que llega tarde no corre nada.',
   },
   screens: ['D1'],
 });

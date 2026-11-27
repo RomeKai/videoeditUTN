@@ -10,7 +10,9 @@ Rules (the same the pipeline applies, see tasks/ingestion.py and tasks/render.py
     Creation reservation, ``metadata['reservation_id']``:
         project at clips_selected or later, or with clips  -> commit
         project failed without clips                       -> rollback
-        anything else (still ingesting)                    -> report only
+        anything else (still ingesting)                    -> report only:
+            an ingestion that makes no progress is re-queued, or failed and
+            refunded, by recover_stuck_renders (kind=ingestion)
     Creation reservation of a whole-video project (single_edit priced for
     its whole duration), settled from where it ended, with the pipeline's own
     rule (ingestion._whole_video_settlement):
@@ -40,6 +42,12 @@ Rules (the same the pipeline applies, see tasks/ingestion.py and tasks/render.py
     re-queues it, fails it (refunded) or only reports it, and which also
     charges a delivered render left unpaid (the same rule as here).
 
+    Once a render asked for later is settled, the clips it never rendered are
+    given back as they were (``_restore_rerendered_clips``). That restore is
+    not part of the settle: if it fails, the settle stays committed, the line
+    says ``result=committed`` (or ``rolled_back``) with ``restore=error=<class>``,
+    and recover_stuck_renders retries the restore (kind=restore).
+
 Safety
     Dry run by default: without ``--apply`` nothing is written. Only
     transactions older than ``--min-age-hours`` (24 by default) are read.
@@ -50,12 +58,18 @@ Safety
     is still RESERVED: a reservation the pipeline settled meanwhile is skipped.
 
 Output
-    One line per transaction with ids, amounts, states and the decision. No
-    user text: never the transaction description (it holds the project title)
-    nor anything from the project besides its id and states.
+    One line per transaction with ids, amounts, states, the decision and, for
+    a render asked for later, how its restore went (``restore``: ``ok``,
+    ``error=<class>`` or ``-``). No user text: never the transaction
+    description (it holds the project title) nor anything from the project
+    besides its id and states. The summary counts settle errors (``errors``,
+    exit code 1) apart from restore errors (``restore_errors``, which
+    recover_stuck_renders retries).
 """
 
 from datetime import timedelta
+
+import logging
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import DatabaseError, transaction
@@ -69,6 +83,8 @@ from apps.videos.tasks.ingestion import (
     _clip_render_settlement, _is_whole_video, _paid_clip_renders, _restore_rerendered_clips,
     _whole_video_settlement,
 )
+
+logger = logging.getLogger(__name__)
 
 COMMIT, ROLLBACK, REPORT = "commit", "rollback", "report"
 _WHOLE_VIDEO_ACTIONS = {"commit": COMMIT, "rollback": ROLLBACK, "wait": REPORT}
@@ -153,9 +169,11 @@ def decide(kind, project):
 def _settle(transaction_id, kind, project_id):
     """
     Decides again under the project's row lock (a stage moving meanwhile waits
-    for it) and settles. Returns (action, reason, result); result is
+    for it) and settles. Returns (action, reason, result, restore); result is
     ``committed``, ``rolled_back``, ``skipped`` (the decision is now to report)
-    or ``already_settled`` (the pipeline settled it first).
+    or ``already_settled`` (the pipeline settled it first). ``restore`` is how
+    the restore after a settled render asked for later went: ``ok``,
+    ``error=<class>`` (the settle is committed all the same) or ``-``.
     """
     from apps.payments.services.wallet_service import (
         PaymentError, commit_partial_reservation, commit_reservation, rollback_reservation,
@@ -168,7 +186,7 @@ def _settle(transaction_id, kind, project_id):
         )
         action, reason = decide(kind, project)
         if action == REPORT:
-            return action, reason, "skipped"
+            return action, reason, "skipped", "-"
         try:
             with transaction.atomic():
                 paid = _paid_clip_render(kind, project)
@@ -188,12 +206,19 @@ def _settle(transaction_id, kind, project_id):
             if Transaction.objects.filter(pk=transaction_id).exclude(
                 status=Transaction.Status.RESERVED
             ).exists():
-                return action, reason, "already_settled"
+                return action, reason, "already_settled", "-"
             raise
-    if kind == "clip_render":
-        # Settled: the clips it never rendered are the user's again, as they were.
+    result = "committed" if action == COMMIT else "rolled_back"
+    if kind != "clip_render":
+        return action, reason, result, "-"
+    # Settled: the clips it never rendered are the user's again, as they were.
+    # Committed already: a failure here is the restore's, never the settle's.
+    try:
         _restore_rerendered_clips(project_id)
-    return action, reason, "committed" if action == COMMIT else "rolled_back"
+    except DatabaseError as exc:
+        logger.error("render.clip_restore_failed project_id=%s error=%s", project_id, type(exc).__name__)
+        return action, reason, result, f"error={type(exc).__name__}"
+    return action, reason, result, "ok"
 
 
 class Command(BaseCommand):
@@ -213,7 +238,6 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        # Deferred: wallet_service imports the tasks package at load time.
         from apps.payments.services.wallet_service import PaymentError
 
         apply = options["apply"]
@@ -232,20 +256,23 @@ class Command(BaseCommand):
         )
 
         totals = {COMMIT: 0, ROLLBACK: 0, REPORT: 0}
-        errors = 0
+        errors = restore_errors = 0
         # Read whole before settling: a stuck reservation is the exception, so
         # the list is short, and no cursor stays open across the settles.
         for row in list(stale):
             kind, project = _linked_project(row["id"])
             action, reason = decide(kind, project)
             result = "dry_run" if action != REPORT else "reported"
+            restore = "-"
             if apply and action != REPORT:
                 try:
-                    action, reason, result = _settle(row["id"], kind, project.pk)
+                    action, reason, result, restore = _settle(row["id"], kind, project.pk)
                 except (PaymentError, DatabaseError) as exc:
                     # One failure never stops the sweep; the class name only.
                     errors += 1
                     result = f"error={type(exc).__name__}"
+            if restore.startswith("error="):
+                restore_errors += 1
             totals[action] += 1
             age_h = (now - row["created_at"]).total_seconds() / 3600
             self.stdout.write(
@@ -253,13 +280,13 @@ class Command(BaseCommand):
                 f"kind={kind or '-'} project={project.pk if project else '-'} "
                 f"stage={project.pipeline_stage if project else '-'} "
                 f"status={project.status if project else '-'} "
-                f"action={action} reason={reason} result={result}"
+                f"action={action} reason={reason} result={result} restore={restore}"
             )
 
         self.stdout.write(
             f"summary mode={'apply' if apply else 'dry_run'} min_age_hours={min_age_hours:g} "
             f"commit={totals[COMMIT]} rollback={totals[ROLLBACK]} report={totals[REPORT]} "
-            f"errors={errors}"
+            f"errors={errors} restore_errors={restore_errors}"
         )
         if errors:
             raise CommandError(f"{errors} reservation(s) could not be settled.")

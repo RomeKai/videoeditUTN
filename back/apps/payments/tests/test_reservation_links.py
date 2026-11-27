@@ -37,7 +37,7 @@ class ReserveFundsLinkTests(TestCase):
         self.project = VideoProject.objects.create(workspace=self.workspace, uploaded_by=self.user, title='P')
 
     def test_project_and_category_go_in_the_insert_and_queue_nothing(self):
-        with patch('apps.payments.services.wallet_service.process_video_pipeline.delay') as pipeline, \
+        with patch('apps.videos.tasks.process_video_pipeline.delay') as pipeline, \
                 CaptureQueriesContext(connection) as queries:
             txn = wallet_service.reserve_funds(
                 self.wallet.id, Decimal('5'), user=self.user, project=self.project, category=RENDER,
@@ -46,7 +46,7 @@ class ReserveFundsLinkTests(TestCase):
         self.assertEqual(link_of(txn.pk), (self.project.pk, RENDER))
         updates = [q['sql'] for q in queries.captured_queries if q['sql'].startswith('UPDATE "payments_transaction"')]
         self.assertEqual(updates, [])
-        # Only project_id queues the pipeline, as before.
+        # A reservation never queues the pipeline (project_id is accepted and ignored).
         pipeline.assert_not_called()
 
     def test_without_them_the_reservation_is_other_and_has_no_project(self):

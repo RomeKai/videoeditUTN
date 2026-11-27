@@ -127,6 +127,18 @@ class IngestionHarness(CapturedTaskFailures):
     def run_task(self, project):
         return process_initial_ingestion.apply(args=[str(project.id)])
 
+    def redispatch_task(self, project):
+        """
+        What a re-dispatch of a failed project sends (the view or the admin
+        override): a chain of its own, stored first. A failure replaces the
+        chain, so a plain copy of an earlier message never reopens it.
+        """
+        from apps.videos.tasks.ingestion import INGESTION_CHAIN_KEY, new_ingestion_chain
+
+        chain = new_ingestion_chain()
+        _merge_metadata(project.id, {INGESTION_CHAIN_KEY: chain})
+        return process_initial_ingestion.apply(args=[str(project.id)], kwargs={'chain': chain})
+
 
 class StageResumeTests(IngestionHarness, TestCase):
     def test_happy_path_persists_every_stage(self):
@@ -233,7 +245,8 @@ class StageResumeTests(IngestionHarness, TestCase):
 
         self.mock_select.side_effect = None
         self.mock_select.return_value = selection_result()
-        result = self.run_task(project)
+        self.assertIn("Not resumed", self.run_task(project).result)  # a copy of the failed chain
+        result = self.redispatch_task(project)
 
         project.refresh_from_db()
         self.assertTrue(result.successful())

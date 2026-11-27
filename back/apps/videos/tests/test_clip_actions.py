@@ -1103,13 +1103,19 @@ class RedispatchTests(ClipActionsHarness, APITestCase):
             response = self.client.post(project_url(project, "redispatch"))
         return response, delay
 
+    @staticmethod
+    def chain(project):
+        """The chain the re-dispatch stored: its message carries it (tasks/ingestion.py, INGESTION_CHAIN_KEY)."""
+        project.refresh_from_db()
+        return project.metadata["ingestion_chain"]
+
     def test_work_that_was_refunded_is_reserved_again_with_the_same_amount(self):
         project = self.failed({"audio_extracted": "completed", "transcribed": "failed"})
 
         response, delay = self.redispatch(project)
 
         self.assertEqual(response.status_code, 202, response.content[:300])
-        delay.assert_called_once_with(str(project.pk))
+        delay.assert_called_once_with(str(project.pk), chain=self.chain(project))
         project.refresh_from_db()
         new = Transaction.objects.get(pk=project.metadata["reservation_id"])
         self.assertEqual((new.status, new.amount), (RESERVED, Decimal("12.50")))
@@ -1215,7 +1221,7 @@ class RedispatchTests(ClipActionsHarness, APITestCase):
         resumed, delay = self.redispatch(over_plan)
 
         self.assertEqual(resumed.status_code, 202, resumed.content[:300])
-        delay.assert_called_once_with(str(over_plan.pk))
+        delay.assert_called_once_with(str(over_plan.pk), chain=self.chain(over_plan))
         self.assertEqual(self.balances(), (Decimal("87.50"), Decimal("12.50")))
 
 
@@ -1262,14 +1268,14 @@ class RedispatchMoneyRaceTests(RedispatchTests):
         self.assertEqual(Transaction.objects.get(pk=project.metadata["reservation_id"]).status, RESERVED)
         with patch("apps.videos.tasks.ingestion._stage_transcribe", side_effect=RuntimeError("stop here")), \
                 self.assertRaises(RuntimeError):
-            _run_ingestion(project.pk, attempt=1)
+            _run_ingestion(project.pk, attempt=1, chain=delay.call_args.kwargs["chain"])
         project.refresh_from_db()
         self.assertEqual(project.status, VideoProject.Status.INGESTING)  # reopened
 
     def test_a_message_that_got_through_keeps_the_reservation_that_pays_it(self):
         project = self.failed({"audio_extracted": "completed"}, code="CapacityTimeoutError")
 
-        def published_then_raised(project_id):
+        def published_then_raised(project_id, chain=None):
             # The pipeline took it (and reopened it) before the client saw the error.
             VideoProject.objects.filter(pk=project_id).update(
                 pipeline_stage=PipelineStage.AUDIO_EXTRACTED, status=VideoProject.Status.INGESTING,
@@ -1753,7 +1759,7 @@ class ConcurrentPaidRenderTests(ClipActionsHarness, APITransactionTestCase):
         statuses, _responses, _delay, ingestion = self.race(project_url(project, "redispatch"))
 
         self.assertEqual(statuses, [202, 202])  # the second one reuses the first's reservation
-        self.assertEqual(ingestion.call_count, 2)  # two messages, one project lock: harmless
+        self.assertEqual(ingestion.call_count, 2)  # two messages, but only the last chain stored runs
         self.assertEqual(Transaction.objects.filter(wallet=self.wallet, status=RESERVED).count(), 1)
         self.assertEqual(self.balances(), (Decimal("87.50"), Decimal("12.50")))
 
