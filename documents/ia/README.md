@@ -93,6 +93,7 @@ Rutas relativas a `back/apps/videos/` salvo indicación.
 | [services/face_tracking.py](../../back/apps/videos/services/face_tracking.py) | `IoUTracker` y `FaceTracks`: une detecciones en tracks con id estable. `sampling_fps` por estilo |
 | [services/tracking_utils.py](../../back/apps/videos/services/tracking_utils.py) | `TrackingPoint`, `TrackingPath`, suavizado (`MovingAverageSmoothing`, `EMASmoothing`) e `interpolate_gaps` |
 | [services/speaker_engine.py](../../back/apps/videos/services/speaker_engine.py) | `SpeakerTrackingEngine`: quién habla, con energía del audio y movimiento de boca, sin pyannote |
+| [services/scheduled_posts.py](../../back/apps/videos/services/scheduled_posts.py) | Las escrituras de la API de publicaciones: crear, editar, cancelar, reintentar y regenerar el texto, sin llamar a ninguna red ([05](05-seo-y-publicacion.md#flujo-la-api-de-publicaciones)) |
 | [signals.py](../../back/apps/videos/signals.py) | `generate_seo_for_new_post` (post_save de `ScheduledPost`), `queue_post_seo`, `seo_requested` |
 | [checks.py](../../back/apps/videos/checks.py) | `check_ai_configuration`: chequeo de arranque `videos.E001` a `videos.E006` |
 | [management/commands/export_ai_pilot_metrics.py](../../back/apps/videos/management/commands/export_ai_pilot_metrics.py) | Export de métricas del piloto en CSV o JSONL, sin texto del usuario |

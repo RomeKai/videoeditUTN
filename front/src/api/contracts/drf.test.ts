@@ -27,6 +27,7 @@ import { ClipPreview } from './clips';
 import real from './drf/responses.json';
 import { Notification, type NotificationsResponse, listNotifications, markNotificationRead } from './notifications';
 import { ActivityItem, ApprovePaperEditResponse, CreateFromPromptResponse, CreateProjectResponse, PaperEditData, Project, ProjectListItem, ProjectsResponse, StageTiming, UploadTooLargeBody, createProject } from './projects';
+import { ScheduledPost, createPost, createPostsBulk, listPosts, regeneratePostSeo, retryPost, updatePost } from './social';
 import { type MembersResponse, type Workspace, createWorkspace, getWorkspace, listMembers, listWorkspaces, transferWorkspace, updateMember, updateWorkspace } from './workspaces';
 
 /**
@@ -420,5 +421,54 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
     const read = parse(markNotificationRead.response, real.notification_read) as Notification;
     expect(read.read_at).toBe('2026-11-04T16:00:00Z');
     expect(error('notification_404', 'notifications.markRead').isNotFound).toBe(true);
+  });
+
+  it('publicaciones: crear, en lote, editar, publicar un borrador, reintentar, regenerar y la lista', () => {
+    const draft = parse(ScheduledPost, real.posts_create_draft) as ScheduledPost;
+    expect([draft.status, draft.seo_status, draft.caption]).toEqual(['DRAFT', 'pending', '']);
+    // "Publish now" waits for the beat: SCHEDULED, for the time it was asked.
+    const now = parse(createPost.response, real.posts_create_now) as ScheduledPost;
+    expect([now.status, now.publish_at]).toEqual(['SCHEDULED', '2026-11-27T15:02:00Z']);
+    const scheduled = parse(createPost.response, real.posts_create_scheduled) as ScheduledPost;
+    expect(scheduled.hashtags).toEqual(['podcast', 'charlas']);
+    const batch = parse(createPostsBulk.response, real.posts_bulk) as { posts: ScheduledPost[] };
+    expect(batch.posts.map((post) => post.platform)).toEqual(['INSTAGRAM_REELS', 'TIKTOK']);
+    // The flags of TikTok left out come back false.
+    expect(batch.posts[1]?.tiktok).toEqual({ privacy_level: 'PUBLIC_TO_EVERYONE', allow_comment: true, allow_duet: false, allow_stitch: false, brand_organic: false, branded_content: false });
+    expect((parse(updatePost.response, real.posts_update) as ScheduledPost).publish_at).toBe('2026-11-29T15:00:00Z');
+    const published = parse(updatePost.response, real.posts_publish_draft) as ScheduledPost;
+    expect([published.status, published.seo_status]).toEqual(['SCHEDULED', 'ready']);
+    const retried = parse(retryPost.response, real.posts_retry) as ScheduledPost;
+    expect([retried.status, retried.error_code, retried.retry_count]).toEqual(['SCHEDULED', null, 4]);
+    // A post whose AI text failed comes back as a draft, with the failure.
+    const draftAgain = parse(retryPost.response, real.posts_retry_seo_failed) as ScheduledPost;
+    expect([draftAgain.status, draftAgain.seo_status, draftAgain.error_code]).toEqual(['DRAFT', 'failed', null]);
+    // Regenerating keeps the previous text until the new one arrives.
+    const pending = parse(regeneratePostSeo.response, real.posts_regenerate_seo) as ScheduledPost;
+    expect([pending.seo_status, pending.caption]).toEqual(['pending', 'Mirá cómo lo dieron vuelta']);
+    const list = parse(listPosts.response, real.posts_list) as { count: number; status_counts?: Record<string, number> };
+    expect(list.count).toBe(8);
+    expect(list.status_counts).toEqual({ DRAFT: 2, SCHEDULED: 6, QUEUED: 0, PROCESSING: 0, PUBLISHED: 0, FAILED: 0 });
+    expect([createPost, createPostsBulk, updatePost, retryPost, regeneratePostSeo].map((endpoint) => endpoint.backend.status)).toEqual(['exists', 'exists', 'exists', 'exists', 'exists']);
+  });
+
+  it('publicaciones: los errores traen su code, y el lote dice cuál publicación falló', () => {
+    const scheduling = error('post_403_scheduling', 'social.createPost');
+    expect([scheduling.isPlanLimit, planLimitKind(scheduling)]).toEqual([true, 'scheduling']);
+    expect(planLimitKind(error('post_403_crossposting', 'social.createPost'))).toBe('crossposting');
+    expect(planLimitKind(error('post_403_seo', 'social.regeneratePostSeo'))).toBe('seo');
+    const bulk = error('post_400_bulk_index', 'social.createPostsBulk');
+    expect([bulk.data.index, fieldError(bulk, 'caption')]).toEqual([1, 'El texto supera el límite de Instagram Reels (2200 caracteres).']);
+    expect(fieldError(error('post_400_tiktok', 'social.createPost'), 'tiktok')).toBe('Elegí quién puede ver el video.');
+    expect(error('post_409_account_not_connected', 'social.createPost').code).toBe('account_not_connected');
+    for (const [key, code] of [
+      ['post_409_in_flight', 'post_in_flight'],
+      ['post_409_published', 'post_published'],
+      ['post_409_not_failed', 'post_not_failed'],
+      ['post_409_idempotency_key_reused', 'idempotency_key_reused'],
+    ] as const) {
+      const conflict = error(key, 'social.updatePost');
+      expect([conflict.isConflict, conflict.code], key).toEqual([true, code]);
+    }
   });
 });

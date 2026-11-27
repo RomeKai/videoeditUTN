@@ -1,12 +1,16 @@
 # SEO y publicación social
 
-Este documento cubre la vida de una publicación (`ScheduledPost`): cómo se generan su caption y sus hashtags con IA (`process_video_seo`, [ADR-013](../adrs/013-ai-social-metadata.md)) y cómo se publica en TikTok, Instagram Reels o YouTube Shorts a través de Ayrshare (`upload_to_social_network`). La generación corre una vez por publicación, apenas se crea el `ScheduledPost`, y solo si el proyecto pagó el adicional de SEO. La publicación corre cuando `dispatch_scheduled_posts_batch` encuentra posts `SCHEDULED` cuya `publish_at` cae dentro de la próxima hora.
+Este documento cubre la vida de una publicación (`ScheduledPost`): cómo la crea y la cambia la API, cómo se generan su caption y sus hashtags con IA (`process_video_seo`, [ADR-013](../adrs/013-ai-social-metadata.md)) y cómo se publica en TikTok, Instagram Reels o YouTube Shorts a través de Ayrshare (`upload_to_social_network`). La generación corre una vez por publicación, apenas se crea el `ScheduledPost`, y solo si el proyecto pagó el adicional de SEO; "Regenerar" la vuelve a pedir. La publicación corre cuando `dispatch_scheduled_posts_batch` encuentra posts `SCHEDULED` cuya `publish_at` ya llegó o cae dentro de la próxima hora. Ningún endpoint llama a la red.
 
 ## Componentes
 
 | Componente | Archivo | Rol |
 |------------|---------|-----|
-| `ScheduledPost` (`Status`, `Platform`) | [models.py](../../back/apps/videos/models.py) | Estado de la publicación, `generated_caption`, `generated_hashtags`, `error_log`, `retry_count`. |
+| `ScheduledPost` (`Status`, `Platform`) | [models.py](../../back/apps/videos/models.py) | Estado de la publicación, `generated_caption`, `generated_hashtags`, `error_log`, `retry_count`, el texto del usuario (`caption`, `hashtags`, `tiktok`) y `seo_requested_at`. |
+| `PostIdempotencyKey` | [models.py](../../back/apps/videos/models.py) | Qué publicaciones creó un pedido con `Idempotency-Key`, por workspace. |
+| `ScheduledPostViewSet` | [views_social.py](../../back/apps/videos/views_social.py) | `/api/v1/scheduled-posts/`: listar y ver, crear (una o en lote), editar, cancelar, reintentar y regenerar el texto. |
+| `create_posts`, `update_post`, `cancel_post`, `retry_post`, `regenerate_seo` | [services/scheduled_posts.py](../../back/apps/videos/services/scheduled_posts.py) | Las reglas de cada escritura: estados, plan, cuenta, locks y la regla de un post trabado. |
+| `ScheduledPostSerializer`, `CreatePostSerializer`, `UpdatePostSerializer` | [serializers_social.py](../../back/apps/videos/serializers_social.py) | Lo que muestra la API (`seo_status`, `error_code`, `error_message` derivados) y lo que acepta. |
 | `generate_seo_for_new_post`, `seo_requested`, `queue_post_seo` | [signals.py](../../back/apps/videos/signals.py) | Receptor de `post_save`: encola la generación después del commit, solo con SEO contratado. |
 | `VideosConfig.ready` | [apps.py](../../back/apps/videos/apps.py) | Importa `signals` (y `checks`) para registrar el receptor. |
 | `ScheduledPostAdmin.regenerate_ai_metadata` | [admin.py](../../back/apps/videos/admin.py) | Acción "Regenerar caption y hashtags con IA": regeneración explícita. |
@@ -22,48 +26,57 @@ Este documento cubre la vida de una publicación (`ScheduledPost`): cómo se gen
 
 ```mermaid
 stateDiagram-v2
-    [*] --> DRAFT : creación
-    DRAFT --> SCHEDULED : programado desde el admin
+    [*] --> DRAFT : API con draft true, o el admin
+    [*] --> SCHEDULED : API, ahora o con fecha
+    DRAFT --> SCHEDULED : PATCH con publish_at
+    SCHEDULED --> SCHEDULED : PATCH reprograma
     SCHEDULED --> QUEUED : dispatch_scheduled_posts_batch
     QUEUED --> PROCESSING : upload_to_social_network
     QUEUED --> FAILED : sin ayrshare_profile_key
     PROCESSING --> PROCESSING : AyrshareAPIError con backoff
     PROCESSING --> PUBLISHED : Ayrshare responde OK
     PROCESSING --> FAILED : error crítico o reintentos agotados
-    DRAFT --> FAILED : fallo SEO sin caption previo
+    PROCESSING --> SCHEDULED : retry de un post trabado
+    FAILED --> SCHEDULED : retry de una falla al publicar
+    FAILED --> DRAFT : retry o generación SEO exitosa sobre un fallo SEO
     SCHEDULED --> FAILED : fallo SEO sin caption previo
     QUEUED --> FAILED : fallo SEO sin caption previo
-    FAILED --> DRAFT : generación SEO exitosa sobre un fallo SEO
+    DRAFT --> [*] : cancel
+    SCHEDULED --> [*] : cancel
+    QUEUED --> [*] : cancel
+    FAILED --> [*] : cancel
+    PROCESSING --> [*] : cancel de un post trabado
     PUBLISHED --> [*]
     note right of PROCESSING
         PROCESSING y PUBLISHED son _SEO_FROZEN_STATUSES
         SEO nunca cambia su estado ni su caption
     end note
-    note left of FAILED
-        Una regeneración fallida no cambia nada
-        el post conserva caption y estado
+    note left of DRAFT
+        Un fallo SEO deja el borrador en DRAFT
+        con el código en error_log
     end note
 ```
 
-1. Todo post nace `DRAFT` (default del modelo). En el backend no hay endpoint que cree o programe publicaciones: hoy se crean y se pasan a `SCHEDULED` desde el admin (o desde código propio).
-2. `dispatch_scheduled_posts_batch` toma los `SCHEDULED` con `publish_at` entre ahora y ahora + 1 h y los pasa a `QUEUED` bajo `select_for_update`.
+1. Un post nace `DRAFT` (default del modelo, `draft: true` en la API, o el admin) o `SCHEDULED` (la API, para ahora o para una fecha). Cómo lo crea y lo cambia la API está en [Flujo: la API de publicaciones](#flujo-la-api-de-publicaciones).
+2. `dispatch_scheduled_posts_batch` toma los `SCHEDULED` con `publish_at` hasta ahora + 1 h (los vencidos también: salen enseguida) y los pasa a `QUEUED` bajo `select_for_update`.
 3. `upload_to_social_network` los pasa a `PROCESSING` y, si Ayrshare responde, a `PUBLISHED`. Sin `ayrshare_profile_key` en el workspace el post queda `FAILED` desde cualquier estado previo.
-4. Un fallo de SEO (`_fail_seo_post`) deja `FAILED` con un código estático en `error_log`, salvo dos excepciones: el post está en `_SEO_FROZEN_STATUSES` (`PROCESSING`, `PUBLISHED`) o ya tiene `generated_caption` no vacío y `generated_hashtags`. En ese último caso (regeneración fallida) solo se registra `seo.regenerate_failed`: el post sigue publicable con el caption anterior.
-5. Una generación exitosa llama a `_recover_seo_failed_post`: un post `FAILED` cuyo `error_log` es un código de SEO vuelve a `DRAFT` con `error_log` vacío. Nunca se vuelve a programar solo: el usuario revisa el caption y lo programa de nuevo. Un `FAILED` de publicación no se toca.
+4. Un fallo de SEO (`_fail_seo_post`) deja `FAILED` con un código estático en `error_log`, salvo estas excepciones: el post está en `_SEO_FROZEN_STATUSES` (`PROCESSING`, `PUBLISHED`); ya tiene `generated_caption` no vacío y `generated_hashtags` (regeneración fallida: solo se registra `seo.regenerate_failed` y el post sigue publicable con el caption anterior); o es un `DRAFT` o tiene caption propio del usuario, que conservan su estado con el código en `error_log` (la API muestra `seo_status: "failed"`; el texto del usuario no necesita el de la IA). En todos los casos borra `seo_requested_at`.
+5. Una generación exitosa llama a `_recover_seo_failed_post`: un post `FAILED` cuyo `error_log` es un código de SEO vuelve a `DRAFT` con `error_log` vacío, y un `DRAFT` con ese código pierde el código. Nunca se vuelve a programar solo: el usuario revisa el caption y lo programa de nuevo. Un `FAILED` de publicación no se toca.
 
 ## Flujo: disparo de la generación
 
 1. **Gating.** `seo_requested(project)` es verdadero solo si `project.metadata['use_seo']` es exactamente `True` y el plan del workspace la incluye: `subscription_plan` es `None` (sin plan no hay límites, como en `PricingEngine`) o `has_seo_optimization` es verdadero. `use_seo` se guarda al crear el proyecto y se cobra como el adicional `seo_optimization` ([ver 01-creacion-de-proyecto](01-creacion-de-proyecto.md)). Prompt-to-Edit no lo puede encender: `ConfigValidator` descarta un `use_seo` que sube el precio ([ver 04-prompt-to-edit](04-prompt-to-edit.md)). El plan se evalúa en el momento del disparo, no al crear el proyecto.
-2. **Señal.** `generate_seo_for_new_post` escucha `post_save` de `ScheduledPost` (`dispatch_uid='videos.scheduled_post_seo'`). Sale sin hacer nada si el post no es nuevo (`created` falso: editar nunca regenera), si viene de un fixture (`raw`), si ya trae `generated_caption` y `generated_hashtags`, si está `PROCESSING` o `PUBLISHED`, o si `seo_requested` es falso.
-3. **Después del commit.** `queue_post_seo(post_id)` registra el envío con `transaction.on_commit`: si la transacción que creó el post hace rollback, la tarea nunca se encola, y cuando se encola siempre encuentra el post. Un error del broker se registra como `seo.dispatch_failed` y no deshace el post; el envío correcto registra `seo.dispatched`.
-4. **Regeneración explícita.** La acción del admin `regenerate_ai_metadata` excluye los posts `PROCESSING` y `PUBLISHED`, filtra los que pasan `seo_requested` y llama a `queue_post_seo(post_id, regenerate=True)`, que encola `process_video_seo` con `kwargs={'regenerate': True}`. Es también la forma de reintentar un post cuyo disparo falló.
-5. **`bulk_create`.** Django no emite `post_save` en `bulk_create`: los posts creados así no disparan la generación. Quien los cree de esa forma tiene que llamar a `queue_post_seo` por cada uno.
+2. **Señal.** `generate_seo_for_new_post` escucha `post_save` de `ScheduledPost` (`dispatch_uid='videos.scheduled_post_seo'`). Sale sin hacer nada si el post no es nuevo (`created` falso: editar nunca regenera), si viene de un fixture (`raw`), si lo creó la API (`seo_decided`: `create_posts` ya decidió), si ya trae `generated_caption` y `generated_hashtags`, si nace `PROCESSING`, `PUBLISHED` o `FAILED`, o si `seo_requested` es falso.
+3. **Después del commit.** `queue_post_seo(post_id)` marca el pedido (`seo_requested_at`, ver abajo) y registra el envío con `transaction.on_commit`: si la transacción que creó el post hace rollback, la tarea nunca se encola, y cuando se encola siempre encuentra el post. Un error del broker se registra como `seo.dispatch_failed` y no deshace el post; el envío correcto registra `seo.dispatched`.
+4. **Regeneración explícita.** `POST /api/v1/scheduled-posts/:id/regenerate-seo/` (`regenerate_seo`) y la acción del admin `regenerate_ai_metadata` llaman a `queue_post_seo(post_id, regenerate=True)`, que encola `process_video_seo` con `kwargs={'regenerate': True}`. Ambas excluyen los posts `PROCESSING` y `PUBLISHED` y piden `seo_requested`; la API excluye también `QUEUED`. Es también la forma de reintentar un post cuyo disparo falló.
+5. **Pedido en camino (`seo_requested_at`).** Lo escribe `queue_post_seo`, la usen la señal, el admin o la API. Mientras está y tiene menos de `seo_request_window()` (`AI_CAPACITY_MAX_WAIT_SECONDS` + 15 min), la API responde `seo_status: "pending"` aunque haya un texto anterior, y otro "Regenerar" no encola nada (un doble clic no paga dos generaciones). Lo borran `_generate_post_metadata` al guardar el texto, `_fail_seo_post` al fallar, y `queue_post_seo` si el broker no tomó el mensaje.
+6. **`bulk_create`.** Django no emite `post_save` en `bulk_create`: los posts creados así no disparan la generación. Quien los cree de esa forma tiene que llamar a `queue_post_seo` por cada uno. El endpoint `/bulk/` guarda cada post con `save()`, así que la señal corre para todos.
 
 ## Flujo: generación de caption y hashtags
 
 ```mermaid
 sequenceDiagram
-    participant ADM as Admin o código
+    participant ADM as API, admin o código
     participant DB as PostgreSQL
     participant SIG as generate_seo_for_new_post
     participant T as process_video_seo
@@ -72,7 +85,7 @@ sequenceDiagram
     participant MOD as AI_Security_Shield
     participant LLM as SEOOptimizationService
 
-    ADM->>DB: crea ScheduledPost (DRAFT)
+    ADM->>DB: crea ScheduledPost (DRAFT o SCHEDULED)
     DB->>SIG: post_save con created
     SIG->>SIG: seo_requested (use_seo y has_seo_optimization)
     SIG->>T: queue_post_seo con transaction.on_commit
@@ -109,7 +122,8 @@ sequenceDiagram
 11. **Uso y capacidad.** Con éxito: `gate.settle` con `_llm_usage_by_model` y `record_usages` con etapa `seo`, versión `v2`, una fila por intento (`usages_for_success`). Con error: `gate.settle` con `_selection_failure_usage` y `_record_call_failure`; después se relanza. Las filas se escriben antes de la moderación de salida y de persistir: la llamada ya se pagó.
 12. **Generación pendiente.** El resultado se guarda en Redis con `_seo_pending_set` (`SEO_PENDING_TTL_SECONDS` = 3600). Si no se puede guardar, se registra `seo.pending_not_saved` y el resultado se usa igual.
 13. **Moderación de salida.** `check_content_safety(metadata.composed_caption())`. Bloqueado: borra la pendiente, registra `seo.output_blocked` y falla con `generated_content_blocked`. Sin veredicto: la pendiente queda en Redis y el reintento no paga una segunda generación.
-14. **Persistencia.** Un `update` de `generated_caption` y `generated_hashtags` que excluye `_SEO_FROZEN_STATUSES`. Si no actualiza ninguna fila (la publicación empezó mientras se generaba), borra la pendiente, registra `seo.skipped reason=publishing` y deja el caption con el que se publicó. Si actualiza, llama a `_recover_seo_failed_post`, borra la pendiente y registra `seo.persisted`.
+14. **Persistencia.** Un `update` de `generated_caption` y `generated_hashtags` (y `seo_requested_at` vacío) que excluye `_SEO_FROZEN_STATUSES`. En una regeneración vacía también `caption` y `hashtags`: el texto nuevo reemplaza el que escribió el usuario. Si no actualiza ninguna fila (la publicación empezó mientras se generaba, o el post se borró), borra la pendiente, registra `seo.skipped reason=publishing` y deja el caption con el que se publicó. Si actualiza, llama a `_recover_seo_failed_post`, borra la pendiente y registra `seo.persisted`.
+15. **Post borrado.** Si el post ya no existe al empezar o al releerlo dentro del lock (un borrador descartado, una publicación cancelada), registra `seo.skipped reason=deleted` y termina con `"Post Deleted"`, sin fallar la tarea.
 
 ### Espera de capacidad
 
@@ -120,6 +134,35 @@ Si `gate.reserve` levanta `CapacityUnavailable`, `_seo_wait_for_capacity` decide
 - Una regeneración conserva `regenerate=True` en el mensaje re-encolado: sin eso, el run siguiente vería el caption viejo y terminaría sin regenerar.
 - El contador de reintentos de Celery viaja con el mensaje: una llamada que falla siempre se queda sin reintentos aunque haya esperas en el medio.
 - A diferencia de la ingesta, la espera de SEO no escribe `metadata['capacity_wait']` en el proyecto: el tiempo esperado solo viaja en `capacity_waited_s`. Los token buckets están en [07-capacidad-costos-y-operacion](07-capacidad-costos-y-operacion.md).
+
+## Flujo: la API de publicaciones
+
+`ScheduledPostViewSet` ([views_social.py](../../back/apps/videos/views_social.py)) atiende `/api/v1/scheduled-posts/` sobre el workspace activo (`X-Workspace-Id`): un post de otro workspace es 404 y un clip de otro workspace es 400 (`"El clip no existe."`). Escribir pide `post.publish` (Dueño, Admin y Editor; un Lector recibe 403). Las reglas están en [services/scheduled_posts.py](../../back/apps/videos/services/scheduled_posts.py), y ninguna llama a Ayrshare: lo que tiene que salir queda `SCHEDULED` y lo encola el beat.
+
+| Endpoint | Función | Qué hace |
+|----------|---------|----------|
+| `POST /` | `create_posts` | Un post. Con `draft: true` queda `DRAFT`; si no, `SCHEDULED` con su `publish_at` (ahora si es `null`, falta o cae a menos de `NOW_TOLERANCE` = 60 s). |
+| `POST /bulk/` | `create_posts` | Hasta `BULK_MAX` = 60, todo o nada en una transacción. Un error dice cuál con `index`; un clip repetido en la misma red es 400. |
+| `PATCH /:id/` | `update_post` | Texto, `tiktok` y `publish_at` de un `DRAFT` o un `SCHEDULED`. `publish_at` con fecha programa o reprograma, `null` lo deja para ahora, sin el campo un borrador sigue borrador. |
+| `POST /:id/cancel/` | `cancel_post` | Borra un `DRAFT`, `SCHEDULED`, `QUEUED`, `FAILED` o un `PROCESSING` trabado. |
+| `POST /:id/retry/` | `retry_post` | Un `FAILED`, o un `PROCESSING` trabado, vuelve a `SCHEDULED` para ahora, sin `error_log`. Si falló el texto con IA, vuelve a `DRAFT`. |
+| `POST /:id/regenerate-seo/` | `regenerate_seo` | Pide otro texto a la IA (ver [disparo](#flujo-disparo-de-la-generación)). Responde 202 con `seo_status: "pending"`. |
+
+1. **Validación (400).** El clip tiene que estar `completed` o `published`. El texto que sale (`compose_caption`) no puede pasar `caption_limit(platform)`, ni los hashtags `HASHTAGS_MAX` (30 en TikTok e Instagram, 15 en YouTube). Los hashtags llegan sin `#` y sin repetidos (`clean_hashtags`); uno con espacios u otros caracteres es 400. Un post de TikTok que sale necesita `tiktok.privacy_level` (`clean_tiktok`; las otras opciones faltantes son `false`). Una fecha más de 60 s en el pasado es 400.
+2. **Plan (403).** Sin plan no hay límites. Programar (una fecha más de 60 s adelante) pide `allow_scheduling` (`code: "scheduling"`). Sin `allow_crossposting`, un clip sale en una sola red: se cuentan sus posts `SCHEDULED`, `QUEUED`, `PROCESSING` y `PUBLISHED` más los nuevos, no los borradores ni los fallidos (`code: "crossposting"`). Se mira al crear, al mandar un borrador y al reintentar.
+3. **Cuenta (409).** Lo que sale necesita `Workspace.ayrshare_profile_key` (`code: "account_not_connected"`), sin llamar a Ayrshare. No se sabe red por red hasta que exista conectar cuentas (hueco 10 del mapa).
+4. **Locks.** Cada escritura toma la fila del post con `select_for_update` y decide con el estado que lee bajo ese lock, como `dispatch_scheduled_posts_batch` y `upload_to_social_network`. Crear, mandar un borrador y reintentar toman antes el proyecto y el clip, en el orden de los renders de `views_clips` (crear y regenerar, antes que nada, el advisory lock del presupuesto de IA; nunca la fila del workspace); así dos pedidos del mismo clip cuentan las redes uno después del otro. Por eso:
+   - un `PATCH` que llega mientras el despachador pasa el post a `QUEUED` espera y responde 409 `post_in_flight`: su tarea ya salió con la hora vieja;
+   - un `cancel` que llega mientras el worker lo pasa a `PROCESSING` espera y responde 409 `post_in_flight`; uno que llega con el post `QUEUED` lo borra, y la tarea después no lo encuentra (`"Post Deleted"`);
+   - dos `retry` a la vez: el segundo encuentra el post `SCHEDULED` y responde 409 `post_not_failed`.
+5. **Post trabado.** Un `PROCESSING` se puede reintentar o cancelar (`_check_stuck`) cuando su último intento empezó (`updated_at`, que el worker escribe al pasarlo a `PROCESSING`) hace más de `stuck_after` y el worker no tiene `lock_post_publish_<post_id>` (`publish_lock_held`). `stuck_after` es `POST_STUCK_AFTER` = 15 min (un intento tiene el lock a lo sumo 600 s), salvo que el worker esté esperando un reintento: entre dos intentos escribe `error_log` `Retry n: …` con `update()` (no mueve `updated_at`), suelta el lock y su reintento espera un lugar libre en los workers, que los renders pueden ocupar por horas. Ese post está en camino: recién cuenta como trabado pasado el `visibility_timeout` del broker (4 h) más `LONGEST_RETRY_COUNTDOWN` (240 s). Antes es 409 `post_in_flight`; si la caché de locks no contesta, 409 `post_lock_unavailable`. Un post trabado, o uno que falló con `AyrshareOutcomeUnknownError`, pudo haber salido: la UI lo avisa antes de reintentar o cancelar (cancelar lo saca de OneCreator, no de la red).
+6. **`Idempotency-Key`.** Crear y `/bulk/` la aceptan (hasta 255 caracteres). `PostIdempotencyKey` se inserta al empezar la transacción, con un índice único por workspace y clave: un pedido igual que llega a la vez espera ese índice y después devuelve los posts que creó el primero (como están ahora), sin crear nada. Con otro cuerpo (huella `fingerprint`) es 409 `idempotency_key_reused`, igual que si sus posts ya no existen. Un error deshace la fila, así que la misma clave vuelve a intentar. Las claves de más de 24 h (`IDEMPOTENCY_TTL`) se borran antes de cada pedido con clave.
+7. **Texto con IA y lo que cuesta.** Cada texto es una llamada al LLM: no gasta tokens de la billetera (el SEO se cobra una vez al crear el proyecto, `seo_optimization` de `PricingEngine`), pero se paga al proveedor y usa la capacidad que comparte la ingesta de todos los espacios. Por eso `create_posts` decide por cada post nuevo, con el presupuesto del espacio bloqueado (`lock_ai_budget`):
+   - sin texto con IA si el proyecto no tiene SEO o si el post trae caption y hashtags;
+   - reusado (`reusable_ai_text`) si otro post del mismo clip y la misma red ya lo tiene, o si lo tenía un borrador descartado en las últimas 24 h (`remember_ai_text` lo guarda en la caché al cancelar, con el recorte del clip en la clave);
+   - pedido (`queue_post_seo`) si queda lugar en `seo_budget`, contado bajo un advisory lock del espacio (`lock_ai_budget`: `pg_advisory_xact_lock` con un namespace propio), nunca bajo la fila del workspace: un render pago o un re-dispatch bloquean un proyecto y después su workspace, y borrar un workspace bloquea sus proyectos y después el workspace, así que nada puede bloquear la fila del workspace y después un proyecto. El límite es `AI_SEO_MAX_PER_WORKSPACE_PER_HOUR` (120) menos los pedidos en camino de la última hora y las filas `AIUsageRecord` de etapa `seo` (rol `primary`) de la última hora, que quedan aunque el post se borre;
+   - sin lugar, el post se crea igual con `error_log` `seo_rate_limited` (`seo_status: "failed"`).
+   "Regenerar" usa el mismo límite (429 `seo_rate_limited`) y además `THROTTLE_POST_SEO_REGENERATE` (30 por hora por usuario). Crear y `/bulk/` tienen `THROTTLE_POST_CREATE` (300 por hora por usuario, contando cada post del lote: `PostCreateThrottle`). Guardar el texto con `PATCH` escribe `text_edited_at` y deja `seo_requested_at` como está (el pedido sigue contando en `seo_budget`): `_generate_post_metadata` solo reemplaza el texto del usuario si el "Regenerar" se pidió después de esa edición. Las dos marcas salen del reloj de la base (`Now()`, que en PostgreSQL es `STATEMENT_TIMESTAMP()`) en una sentencia escrita con el lock de la fila del post tomado, así siguen el orden en que los dos pedidos tuvieron el post. El advisory lock es de transacción (`pg_advisory_xact_lock`): se suelta al terminar el pedido, también si se rechazó.
 
 ## Flujo: publicación
 
@@ -134,9 +177,9 @@ sequenceDiagram
     participant AY as Ayrshare
 
     BEAT->>D: ejecución periódica
-    D->>DB: SCHEDULED con publish_at en la próxima hora
+    D->>DB: SCHEDULED con publish_at hasta la próxima hora
     loop cada post
-        D->>DB: select_for_update y SCHEDULED a QUEUED
+        D->>DB: select_for_update con el mismo filtro y SCHEDULED a QUEUED
         D->>W: apply_async con eta igual a publish_at
     end
     W->>C: add del lock lock_post_publish (600 s)
@@ -159,8 +202,8 @@ sequenceDiagram
     W->>C: borra el lock
 ```
 
-1. **Disparo periódico.** El docstring de `dispatch_scheduled_posts_batch` dice que corre cada hora con Celery Beat. En el repo no hay `CELERY_BEAT_SCHEDULE` ni servicio `beat` en `docker-compose.yml`: el schedule se configura fuera de este código.
-2. **Ventana.** Solo toma posts `SCHEDULED` con `publish_at` en `[ahora, ahora + 1 h]`. Cada post se re-lee con `select_for_update` y pasa a `QUEUED` solo si sigue `SCHEDULED`; después se encola `upload_to_social_network` con `eta=publish_at`.
+1. **Disparo periódico.** `CELERY_BEAT_SCHEDULE` (`dispatch-scheduled-posts`) lo corre cada 5 minutos, con el servicio `beat` de `docker-compose.yml`.
+2. **Ventana.** Toma posts `SCHEDULED` con `publish_at` hasta ahora + 1 h, los vencidos incluidos (un "publicar ahora" de la API es uno). Cada post se re-lee con `select_for_update` y el mismo filtro (`SCHEDULED` y `publish_at` dentro de la ventana): si ya no coincide (se canceló, se borró o se reprogramó después de la consulta) se saltea; si coincide, pasa a `QUEUED` y se encola `upload_to_social_network` con `eta=publish_at`.
 3. **Lock de publicación.** `caches['locks'].add(f"lock_post_publish_{post_id}", ..., AyrshareClient.TIMEOUT_SECONDS[1] + 300)` (600 s) en el alias `locks` de la caché de Django, que con `CACHE_REDIS_URL` es el Redis que comparten todos los workers: ahí `add` es un `SET NX` atómico ([07](07-capacidad-costos-y-operacion.md#cache-compartida)). Si ya existe, termina con `"Locked"`. Ese alias no ignora errores: si Redis no contesta, no publica sin lock. Loguea `publish.lock_unavailable` y reintenta con `self.retry` a 60, 120 y 240 s (`max_retries=3`); al agotarse, el post pasa a `FAILED` con `error_log` `Lock unavailable after N attempts: <clase>`, en vez de quedar `QUEUED` sin tarea (el despachador solo toma `SCHEDULED`). Se libera en el `finally`; si soltarlo falla, `publish.lock_release_failed` y lo libera el TTL.
 4. **Validación.** Un post `PUBLISHED` termina (`"Already Published"`). Sin `workspace.ayrshare_profile_key` el post queda `FAILED` y se levanta `PostConfigurationError` después del commit (no se reintenta).
 5. **Media.** `CloudflareR2Manager.generate_presigned_url(video_clip.s3_object_key, expiration_seconds=3600)`. Ayrshare descarga el video desde esa URL.
@@ -180,6 +223,7 @@ Todos son estáticos: nunca llevan texto del proveedor, del usuario ni del model
 | `content_blocked` | La moderación bloqueó el título o la transcripción del clip. |
 | `generated_content_blocked` | La moderación bloqueó el caption o los hashtags generados. |
 | `capacity_timeout` | La espera de capacidad superó `AI_CAPACITY_MAX_WAIT_SECONDS`. |
+| `seo_rate_limited` | No lo escribe la tarea: `create_posts` lo deja cuando el espacio ya pidió sus textos de la hora (`seo_budget`) y no llama al LLM. |
 | `moderation_unavailable`, `moderation_misconfigured`, `moderation_quota` | `ModerationError` sin veredicto: no reintentable o reintentos agotados (`mod_exc.code`). |
 | `seo_generation_failed:<clase>` | `AIError` no reintentable (auth, configuración, 4xx, contrato inválido) o reintentos agotados. Ej.: `seo_generation_failed:AIContractValidationError`. |
 | `seo_failed:<clase>` | Cualquier otra excepción no reintentable o con reintentos agotados; además se relanza. |
@@ -194,13 +238,17 @@ Todos son estáticos: nunca llevan texto del proveedor, del usuario ni del model
 | Falla SEO en un post `PROCESSING` o `PUBLISHED` | No se toca: el `filter` excluye `_SEO_FROZEN_STATUSES`. | `_fail_seo_post` |
 | La publicación empieza durante la generación | El `update` no encuentra fila; log `seo.skipped reason=publishing`. El LLM ya se pagó y sus filas quedan. | `_generate_post_metadata` |
 | El post se publica antes de que termine la generación | Se publica con `metadata['caption']` o el texto por defecto. | `upload_to_social_network` |
-| Post `FAILED` por SEO que estaba programado | Ya no está `SCHEDULED`: el despachador no lo toma. Al recuperarse vuelve a `DRAFT` y hay que programarlo otra vez. | `_recover_seo_failed_post` |
+| Post `FAILED` por SEO que estaba programado | Ya no está `SCHEDULED`: el despachador no lo toma. Al recuperarse, o al reintentarlo desde la API, vuelve a `DRAFT` y hay que programarlo otra vez. | `_recover_seo_failed_post`, `retry_post` |
+| Falla el texto de un borrador | Sigue `DRAFT` con el código en `error_log` (`seo_status: "failed"`). Al mandarlo con `PATCH` se borra el código. | `_fail_seo_post`, `update_post` |
+| Se borra el post antes o durante su generación | `seo.skipped reason=deleted` y `"Post Deleted"`, sin fallar la tarea. | `process_video_seo` |
 | Dos mensajes para el mismo post a la vez | El segundo no obtiene el lock y termina (`"SEO Busy"`), sin reintento. | `_seo_post_lock` |
 | El lock venció antes de terminar (más de 600 s) | Al liberar, `seo.lock_not_owned`. | `_seo_post_lock` |
 | No se pudo guardar la generación pendiente | `seo.pending_not_saved`; el resultado se usa igual, pero un reintento de moderación volvería a pagar. | `_seo_pending_set` |
 | Post creado con `bulk_create` | No hay señal: no se genera nada hasta llamar a `queue_post_seo`. | `generate_seo_for_new_post` |
 | Broker caído al encolar | `seo.dispatch_failed`; el post queda sin caption. Se reintenta con la acción del admin. | `queue_post_seo` |
-| Post con `publish_at` ya pasado | Queda fuera de la ventana `[ahora, ahora + 1 h]` y no se despacha. | `dispatch_scheduled_posts_batch` |
+| Post con `publish_at` ya pasado | Se despacha en la próxima corrida y sale enseguida (es el caso de "publicar ahora"). | `dispatch_scheduled_posts_batch` |
+| Se borra un post mientras el despachador recorre la ventana | Cada post se vuelve a leer bajo su lock con el mismo filtro (`SCHEDULED` y dentro de la ventana): uno que ya no está se saltea y la corrida sigue. Pasa con `cancel`, con el borrado de un clip y con el admin. | `dispatch_scheduled_posts_batch`, `test_scheduled_dispatch_races.py` |
+| Se reprograma un post mientras el despachador recorre la ventana | El mismo filtro bajo el lock lo saltea si su `publish_at` nueva quedó fuera de la ventana: sigue `SCHEDULED` y editable, y sale en la corrida que le toca, nunca encolado días antes con una ETA que pasa el `visibility_timeout`. | `dispatch_scheduled_posts_batch`, `test_scheduled_dispatch_races.py` |
 | Workspace sin `ayrshare_profile_key` | `FAILED` con `Error: Ayrshare Profile Key not configured in workspace.` y `PostConfigurationError`, sin reintento. | `upload_to_social_network` |
 | El post se borró después de encolarse (con su clip, su proyecto o su workspace) | La tarea termina con `Post Deleted`, sin llamar a Ayrshare y sin fallar. Queda `publish.post_deleted` en el log. | `upload_to_social_network` |
 | El post se borró mientras Ayrshare respondía | La tarea guarda solo `status` y `error_log` (`save(update_fields=...)`), así que no vuelve a insertar la fila. Termina sin fallar y deja `publish.post_deleted` con `when=after_publishing`. | `upload_to_social_network` |
@@ -218,12 +266,15 @@ Todos son estáticos: nunca llevan texto del proveedor, del usuario ni del model
   - `status`: transiciones del diagrama.
   - `error_log`: códigos de SEO de la tabla anterior; en la publicación, `Ayrshare ID: <id>` al publicar, `Retry N: <mensaje>`, `Critical: <mensaje>` o el texto fijo de la profile key faltante. A diferencia de SEO, la publicación guarda el mensaje de la excepción.
   - `retry_count`: intentos fallidos contra Ayrshare.
+- **`ScheduledPost` desde la API**: `status`, `publish_at`, `caption`, `hashtags`, `tiktok`, `seo_requested_at`, `text_edited_at` y, al mandar un borrador o reintentar, `error_log` vacío. `retry_count` no cambia.
+- **`PostIdempotencyKey`**: workspace, clave, huella del pedido y los ids de los posts que creó.
+- **Caché `default`**: `posts:ai_text:<clip>:<red>:<inicio>:<fin>` (24 h), el texto con IA de un post cancelado, para el próximo borrador.
 - **`AIUsageRecord`**: una fila por intento con `stage='seo'`, `pipeline_version='v2'` (siempre, aunque el proyecto corra en legacy), `role` `primary` o `fallback`, `attempt` igual al `pipeline_attempts` del proyecto, tokens, costo estimado y `error_code` con la clase del error. Si la llamada falla sin intentos adjuntos, una fila de cero tokens con la latencia medida a nombre de `AI_DEFAULT_LLM_MODEL`. El export del piloto las suma aparte en `seo_records`, `seo_cost_usd` y `seo_cost_complete` ([runbook](../runbooks/ai-core-pilot-runbook.md)).
 - **Redis**: `lock:seo:post:<post_id>` (600 s) y `seo:pending:<post_id>` (JSON de `SocialMetadata`, 3600 s). El alias `locks` de la caché de Django guarda `lock_post_publish_<post_id>` (600 s).
 - **Capacidad**: reserva con `stage='seo'`, liquidada con el uso real o devuelta si la moderación cortó antes del LLM.
 - **Claves de `VideoProject.metadata` que se leen**: `use_seo`, `niche`, `caption`.
-- **Logs** (sin caption, hashtags, título ni transcripción): `seo.dispatched`, `seo.dispatch_failed`, `seo.skipped`, `seo.no_clip_transcript`, `seo.input_blocked`, `seo.output_blocked`, `seo.pending_capacity`, `seo.capacity_timeout`, `seo.completed`, `seo.primary_failed`, `seo.fallback_failed`, `seo.failed`, `seo.regenerate_failed`, `seo.persisted`, `seo.lock_not_owned`, `seo.pending_not_saved`, `seo.pending_not_cleared`.
-- **Resultado de la tarea** (en el backend de resultados de Celery): `SEO Success`, `SEO Already Generated`, `SEO Busy`, `SEO Skipped`, `No Transcript`, `Security Abort`, `Moderation Failed`, `SEO Failed`, `Waiting for capacity`, `Capacity Timeout`.
+- **Logs** (sin caption, hashtags, título ni transcripción): `posts.created` (con `seo` `none`, `reused`, `asked` o `limited`), `posts.updated`, `posts.cancelled`, `posts.retried`, `posts.lock_unknown`, `posts.ai_text_not_kept`, `posts.replayed`, `posts.seo_regenerate`, `seo.dispatched`, `seo.dispatch_failed`, `seo.skipped`, `seo.no_clip_transcript`, `seo.input_blocked`, `seo.output_blocked`, `seo.pending_capacity`, `seo.capacity_timeout`, `seo.completed`, `seo.primary_failed`, `seo.fallback_failed`, `seo.failed`, `seo.regenerate_failed`, `seo.persisted`, `seo.lock_not_owned`, `seo.pending_not_saved`, `seo.pending_not_cleared`.
+- **Resultado de la tarea** (en el backend de resultados de Celery): `SEO Success`, `SEO Already Generated`, `SEO Busy`, `SEO Skipped`, `Post Deleted`, `No Transcript`, `Security Abort`, `Moderation Failed`, `SEO Failed`, `Waiting for capacity`, `Capacity Timeout`.
 
 ## Configuración
 
@@ -244,8 +295,11 @@ Todos son estáticos: nunca llevan texto del proveedor, del usuario ni del model
 | `MODERATION_MODEL`, `MODERATION_BLOCK_CHARS`, `MODERATION_NON_BLOCKING_CATEGORIES`, `MODERATION_TIMEOUT_SECONDS` | `'omni-moderation-latest'`, `10000`, 4 categorías, `10.0` | Moderación por bloques ([ver 03](03-transcripcion-moderacion-seleccion.md)). |
 | `REDIS_URL` | `'redis://redis:6379/0'` | Lock por post y generación pendiente. |
 | `AYRSHARE_API_KEY` | `None` | Key global de Ayrshare. Sin ella, cada intento falla con `AyrshareAPIError` y se reintenta. |
+| `THROTTLE_POST_SEO_REGENERATE` | `'30/hour'` | Pedidos de "Regenerar" por usuario. |
+| `THROTTLE_POST_CREATE` | `'300/hour'` | Publicaciones creadas por usuario, contando cada una de un lote. |
+| `AI_SEO_MAX_PER_WORKSPACE_PER_HOUR` | `120` | Textos con IA que la API pide por espacio y por hora (`seo_budget`). |
 
-Constantes en código: `SEO_LOCK_TTL_SECONDS = 600` y `SEO_PENDING_TTL_SECONDS = 3600` (`tasks/social.py`); `MIN_HASHTAGS = 5`, `MAX_HASHTAGS = 8` y `_temperature = 0.7` (`seo_engine.py`).
+Constantes en código: `SEO_LOCK_TTL_SECONDS = 600` y `SEO_PENDING_TTL_SECONDS = 3600` (`tasks/social.py`); `MIN_HASHTAGS = 5`, `MAX_HASHTAGS = 8` y `_temperature = 0.7` (`seo_engine.py`); `POST_STUCK_AFTER` = 15 min, `NOW_TOLERANCE` = 60 s, `BULK_MAX = 60`, `IDEMPOTENCY_TTL` = 24 h y `HASHTAGS_MAX` (`services/scheduled_posts.py`).
 
 ## Referencias
 

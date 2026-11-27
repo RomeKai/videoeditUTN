@@ -128,7 +128,8 @@ export type MockProject = Omit<Project, 'clips' | 'transcript_data'> & {
 };
 
 /** `regen`: how many times the AI text was regenerated (E1 · Regenerar); the new text replaces the current one. */
-export type MockPost = ScheduledPost & { workspace: string; _sim?: { startedAt: number; fails?: boolean; regen?: number } };
+/** `keepText`: the user saved the text after "Regenerar" (`text_edited_at`): the new AI text does not replace it. */
+export type MockPost = ScheduledPost & { workspace: string; _sim?: { startedAt: number; fails?: boolean; regen?: number; keepText?: boolean } };
 
 export type MockNotification = Notification & { workspace: string; user: string };
 
@@ -184,6 +185,8 @@ export interface MockFlags {
 export interface MockDb {
   /** Answers of the writes that came with an `Idempotency-Key`, by workspace, endpoint and key. */
   idempotency?: Record<string, { status: number; data: unknown }>;
+  /** The AI text of cancelled posts, by clip, network and trim, for 24 h (the backend's cache, `remember_ai_text`). */
+  discardedAiText?: Record<string, { caption: string; hashtags: string[]; at: number }>;
   version: number;
   scenario: string;
   /** Epoch ms of the seed: seeded dates are relative to it. */

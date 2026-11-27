@@ -3,13 +3,16 @@ ScheduledPost as the front contract (front/src/api/contracts/social.ts) shows it
 
 `caption`, `hashtags`, `seo_status`, `error_code` and `error_message` are derived:
 the model keeps the AI text in `generated_*` and the failure in `error_log`, and
-the writers of those columns are not changed by the API.
+the writers of those columns are not changed by the API. The API writes only
+what the user chose (`caption`, `hashtags`, `tiktok`, `publish_at`) and the
+status of a post that has not gone out (services/scheduled_posts.py).
 """
+import re
+
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from .models import ScheduledPost
-from .signals import seo_requested
 
 # Codes process_video_seo writes to error_log when the generation fails.
 SEO_ERROR_MESSAGES = {
@@ -17,6 +20,7 @@ SEO_ERROR_MESSAGES = {
     'content_blocked': "No pudimos generar el texto de este clip. Escribilo vos.",
     'generated_content_blocked': "El texto generado no pasó la revisión. Escribilo vos.",
     'capacity_timeout': "La generación del texto tardó demasiado. Probá de nuevo en unos minutos.",
+    'seo_rate_limited': "Este espacio pidió muchos textos con IA en la última hora. Escribilo vos, o regeneralo en un rato.",
 }
 SEO_ERROR_FALLBACK = "No pudimos generar el texto. Escribilo vos."
 PUBLISH_ERROR_CODE = 'publish_failed'
@@ -57,13 +61,22 @@ class ScheduledPostSerializer(serializers.ModelSerializer):
 
     @extend_schema_field({'type': 'string', 'enum': ['none', 'pending', 'ready', 'failed']})
     def get_seo_status(self, post):
+        from .services.scheduled_posts import seo_request_pending
+
+        going_out = post.status in (ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED)
+        if going_out:
+            # Its text is final: SEO never changes a post going out or out.
+            return 'ready' if post.generated_caption and post.generated_hashtags is not None else 'none'
+        if seo_request_pending(post):
+            # Asked for (signals.queue_post_seo) and not answered yet: the previous text stays meanwhile.
+            return 'pending'
         if post.generated_caption and post.generated_hashtags is not None:
             return 'ready'
-        if post.status == ScheduledPost.Status.FAILED and _seo_error_code(post):
+        # A draft, or a post with the user's own text, keeps its status when its text fails
+        # (process_video_seo's _fail_seo_post); a limited request leaves the code too.
+        if _seo_error_code(post):
             return 'failed'
-        if post.status in (ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED):
-            return 'none'  # the signal never generates for a post already going out
-        return 'pending' if seo_requested(post.video_clip.project) else 'none'
+        return 'none'
 
     @extend_schema_field({
         'type': 'object',
@@ -118,3 +131,83 @@ class PostsQuerySerializer(serializers.Serializer):
         fields = super().get_fields()
         fields['from'] = serializers.DateTimeField(required=False)
         return fields
+
+
+# --- Writes (gap 8: contract CreatePostInput, UpdatePostRequest) ---
+
+TIKTOK_PRIVACY = ('PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'FOLLOWER_OF_CREATOR', 'SELF_ONLY')
+TIKTOK_FLAGS = ('allow_comment', 'allow_duet', 'allow_stitch', 'brand_organic', 'branded_content')
+TIKTOK_PRIVACY_MISSING = "Elegí quién puede ver el video."
+HASHTAG_MAX_CHARS = 100
+_HASHTAG = re.compile(r'^\w+$')
+
+
+def clean_tiktok(value):
+    """
+    TikTokOptions as the post stores it, or a 400 with one sentence under
+    `tiktok` (a nested error would not reach the web app's field errors).
+    The flags left out are False: they start unchecked (map E1.4).
+    """
+    if not isinstance(value, dict) or value.get('privacy_level') not in TIKTOK_PRIVACY:
+        raise serializers.ValidationError(TIKTOK_PRIVACY_MISSING)
+    options = {'privacy_level': value['privacy_level']}
+    for flag in TIKTOK_FLAGS:
+        flag_value = value.get(flag, False)
+        if not isinstance(flag_value, bool):
+            raise serializers.ValidationError(f"`{flag}` tiene que ser verdadero o falso.")
+        options[flag] = flag_value
+    return options
+
+
+def clean_hashtags(values):
+    """Without '#', in order and without repeats (ignoring case); each one letters, digits or '_'."""
+    kept, seen = [], set()
+    for value in values:
+        tag = value.strip().lstrip('#')
+        if not tag:
+            continue
+        if not _HASHTAG.match(tag):
+            raise serializers.ValidationError(
+                f"«{tag[:40]}» no es un hashtag válido: usá letras, números o guion bajo, sin espacios."
+            )
+        if len(tag) > HASHTAG_MAX_CHARS:
+            raise serializers.ValidationError(f"Cada hashtag puede tener hasta {HASHTAG_MAX_CHARS} caracteres.")
+        if tag.casefold() not in seen:
+            seen.add(tag.casefold())
+            kept.append(tag)
+    return kept
+
+
+class _PostTextFields(serializers.Serializer):
+    caption = serializers.CharField(required=False, allow_blank=True)
+    hashtags = serializers.ListField(child=serializers.CharField(allow_blank=True), required=False)
+    tiktok = serializers.JSONField(required=False, error_messages={'null': TIKTOK_PRIVACY_MISSING})
+
+    def validate_hashtags(self, value):
+        return clean_hashtags(value)
+
+    def validate_tiktok(self, value):
+        return clean_tiktok(value)
+
+
+class CreatePostSerializer(_PostTextFields):
+    """One item of POST /scheduled-posts/ and /bulk/. The rules that read the database are in services."""
+
+    video_clip = serializers.UUIDField(error_messages={
+        'required': "Elegí el clip que querés publicar.", 'invalid': "El clip no existe.", 'null': "Elegí el clip que querés publicar.",
+    })
+    platform = serializers.ChoiceField(choices=ScheduledPost.Platform.choices, error_messages={
+        'required': "Elegí la red.", 'invalid_choice': "Elegí TikTok, Instagram Reels o YouTube Shorts.",
+    })
+    publish_at = serializers.DateTimeField(required=False, allow_null=True, error_messages={
+        'invalid': "La fecha no es válida.",
+    })
+    draft = serializers.BooleanField(required=False, default=False)
+
+
+class UpdatePostSerializer(_PostTextFields):
+    """PATCH /scheduled-posts/:id/: only what comes is changed."""
+
+    publish_at = serializers.DateTimeField(required=False, allow_null=True, error_messages={
+        'invalid': "La fecha no es válida.",
+    })

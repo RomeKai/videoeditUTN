@@ -4,7 +4,7 @@ import { expectClean, HYBRID_API_URL, HYBRID_REAL, settle, watch } from './helpe
 /**
  * Hybrid build (`NEXT_PUBLIC_API_MODE=hybrid`) against a real Django backend: the login, `/me`, the
  * projects, the brand kits and billing come from it, while everything the contract marks as proposed
- * (today, most of social: the accounts and creating or changing posts) is mocked in the browser.
+ * (today, the social accounts: connecting them is gap 10) is mocked in the browser.
  *
  * It needs a backend, so it is skipped unless `E2E_HYBRID_API_URL` says where one is, with a user that
  * owns a workspace with at least one project (more than 25 to see a second page) and one brand kit: `E2E_HYBRID_EMAIL` and `E2E_HYBRID_PASSWORD`. See "Modo híbrido" in the README.
@@ -238,14 +238,14 @@ test.describe('Modo híbrido contra el backend real', () => {
     expectClean(problems, 'crear un brand kit en híbrido');
   });
 
-  test('un endpoint simulado acepta el id de un clip real', async ({ page, request }) => {
+  test('un borrador de un clip real lo crea el backend, que no llama a ninguna red', async ({ page, request }) => {
     const api = await backend(request);
     const workspace = (await api.me()).active_workspace_id ?? '';
     const clip = (await api.projects()).flatMap((project) => project.clips)[0];
     expect(clip, 'el usuario de prueba tiene al menos un proyecto con clips en el backend').toBeDefined();
     await signIn(page);
-    // `social.createPost` is proposed (mocked); the clip only exists in the backend. The mock takes its id
-    // (a stand-in of the clip) and gets to the next check: the mocked accounts of the workspace are not connected.
+    // `social.createPost` exists: with the default routing the backend answers it. A draft publishes nothing
+    // and asks for no connected account (a clip that is not rendered is its 400).
     const created = await page.evaluate(
       async ({ url, id, workspace }) => {
         const { access } = JSON.parse(window.localStorage.getItem('oc.auth') ?? '{}') as { access: string };
@@ -254,11 +254,21 @@ test.describe('Modo híbrido contra el backend real', () => {
           headers: { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json', 'X-Workspace-Id': workspace },
           body: JSON.stringify({ video_clip: id, platform: 'YOUTUBE_SHORTS', draft: true }),
         });
-        return { status: response.status, mock: response.headers.get('x-oc-mock'), body: (await response.json()) as { code?: string } };
+        return { status: response.status, mock: response.headers.get('x-oc-mock'), body: (await response.json()) as { id?: string; status?: string; video_clip?: string[] } };
       },
       { url: HYBRID_API_URL, id: clip?.id ?? '', workspace },
     );
-    expect(created).toMatchObject({ status: 409, mock: 'social.createPost', body: { code: 'account_not_connected' } });
+    expect(created.mock).toBeNull();
+    if (created.status === 400) {
+      expect(created.body.video_clip).toEqual(['El clip todavía no está renderizado.']);
+      return;
+    }
+    expect(created).toMatchObject({ status: 201, body: { status: 'DRAFT' } });
+    // Left as it was found.
+    const removed = await request.post(`${HYBRID_API_URL}/api/v1/scheduled-posts/${created.body.id}/cancel/`, {
+      headers: { ...api.headers, 'X-Workspace-Id': workspace },
+    });
+    expect(removed.status()).toBe(204);
   });
 
   test('el panel muestra el origen de cada dominio y permite cambiarlo en este navegador', async ({ page, request }) => {
@@ -273,7 +283,7 @@ test.describe('Modo híbrido contra el backend real', () => {
     await expect(domain('auth')).toHaveAttribute('data-route', 'real');
     await expect(domain('auth').getByRole('button', { name: 'Mock' })).toBeDisabled();
     // Which endpoints exist is the contract's business: here only that nothing but auth is forced.
-    // Social still has proposed endpoints (connecting an account, creating a post): never all real.
+    // Social still has proposed endpoints (the accounts): never all real.
     await expect(domain('social')).not.toHaveAttribute('data-route', 'real');
     await expect(domain('projects')).toHaveAttribute('data-route', /real|mixed/);
     await expect(domain('brandKits')).toHaveAttribute('data-route', /real|mixed/);

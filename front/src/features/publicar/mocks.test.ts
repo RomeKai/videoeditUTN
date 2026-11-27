@@ -41,7 +41,8 @@ describe('contrato de publicar: borradores y texto con IA', () => {
   beforeEach(() => signIn('estudio-norte'));
 
   it('crear un borrador no publica nada y dispara la generación del texto', async () => {
-    const draft = await apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'TIKTOK', draft: true } });
+    // The third clip has no TikTok post yet: there is no AI text to reuse.
+    const draft = await apiCall(social.createPost, { body: { video_clip: CLIPS.third, platform: 'TIKTOK', draft: true } });
     expect(draft.status).toBe('DRAFT');
     expect(draft.seo_status).toBe('pending');
     expect(draft.caption).toBe('');
@@ -62,7 +63,9 @@ describe('contrato de publicar: borradores y texto con IA', () => {
     expect(error.status).toBe(400);
     expect(error.fieldErrors.tiktok?.[0]).toBe('Elegí quién puede ver el video.');
     const now = await apiCall(social.updatePost, { params: { id: first.id }, body: { publish_at: null, caption: 'Hola', tiktok } });
-    expect(now.status).toBe('QUEUED');
+    // Like the backend: SCHEDULED for now, for the beat.
+    expect(now.status).toBe('SCHEDULED');
+    expect(Date.parse(now.publish_at)).toBeLessThanOrEqual(Date.now());
     expect(now.tiktok?.privacy_level).toBe('SELF_ONLY');
 
     const second = await apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'INSTAGRAM_REELS', draft: true } });
@@ -102,14 +105,15 @@ describe('contrato de publicar: borradores y texto con IA', () => {
 describe('contrato de publicar: plan y rol', () => {
   it('plan Gratis: un borrador no se puede programar, pero sí publicar ahora', async () => {
     signIn('plan-gratis');
-    const draft = await apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'INSTAGRAM_REELS', draft: true } });
+    // A clip with no other network taken: without crossposting, it may go out on one.
+    const draft = await apiCall(social.createPost, { body: { video_clip: CLIPS.fourth, platform: 'INSTAGRAM_REELS', draft: true } });
     // The plan has no SEO: nothing is generated.
     expect(draft.seo_status).toBe('none');
     const error = await fail(apiCall(social.updatePost, { params: { id: draft.id }, body: { publish_at: new Date(Date.now() + 86_400_000).toISOString() } }));
     expect(error.status).toBe(403);
     expect(error.code).toBe('scheduling');
-    expect((await apiCall(social.updatePost, { params: { id: draft.id }, body: { publish_at: null } })).status).toBe('QUEUED');
     expect((await fail(apiCall(social.regeneratePostSeo, { params: { id: draft.id } }))).code).toBe('seo');
+    expect((await apiCall(social.updatePost, { params: { id: draft.id }, body: { publish_at: null } })).status).toBe('SCHEDULED');
   });
 
   it('rol Lector: no crea borradores ni regenera', async () => {
@@ -117,6 +121,160 @@ describe('contrato de publicar: plan y rol', () => {
     expect((await fail(apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'TIKTOK', draft: true } }))).status).toBe(403);
     const draft = loadDb().posts.find((post) => post.status === 'DRAFT');
     expect((await fail(apiCall(social.regeneratePostSeo, { params: { id: draft?.id ?? '' } }))).status).toBe(403);
+  });
+});
+
+describe('contrato de publicar: como el backend', () => {
+  beforeEach(() => signIn('estudio-norte'));
+  const tiktok = { privacy_level: 'SELF_ONLY', allow_comment: false, allow_duet: false, allow_stitch: false, brand_organic: false, branded_content: false } as const;
+
+  it('cada 409 dice por qué con su código', async () => {
+    const db = loadDb();
+    const of = (status: string) => db.posts.find((post) => post.workspace === WORKSPACE_IDS.estudio && post.status === status)?.id ?? '';
+    const [queued, processing, published, scheduled] = [of('QUEUED'), of('PROCESSING'), of('PUBLISHED'), of('SCHEDULED')];
+    expect((await fail(apiCall(social.updatePost, { params: { id: queued }, body: { caption: 'x' } }))).code).toBe('post_in_flight');
+    expect((await fail(apiCall(social.updatePost, { params: { id: published }, body: { caption: 'x' } }))).code).toBe('post_published');
+    expect((await fail(apiCall(social.cancelPost, { params: { id: published } }))).code).toBe('post_published');
+    expect((await fail(apiCall(social.retryPost, { params: { id: scheduled } }))).code).toBe('post_not_failed');
+    expect((await fail(apiCall(social.regeneratePostSeo, { params: { id: queued } }))).code).toBe('post_in_flight');
+    // The PROCESSING post of the seed started an hour ago: it is stuck, so it can be retried; a fresh one cannot.
+    const fresh = loadDb();
+    const post = fresh.posts.find((item) => item.id === processing);
+    if (post) post.updated_at = new Date().toISOString();
+    saveDb(fresh);
+    expect((await fail(apiCall(social.retryPost, { params: { id: processing } }))).code).toBe('post_in_flight');
+    expect((await fail(apiCall(social.cancelPost, { params: { id: processing } }))).code).toBe('post_in_flight');
+  });
+
+  it('reintentar vuelve a la cola una vez; el segundo reintento es un 409', async () => {
+    const failed = loadDb().posts.find((post) => post.workspace === WORKSPACE_IDS.estudio && post.status === 'FAILED');
+    const retried = await apiCall(social.retryPost, { params: { id: failed?.id ?? '' } });
+    expect([retried.status, retried.error_code]).toEqual(['SCHEDULED', null]);
+    expect((await fail(apiCall(social.retryPost, { params: { id: retried.id } }))).code).toBe('post_not_failed');
+  });
+
+  it('una publicación cuyo texto con IA falló vuelve a borrador al reintentar', async () => {
+    const db = loadDb();
+    const failed = db.posts.find((post) => post.workspace === WORKSPACE_IDS.estudio && post.status === 'FAILED');
+    if (!failed) throw new Error('falta una publicación fallida');
+    Object.assign(failed, { error_log: 'seo_no_clip_transcript', error_code: 'seo_no_clip_transcript', seo_status: 'failed' });
+    saveDb(db);
+    const draft = await apiCall(social.retryPost, { params: { id: failed.id } });
+    expect([draft.status, draft.seo_status]).toEqual(['DRAFT', 'failed']);
+  });
+
+  it('el lote dice cuál publicación tiene el error y no crea ninguna', async () => {
+    const before = loadDb().posts.length;
+    const error = await fail(
+      apiCall(social.createPostsBulk, {
+        body: { posts: [{ video_clip: CLIPS.first, platform: 'INSTAGRAM_REELS' }, { video_clip: CLIPS.first, platform: 'TIKTOK', caption: 'x'.repeat(2201), tiktok }] },
+      }),
+    );
+    expect([error.status, error.data.index]).toEqual([400, 1]);
+    expect(error.fieldErrors.caption?.[0]).toMatch(/supera el límite de TikTok/);
+    const twice = await fail(apiCall(social.createPostsBulk, { body: { posts: [{ video_clip: CLIPS.first, platform: 'INSTAGRAM_REELS' }, { video_clip: CLIPS.first, platform: 'INSTAGRAM_REELS' }] } }));
+    expect(twice.fieldErrors.posts?.[0]).toBe('La misma publicación (clip y red) está dos veces.');
+    expect(loadDb().posts.length).toBe(before);
+  });
+
+  it('los hashtags llegan sin «#» ni repetidos, y uno inválido es un 400', async () => {
+    const post = await apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'INSTAGRAM_REELS', draft: true, hashtags: ['#Mendoza', 'mendoza', 'vlog'] } });
+    expect(post.hashtags).toEqual(['Mendoza', 'vlog']);
+    expect((await fail(apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'TIKTOK', draft: true, hashtags: ['dos palabras'] } }))).status).toBe(400);
+  });
+
+  it('un borrador no pide la cuenta conectada; mandarlo sí', async () => {
+    const draft = await apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'YOUTUBE_SHORTS', draft: true } });
+    expect(draft.status).toBe('DRAFT');
+    expect((await fail(apiCall(social.updatePost, { params: { id: draft.id }, body: { publish_at: null } }))).code).toBe('account_not_connected');
+  });
+
+  it('regenerar mientras otro texto está en camino no pide otro', async () => {
+    const draft = await apiCall(social.createPost, { body: { video_clip: CLIPS.third, platform: 'TIKTOK', draft: true } });
+    expect(draft.seo_status).toBe('pending');
+    const again = await apiCall(social.regeneratePostSeo, { params: { id: draft.id } });
+    expect(again.seo_status).toBe('pending');
+    expect(loadDb().posts.find((post) => post.id === draft.id)?._sim?.regen).toBeUndefined();
+  });
+});
+
+describe('contrato de publicar: lo que pidió la revisión del PR #184', () => {
+  beforeEach(() => signIn('estudio-norte'));
+
+  const processing = (errorLog: string | null, minutesAgo: number) => {
+    const db = loadDb();
+    const post = db.posts.find((item) => item.workspace === WORKSPACE_IDS.estudio && item.status === 'PROCESSING');
+    if (!post) throw new Error('falta una publicación publicando');
+    Object.assign(post, { error_log: errorLog, updated_at: new Date(Date.now() - minutesAgo * 60_000).toISOString() });
+    saveDb(db);
+    return post.id;
+  };
+
+  it('el lote valida primero los campos de todas las publicaciones, como el serializer del backend', async () => {
+    const error = await fail(
+      apiCall(social.createPostsBulk, {
+        body: {
+          posts: [
+            { video_clip: '00000000-0000-4000-8000-000000000000', platform: 'INSTAGRAM_REELS' },
+            { video_clip: CLIPS.second, platform: 'INSTAGRAM_REELS', hashtags: ['dos palabras'] },
+          ],
+        },
+      }),
+    );
+    // The clip of the first one does not exist, but the hashtag of the second is checked before any clip.
+    expect([error.data.index, Object.keys(error.fieldErrors)]).toEqual([1, ['hashtags']]);
+    expect((await fail(apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'TIKTOK', draft: true, hashtags: ['a'.repeat(101)] } }))).fieldErrors.hashtags?.[0]).toBe('Cada hashtag puede tener hasta 100 caracteres.');
+  });
+
+  it('el texto con IA del mismo clip y la misma red se reusa, y uno que trae su texto no pide ninguno', async () => {
+    // The seed already has an Instagram post of the first clip, with its AI text.
+    const reused = await apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'INSTAGRAM_REELS', draft: true } });
+    expect([reused.seo_status, reused.caption]).toEqual(['ready', reused.generated_caption]);
+    const own = await apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'YOUTUBE_SHORTS', draft: true, caption: 'Mío', hashtags: ['mio'] } });
+    expect(own.seo_status).toBe('none');
+  });
+
+  it('una trabada se puede cancelar; una que espera su reintento del worker, no', async () => {
+    const waiting = processing('Retry 1: upstream 502', 16);
+    expect((await fail(apiCall(social.retryPost, { params: { id: waiting } }))).code).toBe('post_in_flight');
+    expect((await fail(apiCall(social.cancelPost, { params: { id: waiting } }))).code).toBe('post_in_flight');
+    const stuck = processing(null, 16);
+    await apiCall(social.cancelPost, { params: { id: stuck } });
+    expect(loadDb().posts.some((post) => post.id === stuck)).toBe(false);
+  });
+
+  it('el texto que el usuario guarda mientras se regenera queda', async () => {
+    const draft = await apiCall(social.createPost, { body: { video_clip: CLIPS.third, platform: 'YOUTUBE_SHORTS', draft: true } });
+    advance(3000);
+    await apiCall(social.regeneratePostSeo, { params: { id: draft.id } });
+    const saved = await apiCall(social.updatePost, { params: { id: draft.id }, body: { caption: 'Lo escribí yo' } });
+    // Like the backend: the request stays on (it keeps counting), and the text that arrives does not replace this one.
+    expect([saved.seo_status, saved.caption]).toEqual(['pending', 'Lo escribí yo']);
+    advance(3000);
+    const after = await apiCall(social.getPost, { params: { id: draft.id } });
+    expect([after.seo_status, after.caption]).toEqual(['ready', 'Lo escribí yo']);
+  });
+
+  it('el texto con IA de un borrador descartado sirve para el próximo del mismo clip y la misma red', async () => {
+    const draft = await apiCall(social.createPost, { body: { video_clip: CLIPS.third, platform: 'TIKTOK', draft: true } });
+    advance(3000);
+    const ready = await apiCall(social.getPost, { params: { id: draft.id } });
+    expect(ready.seo_status).toBe('ready');
+    await apiCall(social.cancelPost, { params: { id: draft.id } });
+    const again = await apiCall(social.createPost, { body: { video_clip: CLIPS.third, platform: 'TIKTOK', draft: true } });
+    expect([again.seo_status, again.caption]).toEqual(['ready', ready.generated_caption]);
+  });
+});
+
+describe('contrato de publicar: plan sin varias redes', () => {
+  it('un clip ya programado en una red no se programa en otra, aunque sea en otro pedido', async () => {
+    signIn('plan-gratis');
+    // Its failed TikTok post does not hold the network: it went nowhere.
+    await apiCall(social.createPost, { body: { video_clip: CLIPS.fourth, platform: 'INSTAGRAM_REELS' } });
+    const tiktok = { privacy_level: 'SELF_ONLY', allow_comment: false, allow_duet: false, allow_stitch: false, brand_organic: false, branded_content: false } as const;
+    expect((await fail(apiCall(social.createPost, { body: { video_clip: CLIPS.fourth, platform: 'TIKTOK', tiktok } }))).code).toBe('crossposting');
+    // A draft publishes nothing.
+    expect((await apiCall(social.createPost, { body: { video_clip: CLIPS.fourth, platform: 'TIKTOK', draft: true } })).status).toBe('DRAFT');
   });
 });
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { goingOut } from '@/api/hooks';
 import type { ScheduledPost, SocialAccount } from '@/api/contracts/social';
 import {
   dayKey,
@@ -7,6 +8,7 @@ import {
   groupByDay,
   groupKind,
   groupPosts,
+  isCancellable,
   isDraggable,
   isStuck,
   monthGrid,
@@ -159,5 +161,27 @@ describe('publicaciones con error', () => {
     expect(isStuck(post({ id: '1', status: 'PROCESSING', updated_at: at(2026, 11, 24, 14).toISOString() }), now)).toBe(true);
     expect(isStuck(post({ id: '1', status: 'PROCESSING', updated_at: at(2026, 11, 24, 14, 58).toISOString() }), now)).toBe(false);
     expect(isStuck(post({ id: '1', status: 'QUEUED', updated_at: at(2026, 11, 24, 10).toISOString() }), now)).toBe(false);
+    // The backend's POST_STUCK_AFTER: before 15 minutes a retry is a 409, so the button does not show yet.
+    expect(isStuck(post({ id: '1', status: 'PROCESSING', updated_at: at(2026, 11, 24, 14, 48).toISOString() }), now)).toBe(false);
+    expect(isStuck(post({ id: '1', status: 'PROCESSING', updated_at: at(2026, 11, 24, 14, 44).toISOString() }), now)).toBe(true);
+  });
+
+  it('una que espera el reintento del worker no está trabada hasta pasado el timeout del broker, y una trabada se cancela', () => {
+    const now = at(2026, 11, 24, 15).getTime();
+    const waiting = post({ id: '1', status: 'PROCESSING', error_log: 'Retry 1: upstream', updated_at: at(2026, 11, 24, 14, 40).toISOString() });
+    expect([isStuck(waiting, now), isCancellable(waiting, now)]).toEqual([false, false]);
+    const long = post({ id: '1', status: 'PROCESSING', error_log: 'Retry 1: upstream', updated_at: at(2026, 11, 24, 10, 50).toISOString() });
+    expect(isStuck(long, now)).toBe(true);
+    const stuck = post({ id: '1', status: 'PROCESSING', updated_at: at(2026, 11, 24, 14, 40).toISOString() });
+    expect(isCancellable(stuck, now)).toBe(true);
+    expect(isCancellable(post({ id: '1', status: 'PUBLISHED' }), now)).toBe(false);
+  });
+
+  it('«publicar ahora» queda programada para ya: se sigue consultando hasta que el beat la toma', () => {
+    const now = at(2026, 11, 24, 15).getTime();
+    expect(goingOut(post({ id: '1', status: 'SCHEDULED', publish_at: at(2026, 11, 24, 14, 59).toISOString() }), now)).toBe(true);
+    expect(goingOut(post({ id: '1', status: 'SCHEDULED', publish_at: at(2026, 11, 25, 9).toISOString() }), now)).toBe(false);
+    expect(goingOut(post({ id: '1', status: 'QUEUED' }), now)).toBe(true);
+    expect(goingOut(post({ id: '1', status: 'DRAFT', publish_at: at(2026, 11, 24, 14).toISOString() }), now)).toBe(false);
   });
 });

@@ -540,9 +540,12 @@ Otras respuestas:
 - **Estados:** cuenta desconectada o vencida (pedir reconectar) y texto por encima del límite.
 - **Móvil:** el panel ocupa toda la pantalla.
 - **API:**
-  - ❌ ningún endpoint crea un `ScheduledPost`: hoy solo se crean desde el admin.
-  - ❌ falta conectar redes (perfil de Ayrshare por workspace).
-  - ❌ falta el beat que despacha los programados.
+  - ✅ `POST /api/v1/scheduled-posts/` (con `draft: true` para el borrador que trae el texto con IA) y `POST /api/v1/scheduled-posts/bulk/` (todo o nada, hasta 60). Aceptan `Idempotency-Key`. Ninguno llama a la red: "Publicar" deja el post `SCHEDULED` para ahora y lo encola el beat (hasta 5 min).
+  - ✅ `PATCH /api/v1/scheduled-posts/:id/` manda un borrador (`publish_at`: fecha o `null`) y `POST .../regenerate-seo/` pide otro texto (`seo_status: "pending"` con el texto anterior hasta que llega el nuevo).
+  - ✅ El servidor aplica el plan: programar (`code: "scheduling"`) y una sola red por clip sin crossposting (`code: "crossposting"`).
+  - ✅ El beat que despacha los programados (`dispatch-scheduled-posts`, cada 5 min).
+  - ❌ falta conectar redes (perfil de Ayrshare por workspace): sin `ayrshare_profile_key`, publicar responde 409 `account_not_connected`.
+  - ⚠️ el publicador todavía no usa el texto que escribe el usuario (`caption`, `hashtags`) ni las opciones de TikTok, y puede salir antes de que llegue el texto con IA.
   - ✅ cuando el post existe, el SEO se genera solo (señal) y la publicación usa Ayrshare.
 
 #### E2. Publicaciones — `/publicaciones`
@@ -560,9 +563,9 @@ Otras respuestas:
 - **Móvil:** solo la lista, agrupada por día.
 - **API:**
   - ✅ `GET /api/v1/scheduled-posts/` (paginado, con filtros y `status_counts`) y `GET /api/v1/scheduled-posts/:id/`.
-  - ❌ editar, cancelar y reintentar.
-  - ⚠️ `error_log` de la publicación guarda el texto de la excepción; hay que traducirlo a un mensaje legible.
-  - ⚠️ un post puede quedar trabado en `PROCESSING` (ver la [documentación de IA](../ia/05-seo-y-publicacion.md)).
+  - ✅ editar y reprogramar (`PATCH`, solo `DRAFT` y `SCHEDULED`), cancelar (`POST .../cancel/`, también en cola o fallida) y reintentar (`POST .../retry/`). Toman el lock del post: si el beat ya lo tomó responden 409 con `code`.
+  - ✅ `error_message` traduce la falla; `error_log` no se muestra.
+  - ✅ un post trabado en `PROCESSING` se reintenta o se cancela pasados 15 min desde su último intento, o 4 h si el worker espera un reintento (ver la [documentación de IA](../ia/05-seo-y-publicacion.md#flujo-la-api-de-publicaciones)). Pudo haber salido: la UI lo avisa, y cancelar no lo borra de la red.
 
 ### F. Brand kits
 
@@ -771,8 +774,8 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad. El detalle e
 | 5 | ~~Link de descarga firmado por clip~~ Resuelto: `GET /clips/:id/download/` | D3, D4 | — |
 | 6 | Endpoint de precios (la fórmula) para el estimado. Los planes ya están: `GET /plans/` | C1, A6, G3 | P0 |
 | 7 | ~~Campo `render_resolution` al crear, y alinear el render por defecto con el precio~~ Resuelto: se elige al crear y el render por defecto es 720p, como el precio | C1 | — |
-| 8 | Crear, editar, cancelar y reintentar `ScheduledPost`. Listar (con filtros) y ver una ya existen: `GET /scheduled-posts/` y `GET /scheduled-posts/:id/` | E1, E2 | P1 |
-| 9 | Beat que corra `dispatch_scheduled_posts_batch` | E1, E2 | P1 |
+| 8 | ~~Crear, editar, cancelar y reintentar `ScheduledPost`~~ Resuelto: `POST /scheduled-posts/` y `/bulk/`, `PATCH /scheduled-posts/:id/`, `.../cancel/`, `.../retry/` y `.../regenerate-seo/`, además de listar y ver. Ninguno llama a la red. Siguen pendientes, del publicador: usar el texto del usuario y las opciones de TikTok, y esperar el texto con IA antes de salir | E1, E2 | — |
+| 9 | ~~Beat que corra `dispatch_scheduled_posts_batch`~~ Resuelto: `CELERY_BEAT_SCHEDULE` lo corre cada 5 min con el servicio `beat` | E1, E2 | — |
 | 10 | Conectar redes por workspace (Ayrshare) | E1, H3 | P1 |
 | 11 | ~~Endpoint de clip: renombrar, recortar, volver a renderizar y reintentar~~ Resuelto: `GET/PATCH/DELETE /clips/:id/`, `POST /clips/:id/render/` y `POST /clips/:id/retry/` | D3, D4 | — |
 | 12 | Suscripción, checkout y webhooks de pago (PAY-01/02/03). La lista de planes ya está: `GET /plans/` | G3, G4 | P1 |

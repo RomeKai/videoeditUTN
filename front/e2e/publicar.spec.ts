@@ -23,9 +23,10 @@ test.describe('E1 · Publicar y E2 · Publicaciones', () => {
     await panel.getByLabel('Quién puede ver este video').selectOption({ label: 'Todos' });
     await expect(panel.getByRole('tab', { name: /TikTok/ })).toContainText('Listo');
 
-    // The project asked for SEO: the text arrives by itself, marked as suggested by the AI.
+    // The project asked for SEO: the text arrives by itself, marked as suggested by the AI. This clip already
+    // went out on TikTok, so its AI text is reused instead of asked for again (like the backend).
     await expect(panel.getByText('Sugerido por IA')).toBeVisible({ timeout: 15_000 });
-    await expect(panel.getByLabel('Caption')).toHaveValue(/^Lo mejor de «/);
+    await expect(panel.getByLabel('Caption')).toHaveValue(/^Subimos a 3\.000 metros/);
 
     await publish.click();
     await expect(page.getByText(/se está publicando en TikTok e Instagram/)).toBeVisible();
