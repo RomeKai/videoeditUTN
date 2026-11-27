@@ -114,6 +114,11 @@ class _ScriptedRedis:
 class ProjectLockWithRedisPyTests(SimpleTestCase):
     """The lock of redis-py itself: the fake lock has no notion of which thread owns the token."""
 
+    def setUp(self):
+        # redis-py registers its scripts once per class, bound to the first client: a second run
+        # in the same process would count the renewals of a client that is gone.
+        _RedisPyLock.lua_release = _RedisPyLock.lua_extend = _RedisPyLock.lua_reacquire = None
+
     def test_heartbeat_thread_can_renew_the_lock_the_task_thread_acquired(self):
         client = _ScriptedRedis()
         crashes = []
