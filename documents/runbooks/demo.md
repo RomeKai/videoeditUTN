@@ -65,7 +65,7 @@ La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario,
 | Proyecto: resumen, transcripción, actividad | `/proyectos/:id` | **Backend** |
 | Revisión de clips | `/proyectos/:id/revision` | **Backend**, también el video y el render |
 | Clips, editor de clip y descargas | `/proyectos/:id/clips` | **Backend**. La miniatura de cada clip es un dibujo: todavía no existe en el backend |
-| Brand kits | `/brand-kits` | **Backend** (duplicar es mock) |
+| Brand kits | `/brand-kits` | **Backend**, también duplicar (copia los archivos) |
 | Mi cuenta y avisos por email | menú del usuario | **Backend** |
 | Saldo de la barra, Uso (consumo y movimientos) | `/uso` | **Backend** |
 | Planes y Comprar tokens | `/uso/planes`, `/uso/comprar` | **Backend**, con el proveedor simulado: no se cobra nada |

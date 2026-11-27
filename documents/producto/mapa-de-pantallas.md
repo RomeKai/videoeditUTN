@@ -559,7 +559,7 @@ Otras respuestas:
 - **Qué muestra:** tarjetas con los colores, el logo y el nombre de cada kit, y una marca "Por defecto".
 - **Acciones:** crear, duplicar, marcar como default y borrar.
 - **Vacío:** "Creá tu brand kit para que todos tus clips salgan con tu marca".
-- **API:** ✅ `GET/POST/PATCH/DELETE /api/v1/brand-kits/`.
+- **API:** ✅ `GET/POST/PATCH/DELETE /api/v1/brand-kits/` y `POST /api/v1/brand-kits/:id/duplicate/` (copia el kit con sus archivos como «Copia de …»; la copia nunca es default).
 
 #### F2. Editar brand kit — `/brand-kits/:id`
 - **Campos:**
@@ -572,7 +572,7 @@ Otras respuestas:
 - **A la derecha:** vista previa de un fotograma de clip con subtítulos y logo usando el kit.
 - **API:**
   - ✅ los campos existen.
-  - ⚠️ que haya un solo default por workspace no está garantizado en el backend.
+  - ✅ un solo default por workspace: marcar uno desmarca el anterior. Desmarcar el default o borrarlo deja al workspace sin default.
 
 ### G. Uso y facturación — `/uso`
 

@@ -1326,6 +1326,23 @@
     "workspace": "a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
     "user": null
   },
+  "brand_kit_duplicate": {
+    "id": "c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a77",
+    "name": "Copia de Estudio Norte",
+    "description": "",
+    "primary_font": "http://localhost:8000/media/assets/fonts/Inter_a1B2c3D.ttf",
+    "secondary_font": null,
+    "primary_color": "#FFFFFF",
+    "secondary_color": "#000",
+    "accent_color": "#ffff00",
+    "watermark_logo": null,
+    "intro_video": null,
+    "outro_video": null,
+    "is_default": false,
+    "created_at": "2026-11-27T09:00:00.500000Z",
+    "workspace": "a3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+    "user": "b3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b"
+  },
   "brand_kit_list": [
     {
       "id": "c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
@@ -1484,6 +1501,13 @@
     "role": "admin"
   },
   "errors": {
+    "brand_kit_copy_failed": {
+      "status": 502,
+      "body": {
+        "error": "No pudimos copiar los archivos del brand kit. Probá de nuevo en unos minutos.",
+        "code": "brand_kit_copy_failed"
+      }
+    },
     "login_401": {
       "status": 401,
       "body": {

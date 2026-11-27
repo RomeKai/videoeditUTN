@@ -614,6 +614,24 @@ describe('mocks', () => {
     const copy = await apiCall(brandKits.duplicateBrandKit, { params: { id: other.id } });
     expect(copy.name).toBe(`Copia de ${other.name}`);
     expect(copy.is_default).toBe(false);
+    // As the backend: every file of the copy is its own (another name), and the rest is the same.
+    const withFiles = kits.find((kit) => kit.watermark_logo && kit.primary_font);
+    if (!withFiles) throw new Error('falta un kit con archivos');
+    const twin = await apiCall(brandKits.duplicateBrandKit, { params: { id: withFiles.id } });
+    for (const field of ['primary_font', 'secondary_font', 'watermark_logo', 'intro_video', 'outro_video'] as const) {
+      if (withFiles[field] === null) expect(twin[field]).toBeNull();
+      else {
+        expect(twin[field]).not.toBe(withFiles[field]);
+        expect(twin[field]?.split('.').pop()).toBe(withFiles[field]?.split('.').pop());
+        expect(twin[field]?.split('/').slice(0, -1)).toEqual(withFiles[field]?.split('/').slice(0, -1));
+      }
+    }
+    expect({ ...twin, id: '', name: '', user: null, created_at: '', is_default: false, primary_font: null, secondary_font: null, watermark_logo: null, intro_video: null, outro_video: null }).toEqual({
+      ...withFiles, id: '', name: '', user: null, created_at: '', is_default: false, primary_font: null, secondary_font: null, watermark_logo: null, intro_video: null, outro_video: null,
+    });
+    // Unmarking the default leaves the workspace without one, and creating a kit does not make it default.
+    await apiCall(brandKits.updateBrandKit, { params: { id: other.id }, body: { is_default: false } });
+    expect((await apiCall(brandKits.listBrandKits)).filter((kit) => kit.is_default)).toEqual([]);
     await apiCall(brandKits.deleteBrandKit, { params: { id: copy.id } });
     expect((await fail(apiCall(brandKits.createBrandKit, { body: { name: 'Malo', primary_color: '#FFFFFF' } }).then(() => apiCall(brandKits.getBrandKit, { params: { id: copy.id } })))).status).toBe(404);
   });

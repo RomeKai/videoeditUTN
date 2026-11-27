@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**81 endpoints:** 54 existen hoy en el backend, 5 existen en parte y 22 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**81 endpoints:** 56 existen hoy en el backend, 4 existen en parte y 21 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -45,7 +45,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | 7 | `subtitle_size` se guarda en `metadata.subtitle_size` al crear, además del campo del modelo. | El frontend lee el campo `subtitle_size` del proyecto. |
 | 8 | `brand_kit_name` no viene cuando el proyecto no tiene brand kit (DRF omite el campo). | Opcional en el esquema. |
 | 9 | Un `SPEND` devuelto queda `FAILED`; no hay estado «devuelto» ni vínculo proyecto ↔ transacción. | `Transaction.kind` (`released`, `refund`…), `Transaction.project` y `Project.cost { amount, state, transaction_id }`. |
-| 10 | `BrandKit.is_default` no es único por workspace. | Al marcar uno, el backend desmarca el resto. |
+| 10 | ~~`BrandKit.is_default` no era único por workspace.~~ Resuelto en el backend: marcar un kit desmarca el resto en la misma transacción, y la base lo cuida con una restricción única parcial. | Nada pendiente. `demoteOtherDefaults()` queda como red para un backend anterior. |
 | 11 | Los links no pasan por la validación de duración del plan. | `POST /projects/probe-link/` (propuesto) reconoce el link y responde 403 si supera el plan. |
 | 12 | `error_log` de una publicación guarda el texto de la excepción. | `error_message` legible y `error_code`; `error_log` no se muestra. |
 | 13 | `approve-paper-edit` responde 400 `{ error }` para un proyecto que ya no está en revisión («…no está en espera de aprobación. Estado actual: rendering») y para un límite del plan («Error en el motor de precios: …»). El 409 solo sale en la carrera de dos aprobaciones. | Propuesto: 409 con `code: "not_awaiting_approval"` y 403 con `code` (`duration`, `resolution`). Mientras tanto `approveErrorKind()` los reconoce por el texto: el primero avisa y lleva a Clips, el segundo abre el diálogo de límite del plan. |
@@ -124,9 +124,9 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/brand-kits/` | Brand kits del workspace. | ✅ existe | F1, C1, B2, D5 |
 | POST | `/api/v1/brand-kits/` | Crea un brand kit (multipart por las fuentes, el logo y los videos). | ✅ existe | F1, F2 |
 | GET | `/api/v1/brand-kits/:id/` | Un brand kit. | ✅ existe | F2 |
-| PATCH | `/api/v1/brand-kits/:id/` | Edita un brand kit. Con `is_default: true` pasa a ser el default del workspace. | ⚠️ existe en parte | F1, F2 |
+| PATCH | `/api/v1/brand-kits/:id/` | Edita un brand kit. Con `is_default: true` pasa a ser el default del workspace. | ✅ existe | F1, F2 |
 | DELETE | `/api/v1/brand-kits/:id/` | Borra un brand kit. Los proyectos que lo usaban quedan sin kit (SET_NULL). | ✅ existe | F1, F2 |
-| POST | `/api/v1/brand-kits/:id/duplicate/` | Copia un brand kit con sus archivos ("Copia de …"). La copia nunca es default. | ❌ falta (propuesto) | F1 |
+| POST | `/api/v1/brand-kits/:id/duplicate/` | Copia un brand kit con sus archivos ("Copia de …"). La copia nunca es default. | ✅ existe | F1 |
 | GET | `/api/v1/social-accounts/` | Una entrada por red (TikTok, Instagram Reels, YouTube Shorts) con su estado y sus límites. | ❌ falta (propuesto) · hueco 10 | H3, E1, B2 |
 | POST | `/api/v1/social-accounts/connect/` | Devuelve la URL de la red (vía Ayrshare) para autorizar la cuenta en una ventana aparte. | ❌ falta (propuesto) · hueco 10 | D6, H3, E1 |
 | DELETE | `/api/v1/social-accounts/:platform/` | Desconecta la cuenta de una red. Las publicaciones programadas en esa red quedan en error. | ❌ falta (propuesto) · hueco 10 | H3 |
@@ -1075,12 +1075,12 @@ Edita un brand kit. Con `is_default: true` pasa a ser el default del workspace.
 | | |
 |---|---|
 | Id | `brandKits.update` |
-| Backend | ⚠️ existe en parte · `back/apps/videos/views.py · BrandKitViewSet.partial_update` |
-| Nota | El backend no garantiza un solo default por workspace: al marcar uno debería desmarcar el resto (mapa F2). |
+| Backend | ✅ existe · `back/apps/videos/views.py · BrandKitViewSet.perform_update/_save_one_default + brand_kit_service` |
+| Nota | Un solo default por workspace, garantizado en el backend. `is_default: true` desmarca el default anterior en la misma transacción, con la fila del workspace bloqueada: dos pedidos a la vez terminan con uno solo (gana el último). Crear un kit con `is_default: true` hace lo mismo. Además hay una restricción única parcial en la base (`one_default_brand_kit_per_workspace`). `is_default: false` sobre el kit default se acepta y deja al workspace sin default, igual que borrarlo: ningún otro kit se promueve solo y los proyectos nuevos salen sin kit preseleccionado. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido (multipart) | { name?: string, description?: string, primary_color?: HexColor, secondary_color?: HexColor, accent_color?: HexColor, primary_font?: unknown \\| "", secondary_font?: unknown \\| "", watermark_logo?: unknown \\| "", intro_video?: unknown \\| "", outro_video?: unknown \\| "", is_default?: boolean, watermark_position?: WatermarkPosition } |
 | Respuesta 200 | BrandKit |
-| Errores | **400** Validación por campo.<br>**403** El rol no puede crear ni editar brand kits (Lector). |
+| Errores | **400** Validación por campo.<br>**403** El rol no puede crear ni editar brand kits (Lector).<br>**404** No existe o es de otro workspace. |
 | Pantallas | F1, F2 |
 
 #### `DELETE /api/v1/brand-kits/:id/`
@@ -1091,6 +1091,7 @@ Borra un brand kit. Los proyectos que lo usaban quedan sin kit (SET_NULL).
 |---|---|
 | Id | `brandKits.delete` |
 | Backend | ✅ existe · `back/apps/videos/views.py · BrandKitViewSet.destroy` |
+| Nota | Borrar el kit default deja al workspace sin default: ningún otro kit se promueve solo. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 204 | NoContent |
 | Errores | **403** El rol no puede crear ni editar brand kits (Lector). |
@@ -1103,11 +1104,11 @@ Copia un brand kit con sus archivos ("Copia de …"). La copia nunca es default.
 | | |
 |---|---|
 | Id | `brandKits.duplicate` |
-| Backend | ❌ falta (propuesto) |
-| Nota | Sin número de hueco: el mapa (F1) pide duplicar y los archivos no se pueden copiar desde el navegador. |
+| Backend | ✅ existe · `back/apps/videos/views.py · BrandKitViewSet.duplicate + back/apps/videos/services/brand_kit_service.py · duplicate_brand_kit` |
+| Nota | Sin cuerpo. La copia queda en el workspace activo, a nombre de quien la pide, como «Copia de {nombre}» (cortado a 100 caracteres; el nombre no es único, así que duplicar dos veces da dos kits con el mismo nombre). Copia todos los campos y cada archivo (fuentes, logo, intro, outro) a un nombre nuevo del almacenamiento: los dos kits no comparten archivos. Nunca es default. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 201 | BrandKit |
-| Errores | **403** El rol no puede crear ni editar brand kits (Lector). |
+| Errores | **403** El rol no puede crear ni editar brand kits (Lector).<br>**404** No existe o es de otro workspace.<br>**502** No se pudo copiar un archivo del kit (`code: "brand_kit_copy_failed"`). No se crea nada: ni el kit ni archivos sueltos. No es 503: la app lee cualquier 503 como mantenimiento. |
 | Pantallas | F1 |
 
 ### Redes sociales y publicaciones
