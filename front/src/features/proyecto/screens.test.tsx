@@ -296,6 +296,33 @@ describe('D3 · Clips', () => {
     expect(within(list).getAllByText('Programado').length).toBeGreaterThan(0);
   });
 
+  it('con thumbnail_url la tarjeta muestra la miniatura, y al pasar el mouse reproduce preview_url', async () => {
+    const { user } = open('Vlog Mendoza', 'clips', 'estudio-norte', 'lucia', (project) => {
+      const clip = project.clips.find((item) => item.status === 'completed');
+      if (!clip) throw new Error('falta un clip listo');
+      clip.title = 'Clip con miniatura';
+      clip.thumbnail_url = 'https://media.test/videos/clip.jpg';
+      clip.preview_url = 'https://media.test/videos/clip.mp4';
+    });
+    const list = await screen.findByRole('list');
+    const tile = within(list).getByRole('heading', { name: 'Clip con miniatura' }).closest('li');
+    if (!tile) throw new Error('falta la tarjeta');
+    expect(tile.querySelector('img')).toHaveAttribute('src', 'https://media.test/videos/clip.jpg');
+    expect(tile.querySelector('video')).toBeNull();
+    await user.hover(tile);
+    expect(tile.querySelector('video')).toHaveAttribute('src', 'https://media.test/videos/clip.mp4');
+  });
+
+  it('sin miniatura ni preview_url (null) la tarjeta se queda con el dibujo', async () => {
+    const { user } = open('Vlog Mendoza', 'clips', 'estudio-norte');
+    const list = await screen.findByRole('list');
+    const tile = within(list).getAllByRole('listitem')[0];
+    if (!tile) throw new Error('falta la tarjeta');
+    await user.hover(tile);
+    expect(tile.querySelector('img')).toBeNull();
+    expect(tile.querySelector('video')).toBeNull();
+  });
+
   it('filtra por estado', async () => {
     const { user } = open('Vlog Mendoza', 'clips', 'estudio-norte');
     const chips = await screen.findByRole('group', { name: 'Filtrar clips por estado' });

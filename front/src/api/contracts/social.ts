@@ -176,7 +176,7 @@ export const disconnectSocialAccount = defineEndpoint({
 
 /** What the read endpoints still miss (DIST-03, PR 1: only GET). */
 const PARTIAL_NOTE =
-  'Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. Falta: `thumbnail_url` viene siempre `null` (los clips no tienen miniatura), `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos.';
+  'Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. `clip.thumbnail_url` es la miniatura del clip (URL temporal de 1 h; `null` si no tiene). Falta: `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos.';
 
 export const listPosts = defineEndpoint({
   id: 'social.posts',
