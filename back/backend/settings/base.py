@@ -726,4 +726,11 @@ FONTS_DIR = os.path.join(BASE_DIR, 'assets', 'fonts')
 # Logo that a plan with has_watermark renders over every delivered video (PAY-01).
 WATERMARK_PATH = os.path.join(BASE_DIR, 'assets', 'watermarks', 'onecreator_logo.png')
 
+# --- SOCIAL PUBLISHING (apps.integrations.social) ---
+# The provider new workspace profiles are created with. A workspace that already
+# has one keeps publishing through the provider recorded on it (SocialProfile.provider).
+SOCIAL_PROVIDER = env('SOCIAL_PROVIDER', default='ayrshare')
+# Profiles are titled "<prefix>-<workspace id>" at the provider, where titles are
+# unique per account: give each environment that shares an account its own prefix.
+SOCIAL_PROFILE_TITLE_PREFIX = env('SOCIAL_PROFILE_TITLE_PREFIX', default='onecreator')
 AYRSHARE_API_KEY = env('AYRSHARE_API_KEY', default=None)
