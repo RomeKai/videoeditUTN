@@ -92,7 +92,7 @@ export const workspacesHandlers = [
     if (role !== 'owner') throw ownerOnly();
     if (body.confirm_name !== workspace.name) throw badRequest({ confirm_name: ['El nombre no coincide.'] });
     // Like the backend, in its order: never the person's last workspace (first: waiting does not fix it),
-    // never with work in progress, posts going out, or tokens set aside or left.
+    // never with work in progress, posts going out, tokens set aside, a payment waiting for its provider, or tokens left.
     if (!db.workspaces.some((item) => item.id !== workspace.id && roleIn(db, item.id, user.id))) {
       throw conflict('Es tu único espacio de trabajo y no se puede borrar. Creá otro primero, o sumate al de alguien más.', 'last_workspace');
     }
@@ -109,6 +109,9 @@ export const workspacesHandlers = [
     if (wallet && wallet.reserved_balance > 0) {
       throw conflict('El espacio tiene tokens reservados que todavía no se liquidaron. Probá de nuevo en unos minutos.', 'reservation_open');
     }
+    if (db.purchases.some((item) => item.workspace === workspace.id && item.status === 'pending')) {
+      throw conflict('Hay un pago en curso: terminalo, o esperá a que venza (24 h después de abrirlo).', 'payment_pending');
+    }
     if (wallet && wallet.available_balance > 0) {
       const left = String(wallet.available_balance);
       throw new MockHttpError(409, {
@@ -124,6 +127,7 @@ export const workspacesHandlers = [
     db.brandKits = db.brandKits.filter((item) => item.workspace !== workspace.id);
     db.wallets = db.wallets.filter((item) => item.workspace !== workspace.id);
     db.transactions = db.transactions.filter((item) => item.workspace !== workspace.id);
+    db.purchases = db.purchases.filter((item) => item.workspace !== workspace.id);
     for (const item of db.users) if (item.active_workspace_id === workspace.id) item.active_workspace_id = null;
     return { data: undefined };
   }),
@@ -196,7 +200,7 @@ export const workspacesHandlers = [
     const payingPlan = paying ? db.plans.find((plan) => plan.id === paying.plan_id) : null;
     if (payingPlan && payingPlan.max_members < info.max && info.used + emails.length > payingPlan.max_members) {
       throw new MockHttpError(403, {
-        error: `Estás pasando al plan '${payingPlan.name}', que permite ${payingPlan.max_members} miembros. Terminá o cancelá ese pago para invitar más gente.`,
+        error: `Estás pasando al plan '${payingPlan.name}', que permite ${payingPlan.max_members} miembros. Hay un pago en curso: terminalo, o esperá a que venza (24 h después de abrirlo).`,
         code: 'seats_exceeded',
       });
     }

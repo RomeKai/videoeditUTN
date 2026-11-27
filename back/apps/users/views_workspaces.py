@@ -27,7 +27,8 @@ from rest_framework.views import APIView
 from apps.core.permissions import ADMIN, require_workspace_role
 from apps.core.workspace import OWNER
 from apps.integrations.ayrshare_api import AyrshareClient
-from apps.payments.models import Transaction, Wallet
+from apps.payments.models import Payment, Transaction, Wallet
+from apps.payments.services.payments import payment_pending_message
 from apps.users.models import User, Workspace, WorkspaceMember
 from apps.users.serializers_workspaces import (
     ALREADY_OWNER,
@@ -281,8 +282,9 @@ class WorkspaceDetailView(APIView):
             409: OpenApiResponse(description=(
                 '`{error, code}`, y no se borra nada: `project_processing` con un proyecto subido, en ingesta o '
                 'renderizando; `posts_in_flight` con una publicación en cola o saliendo (una trabada no cuenta); '
-                '`reservation_open` con tokens reservados sin liquidar; `balance_left` con saldo disponible (trae '
-                '`available_balance`); `last_workspace`, que se revisa primero, si es el único workspace del usuario.'
+                '`reservation_open` con tokens reservados sin liquidar; `payment_pending` con una compra de tokens o un '
+                'pago de plan pendiente; `balance_left` con saldo disponible (trae `available_balance`); '
+                '`last_workspace`, que se revisa primero, si es el único workspace del usuario.'
             )),
         },
     )
@@ -305,13 +307,21 @@ class WorkspaceDetailView(APIView):
           does not keep the workspace.
         - `reservation_open`: a reservation still RESERVED, or reserved balance.
           Nothing would settle those tokens once the wallet is gone.
+        - `payment_pending`: a Payment still pending (a token purchase or a
+          plan payment, with its checkout open or still opening). Its row is
+          what a confirmation settles, and what a late payment is logged
+          against (`payment.late_paid`): it must not go with the workspace.
+          It ends when the provider settles it or when its checkout expires
+          (PAYMENTS_CHECKOUT_TTL_SECONDS): the web cannot cancel one, so the
+          sentence says to pay it or wait.
         - `balance_left`: available balance above zero. Tokens are money and
           are never deleted; there is no way to move them yet.
 
         What goes with it (the models' CASCADE): its projects with their clips
         and posts (DRAFT, SCHEDULED, PUBLISHED and FAILED ones; a SCHEDULED post
         is never published), its brand kits, its memberships and pending
-        invitations, and its empty wallet with its transactions.
+        invitations, its settled payments, and its empty wallet with its
+        transactions.
         `User.last_workspace` of whoever had it chosen becomes null, and /me
         falls back to their default. The files in R2 and the Ayrshare profile
         are not cleaned up here.
@@ -347,6 +357,11 @@ class WorkspaceDetailView(APIView):
                 .order_by('pk')
                 .values_list('status', 'updated_at', 'publish_at')
             )
+            # Read with the workspace row locked, and before the wallet (the order of settle_payment:
+            # workspace, payment, wallet). Everything that creates or settles a payment locks the
+            # workspace first, so none starts or ends until this delete does: a purchase that comes
+            # meanwhile finds no workspace.
+            payment_pending = Payment.objects.filter(workspace=workspace, status=Payment.Status.PENDING).exists()
             wallet = Wallet.objects.select_for_update().filter(workspace=workspace).first()
             if any(project_status in _BUSY for project_status in statuses):
                 return _error(409, WORKSPACE_BUSY, 'project_processing')
@@ -358,6 +373,8 @@ class WorkspaceDetailView(APIView):
                 or Transaction.objects.filter(wallet=wallet, status=Transaction.Status.RESERVED).exists()
             ):
                 return _error(409, WORKSPACE_RESERVED, 'reservation_open')
+            if payment_pending:
+                return _error(409, payment_pending_message(), 'payment_pending')
             if wallet is not None and wallet.available_balance > 0:
                 return _error(
                     409, _balance_left(wallet.available_balance), 'balance_left',
