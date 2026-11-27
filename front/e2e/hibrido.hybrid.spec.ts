@@ -90,6 +90,66 @@ async function signIn(page: Page) {
   await settle(page);
 }
 
+/**
+ * B2 on screen against the backend's own answers: the pages, the filters, the search and the counts are the
+ * server's. Part of the first test, not one of its own: every test signs in twice and the backend lets
+ * 10 logins a minute through.
+ */
+async function checkProjectsList(page: Page, api: Awaited<ReturnType<typeof backend>>, seen: Seen[]) {
+  const first = await api.projectsPage();
+
+  const summary = (count: number) => page.getByText(new RegExp(`de ${count} proyectos`));
+  const filters = page.getByRole('group', { name: 'Filtrar por estado' });
+  const chip = (name: RegExp, count: number) => expect(filters.getByRole('button', { name })).toHaveText(new RegExp(`\\D${count}$`));
+  await expect(summary(first.count)).toBeVisible();
+  await chip(/Todos/, first.status_counts.all);
+  await chip(/En proceso/, first.status_counts.in_progress);
+  await chip(/Para revisar/, first.status_counts.to_review);
+  await chip(/Listos/, first.status_counts.ready);
+  await chip(/Con error/, first.status_counts.failed);
+  await expect(page.getByRole('table', { name: 'Proyectos del workspace' }).getByRole('row')).toHaveCount(first.results.length + 1);
+
+  // A project being processed with an estimate says how long is left.
+  const estimated = first.results.find((project) => project.status === 'ingesting' && project.eta_seconds);
+  if (estimated) await expect(page.getByRole('row').filter({ hasText: estimated.title }).getByText(/≈ \d+ (min|h)/)).toBeVisible();
+
+  // The filter: the rows and the total change, the chips do not.
+  const failed = await api.projectsPage('?status_group=failed');
+  await filters.getByRole('button', { name: /Con error/ }).click();
+  if (failed.count > 0) {
+    await expect(summary(failed.count)).toBeVisible();
+    await expect(page.getByText(failed.results[0]?.title ?? '').first()).toBeVisible();
+  } else await expect(page.getByText('No hay proyectos en este estado')).toBeVisible();
+  await chip(/Todos/, first.status_counts.all);
+  expect(new URL(page.url()).pathname).toBe('/proyectos');
+  await filters.getByRole('button', { name: /Todos/ }).click();
+  await expect(summary(first.count)).toBeVisible();
+
+  // The next page, when there is one.
+  if (first.next) {
+    await page.getByRole('button', { name: 'Siguiente' }).click();
+    await expect(page.getByText(new RegExp(`^26–\\d+ de ${first.count} proyectos`))).toBeVisible();
+    const second = await api.projectsPage('?page=2');
+    await expect(page.getByText(second.results[0]?.title ?? '').first()).toBeVisible();
+  }
+
+  // The search, whatever the case: the total and the chips follow it.
+  const term = (first.results[0]?.title ?? '').toUpperCase();
+  const found = await api.projectsPage(`?search=${encodeURIComponent(term)}`);
+  expect(found.count).toBeGreaterThan(0);
+  await page.getByRole('searchbox', { name: 'Buscar proyectos por título' }).fill(term);
+  await expect(summary(found.count)).toBeVisible();
+  await chip(/Todos/, found.status_counts.all);
+
+  const lists = answersOf(seen, 'GET', '/api/v1/projects/');
+  expect(lists.length).toBeGreaterThan(3);
+  expect(lists.filter((item) => item.mock !== null || item.status !== 200)).toEqual([]);
+  // Back to the whole list, for what the test checks next.
+  await page.getByRole('searchbox', { name: 'Buscar proyectos por título' }).fill('');
+  await expect(summary(first.count)).toBeVisible();
+}
+
+
 test.describe('Modo híbrido contra el backend real', () => {
   test('login, /me, proyectos, brand kits y billetera vienen del backend; las redes son simuladas', async ({ page, request }) => {
     const api = await backend(request);
@@ -113,6 +173,7 @@ test.describe('Modo híbrido contra el backend real', () => {
     expect(projects.length, 'el usuario de prueba tiene al menos un proyecto en el backend').toBeGreaterThan(0);
     expect(answersOf(seen, 'GET', '/api/v1/projects/').at(-1)).toMatchObject({ status: 200, mock: null });
     for (const project of projects.slice(0, 3)) await expect(page.getByText(project.title).first()).toBeVisible();
+    await checkProjectsList(page, api, seen);
 
     // Brand kits: also the backend's.
     await page.goto('/brand-kits');
@@ -152,62 +213,6 @@ test.describe('Modo híbrido contra el backend real', () => {
     expect(named.filter((item) => item.workspaceHeader !== active?.id)).toEqual([]);
     expect(seen.filter((item) => item.status >= 400)).toEqual([]);
     expectClean(problems, 'el recorrido híbrido');
-  });
-
-  test('Proyectos: las páginas, los filtros, la búsqueda y los contadores son los del backend', async ({ page, request }) => {
-    const api = await backend(request);
-    const first = await api.projectsPage();
-    const problems = watch(page, { hybrid });
-    const seen = record(page);
-    await signIn(page);
-
-    const summary = (count: number) => page.getByText(new RegExp(`de ${count} proyectos`));
-    const filters = page.getByRole('group', { name: 'Filtrar por estado' });
-    const chip = (name: RegExp, count: number) => expect(filters.getByRole('button', { name })).toHaveText(new RegExp(`\\D${count}$`));
-    await expect(summary(first.count)).toBeVisible();
-    await chip(/Todos/, first.status_counts.all);
-    await chip(/En proceso/, first.status_counts.in_progress);
-    await chip(/Para revisar/, first.status_counts.to_review);
-    await chip(/Listos/, first.status_counts.ready);
-    await chip(/Con error/, first.status_counts.failed);
-    await expect(page.getByRole('table', { name: 'Proyectos del workspace' }).getByRole('row')).toHaveCount(first.results.length + 1);
-
-    // A project being processed with an estimate says how long is left.
-    const estimated = first.results.find((project) => project.status === 'ingesting' && project.eta_seconds);
-    if (estimated) await expect(page.getByRole('row').filter({ hasText: estimated.title }).getByText(/≈ \d+ (min|h)/)).toBeVisible();
-
-    // The filter: the rows and the total change, the chips do not.
-    const failed = await api.projectsPage('?status_group=failed');
-    await filters.getByRole('button', { name: /Con error/ }).click();
-    if (failed.count > 0) {
-      await expect(summary(failed.count)).toBeVisible();
-      await expect(page.getByText(failed.results[0]?.title ?? '').first()).toBeVisible();
-    } else await expect(page.getByText('No hay proyectos en este estado')).toBeVisible();
-    await chip(/Todos/, first.status_counts.all);
-    expect(new URL(page.url()).pathname).toBe('/proyectos');
-    await filters.getByRole('button', { name: /Todos/ }).click();
-    await expect(summary(first.count)).toBeVisible();
-
-    // The next page, when there is one.
-    if (first.next) {
-      await page.getByRole('button', { name: 'Siguiente' }).click();
-      await expect(page.getByText(new RegExp(`^26–\\d+ de ${first.count} proyectos`))).toBeVisible();
-      const second = await api.projectsPage('?page=2');
-      await expect(page.getByText(second.results[0]?.title ?? '').first()).toBeVisible();
-    }
-
-    // The search, whatever the case: the total and the chips follow it.
-    const term = (first.results[0]?.title ?? '').toUpperCase();
-    const found = await api.projectsPage(`?search=${encodeURIComponent(term)}`);
-    expect(found.count).toBeGreaterThan(0);
-    await page.getByRole('searchbox', { name: 'Buscar proyectos por título' }).fill(term);
-    await expect(summary(found.count)).toBeVisible();
-    await chip(/Todos/, found.status_counts.all);
-
-    const lists = answersOf(seen, 'GET', '/api/v1/projects/');
-    expect(lists.length).toBeGreaterThan(3);
-    expect(lists.filter((item) => item.mock !== null || item.status !== 200)).toEqual([]);
-    expectClean(problems, 'la lista de proyectos');
   });
 
   test('un brand kit creado en la app queda guardado en el backend real', async ({ page, request }) => {
