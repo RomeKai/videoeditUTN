@@ -343,6 +343,23 @@ describe('contrato de redes (hueco 10): los mocks como el backend', () => {
     }
   });
 
+  it('conectar es de los planes pagos y pide el email verificado, con el code y el mensaje del backend', async () => {
+    signIn('plan-gratis');
+    const plan = await fail(apiCall(social.connectSocialAccount, { body: { platform: 'YOUTUBE_SHORTS' } }));
+    expect([plan.status, plan.code, plan.message, plan.isPlanLimit]).toEqual([403, 'social_accounts', 'Tu plan no incluye conectar redes. Pasate a un plan pago para conectar las cuentas.', true]);
+    // What is already connected stays: a Gratis workspace still publishes on it and can disconnect it.
+    await expect(apiCall(social.disconnectSocialAccount, { params: { platform: 'TIKTOK' } })).resolves.toBeUndefined();
+
+    signIn('estudio-norte');
+    const db = loadDb();
+    const lucia = db.users.find((item) => item.id === USER_IDS.lucia);
+    if (!lucia) throw new Error('falta Lucía');
+    lucia.is_email_verified = false;
+    saveDb(db);
+    const email = await fail(apiCall(social.connectSocialAccount, { body: { platform: 'YOUTUBE_SHORTS' } }));
+    expect([email.status, email.code, email.message]).toEqual([403, 'email_not_verified', 'Verificá tu email para conectar redes.']);
+  });
+
   it('los límites de cada red son los del backend', async () => {
     const accounts = await apiCall(social.listSocialAccounts);
     expect(accounts.map((account) => [account.platform, account.limits.caption_max_chars, account.limits.hashtags_max, account.limits.max_duration_seconds])).toEqual([

@@ -152,7 +152,7 @@ export function autoRenderSkippedMessage(reason: 'insufficient_funds' | 'plan_li
   };
 }
 
-export type PlanLimitKind = 'duration' | 'resolution' | 'seo' | 'scheduling' | 'crossposting' | 'seats' | 'unknown';
+export type PlanLimitKind = 'duration' | 'resolution' | 'seo' | 'scheduling' | 'crossposting' | 'social' | 'seats' | 'unknown';
 
 /** Which limit a plan message of PricingEngine talks about. */
 function limitFromText(text: string): PlanLimitKind {
@@ -171,6 +171,7 @@ export function planLimitKind(error: unknown): PlanLimitKind {
   const code = error.code;
   if (code === 'duration' || code === 'resolution' || code === 'seo' || code === 'scheduling' || code === 'crossposting') return code;
   if (code === 'seats_exceeded') return 'seats';
+  if (code === 'social_accounts') return 'social';
   return limitFromText(error.message);
 }
 

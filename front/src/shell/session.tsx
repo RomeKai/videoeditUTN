@@ -233,8 +233,16 @@ export interface PlanInfo {
   plan: Plan | null;
   isLoading: boolean;
   /** Feature flags of the plan, false while loading. */
-  allows: (feature: 'scheduling' | 'crossposting' | 'seo') => boolean;
+  allows: (feature: PlanFeature) => boolean;
 }
+
+export type PlanFeature = 'scheduling' | 'crossposting' | 'seo' | 'social';
+const PLAN_FLAG = {
+  scheduling: 'allow_scheduling',
+  crossposting: 'allow_crossposting',
+  seo: 'has_seo_optimization',
+  social: 'allow_social_accounts',
+} as const satisfies Record<PlanFeature, keyof Plan>;
 
 /** Plan of the active workspace (map 1.6). What it does not include is shown locked with <PlanLock>, never hidden. */
 export function usePlan(): PlanInfo {
@@ -245,8 +253,7 @@ export function usePlan(): PlanInfo {
     () => ({
       plan,
       isLoading: subscription.isLoading,
-      allows: (feature) =>
-        plan ? (feature === 'scheduling' ? plan.allow_scheduling : feature === 'crossposting' ? plan.allow_crossposting : plan.has_seo_optimization) : false,
+      allows: (feature) => (plan ? Boolean(plan[PLAN_FLAG[feature]]) : false),
     }),
     [plan, subscription.isLoading],
   );

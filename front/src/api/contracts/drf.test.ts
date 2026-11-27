@@ -353,7 +353,7 @@ describe('errores reales del backend', () => {
 describe('suscripción y compras: respuestas reales del backend (billing_*)', () => {
   it('suscripción y cambio de plan', () => {
     const free = parse(Subscription, real.billing_subscription_free) as Subscription;
-    expect(free.plan.name).toBe('Gratis');
+    expect([free.plan.name, free.plan.allow_social_accounts]).toEqual(['Gratis', false]);
     expect(free.renews_at).toBeNull();
     const checkout = parse(changePlan.response, real.billing_change_plan_checkout) as ReturnType<typeof changePlan.response.parse>;
     expect(checkout.checkout_url).toMatch(/\/dev\/checkout\?compra=.+&volver=/);
@@ -469,6 +469,13 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
     expect((parse(connectSocialAccount.response, real.social_connect) as { connect_url: string }).connect_url).toMatch(/^https:\/\//);
     expect(fieldError(error('social_400_return_url', 'social.connect'), 'return_url')).toBe('La dirección de vuelta tiene que ser de OneCreator.');
     expect(error('social_403_connect', 'social.connect').status).toBe(403);
+    // Connecting is for the paid plans: a plan limit, with the backend's sentence; the email and the cap have their own.
+    const plan = error('social_403_plan', 'social.connect');
+    expect([plan.code, plan.isPlanLimit, planLimitKind(plan), plan.message]).toEqual(['social_accounts', true, 'social', 'Tu plan no incluye conectar redes. Pasate a un plan pago para conectar las cuentas.']);
+    const email = error('social_403_email', 'social.connect');
+    expect([email.code, email.isPlanLimit, email.message]).toEqual(['email_not_verified', false, 'Verificá tu email para conectar redes.']);
+    const cap = error('social_409_profiles_limit', 'social.connect');
+    expect([cap.status, cap.code, cap.message]).toEqual([409, 'social_profiles_limit', 'Por ahora no podemos conectar más espacios a las redes. Escribinos y lo resolvemos.']);
     const down = error('social_503_connect', 'social.connect');
     // A 5xx shows the screen's own sentence (D6: «No pudimos abrir la conexión.»), whatever the body says.
     expect([down.status, down.code, errorMessage(down, 'No pudimos abrir la conexión.')]).toEqual([503, 'provider_unavailable', 'No pudimos abrir la conexión.']);

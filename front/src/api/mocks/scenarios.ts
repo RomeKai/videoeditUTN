@@ -100,7 +100,7 @@ export const SCENARIOS: Scenario[] = [
   {
     id: 'plan-gratis',
     label: 'Plan Gratis',
-    description: 'Estudio Norte en plan Gratis: candados (1080p, 4K, SEO, programar, varias redes), marca de agua, videos de hasta 10 min y 300 tokens.',
+    description: 'Estudio Norte en plan Gratis: candados (1080p, 4K, SEO, programar, varias redes, conectar redes), marca de agua, videos de hasta 10 min y 300 tokens.',
     group: 'Plan',
     options: { plan: 'free', balance: 300 },
     hybrid: true,

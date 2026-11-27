@@ -66,6 +66,7 @@ const plan = (overrides: Partial<Plan>): Plan => ({
   allow_crossposting: true,
   has_seo_optimization: true,
   has_thumbnail_engine: false,
+  allow_social_accounts: true,
   base_discount_rate: 0.1,
   max_members: 10,
   is_active: true,

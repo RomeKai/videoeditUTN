@@ -50,6 +50,7 @@ const LIMIT_TITLE: Record<PlanLimitKind, string> = {
   seo: 'Tu plan no incluye SEO',
   scheduling: 'Tu plan no incluye programar publicaciones',
   crossposting: 'Tu plan permite una sola red por publicación',
+  social: 'Tu plan no incluye conectar redes',
   seats: 'No quedan lugares en tu plan',
   unknown: 'Tu plan no permite esto',
 };
@@ -69,6 +70,8 @@ function allowsMore(kind: PlanLimitKind, current: Plan | null): (plan: Plan) => 
         return plan.allow_scheduling;
       case 'crossposting':
         return plan.allow_crossposting;
+      case 'social':
+        return plan.allow_social_accounts;
       case 'seats':
         return plan.max_members > (current?.max_members ?? 1);
       default:
@@ -89,6 +92,8 @@ function planFeature(kind: PlanLimitKind, plan: Plan): string {
       return plan.allow_scheduling ? 'Programar publicaciones' : 'Solo publicar ahora';
     case 'crossposting':
       return plan.allow_crossposting ? 'Publicar en varias redes' : 'Una red por publicación';
+    case 'social':
+      return plan.allow_social_accounts ? 'Conectar redes sociales' : 'Sin redes conectadas';
     case 'seats':
       return `${plan.max_members} ${plan.max_members === 1 ? 'miembro' : 'miembros'}`;
     default:

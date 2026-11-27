@@ -439,6 +439,14 @@ describe('H3 · Redes sociales', () => {
     expect(await screen.findByRole('dialog', { name: 'Conectar TikTok' })).toBeInTheDocument();
   });
 
+  it('en el plan Gratis no conecta: candado con el plan que lo incluye, y lo conectado se puede desconectar', async () => {
+    renderScreen(<NetworksScreen />, { scenario: 'plan-gratis' });
+    expect(await screen.findByRole('button', { name: 'Desconectar TikTok' })).toBeInTheDocument();
+    expect(await screen.findAllByText(/Disponible en el plan Creador/)).not.toHaveLength(0);
+    expect(screen.queryByRole('button', { name: 'Conectar YouTube' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Reconectar/ })).not.toBeInTheDocument();
+  });
+
   it('no se muestra a un Lector', async () => {
     renderScreen(<NetworksScreen />, { scenario: 'rol-lector' });
     expect(await screen.findByRole('heading', { name: /No tenés acceso a esto/ })).toBeInTheDocument();

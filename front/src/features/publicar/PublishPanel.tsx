@@ -100,8 +100,8 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
 
   const mayPublish = can('post.publish');
   // While the plan loads nothing is shown as locked.
-  const allows = (feature: 'scheduling' | 'crossposting' | 'seo') => planInfo.isLoading || planInfo.allows(feature);
-  const planWith = (field: 'allow_scheduling' | 'allow_crossposting') =>
+  const allows = (feature: 'scheduling' | 'crossposting' | 'seo' | 'social') => planInfo.isLoading || planInfo.allows(feature);
+  const planWith = (field: 'allow_scheduling' | 'allow_crossposting' | 'allow_social_accounts') =>
     [...(plans.data ?? [])].sort((a, b) => a.sort_order - b.sort_order).find((plan) => plan[field])?.name ?? 'Creador';
   const accounts = accountsQuery.data;
   const many = clipIds.length > 1;
@@ -880,12 +880,17 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
                         <Badge tone={badge.tone} dot>
                           {badge.label}
                         </Badge>
-                        {usable ? null : (
+                        {usable ? null : allows('social') ? (
                           <span className={styles.netFix}>
                             <Button size="sm" iconRight="external" aria-label={`${status === 'expired' ? 'Reconectar' : 'Conectar'} ${name}, se abre en otra ventana`} onClick={() => setConnecting(platform)} {...gate('social.manage')}>
                               {status === 'expired' ? 'Reconectar' : 'Conectar'}
                             </Button>
                             <span className={styles.netFixHint}>Se abre en otra ventana.</span>
+                          </span>
+                        ) : (
+                          // Connecting is for the paid plans (`allow_social_accounts`): locked, never hidden (map 1.6).
+                          <span className={styles.netFix}>
+                            <PlanLock plan={planWith('allow_social_accounts')} />
                           </span>
                         )}
                       </div>

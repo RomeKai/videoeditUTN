@@ -43,7 +43,7 @@ function firstCode(value: unknown): string | undefined {
 }
 
 /** Proposed machine-readable codes of a plan 403. */
-export const PLAN_LIMIT_CODES = new Set(['duration', 'resolution', 'seo', 'scheduling', 'crossposting', 'seats_exceeded', 'plan_limit']);
+export const PLAN_LIMIT_CODES = new Set(['duration', 'resolution', 'seo', 'scheduling', 'crossposting', 'social_accounts', 'seats_exceeded', 'plan_limit']);
 /** What PricingEngine raises today (English, no code). */
 export const PLAN_LIMIT_MESSAGE = /exceeds your plan limit|does not support .+ rendering|not allowed in your current plan/i;
 

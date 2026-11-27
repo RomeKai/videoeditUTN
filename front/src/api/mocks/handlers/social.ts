@@ -36,6 +36,9 @@ function isStuck(post: MockPost, now: number): boolean {
 const TIKTOK_PRIVACY_MISSING = 'Elegí quién puede ver el video.';
 const SCHEDULING_DENIED = 'Tu plan no incluye programar publicaciones: publicala ahora o cambiá de plan.';
 const CROSSPOSTING_DENIED = 'Tu plan permite publicar cada clip en una sola red. Para publicarlo en varias, cambiá de plan.';
+/** apps/integrations/social/accounts.py · check_can_connect. */
+const CONNECT_PLAN_DENIED = 'Tu plan no incluye conectar redes. Pasate a un plan pago para conectar las cuentas.';
+const CONNECT_EMAIL_NOT_VERIFIED = 'Verificá tu email para conectar redes.';
 const SEO_FAILURE = /^(seo_|moderation_)|^(content_blocked|generated_content_blocked|capacity_timeout)$/;
 
 /** The 409s of the backend, by what is asked and the status the post is in (`_CONFLICTS`). */
@@ -231,7 +234,7 @@ export const socialHandlers = [
       }),
   })),
 
-  route(contract.connectSocialAccount, ({ body, request, require }) => {
+  route(contract.connectSocialAccount, ({ db, workspace, user, body, request, require }) => {
     require('social.manage');
     // The handlers run in the web app's page: its origin is the backend's FRONTEND_URL.
     const app = typeof location === 'undefined' ? null : location.origin;
@@ -239,6 +242,10 @@ export const socialHandlers = [
     if (body.return_url && app && new URL(body.return_url).origin !== app) {
       throw badRequest({ return_url: ['La dirección de vuelta tiene que ser de OneCreator.'] });
     }
+    // check_can_connect: a paid plan (`allow_social_accounts`; no plan, no limits) and a verified email.
+    const plan = planOf(db, workspace.id);
+    if (plan && !plan.allow_social_accounts) throw new MockHttpError(403, { error: CONNECT_PLAN_DENIED, code: 'social_accounts' });
+    if (!user.is_email_verified) throw new MockHttpError(403, { error: CONNECT_EMAIL_NOT_VERIFIED, code: 'email_not_verified' });
     // The fake authorization window of the network lives in the app (dev route).
     const origin = app ?? (body.return_url ? new URL(body.return_url).origin : (request.headers.get('Origin') ?? 'http://localhost:3000'));
     return { data: { connect_url: `${origin}/dev/conectar-red?red=${body.platform}` } };

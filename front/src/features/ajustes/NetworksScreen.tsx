@@ -3,14 +3,15 @@
 import { useId, useState } from 'react';
 import type { Platform } from '@/api/contracts/common';
 import type { SocialAccount } from '@/api/contracts/social';
-import { useDisconnectSocialAccount, useSocialAccounts } from '@/api/hooks';
+import { useDisconnectSocialAccount, usePlans, useSocialAccounts } from '@/api/hooks';
 import { ConfirmDialog, ConnectNetworkDialog } from '@/dialogs';
 import { cx } from '@/lib/cx';
 import { errorMessage } from '@/lib/error-messages';
 import { LoadError } from '@/shell/LoadError';
 import { RequireRole } from '@/shell/RequireSession';
-import { useSession } from '@/shell/session';
-import { Badge, Button, NETWORKS, NetworkChip, Skeleton, useToast } from '@/ui';
+import { firstPlanWith } from '@/lib/pricing';
+import { usePlan, useSession } from '@/shell/session';
+import { Badge, Button, NETWORKS, NetworkChip, PlanLock, Skeleton, useToast } from '@/ui';
 import styles from './ajustes.module.css';
 
 /** Where each network publishes, when its name does not say it. */
@@ -30,6 +31,12 @@ function Networks() {
   const { workspace } = useSession();
   const accounts = useSocialAccounts();
   const disconnect = useDisconnectSocialAccount();
+  const planInfo = usePlan();
+  const plans = usePlans();
+  // Connecting is for the paid plans (`allow_social_accounts`); what is connected stays and can be disconnected.
+  // Locked only once the plan is known: without it, the backend decides (and D6 shows its answer).
+  const mayConnect = !planInfo.plan || planInfo.allows('social');
+  const planWithIt = firstPlanWith(plans.data ?? [], (plan) => plan.allow_social_accounts)?.name ?? 'Creador';
   const [connecting, setConnecting] = useState<Platform | null>(null);
   const [disconnecting, setDisconnecting] = useState<Platform | null>(null);
   const target = disconnecting ? NETWORKS[disconnecting].shortName : '';
@@ -83,12 +90,13 @@ function Networks() {
                     Sin conectar
                   </Badge>
                 )}
-                {account.status === 'disconnected' ? (
+                {account.status !== 'connected' && !mayConnect ? <PlanLock plan={planWithIt} /> : null}
+                {account.status === 'disconnected' && mayConnect ? (
                   <Button variant="secondary" size="sm" aria-label={`Conectar ${name}`} onClick={() => setConnecting(account.platform)}>
                     Conectar
                   </Button>
                 ) : null}
-                {account.status === 'expired' ? (
+                {account.status === 'expired' && mayConnect ? (
                   <Button variant="secondary" size="sm" iconLeft="retry" aria-label={`Reconectar ${name}`} onClick={() => setConnecting(account.platform)}>
                     Reconectar
                   </Button>
