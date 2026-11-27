@@ -98,6 +98,18 @@ describe('D2 · Revisión de clips', () => {
     expect(screen.getByRole('button', { name: 'Renderizar 5 clips' })).toBeEnabled();
   });
 
+  it('al abrir, el reproductor está en el inicio del clip elegido y el contador lo dice (tiempos del video completo)', async () => {
+    renderScreen(<ReviewScreen projectId={REVIEW} />);
+    const player = await screen.findByRole('group', { name: /^Reproductor:/ });
+    // The clip the review opens on does not start at zero: its start is what "Inicio" shows.
+    const start = (screen.getByRole<HTMLInputElement>('textbox', { name: /Inicio/ }).value.split(',')[0] ?? '');
+    expect(start).toMatch(/^\d\d:\d\d$/);
+    expect(start).not.toBe('00:00');
+    // "Solo el clip": the counter runs from the clip's start to its end, in times of the whole video.
+    expect(player.querySelector('.timecode')).toHaveTextContent(new RegExp(`^${start} / \\d\\d:\\d\\d$`));
+    expect(within(player).getByRole('slider', { name: 'Posición' })).toHaveAttribute('aria-valuetext', start);
+  });
+
   it('incluir y excluir cambia el resumen, también con el teclado', async () => {
     const user = userEvent.setup();
     renderScreen(<ReviewScreen projectId={REVIEW} />);
@@ -344,6 +356,24 @@ describe('D2 · Revisión de clips', () => {
     await user.keyboard(' ');
     expect(selected()).toEqual([]);
     expect(screen.queryByRole('group', { name: 'Acciones para la selección' })).not.toBeInTheDocument();
+  });
+
+  it('con varias palabras seleccionadas con el mouse, Espacio desmarca la enfocada y no mueve el video ni la página', async () => {
+    renderScreen(<ReviewScreen projectId={REVIEW} />);
+    const text = await screen.findByRole('group', { name: /^Texto de la transcripción/ });
+    const selected = () => Array.from(text.querySelectorAll('[role="option"][aria-selected="true"]')).map((word) => Number(word.getAttribute('data-w')));
+    const player = screen.getByRole('group', { name: /^Reproductor:/ });
+    const position = () => within(player).getByRole('slider', { name: 'Posición' }).getAttribute('aria-valuetext');
+    const before = position();
+    selectWords(3, 6);
+    await waitFor(() => expect(selected()).toEqual([3, 4, 5, 6]));
+    const last = text.querySelector('[data-w="6"]') as HTMLElement;
+    last.focus();
+    // keyDown answers false when the key was taken (preventDefault): the page does not scroll.
+    expect(fireEvent.keyDown(last, { key: ' ' })).toBe(false);
+    expect(selected()).toEqual([3, 4, 5]);
+    expect(position()).toBe(before);
+    expect(within(player).queryByRole('button', { name: 'Pausar' })).not.toBeInTheDocument();
   });
 
   it('toggleWord mantiene la selección en un solo tramo', () => {
