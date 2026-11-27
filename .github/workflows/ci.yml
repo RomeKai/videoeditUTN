@@ -73,9 +73,6 @@ jobs:
             back/requirements/constraints-ci.txt
 
       - name: Install system dependencies
-        # Normally about a minute: a stalled download fails here instead of
-        # using up the whole job's timeout.
-        timeout-minutes: 10
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
