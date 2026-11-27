@@ -74,6 +74,21 @@ class RenderTimesHelpersTests(SimpleTestCase):
             self.assertIs(_metadata_with_render_finished(metadata, now), metadata, started)
         self.assertIsNone(_metadata_with_render_finished(None, now))
 
+    def test_a_start_that_already_has_its_end_is_of_an_earlier_render_and_measures_nothing(self):
+        # Every start deletes the end of the render before: with an end, the start is stale.
+        now = timezone.now()
+        week_ago = now - timedelta(days=7)
+        metadata = {
+            "stage_started_at": {RENDER: week_ago.isoformat()},
+            "stage_durations": {RENDER: 0.012},
+            "stage_finished_at": {RENDER: (week_ago + timedelta(seconds=0.012)).isoformat()},
+        }
+
+        self.assertIs(_metadata_with_render_finished(metadata, now), metadata)
+        # An end alone (no duration) is enough to know.
+        del metadata["stage_durations"]
+        self.assertIs(_metadata_with_render_finished(metadata, now), metadata)
+
 
 class ApprovedRenderTimesTests(CapturedTaskFailures, ApprovalHarness, APITestCase):
     def approve_two(self):
@@ -233,6 +248,34 @@ class PaidRenderTimesTests(CapturedTaskFailures, ClipActionsHarness, APITestCase
         response, _delay = self.post(project_url(project, "rerender"))
         self.assertEqual(response.status_code, 202, response.content[:300])
         self.assert_new_render_running(project)
+
+    def test_a_render_reserved_before_the_starts_were_written_is_not_measured_from_an_old_dispatch(self):
+        # What the code before left on an auto-rendered project: the start of its dispatch, days
+        # ago, with the milliseconds the dispatch took. A clip render reserved by that code (it
+        # wrote no start) closes with this one.
+        project, (clip, _other) = self.finished((DONE, DONE))
+        week_ago = timezone.now() - timedelta(days=7)
+        old = {
+            "stage_started_at": {RENDER: week_ago.isoformat()},
+            "stage_durations": {RENDER: 0.012},
+            "stage_finished_at": {RENDER: (week_ago + timedelta(seconds=0.012)).isoformat()},
+        }
+        with patch("apps.videos.views_clips._metadata_with_render_started", side_effect=lambda metadata: metadata, create=True), \
+                patch("apps.videos.tasks.ingestion._metadata_with_render_started", side_effect=lambda metadata, now=None: metadata):
+            VideoProject.objects.filter(pk=project.pk).update(metadata={**project.metadata, **old})
+            response, _delay = self.post(clip_url(clip, "render"))
+        self.assertEqual(response.status_code, 202, response.content[:300])
+        project.refresh_from_db()
+        self.assertEqual(project.metadata["stage_started_at"], old["stage_started_at"])  # as that code left it
+
+        with patch(DELETE_OBJECT):
+            self.render_with(clip)
+
+        project.refresh_from_db()
+        self.assertEqual(project.pipeline_stage, PipelineStage.COMPLETED)
+        # Never the week since that dispatch.
+        self.assertEqual(project.metadata["stage_durations"], old["stage_durations"])
+        self.assertEqual(project.metadata["stage_finished_at"], old["stage_finished_at"])
 
     def test_a_render_that_fails_and_gives_the_clip_back_is_closed_with_its_own_times(self):
         project, (clip, _other) = self.rendered_before()

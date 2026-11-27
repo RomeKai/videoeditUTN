@@ -314,11 +314,20 @@ def _metadata_with_render_finished(metadata, now=None):
     (``stage_finished_at``), as ``_record_stage_duration`` writes them for the
     other stages. Without a start that can be read (a render dispatched before
     the start was recorded), or with one in the future, ``metadata`` comes
-    back as it is: a duration is never made up. Pure, like
-    ``_metadata_with_render_started``.
+    back as it is: a duration is never made up. The same when the render
+    already has its end (``stage_finished_at``): every start deletes it
+    (``_metadata_with_render_started``), so a start that still has one is of
+    an earlier render. That is a render reserved before the starts were
+    written, over a project whose auto-render left a start days ago: measured
+    from it, it would last days. Pure, like ``_metadata_with_render_started``.
     """
     now = now or timezone.now()
-    started = metadata.get('stage_started_at') if isinstance(metadata, dict) else None
+    if not isinstance(metadata, dict):
+        return metadata
+    finished = metadata.get('stage_finished_at')
+    if isinstance(finished, dict) and RENDER_STAGE in finished:
+        return metadata
+    started = metadata.get('stage_started_at')
     value = started.get(RENDER_STAGE) if isinstance(started, dict) else None
     try:
         started_at = datetime.fromisoformat(value) if isinstance(value, str) else None
