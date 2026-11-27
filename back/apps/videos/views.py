@@ -456,6 +456,11 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         outcome = {}
         try:
             with transaction.atomic():
+                # The project's row first, then the wallet (reserve_funds): the order of an
+                # approval, a paid render and a workspace delete. The other way round, a
+                # delete that already holds this row and waits for the wallet deadlocks with
+                # this reservation, whose Transaction row needs this one (its foreign key).
+                VideoProject.objects.select_for_update().filter(pk=project.pk).values_list('pk', flat=True).first()
                 # Asegurar que el workspace tenga billetera (autocuración)
                 from apps.payments.models import Wallet
                 wallet, _ = Wallet.objects.get_or_create(workspace=workspace)

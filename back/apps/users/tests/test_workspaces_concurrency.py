@@ -3,21 +3,28 @@ Two requests that change the owner of one workspace at the same time run one
 after the other: require_workspace_role(lock=True) takes the workspace's row
 lock before it reads the role, so the second one sees what the first one did.
 A token purchase, or a plan change, and a delete of its workspace also run
-one after the other.
+one after the other. So do a brand kit made the default and a delete (both
+lock the workspace row first), and a project created while its workspace is
+deleted: the creation's reservation locks its project before the wallet, the
+order of the delete, so they never deadlock.
 """
+import tempfile
 import threading
 import time
 from decimal import Decimal
 from unittest import mock
 
-from django.db import connection
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection, transaction
 from django.test import override_settings
 from rest_framework.test import APIClient, APITransactionTestCase
 
-from apps.payments.models import Payment, SubscriptionPlan
+from apps.payments.models import Payment, SubscriptionPlan, Transaction, Wallet
 from apps.payments.services.payment_providers import SimulatedProvider
 from apps.users.models import User, Workspace, WorkspaceMember
 from apps.users.serializers_workspaces import TransferWorkspaceSerializer
+from apps.videos.models import BrandKit, ScheduledPost, VideoClip, VideoProject
+from apps.videos.services.media_validation import MediaInfo
 
 
 class ConcurrentOwnerChangesTests(APITransactionTestCase):
@@ -309,3 +316,219 @@ class ConcurrentPurchaseAndDeleteTests(APITransactionTestCase):
 
         assert answers == {"delete": (204, None), "change": 404}
         assert not Payment.objects.exists()
+
+
+def _waiting_for_a_lock(count=1, timeout=10):
+    """Whether ``count`` connections of this test database wait for a row lock, within ``timeout`` seconds."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'"
+            )
+            if cursor.fetchone()[0] >= count:
+                return True
+        time.sleep(0.05)
+    return False
+
+
+class DeleteHarness:
+    def setUp(self):
+        super().setUp()
+        self.owner = User.objects.create_user(username="duenia", email="duenia@test.com", password="password")
+        self.workspace = self.owner.owned_workspaces.get()
+        # Another workspace of the owner's, so the delete is not refused as their last one.
+        Workspace.objects.create(name="Otro", owner=self.owner)
+
+    def _api(self):
+        api = APIClient()
+        api.force_authenticate(user=self.owner)
+        api.credentials(HTTP_X_WORKSPACE_ID=str(self.workspace.pk))
+        return api
+
+    def _delete(self, answers):
+        try:
+            response = self._api().delete(
+                f"/api/v1/workspaces/{self.workspace.pk}/", {"confirm_name": self.workspace.name}, format="json",
+            )
+            answers["delete"] = (response.status_code, response.json().get("code") if response.status_code == 409 else None)
+        except Exception as exc:  # what the view did not answer: a deadlock is an OperationalError
+            answers["delete"] = type(exc).__name__
+        finally:
+            connection.close()
+
+
+class ConcurrentBrandKitAndDeleteTests(DeleteHarness, APITransactionTestCase):
+    """
+    The delete takes the brand kits with it (rows of its cascade, before the
+    workspace's own), and a kit made the default locks the workspace row and
+    then the kit's. The delete locks the workspace row first too
+    (require_workspace_role with lock=True): whichever gets there first goes
+    on, the other one waits for it. Never a deadlock.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.kit = BrandKit.objects.create(workspace=self.workspace, user=self.owner, name="Marca")
+
+    def _make_default(self, answers):
+        try:
+            answers["kit"] = self._api().patch(
+                f"/api/v1/brand-kits/{self.kit.pk}/", {"is_default": True}, format="json",
+            ).status_code
+        except Exception as exc:
+            answers["kit"] = type(exc).__name__
+        finally:
+            connection.close()
+
+    def test_a_default_kit_that_comes_while_the_delete_holds_the_workspace_finds_it_gone(self):
+        from apps.users import views_workspaces
+
+        delete_locked = threading.Event()
+        release = threading.Event()
+        count = views_workspaces._other_workspaces
+
+        def hold_the_lock(user, workspace):
+            # The workspace row is locked here; the kits are deleted later, with the cascade.
+            delete_locked.set()
+            release.wait(timeout=10)
+            return count(user, workspace)
+
+        answers = {}
+        with mock.patch.object(views_workspaces, "_other_workspaces", hold_the_lock):
+            delete = threading.Thread(target=self._delete, args=(answers,))
+            delete.start()
+            assert delete_locked.wait(timeout=10)
+            kit = threading.Thread(target=self._make_default, args=(answers,))
+            kit.start()
+            # The kit waits for the workspace row before it locks its own.
+            assert _waiting_for_a_lock()
+            release.set()
+            delete.join(timeout=30)
+            kit.join(timeout=30)
+
+        assert answers == {"delete": (204, None), "kit": 404}
+        assert not BrandKit.objects.exists()
+
+    def test_a_delete_that_comes_while_a_kit_is_made_the_default_waits_for_it(self):
+        from apps.videos.services import brand_kit_service
+
+        kit_locked = threading.Event()
+        release = threading.Event()
+        demote = brand_kit_service.demote_other_defaults
+
+        def hold_the_lock(workspace_id, keep_pk=None):
+            # The kit's request holds the workspace row and the kit's.
+            kit_locked.set()
+            release.wait(timeout=10)
+            return demote(workspace_id, keep_pk=keep_pk)
+
+        answers = {}
+        with mock.patch.object(brand_kit_service, "demote_other_defaults", hold_the_lock):
+            kit = threading.Thread(target=self._make_default, args=(answers,))
+            kit.start()
+            assert kit_locked.wait(timeout=10)
+            delete = threading.Thread(target=self._delete, args=(answers,))
+            delete.start()
+            assert _waiting_for_a_lock()
+            release.set()
+            kit.join(timeout=30)
+            delete.join(timeout=30)
+
+        assert answers == {"kit": 200, "delete": (204, None)}
+        assert not Workspace.objects.filter(pk=self.workspace.pk).exists()
+
+
+class ConcurrentCreationAndDeleteTests(DeleteHarness, APITransactionTestCase):
+    """
+    A project is created while the owner deletes its workspace. The delete
+    locks the workspace, the projects and then the wallet; the creation's
+    reservation used to lock the wallet (reserve_funds) and then wait for its
+    project's row (the Transaction row's foreign key), so a delete that held
+    that row and waited for the wallet deadlocked with it, and Postgres
+    aborted one of the two. Now the reservation locks its project first, like
+    an approval or a paid render: it waits for the delete, which sees the new
+    project and refuses (project_processing), and then reserves.
+    """
+
+    def setUp(self):
+        super().setUp()
+        Wallet.objects.filter(workspace=self.workspace).update(available_balance=Decimal("1000"), reserved_balance=0)
+        done = VideoProject.objects.create(
+            workspace=self.workspace, uploaded_by=self.owner, title="Listo", status=VideoProject.Status.COMPLETED,
+        )
+        clip = VideoClip.objects.create(project=done, title="c", start_time=0, end_time=5)
+        # A draft post: what the delete locks after the projects and before the wallet.
+        self.post = ScheduledPost.objects.create(
+            video_clip=clip, platform=ScheduledPost.Platform.TIKTOK, publish_at="2030-01-01T00:00:00Z",
+            status=ScheduledPost.Status.DRAFT,
+        )
+        media = tempfile.TemporaryDirectory()
+        self.addCleanup(media.cleanup)
+        media_root = override_settings(MEDIA_ROOT=media.name)
+        media_root.enable()
+        self.addCleanup(media_root.disable)
+        probed = MediaInfo(duration_s=100.0, width=1920, height=1080, mime="video/mp4")
+        for patcher in (
+            mock.patch("apps.videos.services.media_validation.validate_upload", return_value=probed),
+            mock.patch("apps.videos.views.process_initial_ingestion.delay"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_project_created_while_its_workspace_is_deleted_never_deadlocks(self):
+        from apps.videos.services import render_pricing
+
+        post_locked, release_post = threading.Event(), threading.Event()
+        saved, go = threading.Event(), threading.Event()
+        price = render_pricing.price_new_project
+
+        def hold_the_post():
+            try:
+                with transaction.atomic():
+                    ScheduledPost.objects.select_for_update().filter(pk=self.post.pk).first()
+                    post_locked.set()
+                    release_post.wait(timeout=20)
+            finally:
+                connection.close()
+
+        def priced_after_the_delete_starts(*args, **kwargs):
+            # The project row is saved and committed; its reservation comes next.
+            saved.set()
+            go.wait(timeout=20)
+            return price(*args, **kwargs)
+
+        answers = {}
+
+        def create():
+            try:
+                answers["create"] = self._api().post("/api/v1/projects/", {
+                    "title": "Nuevo", "source_file": SimpleUploadedFile("v.mp4", b"0" * 10, content_type="video/mp4"),
+                }, format="multipart").status_code
+            except Exception as exc:
+                answers["create"] = type(exc).__name__
+            finally:
+                connection.close()
+
+        with mock.patch.object(render_pricing, "price_new_project", priced_after_the_delete_starts):
+            holder = threading.Thread(target=hold_the_post)
+            holder.start()
+            assert post_locked.wait(timeout=10)
+            creation = threading.Thread(target=create)
+            creation.start()
+            assert saved.wait(timeout=10)
+            delete = threading.Thread(target=self._delete, args=(answers,))
+            delete.start()
+            # The delete holds every project of the workspace, the new one included, and waits for the post.
+            assert _waiting_for_a_lock(1)
+            go.set()
+            # The reservation waits for the delete too: for its project's row, holding nothing the delete needs.
+            assert _waiting_for_a_lock(2)
+            release_post.set()
+            for thread in (holder, delete, creation):
+                thread.join(timeout=30)
+
+        assert answers == {"delete": (409, "project_processing"), "create": 201}
+        project = VideoProject.objects.get(workspace=self.workspace, title="Nuevo")
+        assert Transaction.objects.filter(project=project, status=Transaction.Status.RESERVED).count() == 1
+        assert Workspace.objects.filter(pk=self.workspace.pk).exists()
