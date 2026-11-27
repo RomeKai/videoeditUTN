@@ -142,7 +142,7 @@ export const duplicateBrandKit = defineEndpoint({
   path: '/api/v1/brand-kits/:id/duplicate/',
   // Fonts, logo and videos are stored (or copied) while the request waits.
   timeoutMs: SLOW_REQUEST_TIMEOUT_MS,
-  summary: 'Copia un brand kit con sus archivos ("Copia de …"). La copia nunca es default.',
+  summary: 'Copia un brand kit con sus archivos ("Copia de …", "Copia 2 de …"). La copia nunca es default.',
   response: BrandKit,
   successStatus: 201,
   errors: [
@@ -153,7 +153,7 @@ export const duplicateBrandKit = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views.py · BrandKitViewSet.duplicate + back/apps/videos/services/brand_kit_service.py · duplicate_brand_kit',
-    note: 'Sin cuerpo. La copia queda en el workspace activo, a nombre de quien la pide, como «Copia de {nombre}» (cortado a 100 caracteres; el nombre no es único, así que duplicar dos veces da dos kits con el mismo nombre). Copia todos los campos y cada archivo (fuentes, logo, intro, outro) a un nombre nuevo del almacenamiento: los dos kits no comparten archivos. Nunca es default.',
+    note: 'Sin cuerpo. La copia queda en el workspace activo, a nombre de quien la pide, como «Copia de {nombre}»; si el workspace ya tiene ese nombre, «Copia 2 de {nombre}», «Copia 3 de {nombre}»… (cortado a 100 caracteres). Copia todos los campos y cada archivo (fuentes, logo, intro, outro) a la carpeta del kit nuevo con el mismo nombre de archivo (`assets/logos/{id del kit}/logo.png`): los dos kits no comparten archivos. Nunca es default.',
   },
   screens: ['F1'],
 });

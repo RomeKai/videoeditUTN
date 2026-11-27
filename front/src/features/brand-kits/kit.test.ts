@@ -7,6 +7,7 @@ import {
   describeChanges,
   draftFrom,
   fileName,
+  storedFileName,
   fontLabel,
   loadableUrl,
   typedHex,
@@ -51,6 +52,22 @@ describe('archivos', () => {
     expect(fontLabel('/media/assets/fonts/InterTight-Bold.ttf')).toBe('Inter Tight');
     expect(fontLabel('/media/assets/fonts/Inter-Bold.ttf')).toBe('Inter');
     expect(fontLabel(null)).toBe('');
+  });
+
+  it('el sufijo que agrega el almacenamiento no se muestra', () => {
+    expect(storedFileName('/media/assets/logos/logo_vCHttht.png')).toBe('logo.png');
+    expect(storedFileName('http://localhost:8000/media/assets/videos/intro_a1B2c3D.mp4?v=1')).toBe('intro.mp4');
+    expect(fontLabel('/media/assets/fonts/fuente_ZxKsE0r.ttf')).toBe('fuente');
+    expect(fontLabel('/media/assets/fonts/InterTight-Bold_a1B2c3D.ttf')).toBe('Inter Tight');
+    // Seven letters that are a word are part of the name.
+    expect(storedFileName('/media/assets/fonts/Inter_Regular.ttf')).toBe('Inter_Regular.ttf');
+    expect(storedFileName('/media/assets/fonts/open_display.otf')).toBe('open_display.otf');
+    expect(storedFileName('/media/assets/logos/LOGO_PRIMARY.png')).toBe('LOGO_PRIMARY.png');
+    expect(storedFileName('/media/assets/logos/logo_2024111.png')).toBe('logo_2024111.png');
+    expect(fontLabel('/media/assets/fonts/Inter_Regular.ttf')).toBe('Inter');
+    // The folder of the kit is not the name.
+    expect(storedFileName('/media/assets/logos/c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a77/logo.png')).toBe('logo.png');
+    expect(storedFileName(null)).toBe('');
   });
 
   it('solo carga direcciones reales: las rutas de los mocks no existen', () => {

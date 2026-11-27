@@ -635,6 +635,10 @@ describe('mocks', () => {
     const copy = await apiCall(brandKits.duplicateBrandKit, { params: { id: other.id } });
     expect(copy.name).toBe(`Copia de ${other.name}`);
     expect(copy.is_default).toBe(false);
+    // Later copies are numbered.
+    const second = await apiCall(brandKits.duplicateBrandKit, { params: { id: other.id } });
+    expect(second.name).toBe(`Copia 2 de ${other.name}`);
+    await apiCall(brandKits.deleteBrandKit, { params: { id: second.id } });
     // As the backend: every file of the copy is its own (another name), and the rest is the same.
     const withFiles = kits.find((kit) => kit.watermark_logo && kit.primary_font);
     if (!withFiles) throw new Error('falta un kit con archivos');
@@ -643,8 +647,9 @@ describe('mocks', () => {
       if (withFiles[field] === null) expect(twin[field]).toBeNull();
       else {
         expect(twin[field]).not.toBe(withFiles[field]);
-        expect(twin[field]?.split('.').pop()).toBe(withFiles[field]?.split('.').pop());
-        expect(twin[field]?.split('/').slice(0, -1)).toEqual(withFiles[field]?.split('/').slice(0, -1));
+        // The folder of the copy, the same file name: no storage suffix.
+        expect(twin[field]?.split('/').slice(0, -1)).toEqual([...(withFiles[field]?.split('/').slice(0, -1) ?? []), twin.id]);
+        expect(twin[field]?.split('/').pop()).toBe(withFiles[field]?.split('/').pop());
       }
     }
     expect({ ...twin, id: '', name: '', user: null, created_at: '', is_default: false, primary_font: null, secondary_font: null, watermark_logo: null, intro_video: null, outro_video: null }).toEqual({

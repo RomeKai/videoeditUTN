@@ -560,7 +560,7 @@ Otras respuestas:
 - **Qué muestra:** tarjetas con los colores, el logo y el nombre de cada kit, y una marca "Por defecto".
 - **Acciones:** crear, duplicar, marcar como default y borrar.
 - **Vacío:** "Creá tu brand kit para que todos tus clips salgan con tu marca".
-- **API:** ✅ `GET/POST/PATCH/DELETE /api/v1/brand-kits/` y `POST /api/v1/brand-kits/:id/duplicate/` (copia el kit con sus archivos como «Copia de …»; la copia nunca es default).
+- **API:** ✅ `GET/POST/PATCH/DELETE /api/v1/brand-kits/` y `POST /api/v1/brand-kits/:id/duplicate/` (copia el kit con sus archivos como «Copia de …», y desde la segunda «Copia 2 de …», «Copia 3 de …»; la copia nunca es default).
 
 #### F2. Editar brand kit — `/brand-kits/:id`
 - **Campos:**

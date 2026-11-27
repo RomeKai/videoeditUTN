@@ -82,7 +82,8 @@ describe('F2 · Editar brand kit', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Copia de Estudio Norte' })).toBeInTheDocument();
     expect(screen.queryByText('Por defecto')).not.toBeInTheDocument();
     expect(screen.getByRole('switch', { name: 'Usar por defecto' })).not.toBeChecked();
-    expect(within(form).getByText('Inter_a1B2c3D.ttf')).toBeInTheDocument();
+    // The copy's file is in its own folder, with the name of the original.
+    expect(within(form).getByText('Inter.ttf')).toBeInTheDocument();
     expect(saveBar()).not.toBeInTheDocument();
 
     // Marking it default sends only that: the backend unmarks the previous one.

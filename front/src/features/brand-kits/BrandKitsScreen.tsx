@@ -12,7 +12,7 @@ import { usePermissions } from '@/shell/session';
 import { Badge, Button, Card, DropdownMenu, Icon, IconButton, Page, PageHead, Skeleton, Tooltip, thumbHue, useToast, type MenuItem } from '@/ui';
 import styles from './BrandKits.module.css';
 import { KitPreview, LogoMark } from './KitPreview';
-import { fileName, fontLabel, kitColor } from './kit';
+import { fontLabel, kitColor, storedFileName } from './kit';
 
 const INTRO = 'Colores, fuentes y logo para tus clips. El kit por defecto se aplica a los proyectos nuevos; podés elegir otro al crear cada proyecto.';
 
@@ -93,7 +93,7 @@ function KitCard({ kit, onDelete }: { kit: BrandKit; onDelete: (kit: BrandKit) =
               <LogoMark name={kit.name} src={kit.watermark_logo} colors={colors} />
               <span className={styles.atxt}>
                 <span className={`t-small ${styles.strong}`}>Logo</span>
-                <span className="t-label subtle">{fileName(kit.watermark_logo)}</span>
+                <span className="t-label subtle">{storedFileName(kit.watermark_logo)}</span>
               </span>
             </div>
           ) : (

@@ -75,9 +75,21 @@ export function fileName(url: string | null | undefined): string {
   }
 }
 
-/** Readable family for a font file: "InterTight-Bold.ttf" → "Inter Tight". */
+/** A word as people write them in a file name: "bold", "Regular", "VF", "2024". A storage suffix is none of these. */
+const WORD = /^([A-Z]?[a-z]+|[A-Z]+|\d+)$/;
+
+/**
+ * The name a stored file was uploaded with. Files saved before each kit had its folder got a
+ * suffix from the storage when the name was taken (Django: "_" and 7 random letters and digits):
+ * "logo_vCHttht.png" → "logo.png". A real word in that place stays: "Inter_Regular.ttf".
+ */
+export function storedFileName(url: string | null | undefined): string {
+  return fileName(url).replace(/_([A-Za-z0-9]{7})(\.[^.]+)?$/, (match, suffix: string, extension: string = '') => (WORD.test(suffix) ? match : extension));
+}
+
+/** Readable family for a font file: "InterTight-Bold.ttf" → "Inter Tight". A storage suffix is not part of it. */
 export function fontLabel(url: string | null | undefined): string {
-  const base = fileName(url).replace(/\.(ttf|otf)$/i, '');
+  const base = storedFileName(url).replace(/\.(ttf|otf)$/i, '');
   if (!base) return '';
   const family = base.replace(/[-_ ](thin|extralight|light|regular|medium|semibold|bold|extrabold|black|italic|variable|vf)+$/i, '');
   return family
