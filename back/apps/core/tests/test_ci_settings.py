@@ -177,3 +177,20 @@ def test_ci_database_sessions_give_up_on_a_lock_after_a_minute():
             "SELECT EXTRACT(EPOCH FROM current_setting('lock_timeout')::interval) * 1000"
         )
         assert int(cursor.fetchone()[0]) == expected_ms > 0
+
+
+
+def test_ci_hashes_passwords_with_the_fast_hasher():
+    """The suite hashes thousands of passwords: the CI settings make each one cheap."""
+    from django.contrib.auth.hashers import get_hasher
+
+    if os.environ.get("DJANGO_SETTINGS_MODULE") != "backend.settings.ci":
+        pytest.skip("only the CI settings use the fast hasher")
+
+    assert get_hasher().algorithm == "md5"
+
+
+def test_the_real_settings_keep_djangos_hasher():
+    """base.py (dev and prod) never sets the fast one."""
+    assert "PASSWORD_HASHERS" not in (BACKEND_ROOT / "backend" / "settings" / "base.py").read_text()
+    assert "PASSWORD_HASHERS" not in (BACKEND_ROOT / "backend" / "settings" / "prod.py").read_text()

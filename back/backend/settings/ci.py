@@ -45,6 +45,13 @@ DATABASES["default"]["OPTIONS"]["options"] = (
 
 DEBUG = False
 SECRET_KEY = "ci-only-not-a-secret"
+
+# Every user the tests create and every login hashes a password: with
+# Django's PBKDF2 (a million iterations) that is a quarter of a second each,
+# thousands of times in the suite. The tests check what the code does with a
+# password, never how strong its hash is, so CI uses the fast one. Never
+# outside the tests: base.py keeps Django's default.
+PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 ALLOWED_HOSTS = ["localhost", "127.0.0.1", "testserver"]
 
 USE_R2 = False
