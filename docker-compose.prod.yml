@@ -11,7 +11,8 @@
 #         1 MB para el resto del formulario (nginx `client_max_body_size 2049m`; Caddy
 #         `request_body { max_size 2049MiB }` con un matcher de esas rutas);
 #       - /api/v1/brand-kits/ y /api/v1/brand-kits/<id>/: 113m;
-#       - todo lo demás: MAX_REQUEST_BYTES (5m).
+#       - todo lo demás: MAX_REQUEST_BYTES (5m), también /admin/ a propósito: un tope más grande ahí deja
+#         que cualquiera, sin sesión, haga guardar en disco esa cantidad (el chequeo de CSRF lee el cuerpo).
 #     gunicorn corre workers sync con --timeout 120: un worker que pasa 120 s con un pedido se
 #     reinicia, también mientras recibe una subida lenta. nginx guarda el cuerpo entero antes de
 #     pasarlo (proxy_request_buffering on, el default), así gunicorn lo recibe en segundos. Caddy no:

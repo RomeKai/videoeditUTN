@@ -344,6 +344,8 @@ class WorkspaceDetailView(APIView):
             # in pk order, and the wallet after them (reserve_funds: project, then
             # wallet): an approval, a paid render or a creation's reservation that starts
             # meanwhile waits for this delete, or this delete for it.
+            # The rule that keeps this safe, for any change to come: nothing locks the
+            # workspace's row and then a project's in the same transaction.
             projects = list(
                 VideoProject.objects.select_for_update()
                 .filter(workspace_id=workspace_pk)
