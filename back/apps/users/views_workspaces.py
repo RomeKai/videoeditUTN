@@ -7,7 +7,7 @@ The workspace comes in the PATH, so the role is checked in that workspace
 `X-Workspace-Id`: a 404 for anyone who neither owns it nor is an ACTIVE member,
 a 403 with only `detail` for a role the ROLE_MATRIX leaves out.
 
-Invitations (create, resend, accept) are not here.
+Invitations (create, resend, read, accept) are in views_invitations.
 """
 import logging
 import uuid
@@ -135,15 +135,20 @@ def _workspace_payload(workspace, role):
 
 
 def _member_payload(member, workspace):
-    user = member.user
+    """
+    A pending invitation never carries `user`, even when its email has an
+    account: whoever invites an address must not learn whose it is.
+    """
+    user = member.user if member.status == ACTIVE else None
+    inviter = member.invited_by
     return {
         'id': member.pk,
-        'user': {'id': user.pk, 'name': _full_name(user), 'email': user.email},
-        'email': user.email,
-        'role': OWNER if member.user_id == workspace.owner_id else member.role,
+        'user': {'id': user.pk, 'name': _full_name(user), 'email': user.email} if user is not None else None,
+        'email': user.email if user is not None else (member.invited_email or member.user.email),
+        'role': OWNER if user is not None and member.user_id == workspace.owner_id else member.role,
         'status': member.status,
         'joined_at': member.joined_at,
-        'invited_by': None,
+        'invited_by': {'id': inviter.pk, 'name': _full_name(inviter)} if inviter is not None else None,
     }
 
 
@@ -471,7 +476,7 @@ class WorkspaceMembersView(APIView):
         active = require_workspace_role(request.user, workspace_id, 'members.manage')
         workspace = active.workspace
         members = list(
-            WorkspaceMember.objects.filter(workspace=workspace).select_related('user').order_by('joined_at', 'pk')
+            WorkspaceMember.objects.filter(workspace=workspace).select_related('user', 'invited_by').order_by('joined_at', 'pk')
         )
         plan = workspace.subscription_plan
         return Response(MembersSerializer({
@@ -507,7 +512,7 @@ class WorkspaceMemberView(APIView):
                 raise ValidationError({'role': [OWNER_ROLE_FIXED]})
             member.role = serializer.validated_data['role']
             member.save(update_fields=['role'])
-        member = WorkspaceMember.objects.select_related('user').get(pk=member.pk)
+        member = WorkspaceMember.objects.select_related('user', 'invited_by').get(pk=member.pk)
         return Response(MemberSerializer(_member_payload(member, workspace)).data)
 
     @extend_schema(

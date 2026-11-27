@@ -34,6 +34,11 @@ function seats(db: MockDb, workspaceId: string) {
 
 const isAdmin = (role: string) => role === 'owner' || role === 'admin';
 
+// back/apps/users/views_invitations.py: one answer for every link that does not open a pending invitation.
+const INVITATION_NOT_FOUND = 'Esta invitación no existe o ya no sirve.';
+const invitationGone = () =>
+  new MockHttpError(410, { error: 'La invitación venció, ya se usó o se canceló. Pedile a quien te invitó que te mande una nueva.', code: 'invitation_invalid' });
+
 export const workspacesHandlers = [
   route(contract.listWorkspaces, ({ db, user }) => ({
     data: db.workspaces
@@ -184,6 +189,7 @@ export const workspacesHandlers = [
     if (!isAdmin(role)) throw forbidden();
     const info = seats(db, workspace.id);
     const emails = [...new Set(body.emails.map((email) => email.toLowerCase()))];
+    if (emails.length > 10) throw badRequest({ emails: ['Podés invitar hasta 10 emails por vez.'] });
     const repeated = emails.find((email) => info.members.some((member) => member.email.toLowerCase() === email));
     if (repeated) throw badRequest({ emails: [`${repeated} ya es miembro o tiene una invitación pendiente.`] });
     // Like check_seat_limit: while a downgrade waits, the seats of the smaller plan count.
@@ -216,7 +222,8 @@ export const workspacesHandlers = [
       const member = {
         id: newId(),
         workspace: workspace.id,
-        user: existing?.id ?? null,
+        // Like the backend: a pending row never says whose account the email is.
+        user: null,
         email,
         role: body.role,
         status: 'pending' as const,
@@ -233,33 +240,60 @@ export const workspacesHandlers = [
 
   route(contract.resendInvitation, ({ db, user, params }) => {
     const { workspace, role } = workspaceFor(db, params.id, user.id);
-    if (!isAdmin(role)) throw forbidden();
+    if (!isAdmin(role)) throw adminsOnly();
     const member = db.members.find((item) => item.id === params.memberId && item.workspace === workspace.id && item.status === 'pending');
     if (!member) throw notFound('La invitación ya no está pendiente.');
+    // A new link: the one sent before stops working.
+    const previous = db.invitations.find((item) => item.member === member.id);
+    db.invitations = db.invitations.filter((item) => item.member !== member.id);
+    member.token = newId();
+    db.invitations.push({
+      token: member.token,
+      member: member.id,
+      workspace_id: workspace.id,
+      workspace_name: workspace.name,
+      inviter_name: previous?.inviter_name ?? user.name,
+      role: member.role,
+      email: member.email,
+      status: 'pending',
+      has_account: db.users.some((item) => item.email.toLowerCase() === member.email.toLowerCase()),
+    });
     return { data: undefined };
   }),
 
-  route(contract.getInvitation, ({ db, params }) => {
-    const invitation = db.invitations.find((item) => item.token === params.token);
-    if (!invitation) throw notFound('Esta invitación no existe.');
-    const { token, member, ...preview } = invitation;
+  route(contract.getInvitation, ({ db, body }) => {
+    const invitation = db.invitations.find((item) => item.token === body.token);
+    // Like the backend: expired, used and unknown links are the same 404.
+    if (!invitation || invitation.status !== 'pending') throw notFound(INVITATION_NOT_FOUND);
+    const { token, member, status, ...preview } = invitation;
     void token;
     void member;
-    return { data: preview };
+    void status;
+    return { data: { ...preview, status: 'pending' as const } };
   }),
 
-  route(contract.acceptInvitation, ({ db, params, body, maybeUser, now }) => {
-    const invitation = db.invitations.find((item) => item.token === params.token);
-    if (!invitation) throw notFound('Esta invitación no existe.');
-    if (invitation.status !== 'pending') throw new MockHttpError(410, { error: 'La invitación venció o ya se usó.', code: invitation.status });
-    const workspace = db.workspaces.find((item) => item.id === invitation.workspace_id);
-    if (!workspace) throw notFound();
+  route(contract.acceptInvitation, ({ db, body, maybeUser, now }) => {
+    const invitation = db.invitations.find((item) => item.token === body.token);
+    const workspace = db.workspaces.find((item) => item.id === invitation?.workspace_id);
+    if (!invitation || invitation.status !== 'pending' || !workspace) throw invitationGone();
     let account = maybeUser;
     let tokens: ReturnType<typeof mockTokens> | null = null;
-    if (!account) {
-      if (invitation.has_account) throw new MockHttpError(401, { detail: 'Iniciá sesión para aceptar la invitación.' });
-      if (!body.name) throw badRequest({ name: ['Este campo es obligatorio.'] });
-      if (!body.password) throw badRequest({ password: ['Este campo es obligatorio.'] });
+    if (account) {
+      // The invitation belongs to its email: no other account accepts it.
+      if (account.email.toLowerCase() !== invitation.email.toLowerCase()) {
+        throw new MockHttpError(403, {
+          error: 'Esta invitación es para otro email. Cerrá sesión y entrá con la cuenta de ese email para aceptarla.',
+          code: 'invitation_email_mismatch',
+        });
+      }
+    } else {
+      if (db.users.some((item) => item.email.toLowerCase() === invitation.email.toLowerCase())) {
+        throw new MockHttpError(401, { detail: 'Ya existe una cuenta con el email de la invitación. Iniciá sesión con ese email para aceptarla.' });
+      }
+      if (!body.name?.trim()) throw badRequest({ name: ['Escribí tu nombre.'] });
+      if (!body.password) throw badRequest({ password: ['Elegí una contraseña.'] });
+      if (/^\d+$/.test(body.password)) throw badRequest({ password: ['La contraseña no puede ser solo números.'] });
+      if (body.terms_accepted !== true) throw badRequest({ terms_accepted: ['Para crear la cuenta tenés que aceptar los términos.'] });
       account = {
         id: newId(),
         name: body.name,

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { http, HttpResponse, delay } from 'msw';
 import { API_URL } from '@/api/config';
+import real from '@/api/contracts/drf/responses.json';
 import { getTokens } from '@/api/session';
 import { server } from '@/api/mocks/server';
 import { loadDb, saveDb } from '@/api/mocks/state';
@@ -238,6 +239,49 @@ describe('H2 · Miembros', () => {
     expect(await screen.findByText('9 de 10 miembros · 1 invitación pendiente')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Invitar' })).toHaveAttribute('aria-disabled', 'true');
     // A long flow (dialog, four validations, the invitation): on a busy machine it needs more than the default 5 s.
+  }, 30_000);
+
+  it('con las respuestas reales del backend: la fila pendiente sin cuenta, los errores de invitar y reenviar', async () => {
+    const user = userEvent.setup();
+    const pending = real.invitation_invited.invited[0];
+    if (!pending) throw new Error('falta la fila invitada');
+    const members = { members: [...real.members.members.slice(0, 2), pending], max_members: 10, seats_used: 3 };
+    let answer: { status: number; body: unknown } = real.errors.invite_403_seats;
+    const sent: unknown[] = [];
+    server.use(
+      http.get(`${API_URL}/api/v1/workspaces/:id/members/`, () => HttpResponse.json(members)),
+      http.post(`${API_URL}/api/v1/workspaces/:id/invitations/`, async ({ request }) => {
+        sent.push(await request.json());
+        return HttpResponse.json(answer.body as Record<string, unknown>, { status: answer.status });
+      }),
+      http.post(`${API_URL}/api/v1/workspaces/:id/invitations/:memberId/resend/`, ({ params }) =>
+        params.memberId === pending.id ? new HttpResponse(null, { status: 204 }) : HttpResponse.json(real.errors.invitation_resend_404.body, { status: 404 }),
+      ),
+    );
+    renderScreen(<MembersScreen />, { scenario: 'estudio-norte' });
+    // A pending row of the backend: no `user`, the invited email, and who invited without their email.
+    const row = (await screen.findByText('juana@example.com')).closest('tr') as HTMLElement;
+    expect(within(row).getByText('Invitación pendiente')).toBeInTheDocument();
+    expect(within(row).getByText(/Invitado por Dana/)).toBeInTheDocument();
+    await user.click(within(row).getByRole('button', { name: 'Reenviar la invitación a juana@example.com' }));
+    expect(await screen.findByText('Reenviamos la invitación a juana@example.com')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Invitar' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Invitar a Estudio Norte' });
+    await user.type(within(dialog).getByLabelText('Emails'), 'nueva@example.com');
+    await user.click(within(dialog).getByRole('button', { name: 'Enviar invitación' }));
+    expect(await within(dialog).findByText(real.errors.invite_403_seats.body.error)).toBeInTheDocument();
+    expect(sent[0]).toEqual({ emails: ['nueva@example.com'], role: 'editor' });
+
+    answer = real.errors.invite_400_already_member;
+    await user.type(within(dialog).getByLabelText('Emails'), ' ');
+    await user.click(within(dialog).getByRole('button', { name: 'Enviar invitación' }));
+    expect(await within(dialog).findByText(real.errors.invite_400_already_member.body.emails[0] as string)).toBeInTheDocument();
+
+    answer = { status: 201, body: real.invitation_invited };
+    await user.type(within(dialog).getByLabelText('Emails'), ' ');
+    await user.click(within(dialog).getByRole('button', { name: 'Enviar invitación' }));
+    expect(await screen.findByText('Invitación enviada a juana@example.com')).toBeInTheDocument();
   }, 30_000);
 
   it('con el plan lleno «Invitar» queda deshabilitado y explica por qué', async () => {

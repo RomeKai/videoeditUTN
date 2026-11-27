@@ -10,7 +10,8 @@ import { server } from '@/api/mocks/server';
 import { applyScenario, loadDb, mockTokens, saveDb } from '@/api/mocks/state';
 import { needsWelcome, SessionProvider } from '@/shell/session';
 import { ToastProvider } from '@/ui';
-import { InvitationScreen, joinOptions } from './InvitationScreen';
+import { InvitationPage, InvitationScreen, joinOptions } from './InvitationScreen';
+import { readInvitationToken, rememberInvitationToken, takeInvitationLink } from './lib';
 import { formatCountdown, NEXT_MAX_AGE_MS, readSignupNonce, rememberNext, rememberSignupNonce, retryAfterSeconds, safeNext, takeNext } from './lib';
 import { LoginScreen } from './LoginScreen';
 import { RecoverScreen } from './RecoverScreen';
@@ -84,7 +85,7 @@ describe('lib', () => {
 
   it('safeNext solo acepta rutas de la app', () => {
     expect(safeNext('/uso/movimientos')).toBe('/uso/movimientos');
-    expect(safeNext('/invitacion/valida')).toBe('/invitacion/valida');
+    expect(safeNext('/invitacion')).toBe('/invitacion');
     expect(safeNext('https://otro.sitio')).toBeNull();
     expect(safeNext('//otro.sitio')).toBeNull();
     expect(safeNext('/\\otro.sitio')).toBeNull();
@@ -111,7 +112,7 @@ describe('lib', () => {
       expect(safeNext(value), JSON.stringify(value)).toBeNull();
     }
     // Whatever is accepted resolves inside the app.
-    for (const value of ['/uso/movimientos', '/a/../proyectos', '/proyectos?x=//otro.sitio', '/invitacion/valida']) {
+    for (const value of ['/uso/movimientos', '/a/../proyectos', '/proyectos?x=//otro.sitio', '/invitacion']) {
       const result = safeNext(value);
       expect(result, value).not.toBeNull();
       expect(new URL(result as string, 'https://app.onecreator.test').origin).toBe('https://app.onecreator.test');
@@ -120,19 +121,19 @@ describe('lib', () => {
 
   it('la página recordada es de una sola cuenta, vence y se olvida al leerla', () => {
     const KEY = 'oc.acceso.siguiente';
-    rememberNext('/invitacion/con-cuenta', ' Sofia@Ejemplo.com ');
-    expect(takeNext('sofia@ejemplo.com')).toBe('/invitacion/con-cuenta');
+    rememberNext('/invitacion', ' Sofia@Ejemplo.com ');
+    expect(takeNext('sofia@ejemplo.com')).toBe('/invitacion');
     // Read once.
     expect(window.localStorage.getItem(KEY)).toBeNull();
     expect(takeNext('sofia@ejemplo.com')).toBeNull();
 
     // Someone else verifying in the same browser does not inherit it, and it is dropped anyway.
-    rememberNext('/invitacion/con-cuenta', 'sofia@ejemplo.com');
+    rememberNext('/invitacion', 'sofia@ejemplo.com');
     expect(takeNext('ana@ejemplo.com')).toBeNull();
     expect(window.localStorage.getItem(KEY)).toBeNull();
 
     // Without knowing who verified, it is not used either.
-    rememberNext('/invitacion/con-cuenta', 'sofia@ejemplo.com');
+    rememberNext('/invitacion', 'sofia@ejemplo.com');
     expect(takeNext(null)).toBeNull();
     expect(window.localStorage.getItem(KEY)).toBeNull();
 
@@ -308,10 +309,10 @@ describe('A1 · Iniciar sesión', () => {
   it('con el email sin verificar conserva la página que se había pedido', async () => {
     scenario('email-sin-verificar');
     const user = userEvent.setup();
-    show(<LoginScreen next="/invitacion/con-cuenta" email="sofia@ejemplo.com" />);
+    show(<LoginScreen next="/invitacion" email="sofia@ejemplo.com" />);
     await user.type(password(), 'contrasena');
     await user.click(screen.getByRole('button', { name: 'Iniciar sesión' }));
-    await waitFor(() => expect(nav.push).toHaveBeenCalledWith('/verificar?email=sofia%40ejemplo.com&motivo=login&siguiente=%2Finvitacion%2Fcon-cuenta'));
+    await waitFor(() => expect(nav.push).toHaveBeenCalledWith('/verificar?email=sofia%40ejemplo.com&motivo=login&siguiente=%2Finvitacion'));
   });
 
   it('explica el límite de intentos y el error del servidor', async () => {
@@ -523,12 +524,12 @@ describe('A3 · Verificar email', () => {
     scenario('email-sin-verificar');
     signedUpInThisBrowser();
     // Waiting screen, reached from a login that was going to an invitation.
-    const waiting = show(<VerifyEmailScreen email="sofia@ejemplo.com" fromLogin next="/invitacion/con-cuenta" />);
+    const waiting = show(<VerifyEmailScreen email="sofia@ejemplo.com" fromLogin next="/invitacion" />);
     await screen.findByRole('heading', { level: 1, name: 'Te mandamos un link a tu email' });
     waiting.unmount();
     // The link of the email, opened later (it does not carry the destination).
     show(<VerifyEmailScreen token="abc123" />);
-    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/invitacion/con-cuenta'));
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/invitacion'));
     expect(nav.replace).not.toHaveBeenCalledWith('/bienvenida');
   });
 
@@ -568,8 +569,8 @@ describe('A3 · Verificar email', () => {
     const first = show(<VerifyEmailScreen email="sofia@ejemplo.com" fromLogin next="/uso/movimientos" />);
     await screen.findByRole('heading', { level: 1, name: 'Te mandamos un link a tu email' });
     first.unmount();
-    show(<VerifyEmailScreen token="abc123" next="/invitacion/con-cuenta" />);
-    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/invitacion/con-cuenta'));
+    show(<VerifyEmailScreen token="abc123" next="/invitacion" />);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/invitacion'));
     expect(nav.replace).toHaveBeenCalledTimes(1);
     expect(window.localStorage.getItem('oc.acceso.siguiente')).toBeNull();
   });
@@ -765,7 +766,7 @@ describe('A5 · Aceptar invitación', () => {
     scenario('sin-sesion');
     show(<InvitationScreen token="con-cuenta" />);
     const link = await screen.findByRole('link', { name: 'Iniciar sesión para aceptar' });
-    expect(link).toHaveAttribute('href', '/login?siguiente=%2Finvitacion%2Fcon-cuenta&email=sofia%40ejemplo.com');
+    expect(link).toHaveAttribute('href', '/login?siguiente=%2Finvitacion&email=sofia%40ejemplo.com');
     expect(screen.queryByLabelText('Nombre')).not.toBeInTheDocument();
   });
 
@@ -793,7 +794,9 @@ describe('A5 · Aceptar invitación', () => {
     expect(getActiveWorkspaceId()).toBe(db.workspaces.find((item) => item.name === 'Estudio Norte')?.id);
   });
 
-  const ACCEPT = 'http://localhost:8000/api/v1/invitations/con-cuenta/accept/';
+  // One URL for every invitation: the token travels in the body.
+  const ACCEPT = 'http://localhost:8000/api/v1/invitations/accept/';
+  const PREVIEW = 'http://localhost:8000/api/v1/invitations/preview/';
   const unauthorized = () => HttpResponse.json({ detail: 'Given token not valid for any token type' }, { status: 401 });
 
   it('con la sesión muerta: la cierra, y «Iniciar sesión» ya no rebota a la invitación', async () => {
@@ -806,7 +809,7 @@ describe('A5 · Aceptar invitación', () => {
     expect(await screen.findByText('Tu sesión se cerró')).toBeInTheDocument();
     // No tokens left: the login will ask for the password instead of sending a "signed-in" user back here.
     expect(getTokens()).toBeNull();
-    expect(await screen.findByRole('link', { name: 'Iniciar sesión para aceptar' })).toHaveAttribute('href', '/login?siguiente=%2Finvitacion%2Fcon-cuenta&email=sofia%40ejemplo.com');
+    expect(await screen.findByRole('link', { name: 'Iniciar sesión para aceptar' })).toHaveAttribute('href', '/login?siguiente=%2Finvitacion&email=sofia%40ejemplo.com');
     expect(screen.queryByRole('button', { name: 'Aceptar invitación' })).not.toBeInTheDocument();
     expect(nav.replace).not.toHaveBeenCalled();
   });
@@ -866,7 +869,7 @@ describe('A5 · Aceptar invitación', () => {
   it('sin sesión, si el email ya tiene cuenta lo dice con el link a Iniciar sesión', async () => {
     scenario('sin-sesion');
     const user = userEvent.setup();
-    server.use(http.post('http://localhost:8000/api/v1/invitations/valida/accept/', unauthorized));
+    server.use(http.post(ACCEPT, unauthorized));
     show(<InvitationScreen token="valida" />);
     await user.type(await screen.findByLabelText('Nombre'), 'Juan Ibáñez');
     await user.type(password(), 'contrasena-segura');
@@ -874,7 +877,7 @@ describe('A5 · Aceptar invitación', () => {
     await user.click(screen.getByRole('button', { name: 'Crear cuenta y unirme' }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Hace falta iniciar sesión');
-    expect(within(alert).getByRole('link', { name: 'Iniciar sesión' })).toHaveAttribute('href', '/login?siguiente=%2Finvitacion%2Fvalida&email=juan%40estudionorte.com');
+    expect(within(alert).getByRole('link', { name: 'Iniciar sesión' })).toHaveAttribute('href', '/login?siguiente=%2Finvitacion&email=juan%40estudionorte.com');
   });
 
   it('si guardar el workspace activo no responde nunca, igual entra a la app', async () => {
@@ -899,16 +902,98 @@ describe('A5 · Aceptar invitación', () => {
     }
   });
 
-  it('reconoce al miembro por el id del workspace, no por el nombre', async () => {
-    scenario('estudio-norte');
-    const db = loadDb();
-    // Another workspace with the same name as one of Lucía's.
-    const invitation = db.invitations.find((item) => item.token === 'usada');
-    if (invitation) invitation.workspace_id = '00000000-0000-4000-8000-00000000abcd';
-    window.localStorage.setItem('oc.mock.db', JSON.stringify(db));
-    show(<InvitationScreen token="usada" />);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Esta invitación ya se usó' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Ir a Estudio Norte' })).not.toBeInTheDocument();
+  it('si el backend dice que la invitación es de otro email (403), muestra su oración y la sesión queda', async () => {
+    scenario('usuario-nuevo');
+    const user = userEvent.setup();
+    // The real body of back/apps/users/views_invitations.py · InvitationAcceptView.
+    const { body } = real.errors.invitation_accept_403_other_account;
+    server.use(http.post(ACCEPT, () => HttpResponse.json(body, { status: 403 })));
+    show(<InvitationScreen token="con-cuenta" />);
+    await user.click(await screen.findByRole('button', { name: 'Aceptar invitación' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(body.error));
+    expect(getTokens()).not.toBeNull();
+    expect(nav.replace).not.toHaveBeenCalled();
+  });
+
+  it('sin lugares en el plan al aceptar (403 seats_exceeded): muestra la oración del backend', async () => {
+    scenario('usuario-nuevo');
+    const user = userEvent.setup();
+    // Accepting answers the same body as inviting when the plan has no seat left.
+    const { body } = real.errors.invite_403_seats;
+    server.use(http.post(ACCEPT, () => HttpResponse.json(body, { status: 403 })));
+    show(<InvitationScreen token="con-cuenta" />);
+    await user.click(await screen.findByRole('button', { name: 'Aceptar invitación' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(body.error));
+  });
+
+  it('si al aceptar el link ya no sirve (410), vuelve a leer la invitación y lo dice', async () => {
+    scenario('usuario-nuevo');
+    const user = userEvent.setup();
+    show(<InvitationScreen token="con-cuenta" />);
+    const button = await screen.findByRole('button', { name: 'Aceptar invitación' });
+    // Cancelled by an admin between opening the link and the click: the real answers of the backend.
+    server.use(
+      http.post(ACCEPT, () => HttpResponse.json(real.errors.invitation_accept_410.body, { status: 410 })),
+      http.post(PREVIEW, () => HttpResponse.json(real.errors.invitation_404.body, { status: 404 })),
+    );
+    await user.click(button);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Esta invitación no existe o ya no sirve' })).toBeInTheDocument();
+    expect(nav.replace).not.toHaveBeenCalled();
+  });
+
+  it('con las respuestas reales del backend: el link, la contraseña débil bajo su campo, y la cuenta creada con sus tokens', async () => {
+    scenario('sin-sesion');
+    const user = userEvent.setup();
+    const sent: unknown[] = [];
+    let answer: { status: number; body: unknown } = real.errors.invitation_accept_400_weak;
+    let reads = 0;
+    const previews: unknown[] = [];
+    let readsWhenAccepted = -1;
+    server.use(
+      http.post(PREVIEW, async ({ request }) => {
+        previews.push(await request.json());
+        reads += 1;
+        return HttpResponse.json(real.invitation_preview);
+      }),
+      http.post(ACCEPT, async ({ request }) => {
+        sent.push(await request.json());
+        if (answer.status === 200) readsWhenAccepted = reads;
+        return HttpResponse.json(answer.body as Record<string, unknown>, { status: answer.status });
+      }),
+    );
+    show(<InvitationScreen token="real" />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Dana Dueña te invitó a Estudio Norte como Editor' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Email')).toHaveValue('juana@example.com');
+    await user.type(screen.getByLabelText('Nombre'), 'Juana Pérez');
+    await user.type(password(), '12345678');
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: 'Crear cuenta y unirme' }));
+    await waitFor(() => expect(password()).toHaveAccessibleDescription('Esa contraseña es muy común. Elegí otra.'));
+    expect(getTokens()).toBeNull();
+
+    answer = { status: 200, body: real.invitation_accepted_new_account };
+    await user.clear(password());
+    await user.type(password(), 'una-clave-Nueva-2026');
+    await user.click(screen.getByRole('button', { name: 'Crear cuenta y unirme' }));
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/proyectos'));
+    expect(previews[0]).toEqual({ token: 'real' });
+    expect(sent[1]).toEqual({ token: 'real', name: 'Juana Pérez', password: 'una-clave-Nueva-2026', terms_accepted: true });
+    // The spent link is not read again on the way to the app (it would be a 404).
+    expect(reads).toBe(readsWhenAccepted);
+    expect(getActiveWorkspaceId()).toBe(real.invitation_accepted_new_account.workspace_id);
+  });
+
+  it('la contraseña que el backend rechaza se dice bajo el campo y la cuenta no se crea', async () => {
+    scenario('sin-sesion');
+    const user = userEvent.setup();
+    show(<InvitationScreen token="valida" />);
+    await user.type(await screen.findByLabelText('Nombre'), 'Juan Ibáñez');
+    await user.type(password(), '1234567890');
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: 'Crear cuenta y unirme' }));
+    await waitFor(() => expect(password()).toHaveAccessibleDescription('La contraseña no puede ser solo números.'));
+    expect(getTokens()).toBeNull();
+    expect(loadDb().users.some((item) => item.email === 'juan@estudionorte.com')).toBe(false);
   });
 
   it('con la sesión de otra cuenta: avisa y deja cerrar sesión', async () => {
@@ -926,26 +1011,83 @@ describe('A5 · Aceptar invitación', () => {
     expect(getTokens()).toBeNull();
   });
 
-  it('vencida, ya usada, ya miembro y la que no existe', async () => {
+  it('vencida, ya usada y la que no existe: la misma pantalla, como responde el backend (404)', async () => {
     scenario('sin-sesion');
-    let view = show(<InvitationScreen token="vencida" />);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Esta invitación venció' })).toBeInTheDocument();
-    expect(screen.getByText('Pedile a Lucía Fernández que te mande una nueva.')).toBeInTheDocument();
-    view.unmount();
-
-    view = show(<InvitationScreen token="usada" />);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Esta invitación ya se usó' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'iniciá sesión' })).toHaveAttribute('href', '/login');
-    view.unmount();
-
-    view = show(<InvitationScreen token="no-existe" />);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Esta invitación no existe' })).toBeInTheDocument();
-    view.unmount();
+    for (const token of ['vencida', 'usada', 'no-existe']) {
+      const view = show(<InvitationScreen token={token} />);
+      expect(await screen.findByRole('heading', { level: 1, name: 'Esta invitación no existe o ya no sirve' })).toBeInTheDocument();
+      expect(screen.getByText(/Puede que haya vencido, que ya la hayas usado o que la hayan cancelado/)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'iniciá sesión' })).toHaveAttribute('href', '/login');
+      // Nothing of the invitation is shown: the answer carries no data.
+      expect(screen.queryByText(/Estudio Norte|Lucía/)).not.toBeInTheDocument();
+      view.unmount();
+    }
 
     scenario('estudio-norte');
     show(<InvitationScreen token="usada" />);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Ya sos parte de Estudio Norte' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Ir a Estudio Norte' })).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: 'andá a tus proyectos' })).toHaveAttribute('href', '/proyectos');
+  });
+});
+
+describe('A5 · el link de la invitación', () => {
+  const goTo = (url: string) => window.history.replaceState(null, '', url);
+  afterEach(() => {
+    goTo('/');
+    window.sessionStorage.clear();
+  });
+
+  it('lee el token del fragmento, lo saca de la barra de direcciones y lo guarda para esta pestaña', () => {
+    goTo('/invitacion#token=abc-123');
+    expect(takeInvitationLink()).toBe('abc-123');
+    expect(window.location.href.endsWith('/invitacion')).toBe(true);
+    expect(takeInvitationLink()).toBeNull();
+    // Kept apart from the URL: only what the page stores.
+    expect(readInvitationToken()).toBeNull();
+    rememberInvitationToken('abc-123');
+    expect(readInvitationToken()).toBe('abc-123');
+    expect(window.localStorage.getItem('oc.acceso.invitacion')).toBeNull();
+  });
+
+  it('abre la invitación del link sin que el token quede en ninguna URL: ni la de la página, ni la del login, ni las de la API', async () => {
+    scenario('sin-sesion');
+    const urls: string[] = [];
+    const listener = ({ request }: { request: Request }) => urls.push(request.url);
+    server.events.on('request:start', listener);
+    goTo('/invitacion#token=con-cuenta');
+    show(<InvitationPage />);
+    const link = await screen.findByRole('link', { name: 'Iniciar sesión para aceptar' });
+    expect(link).toHaveAttribute('href', '/login?siguiente=%2Finvitacion&email=sofia%40ejemplo.com');
+    expect(window.location.href).not.toContain('con-cuenta');
+    expect(readInvitationToken()).toBe('con-cuenta');
+    server.events.removeListener('request:start', listener);
+    expect(urls.some((url) => url.endsWith('/api/v1/invitations/preview/'))).toBe(true);
+    expect(urls.filter((url) => url.includes('con-cuenta'))).toEqual([]);
+  });
+
+  it('de vuelta del login ya no hay fragmento: toma el token de la pestaña, acepta y lo olvida', async () => {
+    scenario('usuario-nuevo');
+    const user = userEvent.setup();
+    rememberInvitationToken('con-cuenta');
+    goTo('/invitacion');
+    show(<InvitationPage />);
+    await user.click(await screen.findByRole('button', { name: 'Aceptar invitación' }));
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/proyectos'));
+    expect(readInvitationToken()).toBeNull();
+    expect(loadDb().invitations.find((item) => item.token === 'con-cuenta')?.status).toBe('used');
+  });
+
+  it('sin token (otra pestaña, o el link cortado) y con uno que ya no sirve: la misma pantalla, y no lo guarda', async () => {
+    scenario('sin-sesion');
+    goTo('/invitacion');
+    const empty = show(<InvitationPage />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Esta invitación no existe o ya no sirve' })).toBeInTheDocument();
+    expect(screen.getByText(/Abrí de nuevo el link del email/)).toBeInTheDocument();
+    empty.unmount();
+
+    goTo('/invitacion#token=vencida');
+    show(<InvitationPage />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Esta invitación no existe o ya no sirve' })).toBeInTheDocument();
+    await waitFor(() => expect(readInvitationToken()).toBeNull());
   });
 });
 

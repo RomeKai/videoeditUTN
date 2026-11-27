@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**81 endpoints:** 64 existen hoy en el backend, 4 existen en parte y 13 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**81 endpoints:** 68 existen hoy en el backend, 4 existen en parte y 9 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -83,10 +83,10 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/workspaces/:id/members/` | Miembros e invitaciones pendientes, con los lugares usados del plan. | ✅ existe | H2, D7, H1 |
 | PATCH | `/api/v1/workspaces/:id/members/:memberId/` | Cambia el rol de un miembro. | ✅ existe | H2 |
 | DELETE | `/api/v1/workspaces/:id/members/:memberId/` | Quita a un miembro o cancela una invitación pendiente. | ✅ existe | H2 |
-| POST | `/api/v1/workspaces/:id/invitations/` | Invita por email con un rol. Crea WorkspaceMember en `pending` y manda el email. | ❌ falta (propuesto) · hueco 13 | D7, H2 |
-| POST | `/api/v1/workspaces/:id/invitations/:memberId/resend/` | Reenvía el email de una invitación pendiente. | ❌ falta (propuesto) · hueco 13 | H2 |
-| GET | `/api/v1/invitations/:token/` | Datos públicos de una invitación: quién invita, a qué workspace y con qué rol. | ❌ falta (propuesto) · hueco 13 | A5 |
-| POST | `/api/v1/invitations/:token/accept/` | Acepta la invitación. Sin cuenta: la crea con `name` y `password`. Con cuenta: basta con la sesión iniciada. | ❌ falta (propuesto) · hueco 13 | A5 |
+| POST | `/api/v1/workspaces/:id/invitations/` | Invita por email con un rol. Crea WorkspaceMember en `pending` y manda el email. | ✅ existe | D7, H2 |
+| POST | `/api/v1/workspaces/:id/invitations/:memberId/resend/` | Reenvía el email de una invitación pendiente, con un link nuevo. | ✅ existe | H2 |
+| POST | `/api/v1/invitations/preview/` | Datos públicos de una invitación: quién invita, a qué workspace y con qué rol. Es una lectura: el POST solo lleva el token en el cuerpo. | ✅ existe | A5 |
+| POST | `/api/v1/invitations/accept/` | Acepta la invitación del `token`. Sin cuenta: la crea con `name` y `password`. Con cuenta: basta con la sesión iniciada. | ✅ existe | A5 |
 | GET | `/api/v1/plans/` | Planes activos y públicos, en orden, para Precios y Uso › Planes. | ✅ existe | A6, G3, D3 (diálogo), C1 |
 | GET | `/api/v1/pricing/` | Valores de la fórmula de precios y los topes de subida, para estimar en el navegador. | ✅ existe | C1, A6, G3, G4, D2, D1 (diálogo) |
 | POST | `/api/v1/pricing/estimate/` | Estimado del backend para una configuración: costo, descuento, saldo después y tiempo estimado. | ✅ existe | C1, D2, D4, D5 |
@@ -440,7 +440,7 @@ Miembros e invitaciones pendientes, con los lugares usados del plan.
 |---|---|
 | Id | `workspaces.members` |
 | Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceMembersView.get (MembersSerializer)` |
-| Nota | Una fila por WorkspaceMember, de la más antigua a la más nueva; la del Dueño sale con `role: "owner"`. `seats_used` cuenta todas las filas, también las pendientes y la del Dueño; `max_members` es 1 si el workspace no tiene plan. Hoy `user` siempre viene (no hay invitaciones a emails sin cuenta) e `invited_by` es siempre null. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
+| Nota | Una fila por WorkspaceMember, de la más antigua a la más nueva; la del Dueño sale con `role: "owner"`. `seats_used` cuenta todas las filas, también las pendientes y la del Dueño; `max_members` es 1 si el workspace no tiene plan. En una invitación pendiente `user` es null (tenga o no cuenta ese email) y `email` es el invitado; `invited_by` es `{id, name}` de quien invitó, o null en las filas que nadie invitó. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Respuesta 200 | MembersResponse |
 | Errores | **403** Solo Dueño y Admin ven la sección (para Editor y Lector no aparece). Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos. |
@@ -469,7 +469,7 @@ Quita a un miembro o cancela una invitación pendiente.
 |---|---|
 | Id | `workspaces.removeMember` |
 | Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceMemberView.delete` |
-| Nota | Borra la fila y libera su lugar del plan; quien fue quitado pasa a recibir 404 en ese workspace. Un Admin puede quitarse a sí mismo. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
+| Nota | Borra la fila y libera su lugar del plan; quien fue quitado pasa a recibir 404 en ese workspace. Quitar una invitación pendiente mata su link. Un Admin puede quitarse a sí mismo. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Respuesta 204 | NoContent |
 | Errores | **400** No se puede quitar al Dueño, lo pida un Admin o el propio Dueño (primero transfiere el workspace): `{detail}`.<br>**403** El rol no administra miembros: un Editor o un Lector tampoco puede quitarse a sí mismo. Solo `detail`, sin `code`.<br>**404** El workspace no existe para este usuario, o `memberId` no es una fila de ese workspace. |
@@ -482,52 +482,56 @@ Invita por email con un rol. Crea WorkspaceMember en `pending` y manda el email.
 | | |
 |---|---|
 | Id | `workspaces.invite` |
-| Backend | ❌ falta (propuesto) · hueco 13 |
+| Backend | ✅ existe · `back/apps/users/views_invitations.py · WorkspaceInvitationsView.post (InviteSerializer)` |
+| Nota | Todos o ninguno. Cada email es una fila `pending` que ocupa un lugar del plan desde ese momento. Los emails vuelven normalizados (el dominio en minúsculas) y sin repetidos. La respuesta nunca dice si un email tiene cuenta: `user` es null. El email lleva un link a `/invitacion#token=…` (el token en el fragmento) que vence a los 7 días (`INVITATION_MAX_AGE_SECONDS`) y sirve una vez; no nombra al workspace ni a quien invita (eso lo muestra A5). Si la cola de emails está caída la invitación queda creada igual, y se manda con «Reenviar». El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Pedido | InviteRequest |
 | Respuesta 201 | { invited: Member[] } |
-| Errores | **400** Email inválido o ya es miembro (error en `emails`).<br>**403** Sin lugares en el plan (`code: "seats_exceeded"`: límite del plan, se resuelve subiendo de plan o quitando miembros; el mismo código en `billing.changePlan` es un 409 porque ahí lo que sobra son miembros) o el rol no puede invitar. |
+| Errores | **400** `{emails: [oración]}`, siempre una lista plana con una sola oración: falta, alguno no es un email, son más de 10, o alguno ya es miembro o tiene una invitación pendiente (con cualquier mayúscula). `{role: [mensaje]}`: no es admin, editor ni viewer (nadie invita a un Dueño). No se invita a ninguno.<br>**403** Sin lugares en el plan (`{error, code: "seats_exceeded"}`: límite del plan, se resuelve subiendo de plan o quitando miembros; el mismo código en `billing.changePlan` es un 409 porque ahí lo que sobra son miembros). El `error` se muestra tal cual: nombra el plan, o el plan más chico de una bajada programada o de un pago en curso. O el rol no puede invitar (Editor, Lector): solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo. Mismo `detail` para todos los casos.<br>**429** Demasiadas invitaciones seguidas. Invitar y reenviar cuentan juntos: 30 por hora por usuario y 60 por hora por workspace. `detail` dice cuánto esperar. |
 | Pantallas | D7, H2 |
 
 #### `POST /api/v1/workspaces/:id/invitations/:memberId/resend/`
 
-Reenvía el email de una invitación pendiente.
+Reenvía el email de una invitación pendiente, con un link nuevo.
 
 | | |
 |---|---|
 | Id | `workspaces.resendInvitation` |
-| Backend | ❌ falta (propuesto) · hueco 13 |
+| Backend | ✅ existe · `back/apps/users/views_invitations.py · WorkspaceInvitationResendView.post` |
+| Nota | El link anterior deja de servir en el momento, y el nuevo empieza su propio vencimiento. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Respuesta 204 | NoContent |
-| Errores | **404** La invitación ya se aceptó o se canceló. |
+| Errores | **403** El rol no administra miembros. Solo `detail`, sin `code`.<br>**404** La invitación ya se aceptó o se canceló, `memberId` no es de ese workspace, o el workspace no existe para este usuario.<br>**429** Demasiadas invitaciones seguidas (el mismo límite que invitar), o demasiados reenvíos a esa dirección: 3 por hora, los pida quien los pida. `detail` dice cuánto esperar. El link anterior sigue sirviendo.<br>**502** No se pudo encolar el email. El link anterior ya no sirve: se reintenta en unos minutos. |
 | Pantallas | H2 |
 
-#### `GET /api/v1/invitations/:token/`
+#### `POST /api/v1/invitations/preview/`
 
-Datos públicos de una invitación: quién invita, a qué workspace y con qué rol.
+Datos públicos de una invitación: quién invita, a qué workspace y con qué rol. Es una lectura: el POST solo lleva el token en el cuerpo.
 
 | | |
 |---|---|
 | Id | `workspaces.invitation` |
-| Backend | ❌ falta (propuesto) · hueco 13 |
-| Nota | Vencida o usada responden 200 con `status`, para poder explicar el motivo. |
+| Backend | ✅ existe · `back/apps/users/views_invitations.py · InvitationView.post (InvitationPreviewSerializer)` |
+| Nota | El token va en el cuerpo y nunca en la ruta: el logger de pedidos de Django y el log de acceso del servidor web escriben las rutas, y un token ahí sería un link que sirve a la vista de quien lee logs. El link del email es `/invitacion#token=…` (en el fragmento, que el navegador no manda). No lee la sesión ni cambia nada. `status` es siempre `pending`. `inviter_name` es el nombre de quien invitó, nunca su email. `has_account` dice si el email invitado ya tiene cuenta: solo lo ve quien tiene el link. |
 | Sesión | Pública |
+| Pedido | InvitationToken |
 | Respuesta 200 | InvitationPreview |
-| Errores | **404** El token no existe. La UI muestra "Esta invitación no existe". |
+| Errores | **404** El token no abre una invitación pendiente: falta, no existe, venció, ya se usó o se canceló. La misma respuesta para todos. La UI muestra "Esta invitación no existe o ya no sirve".<br>**429** Demasiados intentos desde la misma IP (60 por hora). `detail` dice cuánto esperar. |
 | Pantallas | A5 |
 
-#### `POST /api/v1/invitations/:token/accept/`
+#### `POST /api/v1/invitations/accept/`
 
-Acepta la invitación. Sin cuenta: la crea con `name` y `password`. Con cuenta: basta con la sesión iniciada.
+Acepta la invitación del `token`. Sin cuenta: la crea con `name` y `password`. Con cuenta: basta con la sesión iniciada.
 
 | | |
 |---|---|
 | Id | `workspaces.acceptInvitation` |
-| Backend | ❌ falta (propuesto) · hueco 13 |
+| Backend | ✅ existe · `back/apps/users/views_invitations.py · InvitationAcceptView.post (AcceptInvitationSerializer)` |
+| Nota | El token va en el cuerpo, nunca en la ruta (ver `workspaces.invitation`). Con sesión solo se lee `token`, y la cuenta queda con el email verificado. Sin sesión crea la cuenta del email invitado ya verificada (el link llegó a esa casilla), con su workspace propio como en el registro, y devuelve `tokens`. La cuenta, su workspace y la membresía se guardan juntos o no se guarda nada. El link sirve una sola vez. |
 | Sesión | Pública (manda el token si hay sesión) |
-| Pedido | { name?: string, password?: string, terms_accepted?: boolean } |
+| Pedido | { token: string, name?: string, password?: string, terms_accepted?: boolean } |
 | Respuesta 200 | { workspace_id: Id, tokens: TokenPair \\| null } |
-| Errores | **400** Faltan `name` o `password` para crear la cuenta.<br>**401** El email ya tiene cuenta y no hay sesión: la UI pide iniciar sesión. Con sesión, el cliente manda el token (y lo renueva si hace falta).<br>**410** Invitación vencida o ya usada. |
+| Errores | **400** Sin sesión, para crear la cuenta: falta `name` o `password`, la contraseña no cumple las reglas del registro (`{password: [oraciones]}`), o `terms_accepted` no es `true`. No se crea nada y el link sigue sirviendo.<br>**401** El email ya tiene cuenta y no hay sesión (`detail`): la UI pide iniciar sesión. Con sesión, el cliente manda el token (y lo renueva si hace falta); un token que no sirve también es 401.<br>**403** `{error, code: "invitation_email_mismatch"}`: la sesión es de una cuenta con otro email; la invitación solo la acepta la cuenta del email invitado. `{error, code: "seats_exceeded"}`: el plan se achicó después de invitar y ya no queda lugar.<br>**410** `{error, code: "invitation_invalid"}`: el token falta, no existe, venció, ya se usó o la invitación se canceló. La misma respuesta para todos.<br>**429** Demasiados intentos desde la misma IP (20 por hora), con sesión o sin ella. `detail` dice cuánto esperar. |
 | Pantallas | A5 |
 
 ### Planes, billetera, movimientos, compras y precios
@@ -1497,7 +1501,13 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `status` | InvitationStatus |
 | `has_account` | boolean |
 
-**InvitationStatus:** "pending" \| "expired" \| "used"
+**InvitationStatus:** "pending"
+
+**InvitationToken**
+
+| Campo | Tipo |
+|---|---|
+| `token` | string |
 
 **InviteRequest**
 
