@@ -48,9 +48,13 @@ def redis():
 
 @pytest.fixture
 def clock():
-    """time.monotonic of the breaker, moved by hand."""
+    """
+    The breaker's clock, moved by hand: no test here depends on how long it
+    takes to run. Only the breaker's clock: time.monotonic stays real for
+    everything else in the process.
+    """
     now = [1000.0]
-    with patch.object(core_cache.time, "monotonic", side_effect=lambda: now[0]):
+    with patch.object(core_cache, "_now", side_effect=lambda: now[0]):
         yield now
 
 

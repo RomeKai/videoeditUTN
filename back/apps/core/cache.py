@@ -38,6 +38,15 @@ UNREACHABLE = (RedisConnectionError, RedisTimeoutError, socket.timeout, OSError)
 OUTAGE_REMINDER_SECONDS = 300
 
 
+def _now():
+    """
+    The breaker's clock, in seconds. Its own function so a test can move it by
+    hand (patching ``apps.core.cache._now``) without touching time.monotonic,
+    which the rest of the process uses too.
+    """
+    return time.monotonic()
+
+
 class CircuitOpen(Exception):
     """Redis was skipped: it failed less than a cooldown ago."""
 
@@ -65,7 +74,7 @@ class CircuitBreaker:
         with self._lock:
             if self._retry_at is None:
                 return True
-            now = time.monotonic()
+            now = _now()
             if now < self._retry_at:
                 return False
             # Only this caller probes: the others wait for another cooldown.
@@ -74,7 +83,7 @@ class CircuitBreaker:
 
     def failed(self, error):
         with self._lock:
-            now = time.monotonic()
+            now = _now()
             first = self._down_since is None
             if first:
                 self._down_since = now
@@ -92,7 +101,7 @@ class CircuitBreaker:
         with self._lock:
             down_since, self._down_since, self._retry_at = self._down_since, None, None
         if down_since is not None:
-            logger.info("cache.recovered after_seconds=%d", time.monotonic() - down_since)
+            logger.info("cache.recovered after_seconds=%d", _now() - down_since)
 
 
 # One breaker per Redis and per process: Django builds a cache object per thread.
