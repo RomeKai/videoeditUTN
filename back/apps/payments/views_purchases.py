@@ -20,6 +20,9 @@ from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 
+from apps.core.workspace import NOT_FOUND_DETAIL
+from apps.users.models import Workspace
+
 from .models import Payment
 from .serializers_billing import (
     CreatePurchaseRequestSerializer,
@@ -93,6 +96,9 @@ class TokenPurchaseCreateView(BillingView):
             )
         except PaymentsUnavailable:
             return payments_unavailable()
+        except (Workspace.DoesNotExist, Payment.DoesNotExist):
+            # The workspace was deleted while this request waited for its row: nothing was written.
+            raise NotFound(NOT_FOUND_DETAIL)
         except IdempotencyKeyReused:
             return Response(
                 {'error': 'Esa clave ya se usó para otra compra.', 'code': 'idempotency_key_reused'},
