@@ -1,5 +1,6 @@
 ﻿from django.urls import path
 
+from .views_auth import LogoutView, PasswordResetConfirmView, PasswordResetView, RegisterView, ResendVerificationView
 from .views import MeView, NotificationPreferencesView, PasswordChangeView, VerifyEmailView
 from .views_workspaces import (
     WorkspaceDetailView,
@@ -13,6 +14,11 @@ urlpatterns = [
     path('me/', MeView.as_view(), name='me'),
     path('me/password/', PasswordChangeView.as_view(), name='me-password'),
     path('me/notification-preferences/', NotificationPreferencesView.as_view(), name='me-notification-preferences'),
+    path('auth/register/', RegisterView.as_view(), name='auth-register'),
+    path('auth/verify-email/resend/', ResendVerificationView.as_view(), name='auth-verify-email-resend'),
+    path('auth/password-reset/', PasswordResetView.as_view(), name='auth-password-reset'),
+    path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='auth-password-reset-confirm'),
+    path('auth/logout/', LogoutView.as_view(), name='auth-logout'),
     path('auth/verify-email/', VerifyEmailView.as_view(), name='auth-verify-email'),
     # <str>, not <uuid>: a malformed id is the JSON 404 of the view, not Django's HTML one.
     path('workspaces/', WorkspaceListView.as_view(), name='workspace-list'),

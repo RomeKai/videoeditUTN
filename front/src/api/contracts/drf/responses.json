@@ -8,6 +8,15 @@
     "access": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU1MzYwMDB9.x",
     "refresh": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU2MjI0MDB9.z"
   },
+  "auth_register": {
+    "id": "3b8f1e2a-6c4d-4f1a-9e7b-2d5c8a1f0e93",
+    "email": "ana@example.com",
+    "is_email_verified": false,
+    "signup_nonce": "q1t3mDs8Jw0bXk2yPz7cVn4rL9aEhGu6fTiSoNbW5xY"
+  },
+  "verify_email_signed_out": {
+    "signed_in": false
+  },
   "project_uploaded": {
     "id": "6f1c1f40-8a7e-4f5a-9b1e-0d3f2b8c9a11",
     "clips": [],
@@ -1526,6 +1535,72 @@
             "message": "Token is invalid or expired"
           }
         ]
+      }
+    },
+    "register_400_taken": {
+      "status": 400,
+      "body": {
+        "email": [
+          {
+            "message": "Ya existe una cuenta con este email.",
+            "code": "unique"
+          }
+        ]
+      }
+    },
+    "register_400_weak": {
+      "status": 400,
+      "body": {
+        "password": [
+          "Esa contraseña es muy común. Elegí otra.",
+          "La contraseña no puede ser solo números."
+        ]
+      }
+    },
+    "register_400_terms": {
+      "status": 400,
+      "body": {
+        "terms_accepted": [
+          "Para crear la cuenta tenés que aceptar los términos."
+        ]
+      }
+    },
+    "resend_429": {
+      "status": 429,
+      "body": {
+        "detail": "Demasiados intentos. Probá de nuevo en 60 segundos."
+      }
+    },
+    "password_reset_confirm_400_token": {
+      "status": 400,
+      "body": {
+        "token": [
+          "El link no es válido o ya venció."
+        ]
+      }
+    },
+    "password_reset_confirm_400_password": {
+      "status": 400,
+      "body": {
+        "password": [
+          "Esa contraseña es muy común. Elegí otra.",
+          "La contraseña no puede ser solo números."
+        ]
+      }
+    },
+    "logout_400_other_account": {
+      "status": 400,
+      "body": {
+        "refresh": [
+          "Ese refresh es de otra cuenta: no se cerró nada."
+        ]
+      }
+    },
+    "session_revoked_401": {
+      "status": 401,
+      "body": {
+        "detail": "La sesión se cerró en todos los dispositivos. Iniciá sesión de nuevo.",
+        "code": "session_revoked"
       }
     },
     "create_400_upload": {

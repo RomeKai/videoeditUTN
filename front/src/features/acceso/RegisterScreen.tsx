@@ -11,7 +11,7 @@ import { AuthCard } from '@/shell/PublicShell';
 import { useSession } from '@/shell/session';
 import { Banner, Button, Field, Input, Num, PasswordInput, cx } from '@/ui';
 import styles from './acceso.module.css';
-import { emailError, HOME, MIN_PASSWORD, nameError, newPasswordError, requestErrorMessage, startCooldown } from './lib';
+import { emailError, HOME, MIN_PASSWORD, nameError, newPasswordError, rememberSignupNonce, requestErrorMessage, startCooldown } from './lib';
 import { TermsCheckbox } from './Terms';
 
 export const EMAIL_TAKEN = 'Ya existe una cuenta con este email.';
@@ -59,7 +59,9 @@ export function RegisterScreen({ email: initialEmail }: { email?: string | null 
     register.mutate(
       { name: name.trim(), email: cleanEmail, password, terms_accepted: true },
       {
-        onSuccess: () => {
+        onSuccess: (created) => {
+          // Only in this browser does the link of the email also sign in.
+          rememberSignupNonce(created.signup_nonce);
           // The verification email has just been sent: A3 starts with the 60 s wait.
           startCooldown(cleanEmail.toLowerCase(), 60);
           router.push(`/verificar?email=${encodeURIComponent(cleanEmail)}`);
