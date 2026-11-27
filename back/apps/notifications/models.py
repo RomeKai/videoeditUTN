@@ -39,7 +39,10 @@ class Notification(models.Model):
     # Which case of its kind it is, when the kind has more than one text for its
     # email: a code this app writes (CLIP_RENDER_FAILED), never text. Empty: the
     # kind's own case. Not sent to the web app: the bell shows title and body.
-    reason = models.CharField(max_length=32, blank=True, default='')
+    # db_default keeps the default in the database, so a worker running the
+    # previous code (which does not know the column) can still write
+    # notifications between the migration and its restart.
+    reason = models.CharField(max_length=32, blank=True, default='', db_default='')
     # Where it leads: the web app builds the path from the kind and these ids.
     project = models.ForeignKey('videos.VideoProject', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     post = models.ForeignKey('videos.ScheduledPost', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
