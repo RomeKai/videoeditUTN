@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("videos", "0016_layouts_podcast_trending_y_opciones"),
+        ("videos", "0017_cadena_de_ingesta_en_proyectos_fallados"),
     ]
 
     operations = [
