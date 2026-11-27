@@ -186,6 +186,16 @@ class UploadSizeTests(TestCase):
                 }, format="multipart")
             self.assertEqual(created.status_code, 201, created.content[:300])
 
+    def test_a_logo_that_is_not_an_image_is_refused_in_spanish(self):
+        # A text file renamed to .png (the screen only checks the extension), and a PNG cut short.
+        for content in (b"no soy una imagen", b"\x89PNG\r\n\x1a\n" + b"0" * 20):
+            refused = self.client.post(reverse("brandkit-list"), {
+                "name": "Marca", "watermark_logo": SimpleUploadedFile("logo.png", content),
+            }, format="multipart")
+
+            self.assertEqual(refused.status_code, 400)
+            self.assertEqual(refused.json(), {"watermark_logo": ["El logo no es una imagen válida. Subí una imagen PNG."]})
+
     def test_the_caps_of_a_brand_kit_are_the_ones_of_the_web_app(self):
         self.assertEqual(BRAND_KIT_FILE_MAX_BYTES, {
             "primary_font": 5 * 1024 ** 2, "secondary_font": 5 * 1024 ** 2, "watermark_logo": 2 * 1024 ** 2,

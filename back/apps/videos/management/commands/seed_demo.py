@@ -283,7 +283,7 @@ class Command(BaseCommand):
         password = options['password'] or (DEMO_PASSWORD if settings.DEBUG else secrets.token_urlsafe(18))
 
         with transaction.atomic():
-            user, user_created, password_set = self._user(password, explicit=bool(options['password']))
+            user, user_state, password_set = self._user(password, explicit=bool(options['password']))
             workspace = self._workspace(user)
             deposited = self._balance(workspace, user)
             kit, kit_created = self._brand_kit(workspace, user)
@@ -301,7 +301,7 @@ class Command(BaseCommand):
         wallet = Wallet.objects.get(workspace=workspace)
         write = self.stdout.write
         write(self.style.SUCCESS('Cuenta de la demo lista.'))
-        write(f"  usuario: {user.email} ({'creado' if user_created else 'ya estaba'})")
+        write(f"  usuario: {user.email} ({user_state})")
         write(f"  workspace: {workspace.name} · plan {workspace.subscription_plan.name} · id {workspace.pk}")
         write(f"  saldo: {wallet.available_balance.normalize():f} tokens" + (f" (se acreditaron {deposited.normalize():f})" if deposited else ''))
         write(f"  brand kit: {kit.name} ({'creado' if kit_created else 'ya estaba'})")
@@ -334,7 +334,8 @@ class Command(BaseCommand):
                 onboarding_use_case=User.OnboardingUseCase.PODCAST,
                 terms_accepted_at=timezone.now(),
             )
-            return user, True, True
+            return user, 'creado', True
+        state = 'ya estaba'
         if not user.is_active:
             user.is_active = True
             user.save(update_fields=['is_active'])
@@ -342,13 +343,15 @@ class Command(BaseCommand):
             # The name an earlier version of this command gave it: a name someone edited is kept.
             user.first_name, user.last_name = DEMO_USER_NAME
             user.save(update_fields=['first_name', 'last_name'])
+            # Said as what it is: "ya estaba" alone would hide that the run changed the account.
+            state = f"ya estaba: se renombró de «{' '.join(OLD_DEMO_USER_NAME)}» a «{' '.join(DEMO_USER_NAME)}»"
         # Saving a new password revokes the account's sessions: only when it has to change.
         # Outside DEBUG the default is random on each run, so there it changes only when asked.
         known = explicit or settings.DEBUG
         if known and not user.check_password(password):
             user.set_password(password)
             user.save()
-        return user, False, known
+        return user, state, known
 
     def _workspace(self, user):
         plan = SubscriptionPlan.objects.filter(name=DEMO_PLAN_NAME, is_active=True).first()

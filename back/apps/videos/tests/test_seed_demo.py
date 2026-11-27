@@ -73,8 +73,9 @@ def snapshot():
 
 class TestDemoUserName:
     def test_the_user_is_not_called_like_the_workspace(self):
-        run()
+        output = run()
         user = demo_user()
+        assert f'usuario: {user.email} (creado)' in output
         workspace = Workspace.objects.get(owner=user)
         assert user.get_full_name() == 'Ana Demo'
         assert workspace.name == seed_demo.DEMO_WORKSPACE_NAME
@@ -86,14 +87,17 @@ class TestDemoUserName:
         User.objects.filter(pk=demo_user().pk).update(first_name='Demo', last_name='OneCreator')
         before = demo_user().password
 
-        run()
+        output = run()
 
         user = demo_user()
         assert (user.first_name, user.last_name) == ('Ana', 'Demo')
         assert user.password == before  # the rename does not touch the password (nor the sessions)
+        # The run says what it changed: not only "ya estaba".
+        assert f'usuario: {user.email} (ya estaba: se renombró de «Demo OneCreator» a «Ana Demo»)' in output
         once = snapshot()
-        run()
+        output = run()
         assert snapshot() == once
+        assert f'usuario: {user.email} (ya estaba)' in output
         assert demo_user().get_full_name() == 'Ana Demo'
 
     def test_a_name_someone_edited_is_kept(self):
