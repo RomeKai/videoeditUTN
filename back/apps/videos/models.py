@@ -357,6 +357,10 @@ class ScheduledPost(models.Model):
     # provider refuses a second copy of an attempt that did reach it. db_default: a worker of the previous
     # release inserts posts without the column during a deploy.
     publish_key_version = models.PositiveIntegerField(default=0, db_default=0, editable=False)
+    # The current key went to the provider without a clear answer yet (set before each attempt, cleared
+    # by a clear one): an attempt with it may have published. While set, the worker never changes the
+    # key, and a refusal or running out of retries is an unknown outcome, never "try again".
+    publish_key_unclear = models.BooleanField(default=False, db_default=False, editable=False)
     # TikTok direct-post options (privacy_level, allow_comment, ...); null for other platforms.
     tiktok = models.JSONField(null=True, blank=True)
     # When the API asked for the AI text (a post created with SEO, or "Regenerar"),

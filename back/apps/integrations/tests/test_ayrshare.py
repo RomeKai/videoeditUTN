@@ -5,10 +5,15 @@ decides, not the HTTP status alone), and which of our errors each answer is.
 """
 from datetime import datetime, timedelta, timezone as dt_timezone
 from types import SimpleNamespace
+
+import pytest
 from unittest.mock import MagicMock, patch
+
+from http.client import RemoteDisconnected
 
 import requests
 from django.test import SimpleTestCase, override_settings
+from urllib3.exceptions import MaxRetryError, NameResolutionError, NewConnectionError, ProtocolError
 
 from apps.integrations.social import (
     PUBLISH_TIMEOUT_SECONDS,
@@ -226,11 +231,12 @@ class PublishAnswerTests(SimpleTestCase):
         error = self.error_of(answer(429, body, {"Retry-After": "120"}))
         self.assertIsInstance(error, RetryableError)
         self.assertEqual(error.retry_after, 120)
-        self.assertTrue(error.key_spent)
-        # Without a body to read, the same: retried, and the same key goes again.
+        # The rate limit refuses the request before it is processed: it says nothing of an earlier
+        # attempt, so it never spends the key (a new one could publish a second copy).
+        self.assertEqual((error.key_spent, error.maybe_sent), (False, False))
         bare = self.error_of(answer(429, None))
         self.assertIsInstance(bare, RetryableError)
-        self.assertFalse(bare.key_spent)
+        self.assertEqual((bare.key_spent, bare.maybe_sent), (False, False))
 
     def test_retry_available_is_retried_with_a_new_key(self):
         error = self.error_of(answer(503, refused(531, retryAvailable=True)))
@@ -242,7 +248,33 @@ class PublishAnswerTests(SimpleTestCase):
             with self.subTest(status=status):
                 error = self.error_of(answer(status, None))
                 self.assertIsInstance(error, RetryableError)
-                self.assertFalse(error.key_spent)
+                self.assertEqual((error.key_spent, error.maybe_sent), (False, True))
+
+    def test_a_5xx_with_an_unexplained_error_is_never_a_refusal(self):
+        """Review of #186: a 5xx whose body says error without a documented code may have published."""
+        cases = {
+            "504 status error": (answer(504, {"status": "error", "message": "Gateway Timeout"}), OutcomeUnknownError),
+            "500 code 101": (answer(500, {"action": "post", "status": "error", "code": 101, "message": "Unknown"}), RetryableError),
+            "500 posts[0] error": (answer(500, {"status": "error", "posts": [
+                {"status": "error", "errors": [{"platform": "tiktok", "message": "Internal"}]},
+            ]}), RetryableError),
+            "502 status error": (answer(502, {"status": "error"}), RetryableError),
+        }
+        for name, (response, expected) in cases.items():
+            with self.subTest(case=name):
+                error = self.error_of(response)
+                self.assertIsInstance(error, expected)
+                if expected is RetryableError:
+                    self.assertEqual((error.key_spent, error.maybe_sent), (False, True))
+        # A documented code inside a 5xx is still that code.
+        self.assertEqual(self.error_of(answer(500, refused(156))).code, "account_not_connected")
+
+    def test_a_line_without_its_status_in_a_success_is_published(self):
+        body = {"status": "success", "id": "ayr-post-1", "postIds": [
+            {"platform": "instagram", "id": "1787", "postUrl": "https://www.instagram.com/reel/x/"},
+        ]}
+        result = self.outcome(answer(200, body), request_for("INSTAGRAM_REELS"))
+        self.assertEqual((result.external_id, result.post_url), ("ayr-post-1", "https://www.instagram.com/reel/x/"))
 
     def test_a_504_or_an_unreadable_success_may_have_published(self):
         for response in (answer(504, None), answer(200, None), answer(200, {"unexpected": True})):
@@ -260,15 +292,25 @@ class PublishAnswerTests(SimpleTestCase):
         self.assertEqual(error.code, "provider_not_configured")
 
     def test_transport_errors(self):
-        cases = (
-            (requests.exceptions.ConnectTimeout("x"), RetryableError),
-            (requests.exceptions.ConnectionError("reset"), RetryableError),
-            (requests.exceptions.ReadTimeout("x"), OutcomeUnknownError),
-        )
-        for exc, expected in cases:
-            with self.subTest(exc=type(exc).__name__), patch(REQUEST, side_effect=exc):
-                with self.assertRaises(expected):
+        """Retried only when the request never reached Ayrshare; anything sent without an answer may have published."""
+        refused_connection = MaxRetryError(None, "/api/post", NewConnectionError(None, "Connection refused"))
+        no_name = MaxRetryError(None, "/api/post", NameResolutionError("api.ayrshare.com", None, "no name"))
+        cases = {
+            "connect timeout": (requests.exceptions.ConnectTimeout("x"), RetryableError),
+            "refused": (requests.exceptions.ConnectionError(refused_connection), RetryableError),
+            "no name": (requests.exceptions.ConnectionError(no_name), RetryableError),
+            "closed after sending": (requests.exceptions.ConnectionError(
+                ProtocolError("Connection aborted.", RemoteDisconnected("closed"))), OutcomeUnknownError),
+            "reset": (requests.exceptions.ConnectionError("reset"), OutcomeUnknownError),
+            "answer cut": (requests.exceptions.ChunkedEncodingError("cut"), OutcomeUnknownError),
+            "read timeout": (requests.exceptions.ReadTimeout("x"), OutcomeUnknownError),
+        }
+        for name, (exc, expected) in cases.items():
+            with self.subTest(case=name), patch(REQUEST, side_effect=exc):
+                with self.assertRaises(expected) as caught:
                     AyrshareProvider().publish(PROFILE, tiktok_request())
+                if expected is RetryableError:
+                    self.assertEqual((caught.exception.key_spent, caught.exception.maybe_sent), (False, False))
 
     def test_logs_carry_codes_not_words(self):
         with patch(REQUEST, return_value=answer(400, refused(156))), \
@@ -363,3 +405,59 @@ class ProfileTests(SimpleTestCase):
         self.assertEqual(sent.call_args.args, ("delete", "https://api.ayrshare.com/api/profiles"))
         with patch(REQUEST, return_value=answer(500, None)), self.assertRaises(RetryableError):
             AyrshareProvider().delete_profile(PROFILE)
+
+
+@override_settings(AYRSHARE_API_KEY="api-key")
+def test_a_real_connection_closed_after_the_request_is_not_sent_again(network_guard, monkeypatch):
+    """
+    Review of #186, on a real socket: a server that reads the whole request and closes. Ayrshare
+    downloads the video inside the request, so it may still be publishing: an unknown outcome, never
+    a retry. A port where nothing listens is never sent, and is retried.
+    """
+    import socket
+    import threading
+
+    from apps.integrations.social import ayrshare
+
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    closed = socket.socket()
+    closed.bind(("127.0.0.1", 0))
+    nobody = closed.getsockname()[1]
+    closed.close()
+    monkeypatch.setattr(network_guard, "allowed_ports", frozenset({*network_guard.allowed_ports, port, nobody}))
+    read = {}
+
+    def serve():
+        connection, _ = server.accept()
+        connection.settimeout(5)
+        data = b""
+        try:
+            while b"idempotencyKey" not in data or not data.rstrip().endswith(b"}"):
+                chunk = connection.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+        finally:
+            read["bytes"] = len(data)
+            connection.close()
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    try:
+        monkeypatch.setattr(ayrshare, "BASE_URL", f"http://127.0.0.1:{port}/api")
+        with pytest.raises(OutcomeUnknownError):
+            AyrshareProvider().publish(PROFILE, tiktok_request())
+        thread.join(5)
+        assert read["bytes"] > 0  # the server got the whole request
+        monkeypatch.setattr(ayrshare, "BASE_URL", f"http://127.0.0.1:{nobody}/api")
+        with pytest.raises(RetryableError) as caught:
+            AyrshareProvider().publish(PROFILE, tiktok_request())
+        assert (caught.value.key_spent, caught.value.maybe_sent) == (False, False)
+    finally:
+        server.close()

@@ -677,9 +677,9 @@ def retry_post(workspace, post_id):
     failure, for the user to write the text or ask for it again (ADR-013:
     a post is never re-scheduled on its own).
 
-    Publishing again gets a new idempotency key (`publish_key_version`): the
-    provider refuses a used key forever, even after a failure, so the old one
-    could never publish it. That is what the user asks for here, after the web
+    Publishing again gets a new idempotency key (`publish_key_version`, and
+    `publish_key_unclear` cleared): the provider refuses a used key forever,
+    even after a failure, so the old one could never publish it. That is what the user asks for here, after the web
     app warned that a stuck or unknown attempt may be out already. The
     worker's own retries keep the key. `retry_count` does not change.
     """
@@ -705,7 +705,10 @@ def retry_post(workspace, post_id):
             _check_account(workspace)
             post.status, post.publish_at, post.error_log = Status.SCHEDULED, now, None
             post.publish_key_version = F('publish_key_version') + 1
-            post.save(update_fields=['status', 'publish_at', 'error_log', 'publish_key_version', 'updated_at'])
+            post.publish_key_unclear = False  # a key the provider never saw
+            post.save(update_fields=[
+                'status', 'publish_at', 'error_log', 'publish_key_version', 'publish_key_unclear', 'updated_at',
+            ])
             post.refresh_from_db(fields=['publish_key_version'])
     logger.info("posts.retried post_id=%s from=%s to=%s", post.pk, was, post.status)
     return post
