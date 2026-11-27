@@ -130,7 +130,10 @@ class RevocableTokenRefreshSerializer(TokenRefreshSerializer):
         Only for a token this server signed, not expired, of the refresh type,
         of a user who still has the password it was issued with and closed
         every session after it was issued. Anything else keeps SimpleJWT's
-        answer: a forged, expired or merely rotated token learns nothing.
+        answer: a forged, tampered or expired token, one of a deleted user or
+        of an older password, and one blacklisted by its rotation that was
+        issued after the revocation learn nothing. (One rotated before the
+        revocation was ended by it too, and says so.)
         """
         try:
             payload = token_backend.decode(raw, verify=True)  # signature and expiry
