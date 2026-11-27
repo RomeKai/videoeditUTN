@@ -42,9 +42,10 @@ clip edits and retries (``clip_edited``, ``clip_retried``) and who scheduled
 a post.
 
 At most MAX_ITEMS items. The movements of the balance go in first, each
-group whole: the cut drops the oldest of the other items, so the amounts
-still add up to what the project moved (a project with more than MAX_ITEMS
-token items, dozens of paid renders, loses its oldest groups whole).
+group whole, in all the room but the EVENT_ROOM kept for the newest of the
+other items: the cut drops the oldest of those, so the amounts still add up
+to what the project moved. Only a project with more token items than fit
+(dozens of paid renders) loses its oldest groups, whole.
 
 Each item gets a stable id (uuid5 of the project, the kind and its source).
 Five queries whatever the size of the project.
@@ -60,6 +61,9 @@ from apps.videos.models import AIUsageRecord, ScheduledPost, VideoClip, VideoPro
 
 _NAMESPACE = uuid.UUID('6b0c9f8e-2a51-4c7e-9a43-1d5e8f0b7c21')
 MAX_ITEMS = 200
+# Room the newest items that are not token movements (a failure, a post) keep
+# when the movements alone would fill MAX_ITEMS.
+EVENT_ROOM = 20
 
 # Where views_clips.py (REPLACED_RESERVATIONS_KEY) keeps the reservations a new
 # one replaced in its key: a second clip render, a re-dispatch.
@@ -176,16 +180,17 @@ class _Feed:
     def sorted(self):
         """
         At most MAX_ITEMS, newest first. The movements of the balance go in
-        first, whole, the newest first; the other items fill what is left,
-        the newest first.
+        first, whole, the newest first, in all the room but EVENT_ROOM; the
+        other items fill what is left, the newest first.
         """
-        kept = []
-        for group in sorted(self.movements.values(), key=lambda items: max(map(_sort_key, items)), reverse=True):
-            if len(kept) + len(group) > MAX_ITEMS:
-                break
-            kept.extend(group)
         money = {id(item) for items in self.movements.values() for item in items}
         others = _newest_first(item for item in self.items if id(item) not in money)
+        room = MAX_ITEMS - min(len(others), EVENT_ROOM)
+        kept = []
+        for group in sorted(self.movements.values(), key=lambda items: max(map(_sort_key, items)), reverse=True):
+            if len(kept) + len(group) > room:
+                break
+            kept.extend(group)
         kept.extend(others[:MAX_ITEMS - len(kept)])
         return _newest_first(kept)
 

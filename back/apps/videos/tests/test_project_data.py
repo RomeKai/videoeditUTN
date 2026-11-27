@@ -387,6 +387,37 @@ class ProjectActivityTests(ProjectDataHarness):
         theirs_items = self.client.get(activity_url(other)).json()
         self.assertEqual([item['amount'] for item in theirs_items if item['amount']], ['-6.0000000000'])
 
+    def test_only_reservations_are_movements_of_the_project(self):
+        project = self.project()
+        wallet = Wallet.objects.get(workspace=self.home)
+        mine = reserve(self.home, '4', self.alice, 1, project=project)
+        # Rows that never were a reservation that moved the balance: a purchase, a refund and a
+        # spend still pending. Each one linked to the project, and each one only named by its metadata.
+        kinds = [
+            (Transaction.Type.DEPOSIT, Transaction.Status.COMPLETED),
+            (Transaction.Type.REFUND, Transaction.Status.COMPLETED),
+            (Transaction.Type.SPEND, Transaction.Status.PENDING),
+        ]
+        named = []
+        for minutes, (kind, status) in enumerate(kinds, start=2):
+            for linked in (project, None):
+                row = Transaction.objects.create(
+                    wallet=wallet, created_by=self.alice, amount=Decimal('9'), reserved_amount=Decimal('9'),
+                    transaction_type=kind, status=status, description='Procesamiento: Entrevista con Ana', project=linked,
+                )
+                Transaction.objects.filter(pk=row.pk).update(created_at=at(minutes), settled_at=at(minutes))
+                if linked is None:
+                    named.append(str(row.pk))
+        project.metadata = {'reservation_id': named[0], 'render_reservation_id': named[1], 'replaced_reservation_ids': named}
+        project.save()
+
+        items = self.client.get(activity_url(project)).json()
+
+        self.assertEqual([(item['type'], item['amount']) for item in items], [
+            ('tokens_reserved', '-4.0000000000'), ('project_created', None),
+        ])
+        self.assertEqual(items[0]['id'], str(uuid.uuid5(project_activity._NAMESPACE, f"{project.pk}:tokens_reserved:{mine.pk}")))
+
     def test_a_reservation_linked_and_named_by_the_metadata_appears_once(self):
         project = self.project()
         txn = reserve(self.home, '10', self.alice, 1, project=project)
@@ -433,20 +464,39 @@ class ProjectActivityTests(ProjectDataHarness):
             post = ScheduledPost.objects.create(video_clip=clip, platform='TIKTOK', publish_at=at(60), status='SCHEDULED')
             ScheduledPost.objects.filter(pk=post.pk).update(created_at=at(minutes))
 
-        with patch.object(project_activity, 'MAX_ITEMS', 8):
+        with patch.object(project_activity, 'MAX_ITEMS', 8), patch.object(project_activity, 'EVENT_ROOM', 2):
             items = self.client.get(activity_url(project)).json()
         # The three movements (six items) and the two newest posts.
         self.assertEqual(len(items), 8)
         self.assertEqual(signed_total(items), Decimal('-15'))
         self.assertEqual([item['type'] for item in items[:2]], ['post_scheduled', 'post_scheduled'])
 
-        with patch.object(project_activity, 'MAX_ITEMS', 5):
+        with patch.object(project_activity, 'MAX_ITEMS', 5), patch.object(project_activity, 'EVENT_ROOM', 1):
             items = self.client.get(activity_url(project)).json()
         # More movements than fit: the newest ones, whole; never a reservation without its charge.
         money = [item for item in items if item['type'].startswith('tokens_')]
         self.assertEqual([item['type'] for item in money], ['tokens_charged', 'tokens_reserved'] * 2)
         self.assertEqual(len(items), 5)
 
+    def test_movements_that_fill_the_cut_leave_room_for_the_newest_events(self):
+        project = self.project(status=VideoProject.Status.FAILED, pipeline_error_at=at(20))
+        for minutes in (1, 2, 3, 4):
+            txn = reserve(self.home, '5', self.alice, minutes, project=project)
+            wallet_service.commit_reservation(txn.pk)
+            settle(txn, minutes)
+
+        with patch.object(project_activity, 'MAX_ITEMS', 6), patch.object(project_activity, 'EVENT_ROOM', 2):
+            items = self.client.get(activity_url(project)).json()
+
+        # Eight token items alone would fill it: the failure and the creation keep their two places.
+        self.assertEqual([item['type'] for item in items], [
+            'project_failed', 'tokens_charged', 'tokens_reserved', 'tokens_charged', 'tokens_reserved', 'project_created',
+        ])
+        # Fewer events than the room: the movements take the rest.
+        with patch.object(project_activity, 'MAX_ITEMS', 6), patch.object(project_activity, 'EVENT_ROOM', 4):
+            items = self.client.get(activity_url(project)).json()
+        self.assertEqual([item['type'] for item in items][:2], ['project_failed', 'tokens_charged'])
+        self.assertEqual(len(items), 6)
 
 def fresh_render(clip_id, claim_token=None):
     """What RenderEngine.render_clip saves, a new file each time: a render that left the old file delivered nothing."""

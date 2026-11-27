@@ -936,7 +936,8 @@ export function explainCost(
  * activity says: every charge, and every reservation the backend says is still open (`reservation_state`).
  * A reservation that ended is not counted (its charge is), nor one whose end is not known. The activity
  * has every reservation of the project and keeps them over the other items when it cuts at 200, each one
- * whole: only a project with more than 200 token items leaves its oldest charges out of the sum.
+ * whole (the other items keep 20 places): only a project with more token items than fit leaves its oldest
+ * charges out of the sum.
  * Null without charges nor open reservations.
  */
 export function explainMovements(items: ReadonlyArray<ActivityItem>): CostExplanation | null {
