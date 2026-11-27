@@ -67,9 +67,9 @@ def _real_bodies(user):
     )
     assert register.status_code == 201
     # Without the nonce of the sign-up (another browser): it only verifies.
-    signup_link = next(word for word in mail.outbox[-1].body.split() if "/verificar?" in word)
+    signup_link = next(word for word in mail.outbox[-1].body.split() if "/verificar#" in word)
     signed_out = APIClient().post(
-        "/api/v1/auth/verify-email/", {"token": parse_qs(urlparse(signup_link).query)["token"][0]}, format="json",
+        "/api/v1/auth/verify-email/", {"token": parse_qs(urlparse(signup_link).fragment)["token"][0]}, format="json",
     )
     taken = APIClient().post(
         "/api/v1/auth/register/",

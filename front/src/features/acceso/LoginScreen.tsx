@@ -18,7 +18,7 @@ export interface LoginScreenProps {
   next?: string | null;
   /** `?email=`: prefilled when coming from an invitation or from a new password. */
   email?: string | null;
-  /** `?motivo=verificar`: A3 opened the link of a new account outside the browser that signed up; it is `?siguiente=`. */
+  /** `?motivo=verificar`: A3 opened the link of a new account outside the browser that signed up; `?siguiente=` goes back to A3, which kept the link. */
   verifyPending?: boolean;
 }
 
