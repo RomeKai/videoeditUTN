@@ -6,6 +6,7 @@ import { serializeProject } from '@/api/mocks/serialize';
 import { describeProjectStatus } from '@/lib/project-status';
 import {
   activityLink,
+  allReservationsEnded,
   autoRenderNotice,
   buildConfigGroups,
   buildProcessSteps,
@@ -15,6 +16,7 @@ import {
   currentTab,
   describeClip,
   explainCost,
+  explainMovements,
   failedStepNumber,
   findMatches,
   foldText,
@@ -28,6 +30,8 @@ import {
   pteIgnoredLines,
   rulerTicks,
   sourceInfo,
+  foldedMovement,
+  movementKind,
   tokenMovements,
 } from './model';
 
@@ -103,6 +107,57 @@ describe('línea de tiempo del proceso', () => {
     // The same map on a project that did fail is a failure.
     const failed = buildProcessSteps({ ...retrying, status: 'failed' }, NOW).find((item) => item.key === 'transcribe');
     expect(failed?.state).toBe('fail');
+  });
+
+  it('la etapa en curso muestra cuándo arrancó y cuenta lo que lleva', () => {
+    const started = new Date(NOW - 75_000).toISOString();
+    const running = {
+      ...byTitle('Clase 3'),
+      stage_timings: {
+        audio_extracted: { started_at: new Date(NOW - 120_000).toISOString(), finished_at: new Date(NOW - 78_000).toISOString(), duration_s: 42 },
+        transcribed: { started_at: started, finished_at: null, duration_s: null },
+      },
+    };
+    const step = buildProcessSteps(running, NOW).find((item) => item.key === 'transcribe');
+    expect(step).toMatchObject({ state: 'run', startedAt: started, durationSeconds: 75 });
+    expect(buildProcessSteps(running, NOW + 5_000).find((item) => item.key === 'transcribe')?.durationSeconds).toBe(80);
+    // The steps that did not start show no time, even with one left by an earlier attempt.
+    const stale = { ...running, stage_timings: { ...running.stage_timings, moderated: { started_at: started, finished_at: null, duration_s: null } } };
+    expect(buildProcessSteps(stale, NOW).find((item) => item.key === 'moderate')).toMatchObject({ state: 'pending', startedAt: null, durationSeconds: null });
+  });
+
+  it('la etapa que falló muestra cuándo arrancó y cuánto duró hasta que el proyecto se detuvo', () => {
+    const started = new Date(NOW - 600_000).toISOString();
+    const failed = {
+      ...byTitle('Webinar de lanzamiento'),
+      stage_timings: {
+        audio_extracted: { started_at: new Date(NOW - 660_000).toISOString(), finished_at: new Date(NOW - 618_000).toISOString(), duration_s: 42 },
+        transcribed: { started_at: started, finished_at: new Date(NOW - 510_000).toISOString(), duration_s: null },
+      },
+    };
+    const step = buildProcessSteps(failed, NOW).find((item) => item.state === 'fail');
+    // It does not keep counting: it stopped when the project failed.
+    expect(step).toMatchObject({ key: 'transcribe', startedAt: started, durationSeconds: 90 });
+    expect(buildProcessSteps(failed, NOW + 60_000).find((item) => item.state === 'fail')?.durationSeconds).toBe(90);
+    // Without the moment it stopped (a backend that does not know it): the start alone.
+    const open = { ...failed, stage_timings: { ...failed.stage_timings, transcribed: { started_at: started, finished_at: null, duration_s: null } } };
+    expect(buildProcessSteps(open, NOW).find((item) => item.state === 'fail')).toMatchObject({ startedAt: started, durationSeconds: null });
+  });
+
+  it('una ingesta trabada que el barrido dio por fallida muestra los tiempos de la etapa donde quedó', () => {
+    const started = new Date(NOW - 600_000).toISOString();
+    // The sweep fails the project and leaves the stage as `running` in the map.
+    const swept = {
+      ...byTitle('Webinar de lanzamiento'),
+      pipeline_error_code: 'IngestionStuck',
+      pipeline_stage_status: { audio_extracted: 'completed' as const, transcribed: 'running' as const },
+      stage_timings: {
+        audio_extracted: { started_at: new Date(NOW - 660_000).toISOString(), finished_at: new Date(NOW - 618_000).toISOString(), duration_s: 42 },
+        transcribed: { started_at: started, finished_at: new Date(NOW - 300_000).toISOString(), duration_s: null },
+      },
+    };
+    const step = buildProcessSteps(swept, NOW).find((item) => item.state === 'fail');
+    expect(step).toMatchObject({ key: 'transcribe', startedAt: started, durationSeconds: 300 });
   });
 
   it('AutoRenderNotPaid: el render es lo que se detuvo, con su texto', () => {
@@ -335,6 +390,69 @@ describe('actividad', () => {
   it('los movimientos son los eventos con monto', () => {
     const items = [item('a', 'project_created', at(20, 9)), item('b', 'tokens_reserved', at(20, 9), -763.2), item('c', 'tokens_refunded', at(21, 9), 763.2)];
     expect(tokenMovements(items).map((entry) => entry.id)).toEqual(['b', 'c']);
+  });
+
+  it('los ítems de una reserva suman lo que se movió el saldo: solo lo que no es contexto lleva signo', () => {
+    const of = (type: ActivityItem['type'], amount: number, state: ActivityItem['reservation_state']) => ({ ...item(type, type, at(24, 11), amount), reservation_state: state });
+    /** What the screen shows signed: the amount of every item that is not folded. */
+    const signed = (group: ActivityItem[]) => group.filter((entry) => !foldedMovement(entry)).reduce((sum, entry) => sum + (entry.amount ?? 0), 0);
+    const labels = (group: ActivityItem[]) => group.map((entry) => movementKind(entry)?.label);
+
+    // Charged in full (18): the reservation is context of the charge. The balance went down 18.
+    const charged = [of('tokens_reserved', -18, 'charged'), of('tokens_charged', -18, 'charged')];
+    expect(signed(charged)).toBe(-18);
+    expect(labels(charged)).toEqual(['Reserva cobrada', 'Cobrado']);
+    expect(charged.map((entry) => foldedMovement(entry)?.note)).toEqual(['Ya cobrada: es el mismo monto del cobro, no otro.', undefined]);
+
+    // Charged in part (12 reserved, 8 charged): the balance went down 8, not 4.
+    const partial = [of('tokens_reserved', -12, 'partially_charged'), of('tokens_charged', -8, 'partially_charged'), of('tokens_refunded', 4, 'partially_charged')];
+    expect(signed(partial)).toBe(-8);
+    expect(labels(partial)).toEqual(['Reserva cobrada en parte', 'Cobrado', 'No cobrado']);
+    expect(partial.map((entry) => Boolean(foldedMovement(entry)))).toEqual([true, false, true]);
+
+    // Returned (20): nothing is folded, the reservation and its refund cancel out. Never a lone +20.
+    const refunded = [of('tokens_reserved', -20, 'refunded'), of('tokens_refunded', 20, 'refunded')];
+    expect(signed(refunded)).toBe(0);
+    expect(refunded.map((entry) => foldedMovement(entry))).toEqual([null, null]);
+    expect(labels(refunded)).toEqual(['Reserva devuelta', 'Devuelto']);
+
+    // Still reserved, or a backend that does not say: as before, signed.
+    const open = [of('tokens_reserved', -18, 'reserved'), of('tokens_reserved', -18, null), item('x', 'tokens_reserved', at(24, 11), -18), item('y', 'tokens_refunded', at(24, 12), 18)];
+    expect(open.map((entry) => foldedMovement(entry))).toEqual([null, null, null, null]);
+    expect(labels(open)).toEqual(['Reservado', 'Reservado', 'Reservado', 'Devuelto']);
+    expect(movementKind(item('c', 'project_created', at(24, 12)))).toBeNull();
+  });
+
+  it('sin costo de creación, «Cómo se calculó» suma los cobros y las reservas abiertas de sus movimientos', () => {
+    const reservation = (id: string, hour: number, amount: number, state: ActivityItem['reservation_state']) => ({ ...item(id, 'tokens_reserved', at(24, hour), -amount), description: 'Reserva por el render', reservation_state: state });
+    const charge = (id: string, hour: number, amount: number) => ({ ...item(id, 'tokens_charged', at(24, hour), -amount), description: 'Cobro del render' });
+    // The render of the rehearsal: reserved 18 and charged 18 is ONE charge of 18, not 36.
+    expect(explainMovements([charge('b', 12, 18), reservation('a', 11, 18, 'charged')])).toMatchObject({
+      lines: [{ label: 'Cobro del render', value: '18' }],
+      totalLabel: 'Total cobrado',
+      total: '18 tokens',
+    });
+    // A retry still rendering adds its reservation.
+    const withRetry = explainMovements([reservation('c', 13, 9, 'reserved'), charge('b', 12, 18), reservation('a', 11, 18, 'charged')]);
+    expect(withRetry).toMatchObject({ totalLabel: 'Total cobrado y reservado', total: '27 tokens' });
+    expect(withRetry?.lines.map((line) => [line.label, line.note, line.value])).toEqual([
+      ['Cobro del render', undefined, '18'],
+      ['Reserva por el render', 'Reservado, todavía sin cobrar', '9'],
+    ]);
+    expect(explainMovements([reservation('a', 11, 18, 'reserved')])).toMatchObject({ totalLabel: 'Total reservado', total: '18 tokens' });
+    // A partial charge: what was charged, not what had been set aside.
+    expect(explainMovements([item('c', 'tokens_refunded', at(24, 12), 4), charge('b', 12, 8), reservation('a', 11, 12, 'partially_charged')])).toMatchObject({ total: '8 tokens' });
+    // Two reservations, one charged in part (20 → 5) and one still open (20): 25. No guessing which charge closes which.
+    expect(explainMovements([reservation('d', 13, 20, 'reserved'), item('c', 'tokens_refunded', at(24, 12), 15), charge('b', 12, 5), reservation('a', 11, 20, 'partially_charged')])).toMatchObject({ total: '25 tokens' });
+    // A reservation whose end is not known is not counted as open.
+    expect(explainMovements([charge('b', 12, 18), reservation('a', 11, 18, undefined)])).toMatchObject({ totalLabel: 'Total cobrado', total: '18 tokens' });
+    expect(explainMovements([reservation('a', 11, 18, undefined)])).toBeNull();
+    expect(allReservationsEnded([reservation('a', 11, 18, undefined)])).toBe(false);
+    // Everything came back, or nothing moved: nothing to explain.
+    const returned = [item('b', 'tokens_refunded', at(24, 12), 18), reservation('a', 11, 18, 'refunded')];
+    expect(explainMovements(returned)).toBeNull();
+    expect(allReservationsEnded(returned)).toBe(true);
+    expect(explainMovements([item('a', 'project_created', at(24, 11))])).toBeNull();
   });
 
   it('cada evento lleva a donde se puede seguir', () => {

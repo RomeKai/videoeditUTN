@@ -245,8 +245,10 @@ export const ProjectCost = z.object({
 export type ProjectCost = z.infer<typeof ProjectCost>;
 
 /**
- * Times of a stage that finished (its last successful run). `started_at` and `finished_at` are null for
- * stages that finished before the backend recorded when they ended; `duration_s` is always there.
+ * Times of a stage. One that finished (its last successful run) always has `duration_s`; its `started_at`
+ * and `finished_at` are null when it finished before the backend recorded when it ended. One that started
+ * and did not finish (the one running, or the one where the project failed) has `started_at` and a null
+ * `duration_s`; its `finished_at` is when a failed project stopped (`pipeline_error_at`), null otherwise.
  */
 export const StageTiming = z.object({
   started_at: IsoDateTime.nullable(),
@@ -509,6 +511,12 @@ export const ActivityItem = z.object({
   /** Token movement, signed (negative = spent or reserved). */
   amount: Decimal.nullable(),
   platform: Platform.nullable().optional(),
+  /**
+   * In `tokens_reserved`, `tokens_charged` and `tokens_refunded`: how the reservation those items are about
+   * ended. The reservation, its charge and its refund are items of ONE movement of the balance: with this the
+   * screen shows them as a group whose signed amounts add up to what the balance moved.
+   */
+  reservation_state: z.enum(['reserved', 'charged', 'partially_charged', 'refunded']).nullable().optional(),
 });
 export type ActivityItem = z.infer<typeof ActivityItem>;
 
@@ -628,7 +636,7 @@ export const getProject = defineEndpoint({
   backend: {
     status: 'partial',
     source: 'back/apps/videos/views.py · VideoProjectViewSet.retrieve + VideoProjectSerializer',
-    note: 'Trae `cost` (la reserva de creación: reservado, cobrado o devuelto), `stage_timings` (las etapas terminadas; `started_at` y `finished_at` en `null` en las que terminaron antes de que se guardara) y `uploaded_by_detail` (sin el email). `eta_seconds` mientras se procesa (el estimado de Nuevo proyecto menos lo que tardaron las etapas terminadas). Falta `duration_seconds` (la duración sale de `metadata.source_media`). Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura.',
+    note: 'Trae `cost` (la reserva de creación: reservado, cobrado o devuelto), `stage_timings` (las etapas terminadas, con `started_at` y `finished_at` en `null` en las que terminaron antes de que se guardara; y la etapa que arrancó y no terminó, la que está en curso o donde falló el proyecto, con `started_at` de `metadata.stage_started_at`, `duration_s` en `null` y `finished_at` solo si el proyecto falló: `pipeline_error_at`) y `uploaded_by_detail` (sin el email). `eta_seconds` mientras se procesa (el estimado de Nuevo proyecto menos lo que tardaron las etapas terminadas). Falta `duration_seconds` (la duración sale de `metadata.source_media`). Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura.',
   },
   screens: ['D1', 'D1e', 'D1f', 'D3', 'D4', 'D5'],
 });
@@ -771,7 +779,7 @@ export const getProjectActivity = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_project_data.py · ProjectActivityView + services/project_activity.py · build_activity',
-    note: 'No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (las Transaction de las claves `*reservation_id` de la metadata, con `settled_at` y `reserved_amount` desde la migración 0012 de payments), fin del render (cuando se liquidó la reserva que lo pagó), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva cuya clave se borró de la metadata (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems.',
+    note: 'No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección; dice los clips que se sugirieron, `ai_rationale_log.suggestions_count`, no los que quedaron después de aprobar), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (las Transaction de las claves `*reservation_id` de la metadata, con `settled_at` y `reserved_amount` desde la migración 0012 de payments; la reserva, su cobro y su devolución traen `reservation_state`, cómo terminó esa reserva: son ítems de un mismo movimiento del saldo, no cobros ni ingresos aparte), fin del render (cuando se liquidó la reserva que lo pagó), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva cuya clave se borró de la metadata (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems.',
   },
   screens: ['D1f'],
 });

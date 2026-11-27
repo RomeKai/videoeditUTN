@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import type { MockDb, MockProject } from '@/api/mocks/db';
 import { server } from '@/api/mocks/server';
 import { loadDb, saveDb } from '@/api/mocks/state';
+import { formatTime } from '@/lib/format';
 import { ActivityScreen } from './ActivityScreen';
 import { ClipsScreen } from './ClipsScreen';
 import { ProjectShell } from './ProjectShell';
@@ -153,6 +154,32 @@ describe('D1 · Proyecto', () => {
     open('Falló: AutoRenderNotPaid', '', 'todos-los-estados', 'carla');
     const alert = await screen.findByRole('alert');
     expect(within(alert).getByRole('button', { name: 'Comprar tokens' })).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('la etapa en curso muestra su hora de inicio y lo que lleva', async () => {
+    const started = new Date(Date.now() - 75_000);
+    open('Clase 3', '', 'todos-los-estados', 'lucia', (project) => {
+      project.stage_timings = { ...project.stage_timings, transcribed: { started_at: started.toISOString(), finished_at: null, duration_s: null } };
+    });
+    const steps = await screen.findByRole('list', { name: 'Etapas del proceso' });
+    const row = within(steps).getByText('Transcribir').closest('li');
+    if (!row) throw new Error('sin la fila');
+    expect(within(row).getByText('En curso')).toBeInTheDocument();
+    expect(within(row).getByText(formatTime(started, { seconds: true }))).toBeInTheDocument();
+    expect(within(row).getByText(/^1:1\d$/)).toBeInTheDocument();
+    expect(within(row).queryByText('—')).toBeNull();
+  });
+
+  it('la etapa que falló muestra su hora de inicio y cuánto duró', async () => {
+    const started = new Date(Date.now() - 600_000);
+    open('Webinar de lanzamiento', '', 'estudio-norte', 'lucia', (project) => {
+      project.stage_timings = { ...project.stage_timings, transcribed: { started_at: started.toISOString(), finished_at: new Date(started.getTime() + 90_000).toISOString(), duration_s: null } };
+    });
+    const steps = await screen.findByRole('list', { name: 'Etapas del proceso' });
+    const row = within(steps).getByText('Falló').closest('li');
+    if (!row) throw new Error('sin la fila');
+    expect(within(row).getByText(formatTime(started, { seconds: true }))).toBeInTheDocument();
+    expect(within(row).getByText('1:30')).toBeInTheDocument();
   });
 
   it('un reintento interno del pipeline no se muestra como falla', async () => {
@@ -633,9 +660,127 @@ describe('D1f · Actividad', () => {
     expect(screen.getAllByText(/Creó el proyecto/).length).toBe(1);
     const table = screen.getByRole('table', { name: 'Movimientos de tokens del proyecto' });
     expect(within(table).getByText('Cobrado')).toBeInTheDocument();
-    expect(within(table).getByText('Reservado')).toBeInTheDocument();
+    // The reservation of that charge says it was charged, instead of reading as a second debit.
+    expect(within(table).getByText('Reserva cobrada')).toBeInTheDocument();
+    expect(within(table).queryByText('Reservado')).toBeNull();
     expect(await screen.findByText('Total cobrado')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Ver todos los movimientos del workspace/ })).toHaveAttribute('href', '/uso/movimientos');
+  });
+
+  /** Replaces the activity of the project with the token items of one reservation, as the backend sends them. */
+  const withMovements = (rows: Array<[type: 'tokens_reserved' | 'tokens_charged' | 'tokens_refunded', description: string, amount: number]>, state: 'charged' | 'partially_charged' | 'refunded') =>
+    open('Vlog Mendoza', 'actividad', 'estudio-norte', 'lucia', (project, db) => {
+      db.activity = db.activity.filter((entry) => entry.project !== project.id);
+      rows.forEach(([type, description, amount], index) =>
+        db.activity.unshift({ project: project.id, actor: null, id: `00000000-0000-4000-8000-00000000a00${index}`, type, created_at: `2026-11-27T10:0${index}:00Z`, description, amount, reservation_state: state }),
+      );
+    });
+  /** [concept, badge, amount as shown] of each row of the table, newest first. */
+  const tableRows = async () => {
+    const table = await screen.findByRole('table', { name: 'Movimientos de tokens del proyecto' });
+    return within(table)
+      .getAllByRole('row')
+      .slice(1)
+      .map((row) => {
+        const cells = within(row).getAllByRole('cell');
+        return [cells[1]?.querySelector('span')?.textContent, cells[2]?.textContent, cells[3]?.textContent];
+      });
+  };
+  /** [text of the event, badge and amount] of each event of the timeline, newest first. */
+  const timeline = () => {
+    const feed = screen.getByRole('heading', { name: 'Actividad', level: 2 }).closest('section');
+    if (!feed) throw new Error('sin la actividad');
+    return within(feed)
+      .getAllByRole('listitem')
+      .map((event) => [...event.querySelectorAll('p')].map((p) => p.textContent?.replace(/\s+/g, ' ').trim()));
+  };
+
+  it('reserva cobrada entera: la reserva y el cobro se leen como un solo cobro', async () => {
+    withMovements(
+      [
+        ['tokens_reserved', 'Reserva por el render', -18],
+        ['tokens_charged', 'Cobro del render', -18],
+      ],
+      'charged',
+    );
+    expect(await tableRows()).toEqual([
+      ['Cobro del render', 'Cobrado', '−18'],
+      ['Reserva por el render', 'Reserva cobrada', '18'],
+    ]);
+    expect(screen.getByText('Ya cobrada: es el mismo monto del cobro, no otro.')).toBeInTheDocument();
+    expect(timeline()).toEqual([
+      ['OneCreator · Cobro del render', 'Cobrado −18 tokens'],
+      ['OneCreator · Reserva por el render', 'Reserva cobrada 18 tokens'],
+    ]);
+  });
+
+  it('reserva devuelta: la reserva sigue con su signo, no queda un «+20» suelto', async () => {
+    withMovements(
+      [
+        ['tokens_reserved', 'Reserva por el procesamiento', -20],
+        ['tokens_refunded', 'Devolución de la reserva', 20],
+      ],
+      'refunded',
+    );
+    expect(await tableRows()).toEqual([
+      ['Devolución de la reserva', 'Devuelto', '+20'],
+      ['Reserva por el procesamiento', 'Reserva devuelta', '−20'],
+    ]);
+    expect(timeline()).toEqual([
+      ['OneCreator · Devolución de la reserva', 'Devuelto +20 tokens'],
+      ['OneCreator · Reserva por el procesamiento', 'Reserva devuelta −20 tokens'],
+    ]);
+  });
+
+  it('reserva cobrada en parte: el único monto con signo es lo que bajó el saldo', async () => {
+    withMovements(
+      [
+        ['tokens_reserved', 'Reserva por el render', -12],
+        ['tokens_charged', 'Cobro del render', -8],
+        ['tokens_refunded', 'Devolución por los clips que no se generaron', 4],
+      ],
+      'partially_charged',
+    );
+    expect(await tableRows()).toEqual([
+      ['Devolución por los clips que no se generaron', 'No cobrado', '4'],
+      ['Cobro del render', 'Cobrado', '−8'],
+      ['Reserva por el render', 'Reserva cobrada en parte', '12'],
+    ]);
+    expect(screen.getByText('Lo que sobró de la reserva: no se cobró.')).toBeInTheDocument();
+    expect(timeline()).toEqual([
+      ['OneCreator · Devolución por los clips que no se generaron', 'No cobrado 4 tokens'],
+      ['OneCreator · Cobro del render', 'Cobrado −8 tokens'],
+      ['OneCreator · Reserva por el render', 'Reserva cobrada en parte 12 tokens'],
+    ]);
+  });
+
+  it('sin costo de creación pero con el cobro de un render, no dice que no tiene costo', async () => {
+    open('Vlog Mendoza', 'actividad', 'estudio-norte', 'lucia', (project, db) => {
+      // A [DEMO] project after approving its review: nothing was charged to create it, and its render was.
+      project.cost = null;
+      const base = { project: project.id, actor: null };
+      db.activity = db.activity.filter((entry) => entry.project !== project.id);
+      db.activity.unshift(
+        { ...base, id: '00000000-0000-4000-8000-00000000a001', type: 'tokens_reserved', created_at: '2026-11-27T10:00:00Z', description: 'Reserva por el render', amount: -18, reservation_state: 'charged' },
+        { ...base, id: '00000000-0000-4000-8000-00000000a002', type: 'tokens_charged', created_at: '2026-11-27T10:02:00Z', description: 'Cobro del render', amount: -18 },
+      );
+    });
+    const how = (await screen.findByRole('heading', { name: 'Cómo se calculó' })).closest('section');
+    if (!how) throw new Error('sin la tarjeta');
+    expect(await within(how).findByText('Total cobrado')).toBeInTheDocument();
+    expect(within(how).getByText('Cobro del render')).toBeInTheDocument();
+    expect(within(how).getByText('18 tokens')).toBeInTheDocument();
+    expect(within(how).getByText(/Crear este proyecto no tuvo costo/)).toBeInTheDocument();
+    expect(screen.queryByText('Este proyecto no tiene un costo asociado.')).toBeNull();
+  });
+
+  it('sin costo y sin movimientos, dice que no tiene un costo asociado', async () => {
+    open('Vlog Mendoza', 'actividad', 'estudio-norte', 'lucia', (project, db) => {
+      project.cost = null;
+      db.activity = db.activity.filter((entry) => entry.project !== project.id || entry.amount === null);
+    });
+    expect(await screen.findByText('Este proyecto no tiene un costo asociado.')).toBeInTheDocument();
+    expect(screen.getByText('Este proyecto todavía no movió tokens.')).toBeInTheDocument();
   });
 
   it('un proyecto fallido muestra la devolución', async () => {

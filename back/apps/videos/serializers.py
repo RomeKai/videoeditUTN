@@ -174,7 +174,9 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     ))
     stage_timings = serializers.SerializerMethodField(help_text=(
         "{stage: {started_at, finished_at, duration_s}} of the stages that finished (their last successful "
-        "run). started_at and finished_at are null for stages that finished before they were recorded."
+        "run). started_at and finished_at are null for stages that finished before they were recorded. A stage "
+        "that started and did not finish (running, or where the project failed) has started_at, a null "
+        "duration_s, and finished_at only for a failed project (pipeline_error_at)."
     ))
 
     source_file = serializers.FileField(required=False)

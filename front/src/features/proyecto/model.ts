@@ -1,6 +1,6 @@
 import type { Plan, Pricing } from '@/api/contracts/billing';
 import type { Platform } from '@/api/contracts/common';
-import type { ActivityItem, Clip, Project, StageStatus } from '@/api/contracts/projects';
+import type { ActivityItem, Clip, Project, StageStatus, StageTiming } from '@/api/contracts/projects';
 import { groupTranscript, type TranscriptLine } from '@/lib/download';
 import { autoRenderSkippedMessage } from '@/lib/error-messages';
 import { formatDuration, formatMinutes, formatNumber, formatRelative, formatTime, formatTokens, plural } from '@/lib/format';
@@ -132,6 +132,22 @@ function finishedIndex(project: Pick<Project, 'pipeline_stage' | 'pipeline_stage
   return last;
 }
 
+/**
+ * Start and duration of a step. A step that has not run in this attempt (pending) shows no time, even if an
+ * earlier attempt left one. Without a duration the stage did not finish: running, it counts up; failed, it
+ * lasted until the project stopped.
+ */
+function stepTimes(timing: StageTiming | undefined, state: StageState, now: number): Pick<ProcessStep, 'startedAt' | 'durationSeconds'> {
+  if (state === 'pending') return { startedAt: null, durationSeconds: null };
+  const startedAt = timing?.started_at ?? null;
+  let durationSeconds = timing?.duration_s ?? null;
+  if (durationSeconds === null && startedAt) {
+    const until = state === 'run' ? now : state === 'fail' && timing?.finished_at ? new Date(timing.finished_at).getTime() : null;
+    if (until !== null) durationSeconds = Math.max(0, (until - new Date(startedAt).getTime()) / 1000);
+  }
+  return { startedAt, durationSeconds };
+}
+
 type StepsProject = Pick<
   Project,
   'status' | 'pipeline_stage' | 'pipeline_stage_status' | 'pipeline_error_code' | 'clips' | 'project_type' | 'auto_render_bypass' | 'stage_timings' | 'metadata'
@@ -192,9 +208,7 @@ export function buildProcessSteps(project: StepsProject, now: number = Date.now(
       else description = 'No arranca sola: empieza cuando revises y apruebes los clips.';
     }
 
-    const startedAt = timing?.started_at ?? null;
-    let durationSeconds = timing?.duration_s ?? null;
-    if (durationSeconds === null && state === 'run' && startedAt) durationSeconds = Math.max(0, (now - new Date(startedAt).getTime()) / 1000);
+    const { startedAt, durationSeconds } = stepTimes(timing, state, now);
     const gated = key === 'render' && !single && !bypass && state === 'pending' && !failed;
     return { key, label: single && key === 'render' ? 'Editar el video' : text.label, state, stateLabel: STATE_LABEL[state], description, startedAt, durationSeconds, gated };
   });
@@ -209,7 +223,11 @@ export function buildProcessSteps(project: StepsProject, now: number = Date.now(
   if (failAt === -1) {
     failAt = steps.findIndex((step) => step.state !== 'done');
     const target = failAt === -1 ? undefined : steps[failAt];
-    if (target) steps[failAt] = { ...target, state: 'fail', stateLabel: STATE_LABEL.fail, description: FAIL_STEP_TEXT[project.pipeline_error_code] ?? 'Algo falló de nuestro lado.' };
+    if (target) {
+      // Its times were read as a pending step (none): read them again as the step where it stopped.
+      const times = stepTimes(project.stage_timings?.[STEP_STAGE[target.key]], 'fail', now);
+      steps[failAt] = { ...target, ...times, state: 'fail', stateLabel: STATE_LABEL.fail, description: FAIL_STEP_TEXT[project.pipeline_error_code] ?? 'Algo falló de nuestro lado.' };
+    }
   }
   if (failAt === -1) return steps;
   const rest = steps.slice(failAt + 1);
@@ -808,6 +826,41 @@ export const MOVEMENT_KIND: Partial<Record<ActivityItem['type'], { label: string
   tokens_refunded: { label: 'Devuelto', tone: 'ok', hint: 'El trabajo falló y los tokens volvieron al saldo.' },
 };
 
+type MovementKind = { label: string; tone: StatusTone; hint: string };
+type MovementItem = Pick<ActivityItem, 'type' | 'reservation_state'>;
+
+/** A reservation that already ended says how, instead of "Reservado". */
+const ENDED_RESERVATION: Record<'charged' | 'partially_charged' | 'refunded', MovementKind> = {
+  charged: { label: 'Reserva cobrada', tone: 'neutral', hint: 'Lo que se había apartado es lo que se cobró: es un solo cobro.' },
+  partially_charged: { label: 'Reserva cobrada en parte', tone: 'neutral', hint: 'De lo que se había apartado se cobró una parte; el resto no se cobró.' },
+  refunded: { label: 'Reserva devuelta', tone: 'neutral', hint: 'Lo que se había apartado volvió al saldo: no se cobró.' },
+};
+const UNUSED_PART: MovementKind = { label: 'No cobrado', tone: 'neutral', hint: 'La parte de la reserva que no se cobró.' };
+
+/** Badge of a token movement: a reservation that ended says so, and what a partial charge left over is not a refund of something paid. */
+export function movementKind(item: MovementItem): MovementKind | null {
+  const state = item.reservation_state;
+  if (item.type === 'tokens_reserved' && state && state !== 'reserved') return ENDED_RESERVATION[state];
+  if (item.type === 'tokens_refunded' && state === 'partially_charged') return UNUSED_PART;
+  return MOVEMENT_KIND[item.type] ?? null;
+}
+
+/**
+ * The items of one reservation (it, its charge, its refund) are one movement of the balance. So that the
+ * signed amounts of the group add up to what the balance moved, some of them are shown as context: muted
+ * and without sign, with this note. Charged in full: only the charge is signed (−18), the reservation is
+ * context. Charged in part: only the charge is signed (−8); the reservation (12) and what was left over (4)
+ * are context. Returned: nothing is folded, the reservation (−20) and its refund (+20) cancel out.
+ * Null: the amount is shown signed.
+ */
+export function foldedMovement(item: MovementItem): { note: string } | null {
+  const state = item.reservation_state;
+  if (item.type === 'tokens_reserved' && state === 'charged') return { note: 'Ya cobrada: es el mismo monto del cobro, no otro.' };
+  if (item.type === 'tokens_reserved' && state === 'partially_charged') return { note: 'Ya liquidada: de esto se cobró solo una parte, la del cobro.' };
+  if (item.type === 'tokens_refunded' && state === 'partially_charged') return { note: 'Lo que sobró de la reserva: no se cobró.' };
+  return null;
+}
+
 export function tokenMovements(items: ReadonlyArray<ActivityItem>): ActivityItem[] {
   return items.filter((item) => item.amount !== null && MOVEMENT_KIND[item.type]);
 }
@@ -875,6 +928,32 @@ export function explainCost(
     }
   }
   return { lines, totalLabel, total, estimate };
+}
+
+/**
+ * "Cómo se calculó" for a project without a creation cost (nothing was charged to create it) that did
+ * move tokens: a render, a retry. The formula of those is not in the project, so it adds up what its
+ * activity says: every charge, and every reservation the backend says is still open (`reservation_state`).
+ * A reservation that ended is not counted (its charge is), nor one whose end is not known. The activity
+ * has at most 200 items: in a project with more, the oldest charges are not in the sum.
+ * Null without charges nor open reservations.
+ */
+export function explainMovements(items: ReadonlyArray<ActivityItem>): CostExplanation | null {
+  const movements = tokenMovements(items).sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const charges = movements.filter((item) => item.type === 'tokens_charged');
+  const reserved = movements.filter((item) => item.type === 'tokens_reserved' && item.reservation_state === 'reserved');
+  if (charges.length === 0 && reserved.length === 0) return null;
+  const sum = (list: ActivityItem[]) => list.reduce((total, item) => total + Math.abs(item.amount ?? 0), 0);
+  const lines = movements
+    .filter((item) => charges.includes(item) || reserved.includes(item))
+    .map((item) => ({ key: item.id, label: item.description, note: item.type === 'tokens_reserved' ? 'Reservado, todavía sin cobrar' : undefined, value: formatNumber(Math.abs(item.amount ?? 0)) }));
+  const totalLabel = charges.length === 0 ? 'Total reservado' : reserved.length === 0 ? 'Total cobrado' : 'Total cobrado y reservado';
+  return { lines, totalLabel, total: formatTokens(sum(charges) + sum(reserved)), estimate: null };
+}
+
+/** Whether every reservation of the project is known to have ended (none open, none whose end the backend did not say). */
+export function allReservationsEnded(items: ReadonlyArray<ActivityItem>): boolean {
+  return items.filter((item) => item.type === 'tokens_reserved').every((item) => item.reservation_state && item.reservation_state !== 'reserved');
 }
 
 /** Re-exported so screens import the status helper from one place. */
