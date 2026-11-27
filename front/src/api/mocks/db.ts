@@ -208,6 +208,6 @@ export interface MockDb {
   signupNonces?: Record<string, string>;
 }
 
-export const DB_VERSION = 13;
+export const DB_VERSION = 14;
 
 export const PLATFORMS: Platform[] = ['TIKTOK', 'INSTAGRAM_REELS', 'YOUTUBE_SHORTS'];

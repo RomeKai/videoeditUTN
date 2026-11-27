@@ -112,7 +112,7 @@ Detalle y tabla de lo que ya tiene endpoint: [01, Workspace activo y roles](../i
   - `commit_partial_reservation`: se cobra una parte y el resto vuelve al saldo;
   - `rollback_reservation`: se devuelve toda (queda `SPEND` + `FAILED`).
 - Reservá dentro de `transaction.atomic`, junto con el cambio de estado que la justifica. El modelo es `approve_paper_edit` en `back/apps/videos/views.py`: toma, reserva y aprobación en una sola transacción.
-- **No le pases `project_id` a `reserve_funds`:** hoy dispara `process_video_pipeline.delay`. Ninguna llamada de hoy se lo pasa.
+- **`project_id` de `reserve_funds` no hace nada:** se acepta por compatibilidad y se ignora. Encolá lo que paga la reserva vos, cuando haga commit (`transaction.on_commit`), como la creación de un proyecto.
 - **Precio:** `PricingEngine.calculate_render_cost` (`back/apps/payments/services/pricing_engine.py`). La fórmula está en [01, Precio](../ia/01-creacion-de-proyecto.md#precio).
 - **Saldo que no alcanza:** `InsufficientFundsError` → **402** `{ "error", "required" }`. El frontend siempre abre el diálogo de saldo insuficiente.
 - **Límites del plan:** `PlanLimitExceededError` y `FeatureNotAllowedError`. Hoy salen como **403** al crear un proyecto y como **400** («Error en el motor de precios: …») al aprobar la revisión. El frontend reconoce los dos (`planLimitKind`, `approveErrorKind`). En lo nuevo, preferí 403 con `code` (`duration`, `resolution`, `seo`, `scheduling`, `crossposting`, `seats_exceeded`; ver `PLAN_LIMIT_CODES` en `front/src/api/errors.ts`).

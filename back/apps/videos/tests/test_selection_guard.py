@@ -65,7 +65,7 @@ class EmptySelectionGuardTests(IngestionHarness, TestCase):
         self.run_task(project)
 
         self.mock_select.return_value = selection_result(count=2)
-        self.run_task(project)
+        self.redispatch_task(project)
 
         project.refresh_from_db()
         self.assertEqual(project.pipeline_stage, PipelineStage.CLIPS_SELECTED)
