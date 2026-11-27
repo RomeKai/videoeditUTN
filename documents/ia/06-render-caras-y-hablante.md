@@ -60,9 +60,10 @@ sequenceDiagram
         L-->>RE: clip encuadrado al tamaño final
         RE->>RE: subtítulos, write_videofile y remove_silences opcional
         RE->>R2: upload_video
+        RE->>R2: make_clip_thumbnail (un cuadro con ffmpeg, si sale)
         alt el clip sigue RENDERING con su token
-            RE->>DB: s3_object_key y COMPLETED, sin token
-            T->>R2: delete_object de la clave anterior si cambió
+            RE->>DB: s3_object_key, thumbnail_object_key y COMPLETED, sin token
+            T->>R2: delete_object de la clave y la miniatura anteriores si cambiaron
         else una re-entrega lo tomó
             RE->>R2: delete_object de lo que subió
         end
@@ -412,6 +413,35 @@ flowchart TD
 
 Logs: `clips_zip.built` (clips, bytes y duración), `clips_zip.lock_fallback`, `clips_zip.lock_unavailable`, `clips_zip.lock_not_owned`, `clips_zip.lock_release_failed`, `clips_zip.size_failed`, `clips_zip.read_failed`, `clips_zip.store_failed`, `clips_zip.client_failed`, `clips_zip.storage_failed`, `clips_zip.no_disk`, `clips_zip.timeout`, `clips_zip.delete_failed`, `clips_zip.cleanup_failed` y `clip_download.failed`, con ids, números y la clase del error.
 
+## Ver el clip en la app: `preview_url` y `thumbnail_url`
+
+`VideoClipSerializer` manda dos URLs temporales por clip. Las arma [services/clip_media.py](../../back/apps/videos/services/clip_media.py).
+
+- **`preview_url`** reproduce el archivo renderizado. Solo la tiene un clip `completed` o `published` con `s3_object_key`; cualquier otro recibe `null`, también el que se renderiza de nuevo y conserva su archivo anterior.
+- **`thumbnail_url`** es la miniatura del clip. Es `null` si el clip no tiene `thumbnail_object_key`.
+- En R2 son GET prefirmados que duran `CLIP_DOWNLOAD_URL_TTL_SECONDS`, como el link de descarga, pero sin `Content-Disposition`: el navegador los reproduce en la página. Con archivos locales (`USE_R2=False`) son la URL absoluta de `/media/`, igual que `proxy_url`.
+- Se firman en el proceso, sin consulta ni llamada de red por clip, con un solo cliente de R2 por respuesta. Si la firma falla, el campo va en `null` y el clip se manda igual (`clip_media.url_failed`).
+- `VideoProjectSerializer` suma `thumbnail_url` del proyecto: la miniatura de su primer clip que tenga una, tomada de los clips ya serializados.
+- `ScheduledPostSerializer` manda la misma miniatura en `clip.thumbnail_url`.
+
+**La miniatura.** Al final de un render de clip que salió bien, `RenderEngine.render_clip` llama a `make_clip_thumbnail` con el archivo que todavía está en el disco del worker:
+
+1. ffmpeg saca un cuadro al segundo 1, o a la mitad si el clip dura menos de 2 segundos, como JPEG de 360 px en el lado largo. Tiene un timeout de `CLIP_THUMBNAIL_TIMEOUT_SECONDS`.
+2. El JPEG se guarda al lado del archivo del clip: la misma clave con `.jpg` (`thumbnail_key_for`). En R2 se sube con un cliente de timeouts cortos y un solo intento.
+3. La clave queda en `VideoClip.thumbnail_object_key`, en el mismo `UPDATE` que deja el clip `COMPLETED`.
+
+Es al mejor esfuerzo: si ffmpeg falla, tarda de más o la subida no sale, se registra `thumbnail.failed` con el id del clip y la clase del error, y el clip se entrega sin miniatura. Nunca falla ni reintenta el render.
+
+La miniatura se va con el archivo que muestra:
+
+- un render nuevo que se guarda borra la miniatura anterior junto con el archivo anterior (`render_clip_task`);
+- una entrega que perdió el clip borra lo que subió, miniatura incluida (`_discard_unsaved_upload`);
+- borrar el clip borra su archivo y su miniatura (`ClipDetailView.delete`).
+
+Borrar un proyecto no borra los archivos de sus clips ni sus miniaturas: hoy solo borra las filas. El render del paper edit (`render_video_segments`) no hace miniatura.
+
+`seed_demo --with-projects` arma la miniatura de sus clips listos con el mismo comando de ffmpeg.
+
 ## Errores, reintentos y casos borde
 
 | Situación | Qué pasa | Dónde |
@@ -462,7 +492,7 @@ Logs: `clips_zip.built` (clips, bytes y duración), `clips_zip.lock_fallback`, `
 ## Datos que escribe
 
 - **`VideoClip`** (aprobación): un clip `DRAFT` por segmento aprobado, nuevo o actualizado (`start_time`, `end_time`, `title`), y los `DRAFT` no aprobados borrados, salvo uno con posts programados o capas, que queda como estaba ([02](02-pipeline-de-ingesta.md#aprobación-de-la-revisión-approve-paper-edit)).
-- **`VideoClip`**: `status` (`DRAFT` → `RENDERING` → `COMPLETED`; de vuelta a `DRAFT` antes de un reintento; `FAILED` vía `on_failure` después del último intento, y de ahí solo sale con un render que pide y paga el usuario: vuelve a `DRAFT`), `s3_object_key`, `render_claim_token` (la entrega dueña mientras está `RENDERING`) y `render_unfinished_starts` (renders que empezaron y no terminaron). Los dos últimos no salen en la API (`VideoClipSerializer`).
+- **`VideoClip`**: `status` (`DRAFT` → `RENDERING` → `COMPLETED`; de vuelta a `DRAFT` antes de un reintento; `FAILED` vía `on_failure` después del último intento, y de ahí solo sale con un render que pide y paga el usuario: vuelve a `DRAFT`), `s3_object_key`, `thumbnail_object_key` (la miniatura, o `NULL`), `render_claim_token` (la entrega dueña mientras está `RENDERING`) y `render_unfinished_starts` (renders que empezaron y no terminaron). Los tres últimos no salen en la API (`VideoClipSerializer`): la miniatura sale como `thumbnail_url`.
 - **`VideoProject`** (fan-out): `pipeline_stage` `RENDER_DISPATCHED` → `COMPLETED` o `PARTIAL`, y `status` igual.
 - **`VideoProject`** (aprobación): `approved_segments`, `pipeline_stage` `RENDER_DISPATCHED`, `status` `RENDERING` y, en `metadata`, `render_reservation_id`, `render_clip_ids`, `render_seconds` y `final_duration` (y sin las claves de un render automático liquidado).
 - **`VideoProject`** (render que pide el usuario): `pipeline_stage` de `COMPLETED`, `PARTIAL` o `FAILED` a `RENDER_DISPATCHED`, `status` `RENDERING`, el estilo en un `rerender` y, en `metadata`, `clip_render_reservation_id`, `clip_render_clip_ids`, `clip_render_seconds`, `clip_render_previous` (estado y archivo de los clips que ya estaban entregados) y `replaced_reservation_ids` (sin los contadores de re-encolados del render anterior). Un clip entregado cuyo render nuevo falla vuelve a `COMPLETED` o `PUBLISHED`.
@@ -479,6 +509,7 @@ Logs: `clips_zip.built` (clips, bytes y duración), `clips_zip.lock_fallback`, `
 | `CELERY_TASK_ROUTES` | `render_clip_task` y `render_video_segments` → cola `render` | Separa los renders de la ingesta. El worker tiene que consumir `-Q celery,render`. |
 | `CELERY_VISIBILITY_TIMEOUT` | `14400` (4 h) | Cuándo Redis re-entrega un render sin ack (todo el host muerto). Un mensaje que esperó (countdown, prefetch) puede volver con su worker vivo: el lock del proyecto evita el segundo render. |
 | `RENDER_CLIP_MAX_STARTS` | `3` | Renders de un clip que empezaron y no terminaron (su worker murió), contando el que va a empezar. Pasado este número el clip falla (`render_worker_lost`). Los reintentos transitorios no cuentan. Mínimo 2. |
+| `CLIP_THUMBNAIL_TIMEOUT_SECONDS` | `8` | Cuánto puede tardar ffmpeg en sacar la miniatura de un clip. Pasado ese tiempo el clip se entrega sin miniatura. |
 | `RENDER_CLIP_SOFT_TIME_LIMIT` | `7200` (2 h) | Soft time limit de `render_clip_task`: el clip falla del todo y suelta el claim. |
 | `RENDER_CLIP_SECONDS_PER_SECOND` | `4.0` | Peor caso de segundos de render por segundo de clip. La aprobación rechaza (400) un segmento más largo que `RENDER_CLIP_SOFT_TIME_LIMIT` dividido por esto: 1800 s por defecto. |
 | `RENDER_CLIP_TIME_LIMIT` | soft + `300` | Hard time limit del render de un clip. Celery hace ack de ese mensaje: el clip lo toma `recover_stuck_renders`. Menor que `CELERY_VISIBILITY_TIMEOUT`. |

@@ -268,6 +268,11 @@ class TestExampleProjects:
         assert (finished.status, finished.pipeline_stage) == ('completed', 'completed')
         assert [clip.status for clip in finished.clips.all()] == ['completed'] * 2
         assert all(os.path.isfile(clip.s3_object_key) for clip in finished.clips.all())
+        # The ready clips have a thumbnail next to their file; the drafts have none.
+        for clip in finished.clips.all():
+            assert clip.thumbnail_object_key == clip.s3_object_key[:-len('.mp4')] + '.jpg'
+            assert os.path.isfile(clip.thumbnail_object_key)
+        assert not any(clip.thumbnail_object_key for clip in review.clips.all())
         assert Wallet.objects.get(workspace=workspace).reserved_balance == 0
 
     def test_the_api_serves_them(self):
@@ -287,6 +292,11 @@ class TestExampleProjects:
         download = client.get(f'/api/v1/clips/{clip.pk}/download/')
         assert download.status_code == 200
         assert download.data['url'].endswith('/media/demo/clips/clip-1.mp4')
+        finished = next(project for project in listed.data if project['status'] == 'completed')
+        shown = next(row for row in finished['clips'] if row['id'] == str(clip.pk))
+        assert shown['preview_url'] == 'http://testserver/media/demo/clips/clip-1.mp4'
+        assert shown['thumbnail_url'] == 'http://testserver/media/demo/clips/clip-1.jpg'
+        assert finished['thumbnail_url'] == 'http://testserver/media/demo/clips/clip-1.jpg'
 
     def test_is_idempotent_and_reset_makes_them_again(self):
         with patch(FFMPEG, side_effect=fake_ffmpeg) as ffmpeg:

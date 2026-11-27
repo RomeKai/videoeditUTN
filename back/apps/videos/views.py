@@ -178,7 +178,7 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         
         from .serializers import VideoClipSerializer
         clips = project.clips.all()
-        clips_serializer = VideoClipSerializer(clips, many=True)
+        clips_serializer = VideoClipSerializer(clips, many=True, context={'request': request})
 
         return Response({
             "project_id": project.id,
