@@ -430,8 +430,9 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
                 _discard_new_project(project)
                 return Response(refused.body, status=status.HTTP_400_BAD_REQUEST)
             except Exception as e:
-                _discard_new_project(project)
+                # Logged first: the discard deletes the row and leaves project.pk as None.
                 logger.error("Error calculando costo V3 project_id=%s error=%s", project.pk, type(e).__name__)
+                _discard_new_project(project)
                 return Response({"error": "Error interno al procesar el presupuesto del video."}, status=status.HTTP_400_BAD_REQUEST)
 
         elif project.video_url:
@@ -485,8 +486,8 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
             }, status=status.HTTP_402_PAYMENT_REQUIRED)
             
         except Exception as e:
-            _discard_new_project(project)
             logger.error("Error reserving funds on create project_id=%s error=%s", project.pk, type(e).__name__)
+            _discard_new_project(project)
             return Response({"error": "Error procesando el pago."}, status=500)
 
         not_queued = outcome.get('not_queued')
