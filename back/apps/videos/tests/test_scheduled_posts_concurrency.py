@@ -413,3 +413,34 @@ class AiBudgetRacesTests(PostRacesHarness):
         self.assertEqual(created["value"].status_code, 201)
         # The project is not failed: the re-dispatch answers its own 409, after its locks.
         self.assertEqual((redispatched["value"].status_code, redispatched["value"].json()["code"]), (409, "not_failed"))
+
+    def test_a_create_and_a_delete_of_its_workspace_never_deadlock(self):
+        """The delete locks the projects and then the workspace's row (#181); the create, the budget and then a project."""
+        Workspace.objects.create(name="Otro", owner=self.alice)  # not the owner's last one
+        # Finished projects: the delete refuses a workspace with something processing.
+        VideoProject.objects.filter(workspace=self.home).update(status=VideoProject.Status.COMPLETED)
+        clip = self.seo_clips[0]
+        locked, go = threading.Event(), threading.Event()
+        take = service.lock_ai_budget
+
+        def take_then_wait(*args, **kwargs):
+            take(*args, **kwargs)
+            locked.set()
+            go.wait(15)
+
+        with patch.object(service, "lock_ai_budget", take_then_wait), patch(SEO_DELAY):
+            create, created = self.in_thread(self.request, *self.draft(clip))
+            self.assertTrue(locked.wait(10), "the create never took the budget's lock")
+            delete, deleted = self.in_thread(
+                self.request, "delete", reverse("workspace-detail", args=[self.home.pk]), {"confirm_name": self.home.name},
+            )
+            delete.join(timeout=5)
+            go.set()
+            self.finish(create, delete)
+
+        self.assertNotIn("error", created)
+        self.assertNotIn("error", deleted)
+        self.assertEqual(deleted["value"].status_code, 204)
+        # The create went on after the delete: its clip is gone with the workspace.
+        self.assertEqual((created["value"].status_code, created["value"].json()), (400, {"video_clip": ["El clip no existe."]}))
+        self.assertFalse(Workspace.objects.filter(pk=self.home.pk).exists())
