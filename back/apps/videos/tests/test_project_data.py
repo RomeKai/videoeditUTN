@@ -660,6 +660,63 @@ class ProjectActivityMoneyTests(CapturedTaskFailures, ClipActionsHarness, APITes
             'No se pudo volver a renderizar: quedaron los clips anteriores. Te devolvimos 10 tokens.',
         )
 
+    def test_a_rerender_of_a_partial_project_that_fails_says_the_clips_it_had_stayed(self):
+        # One delivered and one failed: all of it is rendered again and nothing comes out. The
+        # delivered one is given back; the other was failed before and still is.
+        project, (done, _failed) = self.finished((DONE, FAILED))
+        response, _delay = self.post(project_url(project, "rerender"))
+        self.assertEqual(response.status_code, 202, response.content[:300])
+        for clip in VideoClip.objects.filter(project=project):
+            self.render_with(clip, side_effect=RuntimeError("bad encode"))
+
+        project.refresh_from_db()
+        done.refresh_from_db()
+        self.assertEqual((project.status, done.status), (VideoProject.Status.PARTIAL, DONE))
+        self.assertEqual(Transaction.objects.get(pk=project.metadata["clip_render_reservation_id"]).status, Transaction.Status.FAILED)
+        self.assertEqual(
+            self.render_item(project)['description'],
+            'No se pudo volver a renderizar: quedó el clip que ya tenías. Te devolvimos 10 tokens.',
+        )
+
+    def test_with_several_delivered_among_the_failed_it_says_the_clips_it_had_stayed(self):
+        project, _clips = self.finished((DONE, DONE, FAILED))
+        self.post(project_url(project, "rerender"))
+        for clip in VideoClip.objects.filter(project=project):
+            self.render_with(clip, side_effect=RuntimeError("bad encode"))
+
+        self.assertEqual(
+            self.render_item(project)['description'],
+            'No se pudo volver a renderizar: quedaron los clips que ya tenías. Te devolvimos 15 tokens.',
+        )
+
+    def test_a_rerender_charged_in_part_that_leaves_the_project_completed_says_what_the_bell_says(self):
+        from apps.notifications.services import render_finished_message
+
+        project, (first, second) = self.finished((DONE, DONE))
+        response, _delay = self.post(project_url(project, "rerender"))
+        self.assertEqual(response.status_code, 202, response.content[:300])
+        self.render_with(first, side_effect=fresh_render)
+        self.render_with(second, side_effect=RuntimeError("bad encode"))
+
+        project.refresh_from_db()
+        second.refresh_from_db()
+        # The one that failed got back the file it had: nothing in error, half the render charged.
+        self.assertEqual((project.status, second.status), (VideoProject.Status.COMPLETED, DONE))
+        paid = Transaction.objects.get(pk=project.metadata["clip_render_reservation_id"])
+        self.assertEqual((paid.status, paid.amount, paid.reserved_amount), (Transaction.Status.COMPLETED, Decimal("5.00"), Decimal("10.00")))
+        text = self.render_item(project)['description']
+        self.assertEqual(
+            text, 'No pudimos volver a generar todos los clips: los que ya tenías quedaron como estaban. Te devolvimos 5 tokens.',
+        )
+        # Word for word the body of the bell for this close.
+        self.assertEqual(text, render_finished_message(project, Decimal("5.00"))[1])
+
+    def test_a_render_charged_in_part_that_ends_partial_still_counts_its_clips(self):
+        # An approval with a clip that failed: nothing was given back to a clip, it is in error.
+        project, _clips = self.finished((DONE, FAILED))
+
+        self.assertEqual(self.render_item(project)['description'], 'Terminó el render: 1 clip listo y 1 con error')
+
     def test_a_whole_video_rendered_again_that_fails_says_the_video_before_stayed(self):
         project, clip = self.whole_video()
         response, _delay = self.post(project_url(project, "rerender"))
