@@ -196,6 +196,21 @@ describe('D1 · Proyecto', () => {
     expect(within(alert).queryByText(/Ya te devolvimos/)).toBeNull();
   });
 
+  it('creación cobrada y render devuelto: muestra lo que volvió (de la actividad) y no lo dice dos veces', async () => {
+    open('Falló: ModerationBlockedError', '', 'todos-los-estados', 'lucia', (project, db) => {
+      const refund = db.activity.find((entry) => entry.project === project.id && entry.type === 'tokens_refunded');
+      if (!refund) throw new Error('El proyecto sembrado no tiene su devolución en la actividad');
+      // The refund is of a render reservation; the creation was charged.
+      refund.amount = 9;
+      project.cost = { amount: 20, state: 'charged', transaction_id: null };
+    });
+    const alert = await screen.findByRole('alert');
+    expect(await within(alert).findByText(/Te devolvimos/)).toHaveTextContent('Te devolvimos 9 tokens.');
+    expect(within(alert).getByText('Algo falló de nuestro lado. Podés intentarlo de nuevo.')).toBeInTheDocument();
+    expect(within(alert).queryByText(/Ya te devolvimos/)).toBeNull();
+    expect(within(alert).getByRole('link', { name: /Ver en Movimientos/ })).toBeInTheDocument();
+  });
+
   it('error de moderación: no dice la categoría y ofrece escribirnos', async () => {
     open('Falló: UnsafeContentError', '');
     const alert = await screen.findByRole('alert');

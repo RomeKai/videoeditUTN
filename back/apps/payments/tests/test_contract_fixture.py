@@ -74,11 +74,11 @@ class ContractFixtureHarness(WalletHarness):
         # A partial charge: 20 reserved, 5 charged, 15 back.
         movement(
             self.home, '5', at=local(2026, 10, 11, 13), settled=local(2026, 10, 11, 13, 30), project=interview,
-            category=RENDER, description='Render Final (Paper Edit): Entrevista con Ana', reserved='20',
+            category=RENDER, description='Render de los clips aprobados: Entrevista con Ana', reserved='20',
         )
         movement(
             self.home, '7.25', status=FAILED, at=local(2026, 10, 12), settled=local(2026, 10, 12, 12, 5), project=podcast,
-            category=RENDER, description='Render Final (Paper Edit): Podcast 12', reserved='7.25',
+            category=RENDER, description='Render de los clips aprobados: Podcast 12', reserved='7.25',
         )
         movement(self.home, '1000', DEPOSIT, PENDING, at=local(2026, 10, 13), description='Compra de 1000 tokens')
         wallet = Wallet.objects.get(workspace=self.home)

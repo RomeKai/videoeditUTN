@@ -239,17 +239,14 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         return uploaded_by_detail(obj)
 
     def get_cost(self, obj) -> dict | None:
-        from .services.project_summary import creation_reservations, project_cost
-        # Every project of the response at once (a page of the list): one query.
-        root = self.root.instance
-        projects = list(root) if isinstance(root, (list, tuple, models.QuerySet)) else []
-        if obj not in projects:
-            projects.append(obj)
-        return project_cost(obj, creation_reservations(projects, self.context))
+        from .services.project_summary import response_cost
+        # The reservations of every project of the response (the list is not
+        # paginated) are read once, in one query; each project then looks up its own.
+        return response_cost(obj, self.root.instance, self.context)
 
     def get_eta_seconds(self, obj) -> int | None:
         from .services.project_summary import eta_seconds
-        return eta_seconds(obj)
+        return eta_seconds(obj, self.context)
 
     def get_stage_timings(self, obj) -> dict:
         from .services.project_summary import stage_timings

@@ -169,6 +169,20 @@ describe('estado del proyecto (sección 3 del mapa)', () => {
     expect(view.text).toBe('No encontramos voz en el video. OneCreator elige clips a partir de lo que se dice. Te devolvimos 1.755 tokens.');
   });
 
+  it('el mensaje genérico no repite la devolución cuando el monto va al lado', () => {
+    const failed = { status: 'failed', pipeline_error_code: 'ModerationBlockedError' } as const;
+    const refunded = describeProjectStatus(project({ ...failed, cost: { amount: 6.3, state: 'refunded', transaction_id: null } }));
+    expect(refunded.text).toBe('Algo falló de nuestro lado. Podés intentarlo de nuevo. Te devolvimos 6,30 tokens.');
+    expect(describeProjectStatus(project({ ...failed, pipeline_error_code: 'IngestionStuck', cost: { amount: 6.3, state: 'refunded', transaction_id: null } })).text).toBe(
+      'El proceso se trabó. Podés intentarlo de nuevo. Te devolvimos 6,30 tokens.',
+    );
+    // Without a refund to show, the message keeps saying it.
+    expect(describeProjectStatus(project({ ...failed, cost: { amount: 6.3, state: 'charged', transaction_id: null } })).text).toBe(
+      'Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo.',
+    );
+    expect(describeProjectStatus(project(failed)).text).toBe('Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo.');
+  });
+
   it('grupos del filtro y tipo de movimiento', () => {
     expect(projectStatusGroup(project({ status: 'ingesting' }))).toBe('in_progress');
     expect(projectStatusGroup(project({ status: 'partial' }))).toBe('ready');
