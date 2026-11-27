@@ -2,25 +2,46 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError } from '@/api/errors';
 import { useConfirmPasswordReset, useLogin, useRequestPasswordReset } from '@/api/hooks';
 import { fieldError } from '@/lib/error-messages';
 import { AuthCard } from '@/shell/PublicShell';
 import { Banner, Button, Field, Input, Num, PasswordInput, cx, useToast } from '@/ui';
 import styles from './acceso.module.css';
-import { emailError, formatCountdown, HOME, MIN_PASSWORD, newPasswordError, requestErrorMessage, retryAfterSeconds, useCooldown } from './lib';
+import { emailError, formatCountdown, HOME, MIN_PASSWORD, newPasswordError, requestErrorMessage, retryAfterSeconds, takeResetLink, useCooldown } from './lib';
 
 export interface RecoverScreenProps {
-  /** `?token=`: the link of the email. With it the screen is step 2. */
-  token?: string | null;
-  /** `?email=`: the account the link belongs to (step 2), or a prefill for step 1. */
+  /** `?email=`: a prefill for step 1. The link of the email brings its token and email in the fragment (`#token=…&email=…`). */
   email?: string | null;
 }
 
-/** A4 · Recuperar contraseña (artboard A4-Recuperar): step 1 asks for the link, step 2 sets the new password. */
-export function RecoverScreen({ token, email }: RecoverScreenProps) {
-  return token ? <NewPassword token={token} email={email ?? ''} /> : <RequestLink initialEmail={email ?? ''} />;
+type ResetLink = { token: string; email: string } | null;
+
+/**
+ * A4 · Recuperar contraseña (artboard A4-Recuperar): step 1 asks for the link, step 2 sets the new password.
+ * Step 2 is the link of the email: its token and email come in the fragment, which only the browser sees,
+ * so the screen knows which step it is once it has read it (`takeResetLink`, which also drops it from the URL).
+ */
+export function RecoverScreen({ email }: RecoverScreenProps) {
+  const [link, setLink] = useState<ResetLink | undefined>(undefined);
+  // Taken once: the fragment is gone after the first read (and React may run the effect twice).
+  const taken = useRef<ResetLink | undefined>(undefined);
+
+  useEffect(() => {
+    if (taken.current === undefined) taken.current = takeResetLink();
+    setLink(taken.current);
+    // The link pasted in this same tab changes only the fragment: no new page load.
+    const onHashChange = () => {
+      const found = takeResetLink();
+      if (found) setLink(found);
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  if (link === undefined) return null;
+  return link ? <NewPassword key={link.token} token={link.token} email={link.email} /> : <RequestLink initialEmail={email ?? ''} />;
 }
 
 const backToLogin = (
