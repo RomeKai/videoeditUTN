@@ -1,4 +1,4 @@
-import type { Project, ProjectListItem } from '@/api/contracts/projects';
+import type { Project, ProjectListItem, ProjectStatusGroup } from '@/api/contracts/projects';
 import type { ProjectStatusView } from '@/lib/project-status';
 import type { ButtonVariant, IconName } from '@/ui';
 
@@ -102,3 +102,56 @@ export const ORDERINGS = [
 ] as const;
 
 export type Ordering = (typeof ORDERINGS)[number]['value'];
+
+/** What B2 shows: the filter, the order, the page and the search. */
+export interface ProjectsListState {
+  group: ProjectStatusGroup;
+  ordering: Ordering;
+  page: number;
+  search: string;
+}
+
+export const DEFAULT_LIST_STATE: ProjectsListState = { group: 'all', ordering: '-created_at', page: 1, search: '' };
+
+/** The query parameters of `/proyectos` (Spanish, like `?espacio=` and `?desde=`). */
+export const LIST_PARAMS = { group: 'estado', ordering: 'orden', page: 'pagina', search: 'buscar' } as const;
+
+/** No project has a longer title (`VideoProject.title`): a longer search is cut. */
+const MAX_SEARCH = 255;
+
+type Query = Pick<URLSearchParams, 'get' | 'toString'>;
+
+/**
+ * The list a URL asks for. Whatever is missing or is not a value the screen knows (a link someone
+ * edited) is the default: a URL never leaves the list without a filter or on page 0.
+ */
+export function readListParams(params: Query): ProjectsListState {
+  const group = params.get(LIST_PARAMS.group);
+  const ordering = params.get(LIST_PARAMS.ordering);
+  const page = params.get(LIST_PARAMS.page) ?? '';
+  return {
+    group: STATUS_FILTERS.find((item) => item.value === group)?.value ?? DEFAULT_LIST_STATE.group,
+    ordering: ORDERINGS.find((item) => item.value === ordering)?.value ?? DEFAULT_LIST_STATE.ordering,
+    page: /^[1-9]\d{0,5}$/.test(page) ? Number(page) : DEFAULT_LIST_STATE.page,
+    search: (params.get(LIST_PARAMS.search) ?? '').trim().slice(0, MAX_SEARCH),
+  };
+}
+
+/**
+ * The query string of `state`, without the `?`: each value that is not the default, and every other
+ * parameter `current` has (the workspace of a link, `?espacio=`) as it is. All defaults: ''.
+ */
+export function listQuery(state: ProjectsListState, current?: Query): string {
+  const next = new URLSearchParams(current?.toString() ?? '');
+  const values: Record<keyof ProjectsListState, string> = {
+    group: state.group === DEFAULT_LIST_STATE.group ? '' : state.group,
+    ordering: state.ordering === DEFAULT_LIST_STATE.ordering ? '' : state.ordering,
+    page: state.page > 1 ? String(Math.floor(state.page)) : '',
+    search: state.search.trim().slice(0, MAX_SEARCH),
+  };
+  for (const key of Object.keys(LIST_PARAMS) as Array<keyof ProjectsListState>) {
+    if (values[key]) next.set(LIST_PARAMS[key], values[key]);
+    else next.delete(LIST_PARAMS[key]);
+  }
+  return next.toString();
+}

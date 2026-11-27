@@ -1,8 +1,9 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { server } from '@/api/mocks/server';
 import { ProjectsScreen } from './ProjectsScreen';
+import { nav } from './testing-nav';
 import { allowSlowScreens, renderScreen, startScenario } from '@/testing';
 
 allowSlowScreens();
@@ -10,6 +11,10 @@ allowSlowScreens();
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
+
+// The list keeps its filter, order, page and search in the URL: a URL that changes, empty before each test.
+vi.mock('next/navigation', async () => (await import('./testing-nav')).navigationMock());
+afterEach(() => nav.set(''));
 
 const table = () => screen.findByRole('table', { name: 'Proyectos del workspace' });
 const rowOf = async (title: string) => {
@@ -90,6 +95,100 @@ describe('B2 · Proyectos', () => {
     await user.click(screen.getByRole('menuitemradio', { name: 'Título (A–Z)' }));
     expect(await screen.findByText(/1–25 de 64 proyectos/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Orden: título (a–z)' })).toBeInTheDocument();
+  });
+
+  it('el filtro, el orden, la página y la búsqueda van a la URL, sin los valores por defecto', async () => {
+    startScenario('muchos-proyectos');
+    const user = userEvent.setup();
+    renderScreen(<ProjectsScreen />);
+    await table();
+    expect(nav.get()).toBe('');
+
+    await user.click(screen.getByRole('button', { name: 'Siguiente' }));
+    await waitFor(() => expect(nav.get()).toBe('pagina=2'));
+    await user.click(screen.getByRole('button', { name: 'Orden: más recientes' }));
+    await user.click(screen.getByRole('menuitemradio', { name: 'Título (A–Z)' }));
+    // Another order starts on the first page: the page leaves the URL with it.
+    await waitFor(() => expect(nav.get()).toBe('orden=title'));
+    const filters = screen.getByRole('group', { name: 'Filtrar por estado' });
+    await user.click(within(filters).getByRole('button', { name: /Listos/ }));
+    await waitFor(() => expect(nav.get()).toBe('orden=title&estado=ready'));
+    await user.type(screen.getByRole('searchbox', { name: 'Buscar proyectos por título' }), 'proyecto 1');
+    await waitFor(() => expect(new URLSearchParams(nav.get()).get('buscar')).toBe('proyecto 1'));
+
+    // Back to the defaults: nothing of the list is left in the URL.
+    await user.clear(screen.getByRole('searchbox', { name: 'Buscar proyectos por título' }));
+    await user.click(within(filters).getByRole('button', { name: /Todos/ }));
+    await user.click(screen.getByRole('button', { name: 'Orden: título (a–z)' }));
+    await user.click(screen.getByRole('menuitemradio', { name: 'Más recientes' }));
+    await waitFor(() => expect(nav.get()).toBe(''));
+  });
+
+  it('al cargar, la URL devuelve la página, el filtro, el orden y la búsqueda (una recarga no los pierde)', async () => {
+    startScenario('muchos-proyectos');
+    const user = userEvent.setup();
+    const first = renderScreen(<ProjectsScreen />);
+    await table();
+    await user.click(screen.getByRole('button', { name: 'Orden: más recientes' }));
+    await user.click(screen.getByRole('menuitemradio', { name: 'Más antiguos' }));
+    await waitFor(() => expect(nav.get()).toBe('orden=created_at'));
+    await user.click(screen.getByRole('button', { name: 'Siguiente' }));
+    expect(await screen.findByText(/26–50 de 64 proyectos/)).toBeInTheDocument();
+    const shown = (await screen.findAllByRole('row')).map((row) => row.textContent);
+    expect(nav.get()).toBe('orden=created_at&pagina=2');
+    first.unmount();
+
+    // The reload: a new screen, the same URL.
+    renderScreen(<ProjectsScreen />);
+    expect(await screen.findByText(/26–50 de 64 proyectos/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Orden: más antiguos' })).toBeInTheDocument();
+    expect((await screen.findAllByRole('row')).map((row) => row.textContent)).toEqual(shown);
+    expect(nav.get()).toBe('orden=created_at&pagina=2');
+  });
+
+  it('abre con el filtro y la búsqueda de un link, y deja como están los parámetros que no son suyos', async () => {
+    startScenario('estudio-norte');
+    nav.set('espacio=abc&estado=failed&buscar=webinar&orden=cualquiera&pagina=-3');
+    const user = userEvent.setup();
+    renderScreen(<ProjectsScreen />);
+    await table();
+    expect(screen.getByRole('searchbox', { name: 'Buscar proyectos por título' })).toHaveValue('webinar');
+    const filters = screen.getByRole('group', { name: 'Filtrar por estado' });
+    expect(within(filters).getByRole('button', { name: /Con error/ })).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByRole('link', { name: /Webinar de lanzamiento/ })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Podcast Ep. 42/ })).not.toBeInTheDocument();
+    // What the screen does not know (an order that does not exist, page -3) is the default.
+    expect(screen.getByRole('button', { name: 'Orden: más recientes' })).toBeInTheDocument();
+
+    await user.click(within(filters).getByRole('button', { name: /Todos/ }));
+    await waitFor(() => expect(new URLSearchParams(nav.get()).get('estado')).toBeNull());
+    expect(new URLSearchParams(nav.get()).get('espacio')).toBe('abc');
+    expect(new URLSearchParams(nav.get()).get('buscar')).toBe('webinar');
+  });
+
+  it('una página de la URL que ya no existe vuelve a la última que hay', async () => {
+    startScenario('estudio-norte');
+    nav.set('pagina=9');
+    renderScreen(<ProjectsScreen />);
+    expect(await screen.findByText(/1–8 de 8 proyectos/, {}, { timeout: 5000 })).toBeInTheDocument();
+    await waitFor(() => expect(nav.get()).toBe(''));
+  });
+
+  it('un link a Proyectos sin parámetros, estando en la lista filtrada, la deja como al entrar', async () => {
+    startScenario('estudio-norte');
+    nav.set('estado=failed&buscar=webinar');
+    renderScreen(<ProjectsScreen />);
+    await table();
+    expect(screen.queryByRole('link', { name: /Podcast Ep. 42/ })).not.toBeInTheDocument();
+
+    // What the sidebar link does: the same path, no query.
+    nav.set('');
+
+    expect(await screen.findByRole('link', { name: /Podcast Ep. 42/ })).toBeInTheDocument();
+    expect(screen.getByRole('searchbox', { name: 'Buscar proyectos por título' })).toHaveValue('');
+    // And the search that was typed is not written back.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(nav.get()).toBe('');
   });
 
   it('recuerda la vista de grilla en el navegador', async () => {

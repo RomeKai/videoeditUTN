@@ -1,7 +1,8 @@
 'use client';
 
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_PAGE_SIZE } from '@/api/contracts/common';
 import type { ProjectListItem as Project, ProjectStatusGroup } from '@/api/contracts/projects';
 import { ApiError } from '@/api/errors';
@@ -9,7 +10,7 @@ import { useProjects } from '@/api/hooks';
 import { keys } from '@/api/query';
 import { DeleteProjectDialog } from '@/dialogs';
 import { plural } from '@/lib/format';
-import { useDebounced, useIsMobile, useStoredState } from '@/lib/hooks';
+import { useIsMobile, useStoredState } from '@/lib/hooks';
 import { describeProjectStatus } from '@/lib/project-status';
 import { LoadError } from '@/shell/LoadError';
 import { useSession } from '@/shell/session';
@@ -33,13 +34,20 @@ import { ProjectsCards, ProjectsGrid, ProjectsTable } from './ProjectItems';
 import { ProjectsEmpty } from './ProjectsEmpty';
 import styles from './Projects.module.css';
 import { RenameProjectDialog } from './RenameProjectDialog';
-import { ORDERINGS, STATUS_FILTERS, type Ordering } from './project-view';
+import { listQuery, ORDERINGS, readListParams, STATUS_FILTERS, type Ordering, type ProjectsListState } from './project-view';
 
 type View = 'list' | 'grid';
+
+/** How long the search waits after the last key before it asks. */
+const SEARCH_DELAY_MS = 300;
 
 /**
  * B2 · Proyectos: todo lo que pasa en el workspace, con buscador, filtro por estado, orden y dos vistas.
  * The server pages, filters, searches, orders and counts the filters; the screen only asks.
+ *
+ * The filter, the order, the page and the search live in the URL (`?estado=&orden=&pagina=&buscar=`, each
+ * one only when it is not the default): a reload, a shared link or coming back from a project show the same
+ * list. The URL is what the screen reads; a choice replaces it (no history entry per click).
  */
 export function ProjectsScreen() {
   const { workspace } = useSession();
@@ -47,20 +55,53 @@ export function ProjectsScreen() {
   const queryClient = useQueryClient();
   const mobile = useIsMobile();
   const [view, setView] = useStoredState<View>('oc.proyectos.vista', 'list');
-  const [search, setSearch] = useState('');
-  const [group, setGroup] = useState<ProjectStatusGroup>('all');
-  const [ordering, setOrdering] = useState<Ordering>('-created_at');
-  const [paging, setPaging] = useState({ scope: '', page: 1 });
+  const router = useRouter();
+  const pathname = usePathname();
+  const params = useSearchParams();
+  const inUrl = useMemo(() => readListParams(params), [params]);
+  const { group, ordering, search: term } = inUrl;
+  const [search, setSearch] = useState(term);
   const [renaming, setRenaming] = useState<Project | null>(null);
   const [deleting, setDeleting] = useState<Project | null>(null);
-  const term = useDebounced(search.trim(), 300);
 
-  // The page belongs to one search in one workspace: a new search or another workspace starts on the first
-  // page in the same render, so no request ever asks for a page of the previous list.
+  const write = useCallback(
+    (changes: Partial<ProjectsListState>) => {
+      const query = listQuery({ ...readListParams(params), ...changes }, params);
+      router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    },
+    [params, pathname, router],
+  );
+
+  // The search asks a moment after the last key, and starts on the first page: both change in the URL at
+  // once, so no request ever asks for a page of the previous search.
+  const typed = search.trim();
+  const written = useRef(term);
+  useEffect(() => {
+    // The search of the URL changed and this screen did not write it (a link back to Proyectos): the field follows.
+    if (term === written.current) return;
+    written.current = term;
+    setSearch(term);
+  }, [term]);
+  useEffect(() => {
+    if (typed === term) return;
+    const timer = window.setTimeout(() => {
+      written.current = typed;
+      write({ search: typed, page: 1 });
+    }, SEARCH_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [typed, term, write]);
+
+  // The page belongs to one workspace: in another one the list starts on the first page in the same
+  // render, while the URL is still the one of the workspace before.
   const workspaceId = workspace?.id ?? null;
-  const scope = `${workspaceId ?? ''}|${term}`;
-  const askedPage = paging.scope === scope ? paging.page : 1;
-  const setPage = (next: number) => setPaging({ scope, page: Math.max(1, next) });
+  const [pageOf, setPageOf] = useState<{ workspace: string | null; stale: unknown }>({ workspace: workspaceId, stale: null });
+  if (pageOf.workspace !== workspaceId) setPageOf({ workspace: workspaceId, stale: pageOf.workspace !== null && inUrl.page > 1 ? params : null });
+  const stalePage = pageOf.workspace !== workspaceId ? pageOf.workspace !== null : pageOf.stale === params;
+  const askedPage = stalePage ? 1 : inUrl.page;
+  useEffect(() => {
+    if (pageOf.stale === params && inUrl.page > 1) write({ page: 1 });
+  }, [pageOf, params, inUrl.page, write]);
+  const setPage = (next: number) => write({ page: Math.max(1, next) });
 
   const query = useProjects({
     page: askedPage,
@@ -82,28 +123,23 @@ export function ProjectsScreen() {
   const anyInProgress = projects.some((project) => describeProjectStatus(project).inProgress);
   const order = ORDERINGS.find((item) => item.value === ordering) ?? ORDERINGS[0];
 
-  // A page past the end answers 404: the last row was deleted (here or by someone else), or the list got
-  // shorter while polling. Step back until a page exists.
+  // A page past the end answers 404: the last row was deleted (here or by someone else), the list got
+  // shorter while polling, or the URL names a page that is not there. Step back until a page exists.
   const pastTheEnd = query.error instanceof ApiError && query.error.status === 404 && askedPage > 1;
   useEffect(() => {
     if (pastTheEnd) {
       // The pages kept in memory are as outdated as the one that just disappeared.
       void queryClient.invalidateQueries({ queryKey: keys.projects.all });
-      setPaging((current) => ({ scope, page: Math.max(1, (current.scope === scope ? current.page : 1) - 1) }));
-    } else if (data && data.results.length === 0 && data.count > 0 && askedPage > 1) setPaging({ scope, page: Math.max(1, Math.ceil(data.count / DEFAULT_PAGE_SIZE)) });
-  }, [pastTheEnd, data, askedPage, scope, queryClient]);
+      write({ page: Math.max(1, askedPage - 1) });
+    } else if (data && !query.isPlaceholderData && data.results.length === 0 && data.count > 0 && askedPage > 1) write({ page: Math.max(1, Math.ceil(data.count / DEFAULT_PAGE_SIZE)) });
+  }, [pastTheEnd, data, query.isPlaceholderData, askedPage, write, queryClient]);
 
-  const pickGroup = (next: ProjectStatusGroup) => {
-    setGroup(next);
-    setPage(1);
-  };
-  const pickOrdering = (next: Ordering) => {
-    setOrdering(next);
-    setPage(1);
-  };
+  const pickGroup = (next: ProjectStatusGroup) => write({ group: next, page: 1 });
+  const pickOrdering = (next: Ordering) => write({ ordering: next, page: 1 });
   const clearFilters = () => {
     setSearch('');
-    pickGroup('all');
+    written.current = '';
+    write({ group: 'all', search: '', page: 1 });
   };
 
   const filterOptions = STATUS_FILTERS.map((option) => ({ ...option, count: counts?.[option.value] }));

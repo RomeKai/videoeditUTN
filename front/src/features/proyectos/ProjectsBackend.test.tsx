@@ -1,18 +1,23 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { delay, http, HttpResponse } from 'msw';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { API_URL } from '@/api/config';
 import real from '@/api/contracts/drf/responses.json';
 import { server } from '@/api/mocks/server';
 import { loadDb, saveDb } from '@/api/mocks/state';
 import { ProjectsScreen } from './ProjectsScreen';
+import { nav } from './testing-nav';
 import { allowSlowScreens, renderScreen, startScenario } from '@/testing';
 
 allowSlowScreens();
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
+
+// The list keeps its filter, order, page and search in the URL: a URL that changes, empty before each test.
+vi.mock('next/navigation', async () => (await import('./testing-nav')).navigationMock());
+afterEach(() => nav.set(''));
 
 const rows = () => within(screen.getByRole('table', { name: 'Proyectos del workspace' })).getAllByRole('row').slice(1);
 const titles = () => rows().map((row) => row.querySelector('a')?.textContent?.replace(/^(Archivo|Link[^:]*): /, '') ?? '');
@@ -99,8 +104,9 @@ describe('B2 · el servidor pagina, filtra, busca y ordena', () => {
     const sample = titles()[3] ?? '';
     await user.type(screen.getByRole('searchbox', { name: 'Buscar proyectos por título' }), `  ${sample.toUpperCase()} `);
     await waitFor(() => expect(lastQuery(asked).get('search')).toBe(sample.toUpperCase()));
-    await waitFor(() => expect(titles()).toContain(sample));
-    expect(rows().length).toBeLessThan(25);
+    // The page before stays on screen until the search answers: wait for the shorter list.
+    await waitFor(() => expect(rows().length).toBeLessThan(25));
+    expect(titles()).toContain(sample);
     // The counts follow the search.
     expect(within(filters).getByRole('button', { name: /Todos/ })).toHaveTextContent(`Todos${rows().length}`);
   });
