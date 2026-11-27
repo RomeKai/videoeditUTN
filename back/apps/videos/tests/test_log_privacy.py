@@ -15,7 +15,7 @@ from django.contrib.auth import get_user_model
 from django.db import DatabaseError
 from django.test import TestCase, override_settings
 
-from apps.integrations.ayrshare_api import AyrshareAPIError
+from apps.integrations.tests.helpers import give_social_profile
 from apps.users.models import Workspace
 from apps.videos.models import ScheduledPost, VideoClip, VideoProject
 from apps.videos.services.ai.errors import NonRetryableAIError
@@ -39,6 +39,8 @@ SECRET = "SECRET_LOG_X"
 TITLE_MARKER = "SECRET_TITLE_X"
 TEXT_MARKER = "SECRET_CAPTION_X"
 MARKERS = (SECRET, TITLE_MARKER, TEXT_MARKER)
+# A workspace's Profile-Key is a credential: never in a log line either.
+PROFILE_KEY = "PROFILE_KEY_SECRET_X"
 
 
 class _Collector(logging.Handler):
@@ -187,9 +189,8 @@ class RenderTaskLogTests(LogPrivacyAssertions, CapturedTaskFailures, TestCase):
     def setUp(self):
         user = User.objects.create_user(username="lp", email="lp@test.com", password="pw")
         self.user = user
-        self.workspace = Workspace.objects.create(
-            name="LP", owner=user, ayrshare_profile_key="profile-key"
-        )
+        self.workspace = Workspace.objects.create(name="LP", owner=user)
+        give_social_profile(self.workspace, "profile-key")
         self.project = VideoProject.objects.create(
             workspace=self.workspace,
             uploaded_by=user,
@@ -262,9 +263,8 @@ class RenderTaskLogTests(LogPrivacyAssertions, CapturedTaskFailures, TestCase):
 class SocialTaskLogTests(LogPrivacyAssertions, CapturedTaskFailures, TestCase):
     def setUp(self):
         user = User.objects.create_user(username="sl", email="sl@test.com", password="pw")
-        workspace = Workspace.objects.create(
-            name="SL", owner=user, ayrshare_profile_key="profile-key"
-        )
+        workspace = Workspace.objects.create(name="SL", owner=user)
+        give_social_profile(workspace, PROFILE_KEY)
         project = VideoProject.objects.create(
             workspace=workspace,
             uploaded_by=user,
@@ -281,6 +281,7 @@ class SocialTaskLogTests(LogPrivacyAssertions, CapturedTaskFailures, TestCase):
             publish_at="2030-01-01T00:00:00Z",
             status=ScheduledPost.Status.QUEUED,
             generated_caption=TEXT_MARKER,
+            tiktok={"privacy_level": "SELF_ONLY"},
         )
 
     def test_generic_publish_failure_does_not_log_message(self):
@@ -295,17 +296,24 @@ class SocialTaskLogTests(LogPrivacyAssertions, CapturedTaskFailures, TestCase):
         self.assert_clean(logs)
 
     def test_ayrshare_error_does_not_log_message(self):
+        """Ayrshare's refusal quotes the post and explains in words: neither reaches a log, nor error_log."""
+        answer = MagicMock(status_code=400, headers={})
+        answer.json.return_value = {
+            "status": "error", "id": "ayr-1", "postIds": [], "post": TEXT_MARKER,
+            "errors": [{"action": "post", "status": "error", "code": 999, "platform": "tiktok",
+                        "message": f"{SECRET} {TEXT_MARKER}", "post": TEXT_MARKER}],
+        }
         with patch(
             "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
             return_value="https://signed.test/x",
-        ), patch(
-            "apps.integrations.ayrshare_api.AyrshareClient.send_post",
-            side_effect=AyrshareAPIError(f"{SECRET} {TEXT_MARKER}"),
-        ):
+        ), patch("apps.integrations.social.ayrshare.requests.request", return_value=answer) as sent:
             with capture_logs() as logs:
                 upload_to_social_network.apply(args=[str(self.post.id)])
 
-        self.assert_clean(logs)
+        sent.assert_called_once()
+        self.assert_clean(logs, MARKERS + (PROFILE_KEY,))
+        self.post.refresh_from_db()
+        self.assertEqual(self.post.error_log, "provider_rejected (ayrshare http=400 code=999)")
 
     def test_seo_safety_violation_does_not_log_message(self):
         from apps.core.security import UnsafeContentError

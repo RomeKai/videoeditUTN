@@ -203,7 +203,7 @@ class RedisDownTests(TestCase):
         from apps.videos.tasks.social import upload_to_social_network
 
         with override_settings(CACHES=self.caches), redis_down(), \
-                patch("apps.integrations.ayrshare_api.AyrshareClient.send_post") as send:
+                patch("apps.integrations.social.ayrshare.AyrshareProvider.publish") as send:
             with self.assertRaises(RedisConnectionError):
                 upload_to_social_network(uuid.uuid4())
 

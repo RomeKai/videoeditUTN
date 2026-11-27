@@ -21,6 +21,7 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient, APITransactionTestCase
 
+from apps.integrations.tests.helpers import PUBLISH as SEND, PUBLISHED, give_social_profile
 from apps.payments.models import SubscriptionPlan
 from apps.users.models import Workspace
 from apps.videos.models import ScheduledPost, VideoClip, VideoProject
@@ -30,7 +31,6 @@ from apps.videos.tasks import dispatch_scheduled_posts_batch, upload_to_social_n
 User = get_user_model()
 Status = ScheduledPost.Status
 
-SEND = "apps.integrations.ayrshare_api.AyrshareClient.send_post"
 PRESIGN = "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url"
 UPLOAD = "apps.videos.tasks.upload_to_social_network.apply_async"
 SEO_DELAY = "apps.videos.tasks.process_video_seo.delay"
@@ -46,8 +46,8 @@ class PostRacesHarness(APITransactionTestCase):
             subscription_plan=SubscriptionPlan.objects.create(
                 name="Pro de carrera", allow_scheduling=True, allow_crossposting=True, max_video_duration_seconds=3600,
             ),
-            ayrshare_profile_key="perfil",
         )
+        give_social_profile(self.home)
         project = VideoProject.objects.create(
             workspace=self.home, uploaded_by=self.alice, title="Entrevista", source_file="videos/raw/a.mp4",
         )
@@ -119,9 +119,9 @@ class PostRacesHarness(APITransactionTestCase):
         """Ayrshare, answering only once ``sent`` is set: the request in the test decides first."""
         sent = threading.Event()
 
-        def answer(**kwargs):
+        def answer(*args, **kwargs):
             sent.wait(15)
-            return {"id": "ayr-1"}
+            return PUBLISHED
 
         return sent, patch(SEND, side_effect=answer)
 
@@ -147,7 +147,7 @@ class CancelRacesTests(PostRacesHarness):
             self.finish(worker)
 
         self.assertNotIn("error", worked)
-        self.assertEqual(worked["value"], "Published via Ayrshare: instagram")
+        self.assertEqual(worked["value"], "Published via Ayrshare: INSTAGRAM_REELS")
         response = cancelled["value"]
         self.assertEqual((response.status_code, response.json()["code"]), (409, "post_in_flight"))
         post.refresh_from_db()

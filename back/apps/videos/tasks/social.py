@@ -116,26 +116,38 @@ def dispatch_scheduled_posts_batch():
 @celery_app.task(name='apps.videos.tasks.upload_to_social_network', bind=True, max_retries=3)
 def upload_to_social_network(self, post_id):
     """
-    Worker: Uploads a video clip via Ayrshare API.
+    Worker: publishes one post through the workspace's provider
+    (apps.integrations.social, today Ayrshare).
     Lifecycle:
-    1. Lock verification (Redis).
-    2. S3 Presigned URL generation (Short-lived).
-    3. Ayrshare delegation with User Profile Key.
-    4. Exponential Backoff on failure.
+    1. Lock (Redis): one attempt at a time per post.
+    2. Under the post's row lock: only a QUEUED or PROCESSING post goes on.
+       Without the workspace's profile, or a TikTok post without its options,
+       it fails here with a code, and nothing is sent.
+    3. The clip's presigned URL, the text (the user's, or else the AI's) and
+       the provider call, with the post's idempotency key.
+    4. A retryable error backs off (60, 120, 240 s); a permanent one, or an
+       unknown outcome, fails the post with a code and is never retried.
+
+    `publish_key_unclear` is what makes the key safe across attempts: it is
+    set before each call and cleared only by a clear answer. While an earlier
+    attempt with the current key is unclear (it may have published), the key
+    never changes, so the provider refuses a second copy; and a refusal, or
+    running out of retries, is an unknown outcome, never "try again".
     """
-    from apps.integrations.ayrshare_api import (
-        AyrshareAPIError, AyrshareClient, AyrshareOutcomeUnknownError,
-    )
+    from apps.integrations import social
+    from apps.integrations.social import errors as codes
+    from apps.videos.services.scheduled_posts import LONGEST_RETRY_COUNTDOWN
+    from apps.videos.services.seo_engine import compose_caption
     from apps.videos.services.storage_service import CloudflareR2Manager
 
     lock_id = f"lock_post_publish_{post_id}"
     # The cache that raises (apps/core/cache.py): with Redis down the task fails
-    # instead of publishing without the lock. Outlives the slowest Ayrshare call
+    # instead of publishing without the lock. Outlives the slowest provider call
     # (read timeout) plus the rest of the task, so a second delivery cannot
     # start while the first one is still sending.
     locks = caches['locks']
     try:
-        acquired = locks.add(lock_id, "locked", AyrshareClient.TIMEOUT_SECONDS[1] + 300)
+        acquired = locks.add(lock_id, "locked", social.PUBLISH_LOCK_TTL_SECONDS)
     except Exception as exc:
         # Redis did not answer: never published without the lock. Retried with
         # backoff; out of retries the post fails, instead of staying QUEUED
@@ -155,6 +167,10 @@ def upload_to_social_network(self, post_id):
         logger.warning(f"🔒 [WORKER] Aborting post {post_id}: Already running.")
         return "Locked"
 
+    # Whether an earlier attempt with the current key ended without a clear answer, and whether this
+    # attempt is inside the provider call (an unexpected error there may come after it published).
+    # sending: inside the provider call. published: the provider answered that it went out.
+    unclear_before, sending, published = False, False, False
     try:
         with transaction.atomic():
             try:
@@ -166,108 +182,144 @@ def upload_to_social_network(self, post_id):
                 return "Post Deleted"
             if post.status == ScheduledPost.Status.PUBLISHED:
                 return "Already Published"
+            if post.status not in (ScheduledPost.Status.QUEUED, ScheduledPost.Status.PROCESSING):
+                # It moved on after this message was queued (the user retried it and the beat
+                # queues it again, its AI text failed): a late copy never publishes it.
+                logger.warning("publish.skipped post_id=%s status=%s", post_id, post.status)
+                return "Skipped"
 
-            # Validation: Does the workspace have an Ayrshare Key?
-            workspace = post.video_clip.project.workspace
-            profile_key = workspace.ayrshare_profile_key
-
-            if not profile_key:
-                logger.error(f"❌ [WORKER] Post {post_id} FAILED: No ayrshare_profile_key for workspace {workspace.id}")
+            clip = post.video_clip
+            project = clip.project
+            profile = social.ready_profile(project.workspace_id)
+            failure, tiktok = None, None
+            if profile is None:
+                failure = social.PermanentError(codes.ACCOUNT_NOT_CONNECTED, 'no profile')
+            elif post.platform == ScheduledPost.Platform.TIKTOK:
+                try:
+                    tiktok = social.TikTokOptions.from_post(post.tiktok)
+                except social.PermanentError as exc:
+                    failure = exc
+            if failure is not None:
                 post.status = ScheduledPost.Status.FAILED
-                post.error_log = "Error: Ayrshare Profile Key not configured in workspace."
+                post.error_log = str(failure)
                 # updated_at too: auto_now only reaches the database when it is listed,
                 # and the project's activity dates the failure with it.
                 post.save(update_fields=['status', 'error_log', 'updated_at'])
                 # Committed on exit of the atomic block; raised after so the task is not reported as SUCCESS.
-                missing_key = True
             else:
-                missing_key = False
+                unclear_before = post.publish_key_unclear
                 post.status = ScheduledPost.Status.PROCESSING
-                post.save(update_fields=['status', 'updated_at'])
+                # Unclear until the provider answers clearly: a worker that dies in the call leaves it set.
+                post.publish_key_unclear = True
+                post.save(update_fields=['status', 'publish_key_unclear', 'updated_at'])
+            key = social.idempotency_key(post.pk, post.publish_key_version)
 
-        if missing_key:
-            raise PostConfigurationError(f"No ayrshare_profile_key for workspace {workspace.id}")
+        if failure is not None:
+            logger.error("publish.not_sent post_id=%s code=%s", post_id, failure.code)
+            raise PostConfigurationError(failure.code)
 
-        # 1. Generate S3 Presigned URL (Valid for 1 hour)
-        # This URL is what Ayrshare will use to download and re-upload the video.
-        s3_key = post.video_clip.s3_object_key
+        # 1. Presigned URL (valid for 1 hour): the provider downloads the video from it.
+        s3_key = clip.s3_object_key
         if not s3_key:
             raise Exception("No s3_object_key found for the video clip.")
-
         media_url = CloudflareR2Manager.generate_presigned_url(s3_key, expiration_seconds=3600)
-        
-        # 2. Call Ayrshare API
-        platform_map = {
-            'TIKTOK': 'tiktok',
-            'INSTAGRAM_REELS': 'instagram',
-            'YOUTUBE_SHORTS': 'youtube'
-        }
-        target_platform = platform_map.get(post.platform, 'tiktok')
-        
-        # Priority: 1. AI Generated Caption, 2. Project Metadata, 3. Default
-        if post.generated_caption:
-            # Stored apart (ADR-013): the hashtags get their '#' only here.
-            from apps.videos.services.seo_engine import compose_caption
 
-            caption = compose_caption(post.generated_caption, post.generated_hashtags)
-        else:
-            caption = post.video_clip.project.metadata.get('caption')
-        if not caption:
-            caption = f"Check this out! #Viral #{target_platform}"
-
-        response = AyrshareClient.send_post(
-            profile_key=profile_key,
-            s3_media_url=media_url,
-            caption=caption,
-            platforms=[target_platform]
+        # 2. What goes out: the API's caption and hashtags (the user's, or else the AI's, each on
+        # its own: ScheduledPost.caption_to_publish), composed once here. Empty if there is none.
+        provider = social.provider_for(profile)
+        request = social.PublishRequest(
+            platform=post.platform,
+            media_url=media_url,
+            text=compose_caption(post.caption_to_publish(), post.hashtags_to_publish()),
+            # YouTube needs a title: the clip's.
+            title=clip.title or project.title or '',
+            idempotency_key=key,
+            tiktok=tiktok,
         )
+        sending = True
+        result = provider.publish(profile, request)
+        sending, published = False, True
 
-        # 3. Success state
+        # 3. Out. A TikTok video the network still processes has no link yet (`post_url` null).
         post.status = ScheduledPost.Status.PUBLISHED
-        post.error_log = f"Ayrshare ID: {response.get('id')}"
+        post.post_url = result.post_url
+        post.external_id = result.external_id
+        post.error_log = None
+        post.publish_key_unclear = False
         try:
             # Only these columns, and never an INSERT: a full save() of a row deleted
-            # while Ayrshare answered tries to insert it again and breaks on its clip.
+            # while the provider answered tries to insert it again and breaks on its clip.
             # In a savepoint: the error of a row that is gone must not break an outer transaction.
             with transaction.atomic():
-                post.save(update_fields=['status', 'error_log', 'updated_at'])
+                post.save(update_fields=[
+                    'status', 'post_url', 'external_id', 'error_log', 'publish_key_unclear', 'updated_at',
+                ])
         except DatabaseError:
             if ScheduledPost.objects.filter(id=post_id).exists():
                 raise
             # Published, and its row went meanwhile: there is nowhere to record it.
             logger.warning("publish.post_deleted post_id=%s when=after_publishing", post_id)
-            return f"Published via Ayrshare: {target_platform} (post deleted)"
-        logger.info(f"✅ [WORKER] Post {post_id} published via Ayrshare.")
-        
-        return f"Published via Ayrshare: {target_platform}"
+            return f"Published via {provider.display_name}: {post.platform} (post deleted)"
+        logger.info("publish.published post_id=%s provider=%s pending=%s", post_id, provider.name, result.pending)
+        return f"Published via {provider.display_name}: {post.platform}"
 
-    except AyrshareAPIError as exc:
-        # Resilience: Exponential Backoff for 3rd party instability
-        logger.error("⚠️ [WORKER] Ayrshare API Error: %s", type(exc).__name__)
-        # Updated by id: `post` may not be bound if the failure happened before the fetch.
+    except social.RetryableError as exc:
+        # Backoff with the same key. A new key only after a clear "nothing went out" (`key_spent`)
+        # with no earlier attempt of this key unclear: otherwise the provider could publish twice.
         attempts = self.request.retries + 1
+        if exc.maybe_sent:
+            unclear = True  # this attempt may have published
+        elif exc.key_spent and not unclear_before:
+            unclear = False
+        else:
+            unclear = unclear_before  # nothing reached the provider, or an earlier attempt is still unclear
+        new_key = exc.key_spent and not unclear_before
+        logger.warning(
+            "publish.retryable post_id=%s attempt=%d code=%s detail=%s unclear=%s new_key=%s",
+            post_id, attempts, exc.code, exc.detail, unclear, new_key,
+        )
+        # Updated by id: `post` may not be bound if the failure happened before the fetch.
+        changes = {'retry_count': F('retry_count') + 1, 'publish_key_unclear': unclear}
+        if new_key:
+            changes['publish_key_version'] = F('publish_key_version') + 1
         if self.request.retries >= self.max_retries:
-            # Out of retries: FAILED, never left in PROCESSING with no task behind it.
+            # Out of retries: FAILED, never left in PROCESSING with no task behind it. If an attempt
+            # may have published, the user must check the network, not be told to try again.
+            code = codes.OUTCOME_UNKNOWN if unclear else codes.PROVIDER_UNAVAILABLE
             ScheduledPost.objects.filter(id=post_id).update(
                 status=ScheduledPost.Status.FAILED,
-                retry_count=F('retry_count') + 1,
-                error_log=f"Failed after {attempts} attempts: {str(exc)}",
+                error_log=f"{code} (after {attempts} attempts; {exc.detail})",
+                **changes,
             )
             raise
-        ScheduledPost.objects.filter(id=post_id).update(
-            retry_count=F('retry_count') + 1,
-            error_log=f"Retry {attempts}: {str(exc)}",
+        # "Retry n: ..." tells the API that a retry is on its way (services/scheduled_posts.stuck_after).
+        ScheduledPost.objects.filter(id=post_id).update(error_log=f"Retry {attempts}: {exc}", **changes)
+        # Backoff: 60s, 120s, 240s (TD-04), or longer if the provider asked, up to the longest one.
+        countdown = max(
+            60 * (2 ** self.request.retries),
+            min(exc.retry_after or 0, int(LONGEST_RETRY_COUNTDOWN.total_seconds())),
         )
+        raise self.retry(exc=exc, countdown=countdown)
 
-        # Backoff: 60s, 120s, 240s... (TD-04: replaces the fixed 60s countdown)
-        raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
-
-    except AyrshareOutcomeUnknownError as exc:
+    except social.OutcomeUnknownError as exc:
         # Never retried: the post may already be public. A person checks and retries.
-        logger.error("⚠️ [WORKER] Ayrshare outcome unknown for post %s", post_id)
+        logger.error("publish.outcome_unknown post_id=%s detail=%s", post_id, exc.detail)
         ScheduledPost.objects.filter(id=post_id).update(
             status=ScheduledPost.Status.FAILED,
             error_log=str(exc),
+        )
+        raise
+
+    except social.PermanentError as exc:
+        # A clear refusal of this attempt. But if an earlier attempt with the same key is unclear, the
+        # refusal may be the provider's answer to a repeated key (its code is not documented): it may be out.
+        code = codes.OUTCOME_UNKNOWN if unclear_before else exc.code
+        logger.error("publish.rejected post_id=%s code=%s detail=%s", post_id, code, exc.detail)
+        ScheduledPost.objects.filter(id=post_id).update(
+            status=ScheduledPost.Status.FAILED,
+            retry_count=F('retry_count') + 1,
+            publish_key_unclear=unclear_before,
+            error_log=f"{code} ({exc.detail})" if exc.detail else code,
         )
         raise
 
@@ -276,11 +328,19 @@ def upload_to_social_network(self, post_id):
         raise
 
     except Exception as e:
-        logger.error("❌ [WORKER] Critical failure: %s", type(e).__name__)
-        ScheduledPost.objects.filter(id=post_id).update(
-            status=ScheduledPost.Status.FAILED,
-            error_log=f"Critical: {str(e)}",
+        logger.error(
+            "❌ [WORKER] Critical failure: %s sending=%s published=%s", type(e).__name__, sending, published,
         )
+        if published:
+            # Out, and only recording it failed (the row is still there): never "try again", or the
+            # user's retry publishes a second copy. publish_key_unclear stays set from before the call.
+            error_log = f"{codes.OUTCOME_UNKNOWN} (published, not recorded: {type(e).__name__})"
+        elif sending:
+            # Inside the provider call the request may already have published: never "try again".
+            error_log = f"{codes.OUTCOME_UNKNOWN} (critical {type(e).__name__})"
+        else:
+            error_log = f"Critical: {str(e)}"
+        ScheduledPost.objects.filter(id=post_id).update(status=ScheduledPost.Status.FAILED, error_log=error_log)
         # Re-raised so Celery records FAILURE instead of reporting a silent SUCCESS.
         raise
 

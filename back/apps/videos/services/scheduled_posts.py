@@ -40,6 +40,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.core.cache import cache, caches
 from django.db import IntegrityError, connection, transaction
+from django.db.models import F
 from django.db.models.functions import Now
 from django.utils import timezone
 
@@ -69,14 +70,16 @@ IDEMPOTENCY_HEADER = 'Idempotency-Key'
 # attempt started (`updated_at`, written by upload_to_social_network when it sets
 # PROCESSING) longer ago than this, and no worker holds its publishing lock
 # (publish_lock_held). An attempt holds that lock for at most the slowest
-# Ayrshare answer plus 300 s (600 s), so 15 min leaves room for a slow one.
+# provider answer plus 300 s (apps.integrations.social.PUBLISH_LOCK_TTL_SECONDS,
+# 600 s), so 15 min leaves room for a slow one.
 POST_STUCK_AFTER = timedelta(minutes=15)
 # Between two attempts the worker writes `error_log` "Retry n: ..." with an
 # update() (`updated_at` does not move), drops the lock, and its retry waits for
 # a free worker slot: the countdown (60, 120, 240 s) is only a minimum, and
 # renders can hold every slot for hours. That post is a delivery on its way. It
 # counts as stuck only once the broker would have delivered its retry again
-# (CELERY_BROKER_TRANSPORT_OPTIONS['visibility_timeout']) plus the longest countdown.
+# (CELERY_BROKER_TRANSPORT_OPTIONS['visibility_timeout']) plus the longest countdown,
+# which the worker never exceeds (not even when the provider asks to wait longer).
 PENDING_RETRY_PREFIX = 'Retry '
 LONGEST_RETRY_COUNTDOWN = timedelta(seconds=240)
 
@@ -280,11 +283,13 @@ def _check_crossposting(plan, wanted, exclude=()):
 
 def _check_account(workspace):
     """
-    The Ayrshare profile of the workspace, without calling Ayrshare: without it
-    the worker would fail the post at its time. Whether each network is
-    connected is not known here (gap 10).
+    The workspace's profile at the publishing provider (SocialProfile), without
+    calling the provider: without it the worker would fail the post at its
+    time. Whether each network is connected is not known here (gap 10).
     """
-    if not workspace.ayrshare_profile_key:
+    from apps.integrations.social import has_ready_profile
+
+    if not has_ready_profile(workspace.pk):
         raise PostRefused.error(409, ACCOUNT_NOT_CONNECTED, 'account_not_connected')
 
 
@@ -590,8 +595,8 @@ def update_post(workspace, post_id, data):
         if post.status not in EDITABLE:
             raise _conflict('edit', post.status)
         fields = ['updated_at']
-        caption = data.get('caption', post.caption or post.generated_caption or '')
-        hashtags = data.get('hashtags', post.hashtags or post.generated_hashtags or [])
+        caption = data.get('caption', post.caption_to_publish())
+        hashtags = data.get('hashtags', post.hashtags_to_publish())
         check_text(post.platform, caption, hashtags)
         if 'caption' in data:
             post.caption = data['caption']
@@ -671,6 +676,12 @@ def retry_post(workspace, post_id):
     whose AI text failed never went out: it goes back to DRAFT, with its
     failure, for the user to write the text or ask for it again (ADR-013:
     a post is never re-scheduled on its own).
+
+    Publishing again gets a new idempotency key (`publish_key_version`, and
+    `publish_key_unclear` cleared): the provider refuses a used key forever,
+    even after a failure, so the old one could never publish it. That is what the user asks for here, after the web
+    app warned that a stuck or unknown attempt may be out already. The
+    worker's own retries keep the key. `retry_count` does not change.
     """
     from apps.videos.serializers_social import _seo_error_code
 
@@ -693,7 +704,12 @@ def retry_post(workspace, post_id):
             _check_crossposting(workspace.subscription_plan, {clip.pk: {post.platform}}, exclude=[post.pk])
             _check_account(workspace)
             post.status, post.publish_at, post.error_log = Status.SCHEDULED, now, None
-            post.save(update_fields=['status', 'publish_at', 'error_log', 'updated_at'])
+            post.publish_key_version = F('publish_key_version') + 1
+            post.publish_key_unclear = False  # a key the provider never saw
+            post.save(update_fields=[
+                'status', 'publish_at', 'error_log', 'publish_key_version', 'publish_key_unclear', 'updated_at',
+            ])
+            post.refresh_from_db(fields=['publish_key_version'])
     logger.info("posts.retried post_id=%s from=%s to=%s", post.pk, was, post.status)
     return post
 

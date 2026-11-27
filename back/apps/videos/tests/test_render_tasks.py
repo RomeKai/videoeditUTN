@@ -6,6 +6,7 @@ from django.contrib.auth import get_user_model
 from django.db import OperationalError, connection
 from django.test import TestCase, TransactionTestCase
 
+from apps.integrations.tests.helpers import PUBLISH, PUBLISHED, give_social_profile, take_social_profile
 from apps.users.models import Workspace
 from apps.videos.models import ScheduledPost, VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import PipelineStage
@@ -588,9 +589,8 @@ class RenderNoTransactionTests(RenderHarness, TransactionTestCase):
 class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
     def setUp(self):
         user = User.objects.create_user(username="soc", email="soc@test.com", password="pw")
-        self.workspace = Workspace.objects.create(
-            name="Social", owner=user, ayrshare_profile_key="profile-key"
-        )
+        self.workspace = Workspace.objects.create(name="Social", owner=user)
+        give_social_profile(self.workspace, "profile-key")
         project = VideoProject.objects.create(workspace=self.workspace, uploaded_by=user, title="S")
         clip = VideoClip.objects.create(
             project=project, title="c", start_time=0, end_time=5, s3_object_key="clips/a.mp4"
@@ -600,6 +600,7 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
             platform=ScheduledPost.Platform.TIKTOK,
             publish_at="2030-01-01T00:00:00Z",
             status=ScheduledPost.Status.QUEUED,
+            tiktok={"privacy_level": "SELF_ONLY"},
         )
 
     def test_a_post_deleted_before_its_task_runs_publishes_nothing(self):
@@ -607,7 +608,7 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
         post_id = str(self.post.id)
         self.post.delete()
 
-        with patch("apps.integrations.ayrshare_api.AyrshareClient.send_post") as send, \
+        with patch(PUBLISH) as send, \
                 self.assertLogs("apps.videos.tasks.social", level="WARNING") as logs:
             result = upload_to_social_network.apply(args=[post_id])
 
@@ -617,19 +618,18 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
         self.assertIn(f"publish.post_deleted post_id={post_id} when=before_publishing", logs.output[0])
 
     def test_a_post_deleted_while_it_was_published_is_not_inserted_again(self):
-        """Its row went while Ayrshare answered: the task ends, and no row comes back."""
+        """Its row went while the provider answered: the task ends, and no row comes back."""
         post_id = str(self.post.id)
 
-        def publish_and_delete(**kwargs):
+        def publish_and_delete(*args, **kwargs):
             ScheduledPost.objects.filter(id=post_id).delete()
-            return {"id": "ayr-1"}
+            return PUBLISHED
 
         with patch(
             "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
             return_value="https://r2/clip.mp4",
-        ), patch(
-            "apps.integrations.ayrshare_api.AyrshareClient.send_post", side_effect=publish_and_delete,
-        ), self.assertLogs("apps.videos.tasks.social", level="WARNING") as logs:
+        ), patch(PUBLISH, side_effect=publish_and_delete), \
+                self.assertLogs("apps.videos.tasks.social", level="WARNING") as logs:
             result = upload_to_social_network.apply(args=[post_id])
 
         self.assertTrue(result.successful(), result.result)
@@ -638,14 +638,14 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
 
     def test_publishing_only_writes_its_own_columns(self):
         """A caption edited while the post was being sent is not overwritten by the task's copy."""
-        def publish(**kwargs):
+        def publish(*args, **kwargs):
             ScheduledPost.objects.filter(id=self.post.id).update(retry_count=7)
-            return {"id": "ayr-1"}
+            return PUBLISHED
 
         with patch(
             "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
             return_value="https://r2/clip.mp4",
-        ), patch("apps.integrations.ayrshare_api.AyrshareClient.send_post", side_effect=publish):
+        ), patch(PUBLISH, side_effect=publish):
             upload_to_social_network.apply(args=[str(self.post.id)])
 
         self.post.refresh_from_db()
@@ -663,15 +663,15 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
         ScheduledPost.objects.filter(id=self.post.id).update(updated_at=old)
         processing_at = []
 
-        def publish(**kwargs):
+        def publish(*args, **kwargs):
             processing_at.append(ScheduledPost.objects.get(id=self.post.id).updated_at)
             ScheduledPost.objects.filter(id=self.post.id).update(updated_at=old)
-            return {"id": "ayr-1"}
+            return PUBLISHED
 
         with patch(
             "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
             return_value="https://r2/clip.mp4",
-        ), patch("apps.integrations.ayrshare_api.AyrshareClient.send_post", side_effect=publish):
+        ), patch(PUBLISH, side_effect=publish):
             upload_to_social_network.apply(args=[str(self.post.id)])
 
         self.post.refresh_from_db()
@@ -680,9 +680,9 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
         self.assertGreater(processing_at[0], old + timedelta(days=2))
         self.assertGreater(self.post.updated_at, old + timedelta(days=2))
 
-        # The failure of a workspace without its Ayrshare profile too.
+        # The failure of a workspace without its profile too.
         ScheduledPost.objects.filter(id=self.post.id).update(status=ScheduledPost.Status.QUEUED, updated_at=old)
-        Workspace.objects.filter(pk=self.workspace.pk).update(ayrshare_profile_key="")
+        take_social_profile(self.workspace)
         upload_to_social_network.apply(args=[str(self.post.id)])
 
         self.post.refresh_from_db()
@@ -703,17 +703,15 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
         with patch(
             "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
             return_value="https://r2/clip.mp4",
-        ), patch(
-            "apps.integrations.ayrshare_api.AyrshareClient.send_post", return_value={"id": "ayr-1"},
-        ), patch.object(ScheduledPost, "save", failing_save):
+        ), patch(PUBLISH, return_value=PUBLISHED), patch.object(ScheduledPost, "save", failing_save):
             result = upload_to_social_network.apply(args=[str(self.post.id)])
 
         self.assertTrue(result.failed())
         self.assertIsInstance(result.result, DatabaseError)
         self.post.refresh_from_db()
-        # The generic handler recorded it.
+        # The generic handler recorded it, and the provider had published it: never «try again».
         self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
-        self.assertIn("Critical: connection lost", self.post.error_log)
+        self.assertEqual(self.post.error_log, "outcome_unknown (published, not recorded: DatabaseError)")
 
     def test_unexpected_error_is_raised_and_post_marked_failed(self):
         with patch(
@@ -727,17 +725,14 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
         self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
         self.assertIn("r2 down", self.post.error_log)
 
-    def test_ayrshare_errors_until_out_of_retries_fail_the_post(self):
+    def test_retryable_errors_until_out_of_retries_fail_the_post(self):
         # Before, the last retry re-raised and the post stayed in PROCESSING forever.
-        from apps.integrations.ayrshare_api import AyrshareAPIError
+        from apps.integrations.social import RetryableError
 
         with patch(
             "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
             return_value="https://r2/clip.mp4",
-        ), patch(
-            "apps.integrations.ayrshare_api.AyrshareClient.send_post",
-            side_effect=AyrshareAPIError("Ayrshare error: rate limited"),
-        ) as send:
+        ), patch(PUBLISH, side_effect=RetryableError(detail="ayrshare http=503")) as send:
             result = upload_to_social_network.apply(args=[str(self.post.id)])
 
         self.post.refresh_from_db()
@@ -745,7 +740,7 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
         self.assertEqual(send.call_count, upload_to_social_network.max_retries + 1)
         self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
         self.assertEqual(self.post.retry_count, upload_to_social_network.max_retries + 1)
-        self.assertIn("Failed after 4 attempts", self.post.error_log)
+        self.assertEqual(self.post.error_log, "provider_unavailable (after 4 attempts; ayrshare http=503)")
 
     def test_a_lock_that_cannot_be_taken_is_retried_then_fails_the_post(self):
         """Redis down for the lock: retried with backoff, never published, and out of retries FAILED, not QUEUED."""
@@ -757,7 +752,7 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
         locks.add.side_effect = RedisConnectionError("down")
         with patch("apps.videos.tasks.social.caches", {"locks": locks}), \
                 patch.object(upload_to_social_network, "retry", wraps=upload_to_social_network.retry) as retry, \
-                patch("apps.integrations.ayrshare_api.AyrshareClient.send_post") as send:
+                patch(PUBLISH) as send:
             result = upload_to_social_network.apply(args=[str(self.post.id)])
 
         self.post.refresh_from_db()
@@ -777,7 +772,7 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
             "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
             return_value="https://r2/clip.mp4",
         ), patch(
-            "apps.integrations.ayrshare_api.requests.post",
+            "apps.integrations.social.ayrshare.requests.request",
             side_effect=requests.exceptions.ReadTimeout("read timed out"),
         ) as post:
             result = upload_to_social_network.apply(args=[str(self.post.id)])
@@ -786,7 +781,7 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
         self.assertTrue(result.failed())
         self.assertEqual(post.call_count, 1)
         self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
-        self.assertIn("may have been published", self.post.error_log)
+        self.assertEqual(self.post.error_log, "outcome_unknown (ayrshare ReadTimeout)")
 
     def test_a_connect_timeout_is_retried(self):
         # Nothing reached Ayrshare: safe to send again.
@@ -796,7 +791,7 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
             "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
             return_value="https://r2/clip.mp4",
         ), patch(
-            "apps.integrations.ayrshare_api.requests.post",
+            "apps.integrations.social.ayrshare.requests.request",
             side_effect=requests.exceptions.ConnectTimeout("connect timed out"),
         ) as post:
             upload_to_social_network.apply(args=[str(self.post.id)])
@@ -804,14 +799,22 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
         self.assertEqual(post.call_count, upload_to_social_network.max_retries + 1)
 
     def test_ayrshare_requests_have_a_timeout(self):
-        from apps.integrations.ayrshare_api import AyrshareClient
+        from unittest.mock import MagicMock
 
-        with patch("apps.integrations.ayrshare_api.requests.post") as post:
-            post.return_value.status_code = 200
-            post.return_value.json.return_value = {"id": "x"}
-            AyrshareClient.send_post("key", "https://r2/clip.mp4", "caption", ["tiktok"])
+        from apps.integrations.social import PUBLISH_TIMEOUT_SECONDS
 
-        self.assertEqual(post.call_args.kwargs["timeout"], AyrshareClient.TIMEOUT_SECONDS)
+        answer = MagicMock(status_code=200, headers={})
+        answer.json.return_value = {"status": "success", "id": "ayr-1", "errors": [], "postIds": [
+            {"status": "success", "platform": "tiktok", "id": "pending", "idShare": "v_pub_url~1"},
+        ]}
+        with patch(
+            "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
+            return_value="https://r2/clip.mp4",
+        ), patch("apps.integrations.social.ayrshare.requests.request", return_value=answer) as post:
+            upload_to_social_network.apply(args=[str(self.post.id)])
+
+        self.assertEqual(post.call_args.kwargs["timeout"], PUBLISH_TIMEOUT_SECONDS)
+        self.assertEqual(PUBLISH_TIMEOUT_SECONDS, (10, 300))
 
     def test_missing_post_ends_the_task_without_an_unbound_local(self):
         # A post that does not exist (deleted, or never there) is nothing to publish: no failure, no retry.
@@ -822,11 +825,14 @@ class UploadToSocialNetworkTests(CapturedTaskFailures, TestCase):
         self.assertTrue(result.successful())
         self.assertEqual(result.result, "Post Deleted")
 
-    def test_missing_profile_key_fails_the_task_and_the_post(self):
-        Workspace.objects.filter(pk=self.workspace.pk).update(ayrshare_profile_key="")
+    def test_missing_profile_fails_the_task_and_the_post(self):
+        take_social_profile(self.workspace)
 
-        result = upload_to_social_network.apply(args=[str(self.post.id)])
+        with patch(PUBLISH) as send:
+            result = upload_to_social_network.apply(args=[str(self.post.id)])
 
         self.post.refresh_from_db()
         self.assertTrue(result.failed())
+        send.assert_not_called()
         self.assertEqual(self.post.status, ScheduledPost.Status.FAILED)
+        self.assertEqual(self.post.error_log, "account_not_connected (no profile)")

@@ -545,9 +545,10 @@ Otras respuestas:
   - ✅ `PATCH /api/v1/scheduled-posts/:id/` manda un borrador (`publish_at`: fecha o `null`) y `POST .../regenerate-seo/` pide otro texto (`seo_status: "pending"` con el texto anterior hasta que llega el nuevo).
   - ✅ El servidor aplica el plan: programar (`code: "scheduling"`) y una sola red por clip sin crossposting (`code: "crossposting"`).
   - ✅ El beat que despacha los programados (`dispatch-scheduled-posts`, cada 5 min).
-  - ❌ falta conectar redes (perfil de Ayrshare por workspace): sin `ayrshare_profile_key`, publicar responde 409 `account_not_connected`.
-  - ⚠️ el publicador todavía no usa el texto que escribe el usuario (`caption`, `hashtags`) ni las opciones de TikTok, y puede salir antes de que llegue el texto con IA.
-  - ✅ cuando el post existe, el SEO se genera solo (señal) y la publicación usa Ayrshare.
+  - ❌ falta conectar redes (el perfil del espacio en el proveedor, `SocialProfile`): sin él, publicar responde 409 `account_not_connected`.
+  - ✅ el publicador manda lo que muestra la API (`caption` y `hashtags`, del usuario o de la IA) con las opciones de TikTok, guarda el link (`post_url`, nulo mientras TikTok procesa el video) y deja un código de error que la API traduce (`error_code`).
+  - ⚠️ una publicación sin texto propio todavía puede salir antes de que llegue el texto con IA: sale sin texto (en YouTube, con el título del clip).
+  - ✅ cuando el post existe, el SEO se genera solo (señal) y la publicación pasa por la capa de proveedores (hoy Ayrshare).
 
 #### E2. Publicaciones — `/publicaciones`
 - **Para qué:** ver todo lo publicado y lo que va a salir.
@@ -654,7 +655,7 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 
 #### H3. Redes sociales
 - **Qué muestra:** una fila por red con estado (Conectada como @usuario, Vencida, Sin conectar) y la acción **Conectar**, **Reconectar** o **Desconectar**.
-- **API:** ❌. Hoy existe `Workspace.ayrshare_profile_key`, pero no hay flujo para conectar.
+- **API:** ❌. Hoy existe el perfil del espacio en el proveedor (`SocialProfile`), pero no hay flujo para conectar.
 
 #### H4. Valores por defecto
 - **No existe como pantalla en el MVP.**
@@ -775,7 +776,7 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad. El detalle e
 | 5 | ~~Link de descarga firmado por clip~~ Resuelto: `GET /clips/:id/download/` | D3, D4 | — |
 | 6 | Endpoint de precios (la fórmula) para el estimado. Los planes ya están: `GET /plans/` | C1, A6, G3 | P0 |
 | 7 | ~~Campo `render_resolution` al crear, y alinear el render por defecto con el precio~~ Resuelto: se elige al crear y el render por defecto es 720p, como el precio | C1 | — |
-| 8 | ~~Crear, editar, cancelar y reintentar `ScheduledPost`~~ Resuelto: `POST /scheduled-posts/` y `/bulk/`, `PATCH /scheduled-posts/:id/`, `.../cancel/`, `.../retry/` y `.../regenerate-seo/`, además de listar y ver. Ninguno llama a la red. Siguen pendientes, del publicador: usar el texto del usuario y las opciones de TikTok, y esperar el texto con IA antes de salir | E1, E2 | — |
+| 8 | ~~Crear, editar, cancelar y reintentar `ScheduledPost`~~ Resuelto: `POST /scheduled-posts/` y `/bulk/`, `PATCH /scheduled-posts/:id/`, `.../cancel/`, `.../retry/` y `.../regenerate-seo/`, además de listar y ver. Ninguno llama a la red. El publicador ya usa el texto del usuario y las opciones de TikTok, y guarda el link; sigue pendiente esperar el texto con IA antes de salir | E1, E2 | — |
 | 9 | ~~Beat que corra `dispatch_scheduled_posts_batch`~~ Resuelto: `CELERY_BEAT_SCHEDULE` lo corre cada 5 min con el servicio `beat` | E1, E2 | — |
 | 10 | Conectar redes por workspace (Ayrshare) | E1, H3 | P1 |
 | 11 | ~~Endpoint de clip: renombrar, recortar, volver a renderizar y reintentar~~ Resuelto: `GET/PATCH/DELETE /clips/:id/`, `POST /clips/:id/render/` y `POST /clips/:id/retry/` | D3, D4 | — |
