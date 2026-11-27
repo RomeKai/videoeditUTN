@@ -190,7 +190,9 @@ class Workspace(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     
     # Relación a través de la tabla intermedia
-    members = models.ManyToManyField(User, through='WorkspaceMember', related_name='workspaces')
+    members = models.ManyToManyField(
+        User, through='WorkspaceMember', through_fields=('workspace', 'user'), related_name='workspaces',
+    )
 
     class Meta:
         constraints = [
@@ -223,16 +225,47 @@ class WorkspaceMember(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    
+    # Null only in a PENDING row: an invitation to an email without an account
+    # (apps.users.invitations). Accepting it sets the account.
+    user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
+
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.EDITOR)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
-    
+
     joined_at = models.DateTimeField(auto_now_add=True)
+
+    # --- Invitation (apps.users.invitations) ---
+    # The address the invitation was sent to, normalized (apps.users.emails).
+    # The invitation belongs to this email: only its account accepts it.
+    invited_email = models.EmailField(max_length=254, blank=True, default='')
+    invited_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    # SHA-256 of the token of the link; the token itself is only in the email.
+    # Null: no link works (not sent yet, used, or replaced by a resend).
+    invitation_token_hash = models.CharField(max_length=64, null=True, blank=True, unique=True, editable=False)
+    # When that token was issued: it expires INVITATION_MAX_AGE_SECONDS later.
+    invitation_sent_at = models.DateTimeField(null=True, blank=True, editable=False)
 
     class Meta:
         # Evita que un usuario esté duplicado en el mismo equipo
         unique_together = ('workspace', 'user')
+        constraints = [
+            # One pending invitation per email in a workspace, in any case.
+            models.UniqueConstraint(
+                'workspace', Upper('invited_email'),
+                condition=models.Q(status='pending') & ~models.Q(invited_email=''),
+                name='users_member_pending_email_unique',
+            ),
+            # An active member is always an account.
+            models.CheckConstraint(
+                condition=models.Q(status='pending') | models.Q(user__isnull=False),
+                name='users_member_active_has_user',
+            ),
+            # A row without an account says which email it waits for.
+            models.CheckConstraint(
+                condition=models.Q(user__isnull=False) | ~models.Q(invited_email=''),
+                name='users_member_has_user_or_email',
+            ),
+        ]
 
 
 class NotificationPreference(models.Model):

@@ -12,7 +12,10 @@ test.describe('Smoke en modo mock', () => {
       const problems = watch(page);
       await page.goto(screen.example);
       await settle(page);
-      await expect(page).toHaveURL(new RegExp(`${screen.example.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/?$`));
+      // The route stays put (no redirect). A fragment is not part of it: a screen that reads a link from it
+      // (A4, A5) takes it out of the address bar on purpose.
+      const path = screen.example.split('#')[0] ?? screen.example;
+      await expect(page).toHaveURL(new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/?$`));
       // Every route renders something of its own: the placeholder with its code, or the built screen's heading.
       await expect(page.locator('h1').first()).toBeVisible();
       if (screen.area === 'app') await expect(page.getByRole('navigation', { name: 'Secciones', exact: true })).toBeVisible();

@@ -4,7 +4,9 @@ front/src/api/contracts/workspaces.ts. The messages go to the screen as they are
 """
 from rest_framework import serializers
 
+from apps.users.emails import InvalidEmailDomain, normalize_email
 from apps.users.models import Workspace, WorkspaceMember
+from apps.users.serializers import NAME_REQUIRED, PASSWORD_REQUIRED, TERMS_REQUIRED, TokenPairSerializer
 
 NAME_MAX_LENGTH = Workspace._meta.get_field('name').max_length
 
@@ -83,19 +85,144 @@ class UserRefSerializer(serializers.Serializer):
     email = serializers.EmailField()
 
 
+class InviterSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    name = serializers.CharField(allow_blank=True)
+
+
 class MemberSerializer(serializers.Serializer):
     id = serializers.UUIDField()
-    user = UserRefSerializer()
+    # Null in a pending invitation, whether its email has an account or not:
+    # inviting an address never says whose account it is.
+    user = UserRefSerializer(allow_null=True)
     email = serializers.EmailField()
     # `owner` for Workspace.owner's row; otherwise WorkspaceMember.role.
     role = serializers.CharField()
     status = serializers.CharField()
     joined_at = serializers.DateTimeField()
-    # Nobody is recorded as the inviter yet (WorkspaceMember has no such column).
-    invited_by = serializers.JSONField(allow_null=True)
+    # Who sent the invitation (WorkspaceMember.invited_by); null for the rows nobody invited.
+    invited_by = InviterSerializer(allow_null=True)
 
 
 class MembersSerializer(serializers.Serializer):
     members = MemberSerializer(many=True)
     max_members = serializers.IntegerField()
     seats_used = serializers.IntegerField()
+
+
+# --- Invitations (apps.users.views_invitations) ---
+
+MAX_INVITED_EMAILS = 10
+EMAILS_REQUIRED = 'Escribí al menos un email.'
+EMAILS_TOO_MANY = f'Podés invitar hasta {MAX_INVITED_EMAILS} emails por vez.'
+EMAIL_NOT_VALID = '«{email}» no es un email válido.'
+ALREADY_MEMBER = '{email} ya es miembro o tiene una invitación pendiente.'
+
+
+class InviteSerializer(serializers.Serializer):
+    """
+    D7. Every error of `emails` is one sentence in a flat list (the dialog
+    shows the first). The emails come back normalized (apps.users.emails) and
+    without repeats, whatever their case.
+    """
+
+    emails = serializers.ListField(
+        child=serializers.CharField(allow_blank=True, trim_whitespace=True),
+        allow_empty=False,
+        error_messages={key: EMAILS_REQUIRED for key in ('required', 'null', 'not_a_list', 'empty')},
+    )
+    # `owner` is not a choice: nobody invites an owner (the workspace is transferred).
+    role = serializers.ChoiceField(
+        choices=WorkspaceMember.Role.choices,
+        error_messages={key: ROLE_INVALID for key in ('required', 'null', 'invalid_choice')},
+    )
+
+    def to_internal_value(self, data):
+        try:
+            return super().to_internal_value(data)
+        except serializers.ValidationError as exc:
+            # A child error of the list comes as {index: [...]}: one flat sentence instead.
+            detail = exc.detail
+            if isinstance(detail, dict) and isinstance(detail.get('emails'), dict):
+                detail = {**detail, 'emails': [EMAILS_REQUIRED]}
+                raise serializers.ValidationError(detail)
+            raise
+
+    def validate_emails(self, values):
+        # Before any work per email: a long list is refused as it comes.
+        if len(values) > MAX_INVITED_EMAILS:
+            raise serializers.ValidationError(EMAILS_TOO_MANY)
+        field = serializers.EmailField(max_length=254)
+        found, seen = [], set()
+        for value in values:
+            try:
+                email = normalize_email(field.run_validation(value))
+            except (serializers.ValidationError, InvalidEmailDomain):
+                raise serializers.ValidationError(EMAIL_NOT_VALID.format(email=str(value)[:254]))
+            if email.upper() in seen:
+                continue
+            seen.add(email.upper())
+            found.append(email)
+        return found
+
+
+class InvitedSerializer(serializers.Serializer):
+    invited = MemberSerializer(many=True)
+
+
+class InvitationPreviewSerializer(serializers.Serializer):
+    """A5: what the link shows before accepting. The inviter's name, never their email."""
+
+    workspace_id = serializers.UUIDField()
+    workspace_name = serializers.CharField()
+    inviter_name = serializers.CharField()
+    role = serializers.CharField()
+    email = serializers.EmailField()
+    # Always `pending`: a link that expired, was used or was cancelled is a 404.
+    status = serializers.CharField()
+    has_account = serializers.BooleanField()
+
+
+TOKEN_REQUIRED = 'Falta el token del link.'
+
+
+class InvitationTokenSerializer(serializers.Serializer):
+    """The token of the link, in the body: never in the path, which ends up in logs."""
+
+    token = serializers.CharField(
+        max_length=200, trim_whitespace=False,
+        error_messages={key: TOKEN_REQUIRED for key in ('required', 'null', 'blank', 'invalid', 'max_length')},
+    )
+
+
+class AcceptInvitationSerializer(serializers.Serializer):
+    """Only read when the link creates the account; with a session only `token` is read."""
+
+    # Read by the view before anything else; a missing one is the 410 of any dead link.
+    token = serializers.CharField(required=False, allow_blank=True, trim_whitespace=False)
+    name = serializers.CharField(
+        max_length=150,
+        error_messages={
+            'required': NAME_REQUIRED, 'blank': NAME_REQUIRED, 'null': NAME_REQUIRED,
+            'max_length': 'El nombre puede tener hasta {max_length} caracteres.',
+        },
+    )
+    # Checked by the view against the invited email (the similarity rule needs it).
+    password = serializers.CharField(
+        write_only=True,
+        error_messages={'required': PASSWORD_REQUIRED, 'blank': PASSWORD_REQUIRED, 'null': PASSWORD_REQUIRED},
+    )
+    terms_accepted = serializers.BooleanField(
+        error_messages={'required': TERMS_REQUIRED, 'invalid': TERMS_REQUIRED, 'null': TERMS_REQUIRED},
+    )
+
+    def validate_terms_accepted(self, value):
+        if value is not True:
+            raise serializers.ValidationError(TERMS_REQUIRED, code='required')
+        return value
+
+
+class AcceptedInvitationSerializer(serializers.Serializer):
+    workspace_id = serializers.UUIDField()
+    # A new session when the account was created here; null with a session.
+    tokens = TokenPairSerializer(allow_null=True)

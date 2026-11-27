@@ -2,6 +2,12 @@
 
 from .views_auth import LogoutView, PasswordResetConfirmView, PasswordResetView, RegisterView, ResendVerificationView
 from .views import MeView, NotificationPreferencesView, PasswordChangeView, VerifyEmailView
+from .views_invitations import (
+    InvitationAcceptView,
+    InvitationView,
+    WorkspaceInvitationResendView,
+    WorkspaceInvitationsView,
+)
 from .views_workspaces import (
     WorkspaceDetailView,
     WorkspaceListView,
@@ -26,4 +32,12 @@ urlpatterns = [
     path('workspaces/<str:workspace_id>/transfer/', WorkspaceTransferView.as_view(), name='workspace-transfer'),
     path('workspaces/<str:workspace_id>/members/', WorkspaceMembersView.as_view(), name='workspace-members'),
     path('workspaces/<str:workspace_id>/members/<str:member_id>/', WorkspaceMemberView.as_view(), name='workspace-member'),
+    path('workspaces/<str:workspace_id>/invitations/', WorkspaceInvitationsView.as_view(), name='workspace-invitations'),
+    path(
+        'workspaces/<str:workspace_id>/invitations/<str:member_id>/resend/',
+        WorkspaceInvitationResendView.as_view(), name='workspace-invitation-resend',
+    ),
+    # The token of the link travels in the body, never in the path: paths end up in access logs.
+    path('invitations/preview/', InvitationView.as_view(), name='invitation'),
+    path('invitations/accept/', InvitationAcceptView.as_view(), name='invitation-accept'),
 ]
