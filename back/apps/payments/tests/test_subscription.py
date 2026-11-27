@@ -478,8 +478,8 @@ def test_choosing_the_current_plan_with_nothing_scheduled_is_a_400_with_its_code
     response = change(client_for(user), plans['Gratis'])
 
     assert response.status_code == 400
-    # The web matches the code, never the text or the field.
-    assert response.json() == {'error': 'Ya es tu plan actual.', 'code': 'nothing_to_cancel'}
+    # The web matches the code, never the text; `plan_id` stays for web builds from before the code.
+    assert response.json() == {'error': 'Ya es tu plan actual.', 'code': 'nothing_to_cancel', 'plan_id': ['Ya es tu plan actual.']}
 
 
 def test_a_plan_that_is_not_offered_is_a_404(owner, plans):

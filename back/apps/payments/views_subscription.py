@@ -41,9 +41,12 @@ from .services.subscriptions import (
 
 NO_PLAN = "Este workspace no tiene un plan activo. Contactá a soporte."
 PLAN_NOT_FOUND = "El plan no existe."
+# `plan_id` stays for web builds from before cancel-pending, which match that field error (the backend can
+# deploy first). The web of now reads `code`.
 ALREADY_CURRENT = {
     'error': "Ya es tu plan actual.",
     'code': 'nothing_to_cancel',
+    'plan_id': ["Ya es tu plan actual."],
 }
 # cancel-pending: what the screen showed is not what the workspace has now. Nothing changed.
 NOTHING_LEFT_TO_CANCEL = {

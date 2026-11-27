@@ -310,6 +310,8 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
     expect(errorMessage(seats)).toBe('Ocupás 4 lugares y el plan Gratis tiene 2. Quitá miembros o invitaciones antes de bajar.');
     const current = error('billing_change_plan_400_current', 'billing.changePlan');
     expect([current.status, current.code, errorMessage(current)]).toEqual([400, 'nothing_to_cancel', 'Ya es tu plan actual.']);
+    // Web builds from before the code match the field error: it stays.
+    expect(fieldError(current, 'plan_id')).toBe('Ya es tu plan actual.');
     expect(errorMessage(error('billing_change_plan_403_role'))).toBe('Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin.');
     expect(fieldError(error('billing_purchase_400_min'), 'custom_tokens')).toBe('El mínimo es 100 tokens.');
     const unavailable = error('billing_purchase_501_no_provider', 'billing.createPurchase');

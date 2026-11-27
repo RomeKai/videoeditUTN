@@ -1898,7 +1898,10 @@
       "status": 400,
       "body": {
         "error": "Ya es tu plan actual.",
-        "code": "nothing_to_cancel"
+        "code": "nothing_to_cancel",
+        "plan_id": [
+          "Ya es tu plan actual."
+        ]
       }
     },
     "billing_change_plan_403_role": {

@@ -173,7 +173,7 @@ export const billingHandlers = [
     if (current?.id === target.id) {
       // Choosing the current plan again cancels a scheduled change and the upgrade waiting for its payment.
       const waiting = db.purchases.some((item) => item.workspace === workspace.id && item.status === 'pending' && item.plan_id);
-      if (!workspace.pending_plan && !waiting) throw badRequest({ error: 'Ya es tu plan actual.', code: 'nothing_to_cancel' });
+      if (!workspace.pending_plan && !waiting) throw badRequest({ error: 'Ya es tu plan actual.', code: 'nothing_to_cancel', plan_id: ['Ya es tu plan actual.'] });
       replacePendingUpgrade(db, workspace.id, null, KEPT);
       workspace.pending_plan = null;
       return { data: { applied: 'now', checkout_url: null, subscription: serializeSubscription(db, workspace) } };

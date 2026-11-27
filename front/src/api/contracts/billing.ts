@@ -340,7 +340,7 @@ export const changePlan = defineEndpoint({
     subscription: Subscription,
   }),
   errors: [
-    { status: 400, when: 'Ya es el plan actual y no hay nada programado ni esperando su pago (`{ error: "Ya es tu plan actual.", code: "nothing_to_cancel" }`), o `return_url` no es una página de la app o pasa de 600 caracteres.' },
+    { status: 400, when: 'Ya es el plan actual y no hay nada programado ni esperando su pago (`{ error: "Ya es tu plan actual.", code: "nothing_to_cancel", plan_id: ["Ya es tu plan actual."] }`: el `plan_id` queda para builds de la web anteriores al `code`), o `return_url` no es una página de la app o pasa de 600 caracteres.' },
     { status: 403, when: 'El rol no puede cambiar el plan (solo Dueño y Admin).' },
     { status: 404, when: 'El plan no existe, está inactivo o no es público (`{ detail: "El plan no existe." }`), o el workspace se borró mientras el pedido esperaba su turno (el `detail` del workspace inexistente; no cambia nada).' },
     {
