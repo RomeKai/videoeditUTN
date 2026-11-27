@@ -20,6 +20,7 @@ urlpatterns = [
     path('api/v1/', include('apps.core.urls')),
     path('api/v1/', include('apps.videos.urls')),
     path('api/v1/', include('apps.payments.urls')),
+    path('api/v1/', include('apps.notifications.urls')),
      # --- DOCUMENTATION ---
 
     # 1.  schema.yml/json 

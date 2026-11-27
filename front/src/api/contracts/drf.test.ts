@@ -23,6 +23,7 @@ import {
 import { BrandKit, duplicateBrandKit, listBrandKits, updateBrandKit } from './brandkits';
 import { ClipPreview } from './clips';
 import real from './drf/responses.json';
+import { Notification, type NotificationsResponse, listNotifications, markNotificationRead } from './notifications';
 import { ApprovePaperEditResponse, CreateFromPromptResponse, CreateProjectResponse, PaperEditData, Project, ProjectsResponse } from './projects';
 import { type MembersResponse, type Workspace, createWorkspace, getWorkspace, listMembers, listWorkspaces, transferWorkspace, updateMember, updateWorkspace } from './workspaces';
 
@@ -310,5 +311,17 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
     const unavailable = error('billing_purchase_501_no_provider', 'billing.createPurchase');
     expect(unavailable.code).toBe('payments_unavailable');
     expect(errorMessage(unavailable, 'No pudimos iniciar la compra')).toBe('Los pagos todavía no están habilitados.');
+  });
+
+  it('notificaciones: la lista de la campana, marcar una leída y el 404', () => {
+    const list = parse(listNotifications.response, real.notifications_list) as NotificationsResponse;
+    expect(list.unread_count).toBe(4);
+    // One of each kind the backend writes today, newest first.
+    expect(list.results.map((item) => item.type)).toEqual(['project_ready', 'payment_rejected', 'payment_approved', 'project_failed', 'render_finished']);
+    expect(list.results.map((item) => item.read_at === null)).toEqual([true, true, true, true, false]);
+    expect(list.results.every((item) => item.post_id === null)).toBe(true);
+    const read = parse(markNotificationRead.response, real.notification_read) as Notification;
+    expect(read.read_at).toBe('2026-11-04T16:00:00Z');
+    expect(error('notification_404', 'notifications.markRead').isNotFound).toBe(true);
   });
 });

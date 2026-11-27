@@ -41,7 +41,7 @@ export function projectTabs(projectId: string, projectType: 'repurpose' | 'singl
   ];
 }
 
-/** Where a notification leads (J2). */
+/** Where a notification leads (J2): its project, its publication or, for a payment, the movements. */
 export function notificationHref(notification: { type: string; project_id: string | null; post_id: string | null }): string {
   switch (notification.type) {
     case 'project_ready':
@@ -54,6 +54,9 @@ export function notificationHref(notification: { type: string; project_id: strin
       return notification.post_id ? `/publicaciones?publicacion=${notification.post_id}` : '/publicaciones';
     case 'low_balance':
       return '/uso/comprar';
+    case 'payment_approved':
+    case 'payment_rejected':
+      return '/uso/movimientos';
     default:
       return '/proyectos';
   }

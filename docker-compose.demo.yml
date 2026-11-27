@@ -87,11 +87,11 @@ services:
         # Qué va al backend real. Por defecto: usuario, proyectos, clips, brand kits, la
         # billetera, los precios, los planes, la suscripción y las compras (con el proveedor
         # simulado: /dev/checkout aprueba o rechaza, sin cobrar), y los workspaces con sus
-        # miembros (las invitaciones no: el backend no las tiene). Redes, publicaciones,
-        # invitaciones y notificaciones quedan enteros en mocks, para que cada área sea
-        # coherente (ver el runbook). DEMO_API_REAL=existing manda al backend todo lo que el
+        # miembros (las invitaciones no: el backend no las tiene), y las notificaciones de la
+        # campana. Redes, publicaciones e invitaciones quedan enteros en mocks, para que cada
+        # área sea coherente (ver el runbook). DEMO_API_REAL=existing manda al backend todo lo que el
         # contrato marca exists o partial.
-        NEXT_PUBLIC_API_REAL: ${DEMO_API_REAL:-users,system,projects,clips,brandKits.list,brandKits.create,brandKits.detail,brandKits.update,brandKits.delete,brandKits.duplicate,billing.wallet,billing.usage,billing.transactions,billing.exportTransactions,billing.pricing,billing.estimate,billing.plans,billing.subscription,billing.changePlan,billing.tokenPackages,billing.createPurchase,billing.purchase,billing.simulatePurchase,workspaces.list,workspaces.create,workspaces.detail,workspaces.update,workspaces.delete,workspaces.transfer,workspaces.members,workspaces.updateMember,workspaces.removeMember}
+        NEXT_PUBLIC_API_REAL: ${DEMO_API_REAL:-users,system,projects,clips,brandKits.list,brandKits.create,brandKits.detail,brandKits.update,brandKits.delete,brandKits.duplicate,billing.wallet,billing.usage,billing.transactions,billing.exportTransactions,billing.pricing,billing.estimate,billing.plans,billing.subscription,billing.changePlan,billing.tokenPackages,billing.createPurchase,billing.purchase,billing.simulatePurchase,workspaces.list,workspaces.create,workspaces.detail,workspaces.update,workspaces.delete,workspaces.transfer,workspaces.members,workspaces.updateMember,workspaces.removeMember,notifications.list,notifications.markRead,notifications.markAllRead}
     restart: on-failure
 
   proxy:

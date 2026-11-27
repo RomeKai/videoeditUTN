@@ -1895,6 +1895,12 @@
         "error": "Los pagos todavía no están habilitados.",
         "code": "payments_unavailable"
       }
+    },
+    "notification_404": {
+      "status": 404,
+      "body": {
+        "detail": "Not found."
+      }
     }
   },
   "pricing": {
@@ -2457,5 +2463,71 @@
     "failure_reason": null,
     "created_at": "2026-11-26T21:22:37.046003Z",
     "balance_after": null
+  },
+  "_about_notifications": "Las claves `notifications_*`, `notification_*` y el error `notification_404` las arma back/apps/notifications/tests/test_contract_fixture.py con los eventos reales (apps/notifications/services.py) y el reloj fijo, y compara cada valor con este archivo. Para regenerarlas: `PRINT_DRF_FIXTURE=1 python -m pytest apps/notifications/tests/test_contract_fixture.py -s`.",
+  "notifications_list": {
+    "unread_count": 4,
+    "results": [
+      {
+        "id": "952d29a2-80fc-4259-a84c-d89e9823b204",
+        "type": "project_ready",
+        "title": "Podcast Ep. 42 está listo para revisar",
+        "body": "Encontramos 9 clips.",
+        "created_at": "2026-11-04T15:40:00Z",
+        "read_at": null,
+        "project_id": "1346791c-355e-4251-9ee1-53ca50c07703",
+        "post_id": null
+      },
+      {
+        "id": "6254ffef-7b7b-43b6-bee1-d66dd2970d1e",
+        "type": "payment_rejected",
+        "title": "No pudimos cobrar tu compra de 5.000 tokens",
+        "body": "No se cobró nada. Podés intentarlo de nuevo.",
+        "created_at": "2026-11-04T15:30:00Z",
+        "read_at": null,
+        "project_id": null,
+        "post_id": null
+      },
+      {
+        "id": "86efcbe9-abf5-42cf-9e8f-ff988472d1e4",
+        "type": "payment_approved",
+        "title": "Se acreditaron 1.500 tokens",
+        "body": "Tu compra se aprobó.",
+        "created_at": "2026-11-04T15:20:00Z",
+        "read_at": null,
+        "project_id": null,
+        "post_id": null
+      },
+      {
+        "id": "a4a1cb48-0d9d-40b2-ac13-97a3a2fcbb63",
+        "type": "project_failed",
+        "title": "Charla TEDx no se pudo procesar",
+        "body": "Te devolvimos 12,50 tokens.",
+        "created_at": "2026-11-04T15:10:00Z",
+        "read_at": null,
+        "project_id": "7e8faef4-87c7-4d4b-8c24-1922834fd8df",
+        "post_id": null
+      },
+      {
+        "id": "a6f39564-7d30-4a97-8564-68ae0c47da07",
+        "type": "render_finished",
+        "title": "Entrevista con Ana: terminó el render",
+        "body": "4 clips listos.",
+        "created_at": "2026-11-04T15:00:00Z",
+        "read_at": "2026-11-04T16:00:00Z",
+        "project_id": "c6b2f6a0-9523-4300-8a9f-f5f467637bda",
+        "post_id": null
+      }
+    ]
+  },
+  "notification_read": {
+    "id": "a6f39564-7d30-4a97-8564-68ae0c47da07",
+    "type": "render_finished",
+    "title": "Entrevista con Ana: terminó el render",
+    "body": "4 clips listos.",
+    "created_at": "2026-11-04T15:00:00Z",
+    "read_at": "2026-11-04T16:00:00Z",
+    "project_id": "c6b2f6a0-9523-4300-8a9f-f5f467637bda",
+    "post_id": null
   }
 }

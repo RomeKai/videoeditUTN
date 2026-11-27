@@ -49,6 +49,7 @@ from django.conf import settings
 from django.db import DataError, IntegrityError, transaction
 from django.utils import timezone
 
+from apps.notifications.services import notify_payment_settled
 from apps.users.models import Workspace
 from apps.users.seats import seats_used
 
@@ -91,7 +92,7 @@ def _fail_checkout(payment):
     Idempotency-Key for a new attempt. A payment that a confirmation settled
     first keeps its status and its key.
     """
-    settled, _ = settle_payment(payment.pk, approved=False, failure_reason=CHECKOUT_FAILED)
+    settled, _ = settle_payment(payment.pk, approved=False, failure_reason=CHECKOUT_FAILED, notify=False)
     if Payment.objects.filter(pk=payment.pk, status=Payment.Status.REJECTED).update(idempotency_key=None):
         settled.idempotency_key = None
     return settled
@@ -214,7 +215,7 @@ def expire_checkout(payment, now=None):
         if not checkout_is_expired(locked, now):
             return locked, False
         logger.info('payments.checkout_expired payment=%s provider=%s', locked.pk, locked.provider)
-        settled, _ = settle_payment(locked.pk, approved=False, failure_reason=CHECKOUT_EXPIRED)
+        settled, _ = settle_payment(locked.pk, approved=False, failure_reason=CHECKOUT_EXPIRED, notify=False)
     if settled.status == Payment.Status.REJECTED:
         close_checkout(settled)
     return settled, settled.status == Payment.Status.REJECTED
@@ -387,7 +388,7 @@ def _credit(payment, now):
     payment.balance_after = wallet.available_balance
 
 
-def settle_payment(payment_id, *, approved, failure_reason=''):
+def settle_payment(payment_id, *, approved, failure_reason='', notify=True):
     """
     Approve or reject a pending payment, once. Approving a token purchase
     credits its tokens; approving an upgrade payment puts the workspace on its
@@ -395,6 +396,11 @@ def settle_payment(payment_id, *, approved, failure_reason=''):
     zone (and drops a scheduled downgrade). Returns ``(payment, changed)``;
     ``changed`` is False when the payment was already settled, and then
     nothing is written (a late approval of a rejected one is logged).
+
+    ``notify``: tells who started the payment how it ended (the bell). False
+    for a rejection that is not the provider's answer: a checkout that never
+    opened or expired, a plan the person replaced or chose not to pay. "We
+    could not charge you" would be false there.
     """
     workspace_id = Payment.objects.values_list('workspace_id', flat=True).get(pk=payment_id)
     with transaction.atomic():
@@ -432,6 +438,8 @@ def settle_payment(payment_id, *, approved, failure_reason=''):
         payment.checkout_url = ''
         payment.settled_at = now
         payment.save()
+        if notify:
+            notify_payment_settled(payment.pk)
     logger.info(
         'payments.settled payment=%s kind=%s status=%s tokens=%s amount_usd=%s',
         payment.pk, 'plan' if payment.plan_id else 'tokens', payment.status, payment.tokens, payment.amount_usd,
