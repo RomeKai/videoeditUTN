@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**82 endpoints:** 69 existen hoy en el backend, 4 existen en parte y 9 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**82 endpoints:** 70 existen hoy en el backend, 3 existen en parte y 9 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -27,7 +27,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 - **Idioma:** el backend responde con `LANGUAGE_CODE = "en-us"`, así que los mensajes propios de DRF llegan en inglés. La UI no los muestra tal cual: `errorMessage()`, `fieldError()` y `translateFieldError()` (`src/lib/error-messages.ts`) traducen los conocidos y caen a un texto genérico en español.
 - **Descargas:** los links firmados son de otro origen, y ahí el navegador ignora el atributo `download`. Para que el archivo se guarde en lugar de reproducirse, R2 tiene que firmar con `ResponseContentDisposition=attachment; filename="…"`. `downloadUrl()` abre esos links en una pestaña nueva para no reemplazar la app.
 - **503:** cualquier respuesta 503 muestra la página de mantenimiento (K5) hasta que la API vuelve a responder.
-- **Listas paginadas (propuesto, hueco 14):** `{ count, next, previous, results }` con `page` y `page_size` (25 por defecto), como `PageNumberPagination`.
+- **Listas paginadas:** `{ count, next, previous, results }` con `page` y `page_size` (25 por defecto, 100 como máximo), como `PageNumberPagination`. Una página que no existe responde 404 `{ detail: "Página inválida." }`. Proyectos (hueco 14, resuelto), movimientos y publicaciones ya paginan así en el backend.
 - **Errores:** validación de DRF `{ "campo": ["mensaje"] }`; vistas propias `{ "error": "mensaje", "required"?: "117.00" }`; permisos y 404 `{ "detail": "mensaje" }`. Propuesto: sumar `code` legible por máquina (`duration`, `resolution`, `seo`, `scheduling`, `crossposting`, `seats_exceeded`, `email_not_verified`, `account_not_connected`, `permission_denied`) y, en los errores de campo, ítems `{ "message", "code" }`.
 - **402** siempre abre el diálogo de saldo insuficiente y **403 de precios** el de límite del plan.
 - **La tabla de roles, en los dos lados:** la tabla 1.7 del mapa está en `src/lib/permissions.ts` (`MATRIX`) y el backend la copia en `ROLE_MATRIX` (`back/apps/core/permissions.py`, PR #125). Que las dos digan lo mismo lo cuida un test de cada lado contra `src/lib/role-matrix.json`, que escribe `python manage.py export_role_matrix` desde `ROLE_MATRIX`: si una tabla cambia sin la otra, falla nombrando el rol y la acción. Lo que la UI deshabilita, la API lo rechaza con el 403 de **Roles**: `{ detail }` en español, sin `code`. Sumar `code: "permission_denied"` sigue propuesto (diferencia 17).
@@ -36,7 +36,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 
 | # | Qué pasa hoy | Qué espera el frontend |
 |---|---|---|
-| 1 | `GET /api/v1/projects/` devuelve un array sin paginar, sin filtros, y cada ítem trae `transcript_data`, `ai_rationale_log` y `metadata` completos. | Paginado, con `status_group`, `search` y `status_counts`. La lista no necesita la transcripción: conviene un serializer liviano. El cliente acepta el array actual y lo envuelve. |
+| 1 | ~~`GET /api/v1/projects/` devuelve un array sin paginar y sin filtros.~~ Resuelto: pagina de a 25, con `status_group`, `search`, `ordering` y `status_counts`, y cada fila va sin `transcript_data`, `ai_rationale_log` ni `metadata.full_text` (`VideoProjectListSerializer`). | El cliente solo acepta la página: un array ya no es una respuesta válida. La transcripción y el registro de la selección se leen de `GET /api/v1/projects/:id/`. |
 | 2 | El código de `InvalidUploadError` (`not_a_video`, `too_long`…) no llega en el 400: DRF solo manda el mensaje. | `{ "source_file": [{ "message", "code" }] }`. Mientras tanto el frontend reconoce el código por el texto (`uploadErrorCode()` en `src/lib/error-messages.ts`). |
 | 3 | Los 403 de `PricingEngine` traen un mensaje en inglés sin código (`Video duration (…) exceeds your plan limit`). | `code` (`duration`, `resolution`, `seo`) y `limit`. Mientras tanto se reconoce por el texto (`planLimitKind()`). |
 | 4 | El rol del modelo es `viewer` (`WorkspaceMember.Role.VIEWER`); el mapa lo llama «Lector». | El contrato usa los valores del backend (`admin`, `editor`, `viewer`) más `owner` derivado de `Workspace.owner`. «Lector» es solo la etiqueta. |
@@ -102,7 +102,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/token-purchases/:id/` | Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`tokens` > 0) o el pago de una subida de plan (`plan_id`, `tokens` 0). | ✅ existe | G5 |
 | POST | `/api/v1/token-purchases/:id/simulate/` | Solo desarrollo y demo: el checkout de prueba aprueba o rechaza un pago del proveedor simulado. | ✅ existe | Checkout de prueba (/dev/checkout) |
 | POST | `/api/v1/projects/probe-link/` | Reconoce un link antes de crear el proyecto: de dónde es, su título y su duración. | ✅ existe | C1 |
-| GET | `/api/v1/projects/` | Proyectos del workspace, del más nuevo al más viejo. | ⚠️ existe en parte · hueco 14 | B2, J1, B1 |
+| GET | `/api/v1/projects/` | Proyectos del workspace, del más nuevo al más viejo. | ✅ existe | B2, J1, B1 |
 | POST | `/api/v1/projects/` | Crea un proyecto desde un archivo (multipart) o un link, reserva los tokens y arranca la ingesta. | ✅ existe | C1 |
 | POST | `/api/v1/projects/from-prompt/` | Igual que crear, más `prompt`: la IA arma la configuración al iniciar la ingesta (queda en `metadata.pte`). | ✅ existe | C1 |
 | GET | `/api/v1/projects/:id/` | Detalle del proyecto con el estado del pipeline, la metadata, la transcripción y sus clips. | ⚠️ existe en parte | D1, D1e, D1f, D3, D4, D5 |
@@ -765,11 +765,12 @@ Proyectos del workspace, del más nuevo al más viejo.
 | | |
 |---|---|
 | Id | `projects.list` |
-| Backend | ⚠️ existe en parte · hueco 14 · `back/apps/videos/views.py · VideoProjectViewSet.list + VideoProjectSerializer` |
-| Nota | Hoy devuelve un array sin paginar y sin filtros. Desde el PR #125 lee `X-Workspace-Id` y trae solo los proyectos del workspace activo (404 si el usuario no es miembro activo); B2 igual filtra por `workspace` en el navegador, como defensa. Propuesto: paginación de 25, `status_group`, `search`, `status_counts` y los campos extra del proyecto. |
+| Backend | ✅ existe · `back/apps/videos/views.py · VideoProjectViewSet.list + ProjectPagination + ProjectsQuerySerializer + VideoProjectListSerializer` |
+| Nota | Solo los proyectos del workspace activo (`X-Workspace-Id`; 404 si el usuario no es miembro activo). Páginas de 25 (`page_size` hasta 100). `status_group` agrupa los estados como los filtros de B2: `in_progress` (uploaded, ingesting, rendering), `to_review` (awaiting_approval), `ready` (completed, partial) y `failed`. `search` busca en el título sin distinguir mayúsculas. `status_counts` cuenta cada filtro con la misma búsqueda, sin importar el filtro ni la página pedidos. Cada fila es el proyecto sin `transcript_data`, `ai_rationale_log` ni `metadata.full_text` (`ProjectListItem`): esos van solo en `GET /projects/:id/`. Las consultas a la base no crecen con la página. De los campos extra del proyecto solo falta `duration_seconds`: la pantalla lee la duración de `metadata`. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | ProjectsQuery |
 | Respuesta 200 | ProjectsResponse |
+| Errores | **400** Un `status_group` o un `ordering` que no existe, o una búsqueda con un carácter nulo: `{ campo: [mensaje] }`.<br>**404** Una página que no existe: `{ detail: "Página inválida." }`. B2 retrocede hasta una que exista. |
 | Pantallas | B2, J1, B1 |
 
 #### `POST /api/v1/projects/`
@@ -2156,6 +2157,62 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `state` | "reserved" \\| "charged" \\| "refunded" |
 | `transaction_id` | Id \\| null |
 
+**ProjectListItem**
+
+| Campo | Tipo |
+|---|---|
+| `id` | Id |
+| `workspace` | Id |
+| `uploaded_by` | Id \\| null |
+| `title` | string |
+| `original_r2_key` | string \\| null |
+| `proxy_r2_key` | string \\| null |
+| `final_export_r2_key` | string \\| null |
+| `project_type` | ProjectType |
+| `editing_style` | EditingStyle |
+| `intelligence_level` | IntelligenceLevel |
+| `auto_render_bypass` | boolean |
+| `brand_kit` | Id \\| null |
+| `brand_kit_name` (opcional) | string |
+| `aspect_ratio` | AspectRatio |
+| `render_layout` | Layout |
+| `gameplay_position` | Position |
+| `camera_selection_position` | Position |
+| `manual_camera_x` | number |
+| `manual_camera_y` | number |
+| `manual_camera_zoom` | number |
+| `pip_corner` | PipCorner |
+| `trending_color` | ColorValue |
+| `trending_text` | string |
+| `speaker_tracking` | boolean |
+| `add_subtitles` | boolean |
+| `subtitle_color` | ColorValue |
+| `subtitle_with_emojis` | boolean |
+| `subtitle_words_per_segment` | number |
+| `subtitle_size` | SubtitleSize |
+| `subtitle_position` | SubtitlePosition |
+| `use_facetracking` | boolean |
+| `remove_silences` | boolean |
+| `source_file` | string \\| null |
+| `video_url` | string \\| null |
+| `metadata` | ProjectMetadata |
+| `approved_segments` | ApprovedSegment[] \\| null |
+| `status` | ProjectStatus |
+| `pipeline_stage` | PipelineStage |
+| `pipeline_stage_status` | PipelineStageStatus |
+| `pipeline_attempts` | number |
+| `pipeline_error_code` | string |
+| `pipeline_error_at` | IsoDateTime \\| null |
+| `created_at` | IsoDateTime |
+| `clips` | Clip[] |
+| `proxy_url` | string \\| null |
+| `thumbnail_url` (opcional) | string \\| null |
+| `uploaded_by_detail` (opcional) | UserRef \\| null |
+| `cost` (opcional) | ProjectCost \\| null |
+| `stage_timings` (opcional) | { [clave]: StageTiming } |
+| `eta_seconds` (opcional) | number \\| null |
+| `duration_seconds` (opcional) | number \\| null |
+
 **ProjectMetadata**
 
 | Campo | Tipo |
@@ -2190,9 +2247,27 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `search` (opcional) | string |
 | `ordering` (opcional) | "-created_at" \\| "created_at" \\| "title" |
 
-**ProjectsResponse:** { count: number, next: string \| null, previous: string \| null, results: Project[], status_counts?: { [clave]: number } } \| Project[]
+**ProjectsResponse**
+
+| Campo | Tipo |
+|---|---|
+| `count` | number |
+| `next` | string \\| null |
+| `previous` | string \\| null |
+| `results` | ProjectListItem[] |
+| `status_counts` | ProjectStatusCounts |
 
 **ProjectStatus:** "uploaded" \| "ingesting" \| "awaiting_approval" \| "rendering" \| "completed" \| "partial" \| "failed"
+
+**ProjectStatusCounts**
+
+| Campo | Tipo |
+|---|---|
+| `all` | number |
+| `in_progress` | number |
+| `to_review` | number |
+| `ready` | number |
+| `failed` | number |
 
 **ProjectStatusGroup:** "all" \| "in_progress" \| "to_review" \| "ready" \| "failed"
 

@@ -365,7 +365,7 @@ class DeleteTests(ClipActionsHarness, APITestCase):
 
         detail = self.client.get(clip_url(clip)).data
         in_project = self.client.get(f"/api/v1/projects/{project.pk}/").data
-        listed = next(row for row in self.client.get("/api/v1/projects/").data if row["id"] == str(project.pk))
+        listed = next(row for row in self.client.get("/api/v1/projects/").data["results"] if row["id"] == str(project.pk))
 
         self.assertEqual((detail["preview_url"], detail["thumbnail_url"]), (video, image))
         for body in (in_project, listed):

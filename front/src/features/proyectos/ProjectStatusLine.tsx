@@ -1,5 +1,5 @@
-import type { Project } from '@/api/contracts/projects';
-import { countClips, describeProjectStatus, type ProjectStatusView } from '@/lib/project-status';
+import type { ProjectListItem as Project } from '@/api/contracts/projects';
+import { countClips, describeProjectStatus, etaLabel, type ProjectStatusView } from '@/lib/project-status';
 import { Badge, ProgressBar, StepSegments, cx } from '@/ui';
 import styles from './Projects.module.css';
 
@@ -15,9 +15,12 @@ export interface ProjectStatusLineProps {
 /**
  * State of a project in the list (map §3 and 9.1.3): the label of section 3 and
  * one short line. The full text stays in the tooltip and on the project screen.
+ * A project in the queue or going through the steps also says how long is left for the review («≈ 9 min», «≈ 40 s»),
+ * when the backend estimates it.
  */
 export function ProjectStatusLine({ project, view = describeProjectStatus(project), inline = false, className }: ProjectStatusLineProps) {
   const clips = countClips(project.clips);
+  const eta = etaLabel(project, view);
   const rendering = view.key === 'rendering' && project.project_type !== 'single_edit' && clips.total > 0;
   return (
     <span className={cx(styles.st, inline && styles.stInline, className)}>
@@ -27,6 +30,12 @@ export function ProjectStatusLine({ project, view = describeProjectStatus(projec
       <span className={styles.stLine}>
         <span className={cx(styles.stText, 'num')} title={view.text !== view.shortText ? view.text : undefined}>
           {view.shortText}
+          {eta ? (
+            <>
+              {' · '}
+              <span title={`Faltan ${eta} para revisar`}>{eta}</span>
+            </>
+          ) : null}
         </span>
         {view.step ? <StepSegments done={view.step.current - 1} running label={`Pasos completados: ${view.step.current - 1} de 4`} /> : null}
         {rendering ? <ProgressBar className={styles.stProgress} value={clips.ready} max={clips.total} label={`Clips renderizados: ${clips.ready} de ${clips.total}`} /> : null}

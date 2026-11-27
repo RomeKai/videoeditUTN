@@ -1,6 +1,6 @@
 import type { Subscription, Transaction, Wallet } from '../contracts/billing';
 import type { Role } from '../contracts/common';
-import type { Clip, Project } from '../contracts/projects';
+import type { Clip, Project, ProjectListItem } from '../contracts/projects';
 import type { ScheduledPost } from '../contracts/social';
 import type { Me } from '../contracts/users';
 import type { Member } from '../contracts/workspaces';
@@ -24,9 +24,19 @@ export function serializeClip(db: MockDb, clip: MockClip): Clip {
 }
 
 /**
- * `full` adds the transcript (detail). The list leaves it out: the real list
- * sends it too, which is heavy; see the note in CONTRACT.md.
+ * A row of the list, as VideoProjectListSerializer: the project without `transcript_data`, `ai_rationale_log`
+ * and `metadata.full_text`.
  */
+export function serializeProjectRow(db: MockDb, project: MockProject): ProjectListItem {
+  const { transcript_data: _transcript, ai_rationale_log: _log, metadata, ...row } = serializeProject(db, project, { full: false });
+  void _transcript;
+  void _log;
+  const { full_text: _text, ...rest } = metadata;
+  void _text;
+  return { ...row, metadata: rest };
+}
+
+/** `full` adds the transcript (detail); without it, the project as a creation or an update answers it. */
 export function serializeProject(db: MockDb, project: MockProject, { full }: { full: boolean }): Project {
   const { _sim, _transcriptSeed, _reservations, _paidRender, clips, ...rest } = project;
   void _sim;
