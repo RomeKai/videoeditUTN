@@ -292,7 +292,7 @@ export const inviteMembers = defineEndpoint({
       when: 'Sin lugares en el plan (`{error, code: "seats_exceeded"}`: límite del plan, se resuelve subiendo de plan o quitando miembros; el mismo código en `billing.changePlan` es un 409 porque ahí lo que sobra son miembros). El `error` se muestra tal cual: nombra el plan, o el plan más chico de una bajada programada o de un pago en curso. O el rol no puede invitar (Editor, Lector): solo `detail`, sin `code`.',
     },
     { status: 404, when: 'El workspace no existe o el usuario no es dueño ni miembro activo. Mismo `detail` para todos los casos.' },
-    { status: 429, when: 'Demasiadas invitaciones seguidas. Invitar y reenviar cuentan juntos: 30 por hora por usuario y 60 por hora por workspace. `detail` dice cuánto esperar.' },
+    { status: 429, when: 'Demasiadas invitaciones seguidas. Invitar y reenviar cuentan juntos: 30 por hora por usuario y 60 por hora por workspace, y por dirección 4 por hora desde este workspace (cancelar y volver a invitar también cuenta) y 10 por hora desde cualquier workspace. `detail` dice cuánto esperar. No queda ninguna invitación pendiente.' },
   ],
   backend: {
     status: 'exists',
@@ -313,7 +313,7 @@ export const resendInvitation = defineEndpoint({
   errors: [
     { status: 403, when: 'El rol no administra miembros. Solo `detail`, sin `code`.' },
     { status: 404, when: 'La invitación ya se aceptó o se canceló, `memberId` no es de ese workspace, o el workspace no existe para este usuario.' },
-    { status: 429, when: 'Demasiadas invitaciones seguidas (el mismo límite que invitar), o demasiados reenvíos a esa dirección: 3 por hora, los pida quien los pida. `detail` dice cuánto esperar. El link anterior sigue sirviendo.' },
+    { status: 429, when: 'Demasiadas invitaciones seguidas, o demasiados emails a esa dirección: los mismos límites que invitar, que cuentan juntos. `detail` dice cuánto esperar. El link anterior sigue sirviendo.' },
     { status: 502, when: 'No se pudo encolar el email. El link anterior ya no sirve: se reintenta en unos minutos.' },
   ],
   backend: {

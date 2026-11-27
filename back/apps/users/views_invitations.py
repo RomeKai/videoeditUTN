@@ -84,17 +84,58 @@ class WorkspaceSendThrottle(AttemptThrottle):
 
 class RecipientThrottle(AttemptThrottle):
     """
-    Resends to one invited address, whoever asks and from whichever workspace:
-    the limits per user and per workspace still let several admins, or one
-    with several workspaces, fill a mailbox. Keyed by the HMAC of the address
-    (throttles.email_ident, any spelling), never the address. Checked by the
-    view once it has the pending row.
+    One window of the invitation emails (invite and resend together) to one
+    address, keyed by the HMAC of the address (throttles.email_ident, any
+    spelling), never the address. See check_recipients.
     """
 
-    scope_attr = 'recipient_throttle_scope'
+    def __init__(self, scope, ident):
+        self.scope = scope
+        self.ident = ident
+        self.rate = self.get_rate()
+        self.num_requests, self.duration = self.parse_rate(self.rate)
 
-    def get_cache_key(self, request, view):
-        return self.cache_format % {'scope': self.scope, 'ident': email_ident(view.throttled_recipient)}
+    def get_cache_key(self, request=None, view=None):
+        return self.cache_format % {'scope': self.scope, 'ident': self.ident}
+
+    def has_room(self):
+        """Whether one more email fits in the window. Counts nothing (``record`` does)."""
+        self.key = self.get_cache_key()
+        self.now = self.timer()
+        self.history = [moment for moment in self.cache.get(self.key, []) if moment > self.now - self.duration]
+        return len(self.history) < self.num_requests
+
+    def record(self):
+        self.history.insert(0, self.now)
+        self.cache.set(self.key, self.history, self.duration)
+
+
+def check_recipients(request, view, workspace_id, emails):
+    """
+    The limits of the invitation emails per address, for invite and resend:
+
+    - `invitation_recipient_workspace`, per workspace and address: cancelling
+      an invitation and inviting the address again counts like a resend;
+    - `invitation_recipient`, per address from any workspace, looser: several
+      workspaces cannot fill a mailbox either, and a workspace that spends its
+      own limit does not lock out another workspace's emails to that address.
+
+    The limits per user and per workspace still let one workspace send all of
+    its emails to one address. Called with the workspace locked, before any row
+    changes: every address is checked first and only then counted, so a
+    refused request (the 429) counts nothing and changes nothing.
+    """
+    throttles = []
+    for email in emails:
+        ident = email_ident(email)
+        throttles.append(RecipientThrottle('invitation_recipient_workspace', f'workspace:{workspace_id}:{ident}'))
+        throttles.append(RecipientThrottle('invitation_recipient', ident))
+    full = [throttle for throttle in throttles if not throttle.has_room()]
+    if full:
+        waits = [throttle.wait() for throttle in full]
+        view.throttled(request, None if None in waits else max(waits))
+    for throttle in throttles:
+        throttle.record()
 
 
 def _token_of(request):
@@ -126,13 +167,15 @@ def _queue(member_id):
 
 
 class InvitationSendView(SpanishThrottleMixin, APIView):
-    """What invite and resend share: the session, the limit per user and the one per workspace."""
+    """
+    What invite and resend share: the session, the limit per user, the one per
+    workspace and the ones per address (check_recipients).
+    """
 
     permission_classes = [IsAuthenticated]
     throttle_classes = [AttemptThrottle]
     throttle_scope = 'invitation_send'
     workspace_throttle_scope = 'invitation_send_workspace'
-    recipient_throttle_scope = 'invitation_resend_recipient'
 
     def check_workspace_throttle(self, request, workspace_id):
         """After the role check (without the lock): 404 and 403 come first and do not count."""
@@ -163,7 +206,8 @@ class WorkspaceInvitationsView(InvitationSendView):
         Invites one or several emails with a role: owner and admins. All of
         them or none. Each one is a PENDING row that takes a seat of the plan
         from now (seats.check_seat_limit, with the workspace locked), and gets
-        an email with its link. The answer never says whether an email has an
+        an email with its link, which counts in the limits per address
+        (check_recipients). The answer never says whether an email has an
         account: `user` is null in every pending row.
         """
         self.check_workspace_throttle(request, workspace_id)
@@ -185,6 +229,8 @@ class WorkspaceInvitationsView(InvitationSendView):
                 check_seat_limit(workspace, [None] * len(emails))
             except DjangoValidationError as exc:
                 return _error(403, exc.messages[0], 'seats_exceeded')
+            # Before any row: a refused invitation (429) leaves nothing pending.
+            check_recipients(request, self, workspace.pk, emails)
             members = [
                 WorkspaceMember.objects.create(
                     workspace=workspace, role=role, status=PENDING, invited_email=email, invited_by=request.user,
@@ -236,10 +282,7 @@ class WorkspaceInvitationResendView(InvitationSendView):
                 # A pending row of before the invitations (made in the admin): its account's email.
                 member.invited_email = User.objects.values_list('email', flat=True).get(pk=member.user_id)
             # Before the old link is touched: a refused resend changes nothing.
-            self.throttled_recipient = member.invited_email
-            throttle = RecipientThrottle()
-            if not throttle.allow_request(request, self):
-                self.throttled(request, throttle.wait())
+            check_recipients(request, self, workspace.pk, [member.invited_email])
             member.invitation_token_hash = None
             member.invitation_sent_at = None
             member.save(update_fields=['invited_email', 'invitation_token_hash', 'invitation_sent_at'])
