@@ -206,8 +206,11 @@ REST_FRAMEWORK = {
         # per user and per workspace: each request sends emails to addresses the user typed.
         'invitation_send': _rate('THROTTLE_INVITATION_SEND', '30/hour'),
         'invitation_send_workspace': _rate('THROTTLE_INVITATION_SEND_WORKSPACE', '60/hour'),
-        # Resends to one invited address (any spelling), whoever asks and from whichever workspace.
-        'invitation_resend_recipient': _rate('THROTTLE_INVITATION_RESEND_RECIPIENT', '3/hour'),
+        # Invitation emails to one address (any spelling), invite and resend together: from one
+        # workspace (cancelling and inviting again counts), and from any workspace, looser, so one
+        # workspace that spends its own limit does not lock another out.
+        'invitation_recipient_workspace': _rate('THROTTLE_INVITATION_RECIPIENT_WORKSPACE', '4/hour'),
+        'invitation_recipient': _rate('THROTTLE_INVITATION_RECIPIENT', '10/hour'),
         # The public endpoints of the link, per IP: reading it and accepting it.
         'invitation_read': _rate('THROTTLE_INVITATION_READ', '60/hour'),
         'invitation_accept': _rate('THROTTLE_INVITATION_ACCEPT', '20/hour'),

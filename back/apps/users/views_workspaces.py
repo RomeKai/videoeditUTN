@@ -30,6 +30,7 @@ from apps.integrations.ayrshare_api import AyrshareClient
 from apps.payments.models import Payment, Transaction, Wallet
 from apps.payments.services.payments import payment_pending_message
 from apps.users.models import User, Workspace, WorkspaceMember
+from apps.users.seats import seat_limit
 from apps.users.serializers_workspaces import (
     ALREADY_OWNER,
     CONFIRM_NAME_MISMATCH,
@@ -470,19 +471,22 @@ class WorkspaceMembersView(APIView):
     def get(self, request, workspace_id):
         """
         Members and pending invitations, oldest first: owner and admins.
-        `seats_used` counts every row, pending ones too, against the plan's
-        `max_members` (one seat without a plan): the count of seats.check_seat_limit.
+        `seats_used` counts every row, pending ones too, against `max_members`:
+        the limit that inviting checks (seats.seat_limit). It is the plan's
+        (one seat without a plan), or the smaller one of a scheduled downgrade
+        or of a plan payment waiting for its checkout; `limited_by` says which.
         """
         active = require_workspace_role(request.user, workspace_id, 'members.manage')
         workspace = active.workspace
         members = list(
             WorkspaceMember.objects.filter(workspace=workspace).select_related('user', 'invited_by').order_by('joined_at', 'pk')
         )
-        plan = workspace.subscription_plan
+        limit = seat_limit(workspace)
         return Response(MembersSerializer({
             'members': [_member_payload(member, workspace) for member in members],
-            'max_members': plan.max_members if plan else 1,
+            'max_members': limit.limit,
             'seats_used': len(members),
+            'limited_by': limit.limited_by,
         }).data)
 
 

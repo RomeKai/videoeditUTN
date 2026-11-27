@@ -138,11 +138,21 @@ describe('workspaces y miembros: respuestas reales del backend', () => {
     const members = parse(listMembers.response, real.members) as MembersResponse;
     expect(members.members.map((member) => member.role)).toEqual(['owner', 'admin', 'editor', 'viewer', 'editor']);
     expect(members.members.at(-1)?.status).toBe('pending');
+    // A pending row never says whose account its email is.
+    expect(members.members.at(-1)?.user).toBeNull();
     expect(members.seats_used).toBe(members.members.length);
+    expect(members.limited_by).toBeNull();
     // A user without a name arrives as '' and nobody is recorded as the inviter.
     expect(members.members[0]?.user?.name).toBe('');
     expect(members.members[0]?.invited_by).toBeNull();
     parse(updateMember.response, real.member_update);
+  });
+
+  it('miembros con un pago de plan en curso: los lugares de ese plan y el motivo', () => {
+    const members = parse(listMembers.response, real.members_plan_payment) as MembersResponse;
+    // On Pro (10 seats) paying for Creador (5): the 5 that inviting checks.
+    expect([members.max_members, members.seats_used]).toEqual([5, 5]);
+    expect(members.limited_by).toEqual({ reason: 'pending_payment', plan_name: 'Creador', effective_at: null });
   });
 
   it('errores: el 403 de rol dice quién puede, sin `code`; los 400 van por campo; el 409 trae `code`', () => {

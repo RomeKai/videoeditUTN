@@ -650,6 +650,10 @@ describe('mocks', () => {
     expect(lateral.subscription.plan.name).toBe('Pro Plus');
     const free = await apiCall(billing.changePlan, { body: { plan_id: '55555555-5555-4555-8555-555555555555' } });
     expect(free.applied).toBe('period_end');
+    // Miembros shows the seats inviting checks, and why.
+    const members = await apiCall(workspaces.listMembers, { params: { id: WORKSPACE_IDS.estudio } });
+    expect([members.max_members, members.seats_used]).toEqual([5, 4]);
+    expect(members.limited_by).toEqual({ reason: 'pending_plan', plan_name: 'Libre', effective_at: free.subscription.pending_plan?.effective_at });
     // Libre has 5 seats and 4 are taken: one more fits, the next does not.
     await apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['quinta@estudionorte.com'], role: 'viewer' } });
     const refused = await fail(apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['sexta@estudionorte.com'], role: 'viewer' } }));
@@ -663,7 +667,12 @@ describe('mocks', () => {
     const creator = plans.find((item) => item.name === 'Creador');
     if (!creator) throw new Error('falta Creador');
     // Pro with 4 seats in use; Creador has 5.
+    expect((await apiCall(workspaces.listMembers, { params: { id: WORKSPACE_IDS.estudio } })).limited_by).toBeNull();
     expect((await apiCall(billing.changePlan, { body: { plan_id: creator.id, return_url: 'http://localhost:3000/uso/planes' } })).checkout_url).toBeTruthy();
+    // Miembros shows the seats inviting checks, and why.
+    const members = await apiCall(workspaces.listMembers, { params: { id: WORKSPACE_IDS.estudio } });
+    expect([members.max_members, members.seats_used]).toEqual([5, 4]);
+    expect(members.limited_by).toEqual({ reason: 'pending_payment', plan_name: 'Creador', effective_at: null });
     await apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['quinta@estudionorte.com'], role: 'viewer' } });
     const refused = await fail(apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['sexta@estudionorte.com'], role: 'viewer' } }));
     expect(refused.code).toBe('seats_exceeded');
