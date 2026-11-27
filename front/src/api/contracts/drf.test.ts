@@ -101,10 +101,12 @@ describe('respuestas reales del backend', () => {
     expect(failed.transcribed).toMatchObject({ finished_at: '2026-11-27T10:03:00+00:00', duration_s: null });
   });
 
-  it('actividad: la reserva dice cómo terminó, y solo ella', () => {
+  it('actividad: la reserva y su cobro dicen cómo terminó la reserva, y nada más', () => {
     const items = parse(z.array(ActivityItem), real.project_activity) as ActivityItem[];
-    expect(items.filter((item) => item.reservation_state).map((item) => [item.type, item.reservation_state, item.amount])).toEqual([['tokens_reserved', 'charged', -18]]);
-    expect(items.find((item) => item.type === 'tokens_charged')?.amount).toBe(-18);
+    expect(items.filter((item) => item.reservation_state).map((item) => [item.type, item.reservation_state, item.amount])).toEqual([
+      ['tokens_charged', 'charged', -18],
+      ['tokens_reserved', 'charged', -18],
+    ]);
   });
 
   it('el aviso de «renderizar sin revisar» y el error de auto-render se pueden leer', () => {
