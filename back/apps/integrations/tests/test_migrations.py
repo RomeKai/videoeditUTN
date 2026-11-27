@@ -59,3 +59,67 @@ class SocialProfileRollbackTests(TransactionTestCase):
         keys = dict(Workspace.objects.filter(pk__in=[later.pk, kept.pk]).values_list("pk", "ayrshare_profile_key"))
         self.assertEqual(keys, {later.pk: "NEW-1", kept.pk: "OLD"})  # a key already there is never replaced
 
+
+
+class NetworksPerWorkspaceMigrationTests(TransactionTestCase):
+    """Review of #187: 0003 keeps one row per provider profile and never locks users_workspace."""
+
+    before = [("integrations", "0002_perfiles_desde_ayrshare_profile_key")]
+    after = [("integrations", "0003_redes_por_espacio")]
+
+    def tearDown(self):
+        call_command("migrate", verbosity=0)
+
+    def test_a_shared_key_stays_only_in_the_oldest_row(self):
+        old_apps = _migrate(self.before)
+        OldUser = old_apps.get_model("users", "User")
+        OldWorkspace = old_apps.get_model("users", "Workspace")
+        OldProfile = old_apps.get_model("integrations", "SocialProfile")
+        owner = OldUser.objects.create(username="compartida", email="compartida@test.com", password="x")
+        first, second, alone = (OldWorkspace.objects.create(name=name, owner=owner) for name in ("Primero", "Segundo", "Solo"))
+        OldProfile.objects.create(workspace_id=first.pk, provider="ayrshare", provider_ref="SAME", provider_id="r1")
+        OldProfile.objects.create(workspace_id=second.pk, provider="ayrshare", provider_ref="SAME", provider_id="r1")
+        OldProfile.objects.create(workspace_id=alone.pk, provider="ayrshare", provider_ref="OWN")
+
+        _migrate(self.after)
+
+        refs = dict(SocialProfile.objects.values_list("workspace_id", "provider_ref"))
+        # Each one could publish to the other's accounts: the newer row connects again.
+        self.assertEqual(refs, {first.pk: "SAME", second.pk: "", alone.pk: "OWN"})
+
+    def test_the_workspace_foreign_key_is_not_dropped_and_the_lock_wait_is_short(self):
+        if connection.vendor != "postgresql":
+            self.skipTest("the statements are PostgreSQL's")
+        _migrate(self.before)
+        statements = []
+
+        def keep(execute, sql, params, many, context):
+            statements.append(str(sql))
+            return execute(sql, params, many, context)
+
+        with connection.execute_wrapper(keep):
+            _migrate(self.after)
+        text = "\n".join(statements).upper()
+        self.assertIn("SET LOCAL LOCK_TIMEOUT = '5S'", text)
+        self.assertIn('ALTER COLUMN WORKSPACE_ID DROP NOT NULL', text)
+        # Re-creating the foreign key takes ACCESS EXCLUSIVE on users_workspace while old containers serve.
+        self.assertNotIn("FOREIGN KEY", text)
+        self.assertNotIn("DROP CONSTRAINT", text)
+
+    def test_going_back_restores_not_null_without_the_orphans(self):
+        owner = User.objects.create_user(username="atras", email="atras@test.com", password="pw")
+        live = Workspace.objects.create(name="Vivo", owner=owner)
+        SocialProfile.objects.create(workspace=live, provider="ayrshare", provider_ref="LIVE")
+        SocialProfile.objects.create(workspace=None, provider="ayrshare", provider_ref="GONE")
+
+        _migrate(self.before)
+
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT workspace_id FROM integrations_socialprofile")
+            self.assertEqual([row[0] for row in cursor.fetchall()], [live.pk])
+            if connection.vendor == "postgresql":
+                cursor.execute(
+                    "SELECT is_nullable FROM information_schema.columns "
+                    "WHERE table_name = 'integrations_socialprofile' AND column_name = 'workspace_id'"
+                )
+                self.assertEqual(cursor.fetchone()[0], "NO")

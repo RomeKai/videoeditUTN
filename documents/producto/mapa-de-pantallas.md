@@ -63,6 +63,7 @@ Leyenda de API: ✅ existe · ⚠️ existe en parte · ❌ falta. Los huecos es
 | `has_watermark` | Resumen de costo, preview de clips | Se muestra la nota "Tu plan agrega marca de agua" con link a Planes. |
 | `allow_scheduling` | Publicar | "Programar" queda con candado; "Publicar ahora" sigue disponible. |
 | `allow_crossposting` | Publicar | Se puede elegir una sola red por publicación; las demás quedan con candado. |
+| `allow_social_accounts` | Publicar, Ajustes › Redes sociales, Conectar red | Sin él (Gratis), "Conectar" y "Reconectar" quedan con candado y el diálogo de conectar lo explica. Lo que ya estaba conectado sigue publicando y se puede desconectar. |
 | `has_seo_optimization` | Nuevo proyecto (SEO) | El interruptor de SEO queda con candado. |
 | `has_thumbnail_engine` | — | Las miniaturas con IA no están en el MVP. |
 | `base_discount_rate` | Planes, resumen de costo | Se muestra "Incluye 10% de descuento en tokens". |
@@ -519,7 +520,7 @@ Otras respuestas:
 - **Para qué:** publicar uno o varios clips en una o varias redes, ahora o programado.
 - **Qué muestra:**
   1. **Redes:** TikTok, Instagram Reels y YouTube Shorts, según las cuentas conectadas.
-     - Una red sin cuenta muestra **Conectar** (abre [conectar red](#d6-conectar-red-social)).
+     - Una red sin cuenta muestra **Conectar** (abre [conectar red](#d6-conectar-red-social)), o el candado si el plan no incluye conectar redes (`allow_social_accounts`).
      - Sin crossposting en el plan, se puede elegir una sola.
   2. **Texto por red:**
      - Caption y hashtags, con contador de caracteres según el límite de cada red.
@@ -654,8 +655,8 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 - **API:** ❌ (el modelo existe).
 
 #### H3. Redes sociales
-- **Qué muestra:** una fila por red con estado (Conectada como @usuario, Vencida, Sin conectar) y la acción **Conectar**, **Reconectar** o **Desconectar**.
-- **API:** ✅ `GET /api/v1/social-accounts/` (cualquier miembro), `POST /api/v1/social-accounts/connect/` (Dueño y Admin; la primera vez crea el perfil del espacio en el proveedor) y `DELETE /api/v1/social-accounts/:platform/` (Dueño y Admin; lo programado y lo que está en cola en esa red queda en error). Las opciones del creador de TikTok son un valor seguro: el proveedor no las da. Ver la [documentación de IA](../ia/05-seo-y-publicacion.md#flujo-conectar-redes).
+- **Qué muestra:** una fila por red con estado (Conectada como @usuario, Vencida, Sin conectar) y la acción **Conectar**, **Reconectar** o **Desconectar**. Si el plan no incluye conectar redes (Gratis), en lugar de Conectar y Reconectar va el candado con el plan que lo incluye; Desconectar sigue.
+- **API:** ✅ `GET /api/v1/social-accounts/` (cualquier miembro), `POST /api/v1/social-accounts/connect/` (Dueño y Admin, en un plan pago y con el email verificado; la primera vez crea el perfil del espacio en el proveedor) y `DELETE /api/v1/social-accounts/:platform/` (Dueño y Admin; lo programado y lo que está en cola en esa red queda en error). Las opciones del creador de TikTok son un valor seguro: el proveedor no las da. Ver la [documentación de IA](../ia/05-seo-y-publicacion.md#flujo-conectar-redes).
 
 #### H4. Valores por defecto
 - **No existe como pantalla en el MVP.**
@@ -732,8 +733,10 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 - **No se muestra** qué categoría disparó el bloqueo.
 
 #### D6. Conectar red social
-- **Qué muestra:** explica qué permisos pide la red y abre la ventana de la red.
-- **Al volver:** muestra la cuenta conectada.
+- **Qué muestra:** explica qué permisos pide la red y abre la ventana de la red. «Cancelar» cierra también esa ventana.
+- **Al volver:** muestra la cuenta conectada (deja de consultar las cuentas apenas aparece).
+- **Sin el plan:** si el plan no incluye conectar redes, muestra el candado con el plan que lo incluye y no abre la red.
+- **Errores con su mensaje:** el email sin verificar, y los que resuelve soporte (el tope de perfiles y un perfil a medio crear), muestran el mensaje del backend.
 
 #### D7. Invitar miembro
 - **Qué pide:** email (uno o varios separados por coma) y rol. Muestra cuántos lugares quedan en el plan.
