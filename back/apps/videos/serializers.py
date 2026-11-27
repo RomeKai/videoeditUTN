@@ -160,7 +160,23 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     thumbnail_url = serializers.SerializerMethodField(help_text=(
         "The thumbnail of the project's first clip that has one (the same temporary URL), or null."
     ))
-    
+    uploaded_by_detail = serializers.SerializerMethodField(help_text=(
+        "Who created the project: {id, name}, never the email. Null when that user is gone."
+    ))
+    cost = serializers.SerializerMethodField(help_text=(
+        "The creation reservation (metadata.reservation_id): {amount, state: reserved|charged|refunded, "
+        "transaction_id}. A partial charge shows what was charged. Null without a creation reservation."
+    ))
+    eta_seconds = serializers.SerializerMethodField(help_text=(
+        "While the project is processing: seconds until it is ready for the review (the estimate for its "
+        "duration minus what its finished stages took). Null otherwise, for a whole-video edit and without "
+        "history to estimate from."
+    ))
+    stage_timings = serializers.SerializerMethodField(help_text=(
+        "{stage: {started_at, finished_at, duration_s}} of the stages that finished (their last successful "
+        "run). started_at and finished_at are null for stages that finished before they were recorded."
+    ))
+
     source_file = serializers.FileField(required=False)
     video_url = serializers.CharField(required=False, allow_blank=True)
     # PTE-02: optional preference for the clip selector ("momentos de humor").
@@ -217,6 +233,24 @@ class VideoProjectSerializer(serializers.ModelSerializer):
 
     def get_thumbnail_url(self, obj) -> str | None:
         return None  # filled by to_representation, from the clips it already serialized
+
+    def get_uploaded_by_detail(self, obj) -> dict | None:
+        from .services.project_summary import uploaded_by_detail
+        return uploaded_by_detail(obj)
+
+    def get_cost(self, obj) -> dict | None:
+        from .services.project_summary import response_cost
+        # The reservations of every project of the response (the list is not
+        # paginated) are read once, in one query; each project then looks up its own.
+        return response_cost(obj, self.root.instance, self.context)
+
+    def get_eta_seconds(self, obj) -> int | None:
+        from .services.project_summary import eta_seconds
+        return eta_seconds(obj, self.context)
+
+    def get_stage_timings(self, obj) -> dict:
+        from .services.project_summary import stage_timings
+        return stage_timings(obj)
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

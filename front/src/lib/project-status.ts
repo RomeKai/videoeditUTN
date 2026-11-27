@@ -82,7 +82,8 @@ export function describeProjectStatus(project: ProjectLike): ProjectStatusView {
       key: 'failed',
       label: 'Error',
       tone: 'err',
-      text: [pipelineErrorMessage(project.pipeline_error_code), refund].filter(Boolean).join(' '),
+      // The refund sentence comes right after: the message does not say "te devolvimos los tokens" too.
+      text: [pipelineErrorMessage(project.pipeline_error_code, { refundShown: Boolean(refund) }), refund].filter(Boolean).join(' '),
       shortText: refund ? refund.replace(/\.$/, '') : 'No se pudo procesar',
       action: 'recreate',
     };
