@@ -25,7 +25,7 @@ URL = '/api/v1/plans/'
 CONTRACT_FIELDS = {
     'id', 'name', 'max_video_duration_seconds', 'max_resolution', 'has_watermark',
     'allow_scheduling', 'allow_crossposting', 'has_seo_optimization',
-    'has_thumbnail_engine', 'base_discount_rate', 'max_members', 'is_active',
+    'has_thumbnail_engine', 'allow_social_accounts', 'base_discount_rate', 'max_members', 'is_active',
     'price_usd_monthly', 'description', 'sort_order', 'is_recommended',
 }
 
@@ -230,3 +230,9 @@ def test_a_new_workspace_keeps_its_admin_member_and_wallet():
     assert member.role == WorkspaceMember.Role.ADMIN
     assert member.status == WorkspaceMember.Status.ACTIVE
     assert Wallet.objects.filter(workspace=workspace).exists()
+
+
+def test_only_the_paid_plans_connect_networks(client):
+    """Connecting takes a paid profile at the publishing provider (payments 0019): Gratis does not."""
+    allowed = {plan['name']: plan['allow_social_accounts'] for plan in client.get(URL).json()}
+    assert allowed == {'Gratis': False, 'Creador': True, 'Pro': True, 'Estudio': True}

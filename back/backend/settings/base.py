@@ -657,10 +657,11 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.payments.tasks.apply_due_plan_changes',
         'schedule': 15 * 60,
     },
-    # Profiles at the publishing provider of deleted workspaces (a paid slot each). The delete
-    # queues it too; this run picks up what a failed one left. Daily at 05:10 UTC.
-    'delete-orphan-social-profiles': {
-        'task': 'apps.integrations.tasks.delete_orphan_social_profiles',
+    # Profiles at the publishing provider (a paid slot each): of deleted workspaces (the delete
+    # queues their cleanup too; this run picks up what a failed one left), and the ones no
+    # network was ever linked to after SOCIAL_UNLINKED_PROFILE_DAYS. Daily at 05:10 UTC.
+    'clean-social-profiles': {
+        'task': 'apps.integrations.tasks.clean_social_profiles',
         'schedule': crontab(hour=5, minute=10),
     },
 }
@@ -741,4 +742,9 @@ SOCIAL_PROVIDER = env('SOCIAL_PROVIDER', default='ayrshare')
 # Profiles are titled "<prefix>-<workspace id>" at the provider, where titles are
 # unique per account: give each environment that shares an account its own prefix.
 SOCIAL_PROFILE_TITLE_PREFIX = env('SOCIAL_PROFILE_TITLE_PREFIX', default='onecreator')
+# Profiles at the provider are paid slots of the whole platform (Ayrshare's Launch plan has 10,
+# Business 30): connecting a new workspace stops at this many (409 social_profiles_limit).
+SOCIAL_MAX_PROFILES = env.int('SOCIAL_MAX_PROFILES', default=10)
+# A profile no network was ever linked to is deleted after this many days (clean_social_profiles).
+SOCIAL_UNLINKED_PROFILE_DAYS = env.int('SOCIAL_UNLINKED_PROFILE_DAYS', default=7)
 AYRSHARE_API_KEY = env('AYRSHARE_API_KEY', default=None)

@@ -62,6 +62,9 @@ class Command(BaseCommand):
                 self.stdout.write(f"  {account.platform}: {account.status} {account.username or ''}{since}".rstrip())
         except social_accounts.WorkspaceGone:
             raise CommandError("El espacio se borró mientras se creaba su perfil.")
+        except social_accounts.ConnectRefused as refused:
+            # The global cap (SOCIAL_MAX_PROFILES) or a profile title taken at the provider (runbook).
+            raise CommandError(f"No se pudo: {refused.code}. {refused.message}")
         except SocialProviderError as exc:
             # Our code and the detail (HTTP status, the provider's numeric codes): never its message or the key.
             raise CommandError(f"El proveedor falló: {exc.code} ({exc.detail})")

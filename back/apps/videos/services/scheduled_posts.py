@@ -733,19 +733,24 @@ def fail_network_posts(workspace, platform):
     published (PROCESSING) or out is not touched. A QUEUED post's task then
     finds it FAILED and publishes nothing.
 
-    The ids are read first and the update filters the status again: Postgres
-    checks that condition once more on a row the dispatcher or the worker
-    changed meanwhile, so a post that turned PROCESSING is left to its worker.
-    Only post rows are locked.
+    The ids are read first; then the posts are locked in pk order (the order
+    the workspace delete locks them, so the two never deadlock) with their
+    status checked again under the lock: a post the dispatcher or the worker
+    took meanwhile is left to it. Only post rows are locked.
     """
     going = (Status.SCHEDULED, Status.QUEUED)
     ids = list(
         ScheduledPost.objects.filter(video_clip__project__workspace=workspace, platform=platform, status__in=going)
         .values_list('pk', flat=True)
     )
-    failed = ScheduledPost.objects.filter(pk__in=ids, status__in=going).update(
-        status=Status.FAILED, error_log='account_not_connected (disconnected)', updated_at=Now(),
-    )
+    with transaction.atomic():
+        locked = list(
+            ScheduledPost.objects.select_for_update().filter(pk__in=ids, status__in=going)
+            .order_by('pk').values_list('pk', flat=True)
+        )
+        failed = ScheduledPost.objects.filter(pk__in=locked).update(
+            status=Status.FAILED, error_log='account_not_connected (disconnected)', updated_at=Now(),
+        )
     logger.info("posts.network_disconnected workspace_id=%s platform=%s failed=%d", workspace.pk, platform, failed)
     return failed
 

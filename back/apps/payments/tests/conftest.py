@@ -9,6 +9,7 @@ seed_migration = importlib.import_module('apps.payments.migrations.0007_complete
 free_plan_migration = importlib.import_module('apps.payments.migrations.0009_free_plan_two_members')
 creator_plan_migration = importlib.import_module('apps.payments.migrations.0013_creator_plan_five_members')
 pro_plan_migration = importlib.import_module('apps.payments.migrations.0014_pro_plan_ten_members')
+social_accounts_migration = importlib.import_module('apps.payments.migrations.0019_conectar_redes_en_planes_pagos')
 SEEDED_NAMES = [plan['name'] for plan in seed_migration.PLANS]
 
 
@@ -21,4 +22,5 @@ def seeded_plans(db):
     free_plan_migration.widen_free_plan(SubscriptionPlan)
     creator_plan_migration.widen_creator_plan(SubscriptionPlan)
     pro_plan_migration.widen_pro_plan(SubscriptionPlan)
+    social_accounts_migration.allow_social_accounts(SubscriptionPlan)
     return {plan.name: plan for plan in SubscriptionPlan.objects.filter(name__in=SEEDED_NAMES)}

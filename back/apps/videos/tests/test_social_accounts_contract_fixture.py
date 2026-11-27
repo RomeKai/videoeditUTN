@@ -25,7 +25,10 @@ from apps.users.models import User, Workspace, WorkspaceMember
 
 PROVIDER = "apps.integrations.social.ayrshare.AyrshareProvider"
 BODIES = ('social_accounts_none', 'social_accounts', 'social_connect')
-ERRORS = ('social_400_return_url', 'social_403_connect', 'social_503_connect')
+ERRORS = (
+    'social_400_return_url', 'social_403_connect', 'social_403_plan', 'social_403_email', 'social_409_profiles_limit',
+    'social_503_connect',
+)
 LINK = "https://profile.ayrshare.com?session=ayr_ls_kJ8mQ2vX9pLn"
 
 
@@ -36,16 +39,14 @@ class SocialAccountsFixtureTests(APITestCase):
 
     def real_bodies(self):
         cache.clear()
-        ana = User.objects.create_user(username='ana', email='ana@test.com', password='pw')
+        ana = User.objects.create_user(username='ana', email='ana@test.com', password='pw', is_email_verified=True)
         home = Workspace.objects.create(name='Estudio Norte', owner=ana, subscription_plan=SubscriptionPlan.objects.get(name='Pro'))
         carla = User.objects.create_user(username='carla', email='carla@test.com', password='pw')
         WorkspaceMember.objects.create(workspace=home, user=carla, role='editor', status='active')
-        ws = {'HTTP_X_WORKSPACE_ID': str(home.pk)}
-
-        def call(method, url, body=None, user=ana):
+        def call(method, url, body=None, user=ana, workspace=home):
             api = APIClient()
             api.force_authenticate(user)
-            return getattr(api, method)(url, body or {}, format='json', **ws)
+            return getattr(api, method)(url, body or {}, format='json', HTTP_X_WORKSPACE_ID=str(workspace.pk))
 
         def err(response, status):
             assert response.status_code == status, (response.status_code, response.content)
@@ -72,6 +73,16 @@ class SocialAccountsFixtureTests(APITestCase):
         }
         with patch(f'{PROVIDER}.connect_url', side_effect=RetryableError(detail='ayrshare http=502')):
             errors['social_503_connect'] = err(call('post', reverse('social-account-connect'), {'platform': 'INSTAGRAM_REELS'}), 503)
+        free = Workspace.objects.create(name='Gratis', owner=ana, subscription_plan=SubscriptionPlan.objects.get(name='Gratis'))
+        errors['social_403_plan'] = err(call('post', reverse('social-account-connect'), {'platform': 'TIKTOK'}, workspace=free), 403)
+        lucia = User.objects.create_user(username='lucia', email='lucia@test.com', password='pw')
+        WorkspaceMember.objects.create(workspace=home, user=lucia, role='admin', status='active')
+        errors['social_403_email'] = err(call('post', reverse('social-account-connect'), {'platform': 'TIKTOK'}, user=lucia), 403)
+        other = Workspace.objects.create(name='Otro', owner=ana, subscription_plan=SubscriptionPlan.objects.get(name='Pro'))
+        with override_settings(SOCIAL_MAX_PROFILES=1):
+            errors['social_409_profiles_limit'] = err(
+                call('post', reverse('social-account-connect'), {'platform': 'TIKTOK'}, workspace=other), 409,
+            )
         return {'social_accounts_none': none, 'social_accounts': accounts, 'social_connect': connect, 'errors': errors}
 
     def test_the_fixture_has_the_values_of_the_real_responses(self):

@@ -20,6 +20,7 @@ class PublicPlanSerializer(serializers.ModelSerializer):
             'allow_crossposting',
             'has_seo_optimization',
             'has_thumbnail_engine',
+            'allow_social_accounts',
             'base_discount_rate',
             'max_members',
             'is_active',

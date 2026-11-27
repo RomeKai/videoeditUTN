@@ -422,7 +422,8 @@ class WorkspaceDetailView(APIView):
             # Its profile at the publishing provider stays without a workspace (SocialProfile.workspace
             # SET_NULL, after its own row lock: a connect creating it is waited for), and is deleted
             # there after the commit (a paid slot). Best effort: never part of this transaction.
-            had_profile = SocialProfile.objects.filter(workspace=workspace).exists()
+            # Marked first: the cleanup deletes only the profiles a workspace delete left (orphaned_at).
+            had_profile = SocialProfile.objects.filter(workspace=workspace).update(orphaned_at=timezone.now()) > 0
             workspace.delete()
             if had_profile:
                 transaction.on_commit(_delete_orphan_social_profiles)

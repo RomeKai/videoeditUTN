@@ -2184,6 +2184,27 @@
         "error": "No pudimos hablar con Instagram Reels. Probá de nuevo en unos minutos.",
         "code": "provider_unavailable"
       }
+    },
+    "social_403_plan": {
+      "status": 403,
+      "body": {
+        "error": "Tu plan no incluye conectar redes. Pasate a un plan pago para conectar las cuentas.",
+        "code": "social_accounts"
+      }
+    },
+    "social_403_email": {
+      "status": 403,
+      "body": {
+        "error": "Verificá tu email para conectar redes.",
+        "code": "email_not_verified"
+      }
+    },
+    "social_409_profiles_limit": {
+      "status": 409,
+      "body": {
+        "error": "Por ahora no podemos conectar más espacios a las redes. Escribinos y lo resolvemos.",
+        "code": "social_profiles_limit"
+      }
     }
   },
   "pricing": {
@@ -2560,6 +2581,7 @@
       "allow_crossposting": false,
       "has_seo_optimization": false,
       "has_thumbnail_engine": false,
+      "allow_social_accounts": false,
       "base_discount_rate": "0.00",
       "max_members": 2,
       "is_active": true,
@@ -2587,6 +2609,7 @@
         "allow_crossposting": false,
         "has_seo_optimization": false,
         "has_thumbnail_engine": false,
+        "allow_social_accounts": false,
         "base_discount_rate": "0.00",
         "max_members": 2,
         "is_active": true,
@@ -2620,6 +2643,7 @@
         "allow_crossposting": true,
         "has_seo_optimization": true,
         "has_thumbnail_engine": false,
+        "allow_social_accounts": true,
         "base_discount_rate": "0.10",
         "max_members": 10,
         "is_active": true,
@@ -2652,6 +2676,7 @@
         "allow_crossposting": true,
         "has_seo_optimization": true,
         "has_thumbnail_engine": false,
+        "allow_social_accounts": true,
         "base_discount_rate": "0.10",
         "max_members": 10,
         "is_active": true,
@@ -2678,6 +2703,7 @@
         "allow_crossposting": true,
         "has_seo_optimization": true,
         "has_thumbnail_engine": false,
+        "allow_social_accounts": true,
         "base_discount_rate": "0.10",
         "max_members": 10,
         "is_active": true,

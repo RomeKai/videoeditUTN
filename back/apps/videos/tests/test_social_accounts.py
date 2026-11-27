@@ -9,7 +9,7 @@ profile at the provider afterwards.
 import io
 import threading
 from datetime import datetime, timezone as dt_timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -64,12 +64,12 @@ class SocialAccountsHarness:
         self.addCleanup(overridden.disable)
         cache.clear()
         self.addCleanup(cache.clear)
-        self.owner = User.objects.create_user(username="duena", email="duena@test.com", password="pw")
+        self.owner = User.objects.create_user(username="duena", email="duena@test.com", password="pw", is_email_verified=True)
         self.workspace = self.owner.owned_workspaces.get()
-        # A plan without the limits these tests are not about (members, crossposting).
+        # A plan without the limits these tests are not about (members, crossposting), that connects networks.
         Workspace.objects.filter(pk=self.workspace.pk).update(subscription_plan=SubscriptionPlan.objects.create(
             name="Redes de prueba", max_members=10, allow_scheduling=True, allow_crossposting=True,
-            max_video_duration_seconds=3600,
+            max_video_duration_seconds=3600, allow_social_accounts=True,
         ))
         self.workspace.refresh_from_db()
         self.api = APIClient()
@@ -84,7 +84,7 @@ class SocialAccountsHarness:
                                     HTTP_X_WORKSPACE_ID=str((workspace or self.workspace).pk))
 
     def member(self, role):
-        user = User.objects.create_user(username=f"m-{role}", email=f"{role}@test.com", password="pw")
+        user = User.objects.create_user(username=f"m-{role}", email=f"{role}@test.com", password="pw", is_email_verified=True)
         WorkspaceMember.objects.create(workspace=self.workspace, user=user, role=role, status=WorkspaceMember.Status.ACTIVE)
         return user
 
@@ -143,12 +143,57 @@ class ListTests(SocialAccountsHarness, TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["code"], "provider_unavailable")
 
-    def test_a_profile_the_provider_lost_is_forgotten(self):
-        give_social_profile(self.workspace)
-        with patch(f"{PROVIDER}.accounts", side_effect=PermanentError("account_not_connected", "ayrshare http=403 code=144")):
-            response = self.call("get", LIST)
+    def test_a_profile_the_provider_does_not_find_is_kept_on_a_read(self):
+        """Review of #187: any member reads; the key is given once: a read never forgets it, it only stops publishing."""
+        give_social_profile(self.workspace, "KEY-KEPT")
+        with patch(f"{PROVIDER}.accounts", side_effect=PermanentError("profile_not_found", "ayrshare http=403 code=144")), \
+                self.assertLogs("apps.integrations.social.accounts", level="ERROR") as logs:
+            response = self.call("get", LIST, user=self.member(WorkspaceMember.Role.VIEWER))
         self.assertEqual({row["status"] for row in response.json()}, {"disconnected"})
-        self.assertEqual(self.profile().provider_ref, "")
+        profile = self.profile()
+        self.assertEqual(profile.provider_ref, "KEY-KEPT")
+        self.assertEqual(set(profile.networks.values()), {"disconnected"})  # the 409 check now refuses
+        self.assertIn("social.profile_not_found", logs.output[0])
+
+    def test_a_failed_read_is_not_tried_again_at_once(self):
+        """Review of #187: a slow or failing provider must not take a web worker per request."""
+        give_social_profile(self.workspace)
+        with patch(f"{PROVIDER}.accounts", side_effect=RetryableError(detail="ayrshare ReadTimeout")) as asked:
+            self.assertEqual(self.call("get", LIST).status_code, 503)
+            self.assertEqual(self.call("get", LIST).status_code, 503)
+        asked.assert_called_once()
+        # With a last good answer, that one is served meanwhile.
+        cache.clear()
+        with patch(f"{PROVIDER}.accounts", return_value=linked(TIKTOK="connected")):
+            self.call("get", LIST)
+        cache.delete(f"social:accounts:{self.workspace.pk}")
+        with patch(f"{PROVIDER}.accounts", side_effect=RetryableError(detail="ayrshare http=502")) as asked:
+            self.assertEqual(self.call("get", LIST).status_code, 503)
+            again = self.call("get", LIST)
+        asked.assert_called_once()
+        self.assertEqual((again.status_code, again.json()[0]["username"]), (200, "@estudionorte"))
+
+    def test_one_read_per_workspace_at_a_time(self):
+        """Another request while a read is on its way gets the last answer, without asking the provider."""
+        give_social_profile(self.workspace)
+        SocialProfile.objects.filter(workspace=self.workspace).update(networks={"TIKTOK": "connected"})
+        cache.add(f"social:accounts_reading:{self.workspace.pk}", 1, 30)
+        with patch(f"{PROVIDER}.accounts") as asked:
+            response = self.call("get", LIST)
+        asked.assert_not_called()
+        self.assertEqual([row["status"] for row in response.json()], ["connected", "disconnected", "disconnected"])
+
+    def test_reading_the_accounts_waits_little(self):
+        from apps.integrations.social.ayrshare import AyrshareProvider
+        from apps.integrations.social.base import ACCOUNTS_TIMEOUT_SECONDS
+
+        give_social_profile(self.workspace)
+        answer = MagicMock(status_code=200, headers={})
+        answer.json.return_value = {"activeSocialAccounts": [], "displayNames": []}
+        with override_settings(AYRSHARE_API_KEY="k"), patch("apps.integrations.social.ayrshare.requests.request", return_value=answer) as sent:
+            AyrshareProvider().accounts(self.profile())
+        self.assertEqual(sent.call_args.kwargs["timeout"], ACCOUNTS_TIMEOUT_SECONDS)
+        self.assertLessEqual(sum(ACCOUNTS_TIMEOUT_SECONDS), 15)
 
 
 class ConnectTests(SocialAccountsHarness, TestCase):
@@ -211,7 +256,7 @@ class ConnectTests(SocialAccountsHarness, TestCase):
 
     def test_a_profile_the_provider_lost_is_made_again(self):
         give_social_profile(self.workspace, "OLD")
-        lost = PermanentError("account_not_connected", "ayrshare http=403 code=144")
+        lost = PermanentError("profile_not_found", "ayrshare http=403 code=144")
         with patch(f"{PROVIDER}.create_profile", return_value=CreatedProfile("NEW")) as create, \
                 patch(f"{PROVIDER}.connect_url", side_effect=[lost, LINK]):
             response = self.call("post", CONNECT, {"platform": "INSTAGRAM_REELS"})
@@ -242,6 +287,80 @@ class DisconnectTests(SocialAccountsHarness, TestCase):
     def post_in(self, platform, status):
         return ScheduledPost.objects.create(video_clip=self.clip, platform=platform, status=status,
                                             publish_at="2030-01-01T00:00:00Z", tiktok={"privacy_level": "SELF_ONLY"})
+
+    def test_posts_of_another_workspace_never_fail(self):
+        """Review of #187: only the workspace that disconnected its network."""
+        other_owner = User.objects.create_user(username="otro", email="otro@test.com", password="pw")
+        other = other_owner.owned_workspaces.get()
+        project = VideoProject.objects.create(workspace=other, uploaded_by=other_owner, title="Otro")
+        clip = VideoClip.objects.create(project=project, title="c", start_time=0, end_time=5,
+                                        status=VideoClip.Status.COMPLETED, s3_object_key="o.mp4")
+        theirs = ScheduledPost.objects.create(video_clip=clip, platform="TIKTOK", status=Status.SCHEDULED,
+                                              publish_at="2030-01-01T00:00:00Z", tiktok={"privacy_level": "SELF_ONLY"})
+        with patch(f"{PROVIDER}.disconnect"):
+            self.assertEqual(self.call("delete", detail("TIKTOK")).status_code, 204)
+        theirs.refresh_from_db()
+        self.assertEqual(theirs.status, Status.SCHEDULED)
+
+    def test_the_posts_are_locked_in_pk_order(self):
+        """Review of #187: the order the workspace delete locks them, so the two never deadlock."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        self.post_in("TIKTOK", Status.SCHEDULED)
+        self.post_in("TIKTOK", Status.QUEUED)
+        with patch(f"{PROVIDER}.disconnect"), CaptureQueriesContext(connection) as queries:
+            self.call("delete", detail("TIKTOK"))
+        locking = [query["sql"] for query in queries if "FOR UPDATE" in query["sql"] and "videos_scheduledpost" in query["sql"]]
+        self.assertEqual(len(locking), 1)
+        self.assertRegex(locking[0], r'SELECT "videos_scheduledpost"\."id" AS "pk" .* ORDER BY 1 ASC FOR UPDATE$')
+
+    def test_a_disconnect_forgets_the_copy_of_the_accounts(self):
+        """Review of #187: the next read is the provider's, not the answer from before the disconnect."""
+        with patch(f"{PROVIDER}.accounts", return_value=linked(TIKTOK="connected")):
+            self.assertEqual(self.call("get", LIST).json()[0]["status"], "connected")
+        with patch(f"{PROVIDER}.disconnect"):
+            self.call("delete", detail("TIKTOK"))
+        with patch(f"{PROVIDER}.accounts", return_value=linked()) as asked:
+            self.assertEqual(self.call("get", LIST).json()[0]["status"], "disconnected")
+        asked.assert_called_once()
+
+    def test_a_stale_connected_after_a_disconnect_is_not_believed(self):
+        """
+        Review of #187: a read in flight during the disconnect, or Ayrshare's own copy (60 s), still says
+        connected. For 60 s it stays disconnected, so the 409 check keeps refusing posts on it.
+        """
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.integrations.social import accounts as social_accounts
+
+        def read_during_the_disconnect(profile):
+            with patch(f"{PROVIDER}.disconnect"):
+                social_accounts.disconnect(self.workspace, "TIKTOK")  # lands while this read is on its way
+            return linked(TIKTOK="connected", INSTAGRAM_REELS="connected")
+
+        with patch(f"{PROVIDER}.accounts", side_effect=read_during_the_disconnect):
+            body = self.call("get", LIST).json()
+        self.assertEqual([row["status"] for row in body[:2]], ["disconnected", "connected"])
+        self.assertEqual(self.profile().networks["TIKTOK"], "disconnected")
+        cache.clear()
+        with patch(f"{PROVIDER}.accounts", return_value=linked(TIKTOK="connected")):
+            self.assertEqual(self.call("get", LIST).json()[0]["status"], "disconnected")  # the provider's copy
+        cache.clear()
+        later = timezone.now() + timedelta(seconds=61)
+        with patch(f"{PROVIDER}.accounts", return_value=linked(TIKTOK="connected")), \
+                patch("apps.integrations.social.accounts.timezone.now", return_value=later):
+            self.assertEqual(self.call("get", LIST).json()[0]["status"], "connected")
+
+    def test_connecting_again_is_believed_at_once(self):
+        with patch(f"{PROVIDER}.disconnect"):
+            self.call("delete", detail("TIKTOK"))
+        with patch(f"{PROVIDER}.connect_url", return_value=LINK):
+            self.call("post", CONNECT, {"platform": "TIKTOK"})
+        with patch(f"{PROVIDER}.accounts", return_value=linked(TIKTOK="connected")):
+            self.assertEqual(self.call("get", LIST).json()[0]["status"], "connected")
 
     def test_editors_cannot_and_unknown_networks_are_404(self):
         with patch(f"{PROVIDER}.disconnect") as unlink:
@@ -408,8 +527,12 @@ class FirstConnectRaceTests(TransactionTestCase):
     """Two first connects at once, with real threads and row locks: one profile at the provider."""
 
     def test_two_first_connects_create_one_profile(self):
-        owner = User.objects.create_user(username="carrera", email="carrera@test.com", password="pw")
+        owner = User.objects.create_user(username="carrera", email="carrera@test.com", password="pw", is_email_verified=True)
         workspace = owner.owned_workspaces.get()
+        # Its own plan: a TransactionTestCase empties the tables, the seeded plans too.
+        Workspace.objects.filter(pk=workspace.pk).update(subscription_plan=SubscriptionPlan.objects.create(
+            name="Redes de carrera", max_members=5, allow_social_accounts=True,
+        ))
         inside, release = threading.Event(), threading.Event()
         created = []
 
@@ -425,8 +548,9 @@ class FirstConnectRaceTests(TransactionTestCase):
             try:
                 api = APIClient()
                 api.force_authenticate(owner)
-                results[name] = api.post(CONNECT, {"platform": "TIKTOK"}, format="json",
-                                         HTTP_X_WORKSPACE_ID=str(workspace.pk)).status_code
+                response = api.post(CONNECT, {"platform": "TIKTOK"}, format="json", HTTP_X_WORKSPACE_ID=str(workspace.pk))
+                results[name] = response.status_code
+                results[f"{name}_body"] = response.content[:200]
             finally:
                 connection.close()
 
@@ -434,7 +558,7 @@ class FirstConnectRaceTests(TransactionTestCase):
                 patch(f"{PROVIDER}.connect_url", return_value=LINK):
             first = threading.Thread(target=connect, args=("first",))
             first.start()
-            self.assertTrue(inside.wait(10), "the first connect never reached the provider")
+            self.assertTrue(inside.wait(10), f"the first connect never reached the provider: {results}")
             second = threading.Thread(target=connect, args=("second",))
             second.start()
             self.wait_for_a_lock_wait()
@@ -442,7 +566,7 @@ class FirstConnectRaceTests(TransactionTestCase):
             first.join(15)
             second.join(15)
 
-        self.assertEqual(results, {"first": 200, "second": 200})
+        self.assertEqual((results.get("first"), results.get("second")), (200, 200), results)
         self.assertEqual(len(created), 1)
         self.assertEqual(list(SocialProfile.objects.values_list("provider_ref", flat=True)), ["KEY-RACE"])
 
@@ -460,3 +584,130 @@ class FirstConnectRaceTests(TransactionTestCase):
                     return
                 time.sleep(0.02)
         self.fail("the second connect never waited for the profile's row lock")
+
+
+class ConnectGateTests(SocialAccountsHarness, TestCase):
+    """Franco (#187): connecting networks is for the paid plans; and a verified email, and room for one more profile."""
+
+    def connect(self, platform="TIKTOK", user=None):
+        with patch(f"{PROVIDER}.create_profile", return_value=CreatedProfile(f"KEY-{self.workspace.pk}")) as create, \
+                patch(f"{PROVIDER}.connect_url", return_value=LINK):
+            response = self.call("post", CONNECT, {"platform": platform}, user=user)
+        return response, create
+
+    def test_a_plan_without_it_does_not_connect_but_sees_its_networks(self):
+        free = SubscriptionPlan.objects.create(name="Sin redes", max_members=10, allow_social_accounts=False)
+        Workspace.objects.filter(pk=self.workspace.pk).update(subscription_plan=free)
+        response, create = self.connect()
+        self.assertEqual((response.status_code, response.json()), (403, {
+            "error": "Tu plan no incluye conectar redes. Pasate a un plan pago para conectar las cuentas.",
+            "code": "social_accounts",
+        }))
+        create.assert_not_called()
+        self.assertEqual(self.call("get", LIST).status_code, 200)
+
+    def test_the_paid_plans_of_the_seed_connect_and_gratis_does_not(self):
+        for name, allowed in (("Gratis", False), ("Creador", True), ("Pro", True), ("Estudio", True)):
+            with self.subTest(plan=name):
+                SocialProfile.objects.all().delete()
+                Workspace.objects.filter(pk=self.workspace.pk).update(subscription_plan=SubscriptionPlan.objects.get(name=name))
+                self.assertEqual(self.connect()[0].status_code, 200 if allowed else 403)
+
+    def test_a_workspace_that_moved_to_gratis_keeps_what_it_connected(self):
+        """Decision: what is connected stays (it still publishes, and can be disconnected); connecting again is refused."""
+        give_social_profile(self.workspace)
+        SocialProfile.objects.filter(workspace=self.workspace).update(networks={"TIKTOK": "connected", "YOUTUBE_SHORTS": "expired"})
+        Workspace.objects.filter(pk=self.workspace.pk).update(subscription_plan=SubscriptionPlan.objects.get(name="Gratis"))
+        with patch(f"{PROVIDER}.accounts", return_value=linked(TIKTOK="connected", YOUTUBE_SHORTS="expired")):
+            self.assertEqual(self.call("get", LIST).json()[0]["status"], "connected")
+        self.assertEqual(self.connect("YOUTUBE_SHORTS")[0].json()["code"], "social_accounts")  # reconnecting is connecting
+        with patch(f"{PROVIDER}.disconnect"):
+            self.assertEqual(self.call("delete", detail("YOUTUBE_SHORTS")).status_code, 204)
+
+    def test_without_a_plan_there_are_no_plan_limits(self):
+        Workspace.objects.filter(pk=self.workspace.pk).update(subscription_plan=None)
+        self.assertEqual(self.connect()[0].status_code, 200)
+
+    def test_an_unverified_email_does_not_connect(self):
+        self.owner.is_email_verified = False
+        self.owner.save(update_fields=["is_email_verified"])
+        response, create = self.connect()
+        self.assertEqual((response.status_code, response.json().get("code")), (403, "email_not_verified"), response.json())
+        create.assert_not_called()
+
+    def test_the_global_cap_of_profiles(self):
+        other = User.objects.create_user(username="lleno", email="lleno@test.com", password="pw").owned_workspaces.get()
+        give_social_profile(other, "KEY-OTHER")
+        with override_settings(SOCIAL_MAX_PROFILES=1):
+            response, create = self.connect()
+            self.assertEqual((response.status_code, response.json()["code"]), (409, "social_profiles_limit"))
+            create.assert_not_called()
+            # A workspace that already has its profile still connects its networks.
+            self.assertEqual(self.connect(user=None)[0].status_code, 409)
+            give_social_profile(self.workspace, "KEY-MINE")
+            self.assertEqual(self.connect()[0].status_code, 200)
+
+    def test_a_title_taken_is_its_own_error(self):
+        """Review of #187: a creation whose answer was lost is not «probá de nuevo» forever: support fixes it."""
+        taken = PermanentError("profile_title_taken", "ayrshare http=400 code=146")
+        with patch(f"{PROVIDER}.create_profile", side_effect=taken), \
+                self.assertLogs("apps.integrations.social.accounts", level="ERROR") as logs:
+            response = self.call("post", CONNECT, {"platform": "TIKTOK"})
+        self.assertEqual((response.status_code, response.json()["code"]), (409, "profile_title_taken"))
+        self.assertNotIn("Probá de nuevo", response.json()["error"])
+        self.assertIn("social.profile_title_taken", logs.output[0])
+
+
+class CleanupSafetyTests(SocialAccountsHarness, TestCase):
+    """Review of #187: the cleanups never delete a profile that someone still uses."""
+
+    def test_one_row_per_provider_profile(self):
+        from django.db import IntegrityError, transaction
+
+        give_social_profile(self.workspace, "SHARED")
+        other = User.objects.create_user(username="otra", email="otra@test.com", password="pw").owned_workspaces.get()
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            SocialProfile.objects.create(workspace=other, provider="ayrshare", provider_ref="SHARED")
+
+    def test_only_the_rows_a_workspace_delete_marked_are_cleaned(self):
+        give_social_profile(self.workspace, "STAFF-CLEARED")
+        SocialProfile.objects.filter(workspace=self.workspace).update(workspace=None)  # staff emptied the field
+        with patch(f"{PROVIDER}.delete_profile") as delete_profile:
+            self.assertEqual(delete_orphan_social_profiles.apply().get(), {"deleted": 0, "kept": 0})
+        delete_profile.assert_not_called()
+        self.assertTrue(SocialProfile.objects.filter(provider_ref="STAFF-CLEARED").exists())
+
+    def test_profiles_never_linked_are_deleted_after_some_days(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.integrations.tasks import clean_social_profiles
+
+        old = timezone.now() - timedelta(days=8)
+        give_social_profile(self.workspace, "ABANDONED")
+        SocialProfile.objects.filter(workspace=self.workspace).update(created_at=old, networks={})
+        linked_owner = User.objects.create_user(username="usa", email="usa@test.com", password="pw")
+        give_social_profile(linked_owner.owned_workspaces.get(), "LINKED-AT-THE-PROVIDER")
+        SocialProfile.objects.filter(provider_ref="LINKED-AT-THE-PROVIDER").update(created_at=old)
+        recent_owner = User.objects.create_user(username="nueva", email="nueva@test.com", password="pw")
+        give_social_profile(recent_owner.owned_workspaces.get(), "RECENT")
+
+        def at_the_provider(profile):
+            return linked(TIKTOK="connected") if profile.provider_ref == "LINKED-AT-THE-PROVIDER" else linked()
+
+        with patch(f"{PROVIDER}.accounts", side_effect=at_the_provider) as asked, \
+                patch(f"{PROVIDER}.delete_profile") as delete_profile:
+            result = clean_social_profiles.apply().get()
+        self.assertEqual((result["unlinked"], result["unlinked_kept"]), (1, 1))
+        self.assertEqual([call.args[0].provider_ref for call in delete_profile.call_args_list], ["ABANDONED"])
+        self.assertEqual(asked.call_count, 2)  # the recent one is not even asked
+        self.assertFalse(SocialProfile.objects.filter(provider_ref="ABANDONED").exists())
+        self.assertIsNotNone(SocialProfile.objects.get(provider_ref="LINKED-AT-THE-PROVIDER").linked_at)
+        self.assertTrue(SocialProfile.objects.filter(provider_ref="RECENT").exists())
+
+    def test_a_read_with_a_linked_network_marks_the_profile_linked(self):
+        give_social_profile(self.workspace)
+        with patch(f"{PROVIDER}.accounts", return_value=linked(INSTAGRAM_REELS="expired")):
+            self.call("get", LIST)
+        self.assertIsNotNone(self.profile().linked_at)

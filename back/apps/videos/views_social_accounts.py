@@ -147,7 +147,15 @@ class SocialAccountConnectView(_SocialAccountsBase):
         responses={
             200: inline_serializer('SocialConnectResponse', {'connect_url': serializers.URLField()}),
             400: OpenApiResponse(description='`platform` o `return_url` inválidos: `{campo: [mensaje]}`.'),
-            403: OpenApiResponse(description='El rol no conecta redes (solo Dueño y Admin): `{detail}`.'),
+            403: OpenApiResponse(description=(
+                'El rol no conecta redes (solo Dueño y Admin): `{detail}`. O `{error, code}`: el plan no lo incluye '
+                '(`social_accounts`) o el email del usuario no está verificado (`email_not_verified`).'
+            )),
+            404: OpenApiResponse(description='El espacio se borró mientras se preparaba la conexión.'),
+            409: OpenApiResponse(description=(
+                '`{error, code}`: no queda lugar para más perfiles (`social_profiles_limit`) o el perfil del espacio '
+                'quedó a medio crear en el proveedor (`profile_title_taken`): lo resuelve soporte.'
+            )),
             503: OpenApiResponse(description='El proveedor no respondió: `{error, code}`.'),
         },
         description=(
@@ -166,7 +174,10 @@ class SocialAccountConnectView(_SocialAccountsBase):
         # window there instead.
         return_url = body.validated_data.get('return_url') or None
         try:
+            social_accounts.check_can_connect(workspace, request.user)
             url = social_accounts.connect_url(workspace, platform, return_url)
+        except social_accounts.ConnectRefused as refused:
+            return Response({'error': refused.message, 'code': refused.code}, status=refused.status)
         except social_accounts.WorkspaceGone:
             return Response({'error': WORKSPACE_GONE}, status=status.HTTP_404_NOT_FOUND)
         except SocialProviderError as exc:
