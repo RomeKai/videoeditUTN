@@ -382,8 +382,8 @@ function useRefunded(project: Project): number {
 function FailedBanner({ project }: { project: Project }) {
   const { gate, can } = usePermissions();
   const code = project.pipeline_error_code;
-  // Money is only mentioned when it is known. The backend does not send `cost` yet (gap 4): without it,
-  // the refund is read from the project's activity, which the backend does have.
+  // Money is only mentioned when it is known: from `cost`, or from the project's activity for a backend
+  // that does not send it.
   const refunded = useRefunded(project);
   // Re-dispatched without tokens for what was left: the clips are still there, so there is nothing to create again.
   const unpaid = code === 'AutoRenderNotPaid';
@@ -391,7 +391,7 @@ function FailedBanner({ project }: { project: Project }) {
     <Banner
       tone="err"
       className={styles.notice}
-      title={pipelineErrorMessage(code)}
+      title={pipelineErrorMessage(code, { refundShown: refunded > 0 })}
       action={
         unpaid ? (
           <div className={styles.bannerActions}>

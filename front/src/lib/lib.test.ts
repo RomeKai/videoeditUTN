@@ -197,6 +197,10 @@ describe('mensajes de error (sección 4 del mapa)', () => {
     // recover_stuck_renders failed it and returned the reservation: it can be tried again.
     expect(pipelineErrorMessage('IngestionStuck')).toBe('El proceso se trabó y te devolvimos los tokens. Podés intentarlo de nuevo.');
     expect(pipelineErrorTitle('IngestionStuck')).toBe('El proceso se trabó');
+    // Next to "Te devolvimos X tokens", the message does not say it again.
+    expect(pipelineErrorMessage('ModerationBlockedError', { refundShown: true })).toBe('Algo falló de nuestro lado. Podés intentarlo de nuevo.');
+    expect(pipelineErrorMessage('IngestionStuck', { refundShown: true })).toBe('El proceso se trabó. Podés intentarlo de nuevo.');
+    expect(pipelineErrorMessage('AINoSpeechDetectedError', { refundShown: true })).toBe(pipelineErrorMessage('AINoSpeechDetectedError'));
     // Link projects: what the download refused, in the user's words (only the four providers the backend allows).
     expect(pipelineErrorMessage('UnsupportedLinkError')).toMatch(/un solo video público de YouTube, Vimeo, Twitch o Google Drive/);
     expect(pipelineErrorTitle('UnsupportedLinkError')).toBe('No pudimos usar este link');

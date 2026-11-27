@@ -191,6 +191,9 @@ describe('D1 · Proyecto', () => {
     expect(within(alert).getByText(/Algo falló de nuestro lado/)).toBeInTheDocument();
     expect(within(alert).getByRole('link', { name: /Escribir a soporte/ })).toBeInTheDocument();
     expect(screen.queryByText(/no cumple nuestras políticas/)).toBeNull();
+    // The amount returned is right there: the message does not say it a second time.
+    expect(await within(alert).findByText(/Te devolvimos/)).toBeInTheDocument();
+    expect(within(alert).queryByText(/Ya te devolvimos/)).toBeNull();
   });
 
   it('error de moderación: no dice la categoría y ofrece escribirnos', async () => {

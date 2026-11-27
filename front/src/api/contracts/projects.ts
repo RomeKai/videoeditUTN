@@ -233,7 +233,10 @@ export type ProjectMetadata = z.infer<typeof ProjectMetadata>;
 
 export const ApprovedSegment = z.object({ start: z.number().min(0), end: z.number().positive(), text: z.string().optional() }).passthrough();
 
-/** Proposed (gap 4): the project's charge and where it stands. */
+/**
+ * The project's charge and where it stands: its creation reservation (`metadata.reservation_id`). A partial
+ * charge shows what was charged (the returned part is in the activity); a refund, what had been set aside.
+ */
 export const ProjectCost = z.object({
   amount: Decimal,
   state: z.enum(['reserved', 'charged', 'refunded']),
@@ -241,7 +244,10 @@ export const ProjectCost = z.object({
 });
 export type ProjectCost = z.infer<typeof ProjectCost>;
 
-/** Proposed (gap 15): times per stage for the process timeline. */
+/**
+ * Times of a stage that finished (its last successful run). `started_at` and `finished_at` are null for
+ * stages that finished before the backend recorded when they ended; `duration_s` is always there.
+ */
 export const StageTiming = z.object({
   started_at: IsoDateTime.nullable(),
   finished_at: IsoDateTime.nullable(),
@@ -310,12 +316,15 @@ export const Project = z.object({
    * `thumbnail_url`), null when no clip has a thumbnail. Optional for backends from before it existed.
    */
   thumbnail_url: z.string().url().nullable().optional(),
-  /* Proposed extras */
+  /** Who created the project (no email); null when that user is gone. Optional for older backends. */
   uploaded_by_detail: UserRef.nullable().optional(),
   /** Source duration in seconds, whatever the origin (gap: today it is spread over metadata). */
   duration_seconds: z.number().nullable().optional(),
+  /** Null when the project has no creation reservation. Optional for older backends. */
   cost: ProjectCost.nullable().optional(),
+  /** Keyed by pipeline stage (`transcribed`, `moderated`…): only the stages that finished. */
   stage_timings: z.record(z.string(), StageTiming).optional(),
+  /* Proposed extras */
   /** Seconds until "Listo para revisar" (gap 18). */
   eta_seconds: z.number().int().nonnegative().nullable().optional(),
 });
@@ -616,8 +625,8 @@ export const getProject = defineEndpoint({
   backend: {
     status: 'partial',
     source: 'back/apps/videos/views.py · VideoProjectViewSet.retrieve + VideoProjectSerializer',
-    gap: [4, 15, 18],
-    note: 'Faltan `cost` (vínculo con la transacción y estado devuelto), `stage_timings`, `eta_seconds`, `duration_seconds` y `uploaded_by_detail`. Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura.',
+    gap: [18],
+    note: 'Trae `cost` (la reserva de creación: reservado, cobrado o devuelto), `stage_timings` (las etapas terminadas; `started_at` y `finished_at` en `null` en las que terminaron antes de que se guardara) y `uploaded_by_detail` (sin el email). Faltan `eta_seconds` y `duration_seconds` (la duración sale de `metadata.source_media`). Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura.',
   },
   screens: ['D1', 'D1e', 'D1f', 'D3', 'D4', 'D5'],
 });

@@ -160,7 +160,18 @@ class VideoProjectSerializer(serializers.ModelSerializer):
     thumbnail_url = serializers.SerializerMethodField(help_text=(
         "The thumbnail of the project's first clip that has one (the same temporary URL), or null."
     ))
-    
+    uploaded_by_detail = serializers.SerializerMethodField(help_text=(
+        "Who created the project: {id, name}, never the email. Null when that user is gone."
+    ))
+    cost = serializers.SerializerMethodField(help_text=(
+        "The creation reservation (metadata.reservation_id): {amount, state: reserved|charged|refunded, "
+        "transaction_id}. A partial charge shows what was charged. Null without a creation reservation."
+    ))
+    stage_timings = serializers.SerializerMethodField(help_text=(
+        "{stage: {started_at, finished_at, duration_s}} of the stages that finished (their last successful "
+        "run). started_at and finished_at are null for stages that finished before they were recorded."
+    ))
+
     source_file = serializers.FileField(required=False)
     video_url = serializers.CharField(required=False, allow_blank=True)
     # PTE-02: optional preference for the clip selector ("momentos de humor").
@@ -217,6 +228,23 @@ class VideoProjectSerializer(serializers.ModelSerializer):
 
     def get_thumbnail_url(self, obj) -> str | None:
         return None  # filled by to_representation, from the clips it already serialized
+
+    def get_uploaded_by_detail(self, obj) -> dict | None:
+        from .services.project_summary import uploaded_by_detail
+        return uploaded_by_detail(obj)
+
+    def get_cost(self, obj) -> dict | None:
+        from .services.project_summary import creation_reservations, project_cost
+        # Every project of the response at once (a page of the list): one query.
+        root = self.root.instance
+        projects = list(root) if isinstance(root, (list, tuple, models.QuerySet)) else []
+        if obj not in projects:
+            projects.append(obj)
+        return project_cost(obj, creation_reservations(projects, self.context))
+
+    def get_stage_timings(self, obj) -> dict:
+        from .services.project_summary import stage_timings
+        return stage_timings(obj)
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
