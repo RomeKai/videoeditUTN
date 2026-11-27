@@ -40,6 +40,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.core.cache import cache, caches
 from django.db import IntegrityError, connection, transaction
+from django.db.models.functions import Now
 from django.utils import timezone
 
 from apps.videos.models import AIUsageRecord, PostIdempotencyKey, ScheduledPost, VideoClip, VideoProject
@@ -598,10 +599,15 @@ def update_post(workspace, post_id, data):
         if 'hashtags' in data:
             post.hashtags = data['hashtags']
             fields.append('hashtags')
-        if 'caption' in data or 'hashtags' in data:
+        edited = 'caption' in data or 'hashtags' in data
+        if edited:
             # The user's text wins over a "Regenerar" asked for before it: the task keeps it
             # (_generate_post_metadata). The request stays on, and keeps counting in seo_budget.
-            post.text_edited_at = now
+            # The database's clock, in the statement written under the post's row lock (Now() is
+            # STATEMENT_TIMESTAMP() on PostgreSQL), like queue_post_seo's `seo_requested_at`: the two
+            # follow the order in which the requests held the post. A clock read before the lock
+            # could come out earlier than a "Regenerar" that held the post meanwhile.
+            post.text_edited_at = Now()
             fields.append('text_edited_at')
         if 'tiktok' in data and post.platform == Platform.TIKTOK:
             post.tiktok = data['tiktok']
@@ -624,6 +630,8 @@ def update_post(workspace, post_id, data):
                 post.error_log = None
                 fields.append('error_log')
         post.save(update_fields=fields)
+        if edited:
+            post.refresh_from_db(fields=['text_edited_at'])
     logger.info("posts.updated post_id=%s from=%s to=%s moved=%s", post.pk, was, post.status, moves)
     return post
 

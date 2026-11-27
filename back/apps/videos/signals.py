@@ -34,11 +34,15 @@ def queue_post_seo(post_id, regenerate=False):
 
     Marks the request first (`seo_requested_at`): the API shows the post as
     `seo_status: "pending"` until the task stores the text or fails, and it is
-    what the per-workspace limit of services/scheduled_posts.py counts.
+    what the per-workspace limit of services/scheduled_posts.py counts. The
+    database's clock (STATEMENT_TIMESTAMP() on PostgreSQL), in the caller's
+    transaction: "Regenerar" calls this holding the post's row lock, and a
+    text PATCH stamps `text_edited_at` the same way, so the two follow the
+    order in which they held the post (process_video_seo compares them).
     """
-    from django.utils import timezone
+    from django.db.models.functions import Now
 
-    ScheduledPost.objects.filter(pk=post_id).update(seo_requested_at=timezone.now())
+    ScheduledPost.objects.filter(pk=post_id).update(seo_requested_at=Now())
 
     def _send():
         from .tasks import process_video_seo

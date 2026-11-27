@@ -34,6 +34,7 @@ SEND = "apps.integrations.ayrshare_api.AyrshareClient.send_post"
 PRESIGN = "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url"
 UPLOAD = "apps.videos.tasks.upload_to_social_network.apply_async"
 SEO_DELAY = "apps.videos.tasks.process_video_seo.delay"
+SEO_APPLY_ASYNC = "apps.videos.tasks.process_video_seo.apply_async"
 
 
 class PostRacesHarness(APITransactionTestCase):
@@ -387,6 +388,13 @@ class AiBudgetRacesTests(PostRacesHarness):
         self.assertEqual(delay.call_count, 1)
 
     def test_a_create_and_a_redispatch_of_its_project_never_deadlock(self):
+        """
+        Since #181 the re-dispatch locks only its project (`of=('self',)`), so this test no
+        longer catches, on its own, a create that locks the workspace's row: the delete test
+        below does. It stays because it runs the real re-dispatch next to a create of the same
+        project, and it deadlocks again if both go back to locking the workspace's row, the
+        create first and the re-dispatch after its project (as before #181).
+        """
         clip = self.seo_clips[0]
         locked, go = threading.Event(), threading.Event()
         take = service.lock_ai_budget
@@ -444,3 +452,126 @@ class AiBudgetRacesTests(PostRacesHarness):
         # The create went on after the delete: its clip is gone with the workspace.
         self.assertEqual((created["value"].status_code, created["value"].json()), (400, {"video_clip": ["El clip no existe."]}))
         self.assertFalse(Workspace.objects.filter(pk=self.home.pk).exists())
+
+
+
+class AiBudgetLockScopeTests(PostRacesHarness):
+    """
+    Review of #184: the budget's advisory lock ends with its transaction
+    (pg_advisory_xact_lock), after a request that created posts and after one
+    that was refused. A session lock (pg_advisory_lock) would stay with the
+    connection of the request, and every later create of the workspace would wait.
+    """
+
+    def setUp(self):
+        super().setUp()
+        VideoProject.objects.filter(pk=self.clip.project_id).update(metadata={"use_seo": True})
+
+    def free_from_another_connection(self):
+        free = {}
+
+        def run():
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT pg_try_advisory_xact_lock(%s, %s)",
+                        [service.AI_BUDGET_LOCK_NAMESPACE, service._advisory_key(self.home.pk)],
+                    )
+                    free["value"] = cursor.fetchone()[0]
+            finally:
+                connection.close()
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        thread.join(timeout=10)
+        return free.get("value")
+
+    def test_the_lock_ends_with_the_request(self):
+        api = APIClient()
+        api.force_authenticate(self.alice)
+        ws = {"HTTP_X_WORKSPACE_ID": str(self.home.pk)}
+        url = reverse("scheduled-post-list")
+        with patch(SEO_DELAY):
+            created = api.post(url, {"video_clip": str(self.clip.pk), "platform": "TIKTOK", "draft": True}, format="json", **ws)
+        self.assertEqual(created.status_code, 201, created.content)
+        self.assertIs(self.free_from_another_connection(), True)
+
+        # Refused inside the transaction, after the lock: a date in the past.
+        past = (timezone.now() - timedelta(hours=1)).isoformat()
+        refused = api.post(url, {"video_clip": str(self.clip.pk), "platform": "YOUTUBE_SHORTS", "publish_at": past}, format="json", **ws)
+        self.assertEqual(refused.status_code, 400)
+        self.assertIs(self.free_from_another_connection(), True)
+
+        # "Regenerar" takes it too: refused after it, the post is not on a plan with SEO here.
+        regenerate = api.post(reverse("scheduled-post-regenerate-seo", args=[created.json()["id"]]), format="json", **ws)
+        self.assertEqual(regenerate.status_code, 403)
+        self.assertIs(self.free_from_another_connection(), True)
+
+
+class TextEditRacesTests(PostRacesHarness):
+    """
+    Review of #184: a text the user saves while a "Regenerar" holds the post is
+    newer than that request, so the AI's answer keeps it. Both timestamps come
+    from the database's clock in statements written under the post's row lock.
+    """
+
+    def setUp(self):
+        super().setUp()
+        Workspace.objects.filter(pk=self.home.pk).update(
+            subscription_plan=SubscriptionPlan.objects.create(
+                name="Pro con SEO de edición", allow_scheduling=True, allow_crossposting=True,
+                has_seo_optimization=True, max_video_duration_seconds=3600,
+            ),
+        )
+        VideoProject.objects.filter(pk=self.clip.project_id).update(
+            metadata={"use_seo": True}, transcript_data=[{"start": 1, "end": 2, "text": "hola"}],
+        )
+
+    def test_a_text_saved_while_a_regeneration_holds_the_post_stays(self):
+        from apps.videos import signals
+        from apps.videos.tasks import process_video_seo
+        from apps.videos.tests.fakes import FakeRedis
+        from apps.videos.tests.test_seo_task import CAPTION, generated
+
+        post = ScheduledPost.objects.create(
+            video_clip=self.clip, platform=ScheduledPost.Platform.INSTAGRAM_REELS, status=Status.DRAFT,
+            publish_at=timezone.now(), generated_caption="Viejo", generated_hashtags=["viejo"],
+        )
+        held, go = threading.Event(), threading.Event()
+        queue = signals.queue_post_seo
+
+        def hold_then_queue(*args, **kwargs):
+            # "Regenerar" holds the post's row and has not marked its request yet.
+            held.set()
+            go.wait(15)
+            return queue(*args, **kwargs)
+
+        with patch.object(signals, "queue_post_seo", hold_then_queue), patch(SEO_APPLY_ASYNC):
+            regenerate, regenerated = self.in_thread(
+                self.request, "post", reverse("scheduled-post-regenerate-seo", args=[post.pk]),
+            )
+            self.assertTrue(held.wait(10), "the regeneration never held the post")
+            edit, edited = self.in_thread(
+                self.request, "patch", reverse("scheduled-post-detail", args=[post.pk]),
+                {"caption": "Lo escribí yo", "hashtags": ["mio"]},
+            )
+            self.wait_until_someone_waits_for_a_lock()
+            go.set()
+            self.finish(regenerate, edit)
+
+        self.assertEqual((regenerated["value"].status_code, edited["value"].status_code), (202, 200))
+        post.refresh_from_db()
+        self.assertGreater(post.text_edited_at, post.seo_requested_at)
+
+        with patch("apps.core.security.AI_Security_Shield.check_content_safety"), \
+                patch("apps.videos.services.ai.project_lock.get_redis_client", return_value=FakeRedis()), \
+                patch("apps.videos.services.seo_engine.SEOOptimizationService") as seo:
+            seo.return_value.generate_metadata.return_value = generated()
+            process_video_seo.push_request(retries=0)
+            try:
+                self.assertEqual(process_video_seo.run(str(post.pk), regenerate=True), "SEO Success")
+            finally:
+                process_video_seo.pop_request()
+
+        post.refresh_from_db()
+        self.assertEqual((post.caption, post.hashtags, post.generated_caption), ("Lo escribí yo", ["mio"], CAPTION))
