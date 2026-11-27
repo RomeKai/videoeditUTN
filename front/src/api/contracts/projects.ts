@@ -566,7 +566,7 @@ const paymentErrors = [
 /** A file over MAX_UPLOAD_BYTES: refused before anything is created or reserved. */
 const uploadTooLargeError = {
   status: 413,
-  when: 'El archivo pesa más que `MAX_UPLOAD_BYTES` (2 GB, el `upload_max_size_bytes` de `GET /pricing/`): `{ error, code: "file_too_large", limit_bytes }`. El backend lo responde antes de leer el cuerpo (por el Content-Length, en cualquier ruta) o al validar el archivo, antes de ffprobe, del storage y de la reserva: no se crea ni se reserva nada. Un proxy adelante puede responder su propio 413, sin ese cuerpo. La web revisa el peso antes de subir; si igual llega un 413, lo muestra junto al archivo.',
+  when: 'El archivo pesa más que `MAX_UPLOAD_BYTES` (2 GB, el `upload_max_size_bytes` de `GET /pricing/`): `{ error, code: "file_too_large", limit_bytes }`. El backend lo responde antes de leer el cuerpo (por el Content-Length) o al validar el archivo, antes de ffprobe, del storage y de la reserva: no se crea ni se reserva nada. Un proxy adelante puede responder su propio 413, sin ese cuerpo. La web revisa el peso antes de subir; si igual llega un 413, lo muestra junto al archivo.',
 };
 
 /** Creation only: the reservation was made but the broker did not take the ingestion. */

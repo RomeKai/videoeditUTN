@@ -152,7 +152,10 @@ sequenceDiagram
 ```
 
 1. `create` usa el [workspace activo](#workspace-activo-y-roles). Sin workspace responde 400.
-2. Antes de la vista, `UploadSizeLimitMiddleware` ([core/upload_limits.py](../../back/apps/core/upload_limits.py)) mira el `Content-Length`: si pasa `MAX_UPLOAD_BYTES` (2 GB) más `UPLOAD_FORM_OVERHEAD_BYTES` (1 MB para los demás campos y los separadores del multipart), responde 413 `{error, code: "file_too_large", limit_bytes}` sin leer el cuerpo, antes de la autenticación y en cualquier ruta. Django nunca lee más que el `Content-Length`, ni nada sin él: un pedido no puede hacer leer más que eso. Log `upload.too_large method=<método> content_length=<bytes> limit=<bytes>`.
+2. Antes de la vista, `UploadSizeLimitMiddleware` ([core/upload_limits.py](../../back/apps/core/upload_limits.py)) mira el `Content-Length` contra el tope de la ruta y responde 413 sin leer el cuerpo, antes de la autenticación. Django nunca lee más que el `Content-Length`, ni nada sin él: un pedido no puede hacer leer más que eso. Log `upload.too_large method=<método> code=<código> content_length=<bytes> limit=<bytes>`, en INFO (cualquiera puede mandar el header).
+   - Crear, `from-prompt` y el PUT o PATCH del proyecto: `MAX_UPLOAD_BYTES` (2 GB) más `UPLOAD_FORM_OVERHEAD_BYTES` (1 MB para los demás campos y los separadores del multipart). El 413 es `{error, code: "file_too_large", limit_bytes}`.
+   - Crear y editar un brand kit: la suma de los topes de sus archivos (`BRAND_KIT_FILE_MAX_BYTES`: fuentes de 5 MB, logo de 2 MB, intro y outro de 50 MB) más ese 1 MB. El 413 también es `file_too_large`, con la suma. Cada archivo pasado de su tope es un 400 en su campo (`BrandKitSerializer`), con el texto de la web («El video pesa más de 50 MB.»).
+   - Todo lo demás: `MAX_REQUEST_BYTES` (5 MB), 413 `request_too_large`. Nada más sube archivos, y así un pedido que lee `request.POST` antes de la sesión (el login del admin, por el chequeo de CSRF) no guarda en disco un cuerpo grande.
 3. `validate_source_file` corta primero por extensión (`.mp4`, `.mov`, `.avi`) y después por el peso del archivo: más de `MAX_UPLOAD_BYTES` es el mismo 413 (`UploadTooLarge`), antes de ffprobe, del storage y de la reserva. Es el archivo apenas más pesado que el tope que entró en el margen del formulario. Después llama a `validate_upload`, que trabaja sobre los bytes y no sobre el nombre ni el header del cliente:
    - `_sniff` lee los primeros 8 KB con libmagic. Pasan los mime de `_DEMUXER_BY_MIME` (MP4, M4V, QuickTime, 3GPP y AVI), cada uno con su demuxer (`mov` o `avi`). Un `application/octet-stream` pasa como `video/quicktime` si tiene una caja ISO (`ftyp`, `moov`, `mdat`, `free`, `skip`, `wide`, `pnot`) en el byte 4: son archivos reales de cámara que libmagic no reconoce.
    - `_has_streaming_manifest` rechaza un manifiesto DASH en los primeros 5 MB, o un archivo que empiece como playlist HLS (`#EXTM3U`) o concat (`ffconcat`). ffmpeg elige el demuxer por contenido y con un manifiesto pediría sus URLs desde el servidor.
@@ -497,7 +500,7 @@ Columnas `fecha,concepto,proyecto,tipo,monto,estado,transaccion`: la fecha en IS
 | Sin fuente, o archivo y URL juntos | 400 con el mensaje de `validate` | `VideoProjectSerializer.validate` |
 | `video_url` de otro sitio, con otro esquema, a una IP o a un host interno | 400 en `video_url` (`No reconocemos este sitio...` o `Ingresá una URL válida...`). No se guarda ni se reserva nada | `validate_video_url`, `validate_video_link` |
 | Extensión distinta de `.mp4`, `.mov`, `.avi` | 400 `Solo se permiten archivos de video (.mp4, .mov, .avi)` | `validate_source_file` |
-| Pedido de más de `MAX_UPLOAD_BYTES` + 1 MB (por su `Content-Length`) | 413 `{"error": "El archivo pesa más de 2 GB, el máximo que podemos recibir.", "code": "file_too_large", "limit_bytes": 2147483648}`, sin leer el cuerpo. No se guarda ni se reserva nada. Log `upload.too_large` | `UploadSizeLimitMiddleware` |
+| Pedido de más de `MAX_UPLOAD_BYTES` + 1 MB (por su `Content-Length`) | 413 `{"error": "El archivo pesa más de 2 GB, el máximo que podemos recibir.", "code": "file_too_large", "limit_bytes": 2147483648}`, sin leer el cuerpo. No se guarda ni se reserva nada. Log `upload.too_large` en INFO | `UploadSizeLimitMiddleware` |
 | Archivo de más de `MAX_UPLOAD_BYTES` | El mismo 413, antes de ffprobe, del storage y de la reserva. También al reemplazar el archivo con un `PATCH` | `validate_source_file` (`UploadTooLarge`) |
 | `not_a_video` | 400 `El archivo no es un video válido. Formatos admitidos: MP4, MOV y AVI.` Lo dispara libmagic o un manifiesto de streaming. Log `upload.rejected code=not_a_video` o `code=streaming_manifest` | `validate_upload` |
 | `unreadable` | 400 `No pudimos leer el video. Probá exportarlo de nuevo en MP4 (H.264).` `ffprobe` falló, tardó más de 60 s o devolvió algo que no es JSON. Log `upload.probe_failed error=<clase>` | `_probe` |
@@ -561,7 +564,8 @@ Columnas `fecha,concepto,proyecto,tipo,monto,estado,transaccion`: la fecha en IS
 | `AI_UPLOAD_MAX_DURATION_SECONDS` | `10800` (3 h) | Duración máxima del archivo subido; si la supera, `too_long`. También del video de un link: si la supera, `LinkTooLongForAppError` en la descarga |
 | `AI_UPLOAD_MAX_LONG_SIDE_PX` | `4096` | Lado mayor máximo del video; si lo supera, `too_large` |
 | `AI_UPLOAD_MIN_SHORT_SIDE_PX` | `240` | Lado menor mínimo del video; si no llega, `too_small` |
-| `MAX_UPLOAD_BYTES` | `2147483648` (2 GB) | Peso máximo del archivo subido: 413 `file_too_large` (`core/upload_limits.py`). `GET pricing/` lo da como `upload_max_size_bytes` y la web revisa el archivo antes de subirlo. El proxy de adelante deja pasar lo mismo más 1 MB (`docker/demo/nginx.conf`: `client_max_body_size 2049m`): si cambia uno, cambia el otro |
+| `MAX_UPLOAD_BYTES` | `2147483648` (2 GB) | Peso máximo del video de un proyecto: 413 `file_too_large` (`core/upload_limits.py`). `GET pricing/` lo da como `upload_max_size_bytes` y la web revisa el archivo antes de subirlo. El proxy de adelante deja pasar lo mismo más 1 MB en esas rutas (`docker/demo/nginx.conf`: `client_max_body_size 2049m`): si cambia uno, cambia el otro |
+| `MAX_REQUEST_BYTES` | `5242880` (5 MB) | Peso máximo de cualquier pedido que no sube un video ni un brand kit: 413 `request_too_large`. El proxy de adelante, lo mismo (`client_max_body_size 5m`) |
 | `AI_PROMPT_MAX_CHARS` | `1000` | Largo máximo de `prompt` en `from_prompt` ([04-prompt-to-edit](04-prompt-to-edit.md)) |
 | `LINK_PROBE_TIMEOUT_SECONDS` | `25` | Tope de `probe-link` para el proceso de yt-dlp; al vencer se mata y responde 504. La web espera 60 s. No está en `base.py`: se lee con `getattr` |
 | `LINK_PROBE_CACHE_SECONDS` | `600` | Cuánto se guarda en la caché un link leído. También con `getattr` |
@@ -575,6 +579,7 @@ Valores fijos en el código (no son settings):
 |-----------|-------|-------|
 | Extensiones | `.mp4`, `.mov`, `.avi` | `UPLOAD_EXTENSIONS` (`serializers.py`), la usa `validate_source_file` |
 | Margen del formulario sobre el tope de peso | 1 MB | `UPLOAD_FORM_OVERHEAD_BYTES` (`core/upload_limits.py`), lo usa `UploadSizeLimitMiddleware` |
+| Tope de cada archivo de un brand kit | fuentes 5 MB, logo 2 MB, intro y outro 50 MB | `BRAND_KIT_FILE_MAX_BYTES` (`core/upload_limits.py`), lo usan `BrandKitSerializer` y el middleware (la suma). Los mismos que revisa la web (`features/brand-kits/kit.ts`) |
 | `PROBE_TIMEOUT_SECONDS` | 60 s | `media_validation.py` |
 | `_PROBE_WINDOW_BYTES` | 5 MB | `media_validation.py` |
 | `BASE_COST_PER_SECOND_720P` | 0,5 | `PricingEngine` |

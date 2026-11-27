@@ -75,6 +75,21 @@ _NOT_SENT_BOOLEANS = {
 }
 
 
+def _brand_kit_file_cap(field, what):
+    """The validator of a file of the kit: a 400 on the field over its cap (apps.core.upload_limits)."""
+
+    def validate(self, value):
+        from apps.core.upload_limits import BRAND_KIT_FILE_MAX_BYTES, FILE_TOO_LARGE, format_bytes
+
+        limit = BRAND_KIT_FILE_MAX_BYTES[field]
+        if value and getattr(value, 'size', 0) > limit:
+            # The text of the web app (features/brand-kits/kit.ts · FILE_RULES).
+            raise serializers.ValidationError(f"{what} pesa más de {format_bytes(limit)}.", code=FILE_TOO_LARGE)
+        return value
+
+    return validate
+
+
 class BrandKitSerializer(serializers.ModelSerializer):
     serializer_field_mapping = _NOT_SENT_BOOLEANS
 
@@ -82,6 +97,12 @@ class BrandKitSerializer(serializers.ModelSerializer):
         model = BrandKit
         fields = '__all__'
         read_only_fields = ('id', 'user', 'workspace')
+
+    validate_primary_font = _brand_kit_file_cap('primary_font', 'La fuente')
+    validate_secondary_font = _brand_kit_file_cap('secondary_font', 'La fuente')
+    validate_watermark_logo = _brand_kit_file_cap('watermark_logo', 'El logo')
+    validate_intro_video = _brand_kit_file_cap('intro_video', 'El video')
+    validate_outro_video = _brand_kit_file_cap('outro_video', 'El video')
 
 class ClipLayerSerializer(serializers.ModelSerializer):
     class Meta:

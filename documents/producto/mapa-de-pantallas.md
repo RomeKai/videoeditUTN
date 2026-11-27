@@ -577,6 +577,7 @@ Otras respuestas:
 - **API:**
   - ✅ los campos existen.
   - ✅ un solo default por workspace: marcar uno desmarca el anterior. Desmarcar el default o borrarlo deja al workspace sin default.
+  - ✅ tope de peso de cada archivo, el mismo que revisa la web antes de subir: fuentes 5 MB, logo 2 MB, intro y outro 50 MB. Pasado, un 400 en el campo («El video pesa más de 50 MB.»).
 
 ### G. Uso y facturación — `/uso`
 

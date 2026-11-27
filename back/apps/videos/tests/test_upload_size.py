@@ -16,11 +16,15 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings
+from django.http import HttpResponse
+from django.test import RequestFactory, TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
-from apps.core.upload_limits import UPLOAD_FORM_OVERHEAD_BYTES, format_bytes
+from apps.core.upload_limits import (
+    BRAND_KIT_FILE_MAX_BYTES, UPLOAD_FORM_OVERHEAD_BYTES, UploadSizeLimitMiddleware, brand_kit_max_bytes,
+    format_bytes, max_request_bytes,
+)
 from apps.payments.models import Transaction, Wallet
 from apps.videos.models import VideoProject
 from apps.videos.services.media_validation import MediaInfo
@@ -90,10 +94,10 @@ class UploadSizeTests(TestCase):
         wallet = Wallet.objects.get(workspace=self.workspace)
         self.assertEqual((wallet.available_balance, wallet.reserved_balance), (BALANCE, Decimal("0")))
 
-    def oversized(self, path, client=None, length=CAP + UPLOAD_FORM_OVERHEAD_BYTES + 1):
+    def oversized(self, path, client=None, length=CAP + UPLOAD_FORM_OVERHEAD_BYTES + 1, method="POST"):
         body = Untouchable()
         response = (client or self.client).generic(
-            "POST", path, b"", content_type="multipart/form-data; boundary=limite",
+            method, path, b"", content_type="multipart/form-data; boundary=limite",
             CONTENT_LENGTH=str(length), **{"wsgi.input": body},
         )
         return response, body
@@ -108,14 +112,85 @@ class UploadSizeTests(TestCase):
         self.validate.assert_not_called()
         self.assert_nothing_happened()
 
-    def test_any_path_and_without_a_session(self):
-        """Before the authentication too: nothing is read for anyone."""
-        for path in (PROJECTS, reverse("brandkit-list"), "/admin/login/"):
-            response, body = self.oversized(path, client=APIClient())
+    def test_before_the_session_too_and_logged_as_info(self):
+        """Nothing is read for anyone; anyone can send the header, so it is not a warning."""
+        with self.assertLogs("apps.core.upload_limits", level="INFO") as logs:
+            response, body = self.oversized(PROJECTS, client=APIClient())
+
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(body.reads, 0)
+        self.assertEqual([record.levelname for record in logs.records], ["INFO"])
+        self.assertIn("code=file_too_large", logs.output[0])
+
+    def test_the_cap_of_the_video_is_only_for_its_routes(self):
+        """Any other request may weigh MAX_REQUEST_BYTES: a 413 `request_too_large` over it, before it is read."""
+        over = max_request_bytes() + 1
+        project = VideoProject.objects.create(workspace=self.workspace, uploaded_by=self.user, title="Otro")
+        for method, path in (
+            ("POST", "/admin/login/"),  # reads request.POST before any session (the CSRF check)
+            ("POST", reverse("project-probe-link")),
+            ("POST", reverse("project-approve-paper-edit", args=[project.pk])),
+            ("POST", "/api/token/"),
+            ("GET", reverse("project-detail", args=[project.pk])),
+        ):
+            response, body = self.oversized(path, client=APIClient(), length=over, method=method)
 
             self.assertEqual(response.status_code, 413, path)
-            self.assertEqual(response.json()["code"], "file_too_large")
+            self.assertEqual(response.json(), {
+                "error": f"El pedido pesa más de {format_bytes(max_request_bytes())}, el máximo que podemos recibir.",
+                "code": "request_too_large",
+                "limit_bytes": max_request_bytes(),
+            })
             self.assertEqual(body.reads, 0)
+        # The PATCH that replaces the video is a route of the video.
+        response, body = self.oversized(reverse("project-detail", args=[project.pk]), method="PATCH")
+        self.assertEqual((response.status_code, response.json()["code"]), (413, "file_too_large"))
+
+    def test_a_brand_kit_may_weigh_the_sum_of_its_files(self):
+        limit = brand_kit_max_bytes() + UPLOAD_FORM_OVERHEAD_BYTES
+        response, body = self.oversized(reverse("brandkit-list"), length=limit + 1)
+
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response.json(), {
+            "error": "Los archivos pesan más de 112 MB, el máximo que podemos recibir.",
+            "code": "file_too_large",
+            "limit_bytes": 112 * 1024 ** 2,
+        })
+        self.assertEqual(body.reads, 0)
+
+    def test_each_file_of_a_brand_kit_has_its_cap(self):
+        import io
+
+        from PIL import Image
+
+        png = io.BytesIO()
+        Image.new("RGB", (1, 1)).save(png, format="PNG")
+        contents = {
+            "primary_font": b"0" * 10, "secondary_font": b"0" * 10, "watermark_logo": png.getvalue(),
+            "intro_video": b"0" * 30, "outro_video": b"0" * 30,
+        }
+        names = {"primary_font": "f.ttf", "secondary_font": "g.otf", "watermark_logo": "l.png", "intro_video": "i.mp4", "outro_video": "o.mp4"}
+        texts = {"primary_font": "La fuente", "secondary_font": "La fuente", "watermark_logo": "El logo", "intro_video": "El video", "outro_video": "El video"}
+        for field, content in contents.items():
+            cap = len(content)
+            with patch.dict(BRAND_KIT_FILE_MAX_BYTES, {field: cap - 1}):
+                refused = self.client.post(reverse("brandkit-list"), {
+                    "name": f"Marca {field}", field: SimpleUploadedFile(names[field], content),
+                }, format="multipart")
+            self.assertEqual(refused.status_code, 400, field)
+            self.assertEqual(refused.json(), {field: [f"{texts[field]} pesa más de {cap - 1} B."]})
+
+            with patch.dict(BRAND_KIT_FILE_MAX_BYTES, {field: cap}):
+                created = self.client.post(reverse("brandkit-list"), {
+                    "name": f"Marca {field}", field: SimpleUploadedFile(names[field], content),
+                }, format="multipart")
+            self.assertEqual(created.status_code, 201, created.content[:300])
+
+    def test_the_caps_of_a_brand_kit_are_the_ones_of_the_web_app(self):
+        self.assertEqual(BRAND_KIT_FILE_MAX_BYTES, {
+            "primary_font": 5 * 1024 ** 2, "secondary_font": 5 * 1024 ** 2, "watermark_logo": 2 * 1024 ** 2,
+            "intro_video": 50 * 1024 ** 2, "outro_video": 50 * 1024 ** 2,
+        })
 
     def test_a_body_within_the_room_of_the_form_is_read(self):
         """The form around the file fits in UPLOAD_FORM_OVERHEAD_BYTES: such a body reaches the view."""
@@ -180,3 +255,25 @@ class DefaultCapTests(TestCase):
         self.assertEqual(format_bytes(1536 * 1024 ** 2), "1,5 GB")
         self.assertEqual(format_bytes(500 * 1024 ** 2), "500 MB")
         self.assertEqual(format_bytes(1000), "1000 B")
+
+
+class BoundaryTests(TestCase):
+    """At the limit of its route a body goes on; one byte more is a 413 (``>``, not ``>=``)."""
+
+    def answer(self, method, path, length):
+        request = getattr(RequestFactory(), method.lower())(path, CONTENT_LENGTH=str(length))
+        request.META["CONTENT_LENGTH"] = str(length)
+        return UploadSizeLimitMiddleware(lambda request: HttpResponse("ok"))(request).status_code
+
+    @override_settings(MAX_UPLOAD_BYTES=3000, MAX_REQUEST_BYTES=2000)
+    def test_each_route_at_its_limit_and_one_byte_over(self):
+        for method, path, limit in (
+            ("POST", PROJECTS, 3000 + UPLOAD_FORM_OVERHEAD_BYTES),
+            ("POST", FROM_PROMPT, 3000 + UPLOAD_FORM_OVERHEAD_BYTES),
+            ("PATCH", "/api/v1/projects/7d7f7b1e-1111-4a4a-8888-000000000000/", 3000 + UPLOAD_FORM_OVERHEAD_BYTES),
+            ("POST", reverse("brandkit-list"), brand_kit_max_bytes() + UPLOAD_FORM_OVERHEAD_BYTES),
+            ("POST", "/admin/login/", 2000),
+            ("POST", "/no-existe/", 2000),
+        ):
+            self.assertEqual(self.answer(method, path, limit), 200, path)
+            self.assertEqual(self.answer(method, path, limit + 1), 413, path)
