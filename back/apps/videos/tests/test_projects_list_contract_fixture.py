@@ -72,7 +72,12 @@ class ProjectListContractFixtureTests(ProjectDataHarness):
         ready = self.a_project(
             moment(10), charged, title='Clase 1: Presupuesto', status=Status.COMPLETED,
             pipeline_stage=PipelineStage.COMPLETED,
-            metadata={'priced_duration_s': 600, 'stage_durations': {'audio_extracted': 12.5, 'transcribed': 40}},
+            metadata={
+                'priced_duration_s': 600, 'stage_durations': {'audio_extracted': 12.5, 'transcribed': 40},
+                'full_text': 'Hola a todos.',
+            },
+            # What a row leaves out (VideoProjectListSerializer).
+            transcript_data=[{'word': 'Hola', 'start': 0.0, 'end': 0.4}], ai_rationale_log={'suggestions_count': 1},
         )
         self.a_clip(
             ready, moment(10, 30), rendered=True, title='El error más común', status=VideoClip.Status.COMPLETED,
@@ -121,3 +126,7 @@ class ProjectListContractFixtureTests(ProjectDataHarness):
         self.assertEqual((first['previous'], first['next'], second['next']), (None, None, None))
         self.assertIn('page_size=2', second['previous'])
         self.assertEqual(first['results'][0]['eta_seconds'], 542)
+        for row in first['results']:
+            self.assertNotIn('transcript_data', row)
+            self.assertNotIn('ai_rationale_log', row)
+            self.assertNotIn('full_text', row['metadata'])

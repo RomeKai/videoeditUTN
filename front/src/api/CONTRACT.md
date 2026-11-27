@@ -36,7 +36,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 
 | # | Qué pasa hoy | Qué espera el frontend |
 |---|---|---|
-| 1 | ~~`GET /api/v1/projects/` devuelve un array sin paginar y sin filtros.~~ Resuelto: pagina de a 25, con `status_group`, `search`, `ordering` y `status_counts`. Cada ítem sigue trayendo `transcript_data`, `ai_rationale_log` y `metadata` completos. | El cliente solo acepta la página: un array ya no es una respuesta válida. La lista no necesita la transcripción: un serializer liviano sigue siendo una mejora posible. |
+| 1 | ~~`GET /api/v1/projects/` devuelve un array sin paginar y sin filtros.~~ Resuelto: pagina de a 25, con `status_group`, `search`, `ordering` y `status_counts`, y cada fila va sin `transcript_data`, `ai_rationale_log` ni `metadata.full_text` (`VideoProjectListSerializer`). | El cliente solo acepta la página: un array ya no es una respuesta válida. La transcripción y el registro de la selección se leen de `GET /api/v1/projects/:id/`. |
 | 2 | El código de `InvalidUploadError` (`not_a_video`, `too_long`…) no llega en el 400: DRF solo manda el mensaje. | `{ "source_file": [{ "message", "code" }] }`. Mientras tanto el frontend reconoce el código por el texto (`uploadErrorCode()` en `src/lib/error-messages.ts`). |
 | 3 | Los 403 de `PricingEngine` traen un mensaje en inglés sin código (`Video duration (…) exceeds your plan limit`). | `code` (`duration`, `resolution`, `seo`) y `limit`. Mientras tanto se reconoce por el texto (`planLimitKind()`). |
 | 4 | El rol del modelo es `viewer` (`WorkspaceMember.Role.VIEWER`); el mapa lo llama «Lector». | El contrato usa los valores del backend (`admin`, `editor`, `viewer`) más `owner` derivado de `Workspace.owner`. «Lector» es solo la etiqueta. |
@@ -765,8 +765,8 @@ Proyectos del workspace, del más nuevo al más viejo.
 | | |
 |---|---|
 | Id | `projects.list` |
-| Backend | ✅ existe · `back/apps/videos/views.py · VideoProjectViewSet.list + ProjectPagination + ProjectsQuerySerializer + VideoProjectSerializer` |
-| Nota | Solo los proyectos del workspace activo (`X-Workspace-Id`; 404 si el usuario no es miembro activo). Páginas de 25 (`page_size` hasta 100). `status_group` agrupa los estados como los filtros de B2: `in_progress` (uploaded, ingesting, rendering), `to_review` (awaiting_approval), `ready` (completed, partial) y `failed`. `search` busca en el título sin distinguir mayúsculas. `status_counts` cuenta cada filtro con la misma búsqueda, sin importar el filtro ni la página pedidos. Las consultas a la base no crecen con la página. De los campos extra del proyecto solo falta `duration_seconds`: la pantalla lee la duración de `metadata`. |
+| Backend | ✅ existe · `back/apps/videos/views.py · VideoProjectViewSet.list + ProjectPagination + ProjectsQuerySerializer + VideoProjectListSerializer` |
+| Nota | Solo los proyectos del workspace activo (`X-Workspace-Id`; 404 si el usuario no es miembro activo). Páginas de 25 (`page_size` hasta 100). `status_group` agrupa los estados como los filtros de B2: `in_progress` (uploaded, ingesting, rendering), `to_review` (awaiting_approval), `ready` (completed, partial) y `failed`. `search` busca en el título sin distinguir mayúsculas. `status_counts` cuenta cada filtro con la misma búsqueda, sin importar el filtro ni la página pedidos. Cada fila es el proyecto sin `transcript_data`, `ai_rationale_log` ni `metadata.full_text` (`ProjectListItem`): esos van solo en `GET /projects/:id/`. Las consultas a la base no crecen con la página. De los campos extra del proyecto solo falta `duration_seconds`: la pantalla lee la duración de `metadata`. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | ProjectsQuery |
 | Respuesta 200 | ProjectsResponse |
@@ -2157,6 +2157,62 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `state` | "reserved" \\| "charged" \\| "refunded" |
 | `transaction_id` | Id \\| null |
 
+**ProjectListItem**
+
+| Campo | Tipo |
+|---|---|
+| `id` | Id |
+| `workspace` | Id |
+| `uploaded_by` | Id \\| null |
+| `title` | string |
+| `original_r2_key` | string \\| null |
+| `proxy_r2_key` | string \\| null |
+| `final_export_r2_key` | string \\| null |
+| `project_type` | ProjectType |
+| `editing_style` | EditingStyle |
+| `intelligence_level` | IntelligenceLevel |
+| `auto_render_bypass` | boolean |
+| `brand_kit` | Id \\| null |
+| `brand_kit_name` (opcional) | string |
+| `aspect_ratio` | AspectRatio |
+| `render_layout` | Layout |
+| `gameplay_position` | Position |
+| `camera_selection_position` | Position |
+| `manual_camera_x` | number |
+| `manual_camera_y` | number |
+| `manual_camera_zoom` | number |
+| `pip_corner` | PipCorner |
+| `trending_color` | ColorValue |
+| `trending_text` | string |
+| `speaker_tracking` | boolean |
+| `add_subtitles` | boolean |
+| `subtitle_color` | ColorValue |
+| `subtitle_with_emojis` | boolean |
+| `subtitle_words_per_segment` | number |
+| `subtitle_size` | SubtitleSize |
+| `subtitle_position` | SubtitlePosition |
+| `use_facetracking` | boolean |
+| `remove_silences` | boolean |
+| `source_file` | string \\| null |
+| `video_url` | string \\| null |
+| `metadata` | ProjectMetadata |
+| `approved_segments` | ApprovedSegment[] \\| null |
+| `status` | ProjectStatus |
+| `pipeline_stage` | PipelineStage |
+| `pipeline_stage_status` | PipelineStageStatus |
+| `pipeline_attempts` | number |
+| `pipeline_error_code` | string |
+| `pipeline_error_at` | IsoDateTime \\| null |
+| `created_at` | IsoDateTime |
+| `clips` | Clip[] |
+| `proxy_url` | string \\| null |
+| `thumbnail_url` (opcional) | string \\| null |
+| `uploaded_by_detail` (opcional) | UserRef \\| null |
+| `cost` (opcional) | ProjectCost \\| null |
+| `stage_timings` (opcional) | { [clave]: StageTiming } |
+| `eta_seconds` (opcional) | number \\| null |
+| `duration_seconds` (opcional) | number \\| null |
+
 **ProjectMetadata**
 
 | Campo | Tipo |
@@ -2198,7 +2254,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `count` | number |
 | `next` | string \\| null |
 | `previous` | string \\| null |
-| `results` | Project[] |
+| `results` | ProjectListItem[] |
 | `status_counts` | ProjectStatusCounts |
 
 **ProjectStatus:** "uploaded" \| "ingesting" \| "awaiting_approval" \| "rendering" \| "completed" \| "partial" \| "failed"

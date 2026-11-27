@@ -1,4 +1,4 @@
-import type { Project } from '@/api/contracts/projects';
+import type { ProjectListItem as Project } from '@/api/contracts/projects';
 import { countClips, describeProjectStatus, etaLabel, type ProjectStatusView } from '@/lib/project-status';
 import { Badge, ProgressBar, StepSegments, cx } from '@/ui';
 import styles from './Projects.module.css';

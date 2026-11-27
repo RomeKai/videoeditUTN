@@ -26,7 +26,7 @@ import { BrandKit, duplicateBrandKit, listBrandKits, updateBrandKit } from './br
 import { ClipPreview } from './clips';
 import real from './drf/responses.json';
 import { Notification, type NotificationsResponse, listNotifications, markNotificationRead } from './notifications';
-import { ActivityItem, ApprovePaperEditResponse, CreateFromPromptResponse, CreateProjectResponse, PaperEditData, Project, ProjectsResponse, StageTiming } from './projects';
+import { ActivityItem, ApprovePaperEditResponse, CreateFromPromptResponse, CreateProjectResponse, PaperEditData, Project, ProjectListItem, ProjectsResponse, StageTiming } from './projects';
 import { type MembersResponse, type Workspace, createWorkspace, getWorkspace, listMembers, listWorkspaces, transferWorkspace, updateMember, updateWorkspace } from './workspaces';
 
 /**
@@ -71,6 +71,22 @@ describe('respuestas reales del backend', () => {
     expect(second).toMatchObject({ count: 3, next: null, status_counts: first.status_counts });
     expect(second.previous).toContain('page_size=2');
     expect(second.results.map((project) => project.id)).toEqual([first.results[2]?.id]);
+  });
+
+  it('lista de proyectos: una fila no trae la transcripción ni el registro de la selección; el proyecto sí', () => {
+    for (const row of [...real.project_list.results, ...real.project_list_page_2.results]) {
+      expect(row).not.toHaveProperty('transcript_data');
+      expect(row).not.toHaveProperty('ai_rationale_log');
+      expect(row.metadata).not.toHaveProperty('full_text');
+      parse(ProjectListItem, row);
+      // A row is not a whole project: the detail schema asks for both fields.
+      expect(Project.safeParse(row).success).toBe(false);
+    }
+    expect(ProjectListItem.shape).not.toHaveProperty('transcript_data');
+    expect(ProjectListItem.shape).not.toHaveProperty('ai_rationale_log');
+    const detail = parse(Project, real.project_completed_auto_render) as Project;
+    expect(detail).toHaveProperty('transcript_data');
+    expect(detail).toHaveProperty('ai_rationale_log');
   });
 
   it('lista de proyectos: el array sin paginar de antes y una página sin contadores ya no son la respuesta', () => {

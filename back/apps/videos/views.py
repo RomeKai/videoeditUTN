@@ -15,7 +15,10 @@ from rest_framework.pagination import PageNumberPagination
 
 # Modelos y Serializers de Videos
 from .models import VideoProject, BrandKit
-from .serializers import VideoProjectSerializer, BrandKitSerializer, ProjectsQuerySerializer
+from .serializers import (
+    PROJECT_LIST_OMITTED_FIELDS, BrandKitSerializer, ProjectsQuerySerializer, VideoProjectListSerializer,
+    VideoProjectSerializer,
+)
 from .tasks import process_initial_ingestion
 from .services.segments import (
     InvalidSegmentsError, check_segment_lengths, max_render_segment_seconds, validate_approved_segments,
@@ -217,7 +220,9 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         the same search, ignoring ``status_group`` and the page. The queries
         do not grow with the page: the counts, the total, the projects, their
         clips, the clips' layers, and one read of reservations for the costs
-        and one for the renders in the queue.
+        and one for the renders in the queue. A row is the project without
+        ``transcript_data``, ``ai_rationale_log`` and ``metadata.full_text``
+        (VideoProjectListSerializer): GET /projects/{id}/ sends them.
         """
         query = ProjectsQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
@@ -235,13 +240,18 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         if group != 'all':
             projects = projects.filter(status__in=PROJECT_STATUS_GROUPS[group])
         projects = (
-            projects.select_related('brand_kit').prefetch_related('clips__layers')
+            # The columns the rows leave out are not read from the database either.
+            projects.select_related('brand_kit').prefetch_related('clips__layers').defer(*PROJECT_LIST_OMITTED_FIELDS)
             .order_by(*PROJECT_ORDERINGS[params.get('ordering', '-created_at')])
         )
 
         self.paginator.status_counts = counts
         page = self.paginate_queryset(projects)
         return self.get_paginated_response(self.get_serializer(page, many=True).data)
+
+    def get_serializer_class(self):
+        # The rows of the list leave out the transcript and the selection log.
+        return VideoProjectListSerializer if self.action == 'list' else super().get_serializer_class()
 
     def get_serializer_context(self):
         context = super().get_serializer_context()

@@ -321,6 +321,7 @@ Otras respuestas:
   - ✅ `GET /api/v1/projects/`: páginas de 25 (`page`, `page_size` hasta 100), del más nuevo al más viejo.
   - ✅ `status_group` filtra por estado (`in_progress`, `to_review`, `ready`, `failed`), `search` busca en el título sin distinguir mayúsculas y `ordering` cambia el orden.
   - ✅ `status_counts` trae cuántos proyectos hay en cada filtro con la misma búsqueda.
+  - ✅ Cada fila es el proyecto sin la transcripción ni el registro de la selección, que solo van en `GET /api/v1/projects/:id/`.
 
 ### C. Crear
 

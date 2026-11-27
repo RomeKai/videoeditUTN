@@ -334,6 +334,14 @@ export const Project = z.object({
 });
 export type Project = z.infer<typeof Project>;
 
+/**
+ * A row of the projects list (VideoProjectListSerializer): the project without the transcript (`transcript_data`
+ * and `metadata.full_text`) and without `ai_rationale_log`. Only the project's own screens read them, from
+ * `GET /projects/:id/`; with a long video they are most of the weight of a project.
+ */
+export const ProjectListItem = Project.omit({ transcript_data: true, ai_rationale_log: true });
+export type ProjectListItem = z.infer<typeof ProjectListItem>;
+
 /** Filter of the projects list (map B2). */
 export const ProjectStatusGroup = z.enum(['all', 'in_progress', 'to_review', 'ready', 'failed']);
 export type ProjectStatusGroup = z.infer<typeof ProjectStatusGroup>;
@@ -358,7 +366,7 @@ export const ProjectStatusCounts = z.object({
 export type ProjectStatusCounts = z.infer<typeof ProjectStatusCounts>;
 
 /** A page of projects (ProjectPagination): 25 unless `page_size` says otherwise, 100 at most. */
-export const ProjectsResponse = paginated(Project).extend({ status_counts: ProjectStatusCounts });
+export const ProjectsResponse = paginated(ProjectListItem).extend({ status_counts: ProjectStatusCounts });
 export type ProjectsResponse = z.infer<typeof ProjectsResponse>;
 
 const FileField = z.custom<Blob>((value) => typeof Blob !== 'undefined' && value instanceof Blob, 'Archivo inválido');
@@ -567,8 +575,8 @@ export const listProjects = defineEndpoint({
   ],
   backend: {
     status: 'exists',
-    source: 'back/apps/videos/views.py · VideoProjectViewSet.list + ProjectPagination + ProjectsQuerySerializer + VideoProjectSerializer',
-    note: 'Solo los proyectos del workspace activo (`X-Workspace-Id`; 404 si el usuario no es miembro activo). Páginas de 25 (`page_size` hasta 100). `status_group` agrupa los estados como los filtros de B2: `in_progress` (uploaded, ingesting, rendering), `to_review` (awaiting_approval), `ready` (completed, partial) y `failed`. `search` busca en el título sin distinguir mayúsculas. `status_counts` cuenta cada filtro con la misma búsqueda, sin importar el filtro ni la página pedidos. Las consultas a la base no crecen con la página. De los campos extra del proyecto solo falta `duration_seconds`: la pantalla lee la duración de `metadata`.',
+    source: 'back/apps/videos/views.py · VideoProjectViewSet.list + ProjectPagination + ProjectsQuerySerializer + VideoProjectListSerializer',
+    note: 'Solo los proyectos del workspace activo (`X-Workspace-Id`; 404 si el usuario no es miembro activo). Páginas de 25 (`page_size` hasta 100). `status_group` agrupa los estados como los filtros de B2: `in_progress` (uploaded, ingesting, rendering), `to_review` (awaiting_approval), `ready` (completed, partial) y `failed`. `search` busca en el título sin distinguir mayúsculas. `status_counts` cuenta cada filtro con la misma búsqueda, sin importar el filtro ni la página pedidos. Cada fila es el proyecto sin `transcript_data`, `ai_rationale_log` ni `metadata.full_text` (`ProjectListItem`): esos van solo en `GET /projects/:id/`. Las consultas a la base no crecen con la página. De los campos extra del proyecto solo falta `duration_seconds`: la pantalla lee la duración de `metadata`.',
   },
   screens: ['B2', 'J1', 'B1'],
 });

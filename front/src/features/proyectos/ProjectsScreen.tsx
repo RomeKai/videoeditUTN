@@ -3,7 +3,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { DEFAULT_PAGE_SIZE } from '@/api/contracts/common';
-import type { Project, ProjectStatusGroup } from '@/api/contracts/projects';
+import type { ProjectListItem as Project, ProjectStatusGroup } from '@/api/contracts/projects';
 import { ApiError } from '@/api/errors';
 import { useProjects } from '@/api/hooks';
 import { keys } from '@/api/query';

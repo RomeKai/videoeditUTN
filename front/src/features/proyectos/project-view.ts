@@ -1,9 +1,9 @@
-import type { Project } from '@/api/contracts/projects';
+import type { Project, ProjectListItem } from '@/api/contracts/projects';
 import type { ProjectStatusView } from '@/lib/project-status';
 import type { ButtonVariant, IconName } from '@/ui';
 
-/** What the list needs of a project (the list endpoint sends the whole serializer). */
-export type ProjectRow = Project;
+/** A project as the list endpoint sends it: without the transcript and the selection log. */
+export type ProjectRow = ProjectListItem;
 
 /**
  * The hosts the backend downloads links from, exactly (`LINK_HOSTS` of

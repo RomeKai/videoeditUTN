@@ -1,5 +1,5 @@
 {
-  "_about": "Cuerpos tal como los arma el backend de dev (VideoProjectSerializer, VideoClipSerializer, BrandKitSerializer y las vistas de apps/videos/views.py), escritos a mano a partir del código. Si un serializer cambia, se actualiza acá y el test dice qué esquema dejó de aceptarlo. Los de la billetera (pricing, estimate_*, wallet*, transactions_* y sus errores) son respuestas reales: los arma back/apps/payments/tests/test_contract_fixture.py, que además compara cada valor con el backend (con el reloj fijo y los ids normalizados). Los de workspaces y miembros (workspace_*, members, members_plan_payment, member_*) son respuestas capturadas de apps/users/views_workspaces.py. Los de invitaciones (invitation_* e invite_* y sus errores) son respuestas reales: los arma y compara back/apps/users/tests/test_invitations_contract_fixture.py. La lista de proyectos (project_list y project_list_page_2) son dos respuestas reales de GET /api/v1/projects/ (la página que pide B2 con una búsqueda, y la segunda página de a 2): las arma y compara back/apps/videos/tests/test_projects_list_contract_fixture.py.",
+  "_about": "Cuerpos tal como los arma el backend de dev (VideoProjectSerializer, VideoClipSerializer, BrandKitSerializer y las vistas de apps/videos/views.py), escritos a mano a partir del código. Si un serializer cambia, se actualiza acá y el test dice qué esquema dejó de aceptarlo. Los de la billetera (pricing, estimate_*, wallet*, transactions_* y sus errores) son respuestas reales: los arma back/apps/payments/tests/test_contract_fixture.py, que además compara cada valor con el backend (con el reloj fijo y los ids normalizados). Los de workspaces y miembros (workspace_*, members, members_plan_payment, member_*) son respuestas capturadas de apps/users/views_workspaces.py. Los de invitaciones (invitation_* e invite_* y sus errores) son respuestas reales: los arma y compara back/apps/users/tests/test_invitations_contract_fixture.py. La lista de proyectos (project_list y project_list_page_2) son dos respuestas reales de GET /api/v1/projects/ (la página que pide B2 con una búsqueda, y la segunda página de a 2); sus filas no traen `transcript_data`, `ai_rationale_log` ni `metadata.full_text`: las arma y compara back/apps/videos/tests/test_projects_list_contract_fixture.py.",
   "token_pair": {
     "access": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU1MzYwMDB9.x",
     "refresh": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTU2MjI0MDB9.y"
@@ -535,18 +535,18 @@
     "previous": null,
     "results": [
       {
-        "id": "2faf337c-be2f-4a95-b8d9-b3bccdad373b",
+        "id": "bebd61d2-de47-4d9d-b3c5-b9d3b71903fb",
         "clips": [],
         "proxy_url": null,
         "thumbnail_url": null,
         "uploaded_by_detail": {
-          "id": "99fdc7cd-aff5-4ea9-979c-5b4f2aa99cc5",
+          "id": "4b88315b-2d78-4d37-ba3b-1fd53844ba8a",
           "name": "alice"
         },
         "cost": {
           "amount": "80.5000000000",
           "state": "reserved",
-          "transaction_id": "8527474e-977b-46e1-994d-10fbda6700c4"
+          "transaction_id": "bb604446-2963-4cef-b0a1-fc441699f261"
         },
         "eta_seconds": 542,
         "stage_timings": {
@@ -586,14 +586,12 @@
         "use_facetracking": false,
         "remove_silences": false,
         "metadata": {
-          "reservation_id": "8527474e-977b-46e1-994d-10fbda6700c4",
+          "reservation_id": "bb604446-2963-4cef-b0a1-fc441699f261",
           "stage_durations": {
             "audio_extracted": 20
           },
           "priced_duration_s": 3122
         },
-        "ai_rationale_log": {},
-        "transcript_data": null,
         "approved_segments": null,
         "status": "ingesting",
         "pipeline_stage": "audio_extracted",
@@ -602,15 +600,15 @@
         "pipeline_error_code": "",
         "pipeline_error_at": null,
         "created_at": "2026-11-04T12:00:00Z",
-        "workspace": "7460a968-671d-4975-9d0b-89ac59171524",
-        "uploaded_by": "99fdc7cd-aff5-4ea9-979c-5b4f2aa99cc5",
+        "workspace": "d29e20b4-e9bf-4ba0-9f6d-ce99727386b6",
+        "uploaded_by": "4b88315b-2d78-4d37-ba3b-1fd53844ba8a",
         "brand_kit": null
       },
       {
-        "id": "b48129c6-2b4d-4fc1-b5bb-7e68b51aeb28",
+        "id": "dcd4177a-33b5-492d-9e4e-32357f4bd8d8",
         "clips": [
           {
-            "id": "3924d8e6-9649-4b79-9191-89e4e3c92398",
+            "id": "fa966786-c8b2-4c8e-9840-e744a3c78f65",
             "layers": [],
             "render_queued": false,
             "preview_url": null,
@@ -623,13 +621,13 @@
             "ai_reasoning": "",
             "status": "draft",
             "created_at": "2026-11-04T11:30:00Z",
-            "project": "b48129c6-2b4d-4fc1-b5bb-7e68b51aeb28"
+            "project": "dcd4177a-33b5-492d-9e4e-32357f4bd8d8"
           }
         ],
         "proxy_url": null,
         "thumbnail_url": null,
         "uploaded_by_detail": {
-          "id": "99fdc7cd-aff5-4ea9-979c-5b4f2aa99cc5",
+          "id": "4b88315b-2d78-4d37-ba3b-1fd53844ba8a",
           "name": "alice"
         },
         "cost": null,
@@ -665,8 +663,6 @@
         "use_facetracking": false,
         "remove_silences": false,
         "metadata": {},
-        "ai_rationale_log": {},
-        "transcript_data": null,
         "approved_segments": null,
         "status": "awaiting_approval",
         "pipeline_stage": "clips_selected",
@@ -675,15 +671,15 @@
         "pipeline_error_code": "",
         "pipeline_error_at": null,
         "created_at": "2026-11-04T11:00:00Z",
-        "workspace": "7460a968-671d-4975-9d0b-89ac59171524",
-        "uploaded_by": "99fdc7cd-aff5-4ea9-979c-5b4f2aa99cc5",
+        "workspace": "d29e20b4-e9bf-4ba0-9f6d-ce99727386b6",
+        "uploaded_by": "4b88315b-2d78-4d37-ba3b-1fd53844ba8a",
         "brand_kit": null
       },
       {
-        "id": "f728ec33-0f5f-4f65-aad0-7a1d852e7c9a",
+        "id": "df436f76-ce35-49fe-af92-05c2019b3523",
         "clips": [
           {
-            "id": "aeb33e50-fece-40f8-8c0e-2bc7923def23",
+            "id": "108acab3-16ba-4885-b940-0c2ad40a716a",
             "layers": [],
             "render_queued": false,
             "preview_url": "http://testserver/media/videos/demo/clip.mp4",
@@ -696,19 +692,19 @@
             "ai_reasoning": "Gancho claro en los primeros segundos.",
             "status": "completed",
             "created_at": "2026-11-04T10:30:00Z",
-            "project": "f728ec33-0f5f-4f65-aad0-7a1d852e7c9a"
+            "project": "df436f76-ce35-49fe-af92-05c2019b3523"
           }
         ],
         "proxy_url": null,
         "thumbnail_url": "http://testserver/media/videos/demo/clip.jpg",
         "uploaded_by_detail": {
-          "id": "99fdc7cd-aff5-4ea9-979c-5b4f2aa99cc5",
+          "id": "4b88315b-2d78-4d37-ba3b-1fd53844ba8a",
           "name": "alice"
         },
         "cost": {
           "amount": "120.0000000000",
           "state": "charged",
-          "transaction_id": "b211be1a-e358-42b9-9bcc-9862a055cef4"
+          "transaction_id": "d6b70cf0-947a-480f-816f-5b0277a76afd"
         },
         "eta_seconds": null,
         "stage_timings": {
@@ -753,15 +749,13 @@
         "use_facetracking": false,
         "remove_silences": false,
         "metadata": {
-          "reservation_id": "b211be1a-e358-42b9-9bcc-9862a055cef4",
+          "reservation_id": "d6b70cf0-947a-480f-816f-5b0277a76afd",
           "stage_durations": {
             "transcribed": 40,
             "audio_extracted": 12.5
           },
           "priced_duration_s": 600
         },
-        "ai_rationale_log": {},
-        "transcript_data": null,
         "approved_segments": null,
         "status": "completed",
         "pipeline_stage": "completed",
@@ -770,8 +764,8 @@
         "pipeline_error_code": "",
         "pipeline_error_at": null,
         "created_at": "2026-11-04T10:00:00Z",
-        "workspace": "7460a968-671d-4975-9d0b-89ac59171524",
-        "uploaded_by": "99fdc7cd-aff5-4ea9-979c-5b4f2aa99cc5",
+        "workspace": "d29e20b4-e9bf-4ba0-9f6d-ce99727386b6",
+        "uploaded_by": "4b88315b-2d78-4d37-ba3b-1fd53844ba8a",
         "brand_kit": null
       }
     ],
@@ -789,10 +783,10 @@
     "previous": "http://testserver/api/v1/projects/?page_size=2&search=clase",
     "results": [
       {
-        "id": "f728ec33-0f5f-4f65-aad0-7a1d852e7c9a",
+        "id": "df436f76-ce35-49fe-af92-05c2019b3523",
         "clips": [
           {
-            "id": "aeb33e50-fece-40f8-8c0e-2bc7923def23",
+            "id": "108acab3-16ba-4885-b940-0c2ad40a716a",
             "layers": [],
             "render_queued": false,
             "preview_url": "http://testserver/media/videos/demo/clip.mp4",
@@ -805,19 +799,19 @@
             "ai_reasoning": "Gancho claro en los primeros segundos.",
             "status": "completed",
             "created_at": "2026-11-04T10:30:00Z",
-            "project": "f728ec33-0f5f-4f65-aad0-7a1d852e7c9a"
+            "project": "df436f76-ce35-49fe-af92-05c2019b3523"
           }
         ],
         "proxy_url": null,
         "thumbnail_url": "http://testserver/media/videos/demo/clip.jpg",
         "uploaded_by_detail": {
-          "id": "99fdc7cd-aff5-4ea9-979c-5b4f2aa99cc5",
+          "id": "4b88315b-2d78-4d37-ba3b-1fd53844ba8a",
           "name": "alice"
         },
         "cost": {
           "amount": "120.0000000000",
           "state": "charged",
-          "transaction_id": "b211be1a-e358-42b9-9bcc-9862a055cef4"
+          "transaction_id": "d6b70cf0-947a-480f-816f-5b0277a76afd"
         },
         "eta_seconds": null,
         "stage_timings": {
@@ -862,15 +856,13 @@
         "use_facetracking": false,
         "remove_silences": false,
         "metadata": {
-          "reservation_id": "b211be1a-e358-42b9-9bcc-9862a055cef4",
+          "reservation_id": "d6b70cf0-947a-480f-816f-5b0277a76afd",
           "stage_durations": {
             "transcribed": 40,
             "audio_extracted": 12.5
           },
           "priced_duration_s": 600
         },
-        "ai_rationale_log": {},
-        "transcript_data": null,
         "approved_segments": null,
         "status": "completed",
         "pipeline_stage": "completed",
@@ -879,8 +871,8 @@
         "pipeline_error_code": "",
         "pipeline_error_at": null,
         "created_at": "2026-11-04T10:00:00Z",
-        "workspace": "7460a968-671d-4975-9d0b-89ac59171524",
-        "uploaded_by": "99fdc7cd-aff5-4ea9-979c-5b4f2aa99cc5",
+        "workspace": "d29e20b4-e9bf-4ba0-9f6d-ce99727386b6",
+        "uploaded_by": "4b88315b-2d78-4d37-ba3b-1fd53844ba8a",
         "brand_kit": null
       }
     ],

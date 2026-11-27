@@ -150,6 +150,12 @@ class VideoClipSerializer(serializers.ModelSerializer):
         return rules[clip.project_id](clip.pk)
 
 
+# What a row of the projects list leaves out: only the project's own screens
+# read them, and with a long video they are most of the weight of a project.
+PROJECT_LIST_OMITTED_FIELDS = ('transcript_data', 'ai_rationale_log')
+PROJECT_LIST_OMITTED_METADATA = ('full_text',)
+
+
 class ProjectsQuerySerializer(serializers.Serializer):
     """Query of GET /projects/ (ProjectsQuery in the contract); the page is the paginator's."""
 
@@ -517,3 +523,24 @@ class VideoProjectSerializer(serializers.ModelSerializer):
 
         project.save()
         return project
+
+
+class VideoProjectListSerializer(VideoProjectSerializer):
+    """
+    A row of GET /projects/: the project without the transcript
+    (``transcript_data`` and ``metadata['full_text']``) and without
+    ``ai_rationale_log``. The list is asked for again every 5 s while a
+    project is processing, and no list reads them; GET /projects/{id}/ sends
+    them. The view does not load those two columns either.
+    """
+
+    class Meta(VideoProjectSerializer.Meta):
+        fields = None
+        exclude = PROJECT_LIST_OMITTED_FIELDS
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        metadata = data.get('metadata')
+        if isinstance(metadata, dict) and any(key in metadata for key in PROJECT_LIST_OMITTED_METADATA):
+            data['metadata'] = {key: value for key, value in metadata.items() if key not in PROJECT_LIST_OMITTED_METADATA}
+        return data

@@ -89,7 +89,21 @@ describe('mocks', () => {
     // As the backend: the counts follow the search, never the filter or the page; a group that does not exist is a 400.
     const searched = await apiCall(projects.listProjects, { query: { search: '  VLOG ', status_group: 'failed', page_size: 1 } });
     expect(searched).toMatchObject({ count: 0, results: [], status_counts: { all: 1, ready: 1, failed: 0 } });
-    // (Plain fetch: the client does not let such a query out.)
+    // A row is the project without the transcript and the selection log (plain fetch: the client would drop
+    // what the schema does not name); the detail keeps them.
+    const rawList = (await (await fetch(`${API_URL}/api/v1/projects/`, { headers: { Authorization: `Bearer ${mockTokens(USER_IDS.lucia).access}` } })).json()) as {
+      results: Array<{ id: string; metadata: Record<string, unknown> }>;
+    };
+    expect(rawList.results).toHaveLength(8);
+    for (const row of rawList.results) {
+      expect(row).not.toHaveProperty('transcript_data');
+      expect(row).not.toHaveProperty('ai_rationale_log');
+      expect(row.metadata).not.toHaveProperty('full_text');
+    }
+    const rawDetail = (await (await fetch(`${API_URL}/api/v1/projects/${list.results[0]?.id}/`, { headers: { Authorization: `Bearer ${mockTokens(USER_IDS.lucia).access}` } })).json()) as Record<string, unknown>;
+    expect(rawDetail).toHaveProperty('transcript_data');
+    expect(rawDetail).toHaveProperty('ai_rationale_log');
+    // (Plain fetch again: the client does not let such a query out.)
     for (const query of ['status_group=archived', 'ordering=-title']) {
       const response = await fetch(`${API_URL}/api/v1/projects/?${query}`, { headers: { Authorization: `Bearer ${mockTokens(USER_IDS.lucia).access}` } });
       expect([query, response.status]).toEqual([query, 400]);

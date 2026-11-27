@@ -4,7 +4,7 @@ import { newId, type MockDb, type MockProject, type ProjectSim } from '../db';
 import { badRequest, conflict, dec, MockHttpError, notFound, paginate, route } from '../http';
 import { adoptProject } from '../hybrid';
 import { priceOf, PRICING, stageStatusFor } from '../seed';
-import { planOf, serializeClip, serializeProject } from '../serialize';
+import { planOf, serializeClip, serializeProject, serializeProjectRow } from '../serialize';
 import { startPaidRender } from '../render';
 import { addActivity, InsufficientFunds, reserveAutoRender, reserveFunds, serveActivity, startRender } from '../sim';
 import { linkProvider } from '@/features/proyectos/project-view';
@@ -281,7 +281,7 @@ export const projectsHandlers = [
       ordering === 'title' ? a.title.toLowerCase().localeCompare(b.title.toLowerCase(), 'es') || b.created_at.localeCompare(a.created_at) : ordering === 'created_at' ? a.created_at.localeCompare(b.created_at) : b.created_at.localeCompare(a.created_at),
     );
     const page = paginate(filtered, query, contract.listProjects.path);
-    return { data: { ...page, results: page.results.map((project) => serializeProject(db, project, { full: false })), status_counts: counts } };
+    return { data: { ...page, results: page.results.map((project) => serializeProjectRow(db, project)), status_counts: counts } };
   }),
 
   route(contract.createProject, (context) => ({ data: createProject(context, null) })),

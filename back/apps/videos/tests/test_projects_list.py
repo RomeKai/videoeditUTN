@@ -118,15 +118,45 @@ class PaginationTests(ListHarness):
         self.assertEqual(self.titles(), ['banana', 'Cereza', 'ananá', 'Durazno'])
         self.assertIn('ordering', self.page(expected=400, ordering='-title'))
 
-    def test_a_row_has_the_fields_of_the_project(self):
-        project = self.project()
-        detail = self.client.get(f'{LIST_URL}{project.pk}/').json()
+    def test_a_row_is_the_project_without_the_transcript_and_the_selection_log(self):
+        words = [{'word': 'hola', 'start': 0.0, 'end': 0.4}] * 50
+        project = self.project(
+            transcript_data=words, ai_rationale_log={'suggestions_count': 3, 'raw': 'x' * 500},
+            metadata={'full_text': 'hola ' * 50, 'priced_duration_s': 90, 'source_media': {'duration_s': 90.0}},
+        )
 
+        detail = self.client.get(f'{LIST_URL}{project.pk}/').json()
         row = self.page()['results'][0]
 
-        self.assertEqual(row, detail)
+        # The project's own screens still get them.
+        self.assertEqual(detail['transcript_data'], words)
+        self.assertEqual(detail['ai_rationale_log'], {'suggestions_count': 3, 'raw': 'x' * 500})
+        self.assertEqual(detail['metadata']['full_text'], 'hola ' * 50)
+        # The row does not, and nothing else changes.
+        for field in ('transcript_data', 'ai_rationale_log'):
+            self.assertNotIn(field, row)
+        self.assertNotIn('full_text', row['metadata'])
+        self.assertNotIn('hola', self.client.get(LIST_URL).content.decode())
+        expected = {key: value for key, value in detail.items() if key not in ('transcript_data', 'ai_rationale_log')}
+        expected['metadata'] = {key: value for key, value in detail['metadata'].items() if key != 'full_text'}
+        self.assertEqual(row, expected)
+        self.assertEqual(row['metadata'], {'priced_duration_s': 90, 'source_media': {'duration_s': 90.0}})
         for field in ('id', 'workspace', 'title', 'status', 'clips', 'cost', 'eta_seconds', 'uploaded_by_detail'):
             self.assertIn(field, row)
+
+    def test_the_columns_a_row_leaves_out_are_not_read_from_the_database(self):
+        self.project(transcript_data=[{'word': 'hola', 'start': 0.0, 'end': 0.4}], ai_rationale_log={'a': 1})
+
+        with CaptureQueriesContext(connection) as captured:
+            self.page()
+
+        reads = [entry['sql'] for entry in captured.captured_queries if '"videos_videoproject"."title"' in entry['sql']]
+        self.assertEqual(len(reads), 1, reads)
+        self.assertNotIn('"transcript_data"', reads[0])
+        self.assertNotIn('"ai_rationale_log"', reads[0])
+        # And nothing asks for them later, one project at a time.
+        again = [entry['sql'] for entry in captured.captured_queries if '"transcript_data"' in entry['sql'] or '"ai_rationale_log"' in entry['sql']]
+        self.assertEqual(again, [])
 
 
 class StatusGroupTests(ListHarness):
@@ -286,7 +316,8 @@ class QueryCountTests(ListHarness):
             # A whole video in the render queue: its draft clip waits while the creation is reserved.
             project_type=VideoProject.Type.SINGLE_EDIT, status=Status.RENDERING,
             pipeline_stage=PipelineStage.RENDER_DISPATCHED,
-            metadata={'reservation_id': str(creation.pk), 'priced_duration_s': 60},
+            metadata={'reservation_id': str(creation.pk), 'priced_duration_s': 60, 'full_text': 'hola'},
+            transcript_data=[{'word': 'hola', 'start': 0.0, 'end': 0.4}], ai_rationale_log={'suggestions_count': 3},
         )
         for clip_number in range(3):
             clip = VideoClip.objects.create(
