@@ -883,6 +883,37 @@ describe('mocks · renders pagos (views_clips.py)', () => {
     expect(after.clips.find((clip) => clip.id === failed.id)?.status).toBe('failed');
     expect(transaction(retried.transaction_id)).toMatchObject({ status: 'FAILED', kind: 'released' });
     expect((await apiCall(billing.getWallet)).available_balance).toBeCloseTo(before.available_balance, 2);
+    // Actividad does not say the render finished: nothing was generated, and it says what came back.
+    const feed = await apiCall(projects.getProjectActivity, { params: { id: project.id } });
+    const finished = feed.filter((item) => item.type === 'render_finished')[0];
+    expect(finished?.description).toMatch(/^No se pudo renderizar el clip: sigue con error\. Te devolvimos [\d.,]+ tokens?\.$/);
+  });
+
+  it('un render de clip que falla dice en Actividad que quedó el clip anterior, y el cobro de cada render dice de cuál es', async () => {
+    edit('Vlog Mendoza', (item, db) => {
+      db.posts = db.posts.filter((post) => post.clip.project_id !== item.id);
+    });
+    const project = projectByTitle('Vlog Mendoza');
+    const [first, second] = project.clips.filter((clip) => clip.status === 'completed' || clip.status === 'published');
+    if (!first || !second) throw new Error('faltan clips entregados');
+    const activity = async () => await apiCall(projects.getProjectActivity, { params: { id: project.id } });
+
+    // One clip rendered again and delivered: its charge is named after it.
+    await apiCall(clips.renderClip, { params: { id: second.id } });
+    advance(SIM.clipMs * 2);
+    expect((await activity()).filter((item) => item.type === 'tokens_charged')[0]?.description).toBe(`Cobro por renderizar «${second.title}»`);
+
+    // Another one whose new render fails: it keeps the file it had and everything comes back.
+    const paid = await apiCall(clips.renderClip, { params: { id: first.id } });
+    edit('Vlog Mendoza', (item) => {
+      for (const clip of item.clips) if (clip.id === first.id) clip._renderFails = true;
+    });
+    advance(SIM.clipMs * 2);
+    expect(transaction(paid.transaction_id)).toMatchObject({ status: 'FAILED' });
+    const after = await apiCall(projects.getProject, { params: { id: project.id } });
+    expect(after.clips.find((clip) => clip.id === first.id)?.status).toBe(first.status);
+    const finished = (await activity()).filter((item) => item.type === 'render_finished')[0];
+    expect(finished?.description).toMatch(/^No se pudo volver a renderizar: quedó el clip anterior\. Te devolvimos [\d.,]+ tokens?\.$/);
   });
 
   it('se cobra por lo entregado: de un render de todos los clips, lo que falló vuelve y el clip conserva lo que tenía', async () => {

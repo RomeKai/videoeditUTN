@@ -479,7 +479,7 @@ function tickRender(db: MockDb, project: MockProject, now: number): void {
   let returned = 0;
   const delivered = project.clips.length > 0 ? (project.clips.length - failed) / project.clips.length : 1;
   // One charge (and one refund) per reservation, like the backend: each says which transaction it settles.
-  const settled: Array<{ id: string; charged: number; returned: number; render: boolean }> = [];
+  const settled: Array<{ id: string; charged: number; returned: number; render: boolean; description: string }> = [];
   for (const id of project._reservations) {
     const transaction = db.transactions.find((item) => item.id === id);
     if (transaction?.status !== 'RESERVED') continue;
@@ -490,7 +490,7 @@ function tickRender(db: MockDb, project: MockProject, now: number): void {
     else settleReservation(db, id, now);
     returned += back;
     const after = db.transactions.find((item) => item.id === id);
-    settled.push({ id, charged: after?.status === 'COMPLETED' ? after.amount : 0, returned: back, render });
+    settled.push({ id, charged: after?.status === 'COMPLETED' ? after.amount : 0, returned: back, render, description: transaction.description });
   }
   for (const item of settled) {
     if (item.returned > 0) addActivity(db, project, 'tokens_refunded', 'Devolución por los clips que no se generaron', now, { amount: round2(item.returned), transactionId: item.id });
@@ -498,10 +498,46 @@ function tickRender(db: MockDb, project: MockProject, now: number): void {
   if (project.cost) project.cost = { ...project.cost, state: 'charged' };
   addActivity(db, project, 'render_finished', 'Terminó el render', now);
   for (const item of settled) {
-    if (item.charged > 0) addActivity(db, project, 'tokens_charged', item.render ? 'Cobro del render' : 'Cobro del procesamiento', now, { amount: -item.charged, transactionId: item.id });
+    if (item.charged > 0) addActivity(db, project, 'tokens_charged', item.render ? renderChargeLabel(item.description) : 'Cobro del procesamiento', now, { amount: -item.charged, transactionId: item.id });
   }
   const ready = project.clips.length - failed;
   notify(db, project.workspace, { type: 'render_finished', title: `${project.title}: terminó el render`, body: renderFinishedBody(ready, failed > 0, returned), project_id: project.id }, now);
+}
+
+const CLIP_RENDER_PREFIXES = [
+  ['Render de clip: ', 'renderizar'],
+  ['Reintento de clip: ', 'reintentar'],
+] as const;
+
+/**
+ * What the charge of a render is called, like the backend (project_activity.py · `_purpose`): after its
+ * reservation ("Reserva por reintentar «Clip»" is charged as "Cobro por reintentar «Clip»"), so two charges
+ * of the same amount say which is which. The approval's is "the render".
+ */
+export function renderChargeLabel(description: string): string {
+  for (const [prefix, what] of CLIP_RENDER_PREFIXES) {
+    const title = description.startsWith(prefix) ? description.slice(prefix.length).trim() : '';
+    if (title) return `Cobro por ${what} «${title}»`;
+  }
+  if (description.startsWith('Render con otro estilo: ')) return 'Cobro por renderizar todo de nuevo';
+  if (description.startsWith('Render automático: ') || description.startsWith('Render sin revisar: ')) return 'Cobro por renderizar sin revisar';
+  return 'Cobro del render';
+}
+
+/**
+ * What `render_finished` says of a paid render that was returned whole, like the backend
+ * (project_activity.py · `_refunded_render_text`): it delivered nothing, and the clips the user had are
+ * still there when every clip it was for got back what it had.
+ */
+function refundedRenderText(project: MockProject, paid: PaidRender, description: string, returned: number): string {
+  const refund = `Te devolvimos ${formatTokens(round2(returned))}.`;
+  const kept = paid.clipIds.length > 0 && paid.clipIds.every((id) => paid.previous[id] && project.clips.find((clip) => clip.id === id)?.status !== 'failed');
+  if (kept) {
+    const what = project.project_type === 'single_edit' ? 'quedó el video anterior' : paid.clipIds.length === 1 ? 'quedó el clip anterior' : 'quedaron los clips anteriores';
+    return `No se pudo volver a renderizar: ${what}. ${refund}`;
+  }
+  if (description.startsWith('Reintento de clip: ')) return `No se pudo renderizar el clip: sigue con error. ${refund}`;
+  return `No se pudo renderizar: no se generó ningún clip. ${refund}`;
 }
 
 /**
@@ -537,8 +573,11 @@ function finishPaidRender(db: MockDb, project: MockProject, paid: PaidRender, no
   const amount = transaction?.status === 'RESERVED' ? transaction.amount : 0;
   const charge = reserved <= 0 || delivered >= reserved ? amount : round2(amount * (delivered / reserved));
   const returned = settleReservationPartially(db, paid.reservation, charge, now);
-  addActivity(db, project, 'render_finished', 'Terminó el render', now);
-  if (amount - returned > 0) addActivity(db, project, 'tokens_charged', 'Cobro del render', now, { amount: -round2(amount - returned), transactionId: paid.reservation });
+  const description = transaction?.description ?? '';
+  // Returned whole: that render delivered nothing, whatever the project has from before.
+  const nothing = amount > 0 && returned >= amount;
+  addActivity(db, project, 'render_finished', nothing ? refundedRenderText(project, paid, description, returned) : 'Terminó el render', now);
+  if (amount - returned > 0) addActivity(db, project, 'tokens_charged', renderChargeLabel(description), now, { amount: -round2(amount - returned), transactionId: paid.reservation });
   if (returned > 0) addActivity(db, project, 'tokens_refunded', 'Devolución por lo que no se generó', now, { amount: round2(returned), transactionId: paid.reservation });
   notify(
     db,
