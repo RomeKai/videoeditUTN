@@ -44,6 +44,8 @@ def queue_post_seo(post_id, regenerate=False):
             logger.error(
                 "seo.dispatch_failed post_id=%s error=%s", post_id, type(exc).__name__,
             )
+            # Nothing is generating it: the API stops showing it as pending, and "Regenerar" works again.
+            ScheduledPost.objects.filter(pk=post_id).update(seo_requested_at=None)
             return
         logger.info("seo.dispatched post_id=%s regenerate=%s", post_id, regenerate)
 

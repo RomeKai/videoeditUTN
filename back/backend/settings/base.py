@@ -214,6 +214,8 @@ REST_FRAMEWORK = {
         # The public endpoints of the link, per IP: reading it and accepting it.
         'invitation_read': _rate('THROTTLE_INVITATION_READ', '60/hour'),
         'invitation_accept': _rate('THROTTLE_INVITATION_ACCEPT', '20/hour'),
+        # POST /scheduled-posts/:id/regenerate-seo/, per user: each one may pay an LLM call.
+        'post_seo_regenerate': _rate('THROTTLE_POST_SEO_REGENERATE', '30/hour'),
     },
     # Proxies in front of Django (load balancer, nginx) that add the client's
     # address to X-Forwarded-For. The per-IP limits take the address that many

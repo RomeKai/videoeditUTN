@@ -55,7 +55,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from django.utils import timezone
 from django.db import DatabaseError, transaction
-from django.db.models import F, Q
+from django.db.models import Case, F, Q, Value, When
 from django.core.cache import caches
 from apps.videos.models import VideoProject, VideoClip, ScheduledPost
 from backend.celery import app as celery_app
@@ -332,6 +332,12 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
                 _seo_pending_clear(post_id)  # a fresh request, not a retry of this one
             return _generate_post_metadata(self, post, capacity_waited_s, regenerate)
 
+    except ScheduledPost.DoesNotExist:
+        # Deleted before or while it was generated (a discarded draft, a cancelled
+        # post): nothing to write, and not a failure of the task.
+        logger.info("seo.skipped post_id=%s reason=deleted", post_id)
+        return "Post Deleted"
+
     except ModerationError as mod_exc:
         # Fail closed: no moderation verdict => content does not pass. Must stay above
         # the generic handler, which would retry blindly with a fixed countdown.
@@ -384,29 +390,39 @@ def _fail_seo_post(post_id, code):
     FAILED with a static code, unless publishing already started or finished:
     a post published with another caption must never turn FAILED because of SEO.
     A failed regeneration keeps the caption it was replacing, and the post keeps
-    its status: it can still be published.
+    its status: it can still be published. A DRAFT stays a DRAFT with the code
+    (the API shows `seo_status: "failed"`): it was not going out, and the user
+    writes the text and sends it. Either way the API request is over
+    (`seo_requested_at`).
     """
     posts = ScheduledPost.objects.filter(id=post_id).exclude(status__in=_SEO_FROZEN_STATUSES)
     if posts.filter(generated_caption__gt='', generated_hashtags__isnull=False).exists():
         logger.warning("seo.regenerate_failed post_id=%s code=%s", post_id, code)
+        posts.update(seo_requested_at=None)
         return
-    posts.update(status=ScheduledPost.Status.FAILED, error_log=code)
+    draft = ScheduledPost.Status.DRAFT
+    posts.update(
+        status=Case(When(status=draft, then=Value(draft)), default=Value(ScheduledPost.Status.FAILED)),
+        error_log=code,
+        seo_requested_at=None,
+    )
 
 
 def _recover_seo_failed_post(post_id):
     """
     A post an earlier SEO failure left FAILED is recoverable (ADR-013): back to
     DRAFT, so the user reviews the caption and schedules it again. It is never
-    re-scheduled on its own. Publishing failures are not touched.
+    re-scheduled on its own. A DRAFT that kept the failure loses it. Publishing
+    failures are not touched.
     """
     seo_codes = (
         Q(error_log__in=_SEO_FAILURE_CODES)
         | Q(error_log__startswith='seo_')
         | Q(error_log__startswith='moderation_')
     )
-    ScheduledPost.objects.filter(seo_codes, id=post_id, status=ScheduledPost.Status.FAILED).update(
-        status=ScheduledPost.Status.DRAFT, error_log=None,
-    )
+    ScheduledPost.objects.filter(
+        seo_codes, id=post_id, status__in=(ScheduledPost.Status.FAILED, ScheduledPost.Status.DRAFT),
+    ).update(status=ScheduledPost.Status.DRAFT, error_log=None)
 
 
 @contextmanager
@@ -492,9 +508,13 @@ def _generate_post_metadata(task, post, capacity_waited_s, regenerate=False):
         _fail_seo_post(post.id, "generated_content_blocked")
         return "Security Abort"
 
+    fields = {'generated_caption': metadata.caption, 'generated_hashtags': metadata.hashtags, 'seo_requested_at': None}
+    if regenerate:
+        # "Regenerar" replaces the text the user wrote too (empty: the API shows the AI's).
+        fields.update(caption='', hashtags=[])
     stored = ScheduledPost.objects.filter(id=post.id).exclude(
         status__in=_SEO_FROZEN_STATUSES,
-    ).update(generated_caption=metadata.caption, generated_hashtags=metadata.hashtags)
+    ).update(**fields)
     if not stored:
         # Publishing started while this run generated: its caption is final.
         _seo_pending_clear(post.id)

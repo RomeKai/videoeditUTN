@@ -1,0 +1,788 @@
+"""
+Gap 8: the writes of /api/v1/scheduled-posts/ (contract `social.createPost`,
+`createPostsBulk`, `updatePost`, `cancelPost`, `retryPost` and
+`regeneratePostSeo`).
+
+None of them calls a social network: a post that goes out is left SCHEDULED
+and dispatch_scheduled_posts_batch takes it. The races with the dispatcher and
+the worker are in test_scheduled_posts_concurrency.py.
+"""
+import uuid
+from datetime import timedelta
+from unittest.mock import patch
+
+from django.contrib.auth import get_user_model
+from django.urls import reverse
+from django.utils import timezone
+from rest_framework.test import APITestCase
+
+from apps.payments.models import SubscriptionPlan
+from apps.users.models import Workspace, WorkspaceMember
+from apps.videos.models import PostIdempotencyKey, ScheduledPost, VideoClip, VideoProject
+from apps.videos.services import scheduled_posts as service
+from apps.videos.tasks import dispatch_scheduled_posts_batch
+
+User = get_user_model()
+Status, Platform = ScheduledPost.Status, ScheduledPost.Platform
+
+CREATE = reverse("scheduled-post-list")
+BULK = reverse("scheduled-post-bulk")
+DELAY = "apps.videos.tasks.process_video_seo.delay"
+APPLY_ASYNC = "apps.videos.tasks.process_video_seo.apply_async"
+UPLOAD = "apps.videos.tasks.upload_to_social_network.apply_async"
+SEND = "apps.integrations.ayrshare_api.AyrshareClient.send_post"
+TIKTOK = {"privacy_level": "SELF_ONLY"}
+
+
+def detail(post):
+    return reverse("scheduled-post-detail", args=[post.pk])
+
+
+def action(post, name):
+    return reverse(f"scheduled-post-{name}", args=[post.pk])
+
+
+def plan(name):
+    return SubscriptionPlan.objects.get(name=name)
+
+
+class PostsWriteHarness(APITestCase):
+    def setUp(self):
+        self.alice = User.objects.create_user(username="alice", email="alice@test.com", password="pw")
+        self.home = self.alice.owned_workspaces.get()
+        self.set_plan("Pro")
+        Workspace.objects.filter(pk=self.home.pk).update(ayrshare_profile_key="perfil-de-prueba")
+        self.home.refresh_from_db()
+        self.client.force_authenticate(user=self.alice)
+        self.ws = {"HTTP_X_WORKSPACE_ID": str(self.home.pk)}
+        self.project, self.clip = self.make_clip(self.home, "Entrevista")
+        # Nothing reaches a broker or a network in these tests.
+        self.seo_delay = self._patch(DELAY)
+        self.seo_apply_async = self._patch(APPLY_ASYNC)
+        self.upload = self._patch(UPLOAD)
+        self.send_post = self._patch(SEND)
+        self.later = timezone.now() + timedelta(days=2)
+
+    def _patch(self, target):
+        patcher = patch(target)
+        mock = patcher.start()
+        self.addCleanup(patcher.stop)
+        return mock
+
+    def set_plan(self, name, workspace=None):
+        workspace = workspace or self.home
+        Workspace.objects.filter(pk=workspace.pk).update(subscription_plan=plan(name) if name else None)
+        workspace.refresh_from_db()
+
+    def make_clip(self, workspace, title, seo=False, status=VideoClip.Status.COMPLETED):
+        project = VideoProject.objects.create(
+            workspace=workspace, uploaded_by=workspace.owner, title=title, source_file="videos/raw/a.mp4",
+            metadata={"use_seo": True} if seo else {},
+        )
+        clip = VideoClip.objects.create(
+            project=project, title=f"Clip de {title}", start_time=0, end_time=30, status=status,
+            s3_object_key="clips/a.mp4",
+        )
+        return project, clip
+
+    def make_post(self, clip=None, **fields):
+        fields.setdefault("platform", Platform.INSTAGRAM_REELS)
+        fields.setdefault("status", Status.SCHEDULED)
+        fields.setdefault("publish_at", self.later)
+        return ScheduledPost.objects.create(video_clip=clip or self.clip, **fields)
+
+    def member(self, role, workspace=None):
+        person = User.objects.create_user(username=f"m-{role}-{uuid.uuid4().hex[:6]}", email=f"{uuid.uuid4().hex[:8]}@test.com", password="pw")
+        WorkspaceMember.objects.create(
+            workspace=workspace or self.home, user=person, role=role, status=WorkspaceMember.Status.ACTIVE,
+        )
+        return person
+
+    def create(self, key=None, **body):
+        body.setdefault("video_clip", str(self.clip.pk))
+        body.setdefault("platform", Platform.INSTAGRAM_REELS)
+        extra = {"HTTP_IDEMPOTENCY_KEY": key} if key else {}
+        return self.client.post(CREATE, body, format="json", **self.ws, **extra)
+
+    def patch_post(self, post, **body):
+        return self.client.patch(detail(post), body, format="json", **self.ws)
+
+    def post_action(self, post, name):
+        return self.client.post(action(post, name), format="json", **self.ws)
+
+
+class CreateTests(PostsWriteHarness):
+    def test_a_draft_publishes_nothing(self):
+        response = self.create(draft=True)
+
+        self.assertEqual(response.status_code, 201, response.content)
+        body = response.json()
+        self.assertEqual((body["status"], body["seo_status"], body["caption"]), ("DRAFT", "none", ""))
+        post = ScheduledPost.objects.get(pk=body["id"])
+        self.assertEqual(post.video_clip, self.clip)
+        self.seo_delay.assert_not_called()
+        self.send_post.assert_not_called()
+
+    def test_a_draft_of_a_project_with_seo_queues_the_ai_text(self):
+        _, clip = self.make_clip(self.home, "Con SEO", seo=True)
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.create(video_clip=str(clip.pk), draft=True)
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["seo_status"], "pending")
+        post = ScheduledPost.objects.get(pk=response.json()["id"])
+        self.assertIsNotNone(post.seo_requested_at)
+        self.seo_delay.assert_called_once_with(str(post.pk))
+
+    def test_publish_now_leaves_it_scheduled_for_the_beat_without_calling_a_network(self):
+        before = timezone.now()
+        response = self.create(publish_at=None, caption="Mirá esto")
+
+        self.assertEqual(response.status_code, 201, response.content)
+        post = ScheduledPost.objects.get(pk=response.json()["id"])
+        self.assertEqual(post.status, Status.SCHEDULED)
+        self.assertGreaterEqual(post.publish_at, before)
+        self.assertLessEqual(post.publish_at, timezone.now())
+        self.upload.assert_not_called()
+        self.send_post.assert_not_called()
+
+        dispatch_scheduled_posts_batch()
+
+        post.refresh_from_db()
+        self.assertEqual(post.status, Status.QUEUED)
+        self.upload.assert_called_once()
+        self.assertEqual(self.upload.call_args.kwargs["args"], [post.pk])
+
+    def test_without_publish_at_it_also_publishes_now(self):
+        response = self.create(caption="Ya")
+        self.assertEqual(response.json()["status"], "SCHEDULED")
+        self.assertLessEqual(ScheduledPost.objects.get(pk=response.json()["id"]).publish_at, timezone.now())
+
+    def test_a_date_schedules_it(self):
+        response = self.create(publish_at=self.later.isoformat())
+
+        self.assertEqual(response.status_code, 201, response.content)
+        post = ScheduledPost.objects.get(pk=response.json()["id"])
+        self.assertEqual((post.status, post.publish_at), (Status.SCHEDULED, self.later))
+
+    def test_a_date_in_the_past_is_a_400_and_a_minute_of_clock_skew_is_now(self):
+        past = self.create(publish_at=(timezone.now() - timedelta(minutes=5)).isoformat())
+        self.assertEqual(past.status_code, 400)
+        self.assertEqual(past.json(), {"publish_at": ["La fecha ya pasó."]})
+
+        self.set_plan("Gratis")  # without scheduling: "about now" is not scheduling
+        skew = self.create(publish_at=(timezone.now() + timedelta(seconds=30)).isoformat())
+        self.assertEqual(skew.status_code, 201, skew.content)
+
+    def test_tiktok_needs_its_privacy_unless_it_is_a_draft(self):
+        missing = self.create(platform=Platform.TIKTOK)
+        self.assertEqual(missing.status_code, 400)
+        self.assertEqual(missing.json(), {"tiktok": ["Elegí quién puede ver el video."]})
+        wrong = self.create(platform=Platform.TIKTOK, tiktok={"privacy_level": "TODOS"})
+        self.assertEqual(wrong.json(), {"tiktok": ["Elegí quién puede ver el video."]})
+
+        self.assertEqual(self.create(platform=Platform.TIKTOK, draft=True).status_code, 201)
+        ScheduledPost.objects.all().delete()
+        response = self.create(platform=Platform.TIKTOK, tiktok={"privacy_level": "SELF_ONLY", "allow_comment": True})
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["tiktok"], {
+            "privacy_level": "SELF_ONLY", "allow_comment": True, "allow_duet": False, "allow_stitch": False,
+            "brand_organic": False, "branded_content": False,
+        })
+
+    def test_options_of_tiktok_are_not_kept_for_another_network(self):
+        response = self.create(tiktok=TIKTOK)
+        self.assertIsNone(response.json()["tiktok"])
+
+    def test_the_text_must_fit_the_network(self):
+        over = self.create(caption="a" * 2201)
+        self.assertEqual(over.status_code, 400)
+        self.assertEqual(over.json(), {"caption": ["El texto supera el límite de Instagram Reels (2200 caracteres)."]})
+        # The hashtags count too: the caption, a blank line and "#tag".
+        self.assertEqual(self.create(caption="a" * 2195, hashtags=["abc"]).status_code, 400)
+        too_many = self.create(platform=Platform.YOUTUBE_SHORTS, hashtags=[f"tag{n}" for n in range(16)])
+        self.assertEqual(too_many.json(), {"hashtags": ["YouTube Shorts acepta hasta 15 hashtags."]})
+        self.assertFalse(ScheduledPost.objects.exists())
+
+    def test_hashtags_lose_their_hash_and_repeats(self):
+        response = self.create(hashtags=["#Mendoza", "mendoza", " vlog ", ""])
+        self.assertEqual(response.json()["hashtags"], ["Mendoza", "vlog"])
+        invalid = self.create(hashtags=["dos palabras"])
+        self.assertEqual(invalid.status_code, 400)
+        self.assertIn("no es un hashtag válido", invalid.json()["hashtags"][0])
+
+    def test_a_clip_of_another_workspace_does_not_exist_here(self):
+        bob = User.objects.create_user(username="bob", email="bob@test.com", password="pw")
+        _, foreign = self.make_clip(bob.owned_workspaces.get(), "Ajeno")
+
+        response = self.create(video_clip=str(foreign.pk), draft=True)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"video_clip": ["El clip no existe."]})
+        self.assertFalse(ScheduledPost.objects.exists())
+
+    def test_a_clip_that_is_not_rendered_cannot_be_published(self):
+        _, rendering = self.make_clip(self.home, "Renderizando", status=VideoClip.Status.RENDERING)
+        response = self.create(video_clip=str(rendering.pk))
+        self.assertEqual(response.json(), {"video_clip": ["El clip todavía no está renderizado."]})
+
+    def test_the_roles_that_publish(self):
+        for role, expected in (
+            (WorkspaceMember.Role.ADMIN, 201), (WorkspaceMember.Role.EDITOR, 201), (WorkspaceMember.Role.VIEWER, 403),
+        ):
+            with self.subTest(role=role):
+                self.client.force_authenticate(self.member(role))
+                response = self.create(draft=True, platform=Platform.YOUTUBE_SHORTS)
+                self.assertEqual(response.status_code, expected, response.content)
+                ScheduledPost.objects.all().delete()
+        self.assertIn("Lector", response.json()["detail"])
+
+    def test_the_header_picks_the_workspace(self):
+        bob = User.objects.create_user(username="bob", email="bob@test.com", password="pw")
+        other = bob.owned_workspaces.get()
+        WorkspaceMember.objects.create(
+            workspace=other, user=self.alice, role=WorkspaceMember.Role.VIEWER, status=WorkspaceMember.Status.ACTIVE,
+        )
+        _, theirs = self.make_clip(other, "Suyo")
+        response = self.client.post(
+            CREATE, {"video_clip": str(theirs.pk), "platform": "TIKTOK", "draft": True}, format="json",
+            HTTP_X_WORKSPACE_ID=str(other.pk),
+        )
+        self.assertEqual(response.status_code, 403)  # a Lector there
+        # And the clip of that workspace is not one of the active one.
+        self.assertEqual(self.create(video_clip=str(theirs.pk), draft=True).status_code, 400)
+
+    def test_without_an_account_only_drafts_are_created(self):
+        Workspace.objects.filter(pk=self.home.pk).update(ayrshare_profile_key=None)
+
+        response = self.create(publish_at=None)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["code"], "account_not_connected")
+        self.assertFalse(ScheduledPost.objects.exists())
+        self.assertEqual(self.create(draft=True).status_code, 201)
+
+
+class PlanTests(PostsWriteHarness):
+    def test_free_plan_publishes_now_but_does_not_schedule(self):
+        self.set_plan("Gratis")
+
+        scheduled = self.create(publish_at=self.later.isoformat())
+
+        self.assertEqual(scheduled.status_code, 403)
+        self.assertEqual(scheduled.json()["code"], "scheduling")
+        self.assertFalse(ScheduledPost.objects.exists())
+        self.assertEqual(self.create(publish_at=None).status_code, 201)
+        self.assertEqual(self.create(platform=Platform.YOUTUBE_SHORTS, draft=True, publish_at=self.later.isoformat()).status_code, 201)
+
+    def test_without_crossposting_a_clip_goes_out_on_one_network(self):
+        self.set_plan("Creador")
+        self.assertEqual(self.create(publish_at=self.later.isoformat()).status_code, 201)
+
+        second = self.create(platform=Platform.YOUTUBE_SHORTS, publish_at=self.later.isoformat())
+
+        self.assertEqual(second.status_code, 403)
+        self.assertEqual(second.json()["code"], "crossposting")
+        # A draft publishes nothing, and another clip is another publication.
+        self.assertEqual(self.create(platform=Platform.YOUTUBE_SHORTS, draft=True).status_code, 201)
+        _, other = self.make_clip(self.home, "Otro")
+        self.assertEqual(self.create(video_clip=str(other.pk), platform=Platform.YOUTUBE_SHORTS).status_code, 201)
+
+    def test_a_failed_post_does_not_hold_its_network(self):
+        self.set_plan("Gratis")
+        self.make_post(status=Status.FAILED, platform=Platform.TIKTOK)
+        self.assertEqual(self.create().status_code, 201)
+
+    def test_without_a_plan_there_are_no_limits(self):
+        self.set_plan(None)
+        self.assertEqual(self.create(publish_at=self.later.isoformat()).status_code, 201)
+        self.assertEqual(self.create(platform=Platform.YOUTUBE_SHORTS, publish_at=self.later.isoformat()).status_code, 201)
+
+
+class IdempotencyTests(PostsWriteHarness):
+    def test_the_same_key_answers_the_first_post_and_creates_nothing(self):
+        first = self.create(key="envio-1", publish_at=None)
+        again = self.create(key="envio-1", publish_at=None)
+
+        self.assertEqual((first.status_code, again.status_code), (201, 201))
+        self.assertEqual(again.json()["id"], first.json()["id"])
+        self.assertEqual(ScheduledPost.objects.count(), 1)
+        self.assertEqual(self.create(key="envio-2", platform=Platform.YOUTUBE_SHORTS).status_code, 201)
+        self.assertEqual(ScheduledPost.objects.count(), 2)
+
+    def test_the_same_key_with_another_body_is_a_409(self):
+        self.create(key="envio-1", draft=True)
+        response = self.create(key="envio-1", platform=Platform.YOUTUBE_SHORTS, draft=True)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["code"], "idempotency_key_reused")
+        self.assertEqual(ScheduledPost.objects.count(), 1)
+
+    def test_an_error_is_not_kept_so_the_same_key_tries_again(self):
+        Workspace.objects.filter(pk=self.home.pk).update(ayrshare_profile_key=None)
+        self.assertEqual(self.create(key="envio-1").status_code, 409)
+        self.assertFalse(PostIdempotencyKey.objects.exists())
+
+        Workspace.objects.filter(pk=self.home.pk).update(ayrshare_profile_key="perfil")
+        self.assertEqual(self.create(key="envio-1").status_code, 201)
+
+    def test_a_key_belongs_to_its_workspace(self):
+        first = self.create(key="envio-1", draft=True)
+        bob = User.objects.create_user(username="bob", email="bob@test.com", password="pw")
+        other = bob.owned_workspaces.get()
+        _, theirs = self.make_clip(other, "Suyo")
+        self.client.force_authenticate(bob)
+        response = self.client.post(
+            CREATE, {"video_clip": str(theirs.pk), "platform": "INSTAGRAM_REELS", "draft": True}, format="json",
+            HTTP_X_WORKSPACE_ID=str(other.pk), HTTP_IDEMPOTENCY_KEY="envio-1",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertNotEqual(response.json()["id"], first.json()["id"])
+
+    def test_a_replay_whose_post_was_cancelled_creates_nothing(self):
+        first = self.create(key="envio-1", draft=True)
+        ScheduledPost.objects.filter(pk=first.json()["id"]).delete()
+        again = self.create(key="envio-1", draft=True)
+        self.assertEqual((again.status_code, again.json()["code"]), (409, "idempotency_key_reused"))
+        self.assertFalse(ScheduledPost.objects.exists())
+
+    def test_a_key_older_than_a_day_is_free_again(self):
+        self.create(key="envio-1", draft=True)
+        PostIdempotencyKey.objects.update(created_at=timezone.now() - service.IDEMPOTENCY_TTL - timedelta(minutes=1))
+        self.assertEqual(self.create(key="envio-1", draft=True).status_code, 201)
+        self.assertEqual(ScheduledPost.objects.count(), 2)
+
+    def test_a_key_too_long_is_a_400(self):
+        self.assertEqual(self.create(key="x" * 256, draft=True).status_code, 400)
+
+
+class BulkTests(PostsWriteHarness):
+    def bulk(self, posts, key=None):
+        extra = {"HTTP_IDEMPOTENCY_KEY": key} if key else {}
+        return self.client.post(BULK, {"posts": posts}, format="json", **self.ws, **extra)
+
+    def items(self, *clips, **fields):
+        return [{"video_clip": str(clip.pk), "platform": Platform.INSTAGRAM_REELS, **fields} for clip in clips]
+
+    def test_creates_every_post_in_order(self):
+        _, second = self.make_clip(self.home, "Segundo")
+        posts = self.items(self.clip, second, publish_at=self.later.isoformat())
+        posts.append({"video_clip": str(self.clip.pk), "platform": Platform.TIKTOK, "tiktok": TIKTOK})
+
+        response = self.bulk(posts)
+
+        self.assertEqual(response.status_code, 201, response.content)
+        created = response.json()["posts"]
+        self.assertEqual(
+            [(row["video_clip"], row["platform"], row["status"]) for row in created],
+            [(str(self.clip.pk), "INSTAGRAM_REELS", "SCHEDULED"), (str(second.pk), "INSTAGRAM_REELS", "SCHEDULED"),
+             (str(self.clip.pk), "TIKTOK", "SCHEDULED")],
+        )
+        self.assertEqual(ScheduledPost.objects.count(), 3)
+
+    def test_one_invalid_post_creates_none_and_says_which(self):
+        bob = User.objects.create_user(username="bob", email="bob@test.com", password="pw")
+        _, foreign = self.make_clip(bob.owned_workspaces.get(), "Ajeno")
+
+        response = self.bulk(self.items(self.clip, foreign))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"video_clip": ["El clip no existe."], "index": 1})
+        self.assertFalse(ScheduledPost.objects.exists())
+
+    def test_a_field_error_says_which_post_too(self):
+        response = self.bulk(self.items(self.clip) + [{"video_clip": str(self.clip.pk), "platform": "MYSPACE"}])
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["index"], 1)
+        self.assertIn("platform", response.json())
+
+    def test_a_plan_limit_on_one_post_creates_none(self):
+        self.set_plan("Gratis")
+        _, second = self.make_clip(self.home, "Segundo")
+        response = self.bulk(self.items(self.clip) + self.items(second, publish_at=self.later.isoformat()))
+        self.assertEqual((response.status_code, response.json()["code"]), (403, "scheduling"))
+        self.assertFalse(ScheduledPost.objects.exists())
+
+    def test_crossposting_counts_the_posts_of_the_batch(self):
+        self.set_plan("Creador")
+        response = self.bulk(self.items(self.clip) + [
+            {"video_clip": str(self.clip.pk), "platform": Platform.YOUTUBE_SHORTS},
+        ])
+        self.assertEqual((response.status_code, response.json()["code"]), (403, "crossposting"))
+        self.assertFalse(ScheduledPost.objects.exists())
+
+    def test_an_error_while_saving_rolls_every_post_back_and_frees_the_key(self):
+        _, second = self.make_clip(self.home, "Segundo")
+        _, third = self.make_clip(self.home, "Tercero")
+        save, calls = ScheduledPost.save, []
+
+        def third_one_breaks(post, *args, **kwargs):
+            calls.append(post)
+            if len(calls) == 3:
+                raise RuntimeError("la base se cayó")
+            return save(post, *args, **kwargs)
+
+        with patch.object(ScheduledPost, "save", third_one_breaks):
+            with self.assertRaises(RuntimeError):
+                self.bulk(self.items(self.clip, second, third), key="lote-1")
+
+        self.assertFalse(ScheduledPost.objects.exists())
+        self.assertFalse(PostIdempotencyKey.objects.exists())
+        retried = self.bulk(self.items(self.clip, second, third), key="lote-1")
+        self.assertEqual((retried.status_code, ScheduledPost.objects.count()), (201, 3))
+
+    def test_the_same_pair_twice_is_a_400(self):
+        response = self.bulk(self.items(self.clip, self.clip))
+        self.assertEqual(response.json(), {"posts": ["La misma publicación (clip y red) está dos veces."], "index": 1})
+
+    def test_between_one_and_sixty_posts(self):
+        for posts in ([], self.items(*[self.clip] * 61), "no"):
+            with self.subTest(size=len(posts)):
+                response = self.bulk(posts)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json(), {"posts": ["Mandá entre 1 y 60 publicaciones."]})
+
+    def test_the_same_key_answers_the_first_batch(self):
+        _, second = self.make_clip(self.home, "Segundo")
+        first = self.bulk(self.items(self.clip, second), key="lote-1")
+        again = self.bulk(self.items(self.clip, second), key="lote-1")
+        self.assertEqual([row["id"] for row in again.json()["posts"]], [row["id"] for row in first.json()["posts"]])
+        self.assertEqual(ScheduledPost.objects.count(), 2)
+
+    def test_a_lector_creates_nothing(self):
+        self.client.force_authenticate(self.member(WorkspaceMember.Role.VIEWER))
+        self.assertEqual(self.bulk(self.items(self.clip)).status_code, 403)
+
+
+class UpdateTests(PostsWriteHarness):
+    def test_editing_the_text_of_a_scheduled_post(self):
+        post = self.make_post(generated_caption="De la IA", generated_hashtags=["ia"])
+
+        response = self.patch_post(post, caption="Mío", hashtags=["#propio"])
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual((response.json()["caption"], response.json()["hashtags"]), ("Mío", ["propio"]))
+        post.refresh_from_db()
+        self.assertEqual((post.status, post.publish_at, post.generated_caption), (Status.SCHEDULED, self.later, "De la IA"))
+
+    def test_rescheduling(self):
+        post = self.make_post()
+        new = self.later + timedelta(hours=3)
+        response = self.patch_post(post, publish_at=new.isoformat())
+        self.assertEqual(response.status_code, 200, response.content)
+        post.refresh_from_db()
+        self.assertEqual(post.publish_at, new)
+
+    def test_a_draft_published_now_waits_for_the_beat(self):
+        draft = self.make_post(status=Status.DRAFT, error_log="seo_no_clip_transcript")
+
+        response = self.patch_post(draft, publish_at=None, caption="Lo escribí yo")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        draft.refresh_from_db()
+        self.assertEqual(draft.status, Status.SCHEDULED)
+        self.assertLessEqual(draft.publish_at, timezone.now())
+        self.assertIsNone(draft.error_log)  # the AI failure is over once the user sends it
+        self.send_post.assert_not_called()
+
+    def test_a_draft_with_a_date_is_scheduled_and_without_one_stays_a_draft(self):
+        draft = self.make_post(status=Status.DRAFT)
+        self.assertEqual(self.patch_post(draft, caption="Solo texto").json()["status"], "DRAFT")
+        self.assertEqual(self.patch_post(draft, publish_at=self.later.isoformat()).json()["status"], "SCHEDULED")
+
+    def test_only_before_the_queue(self):
+        for status, code in (
+            (Status.QUEUED, "post_in_flight"), (Status.PROCESSING, "post_in_flight"),
+            (Status.PUBLISHED, "post_published"), (Status.FAILED, "post_failed"),
+        ):
+            with self.subTest(status=status):
+                post = self.make_post(status=status)
+                response = self.patch_post(post, caption="Tarde", publish_at=self.later.isoformat())
+                self.assertEqual((response.status_code, response.json()["code"]), (409, code))
+                post.refresh_from_db()
+                self.assertEqual((post.caption, post.status), ("", status))
+
+    def test_the_rules_of_creating_hold_when_it_goes_out(self):
+        draft = self.make_post(status=Status.DRAFT, platform=Platform.TIKTOK)
+        self.assertEqual(self.patch_post(draft, publish_at=None).json(), {"tiktok": ["Elegí quién puede ver el video."]})
+        self.assertEqual(self.patch_post(draft, publish_at=(timezone.now() - timedelta(hours=1)).isoformat()).status_code, 400)
+        self.assertEqual(self.patch_post(draft, caption="a" * 2201).status_code, 400)
+        Workspace.objects.filter(pk=self.home.pk).update(ayrshare_profile_key="")
+        self.assertEqual(self.patch_post(draft, publish_at=None, tiktok=TIKTOK).json()["code"], "account_not_connected")
+        draft.refresh_from_db()
+        self.assertEqual((draft.status, draft.tiktok), (Status.DRAFT, None))
+
+    def test_plan_limits(self):
+        self.set_plan("Gratis")
+        draft = self.make_post(status=Status.DRAFT)
+        scheduled = self.patch_post(draft, publish_at=self.later.isoformat())
+        self.assertEqual((scheduled.status_code, scheduled.json()["code"]), (403, "scheduling"))
+        self.make_post(platform=Platform.YOUTUBE_SHORTS, status=Status.PUBLISHED)
+        crossposted = self.patch_post(draft, publish_at=None)
+        self.assertEqual((crossposted.status_code, crossposted.json()["code"]), (403, "crossposting"))
+        draft.refresh_from_db()
+        self.assertEqual(draft.status, Status.DRAFT)
+
+    def test_roles_and_workspaces(self):
+        post = self.make_post()
+        self.client.force_authenticate(self.member(WorkspaceMember.Role.VIEWER))
+        self.assertEqual(self.patch_post(post, caption="x").status_code, 403)
+        self.client.force_authenticate(self.member(WorkspaceMember.Role.EDITOR))
+        self.assertEqual(self.patch_post(post, caption="x").status_code, 200)
+
+        bob = User.objects.create_user(username="bob", email="bob@test.com", password="pw")
+        _, theirs = self.make_clip(bob.owned_workspaces.get(), "Suyo")
+        foreign = self.make_post(clip=theirs)
+        self.assertEqual(self.patch_post(foreign, caption="x").status_code, 404)
+        self.assertEqual(self.client.patch("/api/v1/scheduled-posts/no-es-un-id/", {}, format="json", **self.ws).status_code, 404)
+
+    def test_a_post_is_never_replaced_whole(self):
+        self.assertEqual(self.client.put(detail(self.make_post()), {}, format="json", **self.ws).status_code, 405)
+
+
+class CancelTests(PostsWriteHarness):
+    def test_a_post_that_did_not_go_out_is_deleted(self):
+        for status in (Status.DRAFT, Status.SCHEDULED, Status.QUEUED, Status.FAILED):
+            with self.subTest(status=status):
+                post = self.make_post(status=status)
+                response = self.post_action(post, "cancel")
+                self.assertEqual(response.status_code, 204)
+                self.assertFalse(ScheduledPost.objects.filter(pk=post.pk).exists())
+
+    def test_a_post_going_out_or_published_stays(self):
+        for status, code in ((Status.PROCESSING, "post_in_flight"), (Status.PUBLISHED, "post_published")):
+            with self.subTest(status=status):
+                post = self.make_post(status=status)
+                response = self.post_action(post, "cancel")
+                self.assertEqual((response.status_code, response.json()["code"]), (409, code))
+                self.assertTrue(ScheduledPost.objects.filter(pk=post.pk).exists())
+
+    def test_the_task_of_a_cancelled_queued_post_publishes_nothing(self):
+        from apps.videos.tasks import upload_to_social_network
+
+        post = self.make_post(status=Status.QUEUED)
+        self.post_action(post, "cancel")
+
+        self.assertEqual(upload_to_social_network.apply(args=[post.pk]).get(), "Post Deleted")
+        self.send_post.assert_not_called()
+
+    def test_roles_and_workspaces(self):
+        post = self.make_post()
+        self.client.force_authenticate(self.member(WorkspaceMember.Role.VIEWER))
+        self.assertEqual(self.post_action(post, "cancel").status_code, 403)
+        self.client.force_authenticate(self.alice)
+        bob = User.objects.create_user(username="bob", email="bob@test.com", password="pw")
+        _, theirs = self.make_clip(bob.owned_workspaces.get(), "Suyo")
+        foreign = self.make_post(clip=theirs)
+        self.assertEqual(self.post_action(foreign, "cancel").status_code, 404)
+        self.assertTrue(ScheduledPost.objects.filter(pk__in=[post.pk, foreign.pk]).count() == 2)
+
+
+class RetryTests(PostsWriteHarness):
+    def stale(self, post, by=timedelta(minutes=1)):
+        ScheduledPost.objects.filter(pk=post.pk).update(updated_at=timezone.now() - service.POST_STUCK_AFTER - by)
+
+    def test_a_failed_post_goes_back_to_the_beat_for_now(self):
+        post = self.make_post(status=Status.FAILED, publish_at=timezone.now() - timedelta(hours=1),
+                              error_log="Failed after 4 attempts: x", retry_count=4)
+
+        response = self.post_action(post, "retry")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual((response.json()["status"], response.json()["error_code"]), ("SCHEDULED", None))
+        post.refresh_from_db()
+        self.assertEqual((post.status, post.error_log, post.retry_count), (Status.SCHEDULED, None, 4))
+        self.assertLessEqual(post.publish_at, timezone.now())
+        self.send_post.assert_not_called()
+        dispatch_scheduled_posts_batch()
+        post.refresh_from_db()
+        self.assertEqual(post.status, Status.QUEUED)
+
+    def test_a_second_retry_is_a_409(self):
+        post = self.make_post(status=Status.FAILED)
+        self.assertEqual(self.post_action(post, "retry").status_code, 200)
+        again = self.post_action(post, "retry")
+        self.assertEqual((again.status_code, again.json()["code"]), (409, "post_not_failed"))
+
+    def test_only_a_failed_or_stuck_post(self):
+        for status, code in (
+            (Status.DRAFT, "post_not_failed"), (Status.SCHEDULED, "post_not_failed"),
+            (Status.QUEUED, "post_not_failed"), (Status.PUBLISHED, "post_published"),
+        ):
+            with self.subTest(status=status):
+                response = self.post_action(self.make_post(status=status), "retry")
+                self.assertEqual((response.status_code, response.json()["code"]), (409, code))
+
+    def test_a_post_publishing_right_now_is_not_retried(self):
+        post = self.make_post(status=Status.PROCESSING)
+        self.stale(post, by=-timedelta(minutes=2))  # its attempt started 13 minutes ago
+        response = self.post_action(post, "retry")
+        self.assertEqual((response.status_code, response.json()["code"]), (409, "post_in_flight"))
+        post.refresh_from_db()
+        self.assertEqual(post.status, Status.PROCESSING)
+
+    def test_a_stuck_post_is_retried(self):
+        post = self.make_post(status=Status.PROCESSING, publish_at=timezone.now() - timedelta(hours=2))
+        self.stale(post)
+        response = self.post_action(post, "retry")
+        self.assertEqual((response.status_code, response.json()["status"]), (200, "SCHEDULED"))
+
+    def test_a_stuck_post_whose_worker_holds_the_lock_is_not_retried(self):
+        from django.core.cache import caches
+
+        post = self.make_post(status=Status.PROCESSING)
+        self.stale(post)
+        caches["locks"].add(service.publish_lock_key(post.pk), "locked", 600)
+
+        response = self.post_action(post, "retry")
+
+        self.assertEqual((response.status_code, response.json()["code"]), (409, "post_in_flight"))
+
+    def test_without_the_lock_cache_a_stuck_post_is_not_retried(self):
+        post = self.make_post(status=Status.PROCESSING)
+        self.stale(post)
+        with patch("apps.videos.services.scheduled_posts.caches") as caches:
+            caches.__getitem__.return_value.get.side_effect = ConnectionError("redis")
+            response = self.post_action(post, "retry")
+        self.assertEqual((response.status_code, response.json()["code"]), (409, "post_lock_unavailable"))
+
+    def test_the_lock_is_the_one_the_worker_takes(self):
+        from apps.videos.tasks import upload_to_social_network
+
+        post = self.make_post(status=Status.QUEUED)
+        with patch("apps.videos.tasks.social.caches") as caches:
+            caches.__getitem__.return_value.add.return_value = False  # someone has it: the worker stops
+            self.assertEqual(upload_to_social_network.apply(args=[post.pk]).get(), "Locked")
+        self.assertEqual(caches.__getitem__.return_value.add.call_args.args[0], service.publish_lock_key(post.pk))
+
+    def test_the_stuck_window_outlasts_a_live_delivery(self):
+        from apps.integrations.ayrshare_api import AyrshareClient
+        from apps.videos.tasks import upload_to_social_network
+
+        lock_ttl = AyrshareClient.TIMEOUT_SECONDS[1] + 300
+        longest_backoff = 60 * 2 ** (upload_to_social_network.max_retries - 1)
+        self.assertGreater(service.POST_STUCK_AFTER.total_seconds(), lock_ttl + longest_backoff)
+
+    def test_a_post_whose_ai_text_failed_goes_back_to_draft(self):
+        _, clip = self.make_clip(self.home, "Con SEO", seo=True)
+        post = self.make_post(clip=clip, status=Status.FAILED, error_log="seo_no_clip_transcript")
+
+        response = self.post_action(post, "retry")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual((response.json()["status"], response.json()["seo_status"]), ("DRAFT", "failed"))
+        dispatch_scheduled_posts_batch()
+        self.upload.assert_not_called()
+
+    def test_the_rules_of_publishing_hold(self):
+        post = self.make_post(status=Status.FAILED, platform=Platform.TIKTOK)
+        self.assertEqual(self.post_action(post, "retry").json(), {"tiktok": ["Elegí quién puede ver el video."]})
+        ScheduledPost.objects.filter(pk=post.pk).update(tiktok=TIKTOK)
+        Workspace.objects.filter(pk=self.home.pk).update(ayrshare_profile_key=None)
+        self.assertEqual(self.post_action(post, "retry").json()["code"], "account_not_connected")
+        Workspace.objects.filter(pk=self.home.pk).update(ayrshare_profile_key="perfil")
+        self.set_plan("Gratis")
+        self.make_post(platform=Platform.YOUTUBE_SHORTS)
+        self.assertEqual(self.post_action(post, "retry").json()["code"], "crossposting")
+        VideoClip.objects.filter(pk=self.clip.pk).update(status=VideoClip.Status.RENDERING)
+        self.assertEqual(self.post_action(post, "retry").status_code, 400)
+        post.refresh_from_db()
+        self.assertEqual(post.status, Status.FAILED)
+
+    def test_roles_and_workspaces(self):
+        post = self.make_post(status=Status.FAILED)
+        self.client.force_authenticate(self.member(WorkspaceMember.Role.VIEWER))
+        self.assertEqual(self.post_action(post, "retry").status_code, 403)
+        self.client.force_authenticate(self.alice)
+        bob = User.objects.create_user(username="bob", email="bob@test.com", password="pw")
+        _, theirs = self.make_clip(bob.owned_workspaces.get(), "Suyo")
+        self.assertEqual(self.post_action(self.make_post(clip=theirs, status=Status.FAILED), "retry").status_code, 404)
+
+
+class RegenerateTests(PostsWriteHarness):
+    def setUp(self):
+        super().setUp()
+        _, self.seo_clip = self.make_clip(self.home, "Con SEO", seo=True)
+
+    def ready_post(self, **fields):
+        fields.setdefault("status", Status.DRAFT)
+        return self.make_post(clip=self.seo_clip, generated_caption="Texto viejo", generated_hashtags=["viejo"], **fields)
+
+    def test_asks_for_a_new_text_and_keeps_the_old_one_meanwhile(self):
+        post = self.ready_post()
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.post_action(post, "regenerate-seo")
+
+        self.assertEqual(response.status_code, 202, response.content)
+        body = response.json()
+        self.assertEqual((body["seo_status"], body["caption"], body["hashtags"]), ("pending", "Texto viejo", ["viejo"]))
+        self.seo_apply_async.assert_called_once_with(args=[str(post.pk)], kwargs={"regenerate": True})
+        # And the next read still says so (the E1 panel polls the draft).
+        self.assertEqual(self.client.get(detail(post), **self.ws).json()["seo_status"], "pending")
+
+    def test_a_second_request_while_it_is_on_its_way_queues_nothing(self):
+        post = self.ready_post()
+        with self.captureOnCommitCallbacks(execute=True):
+            self.post_action(post, "regenerate-seo")
+            again = self.post_action(post, "regenerate-seo")
+        self.assertEqual((again.status_code, again.json()["seo_status"]), (202, "pending"))
+        self.seo_apply_async.assert_called_once()
+
+    def test_a_request_that_never_got_an_answer_can_be_made_again(self):
+        post = self.ready_post(seo_requested_at=timezone.now() - service.seo_request_window() - timedelta(minutes=1))
+        self.assertEqual(self.client.get(detail(post), **self.ws).json()["seo_status"], "ready")
+        with self.captureOnCommitCallbacks(execute=True):
+            self.post_action(post, "regenerate-seo")
+        self.seo_apply_async.assert_called_once()
+
+    def test_a_broker_error_ends_the_request(self):
+        post = self.ready_post()
+        self.seo_apply_async.side_effect = ConnectionError("broker")
+        with self.captureOnCommitCallbacks(execute=True):
+            self.post_action(post, "regenerate-seo")
+        post.refresh_from_db()
+        self.assertIsNone(post.seo_requested_at)
+        self.assertEqual(self.client.get(detail(post), **self.ws).json()["seo_status"], "ready")
+
+    def test_only_projects_that_have_the_ai_text(self):
+        post = self.make_post(status=Status.DRAFT)  # the project did not ask for SEO
+        response = self.post_action(post, "regenerate-seo")
+        self.assertEqual((response.status_code, response.json()["code"]), (403, "seo"))
+        self.set_plan("Gratis")  # the project asked, the plan does not include it
+        response = self.post_action(self.ready_post(), "regenerate-seo")
+        self.assertEqual((response.status_code, response.json()["code"]), (403, "seo"))
+        self.seo_apply_async.assert_not_called()
+
+    def test_not_once_it_is_going_out(self):
+        for status, code in (
+            (Status.QUEUED, "post_in_flight"), (Status.PROCESSING, "post_in_flight"), (Status.PUBLISHED, "post_published"),
+        ):
+            with self.subTest(status=status):
+                response = self.post_action(self.ready_post(status=status), "regenerate-seo")
+                self.assertEqual((response.status_code, response.json()["code"]), (409, code))
+
+    def test_a_scheduled_or_failed_post_can_get_a_new_text(self):
+        for status in (Status.SCHEDULED, Status.FAILED):
+            with self.subTest(status=status):
+                self.assertEqual(self.post_action(self.ready_post(status=status), "regenerate-seo").status_code, 202)
+
+    def test_each_user_has_a_limit(self):
+        from rest_framework.throttling import SimpleRateThrottle
+
+        with patch.dict(SimpleRateThrottle.THROTTLE_RATES, {"post_seo_regenerate": "2/hour"}):
+            posts = [self.ready_post(platform=platform) for platform in Platform.values]
+            answers = [self.post_action(post, "regenerate-seo").status_code for post in posts]
+            self.assertEqual(answers, [202, 202, 429])
+            blocked = self.post_action(posts[2], "regenerate-seo")
+            self.assertTrue(blocked.json()["detail"].startswith("Demasiados intentos."))
+            # Another user counts apart.
+            self.client.force_authenticate(self.member(WorkspaceMember.Role.EDITOR))
+            self.assertEqual(self.post_action(posts[2], "regenerate-seo").status_code, 202)
+
+    def test_roles_and_workspaces(self):
+        post = self.ready_post()
+        self.client.force_authenticate(self.member(WorkspaceMember.Role.VIEWER))
+        self.assertEqual(self.post_action(post, "regenerate-seo").status_code, 403)
+        self.client.force_authenticate(self.alice)
+        bob = User.objects.create_user(username="bob", email="bob@test.com", password="pw")
+        _, theirs = self.make_clip(bob.owned_workspaces.get(), "Suyo", seo=True)
+        self.assertEqual(self.post_action(self.make_post(clip=theirs), "regenerate-seo").status_code, 404)
