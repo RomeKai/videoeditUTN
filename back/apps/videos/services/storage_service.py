@@ -88,8 +88,16 @@ def copy_stored_file(storage, source_name: str, dest_name: str) -> None:
     bucket: the copy is a server-side ``CopyObject``, so the bytes never come
     to this process. Raises ``StoredFileCopyError``; a partial local copy is
     removed.
+
+    The destination must be another name. A storage that hands back the same
+    name (one that overwrites, like ``S3Boto3Storage`` with
+    ``file_overwrite=True``) would leave both rows on one object, so it is an
+    error and nothing is copied.
     """
     from django.core.files.storage import FileSystemStorage
+
+    if dest_name == source_name:
+        raise StoredFileCopyError("SameName")
 
     if isinstance(storage, FileSystemStorage):
         source, dest = storage.path(source_name), storage.path(dest_name)

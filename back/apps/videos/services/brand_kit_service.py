@@ -34,9 +34,15 @@ def demote_other_defaults(workspace_id, keep_pk=None) -> None:
     BrandKit.objects.filter(workspace_id=workspace_id, is_default=True).exclude(pk=keep_pk).update(is_default=False)
 
 
-def _delete_copies(copies) -> None:
-    """Best effort: a copy that cannot be deleted is logged and left (no row points to it)."""
+def _delete_copies(copies, source_names=()) -> None:
+    """
+    Best effort: a copy that cannot be deleted is logged and left (no row points to it).
+    A name in ``source_names`` (a file of the original kit) is never deleted.
+    """
     for storage, name in copies:
+        if name in source_names:
+            logger.warning("brand_kit.copy_cleanup_skipped_source")
+            continue
         try:
             storage.delete(name)
         except Exception as exc:
@@ -52,9 +58,13 @@ def duplicate_brand_kit(kit: BrandKit, user=None) -> BrandKit:
 
     All or nothing: the files are copied first and the row is written last.
     If a copy or the insert fails, the files already copied are deleted and
-    ``BrandKitCopyError`` is raised; no row is left.
+    ``BrandKitCopyError`` is raised; no row is left. The files of ``kit`` are
+    never deleted: a copy that would get the name of its original is an error
+    (``copy_stored_file``), and the cleanup skips the names ``kit`` uses.
     """
     values, copies = {}, []
+    file_fields = [f for f in BrandKit._meta.concrete_fields if isinstance(f, models.FileField)]
+    source_names = {getattr(kit, f.name).name for f in file_fields if getattr(kit, f.name)}
     try:
         for field in BrandKit._meta.concrete_fields:
             if field.name in _NOT_COPIED:
@@ -79,7 +89,7 @@ def duplicate_brand_kit(kit: BrandKit, user=None) -> BrandKit:
                 **values,
             )
     except Exception as exc:
-        _delete_copies(copies)
+        _delete_copies(copies, source_names)
         logger.warning(
             "brand_kit.duplicate_failed brand_kit_id=%s copied=%d error=%s", kit.pk, len(copies), type(exc).__name__,
         )

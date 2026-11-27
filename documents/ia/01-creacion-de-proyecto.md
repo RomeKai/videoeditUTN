@@ -73,7 +73,7 @@ El esquema OpenAPI declara el header en cada operación de una vista con `Worksp
 
 **Duplicar.** `POST brand-kits/<id>/duplicate/` (`brandkit.manage`, sin cuerpo) llama a `brand_kit_service.duplicate_brand_kit`:
 
-1. Copia cada archivo (fuentes, logo, intro, outro) a un nombre nuevo de su storage con `storage_service.copy_stored_file`. Un `FileSystemStorage` copia el archivo bajo `MEDIA_ROOT`; cualquier otro storage es un bucket y se copia del lado del servidor con `CloudflareR2Manager.copy_object` (`CopyObject`). Hoy los archivos de un kit viven en `MEDIA_ROOT`, también con `USE_R2=True`.
+1. Copia cada archivo (fuentes, logo, intro, outro) a un nombre nuevo de su storage con `storage_service.copy_stored_file`. Un `FileSystemStorage` copia el archivo bajo `MEDIA_ROOT`; cualquier otro storage es un bucket y se copia del lado del servidor con `CloudflareR2Manager.copy_object` (`CopyObject`). Hoy los archivos de un kit viven en `MEDIA_ROOT`, también con `USE_R2=True`. Si el storage devuelve el mismo nombre del original (uno que sobrescribe), `copy_stored_file` no copia nada y lanza `StoredFileCopyError`: los dos kits no comparten archivo.
 2. Crea la fila al final: «Copia de {nombre}» (cortado a 100 caracteres, el nombre no es único), mismo workspace, `user` de quien la pide, `is_default=False`. Los demás campos se copian todos, también los que se agreguen al modelo.
 3. Responde 201 con el kit nuevo.
 
@@ -81,7 +81,7 @@ El esquema OpenAPI declara el header en cada operación de una vista con `Worksp
 |------|-----------|
 | Kit de otro workspace | 404 |
 | Lector | 403 `{detail}` |
-| Falla la copia de un archivo (o el archivo original no está) | 502 `{"error", "code": "brand_kit_copy_failed"}`. Se borran las copias ya hechas y no se crea la fila. No es 503: la web lee cualquier 503 como mantenimiento |
+| Falla la copia de un archivo (o el archivo original no está) | 502 `{"error", "code": "brand_kit_copy_failed"}`. Se borran las copias ya hechas y no se crea la fila. La limpieza nunca borra un nombre que usa el kit original. No es 503: la web lee cualquier 503 como mantenimiento |
 
 Los dos kits no comparten archivos: borrar o reemplazar los de uno no toca los del otro. Borrar un kit no borra sus archivos del storage (igual que antes).
 

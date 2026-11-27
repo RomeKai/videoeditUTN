@@ -2,6 +2,7 @@
 Brand kits: duplicating one with its files, and one default per workspace.
 """
 
+import os
 import shutil
 import tempfile
 import threading
@@ -9,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
-from django.core.files.storage import Storage
+from django.core.files.storage import FileSystemStorage, Storage
 from django.core.management import call_command
 from django.db import IntegrityError, connection, connections, transaction
 from django.db.migrations.executor import MigrationExecutor
@@ -63,8 +64,6 @@ def full_kit(workspace, user, **fields):
 
 
 def stored_files(root):
-    import os
-
     return sorted(os.path.join(folder, name) for folder, _, names in os.walk(root) for name in names)
 
 
@@ -207,6 +206,65 @@ class DuplicateBrandKitTests(MediaRootHarness):
         self.assertEqual(stored_files(self.media), before)
 
 
+class SameNameStorage(FileSystemStorage):
+    """A storage that overwrites: the "available" name is the one asked for."""
+
+    def get_available_name(self, name, max_length=None):
+        return name
+
+
+class SameNameStorageTests(MediaRootHarness):
+    """A copy must never share, or cost, the files of the original kit."""
+
+    def kit_on_same_name_storage(self):
+        kit = full_kit(self.home, self.alice)
+        storage = SameNameStorage()
+        for name in FILE_FIELDS:
+            patcher = patch.object(BrandKit._meta.get_field(name), "storage", storage)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return BrandKit.objects.get(pk=kit.pk)
+
+    def assert_originals_intact(self, kit):
+        for name in FILE_FIELDS:
+            with open(os.path.join(self.media, getattr(kit, name).name), "rb") as stored:
+                self.assertEqual(stored.read(), name.encode(), name)
+
+    def test_a_copy_with_the_name_of_its_original_is_refused(self):
+        kit = self.kit_on_same_name_storage()
+        before = stored_files(self.media)
+
+        response = self.client.post(duplicate(kit), **header(self.home))
+
+        self.assertEqual(response.status_code, 502, response.content[:300])
+        self.assertEqual(response.data["code"], "brand_kit_copy_failed")
+        self.assertEqual(list(BrandKit.objects.values_list("pk", flat=True)), [kit.pk])
+        self.assertEqual(stored_files(self.media), before)
+        self.assert_originals_intact(kit)
+
+    def test_the_cleanup_never_deletes_a_file_of_the_original(self):
+        # The copy step is taken out, so every "copy" keeps its original's name.
+        kit = self.kit_on_same_name_storage()
+        before = stored_files(self.media)
+
+        with patch(COPY_FILE), patch.object(BrandKit.objects, "create", side_effect=IntegrityError("boom")):
+            with self.assertRaises(IntegrityError):
+                brand_kit_service.duplicate_brand_kit(kit, user=self.alice)
+
+        self.assertEqual(stored_files(self.media), before)
+        self.assert_originals_intact(kit)
+
+    def test_delete_copies_skips_the_source_names(self):
+        storage = MagicMock()
+
+        brand_kit_service._delete_copies(
+            [(storage, "assets/logos/a.png"), (storage, "assets/logos/a_copy.png")],
+            {"assets/logos/a.png"},
+        )
+
+        storage.delete.assert_called_once_with("assets/logos/a_copy.png")
+
+
 class BucketStorage(Storage):
     """Stands for a bucket storage (django-storages): no local paths."""
 
@@ -226,6 +284,13 @@ class CopyStoredFileTests(APITestCase):
         )
         client.download_file.assert_not_called()
         client.upload_file.assert_not_called()
+
+    def test_the_same_name_is_refused_before_copying(self):
+        client = MagicMock()
+        with override_settings(USE_R2=True), patch.object(storage_service, "_get_r2_client", return_value=client):
+            with self.assertRaises(storage_service.StoredFileCopyError):
+                storage_service.copy_stored_file(BucketStorage(), "a.png", "a.png")
+        client.copy_object.assert_not_called()
 
     def test_a_bucket_error_is_a_copy_error(self):
         client = MagicMock()
