@@ -101,12 +101,19 @@ function BuyTokens() {
     group.current?.querySelectorAll<HTMLElement>('[role="radio"]')[next]?.focus();
   };
 
+  // One key per purchase the person asks for: pressing Pagar again for the same amount after a lost answer sends
+  // the same key, and the server answers the purchase it already started instead of opening a second checkout.
+  const purchaseKey = useRef<{ signature: string; key: string } | null>(null);
   const pay = () => {
     if (tokens === null) return;
+    const body = { ...(customTyped ? { custom_tokens: tokens } : { package_id: pack?.id }), return_url: `${window.location.origin}/uso/comprar/resultado` };
+    const signature = JSON.stringify(body);
+    if (purchaseKey.current?.signature !== signature) purchaseKey.current = { signature, key: crypto.randomUUID() };
     purchase.mutate(
-      { ...(customTyped ? { custom_tokens: tokens } : { package_id: pack?.id }), return_url: `${window.location.origin}/uso/comprar/resultado` },
+      { ...body, idempotencyKey: purchaseKey.current.key },
       {
         onSuccess: (result) => {
+          purchaseKey.current = null;
           setLeaving(true);
           leaveTo(result.checkout_url ?? `/uso/comprar/resultado?compra=${result.id}`);
         },

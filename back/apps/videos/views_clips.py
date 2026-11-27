@@ -241,7 +241,8 @@ def _stuck(project, reserved_at):
     """
     No worker holds the project's lock and nothing happened for
     RENDER_STUCK_AFTER_SECONDS (longer than any task can live): no creation,
-    reservation, recorded error, capacity wait, render start or re-queue.
+    reservation, recorded error, capacity wait, ingestion or render start, or
+    re-queue of recover_stuck_renders.
     """
     from datetime import timedelta
 
@@ -249,6 +250,7 @@ def _stuck(project, reserved_at):
     from django.utils import timezone
 
     from .services.ai.project_lock import project_lock_held
+    from .tasks.ingestion import INGESTION_RECOVERY_REQUEUED_AT_KEY, INGESTION_STARTED_AT_KEY
     from .tasks.render_recovery import _when
 
     try:
@@ -258,7 +260,10 @@ def _stuck(project, reserved_at):
         return False  # Redis down: it may be running
     metadata = project.metadata or {}
     moments = [project.created_at, project.pipeline_error_at, *reserved_at]
-    for key in ('render_clip_started_at', 'render_started_at', 'render_recovery_requeued_at'):
+    for key in (
+        'render_clip_started_at', 'render_started_at', 'render_recovery_requeued_at',
+        INGESTION_STARTED_AT_KEY, INGESTION_RECOVERY_REQUEUED_AT_KEY,
+    ):
         moments.append(_when(metadata.get(key)))
     moments.append(_when((metadata.get('capacity_wait') or {}).get('since')))
     last = max(moment for moment in moments if moment)
@@ -343,12 +348,16 @@ def _price(project, seconds):
         ), 'duration', limit=limit)
 
 
-def _reserve(project, amount, user, description):
-    """The reservation, or ``_Refused`` with the 402 (the caller's transaction rolls back)."""
+def _reserve(project, amount, user, description, category=Transaction.Category.RENDER):
+    """
+    The reservation, linked to the project with its ``category``, or
+    ``_Refused`` with the 402 (the caller's transaction rolls back).
+    """
     wallet, _ = Wallet.objects.get_or_create(workspace=project.workspace)
     try:
         return wallet_service.reserve_funds(
             wallet_id=wallet.id, amount=amount, user=user, description=description[:255],
+            project=project, category=category,
         )
     except wallet_service.InsufficientFundsError:
         raise _Refused(_error(402, INSUFFICIENT_FUNDS, required=amount))
@@ -790,16 +799,24 @@ class ProjectRedispatchView(_WorkspaceScoped):
     or its whole video was rendered already (``rerender/``). If the broker
     refuses the message, what was reserved goes back with REDISPATCH_NOT_QUEUED
     (503), which the pipeline never resumes until another re-dispatch pays.
+    Each request stores a new chain (tasks/ingestion.py, INGESTION_CHAIN_KEY)
+    and sends it with its message: only that message reopens the project, so
+    the first of a double click, or an older copy that was only delayed, runs
+    nothing.
     """
 
     workspace_actions = {'POST': 'members.manage'}
 
     def post(self, request, pk):
         from .tasks import process_initial_ingestion
-        from .tasks.ingestion import REDISPATCH_NOT_QUEUED
+        from .tasks.ingestion import INGESTION_CHAIN_KEY, REDISPATCH_NOT_QUEUED, new_ingestion_chain
 
         project = self.get_project(request, pk)
         reservation = None
+        # Only this request's message reopens the project: a copy of an older
+        # one that was only delayed runs nothing (tasks/ingestion.py,
+        # INGESTION_CHAIN_KEY), and neither does the first of a double click.
+        chain = new_ingestion_chain()
         try:
             with transaction.atomic():
                 project = VideoProject.objects.select_for_update().select_related('workspace').get(pk=project.pk)
@@ -807,25 +824,34 @@ class ProjectRedispatchView(_WorkspaceScoped):
                     raise _Refused(_error(409, "El proyecto ya está en curso o terminó.", 'not_failed'))
                 amount = self._amount_to_reserve(project)
                 metadata = dict(project.metadata or {})
+                previous_chain = metadata.get(INGESTION_CHAIN_KEY)
                 updates = {}
                 if project.pipeline_error_code == REDISPATCH_NOT_QUEUED:
                     # A re-dispatch refunded before: this one queues it, so
                     # the pipeline must not skip it any more.
                     updates['pipeline_error_code'] = metadata.pop(REDISPATCH_PREVIOUS_CODE_KEY, '') or ''
                 if amount is not None:
-                    reservation = _reserve(project, amount, request.user, f"Procesamiento: {project.title}")
+                    reservation = _reserve(
+                        project, amount, request.user, f"Procesamiento: {project.title}", Transaction.Category.PROJECT,
+                    )
                     metadata[REPLACED_RESERVATIONS_KEY] = _replaced(metadata, 'reservation_id')
                     metadata['reservation_id'] = str(reservation.id)
-                if updates or amount is not None:
-                    VideoProject.objects.filter(pk=project.pk).update(metadata=metadata, **updates)
+                metadata[INGESTION_CHAIN_KEY] = chain
+                VideoProject.objects.filter(pk=project.pk).update(metadata=metadata, **updates)
         except _Refused as refused:
             return refused.response
 
         try:
-            process_initial_ingestion.delay(str(project.pk))
+            process_initial_ingestion.delay(str(project.pk), chain=chain)
         except Exception as exc:
             logger.error("pipeline.redispatch_not_queued project_id=%s error=%s", project.pk, type(exc).__name__)
-            if reservation is None or self._give_back(project.pk, reservation):
+            if reservation is None:
+                # Nothing was reserved: an earlier re-dispatch (a double
+                # click) reserved it and its message may be queued. Its chain
+                # goes back, or that message would run nothing either.
+                self._restore_chain(project.pk, chain, previous_chain)
+                return _error(503, "No pudimos volver a procesar el proyecto. Probá de nuevo en unos minutos.")
+            if self._give_back(project.pk, reservation):
                 return _error(503, "No pudimos volver a procesar el proyecto. Probá de nuevo en unos minutos.")
             # The message got through after all: the pipeline already took
             # the project, and the reservation pays for that run.
@@ -890,6 +916,37 @@ class ProjectRedispatchView(_WorkspaceScoped):
         if creation.status != Transaction.Status.FAILED:
             return None  # still reserved (it pays the resume) or already charged
         return creation.amount
+
+    @staticmethod
+    def _restore_chain(project_id, chain, previous):
+        """
+        Puts back the chain this request replaced, only while the project is
+        still failed and its own chain is still the stored one (compare-and-set
+        under the row lock, the rule of ``_give_back``): if its message got
+        through after all and a worker reopened the project, that run keeps
+        its chain. Never raises: at worst nothing runs until the next
+        re-dispatch.
+        """
+        from .tasks.ingestion import INGESTION_CHAIN_KEY
+
+        try:
+            with transaction.atomic():
+                project = VideoProject.objects.select_for_update().get(pk=project_id)
+                if project.pipeline_stage != VideoProject.PipelineStage.FAILED:
+                    logger.warning("pipeline.redispatch_chain_kept project_id=%s reason=resumed", project_id)
+                    return
+                metadata = dict(project.metadata or {})
+                if metadata.get(INGESTION_CHAIN_KEY) != chain:
+                    return
+                if previous:
+                    metadata[INGESTION_CHAIN_KEY] = previous
+                else:
+                    metadata.pop(INGESTION_CHAIN_KEY, None)
+                VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
+        except Exception as exc:
+            logger.error(
+                "pipeline.redispatch_chain_not_restored project_id=%s error=%s", project_id, type(exc).__name__,
+            )
 
     @staticmethod
     def _give_back(project_id, reservation):

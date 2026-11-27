@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**80 endpoints:** 33 existen hoy en el backend, 5 existen en parte y 42 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**81 endpoints:** 54 existen hoy en el backend, 5 existen en parte y 22 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -74,31 +74,32 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | POST | `/api/v1/me/password/` | Cambia la contraseña y cierra las demás sesiones. Responde un par JWT nuevo: el cliente lo guarda y sigue con sesión. | ✅ existe | I1 |
 | GET | `/api/v1/me/notification-preferences/` | Qué emails recibe el usuario, por tipo. | ✅ existe | I2 |
 | PATCH | `/api/v1/me/notification-preferences/` | Prende o apaga los emails por tipo. | ✅ existe | I2 |
-| GET | `/api/v1/workspaces/` | Workspaces del usuario. | ❌ falta (propuesto) · hueco 2 | J3 |
-| POST | `/api/v1/workspaces/` | Crea un workspace con el usuario como dueño (plan Gratis y billetera vacía). | ❌ falta (propuesto) · hueco 2 | J3, B1 |
-| GET | `/api/v1/workspaces/:id/` | Datos del workspace. | ❌ falta (propuesto) · hueco 2 | H1 |
-| PATCH | `/api/v1/workspaces/:id/` | Renombra el workspace (Dueño y Admin). | ❌ falta (propuesto) · hueco 2, 3 | H1, B1 |
-| DELETE | `/api/v1/workspaces/:id/` | Borra el workspace. Solo el Dueño, escribiendo el nombre para confirmar. | ❌ falta (propuesto) · hueco 2, 3 | H1 |
-| POST | `/api/v1/workspaces/:id/transfer/` | Transfiere el workspace a otro miembro activo. El dueño anterior queda como Admin. | ❌ falta (propuesto) · hueco 2, 3 | H1 |
-| GET | `/api/v1/workspaces/:id/members/` | Miembros e invitaciones pendientes, con los lugares usados del plan. | ❌ falta (propuesto) · hueco 13 | H2, D7, H1 |
-| PATCH | `/api/v1/workspaces/:id/members/:memberId/` | Cambia el rol de un miembro. | ❌ falta (propuesto) · hueco 3, 13 | H2 |
-| DELETE | `/api/v1/workspaces/:id/members/:memberId/` | Quita a un miembro o cancela una invitación pendiente. | ❌ falta (propuesto) · hueco 3, 13 | H2 |
+| GET | `/api/v1/workspaces/` | Workspaces del usuario. | ✅ existe | J3 |
+| POST | `/api/v1/workspaces/` | Crea un workspace con el usuario como dueño (plan Gratis y billetera vacía). | ✅ existe | J3, B1 |
+| GET | `/api/v1/workspaces/:id/` | Datos del workspace. | ✅ existe | H1 |
+| PATCH | `/api/v1/workspaces/:id/` | Renombra el workspace (Dueño y Admin). | ✅ existe | H1, B1 |
+| DELETE | `/api/v1/workspaces/:id/` | Borra el workspace. Solo el Dueño, escribiendo el nombre para confirmar. | ✅ existe | H1 |
+| POST | `/api/v1/workspaces/:id/transfer/` | Transfiere el workspace a otro miembro activo. El dueño anterior queda como Admin. | ✅ existe | H1 |
+| GET | `/api/v1/workspaces/:id/members/` | Miembros e invitaciones pendientes, con los lugares usados del plan. | ✅ existe | H2, D7, H1 |
+| PATCH | `/api/v1/workspaces/:id/members/:memberId/` | Cambia el rol de un miembro. | ✅ existe | H2 |
+| DELETE | `/api/v1/workspaces/:id/members/:memberId/` | Quita a un miembro o cancela una invitación pendiente. | ✅ existe | H2 |
 | POST | `/api/v1/workspaces/:id/invitations/` | Invita por email con un rol. Crea WorkspaceMember en `pending` y manda el email. | ❌ falta (propuesto) · hueco 13 | D7, H2 |
 | POST | `/api/v1/workspaces/:id/invitations/:memberId/resend/` | Reenvía el email de una invitación pendiente. | ❌ falta (propuesto) · hueco 13 | H2 |
 | GET | `/api/v1/invitations/:token/` | Datos públicos de una invitación: quién invita, a qué workspace y con qué rol. | ❌ falta (propuesto) · hueco 13 | A5 |
 | POST | `/api/v1/invitations/:token/accept/` | Acepta la invitación. Sin cuenta: la crea con `name` y `password`. Con cuenta: basta con la sesión iniciada. | ❌ falta (propuesto) · hueco 13 | A5 |
 | GET | `/api/v1/plans/` | Planes activos y públicos, en orden, para Precios y Uso › Planes. | ✅ existe | A6, G3, D3 (diálogo), C1 |
-| GET | `/api/v1/pricing/` | Valores de la fórmula de precios y los topes de subida, para estimar en el navegador. | ❌ falta (propuesto) · hueco 6 | C1, A6, G3, G4, D2, D1 (diálogo) |
-| POST | `/api/v1/pricing/estimate/` | Estimado del backend para una configuración: costo, descuento, saldo después y tiempo estimado. | ❌ falta (propuesto) · hueco 6, 18 | C1, D2, D4, D5 |
-| GET | `/api/v1/subscription/` | Plan actual del workspace, su renovación y el cambio pendiente si lo hay. | ❌ falta (propuesto) · hueco 12 | Barra, G1, G3, C1, E1, H2 |
-| POST | `/api/v1/subscription/change/` | Cambia de plan. Subir se aplica al momento, o al volver del checkout si hay que pagar; bajar, al fin del período. Mandar el plan actual cancela un cambio programado. | ❌ falta (propuesto) · hueco 12 | G3 |
-| GET | `/api/v1/wallet/` | Saldo disponible y reservado del workspace, con el detalle de lo reservado por proyecto. | ❌ falta (propuesto) · hueco 4, 19 | Barra, G1, C1, D2, G4, D1 (diálogo), D2 (diálogo) |
-| GET | `/api/v1/wallet/usage/` | Consumo por día de un mes (solo lo cobrado), separado en proyectos, renders y SEO. El mes y los días son los de la zona horaria del workspace (America/Argentina/Buenos_Aires). | ❌ falta (propuesto) · hueco 4 | G1 |
-| GET | `/api/v1/transactions/` | Movimientos de la billetera, paginados, con filtro por tipo, mes y proyecto. `month=YYYY-MM` es el mes en la zona horaria del workspace (America/Argentina/Buenos_Aires). | ❌ falta (propuesto) · hueco 4 | G2, D1f |
-| GET | `/api/v1/transactions/export/` | Los mismos movimientos en CSV. El monto lleva el signo de lo que le hizo al saldo: negativo lo reservado y lo cobrado, positivo lo comprado y lo devuelto. | ❌ falta (propuesto) · hueco 4 | G2 |
-| GET | `/api/v1/token-packages/` | Los 3 paquetes fijos, el precio de la cantidad libre y la conversión de referencia. | ❌ falta (propuesto) · hueco 12 | G4, D2 (diálogo) |
-| POST | `/api/v1/token-purchases/` | Inicia una compra de tokens y devuelve la URL del checkout del proveedor de pagos. | ❌ falta (propuesto) · hueco 12 | G4, D2 (diálogo) |
-| GET | `/api/v1/token-purchases/:id/` | Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`tokens` > 0) o el pago de una subida de plan (`plan_id`, `tokens` 0). | ❌ falta (propuesto) · hueco 12 | G5 |
+| GET | `/api/v1/pricing/` | Valores de la fórmula de precios y los topes de subida, para estimar en el navegador. | ✅ existe | C1, A6, G3, G4, D2, D1 (diálogo) |
+| POST | `/api/v1/pricing/estimate/` | Estimado del backend para una configuración: costo, descuento, saldo después y tiempo estimado. | ✅ existe | C1, D2, D4, D5 |
+| GET | `/api/v1/subscription/` | Plan actual del workspace, su renovación y el cambio pendiente si lo hay. | ✅ existe | Barra, G1, G3, C1, E1, H2 |
+| POST | `/api/v1/subscription/change/` | Cambia de plan. Todo otro plan pago se compra: se aplica al volver del checkout, cuando se confirma el pago. Un plan gratis, al fin del período. Mandar el plan actual cancela lo programado. | ✅ existe | G3 |
+| GET | `/api/v1/wallet/` | Saldo disponible y reservado del workspace, con el detalle de lo reservado por proyecto. | ✅ existe | Barra, G1, C1, D2, G4, D1 (diálogo), D2 (diálogo) |
+| GET | `/api/v1/wallet/usage/` | Consumo por día de un mes (solo lo cobrado), separado en proyectos, renders y SEO. El mes y los días son los de la zona horaria del workspace (America/Argentina/Buenos_Aires). | ✅ existe | G1 |
+| GET | `/api/v1/transactions/` | Movimientos de la billetera, paginados, con filtro por tipo, mes y proyecto. `month=YYYY-MM` es el mes en la zona horaria del workspace (America/Argentina/Buenos_Aires). | ✅ existe | G2, D1f |
+| GET | `/api/v1/transactions/export/` | Los mismos movimientos en CSV, como libro de la billetera: una fila por cada cambio del saldo, con su signo. Sus montos suman lo que hizo el saldo en el período exportado. | ✅ existe | G2 |
+| GET | `/api/v1/token-packages/` | Los 3 paquetes fijos, el precio de la cantidad libre y la conversión de referencia. | ✅ existe | G4, D2 (diálogo) |
+| POST | `/api/v1/token-purchases/` | Inicia una compra de tokens y devuelve la URL del checkout del proveedor de pagos. | ✅ existe | G4, D2 (diálogo) |
+| GET | `/api/v1/token-purchases/:id/` | Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`tokens` > 0) o el pago de una subida de plan (`plan_id`, `tokens` 0). | ✅ existe | G5 |
+| POST | `/api/v1/token-purchases/:id/simulate/` | Solo desarrollo y demo: el checkout de prueba aprueba o rechaza un pago del proveedor simulado. | ✅ existe | Checkout de prueba (/dev/checkout) |
 | POST | `/api/v1/projects/probe-link/` | Reconoce un link antes de crear el proyecto: de dónde es, su título y su duración. | ✅ existe | C1 |
 | GET | `/api/v1/projects/` | Proyectos del workspace, del más nuevo al más viejo. | ⚠️ existe en parte · hueco 14 | B2, J1, B1 |
 | POST | `/api/v1/projects/` | Crea un proyecto desde un archivo (multipart) o un link, reserva los tokens y arranca la ingesta. | ✅ existe | C1 |
@@ -347,8 +348,8 @@ Workspaces del usuario.
 | | |
 |---|---|
 | Id | `workspaces.list` |
-| Backend | ❌ falta (propuesto) · hueco 2 |
-| Nota | El selector (J3) usa la lista de `/me`; este listado es el recurso REST completo. |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceListView.get (WorkspaceSerializer)` |
+| Nota | Los workspaces propios y los de una membresía activa, del más antiguo al más nuevo, con `role`. Una invitación pendiente no aparece. El selector (J3) usa la lista de `/me`; este listado es el recurso REST completo. |
 | Sesión | JWT |
 | Respuesta 200 | Workspace[] |
 | Pantallas | J3 |
@@ -360,11 +361,12 @@ Crea un workspace con el usuario como dueño (plan Gratis y billetera vacía).
 | | |
 |---|---|
 | Id | `workspaces.create` |
-| Backend | ❌ falta (propuesto) · hueco 2 |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceListView.post (apps/users/workspaces.py · create_owned_workspace)` |
+| Nota | El mismo camino que el registro: plan `DEFAULT_PLAN_NAME` (Gratis; `subscription_plan: null` si ese plan no existe), billetera en 0 y el usuario como Admin activo además de dueño. El nombre se guarda sin espacios a los costados. Tope: 10 workspaces propios por usuario (`MAX_OWNED_WORKSPACES`) y un límite de intentos (`THROTTLE_WORKSPACE_CREATE`). |
 | Sesión | JWT |
 | Pedido | { name: string } |
 | Respuesta 201 | Workspace |
-| Errores | **400** Nombre vacío o demasiado largo. |
+| Errores | **400** Nombre vacío (o solo espacios) o de más de 100 caracteres: `{name: [mensaje]}`.<br>**409** El usuario ya es dueño de 10 workspaces (`code: "workspace_limit"`). Los workspaces ajenos donde es miembro no cuentan.<br>**429** Demasiadas creaciones seguidas (10 por hora por usuario; cuentan también los intentos rechazados). `detail` dice cuánto esperar. |
 | Pantallas | J3, B1 |
 
 #### `GET /api/v1/workspaces/:id/`
@@ -374,10 +376,11 @@ Datos del workspace.
 | | |
 |---|---|
 | Id | `workspaces.detail` |
-| Backend | ❌ falta (propuesto) · hueco 2 |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceDetailView.get (WorkspaceDetailSerializer)` |
+| Nota | Lo lee cualquier rol. Trae `role` y `admins`. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Respuesta 200 | Workspace |
-| Errores | **404** No existe o el usuario no es miembro. |
+| Errores | **404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos. |
 | Pantallas | H1 |
 
 #### `PATCH /api/v1/workspaces/:id/`
@@ -387,11 +390,12 @@ Renombra el workspace (Dueño y Admin).
 | | |
 |---|---|
 | Id | `workspaces.update` |
-| Backend | ❌ falta (propuesto) · hueco 2, 3 |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceDetailView.patch` |
+| Nota | Solo cambia `name`. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Pedido | { name: string } |
 | Respuesta 200 | Workspace |
-| Errores | **400** Nombre vacío o demasiado largo.<br>**403** El rol no puede renombrar (Editor, Lector). |
+| Errores | **400** Nombre vacío (o solo espacios) o de más de 100 caracteres: `{name: [mensaje]}`.<br>**403** El rol no puede renombrar (Editor, Lector). Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos. |
 | Pantallas | H1, B1 |
 
 #### `DELETE /api/v1/workspaces/:id/`
@@ -401,11 +405,12 @@ Borra el workspace. Solo el Dueño, escribiendo el nombre para confirmar.
 | | |
 |---|---|
 | Id | `workspaces.delete` |
-| Backend | ❌ falta (propuesto) · hueco 2, 3 |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceDetailView.delete` |
+| Nota | Borra para siempre el workspace con sus proyectos, clips y publicaciones (las programadas que no salieron no se publican), brand kits, miembros e invitaciones, sus pagos ya liquidados, y la billetera, ya en cero, con sus movimientos. Las cuentas de los miembros no se tocan. No limpia los archivos en R2 ni el perfil de Ayrshare. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Pedido | { confirm_name: string } |
 | Respuesta 204 | NoContent |
-| Errores | **400** `confirm_name` no coincide con el nombre.<br>**403** No es el Dueño. |
+| Errores | **400** `confirm_name` falta o no es exactamente el nombre: `{confirm_name: [mensaje]}`.<br>**403** No es el Dueño. Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos.<br>**409** No se borra nada. Cuerpo `{error, code}`, y el `error` se muestra tal cual. Se revisan en este orden. `last_workspace`: es el único workspace del usuario (va primero porque esperar no lo resuelve). `project_processing`: hay un proyecto subido, en ingesta o renderizando (uno trabado se borra primero). `posts_in_flight`: hay una publicación saliendo (`PROCESSING` hace menos de 10 minutos) o en cola (`QUEUED` hasta 15 minutos después de su `publish_at`); una más vieja está trabada y no frena el borrado. `reservation_open`: hay tokens reservados sin liquidar. `payment_pending`: hay una compra de tokens o un pago de plan pendiente (con el checkout abierto o abriéndose); se resuelve cuando el proveedor lo liquida o cuando vence su checkout (`PAYMENTS_CHECKOUT_TTL_SECONDS`, 24 h por defecto). La web no tiene cómo cancelarlo, así que el `error` dice pagarlo o esperar, con el plazo del setting. `balance_left`: queda saldo disponible (trae `available_balance`); los tokens nunca se borran. |
 | Pantallas | H1 |
 
 #### `POST /api/v1/workspaces/:id/transfer/`
@@ -415,11 +420,12 @@ Transfiere el workspace a otro miembro activo. El dueño anterior queda como Adm
 | | |
 |---|---|
 | Id | `workspaces.transfer` |
-| Backend | ❌ falta (propuesto) · hueco 2, 3 |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceTransferView.post` |
+| Nota | La respuesta trae `owner` nuevo y `role: "admin"` (el rol de quien transfirió). El plan, la billetera y los lugares no cambian. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Pedido | { new_owner_id: Id } |
 | Respuesta 200 | Workspace |
-| Errores | **400** El usuario no es miembro activo.<br>**403** No es el Dueño. |
+| Errores | **400** `new_owner_id` no es un miembro activo (una invitación pendiente no alcanza) o es el propio Dueño: `{new_owner_id: [mensaje]}`. Con `detail`: el Dueño no tenía fila de miembro y no queda lugar en el plan para dejarlo como Admin.<br>**403** No es el Dueño. Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos. |
 | Pantallas | H1 |
 
 #### `GET /api/v1/workspaces/:id/members/`
@@ -429,11 +435,11 @@ Miembros e invitaciones pendientes, con los lugares usados del plan.
 | | |
 |---|---|
 | Id | `workspaces.members` |
-| Backend | ❌ falta (propuesto) · hueco 13 |
-| Nota | Modelo: WorkspaceMember (apps/users/models.py). |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceMembersView.get (MembersSerializer)` |
+| Nota | Una fila por WorkspaceMember, de la más antigua a la más nueva; la del Dueño sale con `role: "owner"`. `seats_used` cuenta todas las filas, también las pendientes y la del Dueño; `max_members` es 1 si el workspace no tiene plan. Hoy `user` siempre viene (no hay invitaciones a emails sin cuenta) e `invited_by` es siempre null. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Respuesta 200 | MembersResponse |
-| Errores | **403** Solo Dueño y Admin ven la sección (para Editor y Lector no aparece). |
+| Errores | **403** Solo Dueño y Admin ven la sección (para Editor y Lector no aparece). Solo `detail`, sin `code`.<br>**404** El workspace no existe o el usuario no es dueño ni miembro activo (una invitación pendiente no alcanza). Mismo `detail` para todos los casos. |
 | Pantallas | H2, D7, H1 |
 
 #### `PATCH /api/v1/workspaces/:id/members/:memberId/`
@@ -443,11 +449,12 @@ Cambia el rol de un miembro.
 | | |
 |---|---|
 | Id | `workspaces.updateMember` |
-| Backend | ❌ falta (propuesto) · hueco 3, 13 |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceMemberView.patch` |
+| Nota | También cambia el rol de una invitación pendiente. Un Admin puede cambiar el rol de otro Admin y el suyo. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Pedido | { role: MemberRole } |
 | Respuesta 200 | Member |
-| Errores | **400** No se puede cambiar el rol del Dueño.<br>**403** El rol no administra miembros. |
+| Errores | **400** No se puede cambiar el rol del Dueño (solo deja de serlo al transferir), o `role` no es admin, editor ni viewer: `{role: [mensaje]}`.<br>**403** El rol no administra miembros. Solo `detail`, sin `code`.<br>**404** El workspace no existe para este usuario, o `memberId` no es una fila de ese workspace. |
 | Pantallas | H2 |
 
 #### `DELETE /api/v1/workspaces/:id/members/:memberId/`
@@ -457,10 +464,11 @@ Quita a un miembro o cancela una invitación pendiente.
 | | |
 |---|---|
 | Id | `workspaces.removeMember` |
-| Backend | ❌ falta (propuesto) · hueco 3, 13 |
+| Backend | ✅ existe · `back/apps/users/views_workspaces.py · WorkspaceMemberView.delete` |
+| Nota | Borra la fila y libera su lugar del plan; quien fue quitado pasa a recibir 404 en ese workspace. Un Admin puede quitarse a sí mismo. El rol se mira en el workspace de la ruta, nunca en el de `X-Workspace-Id`. |
 | Sesión | JWT |
 | Respuesta 204 | NoContent |
-| Errores | **400** No se puede quitar al Dueño.<br>**403** El rol no administra miembros. |
+| Errores | **400** No se puede quitar al Dueño, lo pida un Admin o el propio Dueño (primero transfiere el workspace): `{detail}`.<br>**403** El rol no administra miembros: un Editor o un Lector tampoco puede quitarse a sí mismo. Solo `detail`, sin `code`.<br>**404** El workspace no existe para este usuario, o `memberId` no es una fila de ese workspace. |
 | Pantallas | H2 |
 
 #### `POST /api/v1/workspaces/:id/invitations/`
@@ -542,8 +550,8 @@ Valores de la fórmula de precios y los topes de subida, para estimar en el nave
 | | |
 |---|---|
 | Id | `billing.pricing` |
-| Backend | ❌ falta (propuesto) · hueco 6 |
-| Nota | Valores de PricingEngine (apps/payments/services/pricing_engine.py) y de settings. |
+| Backend | ✅ existe · `back/apps/payments/views.py · PricingView + services/estimate.py · pricing_values` |
+| Nota | Público, sin token. Los valores de PricingEngine (apps/payments/services/pricing_engine.py), los topes de subida de apps/videos/serializers.py y los settings `AI_SINGLE_EDIT_MAX_DURATION_SECONDS`, `AI_UPLOAD_MAX_DURATION_SECONDS`, `AI_PROMPT_MAX_CHARS` y `TOKEN_PRICE_USD`. Los decimales llegan como texto (`"0.5"`). |
 | Sesión | Pública |
 | Respuesta 200 | Pricing |
 | Pantallas | C1, A6, G3, G4, D2, D1 (diálogo) |
@@ -555,12 +563,12 @@ Estimado del backend para una configuración: costo, descuento, saldo después y
 | | |
 |---|---|
 | Id | `billing.estimate` |
-| Backend | ❌ falta (propuesto) · hueco 6, 18 |
-| Nota | Envuelve PricingEngine.calculate_render_cost con el plan del workspace. |
+| Backend | ✅ existe · `back/apps/payments/views.py · EstimateView + services/estimate.py · estimate` |
+| Nota | El precio sale de la misma función que la creación (`price_new_project`, apps/videos/services/render_pricing.py): un archivo por sus segundos enteros con PricingEngine.calculate_render_cost y el plan del workspace; un link, precio fijo más el SEO con descuento. `discount_amount` es base + adicionales − total (incluye el redondeo). No escribe nada: lo pide cualquier rol (`wallet.view`). `eta_seconds` sale de los tiempos por etapa de los últimos 50 proyectos de 30 días que llegaron a la revisión (`metadata.stage_durations`), guardado 5 minutos en el cache: null para un link o mientras no hay ninguno. 404 si el usuario no tiene workspace. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | EstimateRequest |
 | Respuesta 200 | Estimate |
-| Errores | **403** El plan no permite la duración, la resolución o el SEO (`code`: `duration` \| `resolution` \| `seo`). La UI abre D3. |
+| Errores | **400** Los mismos de la creación: un link en otra resolución que 720p (`{ error }`) y un archivo más largo que el tope de cualquier subida (`source_file`, el texto de `too_long`). Además, `duration_seconds` falta con `source: "file"`.<br>**403** El plan no permite la duración, la resolución o el SEO (`code`: `duration` \| `resolution` \| `seo`, con `limit` en los dos primeros). La UI abre D3. |
 | Pantallas | C1, D2, D4, D5 |
 
 #### `GET /api/v1/subscription/`
@@ -570,25 +578,26 @@ Plan actual del workspace, su renovación y el cambio pendiente si lo hay.
 | | |
 |---|---|
 | Id | `billing.subscription` |
-| Backend | ❌ falta (propuesto) · hueco 12 |
-| Nota | Hoy solo existe Workspace.subscription_plan. |
+| Backend | ✅ existe · `back/apps/payments/views_subscription.py · SubscriptionView + SubscriptionSerializer (apps/payments/serializers_billing.py)` |
+| Nota | Todos los roles. `renews_at` es el fin del período pagado con el checkout: un mes calendario desde que se confirmó el pago de la subida, contado en `WORKSPACE_TIME_ZONE` y anclado al día en que empezó (31 ene → 28 feb → 31 mar). Es null en un plan gratis y en uno asignado en el admin (una cortesía, que no vence). Todavía nada cobra la renovación (PAY-02): cuando el período termina, la tarea `apply_due_plan_changes` aplica la bajada programada o, sin ninguna, pasa el workspace al plan por defecto (`DEFAULT_PLAN_NAME`). Por eso `status` es siempre `active`. Un workspace sin plan muestra el plan por defecto. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Subscription |
+| Errores | **404** El workspace no tiene plan y tampoco existe el plan por defecto (`DEFAULT_PLAN_NAME`). |
 | Pantallas | Barra, G1, G3, C1, E1, H2 |
 
 #### `POST /api/v1/subscription/change/`
 
-Cambia de plan. Subir se aplica al momento, o al volver del checkout si hay que pagar; bajar, al fin del período. Mandar el plan actual cancela un cambio programado.
+Cambia de plan. Todo otro plan pago se compra: se aplica al volver del checkout, cuando se confirma el pago. Un plan gratis, al fin del período. Mandar el plan actual cancela lo programado.
 
 | | |
 |---|---|
 | Id | `billing.changePlan` |
-| Backend | ❌ falta (propuesto) · hueco 12 |
-| Nota | Con `plan_id` igual al plan actual y un cambio programado, lo cancela (`pending_plan` vuelve a null, `applied: "now"`). Si subir necesita un pago, `checkout_url` viene con valor, el plan no cambia todavía y el proveedor vuelve a `return_url` con `compra=<id>`. |
+| Backend | ✅ existe · `back/apps/payments/views_subscription.py · ChangePlanView (apps/payments/services/subscriptions.py)` |
+| Nota | Antes de PAY-02, todo otro plan pago es una compra, sea más caro, más barato o del mismo precio: `checkout_url` viene con valor, el plan no cambia todavía y el proveedor vuelve a `return_url` (por defecto `FRONTEND_URL/uso/planes`) con `compra=<id>`; al confirmarse el pago cambia el plan una sola vez, al momento, y empieza un período pagado de un mes propio. Sin prorrateo: se cobra el mes entero del plan nuevo y lo que quedaba del período actual se pierde. Así pagar una vez nunca deja un plan pago para siempre. Pedir otra vez el mismo plan devuelve el mismo checkout; elegir otro rechaza el pago que esperaba. Solo un plan gratis (como el de `DEFAULT_PLAN_NAME`) se programa para el fin del período pagado (`applied: "period_end"`); sin período pagado se aplica al momento (`applied: "now"`). La web dice «Subir» o «Bajar» por `sort_order` (un check de Django, `payments.W002`, avisa si el orden de los planes públicos no sigue al precio) y avisa que un plan pago se paga y se aplica al momento. Mientras una bajada espera, o mientras un pago de plan espera su checkout, invitar a más gente que la que entra en ese plan se rechaza. La tarea `apply_due_plan_changes` (Celery Beat, cada 15 min) aplica las bajadas que vencieron y, si el período terminó sin nada programado, pasa al plan por defecto. Con `plan_id` igual al plan actual cancela la bajada programada y el pago de plan que esperaba su checkout (`applied: "now"`). Un checkout que nadie paga vence a las 24 h de abierto (`PAYMENTS_CHECKOUT_TTL_SECONDS`): la tarea lo rechaza («El checkout venció sin que se pagara.») y lo cierra en el proveedor, y deja de limitar las invitaciones; pedir ese plan después abre otro checkout. El mock aplica todo plan pago al momento salvo en el escenario «Plan con checkout». |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | { plan_id: Id, return_url?: string } |
 | Respuesta 200 | { applied: "now" \\| "period_end", checkout_url: string \\| null, subscription: Subscription } |
-| Errores | **400** Ya es el plan actual y no hay ningún cambio programado para cancelar.<br>**403** El rol no puede cambiar el plan (solo Dueño y Admin).<br>**409** Bajar a un plan con menos lugares que los que el workspace ocupa hoy, contando invitaciones pendientes (`code: "seats_exceeded"`). No se programa nada: primero hay que quitar miembros. Es un 409 porque lo impide el estado del workspace; el mismo código en `workspaces.invite` es un 403 de límite de plan, que se resuelve subiendo de plan. |
+| Errores | **400** Ya es el plan actual y no hay nada programado ni esperando su pago (`{ plan_id: ["Ya es tu plan actual."] }`), o `return_url` no es una página de la app o pasa de 600 caracteres.<br>**403** El rol no puede cambiar el plan (solo Dueño y Admin).<br>**404** El plan no existe, está inactivo o no es público (`{ detail: "El plan no existe." }`), o el workspace se borró mientras el pedido esperaba su turno (el `detail` del workspace inexistente; no cambia nada).<br>**409** Cambiar a un plan con menos lugares que los que el workspace ocupa hoy, contando invitaciones pendientes (`code: "seats_exceeded"`, con `seats_used` y `max_members`). No se programa nada: primero hay que quitar miembros. Es un 409 porque lo impide el estado del workspace; el mismo código en `workspaces.invite` es un 403 de límite de plan, que se resuelve subiendo de plan. También 409 `code: "checkout_in_progress"`: el mismo pago todavía está abriendo su checkout (un doble envío); se reintenta en unos segundos y nada se rechaza (un intento cuyo checkout nunca abrió deja de bloquear pasado el doble de `PAYMENTS_PROVIDER_TIMEOUT_SECONDS` desde que empezó su llamada al proveedor). Y 409 `code: "plan_change_superseded"`: mientras se abría el pago se eligió otro plan (o seguir con el actual); nunca se devuelve el checkout de otro plan.<br>**501** Pasar a otro plan pago sin proveedor de pagos configurado (`code: "payments_unavailable"`). No cambia nada. No es 503: la app lee cualquier 503 como mantenimiento.<br>**502** El proveedor no abrió el checkout (`code: "checkout_failed"`). No se cobró nada. |
 | Pantallas | G3 |
 
 #### `GET /api/v1/wallet/`
@@ -598,8 +607,8 @@ Saldo disponible y reservado del workspace, con el detalle de lo reservado por p
 | | |
 |---|---|
 | Id | `billing.wallet` |
-| Backend | ❌ falta (propuesto) · hueco 4, 19 |
-| Nota | Modelo: Wallet (available_balance, reserved_balance). |
+| Backend | ✅ existe · `back/apps/payments/views.py · WalletView` |
+| Nota | Los saldos con sus diez decimales, como texto. `reservations` tiene una fila por reserva abierta (no una suma por proyecto), con el proyecto que paga (`Transaction.project`, migración 0015 de payments; null en una reserva vieja que la 0016 no pudo vincular). `spent_this_month` y el mes van en `WORKSPACE_TIME_ZONE` (America/Argentina/Buenos_Aires) y cuentan por cuándo se cobró (`settled_at`). Lo ven todos los roles (`wallet.view`). 404 si el usuario no tiene workspace. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Wallet |
 | Pantallas | Barra, G1, C1, D2, G4, D1 (diálogo), D2 (diálogo) |
@@ -611,11 +620,12 @@ Consumo por día de un mes (solo lo cobrado), separado en proyectos, renders y S
 | | |
 |---|---|
 | Id | `billing.usage` |
-| Backend | ❌ falta (propuesto) · hueco 4 |
+| Backend | ✅ existe · `back/apps/payments/views.py · WalletUsageView + services/movements.py · usage` |
+| Nota | Todos los días del mes (sin `month`, el actual), en orden. Suma los SPEND + COMPLETED por el día en que se cobraron (`settled_at`, o `created_at` en filas viejas): un cobro parcial cuenta lo cobrado. Columnas por `Transaction.category`: `render` en `renders`, `seo` en `seo` y el resto en `projects`. Hoy nada escribe `seo`: el SEO se cobra dentro de la creación, así que cae en `projects` y la columna llega en 0. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | { month?: string } |
 | Respuesta 200 | UsageDay[] |
-| Errores | **403** Solo Dueño y Admin. |
+| Errores | **400** `month` no es `AAAA-MM` (`{ month: ["Mandá el mes como AAAA-MM."] }`).<br>**403** Solo Dueño y Admin. |
 | Pantallas | G1 |
 
 #### `GET /api/v1/transactions/`
@@ -625,26 +635,27 @@ Movimientos de la billetera, paginados, con filtro por tipo, mes y proyecto. `mo
 | | |
 |---|---|
 | Id | `billing.transactions` |
-| Backend | ❌ falta (propuesto) · hueco 4 |
-| Nota | Modelo: Transaction. Faltan el vínculo al proyecto y `kind`. Hoy el backend solo escribe DEPOSIT y SPEND: un cobro parcial (`commit_partial_reservation`) baja el monto del SPEND a lo cobrado y lo deja COMPLETED, y devuelve el resto al saldo sin escribir otra fila; una reserva que se cae queda SPEND + FAILED (`kind: "released"`, «Devuelto»). El tipo REFUND existe en el modelo pero nada lo escribe: `kind: "refund"` queda propuesto para devoluciones de algo ya cobrado. |
+| Backend | ✅ existe · `back/apps/payments/views.py · TransactionListView + TransactionSerializer (apps/payments/serializers.py) + services/movements.py` |
+| Nota | Una fila por transacción, de la más nueva a la más vieja por cuándo movió el saldo por última vez (`settled_at ?? created_at`); `month` y `totals` usan la misma fecha, así que un cobro es del mes en que se cobró, como en `billing.usage`. `page_size` hasta 100 (25 por defecto). `kind` sale de tipo + estado; una fila sin `kind` no movió el saldo y no sale (una compra que falló). Un cobro parcial (`commit_partial_reservation`) deja el SPEND en lo cobrado (`amount`) con lo reservado en `reserved_amount`, sin otra fila para lo devuelto: `totals.released` lo suma y lo cuenta en `partial_count`. Una reserva que se cae queda SPEND + FAILED (`kind: "released"`, «Devuelto», con su proyecto). Cada reserva queda vinculada a su proyecto con `category` desde que se reserva (`reserve_funds`, `project` y `category`); las viejas, por la migración 0016 de payments. Un proyecto borrado deja `project` en null. DEPOSIT llega con las compras (PAY-02) y REFUND no lo escribe nada todavía. Cuatro consultas por página (la billetera, los totales, la cantidad y las filas), sea cual sea su tamaño. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | TransactionsQuery |
 | Respuesta 200 | { count: number, next: string \\| null, previous: string \\| null, results: Transaction[], totals: { [clave]: TransactionKindTotal } } |
-| Errores | **403** Solo Dueño y Admin (Editor y Lector ven únicamente el saldo). |
+| Errores | **400** `kind`, `month` o `project` no son válidos (errores por campo).<br>**403** Solo Dueño y Admin, también con `project` (Editor y Lector ven únicamente el saldo).<br>**404** La página no existe (`detail: "Página inválida."`). |
 | Pantallas | G2, D1f |
 
 #### `GET /api/v1/transactions/export/`
 
-Los mismos movimientos en CSV. El monto lleva el signo de lo que le hizo al saldo: negativo lo reservado y lo cobrado, positivo lo comprado y lo devuelto.
+Los mismos movimientos en CSV, como libro de la billetera: una fila por cada cambio del saldo, con su signo. Sus montos suman lo que hizo el saldo en el período exportado.
 
 | | |
 |---|---|
 | Id | `billing.exportTransactions` |
-| Backend | ❌ falta (propuesto) · hueco 4 |
+| Backend | ✅ existe · `back/apps/payments/views.py · TransactionExportView + services/movements.py · ledger, csv_text` |
+| Nota | Columnas `fecha,concepto,proyecto,tipo,monto,estado,transaccion`. Cada SPEND es su reserva (`Reserva`, −`reserved_amount`, en `created_at`) y, si volvió algo, su devolución (`Devuelto`, +lo devuelto: todo en una reserva que se cayó, `reserved_amount − amount` en un cobro parcial, en `settled_at`); una compra es `Compra` y un REFUND `Devolución`, con su monto. Un cobro entero no agrega fila: ya se descontó al reservar. Una compra pendiente no movió el saldo y no sale. Con `month`, solo los cambios de ese mes; `kind` y `project` eligen las transacciones como en la lista. `estado` es el tipo de la transacción hoy («Cobrado», «Devuelto»…) y `transaccion` su id, que une una reserva con su devolución. La fecha va en ISO con la zona del workspace y el monto exacto (dos decimales si alcanzan, si no todos). Un texto que empieza con `=`, `+`, `-` o `@` lleva un apóstrofo adelante, para que una planilla no lo ejecute. Toda la historia, sin páginas. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | { kind?: TransactionKind, month?: string, project?: Id } |
 | Respuesta 200 | texto (CSV) |
-| Errores | **403** Solo Dueño y Admin. |
+| Errores | **400** `kind`, `month` o `project` no son válidos (errores por campo).<br>**403** Solo Dueño y Admin. |
 | Pantallas | G2 |
 
 #### `GET /api/v1/token-packages/`
@@ -654,7 +665,8 @@ Los 3 paquetes fijos, el precio de la cantidad libre y la conversión de referen
 | | |
 |---|---|
 | Id | `billing.tokenPackages` |
-| Backend | ❌ falta (propuesto) · hueco 12 |
+| Backend | ✅ existe · `back/apps/payments/views_purchases.py · TokenPackagesView (apps/payments/services/token_packages.py)` |
+| Nota | Todos los roles. El precio de un paquete sale de sus tokens y su descuento sobre `TOKEN_PRICE_USD` (0,01 USD por token, el mismo de `billing.pricing`). La conversión es de referencia (`PAYMENTS_LOCAL_CURRENCY`, `PAYMENTS_USD_TO_LOCAL_RATE`): todo pago es en USD. La cantidad libre va de 100 a 1.000.000 tokens. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | TokenPackages |
 | Pantallas | G4, D2 (diálogo) |
@@ -666,11 +678,12 @@ Inicia una compra de tokens y devuelve la URL del checkout del proveedor de pago
 | | |
 |---|---|
 | Id | `billing.createPurchase` |
-| Backend | ❌ falta (propuesto) · hueco 12 |
-| Sesión | JWT · `X-Workspace-Id` |
+| Backend | ✅ existe · `back/apps/payments/views_purchases.py · TokenPurchaseCreateView + PaymentSerializer (apps/payments/serializers_billing.py)` |
+| Nota | El proveedor es `PAYMENTS_PROVIDER`. Con `simulated` (desarrollo, y en una demo con `PAYMENTS_ALLOW_SIMULATED`) `checkout_url` es `/dev/checkout?compra=<id>&volver=<return_url>` en el origen de `return_url`, y esa página decide con `billing.simulatePurchase`. Sin proveedor, 501. La `Idempotency-Key` vale por workspace: repetida, responde la compra que ya empezó, con el mismo 201. Si el checkout no se abrió (502), o el intento quedó sin checkout más del doble de `PAYMENTS_PROVIDER_TIMEOUT_SECONDS` desde que empezó su llamada al proveedor (el proceso murió en esa llamada), la clave queda libre y el reintento con la misma clave es un intento nuevo; la tarea de beat también los rechaza. Un checkout que nadie paga vence a las 24 h de abierto (`PAYMENTS_CHECKOUT_TTL_SECONDS`): queda rechazado, con su clave, y repetirla responde esa compra rechazada. |
+| Sesión | JWT · `X-Workspace-Id` · `Idempotency-Key` (una por envío; se repite al reintentar) |
 | Pedido | { package_id?: string, custom_tokens?: number, return_url: string } |
 | Respuesta 201 | TokenPurchase |
-| Errores | **400** Cantidad por debajo del mínimo o paquete inexistente.<br>**403** El rol no puede comprar (solo Dueño y Admin). |
+| Errores | **400** Cantidad por debajo del mínimo o por encima del máximo (1.000.000), paquete inexistente, o `return_url` que no es una página de la app o pasa de 600 caracteres.<br>**403** El rol no puede comprar (solo Dueño y Admin).<br>**404** El workspace se borró mientras el pedido esperaba su turno: no se escribe nada (el `detail` del workspace inexistente).<br>**409** La `Idempotency-Key` ya empezó otra compra (`code: "idempotency_key_reused"`), o la compra que empezó todavía está abriendo su checkout (`code: "purchase_in_progress"`: se reintenta en unos segundos).<br>**501** No hay proveedor de pagos configurado (`code: "payments_unavailable"`). No se crea nada. No es 503: la app lee cualquier 503 como mantenimiento.<br>**502** El proveedor no abrió el checkout (`code: "checkout_failed"`). No se cobró nada. |
 | Pantallas | G4, D2 (diálogo) |
 
 #### `GET /api/v1/token-purchases/:id/`
@@ -680,12 +693,27 @@ Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`
 | | |
 |---|---|
 | Id | `billing.purchase` |
-| Backend | ❌ falta (propuesto) · hueco 12 |
-| Nota | El webhook del proveedor acredita; la pantalla consulta cada 5 s mientras está pendiente. |
+| Backend | ✅ existe · `back/apps/payments/views_purchases.py · TokenPurchaseDetailView + PaymentSerializer (apps/payments/serializers_billing.py)` |
+| Nota | La confirmación del proveedor (o `billing.simulatePurchase`) acredita una sola vez: un DEPOSIT COMPLETED de los tokens en la billetera, con `category: "purchase"` y «Compra de 1.000 tokens». La pantalla consulta cada 5 s mientras está pendiente. `plan_id` viene siempre (null en una compra de tokens). `balance_after` llega con 10 decimales, como el saldo. Un pago que el proveedor confirma después de rechazado (reemplazado, cancelado, vencido o con el checkout fallido) no cambia nada: queda en el log como `payment.late_paid` para devolverlo a mano. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Payment |
-| Errores | **404** La compra no existe en este workspace. |
+| Errores | **403** El rol no puede ver pagos (solo Dueño y Admin).<br>**404** La compra no existe en este workspace. |
 | Pantallas | G5 |
+
+#### `POST /api/v1/token-purchases/:id/simulate/`
+
+Solo desarrollo y demo: el checkout de prueba aprueba o rechaza un pago del proveedor simulado.
+
+| | |
+|---|---|
+| Id | `billing.simulatePurchase` |
+| Backend | ✅ existe · `back/apps/payments/views_purchases.py · SimulatePaymentView` |
+| Nota | Liquida el pago en el momento, como lo haría el webhook de un proveedor real, y responde el pago ya liquidado. Uno ya liquidado se responde como está: aprobar dos veces acredita una sola. Lo llama `/dev/checkout` cuando `billing` va al backend; en el modo mock la página decide en la base simulada y el pago se liquida unos segundos después de volver, como un webhook. |
+| Sesión | JWT · `X-Workspace-Id` |
+| Pedido | { approved: boolean } |
+| Respuesta 200 | Payment |
+| Errores | **403** El rol no puede pagar (solo Dueño y Admin).<br>**404** El pago no existe en este workspace, no es del proveedor simulado, o el proveedor simulado está apagado (sin `PAYMENTS_PROVIDER=simulated`, o sin `DEBUG` ni `PAYMENTS_ALLOW_SIMULATED`): fuera de desarrollo y demos el endpoint no existe. Sin `DEBUG`, también para quien no es staff ni tiene un email verificado de `PAYMENTS_SIMULATE_ALLOWED_EMAILS`. |
+| Pantallas | Checkout de prueba (/dev/checkout) |
 
 ### Proyectos
 
@@ -829,7 +857,7 @@ Vuelve a despachar el pipeline de un proyecto que falló, desde la última etapa
 |---|---|
 | Id | `projects.redispatch` |
 | Backend | ✅ existe · `back/apps/videos/views_clips.py · ProjectRedispatchView` |
-| Nota | No cobra lo que sigue pagado: un proyecto con los clips elegidos sigue gratis (su render se paga solo). Lo que se devolvió al fallar (una etapa antes de elegir los clips, o el render de un video completo) se reserva otra vez y el pipeline lo liquida como al crear. Responde `cost_details` cuando reservó. El proyecto sigue `failed` hasta que la tarea lo reabre. |
+| Nota | No cobra lo que sigue pagado: un proyecto con los clips elegidos sigue gratis (su render se paga solo). Lo que se devolvió al fallar (una etapa antes de elegir los clips, o el render de un video completo) se reserva otra vez y el pipeline lo liquida como al crear. Responde `cost_details` cuando reservó. El proyecto sigue `failed` hasta que la tarea lo reabre. Uno que falló con `IngestionStuck` (su ingesta no avanzaba y se devolvió la reserva) también reserva de nuevo y corre. Solo el mensaje de este pedido lo reabre: una copia vieja que llega tarde no corre nada. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 202 | RedispatchResponse |
 | Errores | **402** Saldo insuficiente para volver a reservar lo devuelto: `{ error, required }`. La UI abre D2.<br>**403** Solo Dueño y Admin.<br>**409** `{ error, code }`: no está en error (`not_failed`), la moderación frenó su contenido (`moderation_blocked`, solo `UnsafeContentError`), su ingesta nunca se encoló al crearlo (`not_queued`: se crea de nuevo), sus clips ya se liquidaron y se reintentan de a uno desde Clips (`render_settled`), su video completo ya se renderizó (`use_rerender`), no tiene reserva de creación (`no_reservation`) o su link dura más de las 3 h que procesa la app (`duration_app`: falló con `LinkTooLongForAppError`; se crea otro con un video más corto). Uno que falló con `LinkTooLongError` sí se re-despacha: el plan pudo cambiar.<br>**503** No se pudo encolar: lo reservado vuelve (el proyecto queda con `pipeline_error_code: "RedispatchNotQueued"`) y se puede probar de nuevo. |
@@ -1617,10 +1645,12 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `wallet` | Id |
 | `created_by` | Id \\| null |
 | `amount` | Decimal |
+| `reserved_amount` | Decimal \\| null |
 | `transaction_type` | TransactionType |
 | `status` | TransactionStatus |
 | `description` | string |
 | `created_at` | IsoDateTime |
+| `settled_at` | IsoDateTime \\| null |
 | `kind` | TransactionKind |
 | `created_by_detail` | UserRef \\| null |
 | `project` | { id: Id, title: string } \\| null |
@@ -1634,6 +1664,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 |---|---|
 | `count` | number |
 | `amount` | Decimal |
+| `partial_count` (opcional) | number |
 
 **TransactionsQuery**
 

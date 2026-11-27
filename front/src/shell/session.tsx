@@ -68,9 +68,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [me, stored]);
 
   // Keep the header the client sends in line with the workspace the UI shows.
+  // A stored id that `/me` does not have (the workspace was deleted, or the person was removed from it)
+  // is replaced by the one shown; with no workspace at all it is cleared, so no request names a
+  // workspace that answers 404.
   useEffect(() => {
     if (workspace && getActiveWorkspaceId() !== workspace.id) setActiveWorkspaceId(workspace.id);
-  }, [workspace]);
+    else if (me && me.workspaces.length === 0 && getActiveWorkspaceId() !== null) setActiveWorkspaceId(null);
+  }, [me, workspace]);
 
   const { mutateAsync: saveMe } = updateMe;
   const navigation = useGuardedNavigation();

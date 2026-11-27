@@ -80,7 +80,7 @@ describe('mocks', () => {
     expect(wallet.reservations.length).toBeGreaterThan(0);
     await apiCall(billing.getUsage, { query: {} });
     expect((await apiCall(billing.listTransactions, { query: { kind: 'purchase' } })).results.every((item) => item.kind === 'purchase')).toBe(true);
-    expect(await apiCall(billing.exportTransactions, { query: {} })).toContain('fecha,concepto,tipo,monto');
+    expect(await apiCall(billing.exportTransactions, { query: {} })).toContain('fecha,concepto,proyecto,tipo,monto');
     expect((await apiCall(billing.listTokenPackages)).packages).toHaveLength(3);
 
     const list = await apiCall(projects.listProjects, { query: { status_group: 'to_review' } });
@@ -306,6 +306,115 @@ describe('mocks', () => {
     expect(bulk.code).toBe('crossposting');
   });
 
+  it('workspaces: como el backend, el rol es el del workspace de la ruta y el dueño solo cambia al transferir', async () => {
+    const id = WORKSPACE_IDS.estudio;
+    // A new workspace: the user is its owner and the wallet starts empty; the name is trimmed.
+    const created = await apiCall(workspaces.createWorkspace, { body: { name: '  Canal nuevo  ' } });
+    expect(created).toMatchObject({ name: 'Canal nuevo', owner: USER_IDS.lucia, role: 'owner' });
+    expect((await apiCall(users.getMe)).workspaces.find((item) => item.id === created.id)?.available_balance).toBe(0);
+    expect((await fail(apiCall(workspaces.createWorkspace, { body: { name: '   ' } }))).fieldErrors.name?.[0]).toBe('Escribí un nombre para el espacio.');
+    expect((await apiCall(workspaces.listWorkspaces)).at(-1)?.id).toBe(created.id);
+
+    // The owner's row: never demoted or removed through members.
+    const { members } = await apiCall(workspaces.listMembers, { params: { id } });
+    const owner = members.find((member) => member.role === 'owner');
+    const other = members.find((member) => member.status === 'active' && member.role !== 'owner' && member.user);
+    if (!owner || !other?.user) throw new Error('faltan miembros');
+    expect((await fail(apiCall(workspaces.updateMember, { params: { id, memberId: owner.id }, body: { role: 'viewer' } }))).fieldErrors.role?.[0]).toBe('No se puede cambiar el rol del dueño.');
+    expect((await fail(apiCall(workspaces.removeMember, { params: { id, memberId: owner.id } }))).message).toBe('No se puede quitar al dueño del workspace.');
+    expect((await fail(apiCall(workspaces.removeMember, { params: { id, memberId: created.id } }))).status).toBe(404);
+
+    // Delete: the exact name, and an empty workspace goes.
+    expect((await fail(apiCall(workspaces.deleteWorkspace, { params: { id: created.id }, body: { confirm_name: 'canal nuevo' } }))).fieldErrors.confirm_name?.[0]).toBe('El nombre no coincide.');
+    await apiCall(workspaces.deleteWorkspace, { params: { id: created.id }, body: { confirm_name: 'Canal nuevo' } });
+    expect((await fail(apiCall(workspaces.getWorkspace, { params: { id: created.id } }))).status).toBe(404);
+
+    // Transfer: not to oneself; the previous owner stays as Admin and stops being able to transfer or delete.
+    expect((await fail(apiCall(workspaces.transferWorkspace, { params: { id }, body: { new_owner_id: USER_IDS.lucia } }))).status).toBe(400);
+    const transferred = await apiCall(workspaces.transferWorkspace, { params: { id }, body: { new_owner_id: other.user.id } });
+    expect(transferred).toMatchObject({ owner: other.user.id, role: 'admin' });
+    const denied = await fail(apiCall(workspaces.transferWorkspace, { params: { id }, body: { new_owner_id: USER_IDS.lucia } }));
+    expect(denied.status).toBe(403);
+    // The backend's sentence, with no `code`.
+    expect(denied.code).toBeUndefined();
+    expect(denied.message).toBe('Solo el dueño del espacio puede hacer esto.');
+  });
+
+  it('borrar un workspace: nunca con publicaciones saliendo, con un pago en curso, con saldo ni si es el único', async () => {
+    const id = WORKSPACE_IDS.estudio;
+    const name = (await apiCall(workspaces.getWorkspace, { params: { id } })).name;
+    const remove = () => fail(apiCall(workspaces.deleteWorkspace, { params: { id }, body: { confirm_name: name } }));
+    const edit = (change: (db: ReturnType<typeof loadDb>) => void) => {
+      const db = loadDb();
+      change(db);
+      saveDb(db);
+    };
+    // Nothing processing, one post going out.
+    edit((db) => {
+      db.projects = db.projects.filter((project) => project.workspace !== id || !['uploaded', 'ingesting', 'rendering'].includes(project.status));
+      const post = db.posts.find((item) => item.workspace === id);
+      if (!post) throw new Error('falta una publicación');
+      post.status = 'PROCESSING';
+      for (const wallet of db.wallets) if (wallet.workspace === id) Object.assign(wallet, { available_balance: 120.5, reserved_balance: 0 });
+    });
+    expect((await remove()).code).toBe('posts_in_flight');
+    // Once none is going out (the simulation would send a due SCHEDULED one, so they end as drafts), a payment
+    // waiting for its provider stops it: its row is what the confirmation settles.
+    const purchaseId = '7d1f3a52-6c1e-4b8a-9f0d-2e5c8b4a1f00';
+    edit((db) => {
+      for (const post of db.posts) if (post.workspace === id && ['SCHEDULED', 'QUEUED', 'PROCESSING'].includes(post.status)) post.status = 'DRAFT';
+      db.purchases.push({
+        id: purchaseId,
+        workspace: id,
+        status: 'pending',
+        tokens: 1000,
+        plan_id: null,
+        amount_usd: 10,
+        checkout_url: `http://localhost:3000/dev/checkout?compra=${purchaseId}`,
+        failure_reason: null,
+        created_at: new Date().toISOString(),
+        balance_after: null,
+        _settleAt: null,
+        _reject: false,
+      });
+    });
+    const paying = await remove();
+    expect([paying.status, paying.code, paying.message]).toEqual([409, 'payment_pending', 'Hay un pago en curso: terminalo, o esperá a que venza (24 h después de abrirlo).']);
+    // Once it is settled (here, rejected), the tokens stop it.
+    edit((db) => {
+      for (const purchase of db.purchases) if (purchase.id === purchaseId) Object.assign(purchase, { status: 'rejected', checkout_url: null });
+    });
+    const balance = await remove();
+    expect(balance.code).toBe('balance_left');
+    expect(balance.message).toBe('Quedan 120.5 tokens en este espacio y no se pueden recuperar después de borrarlo. Usalos o escribinos antes de borrarlo.');
+    // No other workspace to work in: that comes first, whatever else holds (the tokens are still there).
+    edit((db) => {
+      db.workspaces = db.workspaces.filter((workspace) => workspace.id === id);
+      db.members = db.members.filter((member) => member.workspace === id);
+    });
+    expect((await remove()).code).toBe('last_workspace');
+    expect(loadDb().workspaces.map((workspace) => workspace.id)).toEqual([id]);
+  });
+
+  it('crear workspaces: hasta 10 propios', async () => {
+    const owned = loadDb().workspaces.filter((workspace) => workspace.owner === USER_IDS.lucia).length;
+    for (let number = owned; number < 10; number += 1) await apiCall(workspaces.createWorkspace, { body: { name: `Espacio ${number}` } });
+    const refused = await fail(apiCall(workspaces.createWorkspace, { body: { name: 'Uno más' } }));
+    expect(refused.status).toBe(409);
+    expect(refused.code).toBe('workspace_limit');
+  });
+
+  it('borrar un workspace: nunca con proyectos en proceso', async () => {
+    signIn('todos-los-estados');
+    const me = await apiCall(users.getMe);
+    const mine = me.workspaces.find((item) => item.id === me.active_workspace_id);
+    if (!mine || mine.role !== 'owner') throw new Error('falta el workspace propio');
+    const busy = await fail(apiCall(workspaces.deleteWorkspace, { params: { id: mine.id }, body: { confirm_name: mine.name } }));
+    expect(busy.status).toBe(409);
+    expect(busy.code).toBe('project_processing');
+    await expect(apiCall(workspaces.getWorkspace, { params: { id: mine.id } })).resolves.toBeTruthy();
+  });
+
   it('los roles se aplican: el Lector no crea ni ve movimientos; el Editor no administra', async () => {
     signIn('rol-lector', 'diego');
     expect((await apiCall(users.getMe)).workspaces[0]?.role).toBe('viewer');
@@ -384,6 +493,75 @@ describe('mocks', () => {
     await apiCall(billing.getTokenPurchase, { params: { id: rejected.id } });
     advance(SIM.purchaseMs + 500);
     expect((await apiCall(billing.getTokenPurchase, { params: { id: rejected.id } })).status).toBe('rejected');
+  });
+
+  it('el checkout de prueba con billing en el backend: simulate liquida en el momento y una vez', async () => {
+    const purchase = await apiCall(billing.createTokenPurchase, { body: { custom_tokens: 2500, return_url: 'http://localhost:3000/uso/comprar/resultado' } });
+    expect(purchase.plan_id).toBeNull();
+    const approved = await apiCall(billing.simulatePurchase, { params: { id: purchase.id }, body: { approved: true } });
+    expect(approved).toMatchObject({ status: 'approved', checkout_url: null, balance_after: 4860 + 2500 });
+    // Settled already: answered as it is, nothing credited twice.
+    expect((await apiCall(billing.simulatePurchase, { params: { id: purchase.id }, body: { approved: false } })).status).toBe('approved');
+    expect((await apiCall(billing.getWallet)).available_balance).toBe(4860 + 2500);
+    expect((await fail(apiCall(billing.createTokenPurchase, { body: { custom_tokens: 1_000_001, return_url: 'http://localhost:3000/uso/comprar/resultado' } }))).fieldErrors.custom_tokens).toEqual(['El máximo es 1.000.000 tokens por compra.']);
+  });
+
+  it('planes: bajar sin período pagado se aplica al momento; la misma subida con pago reusa su checkout', async () => {
+    const plans = await apiCall(billing.listPlans);
+    const plan = (name: string) => plans.find((item) => item.name === name)?.id ?? '';
+    const db = loadDb();
+    const workspace = db.workspaces.find((item) => item.id === WORKSPACE_IDS.estudio);
+    if (!workspace) throw new Error('falta el workspace');
+    workspace.renews_at = null;
+    saveDb(db);
+    const down = await apiCall(billing.changePlan, { body: { plan_id: plan('Creador') } });
+    expect(down.applied).toBe('now');
+    expect(down.subscription.plan.name).toBe('Creador');
+
+    signIn('plan-con-checkout');
+    const first = await apiCall(billing.changePlan, { body: { plan_id: plan('Estudio'), return_url: 'http://localhost:3000/uso/planes' } });
+    const again = await apiCall(billing.changePlan, { body: { plan_id: plan('Estudio'), return_url: 'http://localhost:3000/uso/planes' } });
+    expect(again.checkout_url).toBe(first.checkout_url);
+    expect(loadDb().purchases.filter((item) => item.plan_id && item.status === 'pending')).toHaveLength(1);
+    // Keeping the current plan cancels the upgrade that waits for its payment.
+    const kept = await apiCall(billing.changePlan, { body: { plan_id: plan('Pro') } });
+    expect(kept.applied).toBe('now');
+    expect(loadDb().purchases.find((item) => item.plan_id)?.status).toBe('rejected');
+    expect((await fail(apiCall(billing.changePlan, { body: { plan_id: plan('Pro') } }))).fieldErrors.plan_id).toEqual(['Ya es tu plan actual.']);
+  });
+
+  it('planes: todo plan pago es una compra, y mientras una bajada espera nadie entra pasado sus lugares', async () => {
+    const db = loadDb();
+    const pro = db.plans.find((item) => item.name === 'Pro');
+    if (!pro) throw new Error('faltan datos');
+    // Same price, listed later: still a purchase that applies at once (no checkout scenario here).
+    db.plans.push({ ...pro, id: '44444444-4444-4444-8444-444444444444', name: 'Pro Plus', sort_order: 9, is_recommended: false });
+    // A second free plan with 5 seats: only a free plan waits for the end of the period.
+    db.plans.push({ ...pro, id: '55555555-5555-4555-8555-555555555555', name: 'Libre', price_usd_monthly: 0, sort_order: 0, is_recommended: false, max_members: 5 });
+    saveDb(db);
+    const lateral = await apiCall(billing.changePlan, { body: { plan_id: '44444444-4444-4444-8444-444444444444' } });
+    expect(lateral.applied).toBe('now');
+    expect(lateral.subscription.plan.name).toBe('Pro Plus');
+    const free = await apiCall(billing.changePlan, { body: { plan_id: '55555555-5555-4555-8555-555555555555' } });
+    expect(free.applied).toBe('period_end');
+    // Libre has 5 seats and 4 are taken: one more fits, the next does not.
+    await apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['quinta@estudionorte.com'], role: 'viewer' } });
+    const refused = await fail(apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['sexta@estudionorte.com'], role: 'viewer' } }));
+    expect(refused.code).toBe('seats_exceeded');
+    expect(refused.message).toMatch(/^Tu plan pasa a 'Libre' el .* y ese plan permite 5 miembros/);
+  });
+
+  it('planes: mientras un pago de plan espera su checkout, nadie entra pasado los lugares de ese plan', async () => {
+    signIn('plan-con-checkout');
+    const plans = await apiCall(billing.listPlans);
+    const creator = plans.find((item) => item.name === 'Creador');
+    if (!creator) throw new Error('falta Creador');
+    // Pro with 4 seats in use; Creador has 5.
+    expect((await apiCall(billing.changePlan, { body: { plan_id: creator.id, return_url: 'http://localhost:3000/uso/planes' } })).checkout_url).toBeTruthy();
+    await apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['quinta@estudionorte.com'], role: 'viewer' } });
+    const refused = await fail(apiCall(workspaces.inviteMembers, { params: { id: WORKSPACE_IDS.estudio }, body: { emails: ['sexta@estudionorte.com'], role: 'viewer' } }));
+    expect(refused.code).toBe('seats_exceeded');
+    expect(refused.message).toMatch(/^Estás pasando al plan 'Creador', que permite 5 miembros/);
   });
 
   it('la sesión: login, credenciales incorrectas, email sin verificar y sesión vencida', async () => {

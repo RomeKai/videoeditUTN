@@ -106,6 +106,87 @@ PTE_PARSE_RETRY_SECONDS = (30, 90)
 # the broker did not take its ingestion (views._fail_unqueued_project). Its
 # message may still arrive later: it is never resumed.
 INGESTION_NOT_QUEUED = 'IngestionNotQueued'
+# pipeline_error_code of a project recover_stuck_renders failed and refunded:
+# its ingestion made no progress for too long, with no worker and no re-queue
+# left (tasks/render_recovery.py). The fail replaces its chain (below), so no
+# copy of its messages runs it again; a re-dispatch does, paying again.
+INGESTION_STUCK = 'IngestionStuck'
+# When a delivery started running the ingestion (ISO time), and how many times
+# recover_stuck_renders re-queued it (in a row without a start, and in all)
+# and when. A re-dispatch that reopens the project starts its own count.
+INGESTION_STARTED_AT_KEY = 'ingestion_started_at'
+INGESTION_RECOVERY_REQUEUES_KEY = 'ingestion_recovery_requeues'
+INGESTION_RECOVERY_REQUEUES_TOTAL_KEY = 'ingestion_recovery_requeues_total'
+INGESTION_RECOVERY_REQUEUED_AT_KEY = 'ingestion_recovery_requeued_at'
+INGESTION_RECOVERY_KEYS = (
+    INGESTION_RECOVERY_REQUEUES_KEY, INGESTION_RECOVERY_REQUEUES_TOTAL_KEY, INGESTION_RECOVERY_REQUEUED_AT_KEY,
+)
+# The chain of messages that may run the ingestion now. Whatever sends a new
+# message to a project that may still have an older one alive (a re-dispatch,
+# the moderation override in the admin, a re-queue of recover_stuck_renders)
+# stores a fresh token here and passes it as the task's ``chain`` kwarg, and
+# every re-publish of that delivery carries it on. A message of another chain
+# runs nothing: a copy that was only delayed (a backed-up queue, a countdown
+# held by a busy worker, the visibility timeout of a dead host) can neither
+# reopen a failed (refunded) project for free nor run stages next to the
+# current one. A message without a token (the creation's, and any queued
+# before tokens existed) is the chain of a project that has none stored yet.
+INGESTION_CHAIN_KEY = 'ingestion_chain'
+
+
+def new_ingestion_chain():
+    """A fresh chain token (see INGESTION_CHAIN_KEY)."""
+    return uuid.uuid4().hex
+
+
+def _chain_kwargs(chain):
+    """The task kwargs that carry ``chain`` on (none for the chain without a token)."""
+    return {'chain': chain} if chain else {}
+
+
+def _chain_current(metadata, chain):
+    """A message of ``chain`` belongs to the chain stored in the project's ``metadata``."""
+    return ((metadata or {}).get(INGESTION_CHAIN_KEY) or None) == (chain or None)
+
+
+def _fail_with_new_chain(project_id, expected_stage=None):
+    """
+    ``mark_failed`` and a chain no message has, in one transaction: every
+    message sent before the failure (a copy of the delivery that failed it,
+    which a re-publish that reached the broker and still raised leaves
+    behind, or any older one) is of another chain, so only a token minted
+    afterwards (a re-dispatch, the override) reopens the project. Returns
+    whether this call failed it.
+    """
+    with transaction.atomic():
+        failed = mark_failed(project_id, expected_stage=expected_stage)
+        if failed:
+            _merge_metadata(project_id, {INGESTION_CHAIN_KEY: new_ingestion_chain()})
+    return failed
+
+
+def _hand_to_review(project_id):
+    """
+    Clips selected, no render dispatched: the ingestion work is delivered, so
+    its creation is charged, an auto-render reserved and never dispatched pays
+    for nothing and is returned, and the project waits for the review. The
+    path of a run without auto_render_bypass; recover_stuck_renders takes it
+    for one that may no longer render (too old). Guarded: only a project still
+    ingesting at clips_selected moves, so a later user action is never undone.
+    Returns whether it moved.
+    """
+    _commit_ingestion_reservation(project_id)
+    try:
+        _refund_undispatched_auto_render(project_id)
+    except DatabaseError as exc:
+        # settle_stale_reservations returns it later (not_dispatched).
+        logger.error(
+            "pipeline.auto_render_refund_failed project_id=%s error=%s", project_id, type(exc).__name__,
+        )
+    return bool(VideoProject.objects.filter(
+        pk=project_id, pipeline_stage=PipelineStage.CLIPS_SELECTED,
+        status__in=[VideoProject.Status.UPLOADED, VideoProject.Status.INGESTING],
+    ).update(status=VideoProject.Status.AWAITING_APPROVAL))
 
 _CLIP_SUGGESTION_FIELDS = {'start', 'end', 'title', 'virality_score', 'reasoning'}
 
@@ -368,7 +449,7 @@ class _PromptParseCapacity:
             self.gate.settle(reservation, _llm_usage_by_model(self.models, result.attempts or [result.usage]))
 
 
-def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries, parse_retries=0):
+def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries, parse_retries=0, chain=None):
     """
     Re-queues the ingestion after the capacity wait instead of blocking the
     worker. Not a failed attempt: pipeline_attempts and the usage rows are not
@@ -379,6 +460,7 @@ def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries, parse_ret
     call that keeps failing still runs out of retries (PIPELINE_MAX_RETRIES)
     even when capacity waits sit between its attempts. So does the prompt
     parser's own count (``parse_retries``): a capacity wait never refills it.
+    And so does its ``chain``: the re-queue is the same chain.
     """
     from apps.videos.services.ai.capacity import CapacityTimeoutError
 
@@ -423,7 +505,7 @@ def _wait_for_capacity(project_id, exc, attempt, owner_stage, retries, parse_ret
     _publish_requeue(
         process_initial_ingestion,
         lambda: process_initial_ingestion.apply_async(
-            args=[str(project_id)], kwargs={'parse_retries': parse_retries},
+            args=[str(project_id)], kwargs={'parse_retries': parse_retries, **_chain_kwargs(chain)},
             countdown=countdown, retries=retries,
         ),
         "pipeline.requeue_not_published", project_id, "capacity",
@@ -629,7 +711,6 @@ def _refund_ingestion_reservation(project_id):
     """
     from django.core.exceptions import ValidationError
 
-    # Deferred: wallet_service imports this module at load time.
     from apps.payments.services.wallet_service import PaymentError, rollback_reservation
 
     try:
@@ -674,7 +755,6 @@ def _commit_ingestion_reservation(project_id):
     """
     from django.core.exceptions import ValidationError
 
-    # Deferred: wallet_service imports this module at load time.
     from apps.payments.services.wallet_service import PaymentError, commit_reservation
 
     reservation_id = None
@@ -969,7 +1049,8 @@ PAID_CLIP_RENDERS = (AUTO_RENDER, APPROVED_RENDER, CLIP_RENDER)
 # The clips of a CLIP_RENDER that were delivered before it reset them to DRAFT:
 # ``{clip_id: {'status': ..., 'key': ...}}``. Their old file stays until a new
 # one replaces it. Only a new file counts as delivered, and a render of one
-# that fails gives it back as it was (``_restore_rerendered_clips``).
+# that fails gives it back as it was (``_restore_rerendered_clips``). Dropped
+# once that render is settled and nothing is left to give back.
 CLIP_RENDER_PREVIOUS_KEY = 'clip_render_previous'
 # pipeline_error_code of a failed project whose re-dispatch was refunded
 # because the broker did not take it (views_clips.ProjectRedispatchView): a
@@ -1100,6 +1181,7 @@ def _reserve_auto_render(project_id, resuming=False):
             txn = wallet_service.reserve_funds(
                 wallet_id=wallet.id, amount=cost, user=project.uploaded_by,
                 description=f"Render automático: {project.title}"[:255],
+                project=project, category=Transaction.Category.RENDER,
             )
         except (wallet_service.InsufficientFundsError, PlanLimitExceededError, FeatureNotAllowedError) as exc:
             reason = 'insufficient_funds' if isinstance(exc, wallet_service.InsufficientFundsError) else 'plan_limit'
@@ -1177,6 +1259,31 @@ def _rerendered_clips_to_restore(metadata):
     return previous, statuses
 
 
+def _restore_pending(metadata):
+    """
+    Whether ``_restore_rerendered_clips`` would give a clip back now, read
+    from a project's ``metadata`` without any lock: a clip a render asked for
+    later found delivered is in a status it is given back from with its old
+    file, or one that was PUBLISHED is COMPLETED with a new file. One query.
+    """
+    previous, statuses = _rerendered_clips_to_restore(metadata or {})
+    delivered = (VideoClip.Status.COMPLETED, VideoClip.Status.PUBLISHED)
+    wanted = {
+        str(pk): before for pk, before in previous.items()
+        if before.get('status') in delivered and before.get('key')
+    }
+    if not wanted:
+        return False
+    for pk, status, key in VideoClip.objects.filter(pk__in=list(wanted)).values_list('pk', 'status', 's3_object_key'):
+        before = wanted[str(pk)]
+        if status in statuses and key == before['key']:
+            return True
+        published = before['status'] == VideoClip.Status.PUBLISHED
+        if published and status == VideoClip.Status.COMPLETED and key != before['key']:
+            return True
+    return False
+
+
 def _restore_rerendered_clips(project_id):
     """
     A clip that was delivered and rendered again (CLIP_RENDER) keeps what the
@@ -1192,17 +1299,12 @@ def _restore_rerendered_clips(project_id):
     Read again under it, a draft whose new render was reserved meanwhile is
     left alone; restored, that render would skip it as already rendered and
     be refunded without rendering what the user paid for. Conditional
-    updates, idempotent.
+    updates, idempotent. Returns how many clips it changed, both kinds.
     """
     metadata = VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first() or {}
-    previous, statuses = _rerendered_clips_to_restore(metadata)
-    if not previous:
-        return 0
-    published = [pk for pk, before in previous.items() if before.get('status') == VideoClip.Status.PUBLISHED]
-    if not (
-        VideoClip.objects.filter(pk__in=list(previous), status__in=statuses).exists()
-        or VideoClip.objects.filter(pk__in=published, status=VideoClip.Status.COMPLETED).exists()
-    ):
+    if not _restore_pending(metadata):
+        if CLIP_RENDER_PREVIOUS_KEY in metadata and not _clip_render_reserved(metadata):
+            _forget_rerendered_clips(project_id)
         return 0
     restored = 0
     with transaction.atomic():
@@ -1218,12 +1320,33 @@ def _restore_rerendered_clips(project_id):
                 pk=clip_id, status__in=statuses, s3_object_key=key,
             ).update(status=status, render_claim_token=None, render_unfinished_starts=0)
             if status == VideoClip.Status.PUBLISHED:
-                VideoClip.objects.filter(pk=clip_id, status=VideoClip.Status.COMPLETED).exclude(
+                restored += VideoClip.objects.filter(pk=clip_id, status=VideoClip.Status.COMPLETED).exclude(
                     s3_object_key=key,
                 ).update(status=status)
+        _forget_rerendered_clips(project_id)
     if restored:
         logger.info("render.clip_restored project_id=%s clips=%d", project_id, restored)
     return restored
+
+
+def _forget_rerendered_clips(project_id):
+    """
+    Drops CLIP_RENDER_PREVIOUS_KEY once its render is settled and nothing is
+    left to give back: no settle reads it any more (``_clip_render_settlement``
+    only while RESERVED), and recover_stuck_renders only looks at projects
+    that still have it. Decided again under the row lock: a paid render
+    reserved meanwhile writes its own and keeps it.
+    """
+    with transaction.atomic():
+        project = VideoProject.objects.select_for_update().filter(pk=project_id).first()
+        metadata = dict((project.metadata if project else None) or {})
+        if (
+            CLIP_RENDER_PREVIOUS_KEY not in metadata or _clip_render_reserved(metadata)
+            or _restore_pending(metadata)
+        ):
+            return
+        metadata.pop(CLIP_RENDER_PREVIOUS_KEY)
+        VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
 
 
 def _clip_render_charge(project, txn_amount, delivered_seconds, paid=AUTO_RENDER):
@@ -1249,7 +1372,8 @@ def _settle_clip_render_reservations(project_id):
     try:
         _restore_rerendered_clips(project_id)
     except DatabaseError as exc:
-        # Display only: the next finalize or paid render restores them.
+        # Display only, and the settle stays: recover_stuck_renders retries the
+        # restore of a project whose render asked for later is settled.
         logger.error("render.clip_restore_failed project_id=%s error=%s", project_id, type(exc).__name__)
 
 
@@ -1263,7 +1387,6 @@ def _settle_clip_render_reservation(project_id, paid):
     """
     from django.core.exceptions import ValidationError
 
-    # Deferred: wallet_service imports this module at load time.
     from apps.payments.services.wallet_service import (
         PaymentError, commit_partial_reservation, rollback_reservation,
     )
@@ -1340,7 +1463,6 @@ def _settle_whole_video_reservation(project_id):
     """
     from django.core.exceptions import ValidationError
 
-    # Deferred: wallet_service imports this module at load time.
     from apps.payments.services.wallet_service import PaymentError, rollback_reservation
 
     project = VideoProject.objects.filter(pk=project_id).first()
@@ -1577,10 +1699,13 @@ def _resume_render_dispatch(project_id, progress=None):
     return f"Render re-dispatched for {project_id}: {len(clip_ids)} clips"
 
 
-def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=0):
+def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=0, chain=None):
     """
     ``progress['stage']`` always holds the stage this worker believes the project
     is at, so a failure handler can guard its writes by ownership.
+
+    ``chain`` is the token of the message (INGESTION_CHAIN_KEY): one of
+    another chain never reopens a failed project nor runs an ingestion stage.
     """
     progress = progress if progress is not None else {}
 
@@ -1592,6 +1717,7 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
     project = VideoProject.objects.get(pk=project_id)
     stage = project.pipeline_stage
     progress['stage'] = stage
+    reopened = False
 
     if stage == PipelineStage.FAILED:
         if project.pipeline_error_code == INGESTION_NOT_QUEUED:
@@ -1613,15 +1739,29 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
             # is never run by a late copy of its message, and one refunded
             # after this reopen sees the project no longer failed and keeps
             # its reservation (views_clips.ProjectRedispatchView).
-            code = VideoProject.objects.select_for_update().filter(pk=project_id).values_list(
-                'pipeline_error_code', flat=True,
-            ).first()
+            code, metadata = VideoProject.objects.select_for_update().filter(pk=project_id).values_list(
+                'pipeline_error_code', 'metadata',
+            ).first() or ('', None)
+            metadata = metadata or {}
             if code in (REDISPATCH_NOT_QUEUED, INGESTION_NOT_QUEUED):
                 # INGESTION_NOT_QUEUED again, now under the lock: the create
                 # view may have failed it after the read above.
                 logger.warning("pipeline.redispatch_skipped project_id=%s reason=%s", project_id, code)
                 return f"Not resumed {project_id}: it was refunded when its message could not be queued"
+            if not _chain_current(metadata, chain):
+                # Only the message of whatever asked for this resume (a
+                # re-dispatch, the override) reopens it: a copy of an older
+                # chain that was only delayed (a re-queue of the sweep, the
+                # original message) would run what was refunded for free.
+                logger.warning("pipeline.redispatch_skipped project_id=%s reason=stale_chain", project_id)
+                return f"Not resumed {project_id}: its message belongs to a chain that was replaced"
             reopen(project_id, stage)
+            if any(key in metadata for key in INGESTION_RECOVERY_KEYS):
+                # A re-dispatch is a new run: recover_stuck_renders counts its re-queues anew.
+                VideoProject.objects.filter(pk=project_id).update(metadata={
+                    key: value for key, value in metadata.items() if key not in INGESTION_RECOVERY_KEYS
+                })
+        reopened = True
         progress['stage'] = stage
 
     if stage in TERMINAL_STAGES:
@@ -1650,11 +1790,24 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
                 # re-dispatched once the workspace has tokens. Projects
                 # dispatched before auto-render was charged have no key and
                 # resume as they started.
-                mark_failed(project_id, expected_stage=PipelineStage.RENDER_DISPATCHED)
+                _fail_with_new_chain(project_id, expected_stage=PipelineStage.RENDER_DISPATCHED)
                 record_error(project_id, 'AutoRenderNotPaid')
                 logger.warning("pipeline.redispatch_skipped project_id=%s reason=auto_render_unpaid", project_id)
                 return f"Not resumed {project_id}: its auto-render cannot be paid"
         return _resume_render_dispatch(project_id, progress)
+
+    if not reopened and not _chain_current(project.metadata, chain):
+        # Another chain owns the ingestion now (a re-queue of the sweep, a
+        # re-dispatch): this copy runs nothing, so two chains never run stages,
+        # plan capacity waits or spend retries side by side. The token only
+        # changes under this lock or while the project is failed.
+        logger.warning("pipeline.chain_stale project_id=%s stage=%s", project_id, stage)
+        return f"Skipped {project_id}: its message belongs to a chain that was replaced"
+
+    # This delivery runs the ingestion now (the lock is ours): recover_stuck_renders
+    # measures "no progress" from the last start. Compare-and-set, like the status
+    # below: a project that moved meanwhile is not this run's.
+    _merge_metadata(project_id, {INGESTION_STARTED_AT_KEY: timezone.now().isoformat()}, expected_stage=stage)
 
     # Prompt-to-Edit (PTE-01b): parse and apply once, before any stage reads the
     # project settings (idempotent; a project without a prompt is untouched).
@@ -1751,23 +1904,11 @@ def _run_ingestion(project_id, attempt, progress=None, lock=None, parse_retries=
                 _stage_dispatch_render(project_id, progress)
         else:
             # The clips exist: the ingestion work is delivered and its tokens are
-            # charged (already, if an auto-render could not be paid).
-            _commit_ingestion_reservation(project_id)
-            # An auto-render reserved by an earlier run that never dispatched
-            # (the bypass was turned off since) pays for nothing: returned.
-            try:
-                _refund_undispatched_auto_render(project_id)
-            except DatabaseError as exc:
-                # settle_stale_reservations returns it later (not_dispatched).
-                logger.error(
-                    "pipeline.auto_render_refund_failed project_id=%s error=%s", project_id, type(exc).__name__,
-                )
+            # charged (already, if an auto-render could not be paid). An
+            # auto-render reserved by an earlier run that never dispatched (the
+            # bypass was turned off since) pays for nothing: returned.
+            _hand_to_review(project_id)
             logger.info("⏳ Ingestion complete. Awaiting user approval.")
-            # Guarded: a redelivered task must not undo a later user action.
-            VideoProject.objects.filter(
-                pk=project_id,
-                status__in=[VideoProject.Status.UPLOADED, VideoProject.Status.INGESTING],
-            ).update(status=VideoProject.Status.AWAITING_APPROVAL)
 
     return f"Ingestion Success {project_id}"
 
@@ -1783,7 +1924,6 @@ def _refund_undispatched_auto_render(project_id):
     Under the row lock; returns whether it refunded. A reservation another
     settle returned meanwhile is not an error; a database error propagates.
     """
-    # Deferred: wallet_service imports this module at load time.
     from apps.payments.services.wallet_service import PaymentError, rollback_reservation
 
     with transaction.atomic():
@@ -1842,7 +1982,10 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
             # failed because of it.
             logger.warning("pipeline.fail_skipped project_id=%s reason=work_done", project_id)
         elif final:
-            failed_now = mark_failed(project_id, expected_stage=stage)
+            # With a new chain: a copy of this very delivery (a re-publish
+            # that reached the broker and raised anyway) never reopens what
+            # is refunded below.
+            failed_now = _fail_with_new_chain(project_id, expected_stage=stage)
     except (DatabaseError, VideoProject.DoesNotExist) as record_exc:
         logger.error(
             "pipeline.failure_not_recorded project_id=%s error=%s",
@@ -1874,7 +2017,7 @@ def _record_pipeline_failure(project_id, exc, attempt, final, stage=None):
     soft_time_limit=getattr(settings, 'PIPELINE_SOFT_TIME_LIMIT', 2 * 3600),
     time_limit=getattr(settings, 'PIPELINE_TIME_LIMIT', 2 * 3600 + 300),
 )
-def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0):
+def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0, chain=None):
     """
     Multimodal Ingestion Pipeline V2 (Paper Edit V1 + Video Sync), recoverable.
     Retryable errors back off exponentially (TD-04: replaces the fixed 60s
@@ -1882,6 +2025,9 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
 
     Waiting for a busy project lock has its own counter (``lock_retries``,
     AICORE-18): lock contention never spends the retries meant for errors.
+    ``chain`` is the token of the chain the message belongs to
+    (INGESTION_CHAIN_KEY): every re-queue carries it on, and ``self.retry``
+    keeps the kwargs.
     """
     from apps.videos.services.ai.prompt_validator import PromptParseRetry
 
@@ -1893,7 +2039,7 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
     progress = {}
     try:
         with project_lock(project_id) as lock:
-            return _run_ingestion(project_id, attempt, progress, lock, parse_retries)
+            return _run_ingestion(project_id, attempt, progress, lock, parse_retries, chain=chain)
     except PromptParseRetry:
         # Re-queued, not self.retry(): the stages keep their whole retry budget.
         countdown = PTE_PARSE_RETRY_SECONDS[min(parse_retries, len(PTE_PARSE_RETRY_SECONDS) - 1)]
@@ -1908,7 +2054,7 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
             self,
             lambda: process_initial_ingestion.apply_async(
                 args=[str(project_id)],
-                kwargs={'lock_retries': lock_retries, 'parse_retries': parse_retries + 1},
+                kwargs={'lock_retries': lock_retries, 'parse_retries': parse_retries + 1, **_chain_kwargs(chain)},
                 countdown=countdown,
                 retries=self.request.retries,
             ),
@@ -1929,7 +2075,7 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
                 self,
                 lambda: process_initial_ingestion.apply_async(
                     args=[str(project_id)],
-                    kwargs={'lock_retries': lock_retries + 1, 'parse_retries': parse_retries},
+                    kwargs={'lock_retries': lock_retries + 1, 'parse_retries': parse_retries, **_chain_kwargs(chain)},
                     countdown=PIPELINE_LOCK_RETRY_SECONDS,
                     retries=self.request.retries,
                 ),
@@ -1955,7 +2101,7 @@ def process_initial_ingestion(self, project_id, lock_retries=0, parse_retries=0)
         try:
             return _wait_for_capacity(
                 project_id, exc, attempt, progress.get('stage'), self.request.retries,
-                parse_retries,
+                parse_retries, chain,
             )
         except Reject:
             # The re-queue was not published: this message goes back to the

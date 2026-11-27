@@ -5,7 +5,7 @@ import { http, HttpResponse, delay } from 'msw';
 import { API_URL } from '@/api/config';
 import { getTokens } from '@/api/session';
 import { server } from '@/api/mocks/server';
-import { loadDb } from '@/api/mocks/state';
+import { loadDb, saveDb } from '@/api/mocks/state';
 import { failRead, renderScreen, startMockApi } from '../uso/test-utils';
 import { GeneralSettings } from './GeneralSettings';
 import { parseEmails } from './InviteMemberDialog';
@@ -67,11 +67,69 @@ describe('H1 · General', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Guardar' })).toBeDisabled());
   });
 
-  it('borrar pide escribir el nombre del workspace', async () => {
+  it('borrar con proyectos en proceso: el servidor lo rechaza y el diálogo dice por qué', async () => {
     const user = userEvent.setup();
     renderScreen(<GeneralSettings />);
     await user.click(await screen.findByRole('button', { name: 'Borrar el workspace…' }));
     const dialog = await screen.findByRole('alertdialog', { name: '¿Borrar Estudio Norte?' });
+    await user.type(within(dialog).getByRole('textbox'), 'Estudio Norte');
+    await user.click(within(dialog).getByRole('button', { name: 'Borrar el workspace' }));
+    expect(await within(dialog).findByText(/Hay proyectos procesándose o renderizándose/)).toBeInTheDocument();
+    expect(loadDb().workspaces.some((workspace) => workspace.name === 'Estudio Norte')).toBe(true);
+    expect(navigation.replace).not.toHaveBeenCalled();
+  });
+
+  it('borrar con un pago en curso: el servidor lo rechaza y el diálogo dice qué hacer', async () => {
+    const user = userEvent.setup();
+    const prepare = () => {
+      const db = loadDb();
+      const estudio = db.workspaces.find((workspace) => workspace.name === 'Estudio Norte')?.id ?? '';
+      db.projects = db.projects.filter((project) => project.workspace !== estudio || !['uploaded', 'ingesting', 'rendering'].includes(project.status));
+      for (const post of db.posts) if (post.workspace === estudio && ['SCHEDULED', 'QUEUED', 'PROCESSING'].includes(post.status)) post.status = 'DRAFT';
+      for (const wallet of db.wallets) if (wallet.workspace === estudio) Object.assign(wallet, { available_balance: 0, reserved_balance: 0 });
+      const id = '5b2e8c1d-3f4a-4e6b-8c9d-0a1b2c3d4e5f';
+      db.purchases.push({
+        id,
+        workspace: estudio,
+        status: 'pending',
+        tokens: 0,
+        plan_id: db.plans.find((plan) => plan.price_usd_monthly > 0)?.id ?? null,
+        amount_usd: 49,
+        checkout_url: `http://localhost:3000/dev/checkout?compra=${id}`,
+        failure_reason: null,
+        created_at: new Date().toISOString(),
+        balance_after: null,
+        _settleAt: null,
+        _reject: false,
+      });
+      saveDb(db);
+    };
+    renderScreen(<GeneralSettings />, { prepare });
+    await user.click(await screen.findByRole('button', { name: 'Borrar el workspace…' }));
+    const dialog = await screen.findByRole('alertdialog', { name: '¿Borrar Estudio Norte?' });
+    await user.type(within(dialog).getByRole('textbox'), 'Estudio Norte');
+    await user.click(within(dialog).getByRole('button', { name: 'Borrar el workspace' }));
+    expect(await within(dialog).findByText('Hay un pago en curso: terminalo, o esperá a que venza (24 h después de abrirlo).')).toBeInTheDocument();
+    expect(loadDb().workspaces.some((workspace) => workspace.name === 'Estudio Norte')).toBe(true);
+    expect(navigation.replace).not.toHaveBeenCalled();
+  });
+
+  it('borrar pide escribir el nombre del workspace', async () => {
+    const user = userEvent.setup();
+    // Nothing in progress: a workspace with projects processing or rendering is not deleted (409).
+    const prepare = () => {
+      const db = loadDb();
+      const estudio = db.workspaces.find((workspace) => workspace.name === 'Estudio Norte')?.id;
+      db.projects = db.projects.filter((project) => project.workspace !== estudio || !['uploaded', 'ingesting', 'rendering'].includes(project.status));
+      // Drafts: the simulation would send a SCHEDULED post that is due, and one going out stops the delete.
+      for (const post of db.posts) if (post.workspace === estudio && ['SCHEDULED', 'QUEUED', 'PROCESSING'].includes(post.status)) post.status = 'DRAFT';
+      for (const wallet of db.wallets) if (wallet.workspace === estudio) Object.assign(wallet, { available_balance: 0, reserved_balance: 0 });
+      saveDb(db);
+    };
+    renderScreen(<GeneralSettings />, { prepare });
+    await user.click(await screen.findByRole('button', { name: 'Borrar el workspace…' }));
+    const dialog = await screen.findByRole('alertdialog', { name: '¿Borrar Estudio Norte?' });
+    expect(within(dialog).getByText(/Las publicaciones programadas que todavía no salieron se borran y no se van a publicar\./)).toBeInTheDocument();
     const confirm = within(dialog).getByRole('button', { name: 'Borrar el workspace' });
     expect(confirm).toBeDisabled();
     await user.type(within(dialog).getByRole('textbox'), 'Estudio Norte');
@@ -102,6 +160,7 @@ describe('H1 · General', () => {
     await user.click(await screen.findByRole('button', { name: 'Borrar el workspace…' }));
     const dialog = await screen.findByRole('alertdialog', { name: '¿Borrar Mi Espacio?' });
     expect(within(dialog).getByText('Es tu único workspace')).toBeInTheDocument();
+    expect(within(dialog).getByText(/No se puede borrar el único workspace que tenés/)).toBeInTheDocument();
   });
 
   it('transferir ofrece a los demás miembros activos', async () => {

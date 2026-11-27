@@ -26,7 +26,7 @@ export const Plan = z.object({
 });
 export type Plan = z.infer<typeof Plan>;
 
-/** The numbers of PricingEngine, so the browser estimates with the same formula (map 1.5). */
+/** The numbers of PricingEngine, so the browser estimates with the same formula (map 1.5). The backend sends every Decimal as text. */
 export const Pricing = z.object({
   /** PricingEngine.BASE_COST_PER_SECOND_720P */
   base_cost_per_second_720p: Decimal,
@@ -34,19 +34,19 @@ export const Pricing = z.object({
   resolution_multipliers: z.object({ '720p': Decimal, '1080p': Decimal, '4K': Decimal }),
   /** PricingEngine.FEATURE_COSTS */
   feature_costs: z.object({ seo_optimization: Decimal, ai_thumbnail: Decimal }),
-  /** Flat price of a project created from a link (views.py: Decimal('10.0')). Links are always 720p. */
+  /** Flat price of a project created from a link (PricingEngine.LINK_FLAT_COST). Links are always 720p. */
   link_flat_cost: Decimal,
-  /** Floor of any charge (0.01). */
+  /** Floor of any charge (PricingEngine.MIN_COST, 0.01). */
   min_cost: Decimal,
-  /** Reference price of one token, for "≈ USD 9". */
+  /** Reference price of one token, for "≈ USD 9" (setting TOKEN_PRICE_USD). */
   token_price_usd: Decimal,
   /** AI_SINGLE_EDIT_MAX_DURATION_SECONDS (600). */
   single_edit_max_duration_seconds: z.number().int().positive(),
   /** AI_UPLOAD_MAX_DURATION_SECONDS (3 h): the system ceiling, above any plan. */
   upload_max_duration_seconds: z.number().int().positive(),
-  /** Upload size ceiling in bytes (serializer: 500 MB). */
+  /** Upload size ceiling in bytes (UPLOAD_MAX_SIZE_BYTES in apps/videos/serializers.py: 500 MB). */
   upload_max_size_bytes: z.number().int().positive(),
-  /** Accepted extensions (serializer: .mp4, .mov, .avi). */
+  /** Accepted extensions (UPLOAD_EXTENSIONS: .mp4, .mov, .avi). */
   upload_extensions: z.array(z.string()),
   /** MAX_SELECTION_CRITERIA_CHARS */
   selection_criteria_max_chars: z.number().int().positive(),
@@ -58,10 +58,12 @@ export type Pricing = z.infer<typeof Pricing>;
 export const EstimateRequest = z.object({
   /** 'file': priced by duration. 'link': flat price, duration unknown. */
   source: z.enum(['file', 'link']),
+  /** Needed with 'file' (400 without it); priced by its whole seconds, like the creation. Above AI_UPLOAD_MAX_DURATION_SECONDS, the creation's 400. */
   duration_seconds: z.number().nonnegative().optional(),
+  /** Default 720p. A 'link' takes only 720p (the creation's 400 otherwise). */
   render_resolution: RenderResolution.optional(),
   use_seo: z.boolean().optional(),
-  /** For the ETA: how many clips at most. */
+  /** For the ETA: how many clips at most. Accepted; the time to the review does not depend on it today. */
   max_clips: z.number().int().positive().optional(),
 });
 export type EstimateRequest = z.infer<typeof EstimateRequest>;
@@ -76,7 +78,11 @@ export const Estimate = z.object({
   balance_after: Decimal,
   sufficient: z.boolean(),
   has_watermark: z.boolean(),
-  /** "Listo para revisar en ≈ X min" (gap 18). Null when it cannot be estimated. */
+  /**
+   * "Listo para revisar en ≈ X min" (gap 18): the median time the latest projects took per second of video
+   * up to the review, times this duration (only the stages, not the queue). Null for a link, for 0 s and
+   * while no project has reached the review.
+   */
   eta_seconds: z.number().int().nonnegative().nullable(),
 });
 export type Estimate = z.infer<typeof Estimate>;
@@ -97,11 +103,11 @@ export const Wallet = z.object({
   available_balance: Decimal,
   reserved_balance: Decimal,
   updated_at: IsoDateTime,
-  /** Proposed: SPEND + COMPLETED of the current month. */
+  /** SPEND + COMPLETED charged this month (by when it was charged), in the workspace's time zone. */
   spent_this_month: Decimal,
-  /** Proposed: below this the UI warns "saldo bajo" (cost of an average video, map 1.11). */
+  /** Below this the UI warns "saldo bajo": an average video, 20 min at 720p with the plan's discount (map 1.11). */
   low_balance_threshold: Decimal,
-  /** Proposed (gap 19): what is reserved, per project. */
+  /** Gap 19: each open reservation (SPEND + RESERVED) with its project, newest first. */
   reservations: z.array(
     z.object({
       transaction_id: Id,
@@ -120,8 +126,10 @@ export const TransactionType = z.enum(['DEPOSIT', 'SPEND', 'REFUND']);
 export const TransactionStatus = z.enum(['PENDING', 'RESERVED', 'COMPLETED', 'FAILED']);
 
 /**
- * What the movements table shows (map G2). Derivable from type + status today;
- * proposed as an explicit field so "devuelto" does not depend on reading FAILED.
+ * What the movements table shows (map G2). The backend derives it from type + status
+ * (apps/payments/services/movements.py · KINDS), so "devuelto" does not depend on reading FAILED:
+ * DEPOSIT+COMPLETED purchase, SPEND+RESERVED reserved, SPEND+COMPLETED charged, REFUND+COMPLETED refund,
+ * SPEND+FAILED released, DEPOSIT or REFUND + PENDING pending.
  */
 export const TransactionKind = z.enum(['purchase', 'reserved', 'charged', 'refund', 'released', 'pending']);
 export type TransactionKind = z.infer<typeof TransactionKind>;
@@ -130,17 +138,23 @@ export const Transaction = z.object({
   id: Id,
   wallet: Id,
   created_by: Id.nullable(),
+  /** What it is now: reserved, charged (a partial charge keeps only what was charged), returned or bought. */
   amount: Decimal,
+  /** What the reservation set aside. Above `amount` on a partial charge: the difference came back. Null on a purchase and on rows from before payments 0012. */
+  reserved_amount: Decimal.nullable(),
   transaction_type: TransactionType,
   status: TransactionStatus,
   description: z.string(),
   created_at: IsoDateTime,
-  /** Proposed (gap 4). */
+  /** When it was charged or returned. Null while reserved, on a purchase and on old rows. The list is dated and ordered by `settled_at ?? created_at`. */
+  settled_at: IsoDateTime.nullable(),
+  /** Gap 4. */
   kind: TransactionKind,
+  /** The name, never the email. */
   created_by_detail: UserRef.nullable(),
-  /** Proposed (gap 4): direct link to the project. */
+  /** Gap 4: direct link to the project. Null on a purchase and once the project is deleted. */
   project: z.object({ id: Id, title: z.string() }).nullable(),
-  /** Proposed: what the charge was for, for the usage chart. */
+  /** What the charge was for, for the usage chart. The creation is `project` (SEO included); any later render, `render`. */
   category: z.enum(['project', 'render', 'seo', 'purchase', 'other']),
 });
 export type Transaction = z.infer<typeof Transaction>;
@@ -153,8 +167,16 @@ export const TransactionsQuery = PageQuery.extend({
 });
 export type TransactionsQuery = z.infer<typeof TransactionsQuery>;
 
-/** Count and sum of the movements of one kind, for the filter chips and the totals of G2 and G1. */
-export const TransactionKindTotal = z.object({ count: z.number().int().nonnegative(), amount: Decimal });
+/**
+ * Count and sum of the movements of one kind, for the filter chips and the totals of G2 and G1. In `released`,
+ * `amount` also has what partial charges gave back (`reserved_amount − amount`), and `partial_count` says how many;
+ * `count` stays the released rows, the ones its filter lists.
+ */
+export const TransactionKindTotal = z.object({
+  count: z.number().int().nonnegative(),
+  amount: Decimal,
+  partial_count: z.number().int().nonnegative().optional(),
+});
 export type TransactionKindTotal = z.infer<typeof TransactionKindTotal>;
 
 export const UsageDay = z.object({
@@ -241,7 +263,11 @@ export const getPricing = defineEndpoint({
   auth: false,
   workspaceScoped: false,
   errors: [],
-  backend: { status: 'proposed', gap: 6, note: 'Valores de PricingEngine (apps/payments/services/pricing_engine.py) y de settings.' },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views.py · PricingView + services/estimate.py · pricing_values',
+    note: 'Público, sin token. Los valores de PricingEngine (apps/payments/services/pricing_engine.py), los topes de subida de apps/videos/serializers.py y los settings `AI_SINGLE_EDIT_MAX_DURATION_SECONDS`, `AI_UPLOAD_MAX_DURATION_SECONDS`, `AI_PROMPT_MAX_CHARS` y `TOKEN_PRICE_USD`. Los decimales llegan como texto (`"0.5"`).',
+  },
   screens: ['C1', 'A6', 'G3', 'G4', 'D2', 'D1 (diálogo)'],
 });
 
@@ -252,8 +278,18 @@ export const estimateCost = defineEndpoint({
   summary: 'Estimado del backend para una configuración: costo, descuento, saldo después y tiempo estimado.',
   request: EstimateRequest,
   response: Estimate,
-  errors: [{ status: 403, when: 'El plan no permite la duración, la resolución o el SEO (`code`: `duration` | `resolution` | `seo`). La UI abre D3.' }],
-  backend: { status: 'proposed', gap: [6, 18], note: 'Envuelve PricingEngine.calculate_render_cost con el plan del workspace.' },
+  errors: [
+    {
+      status: 400,
+      when: 'Los mismos de la creación: un link en otra resolución que 720p (`{ error }`) y un archivo más largo que el tope de cualquier subida (`source_file`, el texto de `too_long`). Además, `duration_seconds` falta con `source: "file"`.',
+    },
+    { status: 403, when: 'El plan no permite la duración, la resolución o el SEO (`code`: `duration` | `resolution` | `seo`, con `limit` en los dos primeros). La UI abre D3.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views.py · EstimateView + services/estimate.py · estimate',
+    note: 'El precio sale de la misma función que la creación (`price_new_project`, apps/videos/services/render_pricing.py): un archivo por sus segundos enteros con PricingEngine.calculate_render_cost y el plan del workspace; un link, precio fijo más el SEO con descuento. `discount_amount` es base + adicionales − total (incluye el redondeo). No escribe nada: lo pide cualquier rol (`wallet.view`). `eta_seconds` sale de los tiempos por etapa de los últimos 50 proyectos de 30 días que llegaron a la revisión (`metadata.stage_durations`), guardado 5 minutos en el cache: null para un link o mientras no hay ninguno. 404 si el usuario no tiene workspace.',
+  },
   screens: ['C1', 'D2', 'D4', 'D5'],
 });
 
@@ -263,8 +299,12 @@ export const getSubscription = defineEndpoint({
   path: '/api/v1/subscription/',
   summary: 'Plan actual del workspace, su renovación y el cambio pendiente si lo hay.',
   response: Subscription,
-  errors: [],
-  backend: { status: 'proposed', gap: 12, note: 'Hoy solo existe Workspace.subscription_plan.' },
+  errors: [{ status: 404, when: 'El workspace no tiene plan y tampoco existe el plan por defecto (`DEFAULT_PLAN_NAME`).' }],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views_subscription.py · SubscriptionView + SubscriptionSerializer (apps/payments/serializers_billing.py)',
+    note: 'Todos los roles. `renews_at` es el fin del período pagado con el checkout: un mes calendario desde que se confirmó el pago de la subida, contado en `WORKSPACE_TIME_ZONE` y anclado al día en que empezó (31 ene → 28 feb → 31 mar). Es null en un plan gratis y en uno asignado en el admin (una cortesía, que no vence). Todavía nada cobra la renovación (PAY-02): cuando el período termina, la tarea `apply_due_plan_changes` aplica la bajada programada o, sin ninguna, pasa el workspace al plan por defecto (`DEFAULT_PLAN_NAME`). Por eso `status` es siempre `active`. Un workspace sin plan muestra el plan por defecto.',
+  },
   screens: ['Barra', 'G1', 'G3', 'C1', 'E1', 'H2'],
 });
 
@@ -273,14 +313,14 @@ export const changePlan = defineEndpoint({
   method: 'POST',
   path: '/api/v1/subscription/change/',
   summary:
-    'Cambia de plan. Subir se aplica al momento, o al volver del checkout si hay que pagar; bajar, al fin del período. Mandar el plan actual cancela un cambio programado.',
+    'Cambia de plan. Todo otro plan pago se compra: se aplica al volver del checkout, cuando se confirma el pago. Un plan gratis, al fin del período. Mandar el plan actual cancela lo programado.',
   request: z.object({
     plan_id: Id,
     /**
      * Where the provider sends the browser back when the upgrade needs a payment (`/uso/planes`).
      * The backend appends `compra=<id>`; the screen follows that payment with `billing.purchase`.
      */
-    return_url: z.string().url().optional(),
+    return_url: z.string().url().max(600).optional(),
   }),
   response: z.object({
     applied: z.enum(['now', 'period_end']),
@@ -289,17 +329,20 @@ export const changePlan = defineEndpoint({
     subscription: Subscription,
   }),
   errors: [
-    { status: 400, when: 'Ya es el plan actual y no hay ningún cambio programado para cancelar.' },
+    { status: 400, when: 'Ya es el plan actual y no hay nada programado ni esperando su pago (`{ plan_id: ["Ya es tu plan actual."] }`), o `return_url` no es una página de la app o pasa de 600 caracteres.' },
     { status: 403, when: 'El rol no puede cambiar el plan (solo Dueño y Admin).' },
+    { status: 404, when: 'El plan no existe, está inactivo o no es público (`{ detail: "El plan no existe." }`), o el workspace se borró mientras el pedido esperaba su turno (el `detail` del workspace inexistente; no cambia nada).' },
     {
       status: 409,
-      when: 'Bajar a un plan con menos lugares que los que el workspace ocupa hoy, contando invitaciones pendientes (`code: "seats_exceeded"`). No se programa nada: primero hay que quitar miembros. Es un 409 porque lo impide el estado del workspace; el mismo código en `workspaces.invite` es un 403 de límite de plan, que se resuelve subiendo de plan.',
+      when: 'Cambiar a un plan con menos lugares que los que el workspace ocupa hoy, contando invitaciones pendientes (`code: "seats_exceeded"`, con `seats_used` y `max_members`). No se programa nada: primero hay que quitar miembros. Es un 409 porque lo impide el estado del workspace; el mismo código en `workspaces.invite` es un 403 de límite de plan, que se resuelve subiendo de plan. También 409 `code: "checkout_in_progress"`: el mismo pago todavía está abriendo su checkout (un doble envío); se reintenta en unos segundos y nada se rechaza (un intento cuyo checkout nunca abrió deja de bloquear pasado el doble de `PAYMENTS_PROVIDER_TIMEOUT_SECONDS` desde que empezó su llamada al proveedor). Y 409 `code: "plan_change_superseded"`: mientras se abría el pago se eligió otro plan (o seguir con el actual); nunca se devuelve el checkout de otro plan.',
     },
+    { status: 501, when: 'Pasar a otro plan pago sin proveedor de pagos configurado (`code: "payments_unavailable"`). No cambia nada. No es 503: la app lee cualquier 503 como mantenimiento.' },
+    { status: 502, when: 'El proveedor no abrió el checkout (`code: "checkout_failed"`). No se cobró nada.' },
   ],
   backend: {
-    status: 'proposed',
-    gap: 12,
-    note: 'Con `plan_id` igual al plan actual y un cambio programado, lo cancela (`pending_plan` vuelve a null, `applied: "now"`). Si subir necesita un pago, `checkout_url` viene con valor, el plan no cambia todavía y el proveedor vuelve a `return_url` con `compra=<id>`.',
+    status: 'exists',
+    source: 'back/apps/payments/views_subscription.py · ChangePlanView (apps/payments/services/subscriptions.py)',
+    note: 'Antes de PAY-02, todo otro plan pago es una compra, sea más caro, más barato o del mismo precio: `checkout_url` viene con valor, el plan no cambia todavía y el proveedor vuelve a `return_url` (por defecto `FRONTEND_URL/uso/planes`) con `compra=<id>`; al confirmarse el pago cambia el plan una sola vez, al momento, y empieza un período pagado de un mes propio. Sin prorrateo: se cobra el mes entero del plan nuevo y lo que quedaba del período actual se pierde. Así pagar una vez nunca deja un plan pago para siempre. Pedir otra vez el mismo plan devuelve el mismo checkout; elegir otro rechaza el pago que esperaba. Solo un plan gratis (como el de `DEFAULT_PLAN_NAME`) se programa para el fin del período pagado (`applied: "period_end"`); sin período pagado se aplica al momento (`applied: "now"`). La web dice «Subir» o «Bajar» por `sort_order` (un check de Django, `payments.W002`, avisa si el orden de los planes públicos no sigue al precio) y avisa que un plan pago se paga y se aplica al momento. Mientras una bajada espera, o mientras un pago de plan espera su checkout, invitar a más gente que la que entra en ese plan se rechaza. La tarea `apply_due_plan_changes` (Celery Beat, cada 15 min) aplica las bajadas que vencieron y, si el período terminó sin nada programado, pasa al plan por defecto. Con `plan_id` igual al plan actual cancela la bajada programada y el pago de plan que esperaba su checkout (`applied: "now"`). Un checkout que nadie paga vence a las 24 h de abierto (`PAYMENTS_CHECKOUT_TTL_SECONDS`): la tarea lo rechaza («El checkout venció sin que se pagara.») y lo cierra en el proveedor, y deja de limitar las invitaciones; pedir ese plan después abre otro checkout. El mock aplica todo plan pago al momento salvo en el escenario «Plan con checkout».',
   },
   screens: ['G3'],
 });
@@ -311,7 +354,11 @@ export const getWallet = defineEndpoint({
   summary: 'Saldo disponible y reservado del workspace, con el detalle de lo reservado por proyecto.',
   response: Wallet,
   errors: [],
-  backend: { status: 'proposed', gap: [4, 19], note: 'Modelo: Wallet (available_balance, reserved_balance).' },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views.py · WalletView',
+    note: 'Los saldos con sus diez decimales, como texto. `reservations` tiene una fila por reserva abierta (no una suma por proyecto), con el proyecto que paga (`Transaction.project`, migración 0015 de payments; null en una reserva vieja que la 0016 no pudo vincular). `spent_this_month` y el mes van en `WORKSPACE_TIME_ZONE` (America/Argentina/Buenos_Aires) y cuentan por cuándo se cobró (`settled_at`). Lo ven todos los roles (`wallet.view`). 404 si el usuario no tiene workspace.',
+  },
   screens: ['Barra', 'G1', 'C1', 'D2', 'G4', 'D1 (diálogo)', 'D2 (diálogo)'],
 });
 
@@ -322,8 +369,15 @@ export const getUsage = defineEndpoint({
   summary: 'Consumo por día de un mes (solo lo cobrado), separado en proyectos, renders y SEO. El mes y los días son los de la zona horaria del workspace (America/Argentina/Buenos_Aires).',
   query: z.object({ month: z.string().regex(/^\d{4}-\d{2}$/).optional() }),
   response: z.array(UsageDay),
-  errors: [{ status: 403, when: 'Solo Dueño y Admin.' }],
-  backend: { status: 'proposed', gap: 4 },
+  errors: [
+    { status: 400, when: '`month` no es `AAAA-MM` (`{ month: ["Mandá el mes como AAAA-MM."] }`).' },
+    { status: 403, when: 'Solo Dueño y Admin.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views.py · WalletUsageView + services/movements.py · usage',
+    note: 'Todos los días del mes (sin `month`, el actual), en orden. Suma los SPEND + COMPLETED por el día en que se cobraron (`settled_at`, o `created_at` en filas viejas): un cobro parcial cuenta lo cobrado. Columnas por `Transaction.category`: `render` en `renders`, `seo` en `seo` y el resto en `projects`. Hoy nada escribe `seo`: el SEO se cobra dentro de la creación, así que cae en `projects` y la columna llega en 0.',
+  },
   screens: ['G1'],
 });
 
@@ -335,14 +389,22 @@ export const listTransactions = defineEndpoint({
   query: TransactionsQuery,
   response: paginated(Transaction).extend({
     /**
-     * Proposed (gap 4), always present: how many movements and how many tokens per kind, for the
+     * Gap 4, always present: how many movements and how many tokens per kind, for the
      * same month and project but ignoring `kind` and the page, so the chips can show every count
-     * at once. Kinds without movements may be absent.
+     * at once. Kinds without movements are absent.
      */
     totals: z.record(TransactionKind, TransactionKindTotal),
   }),
-  errors: [{ status: 403, when: 'Solo Dueño y Admin (Editor y Lector ven únicamente el saldo).' }],
-  backend: { status: 'proposed', gap: 4, note: 'Modelo: Transaction. Faltan el vínculo al proyecto y `kind`. Hoy el backend solo escribe DEPOSIT y SPEND: un cobro parcial (`commit_partial_reservation`) baja el monto del SPEND a lo cobrado y lo deja COMPLETED, y devuelve el resto al saldo sin escribir otra fila; una reserva que se cae queda SPEND + FAILED (`kind: "released"`, «Devuelto»). El tipo REFUND existe en el modelo pero nada lo escribe: `kind: "refund"` queda propuesto para devoluciones de algo ya cobrado.' },
+  errors: [
+    { status: 400, when: '`kind`, `month` o `project` no son válidos (errores por campo).' },
+    { status: 403, when: 'Solo Dueño y Admin, también con `project` (Editor y Lector ven únicamente el saldo).' },
+    { status: 404, when: 'La página no existe (`detail: "Página inválida."`).' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views.py · TransactionListView + TransactionSerializer (apps/payments/serializers.py) + services/movements.py',
+    note: 'Una fila por transacción, de la más nueva a la más vieja por cuándo movió el saldo por última vez (`settled_at ?? created_at`); `month` y `totals` usan la misma fecha, así que un cobro es del mes en que se cobró, como en `billing.usage`. `page_size` hasta 100 (25 por defecto). `kind` sale de tipo + estado; una fila sin `kind` no movió el saldo y no sale (una compra que falló). Un cobro parcial (`commit_partial_reservation`) deja el SPEND en lo cobrado (`amount`) con lo reservado en `reserved_amount`, sin otra fila para lo devuelto: `totals.released` lo suma y lo cuenta en `partial_count`. Una reserva que se cae queda SPEND + FAILED (`kind: "released"`, «Devuelto», con su proyecto). Cada reserva queda vinculada a su proyecto con `category` desde que se reserva (`reserve_funds`, `project` y `category`); las viejas, por la migración 0016 de payments. Un proyecto borrado deja `project` en null. DEPOSIT llega con las compras (PAY-02) y REFUND no lo escribe nada todavía. Cuatro consultas por página (la billetera, los totales, la cantidad y las filas), sea cual sea su tamaño.',
+  },
   screens: ['G2', 'D1f'],
 });
 
@@ -352,12 +414,19 @@ export const exportTransactions = defineEndpoint({
   path: '/api/v1/transactions/export/',
   // The whole history is written out while the request waits.
   timeoutMs: SLOW_REQUEST_TIMEOUT_MS,
-  summary: 'Los mismos movimientos en CSV. El monto lleva el signo de lo que le hizo al saldo: negativo lo reservado y lo cobrado, positivo lo comprado y lo devuelto.',
+  summary: 'Los mismos movimientos en CSV, como libro de la billetera: una fila por cada cambio del saldo, con su signo. Sus montos suman lo que hizo el saldo en el período exportado.',
   query: TransactionsQuery.omit({ page: true, page_size: true }),
   response: z.string(),
   responseType: 'text',
-  errors: [{ status: 403, when: 'Solo Dueño y Admin.' }],
-  backend: { status: 'proposed', gap: 4 },
+  errors: [
+    { status: 400, when: '`kind`, `month` o `project` no son válidos (errores por campo).' },
+    { status: 403, when: 'Solo Dueño y Admin.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views.py · TransactionExportView + services/movements.py · ledger, csv_text',
+    note: 'Columnas `fecha,concepto,proyecto,tipo,monto,estado,transaccion`. Cada SPEND es su reserva (`Reserva`, −`reserved_amount`, en `created_at`) y, si volvió algo, su devolución (`Devuelto`, +lo devuelto: todo en una reserva que se cayó, `reserved_amount − amount` en un cobro parcial, en `settled_at`); una compra es `Compra` y un REFUND `Devolución`, con su monto. Un cobro entero no agrega fila: ya se descontó al reservar. Una compra pendiente no movió el saldo y no sale. Con `month`, solo los cambios de ese mes; `kind` y `project` eligen las transacciones como en la lista. `estado` es el tipo de la transacción hoy («Cobrado», «Devuelto»…) y `transaccion` su id, que une una reserva con su devolución. La fecha va en ISO con la zona del workspace y el monto exacto (dos decimales si alcanzan, si no todos). Un texto que empieza con `=`, `+`, `-` o `@` lleva un apóstrofo adelante, para que una planilla no lo ejecute. Toda la historia, sin páginas.',
+  },
   screens: ['G2'],
 });
 
@@ -368,7 +437,11 @@ export const listTokenPackages = defineEndpoint({
   summary: 'Los 3 paquetes fijos, el precio de la cantidad libre y la conversión de referencia.',
   response: TokenPackages,
   errors: [],
-  backend: { status: 'proposed', gap: 12 },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views_purchases.py · TokenPackagesView (apps/payments/services/token_packages.py)',
+    note: 'Todos los roles. El precio de un paquete sale de sus tokens y su descuento sobre `TOKEN_PRICE_USD` (0,01 USD por token, el mismo de `billing.pricing`). La conversión es de referencia (`PAYMENTS_LOCAL_CURRENCY`, `PAYMENTS_USD_TO_LOCAL_RATE`): todo pago es en USD. La cantidad libre va de 100 a 1.000.000 tokens.',
+  },
   screens: ['G4', 'D2 (diálogo)'],
 });
 
@@ -382,18 +455,27 @@ export const createTokenPurchase = defineEndpoint({
       package_id: z.string().min(1).optional(),
       custom_tokens: z.number().int().positive().optional(),
       /** Where the provider sends the browser back: `/uso/comprar/resultado`. The backend appends `compra=<id>` to it. */
-      return_url: z.string().url(),
+      return_url: z.string().url().max(600),
     })
     .refine((value) => Boolean(value.package_id) !== Boolean(value.custom_tokens), {
       message: 'Mandá `package_id` o `custom_tokens`, uno solo.',
     }),
   response: TokenPurchase,
   successStatus: 201,
+  idempotencyKey: true,
   errors: [
-    { status: 400, when: 'Cantidad por debajo del mínimo o paquete inexistente.' },
+    { status: 400, when: 'Cantidad por debajo del mínimo o por encima del máximo (1.000.000), paquete inexistente, o `return_url` que no es una página de la app o pasa de 600 caracteres.' },
     { status: 403, when: 'El rol no puede comprar (solo Dueño y Admin).' },
+    { status: 404, when: 'El workspace se borró mientras el pedido esperaba su turno: no se escribe nada (el `detail` del workspace inexistente).' },
+    { status: 409, when: 'La `Idempotency-Key` ya empezó otra compra (`code: "idempotency_key_reused"`), o la compra que empezó todavía está abriendo su checkout (`code: "purchase_in_progress"`: se reintenta en unos segundos).' },
+    { status: 501, when: 'No hay proveedor de pagos configurado (`code: "payments_unavailable"`). No se crea nada. No es 503: la app lee cualquier 503 como mantenimiento.' },
+    { status: 502, when: 'El proveedor no abrió el checkout (`code: "checkout_failed"`). No se cobró nada.' },
   ],
-  backend: { status: 'proposed', gap: 12 },
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views_purchases.py · TokenPurchaseCreateView + PaymentSerializer (apps/payments/serializers_billing.py)',
+    note: 'El proveedor es `PAYMENTS_PROVIDER`. Con `simulated` (desarrollo, y en una demo con `PAYMENTS_ALLOW_SIMULATED`) `checkout_url` es `/dev/checkout?compra=<id>&volver=<return_url>` en el origen de `return_url`, y esa página decide con `billing.simulatePurchase`. Sin proveedor, 501. La `Idempotency-Key` vale por workspace: repetida, responde la compra que ya empezó, con el mismo 201. Si el checkout no se abrió (502), o el intento quedó sin checkout más del doble de `PAYMENTS_PROVIDER_TIMEOUT_SECONDS` desde que empezó su llamada al proveedor (el proceso murió en esa llamada), la clave queda libre y el reintento con la misma clave es un intento nuevo; la tarea de beat también los rechaza. Un checkout que nadie paga vence a las 24 h de abierto (`PAYMENTS_CHECKOUT_TTL_SECONDS`): queda rechazado, con su clave, y repetirla responde esa compra rechazada.',
+  },
   screens: ['G4', 'D2 (diálogo)'],
 });
 
@@ -403,9 +485,35 @@ export const getTokenPurchase = defineEndpoint({
   path: '/api/v1/token-purchases/:id/',
   summary: 'Estado de un pago: pendiente, acreditado o rechazado. Es una compra de tokens (`tokens` > 0) o el pago de una subida de plan (`plan_id`, `tokens` 0).',
   response: Payment,
-  errors: [{ status: 404, when: 'La compra no existe en este workspace.' }],
-  backend: { status: 'proposed', gap: 12, note: 'El webhook del proveedor acredita; la pantalla consulta cada 5 s mientras está pendiente.' },
+  errors: [
+    { status: 403, when: 'El rol no puede ver pagos (solo Dueño y Admin).' },
+    { status: 404, when: 'La compra no existe en este workspace.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views_purchases.py · TokenPurchaseDetailView + PaymentSerializer (apps/payments/serializers_billing.py)',
+    note: 'La confirmación del proveedor (o `billing.simulatePurchase`) acredita una sola vez: un DEPOSIT COMPLETED de los tokens en la billetera, con `category: "purchase"` y «Compra de 1.000 tokens». La pantalla consulta cada 5 s mientras está pendiente. `plan_id` viene siempre (null en una compra de tokens). `balance_after` llega con 10 decimales, como el saldo. Un pago que el proveedor confirma después de rechazado (reemplazado, cancelado, vencido o con el checkout fallido) no cambia nada: queda en el log como `payment.late_paid` para devolverlo a mano.',
+  },
   screens: ['G5'],
+});
+
+export const simulatePurchase = defineEndpoint({
+  id: 'billing.simulatePurchase',
+  method: 'POST',
+  path: '/api/v1/token-purchases/:id/simulate/',
+  summary: 'Solo desarrollo y demo: el checkout de prueba aprueba o rechaza un pago del proveedor simulado.',
+  request: z.object({ approved: z.boolean() }),
+  response: Payment,
+  errors: [
+    { status: 403, when: 'El rol no puede pagar (solo Dueño y Admin).' },
+    { status: 404, when: 'El pago no existe en este workspace, no es del proveedor simulado, o el proveedor simulado está apagado (sin `PAYMENTS_PROVIDER=simulated`, o sin `DEBUG` ni `PAYMENTS_ALLOW_SIMULATED`): fuera de desarrollo y demos el endpoint no existe. Sin `DEBUG`, también para quien no es staff ni tiene un email verificado de `PAYMENTS_SIMULATE_ALLOWED_EMAILS`.' },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views_purchases.py · SimulatePaymentView',
+    note: 'Liquida el pago en el momento, como lo haría el webhook de un proveedor real, y responde el pago ya liquidado. Uno ya liquidado se responde como está: aprobar dos veces acredita una sola. Lo llama `/dev/checkout` cuando `billing` va al backend; en el modo mock la página decide en la base simulada y el pago se liquida unos segundos después de volver, como un webhook.',
+  },
+  screens: ['Checkout de prueba (/dev/checkout)'],
 });
 
 export const billingEndpoints = [
@@ -421,4 +529,5 @@ export const billingEndpoints = [
   listTokenPackages,
   createTokenPurchase,
   getTokenPurchase,
+  simulatePurchase,
 ] as const;

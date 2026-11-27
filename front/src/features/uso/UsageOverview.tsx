@@ -11,7 +11,7 @@ import { secondsForTokens } from '@/lib/pricing';
 import { LoadError } from '@/shell/LoadError';
 import { usePermissions, useSession } from '@/shell/session';
 import { Avatar, Badge, Banner, Button, Card, Icon, Skeleton, SkeletonText } from '@/ui';
-import { KindBadge, MovementAmount, movementConcept, totalOf } from './movements';
+import { KindBadge, MovementAmount, movementConcept, movementDate, totalOf } from './movements';
 import { monthKey, monthName, monthTitle, shiftMonth, workspaceDay } from './period';
 import { UsageChart, usageTotals } from './UsageChart';
 import styles from './uso.module.css';
@@ -68,7 +68,7 @@ function planLine(subscription: Subscription): ReactNode {
   if (!renewsAt) return <>No se renueva ni vence.{discount || ' Los tokens se pagan aparte.'}</>;
   return (
     <>
-      Se renueva el <span className="num">{formatDate(renewsAt)}</span>.{discount}
+      Vence el <span className="num">{formatDate(renewsAt)}</span>.{discount}
     </>
   );
 }
@@ -337,7 +337,7 @@ export function UsageOverview({ notice }: { notice?: ReactNode }) {
                 <div className={styles.mrows}>
                   {latest.data.results.map((item) => (
                     <div key={item.id} className={styles.mrow}>
-                      <span className={cx('num subtle t-small', styles.mdate)}>{shortStamp(item.created_at)}</span>
+                      <span className={cx('num subtle t-small', styles.mdate)}>{shortStamp(movementDate(item))}</span>
                       <span className={styles.mwhat}>
                         {item.project ? (
                           <Link className={styles.link} href={`/proyectos/${item.project.id}`}>

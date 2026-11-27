@@ -77,8 +77,9 @@ local_throttle_history = LocalFallbackCache('attempt-throttles-fallback')
 
 class AttemptThrottle(ScopedRateThrottle):
     """
-    ScopedRateThrottle for the endpoints that check a password (login, token
-    refresh, password change, email change): it keeps limiting, per process,
+    ScopedRateThrottle for the endpoints whose attempts are limited: the ones
+    that check a password (login, token refresh, password change, email
+    change) and the creation of workspaces. It keeps limiting, per process,
     while the shared cache is down.
     """
 

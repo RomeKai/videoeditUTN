@@ -84,10 +84,14 @@ export function useTokenPackages({ enabled = true }: { enabled?: boolean } = {})
   return useScopedQuery({ queryKey: keys.billing.packages, queryFn: ({ signal }) => apiCall(contract.listTokenPackages, { signal }), staleTime: 5 * 60_000, enabled });
 }
 
-/** G4: returns the purchase with `checkout_url`; the screen sends the browser there. */
+/**
+ * G4: returns the purchase with `checkout_url`; the screen sends the browser there. `idempotencyKey`: one per
+ * submit of the person, the same when that submit is retried (the server answers the purchase it already started).
+ */
 export function useCreateTokenPurchase() {
   return useMutation({
-    mutationFn: (body: { package_id?: string; custom_tokens?: number; return_url: string }) => apiCall(contract.createTokenPurchase, { body }),
+    mutationFn: ({ idempotencyKey, ...body }: { package_id?: string; custom_tokens?: number; return_url: string; idempotencyKey?: string }) =>
+      apiCall(contract.createTokenPurchase, { body, idempotencyKey }),
   });
 }
 
@@ -98,5 +102,12 @@ export function useTokenPurchase(id: string | null | undefined) {
     queryFn: ({ signal }) => apiCall(contract.getTokenPurchase, { params: { id: id ?? '' }, signal }),
     enabled: Boolean(id),
     ...pollWhile<contract.TokenPurchase>((purchase) => purchase?.status === 'pending'),
+  });
+}
+
+/** Test checkout (`/dev/checkout`) with `billing` on the backend: the simulated provider approves or rejects the payment. */
+export function useSimulatePurchase() {
+  return useMutation({
+    mutationFn: ({ id, approved }: { id: string; approved: boolean }) => apiCall(contract.simulatePurchase, { params: { id }, body: { approved } }),
   });
 }

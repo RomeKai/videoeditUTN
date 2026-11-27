@@ -8,13 +8,15 @@ to front/src/lib/role-matrix.json, a test on each side compares its own table
 with that file, and both fail naming the role and the action that differ.
 """
 import json
+import uuid
 from pathlib import Path
 
 from rest_framework import permissions
+from rest_framework.exceptions import NotFound, PermissionDenied
 
-from apps.users.models import WorkspaceMember
+from apps.users.models import Workspace, WorkspaceMember
 
-from .workspace import OWNER, resolve_active_workspace
+from .workspace import NOT_FOUND_DETAIL, OWNER, ActiveWorkspace, resolve_active_workspace, role_in
 
 ADMIN = WorkspaceMember.Role.ADMIN
 EDITOR = WorkspaceMember.Role.EDITOR
@@ -80,6 +82,38 @@ DENIED = {
 EDITOR_DELETE_DENIED = "Como Editor solo podés borrar los proyectos que subiste vos."
 
 
+def require_workspace_role(user, workspace_id, action, lock=False):
+    """
+    The ActiveWorkspace of an endpoint that names its workspace in the PATH
+    (``/workspaces/<id>/...``), once the user's role there allows ``action``
+    (a ROLE_MATRIX key).
+
+    ``X-Workspace-Id`` and the default workspace are not read: the role is the
+    one in the workspace the request changes, wherever the header points. A
+    malformed id, a workspace that does not exist, and one the user neither
+    owns nor is an ACTIVE member of are the same 404 (NOT_FOUND_DETAIL); a role
+    the matrix leaves out is a 403 with only ``detail``, like
+    WorkspaceRolePermission's.
+
+    ``lock``: inside a transaction, takes the workspace's row lock first, so
+    the role and the owner are the ones this request will change (a transfer
+    and a delete of the same workspace run one after the other).
+    """
+    try:
+        pk = workspace_id if isinstance(workspace_id, uuid.UUID) else uuid.UUID(str(workspace_id))
+    except ValueError:
+        raise NotFound(NOT_FOUND_DETAIL)
+    queryset = Workspace.objects.select_for_update() if lock else Workspace.objects.select_related('subscription_plan')
+    workspace = queryset.filter(pk=pk).first()
+    role = role_in(workspace, user) if workspace is not None else None
+    if role is None:
+        raise NotFound(NOT_FOUND_DETAIL)
+    allowed = ROLE_MATRIX[action]
+    if role not in allowed:
+        raise PermissionDenied(DENIED[allowed])
+    return ActiveWorkspace(workspace, role)
+
+
 class WorkspaceRolePermission(permissions.BasePermission):
     """
     Resolves the active workspace of the request (404 when the header names one
@@ -97,7 +131,11 @@ class WorkspaceRolePermission(permissions.BasePermission):
     @staticmethod
     def required_action(request, view):
         actions = getattr(view, 'workspace_actions', {})
-        action = actions.get(getattr(view, 'action', None)) or actions.get(request.method)
+        # Django answers HEAD with the GET handler, so it needs GET's action:
+        # unmapped, it fell to project.view and a Lector got a 200 (and the
+        # work of the GET) where GET is a 403.
+        method = 'GET' if request.method == 'HEAD' else request.method
+        action = actions.get(getattr(view, 'action', None)) or actions.get(method)
         if action:
             return action
         return 'project.view' if request.method in permissions.SAFE_METHODS else _UNMAPPED_WRITE

@@ -81,7 +81,7 @@ test.describe('Uso y facturación', () => {
     expectClean(problems, 'Movimientos');
   });
 
-  test('planes: bajar muestra qué se pierde, queda programado y se puede cancelar', async ({ page }) => {
+  test('planes: bajar a otro plan pago muestra qué se pierde, se paga y se aplica al momento', async ({ page }) => {
     await useScenario(page, 'plan-estudio');
     const problems = watch(page);
     await page.goto('/uso/planes');
@@ -90,14 +90,13 @@ test.describe('Uso y facturación', () => {
     await page.getByRole('button', { name: 'Bajar a Pro' }).click();
     const dialog = page.getByRole('alertdialog', { name: '¿Bajar a Pro?' });
     await expect(dialog.getByText('Miembros: 10 (hoy 15)')).toBeVisible();
+    await expect(dialog).toContainText('Se paga USD 49 por mes y se aplica al momento');
+    await expect(dialog).toContainText('no se descuenta');
     await dialog.getByRole('button', { name: 'Bajar a Pro' }).click();
-    await expect(page.getByRole('article', { name: /^Plan Pro/ }).getByText('Próximo plan')).toBeVisible();
+    await expect(page.getByText('Listo: ya estás en el plan Pro.')).toBeVisible();
+    await expect(page.getByRole('article', { name: 'Plan Pro, tu plan' })).toBeVisible();
     await page.getByRole('link', { name: 'Resumen' }).click();
-    await expect(page.getByRole('region', { name: 'Plan actual' })).toContainText('Pasa a Pro el');
-    await page.getByRole('region', { name: 'Plan actual' }).getByRole('link', { name: 'Cambiar plan' }).click();
-    await page.getByRole('button', { name: 'Seguir con Estudio' }).click();
-    await expect(page.getByText('Listo: seguís con el plan Estudio.')).toBeVisible();
-    await expect(page.getByText('Próximo plan')).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'Plan actual' })).toContainText('Vence el');
     expectClean(problems, 'Planes');
   });
 

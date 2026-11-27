@@ -2,7 +2,6 @@ from django.db import transaction
 from django.utils import timezone
 from decimal import Decimal
 from ..models import Wallet, Transaction
-from apps.videos.tasks import process_video_pipeline
 
 class PaymentError(Exception):
     """Base exception for payment-related errors."""
@@ -13,10 +12,21 @@ class InsufficientFundsError(PaymentError):
     pass
 
 @transaction.atomic
-def reserve_funds(wallet_id, amount: Decimal, project_id=None, user=None, description="") -> Transaction:
+def reserve_funds(
+    wallet_id, amount: Decimal, project_id=None, user=None, description="", *, project=None, category=None,
+) -> Transaction:
     """
     Locks funds in the workspace's wallet before an operation begins.
     Uses select_for_update to prevent race conditions.
+
+    ``project`` and ``category`` say what the reservation pays for
+    (Transaction.project and Transaction.category: the wallet's movements and
+    the usage chart). They are only written on the row.
+
+    ``project_id`` is accepted and ignored. It used to queue
+    ``process_video_pipeline``, a second ingestion of a project whose creation
+    already queues its own: the caller queues what the reservation pays for,
+    after it commits.
     """
     # Select for update locks the row until the transaction block ends
     try:
@@ -42,15 +52,11 @@ def reserve_funds(wallet_id, amount: Decimal, project_id=None, user=None, descri
         reserved_amount=amount,
         transaction_type=Transaction.Type.SPEND,
         status=Transaction.Status.RESERVED,
-        description=description
+        description=description,
+        project=project,
+        category=category or Transaction.Category.OTHER,
     )
-    
-    # DISPARO DE TAREA CELERY (Sincronización con Video Factory)
-    if project_id:
-        # Importación local para evitar circularidad extrema si fuera necesario, 
-        # pero aquí lo hacemos al inicio si el diseño lo permite.
-        process_video_pipeline.delay(project_id, transaction_id=txn.id)
-    
+
     return txn
 
 @transaction.atomic

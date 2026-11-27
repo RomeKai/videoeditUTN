@@ -678,7 +678,6 @@ def _settle_render_reservation(project_id, charge):
     from django.core.exceptions import ValidationError
     from django.db import DatabaseError
 
-    # Deferred: wallet_service imports the tasks package at load time.
     from apps.payments.services.wallet_service import (
         PaymentError, commit_reservation, rollback_reservation,
     )

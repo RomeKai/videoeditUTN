@@ -87,15 +87,15 @@ export const WAITING_TEXT = 'Hay mucha demanda. Tu video sigue en la fila y arra
 
 const STATE_LABEL: Record<StageState, string> = { done: 'Listo', run: 'En curso', wait: 'En espera', fail: 'Falló', pending: 'Pendiente' };
 
-/** Short reason shown in the failed step of the timeline. */
+/** Short reason shown in the failed step of the timeline. `ModerationBlockedError` is not here: the service failed, not the video. */
 const FAIL_STEP_TEXT: Record<string, string> = {
   UnsafeContentError: 'El contenido no cumple nuestras políticas.',
-  ModerationBlockedError: 'El contenido no cumple nuestras políticas.',
   CapacityTimeoutError: 'Había mucha demanda y no pudimos procesarlo.',
   AINoSpeechDetectedError: 'No encontramos voz en el audio.',
   AIEmptySelectionError: 'No encontramos momentos que funcionen como clips.',
   SoftTimeLimitExceeded: 'Tardó demasiado en procesarse.',
   AutoRenderNotPaid: 'No alcanzó el saldo para renderizar los clips que faltaban.',
+  IngestionStuck: 'El proceso se trabó y no siguió.',
 };
 
 function stageIndex(stage: string): number {
@@ -810,6 +810,23 @@ export const MOVEMENT_KIND: Partial<Record<ActivityItem['type'], { label: string
 
 export function tokenMovements(items: ReadonlyArray<ActivityItem>): ActivityItem[] {
   return items.filter((item) => item.amount !== null && MOVEMENT_KIND[item.type]);
+}
+
+/**
+ * What came back to the balance when the project failed, read from its activity: the refunds made after
+ * its last reservation or charge. For a backend that does not send `cost` (gap 4), where the activity is
+ * the only place that says it. `null`: the last movement is still a reservation, so the refund has not
+ * been written yet (it comes right after the failure).
+ */
+export function refundAfterFailure(items: ReadonlyArray<ActivityItem>): number | null {
+  const newestFirst = tokenMovements(items).sort((a, b) => b.created_at.localeCompare(a.created_at));
+  let refunded = 0;
+  for (const item of newestFirst) {
+    if (item.type === 'tokens_refunded') refunded += Math.abs(item.amount ?? 0);
+    else if (refunded === 0 && item.type === 'tokens_reserved') return null;
+    else break;
+  }
+  return refunded;
 }
 
 export interface CostExplanation {

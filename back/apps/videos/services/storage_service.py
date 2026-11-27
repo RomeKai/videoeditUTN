@@ -54,6 +54,25 @@ def _get_r2_client(config=None):
     )
 
 
+def absolute_media_url(path: str, request=None) -> str:
+    """
+    A local /media/ path as a URL the browser can open from another origin.
+    The web app is not served by Django, so a relative path would be asked to
+    the web app's origin, which has no such file.
+
+    With the request, the origin is the one the client used (its ``Host``,
+    also behind a proxy that forwards it). Without one (a Celery task),
+    ``MEDIA_PUBLIC_BASE_URL`` if it is set. Otherwise the path stays relative.
+    A URL that already has a scheme is returned as it is.
+    """
+    if '://' in path:
+        return path
+    if request is not None:
+        return request.build_absolute_uri(path)
+    base = (getattr(settings, 'MEDIA_PUBLIC_BASE_URL', '') or '').rstrip('/')
+    return f"{base}/{path.lstrip('/')}" if base else path
+
+
 class CloudflareR2Manager:
     """
     Static manager for all Cloudflare R2 operations.
@@ -109,12 +128,14 @@ class CloudflareR2Manager:
         return object_key
 
     @staticmethod
-    def generate_presigned_url(object_key: str, expiration_seconds: int = 3600) -> str:
+    def generate_presigned_url(object_key: str, expiration_seconds: int = 3600, request=None) -> str:
         """
         Generates a temporary presigned URL for a given R2 object key.
 
-        When USE_R2=False, the object_key is the local absolute path;
-        returns a /media/ URL relative to MEDIA_URL.
+        When USE_R2=False, the object_key is the local absolute path and the
+        URL is its /media/ URL, made absolute by ``absolute_media_url``:
+        ``request`` is the request being answered, when there is one. An R2
+        URL is already absolute and ignores it.
         """
         if _is_local():
             media_root = str(getattr(settings, 'MEDIA_ROOT', ''))
@@ -123,7 +144,7 @@ class CloudflareR2Manager:
             else:
                 relative = object_key.replace('\\', '/')
             media_url = getattr(settings, 'MEDIA_URL', '/media/')
-            return f"{media_url.rstrip('/')}/{relative.lstrip('/')}"
+            return absolute_media_url(f"{media_url.rstrip('/')}/{relative.lstrip('/')}", request)
 
         client = _get_r2_client()
         bucket = settings.CLOUDFLARE_R2_BUCKET_NAME

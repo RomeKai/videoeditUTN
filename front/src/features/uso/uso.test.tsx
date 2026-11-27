@@ -227,12 +227,35 @@ describe('G2 · Movimientos', () => {
     await user.click(screen.getByRole('button', { name: 'Exportar CSV' }));
     await waitFor(() => expect(download.downloadText).toHaveBeenCalledTimes(1));
     const [csv, filename] = download.downloadText.mock.calls[0] as [string, string];
-    expect(csv.split('\n')[0]).toBe('fecha,concepto,tipo,monto');
-    expect(csv).toContain('reserved');
-    expect(csv).not.toContain('charged');
-    // Lo reservado sale con el mismo signo que en la pantalla.
-    expect(csv.split('\n').slice(1).every((line) => line.split(',').pop()?.startsWith('-'))).toBe(true);
+    expect(csv.split('\n')[0]).toBe('fecha,concepto,proyecto,tipo,monto,estado,transaccion');
+    // One row per change of the balance: each open reservation took its amount.
+    expect(csv).toContain(',Reserva,');
+    expect(csv).toContain(',Reservado,');
+    expect(csv).not.toContain(',Cobrado,');
+    expect(csv.split('\n').slice(1).every((line) => line.split(',').at(-3)?.startsWith('-'))).toBe(true);
     expect(filename).toMatch(/^movimientos-\d{4}-\d{2}\.csv$/);
+  });
+
+  it('un cobro parcial dice cuánto devolvió y «Devuelto» lo suma', async () => {
+    const user = userEvent.setup();
+    renderScreen(<MovementsScreen />, {
+      prepare: () => {
+        const db = loadDb();
+        const charged = db.transactions
+          .filter((item) => item.kind === 'charged')
+          .sort((a, b) => (b.settled_at ?? b.created_at).localeCompare(a.settled_at ?? a.created_at))[0];
+        if (!charged) throw new Error('sin cobros');
+        // Reserved 15 more than it charged: commit_partial_reservation gave them back.
+        charged.reserved_amount = charged.amount + 15;
+        saveDb(db);
+      },
+    });
+    await screen.findByRole('table', { name: /Movimientos de/ });
+    await user.selectOptions(screen.getByLabelText('Filtrar por mes'), 'Todos los meses');
+    const table = await screen.findByRole('table', { name: 'Movimientos de todos los meses' });
+    expect(within(table).getByText('Devolvimos 15 de lo reservado')).toBeInTheDocument();
+    const totals = screen.getByRole('region', { name: 'Totales de todos los meses' });
+    expect(within(totals).getByText(/1 cobro parcial/)).toBeInTheDocument();
   });
 
   it('el día 1 los cobros de ayer quedan en el mes anterior y se llegan con el filtro de mes', async () => {
@@ -272,29 +295,56 @@ describe('G2 · Movimientos', () => {
 });
 
 describe('G3 · Planes', () => {
-  it('marca el plan actual; bajar muestra qué se pierde, queda programado y se puede cancelar', async () => {
+  it('marca el plan actual; bajar a otro plan pago se paga y se aplica al momento', async () => {
     const user = userEvent.setup();
     renderScreen(<PlansScreen />, { scenario: 'plan-estudio' });
     const current = await screen.findByRole('article', { name: 'Plan Estudio, tu plan' });
     expect(within(current).getAllByText('Tu plan').length).toBeGreaterThan(0);
+    expect(within(current).getByText(/vence el/)).toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: /^Plan Pro/ })).getByText('Se paga y se aplica al momento.')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Bajar a Pro' }));
     const dialog = await screen.findByRole('alertdialog', { name: '¿Bajar a Pro?' });
+    expect(within(dialog).getByText(/^Se paga USD 49 por mes y se aplica al momento, cuando se confirma el pago\. Lo que queda de tu período de Estudio \(hasta el .+\) no se descuenta\.$/)).toBeInTheDocument();
     // Pro and Estudio both allow 3 h (the upload ceiling): the duration is not lost.
     expect(within(dialog).queryByText(/^Videos de hasta/)).not.toBeInTheDocument();
     expect(within(dialog).getByText('Miembros: 10 (hoy 15)')).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Bajar a Pro' }));
 
-    expect(await screen.findByText(/^Tu plan pasa a Pro el /, { selector: 'p' })).toBeInTheDocument();
+    expect(await screen.findByText('Listo: ya estás en el plan Pro.')).toBeInTheDocument();
+    expect(await screen.findByRole('article', { name: 'Plan Pro, tu plan' })).toBeInTheDocument();
+    expect(loadDb().workspaces[0]?.pending_plan).toBeNull();
+  });
+
+  it('bajar a Gratis muestra qué se pierde, queda programado para el fin del período y se puede cancelar', async () => {
+    const user = userEvent.setup();
+    renderScreen(<PlansScreen />, {
+      scenario: 'plan-estudio',
+      // Gratis has 2 seats: a team that fits in it.
+      prepare: () => {
+        const db = loadDb();
+        const keep = new Set(db.members.filter((item) => item.workspace === db.workspaces[0]?.id).slice(0, 2).map((item) => item.id));
+        db.members = db.members.filter((item) => item.workspace !== db.workspaces[0]?.id || keep.has(item.id));
+        saveDb(db);
+      },
+    });
+    await screen.findByRole('article', { name: 'Plan Estudio, tu plan' });
+    expect(within(screen.getByRole('article', { name: /^Plan Gratis/ })).getByText(/al fin del período/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Bajar a Gratis' }));
+    const dialog = await screen.findByRole('alertdialog', { name: '¿Bajar a Gratis?' });
+    expect(within(dialog).getByText(/^El cambio se aplica el .+, al fin del período\. Hasta entonces seguís con Estudio\.$/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Bajar a Gratis' }));
+
+    expect(await screen.findByText(/^Tu plan pasa a Gratis el /, { selector: 'p' })).toBeInTheDocument();
     expect(screen.getByRole('article', { name: 'Plan Estudio, tu plan' })).toBeInTheDocument();
-    expect(within(screen.getByRole('article', { name: /^Plan Pro/ })).getByText('Próximo plan')).toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: /^Plan Gratis/ })).getByText('Próximo plan')).toBeInTheDocument();
     expect(loadDb().workspaces[0]?.pending_plan).not.toBeNull();
 
     await user.click(screen.getByRole('button', { name: 'Seguir con Estudio' }));
     expect(await screen.findByText('Listo: seguís con el plan Estudio.')).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText('Próximo plan')).not.toBeInTheDocument());
     expect(loadDb().workspaces[0]?.pending_plan).toBeNull();
-    expect(screen.getByRole('button', { name: 'Bajar a Pro' })).toBeInTheDocument();
   });
 
   it('no deja bajar a un plan con menos lugares que los ocupados', async () => {

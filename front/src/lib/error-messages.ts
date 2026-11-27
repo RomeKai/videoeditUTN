@@ -6,8 +6,9 @@ const MODERATION = 'No podemos procesar este video porque su contenido no cumple
 const GENERIC = 'Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo.';
 
 const PIPELINE_MESSAGES: Record<string, string> = {
+  // Only the content itself. `ModerationBlockedError` is ours (the moderation key or its quota): it gets the
+  // generic message, never a text that blames the video (back/apps/core/security.py).
   UnsafeContentError: MODERATION,
-  ModerationBlockedError: MODERATION,
   CapacityTimeoutError: 'Hay mucha demanda en este momento y no pudimos procesar tu video. Volvé a intentarlo en unos minutos.',
   AINoSpeechDetectedError: 'No encontramos voz en el video. OneCreator elige clips a partir de lo que se dice.',
   AIEmptySelectionError: 'No encontramos momentos que funcionen como clips. Probá con otro video o cambiá el criterio.',
@@ -24,6 +25,8 @@ const PIPELINE_MESSAGES: Record<string, string> = {
   // Over the app's limit (AI_UPLOAD_MAX_DURATION_SECONDS, 3 h): no plan would take it.
   LinkTooLongForAppError: 'El video del link dura más de 3 horas, el máximo que acepta OneCreator. Probá con uno más corto.',
   LinkTooLargeError: 'El video del link pesa más de lo que podemos descargar. Probá con una versión más liviana o subí el archivo.',
+  // Not in map §4 yet: the ingestion made no progress and recover_stuck_renders returned the reservation (it can be re-dispatched).
+  IngestionStuck: 'El proceso se trabó y te devolvimos los tokens. Podés intentarlo de nuevo.',
 };
 
 /** `pipeline_error_code` (class name of the exception) → message for the user (map §4). Unknown codes get the generic one. */
@@ -31,16 +34,18 @@ export function pipelineErrorMessage(code: string | null | undefined): string {
   return (code && PIPELINE_MESSAGES[code]) || GENERIC;
 }
 
-/** True when the project was stopped by moderation: opens dialog D5 (never says which category). */
+/**
+ * True when moderation stopped the project because of its content: opens dialog D5 (never says which category).
+ * `ModerationBlockedError` is not that: the moderation service could not be used, whatever the video says.
+ */
 export function isModerationError(code: string | null | undefined): boolean {
-  return code === 'UnsafeContentError' || code === 'ModerationBlockedError';
+  return code === 'UnsafeContentError';
 }
 
 /** Short titles for the red box of a failed project. */
 export function pipelineErrorTitle(code: string | null | undefined): string {
   switch (code) {
     case 'UnsafeContentError':
-    case 'ModerationBlockedError':
       return 'No podemos procesar este video';
     case 'CapacityTimeoutError':
       return 'Hay mucha demanda';
@@ -62,6 +67,8 @@ export function pipelineErrorTitle(code: string | null | undefined): string {
       return 'El video del link dura más de 3 horas';
     case 'LinkTooLargeError':
       return 'El video del link es muy pesado';
+    case 'IngestionStuck':
+      return 'El proceso se trabó';
     default:
       return 'Algo falló de nuestro lado';
   }
@@ -256,6 +263,8 @@ export function errorMessage(error: unknown, fallback = 'Algo falló de nuestro 
   // A write that got no answer may have been done: "try again" would be the wrong advice.
   if (error instanceof NetworkError) return error.outcomeUnknown ? OUTCOME_UNKNOWN_MESSAGE : 'No pudimos conectar';
   if (error instanceof ApiError) {
+    // 501: something this server does not offer yet (payments without a provider) says so in Spanish.
+    if (error.status === 501 && isSpanish(error.message)) return repairEncoding(error.message);
     if (error.status >= 500) return fallback;
     if (error.status === 402) return 'No te alcanza el saldo';
     if (error.isPlanLimit) return 'Tu plan no incluye esto.';

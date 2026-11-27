@@ -1,0 +1,111 @@
+# Demo local de punta a punta (documents/runbooks/demo.md). Se suma a docker-compose.yml:
+#
+#   cp back/.env.example back/.env        # completar las keys (ver el runbook)
+#   docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.demo.yml exec web python manage.py seed_demo --with-projects
+#
+# Qué agrega a docker-compose.yml:
+#   - web aplica las migraciones antes de arrancar, y espera a que Postgres y Valkey respondan;
+#   - front: la web en modo híbrido (una parte va al backend real y el resto son mocks);
+#   - proxy: un nginx que deja todo en http://localhost:8080 y sirve back/media.
+# No es producción: usa runserver, DEBUG y archivos locales. Por eso nada se publica fuera de
+# esta máquina (127.0.0.1). Pide Docker Compose 2.24 o más nuevo, por `!override`.
+#
+# Otro puerto: DEMO_PORT=9090, y construir de nuevo (`up -d --build`). La URL pública sale de
+# ahí; DEMO_PUBLIC_URL la reemplaza entera si hiciera falta.
+
+services:
+  db:
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  web:
+    command: sh -c "python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:8000"
+    restart: on-failure
+    # docker-compose.yml publica la API en todas las interfaces (8001). Acá corre con DEBUG, una
+    # cuenta de contraseña conocida y /media sin sesión: solo en esta máquina. `!override`
+    # reemplaza la lista en lugar de sumarle.
+    ports: !override
+      - "127.0.0.1:8001:8000"
+    environment:
+      # Un proxy delante de Django: la IP del cliente es la de X-Forwarded-For.
+      - NUM_PROXIES=1
+      # Los links de los emails (en dev salen por consola) abren la web por el proxy.
+      - FRONTEND_URL=${DEMO_PUBLIC_URL:-http://localhost:${DEMO_PORT:-8080}}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/status/', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # Arrancan cuando web ya migró: así ninguna tarea corre contra una base sin tablas.
+  worker:
+    # Pocos procesos: cada render usa mucha CPU y memoria (ADR-003).
+    command: celery -A backend worker -l info -Q celery,render -c ${DEMO_WORKER_CONCURRENCY:-2}
+    restart: on-failure
+    environment:
+      # Igual que en web: un link que arme una tarea también abre la web por el proxy.
+      - FRONTEND_URL=${DEMO_PUBLIC_URL:-http://localhost:${DEMO_PORT:-8080}}
+    depends_on:
+      web:
+        condition: service_healthy
+
+  beat:
+    restart: on-failure
+    environment:
+      - FRONTEND_URL=${DEMO_PUBLIC_URL:-http://localhost:${DEMO_PORT:-8080}}
+    depends_on:
+      web:
+        condition: service_healthy
+
+  front:
+    build:
+      context: ./front
+      args:
+        # El modo queda fijo al construir: cambiar algo de acá pide `--build`.
+        NEXT_PUBLIC_API_MODE: hybrid
+        # Un build de producción con mocks hay que pedirlo (front/next.config.ts).
+        API_MOCKS_IN_BUILD: "true"
+        # El navegador le habla a la API por el proxy, en el mismo origen que la web.
+        NEXT_PUBLIC_API_URL: ${DEMO_PUBLIC_URL:-http://localhost:${DEMO_PORT:-8080}}
+        # Qué va al backend real. Por defecto: usuario, proyectos, clips, brand kits, la
+        # billetera, los precios, los planes, la suscripción y las compras (con el proveedor
+        # simulado: /dev/checkout aprueba o rechaza, sin cobrar), y los workspaces con sus
+        # miembros (las invitaciones no: el backend no las tiene). Redes, publicaciones,
+        # invitaciones y notificaciones quedan enteros en mocks, para que cada área sea
+        # coherente (ver el runbook). DEMO_API_REAL=existing manda al backend todo lo que el
+        # contrato marca exists o partial.
+        NEXT_PUBLIC_API_REAL: ${DEMO_API_REAL:-users,system,projects,clips,brandKits.list,brandKits.create,brandKits.detail,brandKits.update,brandKits.delete,billing.wallet,billing.usage,billing.transactions,billing.exportTransactions,billing.pricing,billing.estimate,billing.plans,billing.subscription,billing.changePlan,billing.tokenPackages,billing.createPurchase,billing.purchase,billing.simulatePurchase,workspaces.list,workspaces.create,workspaces.detail,workspaces.update,workspaces.delete,workspaces.transfer,workspaces.members,workspaces.updateMember,workspaces.removeMember}
+    restart: on-failure
+
+  proxy:
+    image: nginx:1.27-alpine
+    restart: on-failure
+    ports:
+      # Solo en esta máquina: /media no pide sesión, y los mocks (un service worker) solo
+      # andan en localhost o con HTTPS.
+      - "127.0.0.1:${DEMO_PORT:-8080}:80"
+    volumes:
+      - ./docker/demo/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./back/media:/srv/media:ro
+    depends_on:
+      web:
+        condition: service_healthy
+      front:
+        condition: service_started

@@ -86,7 +86,7 @@ Todo endpoint nuevo las cumple. Están probadas y el frontend cuenta con ellas.
 - Las vistas de proyectos y brand kits usan `ActiveWorkspaceMixin`: pone `IsAuthenticated` y `WorkspaceRolePermission`, expone `self.active_workspace` y lo pasa al serializer como `context['workspace']`.
   - Hoy vive en `back/apps/videos/views.py`. `back/apps/core/mixins.py` está vacío. Si lo necesitás en otra app, proponé moverlo a `apps/core` en un PR chico; no lo copies.
 - **El queryset filtra por el workspace activo.** Así un objeto de otro workspace da 404 solo (`get_object`), aunque el usuario sea miembro de los dos.
-- **Ojo con `/workspaces/:id/…`:** esos endpoints son `workspaceScoped: false` en el contrato. El cliente no manda el header: el workspace viene en la ruta. `WorkspaceRolePermission` mira el header (o el default), no la ruta, así que no sirve tal cual. Resolvé el rol con `role_in(workspace, request.user)` (mismo archivo): `None` es 404 con `NOT_FOUND_DETAIL`. Propuesta: un permiso chico que tome el workspace de la ruta y reuse `ROLE_MATRIX` y `DENIED`.
+- **Ojo con `/workspaces/:id/…`:** esos endpoints son `workspaceScoped: false` en el contrato. El cliente no manda el header: el workspace viene en la ruta. `WorkspaceRolePermission` mira el header (o el default), no la ruta, así que no sirve tal cual. Usá `require_workspace_role(user, workspace_id, accion, lock=False)` (`back/apps/core/permissions.py`): toma el workspace de la ruta, resuelve el rol con `role_in` y reusa `ROLE_MATRIX` y `DENIED`. Quien no es dueño ni miembro activo recibe 404 con `NOT_FOUND_DETAIL`; un rol que no alcanza, 403 con solo `detail`. Así lo hacen las vistas de `back/apps/users/views_workspaces.py`.
 
 Detalle y tabla de lo que ya tiene endpoint: [01, Workspace activo y roles](../ia/01-creacion-de-proyecto.md#workspace-activo-y-roles). Tests de referencia: `back/apps/videos/tests/test_active_workspace.py`.
 
@@ -94,7 +94,7 @@ Detalle y tabla de lo que ya tiene endpoint: [01, Workspace activo y roles](../i
 
 - `WorkspaceRolePermission` y `ROLE_MATRIX` (`back/apps/core/permissions.py`) copian `MATRIX` de `front/src/lib/permissions.ts`, que es la tabla 1.7 del mapa. Si sumás una acción, sumala en los dos.
 - Cada vista mapea sus pedidos a acciones con `workspace_actions`: acciones del viewset (`create`, `approve_paper_edit`…) o métodos HTTP en un `APIView`.
-  - Un método seguro sin mapear es una lectura (`project.view`, todos los roles).
+  - Un método seguro sin mapear es una lectura (`project.view`, todos los roles). Un `HEAD` pide la acción del `GET`.
   - **Una escritura sin mapear queda para Dueño y Admin** (`members.manage`).
   - Un método que la vista no tiene sigue de largo: DRF responde 405, no 403.
 - Las acciones de tus áreas: `members.manage`, `workspace.rename`, `workspace.delete`, `workspace.transfer`, `billing.manage`, `wallet.view`, `social.manage` y `post.publish`.
@@ -112,7 +112,7 @@ Detalle y tabla de lo que ya tiene endpoint: [01, Workspace activo y roles](../i
   - `commit_partial_reservation`: se cobra una parte y el resto vuelve al saldo;
   - `rollback_reservation`: se devuelve toda (queda `SPEND` + `FAILED`).
 - Reservá dentro de `transaction.atomic`, junto con el cambio de estado que la justifica. El modelo es `approve_paper_edit` en `back/apps/videos/views.py`: toma, reserva y aprobación en una sola transacción.
-- **No le pases `project_id` a `reserve_funds`:** hoy dispara `process_video_pipeline.delay`. Ninguna llamada de hoy se lo pasa.
+- **`project_id` de `reserve_funds` no hace nada:** se acepta por compatibilidad y se ignora. Encolá lo que paga la reserva vos, cuando haga commit (`transaction.on_commit`), como la creación de un proyecto.
 - **Precio:** `PricingEngine.calculate_render_cost` (`back/apps/payments/services/pricing_engine.py`). La fórmula está en [01, Precio](../ia/01-creacion-de-proyecto.md#precio).
 - **Saldo que no alcanza:** `InsufficientFundsError` → **402** `{ "error", "required" }`. El frontend siempre abre el diálogo de saldo insuficiente.
 - **Límites del plan:** `PlanLimitExceededError` y `FeatureNotAllowedError`. Hoy salen como **403** al crear un proyecto y como **400** («Error en el motor de precios: …») al aprobar la revisión. El frontend reconoce los dos (`planLimitKind`, `approveErrorKind`). En lo nuevo, preferí 403 con `code` (`duration`, `resolution`, `seo`, `scheduling`, `crossposting`, `seats_exceeded`; ver `PLAN_LIMIT_CODES` en `front/src/api/errors.ts`).
@@ -237,6 +237,15 @@ Salen de tus dos commits (759f9f8 y f04db85), que el lead pasó con cherry-pick 
 
 Contrato `contracts/workspaces.ts`. Backend: app `apps/users`, modelos `Workspace` y `WorkspaceMember`. Todos son `workspaceScoped: false`: el workspace viene en la ruta (ver la sección 2, «Ojo con `/workspaces/:id/…`»).
 
+Los nueve de workspaces y miembros (hasta `workspaces.removeMember`) ya existen en `back/apps/users/views_workspaces.py`, con sus pruebas en `back/apps/users/tests/test_workspaces_api.py`. Faltan los cuatro de invitaciones.
+
+- Crear usa `create_owned_workspace` (`back/apps/users/workspaces.py`), lo mismo que el registro. Tope de 10 workspaces propios (409 `workspace_limit`) y límite de intentos por usuario (`THROTTLE_WORKSPACE_CREATE`, scope `workspace_create`).
+- Borrar responde 409 `{error, code}` y no borra nada en estos casos, en este orden: `last_workspace` (es el único workspace del usuario; va primero porque esperar no lo resuelve), `project_processing` (proyecto subido, en ingesta o renderizando; uno trabado se borra primero), `posts_in_flight` (publicación `PROCESSING` dentro de `POST_PROCESSING_WINDOW` o `QUEUED` hasta `POST_QUEUED_GRACE` después de su `publish_at`; una más vieja está trabada y no frena), `reservation_open` (tokens reservados), `payment_pending` (una compra de tokens o un pago de plan pendiente: se libera cuando se liquida o vence su checkout; la web no tiene cómo cancelarlo) y `balance_left` (queda saldo disponible: los tokens nunca se borran).
+- Si se borra, se van en cascada proyectos, clips, publicaciones (las `SCHEDULED` no se publican), brand kits, miembros, los pagos ya liquidados y la billetera en cero con sus movimientos. El log `workspace.deleted` guarda las cifras finales de la billetera.
+- Pendiente: el borrado no limpia los archivos en R2 ni el perfil de Ayrshare.
+- Transferir cambia primero el dueño. Si el dueño anterior no tenía fila de miembro, la fila nueva pasa por el control de lugares del plan: sin lugar responde 400 y no transfiere.
+- Miembros: una fila por `WorkspaceMember`; `invited_by` es siempre null hasta que exista el modelo de invitación.
+
 | Método y ruta | Id | Hook · mock | Pantalla | Backend | Depende de | Talla |
 |---|---|---|---|---|---|---|
 | GET `workspaces/` | `workspaces.list` | `useWorkspaces` · `listWorkspaces` | J3 (§5 J) | `Workspace` + `role_in` | — | S |
@@ -267,14 +276,14 @@ Contrato `contracts/billing.ts`. Backend: app `apps/payments` (`SubscriptionPlan
 | Método y ruta | Id | Hook · mock | Pantalla | Backend | Depende de | Talla |
 |---|---|---|---|---|---|---|
 | GET `plans/` | `billing.plans` | `usePlans` · `listPlans` | A6, G3, C1, D3 diálogo | **Ya existe** en `dev`: `PublicPlanListView` (PR #130). Falta pasarlo a `exists` en el contrato | `fix/planes-gratis-por-defecto` | S |
-| GET `pricing/` | `billing.pricing` | `usePricing` · `getPricing` | C1, A6, G3, G4, D2, D1 diálogo | Público; constantes de `PricingEngine` y settings (`AI_UPLOAD_MAX_DURATION_SECONDS`…) | — | S |
-| POST `pricing/estimate/` | `billing.estimate` | `useEstimate` · `estimateCost` | C1, D2, D4, D5 | Envuelve `PricingEngine.calculate_render_cost` con el plan y la billetera; `eta_seconds` puede ir `null` (hueco 18) | `billing.wallet` | S |
+| GET `pricing/` | `billing.pricing` | `usePricing` · `getPricing` | C1, A6, G3, G4, D2, D1 diálogo | **Ya existe** (`feat/billetera-movimientos-precios`): `PricingView` | — | S |
+| POST `pricing/estimate/` | `billing.estimate` | `useEstimate` · `estimateCost` | C1, D2, D4, D5 | **Ya existe**: `EstimateView`; `eta_seconds` sale de los tiempos de los últimos proyectos y puede ir `null` (hueco 18) | — | S |
 | GET `subscription/` | `billing.subscription` | `useSubscription` · `getSubscription` | Barra, G1, G3, C1, E1, H2 | Hoy solo hay `Workspace.subscription_plan`; renovación y cambio pendiente piden modelo nuevo | — | M |
 | POST `subscription/change/` | `billing.changePlan` | `useChangePlan` · `changePlan` | G3 (§5 G) | Subir ya o al volver del checkout; bajar al fin del período; 409 `seats_exceeded` | `billing.subscription`, `billing.createPurchase` | L |
-| GET `wallet/` | `billing.wallet` | `useWallet` · `getWallet` | Barra, G1, C1, D2, G4, D1 y D2 diálogo | `Wallet`; el detalle de lo reservado por proyecto (hueco 19) pide el vínculo con el proyecto | Vínculo `Transaction` ↔ proyecto | M |
-| GET `wallet/usage/` | `billing.usage` | `useUsage` · `getUsage` | G1 (§5 G) | Suma por día en `America/Argentina/Buenos_Aires`, separada en proyectos, renders y SEO | `kind` en `Transaction` | M |
-| GET `transactions/` | `billing.transactions` | `useTransactions` · `listTransactions` | G2 (§5 G), D1 Actividad (§9.2) | `Transaction` + proyecto + `kind` (migración); paginado | Coordinar con el lead: las reservas se escriben en `apps/videos` | L |
-| GET `transactions/export/` | `billing.exportTransactions` | `useExportTransactions` · `exportTransactions` | G2 (§5 G) | CSV con signo | `billing.transactions` | S |
+| GET `wallet/` | `billing.wallet` | `useWallet` · `getWallet` | Barra, G1, C1, D2, G4, D1 y D2 diálogo | **Ya existe**: `WalletView`, con cada reserva y su proyecto (hueco 19) | — | M |
+| GET `wallet/usage/` | `billing.usage` | `useUsage` · `getUsage` | G1 (§5 G) | **Ya existe**: `WalletUsageView`, por día en `WORKSPACE_TIME_ZONE` | — | M |
+| GET `transactions/` | `billing.transactions` | `useTransactions` · `listTransactions` | G2 (§5 G), D1 Actividad (§9.2) | **Ya existe**: `TransactionListView`, con `Transaction.project`, `category` (migraciones 0015 y 0016 de payments) y `kind` | — | L |
+| GET `transactions/export/` | `billing.exportTransactions` | `useExportTransactions` · `exportTransactions` | G2 (§5 G) | **Ya existe**: `TransactionExportView` | — | S |
 | GET `token-packages/` | `billing.tokenPackages` | `useTokenPackages` · `listTokenPackages` | G4 (§5 G), D2 diálogo | Tres paquetes fijos y la cantidad libre: modelo nuevo o settings | — | S |
 | POST `token-purchases/` | `billing.createPurchase` | `useCreateTokenPurchase` · `createTokenPurchase` | G4 (§5 G), D2 diálogo | PAY-02: checkout de Stripe (`stripe_service.py` está vacío); modelo nuevo de compra; webhook con firma, idempotente | `billing.tokenPackages`, función de acreditar | L |
 | GET `token-purchases/:id/` | `billing.purchase` | `useTokenPurchase` · `getTokenPurchase` | G5 (§9.2) | Estado del pago; la pantalla consulta cada 5 s | `billing.createPurchase` y el webhook | S |
@@ -390,7 +399,8 @@ Para no pisarnos. Lo «en curso» ya tiene rama: no lo arranques por tu lado.
 | Área | Endpoints | Quién | Rama | Estado |
 |---|---|---|---|---|
 | Acceso (lo que falta) | 6 + el 403 de `auth.login` | Pedro | — | Propuesta |
-| Workspaces, miembros e invitaciones | 13 | Pedro | — | Propuesta |
+| Workspaces y miembros | 9 | — | `feat/workspaces-y-miembros` | Hechos: existen en el backend |
+| Invitaciones | 4 | Pedro | — | Propuesta |
 | Planes, billetera y pagos (PAY-xx) | 12 | Pedro | — | Tuyos. PAY-03 ya está mergeado (PR #130) |
 | Seguimientos del PR #130: seed, `is_public`, invalidación del cache, validadores, plan Gratis por defecto | — | Lead | `fix/planes-gratis-por-defecto` | En curso (lead) |
 | Redes y publicaciones | 11 | Pedro | — | Propuesta |
@@ -427,7 +437,7 @@ El backlog (`documents/backlog_mvp.md`) asigna por par, no por persona: PAY-01 a
 | Resuelto en `feat/perfil-me`: `token_blacklist` instalada, y límites de intentos en el login (por IP y por cuenta, solo los fallidos), el refresh, la contraseña y el cambio de email (`apps/users/throttles.py`). El registro y el reenvío necesitan los suyos. | `auth.register`, `auth.resendVerification` | 1, 2 |
 | [ADR-005](../adrs/005-social-publishing-strategy.md) sigue `proposed`: el contrato asume Ayrshare, DIST-01 propone OAuth directo. | `social.accounts`, `social.connect`, `social.disconnect` | 10 |
 | No hay beat para `dispatch_scheduled_posts_batch`: no está en `CELERY_BEAT_SCHEDULE` y `docker-compose.yml` no tiene servicio `beat`. | Publicaciones programadas | 9 |
-| `Transaction` no tiene vínculo con el proyecto ni `kind`; un `SPEND` devuelto queda `FAILED`. | `billing.wallet` (detalle), `billing.transactions`, `billing.usage`, `projects.activity`, `projects.detail` | 4, 19 |
+| Resuelto en `feat/billetera-movimientos-precios`: `Transaction.project` y `Transaction.category` (`reserve_funds` los guarda al reservar, la migración 0016 en las filas viejas) y `kind` en la API. `projects.activity` sigue leyendo la metadata; `projects.detail` todavía no lo usa. | `projects.detail` | 4, 19 |
 | Stripe: `stripe_service.py` está vacío y no hay función para acreditar tokens. | `billing.createPurchase`, `billing.purchase`, `billing.changePlan` | 12 |
 | `LANGUAGE_CODE = 'en-us'`: los mensajes propios de DRF llegan en inglés (el frontend los traduce). | Nada, pero tus mensajes van en español igual | — |
 

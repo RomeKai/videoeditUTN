@@ -32,6 +32,17 @@ DATABASES = {"default": env.db("DATABASE_URL")}
 if DATABASES["default"]["ENGINE"] != "django.db.backends.postgresql":
     raise ImproperlyConfigured("DATABASE_URL for CI must configure PostgreSQL.")
 
+# A test that waits on a row lock held by another connection of the same test
+# (a thread that never finishes, a lock that is never released) would hang the
+# whole job until its timeout, with nothing in the log. With lock_timeout the
+# wait fails after a minute with "canceling statement due to lock timeout",
+# naming the test. No test waits on a lock for that long on purpose.
+CI_DB_LOCK_TIMEOUT_MS = int(os.environ.get("CI_DB_LOCK_TIMEOUT_MS", "60000"))
+DATABASES["default"].setdefault("OPTIONS", {})
+DATABASES["default"]["OPTIONS"]["options"] = (
+    f"-c lock_timeout={CI_DB_LOCK_TIMEOUT_MS}"
+)
+
 DEBUG = False
 SECRET_KEY = "ci-only-not-a-secret"
 ALLOWED_HOSTS = ["localhost", "127.0.0.1", "testserver"]
