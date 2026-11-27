@@ -178,6 +178,8 @@ class ApprovedSegmentsBecomeClipsTests(ApprovalHarness, APITestCase):
         self.assertEqual(self.project.metadata["render_seconds"], 22.0)
         self.assertEqual(self.reservation().amount, Decimal("11.00"))  # 22 s, priced like before
         self.assertEqual(self.reservation().status, Transaction.Status.RESERVED)
+        # What Movimientos shows: in Spanish, with the project's name.
+        self.assertEqual(self.reservation().description, f"Render de los clips aprobados: {self.project.title}")
         self.assertEqual(self.project.pipeline_stage, PipelineStage.RENDER_DISPATCHED)
         self.assertEqual(self.project.status, VideoProject.Status.RENDERING)
         self.assertEqual(sorted(call.args[0] for call in delay.call_args_list), sorted(paid))

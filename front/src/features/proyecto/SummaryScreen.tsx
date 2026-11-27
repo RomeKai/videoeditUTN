@@ -352,9 +352,14 @@ const NETWORK_SHORT = { TIKTOK: 'TikTok', INSTAGRAM_REELS: 'Instagram', YOUTUBE_
 const REFUND_RETRIES = 5;
 const REFUND_RETRY_MS = 3000;
 
-/** Tokens that came back when the project failed: from `cost` when the backend sends it, from the activity otherwise. */
+/**
+ * Tokens that came back when the project failed. `cost` says it when the creation itself was returned;
+ * otherwise the project's activity does: a creation that was charged (whole or in part) can still have
+ * a render reservation that came back, and a backend without `cost` only has the activity.
+ */
 function useRefunded(project: Project): number {
-  const fromActivity = !project.cost;
+  const fromCost = project.cost?.state === 'refunded' ? project.cost.amount : null;
+  const fromActivity = fromCost === null;
   const activity = useProjectActivity(fromActivity ? project.id : null);
   const { refetch } = activity;
   const refunded = fromActivity && activity.data ? refundAfterFailure(activity.data) : 0;
@@ -375,23 +380,23 @@ function useRefunded(project: Project): number {
     }, REFUND_RETRY_MS);
     return () => window.clearTimeout(id);
   }, [waiting, dataUpdatedAt, refetch]);
-  if (!fromActivity) return project.cost?.state === 'refunded' ? project.cost.amount : 0;
-  return refunded ?? 0;
+  return fromCost ?? refunded ?? 0;
 }
 
 function FailedBanner({ project }: { project: Project }) {
   const { gate, can } = usePermissions();
   const code = project.pipeline_error_code;
-  // Money is only mentioned when it is known. The backend does not send `cost` yet (gap 4): without it,
-  // the refund is read from the project's activity, which the backend does have.
+  // Money is only mentioned when it is known: from `cost`, or from the project's activity.
   const refunded = useRefunded(project);
+  // The title only drops "ya te devolvimos los tokens" when the amount is shown below it.
+  const refundShown = refunded > 0;
   // Re-dispatched without tokens for what was left: the clips are still there, so there is nothing to create again.
   const unpaid = code === 'AutoRenderNotPaid';
   return (
     <Banner
       tone="err"
       className={styles.notice}
-      title={pipelineErrorMessage(code)}
+      title={pipelineErrorMessage(code, { refundShown })}
       action={
         unpaid ? (
           <div className={styles.bannerActions}>
@@ -416,12 +421,12 @@ function FailedBanner({ project }: { project: Project }) {
     >
       {ERROR_HINT[code] ? <p>{ERROR_HINT[code]}</p> : null}
       <p className={styles.refund}>
-        {refunded > 0 ? (
+        {refundShown ? (
           <span>
             Te devolvimos <Tokens value={refunded} className={styles.strong} />.
           </span>
         ) : null}
-        {refunded > 0 && can('billing.manage') ? (
+        {refundShown && can('billing.manage') ? (
           <Link className={styles.arrowLink} href="/uso/movimientos">
             Ver en Movimientos <Icon name="chevron-right" size={14} />
           </Link>

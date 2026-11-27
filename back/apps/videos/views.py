@@ -137,7 +137,7 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         workspace = self.active_workspace
         if workspace is None:
             return VideoProject.objects.none()
-        return VideoProject.objects.filter(workspace=workspace).order_by('-created_at')
+        return VideoProject.objects.filter(workspace=workspace).select_related('uploaded_by').order_by('-created_at')
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -310,7 +310,7 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
                         wallet_id=workspace.wallet.id,
                         amount=final_cost,
                         user=request.user,
-                        description=f"Render Final (Paper Edit): {project.title}"[:255],
+                        description=f"Render de los clips aprobados: {project.title}"[:255],
                         project=project,
                         category=Transaction.Category.RENDER,
                     )
