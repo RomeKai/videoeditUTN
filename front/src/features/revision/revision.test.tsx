@@ -386,7 +386,10 @@ describe('D2 · Revisión de clips', () => {
     );
     void view.queryClient.invalidateQueries({ queryKey: keys.projects.paperEdit(REVIEW) });
     await waitFor(() => expect(button).toHaveAttribute('aria-disabled', 'true'));
-    // The reason is one hover (or one Tab) away, and clicking does nothing meanwhile.
+    // The reason is on screen, next to the cost, without hovering or focusing anything…
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    expect(within(bar()).getByText('Actualizando la revisión…')).toBeVisible();
+    // …and on the button for whoever hovers or reaches it with Tab. Clicking does nothing meanwhile.
     await user.hover(button);
     expect(await screen.findByRole('tooltip')).toHaveTextContent('Actualizando la revisión…');
     expect(button).toHaveAccessibleDescription('Actualizando la revisión…');
@@ -395,6 +398,7 @@ describe('D2 · Revisión de clips', () => {
 
     answer();
     await waitFor(() => expect(button).not.toHaveAttribute('aria-disabled'));
+    expect(within(bar()).queryByText('Actualizando la revisión…')).not.toBeInTheDocument();
     await user.click(button);
     expect(await screen.findByRole('dialog', { name: 'Renderizar 5 clips' })).toBeInTheDocument();
   });

@@ -352,6 +352,11 @@
   cursor: not-allowed;
   opacity: 0.6;
 }
+/* Why "Renderizar" waits: same line as the cost, in the text colour so it is not missed. */
+.waiting {
+  color: var(--fg);
+  white-space: nowrap;
+}
 
 /* Loading */
 .skCard {

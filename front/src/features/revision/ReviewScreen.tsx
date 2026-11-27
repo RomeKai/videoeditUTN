@@ -833,6 +833,11 @@ function Review({ projectId, userId, data, refreshing, loadError, onRetry }: Rev
     </Card>
   );
 
+  // While the review is fetched again the clips on screen may be about to change: "Renderizar" waits.
+  // The reason is on screen (the bar's small line) and on the button (tooltip and description).
+  const roleReason = gate('project.review').disabledReason;
+  const waitingReason = roleReason === undefined && refreshing && totals.count > 0 && estimate ? REFRESHING_REASON : '';
+  const waitingNote = waitingReason ? <span className={styles.waiting}>{waitingReason}</span> : null;
   const clipsWord = totals.count === 1 ? '1 clip seleccionado' : `${formatNumber(totals.count, 0)} clips seleccionados`;
   const rate = pricing.data?.base_cost_per_second_720p ?? 0.5;
 
@@ -928,7 +933,10 @@ function Review({ projectId, userId, data, refreshing, loadError, onRetry }: Rev
           ) : !estimate ? (
             'Calculando el costo…'
           ) : isMobile ? (
-            <span className="num">{short ? `Te faltan ${formatTokens(estimate.total - (balance ?? 0))}` : balance !== null ? `Saldo después ${formatTokens(balance - estimate.total)}` : ''}</span>
+            <>
+              <span className="num">{short ? `Te faltan ${formatTokens(estimate.total - (balance ?? 0))}` : balance !== null ? `Saldo después ${formatTokens(balance - estimate.total)}` : ''}</span>
+              {waitingNote ? <> · {waitingNote}</> : null}
+            </>
           ) : (
             <>
               <span className="num">{formatTokens(estimate.total)}</span> = <span className="num">{formatNumber(billedSeconds, 0)}</span> s ×{' '}
@@ -965,6 +973,7 @@ function Review({ projectId, userId, data, refreshing, loadError, onRetry }: Rev
                   Saldo después <span className="num">{formatTokens(balance - estimate.total)}</span>
                 </>
               )}
+              {waitingNote ? <> · {waitingNote}</> : null}
             </>
           )
         }
@@ -973,8 +982,7 @@ function Review({ projectId, userId, data, refreshing, loadError, onRetry }: Rev
           variant="accent"
           size="lg"
           disabled={totals.count === 0 || !estimate}
-          // While the review is fetched again the clips on screen may be about to change: the button waits, and says so.
-          disabledReason={gate('project.review').disabledReason ?? (refreshing && totals.count > 0 && estimate ? REFRESHING_REASON : '')}
+          disabledReason={roleReason ?? waitingReason}
           aria-label={totals.count > 0 ? `Renderizar ${totals.count === 1 ? '1 clip' : `${totals.count} clips`}` : 'Renderizar'}
           onClick={askToRender}
         >
