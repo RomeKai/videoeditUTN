@@ -176,7 +176,7 @@ Renueva el token de acceso. El backend rota el refresh (ROTATE_REFRESH_TOKENS).
 | Sesión | Pública |
 | Pedido | { refresh: string } |
 | Respuesta 200 | { access: string, refresh?: string } |
-| Errores | **401** Refresh vencido, inválido o revocado (rotado, la contraseña cambió, o se cerró la sesión en todos los dispositivos: `code: "session_revoked"`). La UI abre el diálogo D9 (sesión vencida).<br>**429** Más de 30 renovaciones por minuto desde la misma IP. |
+| Errores | **401** Refresh vencido, inválido o revocado (rotado, la contraseña cambió, o se cerró la sesión en todos los dispositivos: `code: "session_revoked"`, también cuando el token de acceso ya había vencido y el refresh es el primero en responder). Lo demás es `token_not_valid`. La UI abre el diálogo D9 (sesión vencida, o «Cerraste la sesión en todos tus dispositivos» con `session_revoked`).<br>**429** Más de 30 renovaciones por minuto desde la misma IP. |
 | Pantallas | A1, D9 |
 
 #### `POST /api/v1/auth/register/`
@@ -187,7 +187,7 @@ Crea la cuenta y manda el email de verificación.
 |---|---|
 | Id | `auth.register` |
 | Backend | ✅ existe · `back/apps/users/views_auth.py · RegisterView (RegisterSerializer); el link: apps/users/email_verification.py · send_signup_verification` |
-| Nota | Crea la cuenta sin verificar, su workspace con el plan por defecto (la señal de User con `create_owned_workspace`: billetera y el usuario como Admin activo; se llama "Espacio de <nombre>") y manda el link de A3 (`/verificar?token=…`, vence en 24 h). El email se guarda normalizado (dominio en punycode y minúsculas): la respuesta trae el guardado. `signup_nonce` es de este navegador: la web lo guarda y lo manda con el link (`auth.verifyEmail`); el backend guarda solo su hash. Decir "email ya usado" permite averiguar qué emails tienen cuenta: el mapa (A2) lo pide así, y por eso el límite por IP. «Reenviar» de A3 espera 60 s desde el registro. Hasta verificar, el login igual entra (falta el 403 propuesto de `auth.login`). |
+| Nota | Crea la cuenta sin verificar, su workspace con el plan por defecto (la señal de User con `create_owned_workspace`: billetera y el usuario como Admin activo; se llama "Espacio de <nombre>") y manda el link de A3 (`/verificar#token=…`, vence en 24 h; el token va en el fragmento, como el de recuperar y el de la invitación: el navegador no lo manda y no queda en el log de accesos del host web. La web lo lee, lo saca de la barra de direcciones y lo manda en el cuerpo de `auth.verifyEmail`. Un link ya enviado con `?token=` sigue sirviendo hasta vencer: la web lee los dos y prefiere el fragmento). El email se guarda normalizado (dominio en punycode y minúsculas): la respuesta trae el guardado. `signup_nonce` es de este navegador: la web lo guarda y lo manda con el link (`auth.verifyEmail`); el backend guarda solo su hash. Decir "email ya usado" permite averiguar qué emails tienen cuenta: el mapa (A2) lo pide así, y por eso el límite por IP. «Reenviar» de A3 espera 60 s desde el registro. Hasta verificar, el login igual entra (falta el 403 propuesto de `auth.login`). |
 | Sesión | Pública |
 | Pedido | RegisterRequest |
 | Respuesta 201 | RegisterResponse |
@@ -202,7 +202,7 @@ Verifica el email con el token del link. El de una cuenta nueva verifica e inici
 |---|---|
 | Id | `auth.verifyEmail` |
 | Backend | ✅ existe · `back/apps/users/views.py · VerifyEmailView; el token: apps/users/email_verification.py` |
-| Nota | El token dice para qué es (cambio de email o registro). El de registro lo mandan `auth.register` y `auth.resendVerification`. Con el `signup_nonce` del registro (vale 24 h desde el registro) o con la sesión de esa cuenta, verifica, descarta un `pending_email` pedido antes y devuelve el par JWT. Si no, responde `{ signed_in: false }`, no cambia nada y el link sigue sirviendo: la UI lleva a `/login?motivo=verificar&siguiente=<el link>` ("Iniciá sesión para terminar de verificar tu email") y, con la sesión, el mismo link verifica. Así, quien se registró con un email ajeno no consigue una cuenta verificada (`may_simulate` de los pagos simulados confía en `is_email_verified`) ni le inicia la sesión a su dueño: el dueño, que no sabe esa contraseña, entra recuperándola, lo que verifica el email y cierra las sesiones del ocupante. Por eso el login tiene que seguir dejando entrar a una cuenta sin verificar: el 403 propuesto de `auth.login` rompería este camino. El link de un cambio pasa `pending_email` a `email` y devuelve el par; deja de servir si el cambio se cancela. Los dos sirven una vez y vencen en 24 h. |
+| Nota | El token dice para qué es (cambio de email o registro). El de registro lo mandan `auth.register` y `auth.resendVerification`. Con el `signup_nonce` del registro (vale 24 h desde el registro) o con la sesión de esa cuenta, verifica, descarta un `pending_email` pedido antes y devuelve el par JWT. Si no, responde `{ signed_in: false }`, no cambia nada y el link sigue sirviendo: la UI guarda el link en `sessionStorage` (solo esa pestaña) y lleva a `/login?motivo=verificar&siguiente=/verificar` ("Iniciá sesión para terminar de verificar tu email"): el token nunca viaja en la query. Con la sesión, el mismo link verifica. Así, quien se registró con un email ajeno no consigue una cuenta verificada (`may_simulate` de los pagos simulados confía en `is_email_verified`) ni le inicia la sesión a su dueño: el dueño, que no sabe esa contraseña, entra recuperándola, lo que verifica el email y cierra las sesiones del ocupante. Por eso el login tiene que seguir dejando entrar a una cuenta sin verificar: el 403 propuesto de `auth.login` rompería este camino. El link de un cambio pasa `pending_email` a `email` y devuelve el par; deja de servir si el cambio se cancela. Los dos sirven una vez y vencen en 24 h. |
 | Sesión | Pública (manda el token si hay sesión) |
 | Pedido | VerifyEmailRequest |
 | Respuesta 200 | VerifyEmailResult |
@@ -295,7 +295,7 @@ Actualiza nombre, email, tour, uso elegido en la bienvenida y workspace activo.
 |---|---|
 | Id | `users.updateMe` |
 | Backend | ✅ existe · `back/apps/users/views.py · MeView.patch (UpdateMeSerializer); el link: apps/users/email_verification.py` |
-| Nota | El backend normaliza el dominio (minúsculas, letras de ancho completo, Unicode a punycode): `ana@Mañana.com` vuelve en `pending_email` como `ana@xn--maana-pta.com`, y otra escritura de un email ya usado cuenta como usado. El email nuevo queda en `pending_email` y le llega un link a `/verificar?token=…&siguiente=/perfil` que vence en 24 h; `auth.verifyEmail` lo aplica. |
+| Nota | El backend normaliza el dominio (minúsculas, letras de ancho completo, Unicode a punycode): `ana@Mañana.com` vuelve en `pending_email` como `ana@xn--maana-pta.com`, y otra escritura de un email ya usado cuenta como usado. El email nuevo queda en `pending_email` y le llega un link a `/verificar#token=…&siguiente=/perfil` (en el fragmento, que no llega al log de accesos) que vence en 24 h; `auth.verifyEmail` lo aplica. |
 | Sesión | JWT |
 | Pedido | UpdateMeRequest |
 | Respuesta 200 | Me |
@@ -785,7 +785,7 @@ Crea un proyecto desde un archivo (multipart) o un link, reserva los tokens y ar
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido (multipart) | CreateProjectRequest |
 | Respuesta 201 | CreateProjectResponse |
-| Errores | **400** Validación. En `source_file` llega el mensaje de InvalidUploadError; la UI lo traduce por código (propuesto: `{message, code}`) o por el texto. `project_type` para video completo con link o de más de 10 min. Link con resolución distinta de 720p. En `video_url`, un link que no es de un host admitido, que apunta a una IP o una dirección interna, o que no nombra un solo video (una lista, un canal): las mismas reglas que `probe-link`. Se guarda la URL del video (`watch?v=<id>` en YouTube).<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre el diálogo D2.<br>**403** El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3.<br>**503** No se pudo encolar la ingesta (broker caído): `{ error, code: "IngestionNotQueued", project_id, refunded }`. Con `refunded: true` el proyecto queda `failed` con ese `pipeline_error_code` y la reserva ya volvió; con `false` no se pudo escribir y el proyecto sigue en `uploaded` con la reserva. La UI muestra el genérico de 5xx. |
+| Errores | **400** Validación. En `source_file` llega el mensaje de InvalidUploadError; la UI lo traduce por código (propuesto: `{message, code}`) o por el texto. `project_type` para video completo con link o de más de 10 min. Link con resolución distinta de 720p. En `video_url`, un link que no es de un host admitido, que apunta a una IP o una dirección interna, o que no nombra un solo video (una lista, un canal): las mismas reglas que `probe-link`. Se guarda la URL del video (`watch?v=<id>` en YouTube).<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre el diálogo D2.<br>**403** El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3.<br>**413** El archivo pesa más que `MAX_UPLOAD_BYTES` (2 GB, el `upload_max_size_bytes` de `GET /pricing/`): `{ error, code: "file_too_large", limit_bytes }`. El backend lo responde antes de leer el cuerpo (por el Content-Length) o al validar el archivo, antes de ffprobe, del storage y de la reserva: no se crea ni se reserva nada. Un proxy adelante puede responder su propio 413, sin ese cuerpo. La web revisa el peso antes de subir; si igual llega un 413, lo muestra junto al archivo.<br>**503** No se pudo encolar la ingesta (broker caído): `{ error, code: "IngestionNotQueued", project_id, refunded }`. Con `refunded: true` el proyecto queda `failed` con ese `pipeline_error_code` y la reserva ya volvió; con `false` no se pudo escribir y el proyecto sigue en `uploaded` con la reserva. La UI muestra el genérico de 5xx. |
 | Pantallas | C1 |
 
 #### `POST /api/v1/projects/from-prompt/`
@@ -800,7 +800,7 @@ Igual que crear, más `prompt`: la IA arma la configuración al iniciar la inges
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido (multipart) | CreateFromPromptRequest |
 | Respuesta 201 | CreateFromPromptResponse |
-| Errores | **400** `prompt` vacío ("Contanos qué querés") o más largo que el máximo; más las validaciones de crear.<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre el diálogo D2.<br>**403** El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3.<br>**503** No se pudo encolar la ingesta (broker caído): `{ error, code: "IngestionNotQueued", project_id, refunded }`. Con `refunded: true` el proyecto queda `failed` con ese `pipeline_error_code` y la reserva ya volvió; con `false` no se pudo escribir y el proyecto sigue en `uploaded` con la reserva. La UI muestra el genérico de 5xx. |
+| Errores | **400** `prompt` vacío ("Contanos qué querés") o más largo que el máximo; más las validaciones de crear.<br>**402** Saldo insuficiente: `{ error, required }`. La UI abre el diálogo D2.<br>**403** El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3.<br>**413** El archivo pesa más que `MAX_UPLOAD_BYTES` (2 GB, el `upload_max_size_bytes` de `GET /pricing/`): `{ error, code: "file_too_large", limit_bytes }`. El backend lo responde antes de leer el cuerpo (por el Content-Length) o al validar el archivo, antes de ffprobe, del storage y de la reserva: no se crea ni se reserva nada. Un proxy adelante puede responder su propio 413, sin ese cuerpo. La web revisa el peso antes de subir; si igual llega un 413, lo muestra junto al archivo.<br>**503** No se pudo encolar la ingesta (broker caído): `{ error, code: "IngestionNotQueued", project_id, refunded }`. Con `refunded: true` el proyecto queda `failed` con ese `pipeline_error_code` y la reserva ya volvió; con `false` no se pudo escribir y el proyecto sigue en `uploaded` con la reserva. La UI muestra el genérico de 5xx. |
 | Pantallas | C1 |
 
 #### `GET /api/v1/projects/:id/`
@@ -911,7 +911,7 @@ Quién hizo qué en el proyecto y sus movimientos de tokens, del más nuevo al m
 |---|---|
 | Id | `projects.activity` |
 | Backend | ✅ existe · `back/apps/videos/views_project_data.py · ProjectActivityView + services/project_activity.py · build_activity` |
-| Nota | No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección; dice los clips que se sugirieron, `ai_rationale_log.suggestions_count`, no los que quedaron después de aprobar), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (todas las Transaction del proyecto: las que tienen `project` y, sin proyecto, las que nombra su metadata en las claves `*reservation_id` y en `replaced_reservation_ids`, siempre de la billetera de su workspace y nunca las de otro proyecto; con `settled_at` y `reserved_amount` desde la migración 0012 de payments; la reserva, su cobro y su devolución traen `reservation_state`, cómo terminó esa reserva: son ítems de un mismo movimiento del saldo, no cobros ni ingresos aparte; con todas las reservas, los montos con signo suman lo que el proyecto movió el saldo), fin del render (cuando se liquidó la última reserva que pagó un render), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva de antes de la migración 0015 de payments que no quedó vinculada (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems: entran primero los movimientos de tokens, cada reserva entera, y el resto se completa con los ítems más nuevos; los otros ítems guardan 20 lugares para los más nuevos (una falla, un post). |
+| Nota | No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección; dice los clips que se sugirieron, `ai_rationale_log.suggestions_count`, no los que quedaron después de aprobar), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (todas las Transaction del proyecto: las que tienen `project` y, sin proyecto, las que nombra su metadata en las claves `*reservation_id` y en `replaced_reservation_ids`, siempre de la billetera de su workspace y nunca las de otro proyecto; con `settled_at` y `reserved_amount` desde la migración 0012 de payments; la reserva, su cobro y su devolución traen `reservation_state`, cómo terminó esa reserva: son ítems de un mismo movimiento del saldo, no cobros ni ingresos aparte; con todas las reservas, los montos con signo suman lo que el proyecto movió el saldo; el cobro se llama como su reserva, «Cobro por reintentar «Clip»», «Cobro por renderizar «Clip»», «Cobro por renderizar todo de nuevo», y «Cómo se calculó» muestra esa `description`), fin del render (cuando se liquidó la última reserva que pagó un render; si esa reserva terminó devuelta entera, `description` no dice «Terminó el render» sino que no se pudo renderizar, lo que se devolvió y, cuando el backend restauró lo que había, «quedó el clip anterior»), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva de antes de la migración 0015 de payments que no quedó vinculada (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems: entran primero los movimientos de tokens, cada reserva entera, y el resto se completa con los ítems más nuevos; los otros ítems guardan 20 lugares para los más nuevos (una falla, un post). |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | ActivityItem[] |
 | Errores | **404** No existe o es de otro workspace. |
@@ -1077,7 +1077,7 @@ Crea un brand kit (multipart por las fuentes, el logo y los videos).
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido (multipart) | BrandKitInput |
 | Respuesta 201 | BrandKit |
-| Errores | **400** Validación por campo (nombre vacío, color que no es hex, archivo inválido).<br>**403** El rol no puede crear ni editar brand kits (Lector). |
+| Errores | **400** Validación por campo (nombre vacío, color que no es hex, archivo inválido, archivo más pesado que su tope).<br>**413** El pedido pesa más que los archivos del kit juntos (112 MB) más 1 MB: `{ error, code: "file_too_large", limit_bytes }`, sin leer el cuerpo. Cada archivo tiene su tope (fuentes 5 MB, logo 2 MB, intro y outro 50 MB): pasado de ese, es un 400 en su campo con el texto de la web. La web revisa los dos antes de subir.<br>**403** El rol no puede crear ni editar brand kits (Lector). |
 | Pantallas | F1, F2 |
 
 #### `GET /api/v1/brand-kits/:id/`
@@ -1105,7 +1105,7 @@ Edita un brand kit. Con `is_default: true` pasa a ser el default del workspace.
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido (multipart) | { name?: string, description?: string, primary_color?: HexColor, secondary_color?: HexColor, accent_color?: HexColor, primary_font?: unknown \\| "", secondary_font?: unknown \\| "", watermark_logo?: unknown \\| "", intro_video?: unknown \\| "", outro_video?: unknown \\| "", is_default?: boolean, watermark_position?: WatermarkPosition } |
 | Respuesta 200 | BrandKit |
-| Errores | **400** Validación por campo.<br>**403** El rol no puede crear ni editar brand kits (Lector).<br>**404** No existe o es de otro workspace. |
+| Errores | **400** Validación por campo, también un archivo más pesado que su tope.<br>**413** El pedido pesa más que los archivos del kit juntos (112 MB) más 1 MB: `{ error, code: "file_too_large", limit_bytes }`, sin leer el cuerpo. Cada archivo tiene su tope (fuentes 5 MB, logo 2 MB, intro y outro 50 MB): pasado de ese, es un 400 en su campo con el texto de la web. La web revisa los dos antes de subir.<br>**403** El rol no puede crear ni editar brand kits (Lector).<br>**404** No existe o es de otro workspace. |
 | Pantallas | F1, F2 |
 
 #### `DELETE /api/v1/brand-kits/:id/`
@@ -1246,7 +1246,7 @@ Edita el texto, reprograma, o publica un borrador (`publish_at`: fecha para prog
 |---|---|
 | Id | `social.updatePost` |
 | Backend | ✅ existe · `back/apps/videos/views_social.py · ScheduledPostViewSet.partial_update + services/scheduled_posts.py · update_post` |
-| Nota | Solo `DRAFT` y `SCHEDULED`: un post `QUEUED` ya tiene su tarea en el broker con la hora vieja. `publish_at` con fecha programa o reprograma; `null` (o dentro de un minuto) lo deja `SCHEDULED` para ahora; sin el campo, un borrador sigue borrador. Al mandarlo se miran el clip, el plan, la cuenta y TikTok como al crear, y se borra la falla del texto del borrador. `caption` y `hashtags` vacíos vuelven a mostrar el texto de la IA. Guardar el texto mientras un «Regenerar» está en camino termina ese pedido: el texto del usuario queda cuando llega el de la IA. Ningún endpoint de publicaciones llama a la red: lo que tiene que salir queda `SCHEDULED` y lo encola `dispatch_scheduled_posts_batch` (Celery Beat, cada 5 min). Cada escritura toma el lock de la fila del post y decide con el estado que lee bajo ese lock, igual que el despachador y el worker, así que nunca pisa una publicación que el beat ya tomó. |
+| Nota | Solo `DRAFT` y `SCHEDULED`: un post `QUEUED` ya tiene su tarea en el broker con la hora vieja. `publish_at` con fecha programa o reprograma; `null` (o dentro de un minuto) lo deja `SCHEDULED` para ahora; sin el campo, un borrador sigue borrador. Al mandarlo se miran el clip, el plan, la cuenta y TikTok como al crear, y se borra la falla del texto del borrador. `caption` y `hashtags` vacíos vuelven a mostrar el texto de la IA. Guardar el texto mientras un «Regenerar» está en camino no lo cancela (sigue `pending` y sigue contando en el límite del espacio), pero el texto del usuario queda cuando llega el de la IA (`text_edited_at`). Ningún endpoint de publicaciones llama a la red: lo que tiene que salir queda `SCHEDULED` y lo encola `dispatch_scheduled_posts_batch` (Celery Beat, cada 5 min). Cada escritura toma el lock de la fila del post y decide con el estado que lee bajo ese lock, igual que el despachador y el worker, así que nunca pisa una publicación que el beat ya tomó. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | UpdatePostRequest |
 | Respuesta 200 | ScheduledPost |
@@ -2390,6 +2390,14 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | Campo | Tipo |
 |---|---|
 | `title` (opcional) | string |
+
+**UploadTooLargeBody**
+
+| Campo | Tipo |
+|---|---|
+| `error` | string |
+| `code` | "file_too_large" |
+| `limit_bytes` | number |
 
 ### `clips.ts`
 

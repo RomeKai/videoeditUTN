@@ -9,7 +9,7 @@ import { ApiError, NetworkError } from '@/api/errors';
 import { useBrandKits, useCreateProject, useEstimate, usePlans, usePricing, useProbeLink, useProjectSnapshot, useWallet } from '@/api/hooks';
 import { keys } from '@/api/query';
 import { ConfirmDialog, useBillingDialogs } from '@/dialogs';
-import { errorMessage, planLimitKind, uploadErrorCode, uploadErrorMessage } from '@/lib/error-messages';
+import { errorMessage, planLimitKind, uploadErrorCode, uploadErrorMessage, uploadTooLarge } from '@/lib/error-messages';
 import { formatDuration, formatMinutes, formatNumber, formatPercent, formatTokens } from '@/lib/format';
 import { useBeforeUnload, useDebounced, useIsMobile } from '@/lib/hooks';
 import { estimateCost, firstPlanWith, planAllowsResolution, type CostEstimate } from '@/lib/pricing';
@@ -482,6 +482,13 @@ export function NewProjectScreen() {
             const arrived = delivered || error.outcomeUnknown;
             if (uploading) setCut({ loaded: sent, percent: arrived ? 100 : size > 0 ? Math.min(100, Math.floor((sent / size) * 100)) : 0, delivered: arrived });
             else setSubmitError('No pudimos conectar. Puede que el proyecto se haya creado: revisá tus proyectos antes de probar de nuevo.');
+            return;
+          }
+          // Over the size cap (413): nothing was created. Said next to the file, as when the browser catches it.
+          const heavy = uploading ? uploadTooLarge(error) : null;
+          if (heavy) {
+            const limitBytes = heavy.limitBytes ?? pricing?.upload_max_size_bytes;
+            setFileState((current) => (current ? { ...current, problem: { code: 'too_heavy', limitBytes } } : current));
             return;
           }
           if (error instanceof ApiError && error.status === 400) {

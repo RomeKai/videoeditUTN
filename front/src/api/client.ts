@@ -395,8 +395,9 @@ export async function apiCall<E extends AnyEndpoint>(endpoint: E, ...args: Args<
   if (needsAuth && isSessionExpired()) throw new SessionExpiredError();
 
   // «Cerrar sesión en todos los dispositivos» from another device: the access token answers 401
-  // `session_revoked`, while the refresh (blacklisted by then) only says it is not valid. Whichever
-  // answer names it decides what dialog D9 says.
+  // `session_revoked`, and so does the refresh (blacklisted by then), which is the first to answer
+  // when the access token had already expired. A refresh that is simply not valid says
+  // `token_not_valid`. Whichever answer names `session_revoked` decides what dialog D9 says.
   let reason: SessionEndReason = 'expired';
   const expire = (): never => {
     notifySessionExpired(reason);

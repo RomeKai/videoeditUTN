@@ -44,7 +44,7 @@ export const Pricing = z.object({
   single_edit_max_duration_seconds: z.number().int().positive(),
   /** AI_UPLOAD_MAX_DURATION_SECONDS (3 h): the system ceiling, above any plan. */
   upload_max_duration_seconds: z.number().int().positive(),
-  /** Upload size ceiling in bytes (UPLOAD_MAX_SIZE_BYTES in apps/videos/serializers.py: 500 MB). */
+  /** Upload size ceiling in bytes (setting MAX_UPLOAD_BYTES, back/apps/core/upload_limits.py: 2 GB). Over it the creation answers 413 `file_too_large`. */
   upload_max_size_bytes: z.number().int().positive(),
   /** Accepted extensions (UPLOAD_EXTENSIONS: .mp4, .mov, .avi). */
   upload_extensions: z.array(z.string()),

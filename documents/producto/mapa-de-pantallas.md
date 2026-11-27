@@ -175,7 +175,7 @@ flowchart TD
 
 **Rutas:**
 
-- **Público:** `/login`, `/registro`, `/verificar`, `/recuperar`, `/invitacion` (el token va en `#token=…`), `/precios`.
+- **Público:** `/login`, `/registro`, `/verificar`, `/recuperar`, `/invitacion` (en los tres links de email, verificar, recuperar e invitación, el token va en `#token=…`), `/precios`.
 - **Primera vez:** `/bienvenida`.
 - **Proyectos:** `/proyectos`, `/proyectos/nuevo`, `/proyectos/:id`, `/proyectos/:id/revision`, `/proyectos/:id/clips`, `/proyectos/:id/clips/:clipId`.
 - **Resto:** `/publicaciones`, `/brand-kits`, `/brand-kits/:id`, `/uso`, `/ajustes/*`, `/perfil/*`.
@@ -235,6 +235,7 @@ Errores al subir el archivo. `InvalidUploadError.code` llega en la respuesta 400
 | `too_long` | "El video dura más de lo que permite tu plan (máx. X min)." El tope del sistema es `AI_UPLOAD_MAX_DURATION_SECONDS` (3 h); el del plan lo controla el precio (403). |
 | `too_large` | "La resolución del video es mayor a 4096 px. Exportalo en 4K o menos y volvé a subirlo." |
 | `too_small` | "La resolución del video es muy baja (mínimo 240 px). Probá con una versión de mejor calidad." |
+| `file_too_large` (413) | "El archivo pesa más de 2 GB." con "Exportalo con menos peso y volvé a subirlo." El navegador lo revisa antes de subir, con el tope de `GET /pricing/` (`upload_max_size_bytes`, el setting `MAX_UPLOAD_BYTES`). Si igual llega el 413 (del backend, con `limit_bytes`, o del proxy, sin cuerpo), se muestra igual junto al archivo. |
 
 Otras respuestas:
 
@@ -267,6 +268,7 @@ Otras respuestas:
 #### A3. Verificar email — `/verificar`
 - **Qué muestra:** "Te mandamos un link a tu email", con la opción **Reenviar** (disponible cada 60 s).
 - **Al abrir el link:** la cuenta queda verificada (`is_email_verified`) y entra a la Bienvenida.
+- **Link:** `/verificar#token=…`. El token va en el fragmento y la pantalla lo saca de la barra de direcciones: no queda en logs ni en el historial. Un link enviado antes, con `?token=…`, sirve hasta que vence.
 - **API:** ✅ `POST /api/v1/auth/verify-email/` (verifica e inicia la sesión en el navegador donde se creó la cuenta; en otro pide iniciar sesión y volver a abrir el link) y `POST /api/v1/auth/verify-email/resend/` (responde igual exista o no la cuenta).
 
 #### A4. Recuperar contraseña — `/recuperar`
@@ -382,6 +384,7 @@ Otras respuestas:
 - **API:**
   - ✅ `POST /api/v1/projects/` (multipart) y `POST /api/v1/projects/from-prompt/`.
   - ✅ el campo `render_resolution` (720p, 1080p o 4K) se cobra y se compara con el plan; sin él, el proyecto se cobra y se renderiza en 720p.
+  - ✅ tope de peso del archivo: `MAX_UPLOAD_BYTES` (2 GB), que `GET /api/v1/pricing/` da como `upload_max_size_bytes`. Más pesado es un 413 `file_too_large` con `limit_bytes`: el backend lo responde antes de leer el cuerpo (por el `Content-Length`) o al validar el archivo, siempre antes de reservar tokens.
   - ✅ `project_type` (`repurpose` o `single_edit`). `single_edit` solo acepta un archivo de hasta 10 min (`AI_SINGLE_EDIT_MAX_DURATION_SECONDS`); con un link o un archivo más largo da 400. No cambia después de crear.
   - ✅ `speaker_tracking=true` sin layout crea el proyecto con Quien habla (`render_layout=active`).
   - ❌ falta el endpoint de precios para el estimado.
@@ -584,6 +587,7 @@ Otras respuestas:
 - **API:**
   - ✅ los campos existen.
   - ✅ un solo default por workspace: marcar uno desmarca el anterior. Desmarcar el default o borrarlo deja al workspace sin default.
+  - ✅ tope de peso de cada archivo, el mismo que revisa la web antes de subir: fuentes 5 MB, logo 2 MB, intro y outro 50 MB. Pasado, un 400 en el campo («El video pesa más de 50 MB.»).
 
 ### G. Uso y facturación — `/uso`
 
@@ -784,7 +788,7 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad. El detalle e
 | 19 | Total reservado del workspace con el detalle por proyecto | G1, barra | P1 |
 | 20 | ~~Pipeline propio para `single_edit`: un solo video de salida, sin revisión~~ Resuelto: el video entero es un solo clip que se renderiza sin revisión; solo con archivo subido | C1, D5 | — |
 | 21 | ✅ Envío de los emails transaccionales en texto y HTML simple (verificar, recuperar, invitación, listo para revisar, render terminado, fallo con devolución, saldo bajo). Falta el de publicación fallida (con el hueco 16) y las plantillas con el diseño de N1 a N8 | A2–A5, J2, I2 | P1 |
-| 22 | Tope de peso del archivo al subir: hoy no hay ninguno (los límites de `media_validation` son de duración y resolución) | C1 | P2 |
+| 22 | ~~Tope de peso del archivo al subir~~ Resuelto: `MAX_UPLOAD_BYTES` (2 GB, en `GET /pricing/` como `upload_max_size_bytes`). Más pesado es un 413 `file_too_large`, antes de leer el cuerpo y de reservar tokens | C1 | — |
 
 ---
 

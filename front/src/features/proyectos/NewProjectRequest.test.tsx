@@ -266,6 +266,28 @@ describe('C1 · errores al crear', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
+  it('un 413 `file_too_large` queda junto al archivo, con el tope, y pide otro archivo', async () => {
+    const user = await open();
+    await pickFile(user);
+    await user.click(create());
+    act(() => fake.options[0]?.onError?.(new ApiError(413, 'projects.create', { error: 'El archivo pesa más de 2 GB, el máximo que podemos recibir.', code: 'file_too_large', limit_bytes: 2 * 1024 ** 3 })));
+    const row = await screen.findByTestId('file-row');
+    await waitFor(() => expect(within(row).getByRole('alert')).toHaveTextContent('El archivo pesa más de 2 GB.'));
+    expect(within(row).getByText('Exportalo con menos peso y volvé a subirlo.')).toBeInTheDocument();
+    expect(within(row).getByRole('button', { name: 'Elegir otro archivo' })).toBeInTheDocument();
+    expect(create()).toBeDisabled();
+    expect(screen.getByText('Elegí otro archivo para seguir.')).toBeInTheDocument();
+  });
+
+  it('el 413 del proxy, sin cuerpo, dice lo mismo con el tope de /pricing/', async () => {
+    const user = await open();
+    await pickFile(user);
+    await user.click(create());
+    act(() => fake.options[0]?.onError?.(new ApiError(413, 'projects.create', '<html><body>413 Request Entity Too Large</body></html>')));
+    const row = await screen.findByTestId('file-row');
+    await waitFor(() => expect(within(row).getByRole('alert')).toHaveTextContent('El archivo pesa más de 2 GB.'));
+  });
+
   it('la conexión se corta con el video ya enviado: no dice que no se creó nada', async () => {
     const user = await open();
     await pickFile(user);

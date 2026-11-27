@@ -41,6 +41,7 @@ AUTH_ERROR_KEYS = [
     "password_reset_confirm_400_password",
     "logout_400_other_account",
     "session_revoked_401",
+    "refresh_401_session_revoked",
 ]
 
 
@@ -67,9 +68,9 @@ def _real_bodies(user):
     )
     assert register.status_code == 201
     # Without the nonce of the sign-up (another browser): it only verifies.
-    signup_link = next(word for word in mail.outbox[-1].body.split() if "/verificar?" in word)
+    signup_link = next(word for word in mail.outbox[-1].body.split() if "/verificar#" in word)
     signed_out = APIClient().post(
-        "/api/v1/auth/verify-email/", {"token": parse_qs(urlparse(signup_link).query)["token"][0]}, format="json",
+        "/api/v1/auth/verify-email/", {"token": parse_qs(urlparse(signup_link).fragment)["token"][0]}, format="json",
     )
     taken = APIClient().post(
         "/api/v1/auth/register/",
@@ -101,6 +102,8 @@ def _real_bodies(user):
     phone = _login("tester@test.com")
     assert _client(mine["access"]).post("/api/v1/auth/logout/", {"refresh": mine["refresh"], "all_devices": True}, format="json").status_code == 204
     revoked = _client(phone["access"]).get("/api/v1/me/")
+    # The other device whose access token had already expired: the refresh (blacklisted) says why too.
+    revoked_refresh = APIClient().post("/api/token/refresh/", {"refresh": phone["refresh"]}, format="json")
     return {
         "auth_register": register.json(),
         "verify_email_signed_out": signed_out.json(),
@@ -113,6 +116,7 @@ def _real_bodies(user):
             "password_reset_confirm_400_password": _error(weak),
             "logout_400_other_account": _error(other),
             "session_revoked_401": _error(revoked),
+            "refresh_401_session_revoked": _error(revoked_refresh),
         },
     }
 

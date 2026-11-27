@@ -93,6 +93,17 @@ export const KNOWN_PIPELINE_ERROR_CODES = [
 ] as const;
 export type KnownPipelineErrorCode = (typeof KNOWN_PIPELINE_ERROR_CODES)[number];
 
+/** `code` of the 413 of a file over MAX_UPLOAD_BYTES (back/apps/core/upload_limits.py). */
+export const FILE_TOO_LARGE_CODE = 'file_too_large';
+/** Body of that 413. A proxy in front of the backend may answer a 413 of its own, without it. */
+export const UploadTooLargeBody = z.object({
+  error: z.string(),
+  code: z.literal(FILE_TOO_LARGE_CODE),
+  /** MAX_UPLOAD_BYTES, the `upload_max_size_bytes` of GET /pricing/. */
+  limit_bytes: z.number().int().positive(),
+});
+export type UploadTooLargeBody = z.infer<typeof UploadTooLargeBody>;
+
 /** InvalidUploadError.code (services/media_validation.py). */
 export const UPLOAD_ERROR_CODES = [
   'not_a_video',
@@ -374,7 +385,7 @@ const FileField = z.custom<Blob>((value) => typeof Blob !== 'undefined' && value
 /** Fields of the creation body (multipart). Field names as VideoProjectSerializer reads them. */
 const CreateProjectFields = z.object({
   title: z.string().min(1).max(255).optional(),
-  /** .mp4, .mov or .avi, up to 500 MB. Exactly one of source_file / video_url. */
+  /** .mp4, .mov or .avi, up to MAX_UPLOAD_BYTES (`upload_max_size_bytes` of GET /pricing/, 2 GB). Exactly one of source_file / video_url. */
   source_file: FileField.optional(),
   video_url: z.string().url().max(500).optional(),
   project_type: ProjectType.optional(),
@@ -556,6 +567,12 @@ const paymentErrors = [
   { status: 403, when: 'El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3.' },
 ];
 
+/** A file over MAX_UPLOAD_BYTES: refused before anything is created or reserved. */
+const uploadTooLargeError = {
+  status: 413,
+  when: 'El archivo pesa más que `MAX_UPLOAD_BYTES` (2 GB, el `upload_max_size_bytes` de `GET /pricing/`): `{ error, code: "file_too_large", limit_bytes }`. El backend lo responde antes de leer el cuerpo (por el Content-Length) o al validar el archivo, antes de ffprobe, del storage y de la reserva: no se crea ni se reserva nada. Un proxy adelante puede responder su propio 413, sin ese cuerpo. La web revisa el peso antes de subir; si igual llega un 413, lo muestra junto al archivo.',
+};
+
 /** Creation only: the reservation was made but the broker did not take the ingestion. */
 const notQueuedError = {
   status: 503,
@@ -598,6 +615,7 @@ export const createProject = defineEndpoint({
       when: 'Validación. En `source_file` llega el mensaje de InvalidUploadError; la UI lo traduce por código (propuesto: `{message, code}`) o por el texto. `project_type` para video completo con link o de más de 10 min. Link con resolución distinta de 720p. En `video_url`, un link que no es de un host admitido, que apunta a una IP o una dirección interna, o que no nombra un solo video (una lista, un canal): las mismas reglas que `probe-link`. Se guarda la URL del video (`watch?v=<id>` en YouTube).',
     },
     ...paymentErrors,
+    uploadTooLargeError,
     notQueuedError,
   ],
   backend: {
@@ -622,6 +640,7 @@ export const createProjectFromPrompt = defineEndpoint({
   errors: [
     { status: 400, when: '`prompt` vacío ("Contanos qué querés") o más largo que el máximo; más las validaciones de crear.' },
     ...paymentErrors,
+    uploadTooLargeError,
     notQueuedError,
   ],
   backend: {
@@ -785,7 +804,7 @@ export const getProjectActivity = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_project_data.py · ProjectActivityView + services/project_activity.py · build_activity',
-    note: 'No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección; dice los clips que se sugirieron, `ai_rationale_log.suggestions_count`, no los que quedaron después de aprobar), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (todas las Transaction del proyecto: las que tienen `project` y, sin proyecto, las que nombra su metadata en las claves `*reservation_id` y en `replaced_reservation_ids`, siempre de la billetera de su workspace y nunca las de otro proyecto; con `settled_at` y `reserved_amount` desde la migración 0012 de payments; la reserva, su cobro y su devolución traen `reservation_state`, cómo terminó esa reserva: son ítems de un mismo movimiento del saldo, no cobros ni ingresos aparte; con todas las reservas, los montos con signo suman lo que el proyecto movió el saldo), fin del render (cuando se liquidó la última reserva que pagó un render), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva de antes de la migración 0015 de payments que no quedó vinculada (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems: entran primero los movimientos de tokens, cada reserva entera, y el resto se completa con los ítems más nuevos; los otros ítems guardan 20 lugares para los más nuevos (una falla, un post).',
+    note: 'No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección; dice los clips que se sugirieron, `ai_rationale_log.suggestions_count`, no los que quedaron después de aprobar), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (todas las Transaction del proyecto: las que tienen `project` y, sin proyecto, las que nombra su metadata en las claves `*reservation_id` y en `replaced_reservation_ids`, siempre de la billetera de su workspace y nunca las de otro proyecto; con `settled_at` y `reserved_amount` desde la migración 0012 de payments; la reserva, su cobro y su devolución traen `reservation_state`, cómo terminó esa reserva: son ítems de un mismo movimiento del saldo, no cobros ni ingresos aparte; con todas las reservas, los montos con signo suman lo que el proyecto movió el saldo; el cobro se llama como su reserva, «Cobro por reintentar «Clip»», «Cobro por renderizar «Clip»», «Cobro por renderizar todo de nuevo», y «Cómo se calculó» muestra esa `description`), fin del render (cuando se liquidó la última reserva que pagó un render; si esa reserva terminó devuelta entera, `description` no dice «Terminó el render» sino que no se pudo renderizar, lo que se devolvió y, cuando el backend restauró lo que había, «quedó el clip anterior»), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva de antes de la migración 0015 de payments que no quedó vinculada (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems: entran primero los movimientos de tokens, cada reserva entera, y el resto se completa con los ítems más nuevos; los otros ítems guardan 20 lugares para los más nuevos (una falla, un post).',
   },
   screens: ['D1f'],
 });

@@ -288,7 +288,7 @@ function Controls() {
           <RadioCard value="hormozi" title="Hormozi" description="Subtítulos grandes." lockedReason="Disponible en el plan Creador" />
         </RadioGroup>
         <span className={styles.label}>Zona para soltar archivos</span>
-        <Field label="Video" hint={file ? `Elegiste ${file}` : 'MP4, MOV o AVI, hasta 500 MB.'}>
+        <Field label="Video" hint={file ? `Elegiste ${file}` : 'MP4, MOV o AVI, hasta 2 GB.'}>
           <FileDropZone accept=".mp4,.mov,.avi" onFiles={(files) => setFile(files[0]?.name ?? null)} title="Arrastrá tu video acá" description="o elegilo desde tu computadora" inputLabel="Elegir video" />
         </Field>
       </Card>

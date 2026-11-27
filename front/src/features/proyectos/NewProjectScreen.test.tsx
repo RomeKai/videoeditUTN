@@ -109,6 +109,19 @@ describe('C1 · Nuevo proyecto', () => {
     expect(screen.getByRole('button', { name: 'Crear proyecto' })).toBeDisabled();
   });
 
+  it('el peso se revisa antes de subir, con el tope de /pricing/ (2 GB)', async () => {
+    const user = await open('estudio-norte');
+    expect(screen.getByText(/o elegilo desde tu dispositivo · MP4, MOV o AVI, hasta 2 GB/)).toBeInTheDocument();
+    const heavy = video('podcast-ep42-72min.mp4');
+    Object.defineProperty(heavy, 'size', { value: 2 * 1024 ** 3 + 1 });
+    await pick(user, heavy);
+    const row = await screen.findByTestId('file-row');
+    expect(within(row).getByRole('alert')).toHaveTextContent('El archivo pesa más de 2 GB.');
+    expect(within(row).getByText('Exportalo con menos peso y volvé a subirlo.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Crear proyecto' })).toBeDisabled();
+    expect(within(await summary()).getByText('Elegí otro archivo para seguir.')).toBeInTheDocument();
+  });
+
   it('pegar link: reconoce el video y muestra los links que no sirven junto al campo', async () => {
     const user = await open('estudio-norte');
     await user.click(screen.getByRole('tab', { name: /Pegar link/ }));

@@ -2,6 +2,7 @@ import type { BrandKit } from '../../contracts/brandkits';
 import * as contract from '../../contracts/brandkits';
 import { newId, type MockDb } from '../db';
 import { badRequest, notFound, route } from '../http';
+import { FILE_RULES } from '@/features/brand-kits/kit';
 
 const FILE_FIELDS = ['primary_font', 'secondary_font', 'watermark_logo', 'intro_video', 'outro_video'] as const;
 const FILE_DIR: Record<(typeof FILE_FIELDS)[number], string> = {
@@ -46,6 +47,8 @@ function apply(kit: BrandKit, form: FormData, { partial }: { partial: boolean })
       continue;
     }
     const file = value as File;
+    // Each file's cap, as the backend checks it (back/apps/core/upload_limits.py · BRAND_KIT_FILE_MAX_BYTES).
+    if (file.size > FILE_RULES[field].maxBytes) throw badRequest({ [field]: [FILE_RULES[field].tooBig] });
     if ((field === 'primary_font' || field === 'secondary_font') && !/\.(ttf|otf)$/i.test(file.name)) {
       throw badRequest({ [field]: ['Subí una fuente .ttf u .otf.'] });
     }

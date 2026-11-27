@@ -121,7 +121,7 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
       window.localStorage.setItem('oc.acceso.registro', JSON.stringify({ nonce: 'nonce-de-este-navegador', at: Date.now() }));
     });
     // The link of the email does not carry the destination.
-    await page.goto('/verificar?token=mock-token');
+    await page.goto('/verificar#token=mock-token');
     await expect(page).toHaveURL(/\/invitacion$/);
     await expect(page.getByRole('button', { name: 'Aceptar invitación' })).toBeVisible();
   });
@@ -170,17 +170,50 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     await page.reload();
     await expect(page.getByRole('button', { name: /Reenviar en \d:\d\d/ })).toBeDisabled();
 
-    // The link of the email.
-    await page.goto('/verificar?token=mock-token');
+    // The link of the email: its token comes in the fragment, which the browser never sends.
+    const requested: string[] = [];
+    page.on('request', (request) => requested.push(request.url()));
+    await page.goto('/verificar#token=mock-token');
     await expect(page).toHaveURL(/\/bienvenida$/);
+    expect(requested.filter((url) => url.includes('mock-token'))).toEqual([]);
     await expect(page.getByRole('heading', { level: 1, name: '¿Cómo se llama tu workspace?' })).toBeVisible();
     expectClean(problems, 'el registro');
   });
 
+  test('A3: el token del link sale de la barra de direcciones, y fuera del navegador del registro el login vuelve sin llevarlo en la URL', async ({ page }) => {
+    await useScenario(page, 'email-sin-verificar');
+    const visited: string[] = [];
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) visited.push(frame.url());
+    });
+    // No signup nonce in this browser: the link changes nothing and asks to sign in.
+    await page.goto('/verificar#token=mock-token');
+    await expect(page).toHaveURL(/\/login\?motivo=verificar&siguiente=%2Fverificar$/);
+    await expect(page.getByText('Iniciá sesión para terminar de verificar tu email.')).toBeVisible();
+    expect(await page.evaluate(() => window.sessionStorage.getItem('oc.acceso.verificar'))).toContain('mock-token');
+    // Nothing that reaches the web host carries the token: no query of any page visited.
+    expect(visited.filter((url) => new URL(url).search.includes('mock-token'))).toEqual([]);
+  });
+
+  test('A3: un link ya enviado con el token en la query (?token=) sigue sirviendo', async ({ page }) => {
+    await useScenario(page, 'sin-sesion');
+    await page.goto('/registro');
+    await settle(page);
+    await page.getByLabel('Nombre').fill('Ana Gómez');
+    await page.getByLabel('Email').fill('ana@ejemplo.com');
+    await page.getByLabel('Contraseña', { exact: true }).fill('contrasena-segura');
+    await page.getByRole('checkbox', { name: /Acepto los Términos/ }).check({ force: true });
+    await page.getByRole('button', { name: 'Crear cuenta' }).click();
+    await expect(page).toHaveURL(/\/verificar\?email=ana%40ejemplo\.com$/);
+    await page.goto('/verificar?token=mock-token');
+    await expect(page).toHaveURL(/\/bienvenida$/);
+  });
+
   test('A3: un link vencido ofrece pedir otro', async ({ page }) => {
     await useScenario(page, 'sin-sesion');
-    await page.goto('/verificar?token=vencido&email=sofia%40ejemplo.com');
+    await page.goto('/verificar?email=sofia%40ejemplo.com#token=vencido');
     await expect(page.getByRole('heading', { level: 1, name: 'Este link ya no sirve' })).toBeVisible();
+    await expect(page).toHaveURL(/\/verificar\?email=sofia%40ejemplo\.com$/);
     await page.getByRole('button', { name: 'Reenviar' }).click();
     await expect(page.getByText(/Te mandamos otro email/)).toBeVisible();
   });

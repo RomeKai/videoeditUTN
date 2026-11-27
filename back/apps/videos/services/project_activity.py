@@ -27,7 +27,13 @@ There is no event log: the feed is read from what the backend already keeps.
   charge gave back is not income). With every reservation in the feed, the
   groups add up to what the project moved the balance in all.
 - ``render_finished``: a project that ended ``completed`` or ``partial``, at
-  the settlement of the last reservation that paid a render.
+  the settlement of the last reservation that paid a render. When that
+  reservation ended returned whole, the render delivered nothing: the item
+  says it could not be rendered and what came back, and that the clip the
+  user had is still there when it is (a render of a delivered clip that
+  failed gives it back, ``_restore_rerendered_clips``). When it was charged
+  in part and the project ended ``completed`` all the same, a clip it could
+  not generate got back the file it had: the item says so, like the bell.
 - ``project_failed``: ``pipeline_error_at``.
 - ``post_scheduled`` / ``post_published`` / ``post_failed``: the
   ScheduledPosts of its clips (``created_at``, then ``updated_at``).
@@ -35,7 +41,9 @@ There is no event log: the feed is read from what the backend already keeps.
 What a reservation paid for is read from the description the code writes
 when it reserves (``Procesamiento: …``, ``Render de clip: …``…), else from
 its metadata key, else from its category. The first reservation of the
-processing is the creation's; a later one, a re-dispatch's.
+processing is the creation's; a later one, a re-dispatch's. Its charge is
+named after it too («Cobro por reintentar «Clip»»), so two charges of the
+same amount say which is which.
 
 Not kept anywhere, so never in the feed: renames (``project_renamed``),
 clip edits and retries (``clip_edited``, ``clip_retried``) and who scheduled
@@ -56,6 +64,7 @@ from typing import NamedTuple
 
 from django.db.models import Max, Q
 
+from apps.notifications.services import format_tokens
 from apps.payments.models import Transaction
 from apps.videos.models import AIUsageRecord, ScheduledPost, VideoClip, VideoProject
 
@@ -79,12 +88,13 @@ class _Purpose(NamedTuple):
     render: bool = False
 
 
+# Each charge is called like its reservation: "Reserva por X" is charged as "Cobro por X".
 _CREATION = _Purpose("Reserva por el procesamiento", "Cobro del procesamiento")
-_REDISPATCH = _Purpose("Reserva por volver a procesar", "Cobro del procesamiento")
+_REDISPATCH = _Purpose("Reserva por volver a procesar", "Cobro por volver a procesar")
 _APPROVAL = _Purpose("Reserva por el render", "Cobro del render", True)
-_AUTO_RENDER = _Purpose("Reserva por renderizar sin revisar", "Cobro del render automático", True)
-_RERENDER = _Purpose("Reserva por renderizar todo de nuevo", "Cobro del render", True)
-_CLIP_RENDER = _Purpose("Reserva por volver a renderizar", "Cobro del render", True)
+_AUTO_RENDER = _Purpose("Reserva por renderizar sin revisar", "Cobro por renderizar sin revisar", True)
+_RERENDER = _Purpose("Reserva por renderizar todo de nuevo", "Cobro por renderizar todo de nuevo", True)
+_CLIP_RENDER = _Purpose("Reserva por volver a renderizar", "Cobro por volver a renderizar", True)
 _GENERIC = _Purpose("Reserva de tokens", "Cobro de tokens")
 _PROCESSING = (_CREATION, _REDISPATCH)
 
@@ -95,10 +105,11 @@ _BY_DESCRIPTION = (
     ('Render automático: ', _AUTO_RENDER),
     ('Render con otro estilo: ', _RERENDER),
 )
-# Those of one clip end with its title.
+# Those of one clip end with its title: what the reservation and its charge are for.
+_RETRY_PREFIX = 'Reintento de clip: '
 _CLIP_DESCRIPTIONS = (
-    ('Render de clip: ', "Reserva por renderizar «{}»"),
-    ('Reintento de clip: ', "Reserva por reintentar «{}»"),
+    ('Render de clip: ', "renderizar «{}»"),
+    (_RETRY_PREFIX, "reintentar «{}»"),
 )
 # A row with another description (written by hand, or older): its metadata key, else its category.
 _BY_KEY = {
@@ -243,9 +254,10 @@ def _purpose(txn, key):
     for prefix, purpose in _BY_DESCRIPTION:
         if description.startswith(prefix):
             return purpose
-    for prefix, reserved in _CLIP_DESCRIPTIONS:
+    for prefix, what in _CLIP_DESCRIPTIONS:
         if description.startswith(prefix) and description[len(prefix):].strip():
-            return _Purpose(reserved.format(description[len(prefix):].strip()), "Cobro del render", True)
+            what = what.format(description[len(prefix):].strip())
+            return _Purpose(f"Reserva por {what}", f"Cobro por {what}", True)
     if key is not None:
         return _BY_KEY.get(key, _GENERIC)
     return _BY_CATEGORY.get(txn.category, _GENERIC)
@@ -262,7 +274,7 @@ def _reservation_state(txn, reserved):
 
 def _add_movement(feed, txn, purpose):
     """The items of one reservation: its reservation and, once settled, its charge and what came back."""
-    reserved = txn.reserved_amount if txn.reserved_amount is not None else txn.amount
+    reserved = _reserved(txn)
     settled = txn.settled_at or txn.created_at
     state = _reservation_state(txn, reserved)
     source = str(txn.pk)
@@ -289,6 +301,46 @@ def _add_movement(feed, txn, purpose):
             'tokens_refunded', settled, "Devolución de la reserva", source=source, amount=reserved,
             reservation_state=state, movement=txn.pk,
         )
+
+
+def _tokens(amount):
+    """ "12,50 tokens", "1.250 tokens", "1 token": as the bell writes them. """
+    return f"{format_tokens(amount)} {'token' if Decimal(amount) == 1 else 'tokens'}"
+
+
+def _reserved(txn):
+    return txn.reserved_amount if txn.reserved_amount is not None else txn.amount
+
+
+def _refunded_render_text(txn, key, metadata, clips, whole_video):
+    """
+    What ``render_finished`` says when the render the project ended with was
+    returned whole (``txn``, FAILED): it delivered nothing. The clips it was
+    for that are delivered all the same are the ones the user had before it
+    (given back as they were): only the last render asked for later says
+    which clips it was for (``clip_render_clip_ids``). All of them: "the
+    clip(s) before stayed". Only some (a rerender of a partial project: the
+    others were failed before it and still are): "the ones you had stayed".
+    A retry is of a failed clip: there was nothing to keep.
+    """
+    refund = f"Te devolvimos {_tokens(_reserved(txn))}."
+    paid = metadata.get('clip_render_clip_ids') if key == 'clip_render_reservation_id' else None
+    paid = [clips.get(_uuid(clip_id)) for clip_id in paid] if isinstance(paid, list) else []
+    kept = sum(1 for status in paid if status in ('completed', 'published'))
+    if kept and kept == len(paid):
+        if whole_video:
+            what = "quedó el video anterior"
+        else:
+            what = "quedó el clip anterior" if kept == 1 else "quedaron los clips anteriores"
+        return f"No se pudo volver a renderizar: {what}. {refund}"
+    if kept:
+        what = "quedó el clip que ya tenías" if kept == 1 else "quedaron los clips que ya tenías"
+        return f"No se pudo volver a renderizar: {what}. {refund}"
+    if (txn.description or '').startswith(_RETRY_PREFIX):
+        return f"No se pudo renderizar el clip: sigue con error. {refund}"
+    if whole_video:
+        return f"El render del video falló. {refund}"
+    return f"No se pudo renderizar: no se generó ningún clip. {refund}"
 
 
 def _prompt_description(pte):
@@ -320,7 +372,8 @@ def build_activity(project):
             stage__in=[AIUsageRecord.Stage.PROMPT_PARSE, AIUsageRecord.Stage.SELECTION],
         ).values_list('stage').annotate(last=Max('created_at'))
     )
-    clip_statuses = list(VideoClip.objects.filter(project_id=project.pk).values_list('status', 'created_at'))
+    clips = list(VideoClip.objects.filter(project_id=project.pk).values_list('pk', 'status', 'created_at'))
+    clip_statuses = [(status, created) for _pk, status, created in clips]
 
     # Prompt-to-Edit: parsed at the start of the ingestion.
     if metadata.get('pte'):
@@ -368,7 +421,22 @@ def build_activity(project):
         paying = max(renders, key=lambda txn: txn.settled_at or txn.created_at, default=None)
         ready = sum(1 for status, _created in clip_statuses if status in ('completed', 'published'))
         failed = sum(1 for status, _created in clip_statuses if status == 'failed')
-        if whole_video:
+        if paying is not None and paying.status == Transaction.Status.FAILED:
+            # Returned whole: that render delivered nothing, whatever the project has from before.
+            text = _refunded_render_text(
+                paying, keys.get(paying.pk), metadata, {pk: status for pk, status, _created in clips}, whole_video,
+            )
+        elif (
+            paying is not None and not whole_video and project.status == VideoProject.Status.COMPLETED
+            and _reserved(paying) > paying.amount
+        ):
+            # Charged in part and nothing is failed: the clips it could not generate got back
+            # the file they had. The bell's words (notifications.render_finished_message).
+            text = (
+                "No pudimos volver a generar todos los clips: los que ya tenías quedaron como estaban. "
+                f"Te devolvimos {_tokens(_reserved(paying) - paying.amount)}."
+            )
+        elif whole_video:
             text = "Terminó el render del video" if not failed else "El render del video falló"
         elif failed:
             text = f"Terminó el render: {_plural(ready, 'clip listo', 'clips listos')} y {failed} con error"

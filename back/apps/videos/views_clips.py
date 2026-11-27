@@ -391,14 +391,18 @@ def _start_paid_render(request, project_id, pick, description, style=None):
     """
     from .services.ai.pipeline_state import PipelineStage, advance
     from .tasks import finalize_project_render
-    from .tasks.ingestion import CLIP_RENDER, CLIP_RENDER_PREVIOUS_KEY, _dispatch_approved_clips
+    from .tasks.ingestion import (
+        CLIP_RENDER, CLIP_RENDER_PREVIOUS_KEY, _dispatch_approved_clips, _metadata_with_render_started,
+    )
 
     # A fan-out that closed and whose settle did not run (a worker that died
     # in between) is settled first: idempotent, the pipeline's own rule.
     finalize_project_render(project_id)
     try:
         with transaction.atomic():
-            project = VideoProject.objects.select_for_update().select_related('workspace').get(pk=project_id)
+            # Only the project's row (`of`): over the join, FOR UPDATE also locked the workspace's, after the
+            # project's. A workspace delete deadlocked with it, and a token purchase made it wait.
+            project = VideoProject.objects.select_for_update(of=('self',)).select_related('workspace').get(pk=project_id)
             picked = pick(project)
             if isinstance(picked, Response):
                 raise _Refused(picked)
@@ -427,6 +431,8 @@ def _start_paid_render(request, project_id, pick, description, style=None):
                 raise _Refused(_error(409, CLIP_RENDERING, 'clip_rendering'))
             advance(project_id, project.pipeline_stage, PipelineStage.RENDER_DISPATCHED)
             metadata = {key: value for key, value in (project.metadata or {}).items() if key not in _RECOVERY_KEYS}
+            # A new render: its own start, and nothing of the times of the one before.
+            metadata = _metadata_with_render_started(metadata)
             metadata[REPLACED_RESERVATIONS_KEY] = _replaced(metadata, CLIP_RENDER.reservation_key)
             metadata.update({
                 CLIP_RENDER.reservation_key: str(reservation.id),
@@ -821,7 +827,8 @@ class ProjectRedispatchView(_WorkspaceScoped):
         chain = new_ingestion_chain()
         try:
             with transaction.atomic():
-                project = VideoProject.objects.select_for_update().select_related('workspace').get(pk=project.pk)
+                # Only the project's row, as in _start_paid_render: never the workspace's after it.
+                project = VideoProject.objects.select_for_update(of=('self',)).select_related('workspace').get(pk=project.pk)
                 if project.status != Status.FAILED or project.pipeline_stage != VideoProject.PipelineStage.FAILED:
                     raise _Refused(_error(409, "El proyecto ya está en curso o terminó.", 'not_failed'))
                 amount = self._amount_to_reserve(project)

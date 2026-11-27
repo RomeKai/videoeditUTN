@@ -10,10 +10,10 @@ from .services.ai.selection_criteria import (
     normalize_selection_criteria,
 )
 
-# What an upload may be (validate_source_file). GET /api/v1/pricing/ gives
-# both to the browser, which checks a file before sending it.
+# What an upload may be (validate_source_file), with its size cap
+# (MAX_UPLOAD_BYTES, apps.core.upload_limits). GET /api/v1/pricing/ gives both
+# to the browser, which checks a file before sending it.
 UPLOAD_EXTENSIONS = ('.mp4', '.mov', '.avi')
-UPLOAD_MAX_SIZE_BYTES = 500 * 1024 * 1024
 
 # What a raw boolean of the creation request may be to mean true (the same
 # strings DRF's BooleanField takes, 'on' included).
@@ -75,6 +75,21 @@ _NOT_SENT_BOOLEANS = {
 }
 
 
+def _brand_kit_file_cap(field, what):
+    """The validator of a file of the kit: a 400 on the field over its cap (apps.core.upload_limits)."""
+
+    def validate(self, value):
+        from apps.core.upload_limits import BRAND_KIT_FILE_MAX_BYTES, FILE_TOO_LARGE, format_bytes
+
+        limit = BRAND_KIT_FILE_MAX_BYTES[field]
+        if value and getattr(value, 'size', 0) > limit:
+            # The text of the web app (features/brand-kits/kit.ts · FILE_RULES).
+            raise serializers.ValidationError(f"{what} pesa más de {format_bytes(limit)}.", code=FILE_TOO_LARGE)
+        return value
+
+    return validate
+
+
 class BrandKitSerializer(serializers.ModelSerializer):
     serializer_field_mapping = _NOT_SENT_BOOLEANS
 
@@ -82,6 +97,12 @@ class BrandKitSerializer(serializers.ModelSerializer):
         model = BrandKit
         fields = '__all__'
         read_only_fields = ('id', 'user', 'workspace')
+
+    validate_primary_font = _brand_kit_file_cap('primary_font', 'La fuente')
+    validate_secondary_font = _brand_kit_file_cap('secondary_font', 'La fuente')
+    validate_watermark_logo = _brand_kit_file_cap('watermark_logo', 'El logo')
+    validate_intro_video = _brand_kit_file_cap('intro_video', 'El video')
+    validate_outro_video = _brand_kit_file_cap('outro_video', 'El video')
 
 class ClipLayerSerializer(serializers.ModelSerializer):
     class Meta:
@@ -381,8 +402,13 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         if value:
             if not value.name.lower().endswith(UPLOAD_EXTENSIONS):
                 raise serializers.ValidationError("Solo se permiten archivos de video (.mp4, .mov, .avi)")
-            if value.size > UPLOAD_MAX_SIZE_BYTES:
-                raise serializers.ValidationError("El archivo es demasiado grande (Máx 500MB)")
+            from apps.core.upload_limits import UploadTooLarge, max_upload_bytes
+
+            # A 413 with its code, before ffprobe, the storage and the reservation. A
+            # body that big is refused before it is read (UploadSizeLimitMiddleware):
+            # this is a file just over the cap, within the room left for the form.
+            if value.size > max_upload_bytes():
+                raise UploadTooLarge()
             # CORE-05: the bytes must be a video the pipeline can process.
             from .services.media_validation import InvalidUploadError, validate_upload
 
