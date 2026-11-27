@@ -39,7 +39,7 @@ demo exec web python manage.py seed_demo --with-projects
 
 `seed_demo` imprime el usuario y la contraseña al final:
 
-- usuario `demo@onecreator.local`, contraseña `OneCreator-Demo-2026`;
+- usuario `demo@onecreator.local`, contraseña `OneCreator-Demo-2026`, de nombre «Ana Demo» (no el del workspace, para que una invitación diga «Ana Demo te invitó a Demo OneCreator»). Si la base ya tenía el usuario con el nombre viejo, «Demo OneCreator», el comando lo renombra; un nombre que alguien editó en Perfil se conserva;
 - workspace «Demo OneCreator» en el plan Pro, con 4.860 tokens y el brand kit «Kit de la demo». Pro queda como cortesía, igual que un plan puesto en el admin: sin período pagado, así nunca vence ni baja solo a Gratis;
 - con `--with-projects`, dos proyectos **de ejemplo**, marcados `[DEMO]`: uno listo para revisar y otro con clips listos. Son datos de prueba: un patrón de colores generado con ffmpeg y un texto escrito a mano. La IA no los analizó, y así lo dicen el título y el «Por qué» de cada clip. Cada uno trae los tiempos de sus etapas (números de ejemplo): por eso el proyecto muestra Inicio y Duración, y Nuevo proyecto ya da un tiempo estimado sin haber procesado un video real. El estimado lee los proyectos de los últimos 30 días: pasado ese plazo, `--reset-projects` los crea de nuevo.
 

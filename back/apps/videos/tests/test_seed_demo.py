@@ -71,6 +71,40 @@ def snapshot():
     }
 
 
+class TestDemoUserName:
+    def test_the_user_is_not_called_like_the_workspace(self):
+        run()
+        user = demo_user()
+        workspace = Workspace.objects.get(owner=user)
+        assert user.get_full_name() == 'Ana Demo'
+        assert workspace.name == seed_demo.DEMO_WORKSPACE_NAME
+        # What an invitation says: "<who> te invitó a <workspace>".
+        assert user.get_full_name() != workspace.name
+
+    def test_a_demo_user_seeded_with_the_old_name_is_renamed(self):
+        run()
+        User.objects.filter(pk=demo_user().pk).update(first_name='Demo', last_name='OneCreator')
+        before = demo_user().password
+
+        run()
+
+        user = demo_user()
+        assert (user.first_name, user.last_name) == ('Ana', 'Demo')
+        assert user.password == before  # the rename does not touch the password (nor the sessions)
+        once = snapshot()
+        run()
+        assert snapshot() == once
+        assert demo_user().get_full_name() == 'Ana Demo'
+
+    def test_a_name_someone_edited_is_kept(self):
+        run()
+        User.objects.filter(pk=demo_user().pk).update(first_name='Lucía', last_name='Pérez')
+
+        run()
+
+        assert demo_user().get_full_name() == 'Lucía Pérez'
+
+
 class TestGuard:
     def test_refuses_without_debug(self, settings):
         settings.DEBUG = False

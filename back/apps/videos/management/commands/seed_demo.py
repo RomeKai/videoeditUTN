@@ -2,7 +2,9 @@
 Seeds the account of the product demo (documents/runbooks/demo.md).
 
 What it creates
-    - One user, ``DEMO_EMAIL``, with a known password (printed at the end).
+    - One user, ``DEMO_EMAIL``, with a known password (printed at the end),
+      named ``DEMO_USER_NAME``: a person's name, not the workspace's, so an
+      invitation reads "Ana Demo te invitó a Demo OneCreator".
     - Its workspace, renamed ``DEMO_WORKSPACE_NAME``, on the plan ``DEMO_PLAN_NAME`` as a
       comp: no paid period that could end, nothing scheduled.
     - A balance of ``DEMO_BALANCE`` tokens: a top-up, never a debit.
@@ -22,7 +24,8 @@ Safety
     - Idempotent: a second run creates nothing new. It only puts back what the
       demo needs (the plan, without the period or the downgrade a rehearsal left,
       the balance up to ``DEMO_BALANCE``, the password if it changed) and keeps
-      whatever else was edited.
+      whatever else was edited. A demo user still called like the workspace
+      (``OLD_DEMO_USER_NAME``, what this command wrote before) is renamed.
 
 The example projects (``--with-projects``)
     They let the presentation show the review and the clips without waiting
@@ -90,6 +93,9 @@ DEMO_EMAIL = 'demo@onecreator.local'
 # The mark of an account this command made (with the email).
 DEMO_USERNAME = 'onecreator-demo'
 DEMO_PASSWORD = 'OneCreator-Demo-2026'
+# (first_name, last_name). The old one was the workspace's name.
+DEMO_USER_NAME = ('Ana', 'Demo')
+OLD_DEMO_USER_NAME = ('Demo', 'OneCreator')
 DEMO_WORKSPACE_NAME = 'Demo OneCreator'
 DEMO_PLAN_NAME = 'Pro'
 # What the web app's default mock scenario shows (front/src/api/mocks/scenarios.ts),
@@ -310,7 +316,7 @@ class Command(BaseCommand):
             # The post_save signals create its workspace (default plan) and the wallet.
             user = User.objects.create_user(
                 username=DEMO_USERNAME, email=DEMO_EMAIL, password=password,
-                first_name='Demo', last_name='OneCreator',
+                first_name=DEMO_USER_NAME[0], last_name=DEMO_USER_NAME[1],
                 is_email_verified=True, tour_completed=True,
                 onboarding_use_case=User.OnboardingUseCase.PODCAST,
                 terms_accepted_at=timezone.now(),
@@ -319,6 +325,10 @@ class Command(BaseCommand):
         if not user.is_active:
             user.is_active = True
             user.save(update_fields=['is_active'])
+        if (user.first_name, user.last_name) == OLD_DEMO_USER_NAME:
+            # The name an earlier version of this command gave it: a name someone edited is kept.
+            user.first_name, user.last_name = DEMO_USER_NAME
+            user.save(update_fields=['first_name', 'last_name'])
         # Saving a new password revokes the account's sessions: only when it has to change.
         # Outside DEBUG the default is random on each run, so there it changes only when asked.
         known = explicit or settings.DEBUG
