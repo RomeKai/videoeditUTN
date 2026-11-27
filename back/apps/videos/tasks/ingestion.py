@@ -1162,27 +1162,58 @@ def render_queued_rule(project):
     from before them), every draft waits. A draft that a render settled
     before never delivered does not wait.
     """
-    if project.pipeline_stage != PipelineStage.RENDER_DISPATCHED:
-        return lambda clip_id: False
-    metadata = project.metadata or {}
-    paid_renders = _paid_clip_renders(metadata)
-    whole = _is_whole_video(project)
-    if whole:
-        # Its creation pays the first render; one asked for later, its own.
-        paid_renders = [paid for paid in paid_renders if paid is CLIP_RENDER]
-    elif not paid_renders:
-        return lambda clip_id: True
-    linked = {paid.reservation_key: str(metadata[paid.reservation_key]) for paid in paid_renders}
-    if whole and metadata.get('reservation_id'):
-        linked['reservation_id'] = str(metadata['reservation_id'])
+    return render_queued_rules([project])[project.pk]
+
+
+def render_queued_rules(projects):
+    """
+    ``{project id: its render_queued_rule}`` for several projects (a page of
+    the list), reading the reservations of all of them together: one query at
+    most, however many of them render.
+    """
+    rules, waiting = {}, {}
+    for project in projects:
+        if project.pipeline_stage != PipelineStage.RENDER_DISPATCHED:
+            rules[project.pk] = _no_draft_waits
+            continue
+        metadata = project.metadata or {}
+        paid_renders = _paid_clip_renders(metadata)
+        whole = _is_whole_video(project)
+        if whole:
+            # Its creation pays the first render; one asked for later, its own.
+            paid_renders = [paid for paid in paid_renders if paid is CLIP_RENDER]
+        elif not paid_renders:
+            rules[project.pk] = _every_draft_waits
+            continue
+        linked = {paid.reservation_key: str(metadata[paid.reservation_key]) for paid in paid_renders}
+        if whole and metadata.get('reservation_id'):
+            linked['reservation_id'] = str(metadata['reservation_id'])
+        waiting[project.pk] = (metadata, paid_renders, linked)
+    wanted = {reservation for _, _, linked in waiting.values() for reservation in linked.values()}
     reserved = {
         str(pk) for pk in Transaction.objects.filter(
-            pk__in=list(linked.values()), status=Transaction.Status.RESERVED,
+            pk__in=list(wanted), status=Transaction.Status.RESERVED,
         ).values_list('pk', flat=True)
-    } if linked else set()
-    if linked.get('reservation_id') in reserved:
-        return lambda clip_id: True
-    paying = [paid for paid in paid_renders if linked[paid.reservation_key] in reserved]
+    } if wanted else set()
+    for project_id, (metadata, paid_renders, linked) in waiting.items():
+        if linked.get('reservation_id') in reserved:
+            rules[project_id] = _every_draft_waits
+        else:
+            rules[project_id] = _drafts_paid_by(
+                metadata, [paid for paid in paid_renders if linked[paid.reservation_key] in reserved],
+            )
+    return rules
+
+
+def _no_draft_waits(clip_id):
+    return False
+
+
+def _every_draft_waits(clip_id):
+    return True
+
+
+def _drafts_paid_by(metadata, paying):
     return lambda clip_id: any(_pays_for(metadata, paid, clip_id) for paid in paying)
 
 

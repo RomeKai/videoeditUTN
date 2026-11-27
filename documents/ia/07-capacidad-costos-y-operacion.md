@@ -688,6 +688,7 @@ La campana lee `Notification` (`apps/notifications`). Solo las escribe `apps/not
 | Render terminado, completo o parcial | `finalize_project_render` y `render_video_segments` | `notify_render_finished` | Dueño y miembros activos |
 | Proyecto fallido | `_record_pipeline_failure`, `_fail_render`, `_recover_ingestion`, `_fail_unqueued_project` y el re-despacho sin saldo (`AutoRenderNotPaid`) | `notify_project_failed` | Dueño y miembros activos |
 | Pago aprobado o rechazado | `settle_payment` | `notify_payment_settled` | Quien inició el pago |
+| Saldo bajo | `reserve_funds` (por `track_low_balance`) | `notify_low_balance` | Dueño y admins activos |
 
 - Se escriben cuando la transacción del evento hace commit (`transaction.on_commit`). Un cambio que se revierte no avisa.
 - Nunca frenan el pipeline. Un error se registra como `notifications.not_created`, con ids y la clase del error.
@@ -698,7 +699,42 @@ La campana lee `Notification` (`apps/notifications`). Solo las escribe `apps/not
 - Un pago rechazado solo se avisa si lo rechazó el proveedor. No se avisa si el checkout no abrió o venció, ni si la persona eligió otro plan o seguir con el suyo (`settle_payment(..., notify=False)`).
 - Quien ya no es miembro del workspace no recibe nada.
 - Se guardan las últimas 20 por usuario y workspace (`KEPT_PER_USER`): al escribir una se borran las más viejas. No hay tarea de limpieza.
-- Todavía no se avisa de una publicación fallida ni del saldo bajo, y no se envían emails.
+
+**Saldo bajo.** `track_low_balance` (`apps/payments/services/wallet_service.py`) corre en cada cambio del saldo disponible, con la fila de la billetera bloqueada.
+
+- El umbral es `low_balance_threshold` del plan del workspace: 20 minutos a 720p con el descuento del plan. Es el mismo número que `GET /api/v1/wallet/` le da a la web para su aviso de saldo bajo.
+- Avisa cuando una reserva (`reserve_funds`) deja el saldo disponible por debajo del umbral. Solo una reserva baja el saldo disponible.
+- Avisa una sola vez por caída. La fila `LowBalanceNotice` de la billetera dice que el aviso ya salió.
+- Se rearma cuando el saldo vuelve al umbral o más: una devolución (`rollback_reservation`, `commit_partial_reservation`) o una compra (`_credit`) borran la fila.
+- Un workspace que ya estaba por debajo del umbral recibe el aviso en su próxima reserva.
+- Si el saldo de antes de la reserva estaba en el umbral o más, la reserva es una caída nueva y avisa aunque la fila exista. La fila queda vieja cuando el saldo sube sin pasar por el servicio (una edición en el admin) o cuando cambia el plan y su umbral baja.
+- Si la transacción de la reserva se revierte, no queda ni la fila ni el aviso.
+- Si al hacer commit el saldo ya volvió al umbral, no se escribe nada.
+- Nunca frena el cobro: corre en un savepoint y un error se registra como `wallet.low_balance_not_tracked`, con el id de la billetera y la clase del error.
+- El estado vive en una tabla propia y no en `Wallet`: el código de un deploy corre antes que su migración, y el alta de una cuenta crea la billetera.
+
+## Emails de las notificaciones
+
+Cada notificación de la campana que tiene email encola la tarea `apps.notifications.tasks.send_notification_email` cuando su fila hace commit. La tarea recibe solo el id de la notificación. Los textos están en `apps/notifications/emails.py`.
+
+| Tipo | Preferencia (`NotificationPreference`) | El link lleva a |
+|---|---|---|
+| `project_ready` | `project_ready` | `/proyectos/:id/revision?espacio=:workspace` |
+| `render_finished` | `render_finished` | `/proyectos/:id/clips?espacio=:workspace` |
+| `project_failed` | `project_failed` | `/proyectos/:id?espacio=:workspace` |
+| `low_balance` | `low_balance` | `/uso/comprar?espacio=:workspace` |
+
+- Los pagos (`payment_approved`, `payment_rejected`) no tienen email ni preferencia. `post_failed` tiene preferencia, pero todavía no se escribe esa notificación.
+- Lo reciben los mismos que la campana, si tienen prendido ese tipo en `GET/PATCH /api/v1/me/notification-preferences/`. Sin fila de preferencias, todo está prendido.
+- No se manda a una cuenta inactiva, a una sin el email verificado, ni a quien ya no está en el workspace.
+- **Ningún email lleva texto escrito por un usuario**: ni el título del proyecto, ni el nombre del workspace, ni nombres de personas. Es la misma regla que los emails de cuenta (`apps/users/email_verification.py`). El título de la campana lleva el título del proyecto, así que no va al email.
+- El email lleva el `body` de la notificación, que los eventos escriben sin texto de usuarios: cuántos clips hay y cuánto se devolvió, con el mismo texto que la campana. El de saldo bajo lleva también su título («Te quedan 300 tokens»).
+- Tiene una parte de texto y una de HTML simple, con las mismas palabras. Todo lo que entra al HTML se escapa. Los links salen de `FRONTEND_URL`.
+- Los links al proyecto y a Comprar tokens llevan el workspace de la notificación en `?espacio=<id>`. La web cambia a ese workspace antes de mostrar la página (`RequireSession`), si la persona es miembro. Sin sesión, el login conserva el link y cambia de workspace antes de ir a la página (`LoginScreen`). Si el workspace no es de la persona, la web se queda donde estaba y lo avisa. Sin eso, quien tiene otro workspace activo abriría un proyecto que no existe ahí, o compraría tokens para otro workspace.
+- Un envío que falla se registra como `notification_email.send_failed`, con ids y la clase del error, y no se reintenta: la notificación sigue en la campana. Si la cola rechaza el mensaje se registra `notifications.email_not_queued`. Ninguno de los dos cambia el evento ni la campana.
+- Los ejemplos de `seed_demo` no mandan email.
+- Con los settings `dev` los emails salen por consola, en el log del worker.
+- Todavía no se avisa de una publicación fallida, ni en la campana ni por email.
 
 ## Referencias
 

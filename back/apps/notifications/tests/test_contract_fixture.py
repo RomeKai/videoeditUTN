@@ -50,7 +50,7 @@ class NotificationsFixtureHarness:
         """One notification of each kind the backend writes, the oldest one read, and the 404."""
         ana = make_user('ana')
         home = team(ana, 'Estudio Norte')
-        wallet = fund_wallet(home, '100.00')
+        wallet = fund_wallet(home, '1000.00')
 
         def project(title, status, clips=0):
             row = VideoProject.objects.create(workspace=home, uploaded_by=ana, title=title, source_file='a/b.mp4', status=status)
@@ -87,6 +87,10 @@ class NotificationsFixtureHarness:
         with event(40):
             ready = project('Podcast Ep. 42', VideoProject.Status.AWAITING_APPROVAL, clips=9)
             services.notify_project_ready(ready.pk)
+
+        with event(50):
+            # 1.000 + 1.500 of the purchase − 2.200: under the 600 of the plan's threshold.
+            reserve_funds(wallet.id, Decimal('2200'), project=ready)
 
         self.client.force_authenticate(ana)
         ws = {'HTTP_X_WORKSPACE_ID': str(home.pk)}

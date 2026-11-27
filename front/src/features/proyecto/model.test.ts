@@ -185,8 +185,18 @@ describe('cabecera y pestañas', () => {
   it('arma el texto de estado con el estimado, la espera o cuándo falló', () => {
     const processing = byTitle('Clase 3');
     expect(headerStatusText(processing, describeProjectStatus(processing), NOW)).toMatch(/^Paso 2 de 4 · faltan ≈ \d+ min para revisar$/);
+    // In the queue the estimate is already there: the header says it too.
+    const queued = byTitle('En cola: recién subido');
+    expect(describeProjectStatus(queued).key).toBe('queued');
+    expect(headerStatusText({ ...queued, eta_seconds: 540 }, describeProjectStatus(queued), NOW)).toBe('Tu video está en la fila para procesarse · faltan ≈ 9 min para revisar');
+    expect(headerStatusText({ ...queued, eta_seconds: 20 }, describeProjectStatus(queued), NOW)).toBe('Tu video está en la fila para procesarse · faltan ≈ 20 s para revisar');
+    for (const eta of [null, undefined, 0]) {
+      expect(headerStatusText({ ...queued, eta_seconds: eta }, describeProjectStatus(queued), NOW)).toBe('Tu video está en la fila para procesarse.');
+    }
     const waiting = byTitle('En espera en la transcripción');
     expect(headerStatusText(waiting, describeProjectStatus(waiting), NOW)).toMatch(/^En espera hace \d+ min\.$/);
+    // Waiting for capacity: nobody knows how long, whatever the estimate says.
+    expect(headerStatusText({ ...waiting, eta_seconds: 540 }, describeProjectStatus(waiting), NOW)).toMatch(/^En espera hace \d+ min\.$/);
     const failed = byTitle('Webinar de lanzamiento');
     expect(headerStatusText(failed, describeProjectStatus(failed), NOW)).toBe('Falló hace 2 días.');
     const ready = byTitle('Vlog Mendoza');
