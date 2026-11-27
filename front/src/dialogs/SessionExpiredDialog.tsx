@@ -3,6 +3,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState, type FormEvent } from 'react';
+import type { SessionEndReason } from '@/api/errors';
 import { useLogin } from '@/api/hooks';
 import { clearSession, onSessionExpired } from '@/api/session';
 import { useGuardedNavigation } from '@/shell/leaveGuard';
@@ -16,10 +17,12 @@ import styles from './Dialogs.module.css';
 /**
  * D9 · Sesión vencida: opens when the access token could not be renewed. It
  * asks for the password again without losing the screen; the queries that
- * failed are fetched again after signing in.
+ * failed are fetched again after signing in. When the session did not run out
+ * but was closed with «cerrar sesión en todos los dispositivos», it says so.
  */
 export function SessionExpiredDialog() {
   const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState<SessionEndReason>('expired');
   const [password, setPassword] = useState('');
   const [email, setEmail] = useState('');
   const { me } = useSession();
@@ -27,7 +30,14 @@ export function SessionExpiredDialog() {
   const queryClient = useQueryClient();
   const router = useRouter();
 
-  useEffect(() => onSessionExpired(() => setOpen(true)), []);
+  useEffect(
+    () =>
+      onSessionExpired((why) => {
+        setReason(why);
+        setOpen(true);
+      }),
+    [],
+  );
 
   const knownEmail = me?.email ?? '';
   const submit = (event: FormEvent) => {
@@ -65,8 +75,12 @@ export function SessionExpiredDialog() {
       open={open}
       onClose={() => signOut()}
       dismissable={false}
-      title="Tu sesión venció"
-      description="Ingresá tu contraseña para seguir. Esta pantalla queda como la dejaste."
+      title={reason === 'revoked' ? 'Cerraste la sesión en todos tus dispositivos' : 'Tu sesión venció'}
+      description={
+        reason === 'revoked'
+          ? 'Iniciá sesión de nuevo con tu contraseña para seguir. Esta pantalla queda como la dejaste.'
+          : 'Ingresá tu contraseña para seguir. Esta pantalla queda como la dejaste.'
+      }
       footer={
         <>
           <Button variant="ghost" onClick={() => signOut()}>

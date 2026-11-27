@@ -2,7 +2,7 @@ import type { ZodTypeAny } from 'zod';
 import { API_URL, IDEMPOTENCY_HEADER, REQUEST_TIMEOUT_MS, UPLOAD_STALL_TIMEOUT_MS, WORKSPACE_HEADER } from './config';
 import { buildPath, buildQuery, type AnyEndpoint, type ParamsOf, type QueryOf, type RequestBody, type ResponseOf } from './endpoint';
 import { isBackendDefaultWorkspace } from './routing';
-import { ApiError, ContractError, NetworkError, RequestTimeoutError, SessionExpiredError, UploadStalledError } from './errors';
+import { ApiError, ContractError, NetworkError, RequestTimeoutError, SESSION_REVOKED_CODE, SessionExpiredError, UploadStalledError, type SessionEndReason } from './errors';
 import {
   getActiveWorkspaceId,
   getTokenGeneration,
@@ -180,7 +180,7 @@ export function refreshAccessToken(): Promise<string> {
         // password change that revoked it): its pair is about to be stored.
         const other = await pairFromElsewhere(tokens.refresh, REFRESH_FALLBACK_WAIT_MS);
         if (other) return other.access;
-        throw new SessionExpiredError();
+        throw new SessionExpiredError(await endReason(response));
       }
       throw new ApiError(response.status, 'auth.refresh', await readBody(response, 'json'));
     }
@@ -192,6 +192,16 @@ export function refreshAccessToken(): Promise<string> {
     refreshing = null;
   });
   return refreshing;
+}
+
+/** Why a 401 ended the session, from its `code`. The body is read from a copy: the answer stays whole. */
+async function endReason(response: Response): Promise<SessionEndReason> {
+  try {
+    const data: unknown = await response.clone().json();
+    return data && typeof data === 'object' && (data as { code?: unknown }).code === SESSION_REVOKED_CODE ? 'revoked' : 'expired';
+  } catch {
+    return 'expired';
+  }
 }
 
 async function readBody(response: Response, type: 'json' | 'text' | 'blob'): Promise<unknown> {
@@ -384,9 +394,13 @@ export async function apiCall<E extends AnyEndpoint>(endpoint: E, ...args: Args<
   // After the session expired nothing authenticated goes out until the user signs in again (dialog D9).
   if (needsAuth && isSessionExpired()) throw new SessionExpiredError();
 
+  // «Cerrar sesión en todos los dispositivos» from another device: the access token answers 401
+  // `session_revoked`, while the refresh (blacklisted by then) only says it is not valid. Whichever
+  // answer names it decides what dialog D9 says.
+  let reason: SessionEndReason = 'expired';
   const expire = (): never => {
-    notifySessionExpired();
-    throw new SessionExpiredError();
+    notifySessionExpired(reason);
+    throw new SessionExpiredError(reason);
   };
   const renew = async (): Promise<string | undefined> => {
     try {
@@ -395,6 +409,7 @@ export async function apiCall<E extends AnyEndpoint>(endpoint: E, ...args: Args<
       if (!(error instanceof SessionExpiredError)) throw error;
       // A public endpoint that only sends the token when there is one goes on without it.
       if (!needsAuth) return undefined;
+      if (error.reason === 'revoked') reason = 'revoked';
       return expire();
     }
   };
@@ -412,11 +427,15 @@ export async function apiCall<E extends AnyEndpoint>(endpoint: E, ...args: Args<
   let response = await attempt(sent);
 
   if (response.status === 401 && sendsToken && (needsAuth || sent)) {
+    reason = await endReason(response);
     // Another tab may already have renewed the pair: try its token before spending a refresh.
     const stored = getTokens()?.access;
     const next = stored && stored !== sent ? stored : await renew();
     response = await attempt(next);
-    if (response.status === 401 && needsAuth) expire();
+    if (response.status === 401 && needsAuth) {
+      if ((await endReason(response)) === 'revoked') reason = 'revoked';
+      expire();
+    }
   }
 
   // 503: the platform is down for maintenance (page K5). Any other answer means it is back.
