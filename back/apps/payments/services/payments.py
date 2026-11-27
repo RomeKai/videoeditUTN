@@ -56,6 +56,7 @@ from apps.users.seats import seats_used
 from ..models import Payment, Transaction, Wallet
 from .payment_providers import get_payment_provider, require_payment_provider
 from .plan_periods import PLAN_FIELDS, start_paid_period
+from .wallet_service import track_low_balance
 
 logger = logging.getLogger(__name__)
 
@@ -375,6 +376,7 @@ def _credit(payment, now):
     wallet, _ = Wallet.objects.select_for_update().get_or_create(workspace_id=payment.workspace_id)
     amount = Decimal(payment.tokens)
     wallet.available_balance += amount
+    track_low_balance(wallet)
     wallet.save(update_fields=['available_balance', 'updated_at'])
     payment.credit_transaction = Transaction.objects.create(
         wallet=wallet,

@@ -14,19 +14,25 @@ a payment's settlement), never from a view that renders. All of them:
 
 The table stays bounded: after each write, only the newest ``KEPT_PER_USER``
 of each recipient in that workspace are kept (what the panel shows).
+
+Each notification of a kind that has an email (``emails.EMAIL_KINDS``) also
+queues ``tasks.send_notification_email`` with its id, once its row is
+committed. The task decides who gets it (the user's preferences) and what it
+says; queueing never raises, and the bell is already written by then.
 """
 import logging
 import uuid
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.payments.models import Payment, Transaction
+from apps.payments.models import Payment, Transaction, Wallet
 from apps.users.models import Workspace, WorkspaceMember
 from apps.videos.models import VideoClip, VideoProject
 
+from .emails import EMAIL_KINDS
 from .models import Notification
 
 logger = logging.getLogger(__name__)
@@ -69,22 +75,47 @@ def _prune(user_id, workspace_id):
         Notification.objects.filter(pk__in=old).delete()
 
 
-def _write(workspace, user_ids, kind, title, body, project=None, post=None):
-    """One notification for each of ``user_ids`` who can still act in the workspace."""
+def _queue_emails(kind, notification_ids):
+    """One email task per notification, with its id only. Never raises: the bell is already written."""
+    from .tasks import send_notification_email
+
+    for notification_id in notification_ids:
+        try:
+            send_notification_email.delay(str(notification_id))
+        except Exception as exc:
+            logger.error(
+                'notifications.email_not_queued kind=%s notification_id=%s error=%s',
+                kind, notification_id, type(exc).__name__,
+            )
+
+
+def _write(workspace, user_ids, kind, title, body, project=None, post=None, email=True):
+    """
+    One notification for each of ``user_ids`` who can still act in the
+    workspace and, with ``email``, its email task once the rows are committed.
+    """
     # In one order: two events for the same people never wait for each other's rows (the prune deletes).
     targets = sorted(recipients_of(workspace) & set(user_ids))
     with transaction.atomic():
+        created = []
         for user_id in targets:
-            Notification.objects.create(
+            row = Notification.objects.create(
                 user_id=user_id, workspace=workspace, kind=kind, title=title[:300], body=body[:300],
                 project=project, post=post,
             )
+            created.append(row.pk)
             _prune(user_id, workspace.pk)
+        if email and created and kind in EMAIL_KINDS:
+            transaction.on_commit(lambda: _queue_emails(kind, created))
     return len(targets)
 
 
-# For the demo seed (seed_demo), which writes example notifications with the texts of the real events.
-write = _write
+def write(workspace, user_ids, kind, title, body, project=None, post=None):
+    """
+    For the demo seed (seed_demo), which writes example notifications with the
+    texts of the real events: only the bell, no email (nothing just happened).
+    """
+    return _write(workspace, user_ids, kind, title, body, project=project, post=post, email=False)
 
 
 def _after_commit(event, build, **ids):
@@ -220,6 +251,24 @@ def payment_message(approved, tokens=0, plan_name=None):
     return title, body
 
 
+def low_balance_message(available):
+    """
+    (title, body) of ``low_balance``. The balance is cut to cents, never
+    rounded up: the text does not say there is more than there is.
+    """
+    left = Decimal(available).quantize(Decimal('0.01'), rounding=ROUND_DOWN)
+    title = 'Te queda 1 token' if left == 1 else f'Te quedan {_tokens(left)}'
+    return title, 'El saldo quedó por debajo de lo que cuesta un video promedio.'
+
+
+def buyers_of(workspace):
+    """The ids of who can buy tokens in the workspace: its owner and its ACTIVE admins."""
+    admins = WorkspaceMember.objects.filter(
+        workspace=workspace, status=WorkspaceMember.Status.ACTIVE, role=WorkspaceMember.Role.ADMIN,
+    ).values_list('user_id', flat=True)
+    return {workspace.owner_id, *admins} - {None}
+
+
 def notify_project_ready(project_id):
     """The clips are selected and the project waits for the review (``awaiting_approval``)."""
     def build():
@@ -284,3 +333,26 @@ def notify_payment_settled(payment_id):
         _write(payment.workspace, {payment.created_by_id}, kind, title, body)
 
     _after_commit('payment_settled', build, payment_id=payment_id)
+
+
+def notify_low_balance(workspace_id):
+    """
+    A reservation left the workspace's available balance under
+    ``low_balance_threshold`` of its plan (the web app's "saldo bajo"). For
+    who can buy tokens: the owner and the admins. Called by
+    ``wallet_service.track_low_balance``, which sends it once per fall.
+    Nothing is written if the balance is back at the threshold by the time
+    the reservation commits.
+    """
+    def build():
+        from apps.payments.services.estimate import low_balance_threshold
+
+        workspace = Workspace.objects.select_related('subscription_plan').filter(pk=workspace_id).first()
+        if workspace is None:
+            return
+        available = Wallet.objects.filter(workspace=workspace).values_list('available_balance', flat=True).first()
+        if available is None or available >= low_balance_threshold(workspace.subscription_plan):
+            return
+        _write(workspace, buyers_of(workspace), Kind.LOW_BALANCE, *low_balance_message(available))
+
+    _after_commit('low_balance', build, workspace_id=workspace_id)

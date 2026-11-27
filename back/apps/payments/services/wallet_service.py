@@ -1,7 +1,11 @@
+import logging
+
 from django.db import transaction
 from django.utils import timezone
 from decimal import Decimal
-from ..models import Wallet, Transaction
+from ..models import LowBalanceNotice, Transaction, Wallet
+
+logger = logging.getLogger(__name__)
 
 class PaymentError(Exception):
     """Base exception for payment-related errors."""
@@ -10,6 +14,48 @@ class PaymentError(Exception):
 class InsufficientFundsError(PaymentError):
     """Raised when available balance is lower than requested amount."""
     pass
+
+
+def track_low_balance(wallet, spending=False):
+    """
+    The "saldo bajo" notice (map 1.11), sent once each time the balance falls.
+    A ``LowBalanceNotice`` row says the notice of this wallet is out. Call it
+    with the wallet's row locked (so two changes never decide at once), after
+    changing ``available_balance``.
+
+    - ``spending`` (a reservation, the only thing that lowers the available
+      balance): if it leaves the balance under ``low_balance_threshold`` of
+      the workspace's plan (the same number the web app warns with) and no
+      notice is out, the row is written and the notification queued for the
+      commit. Both go back if the caller's transaction is rolled back.
+    - Any change that leaves the balance at the threshold or above (a refund,
+      a purchase) deletes the row: the next fall notifies again.
+
+    It never raises and, in a savepoint, never leaves the caller's
+    transaction broken: the money step goes on without the notice.
+    """
+    try:
+        with transaction.atomic():
+            noticed = LowBalanceNotice.objects.filter(wallet_id=wallet.pk)
+            if not spending and not noticed.exists():
+                return
+            from apps.users.models import Workspace
+            from .estimate import low_balance_threshold
+
+            workspace = Workspace.objects.select_related('subscription_plan').filter(pk=wallet.workspace_id).first()
+            if workspace is None:
+                return
+            if wallet.available_balance >= low_balance_threshold(workspace.subscription_plan):
+                noticed.delete()
+            elif spending:
+                _, created = LowBalanceNotice.objects.get_or_create(wallet_id=wallet.pk)
+                if created:
+                    from apps.notifications.services import notify_low_balance
+
+                    notify_low_balance(workspace.pk)
+    except Exception as exc:
+        logger.error('wallet.low_balance_not_tracked wallet=%s error=%s', wallet.pk, type(exc).__name__)
+
 
 @transaction.atomic
 def reserve_funds(
@@ -42,6 +88,7 @@ def reserve_funds(
     # Move funds from available to reserved
     wallet.available_balance -= amount
     wallet.reserved_balance += amount
+    track_low_balance(wallet, spending=True)
     wallet.save()
 
     # Create a transaction record in RESERVED status
@@ -115,6 +162,7 @@ def commit_partial_reservation(transaction_id, amount: Decimal) -> Transaction:
         txn.reserved_amount = txn.amount
     wallet.reserved_balance -= txn.amount
     wallet.available_balance += released
+    track_low_balance(wallet)
     wallet.save()
 
     txn.amount = amount
@@ -143,6 +191,7 @@ def rollback_reservation(transaction_id) -> Transaction:
     # Return funds to available balance
     wallet.available_balance += txn.amount
     wallet.reserved_balance -= txn.amount
+    track_low_balance(wallet)
     wallet.save()
 
     txn.status = Transaction.Status.FAILED

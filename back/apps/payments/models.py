@@ -120,6 +120,25 @@ class Wallet(models.Model):
     def __str__(self):
         return f"Wallet de {self.workspace.name} ({self.available_balance})"
 
+
+class LowBalanceNotice(models.Model):
+    """
+    The "saldo bajo" notice of a wallet is out (map 1.11): the row exists from
+    the reservation that left the available balance under the threshold until
+    the balance is back at it. While it exists, no other notice is sent
+    (services.wallet_service.track_low_balance).
+
+    A table of its own, not a column of Wallet: the code of a deploy runs
+    before its migration, and a sign-up (which creates the wallet) must not
+    depend on it.
+    """
+
+    wallet = models.OneToOneField(Wallet, on_delete=models.CASCADE, primary_key=True, related_name='low_balance_notice')
+    notified_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f'Saldo bajo avisado {self.wallet_id}'
+
 class Transaction(models.Model):
     class Status(models.TextChoices):
         PENDING = 'PENDING', _('Pending')
