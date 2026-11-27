@@ -124,11 +124,13 @@ def delete_thumbnail(clip_id, key):
 _CLIENT_KEY = '_clip_media_r2_client'
 
 
-def _media_url(clip_id, key, context):
+def _media_url(clip_id, key, context, content_type):
     """
     A temporary URL that shows ``key``, or None when it cannot be signed.
     ``context`` is the serializer's: it carries the request (local URLs) and
-    keeps one R2 client for every clip of the response.
+    keeps one R2 client for every clip of the response. ``content_type`` is
+    the type R2 answers with: the files are uploaded without one, and Safari
+    does not play a video served as a generic binary.
     """
     from .clip_download import clip_url_ttl_seconds
     from .storage_service import CloudflareR2Manager, _get_r2_client, _is_local
@@ -141,7 +143,7 @@ def _media_url(clip_id, key, context):
             client = context[_CLIENT_KEY] = _get_r2_client()
         return client.generate_presigned_url(
             'get_object',
-            Params={'Bucket': settings.CLOUDFLARE_R2_BUCKET_NAME, 'Key': key},
+            Params={'Bucket': settings.CLOUDFLARE_R2_BUCKET_NAME, 'Key': key, 'ResponseContentType': content_type},
             ExpiresIn=clip_url_ttl_seconds(),
         )
     except Exception as exc:
@@ -153,10 +155,10 @@ def preview_url(clip, context):
     """Plays the rendered file of a completed or published clip; None for any other."""
     if clip.status not in PLAYABLE_STATUSES or not clip.s3_object_key:
         return None
-    return _media_url(clip.pk, clip.s3_object_key, context)
+    return _media_url(clip.pk, clip.s3_object_key, context, 'video/mp4')
 
 
 def thumbnail_url(clip, context):
     if not clip.thumbnail_object_key:
         return None
-    return _media_url(clip.pk, clip.thumbnail_object_key, context)
+    return _media_url(clip.pk, clip.thumbnail_object_key, context, 'image/jpeg')

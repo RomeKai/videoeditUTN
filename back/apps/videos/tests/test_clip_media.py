@@ -146,9 +146,16 @@ class R2UrlTests(UrlHarness, TestCase):
 
         self.assertEqual(data["preview_url"], "https://r2.test/videos/u/p/a.mp4?X-Amz-Expires=1234")
         self.assertEqual(data["thumbnail_url"], "https://r2.test/videos/u/p/a.jpg?X-Amz-Expires=1234")
-        # Played in the page, not downloaded: no Content-Disposition is asked for.
-        for call in get_client.return_value.generate_presigned_url.call_args_list:
-            self.assertEqual(call.kwargs["Params"], {"Bucket": "bucket", "Key": call.kwargs["Params"]["Key"]})
+        # Played in the page, not downloaded: no Content-Disposition is asked for. R2 answers with
+        # the type of each file (they are uploaded without one, and Safari won't play a binary).
+        params = {
+            call.kwargs["Params"]["Key"]: call.kwargs["Params"]
+            for call in get_client.return_value.generate_presigned_url.call_args_list
+        }
+        self.assertEqual(params, {
+            "videos/u/p/a.mp4": {"Bucket": "bucket", "Key": "videos/u/p/a.mp4", "ResponseContentType": "video/mp4"},
+            "videos/u/p/a.jpg": {"Bucket": "bucket", "Key": "videos/u/p/a.jpg", "ResponseContentType": "image/jpeg"},
+        })
 
     def test_one_client_signs_every_clip_of_the_response(self):
         for number in range(5):
@@ -242,6 +249,18 @@ class RenderThumbnailTests(ClaimHarness, TestCase):
         self.assertTrue(result.successful())
         clip.refresh_from_db()
         self.assertEqual((clip.status, clip.thumbnail_object_key), (DONE, None))
+
+    def test_an_error_while_making_the_thumbnail_keeps_its_own_error_and_discards_the_upload(self):
+        # Something escaping the thumbnail step (a soft time limit, say) must surface as itself,
+        # never as an UnboundLocalError of the cleanup, and the clip file uploaded just before goes.
+        clip = self.make_clip()
+
+        with self.engine() as r2, patch.object(clip_media, "make_clip_thumbnail", side_effect=RuntimeError("thumb")):
+            result = render_clip_task.apply(args=[str(clip.id)])
+
+        self.assertNotIsInstance(result.result, UnboundLocalError)
+        (video_key,) = self.uploaded_keys()
+        self.assertEqual([call.kwargs["Key"] for call in r2.delete_object.call_args_list], [video_key])
 
     def test_a_rerender_deletes_the_old_file_and_its_thumbnail(self):
         clip = self.make_clip(s3_object_key="videos/old.mp4", thumbnail_object_key="videos/old.jpg")

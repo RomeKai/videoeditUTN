@@ -139,7 +139,7 @@ class RenderEngine:
         """
         clip_obj, original_clip, final_clip, export_clip = None, None, None, None
         output_path, temp_audio_path = None, None
-        s3_key, saved = None, False
+        s3_key, thumbnail_key, saved = None, None, False
 
         try:
             clip_obj = VideoClip.objects.get(id=clip_id)
