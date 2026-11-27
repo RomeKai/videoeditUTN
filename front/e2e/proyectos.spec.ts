@@ -73,17 +73,20 @@ test.describe('B2 · Proyectos', () => {
     await page.getByRole('button', { name: 'Orden: más recientes' }).click();
     await page.getByRole('menuitemradio', { name: 'Título (A–Z)' }).click();
     await expect(page).toHaveURL(/\/proyectos\?orden=title$/);
+    // The first project of each page, by its title: the page before stays on screen until the next one arrives.
+    const firstTitle = page.getByRole('table', { name: 'Proyectos del workspace' }).getByRole('row').nth(1).getByRole('link').first();
+    const onPageOne = await firstTitle.innerText();
     await page.getByRole('button', { name: 'Siguiente' }).click();
     await expect(page.getByText('26–50 de 64 proyectos')).toBeVisible();
     await expect(page).toHaveURL(/\/proyectos\?orden=title&pagina=2$/);
-    const rows = page.getByRole('table', { name: 'Proyectos del workspace' }).getByRole('row');
-    const firstRow = await rows.nth(1).innerText();
+    await expect(firstTitle).not.toHaveText(onPageOne);
+    const onPageTwo = await firstTitle.innerText();
 
     await page.reload();
     await settle(page);
     await expect(page.getByText('26–50 de 64 proyectos')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Orden: título (a–z)' })).toBeVisible();
-    expect(await rows.nth(1).innerText()).toBe(firstRow);
+    await expect(firstTitle).toHaveText(onPageTwo);
     await expect(page).toHaveURL(/\/proyectos\?orden=title&pagina=2$/);
 
     // A filter and a search start on the first page; a reload keeps them too.
@@ -105,7 +108,7 @@ test.describe('B2 · Proyectos', () => {
     await page.getByRole('menuitemradio', { name: 'Más recientes' }).click();
     await expect(page).toHaveURL(/\/proyectos$/);
     await expect(page.getByText('1–25 de 64 proyectos')).toBeVisible();
-    expect(problems).toEqual([]);
+    expectClean(problems, 'Proyectos · URL');
   });
 
   test('renombra y borra un proyecto desde su menú', async ({ page }) => {
