@@ -9,7 +9,8 @@ from rest_framework.test import APIClient
 
 from apps.core.permissions import ADMINS, DENIED, OWNER_ONLY
 from apps.core.workspace import NOT_FOUND_DETAIL
-from apps.payments.models import SubscriptionPlan, Transaction, Wallet
+from apps.payments.models import Payment, SubscriptionPlan, Transaction, Wallet
+from apps.payments.services.payments import settle_payment
 from apps.users.models import User, Workspace, WorkspaceMember
 from apps.videos.models import BrandKit, ScheduledPost, VideoClip, VideoProject
 
@@ -330,6 +331,53 @@ def test_delete_is_refused_with_tokens_reserved(team, how):
     assert response.status_code == 409
     assert response.json()["code"] == "reservation_open"
     assert Workspace.objects.filter(pk=team.workspace.pk).exists()
+
+
+def _payment(team, kind="tokens"):
+    """A payment waiting for its provider, its checkout open: a token purchase or the payment of a plan."""
+    if kind == "tokens":
+        fields = {"tokens": 1000}
+    else:
+        fields = {"tokens": 0, "plan": SubscriptionPlan.objects.create(name="Plan pago", max_members=5, price_usd_monthly=Decimal("49"))}
+    return Payment.objects.create(
+        workspace=team.workspace, created_by=team.owner, amount_usd=Decimal("10.00"), provider="simulated",
+        provider_reference=f"sim_{kind}", checkout_url="https://app.example.com/dev/checkout?compra=1", **fields,
+    )
+
+
+@pytest.mark.parametrize("kind", ["tokens", "plan"])
+def test_delete_is_refused_while_a_payment_is_pending(team, kind):
+    """Its row is what the provider's confirmation settles (or logs as a late payment): it never goes with the workspace."""
+    payment = _payment(team, kind)
+
+    response = client_for(team.owner).delete(url(team.workspace), {"confirm_name": team.workspace.name}, format="json")
+
+    assert response.status_code == 409
+    assert response.json() == {
+        # Only what the web lets the person do: nothing cancels a token purchase.
+        "error": "Hay un pago en curso: terminalo, o esperá a que venza (24 h después de abrirlo).",
+        "code": "payment_pending",
+    }
+    assert Workspace.objects.filter(pk=team.workspace.pk).exists()
+    payment.refresh_from_db()
+    assert payment.status == Payment.Status.PENDING
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_once_the_payment_is_settled_the_workspace_can_be_deleted(team, approved):
+    payment = _payment(team)
+    settle_payment(payment.pk, approved=approved)
+    if approved:
+        # The tokens it credited were spent: a balance left would be its own refusal.
+        Wallet.objects.filter(workspace=team.workspace).update(available_balance=Decimal("0"))
+
+    response = client_for(team.owner).delete(url(team.workspace), {"confirm_name": team.workspace.name}, format="json")
+
+    assert response.status_code == 204
+    assert not Workspace.objects.filter(pk=team.workspace.pk).exists()
+    # A settled payment goes with it, its deposit too.
+    assert not Payment.objects.filter(pk=payment.pk).exists()
+    assert not Transaction.objects.filter(category=Transaction.Category.PURCHASE).exists()
 
 
 def _post(team, status, publish_in=None, updated_ago=None):
