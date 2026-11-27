@@ -51,6 +51,22 @@ export function useChangePlan() {
   });
 }
 
+/**
+ * «Seguir con …» in Planes: cancels the plan payment and the scheduled downgrade the screen showed, never the
+ * plan. It sends what the screen saw, so a stale screen gets a 409 with a `code` instead of a plan change.
+ * Billing is read again whatever the answer: either way the screen may be behind.
+ */
+export function useCancelPending() {
+  const queryClient = useQueryClient();
+  const refresh = () =>
+    Promise.all([queryClient.invalidateQueries({ queryKey: keys.billing.all }), queryClient.invalidateQueries({ queryKey: keys.me })]);
+  return useMutation({
+    mutationFn: ({ currentPlanId, paymentId, pendingPlanId }: { currentPlanId: string; paymentId?: string; pendingPlanId?: string }) =>
+      apiCall(contract.cancelPending, { body: { current_plan_id: currentPlanId, payment_id: paymentId, pending_plan_id: pendingPlanId } }),
+    onSettled: refresh,
+  });
+}
+
 /** Available and reserved balance: always visible in the topbar (map 1.5). Polls while something is reserved. */
 export function useWallet({ enabled = true }: { enabled?: boolean } = {}) {
   return useScopedQuery({

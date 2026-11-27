@@ -95,7 +95,8 @@ export const Subscription = z.object({
   /** Downgrade waiting for the end of the period. */
   pending_plan: z.object({ id: Id, name: z.string(), effective_at: IsoDateTime }).nullable(),
   /**
-   * The payment of another paid plan waiting for its checkout: choosing the current plan cancels it. No
+   * The payment of another paid plan waiting for its checkout: «Seguir con …» cancels it
+   * (`billing.cancelPending` with its `id`). No
    * checkout URL (every role reads this; `billing.purchase` has it). `expires_at` is when its checkout
    * expires (`PAYMENTS_CHECKOUT_TTL_SECONDS` after it opened), null while the checkout is still opening.
    * Optional for older backends.
@@ -313,7 +314,7 @@ export const getSubscription = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/payments/views_subscription.py · SubscriptionView + SubscriptionSerializer (apps/payments/serializers_billing.py)',
-    note: 'Todos los roles. `renews_at` es el fin del período pagado con el checkout: un mes calendario desde que se confirmó el pago de la subida, contado en `WORKSPACE_TIME_ZONE` y anclado al día en que empezó (31 ene → 28 feb → 31 mar). Es null en un plan gratis y en uno asignado en el admin (una cortesía, que no vence). Todavía nada cobra la renovación (PAY-02): cuando el período termina, la tarea `apply_due_plan_changes` aplica la bajada programada o, sin ninguna, pasa el workspace al plan por defecto (`DEFAULT_PLAN_NAME`). Por eso `status` es siempre `active`. Un workspace sin plan muestra el plan por defecto. `pending_payment` es el pago de otro plan pago que espera su checkout (sin la URL), con `expires_at`: cuándo vence ese checkout (`PAYMENTS_CHECKOUT_TTL_SECONDS` desde que se abrió), o null mientras todavía se está abriendo. No aparece uno cuyo checkout venció, ni un intento cuya llamada al proveedor se perdió (sin checkout pasado el doble de `PAYMENTS_PROVIDER_TIMEOUT_SECONDS`). Planes lo cancela con «Seguir con …» (`billing.changePlan` con el plan actual).',
+    note: 'Todos los roles. `renews_at` es el fin del período pagado con el checkout: un mes calendario desde que se confirmó el pago de la subida, contado en `WORKSPACE_TIME_ZONE` y anclado al día en que empezó (31 ene → 28 feb → 31 mar). Es null en un plan gratis y en uno asignado en el admin (una cortesía, que no vence). Todavía nada cobra la renovación (PAY-02): cuando el período termina, la tarea `apply_due_plan_changes` aplica la bajada programada o, sin ninguna, pasa el workspace al plan por defecto (`DEFAULT_PLAN_NAME`). Por eso `status` es siempre `active`. Un workspace sin plan muestra el plan por defecto. `pending_payment` es el pago de otro plan pago que espera su checkout (sin la URL), con `expires_at`: cuándo vence ese checkout (`PAYMENTS_CHECKOUT_TTL_SECONDS` desde que se abrió), o null mientras todavía se está abriendo. No aparece uno cuyo checkout venció, ni un intento cuya llamada al proveedor se perdió (sin checkout pasado el doble de `PAYMENTS_PROVIDER_TIMEOUT_SECONDS`). Planes lo cancela con «Seguir con …» (`billing.cancelPending` con su `id`).',
   },
   screens: ['Barra', 'G1', 'G3', 'C1', 'E1', 'H2'],
 });
@@ -323,7 +324,7 @@ export const changePlan = defineEndpoint({
   method: 'POST',
   path: '/api/v1/subscription/change/',
   summary:
-    'Cambia de plan. Todo otro plan pago se compra: se aplica al volver del checkout, cuando se confirma el pago. Un plan gratis, al fin del período. Mandar el plan actual cancela lo programado.',
+    'Cambia de plan. Todo otro plan pago se compra: se aplica al volver del checkout, cuando se confirma el pago. Un plan gratis, al fin del período. Mandar el plan actual cancela lo programado (builds viejos: «Seguir con …» usa `billing.cancelPending`).',
   request: z.object({
     plan_id: Id,
     /**
@@ -339,7 +340,7 @@ export const changePlan = defineEndpoint({
     subscription: Subscription,
   }),
   errors: [
-    { status: 400, when: 'Ya es el plan actual y no hay nada programado ni esperando su pago (`{ plan_id: ["Ya es tu plan actual."] }`), o `return_url` no es una página de la app o pasa de 600 caracteres.' },
+    { status: 400, when: 'Ya es el plan actual y no hay nada programado ni esperando su pago (`{ error: "Ya es tu plan actual.", code: "nothing_to_cancel" }`), o `return_url` no es una página de la app o pasa de 600 caracteres.' },
     { status: 403, when: 'El rol no puede cambiar el plan (solo Dueño y Admin).' },
     { status: 404, when: 'El plan no existe, está inactivo o no es público (`{ detail: "El plan no existe." }`), o el workspace se borró mientras el pedido esperaba su turno (el `detail` del workspace inexistente; no cambia nada).' },
     {
@@ -352,7 +353,39 @@ export const changePlan = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/payments/views_subscription.py · ChangePlanView (apps/payments/services/subscriptions.py)',
-    note: 'Antes de PAY-02, todo otro plan pago es una compra, sea más caro, más barato o del mismo precio: `checkout_url` viene con valor, el plan no cambia todavía y el proveedor vuelve a `return_url` (por defecto `FRONTEND_URL/uso/planes`) con `compra=<id>`; al confirmarse el pago cambia el plan una sola vez, al momento, y empieza un período pagado de un mes propio. Sin prorrateo: se cobra el mes entero del plan nuevo y lo que quedaba del período actual se pierde. Así pagar una vez nunca deja un plan pago para siempre. Pedir otra vez el mismo plan devuelve el mismo checkout; elegir otro rechaza el pago que esperaba. Solo un plan gratis (como el de `DEFAULT_PLAN_NAME`) se programa para el fin del período pagado (`applied: "period_end"`); sin período pagado se aplica al momento (`applied: "now"`). La web dice «Subir» o «Bajar» por `sort_order` (un check de Django, `payments.W002`, avisa si el orden de los planes públicos no sigue al precio) y avisa que un plan pago se paga y se aplica al momento. Mientras una bajada espera, o mientras un pago de plan espera su checkout, invitar a más gente que la que entra en ese plan se rechaza. La tarea `apply_due_plan_changes` (Celery Beat, cada 15 min) aplica las bajadas que vencieron y, si el período terminó sin nada programado, pasa al plan por defecto. Con `plan_id` igual al plan actual cancela la bajada programada y el pago de plan que esperaba su checkout (`applied: "now"`). Un checkout que nadie paga vence a las 24 h de abierto (`PAYMENTS_CHECKOUT_TTL_SECONDS`): la tarea lo rechaza («El checkout venció sin que se pagara.») y lo cierra en el proveedor, y deja de limitar las invitaciones; pedir ese plan después abre otro checkout. El mock aplica todo plan pago al momento salvo en el escenario «Plan con checkout».',
+    note: 'Antes de PAY-02, todo otro plan pago es una compra, sea más caro, más barato o del mismo precio: `checkout_url` viene con valor, el plan no cambia todavía y el proveedor vuelve a `return_url` (por defecto `FRONTEND_URL/uso/planes`) con `compra=<id>`; al confirmarse el pago cambia el plan una sola vez, al momento, y empieza un período pagado de un mes propio. Sin prorrateo: se cobra el mes entero del plan nuevo y lo que quedaba del período actual se pierde. Así pagar una vez nunca deja un plan pago para siempre. Pedir otra vez el mismo plan devuelve el mismo checkout; elegir otro rechaza el pago que esperaba. Solo un plan gratis (como el de `DEFAULT_PLAN_NAME`) se programa para el fin del período pagado (`applied: "period_end"`); sin período pagado se aplica al momento (`applied: "now"`). La web dice «Subir» o «Bajar» por `sort_order` (un check de Django, `payments.W002`, avisa si el orden de los planes públicos no sigue al precio) y avisa que un plan pago se paga y se aplica al momento. Mientras una bajada espera, o mientras un pago de plan espera su checkout, invitar a más gente que la que entra en ese plan se rechaza. La tarea `apply_due_plan_changes` (Celery Beat, cada 15 min) aplica las bajadas que vencieron y, si el período terminó sin nada programado, pasa al plan por defecto. Con `plan_id` igual al plan actual cancela la bajada programada y el pago de plan que esperaba su checkout (`applied: "now"`), para builds viejos de la web: «Seguir con …» usa `billing.cancelPending`, porque una pantalla vieja mandaría un plan que ya no es el actual y eso abre un cambio de verdad (una bajada programada o un checkout nuevo). Un checkout que nadie paga vence a las 24 h de abierto (`PAYMENTS_CHECKOUT_TTL_SECONDS`): la tarea lo rechaza («El checkout venció sin que se pagara.») y lo cierra en el proveedor, y deja de limitar las invitaciones; pedir ese plan después abre otro checkout. El mock aplica todo plan pago al momento salvo en el escenario «Plan con checkout».',
+  },
+  screens: ['G3'],
+});
+
+export const cancelPending = defineEndpoint({
+  id: 'billing.cancelPending',
+  method: 'POST',
+  path: '/api/v1/subscription/cancel-pending/',
+  summary:
+    '«Seguir con …» en Planes: cancela el pago de plan y la bajada programada que la pantalla mostró. Nunca cambia el plan.',
+  request: z.object({
+    /** The plan the screen showed as the current one (`subscription.plan.id`). */
+    current_plan_id: Id,
+    /** The plan payment it offered to cancel (`subscription.pending_payment.id`). */
+    payment_id: Id.optional(),
+    /** The scheduled downgrade it offered to cancel (`subscription.pending_plan.id`). One of the two at least. */
+    pending_plan_id: Id.optional(),
+  }),
+  response: z.object({ subscription: Subscription }),
+  errors: [
+    { status: 400, when: 'Falta `current_plan_id`, un id no es válido, o no vino ni `payment_id` ni `pending_plan_id` (`non_field_errors`).' },
+    { status: 403, when: 'El rol no puede cambiar el plan (solo Dueño y Admin).' },
+    { status: 404, when: 'El workspace se borró mientras el pedido esperaba su turno. No cambia nada.' },
+    {
+      status: 409,
+      when: 'No cambia nada; cuerpo `{ error, code }`. `code: "plan_changed"`: el plan actual ya no es `current_plan_id` (el pago se aprobó en otra pestaña o lo confirmó el proveedor, se aplicó la bajada, lo cambió el admin); el `error` nombra el plan de ahora y la pantalla lo muestra y relee la facturación. `code: "pending_changed"`: espera algo que la pantalla no mostró (otro pago de plan, una bajada a otro plan); la pantalla muestra el `error` y relee. `code: "nothing_to_cancel"`: ya no espera nada de lo que mostró (se rechazó, venció o se canceló en otro lado); la persona ya tiene lo que pedía, así que la pantalla relee sin avisar.',
+    },
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/payments/views_subscription.py · CancelPendingChangeView (apps/payments/services/subscriptions.py · cancel_pending_change)',
+    note: 'Decide con la fila del workspace bloqueada y después la del pago, en el orden de la liquidación (`settle_payment`): un «Seguir con …» que corre contra la aprobación del mismo pago termina en un solo estado. Si gana la cancelación, el pago queda rechazado («Elegiste seguir con tu plan antes de pagar este.»), se cierra su checkout y una aprobación tardía no cambia nada (`payment.late_paid`); si gana la aprobación, el plan ya es otro y la cancelación responde `plan_changed`. Un pago que no se mostró pero cuyo checkout venció o se perdió no frena la cancelación: la pantalla nunca lo muestra. Si de lo que mostró solo queda una parte (el pago se rechazó en otro lado y la bajada sigue), cancela esa parte. Responde la suscripción como queda.',
   },
   screens: ['G3'],
 });
@@ -532,6 +565,7 @@ export const billingEndpoints = [
   estimateCost,
   getSubscription,
   changePlan,
+  cancelPending,
   getWallet,
   getUsage,
   listTransactions,

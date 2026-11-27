@@ -1,6 +1,6 @@
 import * as contract from '../../contracts/billing';
 import { newId, workspaceDateTime, workspaceDay, type MockDb, type MockPurchase, type MockTransaction } from '../db';
-import { badRequest, dec, MockHttpError, notFound, paginate, route } from '../http';
+import { badRequest, conflict, dec, MockHttpError, notFound, paginate, route } from '../http';
 import { priceOf, PRICING, TOKEN_PACKAGES } from '../seed';
 import { movedAt, planOf, serializeSubscription, serializeTransaction, serializeWallet } from '../serialize';
 import { SIM, tick, walletOf } from '../sim';
@@ -75,6 +75,9 @@ function balanceChanges(item: MockTransaction): BalanceChange[] {
 const CUSTOM_MAX_TOKENS = 1_000_000;
 const REPLACED = 'Elegiste otro plan antes de pagar este.';
 const KEPT = 'Elegiste seguir con tu plan antes de pagar este.';
+/** The 409s of `billing.cancelPending`, with the backend's texts (views_subscription.py). */
+const PENDING_CHANGED = 'Mientras tanto cambió lo que estaba pendiente. No cancelamos nada: revisá cómo quedó y, si querés, probá de nuevo.';
+const NOTHING_LEFT_TO_CANCEL = 'Ya no hay nada pendiente para cancelar.';
 
 /** Like the backend: choosing a plan rejects the upgrade payment that was waiting, unless it is for that same plan. */
 function replacePendingUpgrade(db: MockDb, workspaceId: string, keepPlanId: string | null, reason = REPLACED) {
@@ -170,7 +173,7 @@ export const billingHandlers = [
     if (current?.id === target.id) {
       // Choosing the current plan again cancels a scheduled change and the upgrade waiting for its payment.
       const waiting = db.purchases.some((item) => item.workspace === workspace.id && item.status === 'pending' && item.plan_id);
-      if (!workspace.pending_plan && !waiting) throw badRequest({ plan_id: ['Ya es tu plan actual.'] });
+      if (!workspace.pending_plan && !waiting) throw badRequest({ error: 'Ya es tu plan actual.', code: 'nothing_to_cancel' });
       replacePendingUpgrade(db, workspace.id, null, KEPT);
       workspace.pending_plan = null;
       return { data: { applied: 'now', checkout_url: null, subscription: serializeSubscription(db, workspace) } };
@@ -229,6 +232,29 @@ export const billingHandlers = [
       workspace.renews_at = null;
     }
     return { data: { applied: purchase || !periodEnd ? 'now' : 'period_end', checkout_url: null, subscription: serializeSubscription(db, workspace) } };
+  }),
+
+  route(contract.cancelPending, ({ db, workspace, body, require }) => {
+    require('billing.manage');
+    if (!body.payment_id && !body.pending_plan_id) {
+      throw badRequest({ non_field_errors: ['Decí qué cancelar: el pago pendiente o el cambio programado.'] });
+    }
+    // Like the backend (cancel_pending_change): only what the screen showed, and never a change of plan.
+    const current = planOf(db, workspace.id);
+    if (!current || current.id !== body.current_plan_id) {
+      const nowOn = current ? `: ahora estás en el plan ${current.name}` : '';
+      throw conflict(`Tu plan cambió mientras tanto${nowOn}. No cancelamos nada.`, 'plan_changed');
+    }
+    const waiting = db.purchases.find((item) => item.workspace === workspace.id && item.status === 'pending' && item.plan_id);
+    const cancelPayment = Boolean(waiting && waiting.id === body.payment_id);
+    const cancelDowngrade = Boolean(workspace.pending_plan && workspace.pending_plan.id === body.pending_plan_id);
+    // Something waits that the screen did not show (another payment, another downgrade): nothing is canceled.
+    if ((waiting && !cancelPayment) || (workspace.pending_plan && !cancelDowngrade)) throw conflict(PENDING_CHANGED, 'pending_changed');
+    // Settled elsewhere (rejected, expired, kept in another tab): nothing is left of what it showed.
+    if (!cancelPayment && !cancelDowngrade) throw conflict(NOTHING_LEFT_TO_CANCEL, 'nothing_to_cancel');
+    if (cancelPayment) replacePendingUpgrade(db, workspace.id, null, KEPT);
+    if (cancelDowngrade) workspace.pending_plan = null;
+    return { data: { subscription: serializeSubscription(db, workspace) } };
   }),
 
   route(contract.getWallet, ({ db, workspace, now }) => ({ data: serializeWallet(db, workspace.id, now) })),

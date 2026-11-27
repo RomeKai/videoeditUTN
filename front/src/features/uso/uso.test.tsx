@@ -521,12 +521,74 @@ describe('G3 · Planes', () => {
     expect(await screen.findByText('Estás pasando al plan Estudio: falta el pago')).toBeInTheDocument();
 
     rejectElsewhere(PAYMENT_ID);
-    // The backend answers 400 `{ plan_id: ['Ya es tu plan actual.'] }`: there is nothing left to cancel.
+    // The backend answers 409 `code: "nothing_to_cancel"`: the screen matches the code, not a text or a field.
     await user.click(screen.getByRole('button', { name: 'Seguir con Pro' }));
     await waitFor(() => expect(screen.queryByText(/falta el pago/)).not.toBeInTheDocument());
+    expect(screen.queryByText('Ya no hay nada pendiente para cancelar.')).not.toBeInTheDocument();
     expect(screen.queryByText('Ya es tu plan actual.')).not.toBeInTheDocument();
     expect(screen.queryByText(/No pudimos cancelar/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Listo: seguís con/)).not.toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(loadDb().purchases.find((item) => item.id === PAYMENT_ID)).toMatchObject({ status: 'rejected' });
+  });
+
+  /** The provider approved the payment while this tab was not looking: the plan is the one paid for. */
+  const approveElsewhere = (id: string) => {
+    const db = loadDb();
+    const payment = db.purchases.find((item) => item.id === id);
+    const workspace = db.workspaces.find((item) => item.id === payment?.workspace);
+    if (!payment?.plan_id || !workspace) throw new Error('falta el pago');
+    payment.status = 'approved';
+    payment.checkout_url = null;
+    workspace.subscription_plan = payment.plan_id;
+    workspace.pending_plan = null;
+    workspace.renews_at = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+    saveDb(db);
+  };
+
+  it('«Seguir con» en una pantalla vieja, con el pago ya aprobado en otro lado, no cambia el plan: muestra el plan de ahora', async () => {
+    const PAYMENT_ID = '99999999-9999-4999-8999-999999999999';
+    const user = userEvent.setup();
+    renderScreen(<PlansScreen />, { scenario: 'plan-con-checkout', prepare: seedPendingPlanPayment(PAYMENT_ID) });
+    expect(await screen.findByText('Estás pasando al plan Estudio: falta el pago')).toBeInTheDocument();
+
+    approveElsewhere(PAYMENT_ID);
+    // The tab never lost the focus: the screen still says Pro and offers to keep it.
+    await user.click(screen.getByRole('button', { name: 'Seguir con Pro' }));
+
+    expect(await screen.findByText('Tu plan cambió mientras tanto: ahora estás en el plan Estudio. No cancelamos nada.')).toBeInTheDocument();
+    expect(await screen.findByRole('article', { name: 'Plan Estudio, tu plan' })).toBeInTheDocument();
+    expect(screen.queryByText(/falta el pago/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Seguir con Pro' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Listo: seguís con/)).not.toBeInTheDocument();
+    // Nothing changed: no checkout for Pro, no new payment, nothing scheduled.
+    expect(leaveTo).not.toHaveBeenCalled();
+    const db = loadDb();
+    expect(db.purchases.filter((item) => item.plan_id).map((item) => [item.id, item.status])).toEqual([[PAYMENT_ID, 'approved']]);
+    expect(db.plans.find((item) => item.id === db.workspaces[0]?.subscription_plan)?.name).toBe('Estudio');
+    expect(db.workspaces[0]?.pending_plan).toBeNull();
+  });
+
+  it('«Seguir con» no cancela un pago que la pantalla no mostró: avisa y muestra el de ahora', async () => {
+    const PAYMENT_ID = '99999999-9999-4999-8999-999999999998';
+    const user = userEvent.setup();
+    renderScreen(<PlansScreen />, { scenario: 'plan-con-checkout', prepare: seedPendingPlanPayment(PAYMENT_ID) });
+    expect(await screen.findByText('Estás pasando al plan Estudio: falta el pago')).toBeInTheDocument();
+
+    // In another tab the person picked Creador: the Estudio payment was replaced by a new one.
+    const db = loadDb();
+    const shown = db.purchases.find((item) => item.id === PAYMENT_ID);
+    const creator = db.plans.find((item) => item.name === 'Creador');
+    if (!shown || !creator) throw new Error('faltan datos');
+    shown.status = 'rejected';
+    db.purchases.push({ ...shown, id: '99999999-9999-4999-8999-999999999997', status: 'pending', plan_id: creator.id, amount_usd: creator.price_usd_monthly });
+    saveDb(db);
+    await user.click(screen.getByRole('button', { name: 'Seguir con Pro' }));
+
+    expect(await screen.findByText(/^Mientras tanto cambió lo que estaba pendiente\. No cancelamos nada/)).toBeInTheDocument();
+    expect(await screen.findByText('Estás pasando al plan Creador: falta el pago')).toBeInTheDocument();
+    expect(screen.queryByText(/Listo: seguís con/)).not.toBeInTheDocument();
+    expect(loadDb().purchases.find((item) => item.plan_id === creator.id)).toMatchObject({ status: 'pending' });
   });
 
   it('otro rechazo de «Seguir con» sí se muestra como error', async () => {
@@ -534,9 +596,10 @@ describe('G3 · Planes', () => {
     const user = userEvent.setup();
     renderScreen(<PlansScreen />, { scenario: 'plan-con-checkout', prepare: seedPendingPlanPayment(PAYMENT_ID) });
     await screen.findByText('Estás pasando al plan Estudio: falta el pago');
-    server.use(http.post(`${API_URL}/api/v1/subscription/change/`, () => HttpResponse.json({ error: 'Ya estamos abriendo el checkout de este cambio de plan.', code: 'checkout_in_progress' }, { status: 409 })));
+    server.use(http.post(`${API_URL}/api/v1/subscription/cancel-pending/`, () => HttpResponse.json({ detail: 'Error' }, { status: 500 })));
     await user.click(screen.getByRole('button', { name: 'Seguir con Pro' }));
-    expect(await screen.findByText(/Ya estamos abriendo el checkout/)).toBeInTheDocument();
+    expect(await screen.findByText('No pudimos cancelar el cambio')).toBeInTheDocument();
+    expect(screen.queryByText(/Listo: seguís con/)).not.toBeInTheDocument();
   });
 
   it('sin volver del checkout de ese pago, «Seguir con» sigue a la vista', async () => {

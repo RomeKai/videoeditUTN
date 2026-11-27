@@ -577,7 +577,31 @@ describe('mocks', () => {
     const kept = await apiCall(billing.changePlan, { body: { plan_id: plan('Pro') } });
     expect(kept.applied).toBe('now');
     expect(loadDb().purchases.find((item) => item.plan_id)?.status).toBe('rejected');
-    expect((await fail(apiCall(billing.changePlan, { body: { plan_id: plan('Pro') } }))).fieldErrors.plan_id).toEqual(['Ya es tu plan actual.']);
+    expect((await fail(apiCall(billing.changePlan, { body: { plan_id: plan('Pro') } }))).code).toBe('nothing_to_cancel');
+  });
+
+  it('planes: «Seguir con» cancela solo lo que la pantalla mostró y nunca cambia el plan', async () => {
+    signIn('plan-con-checkout');
+    const plans = await apiCall(billing.listPlans);
+    const plan = (name: string) => plans.find((item) => item.name === name)?.id ?? '';
+    const started = await apiCall(billing.changePlan, { body: { plan_id: plan('Estudio'), return_url: 'http://localhost:3000/uso/planes' } });
+    const payment = started.subscription.pending_payment;
+    if (!payment) throw new Error('falta el pago');
+    const before = JSON.stringify(loadDb().purchases);
+    // A stale screen that still shows another plan, or a payment that is no longer the one waiting: 409, nothing changes.
+    const stale = await fail(apiCall(billing.cancelPending, { body: { current_plan_id: plan('Gratis'), payment_id: payment.id } }));
+    expect([stale.status, stale.code, stale.message]).toEqual([409, 'plan_changed', 'Tu plan cambió mientras tanto: ahora estás en el plan Pro. No cancelamos nada.']);
+    const unseen = await fail(apiCall(billing.cancelPending, { body: { current_plan_id: plan('Pro'), payment_id: '99999999-9999-4999-8999-999999999999' } }));
+    expect([unseen.status, unseen.code]).toEqual([409, 'pending_changed']);
+    expect(JSON.stringify(loadDb().purchases)).toBe(before);
+    expect((await fail(apiCall(billing.cancelPending, { body: { current_plan_id: plan('Pro') } }))).status).toBe(400);
+
+    const kept = await apiCall(billing.cancelPending, { body: { current_plan_id: plan('Pro'), payment_id: payment.id } });
+    expect([kept.subscription.plan.name, kept.subscription.pending_payment]).toEqual(['Pro', null]);
+    expect(loadDb().purchases.find((item) => item.id === payment.id)).toMatchObject({ status: 'rejected', failure_reason: 'Elegiste seguir con tu plan antes de pagar este.' });
+    const again = await fail(apiCall(billing.cancelPending, { body: { current_plan_id: plan('Pro'), payment_id: payment.id } }));
+    expect([again.status, again.code]).toEqual([409, 'nothing_to_cancel']);
+    expect(loadDb().purchases.filter((item) => item.plan_id)).toHaveLength(1);
   });
 
   it('planes: todo plan pago es una compra, y mientras una bajada espera nadie entra pasado sus lugares', async () => {

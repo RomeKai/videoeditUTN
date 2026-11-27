@@ -60,6 +60,21 @@ def real_bodies(seeded_plans):
             errors[name] = {'status': response.status_code, 'body': response.json()}
 
         error('change_plan_400_current', client.post('/api/v1/subscription/change/', {'plan_id': str(plans['Pro'].pk)}, format='json'))
+        # «Seguir con …»: what Planes showed (a downgrade to Gratis and a payment for Estudio), canceled.
+        client.post('/api/v1/subscription/change/', {'plan_id': str(plans['Gratis'].pk)}, format='json')
+        estudio = client.post('/api/v1/subscription/change/', {'plan_id': str(plans['Estudio'].pk), 'return_url': f'{FRONT}/uso/planes'}, format='json').json()
+        shown = estudio['subscription']
+        keep = {'current_plan_id': shown['plan']['id'], 'payment_id': shown['pending_payment']['id'], 'pending_plan_id': shown['pending_plan']['id']}
+        bodies['cancel_pending'] = client.post('/api/v1/subscription/cancel-pending/', keep, format='json').json()
+        error('cancel_pending_409_nothing', client.post('/api/v1/subscription/cancel-pending/', keep, format='json'))
+        # A stale screen: it still shows Gratis, from before the payment for Pro was approved.
+        stale = {'current_plan_id': str(plans['Gratis'].pk), 'payment_id': shown['pending_payment']['id']}
+        error('cancel_pending_409_plan_changed', client.post('/api/v1/subscription/cancel-pending/', stale, format='json'))
+        # A payment the screen did not show (started in another tab) is never canceled.
+        other = client.post('/api/v1/subscription/change/', {'plan_id': str(plans['Estudio'].pk), 'return_url': f'{FRONT}/uso/planes'}, format='json').json()
+        unseen = {'current_plan_id': str(plans['Pro'].pk), 'pending_plan_id': str(plans['Gratis'].pk)}
+        error('cancel_pending_409_pending_changed', client.post('/api/v1/subscription/cancel-pending/', unseen, format='json'))
+        client.post('/api/v1/subscription/cancel-pending/', {**unseen, 'payment_id': other['subscription']['pending_payment']['id']}, format='json')
         workspace.refresh_from_db()  # on Pro now: room for the invitations
         for name in ('uno', 'dos', 'tres'):
             join(workspace, make_user(name), status=WorkspaceMember.Status.PENDING)

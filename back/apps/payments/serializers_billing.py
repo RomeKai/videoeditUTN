@@ -67,7 +67,7 @@ class SubscriptionSerializer(serializers.Serializer):
     renews_at = serializers.DateTimeField(allow_null=True)
     # The downgrade waiting for the end of the period.
     pending_plan = PendingPlanSerializer(allow_null=True)
-    # The plan payment waiting for its checkout (choosing the current plan cancels it). No checkout URL:
+    # The plan payment waiting for its checkout («Seguir con …» cancels it: cancel-pending). No checkout URL:
     # every role reads this.
     pending_payment = PendingPaymentSerializer(allow_null=True)
 
@@ -83,6 +83,27 @@ class ChangePlanRequestSerializer(serializers.Serializer):
 class ChangePlanResponseSerializer(serializers.Serializer):
     applied = serializers.ChoiceField(choices=['now', 'period_end'])
     checkout_url = serializers.URLField(allow_null=True)
+    subscription = SubscriptionSerializer()
+
+
+class CancelPendingRequestSerializer(serializers.Serializer):
+    """
+    What Planes showed when «Seguir con …» was clicked: the current plan, and
+    the plan payment (`pending_payment.id`) and the downgrade (`pending_plan.id`)
+    it offered to cancel. One of the two at least.
+    """
+
+    current_plan_id = serializers.UUIDField(error_messages={'invalid': 'Falta tu plan actual.', 'required': 'Falta tu plan actual.', 'null': 'Falta tu plan actual.'})
+    payment_id = serializers.UUIDField(required=False, allow_null=True, error_messages={'invalid': 'El pago no es válido.'})
+    pending_plan_id = serializers.UUIDField(required=False, allow_null=True, error_messages={'invalid': 'El cambio programado no es válido.'})
+
+    def validate(self, attrs):
+        if attrs.get('payment_id') is None and attrs.get('pending_plan_id') is None:
+            raise serializers.ValidationError('Decí qué cancelar: el pago pendiente o el cambio programado.')
+        return attrs
+
+
+class CancelPendingResponseSerializer(serializers.Serializer):
     subscription = SubscriptionSerializer()
 
 

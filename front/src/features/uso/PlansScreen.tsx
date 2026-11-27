@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import type { Plan } from '@/api/contracts/billing';
 import { isApiError } from '@/api/errors';
-import { useChangePlan, useMembers, usePlans, usePricing, useSubscription, useTokenPurchase } from '@/api/hooks';
+import { useCancelPending, useChangePlan, useMembers, usePlans, usePricing, useSubscription, useTokenPurchase } from '@/api/hooks';
 import { keys } from '@/api/query';
 import { ConfirmDialog } from '@/dialogs';
 import { cx } from '@/lib/cx';
@@ -106,7 +106,7 @@ function Plans() {
   const pricing = usePricing();
   const members = useMembers(workspace?.id, { enabled: can('members.manage') });
   const change = useChangePlan();
-  const queryClient = useQueryClient();
+  const cancel = useCancelPending();
   const [target, setTarget] = useState<Plan | null>(null);
 
   const current = subscription.data?.plan ?? null;
@@ -161,28 +161,36 @@ function Plans() {
       },
     );
   };
-  /** Choosing the current plan again cancels the scheduled change and the plan payment waiting for its checkout. */
+  /**
+   * «Seguir con …» only cancels: the scheduled change and the plan payment this screen shows, named by what it
+   * shows (the current plan too). It never asks for a plan, so a stale screen (the payment was approved in
+   * another tab) cannot start a downgrade or a new checkout: the backend answers 409 and changes nothing.
+   * Whatever the answer, the hook reads billing again and the screen shows the real state.
+   */
   const keepCurrent = () => {
     if (!current) return;
-    change.mutate(
-      { planId: current.id },
+    cancel.mutate(
+      { currentPlanId: current.id, paymentId: paying?.id, pendingPlanId: pending?.id },
       {
         onSuccess: () => toast.success(`Listo: seguís con el plan ${current.name}.`),
         onError: (error) => {
-          // 400 on `plan_id` (ChangePlanView, «Ya es tu plan actual.»): there was nothing left to cancel. The
-          // payment settled somewhere else (rejected or expired in another tab) and the person already has
-          // what they asked for, so it is not an error: the screen just catches up.
-          const settled = isApiError(error) && error.status === 400 && Boolean(error.fieldErrors.plan_id);
-          if (!settled) toast.error(errorMessage(error, 'No pudimos cancelar el cambio'));
-          // Any other refusal can also mean the screen is behind: read it again.
-          void queryClient.invalidateQueries({ queryKey: keys.billing.all });
+          const code = isApiError(error) ? error.code : undefined;
+          // What the screen showed was settled somewhere else (rejected, expired or kept in another tab): the
+          // person already has what they asked for, so it is not news. The screen just catches up.
+          if (code === 'nothing_to_cancel') return;
+          if (code === 'plan_changed' || code === 'pending_changed') {
+            // The screen was behind and nothing was canceled: the backend says what changed (the plan of now).
+            toast.show(errorMessage(error, 'Tu plan cambió mientras tanto. No cancelamos nada.'), { tone: 'info' });
+            return;
+          }
+          toast.error(errorMessage(error, 'No pudimos cancelar el cambio'));
         },
       },
     );
   };
   const keepName = current?.name ?? 'mi plan';
   const keepButton = confirming ? undefined : (
-    <Button size="sm" variant="secondary" onClick={keepCurrent} loading={change.isPending && !target} {...gate('billing.manage')}>
+    <Button size="sm" variant="secondary" onClick={keepCurrent} loading={cancel.isPending} disabled={change.isPending} {...gate('billing.manage')}>
       Seguir con {keepName}
     </Button>
   );
