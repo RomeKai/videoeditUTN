@@ -10,6 +10,8 @@ from rest_framework.throttling import ScopedRateThrottle
 from apps.core.testing import clear_local_caches
 from apps.users.models import User
 
+from .clocks import frozen_clocks
+
 
 @override_settings(LOGIN_FAILURE_RATES={"account_ip": "50/15m", "account": "3/h"})
 class ConcurrentLoginFailuresTests(TransactionTestCase):
@@ -32,7 +34,8 @@ class ConcurrentLoginFailuresTests(TransactionTestCase):
             finally:
                 connection.close()
 
-        with mock.patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"login": "1000/min"}):
+        # Twelve failures inside one hour window: a clock that does not move (patched for every thread).
+        with frozen_clocks(), mock.patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"login": "1000/min"}):
             threads = [threading.Thread(target=attempt, args=(n,)) for n in range(12)]
             for thread in threads:
                 thread.start()
