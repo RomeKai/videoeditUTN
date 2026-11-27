@@ -1,7 +1,10 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { http, HttpResponse } from 'msw';
+import { API_URL } from '@/api/config';
 import type { Plan } from '@/api/contracts/billing';
+import { server } from '@/api/mocks/server';
 import { loadDb, saveDb } from '@/api/mocks/state';
 import { formatDateTime } from '@/lib/format';
 import { BuyTokensScreen, parseTokenAmount } from './BuyTokensScreen';
@@ -72,6 +75,30 @@ const plan = (overrides: Partial<Plan>): Plan => ({
   is_recommended: true,
   ...overrides,
 });
+
+/** A plan payment to Estudio waiting for its checkout, as the workspace left it. */
+const seedPendingPlanPayment = (id: string, extra?: (db: ReturnType<typeof loadDb>) => void) => () => {
+  const db = loadDb();
+  const workspace = db.workspaces[0];
+  const studio = db.plans.find((item) => item.name === 'Estudio');
+  if (!workspace || !studio) throw new Error('faltan datos');
+  db.purchases.push({
+    id,
+    workspace: workspace.id,
+    status: 'pending',
+    tokens: 0,
+    amount_usd: 129,
+    plan_id: studio.id,
+    checkout_url: `http://localhost:3000/dev/checkout?compra=${id}`,
+    failure_reason: null,
+    created_at: new Date().toISOString(),
+    balance_after: null,
+    _settleAt: null,
+    _reject: false,
+  });
+  extra?.(db);
+  saveDb(db);
+};
 
 describe('utilidades de Uso', () => {
   it('arma los meses del filtro y sus nombres', () => {
@@ -163,6 +190,24 @@ describe('G1 · Resumen', () => {
     expect(await within(latest).findByText('Compra de 1.000 tokens')).toBeInTheDocument();
     expect(await screen.findByRole('img', { name: /Consumo por día en/ })).toBeInTheDocument();
     expect(screen.queryByText('Te queda poco saldo')).not.toBeInTheDocument();
+  });
+
+  it('con un pago de plan pendiente lo dice y lleva a Planes; sin uno, no', async () => {
+    const view = renderScreen(<UsageOverview />, { scenario: 'plan-con-checkout', prepare: seedPendingPlanPayment('66666666-6666-4666-8666-666666666666') });
+    const line = (await screen.findByText('Tenés un pago pendiente para pasar al plan Estudio.')).closest('[role="note"]') as HTMLElement;
+    expect(within(line).getByRole('link', { name: 'Ver en Planes' })).toHaveAttribute('href', '/uso/planes');
+    view.unmount();
+
+    renderScreen(<UsageOverview />, { scenario: 'plan-con-checkout' });
+    await screen.findByRole('region', { name: 'Plan actual' });
+    expect(screen.queryByText(/Tenés un pago pendiente/)).not.toBeInTheDocument();
+  });
+
+  it('a un Editor no le habla del pago del plan: no puede abrir Planes', async () => {
+    renderScreen(<UsageOverview />, { scenario: 'rol-editor', prepare: seedPendingPlanPayment('66666666-6666-4666-8666-666666666666') });
+    await screen.findByRole('region', { name: 'Saldo de tokens' });
+    await screen.findByText(/Los movimientos y los planes los ven/);
+    expect(screen.queryByText(/Tenés un pago pendiente/)).not.toBeInTheDocument();
   });
 
   it('con el navegador ya en diciembre (UTC) y el workspace todavía en noviembre, el mes es noviembre', async () => {
@@ -406,30 +451,6 @@ describe('G3 · Planes', () => {
     expect(loadDb().purchases[0]).toMatchObject({ status: 'rejected' });
   });
 
-  /** A plan payment to Estudio waiting for its checkout, as the workspace left it. */
-  const seedPendingPlanPayment = (id: string, extra?: (db: ReturnType<typeof loadDb>) => void) => () => {
-    const db = loadDb();
-    const workspace = db.workspaces[0];
-    const studio = db.plans.find((item) => item.name === 'Estudio');
-    if (!workspace || !studio) throw new Error('faltan datos');
-    db.purchases.push({
-      id,
-      workspace: workspace.id,
-      status: 'pending',
-      tokens: 0,
-      amount_usd: 129,
-      plan_id: studio.id,
-      checkout_url: `http://localhost:3000/dev/checkout?compra=${id}`,
-      failure_reason: null,
-      created_at: new Date().toISOString(),
-      balance_after: null,
-      _settleAt: null,
-      _reject: false,
-    });
-    extra?.(db);
-    saveDb(db);
-  };
-
   it('mientras se confirma el pago al volver del checkout no ofrece «Seguir con»: podría estar pagado', async () => {
     const PAYMENT_ID = '33333333-3333-4333-8333-333333333333';
     navigation.search = `compra=${PAYMENT_ID}`;
@@ -461,6 +482,62 @@ describe('G3 · Planes', () => {
     await waitFor(() => expect(screen.queryByText(/falta el pago/)).not.toBeInTheDocument());
     expect(screen.queryByRole('button', { name: 'Seguir con Pro' })).not.toBeInTheDocument();
   }, 20_000);
+
+  /** The provider rejected the payment while this tab was not looking (the checkout was in another one). */
+  const rejectElsewhere = (id: string) => {
+    const db = loadDb();
+    const payment = db.purchases.find((item) => item.id === id);
+    if (!payment) throw new Error('falta el pago');
+    payment.status = 'rejected';
+    saveDb(db);
+  };
+
+  it('si el pago se rechazó en otra pestaña, al volver a esta el aviso se va sin esperar a que el dato envejezca', async () => {
+    const PAYMENT_ID = '77777777-7777-4777-8777-777777777777';
+    renderScreen(<PlansScreen />, { scenario: 'plan-con-checkout', prepare: seedPendingPlanPayment(PAYMENT_ID) });
+    expect(await screen.findByText('Estás pasando al plan Estudio: falta el pago')).toBeInTheDocument();
+
+    // The clock is pinned: what was read is as fresh as it gets, and still it is read again.
+    rejectElsewhere(PAYMENT_ID);
+    window.dispatchEvent(new Event('focus'));
+    await waitFor(() => expect(screen.queryByText(/falta el pago/)).not.toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Seguir con Pro' })).not.toBeInTheDocument();
+  });
+
+  it('al volver a la pestaña (visibilitychange) también relee la suscripción', async () => {
+    const PAYMENT_ID = '77777777-7777-4777-8777-777777777778';
+    renderScreen(<PlansScreen />, { scenario: 'plan-con-checkout', prepare: seedPendingPlanPayment(PAYMENT_ID) });
+    expect(await screen.findByText('Estás pasando al plan Estudio: falta el pago')).toBeInTheDocument();
+
+    rejectElsewhere(PAYMENT_ID);
+    document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
+    await waitFor(() => expect(screen.queryByText(/falta el pago/)).not.toBeInTheDocument());
+  });
+
+  it('«Seguir con» sobre un pago que ya se rechazó en otro lado no muestra un error: la pantalla se pone al día', async () => {
+    const PAYMENT_ID = '88888888-8888-4888-8888-888888888888';
+    const user = userEvent.setup();
+    renderScreen(<PlansScreen />, { scenario: 'plan-con-checkout', prepare: seedPendingPlanPayment(PAYMENT_ID) });
+    expect(await screen.findByText('Estás pasando al plan Estudio: falta el pago')).toBeInTheDocument();
+
+    rejectElsewhere(PAYMENT_ID);
+    // The backend answers 400 `{ plan_id: ['Ya es tu plan actual.'] }`: there is nothing left to cancel.
+    await user.click(screen.getByRole('button', { name: 'Seguir con Pro' }));
+    await waitFor(() => expect(screen.queryByText(/falta el pago/)).not.toBeInTheDocument());
+    expect(screen.queryByText('Ya es tu plan actual.')).not.toBeInTheDocument();
+    expect(screen.queryByText(/No pudimos cancelar/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('otro rechazo de «Seguir con» sí se muestra como error', async () => {
+    const PAYMENT_ID = '88888888-8888-4888-8888-888888888889';
+    const user = userEvent.setup();
+    renderScreen(<PlansScreen />, { scenario: 'plan-con-checkout', prepare: seedPendingPlanPayment(PAYMENT_ID) });
+    await screen.findByText('Estás pasando al plan Estudio: falta el pago');
+    server.use(http.post(`${API_URL}/api/v1/subscription/change/`, () => HttpResponse.json({ error: 'Ya estamos abriendo el checkout de este cambio de plan.', code: 'checkout_in_progress' }, { status: 409 })));
+    await user.click(screen.getByRole('button', { name: 'Seguir con Pro' }));
+    expect(await screen.findByText(/Ya estamos abriendo el checkout/)).toBeInTheDocument();
+  });
 
   it('sin volver del checkout de ese pago, «Seguir con» sigue a la vista', async () => {
     navigation.search = 'compra=44444444-4444-4444-8444-444444444444';
