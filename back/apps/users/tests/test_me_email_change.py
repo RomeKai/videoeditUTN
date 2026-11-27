@@ -255,16 +255,22 @@ def test_a_link_of_another_account_never_replaces_the_session(user, purpose):
     assert attacker.email == "atacante@test.com"
 
 
-def test_a_signup_link_verifies_the_account_and_signs_in(user):
+def test_a_signup_link_verifies_the_account_and_signs_in_only_with_its_session(user):
     token = make_token(user, SIGNUP)
 
+    # Another browser (no session, no nonce of the sign-up, see test_register.py): nothing changes.
     response = _verify(token)
 
     assert response.status_code == 200
-    assert set(response.json()) == {"access", "refresh"}
+    assert response.json() == {"signed_in": False}
+    user.refresh_from_db()
+    assert user.is_email_verified is False
+    # With the session of that account the same link verifies and answers a pair, once.
+    again = _verify(token, as_user=user)
+    assert set(again.json()) == {"access", "refresh"}
     user.refresh_from_db()
     assert user.is_email_verified is True
-    assert _verify(token).status_code == 400
+    assert _verify(token, as_user=user).status_code == 400
 
 
 def test_email_changes_are_throttled_but_other_edits_are_not(client, user):
