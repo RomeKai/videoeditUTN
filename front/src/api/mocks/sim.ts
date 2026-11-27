@@ -1,4 +1,4 @@
-import { formatNumber, formatTokens } from '@/lib/format';
+import { formatNumber, formatTokens, plural } from '@/lib/format';
 import type { Role } from '../contracts/common';
 import type { PipelineStage } from '../contracts/projects';
 import { KIND, mid, newId, type MockActivity, type MockClip, type MockDb, type MockProject, type MockTransaction, type MockWallet, type PaidRender } from './db';
@@ -406,7 +406,7 @@ function tickIngest(db: MockDb, project: MockProject, now: number): void {
   if (creation?.status === 'RESERVED') {
     settleReservation(db, creation.id, now);
     if (project.cost) project.cost = { ...project.cost, state: 'charged' };
-    addActivity(db, project, 'tokens_charged', 'Cobro del procesamiento', now, { amount: -creation.amount, transactionId: creation.id });
+    addActivity(db, project, 'tokens_charged', processingChargeLabel(db, creation.id), now, { amount: -creation.amount, transactionId: creation.id });
   }
   const count = Math.min(20, Math.max(1, project.metadata.max_clips ?? 8));
   const seedIndex = Math.floor(sim.startedAt % 9_000) + 500;
@@ -496,9 +496,13 @@ function tickRender(db: MockDb, project: MockProject, now: number): void {
     if (item.returned > 0) addActivity(db, project, 'tokens_refunded', 'Devolución por los clips que no se generaron', now, { amount: round2(item.returned), transactionId: item.id });
   }
   if (project.cost) project.cost = { ...project.cost, state: 'charged' };
-  addActivity(db, project, 'render_finished', 'Terminó el render', now);
+  // Every clip failed and its render came back whole: it delivered nothing (project_activity.py · `_refunded_render_text`).
+  const renders = settled.filter((item) => item.render);
+  const nothing = renders.length > 0 && renders.every((item) => item.charged === 0 && item.returned > 0);
+  const back = renders.reduce((sum, item) => sum + item.returned, 0);
+  addActivity(db, project, 'render_finished', nothing ? `No se pudo renderizar: no se generó ningún clip. Te devolvimos ${formatTokens(round2(back))}.` : renderFinishedText(project), now);
   for (const item of settled) {
-    if (item.charged > 0) addActivity(db, project, 'tokens_charged', item.render ? renderChargeLabel(item.description) : 'Cobro del procesamiento', now, { amount: -item.charged, transactionId: item.id });
+    if (item.charged > 0) addActivity(db, project, 'tokens_charged', item.render ? renderChargeLabel(item.description) : processingChargeLabel(db, item.id), now, { amount: -item.charged, transactionId: item.id });
   }
   const ready = project.clips.length - failed;
   notify(db, project.workspace, { type: 'render_finished', title: `${project.title}: terminó el render`, body: renderFinishedBody(ready, failed > 0, returned), project_id: project.id }, now);
@@ -525,18 +529,40 @@ export function renderChargeLabel(description: string): string {
 }
 
 /**
+ * What the charge of the processing is called, like the backend (project_activity.py · `_REDISPATCH`):
+ * the one a re-dispatch reserved again («Reserva por volver a procesar») is charged as such.
+ */
+function processingChargeLabel(db: MockDb, transactionId: string): string {
+  const again = db.activity.some((item) => item._transaction === transactionId && item.type === 'tokens_reserved' && item.description === 'Reserva por volver a procesar');
+  return again ? 'Cobro por volver a procesar' : 'Cobro del procesamiento';
+}
+
+/** What `render_finished` says of a render that delivered something, like the backend (project_activity.py · `build_activity`): the clips the project has. */
+function renderFinishedText(project: MockProject): string {
+  const ready = project.clips.filter((clip) => clip.status === 'completed' || clip.status === 'published').length;
+  const failed = project.clips.filter((clip) => clip.status === 'failed').length;
+  if (project.project_type === 'single_edit') return failed > 0 ? 'El render del video falló' : 'Terminó el render del video';
+  const clips = plural(ready, 'clip listo', 'clips listos');
+  return failed > 0 ? `Terminó el render: ${clips} y ${failed} con error` : `Terminó el render: ${clips}`;
+}
+
+/**
  * What `render_finished` says of a paid render that was returned whole, like the backend
- * (project_activity.py · `_refunded_render_text`): it delivered nothing, and the clips the user had are
- * still there when every clip it was for got back what it had.
+ * (project_activity.py · `_refunded_render_text`): it delivered nothing. The clips it was for that are
+ * delivered all the same are the ones the user had (given back as they were): all of them, "the clip(s)
+ * before stayed"; only some (the others were failed before it and still are), "the ones you had stayed".
  */
 function refundedRenderText(project: MockProject, paid: PaidRender, description: string, returned: number): string {
   const refund = `Te devolvimos ${formatTokens(round2(returned))}.`;
-  const kept = paid.clipIds.length > 0 && paid.clipIds.every((id) => paid.previous[id] && project.clips.find((clip) => clip.id === id)?.status !== 'failed');
-  if (kept) {
-    const what = project.project_type === 'single_edit' ? 'quedó el video anterior' : paid.clipIds.length === 1 ? 'quedó el clip anterior' : 'quedaron los clips anteriores';
+  const single = project.project_type === 'single_edit';
+  const kept = paid.clipIds.filter((id) => ['completed', 'published'].includes(project.clips.find((clip) => clip.id === id)?.status ?? '')).length;
+  if (kept > 0 && kept === paid.clipIds.length) {
+    const what = single ? 'quedó el video anterior' : kept === 1 ? 'quedó el clip anterior' : 'quedaron los clips anteriores';
     return `No se pudo volver a renderizar: ${what}. ${refund}`;
   }
+  if (kept > 0) return `No se pudo volver a renderizar: ${kept === 1 ? 'quedó el clip que ya tenías' : 'quedaron los clips que ya tenías'}. ${refund}`;
   if (description.startsWith('Reintento de clip: ')) return `No se pudo renderizar el clip: sigue con error. ${refund}`;
+  if (single) return `El render del video falló. ${refund}`;
   return `No se pudo renderizar: no se generó ningún clip. ${refund}`;
 }
 
@@ -576,7 +602,14 @@ function finishPaidRender(db: MockDb, project: MockProject, paid: PaidRender, no
   const description = transaction?.description ?? '';
   // Returned whole: that render delivered nothing, whatever the project has from before.
   const nothing = amount > 0 && returned >= amount;
-  addActivity(db, project, 'render_finished', nothing ? refundedRenderText(project, paid, description, returned) : 'Terminó el render', now);
+  // Charged in part with nothing left in error: what it could not generate got back the file it had (the bell's words).
+  const restored = !nothing && returned > 0 && failed === 0 && project.project_type !== 'single_edit';
+  const finished = nothing
+    ? refundedRenderText(project, paid, description, returned)
+    : restored
+      ? `No pudimos volver a generar todos los clips: los que ya tenías quedaron como estaban. Te devolvimos ${formatTokens(round2(returned))}.`
+      : renderFinishedText(project);
+  addActivity(db, project, 'render_finished', finished, now);
   if (amount - returned > 0) addActivity(db, project, 'tokens_charged', renderChargeLabel(description), now, { amount: -round2(amount - returned), transactionId: paid.reservation });
   if (returned > 0) addActivity(db, project, 'tokens_refunded', 'Devolución por lo que no se generó', now, { amount: round2(returned), transactionId: paid.reservation });
   notify(
