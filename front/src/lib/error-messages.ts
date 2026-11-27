@@ -1,4 +1,4 @@
-import type { UploadErrorCode } from '@/api/contracts/projects';
+import { UploadTooLargeBody, type UploadErrorCode } from '@/api/contracts/projects';
 import { ApiError, NetworkError } from '@/api/errors';
 import { formatMinutes } from './format';
 
@@ -130,6 +130,17 @@ export function uploadErrorCode(error: unknown): UploadErrorCode | null {
   const text = [...(error.fieldErrors.source_file ?? []), ...(error.fieldErrors.project_type ?? [])].join(' ');
   for (const [code, pattern] of UPLOAD_MESSAGE_HINTS) if (pattern.test(text)) return code;
   return null;
+}
+
+/**
+ * The upload was over the size cap (map §4 · `file_too_large`): a 413 with the backend's body
+ * (back/apps/core/upload_limits.py), whose `limit_bytes` comes back, or a 413 of the proxy in front,
+ * without it (`{}`). Null for any other error.
+ */
+export function uploadTooLarge(error: unknown): { limitBytes?: number } | null {
+  if (!(error instanceof ApiError) || error.status !== 413) return null;
+  const body = UploadTooLargeBody.safeParse(error.data);
+  return body.success ? { limitBytes: body.data.limit_bytes } : {};
 }
 
 /** The notice of the review when "Renderizar sin revisar" could not be paid (map C1 · `metadata.auto_render_skipped`). */

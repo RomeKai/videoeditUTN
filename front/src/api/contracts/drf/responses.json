@@ -1850,6 +1850,14 @@
         ]
       }
     },
+    "create_413_file_too_large": {
+      "status": 413,
+      "body": {
+        "error": "El archivo pesa más de 2 GB, el máximo que podemos recibir.",
+        "code": "file_too_large",
+        "limit_bytes": 2147483648
+      }
+    },
     "create_400_required": {
       "status": 400,
       "body": {
@@ -2259,7 +2267,7 @@
     "token_price_usd": "0.01",
     "single_edit_max_duration_seconds": 600,
     "upload_max_duration_seconds": 10800,
-    "upload_max_size_bytes": 524288000,
+    "upload_max_size_bytes": 2147483648,
     "upload_extensions": [
       ".mp4",
       ".mov",

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z, type ZodTypeAny } from 'zod';
-import { approveErrorKind, errorMessage, fieldError, pipelineErrorMessage, planLimitKind, uploadErrorCode } from '@/lib/error-messages';
+import { approveErrorKind, errorMessage, fieldError, pipelineErrorMessage, planLimitKind, uploadErrorCode, uploadTooLarge } from '@/lib/error-messages';
 import { describeProjectStatus } from '@/lib/project-status';
 import { ApiError } from '../errors';
 import { TokenPair, refreshToken } from './auth';
@@ -26,7 +26,7 @@ import { BrandKit, duplicateBrandKit, listBrandKits, updateBrandKit } from './br
 import { ClipPreview } from './clips';
 import real from './drf/responses.json';
 import { Notification, type NotificationsResponse, listNotifications, markNotificationRead } from './notifications';
-import { ActivityItem, ApprovePaperEditResponse, CreateFromPromptResponse, CreateProjectResponse, PaperEditData, Project, ProjectsResponse, StageTiming } from './projects';
+import { ActivityItem, ApprovePaperEditResponse, CreateFromPromptResponse, CreateProjectResponse, PaperEditData, Project, ProjectsResponse, StageTiming, UploadTooLargeBody, createProject } from './projects';
 import { type MembersResponse, type Workspace, createWorkspace, getWorkspace, listMembers, listWorkspaces, transferWorkspace, updateMember, updateWorkspace } from './workspaces';
 
 /**
@@ -261,6 +261,17 @@ describe('errores reales del backend', () => {
     expect(uploadErrorCode(error('create_400_upload'))).toBe('too_long');
     expect(error('create_400_required').message).toBe("Debes proporcionar un 'source_file' o una 'video_url'.");
     expect(fieldError(error('create_400_single_edit'), 'project_type')).toMatch(/subí el archivo/);
+  });
+
+  it('subida: el 413 de un archivo que pasa el tope trae su código y el tope, el mismo de /pricing/', () => {
+    // back/apps/videos/tests/test_upload_size.py compares this body with the backend's.
+    const body = UploadTooLargeBody.parse(real.errors.create_413_file_too_large.body);
+    expect(body.limit_bytes).toBe(real.pricing.upload_max_size_bytes);
+    const tooLarge = error('create_413_file_too_large', 'projects.create');
+    expect(tooLarge.code).toBe('file_too_large');
+    expect(uploadTooLarge(tooLarge)).toEqual({ limitBytes: 2 * 1024 ** 3 });
+    expect(errorMessage(tooLarge)).toBe('El archivo pesa más de 2 GB, el máximo que podemos recibir.');
+    expect(createProject.errors.map((item) => item.status)).toContain(413);
   });
 
   it('los mensajes en inglés de DRF no llegan a la pantalla', () => {

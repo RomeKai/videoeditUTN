@@ -80,8 +80,8 @@ export async function readMedia(file: File): Promise<MediaInfo> {
 
 export type FileProblem =
   | { code: UploadErrorCode; limitSeconds?: number; byPlan?: boolean }
-  /** The serializer rejects files over its size ceiling (no code in map §4). */
-  | { code: 'too_heavy'; limitBytes: number };
+  /** Over the size cap (`upload_max_size_bytes`): the backend's 413 `file_too_large` (map §4). Without `limitBytes` when nobody said it. */
+  | { code: 'too_heavy'; limitBytes?: number };
 
 function extensionOf(name: string): string {
   const match = /\.[a-z0-9]+$/i.exec(name);

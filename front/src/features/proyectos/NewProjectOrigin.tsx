@@ -38,7 +38,8 @@ export interface CutUpload {
 /** Message and help of a file problem (map §4), next to the file field. */
 export function describeFileProblem(problem: FileProblem, plan: Plan | null, plans: Plan[], pricing: Pricing | null, duration: number | null): { message: string; hint?: ReactNode } {
   if (problem.code === 'too_heavy') {
-    return { message: `El archivo pesa más de ${formatBytes(problem.limitBytes)}.`, hint: 'Exportalo con menos peso y volvé a subirlo.' };
+    const message = problem.limitBytes ? `El archivo pesa más de ${formatBytes(problem.limitBytes)}.` : 'El archivo pesa más de lo que podemos recibir.';
+    return { message, hint: 'Exportalo con menos peso y volvé a subirlo.' };
   }
   if (problem.code === 'not_a_video') {
     return { message: uploadErrorMessage('not_a_video'), hint: pricing ? `Aceptamos ${extensionsLabel(pricing.upload_extensions)}.` : undefined };

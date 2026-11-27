@@ -10,10 +10,10 @@ from .services.ai.selection_criteria import (
     normalize_selection_criteria,
 )
 
-# What an upload may be (validate_source_file). GET /api/v1/pricing/ gives
-# both to the browser, which checks a file before sending it.
+# What an upload may be (validate_source_file), with its size cap
+# (MAX_UPLOAD_BYTES, apps.core.upload_limits). GET /api/v1/pricing/ gives both
+# to the browser, which checks a file before sending it.
 UPLOAD_EXTENSIONS = ('.mp4', '.mov', '.avi')
-UPLOAD_MAX_SIZE_BYTES = 500 * 1024 * 1024
 
 # What a raw boolean of the creation request may be to mean true (the same
 # strings DRF's BooleanField takes, 'on' included).
@@ -353,8 +353,13 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         if value:
             if not value.name.lower().endswith(UPLOAD_EXTENSIONS):
                 raise serializers.ValidationError("Solo se permiten archivos de video (.mp4, .mov, .avi)")
-            if value.size > UPLOAD_MAX_SIZE_BYTES:
-                raise serializers.ValidationError("El archivo es demasiado grande (Máx 500MB)")
+            from apps.core.upload_limits import UploadTooLarge, max_upload_bytes
+
+            # A 413 with its code, before ffprobe, the storage and the reservation. A
+            # body that big is refused before it is read (UploadSizeLimitMiddleware):
+            # this is a file just over the cap, within the room left for the form.
+            if value.size > max_upload_bytes():
+                raise UploadTooLarge()
             # CORE-05: the bytes must be a video the pipeline can process.
             from .services.media_validation import InvalidUploadError, validate_upload
 

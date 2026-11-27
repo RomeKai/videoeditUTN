@@ -93,6 +93,17 @@ export const KNOWN_PIPELINE_ERROR_CODES = [
 ] as const;
 export type KnownPipelineErrorCode = (typeof KNOWN_PIPELINE_ERROR_CODES)[number];
 
+/** `code` of the 413 of a file over MAX_UPLOAD_BYTES (back/apps/core/upload_limits.py). */
+export const FILE_TOO_LARGE_CODE = 'file_too_large';
+/** Body of that 413. A proxy in front of the backend may answer a 413 of its own, without it. */
+export const UploadTooLargeBody = z.object({
+  error: z.string(),
+  code: z.literal(FILE_TOO_LARGE_CODE),
+  /** MAX_UPLOAD_BYTES, the `upload_max_size_bytes` of GET /pricing/. */
+  limit_bytes: z.number().int().positive(),
+});
+export type UploadTooLargeBody = z.infer<typeof UploadTooLargeBody>;
+
 /** InvalidUploadError.code (services/media_validation.py). */
 export const UPLOAD_ERROR_CODES = [
   'not_a_video',
@@ -370,7 +381,7 @@ const FileField = z.custom<Blob>((value) => typeof Blob !== 'undefined' && value
 /** Fields of the creation body (multipart). Field names as VideoProjectSerializer reads them. */
 const CreateProjectFields = z.object({
   title: z.string().min(1).max(255).optional(),
-  /** .mp4, .mov or .avi, up to 500 MB. Exactly one of source_file / video_url. */
+  /** .mp4, .mov or .avi, up to MAX_UPLOAD_BYTES (`upload_max_size_bytes` of GET /pricing/, 2 GB). Exactly one of source_file / video_url. */
   source_file: FileField.optional(),
   video_url: z.string().url().max(500).optional(),
   project_type: ProjectType.optional(),
@@ -552,6 +563,12 @@ const paymentErrors = [
   { status: 403, when: 'El plan no lo permite (duración, resolución o SEO). La UI abre el diálogo D3.' },
 ];
 
+/** A file over MAX_UPLOAD_BYTES: refused before anything is created or reserved. */
+const uploadTooLargeError = {
+  status: 413,
+  when: 'El archivo pesa más que `MAX_UPLOAD_BYTES` (2 GB, el `upload_max_size_bytes` de `GET /pricing/`): `{ error, code: "file_too_large", limit_bytes }`. El backend lo responde antes de leer el cuerpo (por el Content-Length, en cualquier ruta) o al validar el archivo, antes de ffprobe, del storage y de la reserva: no se crea ni se reserva nada. Un proxy adelante puede responder su propio 413, sin ese cuerpo. La web revisa el peso antes de subir; si igual llega un 413, lo muestra junto al archivo.',
+};
+
 /** Creation only: the reservation was made but the broker did not take the ingestion. */
 const notQueuedError = {
   status: 503,
@@ -592,6 +609,7 @@ export const createProject = defineEndpoint({
       when: 'Validación. En `source_file` llega el mensaje de InvalidUploadError; la UI lo traduce por código (propuesto: `{message, code}`) o por el texto. `project_type` para video completo con link o de más de 10 min. Link con resolución distinta de 720p. En `video_url`, un link que no es de un host admitido, que apunta a una IP o una dirección interna, o que no nombra un solo video (una lista, un canal): las mismas reglas que `probe-link`. Se guarda la URL del video (`watch?v=<id>` en YouTube).',
     },
     ...paymentErrors,
+    uploadTooLargeError,
     notQueuedError,
   ],
   backend: {
@@ -616,6 +634,7 @@ export const createProjectFromPrompt = defineEndpoint({
   errors: [
     { status: 400, when: '`prompt` vacío ("Contanos qué querés") o más largo que el máximo; más las validaciones de crear.' },
     ...paymentErrors,
+    uploadTooLargeError,
     notQueuedError,
   ],
   backend: {

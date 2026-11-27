@@ -125,7 +125,7 @@ docker compose -f docker-compose.prod.yml logs worker | grep "ready"
 
 - [ ] Correr la PoC y anotar el resultado (tiempos de build, RAM en reposo de `web` y `worker`).
 - [ ] Hardening de `prod.py`: activar `SECURE_SSL_REDIRECT`, cookies seguras y HSTS detrás del proxy, y WhiteNoise para los estáticos del admin y de la documentación de la API.
-- [ ] Reemplazar los placeholders `back/docker/nginx.conf` y `supervisor.conf` (o borrarlos si se usa Caddy en el host).
+- [ ] Reemplazar los placeholders `back/docker/nginx.conf` y `supervisor.conf` (o borrarlos si se usa Caddy en el host). El proxy que quede deja pasar `MAX_UPLOAD_BYTES` más 1 MB (`client_max_body_size 2049m` en nginx) y guarda el cuerpo antes de pasarlo a gunicorn (ver `docker-compose.prod.yml`).
 - [ ] Retirar Whisper/PyTorch de la imagen (AICORE-10, #44) para achicar la imagen y la RAM del worker.
 - [ ] Workflow de CD (INFRA-03, #33): build de imágenes, push a GHCR y deploy por SSH a staging (`dev`) y producción (`main`, con aprobación).
 

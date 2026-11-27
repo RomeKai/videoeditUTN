@@ -5,6 +5,10 @@
 #   - sin bind mounts del código: se corre lo que trae la imagen;
 #   - migraciones al arrancar web, restart automático y healthchecks;
 #   - la API se publica solo en 127.0.0.1: el TLS lo termina un reverse proxy del host.
+#     Ese proxy tiene que dejar pasar las subidas: MAX_UPLOAD_BYTES (2 GB) más 1 MB para el resto del
+#     formulario (nginx: `client_max_body_size 2049m`, su default de 1m corta todas; Caddy:
+#     `request_body { max_size 2049MiB }`), y guardar el cuerpo entero antes de pasarlo (nginx lo
+#     hace por defecto): gunicorn mata a los 120 s (--timeout) un pedido que todavía se está subiendo.
 #
 # Uso:
 #   cp back/.env.example back/.env.prod   # completar SECRET_KEY, ALLOWED_HOSTS, R2, keys de IA
