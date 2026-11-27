@@ -266,6 +266,8 @@ class DatabaseErrorTests(TransactionTestCase):
             workspace=self.workspace, uploaded_by=self.ana, title='Podcast 42', source_file='x/y.mp4',
             status=VideoProject.Status.INGESTING, pipeline_stage=PipelineStage.TRANSCRIBED,
         )
+        # Above the "saldo bajo" threshold: the reservation writes no notification of its own.
+        Wallet.objects.filter(pk=self.wallet.pk).update(available_balance=Decimal('1000'))
         txn = reserve_funds(self.wallet.id, Decimal('12.50'), project=project)
         VideoProject.objects.filter(pk=project.pk).update(metadata={'reservation_id': str(txn.id)})
 
@@ -280,7 +282,7 @@ class DatabaseErrorTests(TransactionTestCase):
         txn.refresh_from_db()
         project.refresh_from_db()
         self.assertEqual((project.status, txn.status), (VideoProject.Status.FAILED, Transaction.Status.FAILED))
-        self.assertEqual(Wallet.objects.get(pk=self.wallet.pk).available_balance, Decimal('100'))
+        self.assertEqual(Wallet.objects.get(pk=self.wallet.pk).available_balance, Decimal('1000'))
         # The insert went back with the failed prune: nothing half written.
         self.assertEqual(Notification.objects.count(), 0)
 

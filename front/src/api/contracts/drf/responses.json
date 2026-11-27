@@ -2681,8 +2681,18 @@
   },
   "_about_notifications": "Las claves `notifications_*`, `notification_*` y el error `notification_404` las arma back/apps/notifications/tests/test_contract_fixture.py con los eventos reales (apps/notifications/services.py) y el reloj fijo, y compara cada valor con este archivo. Para regenerarlas: `PRINT_DRF_FIXTURE=1 python -m pytest apps/notifications/tests/test_contract_fixture.py -s`.",
   "notifications_list": {
-    "unread_count": 4,
+    "unread_count": 5,
     "results": [
+      {
+        "id": "0c8f6b1e-4d3a-4b52-9a7e-2f1d5e6c7a80",
+        "type": "low_balance",
+        "title": "Te quedan 300 tokens",
+        "body": "El saldo quedó por debajo de lo que cuesta un video promedio.",
+        "created_at": "2026-11-04T15:50:00Z",
+        "read_at": null,
+        "project_id": null,
+        "post_id": null
+      },
       {
         "id": "952d29a2-80fc-4259-a84c-d89e9823b204",
         "type": "project_ready",

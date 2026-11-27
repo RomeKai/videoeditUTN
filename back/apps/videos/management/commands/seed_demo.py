@@ -83,6 +83,7 @@ from apps.notifications import services as notifications
 from apps.notifications.models import Notification
 from apps.payments.models import SubscriptionPlan, Transaction, Wallet
 from apps.payments.services.plan_periods import PLAN_FIELDS, switch_plan
+from apps.payments.services.wallet_service import track_low_balance
 from apps.users.models import Workspace, WorkspaceMember
 from apps.videos.models import BrandKit, VideoClip, VideoProject
 
@@ -367,6 +368,7 @@ class Command(BaseCommand):
         if missing <= 0:
             return Decimal('0')
         wallet.available_balance += missing
+        track_low_balance(wallet)
         wallet.save(update_fields=['available_balance', 'updated_at'])
         Transaction.objects.create(
             wallet=wallet, created_by=user, amount=missing,

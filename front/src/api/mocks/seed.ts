@@ -917,7 +917,7 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
     if (failedPost) add(2, { type: 'post_failed', title: 'No pudimos publicar en TikTok', body: failedPost.clip.title, created_at: iso(now - 6 * HOUR), read_at: null, project_id: failedPost.clip.project_id, post_id: failedPost.id });
     if (done) add(3, { type: 'render_finished', title: `${done.title}: terminó el render`, body: `${done.clips.length} clips listos.`, created_at: iso(now - 1 * DAY), read_at: iso(now - 20 * HOUR), project_id: done.id, post_id: null });
     if (failed) add(4, { type: 'project_failed', title: `${failed.title} no se pudo procesar`, body: `Te devolvimos ${failed.cost?.amount ?? 0} tokens.`, created_at: iso(now - 3 * DAY), read_at: iso(now - 3 * DAY + HOUR), project_id: failed.id, post_id: null });
-    if ((options.balance ?? balance) < 500) add(5, { type: 'low_balance', title: 'Te queda poco saldo', body: 'No alcanza para un video promedio.', created_at: iso(now - 2 * HOUR), read_at: null, project_id: null, post_id: null });
+    if ((options.balance ?? balance) < 500) add(5, { type: 'low_balance', title: `Te quedan ${(options.balance ?? balance).toLocaleString('es-AR')} tokens`, body: 'El saldo quedó por debajo de lo que cuesta un video promedio.', created_at: iso(now - 2 * HOUR), read_at: null, project_id: null, post_id: null });
 
     let activityIndex = 0;
     for (const project of projects) {
