@@ -634,10 +634,11 @@ const SEO_VARIANTS: Array<{ caption: (title: string) => string; hashtags: string
 
 function tickPosts(db: MockDb, now: number): void {
   for (const post of db.posts) {
-    // The beat: a scheduled post whose time arrived goes to the queue.
-    if (post.status === 'SCHEDULED' && new Date(post.publish_at).getTime() <= now && !post._sim) {
+    // The beat: a scheduled post whose time arrived goes to the queue. "Publish now" is one of them too
+    // (the backend leaves it SCHEDULED for dispatch_scheduled_posts_batch): it keeps its clock and its fate.
+    if (post.status === 'SCHEDULED' && new Date(post.publish_at).getTime() <= now) {
       post.status = 'QUEUED';
-      post._sim = { startedAt: now };
+      post._sim = { ...post._sim, startedAt: post._sim?.startedAt ?? now };
     }
     if (!post._sim) continue;
     const elapsed = now - post._sim.startedAt;
@@ -650,9 +651,11 @@ function tickPosts(db: MockDb, now: number): void {
       const variant = SEO_VARIANTS[index] as (typeof SEO_VARIANTS)[number];
       post.generated_caption = variant.caption(post.clip.title);
       post.generated_hashtags = variant.hashtags;
-      // A regeneration replaces the text; the first generation only fills what is empty.
-      if (!post.caption || regen > 0) post.caption = post.generated_caption;
-      if (post.hashtags.length === 0 || regen > 0) post.hashtags = post.generated_hashtags;
+      // A regeneration replaces the text (unless the user saved theirs after asking); the first generation only
+      // fills what is empty.
+      const replaces = regen > 0 && !post._sim.keepText;
+      if (!post.caption || replaces) post.caption = post.generated_caption;
+      if (post.hashtags.length === 0 || replaces) post.hashtags = post.generated_hashtags;
     }
     if (post.status !== 'QUEUED' && post.status !== 'PROCESSING') {
       if (post.seo_status !== 'pending') delete post._sim;

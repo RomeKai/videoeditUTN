@@ -8,4 +8,6 @@ export const CLIPS = {
   first: '00000008-0000-4000-8000-0000000001f5',
   second: '00000008-0000-4000-8000-0000000001f6',
   third: '00000008-0000-4000-8000-0000000001f7',
+  /** Its only publication failed (TikTok): on a plan without crossposting it can still go out on one network. */
+  fourth: '00000008-0000-4000-8000-0000000001f8',
 } as const;

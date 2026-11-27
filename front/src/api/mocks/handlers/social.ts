@@ -9,6 +9,105 @@ import { addActivity } from '../sim';
 
 const NETWORK_NAME: Record<Platform, string> = { TIKTOK: 'TikTok', INSTAGRAM_REELS: 'Instagram Reels', YOUTUBE_SHORTS: 'YouTube Shorts' };
 const EDITABLE = new Set(['DRAFT', 'SCHEDULED']);
+/** Posts that hold their network for the crossposting limit (services/scheduled_posts.py · LIVE). */
+const LIVE = new Set(['SCHEDULED', 'QUEUED', 'PROCESSING', 'PUBLISHED']);
+/** A `publish_at` this close to now is "now" (NOW_TOLERANCE). */
+const NOW_TOLERANCE_MS = 60_000;
+/** A post "Publicando" whose last attempt started longer ago than this may be retried or cancelled (POST_STUCK_AFTER). */
+export const POST_STUCK_AFTER_MS = 15 * 60_000;
+/** One whose worker retry is on its way ("Retry n:"): the broker's visibility timeout plus the longest countdown. */
+export const PENDING_RETRY_STUCK_AFTER_MS = (4 * 3600 + 240) * 1000;
+const HASHTAG_MAX_CHARS = 100;
+/** How long the AI text of a cancelled post waits for the next draft of its clip and network (AI_TEXT_CACHE_TTL). */
+const DISCARDED_AI_TEXT_MS = 24 * 3600 * 1000;
+
+function discardedKey(clip: { id: string; start_time: number; end_time: number }, platform: Platform): string {
+  return `${clip.id}:${platform}:${clip.start_time}:${clip.end_time}`;
+}
+
+/** services/scheduled_posts.is_stuck. */
+function isStuck(post: MockPost, now: number): boolean {
+  if (post.status !== 'PROCESSING') return false;
+  const after = (post.error_log ?? '').startsWith('Retry ') ? PENDING_RETRY_STUCK_AFTER_MS : POST_STUCK_AFTER_MS;
+  return now - new Date(post.updated_at).getTime() > after;
+}
+const TIKTOK_PRIVACY_MISSING = 'Elegí quién puede ver el video.';
+const SCHEDULING_DENIED = 'Tu plan no incluye programar publicaciones: publicala ahora o cambiá de plan.';
+const CROSSPOSTING_DENIED = 'Tu plan permite publicar cada clip en una sola red. Para publicarlo en varias, cambiá de plan.';
+const SEO_FAILURE = /^(seo_|moderation_)|^(content_blocked|generated_content_blocked|capacity_timeout)$/;
+
+/** The 409s of the backend, by what is asked and the status the post is in (`_CONFLICTS`). */
+const CONFLICTS: Record<'edit' | 'cancel' | 'retry' | 'seo', Partial<Record<string, [string, string]>>> = {
+  edit: {
+    QUEUED: ['post_in_flight', 'La publicación ya está en cola: no se puede cambiar.'],
+    PROCESSING: ['post_in_flight', 'La publicación se está publicando: no se puede cambiar.'],
+    PUBLISHED: ['post_published', 'La publicación ya salió: no se puede cambiar.'],
+    FAILED: ['post_failed', 'La publicación falló: reintentala o cancelala.'],
+  },
+  cancel: {
+    PROCESSING: ['post_in_flight', 'La publicación se está publicando: ya no se puede cancelar.'],
+    PUBLISHED: ['post_published', 'La publicación ya salió: no se puede cancelar.'],
+  },
+  retry: {
+    DRAFT: ['post_not_failed', 'La publicación no está en error: no hay nada que reintentar.'],
+    SCHEDULED: ['post_not_failed', 'La publicación no está en error: no hay nada que reintentar.'],
+    QUEUED: ['post_not_failed', 'La publicación no está en error: no hay nada que reintentar.'],
+    PROCESSING: ['post_in_flight', 'La publicación se está publicando. Si en unos minutos sigue igual, vas a poder reintentarla.'],
+    PUBLISHED: ['post_published', 'La publicación ya salió: no hay nada que reintentar.'],
+  },
+  seo: {
+    QUEUED: ['post_in_flight', 'La publicación ya está saliendo: su texto no cambia.'],
+    PROCESSING: ['post_in_flight', 'La publicación ya está saliendo: su texto no cambia.'],
+    PUBLISHED: ['post_published', 'La publicación ya salió: su texto no cambia.'],
+  },
+};
+
+function refuse(kind: keyof typeof CONFLICTS, status: string): void {
+  const found = CONFLICTS[kind][status];
+  if (found) throw conflict(found[1], found[0]);
+}
+
+/** A 400 with the field's sentence; in a batch, also `index`, the position of the post. */
+const invalid = (field: string, message: string, index?: number) => badRequest(index === undefined ? { [field]: [message] } : { [field]: [message], index });
+
+/** clean_hashtags: without "#", without repeats (ignoring case); letters, digits or "_". */
+function cleanHashtags(values: string[], index?: number): string[] {
+  const kept: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const tag = value.trim().replace(/^#+/, '');
+    if (!tag) continue;
+    if (!/^[\p{L}\p{N}_]+$/u.test(tag)) throw invalid('hashtags', `«${tag.slice(0, 40)}» no es un hashtag válido: usá letras, números o guion bajo, sin espacios.`, index);
+    if (tag.length > HASHTAG_MAX_CHARS) throw invalid('hashtags', `Cada hashtag puede tener hasta ${HASHTAG_MAX_CHARS} caracteres.`, index);
+    if (seen.has(tag.toLowerCase())) continue;
+    seen.add(tag.toLowerCase());
+    kept.push(tag);
+  }
+  return kept;
+}
+
+/** Without `allow_crossposting` a clip goes out on one network, counting its live posts (not drafts, not failures). */
+function checkCrossposting(db: MockDb, workspace: MockWorkspace, wanted: Map<string, Set<Platform>>, exclude?: string): void {
+  const plan = planOf(db, workspace.id);
+  if (!plan || plan.allow_crossposting) return;
+  for (const [clipId, platforms] of wanted) {
+    const networks = new Set(platforms);
+    for (const post of db.posts) {
+      if (post.workspace === workspace.id && post.video_clip === clipId && post.id !== exclude && LIVE.has(post.status)) networks.add(post.platform);
+    }
+    if (networks.size > 1) throw new MockHttpError(403, { error: CROSSPOSTING_DENIED, code: 'crossposting' });
+  }
+}
+
+function checkAccount(db: MockDb, workspaceId: string, platform: Platform): void {
+  // On purpose not like the backend of today: the backend only knows whether the workspace has its Ayrshare
+  // profile (one 409 for every network) until connecting accounts exists (gap 10). The mocks simulate that
+  // gap: each network has its account, and the screens (E1, H3) show them one by one.
+  const account = db.socialAccounts.find((item) => item.workspace === workspaceId && item.platform === platform);
+  if (!account || account.status !== 'connected') {
+    throw conflict(`La cuenta de ${NETWORK_NAME[platform]} está ${account?.status === 'expired' ? 'vencida' : 'sin conectar'}. Reconectala para publicar.`, 'account_not_connected');
+  }
+}
 
 function ownPost(db: MockDb, id: string | undefined, workspaceId: string): MockPost {
   const post = db.posts.find((item) => item.id === id && item.workspace === workspaceId);
@@ -16,75 +115,96 @@ function ownPost(db: MockDb, id: string | undefined, workspaceId: string): MockP
   return post;
 }
 
-function checkText(db: MockDb, workspaceId: string, platform: Platform, caption: string, hashtags: string[]): void {
+function checkText(db: MockDb, workspaceId: string, platform: Platform, caption: string, hashtags: string[], index?: number): void {
   const account = db.socialAccounts.find((item) => item.workspace === workspaceId && item.platform === platform);
   const limit = account?.limits.caption_max_chars ?? 2200;
   // compose_caption(): the caption, a blank line and "#a #b".
   const tags = hashtags.filter(Boolean);
   const length = tags.length === 0 ? caption.length : caption.length + 2 + tags.reduce((sum, tag) => sum + tag.length + 1, 0) + (tags.length - 1);
-  if (length > limit) throw badRequest({ caption: [`El texto supera el límite de ${NETWORK_NAME[platform]} (${limit} caracteres).`] });
-  if (account && hashtags.length > account.limits.hashtags_max) throw badRequest({ hashtags: [`${NETWORK_NAME[platform]} acepta hasta ${account.limits.hashtags_max} hashtags.`] });
+  if (length > limit) throw invalid('caption', `El texto supera el límite de ${NETWORK_NAME[platform]} (${limit} caracteres).`, index);
+  if (account && hashtags.length > account.limits.hashtags_max) throw invalid('hashtags', `${NETWORK_NAME[platform]} acepta hasta ${account.limits.hashtags_max} hashtags.`, index);
 }
 
-/** Validates a batch against plan, accounts and limits, then creates the posts. All or nothing. */
-function createPosts(db: MockDb, workspace: MockWorkspace, inputs: CreatePostInput[], userId: string, now: number): MockPost[] {
-  const plan = planOf(db, workspace.id);
-  const scheduling = inputs.some((input) => !input.draft && input.publish_at && new Date(input.publish_at).getTime() > now + 60_000);
-  if (scheduling && plan && !plan.allow_scheduling) {
-    throw new MockHttpError(403, { error: 'Tu plan no incluye programar publicaciones.', code: 'scheduling' });
-  }
-  const perClip = new Map<string, Set<Platform>>();
-  for (const input of inputs) {
-    // Drafts publish nothing: they only count when they are sent.
-    if (!input.draft) perClip.set(input.video_clip, new Set([...(perClip.get(input.video_clip) ?? []), input.platform]));
-  }
-  if (plan && !plan.allow_crossposting && [...perClip.values()].some((platforms) => platforms.size > 1)) {
-    throw new MockHttpError(403, { error: 'Tu plan permite una sola red por publicación.', code: 'crossposting' });
-  }
+/**
+ * Validates a batch and creates the posts, all or nothing, in the backend's order (create_posts): each post's
+ * 400s (with `index` in a batch), then the plan (403) and the account (409). A post that goes out is left
+ * `SCHEDULED` (for now, or its date) and the beat of the simulation queues it, as dispatch_scheduled_posts_batch does.
+ */
+function createPosts(db: MockDb, workspace: MockWorkspace, inputs: CreatePostInput[], userId: string, now: number, many = false): MockPost[] {
+  const at = (index: number) => (many ? index : undefined);
+  // As the backend: every post's own fields first (its serializer), then the repeats, then what needs the data.
+  const cleaned = inputs.map((input, index) => cleanHashtags(input.hashtags ?? [], at(index)));
+  const pairs = new Set<string>();
+  inputs.forEach((input, index) => {
+    const pair = `${input.video_clip}:${input.platform}`;
+    if (pairs.has(pair)) throw invalid('posts', 'La misma publicación (clip y red) está dos veces.', index);
+    pairs.add(pair);
+  });
 
-  const drafts = inputs.map((input) => {
+  let later = false;
+  const going = new Map<string, Set<Platform>>();
+  const drafts = inputs.map((input, index) => {
     // Hybrid: publishing a clip of the real backend works on a stand-in of it.
     const project =
       db.projects.find((item) => item.workspace === workspace.id && item.clips.some((clip) => clip.id === input.video_clip)) ??
       adoptClip(db, workspace.id, input.video_clip)?.project;
     const clip = project?.clips.find((item) => item.id === input.video_clip);
-    if (!project || !clip) throw badRequest({ video_clip: ['El clip no existe.'] });
-    if (clip.status !== 'completed' && clip.status !== 'published') throw badRequest({ video_clip: ['El clip todavía no está renderizado.'] });
-    const account = db.socialAccounts.find((item) => item.workspace === workspace.id && item.platform === input.platform);
-    if (!account || account.status !== 'connected') {
-      throw conflict(`La cuenta de ${NETWORK_NAME[input.platform]} está ${account?.status === 'expired' ? 'vencida' : 'sin conectar'}. Reconectala para publicar.`, 'account_not_connected');
-    }
-    if (!input.draft && input.platform === 'TIKTOK' && !input.tiktok) throw badRequest({ tiktok: ['Elegí quién puede ver el video.'] });
-    if (!input.draft && input.publish_at && new Date(input.publish_at).getTime() < now - 60_000) throw badRequest({ publish_at: ['La fecha ya pasó.'] });
-    // seo_requested(project): the project asked for SEO and the plan includes it, checked when the post is created.
-    const seo = Boolean(project.metadata.use_seo) && (!plan || plan.has_seo_optimization);
+    if (!project || !clip) throw invalid('video_clip', 'El clip no existe.', at(index));
+    if (clip.status !== 'completed' && clip.status !== 'published') throw invalid('video_clip', 'El clip todavía no está renderizado.', at(index));
     const caption = input.caption ?? '';
-    const hashtags = input.hashtags ?? [];
-    checkText(db, workspace.id, input.platform, caption, hashtags);
-    return { input, project, clip, seo, caption, hashtags };
+    const hashtags = cleaned[index] ?? [];
+    checkText(db, workspace.id, input.platform, caption, hashtags, at(index));
+    const draft = Boolean(input.draft);
+    let publishAt = input.publish_at ?? new Date(now).toISOString();
+    if (!draft) {
+      const when = input.publish_at ? new Date(input.publish_at).getTime() : now;
+      if (when < now - NOW_TOLERANCE_MS) throw invalid('publish_at', 'La fecha ya pasó.', at(index));
+      if (input.platform === 'TIKTOK' && !input.tiktok) throw invalid('tiktok', TIKTOK_PRIVACY_MISSING, at(index));
+      if (when > now + NOW_TOLERANCE_MS) later = true;
+      else publishAt = input.publish_at ?? new Date(now).toISOString();
+      going.set(clip.id, new Set([...(going.get(clip.id) ?? []), input.platform]));
+    }
+    // seo_requested(project): the project asked for SEO and the plan includes it, checked when the post is created.
+    const plan = planOf(db, workspace.id);
+    const wantsSeo = Boolean(project.metadata.use_seo) && (!plan || plan.has_seo_optimization) && !(caption && hashtags.length > 0);
+    // Like the backend, the AI text of the same clip and network is reused instead of asked for again: another
+    // post's, or a cancelled one's of the last 24 h.
+    const kept = db.discardedAiText?.[discardedKey(clip, input.platform)];
+    const reused = wantsSeo
+      ? (db.posts
+          .filter((post) => post.workspace === workspace.id && post.video_clip === clip.id && post.platform === input.platform && post.generated_caption && post.generated_hashtags)
+          .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0] ??
+        (kept && now - kept.at < DISCARDED_AI_TEXT_MS ? { generated_caption: kept.caption, generated_hashtags: kept.hashtags } : undefined))
+      : undefined;
+    const seo = wantsSeo && !reused;
+    return { input, project, clip, seo, reused, caption, hashtags, draft, publishAt };
   });
 
-  return drafts.map(({ input, project, clip, seo, caption, hashtags }) => {
-    const draft = Boolean(input.draft);
-    const immediate = !draft && (!input.publish_at || new Date(input.publish_at).getTime() <= now + 60_000);
+  const plan = planOf(db, workspace.id);
+  if (later && plan && !plan.allow_scheduling) throw new MockHttpError(403, { error: SCHEDULING_DENIED, code: 'scheduling' });
+  checkCrossposting(db, workspace, going);
+  for (const { input, draft } of drafts) if (!draft) checkAccount(db, workspace.id, input.platform);
+
+  return drafts.map(({ input, project, clip, seo, reused, caption, hashtags, draft, publishAt }) => {
+    const immediate = !draft && new Date(publishAt).getTime() <= now + NOW_TOLERANCE_MS;
     const stamp = new Date(now).toISOString();
     const post: MockPost = {
       id: newId(),
       workspace: workspace.id,
       video_clip: clip.id,
       platform: input.platform,
-      publish_at: input.publish_at ?? stamp,
-      status: draft ? 'DRAFT' : immediate ? 'QUEUED' : 'SCHEDULED',
+      publish_at: publishAt,
+      status: draft ? 'DRAFT' : 'SCHEDULED',
       error_log: null,
       retry_count: 0,
-      generated_caption: null,
-      generated_hashtags: null,
+      generated_caption: reused?.generated_caption ?? null,
+      generated_hashtags: reused?.generated_hashtags ?? null,
       created_at: stamp,
       updated_at: stamp,
-      caption,
-      hashtags,
-      // The existing signal generates the SEO text when the post is created.
-      seo_status: seo ? 'pending' : 'none',
+      caption: caption || (reused?.generated_caption ?? ''),
+      hashtags: hashtags.length > 0 ? hashtags : (reused?.generated_hashtags ?? []),
+      // The backend asks for the AI text when the post is created (unless it reused one or the post brings its own).
+      seo_status: seo ? 'pending' : reused ? 'ready' : 'none',
       clip: { id: clip.id, title: clip.title, project_id: project.id, project_title: project.title, duration_seconds: Math.round((clip.end_time - clip.start_time) * 100) / 100, thumbnail_url: null },
       post_url: null,
       error_message: null,
@@ -165,7 +285,7 @@ export const socialHandlers = [
 
   route(contract.createPostsBulk, ({ db, workspace, body, user, now, require }) => {
     require('post.publish');
-    return { data: { posts: createPosts(db, workspace, body.posts, user.id, now).map(serializePost) } };
+    return { data: { posts: createPosts(db, workspace, body.posts, user.id, now, true).map(serializePost) } };
   }),
 
   route(contract.getPost, ({ db, workspace, params }) => ({ data: serializePost(ownPost(db, params.id, workspace.id)) })),
@@ -173,82 +293,110 @@ export const socialHandlers = [
   route(contract.updatePost, ({ db, workspace, params, body, user, now, require }) => {
     require('post.publish');
     const post = ownPost(db, params.id, workspace.id);
-    if (!EDITABLE.has(post.status)) throw conflict('La publicación ya está en cola, publicando o publicada: no se puede editar.');
-    const caption = body.caption ?? post.caption;
-    const hashtags = body.hashtags ?? post.hashtags;
+    refuse('edit', post.status);
+    const caption = body.caption ?? (post.caption || post.generated_caption || '');
+    const hashtags = body.hashtags !== undefined ? cleanHashtags(body.hashtags) : post.hashtags.length > 0 ? post.hashtags : (post.generated_hashtags ?? []);
     checkText(db, workspace.id, post.platform, caption, hashtags);
     const stamp = new Date(now).toISOString();
     if (body.publish_at !== undefined) {
-      // `null` (or a date that is already here) publishes now; a later date schedules.
+      // `null` (or a date within a minute) publishes now; a later date schedules. Either way it waits for the beat.
       const at = body.publish_at === null ? now : new Date(body.publish_at).getTime();
-      if (at < now - 60_000) throw badRequest({ publish_at: ['La fecha ya pasó.'] });
-      const immediate = at <= now + 60_000;
+      if (at < now - NOW_TOLERANCE_MS) throw invalid('publish_at', 'La fecha ya pasó.');
+      const immediate = at <= now + NOW_TOLERANCE_MS;
+      const project = db.projects.find((item) => item.id === post.clip.project_id);
+      const clip = project?.clips.find((item) => item.id === post.video_clip);
+      if (clip && clip.status !== 'completed' && clip.status !== 'published') throw invalid('video_clip', 'El clip todavía no está renderizado.');
+      if (post.platform === 'TIKTOK' && !(body.tiktok ?? post.tiktok)) throw invalid('tiktok', TIKTOK_PRIVACY_MISSING);
       const plan = planOf(db, workspace.id);
-      if (!immediate && plan && !plan.allow_scheduling) {
-        throw new MockHttpError(403, { error: 'Tu plan no incluye programar publicaciones.', code: 'scheduling' });
-      }
-      const account = db.socialAccounts.find((item) => item.workspace === workspace.id && item.platform === post.platform);
-      if (!account || account.status !== 'connected') {
-        throw conflict(`La cuenta de ${NETWORK_NAME[post.platform]} está ${account?.status === 'expired' ? 'vencida' : 'sin conectar'}. Reconectala para publicar.`, 'account_not_connected');
-      }
-      if (post.platform === 'TIKTOK' && !(body.tiktok ?? post.tiktok)) throw badRequest({ tiktok: ['Elegí quién puede ver el video.'] });
+      if (!immediate && plan && !plan.allow_scheduling) throw new MockHttpError(403, { error: SCHEDULING_DENIED, code: 'scheduling' });
+      checkCrossposting(db, workspace, new Map([[post.video_clip, new Set([post.platform])]]), post.id);
+      checkAccount(db, workspace.id, post.platform);
       const wasDraft = post.status === 'DRAFT';
       post.publish_at = body.publish_at ?? stamp;
-      post.status = immediate ? 'QUEUED' : 'SCHEDULED';
+      post.status = 'SCHEDULED';
+      // The failure of the draft's AI text is over once it is sent.
+      post.error_log = null;
+      if (post.seo_status === 'failed') post.seo_status = 'none';
       if (immediate) post._sim = { ...post._sim, startedAt: now, fails: /falla/i.test(caption) };
-      if (wasDraft) {
-        const project = db.projects.find((item) => item.id === post.clip.project_id);
-        if (project) {
-          const verb = immediate ? 'Publicó' : 'Programó';
-          addActivity(db, project, 'post_scheduled', `${verb} «${post.clip.title}» en ${NETWORK_NAME[post.platform]}`, now, { actorId: user.id });
-        }
+      if (wasDraft && project) {
+        const verb = immediate ? 'Publicó' : 'Programó';
+        addActivity(db, project, 'post_scheduled', `${verb} «${post.clip.title}» en ${NETWORK_NAME[post.platform]}`, now, { actorId: user.id });
       }
     }
-    post.caption = caption;
-    post.hashtags = hashtags;
+    if (body.caption !== undefined) post.caption = body.caption;
+    if (body.hashtags !== undefined) post.hashtags = hashtags;
+    if ((body.caption !== undefined || body.hashtags !== undefined) && post._sim) {
+      // The user's text wins over a "Regenerar" asked for before it (`text_edited_at`): the request stays on
+      // (and keeps counting), and the AI text that arrives does not replace this one.
+      post._sim.keepText = true;
+    }
     if (body.tiktok !== undefined && post.platform === 'TIKTOK') post.tiktok = body.tiktok;
     post.updated_at = stamp;
     return { data: serializePost(post) };
   }),
 
-  route(contract.cancelPost, ({ db, workspace, params, require }) => {
+  route(contract.cancelPost, ({ db, workspace, params, now, require }) => {
     require('post.publish');
     const post = ownPost(db, params.id, workspace.id);
-    if (post.status === 'PROCESSING' || post.status === 'PUBLISHED') throw conflict('Ya se está publicando o ya se publicó.');
+    // A stuck post may already be public: the web app warns that cancelling does not take it off the network.
+    if (!isStuck(post, now)) refuse('cancel', post.status);
     db.posts = db.posts.filter((item) => item.id !== post.id);
+    // Its AI text waits 24 h for the next draft of the clip and network (the E1 panel creates them again).
+    const clip = db.projects.find((item) => item.id === post.clip.project_id)?.clips.find((item) => item.id === post.video_clip);
+    if (clip && post.generated_caption && post.generated_hashtags) {
+      db.discardedAiText = { ...db.discardedAiText, [discardedKey(clip, post.platform)]: { caption: post.generated_caption, hashtags: post.generated_hashtags, at: now } };
+    }
     return { data: undefined };
   }),
 
   route(contract.retryPost, ({ db, workspace, params, now, require }) => {
     require('post.publish');
     const post = ownPost(db, params.id, workspace.id);
-    if (post.status !== 'FAILED' && post.status !== 'PROCESSING') throw conflict('La publicación no está en error.');
+    // A post "Publicando" is retried only once it is stuck: before, it may still be going out.
+    if (!isStuck(post, now)) refuse('retry', post.status);
+    const stamp = new Date(now).toISOString();
+    if (post.status === 'FAILED' && SEO_FAILURE.test(post.error_log ?? '')) {
+      // Its AI text failed: it never went out. Back to a draft for the user to write the text.
+      post.status = 'DRAFT';
+      post.seo_status = 'failed';
+      post.error_code = null;
+      post.error_message = null;
+      post.updated_at = stamp;
+      return { data: serializePost(post) };
+    }
+    const project = db.projects.find((item) => item.id === post.clip.project_id);
+    const clip = project?.clips.find((item) => item.id === post.video_clip);
+    if (clip && clip.status !== 'completed' && clip.status !== 'published') throw invalid('video_clip', 'El clip todavía no está renderizado.');
+    if (post.platform === 'TIKTOK' && !post.tiktok) throw invalid('tiktok', TIKTOK_PRIVACY_MISSING);
+    checkCrossposting(db, workspace, new Map([[post.video_clip, new Set([post.platform])]]), post.id);
     const account = db.socialAccounts.find((item) => item.workspace === workspace.id && item.platform === post.platform);
     if (!account || account.status !== 'connected') {
       throw conflict(`La cuenta de ${NETWORK_NAME[post.platform]} no está conectada. Reconectala para reintentar.`, 'account_not_connected');
     }
-    post.status = 'QUEUED';
+    // Back to the beat, for now: the simulation queues it on its next tick.
+    post.status = 'SCHEDULED';
+    post.publish_at = stamp;
     post.error_log = null;
     post.error_message = null;
     post.error_code = null;
-    post.updated_at = new Date(now).toISOString();
-    post._sim = { startedAt: now };
+    post.updated_at = stamp;
+    delete post._sim;
     return { data: serializePost(post) };
   }),
 
   route(contract.regeneratePostSeo, ({ db, workspace, params, now, require }) => {
     require('post.publish');
     const post = ownPost(db, params.id, workspace.id);
-    if (post.status === 'PROCESSING' || post.status === 'PUBLISHED') throw conflict('La publicación ya salió: su texto no cambia.');
+    refuse('seo', post.status);
     const project = db.projects.find((item) => item.id === post.clip.project_id);
     const plan = planOf(db, workspace.id);
     if (!project?.metadata.use_seo || (plan && !plan.has_seo_optimization)) {
       throw new MockHttpError(403, { error: 'Este proyecto no tiene el texto con IA.', code: 'seo' });
     }
+    // One on its way already: nothing more is asked for (a double click never pays two generations).
+    if (post.seo_status === 'pending' && post._sim) return { status: 202, data: serializePost(post) };
     post.seo_status = 'pending';
-    post._sim = { ...post._sim, startedAt: post._sim?.startedAt ?? now, regen: (post._sim?.regen ?? 0) + 1 };
-    // The generation takes its two seconds from this request, without restarting a publication in flight.
-    if (post.status !== 'QUEUED') post._sim.startedAt = now;
+    post._sim = { ...post._sim, startedAt: now, regen: (post._sim?.regen ?? 0) + 1 };
     post.updated_at = new Date(now).toISOString();
     return { status: 202, data: serializePost(post) };
   }),

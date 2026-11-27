@@ -2090,6 +2090,79 @@
       "body": {
         "detail": "Not found."
       }
+    },
+    "post_400_bulk_index": {
+      "status": 400,
+      "body": {
+        "caption": [
+          "El texto supera el límite de Instagram Reels (2200 caracteres)."
+        ],
+        "index": 1
+      }
+    },
+    "post_400_tiktok": {
+      "status": 400,
+      "body": {
+        "tiktok": [
+          "Elegí quién puede ver el video."
+        ]
+      }
+    },
+    "post_403_scheduling": {
+      "status": 403,
+      "body": {
+        "error": "Tu plan no incluye programar publicaciones: publicala ahora o cambiá de plan.",
+        "code": "scheduling"
+      }
+    },
+    "post_403_crossposting": {
+      "status": 403,
+      "body": {
+        "error": "Tu plan permite publicar cada clip en una sola red. Para publicarlo en varias, cambiá de plan.",
+        "code": "crossposting"
+      }
+    },
+    "post_403_seo": {
+      "status": 403,
+      "body": {
+        "error": "Este proyecto no tiene el texto con IA.",
+        "code": "seo"
+      }
+    },
+    "post_409_account_not_connected": {
+      "status": 409,
+      "body": {
+        "error": "Este espacio todavía no tiene las redes conectadas. Conectá la cuenta para publicar.",
+        "code": "account_not_connected"
+      }
+    },
+    "post_409_in_flight": {
+      "status": 409,
+      "body": {
+        "error": "La publicación ya está en cola: no se puede cambiar.",
+        "code": "post_in_flight"
+      }
+    },
+    "post_409_published": {
+      "status": 409,
+      "body": {
+        "error": "La publicación ya salió: no se puede cancelar.",
+        "code": "post_published"
+      }
+    },
+    "post_409_not_failed": {
+      "status": 409,
+      "body": {
+        "error": "La publicación no está en error: no hay nada que reintentar.",
+        "code": "post_not_failed"
+      }
+    },
+    "post_409_idempotency_key_reused": {
+      "status": 409,
+      "body": {
+        "error": "Esa clave ya se usó para otro pedido.",
+        "code": "idempotency_key_reused"
+      }
     }
   },
   "pricing": {
@@ -2754,5 +2827,594 @@
     "read_at": "2026-11-04T16:00:00Z",
     "project_id": "c6b2f6a0-9523-4300-8a9f-f5f467637bda",
     "post_id": null
+  },
+  "_about_posts": "Las claves `posts_*` y los errores `post_*` las arma back/apps/videos/tests/test_posts_contract_fixture.py con la API real de publicaciones (crear, en lote, editar, publicar un borrador, reintentar, regenerar el texto y la lista) y el reloj fijo, y compara cada valor con este archivo. Para regenerarlas: `PRINT_DRF_FIXTURE=1 python -m pytest apps/videos/tests/test_posts_contract_fixture.py -s`.",
+  "posts_create_draft": {
+    "id": "630e4950-3746-413d-9d99-043f90285c99",
+    "video_clip": "0dc70729-33ab-44f5-b453-00fef4865779",
+    "platform": "TIKTOK",
+    "publish_at": "2026-11-27T15:00:00Z",
+    "status": "DRAFT",
+    "error_log": null,
+    "retry_count": 0,
+    "generated_caption": null,
+    "generated_hashtags": null,
+    "created_at": "2026-11-27T15:00:00Z",
+    "updated_at": "2026-11-27T15:00:00Z",
+    "caption": "",
+    "hashtags": [],
+    "seo_status": "pending",
+    "clip": {
+      "id": "0dc70729-33ab-44f5-b453-00fef4865779",
+      "title": "La remontada",
+      "project_id": "c7ff8921-56b7-4a84-b894-63bb90d5df3c",
+      "project_title": "Entrevista con Ana",
+      "duration_seconds": 30.5,
+      "thumbnail_url": null
+    },
+    "post_url": null,
+    "error_message": null,
+    "error_code": null,
+    "tiktok": null
+  },
+  "posts_create_scheduled": {
+    "id": "c1efe9bb-9501-495d-bc2c-f3331b06c5e6",
+    "video_clip": "484fcfda-b4cf-4cbd-a02b-5abc79141a5b",
+    "platform": "INSTAGRAM_REELS",
+    "publish_at": "2026-11-28T15:00:00Z",
+    "status": "SCHEDULED",
+    "error_log": null,
+    "retry_count": 0,
+    "generated_caption": null,
+    "generated_hashtags": null,
+    "created_at": "2026-11-27T15:01:00Z",
+    "updated_at": "2026-11-27T15:01:00Z",
+    "caption": "Arrancó el podcast 12",
+    "hashtags": [
+      "podcast",
+      "charlas"
+    ],
+    "seo_status": "none",
+    "clip": {
+      "id": "484fcfda-b4cf-4cbd-a02b-5abc79141a5b",
+      "title": "Intro del podcast",
+      "project_id": "8dd220ef-38d9-439d-9c7d-6159db4f1fb7",
+      "project_title": "Podcast 12",
+      "duration_seconds": 30.5,
+      "thumbnail_url": null
+    },
+    "post_url": null,
+    "error_message": null,
+    "error_code": null,
+    "tiktok": null
+  },
+  "posts_create_now": {
+    "id": "6e0d76c5-c085-4e2e-a138-379d8f4c1c71",
+    "video_clip": "484fcfda-b4cf-4cbd-a02b-5abc79141a5b",
+    "platform": "YOUTUBE_SHORTS",
+    "publish_at": "2026-11-27T15:02:00Z",
+    "status": "SCHEDULED",
+    "error_log": null,
+    "retry_count": 0,
+    "generated_caption": null,
+    "generated_hashtags": null,
+    "created_at": "2026-11-27T15:02:00Z",
+    "updated_at": "2026-11-27T15:02:00Z",
+    "caption": "Ya salió",
+    "hashtags": [],
+    "seo_status": "none",
+    "clip": {
+      "id": "484fcfda-b4cf-4cbd-a02b-5abc79141a5b",
+      "title": "Intro del podcast",
+      "project_id": "8dd220ef-38d9-439d-9c7d-6159db4f1fb7",
+      "project_title": "Podcast 12",
+      "duration_seconds": 30.5,
+      "thumbnail_url": null
+    },
+    "post_url": null,
+    "error_message": null,
+    "error_code": null,
+    "tiktok": null
+  },
+  "posts_bulk": {
+    "posts": [
+      {
+        "id": "e17b8bd3-ecdc-4e99-a5a2-b46d769b91a7",
+        "video_clip": "892e3073-f692-4cce-b84d-635ab3406a8f",
+        "platform": "INSTAGRAM_REELS",
+        "publish_at": "2026-11-28T15:00:00Z",
+        "status": "SCHEDULED",
+        "error_log": null,
+        "retry_count": 0,
+        "generated_caption": null,
+        "generated_hashtags": null,
+        "created_at": "2026-11-27T15:03:00Z",
+        "updated_at": "2026-11-27T15:03:00Z",
+        "caption": "El cierre",
+        "hashtags": [],
+        "seo_status": "none",
+        "clip": {
+          "id": "892e3073-f692-4cce-b84d-635ab3406a8f",
+          "title": "El cierre",
+          "project_id": "209a1f33-c0bd-46a0-b39f-be3427a21473",
+          "project_title": "Podcast 12 (cierre)",
+          "duration_seconds": 30.5,
+          "thumbnail_url": null
+        },
+        "post_url": null,
+        "error_message": null,
+        "error_code": null,
+        "tiktok": null
+      },
+      {
+        "id": "1bcc82ab-86a2-4418-9d55-bfbbed427abc",
+        "video_clip": "892e3073-f692-4cce-b84d-635ab3406a8f",
+        "platform": "TIKTOK",
+        "publish_at": "2026-11-28T16:00:00Z",
+        "status": "SCHEDULED",
+        "error_log": null,
+        "retry_count": 0,
+        "generated_caption": null,
+        "generated_hashtags": null,
+        "created_at": "2026-11-27T15:03:00Z",
+        "updated_at": "2026-11-27T15:03:00Z",
+        "caption": "",
+        "hashtags": [],
+        "seo_status": "none",
+        "clip": {
+          "id": "892e3073-f692-4cce-b84d-635ab3406a8f",
+          "title": "El cierre",
+          "project_id": "209a1f33-c0bd-46a0-b39f-be3427a21473",
+          "project_title": "Podcast 12 (cierre)",
+          "duration_seconds": 30.5,
+          "thumbnail_url": null
+        },
+        "post_url": null,
+        "error_message": null,
+        "error_code": null,
+        "tiktok": {
+          "allow_duet": false,
+          "allow_stitch": false,
+          "allow_comment": true,
+          "brand_organic": false,
+          "privacy_level": "PUBLIC_TO_EVERYONE",
+          "branded_content": false
+        }
+      }
+    ]
+  },
+  "posts_update": {
+    "id": "c1efe9bb-9501-495d-bc2c-f3331b06c5e6",
+    "video_clip": "484fcfda-b4cf-4cbd-a02b-5abc79141a5b",
+    "platform": "INSTAGRAM_REELS",
+    "publish_at": "2026-11-29T15:00:00Z",
+    "status": "SCHEDULED",
+    "error_log": null,
+    "retry_count": 0,
+    "generated_caption": null,
+    "generated_hashtags": null,
+    "created_at": "2026-11-27T15:01:00Z",
+    "updated_at": "2026-11-27T15:04:00Z",
+    "caption": "Arrancó el podcast 12: no te lo pierdas",
+    "hashtags": [
+      "podcast",
+      "charlas"
+    ],
+    "seo_status": "none",
+    "clip": {
+      "id": "484fcfda-b4cf-4cbd-a02b-5abc79141a5b",
+      "title": "Intro del podcast",
+      "project_id": "8dd220ef-38d9-439d-9c7d-6159db4f1fb7",
+      "project_title": "Podcast 12",
+      "duration_seconds": 30.5,
+      "thumbnail_url": null
+    },
+    "post_url": null,
+    "error_message": null,
+    "error_code": null,
+    "tiktok": null
+  },
+  "posts_publish_draft": {
+    "id": "630e4950-3746-413d-9d99-043f90285c99",
+    "video_clip": "0dc70729-33ab-44f5-b453-00fef4865779",
+    "platform": "TIKTOK",
+    "publish_at": "2026-11-27T15:05:00Z",
+    "status": "SCHEDULED",
+    "error_log": null,
+    "retry_count": 0,
+    "generated_caption": "La remontada más épica del año",
+    "generated_hashtags": [
+      "futbol",
+      "remontada",
+      "viral"
+    ],
+    "created_at": "2026-11-27T15:00:00Z",
+    "updated_at": "2026-11-27T15:05:00Z",
+    "caption": "La remontada más épica del año",
+    "hashtags": [
+      "futbol",
+      "remontada",
+      "viral"
+    ],
+    "seo_status": "ready",
+    "clip": {
+      "id": "0dc70729-33ab-44f5-b453-00fef4865779",
+      "title": "La remontada",
+      "project_id": "c7ff8921-56b7-4a84-b894-63bb90d5df3c",
+      "project_title": "Entrevista con Ana",
+      "duration_seconds": 30.5,
+      "thumbnail_url": null
+    },
+    "post_url": null,
+    "error_message": null,
+    "error_code": null,
+    "tiktok": {
+      "allow_duet": false,
+      "allow_stitch": false,
+      "allow_comment": true,
+      "brand_organic": false,
+      "privacy_level": "PUBLIC_TO_EVERYONE",
+      "branded_content": false
+    }
+  },
+  "posts_retry": {
+    "id": "a91087bc-9d39-4ed8-bba3-0dbed54d22bb",
+    "video_clip": "0dc70729-33ab-44f5-b453-00fef4865779",
+    "platform": "INSTAGRAM_REELS",
+    "publish_at": "2026-11-27T15:06:00Z",
+    "status": "SCHEDULED",
+    "error_log": null,
+    "retry_count": 4,
+    "generated_caption": null,
+    "generated_hashtags": null,
+    "created_at": "2026-11-27T15:06:00Z",
+    "updated_at": "2026-11-27T15:06:00Z",
+    "caption": "",
+    "hashtags": [],
+    "seo_status": "none",
+    "clip": {
+      "id": "0dc70729-33ab-44f5-b453-00fef4865779",
+      "title": "La remontada",
+      "project_id": "c7ff8921-56b7-4a84-b894-63bb90d5df3c",
+      "project_title": "Entrevista con Ana",
+      "duration_seconds": 30.5,
+      "thumbnail_url": null
+    },
+    "post_url": null,
+    "error_message": null,
+    "error_code": null,
+    "tiktok": null
+  },
+  "posts_retry_seo_failed": {
+    "id": "24068233-c2c2-4538-bb1a-0d6f14922393",
+    "video_clip": "0dc70729-33ab-44f5-b453-00fef4865779",
+    "platform": "YOUTUBE_SHORTS",
+    "publish_at": "2026-11-28T18:00:00Z",
+    "status": "DRAFT",
+    "error_log": "seo_no_clip_transcript",
+    "retry_count": 0,
+    "generated_caption": null,
+    "generated_hashtags": null,
+    "created_at": "2026-11-27T15:06:00Z",
+    "updated_at": "2026-11-27T15:07:00Z",
+    "caption": "",
+    "hashtags": [],
+    "seo_status": "failed",
+    "clip": {
+      "id": "0dc70729-33ab-44f5-b453-00fef4865779",
+      "title": "La remontada",
+      "project_id": "c7ff8921-56b7-4a84-b894-63bb90d5df3c",
+      "project_title": "Entrevista con Ana",
+      "duration_seconds": 30.5,
+      "thumbnail_url": null
+    },
+    "post_url": null,
+    "error_message": null,
+    "error_code": null,
+    "tiktok": null
+  },
+  "posts_regenerate_seo": {
+    "id": "3a7d20d9-bc0d-40bc-b9e8-26ba93c51938",
+    "video_clip": "0dc70729-33ab-44f5-b453-00fef4865779",
+    "platform": "TIKTOK",
+    "publish_at": "2026-11-27T15:00:00Z",
+    "status": "DRAFT",
+    "error_log": null,
+    "retry_count": 0,
+    "generated_caption": "Mirá cómo lo dieron vuelta",
+    "generated_hashtags": [
+      "futbol",
+      "remontada"
+    ],
+    "created_at": "2026-11-27T15:08:00Z",
+    "updated_at": "2026-11-27T15:09:00Z",
+    "caption": "Mirá cómo lo dieron vuelta",
+    "hashtags": [
+      "futbol",
+      "remontada"
+    ],
+    "seo_status": "pending",
+    "clip": {
+      "id": "0dc70729-33ab-44f5-b453-00fef4865779",
+      "title": "La remontada",
+      "project_id": "c7ff8921-56b7-4a84-b894-63bb90d5df3c",
+      "project_title": "Entrevista con Ana",
+      "duration_seconds": 30.5,
+      "thumbnail_url": null
+    },
+    "post_url": null,
+    "error_message": null,
+    "error_code": null,
+    "tiktok": null
+  },
+  "posts_list": {
+    "count": 8,
+    "next": null,
+    "previous": null,
+    "results": [
+      {
+        "id": "3a7d20d9-bc0d-40bc-b9e8-26ba93c51938",
+        "video_clip": "0dc70729-33ab-44f5-b453-00fef4865779",
+        "platform": "TIKTOK",
+        "publish_at": "2026-11-27T15:00:00Z",
+        "status": "DRAFT",
+        "error_log": null,
+        "retry_count": 0,
+        "generated_caption": "Mirá cómo lo dieron vuelta",
+        "generated_hashtags": [
+          "futbol",
+          "remontada"
+        ],
+        "created_at": "2026-11-27T15:08:00Z",
+        "updated_at": "2026-11-27T15:09:00Z",
+        "caption": "Mirá cómo lo dieron vuelta",
+        "hashtags": [
+          "futbol",
+          "remontada"
+        ],
+        "seo_status": "pending",
+        "clip": {
+          "id": "0dc70729-33ab-44f5-b453-00fef4865779",
+          "title": "La remontada",
+          "project_id": "c7ff8921-56b7-4a84-b894-63bb90d5df3c",
+          "project_title": "Entrevista con Ana",
+          "duration_seconds": 30.5,
+          "thumbnail_url": null
+        },
+        "post_url": null,
+        "error_message": null,
+        "error_code": null,
+        "tiktok": null
+      },
+      {
+        "id": "6e0d76c5-c085-4e2e-a138-379d8f4c1c71",
+        "video_clip": "484fcfda-b4cf-4cbd-a02b-5abc79141a5b",
+        "platform": "YOUTUBE_SHORTS",
+        "publish_at": "2026-11-27T15:02:00Z",
+        "status": "SCHEDULED",
+        "error_log": null,
+        "retry_count": 0,
+        "generated_caption": null,
+        "generated_hashtags": null,
+        "created_at": "2026-11-27T15:02:00Z",
+        "updated_at": "2026-11-27T15:02:00Z",
+        "caption": "Ya salió",
+        "hashtags": [],
+        "seo_status": "none",
+        "clip": {
+          "id": "484fcfda-b4cf-4cbd-a02b-5abc79141a5b",
+          "title": "Intro del podcast",
+          "project_id": "8dd220ef-38d9-439d-9c7d-6159db4f1fb7",
+          "project_title": "Podcast 12",
+          "duration_seconds": 30.5,
+          "thumbnail_url": null
+        },
+        "post_url": null,
+        "error_message": null,
+        "error_code": null,
+        "tiktok": null
+      },
+      {
+        "id": "630e4950-3746-413d-9d99-043f90285c99",
+        "video_clip": "0dc70729-33ab-44f5-b453-00fef4865779",
+        "platform": "TIKTOK",
+        "publish_at": "2026-11-27T15:05:00Z",
+        "status": "SCHEDULED",
+        "error_log": null,
+        "retry_count": 0,
+        "generated_caption": "La remontada más épica del año",
+        "generated_hashtags": [
+          "futbol",
+          "remontada",
+          "viral"
+        ],
+        "created_at": "2026-11-27T15:00:00Z",
+        "updated_at": "2026-11-27T15:05:00Z",
+        "caption": "La remontada más épica del año",
+        "hashtags": [
+          "futbol",
+          "remontada",
+          "viral"
+        ],
+        "seo_status": "ready",
+        "clip": {
+          "id": "0dc70729-33ab-44f5-b453-00fef4865779",
+          "title": "La remontada",
+          "project_id": "c7ff8921-56b7-4a84-b894-63bb90d5df3c",
+          "project_title": "Entrevista con Ana",
+          "duration_seconds": 30.5,
+          "thumbnail_url": null
+        },
+        "post_url": null,
+        "error_message": null,
+        "error_code": null,
+        "tiktok": {
+          "allow_duet": false,
+          "allow_stitch": false,
+          "allow_comment": true,
+          "brand_organic": false,
+          "privacy_level": "PUBLIC_TO_EVERYONE",
+          "branded_content": false
+        }
+      },
+      {
+        "id": "a91087bc-9d39-4ed8-bba3-0dbed54d22bb",
+        "video_clip": "0dc70729-33ab-44f5-b453-00fef4865779",
+        "platform": "INSTAGRAM_REELS",
+        "publish_at": "2026-11-27T15:06:00Z",
+        "status": "SCHEDULED",
+        "error_log": null,
+        "retry_count": 4,
+        "generated_caption": null,
+        "generated_hashtags": null,
+        "created_at": "2026-11-27T15:06:00Z",
+        "updated_at": "2026-11-27T15:06:00Z",
+        "caption": "",
+        "hashtags": [],
+        "seo_status": "none",
+        "clip": {
+          "id": "0dc70729-33ab-44f5-b453-00fef4865779",
+          "title": "La remontada",
+          "project_id": "c7ff8921-56b7-4a84-b894-63bb90d5df3c",
+          "project_title": "Entrevista con Ana",
+          "duration_seconds": 30.5,
+          "thumbnail_url": null
+        },
+        "post_url": null,
+        "error_message": null,
+        "error_code": null,
+        "tiktok": null
+      },
+      {
+        "id": "e17b8bd3-ecdc-4e99-a5a2-b46d769b91a7",
+        "video_clip": "892e3073-f692-4cce-b84d-635ab3406a8f",
+        "platform": "INSTAGRAM_REELS",
+        "publish_at": "2026-11-28T15:00:00Z",
+        "status": "SCHEDULED",
+        "error_log": null,
+        "retry_count": 0,
+        "generated_caption": null,
+        "generated_hashtags": null,
+        "created_at": "2026-11-27T15:03:00Z",
+        "updated_at": "2026-11-27T15:03:00Z",
+        "caption": "El cierre",
+        "hashtags": [],
+        "seo_status": "none",
+        "clip": {
+          "id": "892e3073-f692-4cce-b84d-635ab3406a8f",
+          "title": "El cierre",
+          "project_id": "209a1f33-c0bd-46a0-b39f-be3427a21473",
+          "project_title": "Podcast 12 (cierre)",
+          "duration_seconds": 30.5,
+          "thumbnail_url": null
+        },
+        "post_url": null,
+        "error_message": null,
+        "error_code": null,
+        "tiktok": null
+      },
+      {
+        "id": "1bcc82ab-86a2-4418-9d55-bfbbed427abc",
+        "video_clip": "892e3073-f692-4cce-b84d-635ab3406a8f",
+        "platform": "TIKTOK",
+        "publish_at": "2026-11-28T16:00:00Z",
+        "status": "SCHEDULED",
+        "error_log": null,
+        "retry_count": 0,
+        "generated_caption": null,
+        "generated_hashtags": null,
+        "created_at": "2026-11-27T15:03:00Z",
+        "updated_at": "2026-11-27T15:03:00Z",
+        "caption": "",
+        "hashtags": [],
+        "seo_status": "none",
+        "clip": {
+          "id": "892e3073-f692-4cce-b84d-635ab3406a8f",
+          "title": "El cierre",
+          "project_id": "209a1f33-c0bd-46a0-b39f-be3427a21473",
+          "project_title": "Podcast 12 (cierre)",
+          "duration_seconds": 30.5,
+          "thumbnail_url": null
+        },
+        "post_url": null,
+        "error_message": null,
+        "error_code": null,
+        "tiktok": {
+          "allow_duet": false,
+          "allow_stitch": false,
+          "allow_comment": true,
+          "brand_organic": false,
+          "privacy_level": "PUBLIC_TO_EVERYONE",
+          "branded_content": false
+        }
+      },
+      {
+        "id": "24068233-c2c2-4538-bb1a-0d6f14922393",
+        "video_clip": "0dc70729-33ab-44f5-b453-00fef4865779",
+        "platform": "YOUTUBE_SHORTS",
+        "publish_at": "2026-11-28T18:00:00Z",
+        "status": "DRAFT",
+        "error_log": "seo_no_clip_transcript",
+        "retry_count": 0,
+        "generated_caption": null,
+        "generated_hashtags": null,
+        "created_at": "2026-11-27T15:06:00Z",
+        "updated_at": "2026-11-27T15:07:00Z",
+        "caption": "",
+        "hashtags": [],
+        "seo_status": "failed",
+        "clip": {
+          "id": "0dc70729-33ab-44f5-b453-00fef4865779",
+          "title": "La remontada",
+          "project_id": "c7ff8921-56b7-4a84-b894-63bb90d5df3c",
+          "project_title": "Entrevista con Ana",
+          "duration_seconds": 30.5,
+          "thumbnail_url": null
+        },
+        "post_url": null,
+        "error_message": null,
+        "error_code": null,
+        "tiktok": null
+      },
+      {
+        "id": "c1efe9bb-9501-495d-bc2c-f3331b06c5e6",
+        "video_clip": "484fcfda-b4cf-4cbd-a02b-5abc79141a5b",
+        "platform": "INSTAGRAM_REELS",
+        "publish_at": "2026-11-29T15:00:00Z",
+        "status": "SCHEDULED",
+        "error_log": null,
+        "retry_count": 0,
+        "generated_caption": null,
+        "generated_hashtags": null,
+        "created_at": "2026-11-27T15:01:00Z",
+        "updated_at": "2026-11-27T15:04:00Z",
+        "caption": "Arrancó el podcast 12: no te lo pierdas",
+        "hashtags": [
+          "podcast",
+          "charlas"
+        ],
+        "seo_status": "none",
+        "clip": {
+          "id": "484fcfda-b4cf-4cbd-a02b-5abc79141a5b",
+          "title": "Intro del podcast",
+          "project_id": "8dd220ef-38d9-439d-9c7d-6159db4f1fb7",
+          "project_title": "Podcast 12",
+          "duration_seconds": 30.5,
+          "thumbnail_url": null
+        },
+        "post_url": null,
+        "error_message": null,
+        "error_code": null,
+        "tiktok": null
+      }
+    ],
+    "status_counts": {
+      "DRAFT": 2,
+      "SCHEDULED": 6,
+      "QUEUED": 0,
+      "PROCESSING": 0,
+      "PUBLISHED": 0,
+      "FAILED": 0
+    }
   }
 }

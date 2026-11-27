@@ -191,13 +191,24 @@ export function isUntouchedDraft(post: Pick<ScheduledPost, 'status' | 'caption' 
 
 /** Text and date can change only before the post is queued. */
 export const isEditable = (status: PostStatus): boolean => status === 'DRAFT' || status === 'SCHEDULED';
-/** A post that has not gone out yet can be cancelled. */
-export const isCancellable = (status: PostStatus): boolean => status === 'DRAFT' || status === 'SCHEDULED' || status === 'QUEUED' || status === 'FAILED';
+/** A post that has not gone out yet can be cancelled, and so can one stuck «Publicando» (it may be public already). */
+export const isCancellable = (post: Pick<ScheduledPost, 'status' | 'updated_at' | 'error_log'>, now: number = Date.now()): boolean =>
+  post.status === 'DRAFT' || post.status === 'SCHEDULED' || post.status === 'QUEUED' || post.status === 'FAILED' || isStuck(post, now);
 
-/** Minutes after which a post still "Publicando" is considered stuck and can be retried. */
-export const STUCK_AFTER_MS = 10 * 60_000;
-export function isStuck(post: Pick<ScheduledPost, 'status' | 'updated_at'>, now: number = Date.now()): boolean {
-  return post.status === 'PROCESSING' && now - new Date(post.updated_at).getTime() > STUCK_AFTER_MS;
+/**
+ * Minutes after which a post still "Publicando" is considered stuck and can be retried: the backend's
+ * POST_STUCK_AFTER (services/scheduled_posts.py), which answers 409 `post_in_flight` before.
+ */
+export const STUCK_AFTER_MS = 15 * 60_000;
+/**
+ * A worker retry on its way («Retry n: …» in `error_log`) can wait hours for a free worker: the backend counts the
+ * post as stuck only after the broker's visibility timeout (4 h) plus the longest countdown (240 s).
+ */
+export const PENDING_RETRY_STUCK_AFTER_MS = (4 * 3600 + 240) * 1000;
+export function isStuck(post: Pick<ScheduledPost, 'status' | 'updated_at' | 'error_log'>, now: number = Date.now()): boolean {
+  if (post.status !== 'PROCESSING') return false;
+  const after = (post.error_log ?? '').startsWith('Retry ') ? PENDING_RETRY_STUCK_AFTER_MS : STUCK_AFTER_MS;
+  return now - new Date(post.updated_at).getTime() > after;
 }
 
 export function accountOf(accounts: SocialAccount[] | undefined, platform: Platform): SocialAccount | undefined {

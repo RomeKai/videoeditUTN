@@ -351,6 +351,13 @@ class ScheduledPost(models.Model):
     post_url = models.URLField(max_length=500, null=True, blank=True)
     # TikTok direct-post options (privacy_level, allow_comment, ...); null for other platforms.
     tiktok = models.JSONField(null=True, blank=True)
+    # When the API asked for the AI text (a post created with SEO, or "Regenerar"),
+    # until process_video_seo stores it or fails: the API shows `seo_status:
+    # "pending"` meanwhile, over the previous text (services/scheduled_posts.py).
+    seo_requested_at = models.DateTimeField(null=True, blank=True, editable=False)
+    # When the user last saved `caption` or `hashtags` through the API. A "Regenerar"
+    # replaces that text only if it was asked for after it (process_video_seo).
+    text_edited_at = models.DateTimeField(null=True, blank=True, editable=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -363,6 +370,32 @@ class ScheduledPost(models.Model):
 
     def __str__(self):
         return f"{self.platform} @ {self.publish_at}"
+
+
+class PostIdempotencyKey(models.Model):
+    """
+    The `Idempotency-Key` of a POST /scheduled-posts/ (or /bulk/) that created
+    posts: a request that repeats it in the same workspace gets those posts
+    back and creates nothing (contract `social.createPost`). Claimed at the
+    start of the request's transaction, so a concurrent copy waits on the
+    unique index and then answers with what the first one created.
+    """
+    id = models.BigAutoField(primary_key=True)
+    workspace = models.ForeignKey('users.Workspace', on_delete=models.CASCADE, related_name='+')
+    key = models.CharField(max_length=255)
+    # sha256 of the endpoint and the body: the same key with another body is a 409.
+    fingerprint = models.CharField(max_length=64)
+    post_ids = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['workspace', 'key'], name='one_post_request_per_key'),
+        ]
+        indexes = [models.Index(fields=['workspace', 'created_at'], name='post_idem_ws_created_idx')]
+
+    def __str__(self):
+        return f"Idempotency-Key de publicaciones ({self.workspace_id})"
 
 
 class AIUsageRecord(models.Model):

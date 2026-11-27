@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**82 endpoints:** 70 existen hoy en el backend, 3 existen en parte y 9 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**82 endpoints:** 76 existen hoy en el backend, 3 existen en parte y 3 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -132,13 +132,13 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | POST | `/api/v1/social-accounts/connect/` | Devuelve la URL de la red (vía Ayrshare) para autorizar la cuenta en una ventana aparte. | ❌ falta (propuesto) · hueco 10 | D6, H3, E1 |
 | DELETE | `/api/v1/social-accounts/:platform/` | Desconecta la cuenta de una red. Las publicaciones programadas en esa red quedan en error. | ❌ falta (propuesto) · hueco 10 | H3 |
 | GET | `/api/v1/scheduled-posts/` | Publicaciones del workspace, ordenadas por `publish_at`, con filtros por estado, red, rango y clip. | ⚠️ existe en parte · hueco 8 | E2, D3, D4 (diálogo) |
-| POST | `/api/v1/scheduled-posts/` | Publica ahora o programa un clip en una red. Con `draft: true` crea un borrador, que dispara la generación del texto con IA. | ❌ falta (propuesto) · hueco 8, 9 | E1 |
-| POST | `/api/v1/scheduled-posts/bulk/` | Crea varias publicaciones juntas (varios clips, varias redes). Todo o nada. | ❌ falta (propuesto) · hueco 8 | E1c |
+| POST | `/api/v1/scheduled-posts/` | Publica ahora o programa un clip en una red. Con `draft: true` crea un borrador, que dispara la generación del texto con IA. | ✅ existe | E1 |
+| POST | `/api/v1/scheduled-posts/bulk/` | Crea varias publicaciones juntas (varios clips, varias redes). Todo o nada. | ✅ existe | E1c |
 | GET | `/api/v1/scheduled-posts/:id/` | Detalle de una publicación. Se consulta cada 5 s mientras está en cola o publicando. | ⚠️ existe en parte · hueco 8 | E2, E1 |
-| PATCH | `/api/v1/scheduled-posts/:id/` | Edita el texto, reprograma, o publica un borrador (`publish_at`: fecha para programar, `null` para publicar ahora). Solo antes de `QUEUED`. | ❌ falta (propuesto) · hueco 8 | E2 |
-| POST | `/api/v1/scheduled-posts/:id/cancel/` | Cancela una publicación que todavía no salió. La borra. | ❌ falta (propuesto) · hueco 8 | E2 |
-| POST | `/api/v1/scheduled-posts/:id/retry/` | Reintenta una publicación que falló (también una trabada en `PROCESSING`). | ❌ falta (propuesto) · hueco 8 | E2 |
-| POST | `/api/v1/scheduled-posts/:id/regenerate-seo/` | Vuelve a generar el caption y los hashtags con IA. Responde con `seo_status: "pending"`; el texto anterior se conserva hasta que llega el nuevo. | ❌ falta (propuesto) · hueco 8 | E1 |
+| PATCH | `/api/v1/scheduled-posts/:id/` | Edita el texto, reprograma, o publica un borrador (`publish_at`: fecha para programar, `null` para publicar ahora). Solo antes de `QUEUED`. | ✅ existe | E2 |
+| POST | `/api/v1/scheduled-posts/:id/cancel/` | Cancela una publicación que todavía no salió. La borra. | ✅ existe | E2 |
+| POST | `/api/v1/scheduled-posts/:id/retry/` | Reintenta una publicación que falló (también una trabada en `PROCESSING`). | ✅ existe | E2 |
+| POST | `/api/v1/scheduled-posts/:id/regenerate-seo/` | Vuelve a generar el caption y los hashtags con IA. Responde con `seo_status: "pending"`; el texto anterior se conserva hasta que llega el nuevo. | ✅ existe | E1 |
 | GET | `/api/v1/notifications/` | Las últimas 20 notificaciones del usuario en el workspace y cuántas están sin leer. | ✅ existe | J2, Barra |
 | POST | `/api/v1/notifications/:id/read/` | Marca una notificación como leída. | ✅ existe | J2 |
 | POST | `/api/v1/notifications/read-all/` | Marca todas como leídas. | ✅ existe | J2 |
@@ -1188,7 +1188,7 @@ Publicaciones del workspace, ordenadas por `publish_at`, con filtros por estado,
 |---|---|
 | Id | `social.posts` |
 | Backend | ⚠️ existe en parte · hueco 8 · `back/apps/videos/views_social.py · ScheduledPostViewSet.list + ScheduledPostSerializer` |
-| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. `clip.thumbnail_url` es la miniatura del clip (URL temporal de 1 h; `null` si no tiene). Falta: `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos. |
+| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. `clip.thumbnail_url` es la miniatura del clip (URL temporal de 1 h; `null` si no tiene). Falta: `post_url` queda `null` hasta que el publicador lo guarde. Una publicación «ahora» queda `SCHEDULED` con `publish_at` en el pasado hasta que el beat la toma (hasta 5 min): la UI la consulta como si estuviera en cola. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Query | PostsQuery |
 | Respuesta 200 | { count: number, next: string \\| null, previous: string \\| null, results: ScheduledPost[], status_counts?: { [clave]: number } } |
@@ -1201,12 +1201,12 @@ Publica ahora o programa un clip en una red. Con `draft: true` crea un borrador,
 | | |
 |---|---|
 | Id | `social.createPost` |
-| Backend | ❌ falta (propuesto) · hueco 8, 9 |
-| Nota | Crear solo encola: la respuesta sale apenas el post queda guardado (`QUEUED` o `SCHEDULED`) y la publicación en la red la hace el worker después, así que el pedido entra en el tiempo de espera normal. Acepta `Idempotency-Key`: el cliente manda una clave por envío y la repite si reintenta (por ejemplo, después de un pedido que venció); el backend guarda la respuesta exitosa (2xx) por clave y workspace al menos 24 h y la devuelve tal cual, sin crear ni publicar de nuevo; una respuesta de error no se guarda, así que reintentar con la misma clave después de corregir el problema (por ejemplo, conectar la cuenta) vuelve a intentarlo. El backend tiene que permitir el header en CORS (`CORS_ALLOW_HEADERS`). Al crear el post, la señal existente genera el SEO y la publicación usa Ayrshare. Reglas propuestas: (1) una publicación en cola sin texto propio espera a que termine la generación con IA antes de salir (hoy saldría con el caption de reserva); (2) si la generación falla en un borrador, sigue en `DRAFT` con `seo_status: "failed"` (hoy `_fail_seo_post` lo pasa a `FAILED`); (3) un borrador creado con `draft: true` que nadie programa ni publica en N horas (sugerido: 24) se borra solo: el panel E1 los descarta al cerrarse, pero una pestaña que se cierra de golpe puede dejar alguno. |
+| Backend | ✅ existe · `back/apps/videos/views_social.py · ScheduledPostViewSet.create + services/scheduled_posts.py · create_posts` |
+| Nota | Crear solo guarda: un borrador queda `DRAFT` y lo demás `SCHEDULED` (ahora, o la fecha pedida), y la publicación en la red la hace el worker después de que el beat la encola. Ningún endpoint de publicaciones llama a la red: lo que tiene que salir queda `SCHEDULED` y lo encola `dispatch_scheduled_posts_batch` (Celery Beat, cada 5 min). Cada escritura toma el lock de la fila del post y decide con el estado que lee bajo ese lock, igual que el despachador y el worker, así que nunca pisa una publicación que el beat ya tomó. El clip tiene que ser del espacio activo y estar renderizado. Los límites del plan se miran en el servidor: programar pide `allow_scheduling`; sin `allow_crossposting` un clip sale en una sola red, contando sus publicaciones programadas, en cola, publicando o publicadas (no los borradores ni las fallidas). Sin plan no hay límites. La cuenta: sin `Workspace.ayrshare_profile_key` es 409 `account_not_connected` (no se sabe red por red hasta el hueco 10; un borrador no la pide). Acepta `Idempotency-Key` (hasta 255 caracteres): el backend guarda por clave y workspace, durante 24 h, qué publicaciones creó; la misma clave devuelve esas publicaciones (tal como están ahora) sin crear nada, con otro cuerpo es 409, y una respuesta de error no se guarda. Al crear el post se pide el SEO (`seo_status: "pending"`). El texto con IA se pide solo si el proyecto tiene SEO y la publicación no trae caption y hashtags. Si otra publicación del mismo clip y la misma red ya tiene texto de la IA (o lo tenía un borrador descartado en las últimas 24 h), se reusa y llega `seo_status: "ready"`. Cada espacio pide hasta `AI_SEO_MAX_PER_WORKSPACE_PER_HOUR` (120) textos por hora, contando los que están en camino y las llamadas ya hechas: pasado eso la publicación se crea igual, con `seo_status: "failed"` (`error_log: "seo_rate_limited"`), y el usuario la escribe o la regenera más tarde. Si la generación falla en un borrador, o en una publicación con caption propio, el estado no cambia y queda `seo_status: "failed"`. Pendiente: (1) una publicación en cola sin texto propio todavía puede salir antes de que llegue el de la IA, con el texto de reserva, y el publicador todavía no usa `caption`, `hashtags` ni `tiktok` (es del publicador); (2) los borradores que nadie manda no se borran solos. |
 | Sesión | JWT · `X-Workspace-Id` · `Idempotency-Key` (una por envío; se repite al reintentar) |
 | Pedido | CreatePostInput |
 | Respuesta 201 | ScheduledPost |
-| Errores | **400** Texto por encima del límite de la red, clip sin renderizar, o falta `tiktok.privacy_level`.<br>**403** El plan no permite programar (`code: "scheduling"`) o publicar en varias redes (`code: "crossposting"`), o el rol no publica.<br>**409** La cuenta de la red está desconectada o vencida (`code: "account_not_connected"`): la UI pide reconectar. |
+| Errores | **400** Por campo (`{campo: [mensaje]}`): texto por encima del límite de la red (`caption`), demasiados hashtags o uno inválido (`hashtags`), clip de otro espacio o sin renderizar (`video_clip`), fecha pasada (`publish_at`) o falta `tiktok.privacy_level` (`tiktok`). En /bulk/ va además `index`, la posición de la publicación con el error, y `posts` si el lote está vacío, pasa de 60 o repite un clip en la misma red.<br>**403** El plan no permite programar (`code: "scheduling"`) o publicar el clip en varias redes (`code: "crossposting"`): `{error, code}`. O el rol no publica: `{detail}`.<br>**409** El espacio no tiene la cuenta de Ayrshare (`code: "account_not_connected"`): la UI pide conectar. O la `Idempotency-Key` ya se usó con otro cuerpo, o sus publicaciones ya no existen (`code: "idempotency_key_reused"`).<br>**429** El usuario creó demasiadas publicaciones en la última hora (300; un lote cuenta cada una): `detail` dice cuánto esperar. |
 | Pantallas | E1 |
 
 #### `POST /api/v1/scheduled-posts/bulk/`
@@ -1216,12 +1216,12 @@ Crea varias publicaciones juntas (varios clips, varias redes). Todo o nada.
 | | |
 |---|---|
 | Id | `social.createPostsBulk` |
-| Backend | ❌ falta (propuesto) · hueco 8 |
-| Nota | Hasta 60 publicaciones. Igual que `createPost`: solo encola (ninguna red se llama dentro del pedido) y acepta `Idempotency-Key`, con la misma regla: una clave repetida devuelve las publicaciones que creó el primer pedido. |
+| Backend | ✅ existe · `back/apps/videos/views_social.py · ScheduledPostViewSet.bulk + services/scheduled_posts.py · create_posts` |
+| Nota | Hasta 60 publicaciones, en una sola transacción: un error en cualquiera (validación, plan, cuenta o de la base) no crea ninguna, y el 400 dice cuál con `index`. Un clip repetido en la misma red es 400. Las mismas reglas que `createPost`, y la misma `Idempotency-Key`: una clave repetida devuelve las publicaciones que creó el primer pedido. |
 | Sesión | JWT · `X-Workspace-Id` · `Idempotency-Key` (una por envío; se repite al reintentar) |
 | Pedido | { posts: CreatePostInput[] } |
 | Respuesta 201 | { posts: ScheduledPost[] } |
-| Errores | **400** Texto por encima del límite de la red, clip sin renderizar, o falta `tiktok.privacy_level`.<br>**403** El plan no permite programar (`code: "scheduling"`) o publicar en varias redes (`code: "crossposting"`), o el rol no publica.<br>**409** La cuenta de la red está desconectada o vencida (`code: "account_not_connected"`): la UI pide reconectar. |
+| Errores | **400** Por campo (`{campo: [mensaje]}`): texto por encima del límite de la red (`caption`), demasiados hashtags o uno inválido (`hashtags`), clip de otro espacio o sin renderizar (`video_clip`), fecha pasada (`publish_at`) o falta `tiktok.privacy_level` (`tiktok`). En /bulk/ va además `index`, la posición de la publicación con el error, y `posts` si el lote está vacío, pasa de 60 o repite un clip en la misma red.<br>**403** El plan no permite programar (`code: "scheduling"`) o publicar el clip en varias redes (`code: "crossposting"`): `{error, code}`. O el rol no publica: `{detail}`.<br>**409** El espacio no tiene la cuenta de Ayrshare (`code: "account_not_connected"`): la UI pide conectar. O la `Idempotency-Key` ya se usó con otro cuerpo, o sus publicaciones ya no existen (`code: "idempotency_key_reused"`).<br>**429** El usuario creó demasiadas publicaciones en la última hora (300; un lote cuenta cada una): `detail` dice cuánto esperar. |
 | Pantallas | E1c |
 
 #### `GET /api/v1/scheduled-posts/:id/`
@@ -1232,7 +1232,7 @@ Detalle de una publicación. Se consulta cada 5 s mientras está en cola o publi
 |---|---|
 | Id | `social.post` |
 | Backend | ⚠️ existe en parte · hueco 8 · `back/apps/videos/views_social.py · ScheduledPostViewSet.retrieve + ScheduledPostSerializer` |
-| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. `clip.thumbnail_url` es la miniatura del clip (URL temporal de 1 h; `null` si no tiene). Falta: `post_url` queda `null` hasta que el publicador lo guarde, y crear, editar y cancelar siguen propuestos. |
+| Nota | Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. `clip.thumbnail_url` es la miniatura del clip (URL temporal de 1 h; `null` si no tiene). Falta: `post_url` queda `null` hasta que el publicador lo guarde. Una publicación «ahora» queda `SCHEDULED` con `publish_at` en el pasado hasta que el beat la toma (hasta 5 min): la UI la consulta como si estuviera en cola. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | ScheduledPost |
 | Errores | **404** No existe o es de otro workspace. |
@@ -1245,11 +1245,12 @@ Edita el texto, reprograma, o publica un borrador (`publish_at`: fecha para prog
 | | |
 |---|---|
 | Id | `social.updatePost` |
-| Backend | ❌ falta (propuesto) · hueco 8 |
+| Backend | ✅ existe · `back/apps/videos/views_social.py · ScheduledPostViewSet.partial_update + services/scheduled_posts.py · update_post` |
+| Nota | Solo `DRAFT` y `SCHEDULED`: un post `QUEUED` ya tiene su tarea en el broker con la hora vieja. `publish_at` con fecha programa o reprograma; `null` (o dentro de un minuto) lo deja `SCHEDULED` para ahora; sin el campo, un borrador sigue borrador. Al mandarlo se miran el clip, el plan, la cuenta y TikTok como al crear, y se borra la falla del texto del borrador. `caption` y `hashtags` vacíos vuelven a mostrar el texto de la IA. Guardar el texto mientras un «Regenerar» está en camino no lo cancela (sigue `pending` y sigue contando en el límite del espacio), pero el texto del usuario queda cuando llega el de la IA (`text_edited_at`). Ningún endpoint de publicaciones llama a la red: lo que tiene que salir queda `SCHEDULED` y lo encola `dispatch_scheduled_posts_batch` (Celery Beat, cada 5 min). Cada escritura toma el lock de la fila del post y decide con el estado que lee bajo ese lock, igual que el despachador y el worker, así que nunca pisa una publicación que el beat ya tomó. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Pedido | UpdatePostRequest |
 | Respuesta 200 | ScheduledPost |
-| Errores | **400** Texto por encima del límite, fecha en el pasado, o falta `tiktok.privacy_level` al publicar un borrador de TikTok.<br>**403** El plan no permite programar (`code: "scheduling"`), o el rol no publica.<br>**409** La publicación ya está en cola, publicando o publicada: no se puede editar. |
+| Errores | **400** Texto por encima del límite, fecha en el pasado, clip que se está renderizando de nuevo, o falta `tiktok.privacy_level` al publicar un borrador de TikTok.<br>**403** El plan no permite programar (`code: "scheduling"`) o publicar el clip en otra red (`code: "crossposting"`), o el rol no publica.<br>**404** No existe o es de otro workspace.<br>**409** Ya está en cola o publicando (`code: "post_in_flight"`), ya salió (`post_published`) o falló (`post_failed`: se reintenta o se cancela). Al mandarla, sin cuenta: `account_not_connected`. |
 | Pantallas | E2 |
 
 #### `POST /api/v1/scheduled-posts/:id/cancel/`
@@ -1259,10 +1260,11 @@ Cancela una publicación que todavía no salió. La borra.
 | | |
 |---|---|
 | Id | `social.cancelPost` |
-| Backend | ❌ falta (propuesto) · hueco 8 |
+| Backend | ✅ existe · `back/apps/videos/views_social.py · ScheduledPostViewSet.cancel + services/scheduled_posts.py · cancel_post` |
+| Nota | Borra `DRAFT`, `SCHEDULED`, `QUEUED` y `FAILED`, y también un `PROCESSING` trabado (la misma regla que `retryPost`): pudo haber salido, así que la UI avisa que cancelar no la borra de la red. La tarea de un post `QUEUED`, o el intento tardío de uno trabado, después no encuentra nada y termina sin publicar. Si el worker lo toma en el mismo momento, el pedido espera su lock y responde 409. Su texto con IA queda 24 h para el próximo borrador del mismo clip y la misma red. Ningún endpoint de publicaciones llama a la red: lo que tiene que salir queda `SCHEDULED` y lo encola `dispatch_scheduled_posts_batch` (Celery Beat, cada 5 min). Cada escritura toma el lock de la fila del post y decide con el estado que lee bajo ese lock, igual que el despachador y el worker, así que nunca pisa una publicación que el beat ya tomó. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 204 | NoContent |
-| Errores | **409** Ya se está publicando o ya se publicó. |
+| Errores | **403** El rol no publica.<br>**404** No existe o es de otro workspace.<br>**409** Se está publicando (`code: "post_in_flight"`), ya se publicó (`post_published`) o no se pudo leer el lock del worker (`post_lock_unavailable`). |
 | Pantallas | E2 |
 
 #### `POST /api/v1/scheduled-posts/:id/retry/`
@@ -1272,10 +1274,11 @@ Reintenta una publicación que falló (también una trabada en `PROCESSING`).
 | | |
 |---|---|
 | Id | `social.retryPost` |
-| Backend | ❌ falta (propuesto) · hueco 8 |
+| Backend | ✅ existe · `back/apps/videos/views_social.py · ScheduledPostViewSet.retry + services/scheduled_posts.py · retry_post` |
+| Nota | Un `FAILED`, o un `PROCESSING` trabado, vuelve a `SCHEDULED` para ahora (sin `error_log`) y lo encola el beat. Trabado: su último intento empezó (`updated_at`) hace más de 15 min y el worker no tiene el lock del post; antes es 409, para no publicarlo dos veces mientras sale. Si el worker espera un reintento (`error_log` empieza con «Retry »), está en camino aunque no tenga el lock: recién cuenta como trabado pasado el `visibility_timeout` del broker (4 h) más la espera más larga del reintento (240 s). Un post trabado o que falló sin saber si salió puede estar publicado: la UI lo avisa antes de reintentar. Si lo que falló fue el texto con IA, vuelve a `DRAFT` con `seo_status: "failed"`: nunca salió y no se programa solo. Ningún endpoint de publicaciones llama a la red: lo que tiene que salir queda `SCHEDULED` y lo encola `dispatch_scheduled_posts_batch` (Celery Beat, cada 5 min). Cada escritura toma el lock de la fila del post y decide con el estado que lee bajo ese lock, igual que el despachador y el worker, así que nunca pisa una publicación que el beat ya tomó. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | ScheduledPost |
-| Errores | **409** La publicación no está en error. |
+| Errores | **400** El clip se está renderizando de nuevo, o es TikTok y le falta `tiktok.privacy_level`.<br>**403** El plan no permite el clip en otra red (`code: "crossposting"`), o el rol no publica.<br>**404** No existe o es de otro workspace.<br>**409** No está en error (`code: "post_not_failed"`: también el segundo reintento), se está publicando (`post_in_flight`), ya salió (`post_published`), no se pudo leer el lock del worker (`post_lock_unavailable`) o no hay cuenta (`account_not_connected`). |
 | Pantallas | E2 |
 
 #### `POST /api/v1/scheduled-posts/:id/regenerate-seo/`
@@ -1285,11 +1288,11 @@ Vuelve a generar el caption y los hashtags con IA. Responde con `seo_status: "pe
 | | |
 |---|---|
 | Id | `social.regeneratePostSeo` |
-| Backend | ❌ falta (propuesto) · hueco 8 |
-| Nota | Hoy solo existe como acción del admin: ScheduledPostAdmin.regenerate_ai_metadata → queue_post_seo(post_id, regenerate=True). |
+| Backend | ✅ existe · `back/apps/videos/views_social.py · ScheduledPostViewSet.regenerate_seo + services/scheduled_posts.py · regenerate_seo` |
+| Nota | Encola `process_video_seo` con `regenerate`. Mientras tanto el post responde `seo_status: "pending"` con el texto anterior; cuando llega el nuevo reemplaza también el que escribió el usuario. Si la generación falla, el texto anterior queda y `seo_status` vuelve a `ready`. Un pedido mientras otro está en camino no encola nada (el doble clic no paga dos veces). No gasta tokens de la billetera: el SEO se cobra una vez, al crear el proyecto; los límites por usuario (30 por hora) y por espacio (120 textos por hora, también los que piden las publicaciones nuevas) acotan lo que se gasta en el proveedor y en la capacidad que comparte la ingesta. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 202 | ScheduledPost |
-| Errores | **403** El proyecto no pidió SEO o el plan no lo incluye (`code: "seo"`), o el rol no publica.<br>**409** La publicación ya se está publicando o ya se publicó: su texto no cambia. |
+| Errores | **403** El proyecto no pidió SEO o el plan no lo incluye (`code: "seo"`), o el rol no publica.<br>**404** No existe o es de otro workspace.<br>**409** Ya está en cola o publicando (`code: "post_in_flight"`) o ya se publicó (`post_published`): su texto no cambia.<br>**429** Demasiados pedidos del usuario (30 por hora): `detail` dice cuánto esperar. O el espacio ya pidió sus textos con IA de esta hora (`code: "seo_rate_limited"`, `{error, code}`). |
 | Pantallas | E1 |
 
 ### Notificaciones

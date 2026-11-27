@@ -10,6 +10,14 @@ import { useScopedQuery } from './scope';
 
 const IN_FLIGHT = new Set(['QUEUED', 'PROCESSING']);
 
+/**
+ * On its way out: queued or publishing, or scheduled for a time that already came. "Publish now" (and a retry)
+ * leaves the post `SCHEDULED` for now, and the beat of the backend queues it within five minutes.
+ */
+export function goingOut(post: Pick<contract.ScheduledPost, 'status' | 'publish_at'>, now = Date.now()): boolean {
+  return IN_FLIGHT.has(post.status) || (post.status === 'SCHEDULED' && Date.parse(post.publish_at) <= now);
+}
+
 /** How long a publication is polled for its AI text. After that the UI stops waiting and the user writes it. */
 export const SEO_WAIT_MS = 120_000;
 
@@ -47,7 +55,7 @@ export function useDisconnectSocialAccount() {
   });
 }
 
-/** E2 and E1: polls every 5 s while any publication of the page is queued, publishing or waiting for its AI text (at most two minutes each). */
+/** E2 and E1: polls every 5 s while any publication of the page is going out (`goingOut`) or waiting for its AI text (at most two minutes each). */
 export function usePosts(query: contract.PostsQuery = {}, { enabled = true }: { enabled?: boolean } = {}) {
   return useScopedQuery({
     queryKey: keys.social.postList(query),
@@ -55,7 +63,7 @@ export function usePosts(query: contract.PostsQuery = {}, { enabled = true }: { 
     placeholderData: keepPreviousData,
     enabled,
     ...pollWhile<{ results: contract.ScheduledPost[] }>((page) =>
-      Boolean(page?.results.some((post) => IN_FLIGHT.has(post.status) || seoPending(post))),
+      Boolean(page?.results.some((post) => goingOut(post) || seoPending(post))),
     ),
   });
 }
@@ -65,7 +73,7 @@ export function usePost(id: string | null | undefined) {
     queryKey: keys.social.post(id ?? ''),
     queryFn: ({ signal }) => apiCall(contract.getPost, { params: { id: id ?? '' }, signal }),
     enabled: Boolean(id),
-    ...pollWhile<contract.ScheduledPost>((post) => Boolean(post && (IN_FLIGHT.has(post.status) || seoPending(post)))),
+    ...pollWhile<contract.ScheduledPost>((post) => Boolean(post && (goingOut(post) || seoPending(post)))),
   });
 }
 
