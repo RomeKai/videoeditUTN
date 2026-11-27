@@ -2,7 +2,9 @@
 Seeds the account of the product demo (documents/runbooks/demo.md).
 
 What it creates
-    - One user, ``DEMO_EMAIL``, with a known password (printed at the end).
+    - One user, ``DEMO_EMAIL``, with a known password (printed at the end),
+      named ``DEMO_USER_NAME``: a person's name, not the workspace's, so an
+      invitation reads "Ana Demo te invitó a Demo OneCreator".
     - Its workspace, renamed ``DEMO_WORKSPACE_NAME``, on the plan ``DEMO_PLAN_NAME`` as a
       comp: no paid period that could end, nothing scheduled.
     - A balance of ``DEMO_BALANCE`` tokens: a top-up, never a debit.
@@ -22,7 +24,8 @@ Safety
     - Idempotent: a second run creates nothing new. It only puts back what the
       demo needs (the plan, without the period or the downgrade a rehearsal left,
       the balance up to ``DEMO_BALANCE``, the password if it changed) and keeps
-      whatever else was edited.
+      whatever else was edited. A demo user still called like the workspace
+      (``OLD_DEMO_USER_NAME``, what this command wrote before) is renamed.
 
 The example projects (``--with-projects``)
     They let the presentation show the review and the clips without waiting
@@ -91,6 +94,9 @@ DEMO_EMAIL = 'demo@onecreator.local'
 # The mark of an account this command made (with the email).
 DEMO_USERNAME = 'onecreator-demo'
 DEMO_PASSWORD = 'OneCreator-Demo-2026'
+# (first_name, last_name). The old one was the workspace's name.
+DEMO_USER_NAME = ('Ana', 'Demo')
+OLD_DEMO_USER_NAME = ('Demo', 'OneCreator')
 DEMO_WORKSPACE_NAME = 'Demo OneCreator'
 DEMO_PLAN_NAME = 'Pro'
 # What the web app's default mock scenario shows (front/src/api/mocks/scenarios.ts),
@@ -132,15 +138,20 @@ FINISHED_CUTS = [
     ('[DEMO] Clip de ejemplo 2', 30.0, 50.0, 74),
 ]
 # Seconds of each stage, in order: example numbers for a 90 s video (about
-# 0.7 s of processing per second of video). The last one, the dispatch of the
-# render, only for the project that finished.
+# 0.7 s of processing per second of video, up to the review). The last one,
+# the render of its two clips from the dispatch to the last one delivered
+# (what finalize_project_render records), only for the project that finished.
 FIXTURE_STAGE_SECONDS = (
     ('audio_extracted', 4.2),
     ('transcribed', 38.6),
     ('moderated', 2.9),
     ('clips_selected', 19.4),
-    ('render_dispatched', 0.8),
+    ('render_dispatched', 23.4),
 )
+# What an older version of this command gave the render: how long its dispatch
+# took, which is what the stage measured then. ``_backfill`` replaces it.
+OLD_FIXTURE_RENDER_SECONDS = 0.8
+RENDER_STAGE = 'render_dispatched'
 # From the creation of the project to its first stage, and between stages.
 FIXTURE_STAGE_GAP_SECONDS = 1.5
 # How long ago each fixture was created: before its example notification
@@ -152,6 +163,13 @@ FIXTURES = {
 }
 # The project of the example "failed" notification: only a title, there is no such project.
 FAILED_EXAMPLE_TITLE = '[DEMO] Ejemplo que falló (datos de prueba)'
+
+
+def _instant(value):
+    try:
+        return datetime.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        return None
 
 
 def transcript_words():
@@ -311,7 +329,7 @@ class Command(BaseCommand):
             # The post_save signals create its workspace (default plan) and the wallet.
             user = User.objects.create_user(
                 username=DEMO_USERNAME, email=DEMO_EMAIL, password=password,
-                first_name='Demo', last_name='OneCreator',
+                first_name=DEMO_USER_NAME[0], last_name=DEMO_USER_NAME[1],
                 is_email_verified=True, tour_completed=True,
                 onboarding_use_case=User.OnboardingUseCase.PODCAST,
                 terms_accepted_at=timezone.now(),
@@ -320,6 +338,10 @@ class Command(BaseCommand):
         if not user.is_active:
             user.is_active = True
             user.save(update_fields=['is_active'])
+        if (user.first_name, user.last_name) == OLD_DEMO_USER_NAME:
+            # The name an earlier version of this command gave it: a name someone edited is kept.
+            user.first_name, user.last_name = DEMO_USER_NAME
+            user.save(update_fields=['first_name', 'last_name'])
         # Saving a new password revokes the account's sessions: only when it has to change.
         # Outside DEBUG the default is random on each run, so there it changes only when asked.
         known = explicit or settings.DEBUG
@@ -552,6 +574,8 @@ class Command(BaseCommand):
         Puts into a fixture made by an older version what it lacks: the times
         of its stages and how many clips it suggested. Only the missing keys:
         a project a rehearsal approved keeps the times its real render wrote.
+        The render time an older version wrote (OLD_FIXTURE_RENDER_SECONDS,
+        its dispatch) is replaced by the one of the fixture, from its start.
         """
         if slug not in FIXTURES:
             return
@@ -570,6 +594,25 @@ class Command(BaseCommand):
                     },
                 }
                 changed.append('metadata')
+            durations = metadata.get('stage_durations')
+            started = metadata.get('stage_started_at')
+            render_started = _instant(started.get(RENDER_STAGE)) if isinstance(started, dict) else None
+            if (
+                isinstance(durations, dict) and durations.get(RENDER_STAGE) == OLD_FIXTURE_RENDER_SECONDS
+                and render_started is not None
+            ):
+                seconds = dict(FIXTURE_STAGE_SECONDS)[RENDER_STAGE]
+                finished = metadata.get('stage_finished_at')
+                metadata = {
+                    **metadata,
+                    'stage_durations': {**durations, RENDER_STAGE: seconds},
+                    'stage_finished_at': {
+                        **(finished if isinstance(finished, dict) else {}),
+                        RENDER_STAGE: (render_started + timedelta(seconds=seconds)).isoformat(),
+                    },
+                }
+                if 'metadata' not in changed:
+                    changed.append('metadata')
             if not isinstance(log.get('suggestions_count'), int):
                 cuts = REVIEW_CUTS if slug == 'review' else FINISHED_CUTS
                 log = {**log, 'suggestions_count': len(cuts)}

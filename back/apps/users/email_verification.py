@@ -122,12 +122,17 @@ def _hours(seconds):
 
 
 def verification_link(user):
-    return _frontend_link('/verificar', {'token': make_token(user), 'siguiente': AFTER_VERIFY_PATH})
+    """
+    In the fragment, like the reset and the invitation links: a browser never
+    sends it, so the token stays out of the web host's access log. A3 reads
+    it, drops it from the address bar and sends it in the body of the POST.
+    """
+    return _frontend_link('/verificar', {'token': make_token(user), 'siguiente': AFTER_VERIFY_PATH}, fragment=True)
 
 
 def signup_link(user):
-    """No `siguiente`: A3 goes on to the page it remembered, or to the welcome (B1)."""
-    return _frontend_link('/verificar', {'token': make_token(user, SIGNUP)})
+    """No `siguiente`: A3 goes on to the page it remembered, or to the welcome (B1). In the fragment too."""
+    return _frontend_link('/verificar', {'token': make_token(user, SIGNUP)}, fragment=True)
 
 
 def send_email_change_verification(user):

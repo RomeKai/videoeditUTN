@@ -391,7 +391,9 @@ def _start_paid_render(request, project_id, pick, description, style=None):
     """
     from .services.ai.pipeline_state import PipelineStage, advance
     from .tasks import finalize_project_render
-    from .tasks.ingestion import CLIP_RENDER, CLIP_RENDER_PREVIOUS_KEY, _dispatch_approved_clips
+    from .tasks.ingestion import (
+        CLIP_RENDER, CLIP_RENDER_PREVIOUS_KEY, _dispatch_approved_clips, _metadata_with_render_started,
+    )
 
     # A fan-out that closed and whose settle did not run (a worker that died
     # in between) is settled first: idempotent, the pipeline's own rule.
@@ -429,6 +431,8 @@ def _start_paid_render(request, project_id, pick, description, style=None):
                 raise _Refused(_error(409, CLIP_RENDERING, 'clip_rendering'))
             advance(project_id, project.pipeline_stage, PipelineStage.RENDER_DISPATCHED)
             metadata = {key: value for key, value in (project.metadata or {}).items() if key not in _RECOVERY_KEYS}
+            # A new render: its own start, and nothing of the times of the one before.
+            metadata = _metadata_with_render_started(metadata)
             metadata[REPLACED_RESERVATIONS_KEY] = _replaced(metadata, CLIP_RENDER.reservation_key)
             metadata.update({
                 CLIP_RENDER.reservation_key: str(reservation.id),

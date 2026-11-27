@@ -175,7 +175,7 @@ flowchart TD
 
 **Rutas:**
 
-- **Público:** `/login`, `/registro`, `/verificar`, `/recuperar`, `/invitacion` (el token va en `#token=…`), `/precios`.
+- **Público:** `/login`, `/registro`, `/verificar`, `/recuperar`, `/invitacion` (en los tres links de email, verificar, recuperar e invitación, el token va en `#token=…`), `/precios`.
 - **Primera vez:** `/bienvenida`.
 - **Proyectos:** `/proyectos`, `/proyectos/nuevo`, `/proyectos/:id`, `/proyectos/:id/revision`, `/proyectos/:id/clips`, `/proyectos/:id/clips/:clipId`.
 - **Resto:** `/publicaciones`, `/brand-kits`, `/brand-kits/:id`, `/uso`, `/ajustes/*`, `/perfil/*`.
@@ -268,6 +268,7 @@ Otras respuestas:
 #### A3. Verificar email — `/verificar`
 - **Qué muestra:** "Te mandamos un link a tu email", con la opción **Reenviar** (disponible cada 60 s).
 - **Al abrir el link:** la cuenta queda verificada (`is_email_verified`) y entra a la Bienvenida.
+- **Link:** `/verificar#token=…`. El token va en el fragmento y la pantalla lo saca de la barra de direcciones: no queda en logs ni en el historial. Un link enviado antes, con `?token=…`, sirve hasta que vence.
 - **API:** ✅ `POST /api/v1/auth/verify-email/` (verifica e inicia la sesión en el navegador donde se creó la cuenta; en otro pide iniciar sesión y volver a abrir el link) y `POST /api/v1/auth/verify-email/resend/` (responde igual exista o no la cuenta).
 
 #### A4. Recuperar contraseña — `/recuperar`

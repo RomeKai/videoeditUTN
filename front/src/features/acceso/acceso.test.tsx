@@ -11,12 +11,12 @@ import { applyScenario, loadDb, mockTokens, saveDb } from '@/api/mocks/state';
 import { needsWelcome, SessionProvider } from '@/shell/session';
 import { ToastProvider } from '@/ui';
 import { InvitationPage, InvitationScreen, joinOptions } from './InvitationScreen';
-import { readInvitationToken, rememberInvitationToken, takeInvitationLink } from './lib';
+import { forgetVerifyLink, readInvitationToken, readVerifyLink, rememberInvitationToken, rememberVerifyLink, takeInvitationLink, takeVerifyLink } from './lib';
 import { formatCountdown, NEXT_MAX_AGE_MS, readSignupNonce, rememberNext, rememberSignupNonce, retryAfterSeconds, safeNext, takeNext } from './lib';
 import { LoginScreen } from './LoginScreen';
 import { RecoverScreen } from './RecoverScreen';
 import { RegisterScreen } from './RegisterScreen';
-import { VerifyEmailScreen } from './VerifyEmailScreen';
+import { VerifyEmailPage, VerifyEmailScreen } from './VerifyEmailScreen';
 import { WelcomeScreen } from './WelcomeScreen';
 import { ApiError } from '@/api/errors';
 import real from '@/api/contracts/drf/responses.json';
@@ -96,6 +96,11 @@ describe('lib', () => {
     expect(safeNext('/verificar?token=abc&siguiente=%2Fperfil')).toBeNull();
     expect(safeNext('/verificar?token=abc&siguiente=%2Fperfil', { verifyLink: true })).toBe('/verificar?token=abc&siguiente=%2Fperfil');
     expect(safeNext('/verificar?email=a%40b.com', { verifyLink: true })).toBeNull();
+    // Without the token: A3 kept the link for this tab.
+    expect(safeNext('/verificar')).toBeNull();
+    expect(safeNext('/verificar', { verifyLink: true })).toBe('/verificar');
+    expect(safeNext('/verificar#token=abc', { verifyLink: true })).toBeNull();
+    expect(safeNext('/verificar/otra', { verifyLink: true })).toBeNull();
     expect(safeNext('/recuperar?token=abc', { verifyLink: true })).toBeNull();
   });
 
@@ -173,7 +178,7 @@ describe('lib', () => {
 describe('A1 · Iniciar sesión', () => {
   it('viniendo de un link de registro abierto en otro navegador, pide iniciar sesión para terminar de verificar', () => {
     scenario('sin-sesion', { signedIn: false });
-    show(<LoginScreen verifyPending next="/verificar?token=abc123" />);
+    show(<LoginScreen verifyPending next="/verificar" />);
     expect(screen.getByText('Iniciá sesión para terminar de verificar tu email.')).toBeInTheDocument();
   });
 
@@ -236,7 +241,8 @@ describe('A1 · Iniciar sesión', () => {
   it('al entrar vuelve al link de verificación que pedía la sesión', async () => {
     scenario('sin-sesion');
     const user = userEvent.setup();
-    const link = '/verificar?token=cambio-de-email&siguiente=%2Fperfil';
+    // A3 kept the link for this tab: the route comes without the token.
+    const link = '/verificar';
     show(<LoginScreen next={link} email="lucia@estudionorte.com" />);
     await user.type(password(), 'contrasena');
     await user.click(screen.getByRole('button', { name: 'Iniciar sesión' }));
@@ -501,10 +507,9 @@ describe('A3 · Verificar email', () => {
     scenario('sin-sesion');
     show(<VerifyEmailScreen token="cambio-de-email" next="/perfil" />);
     expect(await screen.findByRole('heading', { level: 1, name: 'Iniciá sesión para confirmar el email' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Iniciar sesión' })).toHaveAttribute(
-      'href',
-      `/login?siguiente=${encodeURIComponent('/verificar?token=cambio-de-email&siguiente=%2Fperfil')}`,
-    );
+    // The login comes back to /verificar: the token waits in this tab, never in a query.
+    expect(screen.getByRole('link', { name: 'Iniciar sesión' })).toHaveAttribute('href', '/login?siguiente=%2Fverificar');
+    expect(readVerifyLink()).toEqual({ token: 'cambio-de-email', next: '/perfil' });
     expect(getTokens()).toBeNull();
   });
 
@@ -588,10 +593,11 @@ describe('A3 · Verificar email', () => {
     scenario('email-sin-verificar');
     const before = loadDb().users.filter((item) => !item.is_email_verified).length;
     show(<VerifyEmailScreen token="abc123" next="/uso" />);
-    await waitFor(() =>
-      expect(nav.replace).toHaveBeenCalledWith(`/login?motivo=verificar&siguiente=${encodeURIComponent('/verificar?token=abc123&siguiente=%2Fuso')}`),
-    );
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/login?motivo=verificar&siguiente=%2Fverificar'));
     expect(nav.replace).toHaveBeenCalledTimes(1);
+    // The token is not in the login's URL: the link waits in this tab.
+    expect(JSON.stringify(nav.replace.mock.calls)).not.toContain('abc123');
+    expect(readVerifyLink()).toEqual({ token: 'abc123', next: '/uso' });
     expect(getTokens()).toBeNull();
     expect(loadDb().users.filter((item) => !item.is_email_verified)).toHaveLength(before);
   });
@@ -1026,6 +1032,122 @@ describe('A5 · Aceptar invitación', () => {
     scenario('estudio-norte');
     show(<InvitationScreen token="usada" />);
     expect(await screen.findByRole('link', { name: 'andá a tus proyectos' })).toHaveAttribute('href', '/proyectos');
+  });
+});
+
+describe('A3 · el link de verificación', () => {
+  const goTo = (url: string) => window.history.replaceState(null, '', url);
+  afterEach(() => {
+    goTo('/');
+    window.sessionStorage.clear();
+  });
+
+  it('lee el token del fragmento y lo saca de la barra de direcciones', () => {
+    goTo('/verificar#token=abc-123&siguiente=%2Fperfil');
+    expect(takeVerifyLink()).toEqual({ token: 'abc-123', next: '/perfil' });
+    expect(window.location.href.endsWith('/verificar')).toBe(true);
+    expect(takeVerifyLink()).toBeNull();
+    goTo('/verificar#token=solo');
+    expect(takeVerifyLink()).toEqual({ token: 'solo', next: null });
+    goTo('/verificar#otra=cosa');
+    expect(takeVerifyLink()).toBeNull();
+    expect(window.location.hash).toBe('');
+  });
+
+  it('guarda el link solo para esta pestaña y nunca un destino de otro sitio', () => {
+    expect(readVerifyLink()).toBeNull();
+    rememberVerifyLink({ token: 'abc-123', next: '//otro.sitio' });
+    expect(readVerifyLink()).toEqual({ token: 'abc-123', next: null });
+    expect(window.localStorage.getItem('oc.acceso.verificar')).toBeNull();
+    forgetVerifyLink();
+    expect(readVerifyLink()).toBeNull();
+    window.sessionStorage.setItem('oc.acceso.verificar', 'no es json');
+    expect(readVerifyLink()).toBeNull();
+  });
+
+  it('el link del email (#token=) verifica y el token no queda en la barra', async () => {
+    scenario('email-sin-verificar');
+    signedUpInThisBrowser();
+    goTo('/verificar#token=abc123');
+    show(<VerifyEmailPage />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Verificando tu email' })).toBeInTheDocument();
+    expect(window.location.href).not.toContain('abc123');
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/bienvenida'));
+    expect(getTokens()).not.toBeNull();
+    // Done: nothing of the link is left in this tab.
+    await waitFor(() => expect(readVerifyLink()).toBeNull());
+  });
+
+  it('el link de un cambio de email trae su destino en el fragmento', async () => {
+    scenario('estudio-norte');
+    const db = loadDb();
+    const lucia = db.users.find((item) => item.email === 'lucia@estudionorte.com');
+    if (!lucia) throw new Error('falta Lucía');
+    lucia.pending_email = 'lucia@nuevo.com';
+    saveDb(db);
+    goTo('/verificar#token=cambio-de-email&siguiente=%2Fperfil');
+    show(<VerifyEmailPage />);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/perfil'));
+  });
+
+  it('un link ya enviado con ?token= sigue sirviendo, y también sale de la barra', async () => {
+    scenario('email-sin-verificar');
+    signedUpInThisBrowser();
+    goTo('/verificar?token=abc123&siguiente=%2Fuso');
+    // What the page passes from the query.
+    show(<VerifyEmailPage token="abc123" next="/uso" />);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/uso'));
+    expect(window.location.search).toBe('?siguiente=%2Fuso');
+  });
+
+  it('con los dos, gana el del fragmento', async () => {
+    scenario('sin-sesion');
+    goTo('/verificar?token=abc123#token=vencido');
+    show(<VerifyEmailPage token="abc123" />);
+    // "vencido" is the one the mock rejects: it was the one sent.
+    expect(await screen.findByRole('heading', { level: 1, name: 'Este link ya no sirve' })).toBeInTheDocument();
+    expect(window.location.href).not.toContain('vencido');
+    expect(window.location.href).not.toContain('abc123');
+  });
+
+  it('de vuelta del login, sin token en la URL, aplica el link que guardó esta pestaña', async () => {
+    scenario('email-sin-verificar');
+    // Opened outside the browser that signed up: it only asks to sign in.
+    goTo('/verificar#token=abc123');
+    const first = show(<VerifyEmailPage />);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/login?motivo=verificar&siguiente=%2Fverificar'));
+    first.unmount();
+    nav.replace.mockClear();
+    // Signed in, the login comes back to the bare route.
+    const db = loadDb();
+    const sofia = db.users.find((item) => item.email === 'sofia@ejemplo.com');
+    if (!sofia) throw new Error('falta Sofía');
+    for (const item of db.users) item.is_email_verified = item.id !== sofia.id;
+    saveDb(db);
+    setTokens(mockTokens(sofia.id));
+    goTo('/verificar');
+    show(<VerifyEmailPage />);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/bienvenida'));
+    expect(loadDb().users.find((item) => item.id === sofia.id)?.is_email_verified).toBe(true);
+    await waitFor(() => expect(readVerifyLink()).toBeNull());
+  });
+
+  it('la espera (?email=) no aplica ni conserva un link que quedó de antes', async () => {
+    scenario('sin-sesion');
+    rememberVerifyLink({ token: 'abc123', next: null });
+    goTo('/verificar?email=ana%40ejemplo.com');
+    show(<VerifyEmailPage email="ana@ejemplo.com" />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Te mandamos un link a tu email' })).toBeInTheDocument();
+    expect(readVerifyLink()).toBeNull();
+  });
+
+  it('un link vencido no queda guardado', async () => {
+    scenario('sin-sesion');
+    rememberVerifyLink({ token: 'vencido', next: null });
+    goTo('/verificar');
+    show(<VerifyEmailPage />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Este link ya no sirve' })).toBeInTheDocument();
+    await waitFor(() => expect(readVerifyLink()).toBeNull());
   });
 });
 

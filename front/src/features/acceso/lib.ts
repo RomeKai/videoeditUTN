@@ -24,9 +24,12 @@ export function safeNext(next: string | null | undefined, { verifyLink = false }
   if (url.origin !== PARSE_ORIGIN) return null;
   // "/.//otro.sitio" normalises to "//otro.sitio", which a browser reads as another host.
   if (url.pathname.startsWith('//')) return null;
-  // `verifyLink`: the login may go back to an email-change link it interrupted (A3 answers
-  // `login_required`); a link of another account only gets a 403 there, never its session.
-  const backToLink = verifyLink && url.pathname === '/verificar' && Boolean(url.searchParams.get('token'));
+  // `verifyLink`: the login may go back to the verification link it interrupted (A3 answers
+  // `login_required`, or the link of a new account was opened outside the browser that signed up); a link
+  // of another account only gets a 403 there, never its session. The token is not in the path: A3 keeps
+  // it for this tab (`rememberVerifyLink`). A path that still carries it (`?token=`) comes from a page
+  // loaded before the token moved to the fragment.
+  const backToLink = verifyLink && url.pathname === '/verificar' && (url.search === '' || Boolean(url.searchParams.get('token'))) && url.hash === '';
   if (!backToLink && /^\/(login|registro|verificar|recuperar)(\/|$)/.test(url.pathname)) return null;
   return `${url.pathname}${url.search}${url.hash}`;
 }
@@ -157,6 +160,76 @@ export function takeResetLink(): { token: string; email: string } | null {
   window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
   const token = params.get('token');
   return token ? { token, email: params.get('email') ?? '' } : null;
+}
+
+const VERIFY_KEY = 'oc.acceso.verificar';
+
+/** The link of a verification email: its token and, in an email change, where to go after (`siguiente`). */
+export interface VerifyLink {
+  token: string;
+  next: string | null;
+}
+
+/** Where the login sends the person back to finish a verification. The token is not in it: it waits in sessionStorage. */
+export const VERIFY_ROUTE = '/verificar';
+
+/**
+ * The verification link (A3) carries its token in the fragment (`/verificar#token=…&siguiente=…`), like the
+ * reset and invitation links: a browser never sends it, so it stays out of the web host's logs, and the API
+ * gets it in a POST body. Reads it and drops it from the address bar (and from the history).
+ */
+export function takeVerifyLink(): VerifyLink | null {
+  const hash = window.location.hash.replace(/^#/, '');
+  if (!hash) return null;
+  const params = new URLSearchParams(hash);
+  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  const token = params.get('token');
+  return token ? { token, next: params.get('siguiente') } : null;
+}
+
+/**
+ * A link sent before the token moved to the fragment has it in the query (`/verificar?token=…`): it works
+ * until it expires (24 h). Drops it from the address bar (and from the history) once the page read it; the
+ * rest of the query stays.
+ */
+export function dropQueryToken(): void {
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has('token')) return;
+  params.delete('token');
+  const query = params.toString();
+  window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
+}
+
+/**
+ * Keeps the link while the person signs in and comes back to `/verificar` (which no longer has it in its
+ * URL). sessionStorage: this tab only, gone when it closes, and never in `?siguiente=`, which would put the
+ * token in the login's URL and in the web host's logs.
+ */
+export function rememberVerifyLink(link: VerifyLink): void {
+  try {
+    window.sessionStorage.setItem(VERIFY_KEY, JSON.stringify({ token: link.token, next: safeNext(link.next) }));
+  } catch {
+    // Private mode: after signing in, the person opens the link of the email again.
+  }
+}
+
+export function readVerifyLink(): VerifyLink | null {
+  try {
+    const stored = JSON.parse(window.sessionStorage.getItem(VERIFY_KEY) ?? 'null') as Partial<VerifyLink> | null;
+    if (!stored || typeof stored.token !== 'string' || !stored.token) return null;
+    return { token: stored.token, next: typeof stored.next === 'string' ? stored.next : null };
+  } catch {
+    return null;
+  }
+}
+
+/** Once the link did its job or turned out to be dead. */
+export function forgetVerifyLink(): void {
+  try {
+    window.sessionStorage.removeItem(VERIFY_KEY);
+  } catch {
+    // Nothing stored.
+  }
 }
 
 const INVITATION_KEY = 'oc.acceso.invitacion';

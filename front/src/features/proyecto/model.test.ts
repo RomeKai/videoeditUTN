@@ -271,6 +271,25 @@ describe('configuración aplicada', () => {
     expect(Object.keys(Object.fromEntries(buildConfigGroups(byTitle('Tutorial de Notion')).flatMap((group) => group.items.map((item) => [item.label, 1]))))).not.toContain('Clips');
   });
 
+  it('«se detuvo en la revisión» solo si el proyecto llegó a la revisión', () => {
+    const bypass = (project: Project) => buildConfigGroups(project).flatMap((group) => group.items).find((item) => item.key === 'bypass')?.value;
+    const STOPPED = 'No: se detuvo en la revisión';
+    const STOPS = 'No: se detiene en la revisión';
+    // Failed while preparing the video: it never got to the review.
+    const early = byTitle('Falló: CapacityTimeoutError');
+    expect([early.status, early.auto_render_bypass, early.pipeline_stage_status?.clips_selected]).toEqual(['failed', false, 'pending']);
+    expect(bypass(early)).toBe(STOPS);
+    // Failed with the selection running (never finished): neither.
+    expect(bypass({ ...early, pipeline_stage_status: { audio_extracted: 'completed', transcribed: 'completed', moderated: 'completed', clips_selected: 'failed' } })).toBe(STOPS);
+    // Failed after its clips were chosen (in the render): it had stopped there.
+    expect(bypass({ ...early, pipeline_stage_status: { audio_extracted: 'completed', transcribed: 'completed', moderated: 'completed', clips_selected: 'completed', render_dispatched: 'completed' } })).toBe(STOPPED);
+    // Still processing: it will. Waiting for the review or past it: it did.
+    expect(bypass({ ...early, status: 'ingesting' })).toBe(STOPS);
+    expect(bypass({ ...early, status: 'uploaded' })).toBe(STOPS);
+    for (const status of ['awaiting_approval', 'rendering', 'completed', 'partial'] as const) expect(bypass({ ...early, status })).toBe(STOPPED);
+    expect(bypass({ ...early, auto_render_bypass: true })).toBe('Sí: renderiza apenas elige los clips');
+  });
+
   it('traduce lo que el prompt aplicó y por qué ignoró el resto', () => {
     expect(pteAppliedLines({ render_layout: 'blurred', max_clips: 5, subtitle_color: '#FFFF00', use_facetracking: true }).map((line) => line.title)).toEqual([
       'Layout Fondo desenfocado',
@@ -450,6 +469,15 @@ describe('actividad', () => {
       ['Reserva por el render', 'Reservado, todavía sin cobrar', '9'],
     ]);
     expect(explainMovements([reservation('a', 11, 18, 'reserved')])).toMatchObject({ totalLabel: 'Total reservado', total: '18 tokens' });
+    // The render of the approval, a retry and a clip render, 9 each: each line says which one it is.
+    const named = (id: string, hour: number, description: string) => ({ ...item(id, 'tokens_charged', at(24, hour), -9), description });
+    expect(
+      explainMovements([named('c', 13, 'Cobro por renderizar «Clip 1»'), named('b', 12, 'Cobro por reintentar «Clip 2»'), named('a', 11, 'Cobro del render')])?.lines.map((line) => [line.label, line.value]),
+    ).toEqual([
+      ['Cobro del render', '9'],
+      ['Cobro por reintentar «Clip 2»', '9'],
+      ['Cobro por renderizar «Clip 1»', '9'],
+    ]);
     // A partial charge: what was charged, not what had been set aside.
     expect(explainMovements([item('c', 'tokens_refunded', at(24, 12), 4), charge('b', 12, 8), reservation('a', 11, 12, 'partially_charged')])).toMatchObject({ total: '8 tokens' });
     // Two reservations, one charged in part (20 → 5) and one still open (20): 25. No guessing which charge closes which.
