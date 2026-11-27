@@ -151,7 +151,7 @@ async function checkProjectsList(page: Page, api: Awaited<ReturnType<typeof back
 
 
 test.describe('Modo híbrido contra el backend real', () => {
-  test('login, /me, proyectos, brand kits y billetera vienen del backend; las redes son simuladas', async ({ page, request }) => {
+  test('login, /me, proyectos, brand kits, billetera y redes vienen del backend', async ({ page, request }) => {
     const api = await backend(request);
     const me = await api.me();
     const active = me.workspaces.find((item) => item.id === me.active_workspace_id);
@@ -191,11 +191,12 @@ test.describe('Modo híbrido contra el backend real', () => {
     expect(answersOf(seen, 'GET', '/api/v1/subscription/').at(-1)).toMatchObject({ status: 200, mock: null });
     await expect(page.getByText('Saldo disponible')).toBeVisible();
 
-    // Social accounts are still proposed: Redes is answered by the mocks, for the same real workspace.
+    // Social accounts exist since gap 10: Redes is the backend's too, for the same workspace (a workspace without
+    // its profile at the provider answers its three networks disconnected, without calling the provider).
     await page.goto('/ajustes/redes');
     await settle(page);
     expect(answersOf(seen, 'GET', '/api/v1/social-accounts/').at(-1)).toMatchObject({
-      status: 200, mock: 'social.accounts', workspaceHeader: active?.id,
+      status: 200, mock: null, workspaceHeader: active?.id,
     });
 
     // With /me real there is no bridge: a workspace can be created (it would be the backend's).

@@ -3,7 +3,7 @@ import { defineEndpoint } from '../endpoint';
 import { Id, IsoDateTime, NoContent, PageQuery, Platform, paginated } from './common';
 import { PostStatus } from './projects';
 
-/* ── Social accounts (the workspace's profile at the publishing provider) ─── */
+/* ── Social accounts (the networks linked to the workspace's profile at the provider) ─── */
 
 export const SocialAccountStatus = z.enum(['connected', 'expired', 'disconnected']);
 export type SocialAccountStatus = z.infer<typeof SocialAccountStatus>;
@@ -152,7 +152,7 @@ const planErrors = [
   { status: 403, when: 'El plan no permite programar (`code: "scheduling"`) o publicar el clip en varias redes (`code: "crossposting"`): `{error, code}`. O el rol no publica: `{detail}`.' },
   {
     status: 409,
-    when: 'El espacio no tiene su perfil en el proveedor de publicación (`code: "account_not_connected"`): la UI pide conectar. O la `Idempotency-Key` ya se usó con otro cuerpo, o sus publicaciones ya no existen (`code: "idempotency_key_reused"`).',
+    when: 'La cuenta de esa red no está conectada o está vencida (`code: "account_not_connected"`, el mensaje nombra la red): la UI pide conectar. O la `Idempotency-Key` ya se usó con otro cuerpo, o sus publicaciones ya no existen (`code: "idempotency_key_reused"`).',
   },
   { status: 429, when: 'El usuario creó demasiadas publicaciones en la última hora (300; un lote cuenta cada una): `detail` dice cuánto esperar.' },
 ];
@@ -165,14 +165,22 @@ const AI_TEXT_COST =
 const QUEUE_ONLY =
   'Ningún endpoint de publicaciones llama a la red: lo que tiene que salir queda `SCHEDULED` y lo encola `dispatch_scheduled_posts_batch` (Celery Beat, cada 5 min). Cada escritura toma el lock de la fila del post y decide con el estado que lee bajo ese lock, igual que el despachador y el worker, así que nunca pisa una publicación que el beat ya tomó.';
 
+/** What the three endpoints of the networks share. */
+const PROVIDER_DOWN = { status: 503, when: 'El proveedor de publicación no respondió o rechazó el pedido: `{error, code}` (`code` es el de la falla, por ejemplo `provider_unavailable`). No cambió nada.' };
+
 export const listSocialAccounts = defineEndpoint({
   id: 'social.accounts',
   method: 'GET',
   path: '/api/v1/social-accounts/',
   summary: 'Una entrada por red (TikTok, Instagram Reels, YouTube Shorts) con su estado y sus límites.',
   response: z.array(SocialAccount),
-  errors: [],
-  backend: { status: 'proposed', gap: 10, note: 'Hoy solo existe el perfil del espacio en el proveedor (SocialProfile, en apps/integrations), sin flujo para conectar.' },
+  errors: [PROVIDER_DOWN],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/videos/views_social_accounts.py · SocialAccountListView + apps/integrations/social/accounts.py · accounts',
+    note:
+      'Cualquier miembro del espacio activo (`X-Workspace-Id`). Siempre las tres redes, en ese orden. Sin perfil en el proveedor, las tres `disconnected` sin preguntarle. Con perfil, el estado y el nombre son los del proveedor, leídos a lo sumo cada 15 s (conectar y desconectar borran esa copia): `expired` es una cuenta que la red pide autorizar de nuevo. `username` y `connected_at` son `null` si está desconectada. `limits` son las reglas del backend: `caption_max_chars` el mismo límite con el que valida el texto (TikTok e Instagram 2200, YouTube 5000), `hashtags_max` 30, 30 y 15, `max_duration_seconds` 600, 900 y 180, `aspect_ratios` `["9:16"]`. `tiktok`: el proveedor no da las opciones del creador, así que va un valor seguro para toda cuenta (`PUBLIC_TO_EVERYONE`, `MUTUAL_FOLLOW_FRIENDS` y `SELF_ONLY`; nada apagado) mientras TikTok no esté desconectada. Cada lectura queda guardada en el perfil: con ella el backend decide `account_not_connected` al publicar y el paso de onboarding `has_social_account`.',
+  },
   screens: ['H3', 'E1', 'B2'],
 });
 
@@ -183,8 +191,18 @@ export const connectSocialAccount = defineEndpoint({
   summary: 'Devuelve la URL de la red (vía Ayrshare) para autorizar la cuenta en una ventana aparte.',
   request: z.object({ platform: Platform, return_url: z.string().url().optional() }),
   response: z.object({ connect_url: z.string().url() }),
-  errors: [{ status: 403, when: 'El rol no conecta redes (solo Dueño y Admin).' }],
-  backend: { status: 'proposed', gap: 10 },
+  errors: [
+    { status: 400, when: 'Por campo: `platform` que no es una de las tres redes, o `return_url` que no es de la web de OneCreator (`FRONTEND_URL`): `{campo: [mensaje]}`.' },
+    { status: 403, when: 'El rol no conecta redes (solo Dueño y Admin).' },
+    { status: 429, when: 'Demasiados pedidos del usuario (30 por hora): `detail` dice cuánto esperar.' },
+    PROVIDER_DOWN,
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/videos/views_social_accounts.py · SocialAccountConnectView + apps/integrations/social/accounts.py · connect_url',
+    note:
+      'La primera vez crea el perfil del espacio en el proveedor (Ayrshare), uno solo aunque lleguen dos pedidos a la vez. La URL abre la página del proveedor solo para esa red, en castellano, y vale 5 minutos: se pide al tocar «Continuar» y se abre con `window.open`. Sin `return_url`, el botón «Close» del proveedor cierra esa ventana (así lo usa D6: la web ve que se cerró y vuelve a leer las cuentas). Con `return_url`, ese botón lleva la ventana ahí, y tiene que ser de la web (`FRONTEND_URL`) para que no sirva de redirección abierta. La clave del perfil nunca sale del backend.',
+  },
   screens: ['D6', 'H3', 'E1'],
 });
 
@@ -192,11 +210,20 @@ export const disconnectSocialAccount = defineEndpoint({
   id: 'social.disconnect',
   method: 'DELETE',
   path: '/api/v1/social-accounts/:platform/',
-  summary: 'Desconecta la cuenta de una red. Las publicaciones programadas en esa red quedan en error.',
+  summary: 'Desconecta la cuenta de una red. Las publicaciones programadas o en cola en esa red quedan en error.',
   response: NoContent,
   successStatus: 204,
-  errors: [{ status: 403, when: 'El rol no desconecta redes.' }],
-  backend: { status: 'proposed', gap: 10 },
+  errors: [
+    { status: 403, when: 'El rol no desconecta redes (solo Dueño y Admin).' },
+    { status: 404, when: '`:platform` no es `TIKTOK`, `INSTAGRAM_REELS` ni `YOUTUBE_SHORTS`.' },
+    PROVIDER_DOWN,
+  ],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/videos/views_social_accounts.py · SocialAccountDetailView + services/scheduled_posts.py · fail_network_posts',
+    note:
+      'Desvincula la red en el proveedor (no es error si ya no estaba). Después, las publicaciones de esa red en `SCHEDULED` o `QUEUED` pasan a `FAILED` con `error_code: "account_not_connected"`: se reconecta y se reintentan. Los borradores no cambian (al mandarlos se vuelve a mirar la cuenta), y una que se está publicando sigue su curso. Si el proveedor falla, es 503 y no cambia nada.',
+  },
   screens: ['H3'],
 });
 
@@ -240,7 +267,7 @@ export const createPost = defineEndpoint({
     note:
       'Crear solo guarda: un borrador queda `DRAFT` y lo demás `SCHEDULED` (ahora, o la fecha pedida), y la publicación en la red la hace el worker después de que el beat la encola. ' +
       QUEUE_ONLY +
-      ' El clip tiene que ser del espacio activo y estar renderizado. Los límites del plan se miran en el servidor: programar pide `allow_scheduling`; sin `allow_crossposting` un clip sale en una sola red, contando sus publicaciones programadas, en cola, publicando o publicadas (no los borradores ni las fallidas). Sin plan no hay límites. La cuenta: sin el perfil del espacio en el proveedor (SocialProfile) es 409 `account_not_connected` (no se sabe red por red hasta el hueco 10; un borrador no la pide). Acepta `Idempotency-Key` (hasta 255 caracteres): el backend guarda por clave y workspace, durante 24 h, qué publicaciones creó; la misma clave devuelve esas publicaciones (tal como están ahora) sin crear nada, con otro cuerpo es 409, y una respuesta de error no se guarda. Al crear el post se pide el SEO (`seo_status: "pending"`). ' + AI_TEXT_COST + ' Si la generación falla en un borrador, o en una publicación con caption propio, el estado no cambia y queda `seo_status: "failed"`. Lo que sale es lo que muestra la API: `caption` y `hashtags` (los del usuario o, si no hay, los de la IA), con las opciones de `tiktok`. Pendiente: (1) una publicación en cola sin texto propio todavía puede salir antes de que llegue el de la IA: sale sin texto (en YouTube, con el título del clip); (2) los borradores que nadie manda no se borran solos.',
+      ' El clip tiene que ser del espacio activo y estar renderizado. Los límites del plan se miran en el servidor: programar pide `allow_scheduling`; sin `allow_crossposting` un clip sale en una sola red, contando sus publicaciones programadas, en cola, publicando o publicadas (no los borradores ni las fallidas). Sin plan no hay límites. La cuenta, red por red, con lo que dijo el proveedor la última vez que se leyó (`social.accounts`), sin llamarlo: desconectada es 409 `account_not_connected` («La cuenta de X no está conectada. Conectala para publicar.») y vencida también, con «está vencida. Reconectala para publicar.». Un perfil copiado de antes que nunca se leyó cuenta como conectado. Un borrador no la pide. Acepta `Idempotency-Key` (hasta 255 caracteres): el backend guarda por clave y workspace, durante 24 h, qué publicaciones creó; la misma clave devuelve esas publicaciones (tal como están ahora) sin crear nada, con otro cuerpo es 409, y una respuesta de error no se guarda. Al crear el post se pide el SEO (`seo_status: "pending"`). ' + AI_TEXT_COST + ' Si la generación falla en un borrador, o en una publicación con caption propio, el estado no cambia y queda `seo_status: "failed"`. Lo que sale es lo que muestra la API: `caption` y `hashtags` (los del usuario o, si no hay, los de la IA), con las opciones de `tiktok`. Pendiente: (1) una publicación en cola sin texto propio todavía puede salir antes de que llegue el de la IA: sale sin texto (en YouTube, con el título del clip); (2) los borradores que nadie manda no se borran solos.',
   },
   screens: ['E1'],
 });

@@ -143,17 +143,24 @@ describe('fichas del calendario', () => {
 
 describe('publicaciones con error', () => {
   it('si la cuenta no está conectada, la salida es reconectar', () => {
-    const failed = post({ id: '1', platform: 'YOUTUBE_SHORTS', status: 'FAILED', error_message: 'La red rechazó el video.', error_code: 'media_rejected' });
+    const failed = post({ id: '1', platform: 'YOUTUBE_SHORTS', status: 'FAILED', error_message: 'YouTube Shorts rechazó la publicación.', error_code: 'provider_rejected' });
     expect(needsReconnect(failed, [account('YOUTUBE_SHORTS', 'expired')])).toBe(true);
     expect(failureMessage(failed, [account('YOUTUBE_SHORTS', 'expired')])).toBe('La cuenta de YouTube está vencida. Reconectala y reintentá.');
     expect(needsReconnect(failed, [account('YOUTUBE_SHORTS', 'connected')])).toBe(false);
-    expect(failureMessage(failed, [account('YOUTUBE_SHORTS', 'connected')])).toBe('La red rechazó el video.');
+    expect(failureMessage(failed, [account('YOUTUBE_SHORTS', 'connected')])).toBe('YouTube Shorts rechazó la publicación.');
     expect(needsReconnect(post({ id: '2', status: 'SCHEDULED' }), [account('TIKTOK', 'expired')])).toBe(false);
   });
 
+  it('sin la lista de cuentas, el código del backend dice si hay que reconectar', () => {
+    for (const code of ['account_not_connected', 'account_expired']) {
+      expect(needsReconnect(post({ id: '1', status: 'FAILED', error_code: code }), undefined), code).toBe(true);
+    }
+    expect(needsReconnect(post({ id: '1', status: 'FAILED', error_code: 'provider_rejected' }), undefined)).toBe(false);
+  });
+
   it('nunca muestra el texto de la excepción', () => {
-    const failed = post({ id: '1', status: 'FAILED', error_log: 'AyrshareError: code 137', error_message: null });
-    expect(failureMessage(failed)).not.toContain('Ayrshare');
+    const failed = post({ id: '1', status: 'FAILED', error_log: 'provider_rejected (ayrshare http=400 code=138)', error_message: null });
+    expect(failureMessage(failed)).not.toContain('ayrshare');
   });
 
   it('una publicación que lleva mucho «Publicando» se puede reintentar', () => {

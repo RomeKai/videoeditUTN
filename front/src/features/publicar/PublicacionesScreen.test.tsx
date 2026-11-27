@@ -117,8 +117,9 @@ describe('E2 · Publicaciones · lista', () => {
     await open();
     const failed = postWith('FAILED');
     const alert = (await screen.findByText(`«${failed?.clip.title}» no salió en TikTok`)).closest('[role]') as HTMLElement;
-    expect(alert).toHaveTextContent('La red rechazó el video.');
-    expect(alert).not.toHaveTextContent('Ayrshare');
+    // The backend's sentence for `provider_rejected`, never the `error_log` with the provider's detail.
+    expect(alert).toHaveTextContent('TikTok rechazó la publicación.');
+    expect(alert).not.toHaveTextContent('ayrshare');
     expect(within(alert).getByRole('button', { name: 'Reintentar' })).toBeInTheDocument();
   });
 
@@ -238,7 +239,7 @@ describe('E2 · Publicaciones · calendario', () => {
     const card = await within(grid).findByRole('button', { name: new RegExp(`${failed?.clip.title}\\. TikTok: Error`) });
     fireEvent.click(card);
     const detail = await screen.findByRole('dialog', { name: 'Detalle de la publicación' });
-    expect(await within(detail).findByText('La red rechazó el video. Revisá que la cuenta siga conectada y volvé a intentarlo.')).toBeInTheDocument();
+    expect(await within(detail).findByText('TikTok rechazó la publicación. Revisá el video y el texto, y reintentá.')).toBeInTheDocument();
   });
 
   it('arrastrar una programada a otra celda la reprograma', async () => {

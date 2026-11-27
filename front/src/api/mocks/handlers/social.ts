@@ -5,10 +5,12 @@ import { newId, type MockDb, type MockPost, type MockWorkspace } from '../db';
 import { badRequest, conflict, MockHttpError, notFound, paginate, route } from '../http';
 import { adoptClip } from '../hybrid';
 import { planOf, serializePost } from '../serialize';
+import { failPublish } from '../publish-errors';
 import { addActivity } from '../sim';
 
 const NETWORK_NAME: Record<Platform, string> = { TIKTOK: 'TikTok', INSTAGRAM_REELS: 'Instagram Reels', YOUTUBE_SHORTS: 'YouTube Shorts' };
-const EDITABLE = new Set(['DRAFT', 'SCHEDULED']);
+/** What a disconnected network fails (fail_network_posts): what was going out on it. */
+const GOING_OUT = new Set(['SCHEDULED', 'QUEUED']);
 /** Posts that hold their network for the crossposting limit (services/scheduled_posts.py · LIVE). */
 const LIVE = new Set(['SCHEDULED', 'QUEUED', 'PROCESSING', 'PUBLISHED']);
 /** A `publish_at` this close to now is "now" (NOW_TOLERANCE). */
@@ -99,13 +101,12 @@ function checkCrossposting(db: MockDb, workspace: MockWorkspace, wanted: Map<str
   }
 }
 
+/** services/scheduled_posts._check_account: each network by the provider's last read (the accounts the screens show). */
 function checkAccount(db: MockDb, workspaceId: string, platform: Platform): void {
-  // On purpose not like the backend of today: the backend only knows whether the workspace has its Ayrshare
-  // profile (one 409 for every network) until connecting accounts exists (gap 10). The mocks simulate that
-  // gap: each network has its account, and the screens (E1, H3) show them one by one.
   const account = db.socialAccounts.find((item) => item.workspace === workspaceId && item.platform === platform);
+  if (account?.status === 'expired') throw conflict(`La cuenta de ${NETWORK_NAME[platform]} está vencida. Reconectala para publicar.`, 'account_not_connected');
   if (!account || account.status !== 'connected') {
-    throw conflict(`La cuenta de ${NETWORK_NAME[platform]} está ${account?.status === 'expired' ? 'vencida' : 'sin conectar'}. Reconectala para publicar.`, 'account_not_connected');
+    throw conflict(`La cuenta de ${NETWORK_NAME[platform]} no está conectada. Conectala para publicar.`, 'account_not_connected');
   }
 }
 
@@ -232,8 +233,14 @@ export const socialHandlers = [
 
   route(contract.connectSocialAccount, ({ body, request, require }) => {
     require('social.manage');
+    // The handlers run in the web app's page: its origin is the backend's FRONTEND_URL.
+    const app = typeof location === 'undefined' ? null : location.origin;
+    // Like the backend, the way back must be the web app's: never an open redirect.
+    if (body.return_url && app && new URL(body.return_url).origin !== app) {
+      throw badRequest({ return_url: ['La dirección de vuelta tiene que ser de OneCreator.'] });
+    }
     // The fake authorization window of the network lives in the app (dev route).
-    const origin = body.return_url ? new URL(body.return_url).origin : (request.headers.get('Origin') ?? 'http://localhost:3000');
+    const origin = app ?? (body.return_url ? new URL(body.return_url).origin : (request.headers.get('Origin') ?? 'http://localhost:3000'));
     return { data: { connect_url: `${origin}/dev/conectar-red?red=${body.platform}` } };
   }),
 
@@ -245,12 +252,11 @@ export const socialHandlers = [
     account.username = null;
     account.connected_at = null;
     account.tiktok = null;
+    // services/scheduled_posts.fail_network_posts: what was going out on that network fails; drafts stay drafts.
     for (const post of db.posts) {
-      if (post.workspace !== workspace.id || post.platform !== account.platform || !EDITABLE.has(post.status)) continue;
-      post.status = 'FAILED';
-      post.error_code = 'account_not_connected';
-      post.error_message = `La cuenta de ${NETWORK_NAME[post.platform]} se desconectó. Reconectala y reintentá.`;
-      post.error_log = 'AccountDisconnected';
+      if (post.workspace !== workspace.id || post.platform !== account.platform || !GOING_OUT.has(post.status)) continue;
+      failPublish(post, 'account_not_connected', 'disconnected');
+      delete post._sim;
       post.updated_at = new Date(now).toISOString();
     }
     return { data: undefined };
@@ -369,10 +375,7 @@ export const socialHandlers = [
     if (clip && clip.status !== 'completed' && clip.status !== 'published') throw invalid('video_clip', 'El clip todavía no está renderizado.');
     if (post.platform === 'TIKTOK' && !post.tiktok) throw invalid('tiktok', TIKTOK_PRIVACY_MISSING);
     checkCrossposting(db, workspace, new Map([[post.video_clip, new Set([post.platform])]]), post.id);
-    const account = db.socialAccounts.find((item) => item.workspace === workspace.id && item.platform === post.platform);
-    if (!account || account.status !== 'connected') {
-      throw conflict(`La cuenta de ${NETWORK_NAME[post.platform]} no está conectada. Reconectala para reintentar.`, 'account_not_connected');
-    }
+    checkAccount(db, workspace.id, post.platform);
     // Back to the beat, for now: the simulation queues it on its next tick.
     post.status = 'SCHEDULED';
     post.publish_at = stamp;

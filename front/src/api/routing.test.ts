@@ -65,10 +65,10 @@ describe('ruteo híbrido', () => {
     expect(routeOf(projects.listProjects, hybrid())).toBe('real'); // partial
     expect(routeOf(brandKits.listBrandKits, hybrid())).toBe('real'); // exists
     // An endpoint still proposed, taken from the registry: a fixed one turns real as soon as the
-    // backend builds it (projects.getProjectActivity did).
+    // backend builds it (projects.getProjectActivity did, and the networks of gap 10). With none
+    // left, the next test checks the rule on a copy marked proposed.
     const stillProposed = ALL_ENDPOINTS.find((e) => e.backend.status === 'proposed' && domainOf(e) !== 'auth');
-    expect(stillProposed, 'algún endpoint sigue propuesto').toBeDefined();
-    expect(routeOf(stillProposed!, hybrid())).toBe('mock'); // proposed
+    if (stillProposed) expect(routeOf(stillProposed, hybrid())).toBe('mock'); // proposed
   });
 
   it('marcar un endpoint como exists en el contrato alcanza para mandarlo al backend', () => {
@@ -102,10 +102,12 @@ describe('ruteo híbrido', () => {
     const plus = hybrid('existing,users.me');
     expect(routeOf(projects.listProjects, plus)).toBe('real');
     expect(routeOf(users.getMe, plus)).toBe('real');
-    // A proposed endpoint that was not named (users.updateMe exists since feat/perfil-me, billing.wallet
-    // since feat/billetera-movimientos-precios, billing.subscription since feat/suscripcion-y-compras,
-    // notifications since feat/notificaciones).
-    expect(routeOf(social.listSocialAccounts, plus)).toBe('mock');
+    // A proposed endpoint that was not named stays mocked (users.updateMe exists since feat/perfil-me,
+    // billing.wallet since feat/billetera-movimientos-precios, billing.subscription since
+    // feat/suscripcion-y-compras, notifications since feat/notificaciones, social.accounts since
+    // feat/redes-conectar: a copy marked proposed stands for one).
+    expect(routeOf({ ...social.listSocialAccounts, backend: { status: 'proposed' as const, gap: 10 } }, plus)).toBe('mock');
+    expect(routeOf(social.listSocialAccounts, plus)).toBe('real');
     expect(routeOf(notifications.listNotifications, plus)).toBe('real');
     expect(routeOf(billing.getWallet, plus)).toBe('real');
     expect(parseRealList(' Projects ,billing.Plans,, existing ')).toEqual({ domains: new Set(['projects']), endpoints: new Set(['billing.plans']), existing: true });

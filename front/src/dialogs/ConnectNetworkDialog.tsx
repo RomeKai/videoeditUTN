@@ -14,6 +14,9 @@ import { Icon } from '@/ui/Icon';
 import { NETWORKS, NetworkChip } from '@/ui/NetworkChip';
 import styles from './Dialogs.module.css';
 
+/** How often the accounts are asked again after the network's window closed. */
+const RECHECK_MS = 5000;
+
 export interface ConnectNetworkDialogProps {
   /** Network to connect; null keeps the dialog closed. */
   platform: Platform | null;
@@ -35,12 +38,18 @@ export function ConnectNetworkDialog({ platform, onClose }: ConnectNetworkDialog
   const account = accounts.data?.find((item) => item.platform === platform);
   const connected = waiting && account?.status === 'connected';
 
-  // While the network's window is open, check the accounts when it closes or the tab regains focus.
+  // While the network's window is open, check the accounts when it closes or the tab regains focus. Once it is
+  // closed, ask again every few seconds until the account shows up: the backend reads the provider at most every
+  // 15 s, and the provider may take a moment to list a new account.
   useEffect(() => {
     if (!waiting) return;
-    const refresh = () => void queryClient.invalidateQueries({ queryKey: keys.social.accounts });
+    let asked = 0;
+    const refresh = () => {
+      asked = Date.now();
+      void queryClient.invalidateQueries({ queryKey: keys.social.accounts });
+    };
     const timer = window.setInterval(() => {
-      if (popup.current?.closed) refresh();
+      if (popup.current?.closed && Date.now() - asked >= RECHECK_MS) refresh();
     }, 1000);
     window.addEventListener('focus', refresh);
     return () => {
@@ -102,8 +111,9 @@ export function ConnectNetworkDialog({ platform, onClose }: ConnectNetworkDialog
             loading={connect.isPending}
             data-autofocus
             onClick={() =>
+              // No `return_url`: the provider's «Close» then closes this window, and the check above sees it.
               connect.mutate(
-                { platform, return_url: window.location.href },
+                { platform },
                 {
                   onSuccess: ({ connect_url }) => {
                     popup.current = window.open(connect_url, 'onecreator-conectar', 'width=520,height=680');

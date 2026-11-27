@@ -2,7 +2,7 @@ import * as contract from '../../contracts/workspaces';
 import type { SeatLimit } from '../../contracts/workspaces';
 import { newId, PLATFORMS, type MockDb, type MockWorkspace } from '../db';
 import { badRequest, conflict, forbidden, MockHttpError, notFound, route } from '../http';
-import { PLAN_IDS } from '../seed';
+import { PLAN_IDS, SOCIAL_LIMITS } from '../seed';
 import { planOf, serializeMember, serializeWorkspace } from '../serialize';
 import { roleIn } from '../sim';
 import { mockTokens } from '../state';
@@ -85,7 +85,7 @@ export const workspacesHandlers = [
         status: 'disconnected',
         username: null,
         connected_at: null,
-        limits: { caption_max_chars: platform === 'YOUTUBE_SHORTS' ? 100 : 2200, hashtags_max: 30, max_duration_seconds: platform === 'TIKTOK' ? 600 : 90, aspect_ratios: ['9:16'] },
+        limits: SOCIAL_LIMITS[platform],
         tiktok: null,
       });
     }

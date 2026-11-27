@@ -27,7 +27,7 @@ import { ClipPreview } from './clips';
 import real from './drf/responses.json';
 import { Notification, type NotificationsResponse, listNotifications, markNotificationRead } from './notifications';
 import { ActivityItem, ApprovePaperEditResponse, CreateFromPromptResponse, CreateProjectResponse, PaperEditData, Project, ProjectListItem, ProjectsResponse, StageTiming, UploadTooLargeBody, createProject } from './projects';
-import { ScheduledPost, createPost, createPostsBulk, listPosts, regeneratePostSeo, retryPost, updatePost } from './social';
+import { ScheduledPost, type SocialAccount, connectSocialAccount, createPost, createPostsBulk, disconnectSocialAccount, listPosts, listSocialAccounts, regeneratePostSeo, retryPost, updatePost } from './social';
 import { type MembersResponse, type Workspace, createWorkspace, getWorkspace, listMembers, listWorkspaces, transferWorkspace, updateMember, updateWorkspace } from './workspaces';
 
 /**
@@ -450,6 +450,29 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
     expect(list.count).toBe(8);
     expect(list.status_counts).toEqual({ DRAFT: 2, SCHEDULED: 6, QUEUED: 0, PROCESSING: 0, PUBLISHED: 0, FAILED: 0 });
     expect([createPost, createPostsBulk, updatePost, retryPost, regeneratePostSeo].map((endpoint) => endpoint.backend.status)).toEqual(['exists', 'exists', 'exists', 'exists', 'exists']);
+  });
+
+  it('redes del espacio: las tres en orden, con los límites del backend y la vuelta solo a la web', () => {
+    const none = parse(listSocialAccounts.response, real.social_accounts_none) as SocialAccount[];
+    expect(none.map((account) => [account.platform, account.status, account.tiktok])).toEqual([
+      ['TIKTOK', 'disconnected', null],
+      ['INSTAGRAM_REELS', 'disconnected', null],
+      ['YOUTUBE_SHORTS', 'disconnected', null],
+    ]);
+    const accounts = parse(listSocialAccounts.response, real.social_accounts) as SocialAccount[];
+    expect(accounts.map((account) => [account.status, account.username, account.limits.max_duration_seconds])).toEqual([
+      ['connected', '@estudionorte', 600],
+      ['expired', '@estudio.norte', 900],
+      ['disconnected', null, 180],
+    ]);
+    expect(accounts[0]?.tiktok?.privacy_options).toEqual(['PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'SELF_ONLY']);
+    expect((parse(connectSocialAccount.response, real.social_connect) as { connect_url: string }).connect_url).toMatch(/^https:\/\//);
+    expect(fieldError(error('social_400_return_url', 'social.connect'), 'return_url')).toBe('La dirección de vuelta tiene que ser de OneCreator.');
+    expect(error('social_403_connect', 'social.connect').status).toBe(403);
+    const down = error('social_503_connect', 'social.connect');
+    // A 5xx shows the screen's own sentence (D6: «No pudimos abrir la conexión.»), whatever the body says.
+    expect([down.status, down.code, errorMessage(down, 'No pudimos abrir la conexión.')]).toEqual([503, 'provider_unavailable', 'No pudimos abrir la conexión.']);
+    expect([listSocialAccounts, connectSocialAccount, disconnectSocialAccount].map((endpoint) => endpoint.backend.status)).toEqual(['exists', 'exists', 'exists']);
   });
 
   it('publicaciones: los errores traen su code, y el lote dice cuál publicación falló', () => {
