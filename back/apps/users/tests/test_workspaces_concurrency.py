@@ -536,15 +536,58 @@ class ConcurrentCreationAndDeleteTests(DeleteHarness, APITransactionTestCase):
 
 
 
+class ProjectCreatedDuringTheDeleteTests(DeleteHarness, APITransactionTestCase):
+    """
+    The delete locks the projects, then the workspace's row. A project whose
+    INSERT commits between the two is not among the locked ones: with the
+    workspace locked the delete looks again, sees it and refuses. Without that,
+    it would go on to the cascade while the creation reserves its tokens.
+    """
+
+    def test_a_project_saved_between_the_two_locks_makes_the_delete_refuse(self):
+        from apps.users import views_workspaces
+
+        paused, release = threading.Event(), threading.Event()
+        require = views_workspaces.require_workspace_role
+
+        def pause_before_the_workspace_lock(*args, **kwargs):
+            if kwargs.get("lock"):
+                # The projects are locked; the workspace's row is next.
+                paused.set()
+                release.wait(timeout=10)
+            return require(*args, **kwargs)
+
+        answers = {}
+        with mock.patch.object(views_workspaces, "require_workspace_role", pause_before_the_workspace_lock):
+            delete = threading.Thread(target=self._delete, args=(answers,))
+            delete.start()
+            assert paused.wait(timeout=10)
+            # A creation's INSERT, committed: the workspace's row is not locked yet.
+            created = VideoProject.objects.create(
+                workspace=self.workspace, uploaded_by=self.owner, title="Recién subido", status=VideoProject.Status.UPLOADED,
+            )
+            release.set()
+            delete.join(timeout=30)
+
+        assert Wallet.objects.get(workspace=self.workspace).available_balance == 0
+        assert answers == {"delete": (409, "project_processing")}
+        assert VideoProject.objects.filter(pk=created.pk).exists()
+        assert Workspace.objects.filter(pk=self.workspace.pk).exists()
+
+
 class ConcurrentPaidRenderAndDeleteTests(DeleteHarness, APITransactionTestCase):
     """
-    A paid render (``clips/:id/render/``) or a re-dispatch starts while the
-    owner deletes the workspace. Both lock the project's row; with
-    ``select_related('workspace')`` and no ``of``, that FOR UPDATE also locked
-    the workspace's row, after the project's: the reverse of the delete, which
-    locks the workspace and then the projects, so Postgres aborted one of the
-    two. Now they lock the project only: they go on while the delete holds the
-    workspace, and the delete then sees what they did and refuses.
+    A paid render (``clips/:id/render/``), a re-dispatch or an approval starts
+    while the owner deletes the workspace. Each one locks its project's row and,
+    when it writes that row twice (the render, the approval), takes the
+    workspace's row at its commit too: FOR KEY SHARE, the deferred check of the
+    project's foreign key. The delete used to lock the workspace and then wait
+    for the projects, so Postgres aborted one of the two. Now the delete locks
+    the projects first, and the workspace after them: whichever gets the project
+    first goes on, and the other one waits for it (the delete then refuses for
+    what it sees). The render and the re-dispatch also lock the project only
+    (``of``): with ``select_related('workspace')``, their FOR UPDATE took the
+    workspace's row too.
     """
 
     def setUp(self):
@@ -573,7 +616,7 @@ class ConcurrentPaidRenderAndDeleteTests(DeleteHarness, APITransactionTestCase):
         )
         return project, clip
 
-    def _race(self, url, held, first):
+    def _race(self, url, held, first, data=None):
         """
         ``url`` (a paid render or a re-dispatch) and the workspace's delete at once.
         ``first`` is the one that stops halfway, holding its locks, until the other
@@ -596,7 +639,7 @@ class ConcurrentPaidRenderAndDeleteTests(DeleteHarness, APITransactionTestCase):
 
         def post():
             try:
-                answers["request"] = self._api().post(url, {}, format="json").status_code
+                answers["request"] = self._api().post(url, data or {}, format="json").status_code
             except Exception as exc:  # what the view did not answer: a deadlock is an OperationalError
                 answers["request"] = type(exc).__name__
             finally:
@@ -666,6 +709,23 @@ class ConcurrentPaidRenderAndDeleteTests(DeleteHarness, APITransactionTestCase):
         answers = self._race(url, None, first="delete")
 
         assert answers == {"delete": (409, "balance_left"), "request": 202}
+
+    def test_an_approval_that_holds_its_project_and_a_delete_never_deadlock(self):
+        """The approval claims the project and writes it again: at its commit it takes the workspace's row."""
+        from apps.videos import views
+
+        project = VideoProject.objects.create(
+            workspace=self.workspace, uploaded_by=self.owner, title="Revisión",
+            original_r2_key="videos/1/original/source.mp4", add_subtitles=False,
+            status=VideoProject.Status.AWAITING_APPROVAL, pipeline_stage="clips_selected",
+        )
+        VideoClip.objects.create(project=project, title="Sugerido", start_time=0, end_time=5)
+        url = f"/api/v1/projects/{project.pk}/approve-paper-edit/"
+        segments = {"approved_segments": [{"start": 0.0, "end": 2.0}, {"start": 5, "end": 7.5}]}
+
+        answers = self._race(url, (views, "_approve_clips"), first="request", data=segments)
+
+        assert answers == {"request": 200, "delete": (409, "project_processing")}
 
     def _while_a_purchase_holds_the_workspace(self, url):
         """
