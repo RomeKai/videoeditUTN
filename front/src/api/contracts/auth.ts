@@ -68,7 +68,7 @@ export const refreshToken = defineEndpoint({
   errors: [
     {
       status: 401,
-      when: 'Refresh vencido, inválido o revocado (rotado, la contraseña cambió, o se cerró la sesión en todos los dispositivos: `code: "session_revoked"`). La UI abre el diálogo D9 (sesión vencida).',
+      when: 'Refresh vencido, inválido o revocado (rotado, la contraseña cambió, o se cerró la sesión en todos los dispositivos: `code: "session_revoked"`, también cuando el token de acceso ya había vencido y el refresh es el primero en responder). Lo demás es `token_not_valid`. La UI abre el diálogo D9 (sesión vencida, o «Cerraste la sesión en todos tus dispositivos» con `session_revoked`).',
     },
     { status: 429, when: 'Más de 30 renovaciones por minuto desde la misma IP.' },
   ],

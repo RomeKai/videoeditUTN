@@ -8,7 +8,7 @@ import real from './drf/responses.json';
 
 /**
  * The account bodies of drf/responses.json (auth_register, verify_email_signed_out and the register_*, resend_*,
- * password_reset_*, logout_* and session_* errors), parsed with the contract and read with the
+ * password_reset_*, logout_*, session_* and refresh_* errors), parsed with the contract and read with the
  * helpers the screens use. back/apps/users/tests/test_auth_contract_fixture.py builds them with the
  * real endpoints and fails when they stop matching the JSON.
  */
@@ -56,5 +56,10 @@ describe('cuentas: respuestas reales del backend', () => {
     const revoked = error('session_revoked_401');
     expect(revoked.status).toBe(401);
     expect(revoked.code).toBe('session_revoked');
+    // The refresh of that session too (revoke_sessions blacklisted it): same body, same code.
+    const refresh = error('refresh_401_session_revoked', 'auth.refresh');
+    expect(refresh.status).toBe(401);
+    expect(refresh.code).toBe('session_revoked');
+    expect(real.errors.refresh_401_session_revoked.body).toEqual(real.errors.session_revoked_401.body);
   });
 });

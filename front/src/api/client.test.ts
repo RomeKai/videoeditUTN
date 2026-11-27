@@ -8,6 +8,7 @@ import { errorMessage } from '@/lib/error-messages';
 import { API_URL, REQUEST_TIMEOUT_MS, SLOW_REQUEST_TIMEOUT_MS, UPLOAD_STALL_TIMEOUT_MS, WORKSPACE_HEADER } from './config';
 import { exportTransactions } from './contracts/billing';
 import { createBrandKit, duplicateBrandKit, updateBrandKit } from './contracts/brandkits';
+import real from './contracts/drf/responses.json';
 import { createProject, createProjectFromPrompt, downloadAllClips } from './contracts/projects';
 import { defineEndpoint } from './endpoint';
 import { ApiError, ContractError, NetworkError, RequestTimeoutError, SessionExpiredError, UploadStalledError, isOutcomeUnknown } from './errors';
@@ -224,7 +225,7 @@ describe('apiCall', () => {
 
   it('un 401 `session_revoked` avisa que la sesión se cerró en todos los dispositivos, no que venció', async () => {
     // What another device gets after «cerrar sesión en todos los dispositivos»: the access token names
-    // the reason, and the refresh token (already blacklisted) only says it is not valid.
+    // the reason. Even if the refresh then only says it is not valid, the reason already given stays.
     setTokens({ access: 'revocado', refresh: 'refresh-revocado' });
     const expired = vi.fn();
     const off = onSessionExpired(expired);
@@ -259,6 +260,37 @@ describe('apiCall', () => {
     );
     await expect(apiCall(getThing, { params: { id: '1' } })).rejects.toBeInstanceOf(SessionExpiredError);
     expect(expired).toHaveBeenCalledWith('revoked');
+    off();
+  });
+
+  it('con la respuesta real del refresh de una sesión cerrada en todos los dispositivos dice eso, también al subir un archivo', async () => {
+    // back/apps/users/tests/test_auth_contract_fixture.py builds this body: the refresh that revoke_sessions blacklisted.
+    const revoked = real.errors.refresh_401_session_revoked;
+    expect(revoked.body.code).toBe('session_revoked');
+    const expired = vi.fn();
+    const off = onSessionExpired(expired);
+    let uploads = 0;
+    server.use(
+      http.get(`${API_URL}/api/v1/things/:id/`, () => HttpResponse.json({ detail: 'Token is invalid or expired', code: 'token_not_valid' }, { status: 401 })),
+      http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json(revoked.body, { status: revoked.status })),
+      http.post(`${API_URL}/api/v1/uploads/`, () => {
+        uploads += 1;
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+
+    setTokens({ access: 'vencido', refresh: 'refresh-revocado' });
+    const error = await apiCall(getThing, { params: { id: '1' } }).catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(SessionExpiredError);
+    expect((error as SessionExpiredError).reason).toBe('revoked');
+    expect(expired).toHaveBeenLastCalledWith('revoked');
+
+    // An upload renews the token before it starts: that refresh is the one that answers, and nothing is sent.
+    setTokens({ access: 'vencido', refresh: 'refresh-revocado' });
+    const upload = await apiCall(uploadThing, { body: { title: 'x' } }).catch((reason: unknown) => reason);
+    expect((upload as SessionExpiredError).reason).toBe('revoked');
+    expect(expired).toHaveBeenLastCalledWith('revoked');
+    expect(uploads).toBe(0);
     off();
   });
 

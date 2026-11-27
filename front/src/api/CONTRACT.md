@@ -176,7 +176,7 @@ Renueva el token de acceso. El backend rota el refresh (ROTATE_REFRESH_TOKENS).
 | Sesión | Pública |
 | Pedido | { refresh: string } |
 | Respuesta 200 | { access: string, refresh?: string } |
-| Errores | **401** Refresh vencido, inválido o revocado (rotado, la contraseña cambió, o se cerró la sesión en todos los dispositivos: `code: "session_revoked"`). La UI abre el diálogo D9 (sesión vencida).<br>**429** Más de 30 renovaciones por minuto desde la misma IP. |
+| Errores | **401** Refresh vencido, inválido o revocado (rotado, la contraseña cambió, o se cerró la sesión en todos los dispositivos: `code: "session_revoked"`, también cuando el token de acceso ya había vencido y el refresh es el primero en responder). Lo demás es `token_not_valid`. La UI abre el diálogo D9 (sesión vencida, o «Cerraste la sesión en todos tus dispositivos» con `session_revoked`).<br>**429** Más de 30 renovaciones por minuto desde la misma IP. |
 | Pantallas | A1, D9 |
 
 #### `POST /api/v1/auth/register/`

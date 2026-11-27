@@ -101,6 +101,77 @@ def test_a_refresh_without_a_blacklist_row_is_refused_after_closing_everything(u
     assert response.json()["code"] == "session_revoked"
 
 
+SESSION_REVOKED_BODY = {
+    "detail": "La sesión se cerró en todos los dispositivos. Iniciá sesión de nuevo.",
+    "code": "session_revoked",
+}
+
+
+def _refresh(refresh):
+    return APIClient().post(REFRESH_URL, {"refresh": refresh}, format="json")
+
+
+def test_the_refresh_of_a_closed_session_says_so_although_it_is_blacklisted(user):
+    """
+    The other device's access token had expired before the revocation: its first
+    answer is the refresh's. revoke_sessions blacklisted that refresh, and the
+    blacklist is checked first: it said token_not_valid, and the web app «Tu sesión venció».
+    """
+    here, phone = _login(), _login()
+    assert _logout(here, all_devices=True).status_code == 204
+    assert BlacklistedToken.objects.filter(token__jti=RefreshToken(phone["refresh"], verify=False)["jti"]).exists()
+
+    for session in (phone, here):
+        response = _refresh(session["refresh"])
+        assert response.status_code == 401
+        assert response.json() == SESSION_REVOKED_BODY
+
+
+def _signed_with_another_key(payload):
+    import jwt
+
+    return jwt.encode(payload, "otra-clave-que-no-es-la-del-servidor", algorithm="HS256")
+
+
+@pytest.mark.parametrize("case", ["rotated", "forged", "tampered", "expired", "access", "password_changed"])
+def test_a_refresh_refused_for_another_reason_keeps_saying_token_not_valid(user, case):
+    """Only a token this server signed, still valid but for the revocation, says session_revoked: nothing else learns it."""
+    if case == "rotated":
+        # Blacklisted by its rotation, and issued after the revocation: an old copy, not a closed session.
+        earlier = timezone.now() - timedelta(seconds=5)
+        with mock.patch("apps.users.tokens.timezone.now", return_value=earlier):
+            assert _logout(_login(), all_devices=True).status_code == 204
+        session = _login()
+        assert _refresh(session["refresh"]).status_code == 200
+        token = session["refresh"]
+    else:
+        session = _login()
+        assert _logout(_login(), all_devices=True).status_code == 204
+        if case == "forged":
+            # Everything a real one would have, but not signed by this server.
+            token = _signed_with_another_key(RefreshToken(session["refresh"], verify=False).payload)
+        elif case == "tampered":
+            head, body, signature = session["refresh"].split(".")
+            token = f"{head}.{body}.{signature[:-4]}AAAA"
+        elif case == "expired":
+            old = RefreshToken.for_user(user)
+            old.set_iat(at_time=timezone.now() - timedelta(days=5))
+            old.set_exp(from_time=timezone.now() - timedelta(days=4))
+            old.blacklist()
+            token = str(old)
+        elif case == "access":
+            token = session["access"]
+        else:
+            user.set_password("una-clave-Nueva-2026")
+            user.save()
+            token = session["refresh"]
+
+    response = _refresh(token)
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "token_not_valid"
+
+
 def test_the_refresh_of_another_account_is_refused_and_nothing_is_revoked(user, other_user):
     mine, theirs = _login(), _login("otra@test.com")
     my_phone = _login()

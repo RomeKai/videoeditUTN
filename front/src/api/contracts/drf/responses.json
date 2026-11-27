@@ -1835,6 +1835,13 @@
         "code": "session_revoked"
       }
     },
+    "refresh_401_session_revoked": {
+      "status": 401,
+      "body": {
+        "detail": "La sesión se cerró en todos los dispositivos. Iniciá sesión de nuevo.",
+        "code": "session_revoked"
+      }
+    },
     "create_400_upload": {
       "status": 400,
       "body": {
