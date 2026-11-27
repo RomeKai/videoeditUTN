@@ -556,7 +556,7 @@ Otras respuestas:
   - ✅ `GET /api/v1/scheduled-posts/` (paginado, con filtros y `status_counts`) y `GET /api/v1/scheduled-posts/:id/`.
   - ✅ editar y reprogramar (`PATCH`, solo `DRAFT` y `SCHEDULED`), cancelar (`POST .../cancel/`, también en cola o fallida) y reintentar (`POST .../retry/`). Toman el lock del post: si el beat ya lo tomó responden 409 con `code`.
   - ✅ `error_message` traduce la falla; `error_log` no se muestra.
-  - ✅ un post trabado en `PROCESSING` se reintenta pasados 15 min desde su último intento (ver la [documentación de IA](../ia/05-seo-y-publicacion.md#flujo-la-api-de-publicaciones)). Pudo haber salido: la UI lo avisa.
+  - ✅ un post trabado en `PROCESSING` se reintenta o se cancela pasados 15 min desde su último intento, o 4 h si el worker espera un reintento (ver la [documentación de IA](../ia/05-seo-y-publicacion.md#flujo-la-api-de-publicaciones)). Pudo haber salido: la UI lo avisa, y cancelar no lo borra de la red.
 
 ### F. Brand kits
 
