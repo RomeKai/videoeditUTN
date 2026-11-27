@@ -46,8 +46,8 @@ from apps.users.seats import seats_used
 from ..models import Payment, SubscriptionPlan
 from .payment_providers import require_payment_provider
 from .payments import (
-    CHECKOUT_EXPIRED, checkout_is_expired, checkout_is_stale, close_checkout, fail_stale_checkout, lock_workspace,
-    open_checkout, settle_payment,
+    CHECKOUT_EXPIRED, checkout_expires_at, checkout_is_expired, checkout_is_stale, close_checkout, fail_stale_checkout,
+    lock_workspace, open_checkout, settle_payment,
 )
 from .plan_periods import PLAN_FIELDS, is_paid, paid_period_end, price_of, switch_plan
 from .plans import get_default_plan_id
@@ -142,18 +142,27 @@ def pending_plan_payment(workspace, now=None):
     """
     The plan payment the workspace is waiting for, so Planes can say so and
     offer to keep the current plan (which cancels it): {id, plan_id,
-    plan_name}, or None. Read without a lock, for display only. A payment
-    whose checkout expired is left out (nothing hands it out again), and so
-    is its checkout URL: every role reads the subscription.
+    plan_name, expires_at}, or None. Read without a lock, for display only.
+    ``expires_at`` is when its checkout stops being handed out, or None while
+    the checkout is still opening. Left out: a payment whose checkout expired
+    (nothing hands it out again) and an attempt whose provider call was lost
+    (keeping the plan would find nothing to cancel: the next request or the
+    beat task rejects it). Its checkout URL is left out too: every role reads
+    the subscription.
     """
     payment = (
         Payment.objects.filter(workspace=workspace, status=Payment.Status.PENDING, plan__isnull=False)
         .select_related('plan')
         .first()
     )
-    if payment is None or checkout_is_expired(payment, now):
+    if payment is None or checkout_is_expired(payment, now) or checkout_is_stale(payment, now):
         return None
-    return {'id': payment.pk, 'plan_id': payment.plan_id, 'plan_name': payment.plan.name}
+    return {
+        'id': payment.pk,
+        'plan_id': payment.plan_id,
+        'plan_name': payment.plan.name,
+        'expires_at': checkout_expires_at(payment),
+    }
 
 
 def needs_payment(current, target):

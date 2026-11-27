@@ -10,7 +10,7 @@ import { keys } from '@/api/query';
 import { ConfirmDialog } from '@/dialogs';
 import { cx } from '@/lib/cx';
 import { errorMessage } from '@/lib/error-messages';
-import { formatDate, formatNumber, formatPercent, formatUsd } from '@/lib/format';
+import { formatDate, formatDateTime, formatNumber, formatPercent, formatUsd } from '@/lib/format';
 import { estimateCost } from '@/lib/pricing';
 import { LoadError } from '@/shell/LoadError';
 import { RequireRole } from '@/shell/RequireSession';
@@ -100,6 +100,14 @@ function Plans() {
   const renewsAt = subscription.data?.renews_at ?? null;
   const pending = subscription.data?.pending_plan ?? null;
   const paying = subscription.data?.pending_payment ?? null;
+  // Back from the checkout of that same payment (`?compra=`), while the provider has not answered
+  // (UpgradeNotice says «Estamos confirmando…»): it may be paid already, and cancelling it now would leave
+  // a late payment to refund by hand. So «Seguir con …» is not offered until it is settled.
+  const returned = useSearchParams().get('compra');
+  const returnedPayment = useTokenPurchase(paying && returned === paying.id ? returned : null);
+  const confirming = Boolean(
+    paying && returned === paying.id && !returnedPayment.isError && (!returnedPayment.data || returnedPayment.data.status === 'pending'),
+  );
   const base = pricing.data ? estimateCost({ durationSeconds: 1800, resolution: '720p' }, pricing.data, null).total : null;
   const mine = pricing.data && current ? estimateCost({ durationSeconds: 1800, resolution: '720p' }, pricing.data, current).total : null;
 
@@ -151,6 +159,12 @@ function Plans() {
       },
     );
   };
+  const keepName = current?.name ?? 'mi plan';
+  const keepButton = confirming ? undefined : (
+    <Button size="sm" variant="secondary" onClick={keepCurrent} loading={change.isPending && !target} {...gate('billing.manage')}>
+      Seguir con {keepName}
+    </Button>
+  );
 
   return (
     <>
@@ -184,28 +198,17 @@ function Plans() {
           tone="info"
           className={styles.notice}
           title={`Tu plan pasa a ${pending.name} el ${formatDate(pending.effective_at)}`}
-          action={
-            <Button size="sm" variant="secondary" onClick={keepCurrent} loading={change.isPending && !target} {...gate('billing.manage')}>
-              Seguir con {current?.name ?? 'mi plan'}
-            </Button>
-          }
+          action={keepButton}
         >
           Hasta ese día seguís con {current?.name ?? 'tu plan'} y todo lo que incluye. Podés cancelar el cambio hasta entonces.
+          {paying && !confirming ? ` «Seguir con ${keepName}» también cancela el pago pendiente del plan ${paying.plan_name}.` : null}
         </Banner>
       ) : null}
       {paying && !pending ? (
-        <Banner
-          tone="info"
-          className={styles.notice}
-          title={`Estás pasando al plan ${paying.plan_name}: falta el pago`}
-          action={
-            <Button size="sm" variant="secondary" onClick={keepCurrent} loading={change.isPending && !target} {...gate('billing.manage')}>
-              Seguir con {current?.name ?? 'mi plan'}
-            </Button>
-          }
-        >
-          Si ya lo pagaste, el plan cambia apenas se confirme. Si no, el pago vence a las 24 h de abrirlo y seguís con{' '}
-          {current?.name ?? 'tu plan'}.
+        <Banner tone="info" className={styles.notice} title={`Estás pasando al plan ${paying.plan_name}: falta el pago`} action={keepButton}>
+          Si ya lo pagaste, esperá a que se confirme.
+          {paying.expires_at ? ` Si no, vence el ${formatDateTime(paying.expires_at)}.` : null}
+          {confirming ? null : ` «Seguir con ${keepName}» lo cancela.`}
         </Banner>
       ) : null}
       {plans.isError ? <LoadError error={plans.error} onRetry={() => void plans.refetch()} className={styles.notice} fullPageForMissing={false} /> : null}

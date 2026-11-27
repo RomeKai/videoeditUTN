@@ -54,6 +54,8 @@ class PendingPaymentSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     plan_id = serializers.UUIDField()
     plan_name = serializers.CharField()
+    # When its checkout expires; null while the checkout is still opening.
+    expires_at = serializers.DateTimeField(allow_null=True)
 
 
 class SubscriptionSerializer(serializers.Serializer):

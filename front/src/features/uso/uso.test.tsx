@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Plan } from '@/api/contracts/billing';
 import { loadDb, saveDb } from '@/api/mocks/state';
+import { formatDateTime } from '@/lib/format';
 import { BuyTokensScreen, parseTokenAmount } from './BuyTokensScreen';
 import { leaveTo } from './leave';
 import { movementConcept, signedAmount } from './movements';
@@ -393,9 +394,84 @@ describe('G3 · Planes', () => {
 
     // Back on Planes without paying: the payment is still waiting and the plan has not changed.
     expect(await screen.findByText('Estás pasando al plan Estudio: falta el pago')).toBeInTheDocument();
+    // The expiry comes from the payment (`expires_at`), not from a fixed "24 h".
+    const expiresAt = loadDb().purchases[0] ? new Date(new Date(loadDb().purchases[0]!.created_at).getTime() + 24 * 3600 * 1000) : null;
+    if (!expiresAt) throw new Error('falta el pago');
+    expect(
+      screen.getByText(`Si ya lo pagaste, esperá a que se confirme. Si no, vence el ${formatDateTime(expiresAt)}. «Seguir con Pro» lo cancela.`),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Seguir con Pro' }));
     expect(await screen.findByText('Listo: seguís con el plan Pro.')).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText(/falta el pago/)).not.toBeInTheDocument());
+    expect(loadDb().purchases[0]).toMatchObject({ status: 'rejected' });
+  });
+
+  /** A plan payment to Estudio waiting for its checkout, as the workspace left it. */
+  const seedPendingPlanPayment = (id: string, extra?: (db: ReturnType<typeof loadDb>) => void) => () => {
+    const db = loadDb();
+    const workspace = db.workspaces[0];
+    const studio = db.plans.find((item) => item.name === 'Estudio');
+    if (!workspace || !studio) throw new Error('faltan datos');
+    db.purchases.push({
+      id,
+      workspace: workspace.id,
+      status: 'pending',
+      tokens: 0,
+      amount_usd: 129,
+      plan_id: studio.id,
+      checkout_url: `http://localhost:3000/dev/checkout?compra=${id}`,
+      failure_reason: null,
+      created_at: new Date().toISOString(),
+      balance_after: null,
+      _settleAt: null,
+      _reject: false,
+    });
+    extra?.(db);
+    saveDb(db);
+  };
+
+  it('mientras se confirma el pago al volver del checkout no ofrece «Seguir con»: podría estar pagado', async () => {
+    const PAYMENT_ID = '33333333-3333-4333-8333-333333333333';
+    navigation.search = `compra=${PAYMENT_ID}`;
+    renderScreen(<PlansScreen />, { scenario: 'plan-con-checkout', prepare: seedPendingPlanPayment(PAYMENT_ID) });
+
+    expect(await screen.findByText('Estamos confirmando el pago del plan.')).toBeInTheDocument();
+    expect(await screen.findByText('Estás pasando al plan Estudio: falta el pago')).toBeInTheDocument();
+    expect(screen.getByText(/^Si ya lo pagaste, esperá a que se confirme\. Si no, vence el [^.]+\.$/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Seguir con Pro' })).not.toBeInTheDocument();
+    expect(loadDb().purchases[0]).toMatchObject({ status: 'pending' });
+  });
+
+  it('sin volver del checkout de ese pago, «Seguir con» sigue a la vista', async () => {
+    navigation.search = 'compra=44444444-4444-4444-8444-444444444444';
+    renderScreen(<PlansScreen />, {
+      scenario: 'plan-con-checkout',
+      prepare: seedPendingPlanPayment('33333333-3333-4333-8333-333333333333'),
+    });
+
+    expect(await screen.findByText('Estás pasando al plan Estudio: falta el pago')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Seguir con Pro' })).toBeInTheDocument();
+  });
+
+  it('con una bajada programada y un pago de plan sin terminar, avisa que «Seguir con» cancela los dos', async () => {
+    const user = userEvent.setup();
+    renderScreen(<PlansScreen />, {
+      scenario: 'plan-con-checkout',
+      prepare: seedPendingPlanPayment('33333333-3333-4333-8333-333333333333', (db) => {
+        const workspace = db.workspaces[0];
+        const free = db.plans.find((item) => item.name === 'Gratis');
+        if (!workspace || !free) throw new Error('faltan datos');
+        workspace.pending_plan = { id: free.id, effective_at: new Date(Date.now() + 10 * 24 * 3600 * 1000).toISOString() };
+      }),
+    });
+
+    expect(await screen.findByText(/^Tu plan pasa a Gratis el /, { selector: 'p' })).toBeInTheDocument();
+    // One banner, the downgrade's: it says the payment goes too.
+    expect(screen.queryByText(/falta el pago/)).not.toBeInTheDocument();
+    expect(screen.getByText(/«Seguir con Pro» también cancela el pago pendiente del plan Estudio\.$/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Seguir con Pro' }));
+    expect(await screen.findByText('Listo: seguís con el plan Pro.')).toBeInTheDocument();
+    expect(loadDb().workspaces[0]?.pending_plan).toBeNull();
     expect(loadDb().purchases[0]).toMatchObject({ status: 'rejected' });
   });
 

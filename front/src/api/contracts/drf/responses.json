@@ -2213,7 +2213,8 @@
       "pending_payment": {
         "id": "9e9a01ba-999a-495e-b9d0-cfcc842702e5",
         "plan_id": "128f9ed2-0bce-4c78-9d88-955b1d7d8ca5",
-        "plan_name": "Pro"
+        "plan_name": "Pro",
+        "expires_at": "2026-11-27T21:22:37.012345Z"
       }
     }
   },

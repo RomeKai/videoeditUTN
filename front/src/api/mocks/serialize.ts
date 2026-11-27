@@ -116,11 +116,16 @@ export function serializeSubscription(db: MockDb, workspace: MockWorkspace): Sub
   };
 }
 
+const CHECKOUT_TTL_MS = 24 * 3600 * 1000;
+
 /** The plan payment the workspace waits for, like the backend's (no checkout URL). */
 function pendingPlanPayment(db: MockDb, workspace: MockWorkspace): Subscription['pending_payment'] {
   const payment = db.purchases.find((item) => item.workspace === workspace.id && item.status === 'pending' && item.plan_id);
   const plan = payment ? db.plans.find((item) => item.id === payment.plan_id) : null;
-  return payment && plan ? { id: payment.id, plan_id: plan.id, plan_name: plan.name } : null;
+  if (!payment || !plan) return null;
+  // The mock's checkouts open with the payment and live 24 h, the backend's default.
+  const expiresAt = new Date(new Date(payment.created_at).getTime() + CHECKOUT_TTL_MS).toISOString();
+  return { id: payment.id, plan_id: plan.id, plan_name: plan.name, expires_at: payment.checkout_url ? expiresAt : null };
 }
 
 export function workspacesOf(db: MockDb, userId: string): Array<{ workspace: MockWorkspace; role: Role }> {

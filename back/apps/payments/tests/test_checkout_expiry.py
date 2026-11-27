@@ -133,8 +133,8 @@ def test_after_the_expiry_invitations_use_the_current_plans_seats_again(owner, s
     payment = open_plan_checkout(user, seeded_plans['Creador'])
     join(reload(workspace), make_user('n0'), status=WorkspaceMember.Status.PENDING)
     newcomer = make_user('n1')
-    # The refusal says what the person can do: the web has no way to cancel the payment.
-    with pytest.raises(ValidationError, match=r"Estás pasando al plan 'Creador', que permite 5 miembros\. Hay un pago en curso: terminalo, o esperá a que venza \(24 h después de abrirlo\)\."):
+    # The refusal says what the person can do: pay it, or cancel it by keeping the current plan in Planes.
+    with pytest.raises(ValidationError, match=r"Estás pasando al plan 'Creador', que permite 5 miembros\. Hay un pago en curso: terminalo, o elegí «Seguir con Pro» en Planes para cancelarlo\."):
         join(reload(workspace), newcomer, status=WorkspaceMember.Status.PENDING)
 
     opened_ago(payment, 25)
