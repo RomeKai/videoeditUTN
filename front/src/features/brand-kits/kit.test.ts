@@ -8,6 +8,7 @@ import {
   draftFrom,
   fileName,
   storedFileName,
+  storedFontLabel,
   fontLabel,
   loadableUrl,
   typedHex,
@@ -57,17 +58,33 @@ describe('archivos', () => {
   it('el sufijo que agrega el almacenamiento no se muestra', () => {
     expect(storedFileName('/media/assets/logos/logo_vCHttht.png')).toBe('logo.png');
     expect(storedFileName('http://localhost:8000/media/assets/videos/intro_a1B2c3D.mp4?v=1')).toBe('intro.mp4');
-    expect(fontLabel('/media/assets/fonts/fuente_ZxKsE0r.ttf')).toBe('fuente');
-    expect(fontLabel('/media/assets/fonts/InterTight-Bold_a1B2c3D.ttf')).toBe('Inter Tight');
+    expect(storedFontLabel('/media/assets/fonts/fuente_ZxKsE0r.ttf')).toBe('fuente');
+    expect(storedFontLabel('/media/assets/fonts/InterTight-Bold_a1B2c3D.ttf')).toBe('Inter Tight');
     // Seven letters that are a word are part of the name.
     expect(storedFileName('/media/assets/fonts/Inter_Regular.ttf')).toBe('Inter_Regular.ttf');
     expect(storedFileName('/media/assets/fonts/open_display.otf')).toBe('open_display.otf');
     expect(storedFileName('/media/assets/logos/LOGO_PRIMARY.png')).toBe('LOGO_PRIMARY.png');
     expect(storedFileName('/media/assets/logos/logo_2024111.png')).toBe('logo_2024111.png');
-    expect(fontLabel('/media/assets/fonts/Inter_Regular.ttf')).toBe('Inter');
+    expect(storedFontLabel('/media/assets/fonts/Inter_Regular.ttf')).toBe('Inter');
     // The folder of the kit is not the name.
     expect(storedFileName('/media/assets/logos/c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a77/logo.png')).toBe('logo.png');
     expect(storedFileName(null)).toBe('');
+  });
+
+  it('en la carpeta del kit el nombre es el que se subió: no se le quita nada', () => {
+    const folder = '/media/assets/logos/c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a77';
+    for (const name of ['logo_256x256.png', 'clip_1080p60.mp4', 'logo_darkRed.png', 'logo_v2final.png', 'foto_IMG1234.jpg', 'Roboto_Mono500.ttf', '_abcDEF1.png']) {
+      expect(storedFileName(`${folder}/${name}`)).toBe(name);
+      expect(storedFileName(`http://localhost:8000${folder}/${name}?v=1`)).toBe(name);
+    }
+    expect(storedFontLabel('/media/assets/fonts/c3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a77/Roboto_Mono500.ttf')).toBe('Roboto Mono500');
+    // A name that is all suffix keeps its stem, also in an old path.
+    expect(storedFileName('/media/assets/logos/_abcDEF1.png')).toBe('_abcDEF1.png');
+  });
+
+  it('una fuente recién elegida se muestra con su nombre, sin tocar', () => {
+    expect(fontLabel('Roboto_Mono500.ttf')).toBe('Roboto Mono500');
+    expect(fontLabel('fuente_ZxKsE0r.ttf')).toBe('fuente Zx Ks E0r');
   });
 
   it('solo carga direcciones reales: las rutas de los mocks no existen', () => {

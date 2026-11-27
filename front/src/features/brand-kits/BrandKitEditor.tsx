@@ -50,6 +50,7 @@ import {
   fileName,
   fontLabel,
   storedFileName,
+  storedFontLabel,
   isHex,
   kitColor,
   loadableUrl,
@@ -376,7 +377,7 @@ function EditorForm({ kit }: { kit: BrandKit | null }) {
     accent: isHex(colors.accent) ? colors.accent : kitColor(source, 'accent_color'),
   };
   const title = draft.name.trim() || (isNew ? 'Nuevo brand kit' : source.name);
-  const fontName = primaryFont.file ? fontLabel(primaryFont.file.name) : fontLabel(primaryFont.url);
+  const fontName = primaryFont.file ? fontLabel(primaryFont.file.name) : storedFontLabel(primaryFont.url);
 
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
