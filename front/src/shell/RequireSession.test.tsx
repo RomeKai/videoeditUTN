@@ -4,13 +4,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { clearSession, getActiveWorkspaceId } from '@/api/session';
 import { WORKSPACE_IDS } from '@/api/mocks/seed';
 import { allowSlowScreens, db, editDb, renderScenario, startMockApi } from '@/testing';
-import { RequireSession } from './RequireSession';
+import { NOT_IN_WORKSPACE, RequireSession, splitWorkspaceLink } from './RequireSession';
 
-const navigation = vi.hoisted(() => ({ pathname: '/ajustes', replace: vi.fn(), push: vi.fn() }));
+const navigation = vi.hoisted(() => ({ pathname: '/ajustes', search: '', replace: vi.fn(), push: vi.fn() }));
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: navigation.push, replace: navigation.replace, back: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() }),
   usePathname: () => navigation.pathname,
-  useSearchParams: () => new URLSearchParams(),
+  // What the router knows of the URL: the tests move both together with `open`.
+  useSearchParams: () => new URLSearchParams(navigation.search),
   useParams: () => ({}),
 }));
 
@@ -54,6 +55,7 @@ describe('un link con su workspace (`?espacio=`): los emails de los avisos', () 
   afterEach(() => {
     window.history.replaceState({}, '', '/');
     navigation.pathname = '/ajustes';
+    navigation.search = '';
     navigation.replace.mockClear();
   });
 
@@ -68,8 +70,10 @@ describe('un link con su workspace (`?espacio=`): los emails de los avisos', () 
   }
 
   function open(url: string) {
-    window.history.replaceState({}, '', url);
+    // Only the router knows the page: during a client navigation the browser's URL is still the previous one's.
+    window.history.replaceState({}, '', '/login?siguiente=otra-cosa');
     navigation.pathname = url.split('?')[0] ?? url;
+    navigation.search = url.split('?')[1] ?? '';
   }
 
   it('cambia a ese workspace antes de mostrar la página y saca el parámetro de la URL', async () => {
@@ -103,7 +107,7 @@ describe('un link con su workspace (`?espacio=`): los emails de los avisos', () 
     await waitFor(() => expect(navigation.replace).toHaveBeenCalledWith('/proyectos/abc'));
   });
 
-  it('con un workspace que no es de la persona, se queda donde estaba', async () => {
+  it('con un workspace que no es de la persona, se queda donde estaba y lo dice', async () => {
     open('/proyectos/abc?espacio=0c8f6b1e-4d3a-4b52-9a7e-2f1d5e6c7a80');
     const { seen, Inside } = page();
     renderScenario(
@@ -115,7 +119,8 @@ describe('un link con su workspace (`?espacio=`): los emails de los avisos', () 
     expect(await screen.findByText('adentro')).toBeInTheDocument();
     expect(new Set(seen)).toEqual(new Set([WORKSPACE_IDS.estudio]));
     expect(getActiveWorkspaceId()).toBe(WORKSPACE_IDS.estudio);
-    expect(navigation.replace).not.toHaveBeenCalled();
+    expect(await screen.findByText(NOT_IN_WORKSPACE)).toBeInTheDocument();
+    await waitFor(() => expect(navigation.replace).toHaveBeenCalledWith('/proyectos/abc'));
   });
 
   it('sin sesión, el login vuelve al link entero, con su workspace', async () => {
@@ -131,5 +136,14 @@ describe('un link con su workspace (`?espacio=`): los emails de los avisos', () 
       expect(navigation.replace).toHaveBeenCalledWith(`/login?siguiente=${encodeURIComponent(`/proyectos/abc/revision?espacio=${WORKSPACE_IDS.canal}`)}`),
     );
     expect(screen.queryByText('adentro')).not.toBeInTheDocument();
+  });
+});
+
+describe('splitWorkspaceLink', () => {
+  it('separa el workspace del resto del link', () => {
+    expect(splitWorkspaceLink('/uso/comprar?espacio=abc')).toEqual({ workspaceId: 'abc', rest: '/uso/comprar' });
+    expect(splitWorkspaceLink('/uso?compra=ok&espacio=abc#x')).toEqual({ workspaceId: 'abc', rest: '/uso?compra=ok#x' });
+    expect(splitWorkspaceLink('/proyectos/1/clips')).toEqual({ workspaceId: null, rest: '/proyectos/1/clips' });
+    expect(splitWorkspaceLink('/proyectos?espacio=')).toEqual({ workspaceId: null, rest: '/proyectos' });
   });
 });
