@@ -7,7 +7,8 @@ What it creates
       comp: no paid period that could end, nothing scheduled.
     - A balance of ``DEMO_BALANCE`` tokens: a top-up, never a debit.
     - One brand kit, ``DEMO_BRAND_KIT_NAME``.
-    - With ``--with-projects``, two projects of EXAMPLE DATA (see below).
+    - With ``--with-projects``, two projects of EXAMPLE DATA (see below) and a few
+      notifications for the bell (see below).
 
 Safety
     - It refuses to run with ``DEBUG`` off unless ``--force`` is passed. Forced
@@ -40,12 +41,25 @@ The example projects (``--with-projects``)
     Only with ``USE_R2=False``: the files live under ``MEDIA_ROOT/demo/``.
     ``--reset-projects`` deletes those two projects and makes them again (for
     instance after approving the review one in a rehearsal).
+
+The example notifications (``--with-projects``)
+    So the bell is not empty: four notifications of the demo user in the demo
+    workspace, with the texts the real events write (apps/notifications/services.py):
+    the review project is ready (unread), the clips project finished its render
+    (read), a project that failed with nothing charged (unread: nothing was
+    reserved for an example, so it names no refund, and it leads to no project)
+    and the demo balance credited (read, with the amount of the seed's own
+    deposit). Idempotent: one that is already there (same kind and title) is
+    kept as it is, read or not, and only linked again to its project after
+    ``--reset-projects``. Never more than the bell keeps (``KEPT_PER_USER``):
+    with the bell full of real ones, nothing is added.
 """
 
 import os
 import secrets
 import shutil
 import subprocess
+from datetime import timedelta
 from decimal import Decimal
 
 from django.conf import settings
@@ -54,6 +68,8 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
+from apps.notifications import services as notifications
+from apps.notifications.models import Notification
 from apps.payments.models import SubscriptionPlan, Transaction, Wallet
 from apps.payments.services.plan_periods import PLAN_FIELDS, switch_plan
 from apps.users.models import Workspace, WorkspaceMember
@@ -107,6 +123,8 @@ FIXTURES = {
     'review': '[DEMO] Ejemplo para revisar (datos de prueba)',
     'clips': '[DEMO] Ejemplo con clips listos (datos de prueba)',
 }
+# The project of the example "failed" notification: only a title, there is no such project.
+FAILED_EXAMPLE_TITLE = '[DEMO] Ejemplo que falló (datos de prueba)'
 
 
 def transcript_words():
@@ -212,6 +230,8 @@ class Command(BaseCommand):
             for slug in FIXTURES:
                 project, created = self._fixture(slug, workspace, user, kit)
                 project_lines.append(f"  proyecto de ejemplo «{slug}»: {project.pk} ({'creado' if created else 'ya estaba'})")
+            added = self._notifications(workspace, user)
+            project_lines.append(f"  notificaciones de ejemplo: {added} nuevas")
 
         wallet = Wallet.objects.get(workspace=workspace)
         write = self.stdout.write
@@ -321,6 +341,55 @@ class Command(BaseCommand):
                 'is_default': not BrandKit.objects.filter(workspace=workspace, is_default=True).exists(),
             },
         )
+
+    # --- the example notifications -------------------------------------------
+
+    def _notifications(self, workspace, user):
+        """Writes the example notifications that are missing. Returns how many it wrote."""
+        Kind = Notification.Kind
+        fixtures = {project.metadata.get(FIXTURE_KEY): project for project in self._fixtures(workspace)}
+        review, clips = fixtures.get('review'), fixtures.get('clips')
+        deposit = (
+            Transaction.objects.filter(wallet__workspace=workspace, description=DEPOSIT_DESCRIPTION)
+            .order_by('created_at', 'pk').first()
+        )
+        hour = timedelta(hours=1)
+        # (kind, (title, body), project, how long ago, read after)
+        wanted = []
+        if deposit is not None and deposit.amount == deposit.amount.to_integral_value():
+            wanted.append((
+                Kind.PAYMENT_APPROVED, notifications.payment_message(True, tokens=int(deposit.amount)), None, 72 * hour, hour,
+            ))
+        if clips is not None and clips.status == VideoProject.Status.COMPLETED:
+            wanted.append((Kind.RENDER_FINISHED, notifications.render_finished_message(clips), clips, 26 * hour, 2 * hour))
+        wanted.append((
+            Kind.PROJECT_FAILED, notifications.project_failed_message(FAILED_EXAMPLE_TITLE, 0), None, 5 * hour, None,
+        ))
+        if review is not None and review.status == VideoProject.Status.AWAITING_APPROVAL:
+            wanted.append((Kind.PROJECT_READY, notifications.project_ready_message(review), review, hour / 5, None))
+
+        mine = Notification.objects.filter(user=user, workspace=workspace)
+        now = timezone.now()
+        written = 0
+        for kind, (title, body), project, ago, read_after in wanted:
+            existing = mine.filter(kind=kind, title=title).first()
+            if existing is not None:
+                if project is not None and existing.project_id != project.pk:
+                    # Its project was made again (--reset-projects): it leads to the new one.
+                    mine.filter(pk=existing.pk).update(project=project)
+                continue
+            if mine.count() >= notifications.KEPT_PER_USER:
+                # The bell is full of real ones: an example never pushes one out.
+                break
+            with transaction.atomic():
+                if not notifications.write(workspace, {user.pk}, kind, title, body, project=project):
+                    continue
+                created_at = now - ago
+                mine.filter(kind=kind, title=title).update(
+                    created_at=created_at, read_at=created_at + read_after if read_after else None,
+                )
+            written += 1
+        return written
 
     # --- the example projects ------------------------------------------------
 

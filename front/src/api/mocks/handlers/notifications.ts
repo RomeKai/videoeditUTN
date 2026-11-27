@@ -17,8 +17,9 @@ export const notificationsHandlers = [
     return { data: { unread_count: mine.filter((item) => item.read_at === null).length, results: mine.map(strip) } };
   }),
 
-  route(contract.markNotificationRead, ({ db, user, params, now }) => {
-    const notification = db.notifications.find((item) => item.id === params.id && item.user === user.id);
+  route(contract.markNotificationRead, ({ db, user, workspace, params, now }) => {
+    // Like the backend: one of another workspace is a 404 too.
+    const notification = db.notifications.find((item) => item.id === params.id && item.user === user.id && item.workspace === workspace.id);
     if (!notification) throw notFound();
     notification.read_at ??= new Date(now).toISOString();
     return { data: strip(notification) };

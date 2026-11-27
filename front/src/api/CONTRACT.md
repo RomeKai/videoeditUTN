@@ -4,7 +4,7 @@
 
 Este es el contrato de integración entre el frontend (`front/`) y el backend Django (`back/`). Cada endpoint está descripto una sola vez, con esquemas [zod](https://zod.dev); de ahí salen los tipos de TypeScript, los hooks (`src/api/hooks/`), los mocks (`src/api/mocks/`) y este documento.
 
-**81 endpoints:** 65 existen hoy en el backend, 4 existen en parte y 12 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
+**81 endpoints:** 68 existen hoy en el backend, 4 existen en parte y 9 son propuestos para los huecos de la [sección 8 del mapa de pantallas](../../../documents/producto/mapa-de-pantallas.md#8-huecos-de-backend).
 
 ## Cómo leerlo
 
@@ -138,9 +138,9 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | POST | `/api/v1/scheduled-posts/:id/cancel/` | Cancela una publicación que todavía no salió. La borra. | ❌ falta (propuesto) · hueco 8 | E2 |
 | POST | `/api/v1/scheduled-posts/:id/retry/` | Reintenta una publicación que falló (también una trabada en `PROCESSING`). | ❌ falta (propuesto) · hueco 8 | E2 |
 | POST | `/api/v1/scheduled-posts/:id/regenerate-seo/` | Vuelve a generar el caption y los hashtags con IA. Responde con `seo_status: "pending"`; el texto anterior se conserva hasta que llega el nuevo. | ❌ falta (propuesto) · hueco 8 | E1 |
-| GET | `/api/v1/notifications/` | Las últimas 20 notificaciones del usuario en el workspace y cuántas están sin leer. | ❌ falta (propuesto) · hueco 16 | J2, Barra |
-| POST | `/api/v1/notifications/:id/read/` | Marca una notificación como leída. | ❌ falta (propuesto) · hueco 16 | J2 |
-| POST | `/api/v1/notifications/read-all/` | Marca todas como leídas. | ❌ falta (propuesto) · hueco 16 | J2 |
+| GET | `/api/v1/notifications/` | Las últimas 20 notificaciones del usuario en el workspace y cuántas están sin leer. | ✅ existe | J2, Barra |
+| POST | `/api/v1/notifications/:id/read/` | Marca una notificación como leída. | ✅ existe | J2 |
+| POST | `/api/v1/notifications/read-all/` | Marca todas como leídas. | ✅ existe | J2 |
 | GET | `/api/v1/status/` | Si la plataforma está en mantenimiento y hasta cuándo. | ✅ existe | K5 |
 
 ## Detalle por dominio
@@ -1286,9 +1286,11 @@ Las últimas 20 notificaciones del usuario en el workspace y cuántas están sin
 | | |
 |---|---|
 | Id | `notifications.list` |
-| Backend | ❌ falta (propuesto) · hueco 16 |
+| Backend | ✅ existe · `back/apps/notifications/views.py · NotificationListView + NotificationSerializer (apps/notifications/serializers.py)` |
+| Nota | Solo las del usuario en el workspace activo, para cualquier rol, de la más nueva a la más vieja. `unread_count` cuenta todas las no leídas. Las escribe `apps/notifications/services.py` cuando el cambio hace commit: listo para revisar, render terminado (completo o parcial) y proyecto fallido (con lo devuelto) para el dueño y los miembros activos del workspace; pago aprobado o rechazado (`payment_approved`, `payment_rejected`) para quien lo inició. `post_failed` y `low_balance` todavía no se escriben, ni se envía ningún email (hueco 21). Se guardan las últimas 20 por usuario y workspace. `project_id` queda en null si el proyecto se borra. Sin workspace, la lista vacía. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | NotificationsResponse |
+| Errores | **404** El `X-Workspace-Id` no es un workspace del usuario. |
 | Pantallas | J2, Barra |
 
 #### `POST /api/v1/notifications/:id/read/`
@@ -1298,10 +1300,11 @@ Marca una notificación como leída.
 | | |
 |---|---|
 | Id | `notifications.markRead` |
-| Backend | ❌ falta (propuesto) · hueco 16 |
+| Backend | ✅ existe · `back/apps/notifications/views.py · NotificationReadView` |
+| Nota | Sin cuerpo. Solo la primera vez escribe `read_at`; repetirlo responde la misma notificación. Cualquier rol. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Notification |
-| Errores | **404** No existe. |
+| Errores | **404** No existe, es de otra persona o de otro workspace. |
 | Pantallas | J2 |
 
 #### `POST /api/v1/notifications/read-all/`
@@ -1311,9 +1314,11 @@ Marca todas como leídas.
 | | |
 |---|---|
 | Id | `notifications.markAllRead` |
-| Backend | ❌ falta (propuesto) · hueco 16 |
+| Backend | ✅ existe · `back/apps/notifications/views.py · NotificationReadAllView` |
+| Nota | Sin cuerpo. Solo toca las del usuario en el workspace activo que estaban sin leer. Cualquier rol. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 204 | NoContent |
+| Errores | **404** El `X-Workspace-Id` no es un workspace del usuario. |
 | Pantallas | J2 |
 
 ### Sistema
@@ -2486,7 +2491,7 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `unread_count` | number |
 | `results` | Notification[] |
 
-**NotificationType:** "project_ready" \| "render_finished" \| "project_failed" \| "post_failed" \| "low_balance"
+**NotificationType:** "project_ready" \| "render_finished" \| "project_failed" \| "post_failed" \| "low_balance" \| "payment_approved" \| "payment_rejected"
 
 ### `system.ts`
 

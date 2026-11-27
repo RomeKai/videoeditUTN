@@ -111,6 +111,27 @@ describe('mocks', () => {
     }
   });
 
+  it('notificaciones: leer una o todas solo toca las propias del workspace activo, como el backend', async () => {
+    const before = await apiCall(notifications.listNotifications);
+    const first = before.results.find((item) => item.read_at === null);
+    if (!first) throw new Error('falta una notificación sin leer');
+
+    // From another workspace of the same person it does not exist, and "read all" there leaves it alone.
+    setActiveWorkspaceId(WORKSPACE_IDS.canal);
+    expect((await fail(apiCall(notifications.markNotificationRead, { params: { id: first.id } }))).status).toBe(404);
+    await apiCall(notifications.markAllNotificationsRead);
+    setActiveWorkspaceId(WORKSPACE_IDS.estudio);
+    expect((await apiCall(notifications.listNotifications)).unread_count).toBe(before.unread_count);
+
+    const read = await apiCall(notifications.markNotificationRead, { params: { id: first.id } });
+    expect(read.read_at).not.toBeNull();
+    // Reading it again keeps the first time.
+    expect((await apiCall(notifications.markNotificationRead, { params: { id: first.id } })).read_at).toBe(read.read_at);
+    expect((await apiCall(notifications.listNotifications)).unread_count).toBe(before.unread_count - 1);
+    await apiCall(notifications.markAllNotificationsRead);
+    expect((await apiCall(notifications.listNotifications)).unread_count).toBe(0);
+  });
+
   it('crea un proyecto, lo procesa, se aprueba, se renderiza y se cobra', async () => {
     const before = await apiCall(billing.getWallet);
     const file = new File([new Uint8Array(1024)], 'clase-10min.mp4', { type: 'video/mp4' });

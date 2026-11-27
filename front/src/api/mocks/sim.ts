@@ -1,3 +1,4 @@
+import { formatNumber, formatTokens } from '@/lib/format';
 import type { Role } from '../contracts/common';
 import type { PipelineStage } from '../contracts/projects';
 import { KIND, mid, newId, type MockClip, type MockDb, type MockProject, type MockTransaction, type MockWallet, type PaidRender } from './db';
@@ -144,14 +145,20 @@ export function addActivity(
   });
 }
 
-/** In-app notification for every active member of the workspace. */
+/**
+ * In-app notification for every active member of the workspace, like the backend
+ * (apps/notifications/services.py). With `only`, just for that user, if they are still a member.
+ */
 export function notify(
   db: MockDb,
   workspace: string,
   input: { type: MockDb['notifications'][number]['type']; title: string; body: string; project_id?: string | null; post_id?: string | null },
   now: number,
+  only?: string | null,
 ): void {
-  const members = db.members.filter((member) => member.workspace === workspace && member.status === 'active' && member.user);
+  const members = db.members.filter(
+    (member) => member.workspace === workspace && member.status === 'active' && member.user && (only === undefined || member.user === only),
+  );
   for (const member of members) {
     db.notifications.unshift({
       id: newId(),
@@ -176,6 +183,17 @@ export function notify(
   });
 }
 
+/**
+ * The body of `render_finished`, like the backend: what is ready, or that part failed and what went back.
+ * A render that ends complete and still returns tokens had a clip rendered again that failed: it kept its file.
+ */
+function renderFinishedBody(ready: number, partial: boolean, returned: number): string {
+  const refund = returned > 0 ? ` Te devolvimos ${formatTokens(round2(returned))}.` : '';
+  if (partial) return `Parte del render falló.${refund}`;
+  if (returned > 0) return `No pudimos volver a generar todos los clips: los que ya tenías quedaron como estaban.${refund}`;
+  return ready <= 1 ? 'Tu video está listo.' : `${ready} clips listos.`;
+}
+
 export function roleIn(db: MockDb, workspaceId: string, userId: string): Role | null {
   const workspace = db.workspaces.find((item) => item.id === workspaceId);
   if (!workspace) return null;
@@ -196,7 +214,7 @@ function failProject(db: MockDb, project: MockProject, code: string, now: number
   delete project._sim;
   addActivity(db, project, 'project_failed', 'El proceso falló', now);
   if (refunded > 0) addActivity(db, project, 'tokens_refunded', 'Devolución de la reserva', now, { amount: refunded });
-  notify(db, project.workspace, { type: 'project_failed', title: `${project.title} no se pudo procesar`, body: refunded > 0 ? `Te devolvimos ${refunded} tokens.` : 'No se cobró nada.', project_id: project.id }, now);
+  notify(db, project.workspace, { type: 'project_failed', title: `${project.title} no se pudo procesar`, body: refunded > 0 ? `Te devolvimos ${formatTokens(refunded)}.` : 'No se cobró nada.', project_id: project.id }, now);
 }
 
 export function startRender(project: MockProject, now: number, sim: { failOneClip?: boolean } = {}): void {
@@ -408,7 +426,7 @@ function tickRender(db: MockDb, project: MockProject, now: number): void {
     for (const id of project._reservations) refunded += releaseReservation(db, id, now);
     if (project.cost) project.cost = { ...project.cost, state: 'refunded' };
     if (refunded > 0) addActivity(db, project, 'tokens_refunded', 'Devolución de la reserva', now, { amount: refunded });
-    notify(db, project.workspace, { type: 'project_failed', title: `${project.title} no se pudo generar`, body: `Te devolvimos ${refunded} tokens.`, project_id: project.id }, now);
+    notify(db, project.workspace, { type: 'project_failed', title: `${project.title} no se pudo generar`, body: refunded > 0 ? `Te devolvimos ${formatTokens(refunded)}.` : 'No se cobró nada.', project_id: project.id }, now);
     return;
   }
   let charged = 0;
@@ -427,7 +445,7 @@ function tickRender(db: MockDb, project: MockProject, now: number): void {
   addActivity(db, project, 'render_finished', 'Terminó el render', now);
   if (charged > 0) addActivity(db, project, 'tokens_charged', 'Cobro del procesamiento', now, { amount: -charged });
   const ready = project.clips.length - failed;
-  notify(db, project.workspace, { type: 'render_finished', title: `${project.title}: terminó el render`, body: single ? 'Tu video está listo.' : `${ready} clips listos.`, project_id: project.id }, now);
+  notify(db, project.workspace, { type: 'render_finished', title: `${project.title}: terminó el render`, body: renderFinishedBody(ready, failed > 0, returned), project_id: project.id }, now);
 }
 
 /**
@@ -472,7 +490,7 @@ function finishPaidRender(db: MockDb, project: MockProject, paid: PaidRender, no
     {
       type: 'render_finished',
       title: `${project.title}: terminó el render`,
-      body: delivered >= reserved ? 'Tus clips están listos.' : returned > 0 ? `Parte del render falló. Te devolvimos ${round2(returned)} tokens.` : 'Parte del render falló.',
+      body: renderFinishedBody(project.clips.length - failed, failed > 0, returned),
       project_id: project.id,
     },
     now,
@@ -540,6 +558,23 @@ function tickPosts(db: MockDb, now: number): void {
   }
 }
 
+/** A payment was approved or rejected: for who started it, with the backend's texts. */
+function notifyPayment(db: MockDb, purchase: MockDb['purchases'][number], now: number): void {
+  if (!purchase._by) return;
+  const approved = purchase.status === 'approved';
+  const plan = purchase.plan_id ? db.plans.find((item) => item.id === purchase.plan_id)?.name : null;
+  const tokens = formatNumber(purchase.tokens);
+  const title = purchase.plan_id
+    ? approved
+      ? `Tu plan ahora es ${plan}`
+      : `No pudimos cobrar el plan ${plan}`
+    : approved
+      ? `Se acreditaron ${tokens} tokens`
+      : `No pudimos cobrar tu compra de ${tokens} tokens`;
+  const body = !approved ? 'No se cobró nada. Podés intentarlo de nuevo.' : purchase.plan_id ? 'El pago se aprobó.' : 'Tu compra se aprobó.';
+  notify(db, purchase.workspace, { type: approved ? 'payment_approved' : 'payment_rejected', title, body }, now, purchase._by);
+}
+
 function tickPurchases(db: MockDb, now: number): void {
   for (const purchase of db.purchases) {
     if (purchase.status !== 'pending' || purchase._settleAt === null || now < purchase._settleAt) continue;
@@ -548,6 +583,7 @@ function tickPurchases(db: MockDb, now: number): void {
     if (purchase._reject) {
       purchase.status = 'rejected';
       purchase.failure_reason = 'El banco rechazó el pago. Probá con otra tarjeta.';
+      notifyPayment(db, purchase, now);
       continue;
     }
     if (purchase.plan_id) {
@@ -559,6 +595,7 @@ function tickPurchases(db: MockDb, now: number): void {
         workspace.renews_at = iso(now + 30 * 24 * 3600 * 1000);
       }
       purchase.status = 'approved';
+      notifyPayment(db, purchase, now);
       continue;
     }
     const wallet = walletOf(db, purchase.workspace);
@@ -583,6 +620,7 @@ function tickPurchases(db: MockDb, now: number): void {
       project: null,
       category: 'purchase',
     });
+    notifyPayment(db, purchase, now);
   }
 }
 

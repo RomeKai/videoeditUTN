@@ -44,6 +44,7 @@ LOCAL_APPS = [
     'apps.users',
     'apps.videos',
     'apps.payments',
+    'apps.notifications',
     'apps.integrations',
 ]
 

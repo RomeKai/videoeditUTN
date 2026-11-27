@@ -129,7 +129,8 @@ export type MockNotification = Notification & { workspace: string; user: string 
 
 export type MockActivity = ActivityItem & { project: string };
 
-export type MockPurchase = TokenPurchase & { workspace: string; _settleAt: number | null; _reject: boolean };
+/** `_by`: who started it (the backend's `created_by`, which the response does not carry): gets its notification. */
+export type MockPurchase = TokenPurchase & { workspace: string; _settleAt: number | null; _reject: boolean; _by?: string };
 
 /** Time zone of the workspaces in the mocks: months and days of Uso are counted in it (fixed UTC−3). */
 export const WORKSPACE_UTC_OFFSET_MS = -3 * 3600 * 1000;

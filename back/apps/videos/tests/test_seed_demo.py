@@ -7,6 +7,7 @@ and say so.
 """
 import os
 import shutil
+import uuid
 from decimal import Decimal
 from io import StringIO
 from unittest.mock import patch
@@ -16,6 +17,8 @@ from django.conf import settings
 from django.core.management import CommandError, call_command
 from rest_framework.test import APIClient
 
+from apps.notifications.models import Notification
+from apps.notifications.services import KEPT_PER_USER
 from apps.payments.models import SubscriptionPlan, Transaction, Wallet
 from apps.payments.tests.conftest import seeded_plans  # noqa: F401  (fixture)
 from apps.users.models import User, Workspace, WorkspaceMember
@@ -238,6 +241,101 @@ class TestRealUsers:
         assert not Transaction.objects.filter(wallet__workspace=workspace).exists()
         assert BrandKit.objects.filter(pk=kit.pk, is_default=True).exists()
         assert VideoProject.objects.filter(pk=project.pk).exists()
+
+
+class TestExampleNotifications:
+    """The bell of the demo is not empty: example notifications with the texts of the real events."""
+
+    REVIEW = '[DEMO] Ejemplo para revisar (datos de prueba)'
+    CLIPS = '[DEMO] Ejemplo con clips listos (datos de prueba)'
+
+    def seed(self, *args):
+        with patch(FFMPEG, side_effect=fake_ffmpeg):
+            return run('--with-projects', *args)
+
+    @staticmethod
+    def bell():
+        """(type, title, body, read, project title) as the API lists them, newest first."""
+        user = demo_user()
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.get('/api/v1/notifications/', HTTP_X_WORKSPACE_ID=str(Workspace.objects.get(owner=user).pk))
+        assert response.status_code == 200
+        titles = dict(VideoProject.objects.values_list('pk', 'title'))
+        rows = [
+            (row['type'], row['title'], row['body'], row['read_at'] is not None, titles.get(row['project_id'] and uuid.UUID(row['project_id'])))
+            for row in response.data['results']
+        ]
+        return rows, response.data['unread_count']
+
+    def test_the_bell_has_one_of_each_with_the_texts_of_the_real_events(self):
+        output = self.seed()
+
+        rows, unread = self.bell()
+        assert rows == [
+            ('project_ready', f'{self.REVIEW} está listo para revisar', 'Encontramos 3 clips.', False, self.REVIEW),
+            ('project_failed', '[DEMO] Ejemplo que falló (datos de prueba) no se pudo procesar', 'No se cobró nada.', False, None),
+            ('render_finished', f'{self.CLIPS}: terminó el render', '2 clips listos.', True, self.CLIPS),
+            ('payment_approved', 'Se acreditaron 4.860 tokens', 'Tu compra se aprobó.', True, None),
+        ]
+        assert unread == 2
+        assert 'notificaciones de ejemplo: 4 nuevas' in output
+        # Only the demo user's, in the demo workspace; the credit names the seed's own deposit.
+        assert set(Notification.objects.values_list('user__email', 'workspace__name')) == {
+            (seed_demo.DEMO_EMAIL, seed_demo.DEMO_WORKSPACE_NAME),
+        }
+        assert Transaction.objects.get(description=seed_demo.DEPOSIT_DESCRIPTION).amount == Decimal('4860')
+        # Nothing was returned for an example: the wallet has no refund to name.
+        assert not Transaction.objects.filter(status=Transaction.Status.FAILED).exists()
+
+    def test_without_projects_there_are_none(self):
+        run()
+
+        assert not Notification.objects.exists()
+
+    def test_reruns_do_not_duplicate_them_and_keep_what_was_read(self):
+        self.seed()
+        first = set(Notification.objects.values_list('pk', flat=True))
+        Notification.objects.filter(kind='project_ready').update(read_at=Notification.objects.get(kind='render_finished').read_at)
+        before = sorted(Notification.objects.values_list('pk', 'created_at', 'read_at', 'project_id'))
+
+        output = self.seed()
+
+        assert sorted(Notification.objects.values_list('pk', 'created_at', 'read_at', 'project_id')) == before
+        assert 'notificaciones de ejemplo: 0 nuevas' in output
+
+        # The projects are made again: the same notifications, leading to the new projects.
+        self.seed('--reset-projects')
+
+        assert set(Notification.objects.values_list('pk', flat=True)) == first
+        rows, unread = self.bell()
+        assert [(kind, project) for kind, _, _, _, project in rows] == [
+            ('project_ready', self.REVIEW), ('project_failed', None), ('render_finished', self.CLIPS), ('payment_approved', None),
+        ]
+        assert unread == 1
+
+    def test_a_review_approved_in_a_rehearsal_is_not_announced_as_ready_again(self):
+        self.seed()
+        Notification.objects.all().delete()
+        VideoProject.objects.filter(title=self.REVIEW).update(status=VideoProject.Status.RENDERING)
+
+        self.seed()
+
+        assert sorted(Notification.objects.values_list('kind', flat=True)) == ['payment_approved', 'project_failed', 'render_finished']
+
+    def test_a_full_bell_keeps_its_real_notifications(self):
+        run()
+        user = demo_user()
+        workspace = Workspace.objects.get(owner=user)
+        for index in range(KEPT_PER_USER - 1):
+            Notification.objects.create(user=user, workspace=workspace, kind='render_finished', title=f'Real {index}')
+
+        self.seed()
+        self.seed()
+
+        titles = list(Notification.objects.values_list('title', flat=True))
+        assert len(titles) == KEPT_PER_USER
+        assert sum(title.startswith('Real') for title in titles) == KEPT_PER_USER - 1
 
 
 class TestExampleProjects:

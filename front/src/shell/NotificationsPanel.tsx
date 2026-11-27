@@ -20,6 +20,8 @@ const TYPE_ICON: Record<Notification['type'], IconName> = {
   project_failed: 'error',
   post_failed: 'error',
   low_balance: 'tokens',
+  payment_approved: 'tokens',
+  payment_rejected: 'error',
 };
 
 /** J2 · Notificaciones: the last 20, a dot on the unread ones and "Marcar todo como leído". Each one leads to its project or publication. */
@@ -54,7 +56,7 @@ export function NotificationsPanel({ onNavigate }: { onNavigate?: () => void }) 
         {notifications.isSuccess && items.length === 0 ? <p className={cx('t-small muted', styles.notiEmpty)}>No tenés notificaciones.</p> : null}
         {items.map((item) => {
           const isUnread = item.read_at === null;
-          const failed = item.type === 'project_failed' || item.type === 'post_failed';
+          const failed = item.type === 'project_failed' || item.type === 'post_failed' || item.type === 'payment_rejected';
           return (
             <button
               key={item.id}

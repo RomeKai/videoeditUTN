@@ -203,7 +203,7 @@ def _drop_pending_upgrade(workspace, reason, keep_plan=None):
             if not checkout_is_expired(pending):
                 return pending, None
             reason = CHECKOUT_EXPIRED
-    settled, _ = settle_payment(pending.pk, approved=False, failure_reason=reason)
+    settled, _ = settle_payment(pending.pk, approved=False, failure_reason=reason, notify=False)
     return None, settled
 
 

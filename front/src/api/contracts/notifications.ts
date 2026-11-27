@@ -2,8 +2,19 @@ import { z } from 'zod';
 import { defineEndpoint } from '../endpoint';
 import { Id, IsoDateTime, NoContent } from './common';
 
-/** The five cases of map 1.11. */
-export const NotificationType = z.enum(['project_ready', 'render_finished', 'project_failed', 'post_failed', 'low_balance']);
+/**
+ * The five cases of map 1.11, plus the result of a payment (only in the app, no email).
+ * The backend writes today: `project_ready`, `render_finished`, `project_failed`, `payment_approved` and `payment_rejected`.
+ */
+export const NotificationType = z.enum([
+  'project_ready',
+  'render_finished',
+  'project_failed',
+  'post_failed',
+  'low_balance',
+  'payment_approved',
+  'payment_rejected',
+]);
 export type NotificationType = z.infer<typeof NotificationType>;
 
 export const Notification = z.object({
@@ -34,8 +45,12 @@ export const listNotifications = defineEndpoint({
   path: '/api/v1/notifications/',
   summary: 'Las últimas 20 notificaciones del usuario en el workspace y cuántas están sin leer.',
   response: NotificationsResponse,
-  errors: [],
-  backend: { status: 'proposed', gap: 16 },
+  errors: [{ status: 404, when: 'El `X-Workspace-Id` no es un workspace del usuario.' }],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/notifications/views.py · NotificationListView + NotificationSerializer (apps/notifications/serializers.py)',
+    note: 'Solo las del usuario en el workspace activo, para cualquier rol, de la más nueva a la más vieja. `unread_count` cuenta todas las no leídas. Las escribe `apps/notifications/services.py` cuando el cambio hace commit: listo para revisar, render terminado (completo o parcial) y proyecto fallido (con lo devuelto) para el dueño y los miembros activos del workspace; pago aprobado o rechazado (`payment_approved`, `payment_rejected`) para quien lo inició. `post_failed` y `low_balance` todavía no se escriben, ni se envía ningún email (hueco 21). Se guardan las últimas 20 por usuario y workspace. `project_id` queda en null si el proyecto se borra. Sin workspace, la lista vacía.',
+  },
   screens: ['J2', 'Barra'],
 });
 
@@ -45,8 +60,12 @@ export const markNotificationRead = defineEndpoint({
   path: '/api/v1/notifications/:id/read/',
   summary: 'Marca una notificación como leída.',
   response: Notification,
-  errors: [{ status: 404, when: 'No existe.' }],
-  backend: { status: 'proposed', gap: 16 },
+  errors: [{ status: 404, when: 'No existe, es de otra persona o de otro workspace.' }],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/notifications/views.py · NotificationReadView',
+    note: 'Sin cuerpo. Solo la primera vez escribe `read_at`; repetirlo responde la misma notificación. Cualquier rol.',
+  },
   screens: ['J2'],
 });
 
@@ -57,8 +76,12 @@ export const markAllNotificationsRead = defineEndpoint({
   summary: 'Marca todas como leídas.',
   response: NoContent,
   successStatus: 204,
-  errors: [],
-  backend: { status: 'proposed', gap: 16 },
+  errors: [{ status: 404, when: 'El `X-Workspace-Id` no es un workspace del usuario.' }],
+  backend: {
+    status: 'exists',
+    source: 'back/apps/notifications/views.py · NotificationReadAllView',
+    note: 'Sin cuerpo. Solo toca las del usuario en el workspace activo que estaban sin leer. Cualquier rol.',
+  },
   screens: ['J2'],
 });
 

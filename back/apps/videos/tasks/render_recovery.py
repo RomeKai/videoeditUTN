@@ -189,6 +189,7 @@ from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from apps.notifications.services import notify_project_failed
 from apps.payments.models import Transaction
 from apps.videos.models import VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import PipelineStage, mark_failed, record_error
@@ -861,6 +862,7 @@ def _recover_ingestion(project_id, _stuck_after=None):
                                 **(project.metadata or {}), INGESTION_CHAIN_KEY: new_ingestion_chain(),
                             })
                             _settle_stuck_creation(project_id, reservation)
+                            notify_project_failed(project_id, since=now)
                 except PaymentError:
                     failed = False  # rolled back with it: nothing was written
                 if not failed:
