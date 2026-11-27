@@ -8,13 +8,16 @@ and say so.
 import os
 import shutil
 import uuid
+from datetime import datetime
 from decimal import Decimal
 from io import StringIO
 from unittest.mock import patch
 
 import pytest
 from django.conf import settings
+from django.core.cache import cache
 from django.core.management import CommandError, call_command
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.notifications.models import Notification
@@ -408,6 +411,135 @@ class TestExampleProjects:
             run('--reset-projects')
         assert VideoProject.objects.count() == 2
         assert not set(VideoProject.objects.values_list('pk', flat=True)) & {row[0] for row in first['projects']}
+
+    def test_they_have_the_times_of_their_stages(self):
+        with patch(FFMPEG, side_effect=fake_ffmpeg):
+            run('--with-projects')
+        client = APIClient()
+        client.force_authenticate(demo_user())
+        review_stages = ['audio_extracted', 'transcribed', 'moderated', 'clips_selected']
+
+        for slug, stages in (('review', review_stages), ('clips', review_stages + ['render_dispatched'])):
+            project = VideoProject.objects.get(**{f'metadata__{seed_demo.FIXTURE_KEY}': slug})
+            timings = client.get(f'/api/v1/projects/{project.pk}/').data['stage_timings']
+            assert set(timings) == set(stages)
+            previous_end = project.created_at
+            for stage in stages:
+                timing = timings[stage]
+                started, ended = datetime.fromisoformat(timing['started_at']), datetime.fromisoformat(timing['finished_at'])
+                # One after the other, from the creation, and each lasts what it says.
+                assert previous_end < started < ended
+                assert abs((ended - started).total_seconds() - timing['duration_s']) < 0.001
+                assert project.metadata['stage_started_at'][stage] == timing['started_at']
+                previous_end = ended
+            # All of it already happened, before the example notification of the project.
+            assert previous_end < timezone.now()
+            selected = datetime.fromisoformat(timings['clips_selected']['finished_at'])
+            assert all(clip.created_at == selected for clip in project.clips.all())
+            # The whole process took less than the video is long: an example, but a believable one.
+            assert 30 < sum(timing['duration_s'] for timing in timings.values()) < seed_demo.SOURCE_SECONDS
+
+    def test_they_were_created_before_their_notifications(self):
+        with patch(FFMPEG, side_effect=fake_ffmpeg):
+            run('--with-projects')
+
+        for notification in Notification.objects.exclude(project=None):
+            ready = max(
+                datetime.fromisoformat(value) for value in notification.project.metadata['stage_finished_at'].values()
+            )
+            assert notification.project.created_at < ready < notification.created_at
+
+    def test_a_fresh_demo_has_a_time_estimate(self):
+        from apps.payments.services import estimate
+
+        cache.clear()
+        assert estimate.review_eta_seconds(600) is None
+        with patch(FFMPEG, side_effect=fake_ffmpeg):
+            # Seeding forgets the "no history" the cache just kept.
+            run('--with-projects')
+
+        spent = sum(seconds for stage, seconds in seed_demo.FIXTURE_STAGE_SECONDS if stage in estimate.REVIEW_STAGES)
+        assert estimate.review_seconds_per_second() == pytest.approx(spent / seed_demo.SOURCE_SECONDS)
+        assert estimate.review_eta_seconds(600) == round(600 * spent / seed_demo.SOURCE_SECONDS)
+        client = APIClient()
+        client.force_authenticate(demo_user())
+        answer = client.post('/api/v1/pricing/estimate/', {'source': 'file', 'duration_seconds': 600}, format='json')
+        assert answer.status_code == 200
+        assert answer.data['eta_seconds'] == round(600 * spent / seed_demo.SOURCE_SECONDS)
+
+    def test_reruns_keep_the_times_and_reset_writes_them_again(self):
+        def times():
+            return {
+                project.metadata[seed_demo.FIXTURE_KEY]: (
+                    project.metadata['stage_started_at'], project.metadata['stage_finished_at'],
+                    project.metadata['stage_durations'], project.ai_rationale_log,
+                )
+                for project in VideoProject.objects.all()
+            }
+
+        with patch(FFMPEG, side_effect=fake_ffmpeg):
+            run('--with-projects')
+            first = times()
+            run('--with-projects')
+            assert times() == first
+
+            run('--reset-projects')
+        again = times()
+        assert set(again) == {'review', 'clips'}
+        assert again['review'][2] == first['review'][2]
+        assert again['review'][0] != first['review'][0]
+
+    def test_a_fixture_made_before_the_times_existed_gets_them_and_keeps_what_a_rehearsal_wrote(self):
+        with patch(FFMPEG, side_effect=fake_ffmpeg):
+            run('--with-projects')
+            review = VideoProject.objects.get(**{f'metadata__{seed_demo.FIXTURE_KEY}': 'review'})
+            # As an older seed_demo left it, then approved in a rehearsal: the real render wrote its own time.
+            old = {
+                key: value for key, value in review.metadata.items()
+                if key not in ('stage_started_at', 'stage_finished_at', 'stage_durations')
+            }
+            old['stage_durations'] = {'render_dispatched': 0.123}
+            old['title_edited'] = True
+            VideoProject.objects.filter(pk=review.pk).update(
+                metadata=old, ai_rationale_log={seed_demo.FIXTURE_KEY: seed_demo.FIXTURE_NOTE},
+            )
+            review.clips.first().delete()
+
+            run('--with-projects')
+            review.refresh_from_db()
+            completed = dict(review.metadata)
+            run('--with-projects')
+
+        review.refresh_from_db()
+        assert review.metadata == completed
+        assert review.metadata['title_edited'] is True
+        assert review.metadata['stage_durations'] == {
+            'render_dispatched': 0.123,
+            **{stage: seconds for stage, seconds in seed_demo.FIXTURE_STAGE_SECONDS if stage != 'render_dispatched'},
+        }
+        assert set(review.metadata['stage_started_at']) == {'audio_extracted', 'transcribed', 'moderated', 'clips_selected'}
+        # It suggested three, whatever is left of them.
+        assert review.ai_rationale_log['suggestions_count'] == 3
+        assert review.clips.count() == 2
+
+    def test_the_activity_of_the_review_says_the_three_clips_it_suggested_after_approving_two(self):
+        from apps.payments.services import wallet_service
+        from apps.videos.services.project_activity import build_activity
+
+        with patch(FFMPEG, side_effect=fake_ffmpeg):
+            run('--with-projects')
+        review = VideoProject.objects.get(**{f'metadata__{seed_demo.FIXTURE_KEY}': 'review'})
+        wallet = Wallet.objects.get(workspace=review.workspace)
+        approval = wallet_service.reserve_funds(wallet_id=wallet.id, amount=Decimal('18'), user=demo_user(), description='x')
+        # What approving two of the three leaves: the reservation linked and the third clip deleted.
+        review.clips.order_by('start_time').last().delete()
+        review.metadata = {**review.metadata, 'render_reservation_id': str(approval.pk)}
+        review.status = VideoProject.Status.RENDERING
+        review.save()
+
+        descriptions = [item['description'] for item in build_activity(review)]
+
+        assert 'Listo para revisar: 3 clips sugeridos' in descriptions
 
     def test_a_failed_ffmpeg_leaves_no_project(self):
         with patch(FFMPEG, side_effect=CommandError('ffmpeg falló')):
