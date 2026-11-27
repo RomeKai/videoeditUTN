@@ -33,6 +33,16 @@ The example projects (``--with-projects``)
     a tone that ffmpeg generates here; the transcript is a written text, not
     speech recognised from it. Nothing is reserved or charged for them.
 
+    Each one has the times of its stages (``FIXTURE_STAGE_SECONDS``: example
+    numbers, from its creation, which is set a while back: ``FIXTURE_AGE``), so the process
+    timeline shows a start and a duration, and "Nuevo proyecto" has a history
+    to estimate the time from: the estimate reads the ``stage_durations`` of
+    the latest projects of the last 30 days that reached the review, of any
+    workspace (apps/payments/services/estimate.py), and these two count. With
+    real projects in that history, the two examples are two samples more of
+    its median. After 30 days they no longer count: run ``--reset-projects``.
+    A fixture made before these times existed gets them on the next run.
+
     - ``review``: waits in the review (``awaiting_approval``) with three
       suggested cuts. Approving it runs the REAL render, on the worker.
     - ``clips``: finished (``completed``) with two clips. Their files are cuts
@@ -59,11 +69,12 @@ import os
 import secrets
 import shutil
 import subprocess
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
@@ -119,6 +130,21 @@ FINISHED_CUTS = [
     ('[DEMO] Clip de ejemplo 1', 2.0, 22.0, 82),
     ('[DEMO] Clip de ejemplo 2', 30.0, 50.0, 74),
 ]
+# Seconds of each stage, in order: example numbers for a 90 s video (about
+# 0.7 s of processing per second of video). The last one, the dispatch of the
+# render, only for the project that finished.
+FIXTURE_STAGE_SECONDS = (
+    ('audio_extracted', 4.2),
+    ('transcribed', 38.6),
+    ('moderated', 2.9),
+    ('clips_selected', 19.4),
+    ('render_dispatched', 0.8),
+)
+# From the creation of the project to its first stage, and between stages.
+FIXTURE_STAGE_GAP_SECONDS = 1.5
+# How long ago each fixture was created: before its example notification
+# (``_notifications``), so the bell and the project tell the same story.
+FIXTURE_AGE = {'review': timedelta(minutes=15), 'clips': timedelta(hours=27)}
 FIXTURES = {
     'review': '[DEMO] Ejemplo para revisar (datos de prueba)',
     'clips': '[DEMO] Ejemplo con clips listos (datos de prueba)',
@@ -135,6 +161,26 @@ def transcript_words():
         for index, word in enumerate(words)
         if (index + 1) * WORD_SECONDS <= SOURCE_SECONDS
     ]
+
+
+def stage_times(slug, created_at):
+    """
+    The metadata keys the ingestion writes about its stages (tasks/ingestion.py:
+    ``stage_started_at``, ``stage_finished_at``, ``stage_durations``), for the
+    stages the fixture ``slug`` went through, one after the other from
+    ``created_at``.
+    """
+    started, finished, durations = {}, {}, {}
+    at = created_at
+    for stage, seconds in FIXTURE_STAGE_SECONDS:
+        if stage == 'render_dispatched' and slug != 'clips':
+            continue
+        at += timedelta(seconds=FIXTURE_STAGE_GAP_SECONDS)
+        started[stage] = at.isoformat()
+        at += timedelta(seconds=seconds)
+        finished[stage] = at.isoformat()
+        durations[stage] = seconds
+    return {'stage_started_at': started, 'stage_finished_at': finished, 'stage_durations': durations}
 
 
 def run_ffmpeg(args):
@@ -410,6 +456,7 @@ class Command(BaseCommand):
     def _fixture(self, slug, workspace, user, kit):
         existing = self._fixtures(workspace).filter(**{f'metadata__{FIXTURE_KEY}': slug}).first()
         if existing is not None:
+            self._complete_fixture(existing, slug)
             return existing, False
 
         # The files first: a failed ffmpeg leaves no project behind.
@@ -442,7 +489,9 @@ class Command(BaseCommand):
                 original_r2_key=source, proxy_r2_key=source,
                 source_file=os.path.relpath(source, str(settings.MEDIA_ROOT)).replace(os.sep, '/'),
                 transcript_data=words,
-                ai_rationale_log={FIXTURE_KEY: FIXTURE_NOTE},
+                # ``suggestions_count``: what the selection writes, and what the
+                # activity says the review started with ("3 clips sugeridos").
+                ai_rationale_log={FIXTURE_KEY: FIXTURE_NOTE, 'suggestions_count': len(cuts)},
                 metadata={
                     FIXTURE_KEY: slug,
                     'demo_fixture_note': FIXTURE_NOTE,
@@ -472,4 +521,60 @@ class Command(BaseCommand):
                     s3_object_key=clip_files.get(index),
                     thumbnail_object_key=clip_thumbnails.get(index),
                 )
+            # Created a while ago, like its notification says, so its stages are in the past.
+            created_at = timezone.now() - FIXTURE_AGE[slug]
+            times = stage_times(slug, created_at)
+            VideoProject.objects.filter(pk=project.pk).update(
+                created_at=created_at, metadata={**project.metadata, **times},
+            )
+            # The clips appeared when the selection ended.
+            VideoClip.objects.filter(project=project).update(
+                created_at=datetime.fromisoformat(times['stage_finished_at']['clips_selected']),
+            )
+            project.refresh_from_db()
+        self._forget_estimate()
         return project, True
+
+    @staticmethod
+    def _forget_estimate():
+        """The estimate keeps its history in the cache for a while: it reads the new one now."""
+        from apps.payments.services.estimate import ETA_CACHE_KEY
+
+        try:
+            cache.delete(ETA_CACHE_KEY)
+        except Exception:  # a cache that does not answer: the estimate reads it again by itself
+            pass
+
+    def _complete_fixture(self, project, slug):
+        """
+        Puts into a fixture made by an older version what it lacks: the times
+        of its stages and how many clips it suggested. Only the missing keys:
+        a project a rehearsal approved keeps the times its real render wrote.
+        """
+        if slug not in FIXTURES:
+            return
+        with transaction.atomic():
+            project = VideoProject.objects.select_for_update().get(pk=project.pk)
+            metadata = project.metadata if isinstance(project.metadata, dict) else {}
+            log = project.ai_rationale_log if isinstance(project.ai_rationale_log, dict) else {}
+            changed = []
+            if not isinstance(metadata.get('stage_durations'), dict) or 'clips_selected' not in metadata['stage_durations']:
+                times = stage_times(slug, project.created_at)
+                metadata = {
+                    **metadata,
+                    **{
+                        key: {**value, **(metadata[key] if isinstance(metadata.get(key), dict) else {})}
+                        for key, value in times.items()
+                    },
+                }
+                changed.append('metadata')
+            if not isinstance(log.get('suggestions_count'), int):
+                cuts = REVIEW_CUTS if slug == 'review' else FINISHED_CUTS
+                log = {**log, 'suggestions_count': len(cuts)}
+                changed.append('ai_rationale_log')
+            if not changed:
+                return
+            project.metadata, project.ai_rationale_log = metadata, log
+            project.save(update_fields=changed)
+        if 'metadata' in changed:
+            self._forget_estimate()

@@ -127,7 +127,8 @@ export type MockPost = ScheduledPost & { workspace: string; _sim?: { startedAt: 
 
 export type MockNotification = Notification & { workspace: string; user: string };
 
-export type MockActivity = ActivityItem & { project: string };
+/** `_transaction`: the reservation a `tokens_reserved` item is about; its `reservation_state` is read from it when the activity is served. */
+export type MockActivity = ActivityItem & { project: string; _transaction?: string };
 
 /** `_by`: who started it (the backend's `created_by`, which the response does not carry): gets its notification. */
 export type MockPurchase = TokenPurchase & { workspace: string; _settleAt: number | null; _reject: boolean; _by?: string };

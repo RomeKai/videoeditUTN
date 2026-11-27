@@ -406,7 +406,7 @@ Una aprobación anterior a los clips por segmento (sin `render_clip_ids`, todav�
 | `prompt_applied` | `metadata['pte']`: aplicado, vacío o fallido | El último `AIUsageRecord` de `prompt_parse`, si no la creación | Sistema |
 | `review_ready` | Un proyecto en revisión o con la revisión aprobada (no un video completo). Cantidad: `ai_rationale_log['suggestions_count']` | El último `AIUsageRecord` exitoso de `selection`, si no el primer clip | Sistema |
 | `review_approved` | La reserva de `metadata['render_reservation_id']`. Cantidad: `render_clip_ids` | `created_at` de la reserva | `created_by` de la reserva |
-| `tokens_reserved` | Cada `Transaction` de una clave `*reservation_id` de la metadata, del mismo workspace. Monto: `-reserved_amount` | `created_at` | `created_by` |
+| `tokens_reserved` | Cada `Transaction` de una clave `*reservation_id` de la metadata, del mismo workspace. Monto: `-reserved_amount`. Trae `reservation_state`, igual que su cobro y su devolución | `created_at` | `created_by` |
 | `tokens_charged` | La misma, en `COMPLETED`. Monto: `-amount` | `settled_at` | Sistema |
 | `tokens_refunded` | En `FAILED`, todo lo reservado; en `COMPLETED` con `reserved_amount` mayor que `amount`, la diferencia | `settled_at` | Sistema |
 | `render_finished` | Un proyecto `completed` o `partial`, con los clips listos y fallidos | `settled_at` de la reserva que pagó el render (aprobación, render automático o, en un video completo, la de la creación) | Sistema |
@@ -416,6 +416,8 @@ Una aprobación anterior a los clips por segmento (sin `render_clip_ids`, todav�
 - Cada ítem tiene un id estable: `uuid5` del proyecto, el tipo y la fila de donde sale.
 - Los montos son decimales con signo, en texto (`"-20.0000000000"`): negativo es reservado o cobrado.
 - A lo sumo `MAX_ITEMS` (200).
+- La reserva, su cobro y su devolución son ítems de un solo movimiento del saldo. Los tres traen `reservation_state`, cómo terminó la reserva: `reserved` (sigue reservada), `charged`, `partially_charged` (se cobró menos de lo reservado) o `refunded`. Con eso la web los muestra como un grupo cuyos montos con signo suman lo que se movió el saldo: en `charged` y `partially_charged` solo el cobro lleva signo; en `refunded`, la reserva y su devolución.
+- `review_ready` dice los clips que se sugirieron, no los que quedan: aprobar la revisión borra los que se dejaron afuera. Sin `suggestions_count` (o con uno que no es un entero) usa los clips que hay.
 - Una reserva liquidada antes de la migración `0012` de payments no tiene `settled_at` ni `reserved_amount`: se usan `created_at` y `amount`.
 
 No aparece lo que no se guarda: los renombres (`project_renamed`), las ediciones y los reintentos de un clip (`clip_edited`, `clip_retried`), quién programó un post (`ScheduledPost` no tiene autor) y una reserva cuya clave ya no está en la metadata (el render automático liquidado de un proyecto que después se aprobó: la aprobación borra sus claves).

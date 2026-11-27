@@ -37,6 +37,13 @@ export function probeVideoFile(file: File): Promise<MediaInfo> {
       settled = true;
       window.clearTimeout(timer);
       video.removeAttribute('src');
+      // Removing the attribute does not stop the element: with preload="metadata" the browser keeps reading
+      // the blob, and a read that starts after the revoke fails (ERR_FILE_NOT_FOUND). load() without a source stops it.
+      try {
+        video.load();
+      } catch {
+        // Nothing to stop.
+      }
       URL.revokeObjectURL(url);
       resolve(info);
     };

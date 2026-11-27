@@ -113,6 +113,11 @@
   font-weight: 500;
   white-space: nowrap;
 }
+/* A reservation already settled: what was set aside, not one more debit. */
+.settled {
+  font-weight: 400;
+  color: var(--fg-subtle);
+}
 .none {
   padding: 16px 20px;
 }

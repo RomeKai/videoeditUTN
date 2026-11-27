@@ -74,7 +74,7 @@ export const clipsHandlers = [
     require('clip.edit');
     const { project, clip } = find(db, params.id, workspace.id);
     const transaction = startPaidRender(db, project, [clip], { userId: user.id, description: `Render de clip: ${clip.title}`, now });
-    addActivity(db, project, 'tokens_reserved', `Reserva por renderizar «${clip.title}»`, now, { actorId: user.id, amount: -transaction.amount });
+    addActivity(db, project, 'tokens_reserved', `Reserva por renderizar «${clip.title}»`, now, { actorId: user.id, amount: -transaction.amount, transactionId: transaction.id });
     return { data: { message: 'Render encolado.', final_cost: dec(transaction.amount), transaction_id: transaction.id }, status: 202 };
   }),
 
@@ -85,7 +85,7 @@ export const clipsHandlers = [
     if (clip.status !== 'failed') throw conflict('El clip no está en error.', 'not_failed');
     const transaction = startPaidRender(db, project, [clip], { userId: user.id, description: `Reintento de clip: ${clip.title}`, now });
     addActivity(db, project, 'clip_retried', `Reintentó el clip «${clip.title}»`, now, { actorId: user.id });
-    addActivity(db, project, 'tokens_reserved', `Reserva por reintentar «${clip.title}»`, now, { actorId: user.id, amount: -transaction.amount });
+    addActivity(db, project, 'tokens_reserved', `Reserva por reintentar «${clip.title}»`, now, { actorId: user.id, amount: -transaction.amount, transactionId: transaction.id });
     return { data: { ...serializeClip(db, clip), final_cost: dec(transaction.amount), transaction_id: transaction.id }, status: 202 };
   }),
 
