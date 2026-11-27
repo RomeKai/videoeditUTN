@@ -379,7 +379,7 @@ describe('mocks', () => {
       });
     });
     const paying = await remove();
-    expect([paying.status, paying.code, paying.message]).toEqual([409, 'payment_pending', 'Hay un pago en curso. Esperá a que termine o cancelalo antes de borrar el espacio.']);
+    expect([paying.status, paying.code, paying.message]).toEqual([409, 'payment_pending', 'Hay un pago en curso: terminalo, o esperá a que venza (24 h después de abrirlo).']);
     // Once it is settled (here, rejected), the tokens stop it.
     edit((db) => {
       for (const purchase of db.purchases) if (purchase.id === purchaseId) Object.assign(purchase, { status: 'rejected', checkout_url: null });

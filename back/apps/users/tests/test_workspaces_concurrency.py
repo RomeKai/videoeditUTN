@@ -2,10 +2,12 @@
 Two requests that change the owner of one workspace at the same time run one
 after the other: require_workspace_role(lock=True) takes the workspace's row
 lock before it reads the role, so the second one sees what the first one did.
-A token purchase and a delete of its workspace also run one after the other.
+A token purchase, or a plan change, and a delete of its workspace also run
+one after the other.
 """
 import threading
 import time
+from decimal import Decimal
 from unittest import mock
 
 from django.db import connection
@@ -149,10 +151,11 @@ class ConcurrentLastWorkspaceTests(APITransactionTestCase):
 @override_settings(PAYMENTS_PROVIDER="simulated", PAYMENTS_ALLOW_SIMULATED=True)
 class ConcurrentPurchaseAndDeleteTests(APITransactionTestCase):
     """
-    A token purchase starts while the owner deletes the workspace. Both lock
-    the workspace row first: the delete either sees the pending payment and
-    refuses, or ends first and the purchase finds no workspace. Never a 204
-    that leaves a pending payment behind or erases one.
+    A token purchase (or a plan change) starts while the owner deletes the
+    workspace. Both lock the workspace row first: the delete either sees the
+    pending payment and refuses, or ends first and the purchase finds no
+    workspace (404). Never a 204 that leaves a pending payment behind or
+    erases one, and never a 500.
     """
 
     def setUp(self):
@@ -265,3 +268,44 @@ class ConcurrentPurchaseAndDeleteTests(APITransactionTestCase):
 
         assert answers["delete"] == (204, None)
         self._assert_no_payment_lost(answers)
+
+    def test_a_plan_change_that_comes_while_the_delete_holds_the_workspace_finds_it_gone(self):
+        from apps.users import views_workspaces
+
+        plan = SubscriptionPlan.objects.create(
+            name="Pago", max_members=5, price_usd_monthly=Decimal("49"), is_active=True, is_public=True,
+        )
+        delete_locked = threading.Event()
+        release = threading.Event()
+        count = views_workspaces._other_workspaces
+
+        def hold_the_lock(user, workspace):
+            delete_locked.set()
+            release.wait(timeout=10)
+            return count(user, workspace)
+
+        def change():
+            try:
+                answers["change"] = self._api().post(
+                    "/api/v1/subscription/change/", {"plan_id": str(plan.pk)}, format="json",
+                ).status_code
+            except Exception as exc:  # what the view did not answer (a 500)
+                answers["change"] = type(exc).__name__
+            finally:
+                connection.close()
+
+        answers = {}
+        with mock.patch.object(views_workspaces, "_other_workspaces", hold_the_lock):
+            delete = threading.Thread(target=self._delete, args=(answers,))
+            delete.start()
+            assert delete_locked.wait(timeout=10)
+            changer = threading.Thread(target=change)
+            changer.start()
+            # The plan change waits for the workspace's row (lock_workspace).
+            assert self._someone_waits_for_a_lock()
+            release.set()
+            delete.join(timeout=30)
+            changer.join(timeout=30)
+
+        assert answers == {"delete": (204, None), "change": 404}
+        assert not Payment.objects.exists()

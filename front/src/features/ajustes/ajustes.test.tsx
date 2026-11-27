@@ -109,7 +109,7 @@ describe('H1 · General', () => {
     const dialog = await screen.findByRole('alertdialog', { name: '¿Borrar Estudio Norte?' });
     await user.type(within(dialog).getByRole('textbox'), 'Estudio Norte');
     await user.click(within(dialog).getByRole('button', { name: 'Borrar el workspace' }));
-    expect(await within(dialog).findByText('Hay un pago en curso. Esperá a que termine o cancelalo antes de borrar el espacio.')).toBeInTheDocument();
+    expect(await within(dialog).findByText('Hay un pago en curso: terminalo, o esperá a que venza (24 h después de abrirlo).')).toBeInTheDocument();
     expect(loadDb().workspaces.some((workspace) => workspace.name === 'Estudio Norte')).toBe(true);
     expect(navigation.replace).not.toHaveBeenCalled();
   });

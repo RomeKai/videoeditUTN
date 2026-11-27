@@ -110,7 +110,7 @@ export const workspacesHandlers = [
       throw conflict('El espacio tiene tokens reservados que todavía no se liquidaron. Probá de nuevo en unos minutos.', 'reservation_open');
     }
     if (db.purchases.some((item) => item.workspace === workspace.id && item.status === 'pending')) {
-      throw conflict('Hay un pago en curso. Esperá a que termine o cancelalo antes de borrar el espacio.', 'payment_pending');
+      throw conflict('Hay un pago en curso: terminalo, o esperá a que venza (24 h después de abrirlo).', 'payment_pending');
     }
     if (wallet && wallet.available_balance > 0) {
       const left = String(wallet.available_balance);
@@ -200,7 +200,7 @@ export const workspacesHandlers = [
     const payingPlan = paying ? db.plans.find((plan) => plan.id === paying.plan_id) : null;
     if (payingPlan && payingPlan.max_members < info.max && info.used + emails.length > payingPlan.max_members) {
       throw new MockHttpError(403, {
-        error: `Estás pasando al plan '${payingPlan.name}', que permite ${payingPlan.max_members} miembros. Para invitar a más gente, cancelá ese pago: elegí tu plan actual en Planes.`,
+        error: `Estás pasando al plan '${payingPlan.name}', que permite ${payingPlan.max_members} miembros. Hay un pago en curso: terminalo, o esperá a que venza (24 h después de abrirlo).`,
         code: 'seats_exceeded',
       });
     }

@@ -184,7 +184,8 @@ def change_plan(workspace_id, plan_id, *, user, return_url, now=None):
     Apply, schedule or start paying the change to ``plan_id`` (see the module).
     Raises PlanNotFound, NothingToCancel, SeatsExceeded, CheckoutInProgress,
     PlanChangeSuperseded, PaymentsUnavailable (a paid plan and no provider:
-    nothing changes) or CheckoutFailed.
+    nothing changes), CheckoutFailed or Workspace.DoesNotExist (deleted while
+    this waited for its row: nothing changes).
     """
     now = now or timezone.now()
     new_payment = provider = replaced = None

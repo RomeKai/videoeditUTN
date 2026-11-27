@@ -147,6 +147,22 @@ def fail_stale_checkout(payment, now=None):
     return settled, settled.status == Payment.Status.REJECTED
 
 
+def checkout_lifetime():
+    """PAYMENTS_CHECKOUT_TTL_SECONDS as the app writes it: "24 h", or "90 min" when it is not whole hours."""
+    seconds = settings.PAYMENTS_CHECKOUT_TTL_SECONDS
+    if seconds % 3600 == 0:
+        return f'{seconds // 3600} h'
+    return f'{-(-seconds // 60)} min'
+
+
+def payment_pending_message():
+    """
+    What a person can do about a payment that waits for its provider: pay it,
+    or wait for its checkout to expire. The web has no way to cancel one.
+    """
+    return f'Hay un pago en curso: terminalo, o esperá a que venza ({checkout_lifetime()} después de abrirlo).'
+
+
 def checkout_expiry_cutoff(now=None):
     """Before this moment, an open checkout outlived PAYMENTS_CHECKOUT_TTL_SECONDS."""
     return (now or timezone.now()) - timedelta(seconds=settings.PAYMENTS_CHECKOUT_TTL_SECONDS)
@@ -286,7 +302,10 @@ def _replay(payment, tokens, package_id):
             raise PurchaseInProgress()
     if checkout_is_expired(payment):
         # Never hand out a checkout past its lifetime: the replay answers it rejected.
-        payment = expire_checkout(payment)[0] or payment
+        payment, _ = expire_checkout(payment)
+        if payment is None:
+            # Gone with its workspace, deleted meanwhile: never answer the copy read before.
+            raise Payment.DoesNotExist()
     return payment
 
 
@@ -296,8 +315,8 @@ def start_token_purchase(workspace, *, user, tokens, amount_usd, package_id, ret
     ``(payment, created)``: ``created`` is False when ``idempotency_key``
     already started this same purchase. Raises PaymentsUnavailable (no
     provider: nothing is written), IdempotencyKeyReused, PurchaseInProgress,
-    CheckoutFailed or Workspace.DoesNotExist (the workspace was deleted
-    meanwhile: nothing is written).
+    CheckoutFailed, or Workspace.DoesNotExist or Payment.DoesNotExist (the
+    workspace was deleted meanwhile: nothing is written).
     """
     provider = require_payment_provider()
     if idempotency_key:

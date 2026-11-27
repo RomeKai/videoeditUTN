@@ -20,7 +20,7 @@ from django.utils import timezone
 from apps.payments.models import Payment
 from apps.payments.services import payments as payments_service
 from apps.payments.services.payment_providers import SimulatedProvider
-from apps.payments.services.payments import settle_payment
+from apps.payments.services.payments import _replay, payment_pending_message, settle_payment
 from apps.payments.tasks import apply_due_plan_changes as beat_task
 from apps.users.models import Workspace, WorkspaceMember
 
@@ -133,8 +133,8 @@ def test_after_the_expiry_invitations_use_the_current_plans_seats_again(owner, s
     payment = open_plan_checkout(user, seeded_plans['Creador'])
     join(reload(workspace), make_user('n0'), status=WorkspaceMember.Status.PENDING)
     newcomer = make_user('n1')
-    # The refusal says how to stop the payment from capping the seats.
-    with pytest.raises(ValidationError, match=r"Estás pasando al plan 'Creador', que permite 5 miembros\. Para invitar a más gente, cancelá ese pago: elegí tu plan actual en Planes\."):
+    # The refusal says what the person can do: the web has no way to cancel the payment.
+    with pytest.raises(ValidationError, match=r"Estás pasando al plan 'Creador', que permite 5 miembros\. Hay un pago en curso: terminalo, o esperá a que venza \(24 h después de abrirlo\)\."):
         join(reload(workspace), newcomer, status=WorkspaceMember.Status.PENDING)
 
     opened_ago(payment, 25)
@@ -184,6 +184,41 @@ def test_a_replay_past_the_checkout_lifetime_answers_the_purchase_rejected(owner
     assert (replay.json()['id'], replay.json()['status'], replay.json()['checkout_url']) == (first['id'], 'rejected', None)
     assert cancel.call_count == 1
     assert Payment.objects.count() == 1
+
+
+@override_settings(**SIMULATED, PAYMENTS_CHECKOUT_TTL_SECONDS=DAY)
+def test_a_replay_whose_payment_is_gone_is_a_404_never_the_copy_it_read(owner):
+    """Expired and then deleted with its workspace between the replay's read and its lock."""
+    user, _ = owner
+    body = {'package_id': 'pack-1000', 'return_url': f'{FRONT}/uso/comprar/resultado'}
+    first = client_for(user).post(PURCHASES, body, format='json', HTTP_IDEMPOTENCY_KEY='envio-1').json()
+    opened_ago(Payment.objects.get(pk=first['id']), 25)
+    stale = Payment.objects.get(pk=first['id'])
+    Payment.objects.filter(pk=first['id']).delete()
+
+    with pytest.raises(Payment.DoesNotExist):
+        _replay(stale, 1000, 'pack-1000')
+
+    # Through the endpoint: the row goes right after the replay read it.
+    second = client_for(user).post(PURCHASES, body, format='json', HTTP_IDEMPOTENCY_KEY='envio-2').json()
+    opened_ago(Payment.objects.get(pk=second['id']), 25)
+    expire = payments_service.expire_checkout
+
+    def gone_first(payment, now=None):
+        Payment.objects.filter(pk=getattr(payment, 'pk', payment)).delete()
+        return expire(payment, now)
+
+    with mock.patch.object(payments_service, 'expire_checkout', gone_first):
+        replay = client_for(user).post(PURCHASES, body, format='json', HTTP_IDEMPOTENCY_KEY='envio-2')
+
+    assert replay.status_code == 404
+    assert not Payment.objects.exists()
+
+
+@pytest.mark.parametrize('ttl, lifetime', [(DAY, '24 h'), (3600, '1 h'), (5400, '90 min')])
+def test_the_pending_payment_sentence_follows_the_checkout_lifetime(ttl, lifetime):
+    with override_settings(PAYMENTS_CHECKOUT_TTL_SECONDS=ttl):
+        assert payment_pending_message() == f'Hay un pago en curso: terminalo, o esperá a que venza ({lifetime} después de abrirlo).'
 
 
 # --- a confirmation racing the expiry ------------------------------------------------

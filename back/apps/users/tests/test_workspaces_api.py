@@ -354,7 +354,8 @@ def test_delete_is_refused_while_a_payment_is_pending(team, kind):
 
     assert response.status_code == 409
     assert response.json() == {
-        "error": "Hay un pago en curso. Esperá a que termine o cancelalo antes de borrar el espacio.",
+        # Only what the web lets the person do: nothing cancels a token purchase.
+        "error": "Hay un pago en curso: terminalo, o esperá a que venza (24 h después de abrirlo).",
         "code": "payment_pending",
     }
     assert Workspace.objects.filter(pk=team.workspace.pk).exists()

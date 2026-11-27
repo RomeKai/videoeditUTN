@@ -96,8 +96,8 @@ class TokenPurchaseCreateView(BillingView):
             )
         except PaymentsUnavailable:
             return payments_unavailable()
-        except Workspace.DoesNotExist:
-            # Deleted while this request waited for its row: nothing was written.
+        except (Workspace.DoesNotExist, Payment.DoesNotExist):
+            # The workspace was deleted while this request waited for its row: nothing was written.
             raise NotFound(NOT_FOUND_DETAIL)
         except IdempotencyKeyReused:
             return Response(

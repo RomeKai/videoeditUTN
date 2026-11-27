@@ -28,6 +28,7 @@ from apps.core.permissions import ADMIN, require_workspace_role
 from apps.core.workspace import OWNER
 from apps.integrations.ayrshare_api import AyrshareClient
 from apps.payments.models import Payment, Transaction, Wallet
+from apps.payments.services.payments import payment_pending_message
 from apps.users.models import User, Workspace, WorkspaceMember
 from apps.users.serializers_workspaces import (
     ALREADY_OWNER,
@@ -65,7 +66,6 @@ POSTS_IN_FLIGHT = (
     'Hay publicaciones saliendo a las redes en este momento: esperá a que terminen para borrar el espacio. '
     'Si alguna quedó trabada, se libera sola un rato después de su hora de publicación: probá de nuevo más tarde.'
 )
-PAYMENT_PENDING = 'Hay un pago en curso. Esperá a que termine o cancelalo antes de borrar el espacio.'
 LAST_WORKSPACE = (
     'Es tu único espacio de trabajo y no se puede borrar. Creá otro primero, o sumate al de alguien más.'
 )
@@ -311,8 +311,9 @@ class WorkspaceDetailView(APIView):
           plan payment, with its checkout open or still opening). Its row is
           what a confirmation settles, and what a late payment is logged
           against (`payment.late_paid`): it must not go with the workspace.
-          It ends when the provider settles it, when it is canceled, or when
-          its checkout expires (PAYMENTS_CHECKOUT_TTL_SECONDS).
+          It ends when the provider settles it or when its checkout expires
+          (PAYMENTS_CHECKOUT_TTL_SECONDS): the web cannot cancel one, so the
+          sentence says to pay it or wait.
         - `balance_left`: available balance above zero. Tokens are money and
           are never deleted; there is no way to move them yet.
 
@@ -373,7 +374,7 @@ class WorkspaceDetailView(APIView):
             ):
                 return _error(409, WORKSPACE_RESERVED, 'reservation_open')
             if payment_pending:
-                return _error(409, PAYMENT_PENDING, 'payment_pending')
+                return _error(409, payment_pending_message(), 'payment_pending')
             if wallet is not None and wallet.available_balance > 0:
                 return _error(
                     409, _balance_left(wallet.available_balance), 'balance_left',
