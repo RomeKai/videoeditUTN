@@ -153,6 +153,22 @@ class ProjectCostTests(ProjectDataHarness):
         # Not one of the list that was read together: it reads its own reservation.
         self.assertEqual(Decimal(VideoProjectSerializer(late, context=context).data['cost']['amount']), 7)
 
+    def test_a_project_nested_in_a_response_of_something_else_reads_its_own_reservation(self):
+        # VideoProjectSerializer as a field of another serializer: the root of the
+        # response is not a list of projects, and its items have no metadata.
+        project = link(self.project(title='nested'), reserve(self.home, '6', self.alice, 1))
+        roots = {
+            'a list of other objects': [object(), project],
+            'a list of dicts': [{'title': 'x'}, {'metadata': {}}],
+            'a queryset of another model': Transaction.objects.all(),
+            'a dict': {'project': 'x'},
+        }
+        for name, root in roots.items():
+            with self.subTest(root=name):
+                cost = project_summary.response_cost(project, root, {})
+
+                self.assertEqual((cost['state'], Decimal(cost['amount'])), ('reserved', Decimal('6')))
+
 
 class StageTimingTests(ProjectDataHarness):
     def test_a_finished_stage_has_its_start_its_end_and_its_duration(self):

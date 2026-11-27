@@ -90,12 +90,18 @@ def response_cost(project, root_instance, context):
     ``ProjectCost`` of one project of a response. ``root_instance`` is what the
     response serializes: its projects (a list or a queryset) are read together
     the first time, in one query, and after that each project only looks up
-    its own reservation. A single project reads its own.
+    its own reservation. A single project reads its own, and so does one
+    nested in a response of something else (a list of clips or of dicts): only
+    the projects of the root are read together.
     """
+    from apps.videos.models import VideoProject
+
     if context.get(_ROOT_KEY) is not root_instance:
         context[_ROOT_KEY] = root_instance
         if isinstance(root_instance, (list, tuple, QuerySet)):
-            creation_reservations(root_instance, context)
+            creation_reservations(
+                [item for item in root_instance if isinstance(item, VideoProject)], context,
+            )
     reservation_id = creation_reservation_id(project)
     if reservation_id is None:
         return None
