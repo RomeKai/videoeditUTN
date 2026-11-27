@@ -7,6 +7,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from apps.integrations.tests.helpers import give_social_profile
 from apps.payments.models import SubscriptionPlan
 from apps.users.models import User, Workspace, WorkspaceMember
 from apps.videos.models import BrandKit, VideoProject
@@ -134,7 +135,8 @@ def test_first_steps_come_from_the_active_workspace(client, user, workspace):
     VideoProject.objects.create(workspace=workspace, uploaded_by=user, title="Primero", source_file="test/a.mp4")
     BrandKit.objects.create(workspace=workspace, name="Marca")
     team = SubscriptionPlan.objects.create(name="Equipo de prueba", max_members=5)
-    Workspace.objects.filter(pk=workspace.pk).update(ayrshare_profile_key="perfil", subscription_plan=team)
+    Workspace.objects.filter(pk=workspace.pk).update(subscription_plan=team)
+    give_social_profile(workspace)
     # A pending invitation already counts as having invited someone.
     WorkspaceMember.objects.create(
         workspace=workspace, user=_other_user(), role=WorkspaceMember.Role.EDITOR, status=WorkspaceMember.Status.PENDING,

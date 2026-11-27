@@ -347,8 +347,16 @@ class ScheduledPost(models.Model):
     # shows in its place until the user writes their own text.
     caption = models.TextField(blank=True, default='')
     hashtags = models.JSONField(default=list, blank=True)
-    # Link to the post once published.
+    # Link to the post once published; null while the network still processes it (TikTok).
     post_url = models.URLField(max_length=500, null=True, blank=True)
+    # The post's id at the publishing provider (Ayrshare's post id), once it accepted it.
+    external_id = models.CharField(max_length=255, null=True, blank=True)
+    # Version of the idempotency key the publisher sends (apps.integrations.social.idempotency_key).
+    # Moves only when the key can no longer publish: the user's "Reintentar" (services/scheduled_posts.py
+    # retry_post), or a definitive answer that nothing went out. The worker's own retries keep it, so the
+    # provider refuses a second copy of an attempt that did reach it. db_default: a worker of the previous
+    # release inserts posts without the column during a deploy.
+    publish_key_version = models.PositiveIntegerField(default=0, db_default=0, editable=False)
     # TikTok direct-post options (privacy_level, allow_comment, ...); null for other platforms.
     tiktok = models.JSONField(null=True, blank=True)
     # When the API asked for the AI text (a post created with SEO, or "Regenerar"),
@@ -370,6 +378,14 @@ class ScheduledPost(models.Model):
 
     def __str__(self):
         return f"{self.platform} @ {self.publish_at}"
+
+    # What goes out. The one rule the API (ScheduledPostSerializer) and the publisher
+    # (upload_to_social_network) share: the user's text, or else the AI's, each part on its own.
+    def caption_to_publish(self):
+        return self.caption or self.generated_caption or ''
+
+    def hashtags_to_publish(self):
+        return self.hashtags or self.generated_hashtags or []
 
 
 class PostIdempotencyKey(models.Model):

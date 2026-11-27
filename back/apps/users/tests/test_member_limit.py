@@ -108,7 +108,6 @@ class AdminSeatLimitTests(TestCase):
             "name": self.workspace.name,
             "owner": str(self.owner.pk),
             "subscription_plan": str(self.workspace.subscription_plan_id),
-            "ayrshare_profile_key": "",
             f"{prefix}-TOTAL_FORMS": str(len(members) + len(new_users)),
             f"{prefix}-INITIAL_FORMS": str(len(members)),
             f"{prefix}-MIN_NUM_FORMS": "0",

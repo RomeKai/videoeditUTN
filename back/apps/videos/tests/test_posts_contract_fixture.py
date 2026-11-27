@@ -20,6 +20,7 @@ import pytest
 from django.urls import reverse
 from rest_framework.test import APITestCase
 
+from apps.integrations.tests.helpers import give_social_profile, take_social_profile
 from apps.payments.models import SubscriptionPlan
 from apps.payments.tests.test_contract_fixture import FIXTURE, normalised
 from apps.users.models import User, Workspace
@@ -54,12 +55,13 @@ class PostsFixtureHarness:
         ana = User.objects.create_user(username='ana', email='ana@test.com', password='pw')
         pro = SubscriptionPlan.objects.get(name='Pro')
         home = Workspace.objects.create(
-            name='Estudio Norte', owner=ana, subscription_plan=pro, ayrshare_profile_key='perfil-estudio',
+            name='Estudio Norte', owner=ana, subscription_plan=pro,
         )
+        give_social_profile(home, 'perfil-estudio')
         free = Workspace.objects.create(
             name='Gratis', owner=ana, subscription_plan=SubscriptionPlan.objects.get(name='Gratis'),
-            ayrshare_profile_key='perfil-gratis',
         )
+        give_social_profile(free, 'perfil-gratis')
 
         def clip(workspace, title, clip_title, seo):
             project = VideoProject.objects.create(
@@ -184,11 +186,11 @@ class PostsFixtureHarness:
 
     @staticmethod
     def _no_account(call, posts, home, clip, err):
-        Workspace.objects.filter(pk=home.pk).update(ayrshare_profile_key=None)
+        take_social_profile(home)
         try:
             return err(call('post', posts, {'video_clip': str(clip.pk), 'platform': 'YOUTUBE_SHORTS'}), 409)
         finally:
-            Workspace.objects.filter(pk=home.pk).update(ayrshare_profile_key='perfil-estudio')
+            give_social_profile(home, 'perfil-estudio')
 
     @staticmethod
     def _key_reused(call, posts, clip, err, ws):

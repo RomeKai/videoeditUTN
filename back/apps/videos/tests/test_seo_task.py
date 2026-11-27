@@ -271,7 +271,10 @@ class PublishCaptionTests(TestCase):
         from apps.videos.tasks import upload_to_social_network
 
         user = User.objects.create_user(username="pub", email="pub@test.com", password="pw")
-        workspace = Workspace.objects.create(name="Pub", owner=user, ayrshare_profile_key="k")
+        from apps.integrations.tests.helpers import PUBLISH, PUBLISHED, give_social_profile
+
+        workspace = Workspace.objects.create(name="Pub", owner=user)
+        give_social_profile(workspace, "k")
         project = VideoProject.objects.create(workspace=workspace, uploaded_by=user, title="P")
         clip = VideoClip.objects.create(
             project=project, title="c", start_time=0, end_time=5, s3_object_key="c.mp4"
@@ -279,17 +282,17 @@ class PublishCaptionTests(TestCase):
         post = ScheduledPost.objects.create(
             video_clip=clip, platform=ScheduledPost.Platform.TIKTOK,
             publish_at="2030-01-01T00:00:00Z", status=ScheduledPost.Status.QUEUED,
-            generated_caption="Hola", generated_hashtags=["a1", "b2"],
+            generated_caption="Hola", generated_hashtags=["a1", "b2"], tiktok={"privacy_level": "SELF_ONLY"},
         )
         with patch(
             "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url",
             return_value="https://signed.test/x",
         ), patch(
-            "apps.integrations.ayrshare_api.AyrshareClient.send_post", return_value={"id": "1"}
+            PUBLISH, return_value=PUBLISHED
         ) as send:
             upload_to_social_network.apply(args=[str(post.id)])
 
-        self.assertEqual(send.call_args.kwargs["caption"], "Hola\n\n#a1 #b2")
+        self.assertEqual(send.call_args.args[1].text, "Hola\n\n#a1 #b2")
 
 
 class ExportTests(TestCase):

@@ -26,7 +26,7 @@ from rest_framework.views import APIView
 
 from apps.core.permissions import ADMIN, require_workspace_role
 from apps.core.workspace import OWNER
-from apps.integrations.ayrshare_api import AyrshareClient
+from apps.integrations.social import PUBLISH_LOCK_TTL_SECONDS
 from apps.payments.models import Payment, Transaction, Wallet
 from apps.payments.services.payments import payment_pending_message
 from apps.users.models import User, Workspace, WorkspaceMember
@@ -100,8 +100,8 @@ THROTTLED = OpenApiResponse(description='Demasiados intentos: `detail` dice en c
 _BUSY = (VideoProject.Status.UPLOADED, VideoProject.Status.INGESTING, VideoProject.Status.RENDERING)
 # A post counts as going out only while its task can still be working on it.
 # PROCESSING: for as long as the task holds its lock (tasks.social: the slowest
-# Ayrshare answer plus a margin) since the attempt started (`updated_at`).
-POST_PROCESSING_WINDOW = timedelta(seconds=AyrshareClient.TIMEOUT_SECONDS[1] + 300)
+# provider answer plus a margin) since the attempt started (`updated_at`).
+POST_PROCESSING_WINDOW = timedelta(seconds=PUBLISH_LOCK_TTL_SECONDS)
 # QUEUED: until its task is due (`publish_at`), plus its retries for the lock
 # (60 + 120 + 240 s) and a late worker.
 POST_QUEUED_GRACE = timedelta(minutes=15)

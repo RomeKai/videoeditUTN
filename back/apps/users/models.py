@@ -179,7 +179,11 @@ class Workspace(models.Model):
     )
     pending_plan_effective_at = models.DateTimeField(null=True, blank=True)
 
-    # Distribución Social (Ayrshare)
+    # Deprecated: the profile at the publishing provider lives in
+    # apps.integrations.SocialProfile (its migration 0002 copied these keys) and
+    # nothing in this release reads or writes this column. It stays while a worker
+    # of the previous release may still read it during a deploy; a later release
+    # drops it. Hidden in the admin (WorkspaceAdmin).
     ayrshare_profile_key = models.CharField(
         max_length=255, 
         blank=True, 

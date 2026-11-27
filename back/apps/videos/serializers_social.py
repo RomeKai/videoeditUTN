@@ -12,6 +12,8 @@ import re
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
+from apps.integrations.social.base import TIKTOK_FLAGS, TIKTOK_PRIVACY_LEVELS
+
 from .models import ScheduledPost
 
 # Codes process_video_seo writes to error_log when the generation fails.
@@ -23,6 +25,31 @@ SEO_ERROR_MESSAGES = {
     'seo_rate_limited': "Este espacio pidió muchos textos con IA en la última hora. Escribilo vos, o regeneralo en un rato.",
 }
 SEO_ERROR_FALLBACK = "No pudimos generar el texto. Escribilo vos."
+# Codes upload_to_social_network writes first in error_log ("<code>" or "<code> (<detail>)";
+# apps/integrations/social/errors.py). `{network}` is the post's network. Any other failure of
+# publishing is PUBLISH_ERROR_CODE, provider_not_configured included (ours to fix).
+PUBLISH_ERROR_MESSAGES = {
+    'account_not_connected': "La cuenta de {network} no está conectada. Conectala y reintentá.",
+    'account_expired': "La cuenta de {network} venció. Reconectala y reintentá.",
+    'quota_exceeded': "Se alcanzó el límite de publicaciones de este mes. Probá de nuevo más adelante.",
+    'tiktok_options_missing': (
+        "Faltó elegir quién puede ver el video en TikTok. Cancelá esta publicación y creala de nuevo."
+    ),
+    'duplicate_content': (
+        "{network} ya tiene una publicación igual de los últimos dos días: puede que esta ya haya salido. "
+        "Revisá la cuenta antes de reintentar."
+    ),
+    'provider_rejected': "{network} rechazó la publicación. Revisá el video y el texto, y reintentá.",
+    'provider_unavailable': "{network} no respondió después de varios intentos. Probá de nuevo en unos minutos.",
+    'outcome_unknown': (
+        "No sabemos si se publicó: {network} no respondió a tiempo. Revisá la cuenta antes de reintentar."
+    ),
+}
+# What the publisher wrote before the codes, in posts that failed then.
+_LEGACY_PUBLISH_ERRORS = (
+    ('Error: Ayrshare Profile Key not configured', 'account_not_connected'),
+    ('Ayrshare did not answer in time', 'outcome_unknown'),
+)
 PUBLISH_ERROR_CODE = 'publish_failed'
 PUBLISH_ERROR_MESSAGE = "No pudimos publicar el post. Probá de nuevo en unos minutos."
 
@@ -33,6 +60,18 @@ def _seo_error_code(post):
     if log in SEO_ERROR_MESSAGES or log.startswith(('seo_', 'moderation_')):
         return log
     return None
+
+
+def _publish_error_code(post):
+    """The code of a failure to publish: the first word of `error_log`, or PUBLISH_ERROR_CODE."""
+    log = post.error_log or ''
+    code = log.split(' ', 1)[0]
+    if code in PUBLISH_ERROR_MESSAGES:
+        return code
+    for prefix, legacy in _LEGACY_PUBLISH_ERRORS:
+        if log.startswith(prefix):
+            return legacy
+    return PUBLISH_ERROR_CODE
 
 
 class ScheduledPostSerializer(serializers.ModelSerializer):
@@ -54,10 +93,11 @@ class ScheduledPostSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_caption(self, post) -> str:
-        return post.caption or post.generated_caption or ''
+        # The same text the publisher sends (upload_to_social_network).
+        return post.caption_to_publish()
 
     def get_hashtags(self, post) -> list[str]:
-        return post.hashtags or post.generated_hashtags or []
+        return post.hashtags_to_publish()
 
     @extend_schema_field({'type': 'string', 'enum': ['none', 'pending', 'ready', 'failed']})
     def get_seo_status(self, post):
@@ -106,7 +146,7 @@ class ScheduledPostSerializer(serializers.ModelSerializer):
     def get_error_code(self, post) -> str | None:
         if post.status != ScheduledPost.Status.FAILED:
             return None
-        return _seo_error_code(post) or PUBLISH_ERROR_CODE
+        return _seo_error_code(post) or _publish_error_code(post)
 
     def get_error_message(self, post) -> str | None:
         code = self.get_error_code(post)
@@ -114,6 +154,8 @@ class ScheduledPostSerializer(serializers.ModelSerializer):
             return None
         if code == PUBLISH_ERROR_CODE:
             return PUBLISH_ERROR_MESSAGE
+        if code in PUBLISH_ERROR_MESSAGES:
+            return PUBLISH_ERROR_MESSAGES[code].format(network=post.get_platform_display())
         return SEO_ERROR_MESSAGES.get(code, SEO_ERROR_FALLBACK)
 
 
@@ -135,8 +177,8 @@ class PostsQuerySerializer(serializers.Serializer):
 
 # --- Writes (gap 8: contract CreatePostInput, UpdatePostRequest) ---
 
-TIKTOK_PRIVACY = ('PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'FOLLOWER_OF_CREATOR', 'SELF_ONLY')
-TIKTOK_FLAGS = ('allow_comment', 'allow_duet', 'allow_stitch', 'brand_organic', 'branded_content')
+# The same values the publisher reads (apps.integrations.social.TikTokOptions).
+TIKTOK_PRIVACY = TIKTOK_PRIVACY_LEVELS
 TIKTOK_PRIVACY_MISSING = "Elegí quién puede ver el video."
 HASHTAG_MAX_CHARS = 100
 _HASHTAG = re.compile(r'^\w+$')

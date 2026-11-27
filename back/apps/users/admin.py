@@ -80,6 +80,8 @@ class WorkspaceAdmin(admin.ModelAdmin):
     list_filter = ('subscription_plan',)
     search_fields = ('name', 'owner__email')
     inlines = [WorkspaceMemberWorkspaceInline]
+    # Deprecated (Workspace.ayrshare_profile_key): the profile is edited in "Perfiles de redes".
+    exclude = ('ayrshare_profile_key',)
 
     def save_model(self, request, obj, form, change):
         # Un plan puesto a mano es una cortesía: reemplaza la bajada programada

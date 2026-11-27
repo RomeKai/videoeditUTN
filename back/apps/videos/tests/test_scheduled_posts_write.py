@@ -17,6 +17,7 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
+from apps.integrations.tests.helpers import PUBLISH, give_social_profile, take_social_profile
 from apps.payments.models import SubscriptionPlan
 from apps.users.models import Workspace, WorkspaceMember
 from apps.videos.models import AIUsageRecord, PostIdempotencyKey, ScheduledPost, VideoClip, VideoProject
@@ -31,7 +32,7 @@ BULK = reverse("scheduled-post-bulk")
 DELAY = "apps.videos.tasks.process_video_seo.delay"
 APPLY_ASYNC = "apps.videos.tasks.process_video_seo.apply_async"
 UPLOAD = "apps.videos.tasks.upload_to_social_network.apply_async"
-SEND = "apps.integrations.ayrshare_api.AyrshareClient.send_post"
+SEND = PUBLISH
 TIKTOK = {"privacy_level": "SELF_ONLY"}
 
 
@@ -52,7 +53,7 @@ class PostsWriteHarness(APITestCase):
         self.alice = User.objects.create_user(username="alice", email="alice@test.com", password="pw")
         self.home = self.alice.owned_workspaces.get()
         self.set_plan("Pro")
-        Workspace.objects.filter(pk=self.home.pk).update(ayrshare_profile_key="perfil-de-prueba")
+        give_social_profile(self.home, "perfil-de-prueba")
         self.home.refresh_from_db()
         self.client.force_authenticate(user=self.alice)
         self.ws = {"HTTP_X_WORKSPACE_ID": str(self.home.pk)}
@@ -254,7 +255,7 @@ class CreateTests(PostsWriteHarness):
         self.assertEqual(self.create(video_clip=str(theirs.pk), draft=True).status_code, 400)
 
     def test_without_an_account_only_drafts_are_created(self):
-        Workspace.objects.filter(pk=self.home.pk).update(ayrshare_profile_key=None)
+        take_social_profile(self.home)
 
         response = self.create(publish_at=None)
 
@@ -319,11 +320,11 @@ class IdempotencyTests(PostsWriteHarness):
         self.assertEqual(ScheduledPost.objects.count(), 1)
 
     def test_an_error_is_not_kept_so_the_same_key_tries_again(self):
-        Workspace.objects.filter(pk=self.home.pk).update(ayrshare_profile_key=None)
+        take_social_profile(self.home)
         self.assertEqual(self.create(key="envio-1").status_code, 409)
         self.assertFalse(PostIdempotencyKey.objects.exists())
 
-        Workspace.objects.filter(pk=self.home.pk).update(ayrshare_profile_key="perfil")
+        give_social_profile(self.home)
         self.assertEqual(self.create(key="envio-1").status_code, 201)
 
     def test_a_key_belongs_to_its_workspace(self):
@@ -507,7 +508,7 @@ class UpdateTests(PostsWriteHarness):
         self.assertEqual(self.patch_post(draft, publish_at=None).json(), {"tiktok": ["Elegí quién puede ver el video."]})
         self.assertEqual(self.patch_post(draft, publish_at=(timezone.now() - timedelta(hours=1)).isoformat()).status_code, 400)
         self.assertEqual(self.patch_post(draft, caption="a" * 2201).status_code, 400)
-        Workspace.objects.filter(pk=self.home.pk).update(ayrshare_profile_key="")
+        take_social_profile(self.home)
         self.assertEqual(self.patch_post(draft, publish_at=None, tiktok=TIKTOK).json()["code"], "account_not_connected")
         draft.refresh_from_db()
         self.assertEqual((draft.status, draft.tiktok), (Status.DRAFT, None))
@@ -656,10 +657,10 @@ class RetryTests(PostsWriteHarness):
         self.assertEqual(caches.__getitem__.return_value.add.call_args.args[0], service.publish_lock_key(post.pk))
 
     def test_the_stuck_window_outlasts_a_live_delivery(self):
-        from apps.integrations.ayrshare_api import AyrshareClient
+        from apps.integrations.social import PUBLISH_LOCK_TTL_SECONDS
         from apps.videos.tasks import upload_to_social_network
 
-        lock_ttl = AyrshareClient.TIMEOUT_SECONDS[1] + 300
+        lock_ttl = PUBLISH_LOCK_TTL_SECONDS
         longest_backoff = 60 * 2 ** (upload_to_social_network.max_retries - 1)
         self.assertGreater(service.POST_STUCK_AFTER.total_seconds(), lock_ttl + longest_backoff)
 
@@ -678,9 +679,9 @@ class RetryTests(PostsWriteHarness):
         post = self.make_post(status=Status.FAILED, platform=Platform.TIKTOK)
         self.assertEqual(self.post_action(post, "retry").json(), {"tiktok": ["Elegí quién puede ver el video."]})
         ScheduledPost.objects.filter(pk=post.pk).update(tiktok=TIKTOK)
-        Workspace.objects.filter(pk=self.home.pk).update(ayrshare_profile_key=None)
+        take_social_profile(self.home)
         self.assertEqual(self.post_action(post, "retry").json()["code"], "account_not_connected")
-        Workspace.objects.filter(pk=self.home.pk).update(ayrshare_profile_key="perfil")
+        give_social_profile(self.home)
         self.set_plan("Gratis")
         self.make_post(platform=Platform.YOUTUBE_SHORTS)
         self.assertEqual(self.post_action(post, "retry").json()["code"], "crossposting")

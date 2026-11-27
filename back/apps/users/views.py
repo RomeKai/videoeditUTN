@@ -104,8 +104,9 @@ def _workspace_summary(active):
 def _onboarding(workspace):
     """
     First steps of B2 in the active workspace. A network counts as connected
-    when the workspace has its Ayrshare profile (`ayrshare_profile_key`, the
-    only link to the networks today); an invitation counts while pending.
+    when the workspace has its profile at the publishing provider
+    (SocialProfile, without calling the provider); an invitation counts while
+    pending.
     """
     if workspace is None:
         return {'has_project': False, 'has_brand_kit': False, 'has_social_account': False, 'has_invited_member': False}
@@ -121,7 +122,9 @@ def _onboarding(workspace):
         .values('has_project', 'has_brand_kit', 'has_invited_member')
         .get()
     )
-    return {**flags, 'has_social_account': bool(workspace.ayrshare_profile_key)}
+    from apps.integrations.social import has_ready_profile
+
+    return {**flags, 'has_social_account': has_ready_profile(workspace.pk)}
 
 
 def _me_payload(user):
