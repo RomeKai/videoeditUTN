@@ -197,7 +197,7 @@ Detalle y tabla de lo que ya tiene endpoint: [01, Workspace activo y roles](../i
 | Planes, billetera y pagos | 12 (uno ya está en `dev`) | — | Pedro (tickets PAY) |
 | Proyectos | 5 | 2 | Lead: propuestos en curso; los parciales, sin rama |
 | Clips | 6 | — | Lead, en curso |
-| Brand kits | 1 | 1 | Sin dueño |
+| Brand kits | — | — | Hecho (`feat/brand-kits-duplicar`) |
 | Redes y publicaciones | 11 | — | Pedro (propuesta) |
 | Notificaciones | 3 | — | Pedro (propuesta) |
 | Sistema | 1 | — | Lead, en curso |
@@ -312,12 +312,14 @@ Contratos `contracts/projects.ts` y `contracts/clips.ts`. Backend: `apps/videos`
 
 ⚠️ = existe en parte. Los dos parciales son del área del lead, pero no tienen rama: coordinalo con él antes de tocarlos.
 
-### Brand kits (1 propuesto y 1 parcial) · sin dueño
+### Brand kits · hecho
 
-| Método y ruta | Id | Hook · mock | Pantalla | Backend | Depende de | Talla |
-|---|---|---|---|---|---|---|
-| PATCH `brand-kits/:id/` ⚠️ | `brandKits.update` | `useUpdateBrandKit`, `useSetDefaultBrandKit` · `updateBrandKit` | F1, F2 (§5 F) | `BrandKitViewSet.partial_update`: al marcar `is_default`, desmarcar el resto en una transacción | — | S |
-| POST `brand-kits/:id/duplicate/` | `brandKits.duplicate` | `useDuplicateBrandKit` · `duplicateBrandKit` | F1 (§5 F) | Acción nueva de `BrandKitViewSet`; copia los archivos; la copia nunca es default | — | M |
+Los dos ya existen (`feat/brand-kits-duplicar`).
+
+| Método y ruta | Id | Hook · mock | Pantalla | Backend |
+|---|---|---|---|---|
+| PATCH `brand-kits/:id/` | `brandKits.update` | `useUpdateBrandKit`, `useSetDefaultBrandKit` · `updateBrandKit` | F1, F2 (§5 F) | `BrandKitViewSet._save_one_default`: `is_default: true` desmarca el resto en una transacción, con la fila del workspace bloqueada. Restricción `one_default_brand_kit_per_workspace` |
+| POST `brand-kits/:id/duplicate/` | `brandKits.duplicate` | `useDuplicateBrandKit` · `duplicateBrandKit` | F1 (§5 F) | `BrandKitViewSet.duplicate` y `brand_kit_service.duplicate_brand_kit`: copia los archivos a nombres nuevos; la copia nunca es default; 502 `brand_kit_copy_failed` sin escribir nada |
 
 ### Redes y publicaciones (11) · Pedro
 
@@ -405,7 +407,7 @@ Para no pisarnos. Lo «en curso» ya tiene rama: no lo arranques por tu lado.
 | Usuario y perfil, `/status` | 6 | Lead (desde tus commits 759f9f8 y f04db85) | `feat/perfil-me` | En curso (lead) |
 | Proyectos y clips | 11 propuestos | Lead (Franco) | `feat/clips-reintento-render`, `feat/proyecto-actividad-descargas` | En curso (lead) |
 | Proyectos: los 2 parciales | 2 | Área del lead | — | Sin rama: coordinar |
-| Brand kits: duplicar y default único | 2 | — | — | Sin dueño |
+| Brand kits: duplicar y default único | 2 | — | `feat/brand-kits-duplicar` | Hecho |
 | Cache compartido en Redis | — | Lead | `fix/creacion-robusta` | En curso (lead) |
 | Modo híbrido | — | Lead | `feat/front-modo-mixto` | Construido (PR #134) |
 
