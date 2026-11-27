@@ -8,12 +8,14 @@ import { clearLoggedOut, markLoggedOut, mockTokens, userIdFromToken } from '../s
  * Mock rules of the session:
  * - any known email signs in with any password except the literal "incorrecta";
  * - unknown emails answer 401, like wrong credentials;
- * - scenario "email-sin-verificar" (or an unverified user) answers 403 `email_not_verified`;
+ * - scenario "email-sin-verificar" answers 403 `email_not_verified` (proposed: the backend lets an unverified account in,
+ *   which A3 needs: a link opened without the nonce asks to sign in and open it again);
  * - the password "limite" answers 429 (too many attempts) and "caida" answers 500, to see A1's error states;
  * - tokens "invalido" / "vencido" fail in verify-email and password-reset/confirm;
  * - verify-email with "cambio-de-email" is the link of an email change (I1): it needs the session of its account;
  *   any other token verifies a new account, and answers 403 when the browser has another account's session. It
- *   signs in only with the `signup_nonce` of that sign-up (or the session of that account): else `{ signed_in: false }`;
+ *   works only with the `signup_nonce` of that sign-up (or the session of that account): else `{ signed_in: false }`
+ *   and nothing changes;
  * - the sign-up says "ya existe" only when every other field is valid, like the backend;
  * - resend and password reset wait 60 s per email (any case), with or without an account, like the backend;
  * - logout with a refresh of another account answers 400 and closes nothing.
@@ -33,7 +35,7 @@ export const authHandlers = [
     if (!user || body.password === 'incorrecta') {
       throw new MockHttpError(401, { detail: 'No active account found with the given credentials' });
     }
-    if (db.flags.unverifiedLogin || !user.is_email_verified) {
+    if (db.flags.unverifiedLogin) {
       throw new MockHttpError(403, { detail: 'La cuenta todavía no verificó su email.', code: 'email_not_verified' });
     }
     db.flags.sessionExpired = false;
@@ -101,11 +103,12 @@ export const authHandlers = [
       throw new MockHttpError(403, { detail: 'Este link es de otra cuenta. Cerrá la sesión y volvé a abrirlo.', code: 'other_account' });
     }
     const signsIn = Boolean(maybeUser) || (Boolean(body.signup_nonce) && db.signupNonces?.[user.id] === body.signup_nonce);
+    // Outside the browser that signed up nothing changes: sign in and open the same link again.
+    if (!signsIn) return { data: { signed_in: false as const } };
     user.is_email_verified = true;
     user.pending_email = null;
     if (db.signupNonces) delete db.signupNonces[user.id];
     db.flags.unverifiedLogin = false;
-    if (!signsIn) return { data: { signed_in: false as const } };
     clearLoggedOut();
     return { data: mockTokens(user.id) };
   }),

@@ -21,11 +21,11 @@ export const RegisterResponse = z.object({
   id: z.string().uuid(),
   email: z.string().email(),
   is_email_verified: z.boolean(),
-  /** Kept by this browser and sent with the link of the email: only here does the link also sign in. */
+  /** Kept by this browser and sent with the link of the email: only here does the link work without a session. */
   signup_nonce: z.string().min(1),
 });
 
-/** The link verified the email but did not sign in (opened outside the browser that signed up). */
+/** A link of a new account opened outside the browser that signed up: nothing changed; sign in and open it again. */
 export const SignedOut = z.object({ signed_in: z.literal(false) });
 
 export const VerifyEmailRequest = z.object({ token: z.string().min(1), signup_nonce: z.string().min(1).optional() });
@@ -107,7 +107,7 @@ export const verifyEmail = defineEndpoint({
   method: 'POST',
   path: '/api/v1/auth/verify-email/',
   summary:
-    'Verifica el email con el token del link. El de una cuenta nueva deja la sesión iniciada solo en el navegador que se registró (`signup_nonce`); en otro solo verifica. El de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta.',
+    'Verifica el email con el token del link. El de una cuenta nueva verifica e inicia la sesión en el navegador que se registró (`signup_nonce`) o con la sesión de esa cuenta; en otro no cambia nada. El de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta.',
   request: VerifyEmailRequest,
   response: VerifyEmailResult,
   // The session goes with the link when there is one: the backend compares its account with the link's.
@@ -123,7 +123,7 @@ export const verifyEmail = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/users/views.py · VerifyEmailView; el token: apps/users/email_verification.py',
-    note: 'El token dice para qué es (cambio de email o registro). El de registro lo mandan `auth.register` y `auth.resendVerification`: verifica la cuenta y descarta un `pending_email` pedido antes. Devuelve el par JWT si llega el `signup_nonce` del registro (o con la sesión de esa cuenta); si no, `{ signed_in: false }` y la UI lleva a Iniciar sesión con "Tu email quedó verificado. Iniciá sesión.". Así, quien se registró con un email ajeno no le inicia la sesión a su dueño en una cuenta cuya contraseña conoce: el dueño entra recuperando la contraseña, que cierra todas las sesiones. El link de un cambio pasa `pending_email` a `email` y devuelve el par; deja de servir si el cambio se cancela. Los dos sirven una vez y vencen en 24 h.',
+    note: 'El token dice para qué es (cambio de email o registro). El de registro lo mandan `auth.register` y `auth.resendVerification`. Con el `signup_nonce` del registro (vale 24 h desde el registro) o con la sesión de esa cuenta, verifica, descarta un `pending_email` pedido antes y devuelve el par JWT. Si no, responde `{ signed_in: false }`, no cambia nada y el link sigue sirviendo: la UI lleva a `/login?motivo=verificar&siguiente=<el link>` ("Iniciá sesión para terminar de verificar tu email") y, con la sesión, el mismo link verifica. Así, quien se registró con un email ajeno no consigue una cuenta verificada (`may_simulate` de los pagos simulados confía en `is_email_verified`) ni le inicia la sesión a su dueño: el dueño, que no sabe esa contraseña, entra recuperándola, lo que verifica el email y cierra las sesiones del ocupante. Por eso el login tiene que seguir dejando entrar a una cuenta sin verificar: el 403 propuesto de `auth.login` rompería este camino. El link de un cambio pasa `pending_email` a `email` y devuelve el par; deja de servir si el cambio se cancela. Los dos sirven una vez y vencen en 24 h.',
   },
   screens: ['A3'],
 });

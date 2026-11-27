@@ -115,15 +115,26 @@ export function rememberSignupNonce(nonce: string): void {
   }
 }
 
+/** The nonce of the latest sign-up while it lasts. An expired or broken entry is deleted, not just ignored. */
 export function readSignupNonce(): string | undefined {
+  let raw: string | null;
   try {
-    const stored = JSON.parse(window.localStorage.getItem(SIGNUP_KEY) ?? 'null') as { nonce?: unknown; at?: unknown } | null;
-    if (!stored || typeof stored.nonce !== 'string' || !stored.nonce || typeof stored.at !== 'number') return undefined;
-    const age = Date.now() - stored.at;
-    return age >= 0 && age <= NEXT_MAX_AGE_MS ? stored.nonce : undefined;
+    raw = window.localStorage.getItem(SIGNUP_KEY);
   } catch {
     return undefined;
   }
+  if (raw === null) return undefined;
+  try {
+    const stored = JSON.parse(raw) as { nonce?: unknown; at?: unknown } | null;
+    if (stored && typeof stored.nonce === 'string' && stored.nonce && typeof stored.at === 'number') {
+      const age = Date.now() - stored.at;
+      if (age >= 0 && age <= NEXT_MAX_AGE_MS) return stored.nonce;
+    }
+  } catch {
+    // Not JSON: nothing to keep.
+  }
+  forgetSignupNonce();
+  return undefined;
 }
 
 export function forgetSignupNonce(): void {

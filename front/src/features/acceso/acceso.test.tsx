@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { createQueryClient } from '@/api/query';
 import { getActiveWorkspaceId, getTokens, setTokens } from '@/api/session';
 import { server } from '@/api/mocks/server';
-import { applyScenario, loadDb, saveDb } from '@/api/mocks/state';
+import { applyScenario, loadDb, mockTokens, saveDb } from '@/api/mocks/state';
 import { needsWelcome, SessionProvider } from '@/shell/session';
 import { ToastProvider } from '@/ui';
 import { InvitationScreen, joinOptions } from './InvitationScreen';
@@ -71,6 +71,17 @@ function openResetLink(token: string, email?: string) {
 }
 
 describe('lib', () => {
+  it('el nonce del registro vence con el link y el vencido se borra', () => {
+    window.localStorage.setItem('oc.acceso.registro', JSON.stringify({ nonce: 'viejo', at: Date.now() - NEXT_MAX_AGE_MS - 1000 }));
+    expect(readSignupNonce()).toBeUndefined();
+    expect(window.localStorage.getItem('oc.acceso.registro')).toBeNull();
+    window.localStorage.setItem('oc.acceso.registro', 'no es JSON');
+    expect(readSignupNonce()).toBeUndefined();
+    expect(window.localStorage.getItem('oc.acceso.registro')).toBeNull();
+    rememberSignupNonce('vigente');
+    expect(readSignupNonce()).toBe('vigente');
+  });
+
   it('safeNext solo acepta rutas de la app', () => {
     expect(safeNext('/uso/movimientos')).toBe('/uso/movimientos');
     expect(safeNext('/invitacion/valida')).toBe('/invitacion/valida');
@@ -159,10 +170,10 @@ describe('lib', () => {
 });
 
 describe('A1 · Iniciar sesión', () => {
-  it('después de un link que solo verificó, dice que el email quedó verificado', () => {
+  it('viniendo de un link de registro abierto en otro navegador, pide iniciar sesión para terminar de verificar', () => {
     scenario('sin-sesion', { signedIn: false });
-    show(<LoginScreen verified />);
-    expect(screen.getByText('Tu email quedó verificado. Iniciá sesión.')).toBeInTheDocument();
+    show(<LoginScreen verifyPending next="/verificar?token=abc123" />);
+    expect(screen.getByText('Iniciá sesión para terminar de verificar tu email.')).toBeInTheDocument();
   });
 
   it('valida los campos antes de pedir nada', async () => {
@@ -572,13 +583,30 @@ describe('A3 · Verificar email', () => {
     await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/bienvenida'));
   });
 
-  it('abierto fuera del navegador que se registró, el link solo verifica y lleva a iniciar sesión', async () => {
+  it('abierto fuera del navegador que se registró, el link no cambia nada y lleva a iniciar sesión para volver a él', async () => {
     scenario('email-sin-verificar');
-    show(<VerifyEmailScreen token="abc123" />);
-    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/login?verificado=1'));
+    const before = loadDb().users.filter((item) => !item.is_email_verified).length;
+    show(<VerifyEmailScreen token="abc123" next="/uso" />);
+    await waitFor(() =>
+      expect(nav.replace).toHaveBeenCalledWith(`/login?motivo=verificar&siguiente=${encodeURIComponent('/verificar?token=abc123&siguiente=%2Fuso')}`),
+    );
     expect(nav.replace).toHaveBeenCalledTimes(1);
     expect(getTokens()).toBeNull();
-    expect(loadDb().users.filter((item) => !item.is_email_verified)).toHaveLength(0);
+    expect(loadDb().users.filter((item) => !item.is_email_verified)).toHaveLength(before);
+  });
+
+  it('con la sesión de su cuenta (después de iniciarla), el mismo link verifica y entra', async () => {
+    scenario('email-sin-verificar');
+    const db = loadDb();
+    const sofia = db.users.find((item) => item.email === 'sofia@ejemplo.com');
+    if (!sofia) throw new Error('falta Sofía');
+    // The mock verifies the newest unverified account: Sofía, the only one.
+    for (const item of db.users) item.is_email_verified = item.id !== sofia.id;
+    saveDb(db);
+    setTokens(mockTokens(sofia.id));
+    show(<VerifyEmailScreen token="abc123" />);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/bienvenida'));
+    expect(loadDb().users.find((item) => item.id === sofia.id)?.is_email_verified).toBe(true);
   });
 
   it('el link inicia la sesión con el nonce de este navegador y lo olvida', async () => {

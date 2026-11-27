@@ -64,7 +64,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | POST | `/api/token/` | Inicia sesión con email y contraseña; devuelve el par JWT. | ✅ existe | A1, D9 |
 | POST | `/api/token/refresh/` | Renueva el token de acceso. El backend rota el refresh (ROTATE_REFRESH_TOKENS). | ✅ existe | A1, D9 |
 | POST | `/api/v1/auth/register/` | Crea la cuenta y manda el email de verificación. | ✅ existe | A2, A5 |
-| POST | `/api/v1/auth/verify-email/` | Verifica el email con el token del link. El de una cuenta nueva deja la sesión iniciada solo en el navegador que se registró (`signup_nonce`); en otro solo verifica. El de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta. | ✅ existe | A3 |
+| POST | `/api/v1/auth/verify-email/` | Verifica el email con el token del link. El de una cuenta nueva verifica e inicia la sesión en el navegador que se registró (`signup_nonce`) o con la sesión de esa cuenta; en otro no cambia nada. El de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta. | ✅ existe | A3 |
 | POST | `/api/v1/auth/verify-email/resend/` | Reenvía el email de verificación (una vez cada 60 s). Responde 204 exista o no el email y esté o no verificado, como recuperar contraseña. | ✅ existe | A3 |
 | POST | `/api/v1/auth/password-reset/` | Pide el link para recuperar la contraseña. Siempre responde 204, exista o no el email. | ✅ existe | A4, D9 |
 | POST | `/api/v1/auth/password-reset/confirm/` | Define la contraseña nueva con el token del link. Responde 204 sin tokens: la UI inicia sesión con el email del link y la contraseña nueva. | ✅ existe | A4 |
@@ -195,13 +195,13 @@ Crea la cuenta y manda el email de verificación.
 
 #### `POST /api/v1/auth/verify-email/`
 
-Verifica el email con el token del link. El de una cuenta nueva deja la sesión iniciada solo en el navegador que se registró (`signup_nonce`); en otro solo verifica. El de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta.
+Verifica el email con el token del link. El de una cuenta nueva verifica e inicia la sesión en el navegador que se registró (`signup_nonce`) o con la sesión de esa cuenta; en otro no cambia nada. El de un cambio de email (I1) pide la sesión de esa cuenta. Nunca cambia la sesión por la de otra cuenta.
 
 | | |
 |---|---|
 | Id | `auth.verifyEmail` |
 | Backend | ✅ existe · `back/apps/users/views.py · VerifyEmailView; el token: apps/users/email_verification.py` |
-| Nota | El token dice para qué es (cambio de email o registro). El de registro lo mandan `auth.register` y `auth.resendVerification`: verifica la cuenta y descarta un `pending_email` pedido antes. Devuelve el par JWT si llega el `signup_nonce` del registro (o con la sesión de esa cuenta); si no, `{ signed_in: false }` y la UI lleva a Iniciar sesión con "Tu email quedó verificado. Iniciá sesión.". Así, quien se registró con un email ajeno no le inicia la sesión a su dueño en una cuenta cuya contraseña conoce: el dueño entra recuperando la contraseña, que cierra todas las sesiones. El link de un cambio pasa `pending_email` a `email` y devuelve el par; deja de servir si el cambio se cancela. Los dos sirven una vez y vencen en 24 h. |
+| Nota | El token dice para qué es (cambio de email o registro). El de registro lo mandan `auth.register` y `auth.resendVerification`. Con el `signup_nonce` del registro (vale 24 h desde el registro) o con la sesión de esa cuenta, verifica, descarta un `pending_email` pedido antes y devuelve el par JWT. Si no, responde `{ signed_in: false }`, no cambia nada y el link sigue sirviendo: la UI lleva a `/login?motivo=verificar&siguiente=<el link>` ("Iniciá sesión para terminar de verificar tu email") y, con la sesión, el mismo link verifica. Así, quien se registró con un email ajeno no consigue una cuenta verificada (`may_simulate` de los pagos simulados confía en `is_email_verified`) ni le inicia la sesión a su dueño: el dueño, que no sabe esa contraseña, entra recuperándola, lo que verifica el email y cierra las sesiones del ocupante. Por eso el login tiene que seguir dejando entrar a una cuenta sin verificar: el 403 propuesto de `auth.login` rompería este camino. El link de un cambio pasa `pending_email` a `email` y devuelve el par; deja de servir si el cambio se cancela. Los dos sirven una vez y vencen en 24 h. |
 | Sesión | Pública (manda el token si hay sesión) |
 | Pedido | VerifyEmailRequest |
 | Respuesta 200 | VerifyEmailResult |
