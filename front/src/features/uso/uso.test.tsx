@@ -442,6 +442,26 @@ describe('G3 · Planes', () => {
     expect(loadDb().purchases[0]).toMatchObject({ status: 'pending' });
   });
 
+  it('si el pago se rechaza con Planes abierto, el aviso de pago pendiente se va junto con «Seguir con»', async () => {
+    const PAYMENT_ID = '55555555-5555-4555-8555-555555555555';
+    navigation.search = `compra=${PAYMENT_ID}`;
+    renderScreen(<PlansScreen />, {
+      scenario: 'plan-con-checkout',
+      prepare: seedPendingPlanPayment(PAYMENT_ID, (db) => {
+        const payment = db.purchases.find((item) => item.id === PAYMENT_ID);
+        if (payment) payment._reject = true;
+      }),
+    });
+    expect(await screen.findByText('Estamos confirmando el pago del plan.')).toBeInTheDocument();
+    expect(await screen.findByText('Estás pasando al plan Estudio: falta el pago')).toBeInTheDocument();
+
+    // The provider answers a few seconds later: the next read of the payment finds it rejected.
+    vi.setSystemTime(new Date(MID_MONTH.getTime() + 60_000));
+    expect(await screen.findByText('El pago no se completó. No se te cobró nada.', undefined, { timeout: 9000 })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText(/falta el pago/)).not.toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Seguir con Pro' })).not.toBeInTheDocument();
+  }, 20_000);
+
   it('sin volver del checkout de ese pago, «Seguir con» sigue a la vista', async () => {
     navigation.search = 'compra=44444444-4444-4444-8444-444444444444';
     renderScreen(<PlansScreen />, {

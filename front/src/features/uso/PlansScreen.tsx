@@ -33,7 +33,9 @@ function UpgradeNotice({ currentName, plans }: { currentName: string | null; pla
   const refreshed = useRef<string | null>(null);
   const status = payment.data?.status;
   useEffect(() => {
-    if (!id || status !== 'approved' || refreshed.current === id) return;
+    // Any answer changes what Planes shows: approved changes the plan, and rejected (or expired)
+    // takes away the pending payment and its «Seguir con».
+    if (!id || !status || status === 'pending' || refreshed.current === id) return;
     refreshed.current = id;
     void queryClient.invalidateQueries({ queryKey: keys.billing.all });
     void queryClient.invalidateQueries({ queryKey: keys.me });
@@ -94,6 +96,7 @@ function Plans() {
   const pricing = usePricing();
   const members = useMembers(workspace?.id, { enabled: can('members.manage') });
   const change = useChangePlan();
+  const queryClient = useQueryClient();
   const [target, setTarget] = useState<Plan | null>(null);
 
   const current = subscription.data?.plan ?? null;
@@ -155,7 +158,11 @@ function Plans() {
       { planId: current.id },
       {
         onSuccess: () => toast.success(`Listo: seguís con el plan ${current.name}.`),
-        onError: (error) => toast.error(errorMessage(error, 'No pudimos cancelar el cambio')),
+        onError: (error) => {
+          toast.error(errorMessage(error, 'No pudimos cancelar el cambio'));
+          // The refusal can mean the screen is behind (the payment already settled): read it again.
+          void queryClient.invalidateQueries({ queryKey: keys.billing.all });
+        },
       },
     );
   };
