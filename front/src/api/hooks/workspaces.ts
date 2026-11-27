@@ -100,12 +100,15 @@ export function useResendInvitation(workspaceId: string) {
   });
 }
 
-/** A5: public data of an invitation. */
-export function useInvitation(token: string) {
+/**
+ * A5: public data of an invitation. `enabled: false` stops reading it: once accepted the link is spent,
+ * and the refetch that follows every mutation would be a 404 by design.
+ */
+export function useInvitation(token: string, { enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: keys.workspaces.invitation(token),
     queryFn: ({ signal }) => apiCall(contract.getInvitation, { params: { token }, signal }),
-    enabled: Boolean(token),
+    enabled: enabled && Boolean(token),
     retry: false,
   });
 }

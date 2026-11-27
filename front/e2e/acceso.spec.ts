@@ -176,10 +176,11 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     await page.getByRole('button', { name: 'Crear cuenta y unirme' }).click();
     await expect(page).toHaveURL(/\/proyectos$/);
     await expect(page.getByRole('button', { name: /Cambiar de workspace. Actual: Estudio Norte/ })).toBeVisible();
-    // The link cannot be used twice.
-    await page.goto('/invitacion/valida');
-    await expect(page.getByRole('heading', { level: 1, name: 'Ya sos parte de Estudio Norte' })).toBeVisible();
     expectClean(problems, 'la invitación');
+    // The link cannot be used twice: it answers the 404 of any link that no longer works.
+    await page.goto('/invitacion/valida');
+    await expect(page.getByRole('heading', { level: 1, name: 'Esta invitación no existe o ya no sirve' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'andá a tus proyectos' })).toBeVisible();
   });
 
   test('A5: con cuenta, inicia sesión, vuelve a la invitación y la acepta', async ({ page }) => {

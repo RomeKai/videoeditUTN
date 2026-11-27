@@ -943,10 +943,16 @@ describe('A5 · Aceptar invitación', () => {
     const user = userEvent.setup();
     const sent: unknown[] = [];
     let answer: { status: number; body: unknown } = real.errors.invitation_accept_400_weak;
+    let reads = 0;
+    let readsWhenAccepted = -1;
     server.use(
-      http.get('http://localhost:8000/api/v1/invitations/real/', () => HttpResponse.json(real.invitation_preview)),
+      http.get('http://localhost:8000/api/v1/invitations/real/', () => {
+        reads += 1;
+        return HttpResponse.json(real.invitation_preview);
+      }),
       http.post('http://localhost:8000/api/v1/invitations/real/accept/', async ({ request }) => {
         sent.push(await request.json());
+        if (answer.status === 200) readsWhenAccepted = reads;
         return HttpResponse.json(answer.body as Record<string, unknown>, { status: answer.status });
       }),
     );
@@ -966,6 +972,8 @@ describe('A5 · Aceptar invitación', () => {
     await user.click(screen.getByRole('button', { name: 'Crear cuenta y unirme' }));
     await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/proyectos'));
     expect(sent[1]).toEqual({ name: 'Juana Pérez', password: 'una-clave-Nueva-2026', terms_accepted: true });
+    // The spent link is not read again on the way to the app (it would be a 404).
+    expect(reads).toBe(readsWhenAccepted);
     expect(getActiveWorkspaceId()).toBe(real.invitation_accepted_new_account.workspace_id);
   });
 

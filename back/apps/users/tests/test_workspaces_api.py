@@ -550,8 +550,11 @@ def test_transfer_makes_the_member_owner_and_the_old_owner_admin(team):
     # Same rows as before: nobody took or freed a seat.
     assert WorkspaceMember.objects.filter(workspace=team.workspace).count() == 5
     members = client_for(team.editor).get(url(team.workspace, "members/")).json()["members"]
-    assert {item["user"]["id"]: item["role"] for item in members}[str(team.editor.pk)] == "owner"
-    assert {item["user"]["id"]: item["role"] for item in members}[str(team.owner.pk)] == "admin"
+    # The pending row of the fixture comes without `user` (an invitation never says whose account it is).
+    roles = {item["user"]["id"]: item["role"] for item in members if item["user"]}
+    assert roles[str(team.editor.pk)] == "owner"
+    assert roles[str(team.owner.pk)] == "admin"
+    assert [item["email"] for item in members if item["user"] is None] == [team.invitada.email]
     # The old owner is an admin now: no second transfer, no delete.
     again = client_for(team.owner).post(url(team.workspace, "transfer/"), {"new_owner_id": str(team.owner.pk)}, format="json")
     assert again.status_code == 403

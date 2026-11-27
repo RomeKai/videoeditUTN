@@ -28,12 +28,13 @@ const sameEmail = (a: string, b: string) => a.trim().toLowerCase() === b.trim().
 
 /** A5 · Aceptar invitación (artboard A5-Invitacion). */
 export function InvitationScreen({ token }: { token: string }) {
-  const invitation = useInvitation(token);
   const { status, me } = useSession();
   // Accepting changes what this screen is made of (the link stops working, a session appears).
   // While the user is on the way to the app the card stays as it was, instead of flashing its other states.
   const [joining, setJoining] = useState<{ data: InvitationPreview; mode: Mode } | null>(null);
   const [sessionLost, setSessionLost] = useState(false);
+  // Not read while joining: the accepted link answers 404, and every mutation refetches what is on screen.
+  const invitation = useInvitation(token, { enabled: !joining });
   const loginHref = `/login?siguiente=${encodeURIComponent(`/invitacion/${token}`)}`;
 
   if (!joining && invitation.isPending) {
@@ -88,7 +89,7 @@ export function InvitationScreen({ token }: { token: string }) {
         : data.has_account
           ? 'login'
           : 'create');
-  const flow = { token, invitation: data, loginHref, onJoining: (active: boolean) => setJoining(active ? { data, mode } : null), onSessionLost: () => setSessionLost(true) };
+  const flow = { token, invitation: data, loginHref, onJoining: (active: boolean) => setJoining(active ? { data, mode } : null), onSessionLost: () => setSessionLost(true), onGone: () => void invitation.refetch() };
 
   let body: ReactNode;
   let footer: ReactNode = null;
@@ -232,13 +233,14 @@ interface FlowProps {
   onJoining: (active: boolean) => void;
   /** The session turned out to be dead and was closed: the screen explains it next to "Iniciar sesión". */
   onSessionLost: () => void;
+  /** Accepting answered 410: the invitation is read again, and its 404 says the link no longer works. */
+  onGone: () => void;
 }
 
-function AcceptAsMember({ token, invitation, loginHref, onJoining, onSessionLost }: FlowProps) {
+function AcceptAsMember({ token, invitation, loginHref, onJoining, onSessionLost, onGone }: FlowProps) {
   const queryClient = useQueryClient();
   const { me } = useSession();
   const accept = useAcceptInvitation(token);
-  const invitationQuery = useInvitation(token);
   const join = useJoin(invitation);
   const [busy, setBusy] = useState(false);
   const shown = useRef(me);
@@ -257,7 +259,7 @@ function AcceptAsMember({ token, invitation, loginHref, onJoining, onSessionLost
       onJoining(false);
       setBusy(false);
       if (!(error instanceof ApiError)) return;
-      if (error.status === 410) void invitationQuery.refetch();
+      if (error.status === 410) onGone();
       if (error.status === 401) {
         // The client already renewed the token and tried again before giving this answer, so the
         // session is dead. Its tokens must not stay: the login would see "a session" and bounce
@@ -308,9 +310,8 @@ function OtherAccount({ invitation }: { invitation: InvitationPreview }) {
   );
 }
 
-function CreateAccount({ token, invitation, loginHref, onJoining }: Omit<FlowProps, 'onSessionLost'>) {
+function CreateAccount({ token, invitation, loginHref, onJoining, onGone }: Omit<FlowProps, 'onSessionLost'>) {
   const accept = useAcceptInvitation(token);
-  const invitationQuery = useInvitation(token);
   const join = useJoin(invitation);
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
@@ -334,7 +335,7 @@ function CreateAccount({ token, invitation, loginHref, onJoining }: Omit<FlowPro
       setBusy(false);
       if (!(error instanceof ApiError)) return;
       if (error.status === 400) setErrors({ name: fieldError(error, 'name'), password: fieldError(error, 'password') });
-      if (error.status === 410) void invitationQuery.refetch();
+      if (error.status === 410) onGone();
     }
   };
 
