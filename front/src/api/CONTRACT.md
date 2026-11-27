@@ -104,7 +104,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/projects/` | Proyectos del workspace, del más nuevo al más viejo. | ⚠️ existe en parte · hueco 14 | B2, J1, B1 |
 | POST | `/api/v1/projects/` | Crea un proyecto desde un archivo (multipart) o un link, reserva los tokens y arranca la ingesta. | ✅ existe | C1 |
 | POST | `/api/v1/projects/from-prompt/` | Igual que crear, más `prompt`: la IA arma la configuración al iniciar la ingesta (queda en `metadata.pte`). | ✅ existe | C1 |
-| GET | `/api/v1/projects/:id/` | Detalle del proyecto con el estado del pipeline, la metadata, la transcripción y sus clips. | ⚠️ existe en parte · hueco 18 | D1, D1e, D1f, D3, D4, D5 |
+| GET | `/api/v1/projects/:id/` | Detalle del proyecto con el estado del pipeline, la metadata, la transcripción y sus clips. | ⚠️ existe en parte | D1, D1e, D1f, D3, D4, D5 |
 | PATCH | `/api/v1/projects/:id/` | Renombra el proyecto. | ✅ existe | B2, D1 |
 | DELETE | `/api/v1/projects/:id/` | Borra el proyecto con su video, sus clips y sus publicaciones programadas. No devuelve lo cobrado. | ✅ existe | B2, D1, D4 (diálogo) |
 | GET | `/api/v1/projects/:id/paper-edit-data/` | Datos de la revisión: video proxy, transcripción, clips sugeridos y metadata. | ✅ existe | D2 |
@@ -785,8 +785,8 @@ Detalle del proyecto con el estado del pipeline, la metadata, la transcripción 
 | | |
 |---|---|
 | Id | `projects.detail` |
-| Backend | ⚠️ existe en parte · hueco 18 · `back/apps/videos/views.py · VideoProjectViewSet.retrieve + VideoProjectSerializer` |
-| Nota | Trae `cost` (la reserva de creación: reservado, cobrado o devuelto), `stage_timings` (las etapas terminadas; `started_at` y `finished_at` en `null` en las que terminaron antes de que se guardara) y `uploaded_by_detail` (sin el email). Faltan `eta_seconds` y `duration_seconds` (la duración sale de `metadata.source_media`). Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura. |
+| Backend | ⚠️ existe en parte · `back/apps/videos/views.py · VideoProjectViewSet.retrieve + VideoProjectSerializer` |
+| Nota | Trae `cost` (la reserva de creación: reservado, cobrado o devuelto), `stage_timings` (las etapas terminadas; `started_at` y `finished_at` en `null` en las que terminaron antes de que se guardara) y `uploaded_by_detail` (sin el email). `eta_seconds` mientras se procesa (el estimado de Nuevo proyecto menos lo que tardaron las etapas terminadas). Falta `duration_seconds` (la duración sale de `metadata.source_media`). Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 200 | Project |
 | Errores | **404** No existe o es de otro workspace. La UI muestra K1. |
@@ -1884,10 +1884,10 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `proxy_url` | string \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
 | `uploaded_by_detail` (opcional) | UserRef \\| null |
-| `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
 | `eta_seconds` (opcional) | number \\| null |
+| `duration_seconds` (opcional) | number \\| null |
 | `cost_details` | CostDetails |
 | `message` | string |
 | `prompt_config` | { status: "pending", detail: string } |
@@ -1980,10 +1980,10 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `proxy_url` | string \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
 | `uploaded_by_detail` (opcional) | UserRef \\| null |
-| `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
 | `eta_seconds` (opcional) | number \\| null |
+| `duration_seconds` (opcional) | number \\| null |
 | `cost_details` | CostDetails |
 | `message` | string |
 
@@ -2086,10 +2086,10 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `proxy_url` | string \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
 | `uploaded_by_detail` (opcional) | UserRef \\| null |
-| `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
 | `eta_seconds` (opcional) | number \\| null |
+| `duration_seconds` (opcional) | number \\| null |
 
 **ProjectCost**
 
@@ -2203,10 +2203,10 @@ Si la plataforma está en mantenimiento y hasta cuándo.
 | `proxy_url` | string \\| null |
 | `thumbnail_url` (opcional) | string \\| null |
 | `uploaded_by_detail` (opcional) | UserRef \\| null |
-| `duration_seconds` (opcional) | number \\| null |
 | `cost` (opcional) | ProjectCost \\| null |
 | `stage_timings` (opcional) | { [clave]: StageTiming } |
 | `eta_seconds` (opcional) | number \\| null |
+| `duration_seconds` (opcional) | number \\| null |
 | `cost_details` (opcional) | CostDetails |
 
 **RerenderRequest**

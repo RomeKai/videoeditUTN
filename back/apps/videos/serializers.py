@@ -167,6 +167,11 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         "The creation reservation (metadata.reservation_id): {amount, state: reserved|charged|refunded, "
         "transaction_id}. A partial charge shows what was charged. Null without a creation reservation."
     ))
+    eta_seconds = serializers.SerializerMethodField(help_text=(
+        "While the project is processing: seconds until it is ready for the review (the estimate for its "
+        "duration minus what its finished stages took). Null otherwise, for a whole-video edit and without "
+        "history to estimate from."
+    ))
     stage_timings = serializers.SerializerMethodField(help_text=(
         "{stage: {started_at, finished_at, duration_s}} of the stages that finished (their last successful "
         "run). started_at and finished_at are null for stages that finished before they were recorded."
@@ -241,6 +246,10 @@ class VideoProjectSerializer(serializers.ModelSerializer):
         if obj not in projects:
             projects.append(obj)
         return project_cost(obj, creation_reservations(projects, self.context))
+
+    def get_eta_seconds(self, obj) -> int | None:
+        from .services.project_summary import eta_seconds
+        return eta_seconds(obj)
 
     def get_stage_timings(self, obj) -> dict:
         from .services.project_summary import stage_timings

@@ -318,15 +318,18 @@ export const Project = z.object({
   thumbnail_url: z.string().url().nullable().optional(),
   /** Who created the project (no email); null when that user is gone. Optional for older backends. */
   uploaded_by_detail: UserRef.nullable().optional(),
-  /** Source duration in seconds, whatever the origin (gap: today it is spread over metadata). */
-  duration_seconds: z.number().nullable().optional(),
   /** Null when the project has no creation reservation. Optional for older backends. */
   cost: ProjectCost.nullable().optional(),
   /** Keyed by pipeline stage (`transcribed`, `moderated`…): only the stages that finished. */
   stage_timings: z.record(z.string(), StageTiming).optional(),
-  /* Proposed extras */
-  /** Seconds until "Listo para revisar" (gap 18). */
+  /**
+   * While it is processing: seconds until "Listo para revisar" (the estimate of Nuevo proyecto for its duration,
+   * minus what its finished stages took). Null otherwise and for a whole-video edit. Optional for older backends.
+   */
   eta_seconds: z.number().int().nonnegative().nullable().optional(),
+  /* Proposed extras */
+  /** Source duration in seconds, whatever the origin (gap: today it is spread over metadata). */
+  duration_seconds: z.number().nullable().optional(),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -625,8 +628,7 @@ export const getProject = defineEndpoint({
   backend: {
     status: 'partial',
     source: 'back/apps/videos/views.py · VideoProjectViewSet.retrieve + VideoProjectSerializer',
-    gap: [18],
-    note: 'Trae `cost` (la reserva de creación: reservado, cobrado o devuelto), `stage_timings` (las etapas terminadas; `started_at` y `finished_at` en `null` en las que terminaron antes de que se guardara) y `uploaded_by_detail` (sin el email). Faltan `eta_seconds` y `duration_seconds` (la duración sale de `metadata.source_media`). Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura.',
+    note: 'Trae `cost` (la reserva de creación: reservado, cobrado o devuelto), `stage_timings` (las etapas terminadas; `started_at` y `finished_at` en `null` en las que terminaron antes de que se guardara) y `uploaded_by_detail` (sin el email). `eta_seconds` mientras se procesa (el estimado de Nuevo proyecto menos lo que tardaron las etapas terminadas). Falta `duration_seconds` (la duración sale de `metadata.source_media`). Cada clip trae `preview_url` y `thumbnail_url`, y el proyecto `thumbnail_url` (la miniatura de su primer clip que tenga una): son URLs temporales (1 h, se firman de nuevo en cada respuesta) y vienen en `null` cuando no hay render o no hay miniatura.',
   },
   screens: ['D1', 'D1e', 'D1f', 'D3', 'D4', 'D5'],
 });

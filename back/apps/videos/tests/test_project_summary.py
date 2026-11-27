@@ -4,6 +4,7 @@ the creation cost, the times of each stage and who created the project, in the
 project, the list and the detail.
 """
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
@@ -167,3 +168,50 @@ class UploadedByTests(ProjectDataHarness):
         # The authenticated request reads its own user; the creators come with the projects.
         self.assertLessEqual(len(user_reads), 1, [q['sql'] for q in user_reads])
 
+
+
+ETA = 'apps.payments.services.estimate.review_eta_seconds'
+
+
+class EtaTests(ProjectDataHarness):
+    def eta(self, **fields):
+        return VideoProjectSerializer(self.project(**fields)).data['eta_seconds']
+
+    def test_a_processing_project_gets_the_estimate_minus_what_its_stages_took(self):
+        with patch(ETA, return_value=300) as estimate:
+            eta = self.eta(
+                status=VideoProject.Status.INGESTING,
+                metadata={'priced_duration_s': 120, 'stage_durations': {'audio_extracted': 20, 'transcribed': 70.4}},
+            )
+
+        estimate.assert_called_once_with(120)
+        self.assertEqual(eta, 210)
+
+    def test_the_measured_duration_is_used_without_a_priced_one_and_it_never_goes_below_zero(self):
+        with patch(ETA, return_value=50) as estimate:
+            eta = self.eta(
+                status=VideoProject.Status.UPLOADED,
+                metadata={'source_media': {'duration_s': 90.5}, 'stage_durations': {'audio_extracted': 80}},
+            )
+
+        estimate.assert_called_once_with(90.5)
+        self.assertEqual(eta, 0)
+
+    def test_there_is_no_estimate_when_it_cannot_be_told(self):
+        whole = VideoProject.Type.SINGLE_EDIT
+        cases = {
+            'ready for review': dict(status=VideoProject.Status.AWAITING_APPROVAL, metadata={'priced_duration_s': 60}),
+            'failed': dict(status=VideoProject.Status.FAILED, metadata={'priced_duration_s': 60}),
+            'whole video': dict(status=VideoProject.Status.INGESTING, project_type=whole, metadata={'priced_duration_s': 60}),
+            'selection done': dict(
+                status=VideoProject.Status.INGESTING,
+                metadata={'priced_duration_s': 60, 'stage_durations': {'clips_selected': 5}},
+            ),
+            'no duration': dict(status=VideoProject.Status.INGESTING, metadata={}),
+        }
+        for name, fields in cases.items():
+            with self.subTest(name), patch(ETA, return_value=300):
+                self.assertIsNone(self.eta(**fields))
+
+        with patch(ETA, return_value=None):
+            self.assertIsNone(self.eta(status=VideoProject.Status.INGESTING, metadata={'priced_duration_s': 60}))

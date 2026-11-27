@@ -10,6 +10,9 @@ Resumen and Actividad), read from what the backend already keeps:
   ended). Stages that finished before ``stage_finished_at`` existed only have
   their duration.
 - ``uploaded_by_detail``: who created the project, as a ``UserRef``.
+- ``eta_seconds``: while a project is processing, how long until "Listo para
+  revisar": the estimate for its duration (the same one Nuevo proyecto shows,
+  apps.payments.services.estimate) minus what its finished stages took.
 """
 import uuid
 from datetime import datetime, timedelta
@@ -112,3 +115,38 @@ def stage_timings(project):
 
 def uploaded_by_detail(project):
     return user_ref(project.uploaded_by) if project.uploaded_by_id else None
+
+
+def _number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+
+
+def eta_seconds(project):
+    """
+    Seconds until the review of a project still being processed, or None: not
+    processing, a whole-video edit (its render comes after and is not in the
+    estimate), past the selection, no duration, or no history to estimate from.
+    """
+    from apps.payments.services.estimate import REVIEW_STAGES, review_eta_seconds
+    from apps.videos.models import VideoProject
+
+    if project.status not in (VideoProject.Status.UPLOADED, VideoProject.Status.INGESTING):
+        return None
+    if project.project_type == VideoProject.Type.SINGLE_EDIT:
+        return None
+    metadata = project.metadata or {}
+    durations = metadata.get('stage_durations')
+    durations = durations if isinstance(durations, dict) else {}
+    if REVIEW_STAGES[-1] in durations:
+        return None
+    source = metadata.get('source_media')
+    duration = metadata.get('priced_duration_s')
+    if not _number(duration) or not duration:
+        duration = source.get('duration_s') if isinstance(source, dict) else None
+    if not _number(duration) or not duration:
+        return None
+    total = review_eta_seconds(duration)
+    if total is None:
+        return None
+    spent = sum(durations[stage] for stage in REVIEW_STAGES if _number(durations.get(stage)))
+    return max(0, int(round(total - spent)))
