@@ -8,7 +8,25 @@ import { useResendVerification, useVerifyEmail } from '@/api/hooks';
 import { useSession } from '@/shell/session';
 import { Banner, Button, Card, Field, Icon, Input, Num, Skeleton, cx, useToast } from '@/ui';
 import styles from './acceso.module.css';
-import { emailError, formatCountdown, HOME, rememberNext, requestErrorMessage, retryAfterSeconds, safeNext, takeNext, useCooldown } from './lib';
+import {
+  emailError,
+  forgetSignupNonce,
+  formatCountdown,
+  HOME,
+  readSignupNonce,
+  rememberNext,
+  requestErrorMessage,
+  retryAfterSeconds,
+  safeNext,
+  takeNext,
+  useCooldown,
+} from './lib';
+
+/** The same link, to open it again after signing in (with its destination, when it has one). */
+function linkAgain(token: string, next: string | null | undefined): string {
+  const after = safeNext(next);
+  return `/verificar?token=${encodeURIComponent(token)}${after ? `&siguiente=${encodeURIComponent(after)}` : ''}`;
+}
 
 export interface VerifyEmailScreenProps {
   /** `?email=`: the account waiting for verification (comes from A2 or from a login that answered "sin verificar"). */
@@ -32,13 +50,20 @@ export function VerifyEmailScreen({ email, token, fromLogin = false, next }: Ver
   useEffect(() => {
     if (!token || started.current) return;
     started.current = true;
-    verifyToken(token);
+    // The proof of this browser's sign-up, if there is one: with it the link also signs in.
+    verifyToken({ token, signup_nonce: readSignupNonce() }, { onSuccess: () => forgetSignupNonce() });
   }, [token, verifyToken]);
+
+  // Opened outside the browser that signed up: nothing changed. With a session the same link verifies.
+  const signedOut = verify.isSuccess && !('access' in verify.data);
+  useEffect(() => {
+    if (signedOut && token) router.replace(`/login?motivo=verificar&siguiente=${encodeURIComponent(linkAgain(token, next))}`);
+  }, [next, router, signedOut, token]);
 
   // Verified: back to the page that was asked for (kept while waiting for the email), or into the welcome.
   // The remembered page is only for the account it was stored for, so this waits to know who signed in;
   // if the profile does not load, the link's own email is the only clue.
-  const verified = verify.isSuccess;
+  const verified = verify.isSuccess && !signedOut;
   const verifiedEmail = me?.email ?? (status === 'error' ? (email ?? '') : null);
   const left = useRef(false);
   useEffect(() => {
@@ -78,8 +103,7 @@ export function VerifyEmailScreen({ email, token, fromLogin = false, next }: Ver
   if (denied) {
     const needsLogin = denied.code === 'login_required';
     // After signing in, the login brings the person back to this same link (with its destination).
-    const after = safeNext(next);
-    const link = `/verificar?token=${encodeURIComponent(token ?? '')}${after ? `&siguiente=${encodeURIComponent(after)}` : ''}`;
+    const link = linkAgain(token ?? '', next);
     return (
       <Card className={cx(styles.card, styles.verify)}>
         <span className={styles.heroIcon}>

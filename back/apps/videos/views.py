@@ -58,6 +58,7 @@ class BrandKitViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         'update': 'brandkit.manage',
         'partial_update': 'brandkit.manage',
         'destroy': 'brandkit.manage',
+        'duplicate': 'brandkit.manage',
     }
 
     def get_queryset(self):
@@ -66,12 +67,55 @@ class BrandKitViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
             return BrandKit.objects.none()
         return BrandKit.objects.filter(workspace=workspace)
 
+    def _save_one_default(self, serializer, workspace_id, **extra):
+        """
+        Saves the kit keeping one default per workspace at most. Marking it
+        default unmarks the others in the same transaction, with the workspace
+        row locked: two requests that mark different kits run one after the
+        other and the last one wins. Unmarking the default is allowed and
+        leaves the workspace without one, as deleting it does.
+        """
+        from .services import brand_kit_service
+
+        if serializer.validated_data.get('is_default') is not True:
+            serializer.save(**extra)
+            return
+        with transaction.atomic():
+            brand_kit_service.lock_workspace_default(workspace_id)
+            instance = serializer.instance
+            brand_kit_service.demote_other_defaults(workspace_id, keep_pk=instance.pk if instance else None)
+            serializer.save(**extra)
+
     def perform_create(self, serializer):
         workspace = self.active_workspace
         if not workspace:
             # The same 400 as creating a project.
             raise exceptions.ValidationError({"error": NO_WORKSPACE_ERROR})
-        serializer.save(workspace=workspace)
+        self._save_one_default(serializer, workspace.pk, workspace=workspace)
+
+    def perform_update(self, serializer):
+        self._save_one_default(serializer, serializer.instance.workspace_id)
+
+    @action(detail=True, methods=['post'])
+    def duplicate(self, request, pk=None):
+        """
+        Copies the kit and its files into the same workspace as «Copia de …»
+        (brand_kit_service.duplicate_brand_kit). The copy is never the default.
+        201 with the new kit; 502 ``brand_kit_copy_failed`` when a file could
+        not be copied, and then nothing is written. Not a 503: the web app
+        reads any 503 as maintenance.
+        """
+        from .services import brand_kit_service
+
+        kit = self.get_object()  # 404 outside the active workspace
+        try:
+            copy = brand_kit_service.duplicate_brand_kit(kit, user=request.user)
+        except brand_kit_service.BrandKitCopyError:
+            return Response({
+                "error": "No pudimos copiar los archivos del brand kit. Probá de nuevo en unos minutos.",
+                "code": "brand_kit_copy_failed",
+            }, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(self.get_serializer(copy).data, status=status.HTTP_201_CREATED)
 
 from .services.render_pricing import pricing_resolution as _pricing_resolution  # noqa: E402
 

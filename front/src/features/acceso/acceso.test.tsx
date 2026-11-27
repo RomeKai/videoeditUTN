@@ -7,17 +7,18 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { createQueryClient } from '@/api/query';
 import { getActiveWorkspaceId, getTokens, setTokens } from '@/api/session';
 import { server } from '@/api/mocks/server';
-import { applyScenario, loadDb } from '@/api/mocks/state';
+import { applyScenario, loadDb, mockTokens, saveDb } from '@/api/mocks/state';
 import { needsWelcome, SessionProvider } from '@/shell/session';
 import { ToastProvider } from '@/ui';
 import { InvitationScreen, joinOptions } from './InvitationScreen';
-import { formatCountdown, NEXT_MAX_AGE_MS, rememberNext, retryAfterSeconds, safeNext, takeNext } from './lib';
+import { formatCountdown, NEXT_MAX_AGE_MS, readSignupNonce, rememberNext, rememberSignupNonce, retryAfterSeconds, safeNext, takeNext } from './lib';
 import { LoginScreen } from './LoginScreen';
 import { RecoverScreen } from './RecoverScreen';
 import { RegisterScreen } from './RegisterScreen';
 import { VerifyEmailScreen } from './VerifyEmailScreen';
 import { WelcomeScreen } from './WelcomeScreen';
 import { ApiError } from '@/api/errors';
+import real from '@/api/contracts/drf/responses.json';
 
 const nav = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() }));
 vi.mock('next/navigation', () => ({
@@ -55,7 +56,32 @@ function show(ui: ReactElement) {
 
 const password = () => screen.getByLabelText('Contraseña');
 
+/** This browser signed up: it keeps the `signup_nonce` the mock (like the backend) asks for before the link signs in. */
+function signedUpInThisBrowser() {
+  const db = loadDb();
+  db.signupNonces = Object.fromEntries(db.users.map((item) => [item.id, 'nonce-de-este-navegador']));
+  saveDb(db);
+  rememberSignupNonce('nonce-de-este-navegador');
+}
+
+/** Opens A4 as the link of the email does: its token and email in the fragment, which only the browser sees. */
+function openResetLink(token: string, email?: string) {
+  window.location.hash = `#${new URLSearchParams(email ? { token, email } : { token }).toString()}`;
+  return show(<RecoverScreen />);
+}
+
 describe('lib', () => {
+  it('el nonce del registro vence con el link y el vencido se borra', () => {
+    window.localStorage.setItem('oc.acceso.registro', JSON.stringify({ nonce: 'viejo', at: Date.now() - NEXT_MAX_AGE_MS - 1000 }));
+    expect(readSignupNonce()).toBeUndefined();
+    expect(window.localStorage.getItem('oc.acceso.registro')).toBeNull();
+    window.localStorage.setItem('oc.acceso.registro', 'no es JSON');
+    expect(readSignupNonce()).toBeUndefined();
+    expect(window.localStorage.getItem('oc.acceso.registro')).toBeNull();
+    rememberSignupNonce('vigente');
+    expect(readSignupNonce()).toBe('vigente');
+  });
+
   it('safeNext solo acepta rutas de la app', () => {
     expect(safeNext('/uso/movimientos')).toBe('/uso/movimientos');
     expect(safeNext('/invitacion/valida')).toBe('/invitacion/valida');
@@ -144,6 +170,12 @@ describe('lib', () => {
 });
 
 describe('A1 · Iniciar sesión', () => {
+  it('viniendo de un link de registro abierto en otro navegador, pide iniciar sesión para terminar de verificar', () => {
+    scenario('sin-sesion', { signedIn: false });
+    show(<LoginScreen verifyPending next="/verificar?token=abc123" />);
+    expect(screen.getByText('Iniciá sesión para terminar de verificar tu email.')).toBeInTheDocument();
+  });
+
   it('valida los campos antes de pedir nada', async () => {
     scenario('sin-sesion');
     const user = userEvent.setup();
@@ -374,8 +406,37 @@ describe('A2 · Crear cuenta', () => {
     await user.click(screen.getByRole('button', { name: 'Crear cuenta' }));
     await waitFor(() => expect(nav.push).toHaveBeenCalledWith('/verificar?email=ana%40ejemplo.com'));
     expect(loadDb().users.find((item) => item.email === 'ana@ejemplo.com')).toMatchObject({ is_email_verified: false });
-    // No session until the email is verified.
+    // No session until the email is verified; this browser keeps the proof the link asks for to sign in.
     expect(getTokens()).toBeNull();
+    expect(readSignupNonce()).toMatch(/^nonce-/);
+  });
+
+  it('con las respuestas reales del backend: primero la contraseña, después el email ya usado, y la cuenta', async () => {
+    scenario('sin-sesion');
+    let answer: { status: number; body: Record<string, unknown> } = real.errors.register_400_weak;
+    server.use(http.post('http://localhost:8000/api/v1/auth/register/', () => HttpResponse.json(answer.body, { status: answer.status })));
+    const user = userEvent.setup();
+    show(<RegisterScreen />);
+    await fill(user, 'tester@test.com', '12345678');
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: 'Crear cuenta' }));
+    // A sign-up that would create nothing does not say whether the email has an account.
+    await waitFor(() => expect(password()).toHaveAccessibleDescription('Esa contraseña es muy común. Elegí otra.'));
+    expect(screen.getByLabelText('Email')).not.toHaveAccessibleDescription(/Ya existe/);
+
+    answer = real.errors.register_400_taken;
+    await user.clear(password());
+    await user.type(password(), 'una-clave-Nueva-2026');
+    await user.click(screen.getByRole('button', { name: 'Crear cuenta' }));
+    await waitFor(() => expect(screen.getByLabelText('Email')).toHaveAccessibleDescription(/Ya existe una cuenta con este email\./));
+    expect(screen.getAllByRole('link', { name: 'Iniciar sesión' }).some((link) => link.getAttribute('href') === '/login?email=tester%40test.com')).toBe(true);
+
+    answer = { status: 201, body: real.auth_register };
+    await user.clear(screen.getByLabelText('Email'));
+    await user.type(screen.getByLabelText('Email'), 'ana@example.com');
+    await user.click(screen.getByRole('button', { name: 'Crear cuenta' }));
+    await waitFor(() => expect(nav.push).toHaveBeenCalledWith('/verificar?email=ana%40example.com'));
+    expect(readSignupNonce()).toBe(real.auth_register.signup_nonce);
   });
 });
 
@@ -418,6 +479,7 @@ describe('A3 · Verificar email', () => {
 
   it('el link del email verifica la cuenta, inicia la sesión y entra a la Bienvenida', async () => {
     scenario('email-sin-verificar');
+    signedUpInThisBrowser();
     show(<VerifyEmailScreen token="abc123" />);
     expect(screen.getByRole('heading', { level: 1, name: 'Verificando tu email' })).toBeInTheDocument();
     await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/bienvenida'));
@@ -459,6 +521,7 @@ describe('A3 · Verificar email', () => {
 
   it('después de verificar vuelve a la página que se había pedido antes del login', async () => {
     scenario('email-sin-verificar');
+    signedUpInThisBrowser();
     // Waiting screen, reached from a login that was going to an invitation.
     const waiting = show(<VerifyEmailScreen email="sofia@ejemplo.com" fromLogin next="/invitacion/con-cuenta" />);
     await screen.findByRole('heading', { level: 1, name: 'Te mandamos un link a tu email' });
@@ -471,6 +534,7 @@ describe('A3 · Verificar email', () => {
 
   it('otra persona que verifica después en el mismo navegador entra por la Bienvenida', async () => {
     scenario('email-sin-verificar');
+    signedUpInThisBrowser();
     // Someone left a destination behind and never opened the email.
     const first = show(<VerifyEmailScreen email="carla@estudionorte.com" fromLogin next="/uso/movimientos" />);
     await screen.findByRole('heading', { level: 1, name: 'Te mandamos un link a tu email' });
@@ -484,6 +548,7 @@ describe('A3 · Verificar email', () => {
 
   it('abrir la espera sin destino olvida el que había quedado', async () => {
     scenario('email-sin-verificar');
+    signedUpInThisBrowser();
     const first = show(<VerifyEmailScreen email="sofia@ejemplo.com" fromLogin next="/uso/movimientos" />);
     await screen.findByRole('heading', { level: 1, name: 'Te mandamos un link a tu email' });
     expect(window.localStorage.getItem('oc.acceso.siguiente')).not.toBeNull();
@@ -499,6 +564,7 @@ describe('A3 · Verificar email', () => {
 
   it('si el link trae su propio destino, lo sigue y no deja guardado el anterior', async () => {
     scenario('email-sin-verificar');
+    signedUpInThisBrowser();
     const first = show(<VerifyEmailScreen email="sofia@ejemplo.com" fromLogin next="/uso/movimientos" />);
     await screen.findByRole('heading', { level: 1, name: 'Te mandamos un link a tu email' });
     first.unmount();
@@ -510,10 +576,46 @@ describe('A3 · Verificar email', () => {
 
   it('un «siguiente» de otro sitio no se guarda', async () => {
     scenario('email-sin-verificar');
+    signedUpInThisBrowser();
     const waiting = show(<VerifyEmailScreen email="sofia@ejemplo.com" next={'/\t/otro.sitio'} />);
     waiting.unmount();
     show(<VerifyEmailScreen token="abc123" next="//otro.sitio" />);
     await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/bienvenida'));
+  });
+
+  it('abierto fuera del navegador que se registró, el link no cambia nada y lleva a iniciar sesión para volver a él', async () => {
+    scenario('email-sin-verificar');
+    const before = loadDb().users.filter((item) => !item.is_email_verified).length;
+    show(<VerifyEmailScreen token="abc123" next="/uso" />);
+    await waitFor(() =>
+      expect(nav.replace).toHaveBeenCalledWith(`/login?motivo=verificar&siguiente=${encodeURIComponent('/verificar?token=abc123&siguiente=%2Fuso')}`),
+    );
+    expect(nav.replace).toHaveBeenCalledTimes(1);
+    expect(getTokens()).toBeNull();
+    expect(loadDb().users.filter((item) => !item.is_email_verified)).toHaveLength(before);
+  });
+
+  it('con la sesión de su cuenta (después de iniciarla), el mismo link verifica y entra', async () => {
+    scenario('email-sin-verificar');
+    const db = loadDb();
+    const sofia = db.users.find((item) => item.email === 'sofia@ejemplo.com');
+    if (!sofia) throw new Error('falta Sofía');
+    // The mock verifies the newest unverified account: Sofía, the only one.
+    for (const item of db.users) item.is_email_verified = item.id !== sofia.id;
+    saveDb(db);
+    setTokens(mockTokens(sofia.id));
+    show(<VerifyEmailScreen token="abc123" />);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/bienvenida'));
+    expect(loadDb().users.find((item) => item.id === sofia.id)?.is_email_verified).toBe(true);
+  });
+
+  it('el link inicia la sesión con el nonce de este navegador y lo olvida', async () => {
+    scenario('email-sin-verificar');
+    signedUpInThisBrowser();
+    show(<VerifyEmailScreen token="abc123" />);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/bienvenida'));
+    expect(getTokens()).not.toBeNull();
+    expect(readSignupNonce()).toBeUndefined();
   });
 
   it('un link vencido ofrece pedir otro', async () => {
@@ -538,10 +640,20 @@ describe('A4 · Recuperar contraseña', () => {
     expect(screen.getByRole('button', { name: /Reenviar en/ })).toBeDisabled();
   });
 
+  it('el link trae el token en el fragmento, y la pantalla lo saca de la URL', async () => {
+    scenario('sin-sesion');
+    window.history.replaceState(null, '', '/recuperar');
+    openResetLink('abc123', 'lucia@estudionorte.com');
+    expect(screen.getByRole('heading', { level: 1, name: 'Elegí una contraseña nueva' })).toBeInTheDocument();
+    expect(screen.getByText('lucia@estudionorte.com')).toBeInTheDocument();
+    expect(window.location.hash).toBe('');
+    expect(window.location.pathname).toBe('/recuperar');
+  });
+
   it('paso 2: las dos contraseñas tienen que coincidir', async () => {
     scenario('sin-sesion');
     const user = userEvent.setup();
-    show(<RecoverScreen token="abc123" email="lucia@estudionorte.com" />);
+    openResetLink('abc123', 'lucia@estudionorte.com');
     expect(screen.getByRole('heading', { level: 1, name: 'Elegí una contraseña nueva' })).toBeInTheDocument();
     expect(screen.getByText('lucia@estudionorte.com')).toBeInTheDocument();
     await user.type(screen.getByLabelText('Contraseña nueva'), 'contrasena-nueva');
@@ -554,7 +666,7 @@ describe('A4 · Recuperar contraseña', () => {
   it('paso 2: guarda la contraseña y entra', async () => {
     scenario('sin-sesion');
     const user = userEvent.setup();
-    show(<RecoverScreen token="abc123" email="lucia@estudionorte.com" />);
+    openResetLink('abc123', 'lucia@estudionorte.com');
     await user.type(screen.getByLabelText('Contraseña nueva'), 'contrasena-nueva');
     await user.type(screen.getByLabelText('Repetí la contraseña'), 'contrasena-nueva');
     await user.click(screen.getByRole('button', { name: 'Guardar y entrar' }));
@@ -565,7 +677,7 @@ describe('A4 · Recuperar contraseña', () => {
   it('paso 2: sin saber de quién es el link, manda a iniciar sesión', async () => {
     scenario('sin-sesion');
     const user = userEvent.setup();
-    show(<RecoverScreen token="abc123" />);
+    openResetLink('abc123');
     await user.type(screen.getByLabelText('Contraseña nueva'), 'contrasena-nueva');
     await user.type(screen.getByLabelText('Repetí la contraseña'), 'contrasena-nueva');
     await user.click(screen.getByRole('button', { name: 'Guardar y entrar' }));
@@ -576,19 +688,51 @@ describe('A4 · Recuperar contraseña', () => {
   it('paso 2: muestra la contraseña que rechaza el servidor y el link vencido', async () => {
     scenario('sin-sesion');
     const user = userEvent.setup();
-    const view = show(<RecoverScreen token="abc123" />);
+    const view = openResetLink('abc123');
     await user.type(screen.getByLabelText('Contraseña nueva'), '1234567890');
     await user.type(screen.getByLabelText('Repetí la contraseña'), '1234567890');
     await user.click(screen.getByRole('button', { name: 'Guardar y entrar' }));
     await waitFor(() => expect(screen.getByLabelText('Contraseña nueva')).toHaveAccessibleDescription('La contraseña no puede ser solo números.'));
     view.unmount();
 
-    show(<RecoverScreen token="vencido" email="lucia@estudionorte.com" />);
+    openResetLink('vencido', 'lucia@estudionorte.com');
     await user.type(screen.getByLabelText('Contraseña nueva'), 'contrasena-nueva');
     await user.type(screen.getByLabelText('Repetí la contraseña'), 'contrasena-nueva');
     await user.click(screen.getByRole('button', { name: 'Guardar y entrar' }));
     expect(await screen.findByRole('heading', { level: 1, name: 'Este link ya no sirve' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Pedir otro link' })).toHaveAttribute('href', '/recuperar?email=lucia%40estudionorte.com');
+  });
+
+  it('con las respuestas reales del backend: el 429 cuenta como enviado, y el link vencido o la contraseña débil', async () => {
+    scenario('sin-sesion');
+    server.use(
+      http.post('http://localhost:8000/api/v1/auth/password-reset/', () => HttpResponse.json(real.errors.resend_429.body, { status: 429 })),
+      http.post('http://localhost:8000/api/v1/auth/password-reset/confirm/', async ({ request }) => {
+        const { token } = (await request.json()) as { token: string };
+        const answer = token === 'vencido' ? real.errors.password_reset_confirm_400_token : real.errors.password_reset_confirm_400_password;
+        return HttpResponse.json(answer.body, { status: answer.status });
+      }),
+    );
+    const user = userEvent.setup();
+    const first = show(<RecoverScreen />);
+    await user.type(screen.getByLabelText('Email'), 'lucia@estudionorte.com');
+    await user.click(screen.getByRole('button', { name: 'Mandarme el link' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('Si el email existe, te mandamos un link. Revisá tu correo.');
+    expect(screen.getByRole('button', { name: /Reenviar en (1:00|0:5\d)/ })).toBeDisabled();
+    first.unmount();
+
+    const second = openResetLink('abc.123', 'lucia@estudionorte.com');
+    await user.type(screen.getByLabelText('Contraseña nueva'), '12345678');
+    await user.type(screen.getByLabelText('Repetí la contraseña'), '12345678');
+    await user.click(screen.getByRole('button', { name: 'Guardar y entrar' }));
+    await waitFor(() => expect(screen.getByLabelText('Contraseña nueva')).toHaveAccessibleDescription('Esa contraseña es muy común. Elegí otra.'));
+    second.unmount();
+
+    openResetLink('vencido', 'lucia@estudionorte.com');
+    await user.type(screen.getByLabelText('Contraseña nueva'), 'contrasena-nueva');
+    await user.type(screen.getByLabelText('Repetí la contraseña'), 'contrasena-nueva');
+    await user.click(screen.getByRole('button', { name: 'Guardar y entrar' }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Este link ya no sirve' })).toBeInTheDocument();
   });
 });
 

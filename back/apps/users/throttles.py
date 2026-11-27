@@ -1,6 +1,9 @@
 """
 Attempt limits of the endpoints that check a password: the login, the token
-refresh and the account endpoints that ask for `current_password`.
+refresh and the account endpoints that ask for `current_password`. Also of the
+account endpoints of apps.users.views_auth (sign-up, resend the verification,
+password reset, logout): they say whether an email has an account (sign-up)
+or send emails to the address they get.
 
 Without them a password can be guessed as fast as the server answers. The
 rates are in REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'] and are counted in the
@@ -8,6 +11,7 @@ default cache: per user when signed in, per IP otherwise. While that cache does
 not answer they are counted in this process's memory (LocalFallbackCache,
 LoginFailureGuard), so an outage does not switch the limits off.
 """
+import ipaddress
 import math
 import time
 
@@ -18,6 +22,8 @@ from django.core.cache.backends.locmem import LocMemCache
 from django.utils.crypto import salted_hmac
 from rest_framework.exceptions import Throttled
 from rest_framework.throttling import BaseThrottle, ScopedRateThrottle
+
+from apps.users.emails import InvalidEmailDomain, normalize_email
 
 
 class TooManyAttempts(Throttled):
@@ -75,15 +81,90 @@ class LocalFallbackCache:
 local_throttle_history = LocalFallbackCache('attempt-throttles-fallback')
 
 
+def client_ident(request):
+    """
+    Who an "IP" limit counts (DRF's get_ident: REMOTE_ADDR, or X-Forwarded-For
+    with NUM_PROXIES). An IPv6 client usually holds a whole /64 and can take a
+    new address from it for every request, so IPv6 counts by its /64. IPv4
+    (also mapped in IPv6, ``::ffff:10.0.0.1``) counts by its address.
+    """
+    ident = BaseThrottle().get_ident(request)
+    try:
+        address = ipaddress.ip_address(ident)
+    except ValueError:
+        return ident
+    if address.version == 4:
+        return ident
+    if address.ipv4_mapped is not None:
+        return str(address.ipv4_mapped)
+    return str(ipaddress.ip_network((address, 64), strict=False))
+
+
 class AttemptThrottle(ScopedRateThrottle):
     """
     ScopedRateThrottle for the endpoints whose attempts are limited: the ones
     that check a password (login, token refresh, password change, email
-    change) and the creation of workspaces. It keeps limiting, per process,
-    while the shared cache is down.
+    change), the creation of workspaces and the account endpoints of
+    apps.users.views_auth. It keeps limiting, per process, while the shared
+    cache is down.
     """
 
     cache = local_throttle_history
+
+    def get_ident(self, request):
+        return client_ident(request)
+
+
+EMAIL_SALT = 'apps.users.throttles.email'
+
+
+def email_ident(email):
+    """
+    The key of an email address in a throttle: an HMAC of the address as the
+    login finds it (domain normalized, any case), never the address itself.
+    Every spelling of one email shares it, whether it has an account or not.
+    """
+    try:
+        email = normalize_email(email)
+    except InvalidEmailDomain:
+        email = email.strip()
+    return salted_hmac(EMAIL_SALT, email.upper()).hexdigest()
+
+
+class EmailAttemptThrottle(AttemptThrottle):
+    """
+    Per email address of the body (`email`), not per IP or user: the endpoints
+    that send an email to the address they are given (resend the verification,
+    password reset). Its scope is the view's `email_throttle_scope`, so the
+    same view can also have an AttemptThrottle per IP. It answers the same for
+    an email with or without an account. A body without an email is not
+    counted here (it ends in a 400).
+    """
+
+    scope_attr = 'email_throttle_scope'
+
+    def get_cache_key(self, request, view):
+        data = request.data
+        email = data.get('email') if hasattr(data, 'get') else None
+        if not isinstance(email, str) or not email.strip():
+            return None
+        return self.cache_format % {'scope': self.scope, 'ident': email_ident(email)}
+
+    @classmethod
+    def record(cls, scope, email):
+        """
+        Counts a request of `scope` for `email` that did not come through the
+        view: signing up sends the first verification email, so «reenviar»
+        waits its 60 s from there.
+        """
+        throttle = cls()
+        throttle.scope = scope
+        throttle.rate = throttle.get_rate()
+        throttle.num_requests, throttle.duration = throttle.parse_rate(throttle.rate)
+        key = throttle.cache_format % {'scope': scope, 'ident': email_ident(email)}
+        history = throttle.cache.get(key, [])
+        history.insert(0, throttle.timer())
+        throttle.cache.set(key, history, throttle.duration)
 
 
 class EmailChangeThrottle(AttemptThrottle):
@@ -163,7 +244,7 @@ class LoginFailureGuard:
     def __init__(self, request, email):
         account = self.account_key(email)
         self.has_account = account.startswith('user:')
-        ip = BaseThrottle().get_ident(request) or ''
+        ip = client_ident(request) or ''
         rates = settings.LOGIN_FAILURE_RATES
         self.windows = [
             (f'login_failures:{salted_hmac(self.SALT, f"{account}|{ip}").hexdigest()}', *parse_rate(rates['account_ip'])),

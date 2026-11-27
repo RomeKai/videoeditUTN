@@ -1,4 +1,5 @@
 """OpenAPI schema (drf-spectacular): the views scoped to the active workspace declare its header."""
+from drf_spectacular.contrib.rest_framework_simplejwt import SimpleJWTScheme
 from drf_spectacular.openapi import AutoSchema
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter
@@ -25,3 +26,9 @@ class WorkspaceAutoSchema(AutoSchema):
         if WorkspaceRolePermission in getattr(self.view, 'permission_classes', ()):
             return [*parameters, WORKSPACE_PARAMETER]
         return parameters
+
+
+class SessionJWTScheme(SimpleJWTScheme):
+    """The same `jwtAuth` (Bearer) scheme for SimpleJWT's authentication as the project uses it (apps.users.tokens)."""
+
+    target_class = 'apps.users.tokens.SessionJWTAuthentication'

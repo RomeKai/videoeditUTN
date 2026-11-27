@@ -130,6 +130,8 @@ MAINTENANCE_EXEMPT_PATHS = env.list('MAINTENANCE_EXEMPT_PATHS', default=[])
 FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:3000')
 DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='OneCreator <no-reply@onecreator.local>')
 EMAIL_VERIFICATION_MAX_AGE_SECONDS = env.int('EMAIL_VERIFICATION_MAX_AGE_SECONDS', default=24 * 3600)
+# How long a password reset link works (Django's PasswordResetTokenGenerator), in seconds.
+PASSWORD_RESET_TIMEOUT = env.int('PASSWORD_RESET_TIMEOUT', default=24 * 3600)
 
 # --- STATIC & MEDIA ---
 STATIC_URL = '/static/'
@@ -164,7 +166,8 @@ def _rate(variable, default, pattern=_DRF_RATE):
 # --- DRF CONFIG ---
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        # SimpleJWT's, also refusing the sessions closed on every device (apps.users.tokens).
+        'apps.users.tokens.SessionJWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
@@ -177,6 +180,17 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'login': _rate('THROTTLE_LOGIN', '10/min'),
         'token_refresh': _rate('THROTTLE_TOKEN_REFRESH', '30/min'),
+        # The account endpoints without a session (apps.users.views_auth), per IP:
+        # signing up says whether an email has an account (A2), so it is slow to ask.
+        'register': _rate('THROTTLE_REGISTER', '20/hour'),
+        # Every email that resend and password reset send, together.
+        'auth_email': _rate('THROTTLE_AUTH_EMAIL', '20/hour'),
+        'password_reset_confirm': _rate('THROTTLE_PASSWORD_RESET_CONFIRM', '20/hour'),
+        # Per email address (EmailAttemptThrottle), whether it has an account or not: one every 60 s.
+        'resend': _rate('THROTTLE_RESEND', '1/min'),
+        'password_reset': _rate('THROTTLE_PASSWORD_RESET', '1/min'),
+        # Per user.
+        'logout': _rate('THROTTLE_LOGOUT', '60/hour'),
         'password_change': _rate('THROTTLE_PASSWORD_CHANGE', '5/hour'),
         # PATCH /me with a new email: checks the password and sends an email.
         'email_change': _rate('THROTTLE_EMAIL_CHANGE', '5/hour'),

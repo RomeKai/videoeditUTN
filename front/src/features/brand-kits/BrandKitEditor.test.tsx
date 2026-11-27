@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { http, HttpResponse } from 'msw';
 import { server } from '@/api/mocks/server';
 import { loadDb } from '@/api/mocks/state';
+import real from '@/api/contracts/drf/responses.json';
 import { EXAMPLE_IDS } from '@/dev/screens';
 import { useGuardedNavigation, type GuardedNavigation } from '@/shell/leaveGuard';
 import { idle, renderScenario } from '@/testing';
@@ -72,6 +73,22 @@ describe('F2 · Editar brand kit', () => {
     expect(screen.getByText(/Fotograma de muestra con Inter y el logo abajo a la derecha/)).toBeInTheDocument();
     // Nothing changed yet: no save bar.
     expect(saveBar()).not.toBeInTheDocument();
+  });
+
+  it('backend real: abre la copia que deja duplicar, con su archivo propio y sin ser default', async () => {
+    const copy = real.brand_kit_duplicate;
+    server.use(http.get(`http://localhost:8000/api/v1/brand-kits/${copy.id}/`, () => HttpResponse.json(copy)));
+    const form = await open(copy.id);
+    expect(screen.getByRole('heading', { level: 1, name: 'Copia de Estudio Norte' })).toBeInTheDocument();
+    expect(screen.queryByText('Por defecto')).not.toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Usar por defecto' })).not.toBeChecked();
+    expect(within(form).getByText('Inter_a1B2c3D.ttf')).toBeInTheDocument();
+    expect(saveBar()).not.toBeInTheDocument();
+
+    // Marking it default sends only that: the backend unmarks the previous one.
+    fireEvent.click(screen.getByRole('switch', { name: 'Usar por defecto' }));
+    fireEvent.click(within(saveBar() as HTMLElement).getByRole('button', { name: /Guardar/ }));
+    expect(writes.update.mock.calls[0]?.[0]).toEqual({ is_default: true });
   });
 
   it('al cambiar algo aparece la barra con lo que cambió, y Descartar vuelve atrás', async () => {

@@ -260,18 +260,18 @@ Otras respuestas:
 #### A2. Crear cuenta — `/registro`
 - **Qué pide:** nombre, email, contraseña y un tilde de términos (`terms_accepted_at`).
 - **Después:** pasa a A3.
-- **API:** ❌ no hay endpoint de registro.
+- **API:** ✅ `POST /api/v1/auth/register/`. Crea la cuenta sin verificar, su workspace en plan Gratis, y manda el link de A3.
 
 #### A3. Verificar email — `/verificar`
 - **Qué muestra:** "Te mandamos un link a tu email", con la opción **Reenviar** (disponible cada 60 s).
 - **Al abrir el link:** la cuenta queda verificada (`is_email_verified`) y entra a la Bienvenida.
-- **API:** ❌.
+- **API:** ✅ `POST /api/v1/auth/verify-email/` (verifica e inicia la sesión en el navegador donde se creó la cuenta; en otro pide iniciar sesión y volver a abrir el link) y `POST /api/v1/auth/verify-email/resend/` (responde igual exista o no la cuenta).
 
 #### A4. Recuperar contraseña — `/recuperar`
 - **Paso 1:** pedir el email.
   - Siempre responde "Si el email existe, te mandamos un link", aunque no exista.
 - **Paso 2:** desde el link, elegir una contraseña nueva.
-- **API:** ❌.
+- **API:** ✅ `POST /api/v1/auth/password-reset/` y `POST /api/v1/auth/password-reset/confirm/`. Guardar cierra todas las sesiones de la cuenta.
 
 #### A5. Aceptar invitación — `/invitacion/:token`
 - **Qué muestra:** "Juan te invitó a *Estudio Norte* como Editor".
@@ -560,7 +560,7 @@ Otras respuestas:
 - **Qué muestra:** tarjetas con los colores, el logo y el nombre de cada kit, y una marca "Por defecto".
 - **Acciones:** crear, duplicar, marcar como default y borrar.
 - **Vacío:** "Creá tu brand kit para que todos tus clips salgan con tu marca".
-- **API:** ✅ `GET/POST/PATCH/DELETE /api/v1/brand-kits/`.
+- **API:** ✅ `GET/POST/PATCH/DELETE /api/v1/brand-kits/` y `POST /api/v1/brand-kits/:id/duplicate/` (copia el kit con sus archivos como «Copia de …»; la copia nunca es default).
 
 #### F2. Editar brand kit — `/brand-kits/:id`
 - **Campos:**
@@ -573,7 +573,7 @@ Otras respuestas:
 - **A la derecha:** vista previa de un fotograma de clip con subtítulos y logo usando el kit.
 - **API:**
   - ✅ los campos existen.
-  - ⚠️ que haya un solo default por workspace no está garantizado en el backend.
+  - ✅ un solo default por workspace: marcar uno desmarca el anterior. Desmarcar el default o borrarlo deja al workspace sin default.
 
 ### G. Uso y facturación — `/uso`
 
@@ -646,7 +646,7 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 #### I1. Perfil
 - **Campos:** nombre, email (cambiarlo pide verificar de nuevo), contraseña y apariencia (Sistema, Oscuro, Claro).
 - **Salir:** cerrar sesión, o cerrar sesión en todos los dispositivos.
-- **API:** ✅ `GET/PATCH /api/v1/me/` (nombre y email) y `POST /api/v1/me/password/`. ❌ falta cerrar sesión en el servidor (`POST /auth/logout/`, hueco 2).
+- **API:** ✅ `GET/PATCH /api/v1/me/` (nombre y email), `POST /api/v1/me/password/` y `POST /api/v1/auth/logout/` (esta sesión, o todas con `all_devices`).
 
 #### I2. Notificaciones
 - **Qué muestra:** un interruptor de email por cada tipo de la sección 1.11.
@@ -745,8 +745,8 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad. El detalle e
 
 | # | Qué falta | Pantallas que bloquea | Prioridad |
 |---|---|---|---|
-| 1 | Registro, reenviar la verificación y recuperar contraseña. Existe en parte: `POST /auth/verify-email/` verifica el link, pero hoy solo lo manda el cambio de email (I1) | A2, A3, A4 | P0 |
-| 2 | ~~`GET/PATCH /me` con workspaces, rol en cada uno y workspace activo~~ Resuelto (PR #135): `GET/PATCH /me/` y `POST /me/password/`. Sigue faltando: cerrar sesión (`POST /auth/logout/`) y los endpoints de workspace (listar, crear, renombrar, borrar, transferir) | Barra, J3, H1, I1 | P1 |
+| 1 | ~~Registro, reenviar la verificación y recuperar contraseña~~ Resuelto: `POST /auth/register/`, `/auth/verify-email/resend/`, `/auth/password-reset/` y `/auth/password-reset/confirm/`. Sigue faltando: el 403 del login para la cuenta sin verificar | A2, A3, A4 | — |
+| 2 | ~~`GET/PATCH /me` con workspaces, rol en cada uno y workspace activo~~ Resuelto (PR #135): `GET/PATCH /me/` y `POST /me/password/`. Cerrar sesión ya está (`POST /auth/logout/`). Siguen faltando los endpoints de workspace (listar, crear, renombrar, borrar, transferir) | Barra, J3, H1, I1 | P1 |
 | 3 | ~~Roles aplicados en la API (tabla 1.7)~~ Resuelto: la API aplica los roles sobre el workspace de `X-Workspace-Id` y responde 403 con el motivo | Todas | — |
 | 4 | Wallet y transacciones (`GET /wallet`, `GET /transactions`), con vínculo al proyecto y estado "devuelto" visible | Barra, D1, G1, G2 | P0 |
 | 5 | ~~Link de descarga firmado por clip~~ Resuelto: `GET /clips/:id/download/` | D3, D4 | — |

@@ -11,15 +11,29 @@ password ends every session issued before it:
   before ``token_blacklist`` was installed) and a refresh racing the change;
 - ``User.save`` blacklists the user's outstanding refresh tokens whenever
   ``set_password`` ran, whoever changed it (the profile, the admin, a reset).
+
+Closing the session on every device (``POST /auth/logout/`` with
+``all_devices``) keeps the password, so the hash does not help there:
+``revoke_sessions`` stamps ``User.sessions_revoked_at`` and blacklists the
+refresh tokens, and a token issued before that moment (its ``iat``) answers
+401 too, the access ones included (``SessionJWTAuthentication``).
 """
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from rest_framework.exceptions import AuthenticationFailed
+from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.settings import api_settings
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.utils import get_md5_hash_password
+
+SESSION_REVOKED = 'La sesión se cerró en todos los dispositivos. Iniciá sesión de nuevo.'
+
+
+def _session_revoked():
+    # `{detail, code}` like SimpleJWT's own 401s (token_not_valid): the web app reads `code`.
+    return AuthenticationFailed({'detail': SESSION_REVOKED, 'code': 'session_revoked'})
 
 
 def issue_token_pair(user):
@@ -38,8 +52,48 @@ def revoke_refresh_tokens(user):
     )
 
 
+def revoke_sessions(user):
+    """
+    Ends every session of the user, on every device: the tokens issued until
+    now stop working, access tokens included. A login afterwards starts a new one.
+    """
+    user.sessions_revoked_at = timezone.now()
+    user.save(update_fields=['sessions_revoked_at'])
+    revoke_refresh_tokens(user)
+
+
+def issued_before_revocation(user, payload):
+    """
+    The token was issued before the user's last «cerrar sesión en todos los
+    dispositivos». `iat` has whole seconds: a token of the very same second
+    counts as revoked (a login a second after closing everything is refused once).
+    """
+    revoked_at = user.sessions_revoked_at
+    if revoked_at is None:
+        return False
+    try:
+        issued_at = float(payload.get('iat'))
+    except (TypeError, ValueError):
+        # Without a date it cannot prove it is newer.
+        return True
+    return issued_at < revoked_at.timestamp()
+
+
+class SessionJWTAuthentication(JWTAuthentication):
+    """SimpleJWT's authentication, refusing the tokens of the sessions closed with `revoke_sessions`."""
+
+    def get_user(self, validated_token):
+        user = super().get_user(validated_token)
+        if issued_before_revocation(user, validated_token.payload):
+            raise _session_revoked()
+        return user
+
+
 class RevocableTokenRefreshSerializer(TokenRefreshSerializer):
-    """SimpleJWT's refresh, refusing a token issued before the current password (or for a deleted user)."""
+    """
+    SimpleJWT's refresh, refusing a token issued before the current password,
+    before the last «cerrar sesión en todos los dispositivos», or for a deleted user.
+    """
 
     def validate(self, attrs):
         refresh = self.token_class(attrs['refresh'])  # signature, expiry and blacklist
@@ -51,4 +105,7 @@ class RevocableTokenRefreshSerializer(TokenRefreshSerializer):
         if claim != get_md5_hash_password(user.password):
             refresh.blacklist()
             raise AuthenticationFailed("The user's password has been changed.", 'password_changed')
+        if issued_before_revocation(user, refresh.payload):
+            refresh.blacklist()
+            raise _session_revoked()
         return super().validate(attrs)

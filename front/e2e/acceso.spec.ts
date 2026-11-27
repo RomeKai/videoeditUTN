@@ -67,6 +67,13 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     await page.getByLabel('Contraseña', { exact: true }).fill('contrasena');
     await page.getByRole('button', { name: 'Iniciar sesión' }).click();
     await expect(page).toHaveURL(/\/verificar\?email=sofia%40ejemplo\.com&motivo=login&siguiente=%2Finvitacion%2Fcon-cuenta$/);
+    // This browser is the one that signed up (it kept the nonce of the sign-up): the link signs in here.
+    await page.evaluate(() => {
+      const db = JSON.parse(window.localStorage.getItem('oc.mock.db') ?? '{}') as { users?: Array<{ id: string }>; signupNonces?: Record<string, string> };
+      db.signupNonces = Object.fromEntries((db.users ?? []).map((user) => [user.id, 'nonce-de-este-navegador']));
+      window.localStorage.setItem('oc.mock.db', JSON.stringify(db));
+      window.localStorage.setItem('oc.acceso.registro', JSON.stringify({ nonce: 'nonce-de-este-navegador', at: Date.now() }));
+    });
     // The link of the email does not carry the destination.
     await page.goto('/verificar?token=mock-token');
     await expect(page).toHaveURL(/\/invitacion\/con-cuenta$/);
@@ -143,7 +150,8 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     await expect(page.getByRole('status').filter({ hasText: 'Si el email existe, te mandamos un link. Revisá tu correo.' })).toBeVisible();
     await expect(page.getByRole('button', { name: /Reenviar en \d:\d\d/ })).toBeDisabled();
 
-    await page.goto('/recuperar?token=mock-token&email=lucia%40estudionorte.com');
+    // The link of the email carries its token and email in the fragment, which never reaches a server.
+    await page.goto('/recuperar#token=mock-token&email=lucia%40estudionorte.com');
     await expect(page.getByRole('heading', { level: 1, name: 'Elegí una contraseña nueva' })).toBeVisible();
     await page.getByLabel('Contraseña nueva').fill('contrasena-nueva');
     await page.getByLabel('Repetí la contraseña').fill('contrasena-nuev');
