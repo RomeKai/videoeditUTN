@@ -512,8 +512,9 @@ export const ActivityItem = z.object({
   amount: Decimal.nullable(),
   platform: Platform.nullable().optional(),
   /**
-   * Only in `tokens_reserved`: how the reservation ended. Its charge (`tokens_charged`) or its refund
-   * (`tokens_refunded`) is another item of the SAME movement of the balance, not a second one.
+   * In `tokens_reserved`, `tokens_charged` and `tokens_refunded`: how the reservation those items are about
+   * ended. The reservation, its charge and its refund are items of ONE movement of the balance: with this the
+   * screen shows them as a group whose signed amounts add up to what the balance moved.
    */
   reservation_state: z.enum(['reserved', 'charged', 'partially_charged', 'refunded']).nullable().optional(),
 });
@@ -778,7 +779,7 @@ export const getProjectActivity = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_project_data.py · ProjectActivityView + services/project_activity.py · build_activity',
-    note: 'No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección; dice los clips que se sugirieron, `ai_rationale_log.suggestions_count`, no los que quedaron después de aprobar), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (las Transaction de las claves `*reservation_id` de la metadata, con `settled_at` y `reserved_amount` desde la migración 0012 de payments; cada `tokens_reserved` trae `reservation_state`, cómo terminó esa reserva: su cobro o su devolución es otro ítem del mismo movimiento, no un segundo cobro), fin del render (cuando se liquidó la reserva que lo pagó), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva cuya clave se borró de la metadata (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems.',
+    note: 'No hay un registro de eventos: se arma con lo guardado. Creación (`created_at`, `uploaded_by`), prompt (`metadata.pte` y la hora de su AIUsageRecord), revisión (AIUsageRecord de la selección; dice los clips que se sugirieron, `ai_rationale_log.suggestions_count`, no los que quedaron después de aprobar), aprobación (su reserva y quién la hizo), reservas, cobros y devoluciones (las Transaction de las claves `*reservation_id` de la metadata, con `settled_at` y `reserved_amount` desde la migración 0012 de payments; la reserva, su cobro y su devolución traen `reservation_state`, cómo terminó esa reserva: son ítems de un mismo movimiento del saldo, no cobros ni ingresos aparte), fin del render (cuando se liquidó la reserva que lo pagó), falla (`pipeline_error_at`) y publicaciones (ScheduledPost, sin quién las programó: `actor` null). No aparecen porque no se guardan: `project_renamed`, `clip_edited` y `clip_retried`, ni una reserva cuya clave se borró de la metadata (el render automático ya liquidado de un proyecto que después se aprobó). Lo ven todos los roles. Máximo 200 ítems.',
   },
   screens: ['D1f'],
 });

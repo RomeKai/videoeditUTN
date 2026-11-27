@@ -6,7 +6,7 @@ import { adoptProject } from '../hybrid';
 import { priceOf, PRICING, stageStatusFor } from '../seed';
 import { planOf, serializeClip, serializeProject } from '../serialize';
 import { startPaidRender } from '../render';
-import { addActivity, InsufficientFunds, reserveAutoRender, reserveFunds, startRender } from '../sim';
+import { addActivity, InsufficientFunds, reserveAutoRender, reserveFunds, serveActivity, startRender } from '../sim';
 import { linkProvider } from '@/features/proyectos/project-view';
 import { projectStatusGroup } from '@/lib/project-status';
 
@@ -480,19 +480,7 @@ export const projectsHandlers = [
 
   route(contract.getProjectActivity, ({ db, workspace, params }) => {
     const project = own(db, params.id, workspace.id);
-    const items = db.activity
-      .filter((item) => item.project === project.id)
-      .sort((a, b) => b.created_at.localeCompare(a.created_at))
-      .map(({ project: _project, _transaction, ...item }) => {
-        void _project;
-        if (item.type !== 'tokens_reserved' || !_transaction) return item;
-        // How the reservation ended, read from its transaction (services/project_activity.py · _reservation_state).
-        const transaction = db.transactions.find((entry) => entry.id === _transaction);
-        if (!transaction) return item;
-        const partial = transaction.reserved_amount !== null && transaction.reserved_amount > transaction.amount;
-        const reservation_state = transaction.status === 'COMPLETED' ? (partial ? ('partially_charged' as const) : ('charged' as const)) : transaction.status === 'FAILED' ? ('refunded' as const) : ('reserved' as const);
-        return { ...item, reservation_state };
-      });
+    const items = serveActivity(db, project.id);
     return { data: items };
   }),
 

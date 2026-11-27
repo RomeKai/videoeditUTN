@@ -8,7 +8,7 @@ import { LoadError } from '@/shell/LoadError';
 import { usePermissions, usePlan } from '@/shell/session';
 import { Avatar, Badge, Button, Card, CardFoot, CardHead, DateTime, EmptyState, Icon, NetworkChip, Skeleton, Table, Tokens } from '@/ui';
 import styles from './ActivityScreen.module.css';
-import { activityLink, explainCost, explainMovements, groupActivityByDay, movementKind, settledReservation, tokenMovements } from './model';
+import { activityLink, explainCost, allReservationsEnded, explainMovements, foldedMovement, groupActivityByDay, movementKind, tokenMovements } from './model';
 import { useCurrentProject } from './project-context';
 
 function ActivitySkeleton() {
@@ -90,7 +90,7 @@ export function ActivityScreen({ projectId }: { projectId: string }) {
                   {day.items.map((item) => {
                     const link = activityLink(item, project);
                     const movement = movementKind(item);
-                    const settled = settledReservation(item);
+                    const folded = foldedMovement(item);
                     return (
                       <li key={item.id} className={styles.event}>
                         <span className={`${styles.time} num`}>{formatTime(item.created_at)}</span>
@@ -116,7 +116,7 @@ export function ActivityScreen({ projectId }: { projectId: string }) {
                               <Badge tone={movement.tone} size="sm" dot>
                                 {movement.label}
                               </Badge>{' '}
-                              {settled ? <Tokens value={Math.abs(item.amount)} /> : <Tokens value={item.amount} signed />}
+                              {folded ? <Tokens value={Math.abs(item.amount)} className={styles.settled} /> : <Tokens value={item.amount} signed />}
                             </p>
                           ) : null}
                         </div>
@@ -159,7 +159,7 @@ export function ActivityScreen({ projectId }: { projectId: string }) {
               <tbody>
                 {movements.map((item) => {
                   const kind = movementKind(item);
-                  const settled = settledReservation(item);
+                  const folded = foldedMovement(item);
                   return (
                     <tr key={item.id}>
                       <td>
@@ -168,7 +168,7 @@ export function ActivityScreen({ projectId }: { projectId: string }) {
                       <td>
                         <div className={styles.cell2}>
                           <span>{item.description}</span>
-                          {settled ? <span className="t-small muted">{settled.note}</span> : null}
+                          {folded ? <span className="t-small muted">{folded.note}</span> : null}
                           {item.actor ? <span className="t-small muted">{item.actor.name}</span> : null}
                         </div>
                       </td>
@@ -180,8 +180,8 @@ export function ActivityScreen({ projectId }: { projectId: string }) {
                         ) : null}
                       </td>
                       <td className="right">
-                        {settled ? (
-                          // Not one more debit: the amount that was set aside, without the sign of a charge.
+                        {folded ? (
+                          // Context of the charge of the same reservation, not one more movement: without sign.
                           <Tokens value={Math.abs(item.amount ?? 0)} unit={false} className={`${styles.amount} ${styles.settled}`} />
                         ) : (
                           <Tokens value={item.amount ?? 0} unit={false} signed className={styles.amount} />
@@ -227,10 +227,10 @@ export function ActivityScreen({ projectId }: { projectId: string }) {
             </dl>
           ) : movements.length === 0 ? (
             <p className={`${styles.none} t-small muted`}>Este proyecto no tiene un costo asociado.</p>
-          ) : (
+          ) : allReservationsEnded(items) ? (
             // It moved tokens and all of them came back: there is a cost history, and nothing was charged.
             <p className={`${styles.none} t-small muted`}>No se cobró nada: lo reservado volvió al saldo.</p>
-          )}
+          ) : null}
           {movementsCost ? <p className={`${styles.calcNote} t-small muted`}>Crear este proyecto no tuvo costo. El total suma los cobros y las reservas de sus movimientos.</p> : null}
           {cost && pricing.isLoading ? (
             <p className={`${styles.none} t-small muted`} aria-busy="true">

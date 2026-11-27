@@ -929,9 +929,10 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
       };
       push('project_created', 0, 'Creó el proyecto', null);
       push('tokens_reserved', 1000, 'Reserva por el procesamiento', -(project.cost?.amount ?? 0));
-      // How that reservation ended, as the backend says it (`reservation_state`): charged with the render, returned with the failure.
+      // How that reservation ended, as the backend says it in its three items (`reservation_state`): charged with the render, returned with the failure.
+      const reservationState = project.status === 'completed' || project.status === 'partial' ? 'charged' : project.status === 'failed' ? 'refunded' : 'reserved';
       const reservation = activity[activity.length - 1];
-      if (reservation) reservation.reservation_state = project.status === 'completed' || project.status === 'partial' ? 'charged' : project.status === 'failed' ? 'refunded' : 'reserved';
+      if (reservation) reservation.reservation_state = reservationState;
       if (project.metadata.pte) push('prompt_applied', 30_000, 'La IA aplicó la configuración del prompt', null, null);
       if (['awaiting_approval', 'rendering', 'completed', 'partial'].includes(project.status) && project.project_type === 'repurpose')
         push('review_ready', 8 * MIN, `Listo para revisar: ${project.clips.length} clips sugeridos`, null, null);
@@ -940,10 +941,12 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
       if (project.status === 'completed' || project.status === 'partial') {
         push('render_finished', 26 * MIN, 'Terminó el render', null, null);
         push('tokens_charged', 26 * MIN + 1000, 'Cobro del procesamiento', -(project.cost?.amount ?? 0), null);
+        if (reservation) Object.assign(activity[activity.length - 1] ?? {}, { reservation_state: reservationState });
       }
       if (project.status === 'failed') {
         push('project_failed', 6 * MIN, 'El proceso falló', null, null);
         push('tokens_refunded', 7 * MIN, 'Devolución de la reserva', project.cost?.amount ?? 0, null);
+        if (reservation) Object.assign(activity[activity.length - 1] ?? {}, { reservation_state: reservationState });
       }
     }
     for (const post of posts) {

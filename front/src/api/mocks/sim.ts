@@ -1,7 +1,7 @@
 import { formatNumber, formatTokens } from '@/lib/format';
 import type { Role } from '../contracts/common';
 import type { PipelineStage } from '../contracts/projects';
-import { KIND, mid, newId, type MockClip, type MockDb, type MockProject, type MockTransaction, type MockWallet, type PaidRender } from './db';
+import { KIND, mid, newId, type MockActivity, type MockClip, type MockDb, type MockProject, type MockTransaction, type MockWallet, type PaidRender } from './db';
 import { buildClips, PLAN_IDS, priceOf, stageStatusFor } from './seed';
 
 /** Pace of the simulated pipeline: slow enough to see each step with the 5 s polling, fast enough to click through. */
@@ -125,6 +125,38 @@ export function releaseReservation(db: MockDb, transactionId: string, now: numbe
   return transaction.amount;
 }
 
+/**
+ * How a reservation ended, as the backend says it in the three activity items of the transaction
+ * (services/project_activity.py · `_reservation_state`).
+ */
+export function reservationStateOf(transaction: Pick<MockTransaction, 'status' | 'amount' | 'reserved_amount'>): NonNullable<MockActivity['reservation_state']> {
+  if (transaction.status === 'COMPLETED') return transaction.reserved_amount !== null && transaction.reserved_amount > transaction.amount ? 'partially_charged' : 'charged';
+  return transaction.status === 'FAILED' ? 'refunded' : 'reserved';
+}
+
+/** The activity of a project as the API serves it: each token item of a known reservation says how that reservation ended. */
+export function serveActivity(db: MockDb, projectId: string): Array<Omit<MockActivity, 'project' | '_transaction'>> {
+  return db.activity
+    .filter((item) => item.project === projectId)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .map(({ project: _project, _transaction, ...item }) => {
+      void _project;
+      const transaction = _transaction && item.type.startsWith('tokens_') ? db.transactions.find((entry) => entry.id === _transaction) : undefined;
+      return transaction ? { ...item, reservation_state: reservationStateOf(transaction) } : item;
+    });
+}
+
+/** Releases every open reservation of the project, with one refund item each. Returns the total. */
+function refundReservations(db: MockDb, project: MockProject, now: number): number {
+  let refunded = 0;
+  for (const id of project._reservations) {
+    const amount = releaseReservation(db, id, now);
+    if (amount > 0) addActivity(db, project, 'tokens_refunded', 'Devolución de la reserva', now, { amount, transactionId: id });
+    refunded += amount;
+  }
+  return refunded;
+}
+
 export function addActivity(
   db: MockDb,
   project: MockProject,
@@ -213,12 +245,10 @@ function failProject(db: MockDb, project: MockProject, code: string, now: number
   project.stage_timings = Object.fromEntries(
     Object.entries(project.stage_timings ?? {}).map(([name, timing]) => [name, timing.duration_s === null && timing.started_at ? { ...timing, finished_at: iso(now) } : timing]),
   );
-  let refunded = 0;
-  for (const id of project._reservations) refunded += releaseReservation(db, id, now);
   if (project.cost) project.cost = { ...project.cost, state: 'refunded' };
   delete project._sim;
   addActivity(db, project, 'project_failed', 'El proceso falló', now);
-  if (refunded > 0) addActivity(db, project, 'tokens_refunded', 'Devolución de la reserva', now, { amount: refunded });
+  const refunded = refundReservations(db, project, now);
   notify(db, project.workspace, { type: 'project_failed', title: `${project.title} no se pudo procesar`, body: refunded > 0 ? `Te devolvimos ${formatTokens(refunded)}.` : 'No se cobró nada.', project_id: project.id }, now);
 }
 
@@ -291,9 +321,22 @@ function tickIngest(db: MockDb, project: MockProject, now: number): void {
   if (wait > 0 && time >= SIM.stageMs + wait) time -= wait;
   const step = Math.floor(time / SIM.stageMs);
 
+  // Like the backend: the finished stages with their times, and the one at `running` with its start alone.
+  const stageStart = (index: number) => sim.startedAt + SIM.queueMs + (index > 0 ? wait : 0) + index * SIM.stageMs;
+  const timingsAt = (running: number) =>
+    Object.fromEntries(
+      RUNNING_STAGE.slice(0, running + 1).map((name, index) => [
+        name,
+        index < running
+          ? { started_at: iso(stageStart(index)), finished_at: iso(stageStart(index) + SIM.stageMs), duration_s: SIM.stageMs / 1000 }
+          : { started_at: iso(stageStart(index)), finished_at: null, duration_s: null },
+      ]),
+    );
   if (sim.failAt) {
     const failStep = RUNNING_STAGE.indexOf(sim.failAt.stage);
     if (step > failStep) {
+      // The stage it fails at started, even when no tick saw it running.
+      project.stage_timings = timingsAt(failStep);
       project.pipeline_stage = FINISHED_STAGE[failStep] ?? 'uploaded';
       failProject(db, project, sim.failAt.code, now);
       return;
@@ -303,16 +346,7 @@ function tickIngest(db: MockDb, project: MockProject, now: number): void {
     const finished = FINISHED_STAGE[step] ?? 'uploaded';
     project.pipeline_stage = finished;
     project.pipeline_stage_status = stageStatusFor(finished, 'running');
-    // Like the backend: the finished stages with their times, and the one running with its start alone.
-    const stageStart = (index: number) => sim.startedAt + SIM.queueMs + (index > 0 ? wait : 0) + index * SIM.stageMs;
-    project.stage_timings = Object.fromEntries(
-      RUNNING_STAGE.slice(0, step + 1).map((name, index) => [
-        name,
-        index < step
-          ? { started_at: iso(stageStart(index)), finished_at: iso(stageStart(index) + SIM.stageMs), duration_s: SIM.stageMs / 1000 }
-          : { started_at: iso(stageStart(index)), finished_at: null, duration_s: null },
-      ]),
-    );
+    project.stage_timings = timingsAt(step);
     if (step >= 2 && project._transcriptSeed === null) {
       project._transcriptSeed = Math.floor(sim.startedAt % 100_000);
       project.proxy_r2_key = `videos/proxy/${project.id}.mp4`;
@@ -372,7 +406,7 @@ function tickIngest(db: MockDb, project: MockProject, now: number): void {
   if (creation?.status === 'RESERVED') {
     settleReservation(db, creation.id, now);
     if (project.cost) project.cost = { ...project.cost, state: 'charged' };
-    addActivity(db, project, 'tokens_charged', 'Cobro del procesamiento', now, { amount: -creation.amount });
+    addActivity(db, project, 'tokens_charged', 'Cobro del procesamiento', now, { amount: -creation.amount, transactionId: creation.id });
   }
   const count = Math.min(20, Math.max(1, project.metadata.max_clips ?? 8));
   const seedIndex = Math.floor(sim.startedAt % 9_000) + 500;
@@ -437,28 +471,35 @@ function tickRender(db: MockDb, project: MockProject, now: number): void {
   const single = project.project_type === 'single_edit';
   if (single && failed > 0) {
     // The whole-video edit is charged on delivery and refunded when the render fails.
-    let refunded = 0;
-    for (const id of project._reservations) refunded += releaseReservation(db, id, now);
+    const refunded = refundReservations(db, project, now);
     if (project.cost) project.cost = { ...project.cost, state: 'refunded' };
-    if (refunded > 0) addActivity(db, project, 'tokens_refunded', 'Devolución de la reserva', now, { amount: refunded });
     notify(db, project.workspace, { type: 'project_failed', title: `${project.title} no se pudo generar`, body: refunded > 0 ? `Te devolvimos ${formatTokens(refunded)}.` : 'No se cobró nada.', project_id: project.id }, now);
     return;
   }
-  let charged = 0;
   let returned = 0;
   const delivered = project.clips.length > 0 ? (project.clips.length - failed) / project.clips.length : 1;
+  // One charge (and one refund) per reservation, like the backend: each says which transaction it settles.
+  const settled: Array<{ id: string; charged: number; returned: number; render: boolean }> = [];
   for (const id of project._reservations) {
     const transaction = db.transactions.find((item) => item.id === id);
     if (transaction?.status !== 'RESERVED') continue;
+    const render = transaction.category === 'render';
+    let back = 0;
     // The render of the clips that failed is not charged; the processing of the video is.
-    if (failed > 0 && transaction.category === 'render') returned += settleReservationPartially(db, id, transaction.amount * delivered, now);
+    if (failed > 0 && render) back = settleReservationPartially(db, id, transaction.amount * delivered, now);
     else settleReservation(db, id, now);
-    charged += transaction.amount;
+    returned += back;
+    const after = db.transactions.find((item) => item.id === id);
+    settled.push({ id, charged: after?.status === 'COMPLETED' ? after.amount : 0, returned: back, render });
   }
-  if (returned > 0) addActivity(db, project, 'tokens_refunded', 'Devolución por los clips que no se generaron', now, { amount: round2(returned) });
+  for (const item of settled) {
+    if (item.returned > 0) addActivity(db, project, 'tokens_refunded', 'Devolución por los clips que no se generaron', now, { amount: round2(item.returned), transactionId: item.id });
+  }
   if (project.cost) project.cost = { ...project.cost, state: 'charged' };
   addActivity(db, project, 'render_finished', 'Terminó el render', now);
-  if (charged > 0) addActivity(db, project, 'tokens_charged', 'Cobro del procesamiento', now, { amount: -charged });
+  for (const item of settled) {
+    if (item.charged > 0) addActivity(db, project, 'tokens_charged', item.render ? 'Cobro del render' : 'Cobro del procesamiento', now, { amount: -item.charged, transactionId: item.id });
+  }
   const ready = project.clips.length - failed;
   notify(db, project.workspace, { type: 'render_finished', title: `${project.title}: terminó el render`, body: renderFinishedBody(ready, failed > 0, returned), project_id: project.id }, now);
 }
@@ -497,8 +538,8 @@ function finishPaidRender(db: MockDb, project: MockProject, paid: PaidRender, no
   const charge = reserved <= 0 || delivered >= reserved ? amount : round2(amount * (delivered / reserved));
   const returned = settleReservationPartially(db, paid.reservation, charge, now);
   addActivity(db, project, 'render_finished', 'Terminó el render', now);
-  if (amount - returned > 0) addActivity(db, project, 'tokens_charged', 'Cobro del render', now, { amount: -round2(amount - returned) });
-  if (returned > 0) addActivity(db, project, 'tokens_refunded', 'Devolución por lo que no se generó', now, { amount: round2(returned) });
+  if (amount - returned > 0) addActivity(db, project, 'tokens_charged', 'Cobro del render', now, { amount: -round2(amount - returned), transactionId: paid.reservation });
+  if (returned > 0) addActivity(db, project, 'tokens_refunded', 'Devolución por lo que no se generó', now, { amount: round2(returned), transactionId: paid.reservation });
   notify(
     db,
     project.workspace,

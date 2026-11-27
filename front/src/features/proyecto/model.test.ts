@@ -6,6 +6,7 @@ import { serializeProject } from '@/api/mocks/serialize';
 import { describeProjectStatus } from '@/lib/project-status';
 import {
   activityLink,
+  allReservationsEnded,
   autoRenderNotice,
   buildConfigGroups,
   buildProcessSteps,
@@ -29,8 +30,8 @@ import {
   pteIgnoredLines,
   rulerTicks,
   sourceInfo,
+  foldedMovement,
   movementKind,
-  settledReservation,
   tokenMovements,
 } from './model';
 
@@ -141,6 +142,22 @@ describe('línea de tiempo del proceso', () => {
     // Without the moment it stopped (a backend that does not know it): the start alone.
     const open = { ...failed, stage_timings: { ...failed.stage_timings, transcribed: { started_at: started, finished_at: null, duration_s: null } } };
     expect(buildProcessSteps(open, NOW).find((item) => item.state === 'fail')).toMatchObject({ startedAt: started, durationSeconds: null });
+  });
+
+  it('una ingesta trabada que el barrido dio por fallida muestra los tiempos de la etapa donde quedó', () => {
+    const started = new Date(NOW - 600_000).toISOString();
+    // The sweep fails the project and leaves the stage as `running` in the map.
+    const swept = {
+      ...byTitle('Webinar de lanzamiento'),
+      pipeline_error_code: 'IngestionStuck',
+      pipeline_stage_status: { audio_extracted: 'completed' as const, transcribed: 'running' as const },
+      stage_timings: {
+        audio_extracted: { started_at: new Date(NOW - 660_000).toISOString(), finished_at: new Date(NOW - 618_000).toISOString(), duration_s: 42 },
+        transcribed: { started_at: started, finished_at: new Date(NOW - 300_000).toISOString(), duration_s: null },
+      },
+    };
+    const step = buildProcessSteps(swept, NOW).find((item) => item.state === 'fail');
+    expect(step).toMatchObject({ key: 'transcribe', startedAt: started, durationSeconds: 300 });
   });
 
   it('AutoRenderNotPaid: el render es lo que se detuvo, con su texto', () => {
@@ -375,18 +392,34 @@ describe('actividad', () => {
     expect(tokenMovements(items).map((entry) => entry.id)).toEqual(['b', 'c']);
   });
 
-  it('una reserva ya liquidada no se lee como otro cobro', () => {
-    const reserved = { ...item('a', 'tokens_reserved', at(24, 11), -18), reservation_state: 'charged' as const };
-    expect(movementKind(reserved)?.label).toBe('Reserva cobrada');
-    expect(settledReservation(reserved)?.note).toBe('Ya cobrada: es el mismo monto del cobro, no otro.');
-    expect(movementKind({ ...reserved, reservation_state: 'partially_charged' })?.label).toBe('Reserva cobrada en parte');
-    expect(movementKind({ ...reserved, reservation_state: 'refunded' })?.label).toBe('Reserva devuelta');
-    // Still reserved, or a backend that does not say: the reservation as before.
-    expect(movementKind({ ...reserved, reservation_state: 'reserved' })?.label).toBe('Reservado');
-    expect(settledReservation({ ...reserved, reservation_state: null })).toBeNull();
-    expect(movementKind(item('a', 'tokens_reserved', at(24, 11), -18))?.label).toBe('Reservado');
-    // Only a reservation: a charge is a charge whatever it carries.
-    expect(movementKind({ ...item('b', 'tokens_charged', at(24, 12), -18), reservation_state: 'charged' })?.label).toBe('Cobrado');
+  it('los ítems de una reserva suman lo que se movió el saldo: solo lo que no es contexto lleva signo', () => {
+    const of = (type: ActivityItem['type'], amount: number, state: ActivityItem['reservation_state']) => ({ ...item(type, type, at(24, 11), amount), reservation_state: state });
+    /** What the screen shows signed: the amount of every item that is not folded. */
+    const signed = (group: ActivityItem[]) => group.filter((entry) => !foldedMovement(entry)).reduce((sum, entry) => sum + (entry.amount ?? 0), 0);
+    const labels = (group: ActivityItem[]) => group.map((entry) => movementKind(entry)?.label);
+
+    // Charged in full (18): the reservation is context of the charge. The balance went down 18.
+    const charged = [of('tokens_reserved', -18, 'charged'), of('tokens_charged', -18, 'charged')];
+    expect(signed(charged)).toBe(-18);
+    expect(labels(charged)).toEqual(['Reserva cobrada', 'Cobrado']);
+    expect(charged.map((entry) => foldedMovement(entry)?.note)).toEqual(['Ya cobrada: es el mismo monto del cobro, no otro.', undefined]);
+
+    // Charged in part (12 reserved, 8 charged): the balance went down 8, not 4.
+    const partial = [of('tokens_reserved', -12, 'partially_charged'), of('tokens_charged', -8, 'partially_charged'), of('tokens_refunded', 4, 'partially_charged')];
+    expect(signed(partial)).toBe(-8);
+    expect(labels(partial)).toEqual(['Reserva cobrada en parte', 'Cobrado', 'No cobrado']);
+    expect(partial.map((entry) => Boolean(foldedMovement(entry)))).toEqual([true, false, true]);
+
+    // Returned (20): nothing is folded, the reservation and its refund cancel out. Never a lone +20.
+    const refunded = [of('tokens_reserved', -20, 'refunded'), of('tokens_refunded', 20, 'refunded')];
+    expect(signed(refunded)).toBe(0);
+    expect(refunded.map((entry) => foldedMovement(entry))).toEqual([null, null]);
+    expect(labels(refunded)).toEqual(['Reserva devuelta', 'Devuelto']);
+
+    // Still reserved, or a backend that does not say: as before, signed.
+    const open = [of('tokens_reserved', -18, 'reserved'), of('tokens_reserved', -18, null), item('x', 'tokens_reserved', at(24, 11), -18), item('y', 'tokens_refunded', at(24, 12), 18)];
+    expect(open.map((entry) => foldedMovement(entry))).toEqual([null, null, null, null]);
+    expect(labels(open)).toEqual(['Reservado', 'Reservado', 'Reservado', 'Devuelto']);
     expect(movementKind(item('c', 'project_created', at(24, 12)))).toBeNull();
   });
 
@@ -409,11 +442,16 @@ describe('actividad', () => {
     expect(explainMovements([reservation('a', 11, 18, 'reserved')])).toMatchObject({ totalLabel: 'Total reservado', total: '18 tokens' });
     // A partial charge: what was charged, not what had been set aside.
     expect(explainMovements([item('c', 'tokens_refunded', at(24, 12), 4), charge('b', 12, 8), reservation('a', 11, 12, 'partially_charged')])).toMatchObject({ total: '8 tokens' });
-    // A backend that does not say how the reservation ended: one with a later charge or refund is taken as settled.
+    // Two reservations, one charged in part (20 → 5) and one still open (20): 25. No guessing which charge closes which.
+    expect(explainMovements([reservation('d', 13, 20, 'reserved'), item('c', 'tokens_refunded', at(24, 12), 15), charge('b', 12, 5), reservation('a', 11, 20, 'partially_charged')])).toMatchObject({ total: '25 tokens' });
+    // A reservation whose end is not known is not counted as open.
     expect(explainMovements([charge('b', 12, 18), reservation('a', 11, 18, undefined)])).toMatchObject({ totalLabel: 'Total cobrado', total: '18 tokens' });
-    expect(explainMovements([reservation('c', 13, 9, undefined), charge('b', 12, 18), reservation('a', 11, 18, undefined)])).toMatchObject({ total: '27 tokens' });
+    expect(explainMovements([reservation('a', 11, 18, undefined)])).toBeNull();
+    expect(allReservationsEnded([reservation('a', 11, 18, undefined)])).toBe(false);
     // Everything came back, or nothing moved: nothing to explain.
-    expect(explainMovements([item('b', 'tokens_refunded', at(24, 12), 18), reservation('a', 11, 18, 'refunded')])).toBeNull();
+    const returned = [item('b', 'tokens_refunded', at(24, 12), 18), reservation('a', 11, 18, 'refunded')];
+    expect(explainMovements(returned)).toBeNull();
+    expect(allReservationsEnded(returned)).toBe(true);
     expect(explainMovements([item('a', 'project_created', at(24, 11))])).toBeNull();
   });
 
