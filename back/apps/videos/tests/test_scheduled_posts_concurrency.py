@@ -16,6 +16,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.cache import caches
 from django.db import connection
+from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient, APITransactionTestCase
@@ -32,6 +33,7 @@ Status = ScheduledPost.Status
 SEND = "apps.integrations.ayrshare_api.AyrshareClient.send_post"
 PRESIGN = "apps.videos.services.storage_service.CloudflareR2Manager.generate_presigned_url"
 UPLOAD = "apps.videos.tasks.upload_to_social_network.apply_async"
+SEO_DELAY = "apps.videos.tasks.process_video_seo.delay"
 
 
 class PostRacesHarness(APITransactionTestCase):
@@ -328,3 +330,86 @@ class CrosspostingRacesTests(PostRacesHarness):
         self.assertEqual(
             ScheduledPost.objects.filter(video_clip=self.clip).exclude(status=Status.DRAFT).values("platform").distinct().count(), 1,
         )
+
+
+class AiBudgetRacesTests(PostRacesHarness):
+    """
+    Review of #184: the AI text budget is counted under an advisory lock of the
+    workspace (services/scheduled_posts.lock_ai_budget), not under its row:
+    two creates count it one after the other, and a create never deadlocks
+    with what locks a project and then its workspace (a paid render, a
+    re-dispatch) or with a workspace delete (projects, then the workspace).
+    """
+
+    def setUp(self):
+        super().setUp()
+        Workspace.objects.filter(pk=self.home.pk).update(
+            subscription_plan=SubscriptionPlan.objects.create(
+                name="Pro con SEO de carrera", allow_scheduling=True, allow_crossposting=True,
+                has_seo_optimization=True, max_video_duration_seconds=3600,
+            ),
+        )
+        self.seo_clips = []
+        for title in ("Uno", "Dos"):
+            project = VideoProject.objects.create(
+                workspace=self.home, uploaded_by=self.alice, title=title, source_file="videos/raw/a.mp4",
+                metadata={"use_seo": True},
+            )
+            self.seo_clips.append(VideoClip.objects.create(
+                project=project, title=f"Clip {title}", start_time=0, end_time=30,
+                status=VideoClip.Status.COMPLETED, s3_object_key="clips/a.mp4",
+            ))
+
+    def draft(self, clip):
+        return ("post", reverse("scheduled-post-list"), {"video_clip": str(clip.pk), "platform": "TIKTOK", "draft": True})
+
+    @override_settings(AI_SEO_MAX_PER_WORKSPACE_PER_HOUR=1)
+    def test_two_creates_count_the_budget_one_after_the_other(self):
+        meeting = threading.Barrier(2)
+        count = service.seo_budget
+
+        def meet_then_count(*args, **kwargs):
+            # With the budget's lock the second create never gets here while the first waits.
+            try:
+                meeting.wait(timeout=2)
+            except threading.BrokenBarrierError:
+                pass
+            return count(*args, **kwargs)
+
+        # Two clips of two projects: their own row locks do not order the creates.
+        with patch.object(service, "seo_budget", meet_then_count), patch(SEO_DELAY) as delay:
+            runs = [self.in_thread(self.request, *self.draft(clip)) for clip in self.seo_clips]
+            self.finish(*(thread for thread, _ in runs))
+
+        answers = [result["value"] for _, result in runs]
+        self.assertEqual([answer.status_code for answer in answers], [201, 201])
+        self.assertEqual(sorted(answer.json()["seo_status"] for answer in answers), ["failed", "pending"])
+        self.assertEqual(delay.call_count, 1)
+
+    def test_a_create_and_a_redispatch_of_its_project_never_deadlock(self):
+        clip = self.seo_clips[0]
+        locked, go = threading.Event(), threading.Event()
+        take = service.lock_ai_budget
+
+        def take_then_wait(*args, **kwargs):
+            take(*args, **kwargs)
+            # The create holds the budget's lock and has not locked the project yet.
+            locked.set()
+            go.wait(15)
+
+        with patch.object(service, "lock_ai_budget", take_then_wait), patch(SEO_DELAY):
+            create, created = self.in_thread(self.request, *self.draft(clip))
+            self.assertTrue(locked.wait(10), "the create never took the budget's lock")
+            # The re-dispatch locks the project and then its workspace (views_clips.ProjectRedispatchView).
+            redispatch, redispatched = self.in_thread(
+                self.request, "post", reverse("project-redispatch", args=[clip.project_id]),
+            )
+            redispatch.join(timeout=5)
+            go.set()
+            self.finish(create, redispatch)
+
+        self.assertNotIn("error", created)
+        self.assertNotIn("error", redispatched)
+        self.assertEqual(created["value"].status_code, 201)
+        # The project is not failed: the re-dispatch answers its own 409, after its locks.
+        self.assertEqual((redispatched["value"].status_code, redispatched["value"].json()["code"]), (409, "not_failed"))

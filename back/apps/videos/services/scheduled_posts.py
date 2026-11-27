@@ -24,20 +24,24 @@ or queued twice:
   it: a second retry finds it SCHEDULED and is a 409.
 
 Lock order: project, clip, post (the same as the renders in views_clips), and
-only the post for the writes that do not need the clip.
+only the post for the writes that do not need the clip. The AI text budget of
+a workspace is counted under an advisory lock of its own (lock_ai_budget), never
+under the workspace's row: a paid render or a re-dispatch locks a project and
+then its workspace, and deleting a workspace locks its projects and then the
+workspace, so nothing may lock the workspace's row and then a project.
 """
 import hashlib
 import json
 import logging
 import uuid
+import zlib
 from datetime import timedelta
 
 from django.conf import settings
 from django.core.cache import cache, caches
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.utils import timezone
 
-from apps.users.models import Workspace
 from apps.videos.models import AIUsageRecord, PostIdempotencyKey, ScheduledPost, VideoClip, VideoProject
 
 logger = logging.getLogger(__name__)
@@ -301,7 +305,8 @@ def _check_tiktok(platform, options, index=None):
 # project is created) and on the same capacity buckets as the ingestion of every workspace. So the API
 # asks for as few as it can: none when the post brings its own caption and hashtags, none when the
 # same clip already has one for that network (reused), and at most AI_SEO_MAX_PER_WORKSPACE_PER_HOUR
-# per workspace. The per-user limits of the views (creating, regenerating) come on top.
+# per workspace, counted under lock_ai_budget. The per-user limits of the views (creating,
+# regenerating) come on top.
 
 # A discarded draft's AI text, kept for the next draft of the same clip, network and trim (the E1
 # panel creates its drafts again every time it opens).
@@ -349,8 +354,8 @@ def seo_budget(workspace, now):
     How many AI texts the workspace may still ask for this hour: the limit, less
     the requests still on their way (`seo_requested_at` of the last hour) and
     the LLM calls already made for it (its AIUsageRecord rows of stage `seo`,
-    one per call, which outlive a deleted post). The caller holds the
-    workspace's row lock, so two requests count one after the other.
+    one per call, which outlive a deleted post). The caller holds
+    lock_ai_budget, so two requests count one after the other.
     """
     since = now - timedelta(hours=1)
     waiting = ScheduledPost.objects.filter(
@@ -363,8 +368,30 @@ def seo_budget(workspace, now):
     return settings.AI_SEO_MAX_PER_WORKSPACE_PER_HOUR - waiting - made
 
 
-def _lock_workspace(workspace):
-    Workspace.objects.select_for_update(no_key=True).filter(pk=workspace.pk).values_list('pk', flat=True).first()
+# Namespace (the first key) of the advisory locks of the AI text budget, fixed so they never meet
+# another advisory lock of the database: pg_advisory_xact_lock(namespace, workspace key).
+AI_BUDGET_LOCK_NAMESPACE = zlib.crc32(b'videos.scheduled_posts.ai_budget') - 2 ** 31
+
+
+def _advisory_key(workspace_id):
+    """The workspace's id folded into a signed 32-bit key. Two workspaces on one key only wait for each other."""
+    return int.from_bytes(uuid.UUID(str(workspace_id)).bytes[:4], 'big', signed=True)
+
+
+def lock_ai_budget(workspace):
+    """
+    Serializes the AI text budget of a workspace (seo_budget and what follows it)
+    until the transaction ends: a transaction-scoped advisory lock, which no other
+    code takes, so it can never be part of a cycle with the row locks. Without
+    PostgreSQL (SQLite in a local setup, which writes one transaction at a time)
+    there is nothing to take.
+    """
+    if connection.vendor != 'postgresql':
+        return
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT pg_advisory_xact_lock(%s, %s)', [AI_BUDGET_LOCK_NAMESPACE, _advisory_key(workspace.pk)],
+        )
 
 
 # --- Idempotency-Key ---
@@ -459,8 +486,8 @@ def create_posts(workspace, items, *, key=None, print_=None, many=False):
             claim, claimed = _claim(workspace, key, print_)
             if not claimed:
                 return _replayed(workspace, claim, print_)
-        # First, as everywhere: the workspace (the AI text budget), then projects, clips and posts.
-        _lock_workspace(workspace)
+        # The AI text budget's own lock first; then projects, clips and posts, never the workspace's row.
+        lock_ai_budget(workspace)
 
         index_of = (lambda i: i) if many else (lambda i: None)
         pairs = set()
@@ -571,11 +598,11 @@ def update_post(workspace, post_id, data):
         if 'hashtags' in data:
             post.hashtags = data['hashtags']
             fields.append('hashtags')
-        if ('caption' in data or 'hashtags' in data) and post.seo_requested_at is not None:
-            # The user's text wins over a "Regenerar" on its way: the task keeps this text
-            # (_generate_post_metadata only replaces it while the request is on).
-            post.seo_requested_at = None
-            fields.append('seo_requested_at')
+        if 'caption' in data or 'hashtags' in data:
+            # The user's text wins over a "Regenerar" asked for before it: the task keeps it
+            # (_generate_post_metadata). The request stays on, and keeps counting in seo_budget.
+            post.text_edited_at = now
+            fields.append('text_edited_at')
         if 'tiktok' in data and post.platform == Platform.TIKTOK:
             post.tiktok = data['tiktok']
             fields.append('tiktok')
@@ -681,7 +708,7 @@ def regenerate_seo(workspace, post_id):
 
     now = timezone.now()
     with transaction.atomic():
-        _lock_workspace(workspace)
+        lock_ai_budget(workspace)
         post = _lock_post(workspace, post_id, with_clip=False)
         if post.status in _CONFLICTS['seo']:
             raise _conflict('seo', post.status)

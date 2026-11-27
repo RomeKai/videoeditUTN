@@ -514,11 +514,11 @@ def _generate_post_metadata(task, post, capacity_waited_s, regenerate=False):
 
     fields = {'generated_caption': metadata.caption, 'generated_hashtags': metadata.hashtags, 'seo_requested_at': None}
     if regenerate:
-        # "Regenerar" replaces the text the user wrote too (empty: the API shows the AI's), but only
-        # while its request is still on (`seo_requested_at`): a text the user saved after asking ends it
-        # (services/scheduled_posts.update_post), and that text stays. The Case reads the row before
-        # this update, so it sees the request this same statement clears.
-        asked = Q(seo_requested_at__isnull=False)
+        # "Regenerar" replaces the text the user wrote too (empty: the API shows the AI's), unless the
+        # user saved that text after asking (`text_edited_at`, services/scheduled_posts.update_post):
+        # then it stays. The Case reads the row before this update, so it sees the request this same
+        # statement clears.
+        asked = Q(text_edited_at__isnull=True) | Q(text_edited_at__lt=F('seo_requested_at'))
         fields.update(
             caption=Case(When(asked, then=Value('')), default=F('caption'), output_field=TextField()),
             hashtags=Case(When(asked, then=Value([], output_field=JSONField())), default=F('hashtags'), output_field=JSONField()),

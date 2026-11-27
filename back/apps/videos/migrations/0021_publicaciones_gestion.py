@@ -17,6 +17,11 @@ class Migration(migrations.Migration):
             name="seo_requested_at",
             field=models.DateTimeField(blank=True, editable=False, null=True),
         ),
+        migrations.AddField(
+            model_name="scheduledpost",
+            name="text_edited_at",
+            field=models.DateTimeField(blank=True, editable=False, null=True),
+        ),
         migrations.CreateModel(
             name="PostIdempotencyKey",
             fields=[

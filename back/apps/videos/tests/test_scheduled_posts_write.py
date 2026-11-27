@@ -826,6 +826,28 @@ class AiTextCostTests(PostsWriteHarness):
         self.assertEqual({row["seo_status"] for row in second.json()["posts"]}, {"failed"})
         self.assertEqual(self.asked(), 5)
 
+    @override_settings(AI_SEO_MAX_PER_WORKSPACE_PER_HOUR=5)
+    def test_editing_the_text_of_queued_requests_does_not_free_the_limit(self):
+        # Review of #184: a batch, a PATCH of each post, and again. The requests not run yet still count.
+        with self.captureOnCommitCallbacks(execute=True):
+            first = self.bulk(self.drafts())
+        asked = [row for row in first.json()["posts"] if row["seo_status"] == "pending"]
+        self.assertEqual(len(asked), 5)
+        for row in first.json()["posts"]:
+            edited = self.client.patch(
+                reverse("scheduled-post-detail", args=[row["id"]]), {"caption": "Mío"}, format="json", **self.ws,
+            )
+            self.assertEqual(edited.status_code, 200)
+        self.assertEqual(
+            ScheduledPost.objects.filter(pk__in=[row["id"] for row in asked], seo_requested_at__isnull=False).count(), 5,
+        )
+
+        more = [self.make_clip(self.home, f"Otro {n}", seo=True)[1] for n in range(2)]
+        with self.captureOnCommitCallbacks(execute=True):
+            second = self.bulk(self.drafts(more))
+        self.assertEqual({row["seo_status"] for row in second.json()["posts"]}, {"failed"})
+        self.assertEqual(self.asked(), 5)
+
     @override_settings(AI_SEO_MAX_PER_WORKSPACE_PER_HOUR=3)
     def test_the_calls_already_made_count_even_when_their_posts_were_deleted(self):
         # A create-then-cancel loop: each generation that ran left its usage row; its post is gone.

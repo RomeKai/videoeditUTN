@@ -355,6 +355,9 @@ class ScheduledPost(models.Model):
     # until process_video_seo stores it or fails: the API shows `seo_status:
     # "pending"` meanwhile, over the previous text (services/scheduled_posts.py).
     seo_requested_at = models.DateTimeField(null=True, blank=True, editable=False)
+    # When the user last saved `caption` or `hashtags` through the API. A "Regenerar"
+    # replaces that text only if it was asked for after it (process_video_seo).
+    text_edited_at = models.DateTimeField(null=True, blank=True, editable=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
