@@ -181,6 +181,28 @@ def test_a_payment_started_after_the_screen_showed_only_the_downgrade_is_not_can
 
 
 @override_settings(**SIMULATED)
+def test_a_downgrade_scheduled_after_the_screen_showed_only_the_payment_is_not_canceled(owner, plans):
+    user, workspace = owner
+    set_plan(workspace, plans['Pro'], renews_at=timezone.now() + timedelta(days=5))
+    shown = start_plan_payment(user, plans['Estudio'])
+    sent = what_the_screen_shows(user)
+    assert set(sent) == {'current_plan_id', 'payment_id'}
+    # Another tab picks Gratis: it rejects the payment the screen shows and schedules the downgrade.
+    response = client_for(user).post(CHANGE, {'plan_id': str(plans['Gratis'].pk)}, format='json')
+    assert response.json()['applied'] == 'period_end', response.json()
+    shown.refresh_from_db()
+    assert shown.status == 'rejected'
+    before = state(workspace)
+
+    response = keep_current(user, sent)
+
+    # Not «nothing to cancel» (the web would just refresh): a downgrade the screen never showed is waiting.
+    assert (response.status_code, response.json()['code']) == (409, 'pending_changed')
+    assert state(workspace) == before
+    assert reload(workspace).pending_plan == plans['Gratis']
+
+
+@override_settings(**SIMULATED)
 def test_when_what_the_screen_showed_was_already_rejected_there_is_nothing_to_cancel(owner, plans):
     user, workspace = owner
     payment = start_plan_payment(user, plans['Pro'])
