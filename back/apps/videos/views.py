@@ -8,10 +8,14 @@ from rest_framework.decorators import action
 from rest_framework.views import APIView
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Count, Q
+from django.db.models.functions import Lower
+from drf_spectacular.utils import extend_schema
+from rest_framework.pagination import PageNumberPagination
 
 # Modelos y Serializers de Videos
 from .models import VideoProject, BrandKit
-from .serializers import VideoProjectSerializer, BrandKitSerializer
+from .serializers import VideoProjectSerializer, BrandKitSerializer, ProjectsQuerySerializer
 from .tasks import process_initial_ingestion
 from .services.segments import (
     InvalidSegmentsError, check_segment_lengths, max_render_segment_seconds, validate_approved_segments,
@@ -144,8 +148,47 @@ class BrandKitViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
 from .services.render_pricing import pricing_resolution as _pricing_resolution  # noqa: E402
 
 
+# The filters of the projects list (B2), as the web app groups the statuses
+# (front/src/lib/project-status.ts · projectStatusGroup). Every status is in
+# exactly one group.
+PROJECT_STATUS_GROUPS = {
+    'in_progress': (VideoProject.Status.UPLOADED, VideoProject.Status.INGESTING, VideoProject.Status.RENDERING),
+    'to_review': (VideoProject.Status.AWAITING_APPROVAL,),
+    'ready': (VideoProject.Status.COMPLETED, VideoProject.Status.PARTIAL),
+    'failed': (VideoProject.Status.FAILED,),
+}
+
+# ``pk`` breaks ties, so a page never repeats or skips a row.
+PROJECT_ORDERINGS = {
+    '-created_at': ('-created_at', '-pk'),
+    'created_at': ('created_at', 'pk'),
+    'title': (Lower('title'), '-created_at', '-pk'),
+}
+
+
+class ProjectPagination(PageNumberPagination):
+    page_size = 25
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+    invalid_page_message = "Página inválida."
+
+    def get_paginated_response(self, data):
+        response = super().get_paginated_response(data)
+        response.data['status_counts'] = self.status_counts
+        return response
+
+    def get_paginated_response_schema(self, schema):
+        response = super().get_paginated_response_schema(schema)
+        response['properties']['status_counts'] = {
+            'type': 'object',
+            'properties': {group: {'type': 'integer'} for group in ('all', *PROJECT_STATUS_GROUPS)},
+        }
+        return response
+
+
 class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
     serializer_class = VideoProjectSerializer
+    pagination_class = ProjectPagination
     parser_classes = (parsers.JSONParser, parsers.MultiPartParser, parsers.FormParser)
     # Reads (list, retrieve, paper-edit-data) are for every role.
     workspace_actions = {
@@ -163,6 +206,42 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         if workspace is None:
             return VideoProject.objects.none()
         return VideoProject.objects.filter(workspace=workspace).select_related('uploaded_by').order_by('-created_at')
+
+    @extend_schema(parameters=[ProjectsQuerySerializer])
+    def list(self, request, *args, **kwargs):
+        """
+        B2: a page of the active workspace's projects (25, ``page_size`` up
+        to 100), newest first unless ``ordering`` says otherwise. ``search``
+        matches part of the title, whatever the case; ``status_group`` keeps
+        one filter of the screen. ``status_counts`` counts every group under
+        the same search, ignoring ``status_group`` and the page. The queries
+        do not grow with the page: the counts, the total, the projects, their
+        clips, the clips' layers, and one read of reservations for the costs
+        and one for the renders in the queue.
+        """
+        query = ProjectsQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+
+        projects = self.get_queryset()
+        if params.get('search'):
+            # ``icontains`` escapes %, _ and the backslash: the search is text, never a pattern.
+            projects = projects.filter(title__icontains=params['search'])
+        counts = projects.order_by().aggregate(
+            all=Count('pk'),
+            **{group: Count('pk', filter=Q(status__in=statuses)) for group, statuses in PROJECT_STATUS_GROUPS.items()},
+        )
+        group = params.get('status_group', 'all')
+        if group != 'all':
+            projects = projects.filter(status__in=PROJECT_STATUS_GROUPS[group])
+        projects = (
+            projects.select_related('brand_kit').prefetch_related('clips__layers')
+            .order_by(*PROJECT_ORDERINGS[params.get('ordering', '-created_at')])
+        )
+
+        self.paginator.status_counts = counts
+        page = self.paginate_queryset(projects)
+        return self.get_paginated_response(self.get_serializer(page, many=True).data)
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
