@@ -23,7 +23,11 @@ Este documento cubre la vida de una publicación (`ScheduledPost`): cómo la cre
 | `SocialProfile` | [integrations/models.py](../../back/apps/integrations/models.py) | El perfil del espacio en el proveedor: `provider` (el que publica sus posts) y `provider_ref` (para Ayrshare, la Profile-Key, una credencial). Reemplaza a `Workspace.ayrshare_profile_key`, que queda deprecada. |
 | `SocialProvider`, `PublishRequest`, `PublishResult`, `TikTokOptions`, `idempotency_key` | [integrations/social/base.py](../../back/apps/integrations/social/base.py) | La interfaz de un proveedor, en nuestros términos (redes, opciones de TikTok) y los timeouts de publicar. |
 | `RetryableError`, `PermanentError`, `OutcomeUnknownError` y los códigos | [integrations/social/errors.py](../../back/apps/integrations/social/errors.py) | Qué puede hacer el que llama después de un error, y por qué falló. |
-| `provider_for`, `get_provider`, `ready_profile`, `has_ready_profile` | [integrations/social/\_\_init\_\_.py](../../back/apps/integrations/social/__init__.py) | El proveedor de un perfil y el perfil de un espacio, sin llamar al proveedor. |
+| `provider_for`, `get_provider`, `ready_profile` | [integrations/social/\_\_init\_\_.py](../../back/apps/integrations/social/__init__.py) | El proveedor de un perfil y el perfil de un espacio, sin llamar al proveedor. |
+| `SocialAccountListView`, `SocialAccountConnectView`, `SocialAccountDetailView` | [views_social_accounts.py](../../back/apps/videos/views_social_accounts.py) | `/api/v1/social-accounts/`: las redes del espacio, conectar y desconectar (hueco 10). |
+| `ensure_profile`, `connect_url`, `accounts`, `disconnect`, `network_status`, `has_connected_network`, `delete_orphan_profiles` | [integrations/social/accounts.py](../../back/apps/integrations/social/accounts.py) | Las redes de un espacio: el perfil creado la primera vez, la lista de cuentas con su copia corta y la última lectura guardada en el perfil. |
+| `delete_orphan_social_profiles` | [integrations/tasks.py](../../back/apps/integrations/tasks.py) | Borra en el proveedor el perfil de un espacio borrado. |
+| `social_smoke` | [integrations/management/commands/social_smoke.py](../../back/apps/integrations/management/commands/social_smoke.py) | Prueba con una key real ([runbook](../runbooks/redes-sociales-prueba.md)). |
 | `AyrshareProvider` | [integrations/social/ayrshare.py](../../back/apps/integrations/social/ayrshare.py) | `https://api.ayrshare.com/api`: publicar, y crear, vincular, listar, desvincular y borrar perfiles. Lee la respuesta por el cuerpo, no solo por el HTTP. |
 
 ## Flujo: estados de `ScheduledPost`
@@ -139,6 +143,42 @@ Si `gate.reserve` levanta `CapacityUnavailable`, `_seo_wait_for_capacity` decide
 - El contador de reintentos de Celery viaja con el mensaje: una llamada que falla siempre se queda sin reintentos aunque haya esperas en el medio.
 - A diferencia de la ingesta, la espera de SEO no escribe `metadata['capacity_wait']` en el proyecto: el tiempo esperado solo viaja en `capacity_waited_s`. Los token buckets están en [07-capacidad-costos-y-operacion](07-capacidad-costos-y-operacion.md).
 
+## Flujo: conectar redes
+
+Hueco 10 del mapa. `views_social_accounts.py` atiende `/api/v1/social-accounts/` sobre el espacio activo (`X-Workspace-Id`), y las reglas están en `apps/integrations/social/accounts.py`.
+
+| Endpoint | Quién | Qué hace |
+|----------|-------|----------|
+| `GET /social-accounts/` | Cualquier miembro | Las tres redes en orden, con `status` (`connected`, `expired`, `disconnected`), `username`, `connected_at`, `limits` y `tiktok`. |
+| `POST /social-accounts/connect/` | Dueño y Admin (`social.manage`) | `{platform, return_url?}` → `{connect_url}`: la página del proveedor para autorizar esa red. |
+| `DELETE /social-accounts/:platform/` | Dueño y Admin | Desvincula la red en el proveedor y deja en error lo que iba a salir por ella. |
+
+1. **Perfil, la primera vez (`ensure_profile`).**
+   - El primer «Conectar» crea el perfil del espacio en el proveedor que dice `SOCIAL_PROVIDER`, con el título `<SOCIAL_PROFILE_TITLE_PREFIX>-<id del espacio>`, único en Ayrshare.
+   - Primero se reserva la fila de `SocialProfile`, una por espacio, en su propia transacción. Después, con el lock de esa fila, se llama al proveedor. Si dos «Conectar» llegan juntos, el segundo espera ese lock y encuentra el perfil hecho: nunca se crean dos perfiles pagos.
+   - Si la creación falla, la fila queda sin `provider_ref` y el próximo intento la crea. Si se perdió la respuesta, el próximo intento recibe el código 146 (título tomado): se arregla a mano ([runbook](../runbooks/redes-sociales-prueba.md)).
+   - La key también se copia a `Workspace.ayrshare_profile_key` (deprecada), en otra sentencia sin locks, para un worker de la versión anterior durante un deploy.
+2. **Link (`connect_url`).** `generateJWT` con `allowedSocial` de esa red y `language: "es"`. El link vale 5 minutos.
+   - La web lo abre con `window.open`. Sin `return_url`, el botón «Close» del proveedor cierra esa ventana (es lo que hace D6: ve que se cerró y vuelve a leer las cuentas).
+   - Con `return_url`, va como `redirect` y ese botón lleva la ventana ahí. Tiene que tener el esquema y el host de `FRONTEND_URL`, sin usuario en la URL; si no, es 400. Así la página del proveedor no sirve de redirección abierta.
+   - Si el proveedor dice que el perfil no existe (144), se olvida su ref y se crea otro, una vez.
+   - Límite: `THROTTLE_SOCIAL_CONNECT` (30 por hora por usuario).
+3. **Cuentas (`accounts`).** Sin perfil, las tres `disconnected` sin preguntar. Con perfil, `GET /user` del proveedor:
+   - Se reusa `ACCOUNTS_CACHE_SECONDS` (15 s) en la caché `default` (`social:accounts:<espacio>`), y conectar y desconectar la borran. Ayrshare guarda su propia copia hasta 60 s y acepta 300 pedidos cada 5 minutos por perfil.
+   - `expired` es una red cuyo `refreshRequired` ya pasó, o con `refreshDaysRemaining` en 0 o menos.
+   - Cada lectura queda en `SocialProfile.networks` (`{red: estado}`) y `networks_read_at`. Con eso deciden, sin llamar al proveedor, el 409 al publicar (`network_status`) y el paso de onboarding `has_social_account` (`has_connected_network`: alguna red `connected`).
+   - `limits` son nuestras reglas: `caption_limit`, `HASHTAGS_MAX` y la duración máxima de cada formato (TikTok 600 s, Reels 900 s, Shorts 180 s, de las guías de Ayrshare).
+   - `tiktok` lleva un valor seguro (`PUBLIC_TO_EVERYONE`, `MUTUAL_FOLLOW_FRIENDS` y `SELF_ONLY`; nada apagado), porque Ayrshare no expone las opciones del creador.
+   - Un error del proveedor es 503 `{error, code}`.
+4. **Desconectar (`disconnect` y `fail_network_posts`).** `DELETE /profiles/social` con la red (no es error si no estaba). Después, los posts del espacio en esa red en `SCHEDULED` o `QUEUED` pasan a `FAILED` con `account_not_connected (disconnected)`.
+   - Se leen los ids primero y el `update` vuelve a filtrar el estado, así un post que el worker pasó a `PROCESSING` mientras tanto queda para su worker.
+   - Los borradores no cambian.
+   - Si el proveedor falla, es 503 y no cambia nada.
+5. **Borrar el espacio.** `SocialProfile.workspace` es `SET_NULL`: el borrado deja la fila sin espacio (después de su lock: espera a un «Conectar» que la esté creando), y después del commit encola `delete_orphan_social_profiles`.
+   - La tarea borra el perfil en el proveedor, que libera un lugar pago, y después la fila.
+   - Si falla, o si el broker no toma el mensaje, la fila queda para la corrida diaria (`delete-orphan-social-profiles`, 05:10 UTC). Nunca frena el borrado.
+6. **Locks.** Solo la fila de `SocialProfile`. Nada de esto bloquea la fila del workspace. El borrado del espacio toma la fila del perfil al final, en `workspace.delete()`, después de proyectos, workspace, posts y billetera: no hay ciclo posible.
+
 ## Flujo: la API de publicaciones
 
 `ScheduledPostViewSet` ([views_social.py](../../back/apps/videos/views_social.py)) atiende `/api/v1/scheduled-posts/` sobre el workspace activo (`X-Workspace-Id`): un post de otro workspace es 404 y un clip de otro workspace es 400 (`"El clip no existe."`). Escribir pide `post.publish` (Dueño, Admin y Editor; un Lector recibe 403). Las reglas están en [services/scheduled_posts.py](../../back/apps/videos/services/scheduled_posts.py), y ninguna llama al proveedor de publicación: lo que tiene que salir queda `SCHEDULED` y lo encola el beat.
@@ -154,7 +194,7 @@ Si `gate.reserve` levanta `CapacityUnavailable`, `_seo_wait_for_capacity` decide
 
 1. **Validación (400).** El clip tiene que estar `completed` o `published`. El texto que sale (`compose_caption`) no puede pasar `caption_limit(platform)`, ni los hashtags `HASHTAGS_MAX` (30 en TikTok e Instagram, 15 en YouTube). Los hashtags llegan sin `#` y sin repetidos (`clean_hashtags`); uno con espacios u otros caracteres es 400. Un post de TikTok que sale necesita `tiktok.privacy_level` (`clean_tiktok`; las otras opciones faltantes son `false`). Una fecha más de 60 s en el pasado es 400.
 2. **Plan (403).** Sin plan no hay límites. Programar (una fecha más de 60 s adelante) pide `allow_scheduling` (`code: "scheduling"`). Sin `allow_crossposting`, un clip sale en una sola red: se cuentan sus posts `SCHEDULED`, `QUEUED`, `PROCESSING` y `PUBLISHED` más los nuevos, no los borradores ni los fallidos (`code: "crossposting"`). Se mira al crear, al mandar un borrador y al reintentar.
-3. **Cuenta (409).** Lo que sale necesita el perfil del espacio en el proveedor (`SocialProfile` con `provider_ref`, `has_ready_profile`; `code: "account_not_connected"`), sin llamar al proveedor. No se sabe red por red hasta que exista conectar cuentas (hueco 10 del mapa).
+3. **Cuenta (409).** Cada red de lo que sale tiene que estar conectada según la última lectura del proveedor (`network_status`, de `SocialProfile.networks`), sin llamarlo: desconectada es `code: "account_not_connected"` con «La cuenta de X no está conectada. Conectala para publicar.», y vencida el mismo código con «está vencida. Reconectala para publicar.». Un perfil copiado de `ayrshare_profile_key` que nunca se leyó cuenta como conectado. Ver [Flujo: conectar redes](#flujo-conectar-redes).
 4. **Locks.** Cada escritura toma la fila del post con `select_for_update` y decide con el estado que lee bajo ese lock, como `dispatch_scheduled_posts_batch` y `upload_to_social_network`. Crear, mandar un borrador y reintentar toman antes el proyecto y el clip, en el orden de los renders de `views_clips` (crear y regenerar, antes que nada, el advisory lock del presupuesto de IA; nunca la fila del workspace); así dos pedidos del mismo clip cuentan las redes uno después del otro. Por eso:
    - un `PATCH` que llega mientras el despachador pasa el post a `QUEUED` espera y responde 409 `post_in_flight`: su tarea ya salió con la hora vieja;
    - un `cancel` que llega mientras el worker lo pasa a `PROCESSING` espera y responde 409 `post_in_flight`; uno que llega con el post `QUEUED` lo borra, y la tarea después no lo encuentra (`"Post Deleted"`);
@@ -299,6 +339,8 @@ Van primero en `error_log` (`<código>` o `<código> (<detalle>)`); `ScheduledPo
 | Llega un mensaje viejo de un post que ya no está `QUEUED` ni `PROCESSING` | Termina con `"Skipped"` (`publish.skipped`) sin tocarlo: lo publica su mensaje nuevo, o nadie. | `upload_to_social_network` |
 | El post se borró después de encolarse (con su clip, su proyecto o su workspace) | La tarea termina con `Post Deleted`, sin llamar al proveedor y sin fallar. Queda `publish.post_deleted` en el log. | `upload_to_social_network` |
 | El post se borró mientras el proveedor respondía | La tarea guarda solo `status`, `post_url`, `external_id` y `error_log` (`save(update_fields=...)`), así que no vuelve a insertar la fila. Termina sin fallar y deja `publish.post_deleted` con `when=after_publishing`. | `upload_to_social_network` |
+| Se desconecta una red con posts programados o en cola en ella | Pasan a `FAILED` con `account_not_connected (disconnected)`; un `QUEUED` después termina `"Skipped"` en el worker. | `fail_network_posts`, `upload_to_social_network` |
+| Se borra el workspace con su perfil en el proveedor | El perfil queda sin espacio y se borra en el proveedor después del commit; si falla, lo reintenta la corrida diaria. | `WorkspaceDetailView.delete`, `delete_orphan_social_profiles` |
 | Se borra el workspace con un post `QUEUED` o `PROCESSING` | El borrado responde 409 `posts_in_flight` mientras la tarea puede estar trabajando: `PROCESSING` con `updated_at` dentro de `POST_PROCESSING_WINDOW`, o `QUEUED` hasta `POST_QUEUED_GRACE` después de `publish_at`. Un post más viejo está trabado y no frena el borrado. Los `SCHEDULED` se borran con el workspace y no se publican. | `WorkspaceDetailView.delete` (`apps/users/views_workspaces.py`) |
 | Clip sin `s3_object_key` u otro error inesperado | `FAILED` con `Critical: <mensaje>` y la excepción se relanza. | `upload_to_social_network` |
 | Redis de la cache no contesta al tomar el lock | `publish.lock_unavailable` y reintento a 60, 120 y 240 s. Al agotarse, `FAILED` con `Lock unavailable after N attempts: <clase>`. Nunca publica sin lock. | `upload_to_social_network` |
@@ -318,12 +360,13 @@ Van primero en `error_log` (`<código>` o `<código> (<detalle>)`); `ScheduledPo
   - `retry_count`: intentos fallidos contra el proveedor.
 - **`ScheduledPost` desde la API**: `status`, `publish_at`, `caption`, `hashtags`, `tiktok`, `seo_requested_at`, `text_edited_at`, al mandar un borrador o reintentar `error_log` vacío, y al reintentar una publicación `publish_key_version` + 1. `retry_count` no cambia.
 - **`PostIdempotencyKey`**: workspace, clave, huella del pedido y los ids de los posts que creó.
+- **`SocialProfile`**: `provider`, `provider_ref` (la key, secreta), `provider_id` (el `refId`), `networks` y `networks_read_at` (la última lectura de las cuentas) y `workspace` (nulo cuando el espacio se borró y falta borrar el perfil en el proveedor). Caché `default`: `social:accounts:<espacio>` (15 s).
 - **Caché `default`**: `posts:ai_text:<clip>:<red>:<inicio>:<fin>` (24 h), el texto con IA de un post cancelado, para el próximo borrador.
 - **`AIUsageRecord`**: una fila por intento con `stage='seo'`, `pipeline_version='v2'` (siempre, aunque el proyecto corra en legacy), `role` `primary` o `fallback`, `attempt` igual al `pipeline_attempts` del proyecto, tokens, costo estimado y `error_code` con la clase del error. Si la llamada falla sin intentos adjuntos, una fila de cero tokens con la latencia medida a nombre de `AI_DEFAULT_LLM_MODEL`. El export del piloto las suma aparte en `seo_records`, `seo_cost_usd` y `seo_cost_complete` ([runbook](../runbooks/ai-core-pilot-runbook.md)).
 - **Redis**: `lock:seo:post:<post_id>` (600 s) y `seo:pending:<post_id>` (JSON de `SocialMetadata`, 3600 s). El alias `locks` de la caché de Django guarda `lock_post_publish_<post_id>` (600 s).
 - **Capacidad**: reserva con `stage='seo'`, liquidada con el uso real o devuelta si la moderación cortó antes del LLM.
 - **Claves de `VideoProject.metadata` que se leen**: `use_seo` y `niche`. La publicación ya no lee `metadata['caption']` (nada la escribía).
-- **Logs** (sin caption, hashtags, título, transcripción, mensajes del proveedor ni Profile-Key): `publish.not_sent`, `publish.skipped`, `publish.published`, `publish.retryable`, `publish.rejected`, `publish.outcome_unknown`, `social.ayrshare.call`, `social.ayrshare.call_failed`, `social.ayrshare.published`, `social.ayrshare.publish_failed`, `social.ayrshare.no_answer`, `social.ayrshare.not_configured`, `posts.created` (con `seo` `none`, `reused`, `asked` o `limited`), `posts.updated`, `posts.cancelled`, `posts.retried`, `posts.lock_unknown`, `posts.ai_text_not_kept`, `posts.replayed`, `posts.seo_regenerate`, `seo.dispatched`, `seo.dispatch_failed`, `seo.skipped`, `seo.no_clip_transcript`, `seo.input_blocked`, `seo.output_blocked`, `seo.pending_capacity`, `seo.capacity_timeout`, `seo.completed`, `seo.primary_failed`, `seo.fallback_failed`, `seo.failed`, `seo.regenerate_failed`, `seo.persisted`, `seo.lock_not_owned`, `seo.pending_not_saved`, `seo.pending_not_cleared`.
+- **Logs** (sin caption, hashtags, título, transcripción, mensajes del proveedor ni Profile-Key): `social.profile_created`, `social.profile_lost`, `social.connect_url`, `social.disconnected`, `social.request_failed`, `social.orphan_deleted`, `social.orphan_kept`, `social.orphans`, `posts.network_disconnected`, `publish.not_sent`, `publish.skipped`, `publish.published`, `publish.retryable`, `publish.rejected`, `publish.outcome_unknown`, `social.ayrshare.call`, `social.ayrshare.call_failed`, `social.ayrshare.published`, `social.ayrshare.publish_failed`, `social.ayrshare.no_answer`, `social.ayrshare.not_configured`, `posts.created` (con `seo` `none`, `reused`, `asked` o `limited`), `posts.updated`, `posts.cancelled`, `posts.retried`, `posts.lock_unknown`, `posts.ai_text_not_kept`, `posts.replayed`, `posts.seo_regenerate`, `seo.dispatched`, `seo.dispatch_failed`, `seo.skipped`, `seo.no_clip_transcript`, `seo.input_blocked`, `seo.output_blocked`, `seo.pending_capacity`, `seo.capacity_timeout`, `seo.completed`, `seo.primary_failed`, `seo.fallback_failed`, `seo.failed`, `seo.regenerate_failed`, `seo.persisted`, `seo.lock_not_owned`, `seo.pending_not_saved`, `seo.pending_not_cleared`.
 - **Resultado de la tarea** (en el backend de resultados de Celery): `SEO Success`, `SEO Already Generated`, `SEO Busy`, `SEO Skipped`, `Post Deleted`, `No Transcript`, `Security Abort`, `Moderation Failed`, `SEO Failed`, `Waiting for capacity`, `Capacity Timeout`.
 
 ## Configuración
@@ -349,6 +392,7 @@ Van primero en `error_log` (`<código>` o `<código> (<detalle>)`); `ScheduledPo
 | `AYRSHARE_API_KEY` | `None` | Key de la cuenta de Ayrshare. Sin ella, publicar falla con `provider_not_configured`, sin llamar y sin reintento. |
 | `THROTTLE_POST_SEO_REGENERATE` | `'30/hour'` | Pedidos de "Regenerar" por usuario. |
 | `THROTTLE_POST_CREATE` | `'300/hour'` | Publicaciones creadas por usuario, contando cada una de un lote. |
+| `THROTTLE_SOCIAL_CONNECT` | `'30/hour'` | Pedidos de «Conectar» por usuario (cada uno pide un link al proveedor). |
 | `AI_SEO_MAX_PER_WORKSPACE_PER_HOUR` | `120` | Textos con IA que la API pide por espacio y por hora (`seo_budget`). |
 
 Constantes en código: `PUBLISH_TIMEOUT_SECONDS = (10, 300)`, `PUBLISH_LOCK_TTL_SECONDS = 600` y `ADMIN_TIMEOUT_SECONDS = (10, 30)` (`integrations/social/base.py`); `SEO_LOCK_TTL_SECONDS = 600` y `SEO_PENDING_TTL_SECONDS = 3600` (`tasks/social.py`); `MIN_HASHTAGS = 5`, `MAX_HASHTAGS = 8` y `_temperature = 0.7` (`seo_engine.py`); `POST_STUCK_AFTER` = 15 min, `NOW_TOLERANCE` = 60 s, `BULK_MAX = 60`, `IDEMPOTENCY_TTL` = 24 h y `HASHTAGS_MAX` (`services/scheduled_posts.py`).
@@ -362,4 +406,5 @@ Constantes en código: `PUBLISH_TIMEOUT_SECONDS = (10, 300)`, `PUBLISH_LOCK_TTL_
 - PR #82, metadata social por publicación sobre el núcleo de IA: https://github.com/RomeKai/videoeditUTN/pull/82
 - PR #88, generar caption y hashtags al crear la publicación: https://github.com/RomeKai/videoeditUTN/pull/88
 - Documentación de Ayrshare: https://www.ayrshare.com/docs/apis/post/post, https://www.ayrshare.com/docs/apis/post/overview (idempotencia), https://www.ayrshare.com/docs/errors/errors-ayrshare
-- Tests: [test_seo_task.py](../../back/apps/videos/tests/test_seo_task.py), [test_seo_dispatch.py](../../back/apps/videos/tests/test_seo_dispatch.py), [test_publisher.py](../../back/apps/videos/tests/test_publisher.py), [test_ayrshare.py](../../back/apps/integrations/tests/test_ayrshare.py)
+- [Runbook: probar las redes con una key real](../runbooks/redes-sociales-prueba.md)
+- Tests: [test_seo_task.py](../../back/apps/videos/tests/test_seo_task.py), [test_seo_dispatch.py](../../back/apps/videos/tests/test_seo_dispatch.py), [test_publisher.py](../../back/apps/videos/tests/test_publisher.py), [test_ayrshare.py](../../back/apps/integrations/tests/test_ayrshare.py), [test_social_accounts.py](../../back/apps/videos/tests/test_social_accounts.py)
