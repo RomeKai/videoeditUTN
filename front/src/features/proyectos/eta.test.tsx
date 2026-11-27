@@ -39,6 +39,8 @@ const CASES: Array<[number, string]> = [
   [59, '≈ 59 s'],
   [60, '≈ 1 min'],
   [89, '≈ 1 min'],
+  // From a minute on it rounds to the nearest minute: a minute and a half is two.
+  [90, '≈ 2 min'],
   [542, '≈ 9 min'],
   [3600, '≈ 1 h'],
   [3900, '≈ 1 h 5 min'],
