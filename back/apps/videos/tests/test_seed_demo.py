@@ -8,7 +8,7 @@ and say so.
 import os
 import shutil
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from io import StringIO
 from unittest.mock import patch
@@ -560,6 +560,45 @@ class TestExampleProjects:
         # It suggested three, whatever is left of them.
         assert review.ai_rationale_log['suggestions_count'] == 3
         assert review.clips.count() == 2
+
+    def test_the_render_of_the_clips_fixture_lasts_what_a_render_does(self):
+        with patch(FFMPEG, side_effect=fake_ffmpeg):
+            run('--with-projects')
+        clips = VideoProject.objects.get(**{f'metadata__{seed_demo.FIXTURE_KEY}': 'clips'})
+
+        # «Renderizar» shows this: the render of two clips, not the instant its dispatch took.
+        assert clips.metadata['stage_durations']['render_dispatched'] >= 20
+
+    def test_a_fixture_with_the_old_render_time_gets_the_new_one_and_a_real_one_is_kept(self):
+        with patch(FFMPEG, side_effect=fake_ffmpeg):
+            run('--with-projects')
+            clips = VideoProject.objects.get(**{f'metadata__{seed_demo.FIXTURE_KEY}': 'clips'})
+            seeded = dict(clips.metadata)
+            started = datetime.fromisoformat(seeded['stage_started_at']['render_dispatched'])
+            # As an older seed_demo left it: 0.8 s, the dispatch.
+            old = {
+                **seeded,
+                'stage_durations': {**seeded['stage_durations'], 'render_dispatched': seed_demo.OLD_FIXTURE_RENDER_SECONDS},
+                'stage_finished_at': {
+                    **seeded['stage_finished_at'],
+                    'render_dispatched': (started + timedelta(seconds=seed_demo.OLD_FIXTURE_RENDER_SECONDS)).isoformat(),
+                },
+            }
+            VideoProject.objects.filter(pk=clips.pk).update(metadata=old)
+
+            run('--with-projects')
+            clips.refresh_from_db()
+            assert clips.metadata == seeded
+            run('--with-projects')
+            clips.refresh_from_db()
+            assert clips.metadata == seeded
+
+            # A rehearsal rendered it for real: its time stays.
+            real = {**seeded, 'stage_durations': {**seeded['stage_durations'], 'render_dispatched': 31.207}}
+            VideoProject.objects.filter(pk=clips.pk).update(metadata=real)
+            run('--with-projects')
+        clips.refresh_from_db()
+        assert clips.metadata == real
 
     def test_the_activity_of_the_review_says_the_three_clips_it_suggested_after_approving_two(self):
         from apps.payments.services import wallet_service

@@ -137,15 +137,20 @@ FINISHED_CUTS = [
     ('[DEMO] Clip de ejemplo 2', 30.0, 50.0, 74),
 ]
 # Seconds of each stage, in order: example numbers for a 90 s video (about
-# 0.7 s of processing per second of video). The last one, the dispatch of the
-# render, only for the project that finished.
+# 0.7 s of processing per second of video, up to the review). The last one,
+# the render of its two clips from the dispatch to the last one delivered
+# (what finalize_project_render records), only for the project that finished.
 FIXTURE_STAGE_SECONDS = (
     ('audio_extracted', 4.2),
     ('transcribed', 38.6),
     ('moderated', 2.9),
     ('clips_selected', 19.4),
-    ('render_dispatched', 0.8),
+    ('render_dispatched', 23.4),
 )
+# What an older version of this command gave the render: how long its dispatch
+# took, which is what the stage measured then. ``_backfill`` replaces it.
+OLD_FIXTURE_RENDER_SECONDS = 0.8
+RENDER_STAGE = 'render_dispatched'
 # From the creation of the project to its first stage, and between stages.
 FIXTURE_STAGE_GAP_SECONDS = 1.5
 # How long ago each fixture was created: before its example notification
@@ -157,6 +162,13 @@ FIXTURES = {
 }
 # The project of the example "failed" notification: only a title, there is no such project.
 FAILED_EXAMPLE_TITLE = '[DEMO] Ejemplo que falló (datos de prueba)'
+
+
+def _instant(value):
+    try:
+        return datetime.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        return None
 
 
 def transcript_words():
@@ -560,6 +572,8 @@ class Command(BaseCommand):
         Puts into a fixture made by an older version what it lacks: the times
         of its stages and how many clips it suggested. Only the missing keys:
         a project a rehearsal approved keeps the times its real render wrote.
+        The render time an older version wrote (OLD_FIXTURE_RENDER_SECONDS,
+        its dispatch) is replaced by the one of the fixture, from its start.
         """
         if slug not in FIXTURES:
             return
@@ -578,6 +592,25 @@ class Command(BaseCommand):
                     },
                 }
                 changed.append('metadata')
+            durations = metadata.get('stage_durations')
+            started = metadata.get('stage_started_at')
+            render_started = _instant(started.get(RENDER_STAGE)) if isinstance(started, dict) else None
+            if (
+                isinstance(durations, dict) and durations.get(RENDER_STAGE) == OLD_FIXTURE_RENDER_SECONDS
+                and render_started is not None
+            ):
+                seconds = dict(FIXTURE_STAGE_SECONDS)[RENDER_STAGE]
+                finished = metadata.get('stage_finished_at')
+                metadata = {
+                    **metadata,
+                    'stage_durations': {**durations, RENDER_STAGE: seconds},
+                    'stage_finished_at': {
+                        **(finished if isinstance(finished, dict) else {}),
+                        RENDER_STAGE: (render_started + timedelta(seconds=seconds)).isoformat(),
+                    },
+                }
+                if 'metadata' not in changed:
+                    changed.append('metadata')
             if not isinstance(log.get('suggestions_count'), int):
                 cuts = REVIEW_CUTS if slug == 'review' else FINISHED_CUTS
                 log = {**log, 'suggestions_count': len(cuts)}
