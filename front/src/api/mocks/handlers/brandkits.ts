@@ -125,11 +125,16 @@ export const brandKitsHandlers = [
   route(contract.duplicateBrandKit, ({ db, workspace, params, user, now, require }) => {
     require('brandkit.manage');
     const kit = own(db, params.id, workspace.id);
-    const copy: BrandKit = { ...kit, id: newId(), user: user.id, name: `Copia de ${kit.name}`.slice(0, 100), is_default: false, created_at: new Date(now).toISOString() };
-    // Each file is copied under a new name, as the storage does: the two kits never share one.
+    // «Copia de X», then «Copia 2 de X»…: the first name the workspace does not have (brand_kit_service.copy_name).
+    const taken = new Set(db.brandKits.filter((item) => item.workspace === workspace.id).map((item) => item.name));
+    let number = 1;
+    const copyName = () => `${number === 1 ? 'Copia de ' : `Copia ${number} de `}${kit.name}`.slice(0, 100);
+    while (taken.has(copyName())) number += 1;
+    const copy: BrandKit = { ...kit, id: newId(), user: user.id, name: copyName(), is_default: false, created_at: new Date(now).toISOString() };
+    // Each file is copied to the folder of the new kit with its name, as the backend does: the two kits never share one.
     for (const field of FILE_FIELDS) {
       const url = kit[field];
-      if (url) copy[field] = url.replace(/(\.[^./]+)?$/, (extension) => `_${copy.id.slice(0, 7)}${extension}`);
+      if (url) copy[field] = url.replace(/(\/[0-9a-f-]{36})?\/([^/]+)$/, `/${copy.id}/$2`);
     }
     db.brandKits.push(copy);
     return { data: copy };

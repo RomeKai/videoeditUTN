@@ -85,7 +85,8 @@ describe('fixtures: cada escenario cumple los esquemas del contrato', () => {
       const { token, member, ...wire } = invitation;
       void token;
       void member;
-      check(InvitationPreview, wire, `invitación ${invitation.token}`);
+      // Only a pending one is ever served: the others are the mock's memory of dead links (404).
+      if (invitation.status === 'pending') check(InvitationPreview, wire, `invitación ${invitation.token}`);
     }
     check(
       ClipPreview,

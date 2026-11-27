@@ -82,9 +82,9 @@ describe('respuestas reales del backend', () => {
     const copy = duplicateBrandKit.response.parse(real.brand_kit_duplicate);
     expect(copy.name).toBe(`Copia de ${real.brand_kit.name}`);
     expect(copy.is_default).toBe(false);
-    // Its files are its own: another name in the same folder.
+    // Its files are its own: the folder of the copy, with the name of the original.
     expect(copy.primary_font).not.toBe(real.brand_kit.primary_font);
-    expect(copy.primary_font).toMatch(/\/media\/assets\/fonts\/Inter_\w{7}\.ttf$/);
+    expect(copy.primary_font).toBe(`http://localhost:8000/media/assets/fonts/${copy.id}/Inter.ttf`);
     const failed = error('brand_kit_copy_failed');
     expect(failed.code).toBe('brand_kit_copy_failed');
     expect(duplicateBrandKit.errors.map((item) => item.status)).toEqual([403, 404, 502]);
