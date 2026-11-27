@@ -52,6 +52,7 @@ SECRET_KEY = "ci-only-not-a-secret"
 # password, never how strong its hash is, so CI uses the fast one. Never
 # outside the tests: base.py keeps Django's default.
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
+
 ALLOWED_HOSTS = ["localhost", "127.0.0.1", "testserver"]
 
 USE_R2 = False
