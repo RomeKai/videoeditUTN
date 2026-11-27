@@ -14,6 +14,9 @@ an email. What does go:
 
 - the notification's ``body``, which the events write without user text (how
   many clips, what was returned, with the same money texts as the bell);
+- for a ``render_finished`` with the reason ``Notification.CLIP_RENDER_FAILED``
+  (one clip's render that was returned whole), its own subject and text: it
+  does not say a render ended;
 - for ``low_balance``, also its title (the balance: "Te quedan 300 tokens");
 - links built from ``FRONTEND_URL`` and ids. The paths are the web app's for
   each kind (``notificationHref`` in front/src/shell/nav.ts), with the
@@ -81,6 +84,17 @@ def _content(notification):
             ],
             'Revisar clips',
             _project_path(notification, '/revision'),
+        )
+    if kind == Kind.RENDER_FINISHED and notification.reason == Notification.CLIP_RENDER_FAILED:
+        # One clip's render that gave nothing: no render ended and nothing new is ready.
+        return (
+            'No pudimos renderizar un clip de tu proyecto',
+            [
+                f'No pudimos renderizar un clip de un proyecto de tu espacio de trabajo en OneCreator. {detail}'.strip(),
+                'Abrí el proyecto para ver el clip y volver a intentarlo cuando quieras.',
+            ],
+            'Ver clips',
+            _project_path(notification, '/clips'),
         )
     if kind == Kind.RENDER_FINISHED:
         return (

@@ -354,6 +354,20 @@ class NoTypedTextTests(EmailHarness):
         text = 'No se pudo volver a renderizar: quedó el clip anterior. Te devolvimos 9 tokens.'
         self.assertEqual({body for _, _, body in sent()['ana']}, {text})
         self.assert_no_typed_text(2)
+        # Not the email of a render that ended: its own subject, opening and closing.
+        message = mail.outbox[0]
+        self.assertEqual(message.subject, 'No pudimos renderizar un clip de tu proyecto')
+        opening = f'No pudimos renderizar un clip de un proyecto de tu espacio de trabajo en OneCreator. {text}'
+        closing = 'Abrí el proyecto para ver el clip y volver a intentarlo cuando quieras.'
+        for content in (message.body, message.alternatives[0][0]):
+            self.assertIn(opening, content)
+            self.assertIn(closing, content)
+            self.assertNotIn('Terminó el render', content)
+            self.assertNotIn('lo que quedó listo', content)
+        self.assertIn('tenés activado el aviso «El render terminó»', message.body)
+        self.assertEqual(
+            set(Notification.objects.values_list('kind', 'reason')), {('render_finished', Notification.CLIP_RENDER_FAILED)},
+        )
         self.assertIn(text, mail.outbox[0].body)
         self.assertIn(f'https://app.onecreator.test/proyectos/{project.id}/clips?espacio={self.workspace.id}\n', mail.outbox[0].body)
 

@@ -235,6 +235,36 @@ class RefundOfThisEventTests(EventHarness):
         self.committed(lambda: finalize_project_render(project.id))
         self.assertEqual(Notification.objects.count(), 3)
 
+    def test_a_close_that_finds_the_clip_failed_before_it_is_given_back_still_says_it_stayed(self):
+        # The clip fails after the close gave back what there was to give (nothing yet) and before
+        # it ends the project: that close finds it FAILED with the file it had. It is given back
+        # right after, by the settle: the clip did stay.
+        from apps.videos.tasks import ingestion
+
+        project, first = self.delivered()
+        VideoClip.objects.filter(pk=first.pk).update(status=FAILED)
+        txn = self.render_again(
+            project, str(first.pk), previous={'status': 'completed', 'key': 'old-key'}, scope='clip',
+            description='Render de clip: Clip 0',
+        )
+        restore, calls = ingestion._restore_rerendered_clips, []
+
+        def too_early_the_first_time(project_id):
+            calls.append(project_id)
+            return 0 if len(calls) == 1 else restore(project_id)
+
+        with patch.object(ingestion, '_restore_rerendered_clips', side_effect=too_early_the_first_time):
+            self.assertEqual(self.committed(lambda: finalize_project_render(project.id)), PipelineStage.PARTIAL)
+
+        first.refresh_from_db()
+        self.assertEqual((first.status, first.s3_object_key), (DONE, 'old-key'))  # given back by the settle
+        project.refresh_from_db()
+        (outcome,) = [entry for entry in project.metadata['render_outcomes'] if entry['reservation'] == str(txn.pk)]
+        self.assertEqual((outcome['kept'], outcome['failed'], outcome['ready']), (1, 0, 1))
+        text = 'No se pudo volver a renderizar: quedó el clip anterior. Te devolvimos 5 tokens.'
+        self.assertEqual(self.bodies(), [text])
+        self.assertEqual(self.activity_text(project, txn), text)
+
     def test_a_retry_of_one_clip_that_fails_again_says_what_the_activity_says(self):
         project, ids = self.partial()
         Notification.objects.all().delete()
