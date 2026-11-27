@@ -55,7 +55,7 @@ La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario,
 >
 > **Por qué las publicaciones son mocks hoy.** El backend ya tiene `social.posts` y `social.post`, pero no crear una publicación: una creada en la demo no aparecería en el calendario. Quedan en mocks hasta que esté ese endpoint.
 >
-> **La campana empieza vacía.** Las notificaciones se escriben cuando pasa el evento: los proyectos que carga `seed_demo` no traen ninguna. Para tener algo que mostrar, antes de la demo creá un proyecto y dejalo llegar a «Listo para revisar», o aprobá una compra en el checkout de prueba.
+> **La campana ya trae ejemplos.** `seed_demo --with-projects` deja cuatro notificaciones del usuario de la demo, con los mismos textos que escriben los eventos reales: el proyecto de ejemplo listo para revisar y un proyecto que falló sin cobrar nada (sin leer), el render terminado del proyecto con clips y el saldo de la demo acreditado (leídas). La del proyecto que falló es solo un aviso de ejemplo: no hay tal proyecto y lleva a Proyectos. Las demás notificaciones se escriben cuando pasa el evento: al crear un proyecto de verdad o aprobar una compra en el checkout de prueba aparecen solas en menos de un minuto. Volver a correr `seed_demo` no las duplica ni cambia cuáles están leídas.
 >
 > **Cómo se cambia la lista.** Un dominio en `DEMO_API_REAL` va entero al backend, también lo que todavía no existe ahí (responde 404): si falta algo, nombrá los endpoints uno por uno, como en el valor por defecto. Después de cambiarla, `demo up -d --build front` y actualizá la tabla de abajo. `DEMO_API_REAL=existing` manda al backend todo lo que el contrato marca como existente.
 

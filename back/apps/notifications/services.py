@@ -83,6 +83,10 @@ def _write(workspace, user_ids, kind, title, body, project=None, post=None):
     return len(targets)
 
 
+# For the demo seed (seed_demo), which writes example notifications with the texts of the real events.
+write = _write
+
+
 def _after_commit(event, build, **ids):
     """
     Runs ``build`` once the caller's transaction commits. Never raises, now or
@@ -142,15 +146,52 @@ def _to_workspace(project, kind, title, body):
     return _write(workspace, recipients_of(workspace), kind, title, body, project=project)
 
 
+def project_ready_message(project):
+    """(title, body) of ``project_ready``."""
+    clips = VideoClip.objects.filter(project=project).count()
+    found = 'Encontramos 1 clip.' if clips == 1 else f'Encontramos {clips} clips.'
+    return f'{project.title[:_TITLE_ROOM]} está listo para revisar', found
+
+
+def render_finished_message(project):
+    """(title, body) of ``render_finished``, for a project that ended completed or partial."""
+    if project.status == VideoProject.Status.PARTIAL:
+        returned = _returned(project, timezone.now() - _SETTLED_WINDOW)
+        body = 'Parte del render falló.'
+        if returned > 0:
+            body += f' Te devolvimos {_tokens(returned)}.'
+    else:
+        ready = VideoClip.objects.filter(project=project, status=VideoClip.Status.COMPLETED).count()
+        body = 'Tu video está listo.' if ready <= 1 else f'{ready} clips listos.'
+    return f'{project.title[:_TITLE_ROOM]}: terminó el render', body
+
+
+def project_failed_message(project_title, returned, rendering=False):
+    """(title, body) of ``project_failed``: ``returned`` tokens went back (0: nothing was charged)."""
+    body = f'Te devolvimos {_tokens(returned)}.' if returned > 0 else 'No se cobró nada.'
+    what = 'no se pudo generar' if rendering else 'no se pudo procesar'
+    return f'{project_title[:_TITLE_ROOM]} {what}', body
+
+
+def payment_message(approved, tokens=0, plan_name=None):
+    """(title, body) of a settled payment: of the plan ``plan_name``, else of ``tokens``."""
+    if plan_name is not None:
+        title = f'Tu plan ahora es {plan_name}' if approved else f'No pudimos cobrar el plan {plan_name}'
+        body = 'El pago se aprobó.' if approved else 'No se cobró nada. Podés intentarlo de nuevo.'
+    else:
+        amount = format_tokens(tokens)
+        title = f'Se acreditaron {amount} tokens' if approved else f'No pudimos cobrar tu compra de {amount} tokens'
+        body = 'Tu compra se aprobó.' if approved else 'No se cobró nada. Podés intentarlo de nuevo.'
+    return title, body
+
+
 def notify_project_ready(project_id):
     """The clips are selected and the project waits for the review (``awaiting_approval``)."""
     def build():
         project = _project(project_id)
         if project is None or project.status != VideoProject.Status.AWAITING_APPROVAL:
             return
-        clips = VideoClip.objects.filter(project=project).count()
-        found = 'Encontramos 1 clip.' if clips == 1 else f'Encontramos {clips} clips.'
-        _to_workspace(project, Kind.PROJECT_READY, f'{project.title[:_TITLE_ROOM]} está listo para revisar', found)
+        _to_workspace(project, Kind.PROJECT_READY, *project_ready_message(project))
 
     _after_commit('project_ready', build, project_id=project_id)
 
@@ -161,15 +202,7 @@ def notify_render_finished(project_id):
         project = _project(project_id)
         if project is None or project.status not in (VideoProject.Status.COMPLETED, VideoProject.Status.PARTIAL):
             return
-        if project.status == VideoProject.Status.PARTIAL:
-            returned = _returned(project, timezone.now() - _SETTLED_WINDOW)
-            body = 'Parte del render falló.'
-            if returned > 0:
-                body += f' Te devolvimos {_tokens(returned)}.'
-        else:
-            ready = VideoClip.objects.filter(project=project, status=VideoClip.Status.COMPLETED).count()
-            body = 'Tu video está listo.' if ready <= 1 else f'{ready} clips listos.'
-        _to_workspace(project, Kind.RENDER_FINISHED, f'{project.title[:_TITLE_ROOM]}: terminó el render', body)
+        _to_workspace(project, Kind.RENDER_FINISHED, *render_finished_message(project))
 
     _after_commit('render_finished', build, project_id=project_id)
 
@@ -186,10 +219,8 @@ def notify_project_failed(project_id, rendering=False):
             return
         # The refund is settled after the error is recorded (pipeline_error_at).
         since = project.pipeline_error_at or timezone.now() - _SETTLED_WINDOW
-        returned = _returned(project, since)
-        body = f'Te devolvimos {_tokens(returned)}.' if returned > 0 else 'No se cobró nada.'
-        what = 'no se pudo generar' if rendering else 'no se pudo procesar'
-        _to_workspace(project, Kind.PROJECT_FAILED, f'{project.title[:_TITLE_ROOM]} {what}', body)
+        title, body = project_failed_message(project.title, _returned(project, since), rendering)
+        _to_workspace(project, Kind.PROJECT_FAILED, title, body)
 
     _after_commit('project_failed', build, project_id=project_id)
 
@@ -203,13 +234,9 @@ def notify_payment_settled(payment_id):
         approved = payment.status == Payment.Status.APPROVED
         if not approved and payment.status != Payment.Status.REJECTED:
             return
-        if payment.plan_id is not None:
-            title = f'Tu plan ahora es {payment.plan.name}' if approved else f'No pudimos cobrar el plan {payment.plan.name}'
-            body = 'El pago se aprobó.' if approved else 'No se cobró nada. Podés intentarlo de nuevo.'
-        else:
-            tokens = format_tokens(payment.tokens)
-            title = f'Se acreditaron {tokens} tokens' if approved else f'No pudimos cobrar tu compra de {tokens} tokens'
-            body = 'Tu compra se aprobó.' if approved else 'No se cobró nada. Podés intentarlo de nuevo.'
+        title, body = payment_message(
+            approved, tokens=payment.tokens, plan_name=payment.plan.name if payment.plan_id is not None else None,
+        )
         kind = Kind.PAYMENT_APPROVED if approved else Kind.PAYMENT_REJECTED
         _write(payment.workspace, {payment.created_by_id}, kind, title, body)
 
