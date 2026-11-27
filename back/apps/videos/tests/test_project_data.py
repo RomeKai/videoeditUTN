@@ -200,8 +200,19 @@ class ProjectActivityTests(ProjectDataHarness):
             'Reserva por el procesamiento': 'refunded',
             'Reserva de tokens': 'reserved',
         })
-        # Only a reservation carries it.
-        self.assertFalse(any('reservation_state' in item for item in items if item['type'] != 'tokens_reserved'))
+        # The charge and the refund of each reservation carry the same state: the web app groups them.
+        grouped = sorted(
+            (item['type'], item['reservation_state'], Decimal(item['amount']))
+            for item in items if item['type'] in ('tokens_charged', 'tokens_refunded')
+        )
+        self.assertEqual(grouped, [
+            ('tokens_charged', 'charged', Decimal('-18')),
+            ('tokens_charged', 'partially_charged', Decimal('-8')),
+            ('tokens_refunded', 'partially_charged', Decimal('4')),
+            ('tokens_refunded', 'refunded', Decimal('5')),
+        ])
+        # Nothing else carries it.
+        self.assertFalse(any('reservation_state' in item for item in items if not item['type'].startswith('tokens_')))
 
     def test_the_review_says_how_many_clips_were_suggested_not_how_many_are_left(self):
         project = self.project(

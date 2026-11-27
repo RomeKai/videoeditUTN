@@ -498,7 +498,10 @@ class TestExampleProjects:
                 key: value for key, value in review.metadata.items()
                 if key not in ('stage_started_at', 'stage_finished_at', 'stage_durations')
             }
-            old['stage_durations'] = {'render_dispatched': 0.123}
+            # 'transcribed' is a key the backfill writes too: what is there must win.
+            real_end = '2026-11-01T10:00:00+00:00'
+            old['stage_durations'] = {'render_dispatched': 0.123, 'transcribed': 99.9}
+            old['stage_finished_at'] = {'transcribed': real_end}
             old['title_edited'] = True
             VideoProject.objects.filter(pk=review.pk).update(
                 metadata=old, ai_rationale_log={seed_demo.FIXTURE_KEY: seed_demo.FIXTURE_NOTE},
@@ -514,9 +517,11 @@ class TestExampleProjects:
         assert review.metadata == completed
         assert review.metadata['title_edited'] is True
         assert review.metadata['stage_durations'] == {
-            'render_dispatched': 0.123,
             **{stage: seconds for stage, seconds in seed_demo.FIXTURE_STAGE_SECONDS if stage != 'render_dispatched'},
+            'render_dispatched': 0.123, 'transcribed': 99.9,
         }
+        assert review.metadata['stage_finished_at']['transcribed'] == real_end
+        assert set(review.metadata['stage_finished_at']) == {'audio_extracted', 'transcribed', 'moderated', 'clips_selected'}
         assert set(review.metadata['stage_started_at']) == {'audio_extracted', 'transcribed', 'moderated', 'clips_selected'}
         # It suggested three, whatever is left of them.
         assert review.ai_rationale_log['suggestions_count'] == 3

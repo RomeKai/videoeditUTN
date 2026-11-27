@@ -14,10 +14,12 @@ There is no event log: the feed is read from what the backend already keeps.
 - ``tokens_reserved`` / ``tokens_charged`` / ``tokens_refunded``: the
   Transactions linked in the metadata (every ``*reservation_id`` key):
   reserved at ``created_at``, charged or returned at ``settled_at``. The
-  reservation and its charge are two items of ONE movement of the balance:
-  ``tokens_reserved`` says how it ended in ``reservation_state`` (``reserved``,
-  ``charged``, ``partially_charged`` or ``refunded``), so the web app does not
-  show a settled reservation as a second charge.
+  reservation, its charge and its refund are items of ONE movement of the
+  balance: each of the three says how the reservation ended in
+  ``reservation_state`` (``reserved``, ``charged``, ``partially_charged`` or
+  ``refunded``), so the web app shows them as one group whose amounts add up
+  to what the balance moved (a charged reservation is not a second charge;
+  the part a partial charge gave back is not income).
 - ``render_finished``: a project that ended ``completed`` or ``partial``, at
   the settlement of the reservation that paid the render.
 - ``project_failed``: ``pipeline_error_at``.
@@ -201,20 +203,29 @@ def build_activity(project):
         reserved_text, charged_text = _RESERVATIONS.get(key, _GENERIC_RESERVATION)
         reserved = txn.reserved_amount if txn.reserved_amount is not None else txn.amount
         settled = txn.settled_at or txn.created_at
+        state = _reservation_state(txn, reserved)
         feed.add(
             'tokens_reserved', txn.created_at, reserved_text, source=str(txn.pk), actor=txn.created_by,
-            amount=-reserved, reservation_state=_reservation_state(txn, reserved),
+            amount=-reserved, reservation_state=state,
         )
         if txn.status == Transaction.Status.COMPLETED:
-            feed.add('tokens_charged', settled, charged_text, source=str(txn.pk), amount=-txn.amount)
+            feed.add(
+                'tokens_charged', settled, charged_text, source=str(txn.pk), amount=-txn.amount, reservation_state=state,
+            )
             if reserved > txn.amount:
                 returned_text = (
                     "Devolución por los clips que no se generaron" if key in _RENDER_KEYS
                     else "Devolución de la parte que no se usó"
                 )
-                feed.add('tokens_refunded', settled, returned_text, source=str(txn.pk), amount=reserved - txn.amount)
+                feed.add(
+                    'tokens_refunded', settled, returned_text, source=str(txn.pk), amount=reserved - txn.amount,
+                    reservation_state=state,
+                )
         elif txn.status == Transaction.Status.FAILED:
-            feed.add('tokens_refunded', settled, "Devolución de la reserva", source=str(txn.pk), amount=reserved)
+            feed.add(
+                'tokens_refunded', settled, "Devolución de la reserva", source=str(txn.pk), amount=reserved,
+                reservation_state=state,
+            )
 
     if project.status in (VideoProject.Status.COMPLETED, VideoProject.Status.PARTIAL):
         paying = (
