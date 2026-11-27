@@ -579,9 +579,11 @@ function tickPosts(db: MockDb, now: number): void {
       const variant = SEO_VARIANTS[index] as (typeof SEO_VARIANTS)[number];
       post.generated_caption = variant.caption(post.clip.title);
       post.generated_hashtags = variant.hashtags;
-      // A regeneration replaces the text; the first generation only fills what is empty.
-      if (!post.caption || regen > 0) post.caption = post.generated_caption;
-      if (post.hashtags.length === 0 || regen > 0) post.hashtags = post.generated_hashtags;
+      // A regeneration replaces the text (unless the user saved theirs after asking); the first generation only
+      // fills what is empty.
+      const replaces = regen > 0 && !post._sim.keepText;
+      if (!post.caption || replaces) post.caption = post.generated_caption;
+      if (post.hashtags.length === 0 || replaces) post.hashtags = post.generated_hashtags;
     }
     if (post.status !== 'QUEUED' && post.status !== 'PROCESSING') {
       if (post.seo_status !== 'pending') delete post._sim;

@@ -248,9 +248,21 @@ describe('contrato de publicar: lo que pidió la revisión del PR #184', () => {
     advance(3000);
     await apiCall(social.regeneratePostSeo, { params: { id: draft.id } });
     const saved = await apiCall(social.updatePost, { params: { id: draft.id }, body: { caption: 'Lo escribí yo' } });
-    expect(saved.seo_status).toBe('ready');
+    // Like the backend: the request stays on (it keeps counting), and the text that arrives does not replace this one.
+    expect([saved.seo_status, saved.caption]).toEqual(['pending', 'Lo escribí yo']);
     advance(3000);
-    expect((await apiCall(social.getPost, { params: { id: draft.id } })).caption).toBe('Lo escribí yo');
+    const after = await apiCall(social.getPost, { params: { id: draft.id } });
+    expect([after.seo_status, after.caption]).toEqual(['ready', 'Lo escribí yo']);
+  });
+
+  it('el texto con IA de un borrador descartado sirve para el próximo del mismo clip y la misma red', async () => {
+    const draft = await apiCall(social.createPost, { body: { video_clip: CLIPS.third, platform: 'TIKTOK', draft: true } });
+    advance(3000);
+    const ready = await apiCall(social.getPost, { params: { id: draft.id } });
+    expect(ready.seo_status).toBe('ready');
+    await apiCall(social.cancelPost, { params: { id: draft.id } });
+    const again = await apiCall(social.createPost, { body: { video_clip: CLIPS.third, platform: 'TIKTOK', draft: true } });
+    expect([again.seo_status, again.caption]).toEqual(['ready', ready.generated_caption]);
   });
 });
 

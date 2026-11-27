@@ -18,6 +18,12 @@ export const POST_STUCK_AFTER_MS = 15 * 60_000;
 /** One whose worker retry is on its way ("Retry n:"): the broker's visibility timeout plus the longest countdown. */
 export const PENDING_RETRY_STUCK_AFTER_MS = (4 * 3600 + 240) * 1000;
 const HASHTAG_MAX_CHARS = 100;
+/** How long the AI text of a cancelled post waits for the next draft of its clip and network (AI_TEXT_CACHE_TTL). */
+const DISCARDED_AI_TEXT_MS = 24 * 3600 * 1000;
+
+function discardedKey(clip: { id: string; start_time: number; end_time: number }, platform: Platform): string {
+  return `${clip.id}:${platform}:${clip.start_time}:${clip.end_time}`;
+}
 
 /** services/scheduled_posts.is_stuck. */
 function isStuck(post: MockPost, now: number): boolean {
@@ -161,11 +167,14 @@ function createPosts(db: MockDb, workspace: MockWorkspace, inputs: CreatePostInp
     // seo_requested(project): the project asked for SEO and the plan includes it, checked when the post is created.
     const plan = planOf(db, workspace.id);
     const wantsSeo = Boolean(project.metadata.use_seo) && (!plan || plan.has_seo_optimization) && !(caption && hashtags.length > 0);
-    // Like the backend, the AI text of the same clip and network is reused instead of asked for again.
+    // Like the backend, the AI text of the same clip and network is reused instead of asked for again: another
+    // post's, or a cancelled one's of the last 24 h.
+    const kept = db.discardedAiText?.[discardedKey(clip, input.platform)];
     const reused = wantsSeo
-      ? db.posts
+      ? (db.posts
           .filter((post) => post.workspace === workspace.id && post.video_clip === clip.id && post.platform === input.platform && post.generated_caption && post.generated_hashtags)
-          .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0]
+          .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0] ??
+        (kept && now - kept.at < DISCARDED_AI_TEXT_MS ? { generated_caption: kept.caption, generated_hashtags: kept.hashtags } : undefined))
       : undefined;
     const seo = wantsSeo && !reused;
     return { input, project, clip, seo, reused, caption, hashtags, draft, publishAt };
@@ -316,10 +325,10 @@ export const socialHandlers = [
     }
     if (body.caption !== undefined) post.caption = body.caption;
     if (body.hashtags !== undefined) post.hashtags = hashtags;
-    if ((body.caption !== undefined || body.hashtags !== undefined) && post.seo_status === 'pending') {
-      // The user's text wins over a "Regenerar" on its way: the request ends and the text stays.
-      post.seo_status = post.generated_caption ? 'ready' : 'none';
-      if (post._sim) delete post._sim.regen;
+    if ((body.caption !== undefined || body.hashtags !== undefined) && post._sim) {
+      // The user's text wins over a "Regenerar" asked for before it (`text_edited_at`): the request stays on
+      // (and keeps counting), and the AI text that arrives does not replace this one.
+      post._sim.keepText = true;
     }
     if (body.tiktok !== undefined && post.platform === 'TIKTOK') post.tiktok = body.tiktok;
     post.updated_at = stamp;
@@ -332,6 +341,11 @@ export const socialHandlers = [
     // A stuck post may already be public: the web app warns that cancelling does not take it off the network.
     if (!isStuck(post, now)) refuse('cancel', post.status);
     db.posts = db.posts.filter((item) => item.id !== post.id);
+    // Its AI text waits 24 h for the next draft of the clip and network (the E1 panel creates them again).
+    const clip = db.projects.find((item) => item.id === post.clip.project_id)?.clips.find((item) => item.id === post.video_clip);
+    if (clip && post.generated_caption && post.generated_hashtags) {
+      db.discardedAiText = { ...db.discardedAiText, [discardedKey(clip, post.platform)]: { caption: post.generated_caption, hashtags: post.generated_hashtags, at: now } };
+    }
     return { data: undefined };
   }),
 

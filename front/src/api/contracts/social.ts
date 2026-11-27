@@ -292,7 +292,7 @@ export const updatePost = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_social.py · ScheduledPostViewSet.partial_update + services/scheduled_posts.py · update_post',
-    note: 'Solo `DRAFT` y `SCHEDULED`: un post `QUEUED` ya tiene su tarea en el broker con la hora vieja. `publish_at` con fecha programa o reprograma; `null` (o dentro de un minuto) lo deja `SCHEDULED` para ahora; sin el campo, un borrador sigue borrador. Al mandarlo se miran el clip, el plan, la cuenta y TikTok como al crear, y se borra la falla del texto del borrador. `caption` y `hashtags` vacíos vuelven a mostrar el texto de la IA. Guardar el texto mientras un «Regenerar» está en camino termina ese pedido: el texto del usuario queda cuando llega el de la IA. ' + QUEUE_ONLY,
+    note: 'Solo `DRAFT` y `SCHEDULED`: un post `QUEUED` ya tiene su tarea en el broker con la hora vieja. `publish_at` con fecha programa o reprograma; `null` (o dentro de un minuto) lo deja `SCHEDULED` para ahora; sin el campo, un borrador sigue borrador. Al mandarlo se miran el clip, el plan, la cuenta y TikTok como al crear, y se borra la falla del texto del borrador. `caption` y `hashtags` vacíos vuelven a mostrar el texto de la IA. Guardar el texto mientras un «Regenerar» está en camino no lo cancela (sigue `pending` y sigue contando en el límite del espacio), pero el texto del usuario queda cuando llega el de la IA (`text_edited_at`). ' + QUEUE_ONLY,
   },
   screens: ['E2'],
 });
