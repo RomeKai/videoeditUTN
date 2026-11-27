@@ -333,7 +333,23 @@ class WorkspaceDetailView(APIView):
         falls back to their default. The files in R2 and the Ayrshare profile
         are not cleaned up here.
         """
+        # Who may delete it (the same 404 or 403), before any lock.
+        workspace_pk = require_workspace_role(request.user, workspace_id, 'workspace.delete').workspace.pk
         with transaction.atomic():
+            # The projects first, then the workspace's row. Whatever locks a project and
+            # writes its row twice (a paid render, an approval, a stage of the pipeline)
+            # also takes the workspace's row when it commits: FOR KEY SHARE, Postgres's
+            # check of the project's foreign key, deferred to the commit. A delete that
+            # held the workspace and waited for that project deadlocked with it. Locked
+            # in pk order, and the wallet after them (reserve_funds: project, then
+            # wallet): an approval, a paid render or a creation's reservation that starts
+            # meanwhile waits for this delete, or this delete for it.
+            projects = list(
+                VideoProject.objects.select_for_update()
+                .filter(workspace_id=workspace_pk)
+                .order_by('pk')
+                .values_list('pk', 'status')
+            )
             active = require_workspace_role(request.user, workspace_id, 'workspace.delete', lock=True)
             workspace = active.workspace
             serializer = DeleteWorkspaceSerializer(data=request.data)
@@ -347,15 +363,12 @@ class WorkspaceDetailView(APIView):
             User.objects.select_for_update(no_key=True).filter(pk=request.user.pk).first()
             if not _other_workspaces(request.user, workspace):
                 return _error(409, LAST_WORKSPACE, 'last_workspace')
-            # Locks in the order an approval or a paid render takes them (project, then
-            # wallet: wallet_service.reserve_funds), so one that starts meanwhile waits
-            # for this delete instead of deadlocking with it.
-            statuses = list(
-                VideoProject.objects.select_for_update()
-                .filter(workspace=workspace)
-                .order_by('pk')
-                .values_list('status', flat=True)
-            )
+            # A project created after the projects were locked and before the workspace's
+            # row was: its INSERT held that row until it committed, so it is visible now,
+            # and none can start until this ends. It is new, so it is processing.
+            if VideoProject.objects.filter(workspace=workspace).exclude(pk__in=[pk for pk, _ in projects]).exists():
+                return _error(409, WORKSPACE_BUSY, 'project_processing')
+            statuses = [project_status for _, project_status in projects]
             # The post's lock is the one its publishing task takes (tasks.social): a post
             # the dispatcher queues meanwhile waits, and then is gone with its workspace.
             posts = list(

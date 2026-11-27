@@ -398,7 +398,9 @@ def _start_paid_render(request, project_id, pick, description, style=None):
     finalize_project_render(project_id)
     try:
         with transaction.atomic():
-            project = VideoProject.objects.select_for_update().select_related('workspace').get(pk=project_id)
+            # Only the project's row (`of`): FOR UPDATE over the join locked the workspace's too, after the
+            # project, the reverse of a workspace delete (workspace, then projects): a deadlock.
+            project = VideoProject.objects.select_for_update(of=('self',)).select_related('workspace').get(pk=project_id)
             picked = pick(project)
             if isinstance(picked, Response):
                 raise _Refused(picked)
@@ -821,7 +823,8 @@ class ProjectRedispatchView(_WorkspaceScoped):
         chain = new_ingestion_chain()
         try:
             with transaction.atomic():
-                project = VideoProject.objects.select_for_update().select_related('workspace').get(pk=project.pk)
+                # Only the project's row, as in _start_paid_render: never the workspace's after it.
+                project = VideoProject.objects.select_for_update(of=('self',)).select_related('workspace').get(pk=project.pk)
                 if project.status != Status.FAILED or project.pipeline_stage != VideoProject.PipelineStage.FAILED:
                     raise _Refused(_error(409, "El proyecto ya está en curso o terminó.", 'not_failed'))
                 amount = self._amount_to_reserve(project)
