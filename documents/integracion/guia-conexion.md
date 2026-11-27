@@ -210,7 +210,7 @@ Contrato `contracts/auth.ts`. Backend: `back/apps/users/views_auth.py` (y `Verif
 | Método y ruta | Id | Hook · mock | Pantalla | Backend |
 |---|---|---|---|---|
 | POST `auth/register/` | `auth.register` | `useRegister` · `register` | A2, A5 (§5 A) | `RegisterView`. 201 sin sesión, con `signup_nonce` para este navegador; manda el link de A3. 400 por campo (email ya usado con `code: "unique"`, solo con lo demás bien), 429 por IP, 502 si el email no sale |
-| POST `auth/verify-email/` | `auth.verifyEmail` | `useVerifyEmail` · `verifyEmail` | A3 (§5 A) | `VerifyEmailView`. El link del registro (`make_token(user, SIGNUP)`) verifica; devuelve el par JWT solo con el `signup_nonce` del registro, si no `{signed_in: false}` |
+| POST `auth/verify-email/` | `auth.verifyEmail` | `useVerifyEmail` · `verifyEmail` | A3 (§5 A) | `VerifyEmailView`. El link del registro (`make_token(user, SIGNUP)`) verifica y devuelve el par JWT solo con el `signup_nonce` del registro o con la sesión de la cuenta; si no, `{signed_in: false}` y no cambia nada |
 | POST `auth/verify-email/resend/` | `auth.resendVerification` | `useResendVerification` · `resendVerification` | A3 (§5 A) | `ResendVerificationView`. 204 siempre; 429 antes de 60 s por email; lo manda el worker |
 | POST `auth/password-reset/` | `auth.requestPasswordReset` | `useRequestPasswordReset` · `requestPasswordReset` | A4 (§5 A), D9 (§6) | `PasswordResetView`. 204 siempre; link `/recuperar#token=…&email=…` (en el fragmento); 429 antes de 60 s por email |
 | POST `auth/password-reset/confirm/` | `auth.confirmPasswordReset` | `useConfirmPasswordReset` · `confirmPasswordReset` | A4 (§5 A) | `PasswordResetConfirmView`. 204; reglas de contraseña en castellano; cierra todas las sesiones |
