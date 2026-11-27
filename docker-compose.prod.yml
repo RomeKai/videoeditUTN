@@ -5,6 +5,21 @@
 #   - sin bind mounts del código: se corre lo que trae la imagen;
 #   - migraciones al arrancar web, restart automático y healthchecks;
 #   - la API se publica solo en 127.0.0.1: el TLS lo termina un reverse proxy del host.
+#     Ese proxy deja pasar, por ruta, lo mismo que el backend (apps/core/upload_limits.py; el
+#     default de 1m de nginx corta todas las subidas). Como en docker/demo/nginx.conf:
+#       - crear, from-prompt y el PUT o PATCH de /api/v1/projects/<id>/: MAX_UPLOAD_BYTES (2 GB) más
+#         1 MB para el resto del formulario (nginx `client_max_body_size 2049m`; Caddy
+#         `request_body { max_size 2049MiB }` con un matcher de esas rutas);
+#       - /api/v1/brand-kits/ y /api/v1/brand-kits/<id>/: 113m;
+#       - todo lo demás: MAX_REQUEST_BYTES (5m), también /admin/ a propósito: un tope más grande ahí deja
+#         que cualquiera, sin sesión, haga guardar en disco esa cantidad (el chequeo de CSRF lee el cuerpo).
+#     gunicorn corre workers sync con --timeout 120: un worker que pasa 120 s con un pedido se
+#     reinicia, también mientras recibe una subida lenta. nginx guarda el cuerpo entero antes de
+#     pasarlo (proxy_request_buffering on, el default), así gunicorn lo recibe en segundos. Caddy no:
+#     pasa el cuerpo a medida que llega, y una subida de 2 GB por una conexión lenta mata el worker.
+#     Con Caddy (o con nginx sin buffering): workers gthread (`--worker-class gthread --threads 4`,
+#     el worker sigue respondiendo mientras un hilo recibe), o un gunicorn aparte con un --timeout
+#     largo solo para las rutas de subida, al que el proxy les manda esas rutas.
 #
 # Uso:
 #   cp back/.env.example back/.env.prod   # completar SECRET_KEY, ALLOWED_HOSTS, R2, keys de IA

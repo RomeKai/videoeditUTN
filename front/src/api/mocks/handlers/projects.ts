@@ -8,6 +8,7 @@ import { planOf, serializeClip, serializeProject, serializeProjectRow } from '..
 import { startPaidRender } from '../render';
 import { addActivity, InsufficientFunds, reserveAutoRender, reserveFunds, serveActivity, startRender } from '../sim';
 import { linkProvider } from '@/features/proyectos/project-view';
+import { formatBytes } from '@/lib/format';
 import { projectStatusGroup } from '@/lib/project-status';
 
 const RANK: Record<RenderResolution, number> = { '720p': 1, '1080p': 2, '4K': 3 };
@@ -30,6 +31,7 @@ const UPLOAD_MESSAGES = {
 /**
  * Mock triggers, by file name (or link), to reach every error of map §4 without real media:
  *   no-video · ilegible · sin-pista · sin-duracion · muy-largo · muy-grande · muy-chico → 400 on the file
+ *   muy-pesado → 413 `file_too_large`, as a file over the cap that the browser did not stop
  * and by file name or title, for what happens later in the pipeline:
  *   moderacion · sin-voz · sin-clips · timeout · lento · falla → the project fails with that error code
  *   demanda → waits for capacity ("En espera") before going on
@@ -45,6 +47,11 @@ const UPLOAD_TRIGGERS: Array<[RegExp, keyof typeof UPLOAD_MESSAGES]> = [
   [/muy-grande/i, 'too_large'],
   [/muy-chico/i, 'too_small'],
 ];
+
+/** The backend's 413 (back/apps/core/upload_limits.py · too_large_body). */
+function uploadTooLarge(limit: number): contract.UploadTooLargeBody {
+  return { error: `El archivo pesa más de ${formatBytes(limit)}, el máximo que podemos recibir.`, code: contract.FILE_TOO_LARGE_CODE, limit_bytes: limit };
+}
 
 function simFor(text: string, now: number): ProjectSim {
   const sim: ProjectSim = { phase: 'ingest', startedAt: now };
@@ -106,7 +113,7 @@ function createProject(context: Parameters<Parameters<typeof route<typeof contra
   if (upload) {
     const name = upload.name || 'video.mp4';
     if (!/\.(mp4|mov|avi)$/i.test(name)) throw badRequest({ source_file: ['Solo se permiten archivos de video (.mp4, .mov, .avi)'] });
-    if (upload.size > PRICING.upload_max_size_bytes) throw badRequest({ source_file: ['El archivo es demasiado grande (Máx 500MB)'] });
+    if (upload.size > PRICING.upload_max_size_bytes || /muy-pesado/i.test(name)) throw new MockHttpError(413, uploadTooLarge(PRICING.upload_max_size_bytes));
     const trigger = UPLOAD_TRIGGERS.find(([pattern]) => pattern.test(name));
     // Same shape as the backend today: only the message of InvalidUploadError, no code.
     if (trigger) throw badRequest({ source_file: [UPLOAD_MESSAGES[trigger[1]]] });

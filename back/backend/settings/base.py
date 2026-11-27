@@ -57,6 +57,8 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware', # CORS must be before Common
     # After CORS, so the browser can read the 503 (apps.core.maintenance).
     'apps.core.maintenance.MaintenanceModeMiddleware',
+    # Before anything reads the body, and after CORS so the browser can read the 413 (apps.core.upload_limits).
+    'apps.core.upload_limits.UploadSizeLimitMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -316,6 +318,14 @@ AI_PROMPT_MAX_CHARS = env.int('AI_PROMPT_MAX_CHARS', default=1000)
 AI_UPLOAD_MAX_DURATION_SECONDS = env.int('AI_UPLOAD_MAX_DURATION_SECONDS', default=10800)
 AI_UPLOAD_MAX_LONG_SIDE_PX = env.int('AI_UPLOAD_MAX_LONG_SIDE_PX', default=4096)
 AI_UPLOAD_MIN_SHORT_SIDE_PX = env.int('AI_UPLOAD_MIN_SHORT_SIDE_PX', default=240)
+# Size cap of the video of a project, in bytes (apps.core.upload_limits): on its
+# routes, a body over it (plus the rest of the form) is a 413 before it is read,
+# and a file over it a 413 before ffprobe and the reservation. Any other request
+# may weigh MAX_REQUEST_BYTES (brand kits have caps of their own). The proxy in
+# front lets through the same by route (docker/demo/nginx.conf,
+# client_max_body_size): change both together.
+MAX_UPLOAD_BYTES = env.int('MAX_UPLOAD_BYTES', default=2 * 1024 ** 3)
+MAX_REQUEST_BYTES = env.int('MAX_REQUEST_BYTES', default=5 * 1024 ** 2)
 # "Editar el video completo" (single_edit): the whole video is one clip rendered
 # by one task, so it is for short videos.
 AI_SINGLE_EDIT_MAX_DURATION_SECONDS = env.int('AI_SINGLE_EDIT_MAX_DURATION_SECONDS', default=600)

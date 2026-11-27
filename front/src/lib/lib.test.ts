@@ -3,7 +3,7 @@ import type { Pricing } from '@/api/contracts/billing';
 import type { Project } from '@/api/contracts/projects';
 import { ApiError, NetworkError } from '@/api/errors';
 import { transcriptToSrt, transcriptToTxt } from './download';
-import { approveErrorKind, errorMessage, isModerationError, pipelineErrorMessage, pipelineErrorTitle, planLimitKind, uploadErrorCode, uploadErrorMessage } from './error-messages';
+import { approveErrorKind, errorMessage, isModerationError, pipelineErrorMessage, pipelineErrorTitle, planLimitKind, uploadErrorCode, uploadErrorMessage, uploadTooLarge } from './error-messages';
 import { formatBytes, formatDateTime, formatDuration, formatMinutes, formatNumber, formatPercent, formatRelative, formatTimecode, formatTokens, formatUsd, initials, plural } from './format';
 import { can } from './permissions';
 import { estimateCost, firstPlanWith, planAllowsResolution, secondsForTokens } from './pricing';
@@ -242,6 +242,15 @@ describe('mensajes de error (sección 4 del mapa)', () => {
     expect(uploadErrorCode(new ApiError(400, 'projects.create', { title: ['Muy largo'] }))).toBeNull();
     expect(uploadErrorMessage('too_long', { maxSeconds: 1800 })).toBe('El video dura más de lo que permite tu plan (máx. 30 min).');
     expect(uploadErrorMessage('no_duration')).toBe(uploadErrorMessage('unreadable'));
+  });
+
+  it('reconoce el 413 de un archivo que pasa el tope, con el cuerpo del backend o sin él (el del proxy)', () => {
+    const backend = new ApiError(413, 'projects.create', { error: 'El archivo pesa más de 2 GB, el máximo que podemos recibir.', code: 'file_too_large', limit_bytes: 2147483648 });
+    expect(uploadTooLarge(backend)).toEqual({ limitBytes: 2147483648 });
+    expect(uploadTooLarge(new ApiError(413, 'projects.create', '<html><body>413 Request Entity Too Large</body></html>'))).toEqual({});
+    expect(uploadTooLarge(new ApiError(413, 'projects.create', undefined))).toEqual({});
+    expect(uploadTooLarge(new ApiError(400, 'projects.create', { source_file: ['x'] }))).toBeNull();
+    expect(uploadTooLarge(new NetworkError('projects.create'))).toBeNull();
   });
 
   it('distingue el límite del plan por `code` o por el mensaje de PricingEngine', () => {

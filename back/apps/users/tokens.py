@@ -16,14 +16,18 @@ Closing the session on every device (``POST /auth/logout/`` with
 ``all_devices``) keeps the password, so the hash does not help there:
 ``revoke_sessions`` stamps ``User.sessions_revoked_at`` and blacklists the
 refresh tokens, and a token issued before that moment (its ``iat``) answers
-401 too, the access ones included (``SessionJWTAuthentication``).
+401 too, the access ones included (``SessionJWTAuthentication``). Both say
+``code: "session_revoked"``: the refresh one too, although the blacklist
+refuses it first (``RevocableTokenRefreshSerializer._closed_on_every_device``).
 """
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework_simplejwt.exceptions import TokenBackendError, TokenError
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.settings import api_settings
+from rest_framework_simplejwt.state import token_backend
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.utils import get_md5_hash_password
@@ -96,7 +100,12 @@ class RevocableTokenRefreshSerializer(TokenRefreshSerializer):
     """
 
     def validate(self, attrs):
-        refresh = self.token_class(attrs['refresh'])  # signature, expiry and blacklist
+        try:
+            refresh = self.token_class(attrs['refresh'])  # signature, expiry and blacklist
+        except TokenError:
+            if self._closed_on_every_device(attrs['refresh']):
+                raise _session_revoked()
+            raise
         user_id = refresh.payload.get(api_settings.USER_ID_CLAIM)
         user = get_user_model().objects.filter(**{api_settings.USER_ID_FIELD: user_id}).first()
         if user is None:
@@ -109,3 +118,32 @@ class RevocableTokenRefreshSerializer(TokenRefreshSerializer):
             refresh.blacklist()
             raise _session_revoked()
         return super().validate(attrs)
+
+    def _closed_on_every_device(self, raw):
+        """
+        Whether a refresh token SimpleJWT refused is one that ``revoke_sessions``
+        ended. It blacklists them, and the blacklist is checked before
+        ``validate`` could compare the dates: without this, the other devices
+        got ``token_not_valid`` (the web app's «Tu sesión venció») whenever
+        their access token had expired before the revocation.
+
+        Only for a token this server signed, not expired, of the refresh type,
+        of a user who still has the password it was issued with and closed
+        every session after it was issued. Anything else keeps SimpleJWT's
+        answer: a forged, tampered or expired token, one of a deleted user or
+        of an older password, and one blacklisted by its rotation that was
+        issued after the revocation learn nothing. (One rotated before the
+        revocation was ended by it too, and says so.)
+        """
+        try:
+            payload = token_backend.decode(raw, verify=True)  # signature and expiry
+        except TokenBackendError:
+            return False
+        if payload.get(api_settings.TOKEN_TYPE_CLAIM) != self.token_class.token_type:
+            return False
+        user = get_user_model().objects.filter(
+            **{api_settings.USER_ID_FIELD: payload.get(api_settings.USER_ID_CLAIM)},
+        ).first()
+        if user is None or payload.get(api_settings.REVOKE_TOKEN_CLAIM) != get_md5_hash_password(user.password):
+            return False
+        return issued_before_revocation(user, payload)

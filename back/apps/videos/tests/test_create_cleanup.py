@@ -118,6 +118,22 @@ class UploadCleanupTests(CreationHarness, TestCase):
 
         self.assert_nothing_left(response, 500)
 
+    def test_a_failed_price_or_reservation_logs_the_id_of_the_discarded_project(self):
+        """Logged before the discard: deleting the row leaves project.pk as None."""
+        cases = (
+            ("apps.videos.services.render_pricing.price_new_project", 400, "Error calculando costo V3"),
+            ("apps.payments.services.wallet_service.reserve_funds", 500, "Error reserving funds on create"),
+        )
+        for target, status_code, event in cases:
+            with patch(target, side_effect=RuntimeError("boom")), \
+                    self.assertLogs("apps.videos.views", level=logging.ERROR) as logs:
+                response = self.upload()
+
+            self.assert_nothing_left(response, status_code)
+            line = next(message for message in logs.output if event in message)
+            self.assertNotIn("project_id=None", line)
+            self.assertRegex(line, r"project_id=[0-9a-f-]{36} error=RuntimeError")
+
     def test_a_failed_save_does_not_leak_the_error_text(self):
         detail = "/srv/media/videos/raw/privado.mp4 DETAIL: Key (title)=(Privado)"
         with patch.object(MediaInfo, "as_metadata", side_effect=RuntimeError(detail)), \

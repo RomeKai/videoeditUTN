@@ -248,6 +248,10 @@ describe('mocks', () => {
     expect((await fail(upload('no-video.mp4'))).fieldErrors.source_file?.[0]).toMatch(/no es un video válido/);
     expect((await fail(upload('muy-chico.mp4'))).fieldErrors.source_file?.[0]).toMatch(/demasiado baja/);
     expect((await fail(upload('notas.txt'))).fieldErrors.source_file?.[0]).toMatch(/Solo se permiten archivos de video/);
+    // Over the cap: a 413 with its code and the cap of /pricing/, before anything is reserved.
+    const heavy = await fail(upload('muy-pesado.mp4'));
+    expect(heavy.status).toBe(413);
+    expect(heavy.data).toEqual({ error: 'El archivo pesa más de 2 GB, el máximo que podemos recibir.', code: 'file_too_large', limit_bytes: 2 * 1024 ** 3 });
     expect((await fail(upload('largo-20min.mp4', { project_type: 'single_edit' }))).fieldErrors.project_type?.[0]).toMatch(/hasta 10 min/);
     expect((await fail(apiCall(projects.createProject, { body: { video_url: 'https://youtu.be/abc', project_type: 'single_edit' } }))).fieldErrors.project_type?.[0]).toMatch(/subí el archivo/);
     expect((await fail(apiCall(projects.createProjectFromPrompt, { body: { video_url: 'https://youtu.be/abc', prompt: ' ' } }))).fieldErrors.prompt).toBeTruthy();

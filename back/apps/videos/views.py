@@ -519,8 +519,9 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
                 _discard_new_project(project)
                 return Response(refused.body, status=status.HTTP_400_BAD_REQUEST)
             except Exception as e:
-                _discard_new_project(project)
+                # Logged first: the discard deletes the row and leaves project.pk as None.
                 logger.error("Error calculando costo V3 project_id=%s error=%s", project.pk, type(e).__name__)
+                _discard_new_project(project)
                 return Response({"error": "Error interno al procesar el presupuesto del video."}, status=status.HTTP_400_BAD_REQUEST)
 
         elif project.video_url:
@@ -545,6 +546,11 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         outcome = {}
         try:
             with transaction.atomic():
+                # The project's row first, then the wallet (reserve_funds): the order of an
+                # approval, a paid render and a workspace delete. The other way round, a
+                # delete that already holds this row and waits for the wallet deadlocks with
+                # this reservation, whose Transaction row needs this one (its foreign key).
+                VideoProject.objects.select_for_update().filter(pk=project.pk).values_list('pk', flat=True).first()
                 # Asegurar que el workspace tenga billetera (autocuración)
                 from apps.payments.models import Wallet
                 wallet, _ = Wallet.objects.get_or_create(workspace=workspace)
@@ -569,8 +575,8 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
             }, status=status.HTTP_402_PAYMENT_REQUIRED)
             
         except Exception as e:
-            _discard_new_project(project)
             logger.error("Error reserving funds on create project_id=%s error=%s", project.pk, type(e).__name__)
+            _discard_new_project(project)
             return Response({"error": "Error procesando el pago."}, status=500)
 
         not_queued = outcome.get('not_queued')

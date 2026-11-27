@@ -54,6 +54,14 @@ export const BrandKitInput = z.object({
 export type BrandKitInput = z.infer<typeof BrandKitInput>;
 
 const roleError = { status: 403, when: 'El rol no puede crear ni editar brand kits (Lector).' };
+/**
+ * Each file has its cap (back/apps/core/upload_limits.py · BRAND_KIT_FILE_MAX_BYTES, the same as features/brand-kits/kit.ts):
+ * over it, a 400 on its field. The whole request may weigh their sum.
+ */
+const uploadTooLargeError = {
+  status: 413,
+  when: 'El pedido pesa más que los archivos del kit juntos (112 MB) más 1 MB: `{ error, code: "file_too_large", limit_bytes }`, sin leer el cuerpo. Cada archivo tiene su tope (fuentes 5 MB, logo 2 MB, intro y outro 50 MB): pasado de ese, es un 400 en su campo con el texto de la web. La web revisa los dos antes de subir.',
+};
 
 export const listBrandKits = defineEndpoint({
   id: 'brandKits.list',
@@ -81,7 +89,7 @@ export const createBrandKit = defineEndpoint({
   bodyType: 'multipart',
   response: BrandKit,
   successStatus: 201,
-  errors: [{ status: 400, when: 'Validación por campo (nombre vacío, color que no es hex, archivo inválido).' }, roleError],
+  errors: [{ status: 400, when: 'Validación por campo (nombre vacío, color que no es hex, archivo inválido, archivo más pesado que su tope).' }, uploadTooLargeError, roleError],
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views.py · BrandKitViewSet.create/perform_create',
@@ -111,7 +119,7 @@ export const updateBrandKit = defineEndpoint({
   request: BrandKitInput.partial(),
   bodyType: 'multipart',
   response: BrandKit,
-  errors: [{ status: 400, when: 'Validación por campo.' }, roleError, { status: 404, when: 'No existe o es de otro workspace.' }],
+  errors: [{ status: 400, when: 'Validación por campo, también un archivo más pesado que su tope.' }, uploadTooLargeError, roleError, { status: 404, when: 'No existe o es de otro workspace.' }],
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views.py · BrandKitViewSet.perform_update/_save_one_default + brand_kit_service',

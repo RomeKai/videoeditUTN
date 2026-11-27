@@ -46,7 +46,8 @@ class EstimateRefused(Exception):
 
 
 def pricing_values():
-    from apps.videos.serializers import UPLOAD_EXTENSIONS, UPLOAD_MAX_SIZE_BYTES
+    from apps.core.upload_limits import max_upload_bytes
+    from apps.videos.serializers import UPLOAD_EXTENSIONS
     from apps.videos.services.ai.prompt_parser import prompt_max_chars
     from apps.videos.services.ai.selection_criteria import MAX_SELECTION_CRITERIA_CHARS
 
@@ -59,7 +60,7 @@ def pricing_values():
         'token_price_usd': money(Decimal(settings.TOKEN_PRICE_USD)),
         'single_edit_max_duration_seconds': int(getattr(settings, 'AI_SINGLE_EDIT_MAX_DURATION_SECONDS', 600)),
         'upload_max_duration_seconds': int(getattr(settings, 'AI_UPLOAD_MAX_DURATION_SECONDS', 10800)),
-        'upload_max_size_bytes': UPLOAD_MAX_SIZE_BYTES,
+        'upload_max_size_bytes': max_upload_bytes(),
         'upload_extensions': list(UPLOAD_EXTENSIONS),
         'selection_criteria_max_chars': MAX_SELECTION_CRITERIA_CHARS,
         'prompt_max_chars': prompt_max_chars(),

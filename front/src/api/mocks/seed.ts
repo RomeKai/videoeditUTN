@@ -109,7 +109,7 @@ export const PRICING = {
   token_price_usd: 0.01,
   single_edit_max_duration_seconds: 600,
   upload_max_duration_seconds: 10800,
-  upload_max_size_bytes: 500 * 1024 * 1024,
+  upload_max_size_bytes: 2 * 1024 ** 3,
   upload_extensions: ['.mp4', '.mov', '.avi'],
   selection_criteria_max_chars: 300,
   prompt_max_chars: 1000,
