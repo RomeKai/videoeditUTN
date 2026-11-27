@@ -75,7 +75,26 @@ export function fileName(url: string | null | undefined): string {
   }
 }
 
-/** Readable family for a font file: "InterTight-Bold.ttf" → "Inter Tight". */
+/** A word as people write them in a file name: "bold", "Regular", "VF", "2024". A storage suffix is none of these. */
+const WORD = /^([A-Z]?[a-z]+|[A-Z]+|\d+)$/;
+
+/** A file in the folder of its kit: ".../assets/logos/<kit id>/logo.png". There the name is the one it was uploaded with. */
+const IN_KIT_FOLDER = /\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[^/]+$/i;
+
+/**
+ * The name a stored file (a URL or path of the backend) was uploaded with. Files saved before
+ * each kit had its folder got a suffix from the storage when the name was taken (Django: "_" and
+ * 7 random letters and digits): "/media/assets/logos/logo_vCHttht.png" → "logo.png".
+ * Only for those old paths, and never for a real word ("Inter_Regular.ttf") or a name that is
+ * all suffix ("_abcDEF1.png"). Not for a file the user just picked: use its `name`.
+ */
+export function storedFileName(url: string | null | undefined): string {
+  const name = fileName(url);
+  if (!url || IN_KIT_FOLDER.test(url.split(/[?#]/)[0] ?? '')) return name;
+  return name.replace(/^(.+)_([A-Za-z0-9]{7})(\.[^.]+)?$/, (match, stem: string, suffix: string, extension: string = '') => (WORD.test(suffix) ? match : `${stem}${extension}`));
+}
+
+/** Readable family for a font file name or URL, as it is: "InterTight-Bold.ttf" → "Inter Tight". */
 export function fontLabel(url: string | null | undefined): string {
   const base = fileName(url).replace(/\.(ttf|otf)$/i, '');
   if (!base) return '';
@@ -84,6 +103,11 @@ export function fontLabel(url: string | null | undefined): string {
     .replace(/[-_]+/g, ' ')
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .trim();
+}
+
+/** The family of a stored font (a URL or path of the backend), without the suffix of the storage. */
+export function storedFontLabel(url: string | null | undefined): string {
+  return fontLabel(storedFileName(url));
 }
 
 /** Only real addresses are loaded in the browser. The mocks answer with paths (`/media/…`) that no server has. */

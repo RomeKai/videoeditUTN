@@ -126,7 +126,7 @@ Este es el contrato de integración entre el frontend (`front/`) y el backend Dj
 | GET | `/api/v1/brand-kits/:id/` | Un brand kit. | ✅ existe | F2 |
 | PATCH | `/api/v1/brand-kits/:id/` | Edita un brand kit. Con `is_default: true` pasa a ser el default del workspace. | ✅ existe | F1, F2 |
 | DELETE | `/api/v1/brand-kits/:id/` | Borra un brand kit. Los proyectos que lo usaban quedan sin kit (SET_NULL). | ✅ existe | F1, F2 |
-| POST | `/api/v1/brand-kits/:id/duplicate/` | Copia un brand kit con sus archivos ("Copia de …"). La copia nunca es default. | ✅ existe | F1 |
+| POST | `/api/v1/brand-kits/:id/duplicate/` | Copia un brand kit con sus archivos ("Copia de …", "Copia 2 de …"). La copia nunca es default. | ✅ existe | F1 |
 | GET | `/api/v1/social-accounts/` | Una entrada por red (TikTok, Instagram Reels, YouTube Shorts) con su estado y sus límites. | ❌ falta (propuesto) · hueco 10 | H3, E1, B2 |
 | POST | `/api/v1/social-accounts/connect/` | Devuelve la URL de la red (vía Ayrshare) para autorizar la cuenta en una ventana aparte. | ❌ falta (propuesto) · hueco 10 | D6, H3, E1 |
 | DELETE | `/api/v1/social-accounts/:platform/` | Desconecta la cuenta de una red. Las publicaciones programadas en esa red quedan en error. | ❌ falta (propuesto) · hueco 10 | H3 |
@@ -1107,13 +1107,13 @@ Borra un brand kit. Los proyectos que lo usaban quedan sin kit (SET_NULL).
 
 #### `POST /api/v1/brand-kits/:id/duplicate/`
 
-Copia un brand kit con sus archivos ("Copia de …"). La copia nunca es default.
+Copia un brand kit con sus archivos ("Copia de …", "Copia 2 de …"). La copia nunca es default.
 
 | | |
 |---|---|
 | Id | `brandKits.duplicate` |
 | Backend | ✅ existe · `back/apps/videos/views.py · BrandKitViewSet.duplicate + back/apps/videos/services/brand_kit_service.py · duplicate_brand_kit` |
-| Nota | Sin cuerpo. La copia queda en el workspace activo, a nombre de quien la pide, como «Copia de {nombre}» (cortado a 100 caracteres; el nombre no es único, así que duplicar dos veces da dos kits con el mismo nombre). Copia todos los campos y cada archivo (fuentes, logo, intro, outro) a un nombre nuevo del almacenamiento: los dos kits no comparten archivos. Nunca es default. |
+| Nota | Sin cuerpo. La copia queda en el workspace activo, a nombre de quien la pide, como «Copia de {nombre}»; si el workspace ya tiene ese nombre, «Copia 2 de {nombre}», «Copia 3 de {nombre}»… (cortado a 100 caracteres). Copia todos los campos y cada archivo (fuentes, logo, intro, outro) a la carpeta del kit nuevo con el mismo nombre de archivo (`assets/logos/{id del kit}/logo.png`): los dos kits no comparten archivos. Nunca es default. |
 | Sesión | JWT · `X-Workspace-Id` |
 | Respuesta 201 | BrandKit |
 | Errores | **403** El rol no puede crear ni editar brand kits (Lector).<br>**404** No existe o es de otro workspace.<br>**502** No se pudo copiar un archivo del kit (`code: "brand_kit_copy_failed"`). No se crea nada: ni el kit ni archivos sueltos. No es 503: la app lee cualquier 503 como mantenimiento. |
