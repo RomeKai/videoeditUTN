@@ -18,6 +18,8 @@ from rest_framework.throttling import ScopedRateThrottle
 from apps.users.emails import InvalidEmailDomain, normalize_email
 from apps.users.models import User
 
+from .clocks import frozen_clocks
+
 pytestmark = pytest.mark.django_db
 
 LOGIN_URL = "/api/token/"
@@ -151,7 +153,8 @@ def test_the_login_with_a_domain_that_cannot_be_encoded_is_a_401(user):
 
 def test_failures_with_another_spelling_of_the_domain_lock_the_same_account(user):
     api = APIClient(REMOTE_ADDR="10.0.20.1")
-    with mock.patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"login": "1000/min"}):
+    # Ten failures inside one window: a clock that does not move (they could cross its edge).
+    with frozen_clocks(), mock.patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"login": "1000/min"}):
         failures = [
             api.post(LOGIN_URL, {"email": FULL_WIDTH, "password": "otra"}, format="json").status_code
             for _ in range(10)
@@ -351,7 +354,8 @@ def test_a_legacy_account_with_an_invalid_domain_still_signs_in(legacy):
 
 def test_failed_logins_of_a_legacy_account_are_counted(legacy):
     api = APIClient(REMOTE_ADDR="10.0.21.1")
-    with mock.patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"login": "1000/min"}):
+    # Ten failures inside one window: a clock that does not move (they could cross its edge).
+    with frozen_clocks(), mock.patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"login": "1000/min"}):
         failures = [
             api.post(LOGIN_URL, {"email": UNENCODABLE, "password": "otra"}, format="json").status_code
             for _ in range(10)

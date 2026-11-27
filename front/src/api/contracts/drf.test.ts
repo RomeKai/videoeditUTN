@@ -20,7 +20,7 @@ import {
   listTransactions,
   simulatePurchase,
 } from './billing';
-import { BrandKit, listBrandKits } from './brandkits';
+import { BrandKit, duplicateBrandKit, listBrandKits, updateBrandKit } from './brandkits';
 import { ClipPreview } from './clips';
 import real from './drf/responses.json';
 import { ApprovePaperEditResponse, CreateFromPromptResponse, CreateProjectResponse, PaperEditData, Project, ProjectsResponse } from './projects';
@@ -75,6 +75,22 @@ describe('respuestas reales del backend', () => {
     // Colors are free text in the backend: "#000" and lowercase are valid answers.
     parse(BrandKit, real.brand_kit);
     parse(listBrandKits.response, real.brand_kit_list);
+  });
+
+  it('brand kits: la copia de duplicar y su error; duplicar y el default único ya existen', () => {
+    const copy = duplicateBrandKit.response.parse(real.brand_kit_duplicate);
+    expect(copy.name).toBe(`Copia de ${real.brand_kit.name}`);
+    expect(copy.is_default).toBe(false);
+    // Its files are its own: another name in the same folder.
+    expect(copy.primary_font).not.toBe(real.brand_kit.primary_font);
+    expect(copy.primary_font).toMatch(/\/media\/assets\/fonts\/Inter_\w{7}\.ttf$/);
+    const failed = error('brand_kit_copy_failed');
+    expect(failed.code).toBe('brand_kit_copy_failed');
+    expect(duplicateBrandKit.errors.map((item) => item.status)).toEqual([403, 404, 502]);
+    // Never a 503 (the app reads it as maintenance), and the toast keeps its own sentence.
+    expect(errorMessage(failed, 'No pudimos duplicar el brand kit.')).toBe('No pudimos duplicar el brand kit.');
+    expect(duplicateBrandKit.backend.status).toBe('exists');
+    expect(updateBrandKit.backend.status).toBe('exists');
   });
 
   it('el aviso de «renderizar sin revisar» y el error de auto-render se pueden leer', () => {

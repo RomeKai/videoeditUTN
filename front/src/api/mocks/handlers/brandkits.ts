@@ -62,7 +62,7 @@ function apply(kit: BrandKit, form: FormData, { partial }: { partial: boolean })
   if (typeof isDefault === 'string') kit.is_default = ['true', '1', 'on'].includes(isDefault.toLowerCase());
 }
 
-/** The mock keeps a single default per workspace, as the map asks (the backend does not guarantee it yet). */
+/** A single default per workspace, as the backend keeps it (BrandKitViewSet._save_one_default). */
 function enforceSingleDefault(db: MockDb, kit: BrandKit): void {
   if (!kit.is_default) return;
   for (const other of db.brandKits) if (other.workspace === kit.workspace && other.id !== kit.id) other.is_default = false;
@@ -93,8 +93,6 @@ export const brandKitsHandlers = [
       created_at: new Date(now).toISOString(),
     };
     apply(kit, form ?? new FormData(), { partial: false });
-    // The first kit of a workspace becomes its default.
-    if (!db.brandKits.some((item) => item.workspace === workspace.id)) kit.is_default = true;
     db.brandKits.push(kit);
     enforceSingleDefault(db, kit);
     return { data: kit };
@@ -128,6 +126,11 @@ export const brandKitsHandlers = [
     require('brandkit.manage');
     const kit = own(db, params.id, workspace.id);
     const copy: BrandKit = { ...kit, id: newId(), user: user.id, name: `Copia de ${kit.name}`.slice(0, 100), is_default: false, created_at: new Date(now).toISOString() };
+    // Each file is copied under a new name, as the storage does: the two kits never share one.
+    for (const field of FILE_FIELDS) {
+      const url = kit[field];
+      if (url) copy[field] = url.replace(/(\.[^./]+)?$/, (extension) => `_${copy.id.slice(0, 7)}${extension}`);
+    }
     db.brandKits.push(copy);
     return { data: copy };
   }),
