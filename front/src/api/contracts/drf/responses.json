@@ -2051,6 +2051,8 @@
     "billing_change_plan_400_current": {
       "status": 400,
       "body": {
+        "error": "Ya es tu plan actual.",
+        "code": "nothing_to_cancel",
         "plan_id": [
           "Ya es tu plan actual."
         ]
@@ -2069,6 +2071,27 @@
         "code": "seats_exceeded",
         "seats_used": 4,
         "max_members": 2
+      }
+    },
+    "billing_cancel_pending_409_plan_changed": {
+      "status": 409,
+      "body": {
+        "error": "Tu plan cambió mientras tanto: ahora estás en el plan Pro. No cancelamos nada.",
+        "code": "plan_changed"
+      }
+    },
+    "billing_cancel_pending_409_pending_changed": {
+      "status": 409,
+      "body": {
+        "error": "Mientras tanto cambió lo que estaba pendiente. No cancelamos nada: revisá cómo quedó y, si querés, probá de nuevo.",
+        "code": "pending_changed"
+      }
+    },
+    "billing_cancel_pending_409_nothing": {
+      "status": 409,
+      "body": {
+        "error": "Ya no hay nada pendiente para cancelar.",
+        "code": "nothing_to_cancel"
       }
     },
     "billing_purchase_400_min": {
@@ -2626,6 +2649,32 @@
   "billing_change_plan_cancel": {
     "applied": "now",
     "checkout_url": null,
+    "subscription": {
+      "plan": {
+        "id": "128f9ed2-0bce-4c78-9d88-955b1d7d8ca5",
+        "name": "Pro",
+        "max_video_duration_seconds": 10800,
+        "max_resolution": "4K",
+        "has_watermark": false,
+        "allow_scheduling": true,
+        "allow_crossposting": true,
+        "has_seo_optimization": true,
+        "has_thumbnail_engine": false,
+        "base_discount_rate": "0.10",
+        "max_members": 10,
+        "is_active": true,
+        "price_usd_monthly": "49.00",
+        "description": "Para equipos que publican en todas las redes.",
+        "sort_order": 3,
+        "is_recommended": true
+      },
+      "status": "active",
+      "renews_at": "2026-12-26T21:22:37.055166Z",
+      "pending_plan": null,
+      "pending_payment": null
+    }
+  },
+  "billing_cancel_pending": {
     "subscription": {
       "plan": {
         "id": "128f9ed2-0bce-4c78-9d88-955b1d7d8ca5",

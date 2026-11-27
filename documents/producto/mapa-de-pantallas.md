@@ -609,6 +609,11 @@ Solo Dueño y Admin. El resto ve únicamente el saldo, en la barra.
 - **Qué muestra:** igual que A6, con el plan actual marcado.
   - Subir de plan se aplica al momento.
   - Bajar de plan se aplica al fin del período, con aviso de qué se pierde.
+  - Una bajada programada o un pago de plan sin terminar se avisan arriba ("Tu plan pasa a X el …", "Estás pasando al plan X: falta el pago") con el botón **Seguir con {plan actual}**.
+- **Seguir con {plan actual}:** solo cancela lo que el aviso muestra (la bajada, el pago o los dos). Nunca cambia el plan.
+  - Si la pantalla quedó vieja (el pago se aprobó en otra pestaña, o empezó otro), no cancela nada: se relee la facturación y se muestra el plan de ahora con un aviso ("Tu plan cambió mientras tanto: ahora estás en el plan X. No cancelamos nada."), nunca "Listo: seguís con …".
+  - Si lo que mostraba ya se resolvió en otro lado, la pantalla se pone al día sin aviso.
+  - Mientras se confirma el pago al volver del checkout, el botón no aparece: el pago podría estar hecho.
 - **API:** ❌ (PAY-01/02/03 del backlog).
 
 #### G4. Comprar tokens

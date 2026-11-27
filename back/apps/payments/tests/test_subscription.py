@@ -472,13 +472,14 @@ def test_choosing_the_current_plan_cancels_the_scheduled_change(owner, plans):
     assert (workspace.pending_plan, workspace.pending_plan_effective_at) == (None, None)
 
 
-def test_choosing_the_current_plan_with_nothing_scheduled_is_a_400(owner, plans):
+def test_choosing_the_current_plan_with_nothing_scheduled_is_a_400_with_its_code(owner, plans):
     user, _ = owner
 
     response = change(client_for(user), plans['Gratis'])
 
     assert response.status_code == 400
-    assert response.json() == {'plan_id': ['Ya es tu plan actual.']}
+    # The web matches the code, never the text; `plan_id` stays for web builds from before the code.
+    assert response.json() == {'error': 'Ya es tu plan actual.', 'code': 'nothing_to_cancel', 'plan_id': ['Ya es tu plan actual.']}
 
 
 def test_a_plan_that_is_not_offered_is_a_404(owner, plans):
