@@ -13,6 +13,7 @@ from django.conf import settings
 from django.core.files import File
 from apps.videos.models import AIUsageRecord, VideoProject, VideoClip
 from apps.payments.models import Transaction
+from apps.notifications.services import notify_project_failed, notify_render_finished
 from moviepy import VideoFileClip, concatenate_videoclips
 from apps.videos.services.selection_engine import GeminiFlashStrategy, SelectionEngine
 from apps.videos.services.watermark import apply_watermark, project_needs_watermark
@@ -101,6 +102,8 @@ def finalize_project_render(project_id):
     stage = _close_render_fan_out(project_id)
     _settle_whole_video_reservation(project_id)
     _settle_clip_render_reservations(project_id)
+    if stage:
+        notify_render_finished(project_id)
     return stage
 
 
@@ -818,13 +821,16 @@ def _fail_render(project_id, code):
     if _renders_per_clip(VideoProject.objects.filter(pk=project_id).values_list('metadata', flat=True).first()):
         logger.warning("render.fail_skipped project_id=%s reason=per_clip", project_id)
         return
-    VideoProject.objects.filter(pk=project_id).exclude(
-        status=VideoProject.Status.COMPLETED,
+    # Counted without the already failed: only the call that fails it notifies.
+    failed_now = VideoProject.objects.filter(pk=project_id).exclude(
+        status__in=[VideoProject.Status.COMPLETED, VideoProject.Status.FAILED],
     ).update(status=VideoProject.Status.FAILED)
     if _render_delivered(project_id):
         return
     record_error(project_id, code)
     _settle_render_reservation(project_id, charge=False)
+    if failed_now:
+        notify_project_failed(project_id, rendering=True)
 
 
 def _discard_upload(project_id, key):
@@ -1035,6 +1041,7 @@ def _render_final_edit(project_id, lock, attempt):
     if persisted == 1:
         logger.info(f"✅ [FINAL RENDER] Success for project {project_id}")
         _settle_render_reservation(project_id, charge=True)
+        notify_render_finished(project_id)
         return f"Render Success: {final_s3_key}"
     _discard_upload(project_id, final_s3_key)
     if _render_delivered(project_id):

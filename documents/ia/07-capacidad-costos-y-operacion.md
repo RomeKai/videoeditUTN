@@ -640,6 +640,24 @@ Una cuenta con dominio Unicode se guarda y se muestra en punycode (`ana@xn--maan
 
 **Tokens vencidos.** Con `ROTATE_REFRESH_TOKENS` y `BLACKLIST_AFTER_ROTATION`, cada login y cada renovación agregan filas a `OutstandingToken` y `BlacklistedToken`. La tarea `apps.users.tasks.flush_expired_tokens` corre `flushexpiredtokens` de SimpleJWT todos los días a las 04:30 UTC (`flush-expired-tokens` en `CELERY_BEAT_SCHEDULE`) y loguea `tokens.expired_flushed` con cuántas filas borró y cuántas quedan. Solo borra tokens vencidos, que ya se rechazan por su fecha. Sin proceso beat, correr `manage.py flushexpiredtokens` desde cron.
 
+## Notificaciones dentro de la app
+
+La campana lee `Notification` (`apps/notifications`). Solo las escribe `apps/notifications/services.py`, desde donde pasa cada evento:
+
+| Evento | Dónde se llama | Función | Quién la recibe |
+|---|---|---|---|
+| Listo para revisar | `_hand_to_review` | `notify_project_ready` | Dueño y miembros activos |
+| Render terminado, completo o parcial | `finalize_project_render` y `render_video_segments` | `notify_render_finished` | Dueño y miembros activos |
+| Proyecto fallido | `_record_pipeline_failure`, `_fail_render`, `_recover_ingestion`, `_fail_unqueued_project` y el re-despacho sin saldo (`AutoRenderNotPaid`) | `notify_project_failed` | Dueño y miembros activos |
+| Pago aprobado o rechazado | `settle_payment` | `notify_payment_settled` | Quien inició el pago |
+
+- Se escriben cuando la transacción del evento hace commit (`transaction.on_commit`). Un cambio que se revierte no avisa.
+- Nunca frenan el pipeline. Un error se registra como `notifications.not_created`, con ids y la clase del error.
+- El texto de un fallo dice cuánto se devolvió: suma las reservas del proyecto devueltas desde `pipeline_error_at`. Por eso se llama después de la devolución.
+- Quien ya no es miembro del workspace no recibe nada.
+- Se guardan las últimas 20 por usuario y workspace (`KEPT_PER_USER`): al escribir una se borran las más viejas. No hay tarea de limpieza.
+- Todavía no se avisa de una publicación fallida ni del saldo bajo, y no se envían emails.
+
 ## Referencias
 
 - [ADR-012: perfiles de modelos y capacidad](../adrs/012-model-profiles-and-capacity.md) (D-C3 chequeo de arranque, D-C4 rate limiting propio, D-C5 tiers)

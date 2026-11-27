@@ -6,6 +6,7 @@ import * as billing from './contracts/billing';
 import * as brandKits from './contracts/brandkits';
 import * as notifications from './contracts/notifications';
 import * as projects from './contracts/projects';
+import * as social from './contracts/social';
 import * as users from './contracts/users';
 import {
   clearRouteOverrides,
@@ -102,8 +103,10 @@ describe('ruteo híbrido', () => {
     expect(routeOf(projects.listProjects, plus)).toBe('real');
     expect(routeOf(users.getMe, plus)).toBe('real');
     // A proposed endpoint that was not named (users.updateMe exists since feat/perfil-me, billing.wallet
-    // since feat/billetera-movimientos-precios, billing.subscription since feat/suscripcion-y-compras).
-    expect(routeOf(notifications.listNotifications, plus)).toBe('mock');
+    // since feat/billetera-movimientos-precios, billing.subscription since feat/suscripcion-y-compras,
+    // notifications since feat/notificaciones).
+    expect(routeOf(social.listSocialAccounts, plus)).toBe('mock');
+    expect(routeOf(notifications.listNotifications, plus)).toBe('real');
     expect(routeOf(billing.getWallet, plus)).toBe('real');
     expect(parseRealList(' Projects ,billing.Plans,, existing ')).toEqual({ domains: new Set(['projects']), endpoints: new Set(['billing.plans']), existing: true });
     expect(parseRealList(undefined).existing).toBe(true);

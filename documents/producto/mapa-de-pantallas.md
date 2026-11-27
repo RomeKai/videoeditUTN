@@ -126,7 +126,8 @@ Roles del workspace: **Dueño** (`Workspace.owner`) y los de `WorkspaceMember.ro
   - Una publicación falló.
   - El saldo está por debajo de lo que cuesta un video promedio.
 - El usuario puede apagar los emails por tipo en Perfil › Notificaciones.
-- **API ❌:** no hay modelo de notificaciones ni envío de emails.
+- Dentro de la app también se avisa cuando un pago (compra de tokens o cambio de plan) se aprueba o se rechaza, a quien lo inició. No tiene email.
+- **API:** ✅ la campana: `GET /api/v1/notifications/`, `POST /notifications/:id/read/` y `POST /notifications/read-all/` (listo para revisar, render terminado, proyecto fallido y pagos). ❌ todavía no avisa de una publicación fallida ni del saldo bajo, y no hay envío de emails (huecos 16 y 21).
 
 ---
 
@@ -660,7 +661,9 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 
 #### J2. Notificaciones (campana)
 - Un panel con las últimas 20, con un punto en las no leídas y "Marcar todo como leído".
-- Cada notificación lleva a su proyecto o publicación.
+- Cada notificación lleva a su proyecto o publicación; la de un pago, a Uso › Movimientos.
+- **Quién las recibe:** las de un proyecto, el dueño y los miembros activos del workspace; la de un pago, quien lo inició.
+- **API:** ✅ `GET /api/v1/notifications/`, `POST /api/v1/notifications/:id/read/` y `POST /api/v1/notifications/read-all/`.
 
 #### J3. Selector de workspace
 - **Qué muestra:** los workspaces del usuario, con su plan y su rol en cada uno, y la opción **Crear workspace**.
@@ -757,7 +760,7 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad. El detalle e
 | 13 | Invitaciones: crear, reenviar y aceptar | A5, H2 | P1 |
 | 14 | Paginación y filtro por estado en proyectos | B2 | P1 |
 | 15 | Tiempos por etapa del pipeline | D1 | P2 |
-| 16 | Notificaciones (modelo y emails). Las preferencias de email ya están: `GET/PATCH /me/notification-preferences/` | J2 | P2 |
+| 16 | Notificaciones: falta avisar de una publicación fallida y del saldo bajo, y los emails (hueco 21). La campana ya está (`GET /notifications/`, `POST /notifications/:id/read/`, `POST /notifications/read-all/`) con listo para revisar, render terminado, proyecto fallido y pagos; las preferencias de email también: `GET/PATCH /me/notification-preferences/` | J2 | P2 |
 | 17 | ~~Descargar todo en .zip~~ Resuelto: `POST /projects/:id/clips/download/` | D3 | — |
 | 18 | Tiempo estimado del proceso ("Listo para revisar en ≈ 12 min") | C1, D1 | P2 |
 | 19 | Total reservado del workspace con el detalle por proyecto | G1, barra | P1 |

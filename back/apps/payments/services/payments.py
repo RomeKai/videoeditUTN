@@ -49,6 +49,7 @@ from django.conf import settings
 from django.db import DataError, IntegrityError, transaction
 from django.utils import timezone
 
+from apps.notifications.services import notify_payment_settled
 from apps.users.models import Workspace
 from apps.users.seats import seats_used
 
@@ -415,6 +416,7 @@ def settle_payment(payment_id, *, approved, failure_reason=''):
         payment.checkout_url = ''
         payment.settled_at = now
         payment.save()
+        notify_payment_settled(payment.pk)
     logger.info(
         'payments.settled payment=%s kind=%s status=%s tokens=%s amount_usd=%s',
         payment.pk, 'plan' if payment.plan_id else 'tokens', payment.status, payment.tokens, payment.amount_usd,

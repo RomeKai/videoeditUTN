@@ -20,6 +20,7 @@ from .services.segments import (
 from apps.core.permissions import WorkspaceRolePermission
 from apps.core.workspace import resolve_active_workspace
 from apps.users.models import Workspace
+from apps.notifications.services import notify_project_failed
 from apps.payments.models import Transaction
 from apps.payments.services import wallet_service
 
@@ -504,6 +505,7 @@ def _fail_unqueued_project(project_id, reservation_id):
                 return None
             record_error(project_id, INGESTION_NOT_QUEUED)
             rollback_reservation(reservation_id)
+            notify_project_failed(project_id)
     except Exception as exc:
         logger.error("project.not_queued_not_recorded project_id=%s error=%s", project_id, type(exc).__name__)
         return NOT_QUEUED_UNCONFIRMED

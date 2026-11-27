@@ -94,7 +94,8 @@ function replacePendingUpgrade(db: MockDb, workspaceId: string, keepPlanId: stri
 }
 
 function publicPurchase(purchase: MockPurchase) {
-  const { workspace: _workspace, _settleAt, _reject, ...data } = purchase;
+  const { workspace: _workspace, _settleAt, _reject, _by, ...data } = purchase;
+  void _by;
   void _workspace;
   void _settleAt;
   void _reject;
@@ -161,7 +162,7 @@ export const billingHandlers = [
 
   route(contract.getSubscription, ({ db, workspace }) => ({ data: serializeSubscription(db, workspace) })),
 
-  route(contract.changePlan, ({ db, workspace, body, now, require, request }) => {
+  route(contract.changePlan, ({ db, user, workspace, body, now, require, request }) => {
     require('billing.manage');
     const target = db.plans.find((plan) => plan.id === body.plan_id && plan.is_active);
     if (!target) throw notFound('El plan no existe.');
@@ -208,6 +209,7 @@ export const billingHandlers = [
         balance_after: null,
         _settleAt: null,
         _reject: db.flags.rejectPayments,
+        _by: user.id,
       });
       return { data: { applied: 'now', checkout_url: checkoutUrl, subscription: serializeSubscription(db, workspace) } };
     }
@@ -311,7 +313,7 @@ export const billingHandlers = [
 
   route(contract.listTokenPackages, () => ({ data: TOKEN_PACKAGES })),
 
-  route(contract.createTokenPurchase, ({ db, workspace, body, now, require }) => {
+  route(contract.createTokenPurchase, ({ db, user, workspace, body, now, require }) => {
     require('billing.manage');
     const pack = body.package_id ? TOKEN_PACKAGES.packages.find((item) => item.id === body.package_id) : null;
     if (body.package_id && !pack) throw badRequest({ package_id: ['El paquete no existe.'] });
@@ -338,6 +340,7 @@ export const billingHandlers = [
       balance_after: null,
       _settleAt: null,
       _reject: db.flags.rejectPayments,
+      _by: user.id,
     };
     db.purchases.push(purchase);
     return { data: publicPurchase(purchase) };
