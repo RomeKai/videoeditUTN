@@ -100,5 +100,11 @@ export function startPaidRender(
   const scope = input.wholeProject || project.project_type === 'single_edit' ? 'project' : 'clip';
   project._paidRender = { reservation: transaction.id, clipIds: clips.map((clip) => clip.id), scope, previous };
   project._sim = { phase: 'render', startedAt: input.now };
+  // Only a render of the project starts «Renderizar» again (`_metadata_for_render_dispatch`); one clip's
+  // leaves its times, unless the step has no closed render to keep.
+  const closed = project.stage_timings?.render_dispatched?.duration_s != null;
+  if (scope === 'project' || !closed) {
+    project.stage_timings = { ...project.stage_timings, render_dispatched: { started_at: new Date(input.now).toISOString(), finished_at: null, duration_s: null } };
+  }
   return transaction;
 }

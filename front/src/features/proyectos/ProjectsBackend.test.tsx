@@ -166,6 +166,33 @@ describe('B2 · una página que ya no existe (404)', () => {
     saveDb(db);
   }
 
+  it('una URL con una página muy pasada del final no pide las páginas de a una', async () => {
+    startScenario('estudio-norte');
+    const asked = watchListRequests();
+    nav.set('pagina=60');
+    renderScreen(<ProjectsScreen />);
+    expect(await screen.findByText(/1–8 de 8 proyectos/, {}, { timeout: 5000 })).toBeInTheDocument();
+    await waitFor(() => expect(nav.get()).toBe(''));
+    // The page of the URL (404) and the first one; not the 59 in between.
+    const pages = asked.map((query) => new URLSearchParams(query).get('page'));
+    expect([...new Set(pages)]).toEqual(['60', '1']);
+    expect(pages.length).toBeLessThanOrEqual(3);
+  });
+
+  it('con una página en pantalla, una muy pasada del final va a la última que esa página conoce', async () => {
+    startScenario('muchos-proyectos');
+    const asked = watchListRequests();
+    renderScreen(<ProjectsScreen />);
+    await screen.findByText(/1–25 de 64 proyectos/);
+    // Someone pastes a page number in the address bar (or follows an old link) without leaving the screen.
+    nav.set('pagina=60');
+    expect(await screen.findByText(/51–64 de 64 proyectos/, {}, { timeout: 5000 })).toBeInTheDocument();
+    expect(nav.get()).toBe('pagina=3');
+    const pages = asked.map((query) => new URLSearchParams(query).get('page'));
+    expect(pages.filter((page) => page !== '1' && page !== '60' && page !== '3')).toEqual([]);
+    expect(pages.length).toBeLessThanOrEqual(4);
+  });
+
   it('borrar la única fila de la última página vuelve a la anterior, sin error', async () => {
     startScenario('muchos-proyectos');
     keepProjects(26);

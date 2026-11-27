@@ -124,15 +124,24 @@ export function ProjectsScreen() {
   const order = ORDERINGS.find((item) => item.value === ordering) ?? ORDERINGS[0];
 
   // A page past the end answers 404: the last row was deleted (here or by someone else), the list got
-  // shorter while polling, or the URL names a page that is not there. Step back until a page exists.
+  // shorter while polling, or the URL names a page that is not there. If a page of this same list answered
+  // before, go back one, or to the last page its count knows if that is nearer. If none did (a URL opened
+  // on a page that does not exist) nothing says how long the list is: the first page, in one step. Never
+  // one request per page between the URL's and the end.
+  const listKey = `${workspaceId ?? ''}|${group}|${term}`;
+  const known = useRef<{ list: string; count: number } | null>(null);
+  useEffect(() => {
+    if (data && !query.isPlaceholderData) known.current = { list: listKey, count: data.count };
+  }, [data, query.isPlaceholderData, listKey]);
   const pastTheEnd = query.error instanceof ApiError && query.error.status === 404 && askedPage > 1;
   useEffect(() => {
     if (pastTheEnd) {
       // The pages kept in memory are as outdated as the one that just disappeared.
       void queryClient.invalidateQueries({ queryKey: keys.projects.all });
-      write({ page: Math.max(1, askedPage - 1) });
+      const lastKnown = known.current?.list === listKey ? Math.ceil(known.current.count / DEFAULT_PAGE_SIZE) : 1;
+      write({ page: Math.max(1, Math.min(askedPage - 1, lastKnown)) });
     } else if (data && !query.isPlaceholderData && data.results.length === 0 && data.count > 0 && askedPage > 1) write({ page: Math.max(1, Math.ceil(data.count / DEFAULT_PAGE_SIZE)) });
-  }, [pastTheEnd, data, query.isPlaceholderData, askedPage, write, queryClient]);
+  }, [pastTheEnd, data, query.isPlaceholderData, askedPage, listKey, write, queryClient]);
 
   const pickGroup = (next: ProjectStatusGroup) => write({ group: next, page: 1 });
   const pickOrdering = (next: Ordering) => write({ ordering: next, page: 1 });

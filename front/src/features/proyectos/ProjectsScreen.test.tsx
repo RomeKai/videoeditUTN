@@ -166,7 +166,7 @@ describe('B2 · Proyectos', () => {
     expect(new URLSearchParams(nav.get()).get('buscar')).toBe('webinar');
   });
 
-  it('una página de la URL que ya no existe vuelve a la última que hay', async () => {
+  it('una página de la URL que no existe vuelve a la primera', async () => {
     startScenario('estudio-norte');
     nav.set('pagina=9');
     renderScreen(<ProjectsScreen />);

@@ -44,6 +44,27 @@ const byTitle = (title: string): Project => {
 };
 const states = (project: Project) => buildProcessSteps(project, NOW).map((step) => `${step.key}:${step.state}`);
 
+describe('«Renderizar» mientras se renderiza un solo clip', () => {
+  const render = (project: Project) => buildProcessSteps(project, NOW).at(-1);
+  const closed = { started_at: '2026-11-24T17:00:00Z', finished_at: '2026-11-24T17:00:40Z', duration_s: 40 };
+  const done = byTitle('Vlog Mendoza');
+  const oneAgain = done.clips.map((clip, index) => (index === 0 ? { ...clip, status: 'rendering' as const } : clip));
+
+  it('el paso sigue hecho, con los tiempos del render del proyecto, y no «En curso» desde entonces', () => {
+    const project: Project = { ...done, status: 'rendering', pipeline_stage: 'render_dispatched', clips: oneAgain, stage_timings: { ...done.stage_timings, render_dispatched: closed } };
+    expect(render(project)).toMatchObject({ key: 'render', state: 'done', startedAt: closed.started_at, durationSeconds: 40 });
+    expect(render(project)?.description).toBe(`${done.clips.length - 1} de ${done.clips.length} clips listos.`);
+  });
+
+  it('un render del proyecto (el paso sin fin) sí está en curso y cuenta desde su inicio', () => {
+    const started = new Date(NOW - 25_000).toISOString();
+    const project: Project = { ...done, status: 'rendering', pipeline_stage: 'render_dispatched', clips: oneAgain, stage_timings: { ...done.stage_timings, render_dispatched: { started_at: started, finished_at: null, duration_s: null } } };
+    expect(render(project)).toMatchObject({ state: 'run', startedAt: started, durationSeconds: 25 });
+    // Without times at all (an older project), rendering is running too.
+    expect(render({ ...project, stage_timings: {} })).toMatchObject({ state: 'run' });
+  });
+});
+
 describe('«Elegir clips» después de aprobar', () => {
   const select = (project: Project) => buildProcessSteps(project, NOW).find((step) => step.key === 'select')?.description;
 

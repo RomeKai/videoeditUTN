@@ -605,6 +605,12 @@ function finishPaidRender(db: MockDb, project: MockProject, paid: PaidRender, no
   project.status = failed > 0 ? 'partial' : 'completed';
   project.pipeline_stage = failed > 0 ? 'partial' : 'completed';
   project.pipeline_stage_status = stageStatusFor('clips_selected', null);
+  // The close ends the step only if this render started it (`_metadata_with_render_finished`).
+  const running = project.stage_timings?.render_dispatched;
+  if (running?.started_at && running.duration_s === null) {
+    const started = new Date(running.started_at).getTime();
+    project.stage_timings = { ...project.stage_timings, render_dispatched: { started_at: running.started_at, finished_at: iso(now), duration_s: Math.max(0, (now - started) / 1000) } };
+  }
   const transaction = db.transactions.find((item) => item.id === paid.reservation);
   const amount = transaction?.status === 'RESERVED' ? transaction.amount : 0;
   const charge = reserved <= 0 || delivered >= reserved ? amount : round2(amount * (delivered / reserved));

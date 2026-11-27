@@ -315,7 +315,7 @@ Otras respuestas:
   - Arriba: buscador, filtro por estado (Todos, En proceso, Para revisar, Listos, Con error) y orden (recientes).
   - De a 25 por página. El servidor pagina, filtra, busca y ordena; cada filtro muestra cuántos proyectos tiene con la búsqueda actual.
   - Un proyecto en cola o en proceso muestra cuánto falta para revisar ("≈ 9 min") cuando hay un estimado.
-  - La página, el filtro, el orden y la búsqueda van en la URL (`?estado=&orden=&pagina=&buscar=`), cada uno solo cuando no es el valor por defecto: una recarga o un link muestran la misma lista.
+  - La página, el filtro, el orden y la búsqueda van en la URL (`?estado=&orden=&pagina=&buscar=`), cada uno solo cuando no es el valor por defecto: una recarga o un link muestran la misma lista. Una página de la URL que no existe vuelve a la primera en un solo paso.
 - **Vista de grilla:** existe como alternativa y se recuerda por usuario en el navegador.
 - **Acciones por fila:** abrir, renombrar, borrar (según rol).
 - **Estados:**
