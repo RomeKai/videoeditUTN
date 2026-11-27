@@ -131,6 +131,12 @@ DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='OneCreator <no-reply@one
 EMAIL_VERIFICATION_MAX_AGE_SECONDS = env.int('EMAIL_VERIFICATION_MAX_AGE_SECONDS', default=24 * 3600)
 # How long a password reset link works (Django's PasswordResetTokenGenerator), in seconds.
 PASSWORD_RESET_TIMEOUT = env.int('PASSWORD_RESET_TIMEOUT', default=24 * 3600)
+# How long the link of a workspace invitation works (apps.users.invitations), in seconds: 7 days.
+INVITATION_MAX_AGE_SECONDS = env.int('INVITATION_MAX_AGE_SECONDS', default=7 * 24 * 3600)
+if INVITATION_MAX_AGE_SECONDS <= 0:
+    raise ImproperlyConfigured(
+        f'INVITATION_MAX_AGE_SECONDS={INVITATION_MAX_AGE_SECONDS} must be a positive number of seconds, like 604800 (7 days).'
+    )
 
 # --- STATIC & MEDIA ---
 STATIC_URL = '/static/'
@@ -195,6 +201,13 @@ REST_FRAMEWORK = {
         'email_change': _rate('THROTTLE_EMAIL_CHANGE', '5/hour'),
         # POST /workspaces/, per user: each one creates a workspace, a wallet and a membership.
         'workspace_create': _rate('THROTTLE_WORKSPACE_CREATE', '10/hour'),
+        # Invitations (apps.users.views_invitations). Invite and resend count together,
+        # per user and per workspace: each request sends emails to addresses the user typed.
+        'invitation_send': _rate('THROTTLE_INVITATION_SEND', '30/hour'),
+        'invitation_send_workspace': _rate('THROTTLE_INVITATION_SEND_WORKSPACE', '60/hour'),
+        # The public endpoints of the link, per IP: reading it and accepting it.
+        'invitation_read': _rate('THROTTLE_INVITATION_READ', '60/hour'),
+        'invitation_accept': _rate('THROTTLE_INVITATION_ACCEPT', '20/hour'),
     },
     # Proxies in front of Django (load balancer, nginx) that add the client's
     # address to X-Forwarded-For. The per-IP limits take the address that many

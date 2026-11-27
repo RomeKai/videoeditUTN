@@ -41,6 +41,38 @@ def check_seat_limit(workspace, user_ids, freed=0):
     if not new:
         return
     current = 0 if workspace._state.adding else seats_used(workspace)
+    limit, plan, pending, paying = _seat_limit(workspace)
+    if current - freed + len(new) <= limit:
+        return
+    _raise_no_seats(limit, plan, pending, paying)
+
+
+def check_seat_for_accept(workspace, member):
+    """
+    Lanza ValidationError si aceptar la invitación ``member`` dejaría más
+    miembros ACTIVOS que lugares. La fila pendiente ya ocupaba su lugar al
+    invitar, pero el límite pudo achicarse después (el admin cambió el plan,
+    o entró alguien por el admin): aceptar nunca pasa el límite. El dueño
+    siempre entra. Se llama con la fila del workspace bloqueada.
+    """
+    if member.user_id == workspace.owner_id:
+        return
+    active = (
+        WorkspaceMember.objects.filter(workspace=workspace, status=WorkspaceMember.Status.ACTIVE)
+        .exclude(pk=member.pk)
+        .count()
+    )
+    limit, plan, pending, paying = _seat_limit(workspace)
+    if active + 1 <= limit:
+        return
+    _raise_no_seats(limit, plan, pending, paying)
+
+
+def _seat_limit(workspace):
+    """
+    ``(limit, plan, pending, paying)``: los lugares que valen ahora y por qué.
+    ``pending`` o ``paying`` vienen solo cuando son ellos los que achican el límite.
+    """
     plan = workspace.subscription_plan
     limit = plan.max_members if plan else 1
     # The scheduled downgrade as the database has it now, not as the instance was loaded.
@@ -70,8 +102,10 @@ def check_seat_limit(workspace, user_ids, freed=0):
         pending = None
     else:
         paying = None
-    if current - freed + len(new) <= limit:
-        return
+    return limit, plan, pending, paying
+
+
+def _raise_no_seats(limit, plan, pending, paying):
     if paying is not None:
         from apps.payments.services.payments import payment_pending_message
 

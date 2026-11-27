@@ -237,14 +237,14 @@ Salen de tus dos commits (759f9f8 y f04db85), que el lead pasó con cherry-pick 
 
 Contrato `contracts/workspaces.ts`. Backend: app `apps/users`, modelos `Workspace` y `WorkspaceMember`. Todos son `workspaceScoped: false`: el workspace viene en la ruta (ver la sección 2, «Ojo con `/workspaces/:id/…`»).
 
-Los nueve de workspaces y miembros (hasta `workspaces.removeMember`) ya existen en `back/apps/users/views_workspaces.py`, con sus pruebas en `back/apps/users/tests/test_workspaces_api.py`. Faltan los cuatro de invitaciones.
+Los nueve de workspaces y miembros (hasta `workspaces.removeMember`) ya existen en `back/apps/users/views_workspaces.py`, con sus pruebas en `back/apps/users/tests/test_workspaces_api.py`. Los cuatro de invitaciones están en `back/apps/users/views_invitations.py` (reglas en `apps/users/invitations.py`), con sus pruebas en `back/apps/users/tests/test_invitations.py`.
 
 - Crear usa `create_owned_workspace` (`back/apps/users/workspaces.py`), lo mismo que el registro. Tope de 10 workspaces propios (409 `workspace_limit`) y límite de intentos por usuario (`THROTTLE_WORKSPACE_CREATE`, scope `workspace_create`).
 - Borrar responde 409 `{error, code}` y no borra nada en estos casos, en este orden: `last_workspace` (es el único workspace del usuario; va primero porque esperar no lo resuelve), `project_processing` (proyecto subido, en ingesta o renderizando; uno trabado se borra primero), `posts_in_flight` (publicación `PROCESSING` dentro de `POST_PROCESSING_WINDOW` o `QUEUED` hasta `POST_QUEUED_GRACE` después de su `publish_at`; una más vieja está trabada y no frena), `reservation_open` (tokens reservados), `payment_pending` (una compra de tokens o un pago de plan pendiente: se libera cuando se liquida o vence su checkout; la web no tiene cómo cancelarlo) y `balance_left` (queda saldo disponible: los tokens nunca se borran).
 - Si se borra, se van en cascada proyectos, clips, publicaciones (las `SCHEDULED` no se publican), brand kits, miembros, los pagos ya liquidados y la billetera en cero con sus movimientos. El log `workspace.deleted` guarda las cifras finales de la billetera.
 - Pendiente: el borrado no limpia los archivos en R2 ni el perfil de Ayrshare.
 - Transferir cambia primero el dueño. Si el dueño anterior no tenía fila de miembro, la fila nueva pasa por el control de lugares del plan: sin lugar responde 400 y no transfiere.
-- Miembros: una fila por `WorkspaceMember`; `invited_by` es siempre null hasta que exista el modelo de invitación.
+- Miembros: una fila por `WorkspaceMember`; `invited_by` es `{id, name}` de quien invitó (null en las filas que nadie invitó). Una invitación pendiente viene con `user` null y el email invitado.
 
 | Método y ruta | Id | Hook · mock | Pantalla | Backend | Depende de | Talla |
 |---|---|---|---|---|---|---|
@@ -264,7 +264,7 @@ Los nueve de workspaces y miembros (hasta `workspaces.removeMember`) ya existen 
 
 Lo que tenés que decidir para invitar:
 
-- `WorkspaceMember.user` es obligatorio. Una invitación a un email sin cuenta no entra en el modelo de hoy.
+- Resuelto: `WorkspaceMember.user` es nulo en una invitación pendiente, y la fila guarda `invited_email`, `invited_by`, el hash del token y cuándo se emitió.
 - Opciones: un modelo nuevo de invitación (email, rol, token, `invited_by`, vencimiento) o sumar esos campos a `WorkspaceMember` con `user` nulo. El contrato ya espera `Member.user` nulo y `email` en la lista, y usa el id de la fila pendiente como `:memberId`.
 - `check_workspace_member_limit` (`back/apps/users/signals.py`) lanza un `ValidationError` de Django en `pre_save`. Si llega a la vista sin atrapar es un 500: traducilo al 403 `seats_exceeded`.
 - Una invitación pendiente ocupa un lugar (mapa §9.1, punto 8). El conteo de hoy (`workspace.members.count()`) ya incluye las pendientes, y también la fila del dueño cuando la tiene (el workspace del registro la crea).
@@ -368,7 +368,7 @@ El criterio: qué necesita cada flujo de punta a punta para andar con el backend
 **2. Workspaces, miembros e invitaciones.** El equipo es lo que vuelve real al piloto.
 1. `workspaces.list`, `workspaces.detail`, `workspaces.update` (H1).
 2. `workspaces.members`, `workspaces.updateMember`, `workspaces.removeMember` (H2).
-3. Modelo de invitación, `workspaces.invite`, `workspaces.resendInvitation`, `workspaces.invitation` y **`workspaces.acceptInvitation`**. Aceptar es el hueco 13 y hoy no tiene endpoint: una invitación pasa a `active` solo desde el admin de Django.
+3. Modelo de invitación, `workspaces.invite`, `workspaces.resendInvitation`, `workspaces.invitation` y **`workspaces.acceptInvitation`**. Hecho (hueco 13): `back/apps/users/views_invitations.py`.
 4. `workspaces.create`, `workspaces.transfer`, `workspaces.delete`.
 
 **3. Planes y pagos (checkout).** Sin cobrar no hay piloto pago.
@@ -397,7 +397,7 @@ Para no pisarnos. Lo «en curso» ya tiene rama: no lo arranques por tu lado.
 |---|---|---|---|---|
 | Acceso (lo que falta) | 6 + el 403 de `auth.login` | Pedro | — | Propuesta |
 | Workspaces y miembros | 9 | — | `feat/workspaces-y-miembros` | Hechos: existen en el backend |
-| Invitaciones | 4 | Pedro | — | Propuesta |
+| Invitaciones | 4 | Pedro | — | Existe |
 | Planes, billetera y pagos (PAY-xx) | 12 | Pedro | — | Tuyos. PAY-03 ya está mergeado (PR #130) |
 | Seguimientos del PR #130: seed, `is_public`, invalidación del cache, validadores, plan Gratis por defecto | — | Lead | `fix/planes-gratis-por-defecto` | En curso (lead) |
 | Redes y publicaciones | 11 | Pedro | — | Propuesta |
@@ -429,7 +429,7 @@ El backlog (`documents/backlog_mvp.md`) asigna por par, no por persona: PAY-01 a
 | Qué | Bloquea | Hueco (mapa §8) |
 |---|---|---|
 | **El cache no es compartido.** `base`, `dev` y `prod` no definen `CACHES`, así que cada proceso tiene su propio cache en memoria. Los límites de intentos, un guardado de `Idempotency-Key` en cache y la invalidación del cache de planes no cruzan procesos. Lo arregla `fix/creacion-robusta` (lead). | `auth.register`, `auth.resendVerification`, el 429 de `auth.login`, `social.createPost` | — |
-| **No existe el flujo de aceptar una invitación.** No hay endpoints y `WorkspaceMember` no puede guardar una invitación a un email sin cuenta. | Toda la fila de invitaciones, A5 | 13 |
+| ~~**No existe el flujo de aceptar una invitación.**~~ Resuelto: `back/apps/users/views_invitations.py`. | Toda la fila de invitaciones, A5 | 13 |
 | **Faltan emails transaccionales.** Los de cuenta ya salen, en texto, por el backend de email de Django (`apps/users/email_verification.py`: verificar, cambio de email, recuperar). Faltan los demás (N3 a N8, §9.2). | Invitación, notificaciones | 21 |
 | Resuelto: `token_blacklist` instalada, y límites de intentos en el login (por IP y por cuenta, solo los fallidos), el refresh, la contraseña, el cambio de email, el registro, el reenvío, recuperar y cerrar sesión (`apps/users/throttles.py`). | — | 1, 2 |
 | [ADR-005](../adrs/005-social-publishing-strategy.md) sigue `proposed`: el contrato asume Ayrshare, DIST-01 propone OAuth directo. | `social.accounts`, `social.connect`, `social.disconnect` | 10 |

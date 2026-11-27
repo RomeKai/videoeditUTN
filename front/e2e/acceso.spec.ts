@@ -196,21 +196,20 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     await expect(page.getByRole('button', { name: /Cambiar de workspace. Actual: Estudio Norte/ })).toBeVisible();
   });
 
-  test('A5: vencida, ya usada, inexistente y con la sesión de otra cuenta', async ({ page }) => {
+  test('A5: vencida, ya usada e inexistente son la misma pantalla; con la sesión de otra cuenta avisa', async ({ page }) => {
     await useScenario(page, 'estudio-norte');
-    await page.goto('/invitacion/vencida');
-    await expect(page.getByRole('heading', { level: 1, name: 'Esta invitación venció' })).toBeVisible();
-    await page.goto('/invitacion/no-existe');
-    await expect(page.getByRole('heading', { level: 1, name: 'Esta invitación no existe' })).toBeVisible();
-    await page.goto('/invitacion/usada');
-    await expect(page.getByRole('heading', { level: 1, name: 'Ya sos parte de Estudio Norte' })).toBeVisible();
+    for (const token of ['vencida', 'no-existe', 'usada']) {
+      await page.goto(`/invitacion/${token}`);
+      await expect(page.getByRole('heading', { level: 1, name: 'Esta invitación no existe o ya no sirve' })).toBeVisible();
+    }
+    await expect(page.getByRole('link', { name: 'andá a tus proyectos' })).toBeVisible();
 
     await page.goto('/invitacion/valida');
     await expect(page.getByText('Entraste con otra cuenta')).toBeVisible();
     await page.getByRole('button', { name: 'Cerrar sesión y seguir' }).click();
     await expect(page.getByRole('button', { name: 'Crear cuenta y unirme' })).toBeVisible();
     await page.goto('/invitacion/usada');
-    await expect(page.getByRole('heading', { level: 1, name: 'Esta invitación ya se usó' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'iniciá sesión' })).toBeVisible();
   });
 
   test('B1: los tres pasos terminan en Nuevo proyecto y Proyectos deja de mandar a la Bienvenida', async ({ page }) => {

@@ -899,16 +899,87 @@ describe('A5 · Aceptar invitación', () => {
     }
   });
 
-  it('reconoce al miembro por el id del workspace, no por el nombre', async () => {
-    scenario('estudio-norte');
-    const db = loadDb();
-    // Another workspace with the same name as one of Lucía's.
-    const invitation = db.invitations.find((item) => item.token === 'usada');
-    if (invitation) invitation.workspace_id = '00000000-0000-4000-8000-00000000abcd';
-    window.localStorage.setItem('oc.mock.db', JSON.stringify(db));
-    show(<InvitationScreen token="usada" />);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Esta invitación ya se usó' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Ir a Estudio Norte' })).not.toBeInTheDocument();
+  it('si el backend dice que la invitación es de otro email (403), muestra su oración y la sesión queda', async () => {
+    scenario('usuario-nuevo');
+    const user = userEvent.setup();
+    // The real body of back/apps/users/views_invitations.py · InvitationAcceptView.
+    const { body } = real.errors.invitation_accept_403_other_account;
+    server.use(http.post(ACCEPT, () => HttpResponse.json(body, { status: 403 })));
+    show(<InvitationScreen token="con-cuenta" />);
+    await user.click(await screen.findByRole('button', { name: 'Aceptar invitación' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(body.error));
+    expect(getTokens()).not.toBeNull();
+    expect(nav.replace).not.toHaveBeenCalled();
+  });
+
+  it('sin lugares en el plan al aceptar (403 seats_exceeded): muestra la oración del backend', async () => {
+    scenario('usuario-nuevo');
+    const user = userEvent.setup();
+    // Accepting answers the same body as inviting when the plan has no seat left.
+    const { body } = real.errors.invite_403_seats;
+    server.use(http.post(ACCEPT, () => HttpResponse.json(body, { status: 403 })));
+    show(<InvitationScreen token="con-cuenta" />);
+    await user.click(await screen.findByRole('button', { name: 'Aceptar invitación' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(body.error));
+  });
+
+  it('si al aceptar el link ya no sirve (410), vuelve a leer la invitación y lo dice', async () => {
+    scenario('usuario-nuevo');
+    const user = userEvent.setup();
+    show(<InvitationScreen token="con-cuenta" />);
+    const button = await screen.findByRole('button', { name: 'Aceptar invitación' });
+    // Cancelled by an admin between opening the link and the click: the real answers of the backend.
+    server.use(
+      http.post(ACCEPT, () => HttpResponse.json(real.errors.invitation_accept_410.body, { status: 410 })),
+      http.get('http://localhost:8000/api/v1/invitations/con-cuenta/', () => HttpResponse.json(real.errors.invitation_404.body, { status: 404 })),
+    );
+    await user.click(button);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Esta invitación no existe o ya no sirve' })).toBeInTheDocument();
+    expect(nav.replace).not.toHaveBeenCalled();
+  });
+
+  it('con las respuestas reales del backend: el link, la contraseña débil bajo su campo, y la cuenta creada con sus tokens', async () => {
+    scenario('sin-sesion');
+    const user = userEvent.setup();
+    const sent: unknown[] = [];
+    let answer: { status: number; body: unknown } = real.errors.invitation_accept_400_weak;
+    server.use(
+      http.get('http://localhost:8000/api/v1/invitations/real/', () => HttpResponse.json(real.invitation_preview)),
+      http.post('http://localhost:8000/api/v1/invitations/real/accept/', async ({ request }) => {
+        sent.push(await request.json());
+        return HttpResponse.json(answer.body as Record<string, unknown>, { status: answer.status });
+      }),
+    );
+    show(<InvitationScreen token="real" />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Dana Dueña te invitó a Estudio Norte como Editor' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Email')).toHaveValue('juana@example.com');
+    await user.type(screen.getByLabelText('Nombre'), 'Juana Pérez');
+    await user.type(password(), '12345678');
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: 'Crear cuenta y unirme' }));
+    await waitFor(() => expect(password()).toHaveAccessibleDescription('Esa contraseña es muy común. Elegí otra.'));
+    expect(getTokens()).toBeNull();
+
+    answer = { status: 200, body: real.invitation_accepted_new_account };
+    await user.clear(password());
+    await user.type(password(), 'una-clave-Nueva-2026');
+    await user.click(screen.getByRole('button', { name: 'Crear cuenta y unirme' }));
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/proyectos'));
+    expect(sent[1]).toEqual({ name: 'Juana Pérez', password: 'una-clave-Nueva-2026', terms_accepted: true });
+    expect(getActiveWorkspaceId()).toBe(real.invitation_accepted_new_account.workspace_id);
+  });
+
+  it('la contraseña que el backend rechaza se dice bajo el campo y la cuenta no se crea', async () => {
+    scenario('sin-sesion');
+    const user = userEvent.setup();
+    show(<InvitationScreen token="valida" />);
+    await user.type(await screen.findByLabelText('Nombre'), 'Juan Ibáñez');
+    await user.type(password(), '1234567890');
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: 'Crear cuenta y unirme' }));
+    await waitFor(() => expect(password()).toHaveAccessibleDescription('La contraseña no puede ser solo números.'));
+    expect(getTokens()).toBeNull();
+    expect(loadDb().users.some((item) => item.email === 'juan@estudionorte.com')).toBe(false);
   });
 
   it('con la sesión de otra cuenta: avisa y deja cerrar sesión', async () => {
@@ -926,26 +997,21 @@ describe('A5 · Aceptar invitación', () => {
     expect(getTokens()).toBeNull();
   });
 
-  it('vencida, ya usada, ya miembro y la que no existe', async () => {
+  it('vencida, ya usada y la que no existe: la misma pantalla, como responde el backend (404)', async () => {
     scenario('sin-sesion');
-    let view = show(<InvitationScreen token="vencida" />);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Esta invitación venció' })).toBeInTheDocument();
-    expect(screen.getByText('Pedile a Lucía Fernández que te mande una nueva.')).toBeInTheDocument();
-    view.unmount();
-
-    view = show(<InvitationScreen token="usada" />);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Esta invitación ya se usó' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'iniciá sesión' })).toHaveAttribute('href', '/login');
-    view.unmount();
-
-    view = show(<InvitationScreen token="no-existe" />);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Esta invitación no existe' })).toBeInTheDocument();
-    view.unmount();
+    for (const token of ['vencida', 'usada', 'no-existe']) {
+      const view = show(<InvitationScreen token={token} />);
+      expect(await screen.findByRole('heading', { level: 1, name: 'Esta invitación no existe o ya no sirve' })).toBeInTheDocument();
+      expect(screen.getByText(/Puede que haya vencido, que ya la hayas usado o que la hayan cancelado/)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'iniciá sesión' })).toHaveAttribute('href', '/login');
+      // Nothing of the invitation is shown: the answer carries no data.
+      expect(screen.queryByText(/Estudio Norte|Lucía/)).not.toBeInTheDocument();
+      view.unmount();
+    }
 
     scenario('estudio-norte');
     show(<InvitationScreen token="usada" />);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Ya sos parte de Estudio Norte' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Ir a Estudio Norte' })).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: 'andá a tus proyectos' })).toHaveAttribute('href', '/proyectos');
   });
 });
 

@@ -30,7 +30,7 @@ const sameEmail = (a: string, b: string) => a.trim().toLowerCase() === b.trim().
 export function InvitationScreen({ token }: { token: string }) {
   const invitation = useInvitation(token);
   const { status, me } = useSession();
-  // Accepting changes what this screen is made of (the invitation becomes "used", a session appears).
+  // Accepting changes what this screen is made of (the link stops working, a session appears).
   // While the user is on the way to the app the card stays as it was, instead of flashing its other states.
   const [joining, setJoining] = useState<{ data: InvitationPreview; mode: Mode } | null>(null);
   const [sessionLost, setSessionLost] = useState(false);
@@ -54,9 +54,15 @@ export function InvitationScreen({ token }: { token: string }) {
 
   if (!joining && (invitation.isError || !invitation.data)) {
     if (invitation.error instanceof ApiError && invitation.error.status === 404) {
+      // One answer for a link that never existed, expired, was used or was cancelled: the backend does not tell them apart.
       return (
-        <StateCard badge={<Badge dot>No existe</Badge>} title="Esta invitación no existe">
-          Revisá que el link esté completo, o pedile a quien te invitó que te mande una nueva.
+        <StateCard badge={<Badge dot>No disponible</Badge>} title="Esta invitación no existe o ya no sirve">
+          Puede que haya vencido, que ya la hayas usado o que la hayan cancelado. Revisá que el link esté completo, o pedile a quien te invitó que te mande una nueva. Si ya la
+          aceptaste,{' '}
+          <Link className="lnk" href={status === 'authenticated' ? HOME : '/login'}>
+            {status === 'authenticated' ? 'andá a tus proyectos' : 'iniciá sesión'}
+          </Link>
+          .
         </StateCard>
       );
     }
@@ -71,39 +77,6 @@ export function InvitationScreen({ token }: { token: string }) {
   }
 
   const data = joining?.data ?? (invitation.data as InvitationPreview);
-  const member = status === 'authenticated' && me ? me.workspaces.some((workspace) => workspace.id === data.workspace_id) : false;
-
-  if (!joining && data.status === 'expired') {
-    return (
-      <StateCard badge={<Badge tone="warn" dot>Vencida</Badge>} title="Esta invitación venció">
-        Pedile a {data.inviter_name} que te mande una nueva.
-      </StateCard>
-    );
-  }
-
-  if (!joining && data.status === 'used') {
-    if (member) {
-      return (
-        <StateCard
-          badge={<Badge tone="ok" dot>Ya sos miembro</Badge>}
-          title={`Ya sos parte de ${data.workspace_name}`}
-          action={<EnterWorkspace id={data.workspace_id} name={data.workspace_name} />}
-        >
-          No hace falta aceptar nada más: la invitación ya se usó.
-        </StateCard>
-      );
-    }
-    return (
-      <StateCard badge={<Badge dot>Ya usada</Badge>} title="Esta invitación ya se usó">
-        Si ya sos parte de {data.workspace_name},{' '}
-        <Link className="lnk" href={status === 'authenticated' ? HOME : '/login'}>
-          {status === 'authenticated' ? 'andá a tus proyectos' : 'iniciá sesión'}
-        </Link>
-        .
-      </StateCard>
-    );
-  }
-
   const mode: Mode =
     joining?.mode ??
     (status === 'loading'
@@ -182,35 +155,13 @@ export function InvitationScreen({ token }: { token: string }) {
   );
 }
 
-function StateCard({ badge, title, action, children }: { badge: ReactNode; title: string; action?: ReactNode; children: ReactNode }) {
+function StateCard({ badge, title, children }: { badge: ReactNode; title: string; children: ReactNode }) {
   return (
     <Card className={cx(styles.card, styles.state)}>
       {badge}
       <h1 className={cx('t-h3', styles.stateTitle)}>{title}</h1>
       <p className="t-small muted">{children}</p>
-      {action}
     </Card>
-  );
-}
-
-/** Opens the app on the workspace of the invitation. */
-function EnterWorkspace({ id, name }: { id: string; name: string }) {
-  const router = useRouter();
-  const { switchWorkspace } = useSession();
-  const [busy, setBusy] = useState(false);
-  const enter = async () => {
-    setBusy(true);
-    try {
-      await switchWorkspace(id, { to: null });
-    } catch {
-      // The app opens on the workspace it had: the switcher is one click away.
-    }
-    router.replace(HOME);
-  };
-  return (
-    <Button variant="primary" block loading={busy} onClick={() => void enter()} className={cx(styles.tall, styles.stateAction)}>
-      Ir a {name}
-    </Button>
   );
 }
 
@@ -236,7 +187,7 @@ function useJoin(invitation: InvitationPreview) {
 
 /**
  * Every error of "accept" that is not shown under a field. A 410 is the exception: it reloads the
- * invitation, which then explains by itself that it expired or was used.
+ * invitation, which then says by itself that the link no longer works.
  */
 function AcceptError({ error, loginHref, email }: { error: unknown; loginHref: string; email: string }) {
   if (!error) return null;
@@ -256,6 +207,11 @@ function AcceptError({ error, loginHref, email }: { error: unknown; loginHref: s
           Tu sesión se cerró o este email ya tiene una cuenta. Entrá con {email} para aceptar la invitación.
         </Banner>
       );
+    }
+    if (error.status === 403) {
+      // The backend's sentence: the invitation is for another email, or the plan has no seat left.
+      const known = error.code === 'invitation_email_mismatch' || error.code === 'seats_exceeded';
+      return <Banner tone="err">{known ? error.message : errorMessage(error, 'No pudimos aceptar la invitación.')}</Banner>;
     }
     if (error.status === 400) {
       // Field errors are under their fields; anything else of a 400 is said here.

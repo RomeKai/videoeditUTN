@@ -276,8 +276,8 @@ Otras respuestas:
 - **Qué muestra:** "Juan te invitó a *Estudio Norte* como Editor".
 - **Si no tiene cuenta:** crea la cuenta ahí mismo.
 - **Si tiene cuenta:** inicia sesión.
-- **Estados:** invitación vencida o ya usada.
-- **API:** ❌. Existe `WorkspaceMember.status=pending`, pero no hay endpoints.
+- **Estados:** la invitación no existe o ya no sirve (vencida, ya usada o cancelada: una sola pantalla, porque la API responde lo mismo para todas); sesión de otra cuenta.
+- **API:** ✅ `GET /api/v1/invitations/:token/` y `POST /api/v1/invitations/:token/accept/`. La invitación es del email invitado: solo la acepta su cuenta, o la cuenta que se crea ahí con ese email.
 
 #### A6. Precios — `/precios`
 - **Para qué:** comparar planes antes y después de registrarse. Es la misma pantalla que Uso › Planes, sin la barra de la app.
@@ -754,7 +754,7 @@ Lo que el frontend necesita y hoy no existe, en orden de prioridad. El detalle e
 | 10 | Conectar redes por workspace (Ayrshare) | E1, H3 | P1 |
 | 11 | ~~Endpoint de clip: renombrar, recortar, volver a renderizar y reintentar~~ Resuelto: `GET/PATCH/DELETE /clips/:id/`, `POST /clips/:id/render/` y `POST /clips/:id/retry/` | D3, D4 | — |
 | 12 | Suscripción, checkout y webhooks de pago (PAY-01/02/03). La lista de planes ya está: `GET /plans/` | G3, G4 | P1 |
-| 13 | Invitaciones: crear, reenviar y aceptar | A5, H2 | P1 |
+| 13 | ~~Invitaciones: crear, reenviar y aceptar~~ Resuelto: `POST /workspaces/:id/invitations/`, `.../invitations/:memberId/resend/`, `GET /invitations/:token/` y `POST /invitations/:token/accept/` | A5, H2 | — |
 | 14 | Paginación y filtro por estado en proyectos | B2 | P1 |
 | 15 | Tiempos por etapa del pipeline | D1 | P2 |
 | 16 | Notificaciones (modelo y emails). Las preferencias de email ya están: `GET/PATCH /me/notification-preferences/` | J2 | P2 |
