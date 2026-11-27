@@ -3,6 +3,7 @@ What the project screens show beyond the model fields (services/project_summary.
 the creation cost, the times of each stage and who created the project, in the
 project, the list and the detail.
 """
+from datetime import timezone as dt_timezone
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -17,7 +18,7 @@ from apps.videos.models import VideoProject
 from apps.videos.serializers import VideoProjectSerializer
 from apps.videos.services import project_summary
 from apps.videos.services.ai.pipeline_state import PipelineStage
-from apps.videos.tasks.ingestion import _record_stage_duration
+from apps.videos.tasks.ingestion import _record_stage_duration, _record_stage_start
 from apps.videos.tests.test_active_workspace import make_user
 from apps.videos.tests.test_project_data import ProjectDataHarness, reserve
 
@@ -250,6 +251,106 @@ class StageTimingTests(ProjectDataHarness):
         for metadata in ({}, {'stage_durations': ['x']}):
             with self.subTest(metadata=metadata):
                 self.assertEqual(VideoProjectSerializer(self.project(metadata=metadata)).data['stage_timings'], {})
+
+    def test_the_running_stage_has_its_start_and_no_duration(self):
+        project = self.project(metadata={
+            'stage_durations': {'audio_extracted': 4.0},
+            'stage_finished_at': {'audio_extracted': '2026-11-27T10:00:04+00:00'},
+            'stage_started_at': {
+                'audio_extracted': '2026-11-27T09:00:00+00:00', 'transcribed': '2026-11-27T10:00:05+00:00',
+            },
+        })
+
+        timings = VideoProjectSerializer(project).data['stage_timings']
+
+        self.assertEqual(
+            timings['transcribed'], {'started_at': '2026-11-27T10:00:05+00:00', 'finished_at': None, 'duration_s': None},
+        )
+        # A finished stage keeps the start of its last successful run (its end minus its duration).
+        self.assertEqual(timings['audio_extracted']['started_at'], '2026-11-27T10:00:00+00:00')
+
+    def test_the_stage_a_failed_project_stopped_at_has_its_start_and_when_it_stopped(self):
+        stopped = timezone.datetime(2026, 11, 27, 10, 3, tzinfo=dt_timezone.utc)
+        project = self.project(
+            status=VideoProject.Status.FAILED, pipeline_error_at=stopped,
+            metadata={'stage_started_at': {'transcribed': '2026-11-27T10:00:05+00:00'}},
+        )
+
+        timings = VideoProjectSerializer(project).data['stage_timings']
+
+        self.assertEqual(timings['transcribed'], {
+            'started_at': '2026-11-27T10:00:05+00:00', 'finished_at': '2026-11-27T10:03:00+00:00', 'duration_s': None,
+        })
+
+        # A start after the failure is of another run: no end.
+        project.metadata = {'stage_started_at': {'transcribed': '2026-11-27T11:00:00+00:00'}}
+        timings = VideoProjectSerializer(project).data['stage_timings']
+        self.assertIsNone(timings['transcribed']['finished_at'])
+
+    def test_a_stage_that_finished_before_its_end_was_recorded_shows_the_start_it_wrote(self):
+        project = self.project(metadata={
+            'stage_durations': {'moderated': 3.5}, 'stage_started_at': {'moderated': '2026-11-27T10:00:00'},
+        })
+
+        self.assertEqual(
+            VideoProjectSerializer(project).data['stage_timings']['moderated'],
+            {'started_at': '2026-11-27T10:00:00+00:00', 'finished_at': None, 'duration_s': 3.5},
+        )
+
+    def test_corrupt_starts_never_raise(self):
+        for started in ('x', ['transcribed'], 7, None):
+            with self.subTest(started=started):
+                project = self.project(metadata={'stage_started_at': started})
+                self.assertEqual(VideoProjectSerializer(project).data['stage_timings'], {})
+        project = self.project(status=VideoProject.Status.FAILED, pipeline_error_at=timezone.now())
+        project.metadata = {
+            'stage_durations': 'x',
+            'stage_finished_at': ['y'],
+            'stage_started_at': {
+                'audio_extracted': 'yesterday', 'transcribed': 10 ** 400, 'moderated': float('inf'),
+                'clips_selected': None, 'render_dispatched': {'at': 1}, 'proxy': '99999-01-01T00:00:00+00:00',
+                'completed': '0001-01-01T00:00:00+00:00',
+            },
+        }
+
+        timings = VideoProjectSerializer(project).data['stage_timings']
+
+        self.assertEqual(list(timings), ['completed'])
+        self.assertEqual(timings['completed']['duration_s'], None)
+
+    def test_a_stage_records_when_it_started_and_a_retry_keeps_the_first_start(self):
+        project = self.project()
+
+        _record_stage_start(project.pk, PipelineStage.TRANSCRIBED, 1)
+
+        project.refresh_from_db()
+        first = project.metadata['stage_started_at']['transcribed']
+        self.assertIsNotNone(timezone.datetime.fromisoformat(first).tzinfo)
+        timing = VideoProjectSerializer(project).data['stage_timings']['transcribed']
+        self.assertEqual((timing['finished_at'], timing['duration_s']), (None, None))
+
+        _record_stage_start(project.pk, PipelineStage.TRANSCRIBED, 2)
+        project.refresh_from_db()
+        self.assertEqual(project.metadata['stage_started_at']['transcribed'], first)
+
+        # A new run (the user retried the project) starts again.
+        _record_stage_start(project.pk, PipelineStage.TRANSCRIBED, 1)
+        project.refresh_from_db()
+        self.assertGreater(project.metadata['stage_started_at']['transcribed'], first)
+
+    def test_recording_times_over_corrupt_metadata_replaces_what_is_not_an_object(self):
+        project = self.project(metadata={
+            'max_clips': 3, 'stage_started_at': ['x'], 'stage_durations': 'x', 'stage_finished_at': 5,
+        })
+
+        _record_stage_start(project.pk, PipelineStage.TRANSCRIBED, 3)
+        _record_stage_duration(project.pk, PipelineStage.TRANSCRIBED, 12.0)
+
+        project.refresh_from_db()
+        self.assertEqual(project.metadata['max_clips'], 3)
+        self.assertEqual(list(project.metadata['stage_started_at']), ['transcribed'])
+        self.assertEqual(project.metadata['stage_durations'], {'transcribed': 12.0})
+        self.assertEqual(list(project.metadata['stage_finished_at']), ['transcribed'])
 
     def test_a_finished_stage_records_when_it_ended(self):
         project = self.project()

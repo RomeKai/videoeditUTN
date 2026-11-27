@@ -8,7 +8,9 @@ Resumen and Actividad), read from what the backend already keeps:
 - ``stage_timings``: ``metadata['stage_durations']`` (the last successful run
   of each stage, INFRA-02) and ``metadata['stage_finished_at']`` (when it
   ended). Stages that finished before ``stage_finished_at`` existed only have
-  their duration.
+  their duration. A stage that started and did not finish (the one running,
+  or the one where the project failed) comes with its start alone, from
+  ``metadata['stage_started_at']``.
 - ``uploaded_by_detail``: who created the project, as a ``UserRef``.
 - ``eta_seconds``: while a project is processing, how long until "Listo para
   revisar": the estimate for its duration (the same one Nuevo proyecto shows,
@@ -163,22 +165,47 @@ def _started_at(finished_at, duration):
 
 
 def stage_timings(project):
-    """``{stage: StageTiming}`` of the stages that finished, from the metadata."""
+    """
+    ``{stage: StageTiming}`` from the metadata: the stages that finished, with
+    their duration, and the ones that started and did not finish, with their
+    start and no duration. The stage a failed project stopped at also says
+    when it stopped (``pipeline_error_at``).
+    """
+    from apps.videos.models import VideoProject
+
     metadata = _metadata(project)
     durations = metadata.get('stage_durations')
-    if not isinstance(durations, dict):
-        return {}
+    durations = durations if isinstance(durations, dict) else {}
     finished = metadata.get('stage_finished_at')
     finished = finished if isinstance(finished, dict) else {}
+    started = metadata.get('stage_started_at')
+    started = started if isinstance(started, dict) else {}
     timings = {}
     for stage, duration in durations.items():
         if not _seconds(duration):
             continue
         finished_at = _parse(finished.get(stage))
+        started_at = _started_at(finished_at, duration)
+        if finished_at is None:
+            # Finished before ``stage_finished_at`` existed: the start it wrote, if any.
+            started_at = _parse(started.get(stage))
         timings[str(stage)] = {
-            'started_at': _iso(_started_at(finished_at, duration)),
+            'started_at': _iso(started_at),
             'finished_at': _iso(finished_at),
             'duration_s': float(duration),
+        }
+    stopped_at = project.pipeline_error_at if project.status == VideoProject.Status.FAILED else None
+    for stage, value in started.items():
+        if str(stage) in timings:
+            continue
+        started_at = _iso(_parse(value))
+        if started_at is None:
+            continue
+        ended = stopped_at is not None and _parse(started_at) <= stopped_at
+        timings[str(stage)] = {
+            'started_at': started_at,
+            'finished_at': _iso(stopped_at) if ended else None,
+            'duration_s': None,
         }
     return timings
 

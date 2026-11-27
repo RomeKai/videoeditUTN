@@ -201,6 +201,7 @@ def _running_stage(project_id, stage, attempt):
     # status writes are guarded by it so a worker that lost ownership stays silent.
     owner_stage = STAGE_ORDER[STAGE_ORDER.index(stage) - 1]
     set_stage_status(project_id, stage, StageStatus.RUNNING, expected_stage=owner_stage)
+    _record_stage_start(project_id, stage, attempt)
     logger.info(
         "pipeline.stage_started project_id=%s stage=%s attempt=%d", project_id, stage, attempt,
         extra={'project_id': str(project_id), 'stage': str(stage), 'attempt': attempt},
@@ -254,6 +255,37 @@ def _running_stage(project_id, stage, attempt):
     _record_stage_duration(project_id, stage, duration_s)
 
 
+def _metadata_dict(value):
+    """A dict of the metadata to add a key to, or a new one when what is there is not a dict."""
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _record_stage_start(project_id, stage, attempt):
+    """
+    When ``stage`` started, in ``metadata['stage_started_at']``, so the process
+    timeline of the web app shows the stage that is running, or the one that
+    failed, with its start (stage_timings). An automatic retry (``attempt``
+    above 1) keeps the first start: the web app shows the retries of a stage
+    as one run. A new run (a retry the user asked for) writes it again. As
+    with the durations, it must never break the pipeline.
+    """
+    try:
+        with transaction.atomic():
+            project = VideoProject.objects.select_for_update().only('metadata').get(pk=project_id)
+            metadata = _metadata_dict(project.metadata)
+            started = _metadata_dict(metadata.get('stage_started_at'))
+            if attempt > 1 and isinstance(started.get(str(stage)), str):
+                return
+            started[str(stage)] = timezone.now().isoformat()
+            metadata['stage_started_at'] = started
+            VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
+    except Exception as exc:  # a metric must never fail a stage
+        logger.warning(
+            "pipeline.stage_start_not_saved project_id=%s stage=%s error=%s",
+            project_id, stage, type(exc).__name__,
+        )
+
+
 def _record_stage_duration(project_id, stage, duration_s):
     """
     INFRA-02: keeps the last successful duration of each stage in
@@ -264,12 +296,12 @@ def _record_stage_duration(project_id, stage, duration_s):
     try:
         with transaction.atomic():
             project = VideoProject.objects.select_for_update().only('metadata').get(pk=project_id)
-            metadata = dict(project.metadata or {})
-            durations = dict(metadata.get('stage_durations') or {})
+            metadata = _metadata_dict(project.metadata)
+            durations = _metadata_dict(metadata.get('stage_durations'))
             durations[str(stage)] = duration_s
             metadata['stage_durations'] = durations
             # When it ended, for the process timeline of the web app (stage_timings).
-            finished = dict(metadata.get('stage_finished_at') or {})
+            finished = _metadata_dict(metadata.get('stage_finished_at'))
             finished[str(stage)] = timezone.now().isoformat()
             metadata['stage_finished_at'] = finished
             VideoProject.objects.filter(pk=project_id).update(metadata=metadata)
