@@ -21,6 +21,7 @@ from rest_framework.views import APIView
 
 from apps.core.permissions import WorkspaceRolePermission
 from apps.core.workspace import NOT_FOUND_DETAIL, resolve_active_workspace
+from apps.users.models import Workspace
 
 from .serializers_billing import ChangePlanRequestSerializer, ChangePlanResponseSerializer, SubscriptionSerializer
 from .services.payment_providers import PaymentsUnavailable
@@ -114,6 +115,9 @@ class ChangePlanView(BillingView):
             raise ValidationError({'plan_id': [ALREADY_CURRENT]})
         except PlanNotFound:
             raise NotFound(PLAN_NOT_FOUND)
+        except Workspace.DoesNotExist:
+            # Deleted while this request waited for its row (lock_workspace): nothing changed.
+            raise NotFound(NOT_FOUND_DETAIL)
         except SeatsExceeded as exc:
             return Response(
                 {'error': exc.message, 'code': 'seats_exceeded', 'seats_used': exc.used, 'max_members': exc.plan.max_members},

@@ -334,6 +334,16 @@ if PAYMENTS_PROVIDER_TIMEOUT_SECONDS <= 0:
     raise ImproperlyConfigured(
         f'PAYMENTS_PROVIDER_TIMEOUT_SECONDS={PAYMENTS_PROVIDER_TIMEOUT_SECONDS} must be a positive number of seconds, like 30.'
     )
+# How long an open checkout lives, from when its provider call started
+# (Payment.checkout_started_at). A pending payment whose checkout outlived it
+# is rejected and its checkout closed at the provider (services/payments.py,
+# expire_checkouts, run by the beat task): an abandoned plan checkout stops
+# capping the seats. A confirmation that arrives later is a late payment.
+PAYMENTS_CHECKOUT_TTL_SECONDS = env.int('PAYMENTS_CHECKOUT_TTL_SECONDS', default=24 * 60 * 60)
+if PAYMENTS_CHECKOUT_TTL_SECONDS <= 0:
+    raise ImproperlyConfigured(
+        f'PAYMENTS_CHECKOUT_TTL_SECONDS={PAYMENTS_CHECKOUT_TTL_SECONDS} must be a positive number of seconds, like 86400 (24 h).'
+    )
 # Reference conversion shown next to the token packages ("≈ ARS 14.500").
 # Display only: every payment is in USD.
 PAYMENTS_LOCAL_CURRENCY = env('PAYMENTS_LOCAL_CURRENCY', default='ARS')
