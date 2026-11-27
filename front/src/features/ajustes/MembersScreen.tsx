@@ -8,7 +8,7 @@ import { useMembers, useRemoveMember, useResendInvitation, useSubscription, useU
 import { ConfirmDialog } from '@/dialogs';
 import { cx } from '@/lib/cx';
 import { errorMessage } from '@/lib/error-messages';
-import { formatDate } from '@/lib/format';
+import { formatDate, plural } from '@/lib/format';
 import { useIsMobile } from '@/lib/hooks';
 import { ROLE_LABEL } from '@/lib/permissions';
 import { LoadError } from '@/shell/LoadError';
@@ -207,6 +207,9 @@ function MemberRow({ member, isSelf, mobile, onRole, onRemove, onResend, resendi
   );
 }
 
+/** "5 lugares, y ya están ocupados" */
+const seatsTaken = (count: number) => `${plural(count, 'lugar', 'lugares')}, y ya ${count === 1 ? 'está ocupado' : 'están ocupados'}`;
+
 function Members() {
   const toast = useToast();
   const titleId = useId();
@@ -225,7 +228,10 @@ function Members() {
   const planName = subscription.data?.plan.name ?? workspace?.plan?.name ?? null;
   const full = data ? data.seats_used >= data.max_members : false;
   const pendingCount = data ? data.members.filter((member) => member.status === 'pending').length : 0;
-  const fullReason = full ? `No quedan lugares en el plan${planName ? ` ${planName}` : ''}` : undefined;
+  // While a plan change waits, `max_members` is its plan's seats: the ones inviting checks.
+  const limitedBy = data?.limited_by ?? null;
+  const seatsPlan = limitedBy?.plan_name ?? planName;
+  const fullReason = full ? `No quedan lugares en el plan${seatsPlan ? ` ${seatsPlan}` : ''}` : undefined;
 
   const onRole = (member: Member, role: MemberRole) =>
     updateMember.mutate(
@@ -308,7 +314,17 @@ function Members() {
             ))}
           </Card>
         )}
-        {data && full ? (
+        {data && full && limitedBy ? (
+          <p className={styles.note} id={`${titleId}-full`}>
+            {limitedBy.reason === 'pending_plan'
+              ? `Tu plan pasa a ${limitedBy.plan_name} el ${formatDate(limitedBy.effective_at)} y ese plan tiene ${seatsTaken(data.max_members)}. Para invitar a alguien más, `
+              : `Hay un pago en curso para pasar al plan ${limitedBy.plan_name}, que tiene ${seatsTaken(data.max_members)}. Para invitar a alguien más, `}
+            <Link className={styles.link} href="/uso/planes">
+              {limitedBy.reason === 'pending_plan' ? 'cancelá el cambio de plan' : `elegí «Seguir con ${planName ?? 'tu plan'}» en Planes`}
+            </Link>
+            .
+          </p>
+        ) : data && full ? (
           <p className={styles.note} id={`${titleId}-full`}>
             {pendingCount > 0
               ? `${pendingCount === 1 ? 'La invitación pendiente ocupa el último lugar' : 'Las invitaciones pendientes ocupan los últimos lugares'} del plan${planName ? ` ${planName}` : ''}. Para invitar a alguien más, quitá ${pendingCount === 1 ? 'la invitación' : 'una invitación'} o `

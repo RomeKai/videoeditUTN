@@ -15,7 +15,7 @@ import { NetworksScreen } from './NetworksScreen';
 import { NotificationsScreen } from './NotificationsScreen';
 import { ProfileScreen } from './ProfileScreen';
 import { SettingsShell } from './SectionShell';
-import { membersSummary, networksSummary } from './summaries';
+import { membersSummary, networksSummary, seatLimitReason } from './summaries';
 
 const navigation = vi.hoisted(() => ({ pathname: '/ajustes', replace: vi.fn() }));
 vi.mock('next/navigation', () => ({
@@ -26,6 +26,8 @@ vi.mock('next/navigation', () => ({
 }));
 
 startMockApi();
+
+const newMemberId = '7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f';
 
 beforeEach(() => {
   navigation.pathname = '/ajustes';
@@ -40,10 +42,19 @@ describe('utilidades de Ajustes', () => {
 
   it('resume miembros y redes para la lista del teléfono', () => {
     const member = (status: 'active' | 'pending') => ({ id: 'a', user: null, email: 'a@b.co', role: 'editor' as const, status, joined_at: '2026-11-01T00:00:00Z' });
-    expect(membersSummary({ members: [member('active'), member('active'), member('pending')], max_members: 5, seats_used: 3 })).toBe('2 de 5 miembros · 1 invitación pendiente');
-    expect(membersSummary({ members: [member('active')], max_members: 1, seats_used: 1 })).toBe('1 de 1 miembro');
+    expect(membersSummary({ members: [member('active'), member('active'), member('pending')], max_members: 5, seats_used: 3, limited_by: null })).toBe('2 de 5 miembros · 1 invitación pendiente');
+    expect(membersSummary({ members: [member('active')], max_members: 1, seats_used: 1, limited_by: null })).toBe('1 de 1 miembro');
     expect(networksSummary([{ status: 'connected' }, { status: 'connected' }, { status: 'expired' }])).toBe('2 conectadas · 1 vencida');
     expect(networksSummary([{ status: 'disconnected' }])).toBe('Ninguna conectada');
+  });
+
+  it('dice de qué plan son los lugares cuando un cambio de plan los achica', () => {
+    expect(seatLimitReason({ reason: 'pending_payment', plan_name: 'Creador', effective_at: null })).toBe(
+      'Cuentan los lugares del plan Creador: estás pasando a ese plan y el pago está en curso.',
+    );
+    expect(seatLimitReason({ reason: 'pending_plan', plan_name: 'Gratis', effective_at: '2026-12-12T15:00:00Z' })).toBe(
+      'Cuentan los lugares del plan Gratis: tu plan pasa a ese el 12 dic 2026.',
+    );
   });
 });
 
@@ -245,7 +256,7 @@ describe('H2 · Miembros', () => {
     const user = userEvent.setup();
     const pending = real.invitation_invited.invited[0];
     if (!pending) throw new Error('falta la fila invitada');
-    const members = { members: [...real.members.members.slice(0, 2), pending], max_members: 10, seats_used: 3 };
+    const members = { members: [...real.members.members.slice(0, 2), pending], max_members: 10, seats_used: 3, limited_by: null };
     let answer: { status: number; body: unknown } = real.errors.invite_403_seats;
     const sent: unknown[] = [];
     server.use(
@@ -304,6 +315,69 @@ describe('H2 · Miembros', () => {
     await user.click(within(confirm).getByRole('button', { name: 'Quitar la invitación' }));
     expect(await screen.findByText('9 de 10 miembros')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole('button', { name: 'Invitar' })).not.toHaveAttribute('aria-disabled'));
+  });
+
+  it('con un pago de plan en curso cuentan los lugares de ese plan, los mismos que controla invitar', async () => {
+    const user = userEvent.setup();
+    // The rehearsal: Pro (10 seats) with 4 taken while a payment to Creador (5 seats) waits for its checkout.
+    const prepare = () => {
+      const db = loadDb();
+      const estudio = db.workspaces.find((workspace) => workspace.name === 'Estudio Norte')?.id ?? '';
+      const id = '5b2e8c1d-3f4a-4e6b-8c9d-0a1b2c3d4e5f';
+      db.purchases.push({
+        id,
+        workspace: estudio,
+        status: 'pending',
+        tokens: 0,
+        plan_id: db.plans.find((plan) => plan.name === 'Creador')?.id ?? null,
+        amount_usd: 19,
+        checkout_url: `http://localhost:3000/dev/checkout?compra=${id}`,
+        failure_reason: null,
+        created_at: new Date().toISOString(),
+        balance_after: null,
+        _settleAt: null,
+        _reject: false,
+      });
+      saveDb(db);
+    };
+    renderScreen(<MembersScreen />, { prepare });
+    expect(await screen.findByText('4 de 5 miembros')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Invitar' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Invitar a Estudio Norte' });
+    expect(within(dialog).getByText(/en el plan Creador$/)).toHaveTextContent('Queda 1 lugar en el plan Creador');
+    expect(within(dialog).getByText(/Cuentan los lugares del plan Creador: estás pasando a ese plan/)).toBeInTheDocument();
+    await user.type(within(dialog).getByLabelText('Emails'), 'juan@ejemplo.com, ana@ejemplo.com');
+    await user.click(within(dialog).getByRole('button', { name: 'Enviar invitaciones' }));
+    expect(await within(dialog).findByText('Escribiste 2 emails y queda 1 lugar en el plan Creador.')).toBeInTheDocument();
+    await user.clear(within(dialog).getByLabelText('Emails'));
+    await user.type(within(dialog).getByLabelText('Emails'), 'juan@ejemplo.com');
+    await user.click(within(dialog).getByRole('button', { name: 'Enviar invitación' }));
+    expect(await screen.findByText('Invitación enviada a juan@ejemplo.com')).toBeInTheDocument();
+
+    // Full: «Invitar» is off and the note says why, with what to do in Planes.
+    expect(await screen.findByText('4 de 5 miembros · 1 invitación pendiente')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Invitar' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByText(/^Hay un pago en curso para pasar al plan Creador, que tiene 5 lugares, y ya están ocupados\. Para invitar a alguien más,/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'elegí «Seguir con Pro» en Planes' })).toHaveAttribute('href', '/uso/planes');
+  }, 30_000);
+
+  it('con una bajada programada el plan lleno dice cuándo cambia y cómo cancelarlo', async () => {
+    const prepare = () => {
+      const db = loadDb();
+      const workspace = db.workspaces.find((item) => item.name === 'Estudio Norte');
+      const creator = db.plans.find((plan) => plan.name === 'Creador');
+      if (!workspace || !creator) throw new Error('faltan datos');
+      // Creador has 5 seats; Estudio Norte has 4 members and one invitation.
+      workspace.pending_plan = { id: creator.id, effective_at: '2026-12-12T15:00:00Z' };
+      db.members.push({ id: newMemberId, workspace: workspace.id, user: null, email: 'juan@ejemplo.com', role: 'editor', status: 'pending', joined_at: new Date().toISOString(), invited_by: null, token: null });
+      saveDb(db);
+    };
+    renderScreen(<MembersScreen />, { prepare });
+    expect(await screen.findByText('4 de 5 miembros · 1 invitación pendiente')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Invitar' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByText(/^Tu plan pasa a Creador el 12 dic 2026 y ese plan tiene 5 lugares, y ya están ocupados\./)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'cancelá el cambio de plan' })).toHaveAttribute('href', '/uso/planes');
   });
 
   it('cambia el rol de un miembro y no deja tocar el del dueño ni el propio', async () => {

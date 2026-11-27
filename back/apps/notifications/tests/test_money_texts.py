@@ -21,7 +21,8 @@ from django.utils import timezone
 from apps.notifications import services
 from apps.notifications.models import Notification
 from apps.payments.models import Payment, Transaction, Wallet
-from apps.payments.services.payments import expire_checkout, settle_payment
+from apps.payments.services.payment_providers import Checkout, SimulatedProvider
+from apps.payments.services.payments import CHECKOUT_FAILED, expire_checkout, fail_stale_checkouts, settle_payment
 from apps.payments.services.wallet_service import commit_reservation, reserve_funds
 from apps.payments.tests.billing_helpers import SIMULATED, client_for, owner_with_workspace
 from apps.payments.tests.conftest import seeded_plans  # noqa: F401  (fixture)
@@ -228,6 +229,38 @@ class DatabaseErrorTests(TransactionTestCase):
         self.assertEqual(Wallet.objects.get(pk=self.wallet.pk).available_balance, Decimal('1600'))
         self.assertEqual(Notification.objects.count(), 0)
 
+    def test_a_database_error_before_the_savepoint_does_not_undo_the_credit(self):
+        """
+        Only on_commit (services._after_commit) covers this one: the error comes
+        before the notification's own savepoint, in ``recipients_of``. Written
+        in the caller's transaction, it would leave that transaction aborted and
+        the commit would roll the credit back, with the payment still pending.
+        """
+        payment = Payment.objects.create(
+            workspace=self.workspace, created_by=self.ana, tokens=1500, amount_usd=Decimal('15.00'), provider='simulated',
+        )
+
+        def refused_query(*args):
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT * FROM una_tabla_que_no_existe')
+
+        with patch('apps.notifications.services.recipients_of', side_effect=refused_query), \
+                self.assertLogs('apps.notifications.services', logging.ERROR) as logs:
+            _, changed = settle_payment(payment.pk, approved=True)
+
+        self.assertTrue(changed)
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, Payment.Status.APPROVED)
+        self.assertEqual(Wallet.objects.get(pk=self.wallet.pk).available_balance, Decimal('1600'))
+        credit = Transaction.objects.get(pk=payment.credit_transaction_id)
+        self.assertEqual((credit.status, credit.amount), (Transaction.Status.COMPLETED, Decimal('1500')))
+        self.assertEqual(Notification.objects.count(), 0)
+        # Ids and the class of the error, never its text.
+        self.assertEqual(logs.output, [
+            'ERROR:apps.notifications.services:notifications.not_created '
+            f'event=payment_settled payment_id={payment.pk} error=ProgrammingError',
+        ])
+
     def test_a_failed_project_is_refunded_although_the_prune_fails(self):
         project = VideoProject.objects.create(
             workspace=self.workspace, uploaded_by=self.ana, title='Podcast 42', source_file='x/y.mp4',
@@ -299,6 +332,46 @@ class TestPaymentsNobodyRefused:
             _, expired = expire_checkout(Payment.objects.get(workspace=workspace))
 
         assert expired
+        assert not Notification.objects.exists()
+
+    def test_a_checkout_the_provider_did_not_open_is_not_a_failed_charge(self, owner, seeded_plans, django_capture_on_commit_callbacks):  # noqa: F811
+        """_fail_checkout: the provider failed before anyone could pay, so "we could not charge you" would be false."""
+        user, workspace = owner
+        with patch.object(SimulatedProvider, 'start_checkout', side_effect=RuntimeError('proveedor caído')):
+            response = self.change(user, seeded_plans['Pro'], django_capture_on_commit_callbacks)
+
+        assert (response.status_code, response.json()['code']) == (502, 'checkout_failed')
+        payment = Payment.objects.get(workspace=workspace)
+        assert (payment.status, payment.failure_reason, payment.created_by_id) == (Payment.Status.REJECTED, CHECKOUT_FAILED, user.pk)
+        assert not Notification.objects.exists()
+
+    def test_a_checkout_too_long_to_keep_is_not_a_failed_charge(self, owner, django_capture_on_commit_callbacks):
+        user, workspace = owner
+        huge = Checkout(url=f"http://localhost:3000/dev/checkout?x={'a' * 2100}", reference='sim_huge')
+        with patch.object(SimulatedProvider, 'start_checkout', return_value=huge), \
+                django_capture_on_commit_callbacks(execute=True):
+            response = client_for(user).post(
+                '/api/v1/token-purchases/', {'package_id': 'pack-1000', 'return_url': 'http://localhost:3000/uso/comprar/resultado'},
+                format='json',
+            )
+
+        assert response.status_code == 502
+        assert Payment.objects.get(workspace=workspace).status == Payment.Status.REJECTED
+        assert not Notification.objects.exists()
+
+    def test_an_attempt_whose_checkout_never_opened_is_not_a_failed_charge(self, owner, seeded_plans, django_capture_on_commit_callbacks):  # noqa: F811
+        user, workspace = owner
+        long_ago = timezone.now() - timedelta(hours=1)
+        lost = Payment.objects.create(
+            workspace=workspace, created_by=user, plan=seeded_plans['Pro'], amount_usd=Decimal('49.00'), provider='simulated',
+        )
+        Payment.objects.filter(pk=lost.pk).update(created_at=long_ago, checkout_started_at=long_ago)
+
+        with django_capture_on_commit_callbacks(execute=True):
+            assert fail_stale_checkouts() == 1
+
+        lost.refresh_from_db()
+        assert (lost.status, lost.failure_reason) == (Payment.Status.REJECTED, CHECKOUT_FAILED)
         assert not Notification.objects.exists()
 
     def test_a_payment_the_provider_refused_still_tells_who_started_it(self, owner, seeded_plans, django_capture_on_commit_callbacks):  # noqa: F811

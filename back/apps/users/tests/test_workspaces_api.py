@@ -2,9 +2,11 @@
 /api/v1/workspaces/: the role is the one in the workspace of the PATH (never
 the header's), non-members get 404, and the owner only changes by transfer.
 """
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.core.permissions import ADMINS, DENIED, OWNER_ONLY
@@ -615,7 +617,7 @@ def test_members_lists_active_and_pending_with_the_seats_of_the_plan(team):
 
     assert response.status_code == 200
     body = response.json()
-    assert (body["max_members"], body["seats_used"]) == (5, 5)
+    assert (body["max_members"], body["seats_used"], body["limited_by"]) == (5, 5, None)
     by_email = {item["email"]: item for item in body["members"]}
     assert by_email[team.owner.email]["role"] == "owner"
     assert by_email["admin@test.com"]["role"] == "admin"
@@ -638,6 +640,65 @@ def test_without_a_plan_the_workspace_has_one_seat(user, workspace):
     body = client_for(user).get(url(workspace, "members/")).json()
 
     assert (body["max_members"], body["seats_used"]) == (1, 1)
+
+
+def _invite(team, email="nueva@example.com"):
+    return client_for(team.owner).post(url(team.workspace, "invitations/"), {"emails": [email], "role": "editor"}, format="json")
+
+
+def test_members_shows_the_seats_of_a_plan_payment_that_waits_and_inviting_agrees(team):
+    """
+    The rehearsal: on a 10-seat plan with 5 seats taken, a payment to a 5-seat
+    plan waits for its checkout. Inviting is refused (seats.check_seat_limit),
+    so Miembros says 5 seats, not 10, and why.
+    """
+    SubscriptionPlan.objects.filter(pk=team.workspace.subscription_plan_id).update(max_members=10)
+    smaller = SubscriptionPlan.objects.create(name="Creador de prueba", max_members=5, price_usd_monthly=Decimal("19"))
+    payment = Payment.objects.create(
+        workspace=team.workspace, created_by=team.owner, plan=smaller, tokens=0, amount_usd=Decimal("19.00"), provider="simulated",
+    )
+    api = client_for(team.admin)
+
+    body = api.get(url(team.workspace, "members/")).json()
+
+    assert (body["max_members"], body["seats_used"]) == (5, 5)
+    assert body["limited_by"] == {"reason": "pending_payment", "plan_name": "Creador de prueba", "effective_at": None}
+    refused = _invite(team)
+    assert (refused.status_code, refused.json()["code"]) == (403, "seats_exceeded")
+    assert "Creador de prueba" in refused.json()["error"]
+
+    # Keeping the plan («Seguir con …») rejects the payment: the plan's 10 seats again.
+    settle_payment(payment.pk, approved=False)
+    body = api.get(url(team.workspace, "members/")).json()
+    assert (body["max_members"], body["limited_by"]) == (10, None)
+    assert _invite(team).status_code == 201
+
+
+def test_members_shows_the_seats_of_a_scheduled_downgrade_with_its_date(team):
+    SubscriptionPlan.objects.filter(pk=team.workspace.subscription_plan_id).update(max_members=10)
+    smaller = SubscriptionPlan.objects.create(name="Chico", max_members=3)
+    when = timezone.now() + timedelta(days=12)
+    Workspace.objects.filter(pk=team.workspace.pk).update(pending_plan=smaller, pending_plan_effective_at=when)
+
+    body = client_for(team.owner).get(url(team.workspace, "members/")).json()
+
+    assert (body["max_members"], body["seats_used"]) == (3, 5)
+    assert body["limited_by"] == {
+        "reason": "pending_plan", "plan_name": "Chico", "effective_at": when.isoformat().replace("+00:00", "Z"),
+    }
+    assert _invite(team).status_code == 403
+
+
+def test_a_change_to_a_plan_with_more_seats_does_not_change_the_limit(team):
+    bigger = SubscriptionPlan.objects.create(name="Grande", max_members=20, price_usd_monthly=Decimal("99"))
+    Workspace.objects.filter(pk=team.workspace.pk).update(pending_plan=bigger, pending_plan_effective_at=timezone.now())
+    Payment.objects.create(
+        workspace=team.workspace, created_by=team.owner, plan=bigger, tokens=0, amount_usd=Decimal("99.00"), provider="simulated",
+    )
+
+    body = client_for(team.owner).get(url(team.workspace, "members/")).json()
+
+    assert (body["max_members"], body["limited_by"]) == (5, None)
 
 
 def test_an_admin_changes_a_role_and_a_removed_member_frees_the_seat(team):
