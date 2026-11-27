@@ -1,12 +1,12 @@
 # SEO y publicación social
 
-Este documento cubre la vida de una publicación (`ScheduledPost`): cómo la crea y la cambia la API, cómo se generan su caption y sus hashtags con IA (`process_video_seo`, [ADR-013](../adrs/013-ai-social-metadata.md)) y cómo se publica en TikTok, Instagram Reels o YouTube Shorts a través de Ayrshare (`upload_to_social_network`). La generación corre una vez por publicación, apenas se crea el `ScheduledPost`, y solo si el proyecto pagó el adicional de SEO; "Regenerar" la vuelve a pedir. La publicación corre cuando `dispatch_scheduled_posts_batch` encuentra posts `SCHEDULED` cuya `publish_at` ya llegó o cae dentro de la próxima hora. Ningún endpoint llama a la red.
+Este documento cubre la vida de una publicación (`ScheduledPost`): cómo la crea y la cambia la API, cómo se generan su caption y sus hashtags con IA (`process_video_seo`, [ADR-013](../adrs/013-ai-social-metadata.md)) y cómo se publica en TikTok, Instagram Reels o YouTube Shorts a través del proveedor de publicación del espacio (`upload_to_social_network` y la capa de proveedores `apps.integrations.social`, hoy con Ayrshare). La generación corre una vez por publicación, apenas se crea el `ScheduledPost`, y solo si el proyecto pagó el adicional de SEO; "Regenerar" la vuelve a pedir. La publicación corre cuando `dispatch_scheduled_posts_batch` encuentra posts `SCHEDULED` cuya `publish_at` ya llegó o cae dentro de la próxima hora. Ningún endpoint llama a la red.
 
 ## Componentes
 
 | Componente | Archivo | Rol |
 |------------|---------|-----|
-| `ScheduledPost` (`Status`, `Platform`) | [models.py](../../back/apps/videos/models.py) | Estado de la publicación, `generated_caption`, `generated_hashtags`, `error_log`, `retry_count`, el texto del usuario (`caption`, `hashtags`, `tiktok`) y `seo_requested_at`. |
+| `ScheduledPost` (`Status`, `Platform`) | [models.py](../../back/apps/videos/models.py) | Estado de la publicación, `generated_caption`, `generated_hashtags`, `error_log`, `retry_count`, el texto del usuario (`caption`, `hashtags`, `tiktok`), `seo_requested_at`, lo que dejó el proveedor (`post_url`, `external_id`) y la versión de la clave de idempotencia (`publish_key_version`). `caption_to_publish` y `hashtags_to_publish` son la regla del texto que sale, la misma para la API y el publicador. |
 | `PostIdempotencyKey` | [models.py](../../back/apps/videos/models.py) | Qué publicaciones creó un pedido con `Idempotency-Key`, por workspace. |
 | `ScheduledPostViewSet` | [views_social.py](../../back/apps/videos/views_social.py) | `/api/v1/scheduled-posts/`: listar y ver, crear (una o en lote), editar, cancelar, reintentar y regenerar el texto. |
 | `create_posts`, `update_post`, `cancel_post`, `retry_post`, `regenerate_seo` | [services/scheduled_posts.py](../../back/apps/videos/services/scheduled_posts.py) | Las reglas de cada escritura: estados, plan, cuenta, locks y la regla de un post trabado. |
@@ -19,8 +19,12 @@ Este documento cubre la vida de una publicación (`ScheduledPost`): cómo la cre
 | `clip_transcript`, `niche_slug`, `caption_limit`, `compose_caption` | [services/seo_engine.py](../../back/apps/videos/services/seo_engine.py) | Helpers puros: texto del clip, nicho como slug, límite por plataforma, caption final. |
 | `AI_Security_Shield.check_content_safety` | [core/security.py](../../back/apps/core/security.py) | Moderación de la entrada y de la salida ([ADR-011](../adrs/011-content-moderation.md)). |
 | `dispatch_scheduled_posts_batch` | [tasks/social.py](../../back/apps/videos/tasks/social.py) | Pasa a `QUEUED` los posts de la próxima hora y encola la publicación con ETA. |
-| `upload_to_social_network` | [tasks/social.py](../../back/apps/videos/tasks/social.py) | Publica vía Ayrshare, con backoff ante errores de la API. |
-| `AyrshareClient.send_post` | [integrations/ayrshare_api.py](../../back/apps/integrations/ayrshare_api.py) | `POST https://app.ayrshare.com/api/post` con la key global y la profile key del workspace. |
+| `upload_to_social_network` | [tasks/social.py](../../back/apps/videos/tasks/social.py) | Publica a través del proveedor del espacio, con backoff ante errores reintentables y un código en `error_log` ante los demás. |
+| `SocialProfile` | [integrations/models.py](../../back/apps/integrations/models.py) | El perfil del espacio en el proveedor: `provider` (el que publica sus posts) y `provider_ref` (para Ayrshare, la Profile-Key, una credencial). Reemplaza a `Workspace.ayrshare_profile_key`, que queda deprecada. |
+| `SocialProvider`, `PublishRequest`, `PublishResult`, `TikTokOptions`, `idempotency_key` | [integrations/social/base.py](../../back/apps/integrations/social/base.py) | La interfaz de un proveedor, en nuestros términos (redes, opciones de TikTok) y los timeouts de publicar. |
+| `RetryableError`, `PermanentError`, `OutcomeUnknownError` y los códigos | [integrations/social/errors.py](../../back/apps/integrations/social/errors.py) | Qué puede hacer el que llama después de un error, y por qué falló. |
+| `provider_for`, `get_provider`, `ready_profile`, `has_ready_profile` | [integrations/social/\_\_init\_\_.py](../../back/apps/integrations/social/__init__.py) | El proveedor de un perfil y el perfil de un espacio, sin llamar al proveedor. |
+| `AyrshareProvider` | [integrations/social/ayrshare.py](../../back/apps/integrations/social/ayrshare.py) | `https://api.ayrshare.com/api`: publicar, y crear, vincular, listar, desvincular y borrar perfiles. Lee la respuesta por el cuerpo, no solo por el HTTP. |
 
 ## Flujo: estados de `ScheduledPost`
 
@@ -32,10 +36,10 @@ stateDiagram-v2
     SCHEDULED --> SCHEDULED : PATCH reprograma
     SCHEDULED --> QUEUED : dispatch_scheduled_posts_batch
     QUEUED --> PROCESSING : upload_to_social_network
-    QUEUED --> FAILED : sin ayrshare_profile_key
-    PROCESSING --> PROCESSING : AyrshareAPIError con backoff
-    PROCESSING --> PUBLISHED : Ayrshare responde OK
-    PROCESSING --> FAILED : error crítico o reintentos agotados
+    QUEUED --> FAILED : sin perfil o TikTok sin opciones
+    PROCESSING --> PROCESSING : RetryableError con backoff
+    PROCESSING --> PUBLISHED : el proveedor la acepta
+    PROCESSING --> FAILED : error permanente, resultado incierto o reintentos agotados
     PROCESSING --> SCHEDULED : retry de un post trabado
     FAILED --> SCHEDULED : retry de una falla al publicar
     FAILED --> DRAFT : retry o generación SEO exitosa sobre un fallo SEO
@@ -59,7 +63,7 @@ stateDiagram-v2
 
 1. Un post nace `DRAFT` (default del modelo, `draft: true` en la API, o el admin) o `SCHEDULED` (la API, para ahora o para una fecha). Cómo lo crea y lo cambia la API está en [Flujo: la API de publicaciones](#flujo-la-api-de-publicaciones).
 2. `dispatch_scheduled_posts_batch` toma los `SCHEDULED` con `publish_at` hasta ahora + 1 h (los vencidos también: salen enseguida) y los pasa a `QUEUED` bajo `select_for_update`.
-3. `upload_to_social_network` los pasa a `PROCESSING` y, si Ayrshare responde, a `PUBLISHED`. Sin `ayrshare_profile_key` en el workspace el post queda `FAILED` desde cualquier estado previo.
+3. `upload_to_social_network` los pasa a `PROCESSING` y, si el proveedor la acepta, a `PUBLISHED`. Sin perfil del espacio (`SocialProfile`), o en TikTok sin `tiktok.privacy_level`, el post queda `FAILED` sin llamar al proveedor.
 4. Un fallo de SEO (`_fail_seo_post`) deja `FAILED` con un código estático en `error_log`, salvo estas excepciones: el post está en `_SEO_FROZEN_STATUSES` (`PROCESSING`, `PUBLISHED`); ya tiene `generated_caption` no vacío y `generated_hashtags` (regeneración fallida: solo se registra `seo.regenerate_failed` y el post sigue publicable con el caption anterior); o es un `DRAFT` o tiene caption propio del usuario, que conservan su estado con el código en `error_log` (la API muestra `seo_status: "failed"`; el texto del usuario no necesita el de la IA). En todos los casos borra `seo_requested_at`.
 5. Una generación exitosa llama a `_recover_seo_failed_post`: un post `FAILED` cuyo `error_log` es un código de SEO vuelve a `DRAFT` con `error_log` vacío, y un `DRAFT` con ese código pierde el código. Nunca se vuelve a programar solo: el usuario revisa el caption y lo programa de nuevo. Un `FAILED` de publicación no se toca.
 
@@ -137,7 +141,7 @@ Si `gate.reserve` levanta `CapacityUnavailable`, `_seo_wait_for_capacity` decide
 
 ## Flujo: la API de publicaciones
 
-`ScheduledPostViewSet` ([views_social.py](../../back/apps/videos/views_social.py)) atiende `/api/v1/scheduled-posts/` sobre el workspace activo (`X-Workspace-Id`): un post de otro workspace es 404 y un clip de otro workspace es 400 (`"El clip no existe."`). Escribir pide `post.publish` (Dueño, Admin y Editor; un Lector recibe 403). Las reglas están en [services/scheduled_posts.py](../../back/apps/videos/services/scheduled_posts.py), y ninguna llama a Ayrshare: lo que tiene que salir queda `SCHEDULED` y lo encola el beat.
+`ScheduledPostViewSet` ([views_social.py](../../back/apps/videos/views_social.py)) atiende `/api/v1/scheduled-posts/` sobre el workspace activo (`X-Workspace-Id`): un post de otro workspace es 404 y un clip de otro workspace es 400 (`"El clip no existe."`). Escribir pide `post.publish` (Dueño, Admin y Editor; un Lector recibe 403). Las reglas están en [services/scheduled_posts.py](../../back/apps/videos/services/scheduled_posts.py), y ninguna llama al proveedor de publicación: lo que tiene que salir queda `SCHEDULED` y lo encola el beat.
 
 | Endpoint | Función | Qué hace |
 |----------|---------|----------|
@@ -145,17 +149,17 @@ Si `gate.reserve` levanta `CapacityUnavailable`, `_seo_wait_for_capacity` decide
 | `POST /bulk/` | `create_posts` | Hasta `BULK_MAX` = 60, todo o nada en una transacción. Un error dice cuál con `index`; un clip repetido en la misma red es 400. |
 | `PATCH /:id/` | `update_post` | Texto, `tiktok` y `publish_at` de un `DRAFT` o un `SCHEDULED`. `publish_at` con fecha programa o reprograma, `null` lo deja para ahora, sin el campo un borrador sigue borrador. |
 | `POST /:id/cancel/` | `cancel_post` | Borra un `DRAFT`, `SCHEDULED`, `QUEUED`, `FAILED` o un `PROCESSING` trabado. |
-| `POST /:id/retry/` | `retry_post` | Un `FAILED`, o un `PROCESSING` trabado, vuelve a `SCHEDULED` para ahora, sin `error_log`. Si falló el texto con IA, vuelve a `DRAFT`. |
+| `POST /:id/retry/` | `retry_post` | Un `FAILED`, o un `PROCESSING` trabado, vuelve a `SCHEDULED` para ahora, sin `error_log` y con una clave de idempotencia nueva. Si falló el texto con IA, vuelve a `DRAFT`. |
 | `POST /:id/regenerate-seo/` | `regenerate_seo` | Pide otro texto a la IA (ver [disparo](#flujo-disparo-de-la-generación)). Responde 202 con `seo_status: "pending"`. |
 
 1. **Validación (400).** El clip tiene que estar `completed` o `published`. El texto que sale (`compose_caption`) no puede pasar `caption_limit(platform)`, ni los hashtags `HASHTAGS_MAX` (30 en TikTok e Instagram, 15 en YouTube). Los hashtags llegan sin `#` y sin repetidos (`clean_hashtags`); uno con espacios u otros caracteres es 400. Un post de TikTok que sale necesita `tiktok.privacy_level` (`clean_tiktok`; las otras opciones faltantes son `false`). Una fecha más de 60 s en el pasado es 400.
 2. **Plan (403).** Sin plan no hay límites. Programar (una fecha más de 60 s adelante) pide `allow_scheduling` (`code: "scheduling"`). Sin `allow_crossposting`, un clip sale en una sola red: se cuentan sus posts `SCHEDULED`, `QUEUED`, `PROCESSING` y `PUBLISHED` más los nuevos, no los borradores ni los fallidos (`code: "crossposting"`). Se mira al crear, al mandar un borrador y al reintentar.
-3. **Cuenta (409).** Lo que sale necesita `Workspace.ayrshare_profile_key` (`code: "account_not_connected"`), sin llamar a Ayrshare. No se sabe red por red hasta que exista conectar cuentas (hueco 10 del mapa).
+3. **Cuenta (409).** Lo que sale necesita el perfil del espacio en el proveedor (`SocialProfile` con `provider_ref`, `has_ready_profile`; `code: "account_not_connected"`), sin llamar al proveedor. No se sabe red por red hasta que exista conectar cuentas (hueco 10 del mapa).
 4. **Locks.** Cada escritura toma la fila del post con `select_for_update` y decide con el estado que lee bajo ese lock, como `dispatch_scheduled_posts_batch` y `upload_to_social_network`. Crear, mandar un borrador y reintentar toman antes el proyecto y el clip, en el orden de los renders de `views_clips` (crear y regenerar, antes que nada, el advisory lock del presupuesto de IA; nunca la fila del workspace); así dos pedidos del mismo clip cuentan las redes uno después del otro. Por eso:
    - un `PATCH` que llega mientras el despachador pasa el post a `QUEUED` espera y responde 409 `post_in_flight`: su tarea ya salió con la hora vieja;
    - un `cancel` que llega mientras el worker lo pasa a `PROCESSING` espera y responde 409 `post_in_flight`; uno que llega con el post `QUEUED` lo borra, y la tarea después no lo encuentra (`"Post Deleted"`);
    - dos `retry` a la vez: el segundo encuentra el post `SCHEDULED` y responde 409 `post_not_failed`.
-5. **Post trabado.** Un `PROCESSING` se puede reintentar o cancelar (`_check_stuck`) cuando su último intento empezó (`updated_at`, que el worker escribe al pasarlo a `PROCESSING`) hace más de `stuck_after` y el worker no tiene `lock_post_publish_<post_id>` (`publish_lock_held`). `stuck_after` es `POST_STUCK_AFTER` = 15 min (un intento tiene el lock a lo sumo 600 s), salvo que el worker esté esperando un reintento: entre dos intentos escribe `error_log` `Retry n: …` con `update()` (no mueve `updated_at`), suelta el lock y su reintento espera un lugar libre en los workers, que los renders pueden ocupar por horas. Ese post está en camino: recién cuenta como trabado pasado el `visibility_timeout` del broker (4 h) más `LONGEST_RETRY_COUNTDOWN` (240 s). Antes es 409 `post_in_flight`; si la caché de locks no contesta, 409 `post_lock_unavailable`. Un post trabado, o uno que falló con `AyrshareOutcomeUnknownError`, pudo haber salido: la UI lo avisa antes de reintentar o cancelar (cancelar lo saca de OneCreator, no de la red).
+5. **Post trabado.** Un `PROCESSING` se puede reintentar o cancelar (`_check_stuck`) cuando su último intento empezó (`updated_at`, que el worker escribe al pasarlo a `PROCESSING`) hace más de `stuck_after` y el worker no tiene `lock_post_publish_<post_id>` (`publish_lock_held`). `stuck_after` es `POST_STUCK_AFTER` = 15 min (un intento tiene el lock a lo sumo 600 s), salvo que el worker esté esperando un reintento: entre dos intentos escribe `error_log` `Retry n: …` con `update()` (no mueve `updated_at`), suelta el lock y su reintento espera un lugar libre en los workers, que los renders pueden ocupar por horas. Ese post está en camino: recién cuenta como trabado pasado el `visibility_timeout` del broker (4 h) más `LONGEST_RETRY_COUNTDOWN` (240 s). Antes es 409 `post_in_flight`; si la caché de locks no contesta, 409 `post_lock_unavailable`. Un post trabado, o uno que falló con `outcome_unknown` o `duplicate_content`, pudo haber salido: la UI lo avisa antes de reintentar o cancelar (cancelar lo saca de OneCreator, no de la red). Reintentar lo manda con una clave de idempotencia nueva (`publish_key_version` + 1): si había salido, sale otra vez.
 6. **`Idempotency-Key`.** Crear y `/bulk/` la aceptan (hasta 255 caracteres). `PostIdempotencyKey` se inserta al empezar la transacción, con un índice único por workspace y clave: un pedido igual que llega a la vez espera ese índice y después devuelve los posts que creó el primero (como están ahora), sin crear nada. Con otro cuerpo (huella `fingerprint`) es 409 `idempotency_key_reused`, igual que si sus posts ya no existen. Un error deshace la fila, así que la misma clave vuelve a intentar. Las claves de más de 24 h (`IDEMPOTENCY_TTL`) se borran antes de cada pedido con clave.
 7. **Texto con IA y lo que cuesta.** Cada texto es una llamada al LLM: no gasta tokens de la billetera (el SEO se cobra una vez al crear el proyecto, `seo_optimization` de `PricingEngine`), pero se paga al proveedor y usa la capacidad que comparte la ingesta de todos los espacios. Por eso `create_posts` decide por cada post nuevo, con el presupuesto del espacio bloqueado (`lock_ai_budget`):
    - sin texto con IA si el proyecto no tiene SEO o si el post trae caption y hashtags;
@@ -174,7 +178,7 @@ sequenceDiagram
     participant W as upload_to_social_network
     participant C as Cache Django (locks)
     participant R2 as Cloudflare R2
-    participant AY as Ayrshare
+    participant P as Proveedor (AyrshareProvider)
 
     BEAT->>D: ejecución periódica
     D->>DB: SCHEDULED con publish_at hasta la próxima hora
@@ -183,20 +187,21 @@ sequenceDiagram
         D->>W: apply_async con eta igual a publish_at
     end
     W->>C: add del lock lock_post_publish (600 s)
-    W->>DB: select_for_update y sale si PUBLISHED
-    alt workspace sin ayrshare_profile_key
-        W->>DB: FAILED y PostConfigurationError
-    else profile key presente
+    W->>DB: select_for_update, sigue solo si QUEUED o PROCESSING
+    alt sin SocialProfile o TikTok sin opciones
+        W->>DB: FAILED con el código y PostConfigurationError
+    else perfil listo
         W->>DB: PROCESSING
         W->>R2: generate_presigned_url (3600 s)
-        W->>W: compose_caption o metadata caption o texto por defecto
-        W->>AY: send_post(profile_key, media_url, caption, platforms)
-        alt respuesta OK
-            AY-->>W: id de la publicación
-            W->>DB: PUBLISHED y error_log con el id de Ayrshare
-        else AyrshareAPIError
+        W->>P: publish(perfil, PublishRequest con idempotency_key)
+        alt PublishResult
+            P-->>W: external_id, post_url o pendiente
+            W->>DB: PUBLISHED con post_url y external_id
+        else RetryableError
             W->>DB: retry_count más 1 y error_log Retry N
             W->>W: self.retry a 60, 120 y 240 s
+        else PermanentError o OutcomeUnknownError
+            W->>DB: FAILED con el código en error_log
         end
     end
     W->>C: borra el lock
@@ -204,12 +209,36 @@ sequenceDiagram
 
 1. **Disparo periódico.** `CELERY_BEAT_SCHEDULE` (`dispatch-scheduled-posts`) lo corre cada 5 minutos, con el servicio `beat` de `docker-compose.yml`.
 2. **Ventana.** Toma posts `SCHEDULED` con `publish_at` hasta ahora + 1 h, los vencidos incluidos (un "publicar ahora" de la API es uno). Cada post se re-lee con `select_for_update` y el mismo filtro (`SCHEDULED` y `publish_at` dentro de la ventana): si ya no coincide (se canceló, se borró o se reprogramó después de la consulta) se saltea; si coincide, pasa a `QUEUED` y se encola `upload_to_social_network` con `eta=publish_at`.
-3. **Lock de publicación.** `caches['locks'].add(f"lock_post_publish_{post_id}", ..., AyrshareClient.TIMEOUT_SECONDS[1] + 300)` (600 s) en el alias `locks` de la caché de Django, que con `CACHE_REDIS_URL` es el Redis que comparten todos los workers: ahí `add` es un `SET NX` atómico ([07](07-capacidad-costos-y-operacion.md#cache-compartida)). Si ya existe, termina con `"Locked"`. Ese alias no ignora errores: si Redis no contesta, no publica sin lock. Loguea `publish.lock_unavailable` y reintenta con `self.retry` a 60, 120 y 240 s (`max_retries=3`); al agotarse, el post pasa a `FAILED` con `error_log` `Lock unavailable after N attempts: <clase>`, en vez de quedar `QUEUED` sin tarea (el despachador solo toma `SCHEDULED`). Se libera en el `finally`; si soltarlo falla, `publish.lock_release_failed` y lo libera el TTL.
-4. **Validación.** Un post `PUBLISHED` termina (`"Already Published"`). Sin `workspace.ayrshare_profile_key` el post queda `FAILED` y se levanta `PostConfigurationError` después del commit (no se reintenta).
-5. **Media.** `CloudflareR2Manager.generate_presigned_url(video_clip.s3_object_key, expiration_seconds=3600)`. Ayrshare descarga el video desde esa URL.
-6. **Caption.** Con `generated_caption`, el texto es `compose_caption(generated_caption, generated_hashtags)`: el caption, una línea en blanco y los hashtags con `#` separados por espacio. Los hashtags se guardan sin `#` y lo ganan solo acá. Sin caption generado se usa `project.metadata['caption']` y, si tampoco existe, `Check this out! #Viral #<plataforma>`.
-7. **Plataforma.** `TIKTOK` → `tiktok`, `INSTAGRAM_REELS` → `instagram`, `YOUTUBE_SHORTS` → `youtube` (default `tiktok`).
-8. **Ayrshare.** `AyrshareClient.send_post` envía `post`, `platforms`, `mediaUrls` y `profileKeys` con `Authorization: Bearer AYRSHARE_API_KEY`. Un HTTP ≥ 400, un error de conexión o la falta de `AYRSHARE_API_KEY` levantan `AyrshareAPIError`.
+3. **Lock de publicación.** `caches['locks'].add(f"lock_post_publish_{post_id}", ..., PUBLISH_LOCK_TTL_SECONDS)` (600 s: el timeout de lectura de publicar, 300 s, más 300 s) en el alias `locks` de la caché de Django, que con `CACHE_REDIS_URL` es el Redis que comparten todos los workers: ahí `add` es un `SET NX` atómico ([07](07-capacidad-costos-y-operacion.md#cache-compartida)). Si ya existe, termina con `"Locked"`. Ese alias no ignora errores: si Redis no contesta, no publica sin lock. Loguea `publish.lock_unavailable` y reintenta con `self.retry` a 60, 120 y 240 s (`max_retries=3`); al agotarse, el post pasa a `FAILED` con `error_log` `Lock unavailable after N attempts: <clase>`, en vez de quedar `QUEUED` sin tarea (el despachador solo toma `SCHEDULED`). Se libera en el `finally`; si soltarlo falla, `publish.lock_release_failed` y lo libera el TTL. `PUBLISH_LOCK_TTL_SECONDS` también fija `POST_PROCESSING_WINDOW` del borrado del espacio.
+4. **Validación, bajo el lock de la fila.** Un post `PUBLISHED` termina (`"Already Published"`). Uno que no está `QUEUED` ni `PROCESSING` termina con `"Skipped"` y `publish.skipped`: es un mensaje viejo de un post que siguió su camino (el usuario lo reintentó y el beat lo encola de nuevo, o falló su texto con IA), y nunca lo publica. Sin `SocialProfile` con `provider_ref` el post queda `FAILED` con `account_not_connected`; en TikTok, sin `tiktok.privacy_level`, con `tiktok_options_missing`. En los dos casos se levanta `PostConfigurationError` después del commit (no se reintenta) y no se llama al proveedor.
+5. **Media.** `CloudflareR2Manager.generate_presigned_url(video_clip.s3_object_key, expiration_seconds=3600)`. El proveedor descarga el video desde esa URL.
+6. **Texto.** `compose_caption(post.caption_to_publish(), post.hashtags_to_publish())`: el caption del usuario o, si está vacío, el de la IA; los hashtags del usuario o, si no hay, los de la IA (cada parte por su lado, como `caption` y `hashtags` de la API); una línea en blanco y los hashtags con `#`. Sin ninguno, el texto es vacío: las redes lo aceptan y no se inventa nada. YouTube pide un título: el del clip (o el del proyecto).
+7. **Proveedor.** `provider_for(profile)`: el que dice `SocialProfile.provider`, no `SOCIAL_PROVIDER` (ese solo elige el de los perfiles nuevos). `publish(profile, PublishRequest)` recibe la red, la URL, el texto, el título, `TikTokOptions` y la clave de idempotencia. Ver [Capa de proveedores](#capa-de-proveedores).
+8. **Resultado.** `PUBLISHED` con `post_url` (el link de la red) y `external_id` (el id del post en el proveedor; en Ayrshare, el `id` de su respuesta), y `error_log` vacío. TikTok acepta el video y lo procesa después (`id: "pending"`, sin `postUrl`): el post queda `PUBLISHED` con `post_url` nulo. Si TikTok después no lo puede procesar, hoy no se entera nadie: el aviso llega por webhook y todavía no se lee.
+
+## Capa de proveedores
+
+`apps.integrations.social` es lo único que habla con un servicio de publicación. El resto del backend usa sus tipos (`PublishRequest`, `PublishResult`, `Account`, `TikTokOptions`, las redes como `ScheduledPost.Platform`) y sus errores, nunca los nombres, ids ni mensajes de Ayrshare.
+
+- **Interfaz (`SocialProvider`).** `create_profile(workspace)`, `connect_url(profile, platform, return_url)`, `accounts(profile)` (una `Account` por red: `connected`, `expired` o `disconnected`, con `username` y `connected_at`), `disconnect(profile, platform)`, `delete_profile(profile)` y `publish(profile, request)`. `profile` es el `SocialProfile` del espacio. Un segundo proveedor (Upload-Post) implementa la misma interfaz: su perfil es un `username`, su link es `generate-jwt`, su publicación es multipart con el header `Idempotency-Key`, y una subida asíncrona sería un `PublishResult` pendiente con su `request_id`.
+- **Perfil (`SocialProfile`).** Uno por espacio (`OneToOneField`). `provider_ref` es la Profile-Key de Ayrshare: una credencial que nunca va a la web, ni a los logs, ni a `error_log`. La migración `0002_perfiles_desde_ayrshare_profile_key` copió las `Workspace.ayrshare_profile_key` que había. Esa columna queda sin uso y deprecada (el admin la oculta): un worker de la versión anterior todavía puede leerla durante un deploy, y se borra más adelante.
+- **Errores.** `RetryableError`: no salió nada, o el proveedor rechaza la misma clave si salió (error de conexión, 429, un 5xx sin explicación, o una respuesta con `retryAvailable`); el worker reintenta con backoff y, si el proveedor pidió esperar (`Retry-After`), espera eso, hasta 240 s (`LONGEST_RETRY_COUNTDOWN`). `PermanentError`: no salió y mandarlo igual no cambia nada; falla con su código, sin reintento. `OutcomeUnknownError`: pudo haber salido (timeout de lectura, 504, una respuesta 2xx que no se puede leer); falla con `outcome_unknown` y nunca se reintenta solo. Cada error lleva `code` y `detail` (HTTP, los códigos numéricos del proveedor o la clase de la excepción), nunca el mensaje del proveedor: puede citar el caption.
+- **Clave de idempotencia.** `idempotency_key(post_id, publish_key_version)` (`onecreator-post-<id>-v<n>`). Ayrshare rechaza una clave repetida para siempre, aunque el primer post haya fallado. Por eso:
+  - los reintentos automáticos mandan la misma clave: si un intento llegó y se perdió la respuesta, el siguiente es rechazado y no se publica dos veces;
+  - `retry_post` (el «Reintentar» del usuario) suma 1 a `publish_key_version`: la publicación puede volver a salir, que es lo que el usuario pidió después de que la web le avisó que un post trabado o incierto puede estar publicado;
+  - una respuesta definitiva de que no salió y se puede reintentar (`key_spent`: un 429 o un 503 con cuerpo, o `retryAvailable`) también la suma, porque la clave ya está gastada;
+  - el código del rechazo por clave repetida no está documentado: el proveedor lo reconoce por su mensaje, y un rechazo sin explicación en un reintento automático se guarda como `outcome_unknown`.
+- **Ayrshare (`AyrshareProvider`).** `POST /post` con el header `Profile-Key`, `isVideo: true` (la URL firmada no termina en `.mp4`), `idempotencyKey`, `tikTokOptions` (`visibility`: `PUBLIC_TO_EVERYONE` → `public`, `FOLLOWER_OF_CREATOR` → `followers`, `MUTUAL_FOLLOW_FRIENDS` → `friends`, `SELF_ONLY` → `private`; `disableComments`, `disableDuet` y `disableStitch` son lo contrario de `allow_*`; `isBrandOrganic` e `isBrandedContent`) y, en YouTube, `youTubeOptions` con el título (hasta 100 caracteres, sin `<` ni `>`), `visibility: "public"` (el default de Ayrshare es privado) y `shorts: true`. El éxito lo decide el cuerpo: `status` y la línea de la red en `postIds` (un 400 puede traerla en éxito; un 200 puede decir error), también dentro de `posts` cuando la respuesta viene por perfil. Una llamada sin Profile-Key actuaría sobre el perfil principal de la cuenta: sin `provider_ref` no se manda nada.
+
+| Código de Ayrshare | Nuestro código |
+|--------------------|----------------|
+| 156 (red no vinculada), 144 (perfil inexistente) | `account_not_connected` |
+| 161, 129 (renovar la autorización) | `account_expired` |
+| 106 (cuota mensual, HTTP 429) | `quota_exceeded` |
+| 137 (contenido igual en las últimas 48 h) | `duplicate_content` |
+| `retryAvailable: true`, 429 sin 106, 502 o 503 con cuerpo | reintentable con clave nueva |
+| HTTP 401 o falta `AYRSHARE_API_KEY` | `provider_not_configured` |
+| Cualquier otro rechazo | `provider_rejected` |
 
 ## Errores, reintentos y casos borde
 
@@ -228,6 +257,22 @@ Todos son estáticos: nunca llevan texto del proveedor, del usuario ni del model
 | `seo_generation_failed:<clase>` | `AIError` no reintentable (auth, configuración, 4xx, contrato inválido) o reintentos agotados. Ej.: `seo_generation_failed:AIContractValidationError`. |
 | `seo_failed:<clase>` | Cualquier otra excepción no reintentable o con reintentos agotados; además se relanza. |
 
+### Códigos que `upload_to_social_network` escribe en `error_log`
+
+Van primero en `error_log` (`<código>` o `<código> (<detalle>)`); `ScheduledPostSerializer` los devuelve en `error_code` con una frase en `error_message` que nombra la red. Entre dos intentos el `error_log` es `Retry N: <código> (<detalle>)`, que la API lee como un reintento en camino. Los `error_log` de antes de los códigos (`Error: Ayrshare Profile Key not configured…` y `Ayrshare did not answer in time…`) se leen como `account_not_connected` y `outcome_unknown`; el resto, como `publish_failed`.
+
+| Código | Cuándo | Qué hace el usuario |
+|--------|--------|---------------------|
+| `account_not_connected` | El espacio no tiene perfil, o la red no está vinculada. | Conectar la cuenta y reintentar. |
+| `account_expired` | La red pide autorizar de nuevo. | Reconectar y reintentar. |
+| `tiktok_options_missing` | Un post de TikTok sin `tiktok.privacy_level`. | Cancelarlo y crearlo de nuevo (un `FAILED` no se edita). |
+| `quota_exceeded` | Se usó la cuota mensual de posts del proveedor. | Esperar. |
+| `duplicate_content` | La red ya tiene el mismo contenido de las últimas 48 h: puede ser este mismo post. | Revisar la red antes de reintentar. |
+| `provider_rejected` | La red o el proveedor lo rechazaron por otra razón. | Revisar el video y el texto, y reintentar. |
+| `provider_unavailable` | Se agotaron los reintentos de un error reintentable (`provider_unavailable (after N attempts; <detalle>)`). | Reintentar en unos minutos. |
+| `outcome_unknown` | Pudo haber salido. | Revisar la red antes de reintentar. |
+| `provider_not_configured` | Falta `AYRSHARE_API_KEY` o el perfil es de un proveedor que esta versión no conoce. La API muestra `publish_failed`. | Nada: es nuestro. |
+
 ### Situaciones
 
 | Situación | Qué pasa | Dónde |
@@ -237,7 +282,7 @@ Todos son estáticos: nunca llevan texto del proveedor, del usuario ni del model
 | Falla una regeneración | El post conserva caption, hashtags y estado; log `seo.regenerate_failed`. | `_fail_seo_post` |
 | Falla SEO en un post `PROCESSING` o `PUBLISHED` | No se toca: el `filter` excluye `_SEO_FROZEN_STATUSES`. | `_fail_seo_post` |
 | La publicación empieza durante la generación | El `update` no encuentra fila; log `seo.skipped reason=publishing`. El LLM ya se pagó y sus filas quedan. | `_generate_post_metadata` |
-| El post se publica antes de que termine la generación | Se publica con `metadata['caption']` o el texto por defecto. | `upload_to_social_network` |
+| El post se publica antes de que termine la generación | Sale con el texto del usuario si lo tiene; si no, sin texto (YouTube, con el título del clip). | `upload_to_social_network` |
 | Post `FAILED` por SEO que estaba programado | Ya no está `SCHEDULED`: el despachador no lo toma. Al recuperarse, o al reintentarlo desde la API, vuelve a `DRAFT` y hay que programarlo otra vez. | `_recover_seo_failed_post`, `retry_post` |
 | Falla el texto de un borrador | Sigue `DRAFT` con el código en `error_log` (`seo_status: "failed"`). Al mandarlo con `PATCH` se borra el código. | `_fail_seo_post`, `update_post` |
 | Se borra el post antes o durante su generación | `seo.skipped reason=deleted` y `"Post Deleted"`, sin fallar la tarea. | `process_video_seo` |
@@ -249,14 +294,17 @@ Todos son estáticos: nunca llevan texto del proveedor, del usuario ni del model
 | Post con `publish_at` ya pasado | Se despacha en la próxima corrida y sale enseguida (es el caso de "publicar ahora"). | `dispatch_scheduled_posts_batch` |
 | Se borra un post mientras el despachador recorre la ventana | Cada post se vuelve a leer bajo su lock con el mismo filtro (`SCHEDULED` y dentro de la ventana): uno que ya no está se saltea y la corrida sigue. Pasa con `cancel`, con el borrado de un clip y con el admin. | `dispatch_scheduled_posts_batch`, `test_scheduled_dispatch_races.py` |
 | Se reprograma un post mientras el despachador recorre la ventana | El mismo filtro bajo el lock lo saltea si su `publish_at` nueva quedó fuera de la ventana: sigue `SCHEDULED` y editable, y sale en la corrida que le toca, nunca encolado días antes con una ETA que pasa el `visibility_timeout`. | `dispatch_scheduled_posts_batch`, `test_scheduled_dispatch_races.py` |
-| Workspace sin `ayrshare_profile_key` | `FAILED` con `Error: Ayrshare Profile Key not configured in workspace.` y `PostConfigurationError`, sin reintento. | `upload_to_social_network` |
-| El post se borró después de encolarse (con su clip, su proyecto o su workspace) | La tarea termina con `Post Deleted`, sin llamar a Ayrshare y sin fallar. Queda `publish.post_deleted` en el log. | `upload_to_social_network` |
-| El post se borró mientras Ayrshare respondía | La tarea guarda solo `status` y `error_log` (`save(update_fields=...)`), así que no vuelve a insertar la fila. Termina sin fallar y deja `publish.post_deleted` con `when=after_publishing`. | `upload_to_social_network` |
+| Workspace sin `SocialProfile` (o sin `provider_ref`) | `FAILED` con `account_not_connected (no profile)` y `PostConfigurationError`, sin reintento ni llamada al proveedor. | `upload_to_social_network` |
+| Post de TikTok sin `tiktok.privacy_level` (creado antes de la API, o en el admin) | `FAILED` con `tiktok_options_missing`, sin llamar al proveedor. | `upload_to_social_network` |
+| Llega un mensaje viejo de un post que ya no está `QUEUED` ni `PROCESSING` | Termina con `"Skipped"` (`publish.skipped`) sin tocarlo: lo publica su mensaje nuevo, o nadie. | `upload_to_social_network` |
+| El post se borró después de encolarse (con su clip, su proyecto o su workspace) | La tarea termina con `Post Deleted`, sin llamar al proveedor y sin fallar. Queda `publish.post_deleted` en el log. | `upload_to_social_network` |
+| El post se borró mientras el proveedor respondía | La tarea guarda solo `status`, `post_url`, `external_id` y `error_log` (`save(update_fields=...)`), así que no vuelve a insertar la fila. Termina sin fallar y deja `publish.post_deleted` con `when=after_publishing`. | `upload_to_social_network` |
 | Se borra el workspace con un post `QUEUED` o `PROCESSING` | El borrado responde 409 `posts_in_flight` mientras la tarea puede estar trabajando: `PROCESSING` con `updated_at` dentro de `POST_PROCESSING_WINDOW`, o `QUEUED` hasta `POST_QUEUED_GRACE` después de `publish_at`. Un post más viejo está trabado y no frena el borrado. Los `SCHEDULED` se borran con el workspace y no se publican. | `WorkspaceDetailView.delete` (`apps/users/views_workspaces.py`) |
 | Clip sin `s3_object_key` u otro error inesperado | `FAILED` con `Critical: <mensaje>` y la excepción se relanza. | `upload_to_social_network` |
 | Redis de la cache no contesta al tomar el lock | `publish.lock_unavailable` y reintento a 60, 120 y 240 s. Al agotarse, `FAILED` con `Lock unavailable after N attempts: <clase>`. Nunca publica sin lock. | `upload_to_social_network` |
-| `AyrshareAPIError` | `retry_count` + 1, `error_log` `Retry N: <mensaje>`, reintento a 60, 120 y 240 s (`max_retries=3`). Al agotarse, el post pasa a `FAILED` con `error_log` `Failed after N attempts: <mensaje>` y la excepción se propaga. | `upload_to_social_network` |
-| Ayrshare no responde | `requests.post` usa `timeout=AyrshareClient.TIMEOUT_SECONDS` (10 s para conectar, 300 s para leer). Si no conecta, es `AyrshareAPIError` y se reintenta como arriba. Si conectó pero no contestó a tiempo (`ReadTimeout`), es `AyrshareOutcomeUnknownError`: el post queda `FAILED` sin reintento automático, porque pudo haberse publicado y reintentar lo duplicaría. El lock del post dura el timeout de lectura más 300 s. | `AyrshareClient.send_post`, `upload_to_social_network` |
+| `RetryableError` | `retry_count` + 1, `error_log` `Retry N: <código> (<detalle>)`, reintento a 60, 120 y 240 s (`max_retries=3`) con la misma clave de idempotencia (o una nueva si `key_spent`). Al agotarse, el post pasa a `FAILED` con `provider_unavailable (after N attempts; <detalle>)` y la excepción se propaga. | `upload_to_social_network` |
+| `PermanentError` | `retry_count` + 1 y `FAILED` con `<código> (<detalle>)`, sin reintento. Un `provider_rejected` en un reintento automático se guarda como `outcome_unknown`: el intento anterior pudo llegar y el rechazo puede ser el de la clave repetida. | `upload_to_social_network` |
+| El proveedor no responde | `requests.request` usa `timeout=PUBLISH_TIMEOUT_SECONDS` (10 s para conectar, 300 s para leer). Si no conecta, es `RetryableError` y se reintenta como arriba. Si conectó pero no contestó a tiempo (`ReadTimeout`), o contestó 504, es `OutcomeUnknownError`: el post queda `FAILED` con `outcome_unknown` sin reintento automático, porque pudo haberse publicado. El lock del post dura el timeout de lectura más 300 s. | `AyrshareProvider.publish`, `upload_to_social_network` |
 
 ## Datos que escribe
 
@@ -264,16 +312,18 @@ Todos son estáticos: nunca llevan texto del proveedor, del usuario ni del model
   - `generated_caption`: el caption sin hashtags.
   - `generated_hashtags`: lista JSON de 5 a 8 hashtags sin `#`.
   - `status`: transiciones del diagrama.
-  - `error_log`: códigos de SEO de la tabla anterior; en la publicación, `Ayrshare ID: <id>` al publicar, `Retry N: <mensaje>`, `Critical: <mensaje>` o el texto fijo de la profile key faltante. A diferencia de SEO, la publicación guarda el mensaje de la excepción.
-  - `retry_count`: intentos fallidos contra Ayrshare.
-- **`ScheduledPost` desde la API**: `status`, `publish_at`, `caption`, `hashtags`, `tiktok`, `seo_requested_at`, `text_edited_at` y, al mandar un borrador o reintentar, `error_log` vacío. `retry_count` no cambia.
+  - `error_log`: códigos de SEO de la tabla anterior; en la publicación, los códigos de su tabla con su detalle (nunca el mensaje del proveedor), `Retry N: …` entre intentos, `Lock unavailable after N attempts: <clase>` o `Critical: <mensaje>` ante un error inesperado. Al publicar queda vacío.
+  - `post_url` y `external_id`: el link de la red (nulo mientras TikTok procesa) y el id del post en el proveedor.
+  - `publish_key_version`: la versión de la clave de idempotencia; la suben `retry_post` y una respuesta con `key_spent`.
+  - `retry_count`: intentos fallidos contra el proveedor.
+- **`ScheduledPost` desde la API**: `status`, `publish_at`, `caption`, `hashtags`, `tiktok`, `seo_requested_at`, `text_edited_at`, al mandar un borrador o reintentar `error_log` vacío, y al reintentar una publicación `publish_key_version` + 1. `retry_count` no cambia.
 - **`PostIdempotencyKey`**: workspace, clave, huella del pedido y los ids de los posts que creó.
 - **Caché `default`**: `posts:ai_text:<clip>:<red>:<inicio>:<fin>` (24 h), el texto con IA de un post cancelado, para el próximo borrador.
 - **`AIUsageRecord`**: una fila por intento con `stage='seo'`, `pipeline_version='v2'` (siempre, aunque el proyecto corra en legacy), `role` `primary` o `fallback`, `attempt` igual al `pipeline_attempts` del proyecto, tokens, costo estimado y `error_code` con la clase del error. Si la llamada falla sin intentos adjuntos, una fila de cero tokens con la latencia medida a nombre de `AI_DEFAULT_LLM_MODEL`. El export del piloto las suma aparte en `seo_records`, `seo_cost_usd` y `seo_cost_complete` ([runbook](../runbooks/ai-core-pilot-runbook.md)).
 - **Redis**: `lock:seo:post:<post_id>` (600 s) y `seo:pending:<post_id>` (JSON de `SocialMetadata`, 3600 s). El alias `locks` de la caché de Django guarda `lock_post_publish_<post_id>` (600 s).
 - **Capacidad**: reserva con `stage='seo'`, liquidada con el uso real o devuelta si la moderación cortó antes del LLM.
-- **Claves de `VideoProject.metadata` que se leen**: `use_seo`, `niche`, `caption`.
-- **Logs** (sin caption, hashtags, título ni transcripción): `posts.created` (con `seo` `none`, `reused`, `asked` o `limited`), `posts.updated`, `posts.cancelled`, `posts.retried`, `posts.lock_unknown`, `posts.ai_text_not_kept`, `posts.replayed`, `posts.seo_regenerate`, `seo.dispatched`, `seo.dispatch_failed`, `seo.skipped`, `seo.no_clip_transcript`, `seo.input_blocked`, `seo.output_blocked`, `seo.pending_capacity`, `seo.capacity_timeout`, `seo.completed`, `seo.primary_failed`, `seo.fallback_failed`, `seo.failed`, `seo.regenerate_failed`, `seo.persisted`, `seo.lock_not_owned`, `seo.pending_not_saved`, `seo.pending_not_cleared`.
+- **Claves de `VideoProject.metadata` que se leen**: `use_seo` y `niche`. La publicación ya no lee `metadata['caption']` (nada la escribía).
+- **Logs** (sin caption, hashtags, título, transcripción, mensajes del proveedor ni Profile-Key): `publish.not_sent`, `publish.skipped`, `publish.published`, `publish.retryable`, `publish.rejected`, `publish.outcome_unknown`, `social.ayrshare.call`, `social.ayrshare.call_failed`, `social.ayrshare.published`, `social.ayrshare.publish_failed`, `social.ayrshare.no_answer`, `social.ayrshare.not_configured`, `posts.created` (con `seo` `none`, `reused`, `asked` o `limited`), `posts.updated`, `posts.cancelled`, `posts.retried`, `posts.lock_unknown`, `posts.ai_text_not_kept`, `posts.replayed`, `posts.seo_regenerate`, `seo.dispatched`, `seo.dispatch_failed`, `seo.skipped`, `seo.no_clip_transcript`, `seo.input_blocked`, `seo.output_blocked`, `seo.pending_capacity`, `seo.capacity_timeout`, `seo.completed`, `seo.primary_failed`, `seo.fallback_failed`, `seo.failed`, `seo.regenerate_failed`, `seo.persisted`, `seo.lock_not_owned`, `seo.pending_not_saved`, `seo.pending_not_cleared`.
 - **Resultado de la tarea** (en el backend de resultados de Celery): `SEO Success`, `SEO Already Generated`, `SEO Busy`, `SEO Skipped`, `Post Deleted`, `No Transcript`, `Security Abort`, `Moderation Failed`, `SEO Failed`, `Waiting for capacity`, `Capacity Timeout`.
 
 ## Configuración
@@ -294,12 +344,14 @@ Todos son estáticos: nunca llevan texto del proveedor, del usuario ni del model
 | `OPENAI_API_KEY` | `None` | Moderación. Sin key, `moderation_misconfigured` (fail-closed). |
 | `MODERATION_MODEL`, `MODERATION_BLOCK_CHARS`, `MODERATION_NON_BLOCKING_CATEGORIES`, `MODERATION_TIMEOUT_SECONDS` | `'omni-moderation-latest'`, `10000`, 4 categorías, `10.0` | Moderación por bloques ([ver 03](03-transcripcion-moderacion-seleccion.md)). |
 | `REDIS_URL` | `'redis://redis:6379/0'` | Lock por post y generación pendiente. |
-| `AYRSHARE_API_KEY` | `None` | Key global de Ayrshare. Sin ella, cada intento falla con `AyrshareAPIError` y se reintenta. |
+| `SOCIAL_PROVIDER` | `'ayrshare'` | El proveedor con el que se crean los perfiles nuevos. Un espacio con perfil sigue con el proveedor de su perfil. |
+| `SOCIAL_PROFILE_TITLE_PREFIX` | `'onecreator'` | Prefijo del título del perfil en el proveedor (`<prefijo>-<id del espacio>`, único por cuenta): uno por entorno si comparten la cuenta. |
+| `AYRSHARE_API_KEY` | `None` | Key de la cuenta de Ayrshare. Sin ella, publicar falla con `provider_not_configured`, sin llamar y sin reintento. |
 | `THROTTLE_POST_SEO_REGENERATE` | `'30/hour'` | Pedidos de "Regenerar" por usuario. |
 | `THROTTLE_POST_CREATE` | `'300/hour'` | Publicaciones creadas por usuario, contando cada una de un lote. |
 | `AI_SEO_MAX_PER_WORKSPACE_PER_HOUR` | `120` | Textos con IA que la API pide por espacio y por hora (`seo_budget`). |
 
-Constantes en código: `SEO_LOCK_TTL_SECONDS = 600` y `SEO_PENDING_TTL_SECONDS = 3600` (`tasks/social.py`); `MIN_HASHTAGS = 5`, `MAX_HASHTAGS = 8` y `_temperature = 0.7` (`seo_engine.py`); `POST_STUCK_AFTER` = 15 min, `NOW_TOLERANCE` = 60 s, `BULK_MAX = 60`, `IDEMPOTENCY_TTL` = 24 h y `HASHTAGS_MAX` (`services/scheduled_posts.py`).
+Constantes en código: `PUBLISH_TIMEOUT_SECONDS = (10, 300)`, `PUBLISH_LOCK_TTL_SECONDS = 600` y `ADMIN_TIMEOUT_SECONDS = (10, 30)` (`integrations/social/base.py`); `SEO_LOCK_TTL_SECONDS = 600` y `SEO_PENDING_TTL_SECONDS = 3600` (`tasks/social.py`); `MIN_HASHTAGS = 5`, `MAX_HASHTAGS = 8` y `_temperature = 0.7` (`seo_engine.py`); `POST_STUCK_AFTER` = 15 min, `NOW_TOLERANCE` = 60 s, `BULK_MAX = 60`, `IDEMPOTENCY_TTL` = 24 h y `HASHTAGS_MAX` (`services/scheduled_posts.py`).
 
 ## Referencias
 
@@ -309,4 +361,5 @@ Constantes en código: `SEO_LOCK_TTL_SECONDS = 600` y `SEO_PENDING_TTL_SECONDS =
 - Issue #69 (AICORE-17): https://github.com/RomeKai/videoeditUTN/issues/69
 - PR #82, metadata social por publicación sobre el núcleo de IA: https://github.com/RomeKai/videoeditUTN/pull/82
 - PR #88, generar caption y hashtags al crear la publicación: https://github.com/RomeKai/videoeditUTN/pull/88
-- Tests: [test_seo_task.py](../../back/apps/videos/tests/test_seo_task.py), [test_seo_dispatch.py](../../back/apps/videos/tests/test_seo_dispatch.py)
+- Documentación de Ayrshare: https://www.ayrshare.com/docs/apis/post/post, https://www.ayrshare.com/docs/apis/post/overview (idempotencia), https://www.ayrshare.com/docs/errors/errors-ayrshare
+- Tests: [test_seo_task.py](../../back/apps/videos/tests/test_seo_task.py), [test_seo_dispatch.py](../../back/apps/videos/tests/test_seo_dispatch.py), [test_publisher.py](../../back/apps/videos/tests/test_publisher.py), [test_ayrshare.py](../../back/apps/integrations/tests/test_ayrshare.py)

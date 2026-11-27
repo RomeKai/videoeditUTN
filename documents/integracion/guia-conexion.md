@@ -324,11 +324,11 @@ Los dos ya existen (`feat/brand-kits-duplicar`).
 
 ### Redes y publicaciones (11) · Pedro
 
-Contrato `contracts/social.ts`. Backend: `ScheduledPost` en `apps/videos/models.py`, tareas en `apps/videos/tasks/social.py`, señales en `apps/videos/signals.py`, cliente de Ayrshare en `apps/integrations/ayrshare_api.py`. Poné las vistas en un módulo propio dentro de `apps/videos` (por ejemplo `views_social.py`): las ramas del lead tocan `apps/videos/views.py`.
+Contrato `contracts/social.ts`. Backend: `ScheduledPost` en `apps/videos/models.py`, tareas en `apps/videos/tasks/social.py`, señales en `apps/videos/signals.py`, proveedores de publicación (Ayrshare) en `apps/integrations/social/` y el perfil del espacio en `apps/integrations/models.py` (`SocialProfile`). Poné las vistas en un módulo propio dentro de `apps/videos` (por ejemplo `views_social.py`): las ramas del lead tocan `apps/videos/views.py`.
 
 | Método y ruta | Id | Hook · mock | Pantalla | Backend | Depende de | Talla |
 |---|---|---|---|---|---|---|
-| GET `social-accounts/` | `social.accounts` | `useSocialAccounts` · `listSocialAccounts` | H3 (§5 H), E1, B2 | Una entrada por red; hoy solo existe `Workspace.ayrshare_profile_key`; modelo nuevo o datos de Ayrshare | Decisión de ADR-005 | M |
+| GET `social-accounts/` | `social.accounts` | `useSocialAccounts` · `listSocialAccounts` | H3 (§5 H), E1, B2 | Una entrada por red; hoy existe el perfil del espacio (`SocialProfile`) y `accounts()` de la capa de proveedores | Decisión de ADR-005 | M |
 | POST `social-accounts/connect/` | `social.connect` | `useConnectSocialAccount` · `connectSocialAccount` | D6 (§6), H3, E1 | `social.manage`; perfil de Ayrshare por workspace y su URL para autorizar | `social.accounts`, ADR-005 | L |
 | DELETE `social-accounts/:platform/` | `social.disconnect` | `useDisconnectSocialAccount` · `disconnectSocialAccount` | H3 (§5 H) | Las programadas en esa red quedan en error | `social.connect` | M |
 | GET `scheduled-posts/` | `social.posts` | `usePosts` · `listPosts` | E2 (§5 E), D3, D4 diálogo | Paginado; filtros `status`, `platform`, `from`, `to`, `project`; filtra por `video_clip__project__workspace` | Campos nuevos de `ScheduledPost` | M |
@@ -337,7 +337,7 @@ Contrato `contracts/social.ts`. Backend: `ScheduledPost` en `apps/videos/models.
 | GET `scheduled-posts/:id/` | `social.post` | `usePost` · `getPost` | E2, E1 | Mismo serializer que la lista | `social.posts` | S |
 | PATCH `scheduled-posts/:id/` | `social.updatePost` | `useUpdatePost` · `updatePost` | E2 (§5 E) | Texto, reprogramar o publicar un borrador; solo antes de `QUEUED` | `social.createPost` | M |
 | POST `scheduled-posts/:id/cancel/` | `social.cancelPost` | `useCancelPost` · `cancelPost` | E2 (§5 E) | Borra la que todavía no salió | `social.createPost` | S |
-| POST `scheduled-posts/:id/retry/` | `social.retryPost` | `useRetryPost` · `retryPost` | E2 (§5 E) | Re-encola `upload_to_social_network`; con `AyrshareOutcomeUnknownError` no se sabe si salió: no publicar dos veces | `social.createPost` | M |
+| POST `scheduled-posts/:id/retry/` | `social.retryPost` | `useRetryPost` · `retryPost` | E2 (§5 E) | Re-encola `upload_to_social_network` con una clave de idempotencia nueva; con `error_code: "outcome_unknown"` no se sabe si salió: la UI avisa antes | `social.createPost` | M |
 | POST `scheduled-posts/:id/regenerate-seo/` | `social.regeneratePostSeo` | `useRegeneratePostSeo` · `regeneratePostSeo` | E1 (§5 E) | `queue_post_seo(post_id, regenerate=True)`, como la acción del admin | `social.createPost` | S |
 
 Para el texto con IA y la publicación, leé [05, SEO y publicación](../ia/05-seo-y-publicacion.md). El contrato propone tres reglas nuevas en la nota de `social.createPost` (esperar el texto de la IA, el borrador que falla sigue en `DRAFT`, y borrar borradores viejos).

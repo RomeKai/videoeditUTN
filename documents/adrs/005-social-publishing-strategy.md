@@ -10,7 +10,7 @@
 ## Contexto
 
 OneCreator necesita publicar clips directamente a redes sociales (TikTok, YouTube Shorts, Instagram Reels). El codebase actual tiene:
-- `AyrshareClient` en `integrations/ayrshare_api.py` — un servicio intermediario que abstrae múltiples redes
+- `AyrshareClient` en `integrations/ayrshare_api.py` — un servicio intermediario que abstrae múltiples redes (desde 2026-11-27, `AyrshareProvider` detrás de la capa de proveedores `integrations/social/`: ver [05, SEO y publicación](../ia/05-seo-y-publicacion.md#capa-de-proveedores). Cambiar de intermediario, o agregar uno, es otro proveedor de esa capa; no cambia esta decisión)
 - Stubs de `social_auth.py`, `youtube_api.py`, `twitch_api.py`
 
 La decisión es: ¿construimos OAuth directo con cada plataforma o usamos un intermediario como Ayrshare?
@@ -72,7 +72,7 @@ Datos verificados en la documentación oficial, para decidir con evidencia. Los 
 
 ## Referencias
 
-- [Código: AyrshareClient](../../back/apps/integrations/ayrshare_api.py)
+- [Código: la capa de proveedores](../../back/apps/integrations/social/) (`AyrshareProvider` en `ayrshare.py`)
 - [Código: social_auth.py](../../back/apps/integrations/social_auth.py)
 - [TikTok Content Posting API](https://developers.tiktok.com/doc/content-posting-api-get-started)
 - [YouTube Data API v3](https://developers.google.com/youtube/v3)
