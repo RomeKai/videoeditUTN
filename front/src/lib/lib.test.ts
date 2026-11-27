@@ -169,6 +169,20 @@ describe('estado del proyecto (sección 3 del mapa)', () => {
     expect(view.text).toBe('No encontramos voz en el video. OneCreator elige clips a partir de lo que se dice. Te devolvimos 1.755 tokens.');
   });
 
+  it('el mensaje genérico no repite la devolución cuando el monto va al lado', () => {
+    const failed = { status: 'failed', pipeline_error_code: 'ModerationBlockedError' } as const;
+    const refunded = describeProjectStatus(project({ ...failed, cost: { amount: 6.3, state: 'refunded', transaction_id: null } }));
+    expect(refunded.text).toBe('Algo falló de nuestro lado. Podés intentarlo de nuevo. Te devolvimos 6,30 tokens.');
+    expect(describeProjectStatus(project({ ...failed, pipeline_error_code: 'IngestionStuck', cost: { amount: 6.3, state: 'refunded', transaction_id: null } })).text).toBe(
+      'El proceso se trabó. Podés intentarlo de nuevo. Te devolvimos 6,30 tokens.',
+    );
+    // Without a refund to show, the message keeps saying it.
+    expect(describeProjectStatus(project({ ...failed, cost: { amount: 6.3, state: 'charged', transaction_id: null } })).text).toBe(
+      'Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo.',
+    );
+    expect(describeProjectStatus(project(failed)).text).toBe('Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo.');
+  });
+
   it('grupos del filtro y tipo de movimiento', () => {
     expect(projectStatusGroup(project({ status: 'ingesting' }))).toBe('in_progress');
     expect(projectStatusGroup(project({ status: 'partial' }))).toBe('ready');
@@ -197,6 +211,10 @@ describe('mensajes de error (sección 4 del mapa)', () => {
     // recover_stuck_renders failed it and returned the reservation: it can be tried again.
     expect(pipelineErrorMessage('IngestionStuck')).toBe('El proceso se trabó y te devolvimos los tokens. Podés intentarlo de nuevo.');
     expect(pipelineErrorTitle('IngestionStuck')).toBe('El proceso se trabó');
+    // Next to "Te devolvimos X tokens", the message does not say it again.
+    expect(pipelineErrorMessage('ModerationBlockedError', { refundShown: true })).toBe('Algo falló de nuestro lado. Podés intentarlo de nuevo.');
+    expect(pipelineErrorMessage('IngestionStuck', { refundShown: true })).toBe('El proceso se trabó. Podés intentarlo de nuevo.');
+    expect(pipelineErrorMessage('AINoSpeechDetectedError', { refundShown: true })).toBe(pipelineErrorMessage('AINoSpeechDetectedError'));
     // Link projects: what the download refused, in the user's words (only the four providers the backend allows).
     expect(pipelineErrorMessage('UnsupportedLinkError')).toMatch(/un solo video público de YouTube, Vimeo, Twitch o Google Drive/);
     expect(pipelineErrorTitle('UnsupportedLinkError')).toBe('No pudimos usar este link');

@@ -4,6 +4,7 @@ import { formatMinutes } from './format';
 
 const MODERATION = 'No podemos procesar este video porque su contenido no cumple nuestras políticas. Si creés que es un error, escribinos.';
 const GENERIC = 'Algo falló de nuestro lado. Ya te devolvimos los tokens; podés intentarlo de nuevo.';
+const INGESTION_STUCK = 'El proceso se trabó y te devolvimos los tokens. Podés intentarlo de nuevo.';
 
 const PIPELINE_MESSAGES: Record<string, string> = {
   // Only the content itself. `ModerationBlockedError` is ours (the moderation key or its quota): it gets the
@@ -26,12 +27,25 @@ const PIPELINE_MESSAGES: Record<string, string> = {
   LinkTooLongForAppError: 'El video del link dura más de 3 horas, el máximo que acepta OneCreator. Probá con uno más corto.',
   LinkTooLargeError: 'El video del link pesa más de lo que podemos descargar. Probá con una versión más liviana o subí el archivo.',
   // Not in map §4 yet: the ingestion made no progress and recover_stuck_renders returned the reservation (it can be re-dispatched).
-  IngestionStuck: 'El proceso se trabó y te devolvimos los tokens. Podés intentarlo de nuevo.',
+  IngestionStuck: INGESTION_STUCK,
 };
 
-/** `pipeline_error_code` (class name of the exception) → message for the user (map §4). Unknown codes get the generic one. */
-export function pipelineErrorMessage(code: string | null | undefined): string {
-  return (code && PIPELINE_MESSAGES[code]) || GENERIC;
+/**
+ * The same messages without "te devolvimos los tokens", for a box that already says how many came back
+ * ("Te devolvimos 6,30 tokens"): the sentence is not said twice.
+ */
+const WITHOUT_REFUND: Record<string, string> = {
+  [GENERIC]: 'Algo falló de nuestro lado. Podés intentarlo de nuevo.',
+  [INGESTION_STUCK]: 'El proceso se trabó. Podés intentarlo de nuevo.',
+};
+
+/**
+ * `pipeline_error_code` (class name of the exception) → message for the user (map §4). Unknown codes get the
+ * generic one. `refundShown`: the amount returned is shown next to it, so the message does not repeat it.
+ */
+export function pipelineErrorMessage(code: string | null | undefined, { refundShown = false }: { refundShown?: boolean } = {}): string {
+  const message = (code && PIPELINE_MESSAGES[code]) || GENERIC;
+  return (refundShown && WITHOUT_REFUND[message]) || message;
 }
 
 /**

@@ -115,7 +115,8 @@ class LocalUrlTests(UrlHarness, TestCase):
 
     def test_a_project_with_five_clips_costs_the_queries_of_one_with_a_single_clip(self):
         def queries():
-            project = VideoProject.objects.prefetch_related("clips__layers").get(pk=self.project.pk)
+            # Loaded like the projects view loads it (its creator comes with it, for uploaded_by_detail).
+            project = VideoProject.objects.select_related("uploaded_by").prefetch_related("clips__layers").get(pk=self.project.pk)
             with CaptureQueriesContext(connection) as captured:
                 data = VideoProjectSerializer(project, context={"request": self.request}).data
             return len(captured), data
