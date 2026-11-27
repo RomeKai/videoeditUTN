@@ -398,8 +398,8 @@ def _start_paid_render(request, project_id, pick, description, style=None):
     finalize_project_render(project_id)
     try:
         with transaction.atomic():
-            # Only the project's row (`of`): FOR UPDATE over the join locked the workspace's too, after the
-            # project, the reverse of a workspace delete (workspace, then projects): a deadlock.
+            # Only the project's row (`of`): over the join, FOR UPDATE also locked the workspace's, after the
+            # project's. A workspace delete deadlocked with it, and a token purchase made it wait.
             project = VideoProject.objects.select_for_update(of=('self',)).select_related('workspace').get(pk=project_id)
             picked = pick(project)
             if isinstance(picked, Response):
