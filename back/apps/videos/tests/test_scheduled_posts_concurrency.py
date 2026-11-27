@@ -257,3 +257,74 @@ class RetryRacesTests(PostRacesHarness):
         send.assert_called_once()  # published once, by the worker
         post.refresh_from_db()
         self.assertEqual(post.status, Status.PUBLISHED)
+
+
+class CrosspostingRacesTests(PostRacesHarness):
+    """
+    Review of #184: on a plan without crossposting, two requests that put one
+    clip on two networks at the same time count the networks one after the
+    other (the project and clip row locks), so one of them is a 403.
+    """
+
+    def setUp(self):
+        super().setUp()
+        Workspace.objects.filter(pk=self.home.pk).update(
+            subscription_plan=SubscriptionPlan.objects.create(
+                name="Creador de carrera", allow_scheduling=True, allow_crossposting=False, max_video_duration_seconds=3600,
+            ),
+        )
+
+    def together(self, *calls):
+        """Each request stops right before it counts the networks until the other gets there too, or for two seconds."""
+        meeting = threading.Barrier(len(calls))
+        count = service._check_crossposting
+
+        def meet_then_count(*args, **kwargs):
+            try:
+                meeting.wait(timeout=2)
+            except threading.BrokenBarrierError:
+                pass
+            return count(*args, **kwargs)
+
+        with patch.object(service, "_check_crossposting", meet_then_count):
+            runs = [self.in_thread(self.request, *call) for call in calls]
+            self.finish(*(thread for thread, _ in runs))
+        return [result["value"] for _, result in runs]
+
+    def assert_one_each(self, answers, ok):
+        self.assertEqual(sorted(answer.status_code for answer in answers), sorted([ok, 403]))
+        refused = next(answer for answer in answers if answer.status_code == 403)
+        self.assertEqual(refused.json()["code"], "crossposting")
+        live = ScheduledPost.objects.filter(video_clip=self.clip).exclude(status=Status.DRAFT)
+        self.assertEqual(live.values("platform").distinct().count(), 1)
+
+    def test_two_creates_of_one_clip_on_two_networks(self):
+        url = reverse("scheduled-post-list")
+        answers = self.together(
+            ("post", url, {"video_clip": str(self.clip.pk), "platform": "INSTAGRAM_REELS"}),
+            ("post", url, {"video_clip": str(self.clip.pk), "platform": "YOUTUBE_SHORTS"}),
+        )
+        self.assert_one_each(answers, 201)
+
+    def test_two_drafts_of_one_clip_sent_at_once(self):
+        drafts = [
+            ScheduledPost.objects.create(video_clip=self.clip, platform=platform, status=Status.DRAFT, publish_at=timezone.now())
+            for platform in ("INSTAGRAM_REELS", "YOUTUBE_SHORTS")
+        ]
+        answers = self.together(*[
+            ("patch", reverse("scheduled-post-detail", args=[draft.pk]), {"publish_at": None}) for draft in drafts
+        ])
+        self.assert_one_each(answers, 200)
+
+    def test_a_create_and_a_draft_sent_at_once(self):
+        draft = ScheduledPost.objects.create(
+            video_clip=self.clip, platform="YOUTUBE_SHORTS", status=Status.DRAFT, publish_at=timezone.now(),
+        )
+        answers = self.together(
+            ("post", reverse("scheduled-post-list"), {"video_clip": str(self.clip.pk), "platform": "INSTAGRAM_REELS"}),
+            ("patch", reverse("scheduled-post-detail", args=[draft.pk]), {"publish_at": None}),
+        )
+        self.assertEqual(sorted(answer.status_code for answer in answers), [201, 403] if answers[0].status_code == 201 else [200, 403])
+        self.assertEqual(
+            ScheduledPost.objects.filter(video_clip=self.clip).exclude(status=Status.DRAFT).values("platform").distinct().count(), 1,
+        )
