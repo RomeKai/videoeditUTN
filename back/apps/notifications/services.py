@@ -309,7 +309,8 @@ def several_posts_failed_message():
     """(title, body) of the one ``post_failed`` that stands for the failures after POST_BURST_LIMIT."""
     return (
         'Fallaron varias publicaciones en pocos minutos',
-        'No te avisamos de cada una: revisalas en Publicaciones y reintentalas.',
+        'No te avisamos de cada una: revisalas en Publicaciones. Si alguna dice que no sabemos '
+        'si se publicó, revisá la cuenta de esa red antes de reintentarla.',
     )
 
 
