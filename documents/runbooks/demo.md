@@ -146,7 +146,7 @@ Cuánto tarda cada cosa en CPU:
 | `seed_demo --with-projects` | 35 s | Medido |
 | Armar el proxy de un video de 90 s en 720p | 18 s | Medido |
 | Render de un clip de 20 s (720p, relleno, con subtítulos, sin seguir caras) | 9 a 19 s, con dos a la vez | Medido |
-| Render con seguimiento de caras, 1080p o layout «Speaker dinámico» | Hasta 4 veces la duración del clip | `RENDER_CLIP_SECONDS_PER_SECOND` |
+| Render con seguimiento de caras, 1080p o layout «Quien habla» | Hasta 4 veces la duración del clip | `RENDER_CLIP_SECONDS_PER_SECOND` |
 | Transcripción con Groq (`AI_CORE_V2_ENABLED=True`) | Segundos | ADR-002 (addendum), sin medir acá |
 | Transcripción con Whisper local (`False`) | 5 a 7 min por cada 10 min de video. La primera vez cada proceso del worker baja el modelo (139 MB) | ADR-002 (addendum); la descarga, medida |
 | Elegir los clips (Gemini) | Hasta 60 s por llamada | `AI_LLM_TIMEOUT_SECONDS`, sin medir acá |
@@ -160,8 +160,8 @@ Primero mirá qué dice la pantalla. Cada falla se ve distinta:
 
 | Qué se ve | Qué pasa | Qué hacer |
 |---|---|---|
-| **«Estamos en mantenimiento · Volvemos en un rato. No hace falta que hagas nada.»**, a pantalla completa | La API está en modo mantenimiento: `MAINTENANCE_MODE=True` en `back/.env` | Ponelo en `False` y `demo up -d --force-recreate web worker beat`. La página pregunta el estado cada 10 s y sale sola |
-| **«Algo falló de nuestro lado»** con «Reintentar», o **«No pudimos conectar»** | Django no responde: `web` está caído o reiniciando. El proxy contesta 502 o 504, y eso **no** se muestra como mantenimiento | `demo ps`. Si `web` no está: `demo logs web --tail 50` y `demo up -d`. Después, «Reintentar» |
+| **«Estamos en mantenimiento · Volvemos en un rato. No hace falta que hagas nada.»**, a pantalla completa | La API está en modo mantenimiento: `MAINTENANCE_MODE=True` en `back/.env` | Ponelo en `False` y `demo up -d --force-recreate web`. La página pregunta el estado cada 10 s y sale sola; si alguna pestaña queda en «Algo falló de nuestro lado», tocá «Reintentar» |
+| **«Algo falló de nuestro lado»** con «Reintentar» en las pantallas que cargan datos | Django no responde: `web` está caído o reiniciando. El proxy contesta 502 o 504, y eso **no** se muestra como mantenimiento | `demo ps`. Si `web` no está: `demo logs web --tail 50` y `demo up -d`. Después, «Reintentar» |
 | **«Sin conexión. Reintentando…»**, un banner arriba | El navegador se quedó sin red | Se va solo cuando vuelve |
 | **«Tu sesión venció»**, un diálogo sobre la pantalla | La sesión se cortó: la web quedó abierta más de 3 días sin usarse, o `seed_demo` tuvo que reponer la contraseña porque alguien la cambió (eso cierra las sesiones de la cuenta) | Escribí la contraseña ahí mismo: la pantalla de atrás no se pierde. Si iniciás sesión en otra pestaña con la misma cuenta, el diálogo se cierra solo |
 | Un proyecto queda en **error** | Falló un proveedor de IA (key vencida, sin cuota, sin internet), o el video no tiene voz («No encontramos voz en el video») | Los tokens vuelven solos. Seguí con el proyecto preparado |
@@ -170,7 +170,7 @@ Primero mirá qué dice la pantalla. Cada falla se ve distinta:
 | La web abre pero Redes y Publicar no andan | Se abrió con otra dirección: los mocks no arrancan fuera de `localhost` | Volvé a `http://localhost:8080` |
 | Un clic a otra pantalla **no hace nada** | La máquina está cargada | Tocá de nuevo |
 
-**El modo mantenimiento como salida de emergencia.** Si el backend queda en un estado que no querés mostrar, `MAINTENANCE_MODE=True` en `back/.env` y `demo up -d --force-recreate web` deja la web en «Estamos en mantenimiento» en vez de errores sueltos. `GET /api/v1/status/` lo informa y el resto de `/api/` responde 503 solo con `detail`. El admin de Django sigue andando. Con `MAINTENANCE_STARTS_AT` y `MAINTENANCE_ENDS_AT` (las dos, ISO 8601) la página muestra el horario estimado. Para salir, `False` y recrear `web` otra vez. Mientras `web` se recrea, por unos segundos se ve el error de «Django no responde» de la tabla, no el mantenimiento. Probado en los ensayos sin Docker (apagar y prender el modo, y la web vuelve sola); **sin probar** con `demo` en Docker.
+**El modo mantenimiento como salida de emergencia.** Si el backend queda en un estado que no querés mostrar, `MAINTENANCE_MODE=True` en `back/.env` y `demo up -d --force-recreate web` deja la web en «Estamos en mantenimiento» en vez de errores sueltos. `GET /api/v1/status/` lo informa y el resto de `/api/` responde 503 solo con `detail`. El admin de Django sigue andando. Con `MAINTENANCE_STARTS_AT` y `MAINTENANCE_ENDS_AT` (las dos, ISO 8601) la página muestra el horario estimado. Para salir, `False` y recrear `web` otra vez. Alcanza con `web`, que es el único que lee `MAINTENANCE_MODE`: no recrees `worker` si hay un render en curso, porque lo cortás. Ojo: como cambió `back/.env`, el próximo `demo up -d` va a recrear también `worker` y `beat`; si hay un render en curso, esperá a que termine. Mientras `web` se recrea, por unos segundos se ve el error de «Django no responde» de la tabla, no el mantenimiento. Probado en los ensayos sin Docker (apagar y prender el modo, y la web vuelve); que una pestaña que quedó abierta vuelva sola, sin «Reintentar», se arregló después del ensayo 6 y lo cubren los tests, no un ensayo. **Sin probar** con `demo` en Docker. Si al salir una pestaña queda en «Algo falló de nuestro lado», tocá «Reintentar».
 
 Solo el 503 del mantenimiento saca la app. Un 502 o un 503 con `error` o `code` (por ejemplo, un proveedor que no respondió) es el error de ese pedido: se muestra donde se hizo y el resto sigue andando. En la demo no debería aparecer, porque Redes y Publicar son mocks.
 
@@ -189,7 +189,7 @@ Otros riesgos:
 **Si se cae el worker** (un proyecto no sale de «Procesando» o los clips no salen de «Renderizando»):
 
 1. `demo ps` y `demo logs worker --tail 50`. Si el contenedor murió, Docker lo levanta solo (`restart: on-failure`); si no, `demo restart worker`.
-2. **No esperes la tarea que estaba corriendo.** Celery la vuelve a entregar recién a las 4 horas (`CELERY_VISIBILITY_TIMEOUT`), y `recover_stuck_renders` actúa después de más de dos horas. Lo que estaba en cola sin empezar sí corre apenas vuelve el worker.
+2. **No esperes la tarea que estaba corriendo.** Celery la vuelve a entregar recién a las 4 horas (`CELERY_VISIBILITY_TIMEOUT`), y `recover_stuck_renders` actúa después de más de tres horas. Lo que estaba en cola sin empezar sí corre apenas vuelve el worker.
 3. Seguí con el proyecto que dejaste preparado, o con los `[DEMO]`.
 4. Para el video en vivo, **creá el proyecto de nuevo**. La web todavía no tiene el botón para retomar un proyecto en error (el endpoint `projects/:id/redispatch/` existe, pero ninguna pantalla lo llama). Un clip en error sí tiene «Reintentar».
 5. Si el worker muere por memoria, bajá la concurrencia: `DEMO_WORKER_CONCURRENCY=1 demo up -d worker` (por defecto son 2).
@@ -228,7 +228,7 @@ Verificado el 2026-11-28:
 - `docker compose -f docker-compose.yml -f docker-compose.demo.yml config` es válido con un `back/.env` copiado del ejemplo. Muestra solo dos puertos publicados, los dos en `127.0.0.1` (8080 y 8001), `FRONTEND_URL=http://localhost:8080` en `web`, `worker` y `beat`, y la web en modo híbrido con la lista de `DEMO_API_REAL`.
 - `seed_demo --help`: las opciones son `--with-projects`, `--reset-projects` (implica la anterior), `--password` y `--force`.
 - **Ensayos 5 y 6** (sin Docker: `runserver`, un worker y un beat contra Postgres y Redis locales, y la web construida en modo híbrido con la lista de la demo). El recorrido completo: login, aprobar la revisión, render real, descarga, editor y re-render, brand kits, Planes y checkout de prueba, compras, workspaces, invitaciones, la campana, conectar una red y publicar en mock. En el paso 7, Publicaciones muestra el clip real, con título, proyecto, duración y miniatura. Ningún 500 ni error de consola.
-- El modo mantenimiento, prendido y apagado: la web muestra K5 y vuelve sola. Un 502 o un 503 con `code` no se muestra como mantenimiento.
+- El modo mantenimiento, prendido y apagado: la web muestra la página de mantenimiento y vuelve. Que una pestaña abierta vuelva sola, sin «Reintentar», se arregló después del ensayo 6: lo cubren los tests, no un ensayo. Un 502 o un 503 con `code` no se muestra como mantenimiento.
 - Dos pestañas con la misma sesión: una sola renovación del token. Que «Tu sesión venció» se cierre cuando la otra pestaña inicia sesión con la misma cuenta se arregló después del ensayo 6: lo cubren los tests, no un ensayo.
 - Las suites en `dev`: pytest, Vitest, `tsc`, ESLint, el build y Playwright, incluido el smoke híbrido contra un backend vivo.
 
