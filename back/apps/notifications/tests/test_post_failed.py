@@ -368,6 +368,8 @@ class DisconnectedNetworkTests(PostHarness):
         self.assertEqual(set(Notification.objects.values_list('post_id', 'project_id')), {(None, None)})
         self.assertEqual([message.subject for message in mail.outbox], ['Hay publicaciones que no van a salir'] * 3)
         self.assertIn(f'https://app.onecreator.test/publicaciones?espacio={self.workspace.id}\n', mail.outbox[0].body)
+        # These never went out: retrying them is safe, and the email says so.
+        self.assertIn('Hasta que alguien las reintente, quedan en error y no se publican.', mail.outbox[0].body)
 
     def test_nothing_to_fail_tells_nobody(self):
         self.make_post(Platform.TIKTOK, status=Status.DRAFT)
@@ -391,7 +393,7 @@ class BurstTests(PostHarness):
     SEVERAL = (
         'post_failed', 'Fallaron varias publicaciones en pocos minutos',
         'No te avisamos de cada una: revisalas en Publicaciones. Si alguna dice que no sabemos '
-        'si se publicó, mirá la cuenta de la red antes de reintentarla.',
+        'si se publicó, revisá la cuenta de esa red antes de reintentarla.',
     )
 
     def posts(self, count, **fields):
@@ -415,7 +417,7 @@ class BurstTests(PostHarness):
         self.assertEqual(mail.outbox[-1].subject, 'Fallaron varias publicaciones')
         self.assertIn(f'https://app.onecreator.test/publicaciones?espacio={self.workspace.id}\n', mail.outbox[-1].body)
         # The group can hold a post that may have gone out: the email never just says «retry them».
-        self.assertIn('mirá primero la cuenta de la red, para que no salga dos veces', mail.outbox[-1].body)
+        self.assertIn('Reintentar una que en realidad salió la publica dos veces.', mail.outbox[-1].body)
         self.assertNotIn('Hasta que alguien las reintente', mail.outbox[-1].body)
 
     def test_a_broker_that_refuses_every_text_of_a_bulk_create_does_the_same(self):

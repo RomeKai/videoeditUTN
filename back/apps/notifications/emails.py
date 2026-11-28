@@ -139,8 +139,9 @@ def _content(notification):
                     'Hasta que alguien las reintente, quedan en error y no se publican.'
                     if notification.reason == NETWORK_DISCONNECTED else
                     # A burst can hold posts that may have gone out (POST_MAYBE_OUT): never «just retry».
-                    'Abrí cada una antes de reintentarla: si dice que no sabemos si se publicó, '
-                    'mirá primero la cuenta de la red, para que no salga dos veces.',
+                    # The first paragraph already carries the bell's advice; this one gives the reason.
+                    'Quedan en error hasta que alguien las revise. Reintentar una que en realidad salió '
+                    'la publica dos veces.',
                 ],
                 'Ver publicaciones',
                 path,

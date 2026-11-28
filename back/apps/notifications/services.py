@@ -310,7 +310,7 @@ def several_posts_failed_message():
     return (
         'Fallaron varias publicaciones en pocos minutos',
         'No te avisamos de cada una: revisalas en Publicaciones. Si alguna dice que no sabemos '
-        'si se publicó, mirá la cuenta de la red antes de reintentarla.',
+        'si se publicó, revisá la cuenta de esa red antes de reintentarla.',
     )
 
 
