@@ -36,6 +36,7 @@ UPLOAD = "apps.videos.tasks.upload_to_social_network.apply_async"
 DISPATCH = "apps.videos.tasks.dispatch_scheduled_posts_batch.apply_async"
 SEND = PUBLISH
 TIKTOK = {"privacy_level": "SELF_ONLY"}
+CLIP_TOO_LONG = {"video_clip": ["El clip dura 3:01 y YouTube Shorts acepta hasta 3:00."]}
 
 
 def detail(post):
@@ -95,6 +96,10 @@ class PostsWriteHarness(APITestCase):
         fields.setdefault("publish_at", self.later)
         return ScheduledPost.objects.create(video_clip=clip or self.clip, **fields)
 
+    def set_clip_duration(self, seconds, clip=None):
+        clip = clip or self.clip
+        VideoClip.objects.filter(pk=clip.pk).update(start_time=10, end_time=10 + seconds)
+
     def member(self, role, workspace=None):
         person = User.objects.create_user(username=f"m-{role}-{uuid.uuid4().hex[:6]}", email=f"{uuid.uuid4().hex[:8]}@test.com", password="pw")
         WorkspaceMember.objects.create(
@@ -116,6 +121,42 @@ class PostsWriteHarness(APITestCase):
 
 
 class CreateTests(PostsWriteHarness):
+    def test_clip_over_the_network_limit_is_rejected(self):
+        self.set_clip_duration(181)
+
+        response = self.create(platform=Platform.YOUTUBE_SHORTS, caption="Mirá esto")
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json(), CLIP_TOO_LONG)
+        self.assertFalse(ScheduledPost.objects.exists())
+
+    def test_the_same_clip_fits_the_tiktok_limit(self):
+        self.set_clip_duration(181)
+
+        response = self.create(platform=Platform.TIKTOK, tiktok=TIKTOK, caption="Mirá esto")
+
+        self.assertEqual(response.status_code, 201, response.content)
+        post = ScheduledPost.objects.get()
+        self.assertEqual((post.video_clip, post.platform), (self.clip, Platform.TIKTOK))
+
+    def test_clip_at_the_network_limit_is_accepted(self):
+        self.set_clip_duration(180)
+
+        response = self.create(platform=Platform.YOUTUBE_SHORTS, caption="Mirá esto")
+
+        self.assertEqual(response.status_code, 201, response.content)
+        post = ScheduledPost.objects.get()
+        self.assertEqual((post.video_clip, post.platform), (self.clip, Platform.YOUTUBE_SHORTS))
+
+    def test_draft_over_the_network_limit_is_rejected(self):
+        self.set_clip_duration(181)
+
+        response = self.create(platform=Platform.YOUTUBE_SHORTS, draft=True)
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json(), CLIP_TOO_LONG)
+        self.assertFalse(ScheduledPost.objects.exists())
+
     def test_a_draft_publishes_nothing(self):
         response = self.create(draft=True)
 
@@ -393,6 +434,16 @@ class BulkTests(PostsWriteHarness):
         self.assertEqual(response.json(), {"video_clip": ["El clip no existe."], "index": 1})
         self.assertFalse(ScheduledPost.objects.exists())
 
+    def test_one_clip_over_the_network_limit_rejects_the_entire_batch(self):
+        _, second = self.make_clip(self.home, "Segundo")
+        self.set_clip_duration(181, second)
+
+        response = self.bulk(self.items(self.clip, second, platform=Platform.YOUTUBE_SHORTS, caption="Mirá esto"))
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json(), {**CLIP_TOO_LONG, "index": 1})
+        self.assertFalse(ScheduledPost.objects.exists())
+
     def test_a_field_error_says_which_post_too(self):
         response = self.bulk(self.items(self.clip) + [{"video_clip": str(self.clip.pk), "platform": "MYSPACE"}])
         self.assertEqual(response.status_code, 400)
@@ -475,6 +526,17 @@ class UpdateTests(PostsWriteHarness):
         self.assertEqual(response.status_code, 200, response.content)
         post.refresh_from_db()
         self.assertEqual(post.publish_at, new)
+
+    def test_a_post_cannot_move_if_its_clip_now_exceeds_the_network_limit(self):
+        post = self.make_post(platform=Platform.YOUTUBE_SHORTS, caption="Original")
+        self.set_clip_duration(181)
+        before = ScheduledPost.objects.values().get(pk=post.pk)
+
+        response = self.patch_post(post, publish_at=(self.later + timedelta(hours=3)).isoformat(), caption="Nuevo")
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json(), CLIP_TOO_LONG)
+        self.assertEqual(ScheduledPost.objects.values().get(pk=post.pk), before)
 
     def test_a_draft_published_now_waits_for_the_beat(self):
         draft = self.make_post(status=Status.DRAFT, error_log="seo_no_clip_transcript")
@@ -584,6 +646,17 @@ class CancelTests(PostsWriteHarness):
 class RetryTests(PostsWriteHarness):
     def stale(self, post, by=timedelta(minutes=1)):
         ScheduledPost.objects.filter(pk=post.pk).update(updated_at=timezone.now() - service.POST_STUCK_AFTER - by)
+
+    def test_a_failed_post_cannot_retry_if_its_clip_exceeds_the_network_limit(self):
+        post = self.make_post(platform=Platform.YOUTUBE_SHORTS, status=Status.FAILED, error_log="provider_rejected")
+        self.set_clip_duration(181)
+        before = ScheduledPost.objects.values().get(pk=post.pk)
+
+        response = self.post_action(post, "retry")
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json(), CLIP_TOO_LONG)
+        self.assertEqual(ScheduledPost.objects.values().get(pk=post.pk), before)
 
     def test_a_failed_post_goes_back_to_the_dispatcher_for_now(self):
         post = self.make_post(status=Status.FAILED, publish_at=timezone.now() - timedelta(hours=1),
