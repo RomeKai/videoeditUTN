@@ -147,14 +147,16 @@ async function checkProjectsList(page: Page, api: Awaited<ReturnType<typeof back
   // Each thing done on screen was asked to the backend, with its own query: the whole list, the filter, the
   // search and, only when the user has more than a page of projects, the second page. (Not a count of requests:
   // that depends on how many projects the user has.)
-  const lists = answersOf(seen, 'GET', '/api/v1/projects/');
-  const asked = (check: (query: URLSearchParams) => boolean) => lists.some((item) => check(new URLSearchParams(item.query)));
+  const lists = () => answersOf(seen, 'GET', '/api/v1/projects/');
+  const asked = (check: (query: URLSearchParams) => boolean) => lists().some((item) => check(new URLSearchParams(item.query)));
   const firstPage = (query: URLSearchParams) => (query.get('page') ?? '1') === '1';
   expect(asked((query) => !query.has('status_group') && !query.has('search') && firstPage(query)), 'la lista entera').toBe(true);
   expect(asked((query) => query.get('status_group') === 'failed' && !query.has('search') && firstPage(query)), 'el filtro «Con error»').toBe(true);
-  expect(asked((query) => query.get('search')?.trim() === term.trim() && !query.has('status_group') && firstPage(query)), 'la búsqueda').toBe(true);
+  // Waited for: when the search finds every project, the total on screen is the same as before the search
+  // and the line above passes before the answer (or the request, which is debounced) exists.
+  await expect.poll(() => asked((query) => query.get('search')?.trim() === term.trim() && !query.has('status_group') && firstPage(query)), { message: 'la búsqueda' }).toBe(true);
   expect(asked((query) => query.get('page') === '2'), 'la segunda página, solo si hay más de una').toBe(Boolean(first.next));
-  expect(lists.filter((item) => item.mock !== null || item.status !== 200)).toEqual([]);
+  expect(lists().filter((item) => item.mock !== null || item.status !== 200)).toEqual([]);
   // Back to the whole list, for what the test checks next.
   await page.getByRole('searchbox', { name: 'Buscar proyectos por título' }).fill('');
   await expect(summary(first.count)).toBeVisible();
