@@ -8,6 +8,24 @@ PROVIDER_LOCKED = (
     "Este perfil ya existe en {provider}: sus publicaciones salen por ahí. Para pasar el espacio a otro "
     "proveedor, desconectá sus redes y borrá este perfil; el próximo «Conectar» lo crea con SOCIAL_PROVIDER."
 )
+POSTS_IN_FLIGHT = (
+    "Este espacio tiene publicaciones en camino o con un resultado incierto: con otro proveedor podrían "
+    "salir dos veces. Esperá a que terminen y revisá las inciertas antes de elegir el proveedor."
+)
+
+
+def posts_in_flight(workspace_id):
+    """
+    Posts of the workspace the worker may still send (QUEUED, PROCESSING, which a retry keeps) or whose
+    key may already have published (publish_key_unclear): through another provider they could go out twice.
+    """
+    from django.db.models import Q
+
+    from apps.videos.models import ScheduledPost
+
+    return ScheduledPost.objects.filter(video_clip__project__workspace_id=workspace_id).filter(
+        Q(status__in=(ScheduledPost.Status.QUEUED, ScheduledPost.Status.PROCESSING)) | Q(publish_key_unclear=True),
+    ).exists()
 
 
 class SocialProfileForm(forms.ModelForm):
@@ -17,8 +35,10 @@ class SocialProfileForm(forms.ModelForm):
     key typed here is saved, an empty field keeps the one there.
 
     The provider of a profile that exists at the provider (it has its ref)
-    does not change: its ref only means something there. A row without one
-    (before the first «Conectar») may take either provider.
+    never changes, not even with a new ref: its posts, retries included, go
+    out through it. Moving a workspace is deleting its profile and connecting
+    again. A row without a ref (before the first «Conectar») may take either
+    provider, unless the workspace has posts in flight or with an unclear key.
     """
 
     new_provider_ref = forms.CharField(
@@ -31,12 +51,18 @@ class SocialProfileForm(forms.ModelForm):
         model = SocialProfile
         exclude = ('provider_ref',)
 
-    def clean_provider(self):
-        provider = self.cleaned_data['provider']
-        instance = self.instance
-        if instance.pk and instance.provider_ref and provider != instance.provider and not (self.data.get('new_provider_ref') or '').strip():
-            raise forms.ValidationError(PROVIDER_LOCKED.format(provider=instance.get_provider_display()))
-        return provider
+    def clean(self):
+        cleaned = super().clean()
+        provider, instance = cleaned.get('provider'), self.instance
+        if not provider or provider == instance.provider:
+            return cleaned
+        if instance.pk and instance.provider_ref:
+            self.add_error('provider', PROVIDER_LOCKED.format(provider=instance.get_provider_display()))
+            return cleaned
+        workspace = cleaned.get('workspace') or getattr(instance, 'workspace', None)
+        if workspace is not None and posts_in_flight(workspace.pk):
+            self.add_error('provider', POSTS_IN_FLIGHT)
+        return cleaned
 
     def save(self, commit=True):
         profile = super().save(commit=False)

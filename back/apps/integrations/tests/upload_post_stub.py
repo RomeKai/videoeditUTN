@@ -14,7 +14,10 @@ Control, between steps: GET /ctl?upload=<mode>[&status_after=<n>][&privacy=A,B][
   sync (the default)   the network's result in the answer
   async                only a request_id; its status completes after <n> reads (2)
   pending              only a request_id; its status never completes
-  fail:<error_code>    the network failed with that code (account_reauth_required, ...)
+  fail:<error_code>    the network failed with that code (account_reauth_required, ...); its
+                       status says `failed` after <n> reads (`retryable` before)
+  retrying:<code>      the answer says the network failed with that code, Upload-Post retries it
+                       (status `retryable`) and it completes after <n> reads
   http:<status>        that HTTP status with an HTML page, and nothing published
   gateway504           504, but the upload went on: its status completes after <n> reads
   drop                 reads the request and closes the connection; the upload goes on
@@ -186,9 +189,11 @@ def make_handler(state):
                 done = job['outcome'] != 'pending' and job['reads'] >= job['after']
                 network = job['network']
             if not done:
-                # As the docs show it: the entry says success while it is still queued.
+                # As the docs show it: the entry says success while it is still queued; one Upload-Post
+                # retries by itself is `retryable`.
+                entry = job.get('waiting') or {'platform': network, 'success': True, 'message': 'Queued'}
                 return self._send(200, {'request_id': request_id, 'status': 'in_progress', 'completed': 0, 'total': 1,
-                                        'results': [{'platform': network, 'success': True, 'message': 'Queued'}]})
+                                        'results': [entry]})
             if job['outcome'] == 'completed':
                 entry = {'platform': network, 'success': True, 'status': 'completed', 'post_url': job['url'],
                          'message': 'Published'}
@@ -260,10 +265,16 @@ def make_handler(state):
             }[network]
             if mode.startswith('http:'):
                 return self._send(int(mode.split(':', 1)[1]), '<html>upstream error</html>', 'text/html')
-            if mode.startswith('fail:'):
+            if mode.startswith(('fail:', 'retrying:')):
+                code = mode.split(':', 1)[1]
+                retrying = {'platform': network, 'success': False, 'status': 'retryable', 'error_code': code}
+                with state.lock:
+                    state.jobs[request_id] = {
+                        'network': network, 'reads': 0, 'after': state.modes['status_after'], 'url': post_url,
+                        'outcome': 'completed' if mode.startswith('retrying:') else code, 'waiting': retrying,
+                    }
                 reply = {'success': True, 'request_id': request_id, 'results': {network: {
-                    'success': False, 'error': 'Texto del proveedor que puede citar el caption',
-                    'error_code': mode.split(':', 1)[1],
+                    'success': False, 'error': 'Texto del proveedor que puede citar el caption', 'error_code': code,
                 }}}
                 return self._reply(key, 200, reply)
             if mode in ('async', 'pending', 'gateway504', 'drop'):

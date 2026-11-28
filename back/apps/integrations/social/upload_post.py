@@ -50,7 +50,9 @@ What this module relies on, from Upload-Post's documentation (read on
   (`usage`). Per network, `error_code` (account_reauth_required,
   daily_cap_reached, monthly_limit_reached, tiktok_privacy_unavailable,
   upload_interrupted, ...): this module follows the "What to do" column of
-  the docs' table (see _platform_error).
+  the docs' table (see _platform_error), and anything that may have gone out
+  (`platform_unavailable`: "failed or timed out", `unknown_error`, no code, a
+  code added later) is unknown, never a refusal.
 
 Asynchronous uploads (the decision of this module): publish() waits for the
 network's result inside the provider layer, by reading the status of its own
@@ -58,8 +60,10 @@ request_id every STATUS_POLL_SECONDS, and never longer in all than
 PUBLISH_TIMEOUT_SECONDS[1] (so PUBLISH_LOCK_TTL_SECONDS still covers it). A
 confirmed result is a PublishResult or the network's error; anything else at
 the deadline is OutcomeUnknownError: never PUBLISHED without a result, and
-never sent again by the worker. The same status check settles a 504 and a
-connection lost after sending, before they are reported as unknown.
+never sent again by the worker. The same status check settles a 504, a
+connection lost after sending, and a «Retry later» refusal in the upload's
+answer (Upload-Post may retry it by itself, `retryable`): its key is spent
+only once the status of that network says `failed`.
 """
 import logging
 import re
@@ -68,6 +72,7 @@ from urllib.parse import quote
 
 import requests
 from django.conf import settings
+from django.core.cache import cache
 
 from .base import (
     ACCOUNTS_TIMEOUT_SECONDS,
@@ -135,12 +140,25 @@ CODES_QUOTA = frozenset({
 # The account cannot publish with that privacy level: nothing was sent to TikTok.
 CODE_TIKTOK_PRIVACY = 'tiktok_privacy_unavailable'
 CODES_DUPLICATE = frozenset({'content_duplicate'})
-# "Check the account before posting again": it may be out (TikTok had accepted the job).
-CODES_MAYBE_OUT = frozenset({'upload_interrupted', 'x_unknown_outcome', 'tiktok_publish_failed'})
-# "Retry later": nothing went out. The job is spent (its key answers the same failure for 24 h).
+# It may be out: "Check the account before posting again" (TikTok had accepted the job), "the
+# platform failed or timed out", and "not classified". Sending it again could publish a second copy,
+# and the same key only answers this job again.
+CODES_MAYBE_OUT = frozenset({
+    'upload_interrupted', 'x_unknown_outcome', 'tiktok_publish_failed', 'platform_unavailable', 'unknown_error',
+})
+# "Retry later", for a refusal before anything was sent: a cap, a pause, the platform's rate limit,
+# a media URL Upload-Post could not download. Upload-Post may still retry such an upload by itself
+# (status `retryable`), so the key is spent (a new one for the next attempt) only once the status
+# of that network says `failed`.
 CODES_LATER = frozenset({
-    'platform_rate_limited', 'platform_unavailable', 'platform_integration_paused', 'cost_cap_reached',
-    'media_download_failed',
+    'platform_rate_limited', 'platform_integration_paused', 'cost_cap_reached', 'media_download_failed',
+})
+# The platform, or Upload-Post, refused the post: nothing was published ("Change the content",
+# "Fix the file", "Resolve it on the platform"...).
+CODES_REJECTED = frozenset({
+    'account_blocked', 'account_checkpoint_required', 'account_pending_deletion', 'account_restricted',
+    'config_target_missing', 'content_rejected', 'media_invalid_format', 'profile_blocked_by_plan',
+    'tiktok_media_rejected',
 })
 CODE_KEY_IN_USE = 'idempotency_key_in_use'
 
@@ -148,6 +166,13 @@ CODE_KEY_IN_USE = 'idempotency_key_in_use'
 NOT_FINAL = frozenset({'pending', 'queued', 'processing', 'in_progress', 'retryable'})
 COMPLETED = 'completed'
 FAILED = 'failed'
+
+# TikTok's creator info changes rarely (Upload-Post caches it for a few minutes too): read again at
+# most this often, and a failed read not before TIKTOK_SETTINGS_FAILED_SECONDS. Each read adds a
+# call to the accounts screen.
+TIKTOK_SETTINGS_CACHE_SECONDS = 600
+TIKTOK_SETTINGS_FAILED_SECONDS = 60
+TIKTOK_SETTINGS_TIMEOUT_SECONDS = (3, 5)
 
 # The clock, for the tests.
 _clock = time.monotonic
@@ -209,6 +234,8 @@ class UploadPostProvider(SocialProvider):
             body['redirect_url'] = return_url
             body['redirect_button_text'] = LINKING_PAGE_BACK
         data = self._call('post', '/api/uploadposts/users/generate-jwt', 'connect_url', json=body)
+        # Linking again may change what TikTok allows (another account, a new authorization).
+        _forget_tiktok_settings(body['username'])
         url = data.get('access_url')
         if not isinstance(url, str) or not url.startswith(link_schemes(settings.UPLOAD_POST_BASE_URL)):
             raise PermanentError(PROVIDER_REJECTED, 'upload-post generate-jwt answered no access_url')
@@ -243,6 +270,7 @@ class UploadPostProvider(SocialProvider):
         except PermanentError as exc:
             if exc.code != PROFILE_NOT_FOUND:  # 404: never linked, or no profile: nothing to unlink
                 raise
+        _forget_tiktok_settings(body['profile_username'])
 
     def delete_profile(self, profile):
         if not getattr(profile, 'provider_ref', ''):
@@ -256,12 +284,22 @@ class UploadPostProvider(SocialProvider):
     def _tiktok_creator(self, username):
         """
         (TikTok's creator info in our terms, or None; whether TikTok asks to reconnect). Never an
-        error: without it the API offers the safe default (views_social_accounts).
+        error: without it the API offers the safe default (views_social_accounts). Kept in the
+        cache for TIKTOK_SETTINGS_CACHE_SECONDS (a failure, TIKTOK_SETTINGS_FAILED_SECONDS).
         """
+        cached = _cache_get(_tiktok_settings_key(username))
+        if isinstance(cached, tuple) and len(cached) == 2:
+            return cached
+        found = self._read_tiktok_settings(username)
+        seconds = TIKTOK_SETTINGS_CACHE_SECONDS if found[0] is not None else TIKTOK_SETTINGS_FAILED_SECONDS
+        _cache_set(_tiktok_settings_key(username), found, seconds)
+        return found
+
+    def _read_tiktok_settings(self, username):
         try:
             response = self._send(
                 'get', '/api/uploadposts/tiktok/settings', 'tiktok_settings',
-                params={'profile': username}, timeout=ACCOUNTS_TIMEOUT_SECONDS,
+                params={'profile': username}, timeout=TIKTOK_SETTINGS_TIMEOUT_SECONDS,
             )
         except (SocialProviderError, _NoAnswer) as exc:
             logger.warning("social.upload_post.tiktok_settings_failed error=%s", type(exc).__name__)
@@ -474,10 +512,10 @@ def _upload_outcome(response, network, key):
     results = (body or {}).get('results')
     entry = _entry(results, network)
     if entry is not None:
-        result = _platform_result(entry, request_id, final=True)
+        result = _platform_result(entry, request_id, in_answer=True)
         if result is not None:
             return result
-        return request_id, 'queued'
+        return request_id, 'queued' if entry.get('success') is not False else 'retry_later'
     if 200 <= http < 300:
         if body is None or body.get('success') is not False:
             # In the background (request_id, no results), or an answer we cannot read: it may be out.
@@ -517,11 +555,7 @@ def _status_outcome(body, network, request_id):
     state = _code(body.get('status'))
     entry = _entry(body.get('results'), network)
     if entry is not None:
-        own = _code(entry.get('status'))
-        # An entry says `success: true` while it is still queued: only its status, or a finished
-        # request, makes it final.
-        final = own in (COMPLETED, FAILED) or (own is None and state in (COMPLETED, FAILED))
-        result = _platform_result(entry, request_id, final=final)
+        result = _platform_result(entry, request_id, request_state=state)
         if result is not None:
             return result
     if state in (COMPLETED, FAILED) and entry is None:
@@ -530,33 +564,67 @@ def _status_outcome(body, network, request_id):
     return None
 
 
-def _platform_result(entry, request_id, final):
+def _platform_result(entry, request_id, request_state=None, in_answer=False):
     """
     One network's entry: PublishResult when it is out, its error when it failed, None when it is
-    not final yet (queued, processing, retryable, or a status entry without its own status).
+    not final yet. ``in_answer``: the entry of the upload's own answer, which has no status of its
+    own and is final as it is, except a «Retry later» refusal (Upload-Post may still retry it: its
+    status says). Otherwise the entry of a status read, in a request whose status is ``request_state``:
+    an entry says `success: true` while it is still queued, so only its own status (`completed`,
+    `failed`) or a finished request makes it final, and only a completed request a success.
     """
     if entry.get('skipped') is True or entry.get('skip_reason') == SKIP_NOT_CONFIGURED:
         raise PermanentError(ACCOUNT_NOT_CONNECTED, _detail(None, _codes([entry]) or [SKIP_NOT_CONFIGURED]))
     own = _code(entry.get('status'))
-    if own in NOT_FINAL or not final:
+    out, failed = entry.get('success') is True, entry.get('success') is False
+    if own == COMPLETED:
+        if out:
+            return _published(entry, request_id)
+        raise OutcomeUnknownError(detail=_detail(None, _codes([entry])) + ' completed without success')
+    if own == FAILED:
+        raise _platform_error(entry, failed_status=True)
+    if own is not None:
+        # queued, processing, retryable, or a status this module does not know: not final yet.
         return None
-    if entry.get('success') is True and own in (None, COMPLETED):
+    if in_answer:
+        if out:
+            return _published(entry, request_id)
+        if failed:
+            if CODES_LATER & set(_codes([entry])):
+                return None  # Upload-Post may retry it by itself: its status says
+            raise _platform_error(entry, failed_status=False)
+        return None
+    if request_state == COMPLETED and out:
         return _published(entry, request_id)
-    if entry.get('success') is False or own == FAILED:
-        raise _platform_error(entry)
+    if request_state in (COMPLETED, FAILED):
+        if failed:
+            raise _platform_error(entry, failed_status=False)
+        # A finished request whose entry never said it went out (a «Queued» left after an hour
+        # without activity): it cannot be confirmed, nor told to try again.
+        raise OutcomeUnknownError(detail=f'upload-post status={request_state} entry unconfirmed')
     return None
 
 
-def _platform_error(entry):
+def _platform_error(entry, failed_status):
+    """
+    A network's failure. ``failed_status``: its own status said `failed` (Upload-Post is done with
+    it). A failure with no code, `unknown_error` or a code this module does not know may have
+    published: unknown, never a refusal ("Reintentar" would send a second copy without a warning).
+    """
     codes = _codes([entry])
     detail = _detail(None, codes)
     known = _known_error(codes, detail)
     if known is not None:
         return known
     if CODES_LATER & set(codes):
-        # Upload-Post says nothing went out and it may work later; this job is spent.
-        return RetryableError(PROVIDER_UNAVAILABLE, detail, key_spent=True)
-    return PermanentError(PROVIDER_REJECTED, detail)
+        if failed_status:
+            # Nothing went out, and Upload-Post will not retry it: this job is spent.
+            return RetryableError(PROVIDER_UNAVAILABLE, detail, key_spent=True)
+        # Its status never said `failed`: Upload-Post may still be retrying it.
+        return OutcomeUnknownError(detail=f'{detail} not failed')
+    if CODES_REJECTED & set(codes):
+        return PermanentError(PROVIDER_REJECTED, detail)
+    return OutcomeUnknownError(detail=detail)
 
 
 def _known_error(codes, detail):
@@ -595,6 +663,31 @@ def _published(entry, request_id):
 
 
 # --- Small readers (never trust the shape of an answer) ---
+
+def _tiktok_settings_key(username):
+    return f"social:upload_post:tiktok_settings:{username}"
+
+
+def _cache_get(key):
+    try:
+        return cache.get(key)
+    except Exception:  # the cache may be down: read the provider
+        return None
+
+
+def _cache_set(key, value, seconds):
+    try:
+        cache.set(key, value, seconds)
+    except Exception as exc:
+        logger.warning("social.upload_post.cache_not_written error=%s", type(exc).__name__)
+
+
+def _forget_tiktok_settings(username):
+    try:
+        cache.delete(_tiktok_settings_key(username))
+    except Exception as exc:  # it expires on its own
+        logger.warning("social.upload_post.cache_not_forgotten error=%s", type(exc).__name__)
+
 
 def _username(profile):
     """The profile's username, or account_not_connected: no call is made without one."""

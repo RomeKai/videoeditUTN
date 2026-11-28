@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
+from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
 from urllib3.exceptions import MaxRetryError, NewConnectionError, ProtocolError
 
@@ -262,10 +263,15 @@ class PublishAnswerTests(ProviderTestCase):
             "content_duplicate": (PermanentError, "duplicate_content"),
             "profile_platform_mapping_invalid": (PermanentError, "account_not_connected"),
             "content_rejected": (PermanentError, "provider_rejected"),
-            "a_code_added_later": (PermanentError, "provider_rejected"),
+            "tiktok_media_rejected": (PermanentError, "provider_rejected"),
             # "Check the account before posting again": it may be out.
             "upload_interrupted": (OutcomeUnknownError, "outcome_unknown"),
             "tiktok_publish_failed": (OutcomeUnknownError, "outcome_unknown"),
+            # "The platform failed or timed out": it may be out, and the same key only answers this job.
+            "platform_unavailable": (OutcomeUnknownError, "outcome_unknown"),
+            # Not classified, or a code added later: never a refusal ("Reintentar" would send a second copy).
+            "unknown_error": (OutcomeUnknownError, "outcome_unknown"),
+            "a_code_added_later": (OutcomeUnknownError, "outcome_unknown"),
         }
         for code, (kind, ours) in cases.items():
             with self.subTest(code=code):
@@ -275,13 +281,56 @@ class PublishAnswerTests(ProviderTestCase):
                 self.assertEqual(error.detail, f"upload-post code={code}")
                 self.assertNotIn("caption", str(error))  # never the provider's words
 
-    def test_retry_later_codes_are_retried_with_a_new_key(self):
-        """Nothing went out, and this job's key answers the same failure for 24 hours."""
-        for code in ("platform_rate_limited", "platform_unavailable", "platform_integration_paused", "media_download_failed"):
+    def test_a_failure_without_a_code_is_unknown(self):
+        body = {"success": True, "request_id": "up-req-1", "results": {"tiktok": {"success": False, "error": WORDS}}}
+        error = self.error_of(tiktok_request(), answer(200, body))
+        self.assertEqual((type(error), error.code), (OutcomeUnknownError, "outcome_unknown"))
+
+    def test_a_retry_later_refusal_is_retried_with_a_new_key_once_its_status_says_failed(self):
+        """
+        Nothing went out, and Upload-Post is done with it: this job's key answers the same failure for
+        24 hours, so the next attempt needs a new one. Until its status says `failed` (it may be
+        `retryable`: Upload-Post retrying by itself) no new key.
+        """
+        for code in ("platform_rate_limited", "platform_integration_paused", "cost_cap_reached", "media_download_failed"):
             with self.subTest(code=code):
-                error = self.error_of(tiktok_request(), answer(200, failed("tiktok", code)))
+                retrying = {"platform": "tiktok", "success": False, "status": "retryable", "error_code": code}
+                done = {"platform": "tiktok", "success": False, "status": "failed", "error_code": code}
+                error = self.error_of(
+                    tiktok_request(), answer(200, failed("tiktok", code)),
+                    answer(200, status("in_progress", retrying)), answer(200, status("failed", done)),
+                )
                 self.assertIsInstance(error, RetryableError)
                 self.assertEqual((error.key_spent, error.maybe_sent), (True, False))
+
+    def test_a_retry_later_refusal_that_upload_post_retries_is_published(self):
+        retrying = {"platform": "tiktok", "success": False, "status": "retryable", "error_code": "platform_rate_limited"}
+        done = {"platform": "tiktok", "success": True, "status": "completed", "post_url": "https://www.tiktok.com/@a/video/3"}
+        result, sent = self.publish(
+            tiktok_request(), answer(200, failed("tiktok", "platform_rate_limited")),
+            answer(200, status("in_progress", retrying)), answer(200, status("completed", done)),
+        )
+        self.assertEqual(result.post_url, "https://www.tiktok.com/@a/video/3")
+        self.assertEqual([call.args[0] for call in sent.call_args_list].count("post"), 1)
+
+    def test_a_retry_later_refusal_never_said_failed_is_unknown(self):
+        retrying = {"platform": "tiktok", "success": False, "status": "retryable", "error_code": "platform_rate_limited"}
+        error = self.error_of(
+            tiktok_request(), answer(200, failed("tiktok", "platform_rate_limited")),
+            *[answer(200, status("in_progress", retrying))] * 40,
+        )
+        self.assertIsInstance(error, OutcomeUnknownError)
+        # A finished request whose entry has no status of its own is not a `failed` network either.
+        bare = {"platform": "tiktok", "success": False, "error_code": "platform_rate_limited"}
+        error = self.error_of(
+            tiktok_request(), answer(200, failed("tiktok", "platform_rate_limited")), answer(200, status("failed", bare)),
+        )
+        self.assertIsInstance(error, OutcomeUnknownError)
+
+    def test_platform_unavailable_in_its_status_is_unknown(self):
+        done = {"platform": "tiktok", "success": False, "status": "failed", "error_code": "platform_unavailable"}
+        error = self.error_of(tiktok_request(), answer(200, BackgroundUploadTests.ASYNC), answer(200, status("failed", done)))
+        self.assertEqual((type(error), error.code), (OutcomeUnknownError, "outcome_unknown"))
 
     def test_a_network_the_profile_has_no_account_for(self):
         skipped = failed("tiktok", "profile_platform_mapping_invalid", skipped=True, skip_reason="profile_platform_not_configured")
@@ -437,6 +486,31 @@ class BackgroundUploadTests(ProviderTestCase):
         self.assertEqual((sent.call_count, self.clock.slept), (1, []))
         self.assertIn("status=none", caught.exception.detail)
 
+    def test_a_failed_request_with_a_stale_success_is_not_published(self):
+        """`failed` also means «no activity for over 1 hour»: a «Queued» entry with success: true left there."""
+        error = self.error_of(tiktok_request(), answer(200, self.ASYNC), answer(200, status("failed", self.QUEUED)))
+        self.assertIsInstance(error, OutcomeUnknownError)
+        # A completed request makes it final.
+        result, _ = self.publish(tiktok_request(), answer(200, self.ASYNC), answer(200, status("completed", self.QUEUED)))
+        self.assertTrue(result.pending)
+
+    def test_a_completed_entry_without_success_is_unknown(self):
+        odd = {"platform": "tiktok", "success": False, "status": "completed"}
+        error = self.error_of(tiktok_request(), answer(200, self.ASYNC), answer(200, status("completed", odd)))
+        self.assertIsInstance(error, OutcomeUnknownError)
+
+    def test_no_status_read_after_the_deadline(self):
+        """The last wait reaches the deadline: no read after it, however short."""
+        def server(method, url, **kwargs):
+            if method == "post":
+                self.clock.now += upload_post.PUBLISH_DEADLINE_SECONDS - 5  # the upload took almost all of it
+                return answer(200, self.ASYNC)
+            return answer(200, status("completed", self.DONE))
+
+        with patch(REQUEST, side_effect=server) as sent, self.assertRaises(OutcomeUnknownError):
+            UploadPostProvider().publish(PROFILE, tiktok_request())
+        self.assertEqual((sent.call_count, self.clock.slept), (1, [5]))
+
     def test_finished_without_the_network_is_unknown(self):
         other = {"platform": "x", "success": True, "status": "completed"}
         error = self.error_of(tiktok_request(), answer(200, self.ASYNC), answer(200, status("completed", other)))
@@ -489,6 +563,9 @@ class BackgroundUploadTests(ProviderTestCase):
 class ProfileTests(SimpleTestCase):
     WORKSPACE = SimpleNamespace(pk="5b0e2f7a-9d1c-4c5e-8f00-123456789abc")
     USERNAME = "oc-test-5b0e2f7a-9d1c-4c5e-8f00-123456789abc"
+
+    def setUp(self):
+        cache.clear()  # TikTok's settings are kept there
 
     def test_create_profile(self):
         body = {"success": True, "profile": {"username": self.USERNAME, "social_accounts": {}}}
@@ -562,6 +639,7 @@ class ProfileTests(SimpleTestCase):
         self.assertEqual(read.kwargs["timeout"], ACCOUNTS_TIMEOUT_SECONDS)
         self.assertEqual(creator.args, ("get", f"{BASE}/api/uploadposts/tiktok/settings"))
         self.assertEqual(creator.kwargs["params"], {"profile": "oc-test-ws-1"})
+        self.assertEqual(creator.kwargs["timeout"], upload_post.TIKTOK_SETTINGS_TIMEOUT_SECONDS)
         self.assertEqual([(a.platform, a.status, a.username) for a in accounts], [
             # The public handle, never `username` (TikTok's opaque open_id).
             ("TIKTOK", AccountStatus.CONNECTED, "@estudionorte"),
@@ -582,6 +660,7 @@ class ProfileTests(SimpleTestCase):
             "none": ({"success": True, "privacy_level_options": []}, None),
         }
         for name, (body, expected) in cases.items():
+            cache.clear()
             with self.subTest(case=name), patch(REQUEST, side_effect=[answer(200, user), answer(200, body)]):
                 tiktok = UploadPostProvider().accounts(PROFILE)[0]
             self.assertEqual(tiktok.status, AccountStatus.CONNECTED)
@@ -591,13 +670,48 @@ class ProfileTests(SimpleTestCase):
         """The creator info is an extra: its failure never fails the accounts (the API then offers the default)."""
         user = {"success": True, "profile": {"social_accounts": {"tiktok": {"handle": "a"}}}}
         for failure in (answer(502, {"success": False, "message": WORDS}), requests.exceptions.ReadTimeout("x")):
+            cache.clear()
             with self.subTest(failure=failure), patch(REQUEST, side_effect=[answer(200, user), failure]):
                 tiktok = UploadPostProvider().accounts(PROFILE)[0]
             self.assertEqual((tiktok.status, tiktok.tiktok), (AccountStatus.CONNECTED, None))
         # TikTok no longer takes the connection: reconnect.
+        cache.clear()
         revoked = answer(400, {"success": False, "error_code": "tiktok_reconnect_required", "reauth_required": True})
         with patch(REQUEST, side_effect=[answer(200, user), revoked]):
             self.assertEqual(UploadPostProvider().accounts(PROFILE)[0].status, AccountStatus.EXPIRED)
+
+    def test_tiktoks_settings_are_kept_for_a_while(self):
+        """One more call to the accounts screen: at most every TIKTOK_SETTINGS_CACHE_SECONDS (a failure, a minute)."""
+        user = {"success": True, "profile": {"social_accounts": {"tiktok": {"handle": "a"}}}}
+        body = {"success": True, "privacy_level_options": ["SELF_ONLY"]}
+        with patch(REQUEST, side_effect=[answer(200, user), answer(200, body), answer(200, user)]) as sent:
+            first = UploadPostProvider().accounts(PROFILE)[0]
+            again = UploadPostProvider().accounts(PROFILE)[0]
+        self.assertEqual(first.tiktok, again.tiktok)
+        self.assertEqual([call.args[1].rsplit("/", 1)[1] for call in sent.call_args_list], ["oc-test-ws-1", "settings", "oc-test-ws-1"])
+
+        cache.clear()
+        with patch(REQUEST, side_effect=[answer(200, user), answer(502, None), answer(200, user)]) as sent:
+            UploadPostProvider().accounts(PROFILE)
+            self.assertIsNone(UploadPostProvider().accounts(PROFILE)[0].tiktok)
+        self.assertEqual(sent.call_count, 3)  # the failure is not asked again at once
+
+    def test_connecting_or_disconnecting_forgets_tiktoks_settings(self):
+        user = {"success": True, "profile": {"social_accounts": {"tiktok": {"handle": "a"}}}}
+        body = {"success": True, "privacy_level_options": ["SELF_ONLY"]}
+        link = {"success": True, "access_url": "https://app.upload-post.com/connect?token=x"}
+        for name, change in (("connect", lambda p: p.connect_url(PROFILE, "TIKTOK")),
+                             ("disconnect", lambda p: p.disconnect(PROFILE, "TIKTOK"))):
+            cache.clear()
+            with self.subTest(change=name), patch(REQUEST, side_effect=[
+                answer(200, user), answer(200, body), answer(200, link if name == "connect" else {"success": True}),
+                answer(200, user), answer(200, body),
+            ]) as sent:
+                provider = UploadPostProvider()
+                provider.accounts(PROFILE)
+                change(provider)
+                provider.accounts(PROFILE)
+            self.assertEqual(sent.call_count, 5)
 
     def test_an_expired_tiktok_does_not_ask_for_its_settings(self):
         user = {"success": True, "profile": {"social_accounts": {"tiktok": {"handle": "a", "reauth_required": True}}}}

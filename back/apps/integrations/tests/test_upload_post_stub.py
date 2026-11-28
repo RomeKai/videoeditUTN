@@ -15,7 +15,7 @@ from django.core.management import call_command
 from rest_framework.test import APIClient
 
 from apps.integrations.models import SocialProfile
-from apps.integrations.social import AccountStatus, PublishRequest, TikTokOptions, upload_post
+from apps.integrations.social import AccountStatus, PublishRequest, RetryableError, TikTokOptions, upload_post
 from apps.integrations.social import accounts as social_accounts
 from apps.integrations.social.upload_post import UploadPostProvider
 from apps.integrations.tests.upload_post_stub import UploadPostStub
@@ -228,6 +228,44 @@ def test_a_networks_failure_is_our_code(stub, publisher):
 
     assert post.status == ScheduledPost.Status.FAILED
     assert post.error_log == "account_expired (upload-post code=account_reauth_required)"
+
+
+def test_a_platform_that_failed_or_timed_out_is_one_job_and_unknown(stub, publisher):
+    """
+    Review of #199: `platform_unavailable` («the platform failed or timed out») may be out. Before, each
+    retry took a new key: four jobs for one post, then «Reintentar» a fifth. Now one job, unknown, and the
+    key stays marked unclear.
+    """
+    control(stub, upload="fail:platform_unavailable", status_after=1)
+    post = publisher.post()
+    result = publisher.run(post)
+
+    assert result.failed()
+    assert post.status == ScheduledPost.Status.FAILED
+    assert post.error_log == "outcome_unknown (upload-post code=platform_unavailable)"
+    assert post.publish_key_unclear is True
+    assert [upload["idempotency_key"] for upload in stub.state.uploads] == [f"onecreator-post-{post.pk}-v0"]
+
+
+def test_a_refusal_upload_post_retries_by_itself_is_published_once(stub, publisher):
+    control(stub, upload="retrying:platform_rate_limited", status_after=2)
+    post = publisher.post()
+    publisher.run(post)
+
+    assert post.status == ScheduledPost.Status.PUBLISHED, post.error_log
+    assert len(stub.state.uploads) == 1
+
+
+def test_a_retry_later_refusal_spends_its_key_only_once_failed(stub, workspace):
+    profile = linked(stub, workspace)
+    control(stub, upload="fail:platform_rate_limited", status_after=2)
+    request = PublishRequest(platform="TIKTOK", media_url=MEDIA, text="Hola", title="Clip",
+                             idempotency_key="onecreator-post-9-v0", tiktok=TikTokOptions("SELF_ONLY"))
+    with pytest.raises(RetryableError) as caught:
+        UploadPostProvider().publish(profile, request)
+    assert (caught.value.key_spent, caught.value.maybe_sent) == (True, False)
+    # It waited for the status to say `failed` (the first read said `retryable`).
+    assert [path for _, path in stub.state.calls].count("/api/uploadposts/status") == 2
 
 
 def test_a_network_that_is_not_linked_sends_nothing_out(stub, publisher):

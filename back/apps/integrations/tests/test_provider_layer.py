@@ -39,6 +39,27 @@ def test_a_cached_account_is_read_whatever_release_wrote_it():
         == Account("TIKTOK", AccountStatus.EXPIRED)
 
 
+@pytest.mark.django_db
+def test_the_accounts_read_caches_them_as_the_previous_release_reads_them():
+    """The call site in accounts(): what it keeps in the cache is _stored's, not asdict's."""
+    from unittest.mock import patch
+
+    from django.core.cache import cache
+
+    from apps.integrations.models import SocialProfile
+    from apps.users.models import User
+
+    workspace = User.objects.create_user(username="cache", email="cache@test.com", password="pw").owned_workspaces.get()
+    SocialProfile.objects.create(workspace=workspace, provider="ayrshare", provider_ref="KEY")
+    found = [Account("TIKTOK", AccountStatus.CONNECTED, "@ana"), Account("INSTAGRAM_REELS", AccountStatus.DISCONNECTED),
+             Account("YOUTUBE_SHORTS", AccountStatus.DISCONNECTED)]
+    with patch("apps.integrations.social.ayrshare.AyrshareProvider.accounts", return_value=found):
+        social_accounts.accounts(workspace, fresh=True)
+    for kind in ("accounts", "accounts_last"):
+        stored = cache.get(f"social:{kind}:{workspace.pk}")
+        assert [sorted(item) for item in stored] == [["connected_at", "platform", "status", "username"]] * 3, kind
+
+
 def _load_prod(**overrides):
     if (BACK / ".env").exists():
         pytest.skip("back/.env would fill the missing variables")
