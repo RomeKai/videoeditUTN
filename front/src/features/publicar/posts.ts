@@ -232,6 +232,30 @@ export function failureMessage(post: Pick<ScheduledPost, 'platform' | 'error_mes
   return post.error_message ?? 'No pudimos publicar el clip. Probá de nuevo.';
 }
 
+/**
+ * A failure that does not say the clip stayed in: the network did not answer in time (`outcome_unknown`) or
+ * says it already has the same post (`duplicate_content`). Nothing on screen may say "no se publicó" then.
+ */
+export const mayBeOut = (post: Pick<ScheduledPost, 'status' | 'error_code'>): boolean =>
+  post.status === 'FAILED' && (post.error_code === 'outcome_unknown' || post.error_code === 'duplicate_content');
+
+/** What the account column says when the network has no account connected and the post already went out on one. */
+export const ACCOUNT_GONE = 'Cuenta desconectada';
+export const NO_ACCOUNT = 'Sin cuenta';
+
+/**
+ * The account of a post, for the list and the detail. The API only knows the account connected now: a post
+ * that is already out went out on one, even if the network was disconnected later, so it never says "Sin cuenta".
+ * Empty while the accounts are not known.
+ */
+export function accountLabel(post: Pick<ScheduledPost, 'status' | 'platform'>, accounts: SocialAccount[] | undefined): string {
+  // The accounts are not known (still loading, or the provider did not answer): nothing is said about them.
+  if (!accounts) return '';
+  const username = accountOf(accounts, post.platform)?.username;
+  if (username) return username;
+  return post.status === 'PUBLISHED' ? ACCOUNT_GONE : NO_ACCOUNT;
+}
+
 /** One card of the calendars: the same clip at the same minute, with one state per network. */
 export interface PostGroup {
   key: string;

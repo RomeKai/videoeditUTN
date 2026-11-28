@@ -6,7 +6,8 @@ import { applyScenario } from '@/api/mocks/state';
 import { db, editDb, idle, renderScenario } from '@/testing';
 import { PublicacionesScreen } from './PublicacionesScreen';
 import { holdDraft, isRemembered, releaseDraft } from './draftRegistry';
-import { dayKey } from './posts';
+import { failPublish } from '@/api/mocks/publish-errors';
+import { ACCOUNT_GONE, NETWORK_NOUN, NO_ACCOUNT, dayKey } from './posts';
 
 // These flows wait on the mocked API several times: on a busy CI runner the default 1 s / 5 s are not enough.
 configure({ asyncUtilTimeout: 5000 });
@@ -96,6 +97,7 @@ const rowOf = async (title: string, network: string) => {
 };
 
 describe('E2 · Publicaciones · lista', () => {
+  let network = '';
   it('agrupa por día, muestra cada estado con su palabra y deja el borrador sin fecha', async () => {
     await open();
     const list = await table();
@@ -280,8 +282,107 @@ describe('E2 · Publicaciones · lista', () => {
     expect(await within(detail).findByText('La cuenta de TikTok está vencida. Reconectala y reintentá.')).toBeInTheDocument();
     expect(within(detail).getByRole('button', { name: 'Reintentar' })).toBeDisabled();
     expect(within(detail).getByText(/Reintentar se habilita cuando reconectes la cuenta de TikTok/)).toBeInTheDocument();
+    // It failed at its time, for another reason: that is why it cannot be edited any more.
+    expect(within(detail).getByText(/pasó la hora de salida/)).toBeInTheDocument();
     fireEvent.click(within(detail).getByRole('button', { name: 'Reconectar' }));
     expect(await screen.findByRole('dialog', { name: 'Conectar TikTok' })).toBeInTheDocument();
+  });
+
+  /** The list over the default scenario with something changed in the database first. */
+  const openWith = async (change: Parameters<typeof editDb>[0]) => {
+    applyScenario('estudio-norte');
+    nav.set('vista=lista');
+    renderScenario(<PublicacionesScreen />, { keep: true, prepare: () => editDb(change) });
+    await screen.findByRole('heading', { level: 1, name: 'Publicaciones' });
+  };
+  const detailOf = async (title: string, network: string) => {
+    fireEvent.click(within(await rowOf(title, network)).getByRole('button', { name: title }));
+    return screen.findByRole('dialog', { name: 'Detalle de la publicación' });
+  };
+
+  it('una falla de resultado incierto no dice «El clip no se publicó»: puede haber salido', async () => {
+    let title = '';
+    await openWith((data) => {
+      const failed = data.posts.find((post) => post.status === 'FAILED');
+      if (!failed) throw new Error('el escenario no tiene una publicación con error');
+      failPublish(failed, 'outcome_unknown');
+      title = failed.clip.title;
+    });
+    const detail = await detailOf(title, 'TikTok');
+    expect(await within(detail).findByText(/^No sabemos si se publicó/)).toBeInTheDocument();
+    expect(within(detail).getByText(/Puede que el clip se haya publicado igual\./)).toBeInTheDocument();
+    expect(within(detail).queryByText(/El clip no se publicó/)).not.toBeInTheDocument();
+  });
+
+  it('una falla común sigue diciendo que el clip no se publicó', async () => {
+    let title = '';
+    await openWith((data) => {
+      const failed = data.posts.find((post) => post.status === 'FAILED');
+      if (!failed) throw new Error('el escenario no tiene una publicación con error');
+      failPublish(failed, 'provider_rejected');
+      title = failed.clip.title;
+    });
+    const detail = await detailOf(title, 'TikTok');
+    expect(await within(detail).findByText(/El clip no se publicó\./)).toBeInTheDocument();
+  });
+
+  it('una programada que falló porque desconectaron la red antes de su hora lo dice: no «pasó la hora de salida»', async () => {
+    let title = '';
+    await openWith((data) => {
+      const scheduled = data.posts.find((post) => post.status === 'SCHEDULED' && new Date(post.publish_at).getTime() > Date.now());
+      if (!scheduled) throw new Error('el escenario no tiene una publicación programada');
+      title = scheduled.clip.title;
+      // What disconnecting the network does (the mock's handler, like the backend).
+      for (const account of data.socialAccounts) {
+        if (account.platform !== scheduled.platform) continue;
+        account.status = 'disconnected';
+        account.username = null;
+        account.connected_at = null;
+      }
+      for (const post of data.posts) {
+        if (post.platform === scheduled.platform && post.status === 'SCHEDULED') failPublish(post, 'account_not_connected', 'disconnected');
+      }
+      // Only this row has that clip and network.
+      data.posts = data.posts.filter((post) => post === scheduled || post.clip.title !== title || post.platform !== scheduled.platform);
+      network = NETWORK_NOUN[scheduled.platform];
+    });
+    const detail = await detailOf(title, network);
+    expect(await within(detail).findByText(`La cuenta de ${network} está desconectada. Reconectala y reintentá.`)).toBeInTheDocument();
+    expect(within(detail).getByText(new RegExp(`la publicación falló porque la cuenta de ${network} se desconectó\\.`))).toBeInTheDocument();
+    expect(within(detail).queryByText(/pasó la hora de salida/)).not.toBeInTheDocument();
+    expect(within(detail).getByRole('button', { name: 'Reintentar' })).toBeDisabled();
+  });
+
+  it('una publicada en una red que después se desconectó no dice «Sin cuenta», ni en la fila ni en el detalle', async () => {
+    let title = '';
+    await openWith((data) => {
+      const published = data.posts.find((post) => post.status === 'PUBLISHED');
+      if (!published) throw new Error('el escenario no tiene una publicación publicada');
+      title = published.clip.title;
+      network = NETWORK_NOUN[published.platform];
+      for (const account of data.socialAccounts) {
+        if (account.platform !== published.platform) continue;
+        account.status = 'disconnected';
+        account.username = null;
+        account.connected_at = null;
+      }
+      // Only that one and a draft on the same network: the draft has no account, the published one had.
+      const draft = data.posts.find((post) => post.status === 'DRAFT');
+      if (!draft) throw new Error('el escenario no tiene un borrador');
+      draft.platform = published.platform;
+      data.posts = [published, draft];
+    });
+    const row = await rowOf(title, 'Publicado');
+    expect(within(row).getByText(ACCOUNT_GONE)).toBeInTheDocument();
+    expect(within(row).queryByText(NO_ACCOUNT)).not.toBeInTheDocument();
+    // What has not gone out and has no account to go out on still says so.
+    expect(within(await table()).getAllByText(NO_ACCOUNT)).toHaveLength(1);
+
+    fireEvent.click(within(row).getByRole('button', { name: title }));
+    const detail = await screen.findByRole('dialog', { name: 'Detalle de la publicación' });
+    expect(await within(detail).findByText(ACCOUNT_GONE)).toBeInTheDocument();
+    expect(within(detail).queryByText(NO_ACCOUNT)).not.toBeInTheDocument();
+    expect(within(detail).queryByText('Sin conectar')).not.toBeInTheDocument();
   });
 
   it('rol Lector: ve todo, pero las acciones quedan deshabilitadas con su motivo', async () => {

@@ -6,7 +6,7 @@ import { formatDuration, formatTime } from '@/lib/format';
 import { Badge, Button, Card, NETWORKS, NetworkChip, Num, Table, cx } from '@/ui';
 import { PostThumb, StatusBadge } from './PostBits';
 import styles from './Publicaciones.module.css';
-import { accountOf, failureMessage, groupByDay, isStuck, needsReconnect, sameDay, shortDayTitle } from './posts';
+import { accountLabel, failureMessage, groupByDay, isStuck, needsReconnect, sameDay, shortDayTitle } from './posts';
 
 export interface PostActions {
   open: (post: ScheduledPost, mode?: 'view' | 'edit') => void;
@@ -77,10 +77,6 @@ export function RowAction({ post, accounts, actions, touch = false }: { post: Sc
   return null;
 }
 
-function accountName(accounts: SocialAccount[] | undefined, platform: Platform): string {
-  return accountOf(accounts, platform)?.username ?? 'Sin cuenta';
-}
-
 export interface PostListProps {
   posts: ScheduledPost[];
   accounts?: SocialAccount[];
@@ -145,8 +141,8 @@ export function PostTable({ posts, accounts, now, selectedId, actions }: PostLis
                     <span className={styles.netcol}>
                       <span>{NETWORKS[post.platform].shortName}</span>
                       {/* A long account name is cut, never drawn over the next column: the whole name is in the tooltip. */}
-                      <span className="t-label subtle" title={accountName(accounts, post.platform)}>
-                        {accountName(accounts, post.platform)}
+                      <span className="t-label subtle" title={accountLabel(post, accounts) || undefined}>
+                        {accountLabel(post, accounts)}
                       </span>
                     </span>
                   </span>
@@ -207,8 +203,8 @@ export function PostCards({ posts, accounts, now, actions }: PostListProps) {
                       </span>
                       <span className={styles.mNet}>
                         <NetworkChip platform={post.platform} size="sm" hideName />
-                        <span className={styles.mNetName} title={accountName(accounts, post.platform)}>
-                          {network} · {accountName(accounts, post.platform)}
+                        <span className={styles.mNetName} title={accountLabel(post, accounts) || undefined}>
+                          {[network, accountLabel(post, accounts)].filter(Boolean).join(' · ')}
                         </span>
                       </span>
                     </span>

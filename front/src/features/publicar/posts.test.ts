@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { goingOut } from '@/api/hooks';
 import type { ScheduledPost, SocialAccount } from '@/api/contracts/social';
 import {
+  ACCOUNT_GONE,
+  NO_ACCOUNT,
+  accountLabel,
   dayKey,
   failureMessage,
   fromInputs,
@@ -11,6 +14,7 @@ import {
   isCancellable,
   isDraggable,
   isStuck,
+  mayBeOut,
   monthGrid,
   monthLabel,
   needsReconnect,
@@ -156,6 +160,22 @@ describe('publicaciones con error', () => {
       expect(needsReconnect(post({ id: '1', status: 'FAILED', error_code: code }), undefined), code).toBe(true);
     }
     expect(needsReconnect(post({ id: '1', status: 'FAILED', error_code: 'provider_rejected' }), undefined)).toBe(false);
+  });
+
+  it('un resultado incierto o un duplicado pueden haber salido; el resto de las fallas no', () => {
+    for (const code of ['outcome_unknown', 'duplicate_content']) expect(mayBeOut(post({ id: '1', status: 'FAILED', error_code: code })), code).toBe(true);
+    for (const code of ['provider_rejected', 'account_not_connected', 'publish_failed', null]) expect(mayBeOut(post({ id: '1', status: 'FAILED', error_code: code })), String(code)).toBe(false);
+    expect(mayBeOut(post({ id: '1', status: 'PUBLISHED', error_code: 'outcome_unknown' }))).toBe(false);
+  });
+
+  it('la cuenta de una publicación: la conectada; sin cuenta, una publicada no dice «Sin cuenta»', () => {
+    const gone = [{ ...account('TIKTOK', 'disconnected'), username: null }];
+    expect(accountLabel(post({ id: '1', status: 'PUBLISHED' }), [account('TIKTOK', 'connected')])).toBe(account('TIKTOK', 'connected').username);
+    expect(accountLabel(post({ id: '1', status: 'PUBLISHED' }), gone)).toBe(ACCOUNT_GONE);
+    expect(accountLabel(post({ id: '1', status: 'PUBLISHED' }), [])).toBe(ACCOUNT_GONE);
+    // Not known yet (loading, or the provider did not answer): it says nothing rather than something false.
+    for (const status of ['PUBLISHED', 'SCHEDULED'] as const) expect(accountLabel(post({ id: '1', status }), undefined), status).toBe('');
+    for (const status of ['DRAFT', 'SCHEDULED', 'QUEUED', 'PROCESSING', 'FAILED'] as const) expect(accountLabel(post({ id: '1', status }), gone), status).toBe(NO_ACCOUNT);
   });
 
   it('nunca muestra el texto de la excepción', () => {

@@ -15,6 +15,7 @@ import { forgetDraft } from './draftRegistry';
 import styles from './Publicaciones.module.css';
 import {
   NETWORK_NOUN,
+  accountLabel,
   accountOf,
   dayKey,
   failureMessage,
@@ -23,6 +24,7 @@ import {
   isCancellable,
   isEditable,
   isStuck,
+  mayBeOut,
   needsReconnect,
   parseHashtags,
   shortDayTime,
@@ -198,7 +200,8 @@ export function PostDetail({ post, siblings = [], accounts, actions, mode, onMod
 
         {failed ? (
           <Banner tone="err" live="alert" title={failureMessage(post, accounts)}>
-            Falló el <Num>{formatDateTime(post.updated_at)}</Num>. El clip no se publicó.
+            {/* An uncertain outcome is not "no se publicó": the title already says it may be out. */}
+            Falló el <Num>{formatDateTime(post.updated_at)}</Num>. {mayBeOut(post) ? 'Puede que el clip se haya publicado igual.' : 'El clip no se publicó.'}
           </Banner>
         ) : null}
         {stuck ? (
@@ -226,8 +229,9 @@ export function PostDetail({ post, siblings = [], accounts, actions, mode, onMod
               <div>
                 <dt>Cuenta</dt>
                 <dd>
-                  {account?.username ?? 'Sin cuenta'}
-                  {accountStatus && account?.status !== 'connected' ? (
+                  {accountLabel(post, accounts)}
+                  {/* Already out: the state of the account today changes nothing for this post. */}
+                  {accountStatus && account?.status !== 'connected' && post.status !== 'PUBLISHED' ? (
                     <Badge tone={accountStatus.tone} size="sm" dot>
                       {accountStatus.label}
                     </Badge>
@@ -335,7 +339,11 @@ export function PostDetail({ post, siblings = [], accounts, actions, mode, onMod
             ) : null}
           </div>
           {failed && reconnect ? (
-            <p className="t-small subtle">Reintentar se habilita cuando reconectes la cuenta de {noun}. Editar y Reprogramar ya no están: pasó la hora de salida.</p>
+            <p className="t-small subtle">
+              Reintentar se habilita cuando reconectes la cuenta de {noun}. Editar y Reprogramar ya no están:{' '}
+              {/* Disconnecting a network fails what was going out on it, also what was scheduled for later. */}
+              {post.error_code === 'account_not_connected' ? `la publicación falló porque la cuenta de ${noun} se desconectó.` : 'pasó la hora de salida.'}
+            </p>
           ) : null}
           {post.status === 'QUEUED' || post.status === 'PROCESSING' ? (
             <p className="t-small subtle">

@@ -392,6 +392,40 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     await expect(second).toHaveURL(/\/proyectos$/);
   });
 
+  test('con el diálogo de sesión vencida abierto, iniciar sesión desde Iniciar sesión en otra pestaña lo cierra y la primera sigue en su pantalla', async ({ context }) => {
+    const first = await context.newPage();
+    await useScenario(first, 'sesion-vencida');
+    await first.addInitScript(() => window.localStorage.setItem('oc.auth.email', 'lucia@estudionorte.com'));
+    await first.goto('/uso/movimientos');
+    const dialog = first.getByRole('dialog', { name: 'Tu sesión venció' });
+    await expect(dialog).toBeVisible();
+    // Never the login in this tab, from here to the end.
+    const visited: string[] = [];
+    first.on('framenavigated', (frame) => {
+      if (frame === first.mainFrame()) visited.push(new URL(frame.url()).pathname);
+    });
+
+    // The other tab signs in from the login page (the mocked login takes the session back).
+    const second = await context.newPage();
+    await second.goto('/login');
+    await expect(second.getByText('Tu sesión venció. Iniciá sesión de nuevo.')).toBeVisible();
+    await signIn(second, 'lucia@estudionorte.com');
+    await expect(second).toHaveURL(/\/proyectos$/);
+
+    // The first tab has a session again: nothing to ask, and its screen loads with it.
+    await expect(dialog).toBeHidden();
+    await expect(first).toHaveURL(/\/uso\/movimientos$/);
+    await expect(first.getByRole('heading', { level: 1, name: 'Uso y facturación' })).toBeVisible();
+    await settle(first);
+    await expect(first.getByRole('table').first()).toBeVisible();
+    // No error left on the screen (Next's own route announcer is an empty alert).
+    await expect(first.getByRole('alert').filter({ hasText: /\S/ })).toHaveCount(0);
+    await expect(first.getByRole('dialog')).toHaveCount(0);
+    expect(visited.filter((path) => path !== '/uso/movimientos')).toEqual([]);
+    // Both tabs work with the pair the other one stored.
+    expect(await first.evaluate(() => window.localStorage.getItem('oc.auth'))).toBe(await second.evaluate(() => window.localStorage.getItem('oc.auth')));
+  });
+
   test('con el diálogo de sesión vencida abierto, cerrar sesión en otra pestaña lo cierra: no queda sobre el login', async ({ context }) => {
     const first = await context.newPage();
     await useScenario(first, 'sesion-vencida');
