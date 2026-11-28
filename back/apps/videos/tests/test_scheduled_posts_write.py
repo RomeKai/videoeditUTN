@@ -33,7 +33,7 @@ BULK = reverse("scheduled-post-bulk")
 DELAY = "apps.videos.tasks.process_video_seo.delay"
 APPLY_ASYNC = "apps.videos.tasks.process_video_seo.apply_async"
 UPLOAD = "apps.videos.tasks.upload_to_social_network.apply_async"
-DISPATCH_DELAY = "apps.videos.tasks.dispatch_scheduled_posts_batch.delay"
+DISPATCH = "apps.videos.tasks.dispatch_scheduled_posts_batch.apply_async"
 SEND = PUBLISH
 TIKTOK = {"privacy_level": "SELF_ONLY"}
 
@@ -711,7 +711,7 @@ class DispatchNowTests(PostsWriteHarness):
 
     def setUp(self):
         super().setUp()
-        self.dispatch = self._patch(DISPATCH_DELAY)
+        self.dispatch = self._patch(DISPATCH)
 
     def committed(self, write):
         with self.captureOnCommitCallbacks(execute=True):
@@ -725,19 +725,19 @@ class DispatchNowTests(PostsWriteHarness):
         self.dispatch.assert_not_called()  # not before the commit
         for callback in callbacks:
             callback()
-        self.dispatch.assert_called_once_with()
+        self.dispatch.assert_called_once_with(retry=False)
 
     def test_one_run_for_a_batch(self):
         _, second = self.make_clip(self.home, "Segundo")
         posts = [{"video_clip": str(clip.pk), "platform": Platform.INSTAGRAM_REELS} for clip in (self.clip, second)]
         posts.append({"video_clip": str(self.clip.pk), "platform": Platform.YOUTUBE_SHORTS, "publish_at": self.later.isoformat()})
         self.committed(lambda: self.client.post(BULK, {"posts": posts}, format="json", **self.ws))
-        self.dispatch.assert_called_once_with()
+        self.dispatch.assert_called_once_with(retry=False)
 
     def test_a_minute_of_clock_skew_is_now(self):
         soon = timezone.now() + timedelta(seconds=30)
         self.committed(lambda: self.create(publish_at=soon.isoformat()))
-        self.dispatch.assert_called_once_with()
+        self.dispatch.assert_called_once_with(retry=False)
 
     def test_drafts_and_later_posts_wait(self):
         self.committed(lambda: self.create(draft=True))
@@ -748,7 +748,7 @@ class DispatchNowTests(PostsWriteHarness):
     def test_sending_a_draft_now_and_a_retry(self):
         draft = self.make_post(status=Status.DRAFT)
         self.committed(lambda: self.patch_post(draft, publish_at=None))
-        self.dispatch.assert_called_once_with()
+        self.dispatch.assert_called_once_with(retry=False)
         failed = self.make_post(status=Status.FAILED, platform=Platform.YOUTUBE_SHORTS, publish_at=timezone.now() - timedelta(hours=1))
         self.committed(lambda: self.post_action(failed, "retry"))
         self.assertEqual(self.dispatch.call_count, 2)
@@ -760,17 +760,98 @@ class DispatchNowTests(PostsWriteHarness):
         self.dispatch.assert_not_called()
 
     def test_a_broker_that_does_not_take_it_does_not_fail_the_request(self):
+        import redis
         from kombu.exceptions import OperationalError
 
-        self.dispatch.side_effect = OperationalError("broker down")
-        with self.assertLogs("apps.videos.services.scheduled_posts", level="WARNING") as logs:
-            response = self.committed(lambda: self.create(caption="Ya"))
+        for error in (OperationalError("broker down"), ConnectionRefusedError("broker down"),
+                      redis.exceptions.ConnectionError("broker down"), redis.exceptions.TimeoutError("broker down")):
+            with self.subTest(error=type(error).__name__):
+                self.dispatch.side_effect = error
+                with self.assertLogs("apps.videos.services.scheduled_posts", level="WARNING") as logs:
+                    response = self.committed(lambda: self.create(caption="Ya", platform=Platform.YOUTUBE_SHORTS))
 
-        self.assertEqual((response.status_code, response.json()["status"]), (201, "SCHEDULED"))
-        # Still SCHEDULED: the next beat run queues it.
-        self.assertEqual(ScheduledPost.objects.get(pk=response.json()["id"]).status, Status.SCHEDULED)
-        self.assertIn("posts.dispatch_not_queued error=OperationalError", "\n".join(logs.output))
-        self.assertNotIn("broker down", "\n".join(logs.output))
+                self.assertEqual((response.status_code, response.json()["status"]), (201, "SCHEDULED"))
+                # Still SCHEDULED: the next beat run queues it.
+                post = ScheduledPost.objects.get(pk=response.json()["id"])
+                self.assertEqual(post.status, Status.SCHEDULED)
+                self.assertIn(f"posts.dispatch_not_queued error={type(error).__name__}", "\n".join(logs.output))
+                self.assertNotIn("broker down", "\n".join(logs.output))
+                post.delete()
+
+    def test_any_other_error_of_the_dispatch_is_not_hidden(self):
+        """Review of #189: with eager Celery the dispatcher runs inline; its bugs must not pass as a broker error."""
+        self.dispatch.side_effect = RuntimeError("a bug in the dispatcher")
+        with self.assertRaises(RuntimeError):
+            self.committed(lambda: self.create(caption="Ya"))
+
+    # --- Review of #189: a post whose AI text is on its way waits for it ---
+
+    def seo_clip(self):
+        Workspace.objects.filter(pk=self.home.pk).update(
+            subscription_plan=SubscriptionPlan.objects.create(
+                name="Pro con SEO de despacho", allow_scheduling=True, allow_crossposting=True,
+                has_seo_optimization=True, max_video_duration_seconds=3600,
+            ),
+        )
+        self.home.refresh_from_db()
+        return self.make_clip(self.home, "Con SEO", seo=True)[1]
+
+    def test_publish_now_without_a_caption_waits_for_its_ai_text(self):
+        clip = self.seo_clip()
+        response = self.committed(lambda: self.create(video_clip=str(clip.pk)))
+        self.assertEqual(response.json()["seo_status"], "pending")
+        self.seo_delay.assert_called_once()
+        self.dispatch.assert_not_called()
+        # Its own caption does not need the AI's (the hashtags may still come from it).
+        response = self.committed(lambda: self.create(video_clip=str(clip.pk), platform=Platform.YOUTUBE_SHORTS, caption="Mío"))
+        self.assertEqual(self.seo_delay.call_count, 2)
+        self.dispatch.assert_called_once_with(retry=False)
+
+    def test_a_batch_runs_the_dispatcher_only_for_the_posts_that_do_not_wait(self):
+        clip = self.seo_clip()
+        waiting = [{"video_clip": str(clip.pk), "platform": platform} for platform in (Platform.INSTAGRAM_REELS, Platform.YOUTUBE_SHORTS)]
+        self.committed(lambda: self.client.post(BULK, {"posts": waiting}, format="json", **self.ws))
+        self.dispatch.assert_not_called()
+        _, other_seo_clip = self.make_clip(self.home, "Otro con SEO", seo=True)
+        mixed = [
+            {"video_clip": str(other_seo_clip.pk), "platform": Platform.INSTAGRAM_REELS},
+            {"video_clip": str(self.clip.pk), "platform": Platform.INSTAGRAM_REELS},  # without SEO: goes now
+        ]
+        self.committed(lambda: self.client.post(BULK, {"posts": mixed}, format="json", **self.ws))
+        self.dispatch.assert_called_once_with(retry=False)
+
+    def test_sending_a_draft_or_retrying_while_its_ai_text_is_on_its_way(self):
+        draft = self.make_post(status=Status.DRAFT, seo_requested_at=timezone.now())
+        self.committed(lambda: self.patch_post(draft, publish_at=None))
+        failed = self.make_post(status=Status.FAILED, platform=Platform.YOUTUBE_SHORTS, seo_requested_at=timezone.now())
+        self.committed(lambda: self.post_action(failed, "retry"))
+        self.dispatch.assert_not_called()
+        # A caption of its own, or a request older than its window (its message was lost), goes now.
+        other = self.make_post(status=Status.DRAFT, platform=Platform.TIKTOK, tiktok=TIKTOK, seo_requested_at=timezone.now())
+        self.committed(lambda: self.patch_post(other, publish_at=None, caption="Mío"))
+        self.assertEqual(self.dispatch.call_count, 1)
+        ScheduledPost.objects.filter(pk=draft.pk).update(
+            status=Status.DRAFT, seo_requested_at=timezone.now() - service.seo_request_window() - timedelta(minutes=1),
+        )
+        self.committed(lambda: self.patch_post(draft, publish_at=None))
+        self.assertEqual(self.dispatch.call_count, 2)
+
+    def test_the_dispatcher_leaves_a_post_waiting_for_its_ai_text(self):
+        now = timezone.now()
+        waiting = self.make_post(publish_at=now, seo_requested_at=now)
+        own = self.make_post(platform=Platform.YOUTUBE_SHORTS, publish_at=now, seo_requested_at=now, caption="Mío")
+        lost = self.make_post(
+            platform=Platform.TIKTOK, tiktok=TIKTOK, publish_at=now,
+            seo_requested_at=now - service.seo_request_window() - timedelta(minutes=1),
+        )
+        _, other_clip = self.make_clip(self.home, "Otro")
+        plain = self.make_post(clip=other_clip, publish_at=now)
+
+        self.assertEqual(dispatch_scheduled_posts_batch(), "Queued 3 posts.")
+
+        statuses = dict(ScheduledPost.objects.values_list("pk", "status"))
+        self.assertEqual(statuses[waiting.pk], Status.SCHEDULED)
+        self.assertEqual({statuses[post.pk] for post in (own, lost, plain)}, {Status.QUEUED})
 
 
 class RegenerateTests(PostsWriteHarness):

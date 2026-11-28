@@ -45,7 +45,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.core.cache import cache, caches
 from django.db import IntegrityError, connection, transaction
-from django.db.models import F
+from django.db.models import F, Q
 from django.db.models.functions import Now
 from django.utils import timezone
 
@@ -194,6 +194,22 @@ def seo_request_pending(post, now=None):
     if requested is None:
         return False
     return requested > (now or timezone.now()) - seo_request_window()
+
+
+def waits_for_ai_text(post, now=None):
+    """
+    A post with no caption of its own whose AI text is on its way (seo_request_pending) does not
+    go out yet: sent now it would go out with no text (or the old one), and the text that lands
+    later would be thrown away (process_video_seo never changes a post that is publishing). The
+    dispatcher leaves it SCHEDULED (waiting_for_ai_text) until the text lands or its request ends
+    (dispatch_after_ai_text), or until the request passes seo_request_window() (its message was lost).
+    """
+    return not post.caption and seo_request_pending(post, now)
+
+
+def waiting_for_ai_text(now):
+    """waits_for_ai_text as a filter, for the dispatcher's queries."""
+    return Q(caption='') & Q(seo_requested_at__gt=now - seo_request_window())
 
 
 def publish_lock_key(post_id):
@@ -495,30 +511,58 @@ def _queue_dispatch():
     """
     One run of dispatch_scheduled_posts_batch, which queues the post as the
     beat's run would. A broker that does not take it never fails the request:
-    the post stays SCHEDULED and the next beat run queues it.
+    the post stays SCHEDULED and the next beat run queues it. `retry=False`:
+    no publishing retries in the request's thread (Celery's
+    broker_connection_timeout bounds the connection). Only broker and
+    connection errors are caught: anything else is a bug, and a test that runs
+    the dispatcher inline (eager Celery) sees it.
     """
+    import redis
+    from kombu.exceptions import OperationalError as BrokerError
+
     from apps.videos.tasks import dispatch_scheduled_posts_batch
 
     try:
-        dispatch_scheduled_posts_batch.delay()
-    except Exception as exc:
+        dispatch_scheduled_posts_batch.apply_async(retry=False)
+    except (BrokerError, OSError, redis.exceptions.ConnectionError, redis.exceptions.TimeoutError) as exc:
         logger.warning("posts.dispatch_not_queued error=%s", type(exc).__name__)
         return
     logger.info("posts.dispatch_queued")
 
 
-def dispatch_if_due(posts, now):
+def dispatch_if_due(posts, now, waiting=()):
     """
     Call inside the write's transaction. When one of ``posts`` is SCHEDULED
     for now (`publish_at` no later than NOW_TOLERANCE from ``now``, what _when
-    calls "now"), the dispatcher runs once after the commit: "publish now"
-    and a retry go out without waiting for the beat (up to 5 minutes). One run
-    per request, however many posts. The dispatcher locks each post and checks
-    its status and window again, so a run of another request or of the beat at
-    the same time never queues it twice. Nothing runs if the transaction rolls back.
+    calls "now") and does not wait for its AI text (waits_for_ai_text, or its
+    pk in ``waiting``: the posts this transaction asked a text for), the
+    dispatcher runs once after the commit: "publish now" and a retry go out
+    without waiting for the beat (up to 5 minutes). One run per request,
+    however many posts. The dispatcher locks each post and checks its status,
+    its window and its text again, so a run of another request or of the beat
+    at the same time never queues it twice. Nothing runs if the transaction
+    rolls back.
     """
-    if any(post.status == Status.SCHEDULED and post.publish_at <= now + NOW_TOLERANCE for post in posts):
+    if any(
+        post.status == Status.SCHEDULED and post.publish_at <= now + NOW_TOLERANCE
+        and post.pk not in waiting and not waits_for_ai_text(post, now)
+        for post in posts
+    ):
         transaction.on_commit(_queue_dispatch)
+
+
+def dispatch_after_ai_text(post_id):
+    """
+    process_video_seo stored the post's AI text, or its request ended without
+    one: a post that waited for it and is SCHEDULED for now goes out without
+    waiting for the beat (after the commit, if there is a transaction).
+    """
+    post = (
+        ScheduledPost.objects.filter(pk=post_id)
+        .only('status', 'publish_at', 'caption', 'seo_requested_at').first()
+    )
+    if post is not None:
+        dispatch_if_due([post], timezone.now())
 
 
 # --- Create ---
@@ -590,7 +634,7 @@ def create_posts(workspace, items, *, key=None, print_=None, many=False):
         if going:
             _check_account(workspace, {platform for platforms in going.values() for platform in platforms})
 
-        posts, budget = [], None
+        posts, budget, waiting = [], None, set()
         for clip, item, status, publish_at in plans:
             post = ScheduledPost(
                 video_clip=clip, platform=item['platform'], publish_at=publish_at, status=status,
@@ -617,12 +661,15 @@ def create_posts(workspace, items, *, key=None, print_=None, many=False):
             post.save()
             if seo == 'asked':
                 queue_post_seo(post.pk)
+                if not post.caption:
+                    # waits_for_ai_text: queue_post_seo wrote seo_requested_at in the database, not here.
+                    waiting.add(post.pk)
             posts.append(post)
             logger.info("posts.created post_id=%s clip_id=%s status=%s seo=%s", post.pk, clip.pk, post.status, seo)
         if key:
             claim.post_ids = [str(post.pk) for post in posts]
             claim.save(update_fields=['post_ids'])
-        dispatch_if_due(posts, now)
+        dispatch_if_due(posts, now, waiting=waiting)
     return posts
 
 
