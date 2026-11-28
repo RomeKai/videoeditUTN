@@ -178,6 +178,8 @@ class AdminRegenerateTests(SeoDispatchHarness):
             )
         self.assertEqual(response.status_code, 200)
         apply_async.assert_called_once_with(args=[str(draft.pk)], kwargs={"regenerate": True})
+        draft.refresh_from_db()
+        self.assertIsNotNone(draft.seo_requested_at)  # its message has a request to serve
         self.assertContains(response, "Generación encolada para 1 publicaciones.")
         self.assertContains(response, "3 se omitieron")
 

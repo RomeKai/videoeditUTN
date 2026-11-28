@@ -240,8 +240,9 @@ class VideoProjectViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         if group != 'all':
             projects = projects.filter(status__in=PROJECT_STATUS_GROUPS[group])
         projects = (
-            # The columns the rows leave out are not read from the database either.
-            projects.select_related('brand_kit').prefetch_related('clips__layers').defer(*PROJECT_LIST_OMITTED_FIELDS)
+            # The columns the rows leave out are not read from the database either. The clips'
+            # layers and posts are read by VideoClipSerializer, once for the page.
+            projects.select_related('brand_kit').prefetch_related('clips').defer(*PROJECT_LIST_OMITTED_FIELDS)
             .order_by(*PROJECT_ORDERINGS[params.get('ordering', '-created_at')])
         )
 

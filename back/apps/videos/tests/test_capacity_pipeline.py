@@ -383,6 +383,8 @@ class SeoCapacityTests(TestCase):
         from django.contrib.auth import get_user_model
 
         from apps.users.models import Workspace
+        from django.utils import timezone
+
         from apps.videos.models import ScheduledPost, VideoClip
 
         user = get_user_model().objects.create_user(username="seo-cap", email="s@t.com", password="pw")
@@ -395,6 +397,7 @@ class SeoCapacityTests(TestCase):
         self.post = ScheduledPost.objects.create(
             video_clip=clip, platform=ScheduledPost.Platform.TIKTOK,
             publish_at="2030-01-01T00:00:00Z", status=ScheduledPost.Status.QUEUED,
+            seo_requested_at=timezone.now(),  # asked for, as queue_post_seo leaves every post whose message runs
         )
         self.ScheduledPost = ScheduledPost
         self.store = FakeCapacityStore()

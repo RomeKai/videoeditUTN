@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.db import DatabaseError
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
 from apps.integrations.tests.helpers import give_social_profile
 from apps.users.models import Workspace
@@ -320,11 +321,16 @@ class SocialTaskLogTests(LogPrivacyAssertions, CapturedTaskFailures, TestCase):
 
         from apps.videos.tests.fakes import FakeRedis
 
+        # Asked for, as queue_post_seo leaves every post whose message runs (without it the run stops first).
+        ScheduledPost.objects.filter(pk=self.post.pk).update(seo_requested_at=timezone.now())
         with patch(
             "apps.core.security.AI_Security_Shield.check_content_safety",
             side_effect=UnsafeContentError(f"{SECRET} {TEXT_MARKER}"),
-        ), patch("apps.videos.services.ai.project_lock.get_redis_client", return_value=FakeRedis()):
+        ) as check, patch("apps.videos.services.ai.project_lock.get_redis_client", return_value=FakeRedis()):
             with capture_logs() as logs:
                 process_video_seo.apply(args=[self.post.id])
 
+        check.assert_called_once()  # the violation happened: the logs are checked against it
+        self.post.refresh_from_db()
+        self.assertEqual(self.post.error_log, "content_blocked")
         self.assert_clean(logs)

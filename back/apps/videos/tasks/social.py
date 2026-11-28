@@ -406,35 +406,79 @@ def upload_to_social_network(self, post_id):
 # retry never pays for a second generation.
 SEO_LOCK_TTL_SECONDS = 600
 SEO_PENDING_TTL_SECONDS = 3600
+# A newer request (a «Regenerar») that finds the lock held by a run serving an older one waits for
+# it (_seo_wait_for_lock): re-queued every SEO_BUSY_COUNTDOWN_SECONDS (up to 20 % more) until it
+# waited AI_SEO_LOCK_WAIT_SECONDS. Then its request ends as a failure (SEO_BUSY_CODE).
+SEO_BUSY_COUNTDOWN_SECONDS = 20
+SEO_BUSY_CODE = 'seo_busy'
 
 
 @celery_app.task(name='apps.videos.tasks.process_video_seo', bind=True, max_retries=3)
-def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
+def process_video_seo(
+    self, post_id, capacity_waited_s=0.0, regenerate=False, lock_waited_s=0.0, request_at=None, **unknown,
+):
     """
     Caption and hashtags for one ScheduledPost from the clip's own transcript,
     for the post's platform (AICORE-17, ADR-013).
 
     - Idempotent: a post that already has them is not sent to the LLM again,
       unless ``regenerate`` (an explicit user request).
-    - One generation at a time per post (Redis lock).
+    - One generation at a time per post (Redis lock). A newer request than the
+      one the lock's holder serves waits for it (``lock_waited_s``, and
+      ``request_at``: the request it waits with), instead of being dropped.
+    - Only for a request on record: every message comes from
+      signals.queue_post_seo, which stamps one, so a message delivered again
+      after its request ended (``acks_late``) generates nothing.
+    - Arguments it does not know (a message of a later release, during a
+      deploy) are ignored, so a new argument never breaks an older worker.
     - The clip transcript is moderated before the call; the generated text
       before it is stored.
     - Every attempt writes an AIUsageRecord with stage ``seo``.
     - A final failure leaves the post FAILED with a static code in
       ``error_log``; non-retryable errors are not retried.
     """
+    from django.utils.dateparse import parse_datetime
+
     from apps.core.security import ModerationError
+
+    if unknown:
+        logger.warning("seo.unknown_arguments post_id=%s names=%s", post_id, ",".join(sorted(unknown)))
+
+    # The request this run serves (the post's seo_requested_at as it read it): its failure ends that
+    # one, never a «Regenerar» that lands meanwhile (_fail_seo_post's cutoff).
+    served = _ANY_REQUEST
+    waited_with = parse_datetime(request_at) if request_at else None
+
+    def request_over():
+        # No request for this message to serve. A message that waited for the lock serves the one it
+        # waited with; any other, the one on record (queue_post_seo stamped it before sending).
+        # Over: the run that held the lock served it, a newer one replaced it (with a message of its
+        # own), or it ended and this is the same message delivered again.
+        over = served != waited_with if request_at else served is None
+        if over:
+            logger.info("seo.skipped post_id=%s reason=request_over", post_id)
+        return over
 
     try:
         post = ScheduledPost.objects.select_related('video_clip__project').get(id=post_id)
+        served = post.seo_requested_at
         if not regenerate and post.generated_caption and post.generated_hashtags:
             return "SEO Already Generated"
-        with _seo_post_lock(post_id) as acquired:
+        if request_over():
+            return "SEO Skipped"
+        with _seo_post_lock(post_id, served) as acquired:
             if not acquired:
-                # Another worker is generating this post right now.
+                holder = _seo_lock_serves(post_id)
+                if holder is not _ANY_REQUEST and (holder is None or served > holder):
+                    # A newer request than the one being generated (a «Regenerar» meanwhile): it waits.
+                    return _seo_wait_for_lock(
+                        post_id, served, lock_waited_s, self.request.retries, regenerate, capacity_waited_s,
+                    )
+                # Another worker is generating this post, for this same request, right now.
                 logger.info("seo.skipped post_id=%s reason=locked", post_id)
                 return "SEO Busy"
             post.refresh_from_db()
+            served = post.seo_requested_at
             if post.status in _SEO_FROZEN_STATUSES:
                 # Publishing started or finished: its caption is final, and no text is on its way.
                 _end_seo_request(post_id)
@@ -442,6 +486,8 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
                 return "SEO Skipped"
             if not regenerate and post.generated_caption and post.generated_hashtags:
                 return "SEO Already Generated"  # finished by another run before the lock
+            if request_over():
+                return "SEO Skipped"  # served by another run before the lock
             if regenerate and self.request.retries == 0 and not capacity_waited_s:
                 _seo_pending_clear(post_id)  # a fresh request, not a retry of this one
             return _generate_post_metadata(self, post, capacity_waited_s, regenerate)
@@ -462,7 +508,7 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
         if mod_exc.retryable and self.request.retries < self.max_retries:
             raise self.retry(countdown=_retry_countdown(self.request.retries))
         # Static code only: never the provider message or any user text.
-        _fail_seo_post(post_id, mod_exc.code)
+        _fail_seo_post(post_id, mod_exc.code, cutoff=served)
         return "Moderation Failed"
 
     except AIError as exc:
@@ -473,7 +519,7 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
         )
         if will_retry:
             raise self.retry(countdown=_retry_countdown(self.request.retries))
-        _fail_seo_post(post_id, f"seo_generation_failed:{type(exc).__name__}")
+        _fail_seo_post(post_id, f"seo_generation_failed:{type(exc).__name__}", cutoff=served)
         return "SEO Failed"
 
     except Exception as exc:
@@ -485,7 +531,7 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
         )
         if will_retry:
             raise self.retry(countdown=_retry_countdown(self.request.retries))
-        _fail_seo_post(post_id, f"seo_failed:{type(exc).__name__}")
+        _fail_seo_post(post_id, f"seo_failed:{type(exc).__name__}", cutoff=served)
         raise
 
 
@@ -499,7 +545,11 @@ _SEO_FAILURE_CODES = (
 _SEO_FROZEN_STATUSES = (ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED)
 
 
-def _fail_seo_post(post_id, code, redispatch=True, cutoff=None):
+# _fail_seo_post without a cutoff: whatever request the post has ends.
+_ANY_REQUEST = object()
+
+
+def _fail_seo_post(post_id, code, redispatch=True, cutoff=_ANY_REQUEST):
     """
     FAILED with a static code, unless publishing already started or finished:
     a post published with another caption must never turn FAILED because of SEO.
@@ -514,16 +564,20 @@ def _fail_seo_post(post_id, code, redispatch=True, cutoff=None):
     the API request is over (`seo_requested_at`). Without ``redispatch`` the
     caller is the dispatcher (or the worker) and decides about sending it itself.
 
-    ``cutoff``: only a request asked for no later than that ends (the expired
-    ones of scheduled_posts.fail_lost_ai_texts). Each change is one UPDATE with
-    every condition in it, so a «Regenerar» (a newer request) or a text stored
-    between the caller's read and this write leaves the post alone. Returns
-    whether a request ended.
+    ``cutoff``: only a request asked for no later than that ends: the expired
+    ones of scheduled_posts.fail_lost_ai_texts, or the one the caller served
+    (process_video_seo, a send the broker refused). None: the caller served no
+    request, and only a post that has none takes the failure. Each change is
+    one UPDATE with every condition in it, so a «Regenerar» (a newer request)
+    or a text stored between the caller's read and this write leaves the post
+    alone. Returns whether a request ended.
     """
     from apps.videos.services.scheduled_posts import HAS_TEXT, dispatch_after_ai_text
 
     posts = ScheduledPost.objects.filter(id=post_id).exclude(status__in=_SEO_FROZEN_STATUSES)
-    if cutoff is not None:
+    if cutoff is None:
+        posts = posts.filter(seo_requested_at__isnull=True)
+    elif cutoff is not _ANY_REQUEST:
         posts = posts.filter(seo_requested_at__lte=cutoff)
     earlier_text = Q(generated_caption__gt='', generated_hashtags__isnull=False)
     seo_code = (
@@ -586,17 +640,26 @@ def _recover_seo_failed_post(post_id):
     ).update(status=ScheduledPost.Status.DRAFT, error_log=None)
 
 
+def _seo_lock_key(post_id):
+    return f"lock:seo:post:{post_id}"
+
+
 @contextmanager
-def _seo_post_lock(post_id):
-    """Yields whether this worker holds the post; Redis down is a retryable error."""
+def _seo_post_lock(post_id, served=None):
+    """
+    Yields whether this worker holds the post; Redis down is a retryable error.
+    The lock's value names the request it serves («<token>|<seo_requested_at>»,
+    empty for none): a newer request that finds it held waits (_seo_lock_serves).
+    """
     import redis
 
     from apps.videos.services.ai.errors import RetryableAIError
     from apps.videos.services.ai.project_lock import get_redis_client
 
-    lock = get_redis_client().lock(f"lock:seo:post:{post_id}", timeout=SEO_LOCK_TTL_SECONDS)
+    lock = get_redis_client().lock(_seo_lock_key(post_id), timeout=SEO_LOCK_TTL_SECONDS)
+    token = f"{uuid.uuid4().hex}|{served.isoformat() if served is not None else ''}"
     try:
-        acquired = lock.acquire(blocking=False)
+        acquired = lock.acquire(blocking=False, token=token)
     except redis.exceptions.RedisError as exc:
         raise RetryableAIError(
             f"Redis unavailable, cannot lock post {post_id}", provider="redis"
@@ -609,6 +672,54 @@ def _seo_post_lock(post_id):
                 lock.release()
             except redis.exceptions.LockError:
                 logger.warning("seo.lock_not_owned post_id=%s", post_id)
+
+
+def _seo_lock_serves(post_id):
+    """
+    The request the run holding the post's lock serves (the value _seo_post_lock
+    wrote): its seo_requested_at, or None (it served none, or the lock is free
+    now). _ANY_REQUEST when that cannot be told: a lock of an earlier release,
+    or Redis did not answer.
+    """
+    from django.utils.dateparse import parse_datetime
+
+    from apps.videos.services.ai.project_lock import get_redis_client
+
+    try:
+        raw = get_redis_client().get(_seo_lock_key(post_id))
+    except Exception as exc:
+        logger.warning("seo.lock_unreadable post_id=%s error=%s", post_id, type(exc).__name__)
+        return _ANY_REQUEST
+    if raw is None:
+        return None
+    _, separator, stamp = (raw.decode() if isinstance(raw, bytes) else str(raw)).partition('|')
+    if not separator:
+        return _ANY_REQUEST
+    return parse_datetime(stamp) if stamp else None
+
+
+def _seo_wait_for_lock(post_id, served, waited_s, retries, regenerate, capacity_waited_s):
+    """
+    The run holding the post's lock serves an older request: this newer one
+    (``served``) runs once that one is done, instead of being dropped. Re-queued
+    after SEO_BUSY_COUNTDOWN_SECONDS plus up to 20 % jitter, with the request it
+    waits with (``request_at``: if that request is over by then, it stops). Once
+    it waited AI_SEO_LOCK_WAIT_SECONDS its request ends as a failure
+    (SEO_BUSY_CODE): the post shows it failed, and «Regenerar» asks again.
+    """
+    if waited_s >= settings.AI_SEO_LOCK_WAIT_SECONDS:
+        logger.warning("seo.lock_timeout post_id=%s waited_s=%.1f", post_id, waited_s)
+        _fail_seo_post(post_id, SEO_BUSY_CODE, cutoff=served)
+        return "Lock Timeout"
+    countdown = SEO_BUSY_COUNTDOWN_SECONDS * (1 + random.uniform(0, 0.2))
+    logger.info("seo.waiting_for_lock post_id=%s waited_s=%.1f countdown_s=%.1f", post_id, waited_s, countdown)
+    kwargs = {'lock_waited_s': round(waited_s + countdown, 1), 'request_at': served.isoformat()}
+    if regenerate:
+        kwargs['regenerate'] = True
+    if capacity_waited_s:
+        kwargs['capacity_waited_s'] = capacity_waited_s
+    process_video_seo.apply_async(args=[post_id], kwargs=kwargs, countdown=countdown, retries=retries)
+    return "Waiting for lock"
 
 
 def _seo_pending_key(post_id):
@@ -649,6 +760,8 @@ def _seo_pending_clear(post_id):
 
 def _generate_post_metadata(task, post, capacity_waited_s, regenerate=False):
     """Generates (or reuses the pending generation), moderates the output and stores it."""
+    from django.db.models import DateTimeField
+
     from apps.core.security import AI_Security_Shield, UnsafeContentError
     from apps.videos.services.scheduled_posts import dispatch_after_ai_text
     from apps.videos.services.seo_engine import SocialMetadata
@@ -667,16 +780,25 @@ def _generate_post_metadata(task, post, capacity_waited_s, regenerate=False):
     except UnsafeContentError:
         _seo_pending_clear(post.id)
         logger.error("seo.output_blocked post_id=%s", post.id)
-        _fail_seo_post(post.id, "generated_content_blocked")
+        _fail_seo_post(post.id, "generated_content_blocked", cutoff=post.seo_requested_at)
         return "Security Abort"
 
-    fields = {'generated_caption': metadata.caption, 'generated_hashtags': metadata.hashtags, 'seo_requested_at': None}
+    fields = {'generated_caption': metadata.caption, 'generated_hashtags': metadata.hashtags}
+    # The request this run served ends (seo_requested_at as it read it under the lock). A newer one
+    # (a «Regenerar» meanwhile) stays, and its own message generates again.
+    served = post.seo_requested_at
+    if served is not None:
+        fields['seo_requested_at'] = Case(
+            When(seo_requested_at__lte=served, then=Value(None)), default=F('seo_requested_at'),
+            output_field=DateTimeField(),
+        )
     if regenerate:
         # "Regenerar" replaces the text the user wrote too (empty: the API shows the AI's), unless the
-        # user saved that text after asking (`text_edited_at`, services/scheduled_posts.update_post):
-        # then it stays. The Case reads the row before this update, so it sees the request this same
-        # statement clears.
-        asked = Q(text_edited_at__isnull=True) | Q(text_edited_at__lt=F('seo_requested_at'))
+        # user saved that text after asking for this one (`text_edited_at`,
+        # services/scheduled_posts.update_post): then it stays.
+        asked = Q(text_edited_at__isnull=True)
+        if served is not None:
+            asked |= Q(text_edited_at__lt=served)
         fields.update(
             caption=Case(When(asked, then=Value('')), default=F('caption'), output_field=TextField()),
             hashtags=Case(When(asked, then=Value([], output_field=JSONField())), default=F('hashtags'), output_field=JSONField()),
@@ -717,7 +839,7 @@ def _generate_social_metadata(task, post, capacity_waited_s, regenerate=False):
     if not text:
         # Never the whole project transcript as a substitute (ADR-013).
         logger.warning("seo.no_clip_transcript post_id=%s", post.id)
-        _fail_seo_post(post.id, "seo_no_clip_transcript")
+        _fail_seo_post(post.id, "seo_no_clip_transcript", cutoff=post.seo_requested_at)
         return "No Transcript"
     request = SocialMetadataRequest(
         clip_transcript=text,
@@ -736,7 +858,8 @@ def _generate_social_metadata(task, post, capacity_waited_s, regenerate=False):
             reservation = gate.reserve(_seo_demand(models, request), stage='seo')
         except CapacityUnavailable as capacity_exc:
             return _seo_wait_for_capacity(
-                str(post.id), capacity_exc, capacity_waited_s, task.request.retries, regenerate
+                str(post.id), capacity_exc, capacity_waited_s, task.request.retries, regenerate,
+                served=post.seo_requested_at,
             )
 
     try:
@@ -744,7 +867,7 @@ def _generate_social_metadata(task, post, capacity_waited_s, regenerate=False):
     except UnsafeContentError:
         _release_seo_capacity(gate, reservation)
         logger.error("seo.input_blocked post_id=%s", post.id)
-        _fail_seo_post(post.id, "content_blocked")
+        _fail_seo_post(post.id, "content_blocked", cutoff=post.seo_requested_at)
         return "Security Abort"
     except ModerationError:
         _release_seo_capacity(gate, reservation)  # the LLM was never called
@@ -795,7 +918,7 @@ def _release_seo_capacity(gate, reservation):
         })
 
 
-def _seo_wait_for_capacity(post_id, exc, waited_s, retries, regenerate=False):
+def _seo_wait_for_capacity(post_id, exc, waited_s, retries, regenerate=False, served=_ANY_REQUEST):
     """
     Re-queues SEO generation after the capacity wait; fails the post past the max
     wait. The Celery retry count travels with the message: a call that keeps
@@ -803,7 +926,7 @@ def _seo_wait_for_capacity(post_id, exc, waited_s, retries, regenerate=False):
     """
     if waited_s + exc.wait_seconds > settings.AI_CAPACITY_MAX_WAIT_SECONDS:
         logger.error("seo.capacity_timeout post_id=%s waited_s=%.1f", post_id, waited_s)
-        _fail_seo_post(post_id, 'capacity_timeout')
+        _fail_seo_post(post_id, 'capacity_timeout', cutoff=served)
         return "Capacity Timeout"
     countdown = _capacity_countdown(exc.wait_seconds)
     logger.info("seo.pending_capacity post_id=%s countdown_s=%.1f", post_id, countdown)

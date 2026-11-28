@@ -139,9 +139,10 @@ class DraftFailureTests(SeoStateHarness, TestCase):
         self.assertEqual((body["status"], body["seo_status"], body["error_code"]), ("SCHEDULED", "failed", None))
 
     def test_a_later_text_clears_the_failure_of_the_draft(self):
-        self.set_post(status=Status.DRAFT, error_log="seo_no_clip_transcript")
+        self.set_post(status=Status.DRAFT, error_log="seo_no_clip_transcript", seo_requested_at=None)
         self.assertEqual(self.seo_status()["seo_status"], "failed")
 
+        self.ask()  # «Regenerar»
         self.assertEqual(self.run_task(regenerate=True), "SEO Success")
 
         self.post.refresh_from_db()

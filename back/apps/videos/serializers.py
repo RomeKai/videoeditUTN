@@ -129,17 +129,16 @@ class ClipPostSerializer(serializers.Serializer):
     publish_at = serializers.DateTimeField()
 
 
-def _response_posts(field, clip):
+def _read_once_per_response(field, clip, name, read):
     """
-    The publications of ``clip``, read once for every clip the response sends:
-    the posts of the projects (or of the clips) at the root of the response
-    together, in one query however many clips there are. The rows of a page of
-    the list, a project with its clips, a clip alone and a list of clips are
-    the roots there are (``render_queued`` reads its reservations the same way).
+    What ``read(projects, clips)`` finds for ``clip``, read once for every clip
+    the response sends: the rows of the projects (or of the clips) at the root
+    of the response together, in one query however many clips there are. The
+    rows of a page of the list, a project with its clips, a clip alone and a
+    list of clips are the roots there are (``render_queued`` reads its
+    reservations the same way). ``read`` yields (clip id, row id, row).
     """
-    from .models import ScheduledPost
-
-    state = field.context.setdefault('_clip_posts', {'projects': set(), 'clips': set(), 'rows': {}})
+    state = field.context.setdefault(name, {'projects': set(), 'clips': set(), 'rows': {}})
     if clip.project_id not in state['projects'] and clip.pk not in state['clips']:
         root = field.root.instance
         items = list(root) if isinstance(root, (list, tuple, models.QuerySet)) else [root]
@@ -147,19 +146,46 @@ def _response_posts(field, clip):
         clips = {item.pk for item in items if isinstance(item, VideoClip)} - state['clips']
         if clip.project_id not in projects:
             clips.add(clip.pk)
-        rows = (
-            ScheduledPost.objects.filter(models.Q(video_clip__project_id__in=projects) | models.Q(video_clip_id__in=clips))
-            .order_by('publish_at', 'id').values('id', 'video_clip_id', 'platform', 'status', 'publish_at')
-        )
-        for row in rows:
-            state['rows'].setdefault(row['video_clip_id'], {})[row['id']] = row
+        for clip_id, row_id, row in read(projects, clips):
+            state['rows'].setdefault(clip_id, {})[row_id] = row
         state['projects'] |= projects
         state['clips'] |= clips
     return list(state['rows'].get(clip.pk, {}).values())
 
 
+def _response_posts(field, clip):
+    """The publications of ``clip`` by publish_at, read once for the whole response."""
+    from .models import ScheduledPost
+
+    def read(projects, clips):
+        rows = (
+            ScheduledPost.objects.filter(models.Q(video_clip__project_id__in=projects) | models.Q(video_clip_id__in=clips))
+            .order_by('publish_at', 'id').values('id', 'video_clip_id', 'platform', 'status', 'publish_at')
+        )
+        return ((row['video_clip_id'], row['id'], row) for row in rows)
+
+    return _read_once_per_response(field, clip, '_clip_posts', read)
+
+
+def _response_layers(field, clip):
+    """The layers of ``clip``, read once for the whole response (as a prefetch would: in no given order)."""
+    def read(projects, clips):
+        layers = ClipLayer.objects.filter(models.Q(clip__project_id__in=projects) | models.Q(clip_id__in=clips))
+        return ((layer.clip_id, layer.pk, layer) for layer in layers)
+
+    return _read_once_per_response(field, clip, '_clip_layers', read)
+
+
+class ResponseLayersSerializer(serializers.ListSerializer):
+    """VideoClipSerializer.layers: ClipLayerSerializer's list, with the layers of the whole response read at once."""
+
+    def get_attribute(self, clip):
+        return _response_layers(self, clip)
+
+
 class VideoClipSerializer(serializers.ModelSerializer):
-    layers = ClipLayerSerializer(many=True, read_only=True)
+    # Read once for the whole response, never one query per clip (_response_layers).
+    layers = ResponseLayersSerializer(child=ClipLayerSerializer(read_only=True), read_only=True)
     # A paid render (a retry, a render from the editor, a rerender, an approval,
     # an auto-render) puts its clips in DRAFT until a worker takes them: this
     # tells such a draft from a suggestion.

@@ -173,7 +173,7 @@ Es `false` para cualquier otro estado (`rendering` ya lo dice el estado), para u
 
 **Leer, editar y borrar el clip** (`ClipDetailView`, `clips/:id/`):
 
-- `GET` devuelve el clip como dentro del proyecto (`VideoClipSerializer`, con `render_queued` y `posts`, sus publicaciones: ver [05](05-seo-y-publicacion.md#flujo-la-api-de-publicaciones), punto 9), para cualquier rol.
+- `GET` devuelve el clip como dentro del proyecto (`VideoClipSerializer`, con `render_queued`, `layers` y `posts`, sus publicaciones: ver [05](05-seo-y-publicacion.md#flujo-la-api-de-publicaciones), punto 9), para cualquier rol. Las capas y las publicaciones se leen una vez por respuesta, nunca una consulta por clip.
 - `PATCH` cambia `title`, `start_time` y `end_time` (`clip.edit`). Nunca renderiza. El título cambia siempre: el render no lo lee. El recorte no cambia mientras el proyecto renderiza o tiene una reserva de render abierta (409 `project_rendering`), ni mientras el pipeline lo procesa (409 `project_processing`: un render automático pudo haber cobrado esos bordes). Es 400 si el fin no es mayor que el inicio, si pasa el final del video (`metadata['duration']`, medio segundo de margen) o si el clip dura más de lo que un render termina. Un recorte nuevo borra las vistas previas del clip (filas ahora, archivos después del commit).
 - `DELETE` borra el clip con sus posts programados, capas y vistas previas, y sus archivos después del commit (`clip.edit`). Es 409 mientras el proyecto renderiza o procesa, y mientras un post del clip se está subiendo (`post_processing`).
 
