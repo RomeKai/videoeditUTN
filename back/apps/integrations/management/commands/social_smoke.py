@@ -2,8 +2,14 @@
 Smoke test of the publishing provider with a real key (runbook
 documents/runbooks/redes-sociales-prueba.md):
 
-    manage.py social_smoke --workspace <id> [--platform TIKTOK] [--return-url URL] [--no-create]
+    manage.py social_smoke --workspace <id> [--platform TIKTOK] [--return-url URL] [--no-create] [--ignore-plan]
 
+0. What the web app's "Conectar" asks first: the workspace's plan includes
+   networks (check_plan) and, to create a profile, OneCreator is under
+   SOCIAL_MAX_PROFILES. Otherwise it stops with an error (exit 1) before
+   calling the provider: each profile is a paid slot. --ignore-plan, for
+   staff tests, skips the plan only; the cap always counts (raise
+   SOCIAL_MAX_PROFILES for more). The user's email is not asked.
 1. The workspace's profile at the provider: the existing one, or a new one
    (created as the first "Conectar" would; --no-create stops before that).
 2. A linking URL for --platform (TIKTOK by default), valid for 5 minutes:
@@ -31,6 +37,10 @@ class Command(BaseCommand):
         parser.add_argument('--platform', default=social.TIKTOK, choices=social.PLATFORMS)
         parser.add_argument('--return-url', default='', help="A dónde lleva el botón «Close» del proveedor (por defecto, ninguna: cierra la ventana).")
         parser.add_argument('--no-create', action='store_true', help="No crear el perfil si el espacio no tiene uno.")
+        parser.add_argument(
+            '--ignore-plan', action='store_true',
+            help="Solo para pruebas del staff: seguir aunque el plan del espacio no incluya redes. El tope de perfiles se respeta igual.",
+        )
 
     def handle(self, *args, **options):
         try:
@@ -42,10 +52,11 @@ class Command(BaseCommand):
 
         try:
             profile = social.ready_profile(workspace.pk)
+            if profile is None and options['no_create']:
+                self.stdout.write("Sin perfil en el proveedor (--no-create: no se crea).")
+                return
+            self.check_gate(workspace, creating=profile is None, ignore_plan=options['ignore_plan'])
             if profile is None:
-                if options['no_create']:
-                    self.stdout.write("Sin perfil en el proveedor (--no-create: no se crea).")
-                    return
                 profile = social_accounts.ensure_profile(workspace)
                 self.stdout.write(self.style.SUCCESS("Perfil creado en el proveedor."))
             else:
@@ -68,3 +79,24 @@ class Command(BaseCommand):
         except SocialProviderError as exc:
             # Our code and the detail (HTTP status, the provider's numeric codes): never its message or the key.
             raise CommandError(f"El proveedor falló: {exc.code} ({exc.detail})")
+
+    def check_gate(self, workspace, creating, ignore_plan):
+        """Before any call to the provider: the plan (unless --ignore-plan) and, to create a profile, the cap."""
+        try:
+            social_accounts.check_plan(workspace)
+        except social_accounts.ConnectRefused:
+            name = workspace.subscription_plan.name
+            if not ignore_plan:
+                raise CommandError(
+                    f"El plan del espacio ({name}) no incluye conectar redes (allow_social_accounts): no se crea "
+                    "su perfil pago ni se pide un link. Usá un espacio en un plan pago, o --ignore-plan para una "
+                    "prueba del staff."
+                )
+            self.stdout.write(self.style.WARNING(
+                f"--ignore-plan: el plan del espacio ({name}) no incluye conectar redes; se sigue igual.",
+            ))
+        if creating and social_accounts.profiles_cap_reached():
+            raise CommandError(
+                f"Se llegó al tope de perfiles de OneCreator (SOCIAL_MAX_PROFILES={settings.SOCIAL_MAX_PROFILES}): "
+                "no se crea otro. Borrá perfiles de prueba que sobren o subí el tope (runbook de redes, «Limpieza»)."
+            )
