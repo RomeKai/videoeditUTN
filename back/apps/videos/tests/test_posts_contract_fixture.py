@@ -31,7 +31,7 @@ BODIES = (
     'posts_publish_draft', 'posts_retry', 'posts_retry_seo_failed', 'posts_regenerate_seo', 'posts_list',
 )
 ERRORS = (
-    'post_400_bulk_index', 'post_400_tiktok', 'post_403_scheduling', 'post_403_crossposting', 'post_403_seo',
+    'post_400_bulk_index', 'post_400_tiktok', 'post_400_text_missing', 'post_403_scheduling', 'post_403_crossposting', 'post_403_seo',
     'post_409_account_not_connected', 'post_409_in_flight', 'post_409_published', 'post_409_not_failed',
     'post_409_idempotency_key_reused',
 )
@@ -148,12 +148,21 @@ class PostsFixtureHarness:
             gone = ScheduledPost.objects.create(
                 video_clip=cierre, platform='YOUTUBE_SHORTS', status=ScheduledPost.Status.PUBLISHED, publish_at=NOW,
             )
+            # A draft whose AI text failed (what _fail_seo_post leaves), sent with no text of its own.
+            textless = ScheduledPost.objects.create(
+                video_clip=remontada, platform='INSTAGRAM_REELS', status=ScheduledPost.Status.DRAFT, publish_at=NOW,
+                error_log='seo_no_clip_transcript',
+            )
+            ScheduledPost.objects.filter(pk=textless.pk).update(seo_requested_at=None)
         errors = {
             'post_400_bulk_index': err(call('post', bulk, {'posts': [
                 {'video_clip': str(intro.pk), 'platform': 'TIKTOK', 'draft': True},
                 {'video_clip': str(intro.pk), 'platform': 'INSTAGRAM_REELS', 'caption': 'x' * 2201},
             ]}), 400),
             'post_400_tiktok': err(call('post', posts, {'video_clip': str(cierre.pk), 'platform': 'TIKTOK'}), 400),
+            'post_400_text_missing': err(
+                call('patch', reverse('scheduled-post-detail', args=[textless.pk]), {'publish_at': None}), 400,
+            ),
             'post_403_scheduling': err(call('post', posts, {
                 'video_clip': str(gratis.pk), 'platform': 'TIKTOK', 'publish_at': tomorrow, 'tiktok': TIKTOK,
             }, headers=free_ws), 403),

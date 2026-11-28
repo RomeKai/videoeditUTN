@@ -219,16 +219,25 @@ export interface SubmissionInput {
   hasText: (clipId: string, platform: Platform) => boolean;
   draftOf: (clipId: string, platform: Platform) => ScheduledPost | undefined;
   tiktok: TikTokOptions | undefined;
+  /**
+   * True for a pair the person agreed to send with no text after its AI text failed: it goes with
+   * `allow_empty_text` (without it the backend answers 400 `post_text_missing`). Only those: on any
+   * other pair it would let a text that fails later go out empty without asking.
+   */
+  allowEmptyText?: (clipId: string, platform: Platform) => boolean;
 }
 
-export function buildSubmission({ pairs, dates, textOf, hasText, draftOf, tiktok }: SubmissionInput): Submission {
+export function buildSubmission({ pairs, dates, textOf, hasText, draftOf, tiktok, allowEmptyText }: SubmissionInput): Submission {
   const creates: CreatePostInput[] = [];
   const updates: Submission['updates'] = [];
   for (const { clipId, platform } of pairs) {
     const date = dates.get(clipId) ?? null;
     const publishAt = date ? date.toISOString() : null;
     const text = hasText(clipId, platform) ? { caption: textOf(clipId, platform).caption, hashtags: textOf(clipId, platform).hashtags } : {};
-    const extra = platform === 'TIKTOK' && tiktok ? { tiktok } : {};
+    const extra = {
+      ...(platform === 'TIKTOK' && tiktok ? { tiktok } : {}),
+      ...(allowEmptyText?.(clipId, platform) ? { allow_empty_text: true } : {}),
+    };
     const draft = draftOf(clipId, platform);
     if (draft) updates.push({ clipId, platform, draft, request: { id: draft.id, publish_at: publishAt, ...text, ...extra } });
     else creates.push({ video_clip: clipId, platform, publish_at: publishAt, ...text, ...extra });

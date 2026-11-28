@@ -73,7 +73,9 @@ export const ScheduledPost = z.object({
   /**
    * pending: the AI text is still being generated ("Generando texto…"), also after "Regenerar", over the
    * previous text. none: the project has no SEO. failed: the generation failed. A `DRAFT` stays `DRAFT`
-   * with `seo_status: 'failed'` and the user writes the text; a post that was going out turns `FAILED`.
+   * with `seo_status: 'failed'` and the user writes the text, regenerates it, or sends it with
+   * `allow_empty_text` (without it, one with no text at all is a 400 `post_text_missing`); a post that was
+   * going out turns `FAILED`.
    */
   seo_status: z.enum(['none', 'pending', 'ready', 'failed']),
   clip: z.object({
@@ -119,6 +121,11 @@ export const CreatePostInput = z.object({
    * A draft is published or scheduled with `PATCH` (`publish_at`).
    */
   draft: z.boolean().optional(),
+  /**
+   * True: the post may go out with no text at all after its AI text failed (`seo_status: 'failed'`,
+   * the hourly limit included). Without it that is a 400 `post_text_missing`: E1 asks before sending it.
+   */
+  allow_empty_text: z.boolean().optional(),
 });
 export type CreatePostInput = z.infer<typeof CreatePostInput>;
 
@@ -140,6 +147,8 @@ export const UpdatePostRequest = z
     caption: z.string(),
     hashtags: z.array(z.string()),
     tiktok: TikTokOptions,
+    /** As in CreatePostInput: sending a post whose AI text failed with no text at all, on purpose. */
+    allow_empty_text: z.boolean(),
   })
   .partial();
 export type UpdatePostRequest = z.infer<typeof UpdatePostRequest>;
@@ -147,7 +156,7 @@ export type UpdatePostRequest = z.infer<typeof UpdatePostRequest>;
 const planErrors = [
   {
     status: 400,
-    when: 'Por campo (`{campo: [mensaje]}`): texto por encima del límite de la red (`caption`), demasiados hashtags o uno inválido (`hashtags`), clip de otro espacio o sin renderizar (`video_clip`), fecha pasada (`publish_at`) o falta `tiktok.privacy_level` (`tiktok`). En /bulk/ va además `index`, la posición de la publicación con el error, y `posts` si el lote está vacío, pasa de 60 o repite un clip en la misma red.',
+    when: 'Por campo (`{campo: [mensaje]}`): texto por encima del límite de la red (`caption`), demasiados hashtags o uno inválido (`hashtags`), clip de otro espacio o sin renderizar (`video_clip`), fecha pasada (`publish_at`) o falta `tiktok.privacy_level` (`tiktok`). En /bulk/ va además `index`, la posición de la publicación con el error, y `posts` si el lote está vacío, pasa de 60 o repite un clip en la misma red. O `{error, code: "post_text_missing"}` (con `index` en /bulk/): una publicación que sale sin texto propio cuando el espacio ya pidió sus textos con IA de la hora; se escribe el texto o se manda con `allow_empty_text: true`.',
   },
   { status: 403, when: 'El plan no permite programar (`code: "scheduling"`) o publicar el clip en varias redes (`code: "crossposting"`): `{error, code}`. O el rol no publica: `{detail}`.' },
   {
@@ -159,11 +168,11 @@ const planErrors = [
 
 /** What creating a post asks of the AI, and what it may cost. */
 const AI_TEXT_COST =
-  'El texto con IA se pide solo si el proyecto tiene SEO y la publicación no trae caption y hashtags. Si otra publicación del mismo clip y la misma red ya tiene texto de la IA (o lo tenía un borrador descartado en las últimas 24 h), se reusa y llega `seo_status: "ready"`. Cada espacio pide hasta `AI_SEO_MAX_PER_WORKSPACE_PER_HOUR` (120) textos por hora, contando los que están en camino y las llamadas ya hechas: pasado eso la publicación se crea igual, con `seo_status: "failed"` (`error_log: "seo_rate_limited"`), y el usuario la escribe o la regenera más tarde.';
+  'El texto con IA se pide solo si el proyecto tiene SEO y la publicación no trae caption y hashtags. Si otra publicación del mismo clip y la misma red ya tiene texto de la IA (o lo tenía un borrador descartado en las últimas 24 h), se reusa y llega `seo_status: "ready"`. Cada espacio pide hasta `AI_SEO_MAX_PER_WORKSPACE_PER_HOUR` (120) textos por hora, contando los que están en camino y las llamadas ya hechas: pasado eso la publicación se crea igual, con `seo_status: "failed"` (`error_log: "seo_rate_limited"`), y el usuario la escribe o la regenera más tarde. Una que sale (no un borrador) sin caption ni hashtags propios es entonces 400 `post_text_missing`, salvo `allow_empty_text: true`: saldría vacía. Con la confirmación la falla queda atrás (`seo_status: "none"`), así que reprogramarla después no vuelve a preguntar.';
 
 /** What every write of a post does not do: call the network. */
 const QUEUE_ONLY =
-  'Ningún endpoint de publicaciones llama a la red: lo que tiene que salir queda `SCHEDULED` y lo encola `dispatch_scheduled_posts_batch`. Lo corre Celery Beat cada 5 min, y además una vez después de cada escritura que deja una publicación para ahora (crear, en lote, mandar un borrador, reintentar): así «ahora» sale enseguida, sin esperar al beat. Si el broker no toma ese pedido, la escritura responde igual y la encola el beat. Una publicación sin caption propio cuyo texto con IA está en camino (`seo_status: "pending"`) espera ese texto: queda `SCHEDULED` y sale apenas se guarda (o, si la generación falla, queda `FAILED` con el código del texto, salvo que tenga un texto anterior, con el que sale); si el pedido de texto se perdió, sale sin texto cuando vence su ventana (la espera máxima de capacidad más 15 min). Cada escritura toma el lock de la fila del post y decide con el estado que lee bajo ese lock, igual que el despachador y el worker, así que nunca pisa una publicación que el despachador ya tomó; y dos corridas del despachador a la vez (dos pedidos, o un pedido y el beat) encolan cada publicación una sola vez.';
+  'Ningún endpoint de publicaciones llama a la red: lo que tiene que salir queda `SCHEDULED` y lo encola `dispatch_scheduled_posts_batch`. Lo corre Celery Beat cada 5 min, y además una vez después de cada escritura que deja una publicación para ahora (crear, en lote, mandar un borrador, reintentar): así «ahora» sale enseguida, sin esperar al beat. Si el broker no toma ese pedido, la escritura responde igual y la encola el beat. Una publicación sin caption propio cuyo texto con IA está en camino (`seo_status: "pending"`) espera ese texto: queda `SCHEDULED` y sale apenas se guarda (o, si la generación falla, queda `FAILED` con el código del texto, salvo que tenga un texto anterior o propio, con el que sale). Un texto que nunca llega también es una falla: si el broker no tomó el pedido (`seo_dispatch_failed`) o el pedido pasó su ventana sin respuesta (la espera máxima de capacidad más 15 min: `seo_request_expired`), queda `seo_status: "failed"` y la publicación sin texto queda `FAILED`, nunca sale vacía. Cada escritura toma el lock de la fila del post y decide con el estado que lee bajo ese lock, igual que el despachador y el worker, así que nunca pisa una publicación que el despachador ya tomó; y dos corridas del despachador a la vez (dos pedidos, o un pedido y el beat) encolan cada publicación una sola vez.';
 
 /** What the three endpoints of the networks share. */
 const PROVIDER_DOWN = { status: 502, when: 'El proveedor de publicación no respondió o rechazó el pedido: `{error, code}` (`code` es el de la falla, por ejemplo `provider_unavailable`). No cambió nada. No es 503: el 503 queda para el mantenimiento de OneCreator (K5).' };
@@ -316,7 +325,10 @@ export const updatePost = defineEndpoint({
   request: UpdatePostRequest,
   response: ScheduledPost,
   errors: [
-    { status: 400, when: 'Texto por encima del límite, fecha en el pasado, clip que se está renderizando de nuevo, o falta `tiktok.privacy_level` al publicar un borrador de TikTok.' },
+    {
+      status: 400,
+      when: 'Texto por encima del límite, fecha en el pasado, clip que se está renderizando de nuevo, o falta `tiktok.privacy_level` al publicar un borrador de TikTok. O `{error, code: "post_text_missing"}`: falló el texto con IA (`seo_status: "failed"`) y la publicación, al mandar el borrador o al vaciarle el texto, saldría sin caption ni hashtags. El `error` sirve en cualquier pantalla («…escribilo o regeneralo.»); el panel E1 pregunta antes y manda `allow_empty_text: true`.',
+    },
     { status: 403, when: 'El plan no permite programar (`code: "scheduling"`) o publicar el clip en otra red (`code: "crossposting"`), o el rol no publica.' },
     { status: 404, when: 'No existe o es de otro workspace.' },
     {
@@ -327,7 +339,7 @@ export const updatePost = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_social.py · ScheduledPostViewSet.partial_update + services/scheduled_posts.py · update_post',
-    note: 'Solo `DRAFT` y `SCHEDULED`: un post `QUEUED` ya tiene su tarea en el broker con la hora vieja. `publish_at` con fecha programa o reprograma; `null` (o dentro de un minuto) lo deja `SCHEDULED` para ahora; sin el campo, un borrador sigue borrador. Al mandarlo se miran el clip, el plan, la cuenta y TikTok como al crear, y se borra la falla del texto del borrador. `caption` y `hashtags` vacíos vuelven a mostrar el texto de la IA. Guardar el texto mientras un «Regenerar» está en camino no lo cancela (sigue `pending` y sigue contando en el límite del espacio), pero el texto del usuario queda cuando llega el de la IA (`text_edited_at`). ' + QUEUE_ONLY,
+    note: 'Solo `DRAFT` y `SCHEDULED`: un post `QUEUED` ya tiene su tarea en el broker con la hora vieja. `publish_at` con fecha programa o reprograma; `null` (o dentro de un minuto) lo deja `SCHEDULED` para ahora; sin el campo, un borrador sigue borrador. Al mandarlo se miran el clip, el plan, la cuenta y TikTok como al crear. Si su texto con IA falló y no tiene caption ni hashtags (ni propios ni de la IA), mandar el borrador o cambiarle el texto es 400 `post_text_missing` y no cambia nada, salvo que el pedido traiga `allow_empty_text: true`: así nunca sale vacío sin que nadie lo haya elegido (en YouTube el título sale igual, el del clip). Mover a otra hora una publicación ya programada (solo `publish_at`, el arrastre del calendario) no pregunta: sale con el texto con el que se aceptó. Un texto todavía en camino (un «Regenerar» después de la falla) no es una falla: la publicación lo espera. Al mandarlo se borra la falla del texto del borrador. `caption` y `hashtags` vacíos vuelven a mostrar el texto de la IA. Guardar el texto mientras un «Regenerar» está en camino no lo cancela (sigue `pending` y sigue contando en el límite del espacio), pero el texto del usuario queda cuando llega el de la IA (`text_edited_at`). ' + QUEUE_ONLY,
   },
   screens: ['E2'],
 });

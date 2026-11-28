@@ -491,6 +491,37 @@ describe('D3 · Clips', () => {
     expect(within(screen.getByRole('list')).getAllByText('Listo')).toHaveLength(6);
   }, 20_000);
 
+  it('después de publicar, la tarjeta pasa de «Programado» a «Publicado» sola', async () => {
+    // Ensayo 6: Clips said «Listo» after publishing. With the clip's `posts`, its card follows them.
+    let postId = '';
+    open('Charla en la UTN', 'clips', 'estudio-norte', 'lucia', (project, db) => {
+      const clip = project.clips.find((item) => item.status === 'completed' && !db.posts.some((post) => post.video_clip === item.id));
+      const model = db.posts[0];
+      if (!clip || !model) throw new Error('falta un clip listo sin publicaciones');
+      clip.title = 'Recién publicado';
+      // «Publicar ahora» left it in the queue: the simulation sends it a few seconds later.
+      const post = structuredClone(model);
+      Object.assign(post, {
+        id: '00000000-0000-4000-8000-00000000e601', video_clip: clip.id, workspace: project.workspace, platform: 'TIKTOK', status: 'QUEUED',
+        publish_at: new Date().toISOString(), error_log: null, error_code: null, error_message: null, post_url: null,
+        _sim: { startedAt: Date.now() },
+      });
+      post.clip = { ...post.clip, id: clip.id, title: clip.title, project_id: project.id, project_title: project.title };
+      db.posts.push(post);
+      postId = post.id;
+    });
+    const tile = (await screen.findByRole('heading', { name: 'Recién publicado' })).closest('li');
+    if (!tile) throw new Error('falta la tarjeta');
+    expect(within(tile).getByText('Programado')).toBeInTheDocument();
+
+    const db = loadDb();
+    const post = db.posts.find((item) => item.id === postId);
+    if (post?._sim) post._sim.startedAt -= 600_000;
+    saveDb(db);
+    // Nothing else is touched: only the 5 s poll while it goes out can bring the new state.
+    await waitFor(() => expect(within(tile).getByText('Publicado')).toBeInTheDocument(), { timeout: 9000 });
+  }, 20_000);
+
   it('borrar un proyecto que está renderizando: el diálogo muestra el motivo del servidor y el proyecto sigue', async () => {
     const { user, id } = open('Charla en la UTN', '', 'estudio-norte', 'lucia', (project) => {
       project.status = 'rendering';

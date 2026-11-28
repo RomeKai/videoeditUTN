@@ -181,6 +181,24 @@ describe('lo que se envía', () => {
     expect(updates[0]?.request).toEqual({ id: 'draft-1', publish_at: start.toISOString() });
     expect(creates).toEqual([{ video_clip: 'b', platform: 'INSTAGRAM_REELS', publish_at: start.toISOString() }]);
   });
+
+  it('`allow_empty_text` va solo en lo que la persona aceptó publicar sin texto', () => {
+    const { updates, creates } = buildSubmission({
+      ...base,
+      textOf: () => text('', []),
+      pairs: [
+        { clipId: 'a', platform: 'INSTAGRAM_REELS' },
+        { clipId: 'b', platform: 'INSTAGRAM_REELS' },
+      ],
+      dates: scheduleFor(['a', 'b'], 'now', null, 'together'),
+      hasText: () => true,
+      draftOf: (clipId) => (clipId === 'a' ? draft : undefined),
+      allowEmptyText: (clipId) => clipId === 'a',
+    });
+    expect(updates[0]?.request).toEqual({ id: 'draft-1', publish_at: null, caption: '', hashtags: [], allow_empty_text: true });
+    // Any other pair never carries it: a text that fails later must not go out empty without asking.
+    expect(creates).toEqual([{ video_clip: 'b', platform: 'INSTAGRAM_REELS', publish_at: null, caption: '', hashtags: [] }]);
+  });
 });
 
 describe('qué pasó con cada red', () => {

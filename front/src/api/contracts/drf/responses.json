@@ -89,6 +89,7 @@
         "render_queued": false,
         "preview_url": null,
         "thumbnail_url": null,
+        "posts": [],
         "title": "Clip 1",
         "s3_object_key": null,
         "start_time": 72.4,
@@ -105,6 +106,7 @@
         "render_queued": false,
         "preview_url": null,
         "thumbnail_url": null,
+        "posts": [],
         "title": "Clip 2",
         "s3_object_key": null,
         "start_time": 132.4,
@@ -242,6 +244,7 @@
         "render_queued": false,
         "preview_url": "https://r2.example.test/clips/x/1.mp4?X-Amz-Expires=3600",
         "thumbnail_url": "https://r2.example.test/clips/x/1.jpg?X-Amz-Expires=3600",
+        "posts": [],
         "title": "Clip 1",
         "s3_object_key": "clips/x/1.mp4",
         "start_time": 72.4,
@@ -258,6 +261,7 @@
         "render_queued": false,
         "preview_url": null,
         "thumbnail_url": null,
+        "posts": [],
         "title": "Clip 2",
         "s3_object_key": null,
         "start_time": 132.4,
@@ -613,6 +617,7 @@
             "render_queued": false,
             "preview_url": null,
             "thumbnail_url": null,
+            "posts": [],
             "title": "Regla del 50/30/20",
             "s3_object_key": null,
             "start_time": 12.5,
@@ -684,6 +689,14 @@
             "render_queued": false,
             "preview_url": "http://testserver/media/videos/demo/clip.mp4",
             "thumbnail_url": "http://testserver/media/videos/demo/clip.jpg",
+            "posts": [
+              {
+                "id": "5a1d3e0c-2f4b-4c8e-9b7a-6d2e1f0c3b48",
+                "platform": "TIKTOK",
+                "status": "PUBLISHED",
+                "publish_at": "2026-11-04T10:45:00Z"
+              }
+            ],
             "title": "El error más común",
             "s3_object_key": "/srv/media/videos/demo/clip.mp4",
             "start_time": 12.5,
@@ -791,6 +804,14 @@
             "render_queued": false,
             "preview_url": "http://testserver/media/videos/demo/clip.mp4",
             "thumbnail_url": "http://testserver/media/videos/demo/clip.jpg",
+            "posts": [
+              {
+                "id": "5a1d3e0c-2f4b-4c8e-9b7a-6d2e1f0c3b48",
+                "platform": "TIKTOK",
+                "status": "PUBLISHED",
+                "publish_at": "2026-11-04T10:45:00Z"
+              }
+            ],
             "title": "El error más común",
             "s3_object_key": "/srv/media/videos/demo/clip.mp4",
             "start_time": 12.5,
@@ -1048,6 +1069,7 @@
         "render_queued": false,
         "preview_url": null,
         "thumbnail_url": null,
+        "posts": [],
         "title": "Clip 1",
         "s3_object_key": null,
         "start_time": 72.4,
@@ -1064,6 +1086,7 @@
         "render_queued": false,
         "preview_url": null,
         "thumbnail_url": null,
+        "posts": [],
         "title": "Clip 2",
         "s3_object_key": null,
         "start_time": 132.4,
@@ -2106,6 +2129,13 @@
         "tiktok": [
           "Elegí quién puede ver el video."
         ]
+      }
+    },
+    "post_400_text_missing": {
+      "status": 400,
+      "body": {
+        "error": "No pudimos generar el texto con IA y esta publicación no tiene texto: escribilo o regeneralo.",
+        "code": "post_text_missing"
       }
     },
     "post_403_scheduling": {

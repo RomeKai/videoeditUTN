@@ -449,6 +449,66 @@ class AiTextBeforePublishingTests(PostRacesHarness):
         self.assertEqual(dispatch_scheduled_posts_batch(), "Queued 0 posts.")
         self.assertEqual(len(self.queued), 1)
 
+    def draft(self, platform="INSTAGRAM_REELS"):
+        """The helper draft of the publish panel: created with `draft: true`, which asks for its AI text."""
+        with patch(SEO_DELAY):
+            create, created = self.in_thread(self.request, "post", reverse("scheduled-post-list"), {
+                "video_clip": str(self.clip.pk), "platform": platform, "draft": True,
+            })
+            self.finish(create)
+        self.assertEqual(created["value"].status_code, 201, created["value"].content)
+        return ScheduledPost.objects.get(pk=created["value"].json()["id"])
+
+    def send_draft(self, post, **body):
+        """PATCH `publish_at: null`: «Publicar ahora» of a draft."""
+        sent, answer = self.in_thread(
+            self.request, "patch", reverse("scheduled-post-detail", args=[post.pk]), {"publish_at": None, **body},
+        )
+        self.finish(sent)
+        return answer["value"]
+
+    def test_a_draft_sent_while_its_text_is_on_its_way_waits_and_goes_out_with_it(self):
+        # Ensayo 6 saw it work, and it must stay so: the draft waits for its text and goes out with it.
+        from apps.videos.tests.test_seo_task import CAPTION
+
+        post = self.draft()
+        response = self.send_draft(post)
+        self.assertEqual((response.status_code, response.json()["seo_status"]), (200, "pending"))
+        self.assertEqual(self.queued, [])
+
+        self.assertEqual(self.run_seo(post), "SEO Success")
+
+        post.refresh_from_db()
+        self.assertEqual((post.status, post.caption_to_publish()), (Status.QUEUED, CAPTION))
+        self.assertEqual(self.queued, [(post.pk, post.publish_at)])
+
+    def test_a_draft_whose_text_failed_goes_out_without_text_only_when_asked(self):
+        # Ensayo 6: the text failed in under a second and «Publicar ahora» sent `post: ""`.
+        post = self.draft(platform="YOUTUBE_SHORTS")
+        VideoProject.objects.filter(pk=self.clip.project_id).update(transcript_data=[])
+        self.assertEqual(self.run_seo(post), "No Transcript")
+        post.refresh_from_db()
+        self.assertEqual((post.status, post.error_log), (Status.DRAFT, "seo_no_clip_transcript"))
+
+        refused = self.send_draft(post)
+
+        self.assertEqual((refused.status_code, refused.json()["code"]), (400, "post_text_missing"))
+        post.refresh_from_db()
+        self.assertEqual(post.status, Status.DRAFT)
+        self.assertEqual(self.queued, [])
+
+        allowed = self.send_draft(post, allow_empty_text=True)
+
+        self.assertEqual(allowed.status_code, 200, allowed.content)
+        post.refresh_from_db()
+        self.assertEqual((post.status, post.error_log), (Status.QUEUED, None))
+        self.assertEqual(self.queued, [(post.pk, post.publish_at)])
+        with patch(PRESIGN, return_value="https://media.test/a.mp4"), patch(SEND, return_value=PUBLISHED) as send:
+            upload_to_social_network.apply(args=[post.pk]).get()
+        sent = send.call_args.args[1]
+        # No text, as asked; YouTube's title is still the clip's.
+        self.assertEqual((sent.text, sent.title), ("", "Clip"))
+
     def test_when_its_text_fails_it_fails_as_before_and_nothing_goes_out(self):
         post = self.publish_now()
         VideoProject.objects.filter(pk=self.clip.project_id).update(transcript_data=[])

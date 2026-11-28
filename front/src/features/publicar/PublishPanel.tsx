@@ -5,7 +5,7 @@ import type { Platform } from '@/api/contracts/common';
 import type { ScheduledPost, TikTokPrivacy } from '@/api/contracts/social';
 import { ApiError } from '@/api/errors';
 import { seoPending, usePlans, usePostActions, usePosts, useSocialAccounts } from '@/api/hooks';
-import { ConnectNetworkDialog, useBillingDialogs } from '@/dialogs';
+import { ConfirmDialog, ConnectNetworkDialog, useBillingDialogs } from '@/dialogs';
 import { errorMessage } from '@/lib/error-messages';
 import { formatDateTime, formatDuration, formatNumber, formatTime, plural } from '@/lib/format';
 import { useIsMobile } from '@/lib/hooks';
@@ -128,6 +128,8 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
   /** Pairs of the last attempt that did not go out, with the reason. */
   const [failures, setFailures] = useState<PairFailure[]>([]);
   const [regenerating, setRegenerating] = useState<Set<PairKey>>(() => new Set());
+  /** Pairs about to go out with no text after their AI text failed, waiting for the person's word. */
+  const [askEmpty, setAskEmpty] = useState<PanelPair[] | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
 
@@ -173,6 +175,16 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
     const draft = draftOf(clipId, platform);
     if (texts[key] || !draft || !seoPending(draft)) return false;
     return !draft.caption || regenerating.has(key);
+  };
+  /**
+   * The AI text of the pair failed (`seo_status: 'failed'`) and the text that would go out is empty: the
+   * panel says so, offers «Regenerar», and asks before it goes out like that (the backend refuses it
+   * otherwise, 400 `post_text_missing`). A regeneration on its way is `pending`, not this.
+   */
+  const textFailed = (clipId: string, platform: Platform): boolean => {
+    if (draftOf(clipId, platform)?.seo_status !== 'failed') return false;
+    const text = textOf(clipId, platform);
+    return !text.caption && text.hashtags.length === 0;
   };
   const originOf = (clipId: string, platform: Platform): TextOrigin => {
     const draft = draftOf(clipId, platform);
@@ -250,8 +262,18 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
     return errorMessage(error, 'Probá de nuevo.');
   };
 
-  const submit = async () => {
+  /** `allowed`: the pairs the person agreed to send with no text (the confirmation of `askEmpty`). */
+  const submit = async (allowed: PanelPair[] = []) => {
     if (!canSubmit || submitting) return;
+    const left = order.flatMap((clipId) => selected.map((platform) => ({ clipId, platform }))).filter((pair) => !sentRef.current[pairKey(pair.clipId, pair.platform)]);
+    // Going out with no text after the AI failed is never silent: the person says so first.
+    const allowedKeys = new Set(allowed.map((pair) => pairKey(pair.clipId, pair.platform)));
+    const textless = left.filter((pair) => textFailed(pair.clipId, pair.platform) && !allowedKeys.has(pairKey(pair.clipId, pair.platform)));
+    if (textless.length > 0) {
+      setAskEmpty([...allowed, ...textless]);
+      return;
+    }
+    setAskEmpty(null);
     setSubmitting(true);
     setFailures([]);
     // Drafts still being created must exist before deciding what is new and what is a draft.
@@ -265,6 +287,7 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
       hasText: (clipId, platform) => Boolean(texts[pairKey(clipId, platform)]) || (Boolean(drafts.read(clipId, platform)) && !isGenerating(clipId, platform)),
       draftOf: drafts.read,
       tiktok: tiktokOptions(tiktok, accountOf(accounts, 'TIKTOK')),
+      allowEmptyText: (clipId, platform) => allowedKeys.has(pairKey(clipId, platform)),
     });
     const out: Record<PairKey, ScheduledPost> = {};
     const failed: PairFailure[] = [];
@@ -303,6 +326,13 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
         if (billing.handleError(error)) {
           billed = true;
           break;
+        }
+        if (error instanceof ApiError && error.code === 'post_text_missing') {
+          // Its AI text failed after the panel last looked: show it as it is now, so the person writes the
+          // text, regenerates it or confirms it goes out without one.
+          fail(clipId, platform, error);
+          void actions.get(draft.id).then(drafts.put, () => undefined);
+          continue;
         }
         const stale = error instanceof ApiError && (error.status === 404 || (error.status === 409 && error.code !== 'account_not_connected'));
         if (!stale) {
@@ -388,6 +418,17 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
   const regenerateFor = (clip: PanelClip, platform: Platform) =>
     clip.seo && allows('seo') && mayPublish && draftOf(clip.id, platform) ? () => onRegenerate(clip.id, platform) : undefined;
 
+  /** «Escribir el texto» of the confirmation: back to the text of the first publication it named. */
+  const keepWriting = () => {
+    const first = askEmpty?.[0];
+    setAskEmpty(null);
+    if (!first) return;
+    if (many) {
+      setTabState(first.platform);
+      setEditingClip(first.clipId);
+    } else focusField(ids.caption, first.platform);
+  };
+
   const togglePlatform = (platform: Platform, checked: boolean) => {
     if (!crossposting) return setPicked(checked ? [platform] : []);
     setPicked(checked ? [...selected, platform] : selected.filter((item) => item !== platform));
@@ -399,6 +440,16 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
   };
 
   /* ── Render ────────────────────────────────────────────────────────────── */
+  const emptyDescription = (pairs: PanelPair[]): string => {
+    const verb = when === 'now' ? 'publicás' : 'programás';
+    const [only] = pairs;
+    if (pairs.length === 1 && only) {
+      const clipTitle = clips.find((clip) => clip.id === only.clipId)?.title ?? '';
+      const youtube = only.platform === 'YOUTUBE_SHORTS' ? ', solo con el título del clip' : '';
+      return `No pudimos generar el texto de «${clipTitle}» para ${NETWORK_NOUN[only.platform]}. Si ${verb} igual, sale sin caption ni hashtags${youtube}.`;
+    }
+    return `No pudimos generar el texto de ${plural(pairs.length, 'publicación', 'publicaciones')}. Si ${verb} igual, salen sin caption ni hashtags.`;
+  };
   const title = many ? `Publicar ${clipIds.length} clips` : 'Publicar clip';
   const zone = timeZoneLabel(start ?? new Date());
   const firstClip = clips[0];
@@ -534,6 +585,8 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
               {clips.map((clip, index) => {
                 const text = textOf(clip.id, platform);
                 const generating = isGenerating(clip.id, platform);
+                const failed = textFailed(clip.id, platform);
+                const regenerate = regenerateFor(clip, platform);
                 const origin = originOf(clip.id, platform);
                 const editing = editingClip === clip.id;
                 const limit = account?.limits.caption_max_chars ?? 2200;
@@ -552,7 +605,8 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
                             onChange={(value) => setText(clip.id, platform, value)}
                             origin={origin}
                             generating={generating}
-                            onRegenerate={regenerateFor(clip, platform)}
+                            failed={failed}
+                            onRegenerate={regenerate}
                             captionId={index === 0 ? ids.caption : undefined}
                           />
                           <div>
@@ -580,6 +634,11 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
                                 ) : origin === 'edited' ? (
                                   <span className={cx(styles.ai, styles.aiEdited)}>Editado por vos</span>
                                 ) : null}
+                                {failed && regenerate ? (
+                                  <Button variant="ghost" size="sm" iconLeft="retry" className={styles.regen} aria-label={`Regenerar el texto de «${clip.title}»`} onClick={regenerate}>
+                                    Regenerar
+                                  </Button>
+                                ) : null}
                                 <Button
                                   variant="ghost"
                                   size="sm"
@@ -606,7 +665,14 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
                             </>
                           ) : (
                             <>
-                              <p className={styles.tcap}>{text.caption || 'Sin texto todavía.'}</p>
+                              {failed ? (
+                                <p className={styles.textFailed}>
+                                  <Icon name="warning" size={14} />
+                                  <span>No pudimos generar el texto. Escribilo vos.</span>
+                                </p>
+                              ) : (
+                                <p className={styles.tcap}>{text.caption || 'Sin texto todavía.'}</p>
+                              )}
                               <p className={styles.tmeta}>
                                 <span>{formatHashtags(text.hashtags.slice(0, 3))}{text.hashtags.length > 3 ? <span className="subtle"> +{text.hashtags.length - 3}</span> : null}</span>
                                 <span className={cx('num', length > limit && styles.countErr)}>
@@ -631,6 +697,7 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
             onChange={(value) => setText(firstClip.id, platform, value)}
             origin={originOf(firstClip.id, platform)}
             generating={isGenerating(firstClip.id, platform)}
+            failed={textFailed(firstClip.id, platform)}
             onRegenerate={regenerateFor(firstClip, platform)}
             captionId={ids.caption}
           />
@@ -1115,6 +1182,14 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
                                 </span>
                               </p>
                             ) : null}
+                            {selected.some((platform) => textFailed(clip.id, platform)) ? (
+                              <p className={cx(styles.revPub, styles.textFailed)}>
+                                <Icon name="warning" size={14} />
+                                <span>
+                                  No pudimos generar el texto de este clip en {joinNetworks(selected.filter((platform) => textFailed(clip.id, platform)))}.
+                                </span>
+                              </p>
+                            ) : null}
                           </div>
                         </li>
                       );
@@ -1156,6 +1231,26 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
         </div>
       </Drawer>
       <ConnectNetworkDialog platform={connecting} onClose={() => setConnecting(null)} />
+      <ConfirmDialog
+        open={askEmpty !== null}
+        onClose={keepWriting}
+        onConfirm={() => void submit(askEmpty ?? [])}
+        icon="warning"
+        title={when === 'now' ? '¿Publicar sin texto?' : '¿Programar sin texto?'}
+        description={emptyDescription(askEmpty ?? [])}
+        confirmLabel={when === 'now' ? 'Publicar sin texto' : 'Programar sin texto'}
+        cancelLabel="Escribir el texto"
+      >
+        {askEmpty && askEmpty.length > 1 ? (
+          <ul className={styles.emptyList}>
+            {askEmpty.map((pair) => (
+              <li key={pairKey(pair.clipId, pair.platform)}>
+                «{clips.find((clip) => clip.id === pair.clipId)?.title}» en {NETWORK_NOUN[pair.platform]}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </ConfirmDialog>
     </>
   );
 }

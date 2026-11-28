@@ -131,7 +131,8 @@ class LocalUrlTests(UrlHarness, TestCase):
         self.assertTrue(all(clip["preview_url"] and clip["thumbnail_url"] for clip in data["clips"]))
         self.assertTrue(data["thumbnail_url"])
         self.assertEqual(five, one)
-        self.assertEqual(five, 0)
+        # The URLs are signed from the rows: the one query is the clips' publications, read together.
+        self.assertEqual(five, 1)
 
 
 @override_settings(USE_R2=True, CLOUDFLARE_R2_BUCKET_NAME="bucket", CLIP_DOWNLOAD_URL_TTL_SECONDS=1234)

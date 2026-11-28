@@ -2,6 +2,7 @@ import logging
 import os
 import shutil
 import uuid
+from urllib.parse import urlsplit
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -71,6 +72,25 @@ def absolute_media_url(path: str, request=None) -> str:
         return request.build_absolute_uri(path)
     base = (getattr(settings, 'MEDIA_PUBLIC_BASE_URL', '') or '').rstrip('/')
     return f"{base}/{path.lstrip('/')}" if base else path
+
+
+def provider_media_url(object_key: str, expiration_seconds: int = 3600) -> str:
+    """
+    The URL a publishing provider downloads a clip from (upload_to_social_network).
+    With R2, the presigned GET, as always. With local files (USE_R2=False) the
+    worker has no request to take the origin from, and the provider cannot open
+    a relative /media/ path: the origin is MEDIA_PUBLIC_BASE_URL, or else
+    FRONTEND_URL, where the demo's proxy serves /media/ next to the web app.
+    Only a local or dev test of a provider gets here (a double of Ayrshare).
+    """
+    url = CloudflareR2Manager.generate_presigned_url(object_key, expiration_seconds=expiration_seconds)
+    if '://' in url:
+        return url
+    # Its origin, never its path: a web app served under a path still has /media/ at the root.
+    web = urlsplit(getattr(settings, 'FRONTEND_URL', '') or '')
+    if web.scheme not in ('http', 'https') or not web.netloc:
+        return url
+    return f"{web.scheme}://{web.netloc}/{url.lstrip('/')}"
 
 
 class StoredFileCopyError(Exception):

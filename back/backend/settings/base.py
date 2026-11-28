@@ -148,9 +148,21 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 # Local files only (USE_R2=False): origin for the /media/ URLs built where there
-# is no request to take it from (a Celery task). Empty: those stay relative.
-# The API builds its own from the request (storage_service.absolute_media_url).
-MEDIA_PUBLIC_BASE_URL = env('MEDIA_PUBLIC_BASE_URL', default='')
+# is no request to take it from (a Celery task). Empty: those stay relative, but
+# the clip URL handed to the publishing provider, which takes FRONTEND_URL's
+# (storage_service.provider_media_url). The API builds its own from the request
+# (storage_service.absolute_media_url). An origin: http(s)://host[:port], https in
+# production (backend.settings.prod).
+MEDIA_PUBLIC_BASE_URL = env('MEDIA_PUBLIC_BASE_URL', default='').strip().rstrip('/')
+if MEDIA_PUBLIC_BASE_URL:
+    from urllib.parse import urlsplit as _urlsplit
+
+    _media_base = _urlsplit(MEDIA_PUBLIC_BASE_URL)
+    if _media_base.scheme not in ('http', 'https') or not _media_base.hostname or _media_base.path or _media_base.query:
+        raise ImproperlyConfigured(
+            f'MEDIA_PUBLIC_BASE_URL={MEDIA_PUBLIC_BASE_URL!r} is not an origin: write it like http://localhost:8000 '
+            '(scheme and host, no path), or leave it empty.'
+        )
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

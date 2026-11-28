@@ -4,7 +4,7 @@ import { useId, useRef, useState, type ClipboardEvent, type KeyboardEvent } from
 import type { Platform } from '@/api/contracts/common';
 import type { SocialAccount } from '@/api/contracts/social';
 import { formatNumber } from '@/lib/format';
-import { Button, Field, Icon, Num, Skeleton, Spinner, Textarea, cx } from '@/ui';
+import { Banner, Button, Field, Icon, Num, Skeleton, Spinner, Textarea, cx } from '@/ui';
 import styles from './Publish.module.css';
 import { NETWORK_NOUN, parseHashtags, textLength } from './posts';
 import type { TextValue } from './publish';
@@ -91,6 +91,8 @@ export interface TextEditorProps {
   origin: TextOrigin;
   /** The AI text of this publication is on its way. */
   generating: boolean;
+  /** The AI text failed and the box is empty (`seo_status: 'failed'`): the user writes it or regenerates it. */
+  failed?: boolean;
   /** Absent: the project has no AI text, or there is nothing to regenerate yet. */
   onRegenerate?: () => void;
   /** Id of the caption textarea, so the footer's reason can take the user there. */
@@ -101,7 +103,7 @@ export interface TextEditorProps {
 }
 
 /** Caption and hashtags of one publication, with the network's limits (map E1.2). */
-export function TextEditor({ platform, account, value, onChange, origin, generating, onRegenerate, captionId, label = 'Caption', disabled }: TextEditorProps) {
+export function TextEditor({ platform, account, value, onChange, origin, generating, failed = false, onRegenerate, captionId, label = 'Caption', disabled }: TextEditorProps) {
   const tagsLabelId = useId();
   const errorId = useId();
   const limit = account?.limits.caption_max_chars ?? 2200;
@@ -136,6 +138,11 @@ export function TextEditor({ platform, account, value, onChange, origin, generat
 
   return (
     <div className={styles.textBlock}>
+      {failed && !generating ? (
+        <Banner tone="warn" title="No pudimos generar el texto. Escribilo vos.">
+          {onRegenerate ? 'O pedilo de nuevo con «Regenerar». ' : ''}Si lo dejás vacío, antes de que salga te preguntamos si va sin texto.
+        </Banner>
+      ) : null}
       <Field label={label} labelAside={aside} htmlFor={captionId}>
         {generating ? (
           <div className={styles.gen} aria-busy="true" aria-label="Generando texto">

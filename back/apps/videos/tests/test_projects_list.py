@@ -11,7 +11,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from apps.payments.services import estimate
-from apps.videos.models import BrandKit, ClipLayer, VideoClip, VideoProject
+from apps.videos.models import BrandKit, ClipLayer, ScheduledPost, VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import PipelineStage
 from apps.videos.tests.test_active_workspace import EDITOR, header, join, make_user
 from apps.videos.tests.test_project_data import ProjectDataHarness, reserve
@@ -340,6 +340,12 @@ class QueryCountTests(ListHarness):
             )
             for _ in range(2):
                 ClipLayer.objects.create(clip=clip, layer_type=ClipLayer.LayerType.TEXT, content='Hola')
+            # Where each clip is published or scheduled (the marks of its card).
+            for platform in ('TIKTOK', 'INSTAGRAM_REELS')[:clip_number]:
+                ScheduledPost.objects.create(
+                    video_clip=clip, platform=platform, status=ScheduledPost.Status.SCHEDULED,
+                    publish_at=timezone.now() + timedelta(days=1),
+                )
         # One being processed too: its row estimates the time left.
         self.project(
             title=f'Procesando {number}', status=Status.INGESTING,
@@ -367,6 +373,7 @@ class QueryCountTests(ListHarness):
         self.assertEqual(sum(len(row['clips']) for row in rows), 24)
         self.assertEqual(sum(len(clip['layers']) for row in rows for clip in row['clips']), 48)
         self.assertEqual(sum(clip['render_queued'] for row in rows for clip in row['clips']), 24)
+        self.assertEqual(sum(len(clip['posts']) for row in rows for clip in row['clips']), 24)
         self.assertEqual(sum(1 for row in rows if row.get('brand_kit_name')), 8)
         self.assertEqual(sum(1 for row in rows if row['cost']), 8)
         self.assertEqual(sum(1 for row in rows if row['eta_seconds'] == 295), 8)
@@ -379,6 +386,8 @@ class QueryCountTests(ListHarness):
         self.assertEqual(len(reads('videos_videoproject')), 3, reads('videos_videoproject'))
         self.assertEqual(len(reads('videos_videoclip')), 1, reads('videos_videoclip'))
         self.assertEqual(len(reads('videos_cliplayer')), 1, reads('videos_cliplayer'))
+        # The publications of every clip of the page, together.
+        self.assertEqual(len(reads('videos_scheduledpost')), 1, reads('videos_scheduledpost'))
         self.assertEqual(len(reads('videos_brandkit')), 0, reads('videos_brandkit'))
         # The creation reservations for ``cost``, and the ones that pay the renders in the queue.
         self.assertEqual(len(reads('payments_transaction')), 2, reads('payments_transaction'))
