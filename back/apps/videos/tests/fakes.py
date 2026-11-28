@@ -1,6 +1,7 @@
 """In-memory stand-ins for Redis so tests never need a live broker."""
 
 import threading
+import uuid
 
 import redis
 from django.test import override_settings
@@ -33,11 +34,12 @@ class FakeLock:
         self._token = None
         self.extend_calls = []
 
-    def acquire(self, blocking=True, **kwargs):
+    def acquire(self, blocking=True, token=None, **kwargs):
         with self._store.guard:
             if self.name in self._store.held:
                 return False
-            self._token = object()
+            # The value Redis keeps under the lock's name (redis-py makes up one when none is given).
+            self._token = token if token is not None else uuid.uuid1().hex
             self._store.held[self.name] = self._token
             return True
 
@@ -69,8 +71,11 @@ class FakeRedis:
         self.locks = []
         self.values = {}
 
-    # Plain keys (expiry is not simulated).
+    # Plain keys (expiry is not simulated). A held lock's name reads its token, as in Redis.
     def get(self, name):
+        if name in self.held:
+            token = self.held[name]
+            return token.encode() if isinstance(token, str) else b"held"
         return self.values.get(name)
 
     def set(self, name, value, ex=None):
