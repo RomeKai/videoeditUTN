@@ -5,7 +5,10 @@ from urllib.parse import urlsplit
 from django.core.exceptions import ImproperlyConfigured
 
 from .base import *  # noqa: F403
-from .base import AYRSHARE_BASE_URL, MEDIA_PUBLIC_BASE_URL, PAYMENTS_ALLOW_SIMULATED, PAYMENTS_PROVIDER, REST_FRAMEWORK, env
+from .base import (
+    AYRSHARE_BASE_URL, MEDIA_PUBLIC_BASE_URL, PAYMENTS_ALLOW_SIMULATED, PAYMENTS_PROVIDER, REST_FRAMEWORK,
+    UPLOAD_POST_BASE_URL, env,
+)
 
 # --- MODO PRODUCCIÓN ---
 # ¡CRÍTICO! Nunca True en producción, o te pueden robar las claves.
@@ -74,6 +77,13 @@ _ayrshare = urlsplit(AYRSHARE_BASE_URL)
 if _ayrshare.scheme != 'https' or not _ayrshare.hostname:
     raise ImproperlyConfigured(
         'AYRSHARE_BASE_URL must be an https URL in production (by default https://api.ayrshare.com/api); '
+        'http is only for a local stand-in with DEBUG.'
+    )
+# The same for Upload-Post: every call carries UPLOAD_POST_API_KEY.
+_upload_post = urlsplit(UPLOAD_POST_BASE_URL)
+if _upload_post.scheme != 'https' or not _upload_post.hostname:
+    raise ImproperlyConfigured(
+        'UPLOAD_POST_BASE_URL must be an https URL in production (by default https://api.upload-post.com); '
         'http is only for a local stand-in with DEBUG.'
     )
 

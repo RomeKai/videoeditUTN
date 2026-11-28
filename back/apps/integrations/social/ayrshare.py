@@ -37,12 +37,9 @@ What this module relies on, from Ayrshare's documentation (read on
 """
 import logging
 from datetime import datetime, timezone as dt_timezone
-from urllib.parse import urlsplit
 
 import requests
 from django.conf import settings
-from urllib3 import exceptions as urllib3_exceptions
-from urllib3.exceptions import ConnectTimeoutError, MaxRetryError
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -59,6 +56,14 @@ from .base import (
     CreatedProfile,
     PublishResult,
     SocialProvider,
+)
+from .common import (
+    as_list as _list,
+    json_object as _json,
+    link_schemes,
+    never_sent as _never_sent,
+    text_value as _text,
+    youtube_title as _youtube_title,
 )
 from .errors import (
     ACCOUNT_EXPIRED,
@@ -87,7 +92,6 @@ TIKTOK_VISIBILITY = {
     'MUTUAL_FOLLOW_FRIENDS': 'friends',
     'SELF_ONLY': 'private',
 }
-YOUTUBE_TITLE_MAX = 100
 # Shown on top of Ayrshare's linking page instead of "Social Accounts for <title>".
 LINKING_PAGE_HEADER = 'Conectá tus redes a OneCreator'
 
@@ -115,11 +119,8 @@ def _url(path):
 
 
 def _link_schemes():
-    """
-    The linking page opens in the user's browser: https only. A local stand-in served over http
-    (AYRSHARE_BASE_URL http, which only DEBUG and the tests allow) may answer an http page of its own.
-    """
-    return ('https://',) if urlsplit(settings.AYRSHARE_BASE_URL).scheme == 'https' else ('https://', 'http://')
+    """https only, unless AYRSHARE_BASE_URL is an http stand-in (DEBUG and the tests): common.link_schemes."""
+    return link_schemes(settings.AYRSHARE_BASE_URL)
 
 
 class AyrshareProvider(SocialProvider):
@@ -372,35 +373,7 @@ def _tiktok_options(options):
     }
 
 
-def _youtube_title(title):
-    # YouTube refuses "<" and ">" in a title.
-    clean = ' '.join((title or '').replace('<', '').replace('>', '').split())
-    return clean[:YOUTUBE_TITLE_MAX] or 'Clip'
-
-
 # --- Small readers (never trust the shape of an answer) ---
-
-def _never_sent(exc):
-    """
-    Whether the request certainly never reached Ayrshare: the connection or its
-    TLS handshake or proxy failed (requests then wraps the cause in urllib3's
-    MaxRetryError), the connect timed out, or the URL was refused before
-    sending. A connection reset or closed after the request was written
-    (ProtocolError, RemoteDisconnected), a read timeout or a response cut
-    halfway may have been processed.
-    """
-    if isinstance(exc, requests.exceptions.ConnectTimeout):
-        return True
-    if isinstance(exc, requests.exceptions.ConnectionError):
-        reason = exc.args[0] if exc.args else None
-        return isinstance(reason, MaxRetryError) and isinstance(
-            reason.reason, (ConnectTimeoutError, urllib3_exceptions.SSLError, urllib3_exceptions.ProxyError),
-        )
-    return isinstance(exc, (
-        requests.exceptions.InvalidURL, requests.exceptions.MissingSchema,
-        requests.exceptions.InvalidSchema, requests.exceptions.InvalidHeader,
-    ))
-
 
 def _key(profile):
     """The Profile-Key, or account_not_connected: a call without one would act on the primary profile."""
@@ -410,30 +383,12 @@ def _key(profile):
     return ref
 
 
-def _json(response):
-    try:
-        body = response.json()
-    except ValueError:
-        return None
-    return body if isinstance(body, dict) else None
-
-
 def _entry(body):
     """With a Profile-Key the answer may come in `posts`, one item per profile: this request has one."""
     posts = (body or {}).get('posts')
     if isinstance(posts, list) and posts and isinstance(posts[0], dict):
         return posts[0]
     return body or {}
-
-
-def _list(value):
-    return value if isinstance(value, list) else []
-
-
-def _text(value):
-    if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value):
-        return str(value)
-    return None
 
 
 def _codes(items):
