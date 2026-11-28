@@ -2,7 +2,7 @@
 In-app notifications (the bell, J2): the only place that creates them.
 
 Each ``notify_*`` is called where its event happens (the pipeline, the render,
-a payment's settlement), never from a view that renders. All of them:
+a payment's settlement, the publisher), never from a view that renders. All of them:
 
 - write after the caller's transaction commits (``transaction.on_commit``;
   right away when there is none), so a change that is rolled back never
@@ -22,6 +22,7 @@ says; queueing never raises, and the bell is already written by then.
 """
 import logging
 import uuid
+from datetime import timedelta
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 
 from django.db import transaction
@@ -30,7 +31,7 @@ from django.utils import timezone
 
 from apps.payments.models import Payment, Transaction, Wallet
 from apps.users.models import Workspace, WorkspaceMember
-from apps.videos.models import VideoClip, VideoProject
+from apps.videos.models import ScheduledPost, VideoClip, VideoProject
 
 from .emails import EMAIL_KINDS
 from .models import Notification
@@ -261,6 +262,57 @@ def low_balance_message(available):
     return title, 'El saldo quedó por debajo de lo que cuesta un video promedio.'
 
 
+# Failure codes of a post (the API's `error_code`) that mean "it may be out".
+POST_MAYBE_OUT = ('outcome_unknown', 'duplicate_content')
+# ``reason`` of the one notification of a network that was disconnected with several posts to go.
+NETWORK_DISCONNECTED = 'network_disconnected'
+# A workspace is told of this many failed posts one by one within POST_BURST_WINDOW; the next one
+# writes a single notification for all that follow (``reason`` SEVERAL_POSTS_FAILED) and the rest
+# of the window is silent. A broker or worker outage can fail every post of a bulk create (60) or
+# of a sweep at once: one notification and one email each would empty the bell of everything else.
+POST_BURST_LIMIT = 3
+POST_BURST_WINDOW = timedelta(minutes=10)
+SEVERAL_POSTS_FAILED = 'several_posts_failed'
+
+
+def post_failed_message(post):
+    """
+    (title, body, reason) of ``post_failed`` for a FAILED post. The title
+    names the clip (its project when it has no title) and the network. The
+    body is the API's `error_message` of the post, the words Publicaciones
+    shows for its code: it never has text a user typed, so the email carries
+    it. ``reason`` is the code (the API's `error_code`).
+    """
+    from apps.videos.serializers_social import ScheduledPostSerializer
+
+    serializer = ScheduledPostSerializer()
+    code = serializer.get_error_code(post) or ''
+    clip = post.video_clip
+    name = (clip.title or clip.project.title)[:_TITLE_ROOM - 15]
+    network = post.get_platform_display()
+    if code in POST_MAYBE_OUT:
+        title = f'{name}: no sabemos si se publicó en {network}'
+    else:
+        title = f'{name}: no se pudo publicar en {network}'
+    return title, serializer.get_error_message(post) or '', code[:32]
+
+
+def network_disconnected_message(network, posts):
+    """(title, body) of the ``post_failed`` of a disconnected network with ``posts`` (2 or more) that will not go out."""
+    return (
+        f'Se desconectó {network}: {posts} publicaciones no van a salir',
+        f'Reconectá la cuenta de {network} y reintentalas desde Publicaciones.',
+    )
+
+
+def several_posts_failed_message():
+    """(title, body) of the one ``post_failed`` that stands for the failures after POST_BURST_LIMIT."""
+    return (
+        'Fallaron varias publicaciones en pocos minutos',
+        'No te avisamos de cada una: revisalas en Publicaciones y reintentalas.',
+    )
+
+
 def buyers_of(workspace):
     """The ids of who can buy tokens in the workspace: its owner and its ACTIVE admins."""
     admins = WorkspaceMember.objects.filter(
@@ -392,3 +444,79 @@ def notify_low_balance(workspace_id):
         _write(workspace, buyers_of(workspace), Kind.LOW_BALANCE, *low_balance_message(available))
 
     _after_commit('low_balance', build, workspace_id=workspace_id)
+
+
+def _failed_post(post_id):
+    return (
+        ScheduledPost.objects.select_related('video_clip__project__workspace')
+        .filter(pk=post_id, status=ScheduledPost.Status.FAILED).first()
+    )
+
+
+def _write_post_failed(post):
+    project = post.video_clip.project
+    workspace = project.workspace
+    recent = Notification.objects.filter(
+        workspace=workspace, kind=Kind.POST_FAILED, created_at__gte=timezone.now() - POST_BURST_WINDOW,
+    )
+    if recent.filter(reason=SEVERAL_POSTS_FAILED).exists():
+        return  # already told that several are failing
+    if recent.exclude(post=None).values('post_id').distinct().count() >= POST_BURST_LIMIT:
+        _write(
+            workspace, recipients_of(workspace), Kind.POST_FAILED, *several_posts_failed_message(),
+            reason=SEVERAL_POSTS_FAILED,
+        )
+        return
+    title, body, reason = post_failed_message(post)
+    _write(workspace, recipients_of(workspace), Kind.POST_FAILED, title, body, project=project, post=post, reason=reason)
+
+
+def notify_post_failed(post_id):
+    """
+    A scheduled post ended FAILED: it did not go out (or nobody knows if it
+    did), and someone has to retry it, fix its account or write its text. For
+    the workspace's owner and its ACTIVE members, with a link to the post in
+    Publicaciones.
+
+    Call it once per failure, from the write that moved the post to FAILED,
+    never from one that writes FAILED over FAILED: a post that is retried and
+    fails again is a new failure and tells again. Nothing is written if the
+    post is gone or no longer FAILED by the time the write commits (a retry
+    was faster).
+
+    A burst is bounded: after POST_BURST_LIMIT posts of a workspace told one
+    by one within POST_BURST_WINDOW, the next failure writes one notification
+    for all that follow, and the rest of the window writes nothing.
+    """
+    def build():
+        post = _failed_post(post_id)
+        if post is not None:
+            _write_post_failed(post)
+
+    _after_commit('post_failed', build, post_id=post_id)
+
+
+def notify_network_posts_failed(post_ids):
+    """
+    A network was disconnected and ``post_ids`` (its posts that were going
+    out, all of one workspace and one network) turned FAILED. One post tells
+    like any other failure. Several tell once for all of them, with a link to
+    Publicaciones: a notification and an email per post would bury the bell,
+    which keeps ``KEPT_PER_USER``.
+    """
+    post_ids = list(post_ids)
+
+    def build():
+        posts = list(
+            ScheduledPost.objects.select_related('video_clip__project__workspace')
+            .filter(pk__in=post_ids, status=ScheduledPost.Status.FAILED).order_by('pk')
+        )
+        if len(posts) == 1:
+            _write_post_failed(posts[0])
+        elif posts:
+            workspace = posts[0].video_clip.project.workspace
+            title, body = network_disconnected_message(posts[0].get_platform_display(), len(posts))
+            _write(workspace, recipients_of(workspace), Kind.POST_FAILED, title, body, reason=NETWORK_DISCONNECTED)
+
+    if post_ids:
+        _after_commit('network_posts_failed', build, posts=len(post_ids))

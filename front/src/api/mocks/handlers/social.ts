@@ -5,8 +5,8 @@ import { newId, type MockDb, type MockPost, type MockWorkspace } from '../db';
 import { badRequest, conflict, MockHttpError, notFound, paginate, route } from '../http';
 import { adoptClip } from '../hybrid';
 import { planOf, serializePost } from '../serialize';
-import { failPublish } from '../publish-errors';
-import { addActivity } from '../sim';
+import { failPublish, networkDisconnectedNotification, postFailedNotification } from '../publish-errors';
+import { addActivity, notify } from '../sim';
 
 const NETWORK_NAME: Record<Platform, string> = { TIKTOK: 'TikTok', INSTAGRAM_REELS: 'Instagram Reels', YOUTUBE_SHORTS: 'YouTube Shorts' };
 /** What a disconnected network fails (fail_network_posts): what was going out on it. */
@@ -273,12 +273,18 @@ export const socialHandlers = [
     account.connected_at = null;
     account.tiktok = null;
     // services/scheduled_posts.fail_network_posts: what was going out on that network fails; drafts stay drafts.
+    const failed: MockPost[] = [];
     for (const post of db.posts) {
       if (post.workspace !== workspace.id || post.platform !== account.platform || !GOING_OUT.has(post.status)) continue;
       failPublish(post, 'account_not_connected', 'disconnected');
       delete post._sim;
       post.updated_at = new Date(now).toISOString();
+      failed.push(post);
     }
+    // notify_network_posts_failed: one post tells like any failure; several, once for all (no post to lead to).
+    const [only] = failed;
+    if (failed.length === 1 && only) notify(db, workspace.id, postFailedNotification(only), now);
+    else if (failed.length > 1) notify(db, workspace.id, networkDisconnectedNotification(account.platform, failed.length), now);
     return { data: undefined };
   }),
 

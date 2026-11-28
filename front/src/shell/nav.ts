@@ -51,7 +51,7 @@ export function notificationHref(notification: { type: string; project_id: strin
     case 'project_failed':
       return notification.project_id ? `/proyectos/${notification.project_id}` : '/proyectos';
     case 'post_failed':
-      return notification.post_id ? `/publicaciones?publicacion=${notification.post_id}` : '/publicaciones';
+      return notification.post_id ? `/publicaciones?detalle=${notification.post_id}` : '/publicaciones';
     case 'low_balance':
       return '/uso/comprar';
     case 'payment_approved':

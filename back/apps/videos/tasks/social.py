@@ -55,7 +55,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from django.utils import timezone
 from django.db import DatabaseError, transaction
-from django.db.models import Case, F, JSONField, Q, TextField, Value, When
+from django.db.models import BooleanField, Case, F, JSONField, Q, TextField, Value, When
 from django.core.cache import caches
 from apps.videos.models import VideoProject, VideoClip, ScheduledPost
 from backend.celery import app as celery_app
@@ -126,6 +126,30 @@ def dispatch_scheduled_posts_batch():
     logger.info(f"🚀 [DISPATCHER] Queued {count} posts for distribution.")
     return f"Queued {count} posts."
 
+def _notify_post_failed(post_id):
+    """The bell and the email of a post that just turned FAILED (apps.notifications); never raises."""
+    from apps.notifications.services import notify_post_failed
+
+    notify_post_failed(post_id)
+
+
+def _fail_post(post_id, **changes):
+    """
+    The post is FAILED with ``changes``, as one UPDATE by id wrote it before.
+    When this write is the one that failed it (it was not FAILED: the first
+    UPDATE says so by itself, with no lock), its people are told once.
+    Writing FAILED over FAILED changes the row and tells nobody; that second
+    UPDATE only matches a post that is still FAILED, so a post a retry moved
+    on in between is left alone instead of failing with nobody told.
+    """
+    posts = ScheduledPost.objects.filter(id=post_id)
+    failed = ScheduledPost.Status.FAILED
+    if posts.exclude(status=failed).update(status=failed, **changes):
+        _notify_post_failed(post_id)
+    else:
+        posts.filter(status=failed).update(**changes)
+
+
 @celery_app.task(name='apps.videos.tasks.upload_to_social_network', bind=True, max_retries=3)
 def upload_to_social_network(self, post_id):
     """
@@ -173,10 +197,7 @@ def upload_to_social_network(self, post_id):
             "publish.lock_unavailable post_id=%s attempt=%d error=%s", post_id, attempts, type(exc).__name__,
         )
         if self.request.retries >= self.max_retries:
-            ScheduledPost.objects.filter(id=post_id).update(
-                status=ScheduledPost.Status.FAILED,
-                error_log=f"Lock unavailable after {attempts} attempts: {type(exc).__name__}",
-            )
+            _fail_post(post_id, error_log=f"Lock unavailable after {attempts} attempts: {type(exc).__name__}")
             raise
         raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
     if not acquired:
@@ -250,6 +271,7 @@ def upload_to_social_network(self, post_id):
 
         if failure is not None:
             logger.error("publish.not_sent post_id=%s code=%s", post_id, failure.code)
+            _notify_post_failed(post_id)  # it was QUEUED or PROCESSING under its row lock
             raise PostConfigurationError(failure.code)
 
         # 1. Presigned URL (valid for 1 hour): the provider downloads the video from it. Always
@@ -321,11 +343,7 @@ def upload_to_social_network(self, post_id):
             # Out of retries: FAILED, never left in PROCESSING with no task behind it. If an attempt
             # may have published, the user must check the network, not be told to try again.
             code = codes.OUTCOME_UNKNOWN if unclear else codes.PROVIDER_UNAVAILABLE
-            ScheduledPost.objects.filter(id=post_id).update(
-                status=ScheduledPost.Status.FAILED,
-                error_log=f"{code} (after {attempts} attempts; {exc.detail})",
-                **changes,
-            )
+            _fail_post(post_id, error_log=f"{code} (after {attempts} attempts; {exc.detail})", **changes)
             raise
         # "Retry n: ..." tells the API that a retry is on its way (services/scheduled_posts.stuck_after).
         ScheduledPost.objects.filter(id=post_id).update(error_log=f"Retry {attempts}: {exc}", **changes)
@@ -339,10 +357,7 @@ def upload_to_social_network(self, post_id):
     except social.OutcomeUnknownError as exc:
         # Never retried: the post may already be public. A person checks and retries.
         logger.error("publish.outcome_unknown post_id=%s detail=%s", post_id, exc.detail)
-        ScheduledPost.objects.filter(id=post_id).update(
-            status=ScheduledPost.Status.FAILED,
-            error_log=str(exc),
-        )
+        _fail_post(post_id, error_log=str(exc))
         raise
 
     except social.PermanentError as exc:
@@ -350,8 +365,8 @@ def upload_to_social_network(self, post_id):
         # refusal may be the provider's answer to a repeated key (its code is not documented): it may be out.
         code = codes.OUTCOME_UNKNOWN if unclear_before else exc.code
         logger.error("publish.rejected post_id=%s code=%s detail=%s", post_id, code, exc.detail)
-        ScheduledPost.objects.filter(id=post_id).update(
-            status=ScheduledPost.Status.FAILED,
+        _fail_post(
+            post_id,
             retry_count=F('retry_count') + 1,
             publish_key_unclear=unclear_before,
             error_log=f"{code} ({exc.detail})" if exc.detail else code,
@@ -375,7 +390,7 @@ def upload_to_social_network(self, post_id):
             error_log = f"{codes.OUTCOME_UNKNOWN} (critical {type(e).__name__})"
         else:
             error_log = f"Critical: {str(e)}"
-        ScheduledPost.objects.filter(id=post_id).update(status=ScheduledPost.Status.FAILED, error_log=error_log)
+        _fail_post(post_id, error_log=error_log)
         # Re-raised so Celery records FAILURE instead of reporting a silent SUCCESS.
         raise
 
@@ -577,7 +592,19 @@ def _fail_seo_post(post_id, code, redispatch=True, cutoff=_ANY_REQUEST):
         ended = True
     else:
         keeps = Q(status=ScheduledPost.Status.DRAFT) | HAS_TEXT
-        ended = bool(posts.exclude(earlier_text).exclude(publish_failure).update(
+        ending = posts.exclude(earlier_text).exclude(publish_failure)
+        # The post this write fails (it was going out, with no text): its people are told once.
+        # The same rule as the UPDATE below, which then finds nothing left to end.
+        newly_failed = bool(
+            ending.exclude(status=ScheduledPost.Status.FAILED)
+            .annotate(fails=Case(When(keeps, then=Value(False)), default=Value(True), output_field=BooleanField()))
+            .filter(fails=True)
+            .update(status=ScheduledPost.Status.FAILED, error_log=code, seo_requested_at=None)
+        )
+        if newly_failed:
+            _notify_post_failed(post_id)
+        # Only a post that keeps its status (already FAILED, a draft, one with a text): never a new failure.
+        ended = newly_failed or bool(ending.filter(Q(status=ScheduledPost.Status.FAILED) | keeps).update(
             status=Case(When(keeps, then=F('status')), default=Value(ScheduledPost.Status.FAILED)),
             error_log=code,
             seo_requested_at=None,
