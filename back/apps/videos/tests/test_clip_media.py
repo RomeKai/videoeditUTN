@@ -115,8 +115,8 @@ class LocalUrlTests(UrlHarness, TestCase):
 
     def test_a_project_with_five_clips_costs_the_queries_of_one_with_a_single_clip(self):
         def queries():
-            # Loaded like the projects view loads it (its creator comes with it, for uploaded_by_detail).
-            project = VideoProject.objects.select_related("uploaded_by").prefetch_related("clips__layers").get(pk=self.project.pk)
+            # Loaded like the list of projects loads it (its creator comes with it, for uploaded_by_detail).
+            project = VideoProject.objects.select_related("uploaded_by").prefetch_related("clips").get(pk=self.project.pk)
             with CaptureQueriesContext(connection) as captured:
                 data = VideoProjectSerializer(project, context={"request": self.request}).data
             return len(captured), data
@@ -131,8 +131,9 @@ class LocalUrlTests(UrlHarness, TestCase):
         self.assertTrue(all(clip["preview_url"] and clip["thumbnail_url"] for clip in data["clips"]))
         self.assertTrue(data["thumbnail_url"])
         self.assertEqual(five, one)
-        # The URLs are signed from the rows: the one query is the clips' publications, read together.
-        self.assertEqual(five, 1)
+        # The URLs are signed from the rows: the two queries are the clips' publications and their
+        # layers, each read together.
+        self.assertEqual(five, 2)
 
 
 @override_settings(USE_R2=True, CLOUDFLARE_R2_BUCKET_NAME="bucket", CLIP_DOWNLOAD_URL_TTL_SECONDS=1234)
