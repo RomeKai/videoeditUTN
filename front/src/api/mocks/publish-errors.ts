@@ -10,6 +10,7 @@ export const NETWORK_DISPLAY: Record<Platform, string> = { TIKTOK: 'TikTok', INS
  */
 export const PUBLISH_ERROR_MESSAGES: Record<string, (network: string) => string> = {
   account_not_connected: (network) => `La cuenta de ${network} no está conectada. Conectala y reintentá.`,
+  clip_too_long: (network) => `El clip dura más de lo que acepta ${network}. Acortalo y reintentá.`,
   account_expired: (network) => `La cuenta de ${network} venció. Reconectala y reintentá.`,
   quota_exceeded: () => 'Se alcanzó el límite de publicaciones de este mes. Probá de nuevo más adelante.',
   tiktok_options_missing: () => 'Faltó elegir quién puede ver el video en TikTok. Cancelá esta publicación y creala de nuevo.',

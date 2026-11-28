@@ -93,6 +93,7 @@ export const ScheduledPost = z.object({
   /**
    * Only when `FAILED`. Of the AI text: the `seo_*`, `moderation_*` and `content_blocked` codes. Of publishing:
    * `account_not_connected` and `account_expired` (reconnect, then retry), `tiktok_options_missing`, `quota_exceeded`,
+   * `clip_too_long` (shorten the clip, then retry),
    * `duplicate_content` and `outcome_unknown` (it may be out already: check the network before retrying),
    * `provider_rejected`, `provider_unavailable`, and `publish_failed` for anything else.
    */

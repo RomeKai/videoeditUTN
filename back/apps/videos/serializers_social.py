@@ -30,6 +30,7 @@ SEO_ERROR_FALLBACK = "No pudimos generar el texto. Escribilo vos."
 # publishing is PUBLISH_ERROR_CODE, provider_not_configured included (ours to fix).
 PUBLISH_ERROR_MESSAGES = {
     'account_not_connected': "La cuenta de {network} no está conectada. Conectala y reintentá.",
+    'clip_too_long': "El clip dura más de lo que acepta {network}. Acortalo y reintentá.",
     'account_expired': "La cuenta de {network} venció. Reconectala y reintentá.",
     'quota_exceeded': "Se alcanzó el límite de publicaciones de este mes. Probá de nuevo más adelante.",
     'tiktok_options_missing': (

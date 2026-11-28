@@ -5,6 +5,7 @@ import { apiCall } from '@/api/client';
 import * as brandKits from '@/api/contracts/brandkits';
 import * as social from '@/api/contracts/social';
 import { ApiError } from '@/api/errors';
+import { failPublish } from '@/api/mocks/publish-errors';
 import { server } from '@/api/mocks/server';
 import { tick } from '@/api/mocks/sim';
 import { USER_IDS, WORKSPACE_IDS } from '@/api/mocks/seed';
@@ -370,6 +371,19 @@ describe('contrato de redes (hueco 10): los mocks como el backend', () => {
   beforeEach(() => signIn('estudio-norte'));
 
   const tiktok = { privacy_level: 'SELF_ONLY', allow_comment: false, allow_duet: false, allow_stitch: false, brand_organic: false, branded_content: false } as const;
+
+  it('un clip demasiado largo muestra el código y el mensaje del backend', () => {
+    const post: Parameters<typeof failPublish>[0] = {
+      platform: 'YOUTUBE_SHORTS', status: 'QUEUED', error_log: null, error_code: null, error_message: null,
+    };
+
+    failPublish(post, 'clip_too_long');
+
+    expect(post).toMatchObject({
+      status: 'FAILED', error_log: 'clip_too_long', error_code: 'clip_too_long',
+      error_message: 'El clip dura más de lo que acepta YouTube Shorts. Acortalo y reintentá.',
+    });
+  });
 
   it('desconectar deja en error lo programado y lo que está en cola de esa red; los borradores no cambian', async () => {
     const db = loadDb();

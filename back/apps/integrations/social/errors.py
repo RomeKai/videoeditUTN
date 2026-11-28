@@ -22,6 +22,8 @@ never the provider's message (it can quote the caption) nor a profile key.
 
 # The account of that network is not connected to the workspace's profile (or there is no profile).
 ACCOUNT_NOT_CONNECTED = 'account_not_connected'
+# The clip lasts more than the network accepts (scheduled_posts.MAX_DURATION_SECONDS): never sent.
+CLIP_TOO_LONG = 'clip_too_long'
 # The network asks to connect the account again (its authorization expired or was revoked).
 ACCOUNT_EXPIRED = 'account_expired'
 # The provider's monthly post quota, or the network's daily cap, is used up.
