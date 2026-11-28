@@ -113,8 +113,11 @@ class ScheduledPostSerializer(serializers.ModelSerializer):
         if post.generated_caption and post.generated_hashtags is not None:
             return 'ready'
         # A draft, or a post with the user's own text, keeps its status when its text fails
-        # (process_video_seo's _fail_seo_post); a limited request leaves the code too.
-        if _seo_error_code(post):
+        # (process_video_seo's _fail_seo_post); a limited request leaves the code too, and a request
+        # that outlived its window is a failure even before the dispatcher records it (ai_text_failed).
+        from .services.scheduled_posts import ai_text_failed
+
+        if ai_text_failed(post):
             return 'failed'
         return 'none'
 
@@ -224,6 +227,9 @@ class _PostTextFields(serializers.Serializer):
     caption = serializers.CharField(required=False, allow_blank=True)
     hashtags = serializers.ListField(child=serializers.CharField(allow_blank=True), required=False)
     tiktok = serializers.JSONField(required=False, error_messages={'null': TIKTOK_PRIVACY_MISSING})
+    # True: the post may go out with no text after its AI text failed; without it that is a 400
+    # `post_text_missing` (services/scheduled_posts._check_has_text). It changes nothing else.
+    allow_empty_text = serializers.BooleanField(required=False)
 
     def validate_hashtags(self, value):
         return clean_hashtags(value)

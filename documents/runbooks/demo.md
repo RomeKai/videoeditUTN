@@ -66,7 +66,7 @@ La web corre en modo híbrido. **Hoy** la demo manda al backend real el usuario,
 | Nuevo proyecto | `/proyectos/nuevo` | **Backend** crea, valida, estima y cobra. Los límites del plan que se ven antes son mock |
 | Proyecto: resumen, transcripción, actividad | `/proyectos/:id` | **Backend** |
 | Revisión de clips | `/proyectos/:id/revision` | **Backend**, también el video y el render |
-| Clips, editor de clip y descargas | `/proyectos/:id/clips` | **Backend**. La miniatura de cada clip es un dibujo: todavía no existe en el backend |
+| Clips, editor de clip y descargas | `/proyectos/:id/clips` | **Backend**. La miniatura de cada clip es un dibujo: todavía no existe en el backend. Las marcas «Publicado» y «Programado» y los contadores de esos filtros salen de las publicaciones del backend (`posts` de cada clip): lo que se publica en la demo va a los mocks, así que no las cambia y el clip sigue «Listo» |
 | Brand kits | `/brand-kits` | **Backend**, también duplicar (copia los archivos) |
 | Mi cuenta y avisos por email | menú del usuario | **Backend** |
 | Saldo de la barra, Uso (consumo y movimientos) | `/uso` | **Backend** |
@@ -92,7 +92,7 @@ Dos cosas para tener presentes:
 4. **Revisión**: el video, la transcripción y los clips sugeridos. Elegí dos y tocá «Renderizar». Es el render de verdad.
 5. **Clips**: aparecen en «Listo» cuando terminan. Descargá uno y abrilo.
 6. **Brand kits**: abrí «Kit de la demo» y cambiá un color. Queda guardado en el backend.
-7. **Publicar** un clip y mirar **Publicaciones**. Decilo: en esta demo la publicación es simulada.
+7. **Publicar** un clip y mirar **Publicaciones**. Decilo: en esta demo la publicación es simulada. Después de publicar, mostrá Publicaciones y no Clips: Clips cuenta solo las publicaciones del backend, y ahí el clip sigue «Listo» con «Publicados 0 · Programados 0».
 8. **Comprar tokens**: en Uso → Comprar tokens elegí un paquete (por ejemplo 1.000 tokens) y tocá «Ir al pago». Se abre el checkout de prueba: tocá «Pagar». Vuelve a Uso con «Compra acreditada» y el saldo de la barra sube en esos tokens; en Movimientos aparece la compra. Decilo: el pago es simulado, nadie cobra. Con «Simular pago rechazado» se ve el aviso de pago rechazado y el saldo no cambia.
 9. **Planes**: pasar a otro plan pago también pasa por el checkout de prueba y, al aprobar, se aplica al momento. Pasar a Gratis queda para el fin del período (con Pro de cortesía no hay período, así que se aplica al momento: mejor no mostrarlo, o correr `seed_demo` después para volver a Pro).
 10. Volvé al proyecto del paso 2. Si ya está listo para revisar, mostralo.

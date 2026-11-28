@@ -415,6 +415,26 @@
   flex: none;
   margin-top: 1px;
 }
+/* The AI text failed and the box is empty: amber, like a reason that does not block the button. */
+.textFailed {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--warn);
+}
+.textFailed svg {
+  flex: none;
+  margin-top: 1px;
+}
+.emptyList {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--fg-muted);
+}
 .gen {
   display: flex;
   flex-direction: column;

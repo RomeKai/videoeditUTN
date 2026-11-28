@@ -56,8 +56,16 @@ def queue_post_seo(post_id, regenerate=False):
             logger.error(
                 "seo.dispatch_failed post_id=%s error=%s", post_id, type(exc).__name__,
             )
-            # Nothing is generating it: the API stops showing it as pending, and "Regenerar" works again.
-            ScheduledPost.objects.filter(pk=post_id).update(seo_requested_at=None)
+            # Nothing is generating it: a failure of the text, as if the task had failed (the request
+            # ends, "Regenerar" works again, an earlier text stays). Without that, a post with no text
+            # of its own would read `seo_status: "none"` and go out empty on the next dispatch. A post
+            # that already FAILED keeps the failure it has (maybe one of publishing): its request ends.
+            from .services.scheduled_posts import SEO_DISPATCH_FAILED_CODE
+            from .tasks.social import _fail_seo_post
+
+            failed = ScheduledPost.objects.filter(pk=post_id, status=ScheduledPost.Status.FAILED)
+            if failed.update(seo_requested_at=None) == 0:
+                _fail_seo_post(post_id, SEO_DISPATCH_FAILED_CODE)
             return
         logger.info("seo.dispatched post_id=%s regenerate=%s", post_id, regenerate)
 

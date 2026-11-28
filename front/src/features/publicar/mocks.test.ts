@@ -178,6 +178,42 @@ describe('contrato de publicar: como el backend', () => {
     expect([draft.status, draft.seo_status]).toEqual(['DRAFT', 'failed']);
   });
 
+  it('un borrador cuyo texto con IA falló no sale vacío salvo que el pedido lo pida (`allow_empty_text`), como el backend', async () => {
+    const db = loadDb();
+    const failed = db.posts.find((post) => post.workspace === WORKSPACE_IDS.estudio && post.status === 'FAILED');
+    if (!failed) throw new Error('falta una publicación fallida');
+    Object.assign(failed, {
+      platform: 'INSTAGRAM_REELS', error_log: 'seo_no_clip_transcript', error_code: 'seo_no_clip_transcript', seo_status: 'failed',
+      caption: '', hashtags: [], generated_caption: null, generated_hashtags: null,
+    });
+    saveDb(db);
+    const draft = await apiCall(social.retryPost, { params: { id: failed.id } });
+
+    const refused = await fail(apiCall(social.updatePost, { params: { id: draft.id }, body: { publish_at: null } }));
+    expect([refused.status, refused.code]).toEqual([400, 'post_text_missing']);
+    expect((await apiCall(social.getPost, { params: { id: draft.id } })).status).toBe('DRAFT');
+    // With a text of its own, or with the person's word, it goes.
+    const sent = await apiCall(social.updatePost, { params: { id: draft.id }, body: { publish_at: null, allow_empty_text: true } });
+    expect([sent.status, sent.caption]).toEqual(['SCHEDULED', '']);
+  });
+
+  it('mover a otra hora una programada sin texto no pregunta; vaciarle el texto sí (revisión de #192)', async () => {
+    const db = loadDb();
+    const scheduled = db.posts.find((post) => post.workspace === WORKSPACE_IDS.estudio && post.status === 'SCHEDULED');
+    if (!scheduled) throw new Error('falta una publicación programada');
+    Object.assign(scheduled, { platform: 'INSTAGRAM_REELS', seo_status: 'failed', caption: '', hashtags: [], generated_caption: null, generated_hashtags: null });
+    saveDb(db);
+    const later = new Date(Date.now() + 3 * 24 * 3600 * 1000).toISOString();
+
+    const moved = await apiCall(social.updatePost, { params: { id: scheduled.id }, body: { publish_at: later } });
+    expect(moved.status).toBe('SCHEDULED');
+    // (The move ends the failure, as in the backend: put it back to see the text edit asked about.)
+    const again = loadDb();
+    Object.assign(again.posts.find((post) => post.id === scheduled.id) ?? {}, { seo_status: 'failed' });
+    saveDb(again);
+    expect((await fail(apiCall(social.updatePost, { params: { id: scheduled.id }, body: { caption: '' } }))).code).toBe('post_text_missing');
+  });
+
   it('el lote dice cuál publicación tiene el error y no crea ninguna', async () => {
     const before = loadDb().posts.length;
     const error = await fail(

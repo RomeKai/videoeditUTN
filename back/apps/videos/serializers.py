@@ -1,6 +1,7 @@
 import math
 
 from django.db import models, transaction
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 from rest_framework.fields import empty
 from rest_framework.exceptions import APIException
@@ -118,6 +119,45 @@ class ClipLayerSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ('id', 'clip')
 
+
+class ClipPostSerializer(serializers.Serializer):
+    """A publication of a clip, as its card reads it (contract ClipPostRef): where and when, and how it is."""
+
+    id = serializers.UUIDField()
+    platform = serializers.CharField()
+    status = serializers.CharField()
+    publish_at = serializers.DateTimeField()
+
+
+def _response_posts(field, clip):
+    """
+    The publications of ``clip``, read once for every clip the response sends:
+    the posts of the projects (or of the clips) at the root of the response
+    together, in one query however many clips there are. The rows of a page of
+    the list, a project with its clips, a clip alone and a list of clips are
+    the roots there are (``render_queued`` reads its reservations the same way).
+    """
+    from .models import ScheduledPost
+
+    state = field.context.setdefault('_clip_posts', {'projects': set(), 'clips': set(), 'rows': {}})
+    if clip.project_id not in state['projects'] and clip.pk not in state['clips']:
+        root = field.root.instance
+        items = list(root) if isinstance(root, (list, tuple, models.QuerySet)) else [root]
+        projects = {item.pk for item in items if isinstance(item, VideoProject)} - state['projects']
+        clips = {item.pk for item in items if isinstance(item, VideoClip)} - state['clips']
+        if clip.project_id not in projects:
+            clips.add(clip.pk)
+        rows = (
+            ScheduledPost.objects.filter(models.Q(video_clip__project_id__in=projects) | models.Q(video_clip_id__in=clips))
+            .order_by('publish_at', 'id').values('id', 'video_clip_id', 'platform', 'status', 'publish_at')
+        )
+        for row in rows:
+            state['rows'].setdefault(row['video_clip_id'], {})[row['id']] = row
+        state['projects'] |= projects
+        state['clips'] |= clips
+    return list(state['rows'].get(clip.pk, {}).values())
+
+
 class VideoClipSerializer(serializers.ModelSerializer):
     layers = ClipLayerSerializer(many=True, read_only=True)
     # A paid render (a retry, a render from the editor, a rerender, an approval,
@@ -137,6 +177,11 @@ class VideoClipSerializer(serializers.ModelSerializer):
         "Temporary URL of the clip's thumbnail (a JPEG frame of its render), as preview_url. Null when "
         "the clip has none: never rendered, or the thumbnail could not be made."
     ))
+    # What the clip card counts (Publicados, Programados): every publication of the clip.
+    posts = serializers.SerializerMethodField(help_text=(
+        "Every publication of the clip, whatever its status (drafts and failures too), as {id, platform, "
+        "status, publish_at}, by publish_at. Read once for the whole response, never one query per clip."
+    ))
 
     class Meta:
         model = VideoClip
@@ -155,6 +200,10 @@ class VideoClipSerializer(serializers.ModelSerializer):
         from .services.clip_media import thumbnail_url
 
         return thumbnail_url(clip, self.context)
+
+    @extend_schema_field(ClipPostSerializer(many=True))
+    def get_posts(self, clip):
+        return ClipPostSerializer(_response_posts(self, clip), many=True).data
 
     def get_render_queued(self, clip) -> bool:
         if clip.status != VideoClip.Status.DRAFT:

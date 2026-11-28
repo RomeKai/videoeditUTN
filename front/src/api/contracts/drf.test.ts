@@ -5,7 +5,7 @@ import { describeProjectStatus } from '@/lib/project-status';
 import { ApiError } from '../errors';
 import { TokenPair, refreshToken } from './auth';
 import { returnedPart } from '@/features/uso/movements';
-import { explainMovements, foldedMovement } from '@/features/proyecto/model';
+import { clipCounts, describeClip, explainMovements, foldedMovement } from '@/features/proyecto/model';
 import {
   Payment,
   Subscription,
@@ -72,6 +72,17 @@ describe('respuestas reales del backend', () => {
     expect(second).toMatchObject({ count: 3, next: null, status_counts: first.status_counts });
     expect(second.previous).toContain('page_size=2');
     expect(second.results.map((project) => project.id)).toEqual([first.results[2]?.id]);
+  });
+
+  it('lista de proyectos: cada clip trae sus publicaciones y la tarjeta de D3 las lee (ensayo 6)', () => {
+    const first = parse(ProjectsResponse, real.project_list) as ProjectsResponse;
+    const ready = first.results[2];
+    const clip = ready?.clips[0];
+    expect(clip?.posts).toEqual([{ id: expect.any(String), platform: 'TIKTOK', status: 'PUBLISHED', publish_at: '2026-11-04T10:45:00Z' }]);
+    expect(clip && describeClip(clip, ready?.status)).toMatchObject({ group: 'published', label: 'Publicado', where: { platform: 'TIKTOK' } });
+    expect(ready && clipCounts(ready.clips, ready.status)).toMatchObject({ published: 1, ready: 0 });
+    // A clip with none says so with an empty list, not by leaving the field out.
+    expect(first.results[1]?.clips[0]?.posts).toEqual([]);
   });
 
   it('lista de proyectos: una fila no trae la transcripción ni el registro de la selección; el proyecto sí', () => {
@@ -498,6 +509,12 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
     const bulk = error('post_400_bulk_index', 'social.createPostsBulk');
     expect([bulk.data.index, fieldError(bulk, 'caption')]).toEqual([1, 'El texto supera el límite de Instagram Reels (2200 caracteres).']);
     expect(fieldError(error('post_400_tiktok', 'social.createPost'), 'tiktok')).toBe('Elegí quién puede ver el video.');
+    // Ensayo 6: a draft whose AI text failed does not go out empty unless the request says so.
+    const textless = error('post_400_text_missing', 'social.updatePost');
+    expect([textless.status, textless.code, errorMessage(textless)]).toEqual([
+      400, 'post_text_missing', 'No pudimos generar el texto con IA y esta publicación no tiene texto: escribilo o regeneralo.',
+    ]);
+    expect(updatePost.errors?.find((item) => item.status === 400)?.when).toContain('post_text_missing');
     expect(error('post_409_account_not_connected', 'social.createPost').code).toBe('account_not_connected');
     for (const [key, code] of [
       ['post_409_in_flight', 'post_in_flight'],

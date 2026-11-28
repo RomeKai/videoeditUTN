@@ -139,7 +139,10 @@ export const ClipLayer = z.object({
   prompt_used: z.string(),
 });
 
-/** Where a clip is published or scheduled: the marks on the clip card (D3). */
+/**
+ * A publication of the clip (VideoClipSerializer.posts · ClipPostSerializer): where and when it goes or
+ * went out, and how it is. The marks and the counts of the clip cards (D3) read it.
+ */
 export const ClipPostRef = z.object({
   id: Id,
   platform: Platform,
@@ -148,7 +151,7 @@ export const ClipPostRef = z.object({
 });
 export type ClipPostRef = z.infer<typeof ClipPostRef>;
 
-/** VideoClipSerializer (fields = '__all__' + layers) plus the proposed extras. */
+/** VideoClipSerializer (fields = '__all__' + layers, preview_url, thumbnail_url, render_queued and posts) plus the proposed extras. */
 export const Clip = z.object({
   id: Id,
   project: Id,
@@ -186,7 +189,11 @@ export const Clip = z.object({
   render_queued: z.boolean().optional(),
   /** Proposed (gap 11): why the render failed (class name). The retry is paid whatever the reason (clips.retry). */
   error_code: z.string().nullable().optional(),
-  /** Proposed (gap 8): networks where it is published or scheduled. */
+  /**
+   * Every publication of the clip, whatever its status (drafts and failures too), by `publish_at`
+   * (VideoClipSerializer.posts): D3 counts «Publicados» and «Programados» from it. Read once for the whole
+   * response. Optional for backends from before it existed: without it the clip shows «Listo».
+   */
   posts: z.array(ClipPostRef).optional(),
 });
 export type Clip = z.infer<typeof Clip>;

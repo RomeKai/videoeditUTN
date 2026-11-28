@@ -40,6 +40,18 @@ const CROSSPOSTING_DENIED = 'Tu plan permite publicar cada clip en una sola red.
 const CONNECT_PLAN_DENIED = 'Tu plan no incluye conectar redes. Pasate a un plan pago para conectar las cuentas.';
 const CONNECT_EMAIL_NOT_VERIFIED = 'Verificá tu email para conectar redes.';
 const SEO_FAILURE = /^(seo_|moderation_)|^(content_blocked|generated_content_blocked|capacity_timeout)$/;
+/** services/scheduled_posts.TEXT_MISSING: the 400 of a post that would go out empty after its AI text failed. */
+const TEXT_MISSING = 'No pudimos generar el texto con IA y esta publicación no tiene texto: escribilo o regeneralo.';
+
+/**
+ * services/scheduled_posts._check_has_text: a post that goes out after its AI text failed (`seo_status:
+ * "failed"`) with no caption and no hashtags is a 400 `post_text_missing`, unless the request allows it
+ * (`allow_empty_text`). A text still on its way is no failure: the post waits for it.
+ */
+function checkHasText(post: MockPost, caption: string, hashtags: string[], allowed: boolean | undefined): void {
+  if (allowed || caption || hashtags.length > 0 || post.seo_status !== 'failed') return;
+  throw badRequest({ error: TEXT_MISSING, code: 'post_text_missing' });
+}
 
 /** The 409s of the backend, by what is asked and the status the post is in (`_CONFLICTS`). */
 const CONFLICTS: Record<'edit' | 'cancel' | 'retry' | 'seo', Partial<Record<string, [string, string]>>> = {
@@ -325,6 +337,8 @@ export const socialHandlers = [
       if (!immediate && plan && !plan.allow_scheduling) throw new MockHttpError(403, { error: SCHEDULING_DENIED, code: 'scheduling' });
       checkCrossposting(db, workspace, new Map([[post.video_clip, new Set([post.platform])]]), post.id);
       checkAccount(db, workspace.id, post.platform);
+      // A draft that goes out, or a text that changes: moving a scheduled post sends the text it was accepted with.
+      if (post.status === 'DRAFT' || body.caption !== undefined || body.hashtags !== undefined) checkHasText(post, caption, hashtags, body.allow_empty_text);
       const wasDraft = post.status === 'DRAFT';
       post.publish_at = body.publish_at ?? stamp;
       post.status = 'SCHEDULED';
@@ -336,6 +350,9 @@ export const socialHandlers = [
         const verb = immediate ? 'Publicó' : 'Programó';
         addActivity(db, project, 'post_scheduled', `${verb} «${post.clip.title}» en ${NETWORK_NAME[post.platform]}`, now, { actorId: user.id });
       }
+    } else if (post.status === 'SCHEDULED' && (body.caption !== undefined || body.hashtags !== undefined)) {
+      // Emptying the text of a post that goes out, after its AI text failed.
+      checkHasText(post, caption, hashtags, body.allow_empty_text);
     }
     if (body.caption !== undefined) post.caption = body.caption;
     if (body.hashtags !== undefined) post.hashtags = hashtags;
