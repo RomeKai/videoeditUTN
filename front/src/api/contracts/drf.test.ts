@@ -480,9 +480,13 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
     expect([email.code, email.isPlanLimit, email.message]).toEqual(['email_not_verified', false, 'Verificá tu email para conectar redes.']);
     const cap = error('social_409_profiles_limit', 'social.connect');
     expect([cap.status, cap.code, cap.message]).toEqual([409, 'social_profiles_limit', 'Por ahora no podemos conectar más espacios a las redes. Escribinos y lo resolvemos.']);
-    const down = error('social_503_connect', 'social.connect');
-    // A 5xx shows the screen's own sentence (D6: «No pudimos abrir la conexión.»), whatever the body says.
-    expect([down.status, down.code, errorMessage(down, 'No pudimos abrir la conexión.')]).toEqual([503, 'provider_unavailable', 'No pudimos abrir la conexión.']);
+    const down = error('social_502_connect', 'social.connect');
+    // A 502, never a 503 (the maintenance page K5). A 5xx shows the screen's own sentence (D6: «No pudimos abrir la conexión.»), whatever the body says.
+    expect([down.status, down.code, errorMessage(down, 'No pudimos abrir la conexión.')]).toEqual([502, 'provider_unavailable', 'No pudimos abrir la conexión.']);
+    for (const endpoint of [listSocialAccounts, connectSocialAccount, disconnectSocialAccount]) {
+      const statuses = (endpoint.errors ?? []).map((item) => item.status);
+      expect([statuses.includes(502), statuses.includes(503)]).toEqual([true, false]);
+    }
     expect([listSocialAccounts, connectSocialAccount, disconnectSocialAccount].map((endpoint) => endpoint.backend.status)).toEqual(['exists', 'exists', 'exists']);
   });
 

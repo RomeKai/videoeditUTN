@@ -136,12 +136,15 @@ class ListTests(SocialAccountsHarness, TestCase):
                 self.assertEqual(self.call("get", LIST).status_code, 200)
         accounts.assert_called_once()
 
-    def test_a_provider_failure_is_a_503_with_a_code(self):
+    def test_a_provider_failure_is_a_502_with_a_code(self):
+        """Ensayo 5: never a 503, which the web app reads as OneCreator's maintenance (K5)."""
         give_social_profile(self.workspace)
-        with patch(f"{PROVIDER}.accounts", side_effect=RetryableError(detail="ayrshare http=502")):
+        with patch(f"{PROVIDER}.accounts", side_effect=RetryableError(detail="ayrshare http=503")):
             response = self.call("get", LIST)
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["code"], "provider_unavailable")
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json(), {
+            "error": "No pudimos leer las redes conectadas. Probá de nuevo en unos minutos.", "code": "provider_unavailable",
+        })
 
     def test_a_profile_the_provider_does_not_find_is_kept_on_a_read(self):
         """Review of #187: any member reads; the key is given once: a read never forgets it, it only stops publishing."""
@@ -159,8 +162,8 @@ class ListTests(SocialAccountsHarness, TestCase):
         """Review of #187: a slow or failing provider must not take a web worker per request."""
         give_social_profile(self.workspace)
         with patch(f"{PROVIDER}.accounts", side_effect=RetryableError(detail="ayrshare ReadTimeout")) as asked:
-            self.assertEqual(self.call("get", LIST).status_code, 503)
-            self.assertEqual(self.call("get", LIST).status_code, 503)
+            self.assertEqual(self.call("get", LIST).status_code, 502)
+            self.assertEqual(self.call("get", LIST).status_code, 502)
         asked.assert_called_once()
         # With a last good answer, that one is served meanwhile.
         cache.clear()
@@ -168,7 +171,7 @@ class ListTests(SocialAccountsHarness, TestCase):
             self.call("get", LIST)
         cache.delete(f"social:accounts:{self.workspace.pk}")
         with patch(f"{PROVIDER}.accounts", side_effect=RetryableError(detail="ayrshare http=502")) as asked:
-            self.assertEqual(self.call("get", LIST).status_code, 503)
+            self.assertEqual(self.call("get", LIST).status_code, 502)
             again = self.call("get", LIST)
         asked.assert_called_once()
         self.assertEqual((again.status_code, again.json()[0]["username"]), (200, "@estudionorte"))
@@ -262,7 +265,7 @@ class ConnectTests(SocialAccountsHarness, TestCase):
     def test_a_provider_failure_creates_nothing_usable(self):
         with patch(f"{PROVIDER}.create_profile", side_effect=RetryableError(detail="ayrshare ConnectTimeout")):
             response = self.call("post", CONNECT, {"platform": "TIKTOK"})
-        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.status_code, 502)
         self.assertEqual(response.json(), {
             "error": "No pudimos hablar con TikTok. Probá de nuevo en unos minutos.", "code": "provider_unavailable",
         })
@@ -413,7 +416,10 @@ class DisconnectTests(SocialAccountsHarness, TestCase):
         post = self.post_in("TIKTOK", Status.SCHEDULED)
         with patch(f"{PROVIDER}.disconnect", side_effect=RetryableError(detail="ayrshare http=503")):
             response = self.call("delete", detail("TIKTOK"))
-        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json(), {
+            "error": "No pudimos hablar con TikTok. Probá de nuevo en unos minutos.", "code": "provider_unavailable",
+        })
         post.refresh_from_db()
         self.assertEqual(post.status, Status.SCHEDULED)
         self.assertEqual(self.profile().networks["TIKTOK"], "connected")

@@ -2178,8 +2178,8 @@
         "detail": "Solo el dueño o un admin del espacio pueden hacer esto. Pedile acceso a un admin."
       }
     },
-    "social_503_connect": {
-      "status": 503,
+    "social_502_connect": {
+      "status": 502,
       "body": {
         "error": "No pudimos hablar con Instagram Reels. Probá de nuevo en unos minutos.",
         "code": "provider_unavailable"
