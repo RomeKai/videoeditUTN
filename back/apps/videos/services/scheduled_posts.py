@@ -362,8 +362,11 @@ def _check_account(workspace, platforms):
     """
     from apps.integrations.social import AccountStatus
     from apps.integrations.social.accounts import network_status
+    from apps.integrations.social.direct import direct_account_connected
 
     for platform in [platform for platform in Platform.values if platform in platforms]:
+        if direct_account_connected(workspace.pk, platform):
+            continue
         status = network_status(workspace.pk, platform)
         if status == AccountStatus.EXPIRED:
             raise PostRefused.error(409, ACCOUNT_EXPIRED.format(network=NETWORK[platform]), 'account_not_connected')
@@ -947,7 +950,10 @@ def retry_post(workspace, post_id):
             post.status, post.error_log = Status.DRAFT, SEO_TEXT_MISSING_CODE
             post.publish_key_version = F('publish_key_version') + 1
             post.publish_key_unclear = False
-            post.save(update_fields=['status', 'error_log', 'publish_key_version', 'publish_key_unclear', 'updated_at'])
+            post.publish_route = ''
+            post.save(update_fields=[
+                'status', 'error_log', 'publish_key_version', 'publish_key_unclear', 'publish_route', 'updated_at',
+            ])
             post.refresh_from_db(fields=['publish_key_version'])
         else:
             clip = post.video_clip
@@ -959,8 +965,9 @@ def retry_post(workspace, post_id):
             post.status, post.publish_at, post.error_log = Status.SCHEDULED, now, None
             post.publish_key_version = F('publish_key_version') + 1
             post.publish_key_unclear = False  # a key the provider never saw
+            post.publish_route = ''
             post.save(update_fields=[
-                'status', 'publish_at', 'error_log', 'publish_key_version', 'publish_key_unclear', 'updated_at',
+                'status', 'publish_at', 'error_log', 'publish_key_version', 'publish_key_unclear', 'publish_route', 'updated_at',
             ])
             post.refresh_from_db(fields=['publish_key_version'])
         dispatch_if_due([post], now)

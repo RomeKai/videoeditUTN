@@ -77,6 +77,55 @@ class PublisherHarness(CapturedTaskFailures):
         return [call.args[1] for call in publish.call_args_list]
 
 
+class DirectPublishingTests(PublisherHarness, TestCase):
+    engine = 'apps.videos.services.publishing.PublishingEngine.publish'
+    direct_account = 'apps.integrations.social.direct.direct_account_connected'
+    same_account = 'apps.integrations.social.direct.same_ayrshare_account'
+
+    def test_direct_publishes_without_an_intermediary_profile(self):
+        take_social_profile(self.workspace)
+        post = self.make_post(Platform.YOUTUBE_SHORTS, caption='Texto', hashtags=['uno'])
+        with patch(self.direct_account, return_value=True), patch(self.engine, return_value=PUBLISHED) as direct:
+            self.run_task(post)
+        direct.assert_called_once_with(self.clip.pk, Platform.YOUTUBE_SHORTS, 'Texto', ['uno'])
+        self.assertEqual((post.status, post.publish_route), (Status.PUBLISHED, 'direct'))
+        self.assertEqual(post.external_id, PUBLISHED.external_id)
+
+    def test_direct_uses_one_five_and_thirty_second_retry_delays(self):
+        post = self.make_post(Platform.YOUTUBE_SHORTS)
+        failures = [RetryableError() for _ in range(3)]
+        with patch(self.direct_account, return_value=True), patch(self.engine, side_effect=[*failures, PUBLISHED]), \
+                patch.object(upload_to_social_network, 'retry', wraps=upload_to_social_network.retry) as retry:
+            self.run_task(post)
+        self.assertEqual([call.kwargs['countdown'] for call in retry.call_args_list], [1, 5, 30])
+        self.assertEqual(post.status, Status.PUBLISHED)
+
+    def test_fallback_runs_for_a_definite_rejection_only_with_the_same_linked_account(self):
+        SocialProfile.objects.filter(workspace=self.workspace).update(networks={Platform.YOUTUBE_SHORTS: 'connected'})
+        post = self.make_post(Platform.YOUTUBE_SHORTS)
+        with self.settings(AYRSHARE_API_KEY='test-key'), patch(self.direct_account, return_value=True), \
+                patch(self.same_account, return_value=True), patch(self.engine, side_effect=PermanentError()), \
+                patch(PUBLISH, return_value=PUBLISHED) as fallback:
+            self.run_task(post)
+        fallback.assert_called_once()
+        self.assertEqual((post.status, post.publish_route), (Status.PUBLISHED, 'intermediary'))
+
+    def test_uncertain_direct_result_never_falls_back_even_on_redelivery(self):
+        SocialProfile.objects.filter(workspace=self.workspace).update(networks={Platform.YOUTUBE_SHORTS: 'connected'})
+        post = self.make_post(Platform.YOUTUBE_SHORTS)
+        with self.settings(AYRSHARE_API_KEY='test-key'), patch(self.direct_account, return_value=True), \
+                patch(self.same_account, return_value=True), patch(self.engine, side_effect=OutcomeUnknownError()) as direct, \
+                patch(PUBLISH) as fallback:
+            self.run_task(post)
+            self.assertEqual(post.status, Status.FAILED)
+            self.assertTrue(post.publish_key_unclear)
+            ScheduledPost.objects.filter(pk=post.pk).update(status=Status.PROCESSING)
+            self.run_task(post)
+        direct.assert_called_once()
+        fallback.assert_not_called()
+        self.assertTrue(post.error_log.startswith('outcome_unknown'))
+
+
 class WhatGoesOutTests(PublisherHarness, TestCase):
     def test_a_queued_post_fails_without_publishing_if_its_clip_grew_past_the_network_limit(self):
         post = self.make_post(Platform.YOUTUBE_SHORTS)

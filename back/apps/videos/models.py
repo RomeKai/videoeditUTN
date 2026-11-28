@@ -361,6 +361,9 @@ class ScheduledPost(models.Model):
     # by a clear one): an attempt with it may have published. While set, the worker never changes the
     # key, and a refusal or running out of retries is an unknown outcome, never "try again".
     publish_key_unclear = models.BooleanField(default=False, db_default=False, editable=False)
+    # Retries stick to the same route. A lost response must never lead to
+    # another upload through a different provider.
+    publish_route = models.CharField(max_length=12, default='', db_default='', editable=False)
     # TikTok direct-post options (privacy_level, allow_comment, ...); null for other platforms.
     tiktok = models.JSONField(null=True, blank=True)
     # When the API asked for the AI text (a post created with SEO, or "Regenerar"),

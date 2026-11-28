@@ -758,6 +758,8 @@ WATERMARK_PATH = os.path.join(BASE_DIR, 'assets', 'watermarks', 'onecreator_logo
 # The provider new workspace profiles are created with: 'ayrshare' or 'upload_post'. A workspace
 # that already has one keeps publishing through the provider recorded on it (SocialProfile.provider).
 SOCIAL_PROVIDER = env('SOCIAL_PROVIDER', default='ayrshare')
+# Optional import path of the workspace OAuth account source supplied by DIST-01.
+SOCIAL_DIRECT_ACCOUNT_SOURCE = env('SOCIAL_DIRECT_ACCOUNT_SOURCE', default='')
 # Profiles are named "<prefix>-<workspace id>" at the provider (Ayrshare's title, Upload-Post's
 # username), unique per account: give each environment that shares an account its own prefix.
 SOCIAL_PROFILE_TITLE_PREFIX = env('SOCIAL_PROFILE_TITLE_PREFIX', default='onecreator')

@@ -27,6 +27,7 @@ Qué hay en esta carpeta y por dónde empezar.
 | [`demo.md`](runbooks/demo.md) | La demo del producto en una máquina, con Docker: backend real, la web en modo híbrido y datos sembrados |
 | [`redes-sociales-prueba.md`](runbooks/redes-sociales-prueba.md) | Probar conectar redes y publicar con una key real de Ayrshare, o contra un Ayrshare falso |
 | [`social-app-review.md`](runbooks/social-app-review.md) | Registrar las apps en TikTok y Meta y seguir su revisión |
+| [`publicacion-directa.md`](runbooks/publicacion-directa.md) | Integrar las cuentas OAuth con la publicación directa y verificar los proveedores |
 | [`ai-core-pilot-runbook.md`](runbooks/ai-core-pilot-runbook.md) | El piloto de AI Core V2: qué se mide, los gates y el rollback |
 
 ## Dónde está cada tema

@@ -150,20 +150,34 @@ def _fail_post(post_id, **changes):
         posts.filter(status=failed).update(**changes)
 
 
+def _can_fallback_to_ayrshare(profile, platform, error, *, exhausted):
+    from apps.integrations.social import AccountStatus, PermanentError, RetryableError
+    from apps.integrations.social.direct import same_ayrshare_account
+    from apps.integrations.social.errors import DUPLICATE_CONTENT
+
+    return (
+        profile is not None and profile.provider == 'ayrshare' and settings.AYRSHARE_API_KEY
+        and (profile.networks or {}).get(platform) == AccountStatus.CONNECTED
+        and error.code != DUPLICATE_CONTENT
+        and (isinstance(error, PermanentError) or
+             (exhausted and isinstance(error, RetryableError) and not error.maybe_sent))
+        and same_ayrshare_account(profile.workspace_id, platform)
+    )
+
+
 @celery_app.task(name='apps.videos.tasks.upload_to_social_network', bind=True, max_retries=3)
 def upload_to_social_network(self, post_id):
     """
-    Worker: publishes one post through the workspace's provider
-    (apps.integrations.social, today Ayrshare).
+    Worker: publishes through a connected direct account or the workspace's
+    intermediary profile.
     Lifecycle:
     1. Lock (Redis): one attempt at a time per post.
     2. Under the post's row lock: only a QUEUED or PROCESSING post goes on.
-       Without the workspace's profile, or a TikTok post without its options,
-       it fails here with a code, and nothing is sent.
-    3. The clip's presigned URL, the text (the user's, or else the AI's) and
-       the provider call, with the post's idempotency key.
-    4. A retryable error backs off (60, 120, 240 s); a permanent one, or an
-       unknown outcome, fails the post with a code and is never retried.
+       The route is recorded before sending. TikTok requires its options.
+    3. The direct worker prepares the rendered file and asks the network for
+       its result. An intermediary gets a presigned URL and an idempotency key.
+    4. Direct retries use 1, 5 and 30 seconds. Intermediaries keep their
+       60, 120 and 240 seconds. An uncertain direct result has no fallback.
 
     `publish_key_unclear` is what makes the key safe across attempts: it is
     set before each call and cleared only by a clear answer. While an earlier
@@ -173,6 +187,8 @@ def upload_to_social_network(self, post_id):
     """
     from apps.integrations import social
     from apps.integrations.social import errors as codes
+    from apps.integrations.social.direct import BACKOFF, DIRECT, INTERMEDIARY, direct_account_connected
+    from apps.videos.services.publishing import PublishingEngine
     from apps.videos.services.scheduled_posts import (
         LONGEST_RETRY_COUNTDOWN, SEO_REQUEST_EXPIRED_CODE, has_text, overlong_clip_duration, seo_request_expired,
         seo_request_window, waits_for_ai_text,
@@ -208,6 +224,7 @@ def upload_to_social_network(self, post_id):
     # attempt is inside the provider call (an unexpected error there may come after it published).
     # sending: inside the provider call. published: the provider answered that it went out.
     unclear_before, sending, published = False, False, False
+    route = ''
     try:
         with transaction.atomic():
             try:
@@ -246,8 +263,16 @@ def upload_to_social_network(self, post_id):
             clip = post.video_clip
             project = clip.project
             profile = social.ready_profile(project.workspace_id)
+            route = post.publish_route
+            if not route:
+                route = (
+                    DIRECT if not post.publish_key_unclear and direct_account_connected(project.workspace_id, post.platform)
+                    else INTERMEDIARY
+                )
             failure, tiktok = None, None
-            if profile is None:
+            if route == DIRECT and post.publish_key_unclear:
+                failure = social.OutcomeUnknownError(detail='previous direct attempt may have published')
+            elif route == INTERMEDIARY and profile is None:
                 failure = social.PermanentError(codes.ACCOUNT_NOT_CONNECTED, 'no profile')
             elif overlong_clip_duration(clip, post.platform) is not None:
                 failure = social.PermanentError(codes.CLIP_TOO_LONG, 'clip exceeds network duration limit')
@@ -268,7 +293,8 @@ def upload_to_social_network(self, post_id):
                 post.status = ScheduledPost.Status.PROCESSING
                 # Unclear until the provider answers clearly: a worker that dies in the call leaves it set.
                 post.publish_key_unclear = True
-                post.save(update_fields=['status', 'publish_key_unclear', 'updated_at'])
+                post.publish_route = route
+                post.save(update_fields=['status', 'publish_key_unclear', 'publish_route', 'updated_at'])
             key = social.idempotency_key(post.pk, post.publish_key_version)
 
         if failure is not None:
@@ -276,27 +302,40 @@ def upload_to_social_network(self, post_id):
             _notify_post_failed(post_id)  # it was QUEUED or PROCESSING under its row lock
             raise PostConfigurationError(failure.code)
 
-        # 1. Presigned URL (valid for 1 hour): the provider downloads the video from it. Always
-        # absolute, local files included (provider_media_url).
-        s3_key = clip.s3_object_key
-        if not s3_key:
-            raise Exception("No s3_object_key found for the video clip.")
-        media_url = provider_media_url(s3_key, expiration_seconds=3600)
-
-        # 2. What goes out: the API's caption and hashtags (the user's, or else the AI's, each on
-        # its own: ScheduledPost.caption_to_publish), composed once here. Empty if there is none.
-        provider = social.provider_for(profile)
-        request = social.PublishRequest(
-            platform=post.platform,
-            media_url=media_url,
-            text=compose_caption(post.caption_to_publish(), post.hashtags_to_publish()),
-            # YouTube needs a title: the clip's.
-            title=clip.title or project.title or '',
-            idempotency_key=key,
-            tiktok=tiktok,
-        )
-        sending = True
-        result = provider.publish(profile, request)
+        if route == DIRECT:
+            provider = PublishingEngine(project.workspace_id, post.pk, tiktok)
+            sending = True
+            try:
+                result = provider.publish(clip.pk, post.platform, post.caption_to_publish(), post.hashtags_to_publish())
+            except (social.PermanentError, social.RetryableError) as exc:
+                if not _can_fallback_to_ayrshare(
+                    profile, post.platform, exc, exhausted=self.request.retries >= self.max_retries,
+                ):
+                    raise
+                sending = False
+                # Record the route before sending. A retry will use the same
+                # intermediary key if the response to this call is lost.
+                changed = ScheduledPost.objects.filter(
+                    pk=post_id, status=ScheduledPost.Status.PROCESSING, publish_key_version=post.publish_key_version,
+                ).update(publish_route=INTERMEDIARY)
+                if not changed:
+                    return "Skipped"
+                route = INTERMEDIARY
+        if route == INTERMEDIARY:
+            s3_key = clip.s3_object_key
+            if not s3_key:
+                raise ValueError("No s3_object_key found for the video clip.")
+            provider = social.provider_for(profile)
+            request = social.PublishRequest(
+                platform=post.platform,
+                media_url=provider_media_url(s3_key, expiration_seconds=3600),
+                text=compose_caption(post.caption_to_publish(), post.hashtags_to_publish()),
+                title=clip.title or project.title or '',
+                idempotency_key=key,
+                tiktok=tiktok,
+            )
+            sending = True
+            result = provider.publish(profile, request)
         sending, published = False, True
 
         # 3. Out. A TikTok video the network still processes has no link yet (`post_url` null).
@@ -349,9 +388,10 @@ def upload_to_social_network(self, post_id):
             raise
         # "Retry n: ..." tells the API that a retry is on its way (services/scheduled_posts.stuck_after).
         ScheduledPost.objects.filter(id=post_id).update(error_log=f"Retry {attempts}: {exc}", **changes)
-        # Backoff: 60s, 120s, 240s (TD-04), or longer if the provider asked, up to the longest one.
+        base_delay = BACKOFF[self.request.retries] if route == DIRECT else 60 * (2 ** self.request.retries)
+        # Respect a longer wait requested by the provider, up to the existing safety cap.
         countdown = max(
-            60 * (2 ** self.request.retries),
+            base_delay,
             min(exc.retry_after or 0, int(LONGEST_RETRY_COUNTDOWN.total_seconds())),
         )
         raise self.retry(exc=exc, countdown=countdown)
