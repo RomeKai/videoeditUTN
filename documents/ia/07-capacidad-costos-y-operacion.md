@@ -326,7 +326,7 @@ Un lock que necesita un token de dueño o renovarse mientras trabaja no va en la
 
 ## Configuración
 
-Todos los settings de IA de [settings/base.py](../../back/backend/settings/base.py). Los valores vienen del entorno salvo que se indique.
+Todos los settings de IA de [settings/base.py](../../back/backend/settings/base.py). Los valores vienen del entorno salvo que se indique. Los que no son de IA (mantenimiento, archivos, redes, límites de intentos y producción) están en [la tabla de abajo](#otros-settings-de-la-plataforma). Todos tienen su línea en [`back/.env.example`](../../back/.env.example).
 
 | Setting | Default | Efecto |
 |---------|---------|--------|
@@ -368,7 +368,7 @@ Todos los settings de IA de [settings/base.py](../../back/backend/settings/base.
 | `RENDER_SEGMENTS_SOFT_TIME_LIMIT` | `10800` | Soft time limit de `render_video_segments` (paper edit): el proyecto falla y se devuelve la reserva del render |
 | `RENDER_SEGMENTS_TIME_LIMIT` | `RENDER_SEGMENTS_SOFT_TIME_LIMIT + 300` | Hard time limit del paper edit. Celery hace ack de ese mensaje: el proyecto lo levanta `recover_stuck_renders`. Menor que el `visibility_timeout` |
 | `RENDER_STUCK_AFTER_SECONDS` | el mayor de `RENDER_SEGMENTS_TIME_LIMIT` y `RENDER_CLIP_TIME_LIMIT`, `+ 900` | Tiempo sin inicio, aprobación ni re-encolado tras el cual `recover_stuck_renders` da por trabado un paper edit o un render clip por clip. Es también el mínimo: el entorno solo puede subirlo, porque un render más nuevo que su hard limit puede seguir corriendo |
-| `CELERY_BEAT_SCHEDULE` | `cleanup-expired-previews`, `recover-stuck-renders` y `apply-due-plan-changes`, cada 15 min; `flush-expired-tokens`, todos los días a las 04:30 UTC | Fijo en código. Solo corre si hay un proceso `celery beat` (el servicio `beat` de docker-compose). Ver [renders trabados](#operación-renders-trabados), [cuentas](#operación-cuentas-emails-y-tokens) y [suscripción](#operación-suscripción-y-compras-de-tokens) |
+| `CELERY_BEAT_SCHEDULE` | `dispatch-scheduled-posts`, cada 5 min; `cleanup-expired-previews`, `recover-stuck-renders` y `apply-due-plan-changes`, cada 15 min; `flush-expired-tokens`, todos los días a las 04:30 UTC; `clean-social-profiles`, todos los días a las 05:10 UTC | Fijo en código. Solo corre si hay un proceso `celery beat` (el servicio `beat` de docker-compose). Ver [renders trabados](#operación-renders-trabados), [cuentas](#operación-cuentas-emails-y-tokens) y [suscripción](#operación-suscripción-y-compras-de-tokens) |
 | `CELERY_TASK_ROUTES` | `render_clip_task` y `render_video_segments` a la cola `render` | Fijo en código. El resto va a la cola `celery` |
 | `CELERY_WORKER_PREFETCH_MULTIPLIER` | `1` | Fijo en código. Un worker solo reserva la tarea que corre |
 | `AI_CAPACITY_ENABLED` | `False` | Prende los buckets de capacidad |
@@ -380,6 +380,7 @@ Todos los settings de IA de [settings/base.py](../../back/backend/settings/base.
 | `AI_CAPACITY_LLM_OUTPUT_TOKENS` | `4000` | Tokens de salida (visible y razonamiento) en cada reserva de LLM |
 | `AI_SEO_LANGUAGE` | `es` | Idioma del caption |
 | `AI_SEO_CAPTION_MAX_CHARS` | `{"TIKTOK": 2200, "INSTAGRAM_REELS": 2200, "YOUTUBE_SHORTS": 5000}` | Largo máximo de caption más hashtags por plataforma |
+| `AI_SEO_MAX_PER_WORKSPACE_PER_HOUR` | `120` | Textos con IA que la API de publicaciones pide por workspace y por hora (crear y «Regenerar»). Cada uno es una llamada al LLM, gratis para la billetera. Ver [05](05-seo-y-publicacion.md#configuración) |
 | `PAYMENTS_PROVIDER` | vacío (`simulated` en `settings/dev.py`) | Quién cobra las compras y las subidas de plan. Vacío: nadie, y empezar un pago responde 501 `payments_unavailable`. `simulated`: el checkout de prueba de la app web, que no cobra nada. Otro valor frena el arranque (`payments.E001`) |
 | `PAYMENTS_ALLOW_SIMULATED` | `False` | Deja correr `simulated` sin `DEBUG` (una demo). `settings/prod.py` no arranca con `simulated` sin esto, y con esto loguea `payments.simulated_provider_on` y `check --deploy` avisa `payments.W001` |
 | `PAYMENTS_SIMULATE_ALLOWED_EMAILS` | `[]` | Sin `DEBUG`, además del staff, los emails (verificados) que pueden aprobar o rechazar un pago simulado. Separados por coma |
@@ -388,6 +389,30 @@ Todos los settings de IA de [settings/base.py](../../back/backend/settings/base.
 | `PAYMENTS_LOCAL_CURRENCY`, `PAYMENTS_USD_TO_LOCAL_RATE` | `ARS`, `1450` | Conversión de referencia de los paquetes de tokens. Solo se muestra: todo pago es en USD |
 
 Los límites por entorno de `AI_CAPACITY_LIMITS` están en el [runbook §5.5](../runbooks/ai-core-pilot-runbook.md#55-rate-limiting-propio-aicore-11). Los workers leen el entorno al arrancar: un cambio de settings necesita reiniciarlos.
+
+### Otros settings de la plataforma
+
+No son de IA, pero se configuran en el mismo entorno. El detalle de los de redes está en [05](05-seo-y-publicacion.md#configuración) y en el [runbook de redes](../runbooks/redes-sociales-prueba.md).
+
+| Setting | Default | Efecto |
+|---------|---------|--------|
+| `MAINTENANCE_MODE` | `False` | Prendido: `GET /api/v1/status/` lo informa y el resto de `/api/` responde 503 solo con `detail`. La web muestra la página de mantenimiento (K5). El admin sigue andando |
+| `MAINTENANCE_STARTS_AT` / `MAINTENANCE_ENDS_AT` | vacíos | Horario estimado que muestra K5. ISO 8601, UTC si no tiene zona. Se informa solo si están los dos y el fin es posterior al inicio |
+| `MAINTENANCE_EXEMPT_PATHS` | `[]` | Rutas que siguen respondiendo en mantenimiento (webhooks, health checks), separadas por coma. Cada una cubre lo que está debajo |
+| `USE_R2` | `False` | `True`: los archivos van a Cloudflare R2 (`CLOUDFLARE_R2_*`). `False`: al disco, en `back/media` |
+| `MEDIA_PUBLIC_BASE_URL` | vacío | Solo con `USE_R2=False`: el origen de las URLs `/media/` que se arman sin un pedido (tareas de Celery). Vacío: quedan relativas, salvo la del clip que va al proveedor de redes, que usa el origen de `FRONTEND_URL`. Es un origen, sin ruta; si no, no arranca. En producción, `https` |
+| `SOCIAL_PROVIDER` | `ayrshare` | Proveedor con el que se crean los perfiles nuevos. Un workspace con perfil sigue con el de su perfil |
+| `SOCIAL_PROFILE_TITLE_PREFIX` | `onecreator` | Prefijo del título de cada perfil en el proveedor. Uno por entorno si comparten la cuenta |
+| `SOCIAL_MAX_PROFILES` | `10` | Tope de perfiles en la cuenta del proveedor. Pasado el tope, conectar un workspace nuevo responde 409 `social_profiles_limit` |
+| `SOCIAL_UNLINKED_PROFILE_DAYS` | `7` | Días tras los que `clean-social-profiles` borra un perfil al que nunca se le vinculó una red |
+| `AYRSHARE_API_KEY` | `None` | Key de la cuenta de Ayrshare. Sin ella, conectar responde 502 `provider_not_configured` y nada se publica |
+| `AYRSHARE_BASE_URL` | `https://api.ayrshare.com/api` | La API de Ayrshare. Se cambia solo para un doble local en un ensayo. `settings.prod` no arranca si no es `https` |
+| `THROTTLE_POST_SEO_REGENERATE` / `THROTTLE_POST_CREATE` / `THROTTLE_SOCIAL_CONNECT` | `30/hour` / `300/hour` / `30/hour` | Por usuario: «Regenerar» el texto, crear publicaciones (cada una de un lote cuenta) y pedir el link para conectar una red |
+| `FRONTEND_URL` | `http://localhost:3000` | Origen de la web: los links de los emails abren ahí. Obligatorio en `settings.prod` |
+| `NUM_PROXIES` | `0` en dev | Proxies delante de Django que suman la IP del cliente a `X-Forwarded-For`. Obligatorio en `settings.prod`. La demo usa `1` |
+| `ALLOWED_HOSTS` / `CORS_ALLOWED_ORIGINS` | `[]` en `settings.prod` | Hosts que atiende Django y orígenes de la web que pueden llamar a la API. `settings.dev` acepta todo |
+
+Los demás límites de intentos (`THROTTLE_*`, `LOGIN_FAILURES_*`), los de email y los de pagos están comentados en `back/.env.example`.
 
 ## Operación: eventos de log
 
@@ -534,7 +559,7 @@ La misma corrida busca proyectos `uploaded` o `ingesting`, en una etapa anterior
 
 Cuando se liquida un render que pidió el usuario con el proyecto terminado (`CLIP_RENDER`), los clips que no renderizó vuelven como estaban, con su archivo viejo (`_restore_rerendered_clips`, [06](06-render-caras-y-hablante.md#renders-que-pide-el-usuario)). Si esa restauración falla después de que la liquidación hizo commit (`render.clip_restore_failed`), nada la volvía a correr: un clip entregado quedaba `draft`. Cada corrida la reintenta en los proyectos terminados (`completed`, `partial` o `failed`) con `metadata['clip_render_previous']`, la reserva de `CLIP_RENDER` ya liquidada y un clip para devolver (`_restore_pending`): uno `draft` o `failed` con su archivo viejo, o uno que estaba `published` y quedó `completed` con el archivo nuevo (vuelve a `published`). La restauración decide con la fila del proyecto bloqueada, así que nunca deshace un render pago nuevo. Cuando no queda nada para devolver y la reserva está liquidada, borra `clip_render_previous` (`_forget_rerendered_clips`), también en el flujo normal: así la consulta de candidatos (sin filtro previo en SQL: cada proyecto con esa clave cuesta dos consultas) solo ve las restauraciones pendientes. Los proyectos liquidados antes de esta regla, sin nada pendiente, pierden la clave en la primera corrida con `--apply`. Resultado `restored` (log `render.recovery_restored` con la cantidad de clips cambiados, de los dos tipos) o `nothing_restored` si otro la hizo antes. No espera ningún umbral: no hay nada corriendo sobre esos clips.
 
-**Cómo corre.** La tarea `recover_stuck_renders` está en `CELERY_BEAT_SCHEDULE` cada 15 min, pero `docker-compose.yml` no levanta un proceso beat. Donde no haya beat, correr el comando desde cron con `--apply`. Los dos pueden convivir: cada proyecto se vuelve a decidir con su lock.
+**Cómo corre.** La tarea `recover_stuck_renders` está en `CELERY_BEAT_SCHEDULE` cada 15 min, y la corre el servicio `beat` de `docker-compose.yml`. Donde no haya beat, correr el comando desde cron con `--apply`. Los dos pueden convivir: cada proyecto se vuelve a decidir con su lock.
 
 ```bash
 # Solo reporta (dry run): no escribe nada ni toma locks

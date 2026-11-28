@@ -56,9 +56,9 @@ git checkout -b feature/<tu-nombre>/<descripcion-breve>
 # Levantar toda la infraestructura con un solo comando
 docker compose up -d
 
-# Verificar que los 4 servicios están corriendo
+# Verificar que los 5 servicios están corriendo
 docker compose ps
-# Esperado: db, redis, web (port 8001), worker — todos "Up"
+# Esperado: db, redis, web (port 8001), worker, beat — todos "Up"
 
 # Correr migraciones (solo la primera vez)
 docker compose exec web python manage.py migrate
