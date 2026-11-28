@@ -37,6 +37,7 @@ What this module relies on, from Ayrshare's documentation (read on
 """
 import logging
 from datetime import datetime, timezone as dt_timezone
+from urllib.parse import urlsplit
 
 import requests
 from django.conf import settings
@@ -118,7 +119,7 @@ def _link_schemes():
     The linking page opens in the user's browser: https only. A local stand-in served over http
     (AYRSHARE_BASE_URL http, which only DEBUG and the tests allow) may answer an http page of its own.
     """
-    return ('https://',) if settings.AYRSHARE_BASE_URL.startswith('https://') else ('https://', 'http://')
+    return ('https://',) if urlsplit(settings.AYRSHARE_BASE_URL).scheme == 'https' else ('https://', 'http://')
 
 
 class AyrshareProvider(SocialProvider):

@@ -534,8 +534,9 @@ def test_a_local_stand_in_answers_every_call(network_guard, monkeypatch, setting
     ]
 
 
-@override_settings(AYRSHARE_API_KEY="api-key")
-def test_with_https_the_linking_page_must_be_https():
-    with patch(REQUEST, return_value=answer(200, {"status": "success", "url": "http://profile.ayrshare.com?s=x"})), \
+@pytest.mark.parametrize("base", ["https://api.ayrshare.com/api", "HTTPS://api.ayrshare.com/api"])
+def test_with_https_the_linking_page_must_be_https(base):
+    with override_settings(AYRSHARE_API_KEY="api-key", AYRSHARE_BASE_URL=base), \
+            patch(REQUEST, return_value=answer(200, {"status": "success", "url": "http://profile.ayrshare.com?s=x"})), \
             pytest.raises(PermanentError):
         AyrshareProvider().connect_url(PROFILE, "TIKTOK")
