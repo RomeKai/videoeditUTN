@@ -64,9 +64,19 @@ export function ProjectsScreen() {
   const [renaming, setRenaming] = useState<Project | null>(null);
   const [deleting, setDeleting] = useState<Project | null>(null);
 
+  // `router.replace` reaches `params` (and the address bar) a moment later, in a render of its own. A
+  // second choice made meanwhile (the delayed write of the search right after a click on the order) must
+  // start from what the first one asked for, not from the URL of the last render: it would write that
+  // one back and the first choice would be lost. So the last query asked for is kept until the URL moves.
+  const asked = useRef<string | null>(null);
+  useEffect(() => {
+    asked.current = null;
+  }, [params]);
   const write = useCallback(
     (changes: Partial<ProjectsListState>) => {
-      const query = listQuery({ ...readListParams(params), ...changes }, params);
+      const current = asked.current === null ? params : new URLSearchParams(asked.current);
+      const query = listQuery({ ...readListParams(current), ...changes }, current);
+      asked.current = query;
       router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
     },
     [params, pathname, router],
