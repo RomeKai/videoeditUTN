@@ -750,3 +750,7 @@ SOCIAL_MAX_PROFILES = env.int('SOCIAL_MAX_PROFILES', default=10)
 # A profile no network was ever linked to is deleted after this many days (clean_social_profiles).
 SOCIAL_UNLINKED_PROFILE_DAYS = env.int('SOCIAL_UNLINKED_PROFILE_DAYS', default=7)
 AYRSHARE_API_KEY = env('AYRSHARE_API_KEY', default=None)
+# Ayrshare's API, with its /api path. Change it only to point at a local stand-in (a rehearsal
+# against a fake provider): every call carries AYRSHARE_API_KEY and a Profile-Key, so
+# backend.settings.prod refuses anything but https; http works with DEBUG and in the tests.
+AYRSHARE_BASE_URL = env('AYRSHARE_BASE_URL', default='https://api.ayrshare.com/api').strip().rstrip('/')

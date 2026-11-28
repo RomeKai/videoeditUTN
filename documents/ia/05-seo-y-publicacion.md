@@ -28,7 +28,7 @@ Este documento cubre la vida de una publicación (`ScheduledPost`): cómo la cre
 | `check_can_connect`, `ensure_profile`, `connect_url`, `accounts`, `disconnect`, `network_status`, `has_connected_network`, `delete_orphan_profiles`, `delete_unlinked_profiles` | [integrations/social/accounts.py](../../back/apps/integrations/social/accounts.py) | Las redes de un espacio: quién conecta, el perfil creado la primera vez, la lista de cuentas con su copia corta y la última lectura guardada en el perfil, y la limpieza de los perfiles pagos que sobran. |
 | `delete_orphan_social_profiles`, `clean_social_profiles` | [integrations/tasks.py](../../back/apps/integrations/tasks.py) | Borra en el proveedor el perfil de un espacio borrado; la corrida diaria, también los que nunca conectaron una red. |
 | `social_smoke` | [integrations/management/commands/social_smoke.py](../../back/apps/integrations/management/commands/social_smoke.py) | Prueba con una key real ([runbook](../runbooks/redes-sociales-prueba.md)). |
-| `AyrshareProvider` | [integrations/social/ayrshare.py](../../back/apps/integrations/social/ayrshare.py) | `https://api.ayrshare.com/api`: publicar, y crear, vincular, listar, desvincular y borrar perfiles. Lee la respuesta por el cuerpo, no solo por el HTTP. |
+| `AyrshareProvider` | [integrations/social/ayrshare.py](../../back/apps/integrations/social/ayrshare.py) | `AYRSHARE_BASE_URL` (por defecto `https://api.ayrshare.com/api`): publicar, y crear, vincular, listar, desvincular y borrar perfiles. Lee la respuesta por el cuerpo, no solo por el HTTP. |
 
 ## Flujo: estados de `ScheduledPost`
 
@@ -442,6 +442,7 @@ Van primero en `error_log` (`<código>` o `<código> (<detalle>)`); `ScheduledPo
 | `SOCIAL_PROVIDER` | `'ayrshare'` | El proveedor con el que se crean los perfiles nuevos. Un espacio con perfil sigue con el proveedor de su perfil. |
 | `SOCIAL_PROFILE_TITLE_PREFIX` | `'onecreator'` | Prefijo del título del perfil en el proveedor (`<prefijo>-<id del espacio>`, único por cuenta): uno por entorno si comparten la cuenta. |
 | `AYRSHARE_API_KEY` | `None` | Key de la cuenta de Ayrshare. Sin ella, publicar falla con `provider_not_configured`, sin llamar y sin reintento. |
+| `AYRSHARE_BASE_URL` | `'https://api.ayrshare.com/api'` | La API de Ayrshare, con su `/api`. Se cambia solo para un doble local en un ensayo. `backend.settings.prod` no arranca si no es `https`; `http` anda con `DEBUG` y en los tests, y entonces el link para conectar también puede ser `http`. |
 | `THROTTLE_POST_SEO_REGENERATE` | `'30/hour'` | Pedidos de "Regenerar" por usuario. |
 | `THROTTLE_POST_CREATE` | `'300/hour'` | Publicaciones creadas por usuario, contando cada una de un lote. |
 | `THROTTLE_SOCIAL_CONNECT` | `'30/hour'` | Pedidos de «Conectar» por usuario (cada uno pide un link al proveedor). |

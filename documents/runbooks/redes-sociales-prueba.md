@@ -16,6 +16,7 @@ Las pruebas del repositorio nunca llaman a Ayrshare: reemplazan la red. Este run
   - `SOCIAL_PROFILE_TITLE_PREFIX`: uno distinto por entorno si comparten la cuenta de Ayrshare (por ejemplo `oc-staging`). Los perfiles se llaman `<prefijo>-<id del espacio>`, y Ayrshare no deja repetir un título.
   - `FRONTEND_URL`: la web. Con `--return-url` (que tiene que ser de esa web), el botón «Close» de Ayrshare lleva ahí; sin él, ese botón cierra la ventana si la abrió un script, como hace la web.
   - `SOCIAL_MAX_PROFILES` (10): el tope de perfiles de OneCreator en la cuenta de Ayrshare, que tiene que entrar en el plan. Pasado el tope, conectar un espacio nuevo responde 409 `social_profiles_limit` (y el comando, «No se pudo conectar»).
+  - `AYRSHARE_BASE_URL`: no se toca para esta prueba (por defecto `https://api.ayrshare.com/api`). Ver «Ensayo con un Ayrshare falso».
 - **Un espacio de prueba**: su id está en el admin (Usuarios › Workspaces) o en `GET /api/v1/me/`. El comando no mira el plan ni el email (es de operación), pero la web sí: para el paso 6, el espacio tiene que estar en un plan pago (Creador, Pro o Estudio: `allow_social_accounts`) y el usuario, con el email verificado.
 
 ## Pasos
@@ -57,6 +58,17 @@ Las pruebas del repositorio nunca llaman a Ayrshare: reemplazan la red. Este run
 5. Volver a correr el comando del paso 2 (o con `--no-create`): la red tiene que aparecer `connected` con el @usuario. Ayrshare puede tardar unos segundos en listarla.
 6. En la web, con el modo híbrido apuntando a este backend (la lista por defecto de `NEXT_PUBLIC_API_REAL` ya manda las redes al backend), Ajustes › Redes sociales tiene que mostrar lo mismo.
 7. **Desconectar.** Desde Ajustes › Redes sociales, desconectar la red: tiene que quedar «Sin conectar» enseguida y seguir así aunque se recargue. Ayrshare puede seguir listándola hasta 60 s (su copia); el backend no le cree un «conectada» durante 60 s después de desconectar, así que recién pasado ese minuto la lista vuelve a ser la de Ayrshare. Si después de un minuto aparece conectada otra vez, Ayrshare no la desvinculó: revisar en su panel.
+
+## Ensayo con un Ayrshare falso
+
+Para ensayar conectar y publicar de punta a punta sin una cuenta de Ayrshare, el backend puede hablar con un doble local en vez de Ayrshare:
+
+- `AYRSHARE_BASE_URL` es la base de la API, con su `/api` (por ejemplo `http://127.0.0.1:8790/api`). El backend le agrega la ruta de cada llamada (`/profiles`, `/profiles/generateJWT`, `/user`, `/profiles/social`, `/post`) y manda los mismos headers que a Ayrshare: `Authorization: Bearer <AYRSHARE_API_KEY>` y, en las llamadas de un perfil, `Profile-Key`.
+- `AYRSHARE_API_KEY` tiene que tener algún valor (el doble no lo mira): sin key el backend ni llama.
+- Con `http`, el backend tiene que correr con `DEBUG` (`backend.settings.dev`). `backend.settings.prod` no arranca si la base no es `https` («AYRSHARE_BASE_URL must be an https URL in production»): cada llamada lleva la key de la cuenta y la del perfil.
+- Con una base `http`, el link que devuelve `/profiles/generateJWT` (el campo `url`) puede ser una página `http` del doble. Con la base `https` de siempre, un link que no es `https` se rechaza (`provider_rejected`).
+- El doble responde lo que documenta Ayrshare: `POST /profiles` con `profileKey` y `refId`; `POST /profiles/generateJWT` con `url`; `GET /user` con `activeSocialAccounts` y `displayNames`; `POST /post` con `status` y `postIds` por red (ver `back/apps/integrations/social/ayrshare.py`).
+- Mejor en una base de datos propia del ensayo: los perfiles creados contra el doble guardan keys falsas. Al terminar, sacar `AYRSHARE_BASE_URL` del entorno; si se usó la base de siempre, borrar esos perfiles en el admin (Integrations › Perfiles de redes) antes de volver a la Ayrshare de verdad.
 
 ## Qué mirar si falla
 
