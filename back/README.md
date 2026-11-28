@@ -56,7 +56,7 @@ celery -A backend beat -l info --schedule=/tmp/celerybeat-schedule   # en otra; 
 |---|---|
 | `backend.settings.dev` | Desarrollo y la demo. `DEBUG=True`, CORS abierto, los emails salen por consola y los pagos usan el proveedor simulado |
 | `backend.settings.ci` | Los tests. No lee `back/.env` |
-| `backend.settings.prod` | Producción. No arranca sin `NUM_PROXIES`, `FRONTEND_URL`, `DEFAULT_FROM_EMAIL` y, con SMTP, `EMAIL_HOST`. Tampoco con `PAYMENTS_PROVIDER=simulated` sin `PAYMENTS_ALLOW_SIMULATED=True`, ni con un `AYRSHARE_BASE_URL` o un `MEDIA_PUBLIC_BASE_URL` que no sea `https` |
+| `backend.settings.prod` | Producción. No arranca sin `NUM_PROXIES`, `FRONTEND_URL`, `DEFAULT_FROM_EMAIL` y, con SMTP, `EMAIL_HOST`. Tampoco con `PAYMENTS_PROVIDER=simulated` sin `PAYMENTS_ALLOW_SIMULATED=True`, ni con un `AYRSHARE_BASE_URL`, un `UPLOAD_POST_BASE_URL` o un `MEDIA_PUBLIC_BASE_URL` que no sea `https` |
 
 Lo que más se toca:
 
