@@ -2,11 +2,12 @@
 videos.0024: the partial index of the posts whose AI text is on its way. fail_lost_ai_texts runs on
 every beat and after every write that leaves a post due, and its read scanned the whole table. The
 index is built concurrently under a short lock_timeout: the migration goes back and forth, leaves the
-connection's lock_timeout as it was, and builds again over the invalid index a cut build leaves.
+connection's lock_timeout as it was (also when the build fails), and builds again over the invalid
+index a cut build leaves.
 """
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
-from django.db import IntegrityError, connection
+from django.db import IntegrityError, ProgrammingError, connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase, TransactionTestCase
 from django.test.utils import CaptureQueriesContext
@@ -75,6 +76,21 @@ class SeoRequestedIndexMigrationTests(TransactionTestCase):
         self.assertTrue(valid)
         self.assertIn("(seo_requested_at) WHERE (seo_requested_at IS NOT NULL)", definition)
         self.assertNotIn("UNIQUE", definition)
+
+
+    def test_a_build_that_fails_leaves_the_lock_timeout_as_it_was(self):
+        # Review of #198: a build cut by its lock_timeout left the session at 5 s for whatever ran next.
+        self.migrate(BEFORE)
+        # A valid index with the name (nothing drops it): the CREATE INDEX CONCURRENTLY fails.
+        with connection.cursor() as cursor:
+            cursor.execute(f'CREATE INDEX "{INDEX}" ON videos_scheduledpost (video_clip_id)')
+        try:
+            with self.assertRaises(ProgrammingError):
+                self.migrate(AFTER)
+            self.assertTrue(own_lock_timeout())
+        finally:
+            with connection.cursor() as cursor:
+                cursor.execute(f'DROP INDEX IF EXISTS "{INDEX}"')
 
 
 class LostAiTextsReadTests(TestCase):
