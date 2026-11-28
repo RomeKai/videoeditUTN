@@ -173,7 +173,7 @@ Es `false` para cualquier otro estado (`rendering` ya lo dice el estado), para u
 
 **Leer, editar y borrar el clip** (`ClipDetailView`, `clips/:id/`):
 
-- `GET` devuelve el clip como dentro del proyecto (`VideoClipSerializer`, con `render_queued`), para cualquier rol.
+- `GET` devuelve el clip como dentro del proyecto (`VideoClipSerializer`, con `render_queued` y `posts`, sus publicaciones: ver [05](05-seo-y-publicacion.md#flujo-la-api-de-publicaciones), punto 9), para cualquier rol.
 - `PATCH` cambia `title`, `start_time` y `end_time` (`clip.edit`). Nunca renderiza. El título cambia siempre: el render no lo lee. El recorte no cambia mientras el proyecto renderiza o tiene una reserva de render abierta (409 `project_rendering`), ni mientras el pipeline lo procesa (409 `project_processing`: un render automático pudo haber cobrado esos bordes). Es 400 si el fin no es mayor que el inicio, si pasa el final del video (`metadata['duration']`, medio segundo de margen) o si el clip dura más de lo que un render termina. Un recorte nuevo borra las vistas previas del clip (filas ahora, archivos después del commit).
 - `DELETE` borra el clip con sus posts programados, capas y vistas previas, y sus archivos después del commit (`clip.edit`). Es 409 mientras el proyecto renderiza o procesa, y mientras un post del clip se está subiendo (`post_processing`).
 
@@ -523,7 +523,7 @@ Borrar un proyecto no borra los archivos de sus clips ni sus miniaturas: hoy sol
 | `FONTS_DIR` | `<BASE_DIR>/assets/fonts` | Fuente `Montserrat-Bold.ttf` de los subtítulos. |
 | `MEDIA_ROOT` | `<BASE_DIR>/media` | Archivos temporales del render. |
 | `USE_R2` | `False` | Sin R2, `upload_video` copia el archivo bajo `MEDIA_ROOT` y devuelve esa ruta como clave. |
-| `MEDIA_PUBLIC_BASE_URL` | vacío | Solo sin R2. `generate_presigned_url` devuelve la URL `/media/` absoluta (`absolute_media_url`): con el pedido, usa su origen (`proxy_url`, la vista previa); sin pedido (una tarea de Celery), usa este origen. Vacío, esas quedan relativas. Con `DEBUG` y sin R2, Django sirve `/media/`. |
+| `MEDIA_PUBLIC_BASE_URL` | vacío | Solo sin R2. `generate_presigned_url` devuelve la URL `/media/` absoluta (`absolute_media_url`): con el pedido, usa su origen (`proxy_url`, la vista previa); sin pedido (una tarea de Celery), usa este origen. Vacío, esas quedan relativas, salvo la que el publicador le manda al proveedor, que usa el origen de `FRONTEND_URL` (`provider_media_url`, ver [05](05-seo-y-publicacion.md#flujo-publicación)). Con `DEBUG` y sin R2, Django sirve `/media/`. |
 | `CLIP_DOWNLOAD_URL_TTL_SECONDS` | `3600` | Duración del link de descarga de un clip. Se lee con `getattr`: no está en `base.py`, igual que los cuatro siguientes. |
 | `CLIPS_ZIP_MAX_BYTES` | `1073741824` (1 GB) | Tope de lo que entra en un .zip. Más, 422 `zip_too_large`. |
 | `CLIPS_ZIP_MAX_CLIPS` | `50` | Tope de clips de un .zip. Más, 422 `zip_too_many_clips`; un `clip_ids` más largo, 400. |
