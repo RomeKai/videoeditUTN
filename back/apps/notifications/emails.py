@@ -136,7 +136,11 @@ def _content(notification):
                 if notification.reason == NETWORK_DISCONNECTED else 'Fallaron varias publicaciones',
                 [
                     f'{notification.title} en tu espacio de trabajo de OneCreator. {detail}'.strip(),
-                    'Hasta que alguien las reintente, quedan en error y no se publican.',
+                    'Hasta que alguien las reintente, quedan en error y no se publican.'
+                    if notification.reason == NETWORK_DISCONNECTED else
+                    # A burst can hold posts that may have gone out (POST_MAYBE_OUT): never «just retry».
+                    'Abrí cada una antes de reintentarla: si dice que no sabemos si se publicó, '
+                    'mirá primero la cuenta de la red, para que no salga dos veces.',
                 ],
                 'Ver publicaciones',
                 path,

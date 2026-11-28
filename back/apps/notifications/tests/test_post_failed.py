@@ -390,7 +390,8 @@ class BurstTests(PostHarness):
 
     SEVERAL = (
         'post_failed', 'Fallaron varias publicaciones en pocos minutos',
-        'No te avisamos de cada una: revisalas en Publicaciones y reintentalas.',
+        'No te avisamos de cada una: revisalas en Publicaciones. Si alguna dice que no sabemos '
+        'si se publicó, mirá la cuenta de la red antes de reintentarla.',
     )
 
     def posts(self, count, **fields):
@@ -413,6 +414,9 @@ class BurstTests(PostHarness):
         self.assertEqual(len(mail.outbox), 12)
         self.assertEqual(mail.outbox[-1].subject, 'Fallaron varias publicaciones')
         self.assertIn(f'https://app.onecreator.test/publicaciones?espacio={self.workspace.id}\n', mail.outbox[-1].body)
+        # The group can hold a post that may have gone out: the email never just says «retry them».
+        self.assertIn('mirá primero la cuenta de la red, para que no salga dos veces', mail.outbox[-1].body)
+        self.assertNotIn('Hasta que alguien las reintente', mail.outbox[-1].body)
 
     def test_a_broker_that_refuses_every_text_of_a_bulk_create_does_the_same(self):
         from apps.videos.signals import queue_post_seo
