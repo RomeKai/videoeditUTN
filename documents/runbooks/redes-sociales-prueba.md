@@ -84,7 +84,7 @@ Cada espacio publica por el proveedor de su perfil (`SocialProfile.provider`, «
 
 **Pasar un solo espacio nuevo, sin tocar `SOCIAL_PROVIDER`.** Antes de su primer «Conectar», en el admin: Integrations › Perfiles de redes › Agregar, el espacio, «Proveedor» Upload-Post y sin referencia. Su primer «Conectar» crea el perfil en Upload-Post. Sirve también para una fila sin referencia que quedó de una creación fallida.
 
-**Un espacio que ya tiene perfil no cambia de proveedor desde el admin**: su referencia solo sirve en el suyo, y el formulario lo rechaza («Este perfil ya existe en …»). Para moverlo: desconectar sus redes, borrar el perfil en el proveedor viejo (en su panel) y la fila en el admin; el próximo «Conectar» lo crea con `SOCIAL_PROVIDER`. Lo programado por las redes desconectadas queda en error.
+**Un espacio que ya tiene perfil no cambia de proveedor desde el admin**, ni siquiera escribiendo una referencia nueva: sus publicaciones, reintentos incluidos, salen por el suyo, y el formulario lo rechaza («Este perfil ya existe en …»). Tampoco una fila sin referencia de un espacio con publicaciones en camino (`QUEUED`, `PROCESSING`) o con resultado incierto: esperar a que terminen y revisar las inciertas. Para moverlo: desconectar sus redes, borrar el perfil en el proveedor viejo (en su panel) y la fila en el admin; el próximo «Conectar» lo crea con `SOCIAL_PROVIDER`. Lo programado por las redes desconectadas queda en error.
 
 **La prueba de este runbook con Upload-Post** es la misma, con estas diferencias:
 
@@ -115,7 +115,8 @@ Cada espacio publica por el proveedor de su perfil (`SocialProfile.provider`, «
 | `async` (`&status_after=3`) | Solo un `request_id`; su estado dice «Queued» con `success: true` dos veces y después `completed`. | `PUBLISHED` recién con `completed`, sin otra subida. |
 | `pending` | Solo un `request_id`, y nunca termina. | A los 300 s, `FAILED` con `outcome_unknown`; una sola subida en `/state`. |
 | `gateway504` o `drop` | Un 504, o la conexión cerrada después de leer el pedido; la subida sigue. | El worker la busca por su `request_id` y queda `PUBLISHED`. |
-| `fail:<código>` | La red falló con ese `error_code` (por ejemplo `fail:account_reauth_required`). | `FAILED` con el código nuestro de la tabla del [doc 05](../ia/05-seo-y-publicacion.md#capa-de-proveedores). |
+| `fail:<código>` | La red falló con ese `error_code` (por ejemplo `fail:account_reauth_required`); su estado dice `retryable` y después `failed`. | `FAILED` con el código nuestro de la tabla del [doc 05](../ia/05-seo-y-publicacion.md#capa-de-proveedores). Con `fail:platform_unavailable`, `outcome_unknown` y una sola subida; con `fail:platform_rate_limited`, se espera el `failed` del estado y recién ahí se reintenta con clave nueva. |
+| `retrying:<código>` | La respuesta dice que la red falló con ese código, Upload-Post lo reintenta solo (`retryable`) y termina bien. | `PUBLISHED`, con una sola subida: nunca otra clave mientras Upload-Post lo reintenta. |
 | `http:<estado>` | Ese HTTP con una página HTML, sin publicar nada. | 500 se reintenta con la misma clave; 401, `provider_not_configured`. |
 
 También: `&privacy=FOLLOWER_OF_CREATOR,SELF_ONLY` cambia los niveles que TikTok permite (lo que ve el panel), y `&reauth=tiktok` hace que la cuenta pida reconectarse (`expired`).
@@ -183,6 +184,8 @@ Leída el 28/11 (docs.upload-post.com). Para revisar en la primera prueba real:
 - Que un caption vacío en TikTok o Instagram (sin `title`) no se rechace por «title required».
 - Que el 429 del tope mensual traiga siempre `usage` y nunca `Retry-After` (así lo distingue el backend del límite de pedidos), y que `tiktok_privacy_unavailable` llegue con ese código y no solo con texto.
 - Qué hace la página del link sin `redirect_url`: con Ayrshare, «Close» cierra la ventana; con Upload-Post no está documentado.
-- Si `platform_unavailable` («failed or timed out») pudo haber publicado: el backend sigue su «Retry later» y lo reintenta con clave nueva.
+- Si `platform_unavailable` («failed or timed out») alguna vez publica. El backend lo deja `outcome_unknown` (revisar antes de reintentar): si en la práctica nunca publica, se podría reintentar solo.
+- Que `platform_rate_limited` (y los otros «Retry later»: `platform_integration_paused`, `cost_cap_reached`, `media_download_failed`) nunca publique: el backend reintenta con clave nueva cuando su estado dice `failed`.
+- Una subida de TikTok que responde en el acto con `status: "PUBLISH_SUCCESS"` (el ejemplo de su guía de errores) no se toma como final: el backend lee su estado. Si el estado no sigue las subidas que respondieron en el acto, terminaría como un falso `outcome_unknown`. Mirarlo en la primera prueba con key real.
 - Si `handle` viene con o sin `@` (los ejemplos tienen los dos): el backend lo muestra siempre con `@`.
 - La forma del estado para un pedido con una sola red: los ejemplos son de varias.
