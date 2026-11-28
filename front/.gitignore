@@ -7,9 +7,8 @@ playwright-report
 test-results
 .env.local
 .env*.local
-.next-e2e
-.next-e2e-real
-.next-e2e-hybrid
+# Cualquier otra carpeta de build (NEXT_DIST_DIR): las de Playwright, las de un ensayo.
+.next*/
 
 # Sin secretos: solo la URL del backend y si se usan los mocks.
 !.env.development

@@ -153,6 +153,8 @@ Arma un tercer build (`.next-e2e-hybrid`) y lo sirve en `E2E_PORT + 2` (o en `E2
 
 Antes de cada push tienen que pasar `lint`, `typecheck`, `test`, `build` y `test:e2e`. El job `Frontend` del CI corre lo mismo.
 
+**Un build en otra carpeta.** `NEXT_DIST_DIR=.next-ensayo npm run build` deja el build en esa carpeta en vez de `.next` (sirve para armar uno al lado de una app que está corriendo; así hace Playwright los suyos). Usá un nombre que empiece con `.next`: Git y ESLint ignoran cualquier `.next*`. Lo que no se puede evitar es que Next **reescriba `tsconfig.json`**: en cada build agrega `<carpeta>/types/**/*.ts` a `include` si no está escrita tal cual (compara el texto; un comodín como `.next*/types/**/*.ts` no le alcanza y la agrega igual). Las carpetas de siempre (`.next` y las tres de Playwright) ya están anotadas, así que esos builds no tocan el archivo. Con cualquier otra, descartá el cambio antes de commitear: `git checkout -- tsconfig.json`.
+
 ## Carpetas
 
 ```
