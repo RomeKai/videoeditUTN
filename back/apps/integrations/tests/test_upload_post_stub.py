@@ -19,6 +19,7 @@ from apps.integrations.social import AccountStatus, PublishRequest, RetryableErr
 from apps.integrations.social import accounts as social_accounts
 from apps.integrations.social.upload_post import UploadPostProvider
 from apps.integrations.tests.upload_post_stub import UploadPostStub
+from apps.notifications.models import Notification
 from apps.videos.models import ScheduledPost, VideoClip, VideoProject
 from apps.videos.tasks import upload_to_social_network
 
@@ -197,13 +198,16 @@ def test_the_worker_waits_for_a_background_upload(stub, publisher):
     assert len(reads) == 3  # two "Queued" answers with success: true, then completed
 
 
-def test_an_upload_that_never_finishes_is_unknown_and_never_sent_again(stub, publisher, monkeypatch):
+def test_an_upload_that_never_finishes_is_unknown_and_never_sent_again(stub, publisher, monkeypatch,
+                                                                       django_capture_on_commit_callbacks):
     control(stub, upload="pending")
     monkeypatch.setattr(upload_post, "PUBLISH_DEADLINE_SECONDS", 0.5)
     post = publisher.post()
-    result = publisher.run(post)
+    with django_capture_on_commit_callbacks(execute=True):
+        result = publisher.run(post)
 
     assert result.failed()
+    assert Notification.objects.filter(post=post, kind="post_failed").count() == 1
     assert post.status == ScheduledPost.Status.FAILED
     assert post.error_log.startswith("outcome_unknown (upload-post async; status=in_progress; request_id=onecreator-post-")
     assert post.post_url is None
@@ -221,16 +225,18 @@ def test_an_answer_lost_after_sending_is_settled_by_its_status(stub, publisher, 
     assert len(stub.state.uploads) == 1
 
 
-def test_a_networks_failure_is_our_code(stub, publisher):
+def test_a_networks_failure_is_our_code(stub, publisher, django_capture_on_commit_callbacks):
     control(stub, upload="fail:account_reauth_required")
     post = publisher.post()
-    publisher.run(post)
+    with django_capture_on_commit_callbacks(execute=True):
+        publisher.run(post)
 
     assert post.status == ScheduledPost.Status.FAILED
     assert post.error_log == "account_expired (upload-post code=account_reauth_required)"
+    assert list(Notification.objects.filter(post=post).values_list("kind", flat=True)) == ["post_failed"]
 
 
-def test_a_platform_that_failed_or_timed_out_is_one_job_and_unknown(stub, publisher):
+def test_a_platform_that_failed_or_timed_out_is_one_job_and_unknown(stub, publisher, django_capture_on_commit_callbacks):
     """
     Review of #199: `platform_unavailable` («the platform failed or timed out») may be out. Before, each
     retry took a new key: four jobs for one post, then «Reintentar» a fifth. Now one job, unknown, and the
@@ -238,13 +244,16 @@ def test_a_platform_that_failed_or_timed_out_is_one_job_and_unknown(stub, publis
     """
     control(stub, upload="fail:platform_unavailable", status_after=1)
     post = publisher.post()
-    result = publisher.run(post)
+    with django_capture_on_commit_callbacks(execute=True):
+        result = publisher.run(post)
 
     assert result.failed()
     assert post.status == ScheduledPost.Status.FAILED
     assert post.error_log == "outcome_unknown (upload-post code=platform_unavailable)"
     assert post.publish_key_unclear is True
     assert [upload["idempotency_key"] for upload in stub.state.uploads] == [f"onecreator-post-{post.pk}-v0"]
+    # The failure goes through the publisher's FAILED path (#197): its people are told once.
+    assert list(Notification.objects.filter(post=post).values_list("kind", flat=True)) == ["post_failed"]
 
 
 def test_a_refusal_upload_post_retries_by_itself_is_published_once(stub, publisher):
