@@ -1,4 +1,4 @@
-import { expect, type Page } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
 import { ALL_ENDPOINTS } from '../src/api/contracts';
 import { matchEndpoint, routeOf } from '../src/api/routing';
 
@@ -95,4 +95,23 @@ export async function useScenario(page: Page, scenario: string): Promise<void> {
 export async function settle(page: Page): Promise<void> {
   await page.waitForLoadState('networkidle');
   await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+}
+
+/**
+ * Clicks a link to a screen whose JavaScript loads on demand (a dynamic route) and waits for that screen.
+ *
+ * With the machine busy, the React that Next 15.5 brings can lose the wake-up of such a navigation. The link is
+ * followed inside a transition that waits for the page's chunk; if the chunk finishes loading between React's try
+ * and the moment it subscribes to it, the chunk answers the subscription at once, in the middle of the render, and
+ * React drops that ping (the TODO in its `pingSuspendedRoot`). The click was taken and everything arrived, but the
+ * old screen stays until the next update of the page, which can be a minute away. Waiting longer is not a signal:
+ * nothing is on its way. Clicking again is that update (and what a person would do), and the history still gets
+ * one entry. Seen about once in a hundred runs with ten workers on four cores.
+ */
+export async function follow(link: Locator, arrived: Locator): Promise<void> {
+  await expect(async () => {
+    // Still on screen: nothing was clicked yet, or the navigation is asleep. Gone: it is on its way.
+    if (await link.isVisible()) await link.click({ timeout: 5_000 });
+    await expect(arrived).toBeVisible();
+  }).toPass({ timeout: 30_000 });
 }

@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { expectClean, settle, useScenario, watch } from './helpers';
+import { expectClean, follow, settle, useScenario, watch } from './helpers';
 
 test.describe('F1 · Brand kits y F2 · Editar brand kit', () => {
   test('crear un kit, editarlo, usarlo por defecto y borrarlo', async ({ page }) => {
@@ -356,8 +356,8 @@ test.describe('F1 · Brand kits y F2 · Editar brand kit', () => {
     await page.goto('/brand-kits');
     await settle(page);
     await expect(page.getByRole('heading', { name: 'Creá tu brand kit para que todos tus clips salgan con tu marca' })).toBeVisible();
-    await page.getByRole('link', { name: 'Nuevo brand kit' }).click();
-    await expect(page.getByRole('heading', { level: 1, name: 'Nuevo brand kit' })).toBeVisible();
+    await follow(page.getByRole('link', { name: 'Nuevo brand kit' }), page.getByRole('heading', { level: 1, name: 'Nuevo brand kit' }));
+    await expect(page).toHaveURL(/\/brand-kits\/nuevo$/);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
     expectClean(problems, 'brand kits vacío en el teléfono');
   });

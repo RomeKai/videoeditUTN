@@ -85,11 +85,23 @@ test.describe('E1 · Publicar y E2 · Publicaciones', () => {
   });
 
   test('lista: reintentar la que falló, reprogramar y cancelar', async ({ page }) => {
+    // The seed is relative to "now" and «Reintentar» moves the failed post to "now", so a time written here by hand
+    // is, at some minute of the day, the time of another row (or the one the post already has). The clock is fixed,
+    // and the new time is half an hour past it: the rows are at "now", 4 minutes later or 1 minute earlier, whole
+    // hours apart, so no row has that minute. `E2E_NOW=2026-11-25T07:45:00Z` moves the clock: it holds at any time.
+    await page.clock.setFixedTime(process.env.E2E_NOW ? new Date(process.env.E2E_NOW) : new Date(2026, 10, 25, 10, 0, 0));
     await useScenario(page, 'estudio-norte');
     const problems = watch(page);
     await page.goto('/publicaciones?vista=lista');
     await settle(page);
+    // In the browser: its clock and its time zone are the ones the list is drawn with.
+    const time = await page.evaluate(() => {
+      const date = new Date(Date.now() + 30 * 60_000);
+      return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+    });
+    const atThatTime = page.getByRole('row').filter({ has: page.getByRole('cell', { name: time, exact: true }) });
     await expect(page.getByText(/no salió en TikTok/)).toBeVisible();
+    await expect(atThatTime).toHaveCount(0);
     await page.getByRole('table').getByRole('button', { name: /^Reintentar «/ }).click();
     await expect(page.getByText(/^Reintentando «/)).toBeVisible();
     await expect(page.getByText(/no salió en TikTok/)).toBeHidden();
@@ -97,15 +109,15 @@ test.describe('E1 · Publicar y E2 · Publicaciones', () => {
     await page.getByRole('table').getByRole('button', { name: /^Reprogramar/ }).first().click();
     const detail = page.getByRole('complementary', { name: 'Detalle de la publicación' });
     await expect(detail.getByRole('form', { name: 'Editar la publicación' })).toBeVisible();
-    await detail.getByLabel('Hora').fill('07:45');
+    await detail.getByLabel('Hora').fill(time);
     await detail.getByRole('button', { name: 'Guardar' }).click();
-    await expect(page.getByText(/^Reprogramada para el .*07:45$/)).toBeVisible();
-    await expect(page.getByRole('row').filter({ hasText: '07:45' })).toHaveCount(1);
+    await expect(page.getByText(new RegExp(`^Reprogramada para el .*${time}$`))).toBeVisible();
+    await expect(atThatTime).toHaveCount(1);
 
     await detail.getByRole('button', { name: 'Cancelar publicación' }).click();
     await page.getByRole('alertdialog').getByRole('button', { name: 'Cancelar publicación' }).click();
     await expect(page.getByText('Publicación cancelada')).toBeVisible();
-    await expect(page.getByRole('row').filter({ hasText: '07:45' })).toHaveCount(0);
+    await expect(atThatTime).toHaveCount(0);
     await expect(detail).toBeHidden();
     expectClean(problems, 'lista de publicaciones');
   });
