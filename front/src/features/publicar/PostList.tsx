@@ -3,8 +3,8 @@
 import type { Platform } from '@/api/contracts/common';
 import type { ScheduledPost, SocialAccount } from '@/api/contracts/social';
 import { formatDuration, formatTime } from '@/lib/format';
-import { Badge, Button, Card, NETWORKS, NetworkChip, Num, Table, VideoThumb, cx } from '@/ui';
-import { StatusBadge } from './PostBits';
+import { Badge, Button, Card, NETWORKS, NetworkChip, Num, Table, cx } from '@/ui';
+import { PostThumb, StatusBadge } from './PostBits';
 import styles from './Publicaciones.module.css';
 import { accountOf, failureMessage, groupByDay, isStuck, needsReconnect, sameDay, shortDayTitle } from './posts';
 
@@ -97,7 +97,7 @@ export function PostTable({ posts, accounts, now, selectedId, actions }: PostLis
       <thead>
         <tr>
           <th>Clip</th>
-          <th style={{ width: 136 }}>Red</th>
+          <th style={{ width: 160 }}>Red</th>
           <th style={{ width: 64 }}>Hora</th>
           <th style={{ width: 120 }}>Estado</th>
           <th style={{ width: 156 }}>
@@ -128,7 +128,7 @@ export function PostTable({ posts, accounts, now, selectedId, actions }: PostLis
               <tr key={post.id} className={cx(selected && styles.rowSelected)} aria-selected={selected || undefined}>
                 <td>
                   <div className={styles.clipcell}>
-                    <VideoThumb ratio="9:16" xs seed={post.video_clip} className={styles.lthumb} />
+                    <PostThumb clip={post.clip} xs className={styles.lthumb} />
                     <span className={styles.cliptxt}>
                       <button type="button" className={styles.ltitle} aria-expanded={selected} onClick={() => actions.open(post)}>
                         {post.clip.title}
@@ -144,7 +144,10 @@ export function PostTable({ posts, accounts, now, selectedId, actions }: PostLis
                     <NetworkChip platform={post.platform} size="sm" hideName />
                     <span className={styles.netcol}>
                       <span>{NETWORKS[post.platform].shortName}</span>
-                      <span className="t-label subtle">{accountName(accounts, post.platform)}</span>
+                      {/* A long account name is cut, never drawn over the next column: the whole name is in the tooltip. */}
+                      <span className="t-label subtle" title={accountName(accounts, post.platform)}>
+                        {accountName(accounts, post.platform)}
+                      </span>
                     </span>
                   </span>
                 </td>
@@ -196,7 +199,7 @@ export function PostCards({ posts, accounts, now, actions }: PostListProps) {
               return (
                 <li key={post.id} className={styles.mItem}>
                   <button type="button" className={styles.mOpen} aria-label={`Ver el detalle de «${post.clip.title}» en ${network}`} onClick={() => actions.open(post)}>
-                    <VideoThumb ratio="9:16" xs seed={post.video_clip} className={styles.mThumb} />
+                    <PostThumb clip={post.clip} xs className={styles.mThumb} />
                     <span className={styles.mBody}>
                       <span className={styles.mTitle}>{post.clip.title}</span>
                       <span className={styles.mSub}>
@@ -204,7 +207,9 @@ export function PostCards({ posts, accounts, now, actions }: PostListProps) {
                       </span>
                       <span className={styles.mNet}>
                         <NetworkChip platform={post.platform} size="sm" hideName />
-                        {network} · {accountName(accounts, post.platform)}
+                        <span className={styles.mNetName} title={accountName(accounts, post.platform)}>
+                          {network} · {accountName(accounts, post.platform)}
+                        </span>
                       </span>
                     </span>
                     {post.status === 'DRAFT' ? null : <span className={cx(styles.mTime, 'num')}>{formatTime(post.publish_at)}</span>}

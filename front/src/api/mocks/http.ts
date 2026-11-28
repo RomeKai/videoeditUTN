@@ -6,7 +6,7 @@ import type { Role } from '../contracts/common';
 import type { AnyEndpoint, RequestBody, ResponseOf } from '../endpoint';
 import { isHybrid, routeOf } from '../routing';
 import type { MockDb, MockUser, MockWorkspace } from './db';
-import { adoptUserFromToken, adoptWorkspace, rememberLoginEmail } from './hybrid';
+import { adoptUserFromToken, adoptWorkspace, rememberLoginEmail, syncStandIns } from './hybrid';
 import { roleIn, tick } from './sim';
 import { loadDb, saveDb, userIdFromToken } from './state';
 
@@ -133,6 +133,8 @@ async function answer<E extends AnyEndpoint>(endpoint: E, resolver: Resolver<E>,
     const db = loadDb();
     const now = Date.now();
     tick(db, now);
+    // Hybrid: the stand-ins of real rows show what the backend said of them since (`./hybrid`).
+    syncStandIns(db);
     try {
       if (db.flags.serverDown && endpoint.method === 'GET' && endpoint.id !== 'system.status') {
         throw new MockHttpError(500, { detail: 'Error interno del servidor.' });

@@ -1,10 +1,11 @@
 'use client';
 
+import { useState } from 'react';
 import type { PostStatus } from '@/api/contracts/projects';
 import type { ScheduledPost } from '@/api/contracts/social';
 import { formatTime } from '@/lib/format';
 import { POST_STATUS } from '@/lib/project-status';
-import { Badge, Icon, NETWORKS, cx, type IconName, type Tone } from '@/ui';
+import { Badge, Icon, NETWORKS, VideoThumb, cx, type IconName, type Tone, type VideoThumbProps } from '@/ui';
 import styles from './Publicaciones.module.css';
 import { shortDay, type PostGroup } from './posts';
 
@@ -15,6 +16,17 @@ const TONE_CLASS: Record<string, string | undefined> = {
   ok: styles.stOk,
   err: styles.stErr,
 };
+
+/**
+ * The thumbnail of a publication's clip (`clip.thumbnail_url`), or the design's placeholder when the clip
+ * has none. Its URL is temporary: one that no longer loads falls back to the placeholder instead of a
+ * broken image.
+ */
+export function PostThumb({ clip, ...thumb }: { clip: Pick<ScheduledPost['clip'], 'id' | 'thumbnail_url'> } & Omit<VideoThumbProps, 'src' | 'seed' | 'ratio' | 'onImageError'>) {
+  const [broken, setBroken] = useState<string | null>(null);
+  const url = clip.thumbnail_url && clip.thumbnail_url !== broken ? clip.thumbnail_url : null;
+  return <VideoThumb ratio="9:16" seed={clip.id} src={url} onImageError={() => setBroken(clip.thumbnail_url)} {...thumb} />;
+}
 
 export function statusIcon(status: PostStatus): IconName {
   return POST_STATUS[status].icon ?? 'edit';

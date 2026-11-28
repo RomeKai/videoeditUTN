@@ -320,4 +320,70 @@ test.describe('E1 · Publicar y E2 · Publicaciones', () => {
     await expect(drafts(page)).toContainText('1');
     expectClean(problems, 'borradores');
   });
+
+  test('mes: arrastrar una programada a otro día la reprograma, y a un día que ya pasó no', async ({ page }) => {
+    // The seed is relative to "now": a fixed day keeps the scheduled card on Thursday 26 Nov 2026, 14:00.
+    await page.clock.setFixedTime(new Date(2026, 10, 25, 10, 0, 0));
+    await useScenario(page, 'estudio-norte');
+    const problems = watch(page);
+    const patches: string[] = [];
+    page.on('request', (request) => {
+      if (request.method() === 'PATCH') patches.push(new URL(request.url()).pathname);
+    });
+    await page.goto('/publicaciones?vista=mes');
+    await settle(page);
+    const grid = page.getByRole('grid', { name: 'Publicaciones de noviembre de 2026' });
+    await expect(page.getByText('Arrastrá una publicación programada para cambiarle el día.')).toBeVisible();
+    const cells = grid.getByRole('gridcell');
+    // The grid starts on Monday 26 Oct: 2 Nov is the 8th cell, 26 Nov the 32nd and 30 Nov the 36th.
+    const [past, from, to] = [cells.nth(7), cells.nth(31), cells.nth(35)];
+    await expect(to).toContainText('30');
+    const card = from.locator('[draggable="true"]');
+    await expect(card).toHaveCount(1);
+    const name = (await card.getAttribute('aria-label')) ?? '';
+    expect(name).toMatch(/^jue 26 nov, 14:00\. .*Programado/);
+
+    // A day that already went by takes nothing (where the rehearsal's script dropped it).
+    await card.dragTo(past);
+    await expect(from.locator('[draggable="true"]')).toHaveCount(1);
+    expect(patches).toEqual([]);
+
+    await from.locator('[draggable="true"]').dragTo(to);
+    await expect(page.getByText(/pasó al lun 30 nov, 14:00/)).toBeVisible();
+    await expect(to.locator('[draggable="true"]')).toHaveAttribute('aria-label', /^lun 30 nov, 14:00\. /);
+    await expect(from.locator('[draggable="true"]')).toHaveCount(0);
+    expect(patches).toHaveLength(1);
+    // It was written, not only drawn: the list says the same after a reload.
+    await page.goto('/publicaciones?vista=lista');
+    await settle(page);
+    await expect(page.getByRole('rowheader', { name: /lun 30 nov/i })).toBeVisible();
+    await expect(page.getByRole('rowheader', { name: /jue 26 nov/i })).toHaveCount(0);
+    expectClean(problems, 'arrastrar en el mes');
+  });
+
+  test('lista: un nombre de cuenta largo se corta y no se encima con la hora', async ({ page }) => {
+    const long = '@workspacedelbackendconunnombrelarguisimo';
+    await useScenario(page, 'estudio-norte');
+    const problems = watch(page);
+    await page.goto('/publicaciones?vista=lista');
+    await settle(page);
+    // The connected accounts get a long name in the mocked database, and the list is read again.
+    await page.evaluate((username) => {
+      const db = JSON.parse(window.localStorage.getItem('oc.mock.db') ?? '{}') as { socialAccounts: Array<{ username: string | null }> };
+      for (const account of db.socialAccounts) if (account.username) account.username = username;
+      window.localStorage.setItem('oc.mock.db', JSON.stringify(db));
+    }, long);
+    await page.reload();
+    await settle(page);
+    const account = page.getByRole('table').getByTitle(long).first();
+    await expect(account).toBeVisible();
+    const row = page.getByRole('row').filter({ has: page.getByTitle(long) }).first();
+    const [nameBox, networkCell, timeCell] = await Promise.all([account.boundingBox(), row.getByRole('cell').nth(1).boundingBox(), row.getByRole('cell').nth(2).boundingBox()]);
+    if (!nameBox || !networkCell || !timeCell) throw new Error('la fila no está a la vista');
+    // The name ends inside its own column, before the time starts, and is cut with an ellipsis.
+    expect(nameBox.x + nameBox.width).toBeLessThanOrEqual(networkCell.x + networkCell.width);
+    expect(nameBox.x + nameBox.width).toBeLessThanOrEqual(timeCell.x + 1);
+    expect(await account.evaluate((node) => node.scrollWidth > node.clientWidth && getComputedStyle(node).textOverflow === 'ellipsis')).toBe(true);
+    expectClean(problems, 'lista con un nombre de cuenta largo');
+  });
 });

@@ -1,8 +1,8 @@
-import { backendDefaultWorkspaceId, hasBackendDefaultPrefix } from '../config';
+import { API_URL, backendDefaultWorkspaceId, hasBackendDefaultPrefix } from '../config';
 import { isHybrid } from '../routing';
 import { newId, type MockClip, type MockDb, type MockProject, type MockUser, type MockWorkspace } from './db';
 import { findScenario } from './scenarios';
-import { buildProject, PLAN_IDS, socialAccounts, USER_IDS } from './seed';
+import { buildClips, buildProject, PLAN_IDS, socialAccounts, USER_IDS } from './seed';
 
 /**
  * DEV BRIDGE of hybrid mode: how the mocks keep up with a session and with data that live in the real
@@ -16,6 +16,9 @@ import { buildProject, PLAN_IDS, socialAccounts, USER_IDS } from './seed';
  *   the client sends no `X-Workspace-Id` for it and the backend uses the user's default workspace.
  * - When a mocked endpoint gets the id of a workspace, a project or a clip that only the backend knows, it
  *   adopts it too: a stand-in row with that id, so the mocked part of the app works for it.
+ * - The stand-in looks like the real thing as far as the mocks can tell: MSW shows them every answer the
+ *   backend gave to this page (`noteRealAnswer`), and what those say of a workspace, a project or a clip
+ *   (name, title, times, thumbnail) is what the stand-in shows.
  */
 
 export interface JwtClaims {
@@ -88,6 +91,181 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (value: string | undefined): value is string => Boolean(value && UUID.test(value));
 
+/* ── What the real backend said ─────────────────────────────────────────── */
+
+/** What a mocked screen shows of a real clip (Publicaciones: title, project, duration, thumbnail). */
+export interface RealClip {
+  id: string;
+  project: string;
+  title: string;
+  start_time: number;
+  end_time: number;
+  thumbnail_url: string | null;
+}
+
+/**
+ * What the answers of the real backend said, by id. Kept for this page only: a stand-in copies from here
+ * when it is made, and the database (shared by every tab, kept across reloads) remembers what it copied.
+ */
+const real = {
+  workspaces: new Map<string, string>(),
+  projects: new Map<string, string>(),
+  clips: new Map<string, RealClip>(),
+};
+
+/** For tests: a page that has seen no answer of the backend yet. */
+export function forgetRealAnswers(): void {
+  real.workspaces.clear();
+  real.projects.clear();
+  real.clips.clear();
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+const text = (value: unknown): string | null => (typeof value === 'string' && value.trim() !== '' ? value : null);
+
+function noteClip(value: unknown, projectId?: string): void {
+  if (!isRecord(value) || !isUuid(text(value.id) ?? undefined)) return;
+  const project = text(value.project) ?? projectId;
+  const title = text(value.title);
+  if (!project || !title || typeof value.start_time !== 'number' || typeof value.end_time !== 'number') return;
+  const key = String(value.id).toLowerCase();
+  real.clips.set(key, {
+    id: String(value.id),
+    project,
+    title,
+    start_time: value.start_time,
+    end_time: value.end_time,
+    // An answer that does not bring the field says nothing about it: what an earlier one said still holds.
+    thumbnail_url: 'thumbnail_url' in value ? text(value.thumbnail_url) : (real.clips.get(key)?.thumbnail_url ?? null),
+  });
+}
+
+function noteProject(value: unknown): void {
+  if (!isRecord(value) || !isUuid(text(value.id) ?? undefined)) return;
+  const title = text(value.title);
+  if (title) real.projects.set(String(value.id).toLowerCase(), title);
+  if (Array.isArray(value.clips)) for (const clip of value.clips) noteClip(clip, String(value.id));
+}
+
+function noteWorkspace(value: unknown): void {
+  if (!isRecord(value)) return;
+  const id = text(value.id);
+  const name = text(value.name);
+  if (id && name) real.workspaces.set(id.toLowerCase(), name);
+}
+
+/** A page (`{ results }`), a list or one row: each row. */
+const rows = (body: unknown): unknown[] => (Array.isArray(body) ? body : isRecord(body) && Array.isArray(body.results) ? body.results : [body]);
+
+/**
+ * An answer the real backend gave to this page (MSW let the request through and shows the answer to the
+ * mocks: `watchRealAnswers`). Read loosely, by path and shape and never against the contract: it is only
+ * what a stand-in will show, and an answer the mocks do not understand is simply not used.
+ */
+export function noteRealAnswer(url: string, body: unknown): void {
+  if (!isHybrid()) return;
+  let path: string;
+  try {
+    path = new URL(url).pathname;
+  } catch {
+    return;
+  }
+  if (path === '/api/v1/me/') {
+    if (isRecord(body) && Array.isArray(body.workspaces)) body.workspaces.forEach(noteWorkspace);
+  } else if (path.startsWith('/api/v1/workspaces/')) {
+    // The list and the detail; not what hangs below a workspace (its members, its invitations).
+    if (/^\/api\/v1\/workspaces\/([^/]+\/)?$/.test(path)) rows(body).forEach(noteWorkspace);
+  } else if (path.startsWith('/api/v1/projects/')) {
+    rows(body).forEach(noteProject);
+  } else if (path.startsWith('/api/v1/clips/')) {
+    rows(body).forEach((row) => noteClip(row));
+  }
+}
+
+/** The same, from the answer itself: only a JSON answer that went well says anything. */
+export async function noteRealResponse(request: Request, response: Response): Promise<void> {
+  if (!isHybrid() || !response.ok || !request.url.startsWith(`${API_URL}/api/`)) return;
+  if (!(response.headers.get('Content-Type') ?? '').includes('json')) return;
+  try {
+    noteRealAnswer(request.url, await response.clone().json());
+  } catch {
+    // Not JSON after all: nothing to learn.
+  }
+}
+
+interface AnswerEvents {
+  on(event: 'response:bypass', listener: (args: { request: Request; response: Response }) => void): unknown;
+}
+
+/** Shows the mocks every answer MSW did not give itself (the browser's worker and the test server both tell). */
+export function watchRealAnswers(events: AnswerEvents): void {
+  events.on('response:bypass', ({ request, response }) => void noteRealResponse(request, response));
+}
+
+const realClip = (id: string | undefined): RealClip | undefined => (id ? real.clips.get(id.toLowerCase()) : undefined);
+const realProjectTitle = (id: string | undefined): string | undefined => (id ? real.projects.get(id.toLowerCase()) : undefined);
+
+/** What the stand-ins are called until the backend says a name. */
+const PLACEHOLDER = {
+  workspace: 'Workspace del backend',
+  defaultWorkspace: 'Workspace por defecto (backend)',
+  project: 'Proyecto del backend',
+  clip: 'Clip del backend',
+} as const;
+
+/** The account name the mocked networks give a workspace when it connects (`completeMockSocialConnect`). */
+const handleOf = (name: string): string => `@${name.toLowerCase().replace(/[^a-z0-9]+/g, '')}`;
+const round2 = (value: number): number => Math.round(value * 100) / 100;
+
+/** The stand-in clip takes what the backend said of the real one. */
+function fillClip(clip: MockClip, from: RealClip): void {
+  clip.title = from.title;
+  clip.start_time = from.start_time;
+  clip.end_time = from.end_time;
+  clip.thumbnail_url = from.thumbnail_url;
+}
+
+/**
+ * Brings the stand-ins up to date with what the backend said since they were made, before a mocked
+ * endpoint answers. A stand-in that still has its placeholder name takes the real one (a workspace, and with
+ * it the account name of its mocked networks; a project; a clip, with its times). The thumbnail always
+ * follows the latest answer: its URL is temporary. A stand-in that already has a real title is left as it
+ * is: a mocked endpoint may have edited it since.
+ */
+export function syncStandIns(db: MockDb): void {
+  if (!isHybrid()) return;
+  if (real.workspaces.size === 0 && real.projects.size === 0 && real.clips.size === 0) return;
+  for (const workspace of db.workspaces) {
+    const name = real.workspaces.get(workspace.id.toLowerCase());
+    if (!name || workspace.name === name || (workspace.name !== PLACEHOLDER.workspace && workspace.name !== PLACEHOLDER.defaultWorkspace)) continue;
+    const before = handleOf(workspace.name);
+    workspace.name = name;
+    for (const account of db.socialAccounts) if (account.workspace === workspace.id && account.username === before) account.username = handleOf(name);
+  }
+  for (const project of db.projects) {
+    const title = realProjectTitle(project.id);
+    if (title && project.title === PLACEHOLDER.project) project.title = title;
+    for (const clip of project.clips) {
+      const from = realClip(clip.id);
+      if (!from) continue;
+      const filled = clip.title === PLACEHOLDER.clip;
+      if (filled) fillClip(clip, from);
+      else if (from.thumbnail_url) clip.thumbnail_url = from.thumbnail_url;
+      // The project made for this clip alone: it is the real clip's project in all but the id.
+      const ofClip = realProjectTitle(from.project);
+      if (ofClip && project.title === PLACEHOLDER.project && project.id === adoptedId('clipProject', clip.id)) project.title = ofClip;
+      for (const post of db.posts) {
+        if (post.video_clip !== clip.id) continue;
+        if (post.clip.title === PLACEHOLDER.clip) post.clip.title = clip.title;
+        if (post.clip.project_title === PLACEHOLDER.project) post.clip.project_title = project.title;
+        if (filled) post.clip.duration_seconds = round2(clip.end_time - clip.start_time);
+        post.clip.thumbnail_url = clip.thumbnail_url ?? null;
+      }
+    }
+  }
+}
+
+
 /** What an adopted row is, in the first group of its id. */
 const ADOPTED = { wallet: '0c0a0001', member: '0c0a0002', clipProject: '0c0a0003' } as const;
 
@@ -159,7 +337,8 @@ export function adoptWorkspace(db: MockDb, user: MockUser, id: string, now: numb
     const defaults = scenarioDefaults(db);
     workspace = {
       id,
-      name: hasBackendDefaultPrefix(id) ? 'Workspace por defecto (backend)' : 'Workspace del backend',
+      // The real name when the backend already said it (its `/me`), so the mocked screens call it the same.
+      name: real.workspaces.get(id.toLowerCase()) ?? (hasBackendDefaultPrefix(id) ? PLACEHOLDER.defaultWorkspace : PLACEHOLDER.workspace),
       owner: user.id,
       subscription_plan: defaults.plan,
       created_at: iso(now),
@@ -181,15 +360,31 @@ export function adoptWorkspace(db: MockDb, user: MockUser, id: string, now: numb
 
 const SEEDED_USERS = new Set<string>(Object.values(USER_IDS));
 
+/** A built clip turned into the stand-in of a real one: its id, and what the backend said of it if anything. */
+function asStandIn(clip: MockClip, projectId: string, clipId: string): MockClip {
+  const standIn: MockClip = { ...clip, id: clipId, project: projectId, title: PLACEHOLDER.clip, s3_object_key: `clips/${projectId}/${clipId}.mp4` };
+  const from = realClip(clipId);
+  if (from) fillClip(standIn, from);
+  return standIn;
+}
+
+/** One more stand-in clip for a stand-in project that already exists (another clip of the same real project). */
+function standInClip(projectId: string, clipId: string): MockClip {
+  const [built] = buildClips(projectId, 9000, 600, { count: 1, statuses: ['completed'] }, Date.now());
+  if (!built) throw new Error('buildClips no devolvió ningún clip');
+  return asStandIn(built, projectId, clipId);
+}
+
 function standIn(db: MockDb, workspaceId: string, id: string, withClip: string | null): MockProject {
   const now = Date.now();
   const workspace = db.workspaces.find((item) => item.id === workspaceId);
   const owner = db.users.find((item) => item.id === workspace?.owner);
+  const from = realClip(withClip ?? undefined);
   const built = buildProject(
     {
       // Fixed: every copy of the database builds the same stand-in.
       index: 9000,
-      title: 'Proyecto del backend',
+      title: realProjectTitle(id) ?? realProjectTitle(from?.project) ?? PLACEHOLDER.project,
       status: 'completed',
       stage: 'completed',
       durationSeconds: 600,
@@ -201,7 +396,7 @@ function standIn(db: MockDb, workspaceId: string, id: string, withClip: string |
     now,
     null,
   );
-  const clips: MockClip[] = withClip ? built.clips.slice(0, 1).map((clip) => ({ ...clip, id: withClip, project: id, title: 'Clip del backend', s3_object_key: `clips/${id}/${withClip}.mp4` })) : [];
+  const clips: MockClip[] = withClip ? built.clips.slice(0, 1).map((clip) => asStandIn(clip, id, withClip)) : [];
   const { reservation_id: _reservation, ...metadata } = built.metadata;
   const project: MockProject = {
     ...built,
@@ -220,7 +415,8 @@ function standIn(db: MockDb, workspaceId: string, id: string, withClip: string |
 
 /**
  * A project only the backend knows, asked from a mocked endpoint (its activity, a re-render…): a stand-in
- * with that id in the workspace. It is not a copy: the mocks never read the real project.
+ * with that id in the workspace. It is not a copy: the mocks never ask the backend for the real project.
+ * It has its title when the page already got it from the backend, «Proyecto del backend» until then.
  */
 export function adoptProject(db: MockDb, workspaceId: string, id: string | undefined): MockProject | null {
   if (!isHybrid() || !isUuid(id)) return null;
@@ -229,11 +425,26 @@ export function adoptProject(db: MockDb, workspaceId: string, id: string | undef
   return standIn(db, workspaceId, id, null);
 }
 
-/** A clip only the backend knows: a rendered stand-in with that id, inside a stand-in project of its own. */
+/**
+ * A clip only the backend knows: a rendered stand-in with that id, inside a stand-in project of its own.
+ * With what the page already got from the backend about the real clip (its title, its times, its thumbnail
+ * and its project's title); «Clip del backend» in «Proyecto del backend» when it got nothing yet.
+ */
 export function adoptClip(db: MockDb, workspaceId: string, clipId: string | undefined): { project: MockProject; clip: MockClip } | null {
   if (!isHybrid() || !isUuid(clipId)) return null;
   if (db.projects.some((item) => item.clips.some((clip) => clip.id === clipId))) return null;
-  const project = standIn(db, workspaceId, adoptedId('clipProject', clipId), clipId);
+  // The real clip's project, when the backend already said which: the stand-in lives under that id, so what
+  // the mocked screens link to (the project of a publication) is a page the backend has.
+  const home = realClip(clipId)?.project;
+  const known = isUuid(home) ? db.projects.find((item) => item.id === home) : undefined;
+  if (known) {
+    // The same id in another mocked workspace is someone else's project.
+    if (known.workspace !== workspaceId) return null;
+    const clip = standInClip(known.id, clipId);
+    known.clips.push(clip);
+    return { project: known, clip };
+  }
+  const project = standIn(db, workspaceId, isUuid(home) ? home : adoptedId('clipProject', clipId), clipId);
   const clip = project.clips[0];
   return clip ? { project, clip } : null;
 }

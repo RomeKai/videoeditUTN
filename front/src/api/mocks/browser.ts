@@ -5,6 +5,7 @@ import { dropStaleBridgeWorkspace } from '../bridge';
 import { API_REAL_LIST } from '../config';
 import { isHybrid } from '../routing';
 import { unknownRealNames } from '../routingTable';
+import { watchRealAnswers } from './hybrid';
 import { dropForeignSession, loadDb, syncSession } from './state';
 
 let started: Promise<void> | null = null;
@@ -51,6 +52,8 @@ export function startMocks(): Promise<void> {
   }
   // Hybrid: the session comes from a real login, never from the scenario.
   if (!isHybrid()) syncSession(loadDb());
+  // …and the answers of the backend tell the mocks what its rows look like (the worker hands each one over).
+  else watchRealAnswers(worker.events);
   const start = async (): Promise<void> => {
     for (let attempt = 1; ; attempt += 1) {
       try {

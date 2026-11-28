@@ -29,6 +29,8 @@ export interface VideoThumbProps {
   hue?: string;
   /** Real image, when the backend has one. Without it the design's placeholder is drawn. */
   src?: string | null;
+  /** The image did not load (a temporary URL that expired): the caller can drop `src` and get the placeholder. */
+  onImageError?: () => void;
   alt?: string;
   /** Seconds; shown bottom-right as 0:31. */
   duration?: number | null;
@@ -53,6 +55,7 @@ export function VideoThumb({
   seed,
   hue,
   src,
+  onImageError,
   alt = '',
   duration,
   score,
@@ -68,8 +71,9 @@ export function VideoThumb({
     <span className={cx(styles.thumb, RATIO_CLASS[ratio], xs && styles.xs, className)} style={{ width }}>
       {src ? (
         // Remote thumbnails come from presigned storage URLs: next/image cannot optimize them.
+        // Not draggable on its own: inside a card that is dragged (Publicaciones) the card is what moves.
         // eslint-disable-next-line @next/next/no-img-element
-        <img className={styles.img} src={src} alt={alt} loading="lazy" />
+        <img className={styles.img} src={src} alt={alt} loading="lazy" draggable={false} onError={onImageError} />
       ) : (
         <>
           <span className={styles.frame} style={{ '--f1': hue ?? (seed ? thumbHue(seed) : undefined) } as CSSProperties} />
