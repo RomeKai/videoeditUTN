@@ -7,10 +7,8 @@ const compat = new FlatCompat({ baseDirectory: dirname(fileURLToPath(import.meta
 const config = [
   {
     ignores: [
-      '.next/**',
-      '.next-e2e/**',
-      '.next-e2e-real/**',
-      '.next-e2e-hybrid/**',
+      // Every build folder: `.next` and whatever `NEXT_DIST_DIR` names (the Playwright builds, a rehearsal's).
+      '.next*/**',
       'node_modules/**',
       'public/mockServiceWorker.js',
       'playwright-report/**',

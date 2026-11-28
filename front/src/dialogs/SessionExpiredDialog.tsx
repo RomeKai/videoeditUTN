@@ -5,7 +5,18 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { SessionEndReason } from '@/api/errors';
 import { useHasSession, useLogin } from '@/api/hooks';
-import { clearSession, dropExpiredSession, getSessionEmail, isSessionNeeded, onSessionExpired } from '@/api/session';
+import {
+  clearSession,
+  dropExpiredSession,
+  getAccessSnapshot,
+  getSessionEmail,
+  getTokenGeneration,
+  isSessionExpired,
+  isSessionNeeded,
+  onSessionExpired,
+  subscribeSession,
+  tokenUser,
+} from '@/api/session';
 import { useGuardedNavigation } from '@/shell/leaveGuard';
 import { useSession } from '@/shell/session';
 import { Avatar } from '@/ui/Avatar';
@@ -25,6 +36,9 @@ import styles from './Dialogs.module.css';
  * without one (the login with an old session still stored, a public page) is dropped instead, and the
  * login says so: a dialog asking to sign in on top of the form to sign in helps nobody.
  * When the profile never loaded, the email is the one remembered from the last time it did.
+ *
+ * It closes by itself when the session of the same account comes back from another tab (a new pair in the
+ * browser's storage), and when it is gone from the browser altogether (signed out in another tab).
  */
 export function SessionExpiredDialog() {
   const [open, setOpen] = useState(false);
@@ -38,6 +52,16 @@ export function SessionExpiredDialog() {
 
   const known = useRef(false);
   known.current = me !== null;
+  /**
+   * The session the dialog opened over: its access token, how many pairs this tab had stored by then, and
+   * whose it was. Taken once, as the dialog opens: the profile underneath can be read again later with
+   * another account's token (another tab signed in as someone else), and it must not become the owner.
+   */
+  const dead = useRef<{ access: string | null; generation: number; owner: string | null } | null>(null);
+  const openRef = useRef(open);
+  openRef.current = open;
+  const meId = useRef<string | null>(null);
+  meId.current = me?.id ?? null;
   useEffect(
     () =>
       onSessionExpired((why) => {
@@ -51,6 +75,11 @@ export function SessionExpiredDialog() {
         // Not known from the profile: whose session it was the last time the profile loaded.
         if (!known.current) setEmail((typed) => typed || (getSessionEmail() ?? ''));
         setReason(why);
+        // (The requests in flight report the same dead session one after another: the first one counts.)
+        if (!openRef.current) {
+          const access = getAccessSnapshot();
+          dead.current = { access, generation: getTokenGeneration(), owner: meId.current ?? tokenUser(access) };
+        }
         setOpen(true);
       }),
     [queryClient],
@@ -62,6 +91,32 @@ export function SessionExpiredDialog() {
   useEffect(() => {
     if (!hasSession) setOpen(false);
   }, [hasSession]);
+
+  // Another tab stored a new pair (it signed in from the login, or renewed in time): this tab has a live
+  // session again, so there is nothing to ask. The screen underneath stays, and what failed on it is read
+  // again. A pair this tab stored itself (the form below) is not this case: `useLogin` already reads again.
+  //
+  // Looked at when the session module says something changed, never on a render: the pair can be in the
+  // storage before this tab hears of it, and until then the session still counts as expired here (every
+  // request would fail at once, and stay failed). And only for the same account: the screen underneath is
+  // that person's, with their workspace and maybe their unsaved changes. Another account's pair leaves the
+  // dialog where it is.
+  const { reset: resetLogin } = login;
+  useEffect(
+    () =>
+      subscribeSession(() => {
+        const was = dead.current;
+        if (!openRef.current || !was || isSessionExpired()) return;
+        const access = getAccessSnapshot();
+        if (access === null || access === was.access || getTokenGeneration() !== was.generation) return;
+        if (was.owner === null || tokenUser(access) !== was.owner) return;
+        setOpen(false);
+        setPassword('');
+        resetLogin();
+        void queryClient.invalidateQueries();
+      }),
+    [queryClient, resetLogin],
+  );
 
   const knownEmail = me?.email ?? '';
   const submit = (event: FormEvent) => {
