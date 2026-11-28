@@ -1,6 +1,9 @@
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { http } from 'msw';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { API_URL } from '@/api/config';
+import { server } from '@/api/mocks/server';
 import { AUTH_STORAGE_KEY, clearSession, getSessionEmail, getTokens, isSessionExpired, noteRefreshRejected, notifySessionExpired, rememberSessionEmail, SESSION_EMAIL_STORAGE_KEY, setTokens } from '@/api/session';
 import { mockTokens } from '@/api/mocks/state';
 import { USER_IDS } from '@/api/mocks/seed';
@@ -75,6 +78,46 @@ describe('D9 y las otras pestañas', () => {
     expect(await screen.findByRole('dialog', { name: 'Tu sesión venció' })).toBeInTheDocument();
     act(() => clearSession());
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('si otra pestaña inicia sesión (guarda un par nuevo), el diálogo se cierra y la pantalla sigue, con lo que había fallado leído de nuevo', async () => {
+    let profile = 0;
+    server.use(
+      http.get(`${API_URL}/api/v1/me/`, () => {
+        profile += 1;
+        return undefined;
+      }),
+    );
+    renderScenario(APP);
+    expect(await screen.findByText('adentro')).toBeInTheDocument();
+    act(() => notifySessionExpired());
+    const dialog = await screen.findByRole('dialog', { name: 'Tu sesión venció' });
+    await userEvent.setup().type(within(dialog).getByLabelText('Contraseña'), 'a medio escribir');
+    const asked = profile;
+
+    // The other tab signs in from the login: it writes the storage, without going through this tab's `setTokens`.
+    const pair = mockTokens(USER_IDS.lucia);
+    act(() => {
+      window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ access: `${pair.access}-otra`, refresh: `${pair.refresh}-otra` }));
+      window.dispatchEvent(new StorageEvent('storage', { key: AUTH_STORAGE_KEY }));
+    });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    // Same screen, and the session was read again with the new pair.
+    expect(screen.getByText('adentro')).toBeInTheDocument();
+    await waitFor(() => expect(profile).toBeGreaterThan(asked));
+    expect(isSessionExpired()).toBe(false);
+  });
+
+  it('un evento de otra pestaña que deja el mismo par muerto no lo cierra', async () => {
+    renderScenario(APP);
+    expect(await screen.findByText('adentro')).toBeInTheDocument();
+    act(() => notifySessionExpired());
+    expect(await screen.findByRole('dialog', { name: 'Tu sesión venció' })).toBeInTheDocument();
+    act(() => {
+      window.dispatchEvent(new StorageEvent('storage', { key: AUTH_STORAGE_KEY }));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByRole('dialog', { name: 'Tu sesión venció' })).toBeInTheDocument();
   });
 });
 

@@ -2,10 +2,10 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import type { SessionEndReason } from '@/api/errors';
 import { useHasSession, useLogin } from '@/api/hooks';
-import { clearSession, dropExpiredSession, getSessionEmail, isSessionNeeded, onSessionExpired } from '@/api/session';
+import { clearSession, dropExpiredSession, getAccessSnapshot, getSessionEmail, getTokenGeneration, isSessionNeeded, onSessionExpired, subscribeSession } from '@/api/session';
 import { useGuardedNavigation } from '@/shell/leaveGuard';
 import { useSession } from '@/shell/session';
 import { Avatar } from '@/ui/Avatar';
@@ -25,6 +25,9 @@ import styles from './Dialogs.module.css';
  * without one (the login with an old session still stored, a public page) is dropped instead, and the
  * login says so: a dialog asking to sign in on top of the form to sign in helps nobody.
  * When the profile never loaded, the email is the one remembered from the last time it did.
+ *
+ * It closes by itself when the session comes back from another tab (a new pair in the browser's storage),
+ * and when it is gone from the browser altogether (signed out in another tab).
  */
 export function SessionExpiredDialog() {
   const [open, setOpen] = useState(false);
@@ -38,6 +41,8 @@ export function SessionExpiredDialog() {
 
   const known = useRef(false);
   known.current = me !== null;
+  /** The session the dialog opened over: its access token, and how many pairs this tab had stored by then. */
+  const dead = useRef<{ access: string | null; generation: number } | null>(null);
   useEffect(
     () =>
       onSessionExpired((why) => {
@@ -51,6 +56,7 @@ export function SessionExpiredDialog() {
         // Not known from the profile: whose session it was the last time the profile loaded.
         if (!known.current) setEmail((typed) => typed || (getSessionEmail() ?? ''));
         setReason(why);
+        dead.current = { access: getAccessSnapshot(), generation: getTokenGeneration() };
         setOpen(true);
       }),
     [queryClient],
@@ -62,6 +68,20 @@ export function SessionExpiredDialog() {
   useEffect(() => {
     if (!hasSession) setOpen(false);
   }, [hasSession]);
+
+  // Another tab stored a new pair (it signed in from the login, or renewed in time): this tab has a live
+  // session again, so there is nothing to ask. The screen underneath stays, and what failed on it is read
+  // again. A pair this tab stored itself (the form below) is not this case: `useLogin` already reads again.
+  const access = useSyncExternalStore(subscribeSession, getAccessSnapshot, () => null);
+  const { reset: resetLogin } = login;
+  useEffect(() => {
+    if (!open || !dead.current || access === null) return;
+    if (access === dead.current.access || getTokenGeneration() !== dead.current.generation) return;
+    setOpen(false);
+    setPassword('');
+    resetLogin();
+    void queryClient.invalidateQueries();
+  }, [access, open, queryClient, resetLogin]);
 
   const knownEmail = me?.email ?? '';
   const submit = (event: FormEvent) => {
