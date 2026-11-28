@@ -854,6 +854,122 @@ class DispatchNowTests(PostsWriteHarness):
         self.assertEqual({statuses[post.pk] for post in (own, lost, plain)}, {Status.QUEUED})
 
 
+class TextMissingTests(PostsWriteHarness):
+    """
+    Ensayo 6: a draft whose AI text failed, sent with «Publicar ahora» and no text of its own,
+    went out with `post: ""` and nobody had chosen it. Now that is a 400 `post_text_missing`,
+    unless the request says it may go out without text (`allow_empty_text`).
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.dispatch = self._patch(DISPATCH)
+        _, self.seo_clip = self.make_clip(self.home, "Con SEO", seo=True)
+
+    def failed_draft(self, seo_requested_at=None, **fields):
+        """What _fail_seo_post leaves: the code, and the request over (unless a «Regenerar» is on its way)."""
+        fields.setdefault("status", Status.DRAFT)
+        fields.setdefault("error_log", "seo_no_clip_transcript")
+        post = self.make_post(clip=self.seo_clip, **fields)
+        # Its creation asked for the AI text (the post_save signal of a project with SEO).
+        ScheduledPost.objects.filter(pk=post.pk).update(seo_requested_at=seo_requested_at)
+        post.refresh_from_db()
+        return post
+
+    def sent(self, write):
+        with self.captureOnCommitCallbacks(execute=True):
+            return write()
+
+    def assert_text_missing(self, response, index=None):
+        self.assertEqual(response.status_code, 400, response.content)
+        expected = {"error": service.TEXT_MISSING, "code": "post_text_missing"}
+        if index is not None:
+            expected["index"] = index
+        self.assertEqual(response.json(), expected)
+
+    def test_a_draft_whose_ai_text_failed_does_not_go_out_without_text(self):
+        draft = self.failed_draft()
+
+        response = self.sent(lambda: self.patch_post(draft, publish_at=None))
+
+        self.assert_text_missing(response)
+        draft.refresh_from_db()
+        self.assertEqual((draft.status, draft.error_log), (Status.DRAFT, "seo_no_clip_transcript"))
+        self.assertEqual(self.client.get(detail(draft), **self.ws).json()["seo_status"], "failed")
+        self.dispatch.assert_not_called()
+        self.send_post.assert_not_called()
+        # Scheduling it is the same: it would go out empty at its time.
+        self.assert_text_missing(self.sent(lambda: self.patch_post(draft, publish_at=self.later.isoformat())))
+
+    def test_any_failure_of_the_ai_text_counts_the_limit_included(self):
+        for code in ("seo_rate_limited", "content_blocked", "moderation_unavailable", "seo_failed:RuntimeError"):
+            with self.subTest(code=code):
+                self.assert_text_missing(self.sent(lambda: self.patch_post(self.failed_draft(error_log=code), publish_at=None)))
+
+    def test_it_goes_out_without_text_when_the_request_says_so(self):
+        draft = self.failed_draft()
+
+        response = self.sent(lambda: self.patch_post(draft, publish_at=None, allow_empty_text=True))
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual((response.json()["status"], response.json()["caption"]), ("SCHEDULED", ""))
+        draft.refresh_from_db()
+        self.assertEqual((draft.status, draft.error_log), (Status.SCHEDULED, None))
+        self.dispatch.assert_called_once_with(retry=False)
+
+    def test_a_text_of_its_own_needs_no_confirmation(self):
+        with_caption = self.failed_draft()
+        only_tags = self.failed_draft(platform=Platform.YOUTUBE_SHORTS)
+        self.assertEqual(self.sent(lambda: self.patch_post(with_caption, publish_at=None, caption="Mío")).status_code, 200)
+        self.assertEqual(self.sent(lambda: self.patch_post(only_tags, publish_at=None, hashtags=["mio"])).status_code, 200)
+        self.assertEqual(self.dispatch.call_count, 2)
+
+    def test_a_text_on_its_way_is_no_failure_the_post_waits_for_it(self):
+        # «Regenerar» after the failure: sent meanwhile, it waits for the new text (waits_for_ai_text).
+        draft = self.failed_draft(seo_requested_at=timezone.now())
+
+        response = self.sent(lambda: self.patch_post(draft, publish_at=None))
+
+        self.assertEqual((response.status_code, response.json()["status"]), (200, "SCHEDULED"))
+        self.dispatch.assert_not_called()
+
+    def test_a_project_without_the_ai_text_is_not_asked(self):
+        # Nothing failed: the empty box was on screen, and the user sent it.
+        draft = self.make_post(status=Status.DRAFT)
+        self.assertEqual(self.sent(lambda: self.patch_post(draft, publish_at=None)).status_code, 200)
+
+    def test_emptying_the_text_of_a_scheduled_post_whose_ai_text_failed(self):
+        post = self.failed_draft(status=Status.SCHEDULED, caption="Mío")
+
+        self.assert_text_missing(self.sent(lambda: self.patch_post(post, caption="")))
+        post.refresh_from_db()
+        self.assertEqual(post.caption, "Mío")
+        self.assertEqual(self.sent(lambda: self.patch_post(post, caption="", allow_empty_text=True)).status_code, 200)
+        post.refresh_from_db()
+        self.assertEqual(post.caption, "")
+
+    @override_settings(AI_SEO_MAX_PER_WORKSPACE_PER_HOUR=0)
+    def test_creating_a_post_past_the_ai_text_limit_without_text(self):
+        clip = str(self.seo_clip.pk)
+
+        self.assert_text_missing(self.sent(lambda: self.create(video_clip=clip)))
+        batch = [
+            {"video_clip": str(self.clip.pk), "platform": Platform.INSTAGRAM_REELS},  # no SEO: nothing failed
+            {"video_clip": clip, "platform": Platform.YOUTUBE_SHORTS},
+        ]
+        self.assert_text_missing(self.sent(lambda: self.client.post(BULK, {"posts": batch}, format="json", **self.ws)), index=1)
+        self.assertFalse(ScheduledPost.objects.exists())  # all or nothing
+        self.dispatch.assert_not_called()
+
+        # A draft is not going out; a text of its own or the confirmation does.
+        self.assertEqual(self.create(video_clip=clip, draft=True).json()["seo_status"], "failed")
+        self.assertEqual(self.sent(lambda: self.create(video_clip=clip, platform=Platform.YOUTUBE_SHORTS, caption="Mío")).status_code, 201)
+        allowed = self.sent(lambda: self.create(video_clip=clip, platform=Platform.TIKTOK, tiktok=TIKTOK, allow_empty_text=True))
+        self.assertEqual((allowed.status_code, allowed.json()["status"], allowed.json()["caption"]), (201, "SCHEDULED", ""))
+        self.assertEqual(self.dispatch.call_count, 2)
+        self.seo_delay.assert_not_called()
+
+
 class RegenerateTests(PostsWriteHarness):
     def setUp(self):
         super().setUp()

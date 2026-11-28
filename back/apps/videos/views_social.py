@@ -38,7 +38,9 @@ PLAN = OpenApiResponse(description=(
     '(`code: "crossposting"`): `{error, code}`. O el rol no publica: `{detail}`.'
 ))
 INVALID = OpenApiResponse(description=(
-    'Por campo: `{campo: [mensaje]}`. En /bulk/ va además `index`, la posición de la publicación con el error.'
+    'Por campo: `{campo: [mensaje]}`. En /bulk/ va además `index`, la posición de la publicación con el error. '
+    'O `{error, code: "post_text_missing"}`: falló el texto con IA, la publicación no tiene texto y el pedido '
+    'no trae `allow_empty_text: true`.'
 ))
 
 

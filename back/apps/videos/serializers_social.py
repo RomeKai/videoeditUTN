@@ -224,6 +224,9 @@ class _PostTextFields(serializers.Serializer):
     caption = serializers.CharField(required=False, allow_blank=True)
     hashtags = serializers.ListField(child=serializers.CharField(allow_blank=True), required=False)
     tiktok = serializers.JSONField(required=False, error_messages={'null': TIKTOK_PRIVACY_MISSING})
+    # True: the post may go out with no text after its AI text failed; without it that is a 400
+    # `post_text_missing` (services/scheduled_posts._check_has_text). It changes nothing else.
+    allow_empty_text = serializers.BooleanField(required=False)
 
     def validate_hashtags(self, value):
         return clean_hashtags(value)

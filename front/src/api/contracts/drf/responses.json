@@ -2131,6 +2131,13 @@
         ]
       }
     },
+    "post_400_text_missing": {
+      "status": 400,
+      "body": {
+        "error": "No pudimos generar el texto y la publicación no tiene texto. Escribilo vos, regeneralo o confirmá que sale sin texto.",
+        "code": "post_text_missing"
+      }
+    },
     "post_403_scheduling": {
       "status": 403,
       "body": {

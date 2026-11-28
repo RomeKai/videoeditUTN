@@ -692,6 +692,143 @@ describe('E1 · Publicar · borrador que dejó de serlo', () => {
   });
 });
 
+/** What `_fail_seo_post` leaves on a draft: still a DRAFT, with no text and `seo_status: 'failed'`. */
+function failDraftText(clipId: string, platform = 'TIKTOK') {
+  const data = db();
+  const draft = data.posts.find((post) => post.video_clip === clipId && post.platform === platform && post.status === 'DRAFT');
+  if (!draft) throw new Error('falta el borrador');
+  Object.assign(draft, { caption: '', hashtags: [], generated_caption: null, generated_hashtags: null, seo_status: 'failed', error_log: 'seo_no_clip_transcript' });
+  delete draft._sim;
+  saveDb(data);
+  return draft;
+}
+const askEmpty = () => screen.findByRole('alertdialog', { name: '¿Publicar sin texto?' });
+
+describe('E1 · Publicar · el texto con IA falló', () => {
+  // Ensayo 6: the draft was `seo_status: failed` in under a second, the panel said «listo para publicar» with
+  // the box empty, and «Publicar» sent `post: ""` with no warning.
+  it('lo dice, ofrece «Regenerar» y no publica sin texto hasta que la persona lo confirma', async () => {
+    const { panel, onClose, client } = await openPanel([CLIPS.first], undefined, ['TIKTOK']);
+    await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toHaveLength(1));
+    const draft = failDraftText(CLIPS.first);
+    await client.invalidateQueries();
+
+    expect(await within(panel).findByText('No pudimos generar el texto. Escribilo vos.')).toBeInTheDocument();
+    expect(within(panel).getByRole('button', { name: 'Regenerar' })).toBeEnabled();
+    expect((within(panel).getByLabelText('Caption') as HTMLTextAreaElement).value).toBe('');
+    fireEvent.change(within(panel).getByLabelText('Quién puede ver este video'), { target: { value: 'SELF_ONLY' } });
+    fireEvent.click(publishButton());
+
+    const ask = await askEmpty();
+    expect(ask).toHaveTextContent(`No pudimos generar el texto de «${draft.clip.title}» para TikTok. Si publicás igual, sale sin caption ni hashtags.`);
+    // Nothing went out while it asks; «Escribir el texto» goes back to the box.
+    expect(postsOf(CLIPS.first, 'DRAFT').map((post) => post.id)).toEqual([draft.id]);
+    fireEvent.click(within(ask).getByRole('button', { name: 'Escribir el texto' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(onClose).not.toHaveBeenCalled();
+    expect(db().posts.find((post) => post.id === draft.id)?.status).toBe('DRAFT');
+
+    fireEvent.click(publishButton());
+    fireEvent.click(within(await askEmpty()).getByRole('button', { name: 'Publicar sin texto' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 20_000 });
+    const out = db().posts.find((post) => post.id === draft.id);
+    expect(['SCHEDULED', 'QUEUED']).toContain(out?.status);
+    expect(out?.caption).toBe('');
+  });
+
+  it('con un texto escrito sale sin preguntar', async () => {
+    const { panel, onClose, client } = await openPanel([CLIPS.first], undefined, ['TIKTOK']);
+    await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toHaveLength(1));
+    const draft = failDraftText(CLIPS.first);
+    await client.invalidateQueries();
+    expect(await within(panel).findByText('No pudimos generar el texto. Escribilo vos.')).toBeInTheDocument();
+
+    fireEvent.change(within(panel).getByLabelText('Caption'), { target: { value: 'Lo escribí yo' } });
+    expect(within(panel).queryByText('No pudimos generar el texto. Escribilo vos.')).toBeNull();
+    fireEvent.change(within(panel).getByLabelText('Quién puede ver este video'), { target: { value: 'SELF_ONLY' } });
+    fireEvent.click(publishButton());
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 20_000 });
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(db().posts.find((post) => post.id === draft.id)?.caption).toBe('Lo escribí yo');
+  });
+
+  it('«Regenerar» lo vuelve a pedir y el texto que llega sale sin preguntar', async () => {
+    const { panel, onClose, client } = await openPanel([CLIPS.first], undefined, ['TIKTOK']);
+    await waitFor(() => expect(postsOf(CLIPS.first, 'DRAFT')).toHaveLength(1));
+    failDraftText(CLIPS.first);
+    await client.invalidateQueries();
+    fireEvent.click(await within(panel).findByRole('button', { name: 'Regenerar' }));
+    expect(await within(panel).findByText('Generando texto…')).toBeInTheDocument();
+    expect(within(panel).queryByText('No pudimos generar el texto. Escribilo vos.')).toBeNull();
+    finishSeo();
+    await client.invalidateQueries();
+    await waitFor(() => expect((within(panel).getByLabelText('Caption') as HTMLTextAreaElement).value).toMatch(/lo que nadie te cuenta/));
+
+    fireEvent.change(within(panel).getByLabelText('Quién puede ver este video'), { target: { value: 'SELF_ONLY' } });
+    fireEvent.click(publishButton());
+    await waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 20_000 });
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('si falló mientras el panel todavía decía «Generando texto…», el backend no lo deja salir vacío y el panel muestra la falla', async () => {
+    // A clip with no TikTok text to reuse: its AI text is generated.
+    const { panel, onClose } = await openPanel([CLIPS.third], undefined, ['TIKTOK']);
+    expect(await within(panel).findByText('Generando texto…')).toBeInTheDocument();
+    await waitFor(() => expect(postsOf(CLIPS.third, 'DRAFT')).toHaveLength(1));
+    fireEvent.change(within(panel).getByLabelText('Quién puede ver este video'), { target: { value: 'SELF_ONLY' } });
+    // The panel last saw it pending; it fails before the next look.
+    const draft = failDraftText(CLIPS.third);
+    fireEvent.click(publishButton());
+
+    const alert = await within(panel).findByRole('alert');
+    expect(alert).toHaveTextContent('No pudimos publicar en TikTok');
+    expect(alert).toHaveTextContent('No pudimos generar el texto y la publicación no tiene texto.');
+    expect(await within(panel).findByText('No pudimos generar el texto. Escribilo vos.')).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(db().posts.find((post) => post.id === draft.id)?.status).toBe('DRAFT');
+
+    await waitFor(() => expect(publishButton()).toBeEnabled());
+    fireEvent.click(publishButton());
+    fireEvent.click(within(await askEmpty()).getByRole('button', { name: 'Publicar sin texto' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 20_000 });
+    expect(['SCHEDULED', 'QUEUED']).toContain(db().posts.find((post) => post.id === draft.id)?.status);
+  });
+
+  it('con varios clips, la fila lo dice, se regenera desde ahí y la confirmación nombra cada publicación', async () => {
+    const { panel, client } = await openPanel([CLIPS.first, CLIPS.second], undefined, ['TIKTOK']);
+    const tiktokDraft = (clipId: string) => postsOf(clipId, 'DRAFT').filter((post) => post.platform === 'TIKTOK');
+    await waitFor(() => expect(tiktokDraft(CLIPS.first)).toHaveLength(1));
+    await waitFor(() => expect(tiktokDraft(CLIPS.second)).toHaveLength(1));
+    const first = failDraftText(CLIPS.first);
+    const second = failDraftText(CLIPS.second);
+    await client.invalidateQueries();
+
+    await waitFor(() => expect(within(panel).getAllByText('No pudimos generar el texto. Escribilo vos.')).toHaveLength(2));
+    // The calendar of the batch says it too.
+    expect(within(panel).getAllByText('No pudimos generar el texto de este clip en TikTok.', { selector: 'span' })).toHaveLength(2);
+    fireEvent.change(within(panel).getByLabelText('Quién puede ver estos videos'), { target: { value: 'SELF_ONLY' } });
+    fireEvent.click(publishButton());
+
+    const ask = await askEmpty();
+    expect(ask).toHaveTextContent('No pudimos generar el texto de 2 publicaciones. Si publicás igual, salen sin caption ni hashtags.');
+    expect(within(ask).getByText(`«${first.clip.title}» en TikTok`)).toBeInTheDocument();
+    expect(within(ask).getByText(`«${second.clip.title}» en TikTok`)).toBeInTheDocument();
+    // «Escribir el texto» opens the text of the first one.
+    fireEvent.click(within(ask).getByRole('button', { name: 'Escribir el texto' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(within(panel).getByLabelText(first.clip.title)).toHaveValue('');
+    fireEvent.click(within(panel).getByRole('button', { name: 'Listo' }));
+
+    // Regenerated from its row, the first one waits for its new text; only the second one is asked about.
+    fireEvent.click(within(panel).getByRole('button', { name: `Regenerar el texto de «${first.clip.title}»` }));
+    await waitFor(() => expect(db().posts.find((post) => post.id === first.id)?.seo_status).toBe('pending'));
+    await waitFor(() => expect(within(panel).getAllByText('No pudimos generar el texto. Escribilo vos.')).toHaveLength(1));
+    fireEvent.click(publishButton());
+    expect(await askEmpty()).toHaveTextContent(`No pudimos generar el texto de «${second.clip.title}» para TikTok.`);
+  });
+});
+
 describe('E1 · Publicar · TikTok', () => {
   it('el contenido de marca no puede ser «Solo yo», y avisa de la política de contenido de marca', async () => {
     const { panel } = await openPanel([CLIPS.first], 'plan-gratis');

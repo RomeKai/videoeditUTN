@@ -114,6 +114,11 @@ SEO_LIMITED = (
 )
 # Error code a post keeps when its AI text was not asked for because of the limit (seo_status "failed").
 SEO_LIMITED_CODE = 'seo_rate_limited'
+TEXT_MISSING = (
+    "No pudimos generar el texto y la publicación no tiene texto. Escribilo vos, regeneralo "
+    "o confirmá que sale sin texto."
+)
+TEXT_MISSING_CODE = 'post_text_missing'
 LOCK_UNKNOWN = "No pudimos comprobar si la publicación sigue saliendo. Probá de nuevo en unos minutos."
 
 _CONFLICTS = {
@@ -332,6 +337,27 @@ def _check_tiktok(platform, options, index=None):
 
     if platform == Platform.TIKTOK and not options:
         raise PostRefused.invalid('tiktok', TIKTOK_PRIVACY_MISSING, index)
+
+
+def _check_has_text(post, allowed, now, index=None):
+    """
+    A post that goes out after its AI text failed (`seo_status: "failed"`: the code in `error_log`,
+    the limit's included) with no text at all (no caption and no hashtags, the user's or the AI's)
+    is a 400 `post_text_missing`, unless the request says it may go out that way
+    (`allow_empty_text`). Sent anyway it would go out with an empty text that nobody chose. A text
+    still on its way is no failure: the post waits for it (waits_for_ai_text). A project without the
+    AI text promised none, so its posts are not checked. On YouTube the title is the clip's either way.
+    """
+    from apps.videos.serializers_social import _seo_error_code
+
+    if allowed or post.caption_to_publish() or post.hashtags_to_publish():
+        return
+    if not _seo_error_code(post) or seo_request_pending(post, now):
+        return
+    body = {'error': TEXT_MISSING, 'code': TEXT_MISSING_CODE}
+    if index is not None:
+        body['index'] = index
+    raise PostRefused(400, body)
 
 
 # --- AI text: what it costs ---
@@ -635,7 +661,7 @@ def create_posts(workspace, items, *, key=None, print_=None, many=False):
             _check_account(workspace, {platform for platforms in going.values() for platform in platforms})
 
         posts, budget, waiting = [], None, set()
-        for clip, item, status, publish_at in plans:
+        for index, (clip, item, status, publish_at) in enumerate(plans):
             post = ScheduledPost(
                 video_clip=clip, platform=item['platform'], publish_at=publish_at, status=status,
                 caption=item.get('caption', ''), hashtags=item.get('hashtags', []),
@@ -658,6 +684,9 @@ def create_posts(workspace, items, *, key=None, print_=None, many=False):
                     else:
                         post.error_log = SEO_LIMITED_CODE
                         seo = 'limited'
+            if status == Status.SCHEDULED:
+                # Past the limit, a post with no text of its own would go out empty.
+                _check_has_text(post, item.get('allow_empty_text', False), now, index_of(index))
             post.save()
             if seo == 'asked':
                 queue_post_seo(post.pk)
@@ -679,7 +708,8 @@ def update_post(workspace, post_id, data):
     """
     PATCH: the text, the TikTok options and `publish_at` (a date schedules or
     reschedules, None publishes now; absent keeps a draft a draft). Only
-    DRAFT and SCHEDULED.
+    DRAFT and SCHEDULED. A post that would go out with no text after its AI
+    text failed needs `allow_empty_text` (_check_has_text).
     """
     now = timezone.now()
     with transaction.atomic():
@@ -721,12 +751,17 @@ def update_post(workspace, post_id, data):
                 _check_scheduling(plan)
             _check_crossposting(plan, {clip.pk: {post.platform}}, exclude=[post.pk])
             _check_account(workspace, {post.platform})
+            _check_has_text(post, data.get('allow_empty_text', False), now)
             post.status, post.publish_at = Status.SCHEDULED, publish_at
             fields += ['status', 'publish_at']
             if post.error_log:
-                # The text failure of a draft (seo_status "failed") is over once it is sent.
+                # The text failure of a draft (seo_status "failed") is over once it is sent: with a text
+                # of its own, one still on its way, or going out without one because the request said so.
                 post.error_log = None
                 fields.append('error_log')
+        elif edited and post.status == Status.SCHEDULED:
+            # Emptying the text of a post that goes out, after its AI text failed.
+            _check_has_text(post, data.get('allow_empty_text', False), now)
         post.save(update_fields=fields)
         if edited:
             post.refresh_from_db(fields=['text_edited_at'])

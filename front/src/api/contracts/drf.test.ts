@@ -509,6 +509,12 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
     const bulk = error('post_400_bulk_index', 'social.createPostsBulk');
     expect([bulk.data.index, fieldError(bulk, 'caption')]).toEqual([1, 'El texto supera el límite de Instagram Reels (2200 caracteres).']);
     expect(fieldError(error('post_400_tiktok', 'social.createPost'), 'tiktok')).toBe('Elegí quién puede ver el video.');
+    // Ensayo 6: a draft whose AI text failed does not go out empty unless the request says so.
+    const textless = error('post_400_text_missing', 'social.updatePost');
+    expect([textless.status, textless.code, errorMessage(textless)]).toEqual([
+      400, 'post_text_missing', 'No pudimos generar el texto y la publicación no tiene texto. Escribilo vos, regeneralo o confirmá que sale sin texto.',
+    ]);
+    expect(updatePost.errors?.find((item) => item.status === 400)?.when).toContain('post_text_missing');
     expect(error('post_409_account_not_connected', 'social.createPost').code).toBe('account_not_connected');
     for (const [key, code] of [
       ['post_409_in_flight', 'post_in_flight'],
