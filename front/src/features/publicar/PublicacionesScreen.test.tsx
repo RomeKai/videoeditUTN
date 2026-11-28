@@ -4,6 +4,7 @@ import { http, HttpResponse } from 'msw';
 import { server } from '@/api/mocks/server';
 import { applyScenario } from '@/api/mocks/state';
 import { db, editDb, idle, renderScenario } from '@/testing';
+import { notificationHref } from '@/shell/nav';
 import { PublicacionesScreen } from './PublicacionesScreen';
 import { holdDraft, isRemembered, releaseDraft } from './draftRegistry';
 import { failPublish } from '@/api/mocks/publish-errors';
@@ -180,6 +181,25 @@ describe('E2 · Publicaciones · lista', () => {
     fireEvent.click(within(detail).getByRole('button', { name: 'Guardar' }));
     expect(await screen.findByText('Cambios guardados')).toBeInTheDocument();
     expect(isRemembered(draft.id)).toBe(false);
+  });
+
+  it('el link de «una publicación falló» (campana y email) abre el detalle de esa publicación, aunque no esté en la semana a la vista', async () => {
+    const failed = postWith('FAILED');
+    if (!failed) throw new Error('falta la publicación fallida');
+    // Next month: the week on screen does not have it.
+    editDb((data) => {
+      const post = data.posts.find((item) => item.id === failed.id);
+      if (post) post.publish_at = new Date(Date.now() + 30 * 86_400_000).toISOString();
+    });
+    const notification = db().notifications.find((item) => item.type === 'post_failed' && item.post_id === failed.id);
+    if (!notification) throw new Error('falta la notificación de la publicación fallida');
+    const [path, search] = notificationHref(notification).split('?');
+    expect(path).toBe('/publicaciones');
+
+    await open(search);
+    const detail = await screen.findByRole('dialog', { name: 'Detalle de la publicación' });
+    expect(await within(detail).findByText('TikTok rechazó la publicación. Revisá el video y el texto, y reintentá.')).toBeInTheDocument();
+    expect(within(detail).getAllByText(failed.clip.title).length).toBeGreaterThan(0);
   });
 
   it('avisa de la publicación que falló, con un motivo legible', async () => {

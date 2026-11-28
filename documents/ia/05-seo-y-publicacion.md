@@ -448,6 +448,28 @@ Van primero en `error_log` (`<código>` o `<código> (<detalle>)`); `ScheduledPo
 | Upload-Post sigue la subida en segundo plano, o se perdió su respuesta (504, timeout de lectura, conexión cortada) | `publish` lee el estado del `request_id` cada 10 s, hasta 300 s después de empezar (más la última lectura, de 10 s como mucho: entra en el lock de 600 s). Con el resultado de la red, `PUBLISHED` o su código; sin él, `FAILED` con `outcome_unknown (upload-post <motivo>; status=<último estado>; request_id=<clave>)`, sin reintento: el `request_id` sirve para buscarlo en Upload-Post ([runbook](../runbooks/redes-sociales-prueba.md#ensayo-con-un-upload-post-falso)). | `UploadPostProvider.publish` |
 | Un error inesperado dentro de la llamada al proveedor | `FAILED` con `outcome_unknown (critical <clase>)`: el pedido pudo haber salido. Antes de la llamada (R2, por ejemplo), sigue siendo `Critical: <mensaje>`. | `upload_to_social_network` |
 
+### Aviso de una publicación fallida
+
+Cada escritura que pasa un post a `FAILED` avisa a la campana (`post_failed`) y, según la preferencia `post_failed` de cada persona, por email. Lo escribe `apps/notifications/services.py`; el resto de las notificaciones está en [07](07-capacidad-costos-y-operacion.md#notificaciones-dentro-de-la-app).
+
+| Dónde queda `FAILED` | Quién avisa |
+|---|---|
+| El publicador: error permanente, resultado incierto, reintentos agotados, lock que nunca llegó, error inesperado | `_fail_post` (`apps/videos/tasks/social.py`) |
+| El publicador: sin perfil del espacio, o TikTok sin opciones | `upload_to_social_network`, después del commit de esa escritura |
+| El texto con IA de un post que iba a salir sin texto (también `seo_dispatch_failed` y `seo_request_expired`) | `_fail_seo_post` |
+| Una red que se desconecta | `fail_network_posts`, con `notify_network_posts_failed` |
+
+- **Una vez por falla.** Solo avisa la escritura que mueve el post a `FAILED`. `_fail_post` lo sabe con su propio `UPDATE`: el primero excluye los posts ya `FAILED` y, si no cambió ninguna fila, un segundo `UPDATE` escribe los mismos campos sin avisar. Ese segundo `UPDATE` solo toca un post que sigue `FAILED`: si un reintento lo movió entre los dos, queda como está. `_fail_seo_post` hace lo mismo para el post que pasa a `FAILED`; un `DRAFT`, un post con texto propio o uno que ya estaba `FAILED` no avisan, y el `UPDATE` que los escribe nunca pasa un post a `FAILED`.
+- **Otra vez después de un reintento.** `retry_post` saca el post de `FAILED` (a `SCHEDULED` o a `DRAFT`). Si vuelve a fallar, es una falla nueva y avisa de nuevo.
+- **Después del commit, fuera de los locks.** `notify_post_failed` corre con `transaction.on_commit`. Si al hacer commit el post ya no existe o ya no está `FAILED` (un reintento llegó antes), no escribe nada.
+- **Nunca frena a quien llama.** Un error se registra como `notifications.not_created`, con el id del post y la clase del error. El post queda `FAILED` igual y la tarea termina como antes.
+- **Quién la recibe.** El dueño y los miembros activos del espacio, como las de un proyecto.
+- **Qué dice.** El título nombra el clip (el proyecto, si el clip no tiene título) y la red: «<clip>: no se pudo publicar en TikTok». Con `outcome_unknown` o `duplicate_content` (`POST_MAYBE_OUT`) dice «<clip>: no sabemos si se publicó en TikTok». El cuerpo es el `error_message` que la API da para ese post (`PUBLISH_ERROR_MESSAGES`, `SEO_ERROR_MESSAGES`): el mismo texto que muestra Publicaciones. `Notification.reason` guarda el código (`error_code`).
+- **A dónde lleva.** `post_id` es el post: la web abre `/publicaciones?detalle=<id>`, el parámetro con el que `PublicacionesScreen` abre el detalle de un post, en cualquier vista y aunque el post no esté en la semana que muestra el calendario. El email usa el mismo link (`POST_PARAM`), con `&espacio=<id>`. `project_id` es su proyecto.
+- **Red desconectada.** Con un solo post, el aviso es el de cualquier falla. Con varios, `notify_network_posts_failed` escribe una sola notificación por persona («Se desconectó TikTok: 3 publicaciones no van a salir»), sin `post_id` (lleva a Publicaciones) y con `reason` `network_disconnected`. Una por post taparía la campana, que guarda 20.
+- **Muchas fallas juntas.** Un corte del broker o del worker puede fallar de una vez todos los posts de un alta en lote o de `fail_lost_ai_texts`. Un espacio recibe hasta `POST_BURST_LIMIT` (3) avisos de posts distintos en `POST_BURST_WINDOW` (10 minutos). La falla siguiente escribe un solo aviso por persona («Fallaron varias publicaciones en pocos minutos», sin `post_id`, `reason` `several_posts_failed`) y el resto de la ventana no escribe nada. Vale para todos los caminos.
+- **El email no lleva texto de usuarios.** Lleva el cuerpo (la red y qué pasó), nunca el título. Ver [Emails de las notificaciones](07-capacidad-costos-y-operacion.md#emails-de-las-notificaciones).
+
 ## Datos que escribe
 
 - **`ScheduledPost`**

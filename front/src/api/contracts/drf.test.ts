@@ -426,13 +426,16 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
 
   it('notificaciones: la lista de la campana, marcar una leída y el 404', () => {
     const list = parse(listNotifications.response, real.notifications_list) as NotificationsResponse;
-    expect(list.unread_count).toBe(5);
-    // One of each kind the backend writes today, newest first.
-    expect(list.results.map((item) => item.type)).toEqual(['low_balance', 'project_ready', 'payment_rejected', 'payment_approved', 'project_failed', 'render_finished']);
-    expect(list.results.map((item) => item.read_at === null)).toEqual([true, true, true, true, true, false]);
+    expect(list.unread_count).toBe(6);
+    // One of each kind the backend writes, newest first.
+    expect(list.results.map((item) => item.type)).toEqual(['post_failed', 'low_balance', 'project_ready', 'payment_rejected', 'payment_approved', 'project_failed', 'render_finished']);
+    expect(list.results.map((item) => item.read_at === null)).toEqual([true, true, true, true, true, true, false]);
+    // The failed post leads to itself in Publicaciones: it is the only one with a post.
+    const [failedPost, lowBalance, ...others] = list.results;
+    expect([failedPost?.title, failedPost?.post_id, failedPost?.project_id]).toEqual(['Clip 0: no sabemos si se publicó en TikTok', 'e3a1d7f4-2c68-4b9a-8f05-6a4c1b2d9e70', list.results[6]?.project_id]);
     // The low balance one leads to Comprar tokens: it has no project.
-    expect([list.results[0]?.title, list.results[0]?.project_id]).toEqual(['Te quedan 300 tokens', null]);
-    expect(list.results.every((item) => item.post_id === null)).toBe(true);
+    expect([lowBalance?.title, lowBalance?.project_id]).toEqual(['Te quedan 300 tokens', null]);
+    expect([lowBalance, ...others].every((item) => item?.post_id === null)).toBe(true);
     const read = parse(markNotificationRead.response, real.notification_read) as Notification;
     expect(read.read_at).toBe('2026-11-04T16:00:00Z');
     expect(error('notification_404', 'notifications.markRead').isNotFound).toBe(true);

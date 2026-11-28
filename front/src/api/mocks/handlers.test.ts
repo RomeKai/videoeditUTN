@@ -19,6 +19,7 @@ import { API_URL } from '../config';
 import { setActiveWorkspaceId, setTokens } from '../session';
 import { mockedEndpointIds } from './http';
 import { USER_IDS, WORKSPACE_IDS } from './seed';
+import { NETWORK_DISPLAY } from './publish-errors';
 import { server } from './server';
 import { reservationStateOf, serveActivity, SIM, tick } from './sim';
 import { applyScenario, loadDb, mockTokens, saveDb } from './state';
@@ -818,6 +819,79 @@ describe('mocks', () => {
     expect((await apiCall(system.getSystemStatus)).maintenance_window).not.toBeNull();
     // Everything else answers 503, which is what puts the app on the maintenance page.
     expect((await fail(apiCall(projects.listProjects, { query: {} }))).status).toBe(503);
+  });
+});
+
+describe('mocks · «una publicación falló» en la campana (apps/notifications/services.py)', () => {
+  const failures = async () => (await apiCall(notifications.listNotifications)).results.filter((item) => item.type === 'post_failed');
+
+  it('el ejemplo sembrado y una publicación que falla dicen el clip, la red y qué pasó, y llevan a la publicación', async () => {
+    signIn('estudio-norte');
+    const seeded = loadDb().posts.find((post) => post.status === 'FAILED');
+    if (!seeded) throw new Error('falta la publicación fallida');
+    expect((await failures()).map((item) => [item.title, item.body, item.post_id, item.project_id])).toEqual([
+      [`${seeded.clip.title}: no se pudo publicar en ${NETWORK_DISPLAY[seeded.platform]}`, seeded.error_message, seeded.id, seeded.clip.project_id],
+    ]);
+
+    const db = loadDb();
+    const queued = db.posts.find((post) => post.status === 'QUEUED');
+    if (!queued) throw new Error('falta la publicación en cola');
+    queued._sim = { startedAt: Date.now(), fails: true };
+    saveDb(db);
+    advance(SIM.postQueuedMs + SIM.postProcessingMs + 1);
+
+    const [newest] = await failures();
+    expect([newest?.title, newest?.body, newest?.post_id, newest?.read_at]).toEqual([
+      `${queued.clip.title}: no se pudo publicar en ${NETWORK_DISPLAY[queued.platform]}`,
+      `${NETWORK_DISPLAY[queued.platform]} rechazó la publicación. Revisá el video y el texto, y reintentá.`,
+      queued.id,
+      null,
+    ]);
+  });
+
+  it('al desconectar una red: una publicación avisa como cualquier falla; varias, una sola vez', async () => {
+    signIn('estudio-norte');
+    const going = (platform: string) => loadDb().posts.filter((post) => post.platform === platform && (post.status === 'SCHEDULED' || post.status === 'QUEUED'));
+    const before = (await failures()).length;
+    const db = loadDb();
+    const [first, second] = db.posts.filter((post) => post.status === 'SCHEDULED' || post.status === 'QUEUED');
+    if (!first || !second) throw new Error('faltan publicaciones por salir');
+    // Two on one network, none on the others.
+    for (const post of db.posts) if (post.status === 'SCHEDULED' || post.status === 'QUEUED') post.status = 'DRAFT';
+    first.status = 'SCHEDULED';
+    first.platform = 'TIKTOK';
+    second.status = 'QUEUED';
+    second.platform = 'TIKTOK';
+    for (const account of db.socialAccounts) if (account.workspace === WORKSPACE_IDS.estudio) account.status = 'connected';
+    saveDb(db);
+    expect(going('TIKTOK')).toHaveLength(2);
+
+    await apiCall(social.disconnectSocialAccount, { params: { platform: 'TIKTOK' } });
+
+    const after = await failures();
+    expect(after).toHaveLength(before + 1);
+    expect([after[0]?.title, after[0]?.body, after[0]?.post_id, after[0]?.project_id]).toEqual([
+      'Se desconectó TikTok: 2 publicaciones no van a salir',
+      'Reconectá la cuenta de TikTok y reintentalas desde Publicaciones.',
+      null,
+      null,
+    ]);
+
+    // One post on another network: its own notification, with its link.
+    const again = loadDb();
+    const third = again.posts.find((post) => post.id === first.id);
+    if (!third) throw new Error('falta la publicación');
+    third.status = 'SCHEDULED';
+    third.platform = 'INSTAGRAM_REELS';
+    saveDb(again);
+    await apiCall(social.disconnectSocialAccount, { params: { platform: 'INSTAGRAM_REELS' } });
+
+    const [single] = await failures();
+    expect([single?.title, single?.body, single?.post_id]).toEqual([
+      `${first.clip.title}: no se pudo publicar en Instagram Reels`,
+      'La cuenta de Instagram Reels no está conectada. Conectala y reintentá.',
+      first.id,
+    ]);
   });
 });
 
