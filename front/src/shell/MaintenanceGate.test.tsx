@@ -10,6 +10,7 @@ import { server } from '@/api/mocks/server';
 import { keys } from '@/api/query';
 import { renderScenario, startMockApi } from '@/testing';
 import { MAINTENANCE_RECHECK_MS, MaintenanceGate } from './MaintenanceGate';
+import { RequireSession } from './RequireSession';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() }),
@@ -22,6 +23,7 @@ startMockApi();
 
 const ACCOUNTS = `${API_URL}/api/v1/social-accounts/`;
 const STATUS = `${API_URL}/api/v1/status/`;
+const ME = `${API_URL}/api/v1/me/`;
 
 /** The app behind the gate, once the status endpoint answered that all is well. */
 async function renderGate() {
@@ -146,5 +148,58 @@ describe('K5 · cuándo la app pasa a mantenimiento', () => {
       vi.useRealTimers();
       Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
     }
+  });
+
+  it('cuando termina, la app vuelve sola: la cuenta que no se pudo cargar durante el mantenimiento se pide de nuevo', async () => {
+    // A tab opened (or reloaded) with the platform down: the profile never loaded.
+    const down = () => HttpResponse.json({ detail: 'Estamos haciendo mantenimiento. Volvé en un rato.' }, { status: 503 });
+    let over = false;
+    let profile = 0;
+    server.use(
+      http.get(ME, () => {
+        profile += 1;
+        return over ? undefined : down();
+      }),
+      http.get(STATUS, () => (over ? undefined : down())),
+    );
+    renderScenario(
+      <MaintenanceGate>
+        <RequireSession>
+          <p>adentro</p>
+        </RequireSession>
+      </MaintenanceGate>,
+    );
+    expect(await screen.findByRole('heading', { name: 'Estamos en mantenimiento' })).toBeInTheDocument();
+    await waitFor(() => expect(profile).toBe(1));
+
+    over = true;
+    // The tab asks the status again (here, as when it comes back to the front).
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(await screen.findByText('adentro')).toBeInTheDocument();
+    expect(screen.queryByText('Algo falló de nuestro lado')).not.toBeInTheDocument();
+    expect(profile).toBe(2);
+  });
+
+  it('un 503 suelto que el estado desmiente no hace pedir todo de nuevo: el pedido que falla no se repite sin fin', async () => {
+    // Only the profile answers the 503 of a proxy, every time; the status endpoint says all is well.
+    let profile = 0;
+    server.use(
+      http.get(ME, () => {
+        profile += 1;
+        return new HttpResponse('<html>503</html>', { status: 503, headers: { 'Content-Type': 'text/html' } });
+      }),
+    );
+    renderScenario(
+      <MaintenanceGate>
+        <RequireSession>
+          <p>adentro</p>
+        </RequireSession>
+      </MaintenanceGate>,
+    );
+    // The app is back with the error of that request, to retry by hand.
+    expect(await screen.findByRole('button', { name: 'Reintentar' }, { timeout: 2000 })).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(screen.getByRole('button', { name: 'Reintentar' })).toBeInTheDocument();
+    expect(profile).toBe(1);
   });
 });

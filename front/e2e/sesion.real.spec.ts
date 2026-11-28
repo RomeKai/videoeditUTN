@@ -154,6 +154,33 @@ test.describe('Sin mocks: la sesión contra el backend', () => {
     expect(await page.evaluate(() => window.localStorage.getItem('oc.auth'))).toContain('"refresh":"r"');
   });
 
+  test('una pestaña abierta durante el mantenimiento vuelve sola cuando termina: carga la cuenta sin «Reintentar»', async ({ page }) => {
+    // The platform is down (the maintenance middleware answers every path with a 503 without `code`).
+    const down: Record<string, number> = { '/api/v1/me/': 503, '/api/v1/status/': 503, '/api/v1/wallet/': 503, '/api/v1/notifications/': 503 };
+    const calls = await fakeApi(page, down);
+    await signedIn(page);
+    await page.goto('/uso/movimientos');
+    await expect(page.getByRole('heading', { name: /mantenimiento/i })).toBeVisible();
+    // The profile was given up for failed: asked, and asked once more (the client's own retry of a 5xx).
+    const profile = () => calls.filter((call) => call.path === '/api/v1/me/').length;
+    await expect.poll(profile).toBe(2);
+    await page.waitForTimeout(500);
+    expect(profile()).toBe(2);
+
+    // The maintenance ends. The gate asks the status every 10 s while the tab is visible, and at once when it
+    // comes back to the front: that is this event (on `document`, where the gate listens; it does not reach the
+    // window, so it is not the query library's own "the window has focus again, read what is stale").
+    for (const path of Object.keys(down)) delete down[path];
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+
+    await expect(page.getByRole('navigation', { name: 'Secciones', exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: /Saldo: 100 tokens disponibles/ })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /mantenimiento/i })).toHaveCount(0);
+    await expect(page.getByText('Algo falló de nuestro lado')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Reintentar' })).toHaveCount(0);
+    await expect(page).toHaveURL(/\/uso\/movimientos$/);
+  });
+
   test('un 503 al renovar con la plataforma en pie: es un error para reintentar, no mantenimiento ni «Sesión vencida»', async ({ page }) => {
     // Only the renewal fails; the status endpoint says all is well.
     await fakeApi(page, { '/api/v1/me/': 401, '/api/token/refresh/': 503 });
