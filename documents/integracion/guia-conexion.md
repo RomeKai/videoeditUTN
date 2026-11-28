@@ -1,8 +1,14 @@
 # Guía para conectar la web con el backend real
 
 > **Para:** Pedro (moyanop).
-> **Estado:** `dev` al 26/11/2026 (merge del PR #130).
+> **Estado:** escrita con `dev` al 26/11/2026 (merge del PR #130). Repasada el 28/11/2026, con `dev` en el merge del PR #195: ver el recuadro de abajo.
 > **Qué es:** cómo conectar la app web (`front/`) con Django (`back/`), un área por vez, sin pisarte con el resto.
+
+> **Cómo está hoy (28/11/2026).** La conexión está terminada: el contrato tiene **82 endpoints, 79 existen, 3 existen en parte y ninguno es propuesto**. Las tres partes son `projects.detail`, `social.posts` y `social.post`; qué les falta lo dice la nota de cada uno en `front/src/api/CONTRACT.md`.
+>
+> - **Siguen vigentes** las secciones 1 (cómo funciona la conexión), 2 (reglas del backend) y 7 (la lista para dar un área por conectada). Valen para cualquier endpoint nuevo.
+> - **Son historia** las secciones 3, 4 y 5 (qué faltaba, en qué orden y quién lo hacía) y buena parte de la 6. Quedan como registro de cómo se repartió el trabajo: las tablas dicen «propuesto» o «en curso» de endpoints que ya existen.
+> - **Lo que todavía no es real:** cobrar (no hay pasarela: `PAYMENTS_PROVIDER=simulated` usa el checkout de prueba) y publicar sin una cuenta de Ayrshare (`AYRSHARE_API_KEY`). La demo deja Redes y Publicar en mocks: [runbook de la demo](../runbooks/demo.md).
 
 El frontend ya funciona entero contra mocks. Conectar un área es hacer que el backend responda lo que el contrato dice y apagar el mock de esa área. Esta guía te dice cómo, qué reglas tiene que cumplir cada endpoint nuevo, qué falta, en qué orden conviene y quién está con qué.
 
@@ -27,12 +33,12 @@ El frontend ya funciona entero contra mocks. Conectar un área es hacer que el b
 - **JSON en snake_case, con los nombres de campo exactos del backend.** Ids UUID. Fechas ISO 8601 en UTC. Rutas con la barra final de DRF.
 - Si el backend necesita otra forma, **se cambia primero el contrato** y después el mock y el hook. Nunca al revés.
 
-Hoy el contrato tiene **80 endpoints: 14 existen, 3 existen en parte y 63 son propuestos.** `npm run contract:doc` lo confirma: imprime `CONTRACT.md: 80 endpoints (14 existen, 3 en parte, 63 propuestos)`.
+Hoy el contrato tiene **82 endpoints: 79 existen, 3 existen en parte y ninguno es propuesto.** `npm run contract:doc` lo confirma: imprime la cuenta al regenerar `CONTRACT.md`. (Cuando se escribió esta guía eran 80: 14, 3 y 63.)
 
 Cada endpoint tiene un bloque `backend`:
 
 ```ts
-backend: { status: 'proposed', gap: 13, note: '…' }
+backend: { status: 'proposed', gap: 13, note: '…' }   // así se anota uno nuevo que todavía no existe
 ```
 
 - `status`: `'exists'`, `'partial'` o `'proposed'` (el valor en el código es `exists`, no `existing`).
@@ -64,10 +70,10 @@ NEXT_PUBLIC_API_REAL=
 
 - `NEXT_PUBLIC_API_MODE=mock|hybrid|real`. Sin ella sigue valiendo `NEXT_PUBLIC_API_MOCKS` (`true` = mock, `false` = real).
 - `NEXT_PUBLIC_API_REAL`: lista separada por comas de lo que va al backend real. Acepta dominios del contrato (`users`, `workspaces`, `projects`, `clips`, `brandkits`, `billing`, `social`, `notifications`, `system`), ids de endpoint (`billing.plans`, `users.me`) y la palabra `existing`.
-  - **Sin lista** va al backend todo endpoint que el contrato marca `exists` **o `partial`**; el resto sigue en mocks. Pasar un endpoint a `exists` en `front/src/api/contracts/` alcanza para que deje de simularse.
+  - **Sin lista** va al backend todo endpoint que el contrato marca `exists` **o `partial`**; el resto sigue en mocks. Pasar un endpoint a `exists` en `front/src/api/contracts/` alcanza para que deje de simularse. Hoy eso es todo el contrato: para dejar algo en mocks hay que escribir la lista (así lo hace la demo, con `DEMO_API_REAL`).
   - Un dominio en la lista va **entero**, también lo que todavía es `proposed` (responde 404 hasta que exista). Para sumar un solo endpoint a lo existente: `NEXT_PUBLIC_API_REAL=existing,users.me`.
 - `auth` va siempre al backend real en `hybrid` (el backend no acepta los tokens simulados): se entra con un usuario del backend.
-- Mientras `/me` es simulado hay un puente de desarrollo: el mock toma el `user_id` del JWT real y muestra un único workspace marcador, para el que el cliente no manda `X-Workspace-Id` (el backend usa el workspace por defecto del usuario). Cuando `/me` exista, se va solo.
+- `/me` ya es real. El puente de desarrollo de antes (el mock toma el `user_id` del JWT real y muestra un único workspace marcador, para el que el cliente no manda `X-Workspace-Id`) solo aparece si escribís una lista que no nombra `users` ni `users.me`.
 - El panel de desarrollo (el matraz) muestra cada dominio como Real, Mock o Mixto y deja cambiarlo en ese navegador. Cada respuesta de un mock lleva la cabecera `X-OC-Mock`.
 - El modo queda fijo al construir, y un build de producción que no sea `real` hay que pedirlo con `API_MOCKS_IN_BUILD=true`.
 
@@ -126,7 +132,7 @@ Detalle y tabla de lo que ya tiene endpoint: [01, Workspace activo y roles](../i
 - El cliente la manda en `social.createPost` y `social.createPostsBulk`: una clave por envío, repetida si reintenta (`usePostActions` en `front/src/api/hooks/social.ts`).
 - `CORS_ALLOW_HEADERS` (`back/backend/settings/base.py`) ya la permite, junto con `x-workspace-id`.
 - **Regla:** el backend guarda la respuesta exitosa (2xx) por clave y workspace, al menos 24 h, y la devuelve tal cual sin crear ni publicar de nuevo. **Una respuesta de error no se guarda**: reintentar con la misma clave después de corregir el problema vuelve a intentarlo.
-- El guardado todavía no existe en el backend: lo construís con esos dos endpoints. El mock hace exactamente eso (`front/src/api/mocks/http.ts`), sirve de referencia.
+- El guardado ya existe en el backend (`PostIdempotencyKey`, en `back/apps/videos/services/scheduled_posts.py`). Una clave repetida con otro cuerpo responde `idempotency_key_reused`.
 
 ### Errores
 
@@ -179,6 +185,8 @@ Detalle y tabla de lo que ya tiene endpoint: [01, Workspace activo y roles](../i
 ---
 
 ## 3. Endpoints que faltan, por área
+
+> **Historia.** Así estaba el 26/11/2026. Hoy todos estos endpoints existen: el estado de cada uno está en `front/src/api/CONTRACT.md`.
 
 ### Cómo leer las tablas
 
@@ -428,6 +436,8 @@ El backlog (`documents/backlog_mvp.md`) asigna por par, no por persona: PAY-01 a
 - **Estudio tiene un tope de 3 h**, igual que la subida (`AI_UPLOAD_MAX_DURATION_SECONDS`, 10800 s). En `dev`, el seed de `payments/0005` todavía le da 14400 s (4 h): lo corrige el seguimiento del seed en `fix/planes-gratis-por-defecto`.
 
 ### Huecos y bloqueos
+
+> **Al 28/11/2026:** de esta tabla ya están resueltos el cache compartido (`CACHE_REDIS_URL`), el beat de las publicaciones (`dispatch-scheduled-posts` en `CELERY_BEAT_SCHEDULE` y el servicio `beat` de `docker-compose.yml`), conectar redes con Ayrshare, los emails de las invitaciones y de las notificaciones, y el plan Gratis por defecto (`DEFAULT_PLAN_NAME`). Siguen abiertos Stripe y el idioma de los mensajes de DRF.
 
 | Qué | Bloquea | Hueco (mapa §8) |
 |---|---|---|

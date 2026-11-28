@@ -73,10 +73,12 @@ El sistema sigue una arquitectura de **monolito modular** con separación clara 
 | Capa | Tecnología | Propósito |
 |------|-----------|-----------|
 | **Backend** | Django 5.x + DRF | API REST con JWT auth |
-| **Task Queue** | Celery + Redis | Procesamiento asíncrono de video |
+| **Task Queue** | Celery + Valkey (compatible con Redis) | Procesamiento asíncrono de video |
 | **Base de Datos** | PostgreSQL 15 | Persistencia relacional |
-| **Transcripción** | OpenAI Whisper (local) | Speech-to-text con word-level timestamps |
-| **IA / LLM** | OpenAI GPT-4o-mini/4o | Detección de momentos virales |
+| **Transcripción** | Groq Whisper (con `AI_CORE_V2_ENABLED=True`) o Whisper local | Speech-to-text con word-level timestamps |
+| **IA / LLM** | Gemini vía LiteLLM; OpenAI Moderation | Selección de clips, Prompt-to-Edit, textos de las publicaciones y moderación |
+| **Frontend** | Next.js 15 + React 19 + TypeScript | La app web (`front/`) |
+| **Publicación** | Ayrshare | Conectar redes y publicar |
 | **Video Processing** | FFmpeg + MoviePy 2.0 | Proxy generation, rendering, encoding |
 | **Face Tracking** | MediaPipe | Detección facial para dynamic cropping |
 | **Storage** | Cloudflare R2 (S3-compat.) | Almacenamiento de media con zero egress |
@@ -137,7 +139,9 @@ DATABASE_URL=postgres://admin:admin@db:5432/backend_db
 # ==========================================
 # INTELIGENCIA ARTIFICIAL & LLMs
 # ==========================================
-OPENAI_API_KEY=<tu-api-key-de-openai>
+OPENAI_API_KEY=<tu-api-key-de-openai>     # moderación del texto
+GEMINI_API_KEY=<tu-api-key-de-gemini>     # elegir los clips y los textos
+# GROQ_API_KEY=<tu-api-key-de-groq>       # solo con AI_CORE_V2_ENABLED=True
 
 # ==========================================
 # STORAGE
@@ -149,6 +153,8 @@ USE_R2=False
 # CLOUDFLARE_R2_SECRET_ACCESS_KEY=
 # CLOUDFLARE_R2_BUCKET_NAME=
 ```
+
+El archivo completo, con cada variable comentada, es [`back/.env.example`](back/.env.example). Qué hace cada una: [`documents/ia/07`](documents/ia/07-capacidad-costos-y-operacion.md#configuración).
 
 > ⚠️ **Nunca commitear `back/.env`.** El `.gitignore` lo protege, pero verificá que no se filtre.
 
@@ -164,7 +170,7 @@ USE_R2=False
 # Build inicial (solo la primera vez, o si cambian las dependencias)
 docker compose build
 
-# Levantar los 4 servicios en background
+# Levantar los 5 servicios en background
 docker compose up -d
 
 # Verificar que todo está corriendo
@@ -176,9 +182,10 @@ docker compose ps
 | Servicio | Puerto | Descripción |
 |----------|--------|-------------|
 | `db` | 5432 (interno) | PostgreSQL 15 |
-| `redis` | 6379 (interno) | Redis 7 (Celery broker) |
+| `redis` | 6379 (interno) | Valkey 8, compatible con Redis (broker de Celery, locks y cache) |
 | `web` | `localhost:8001` | Django API |
-| `worker` | — | Celery worker (procesamiento IA) |
+| `worker` | — | Celery worker (procesamiento IA y render) |
+| `beat` | — | Celery beat (publicaciones programadas y limpiezas periódicas) |
 
 ### Post-instalación (solo primera vez)
 
@@ -189,8 +196,8 @@ docker compose exec web python manage.py migrate
 # Crear superusuario para acceder al admin
 docker compose exec web python manage.py createsuperuser
 
-# (Opcional) Cargar datos de prueba
-docker compose exec web python manage.py shell < scripts/seed_data.py
+# (Opcional) Una cuenta con datos de ejemplo; imprime el usuario y la contraseña
+docker compose exec web python manage.py seed_demo --with-projects
 ```
 
 ### Endpoints principales
@@ -215,8 +222,7 @@ docker compose logs web --follow
 # Abrir shell de Django
 docker compose exec web python manage.py shell
 
-# Correr tests
-docker compose exec web python manage.py test
+# Los tests corren fuera de Docker, con pytest: ver back/README.md
 
 # Detener todos los servicios
 docker compose down
@@ -369,10 +375,14 @@ La documentación detallada está en el directorio [`documents/`](./documents/):
 
 | Documento | Descripción |
 |-----------|-------------|
+| [Índice de la documentación](documents/README.md) | Qué hay en `documents/` y dónde está cada tema |
+| [Runbook de la demo](documents/runbooks/demo.md) | Levantar la demo, el recorrido, la lista de antes de presentar y qué hacer si algo falla |
 | [IA en OneCreator](documents/ia/README.md) | Arquitectura del core de IA y un documento por flujo: creación de proyecto, ingesta, transcripción, moderación y selección, Prompt-to-Edit, SEO y publicación, render, capacidad y costos |
 | [Mapa de pantallas](documents/producto/mapa-de-pantallas.md) | Qué es cada pantalla, roles, planes, errores y los huecos de backend |
 | [Sistema visual](documents/producto/diseno/README.md) | Tokens y componentes con los que están dibujadas las pantallas |
-| [Guía para conectar la web con el backend](documents/integracion/guia-conexion.md) | Cómo conectar cada área, reglas del backend, qué falta, orden y quién hace qué |
+| [Guía para conectar la web con el backend](documents/integracion/guia-conexion.md) | El contrato, las reglas del backend y la lista para dar un área por conectada |
+| [Decisiones de arquitectura](documents/adrs/README.md) | Los ADRs |
+| [Backend](back/README.md) y [frontend](front/README.md) | Cómo correr cada parte y sus tests |
 
 ---
 
