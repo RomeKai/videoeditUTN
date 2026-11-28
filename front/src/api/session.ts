@@ -12,11 +12,14 @@ export interface TokenPair {
 
 export const AUTH_STORAGE_KEY = 'oc.auth';
 export const WORKSPACE_STORAGE_KEY = 'oc.workspace';
+/** The email of the account the stored session belongs to: kept and dropped with the session. */
+export const SESSION_EMAIL_STORAGE_KEY = 'oc.auth.email';
 
 type Listener = () => void;
 const listeners = new Set<Listener>();
 let memoryTokens: TokenPair | null = null;
 let memoryWorkspace: string | null = null;
+let memoryEmail: string | null = null;
 
 function storage(): Storage | null {
   try {
@@ -63,6 +66,8 @@ export function setTokens(tokens: TokenPair | null): void {
   memoryTokens = tokens;
   // New tokens end the "expired" state; dropping them ends it too (there is nothing left to expire).
   expired = false;
+  // Signing in (or out) is the end of "your session expired" as well.
+  ended = null;
   const store = storage();
   if (store) {
     if (tokens) store.setItem(AUTH_STORAGE_KEY, JSON.stringify(tokens));
@@ -115,10 +120,82 @@ export function setActiveWorkspaceId(id: string | null): void {
   emit();
 }
 
-/** Signs out locally: tokens and the active workspace (it belongs to that user). */
+/** Signs out locally: tokens, the active workspace (it belongs to that user) and whose session it was. */
 export function clearSession(): void {
   setActiveWorkspaceId(null);
+  rememberSessionEmail(null);
   setTokens(null);
+}
+
+/**
+ * Whose session is stored: the profile says it once it loads (the token only carries the user's id).
+ * It is what the app knows of a session that turns out to be dead before the profile ever answered
+ * (the browser was closed for longer than the session lasts): enough to ask for the password of
+ * that account again without making the person type the email.
+ */
+export function rememberSessionEmail(email: string | null): void {
+  if (email === getSessionEmail()) return;
+  memoryEmail = email;
+  try {
+    const store = storage();
+    if (email) store?.setItem(SESSION_EMAIL_STORAGE_KEY, email);
+    else store?.removeItem(SESSION_EMAIL_STORAGE_KEY);
+  } catch {
+    // Kept in memory for this page.
+  }
+}
+
+export function getSessionEmail(): string | null {
+  try {
+    const store = storage();
+    return store ? store.getItem(SESSION_EMAIL_STORAGE_KEY) : memoryEmail;
+  } catch {
+    return memoryEmail;
+  }
+}
+
+/** A stored session that was dropped because it had expired: why, and whose it was when that is known. */
+export interface EndedSession {
+  reason: SessionEndReason;
+  email: string | null;
+}
+let ended: EndedSession | null = null;
+
+/**
+ * Drops a stored session that turned out to be dead on a screen that works without one (the login,
+ * the public pages): there is nothing to keep on screen, so no "Sesión vencida" dialog. The login
+ * says what happened and fills in the email (`getEndedSession`). Until the next sign in.
+ */
+export function dropExpiredSession(reason: SessionEndReason = 'expired'): void {
+  const email = getSessionEmail();
+  clearSession();
+  ended = { reason, email };
+  emit();
+}
+
+/** The session `dropExpiredSession` dropped in this page, or null. Stable between changes (useSyncExternalStore). */
+export function getEndedSession(): EndedSession | null {
+  return ended;
+}
+
+let sessionNeeded = 0;
+
+/**
+ * A screen that cannot be shown without a session is up (`RequireSession`): if the session turns out
+ * to be dead, the person is asked for the password on top of it (dialog D9). Returns how to undo it.
+ */
+export function holdSessionNeeded(): () => void {
+  sessionNeeded += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    sessionNeeded -= 1;
+  };
+}
+
+export function isSessionNeeded(): boolean {
+  return sessionNeeded > 0;
 }
 
 /**
@@ -129,7 +206,10 @@ export function clearSession(): void {
 function onStorage(event: StorageEvent): void {
   if (event.key !== AUTH_STORAGE_KEY && event.key !== WORKSPACE_STORAGE_KEY) return;
   // Another tab signed in again (or out): this tab's "expired" state is over too.
-  if (event.key === AUTH_STORAGE_KEY) expired = false;
+  if (event.key === AUTH_STORAGE_KEY) {
+    expired = false;
+    ended = null;
+  }
   if (event.key === WORKSPACE_STORAGE_KEY) {
     // The other tab came back to this one's workspace: nothing is deferred any more.
     if (heldWorkspace !== null && event.newValue === heldWorkspace) heldWorkspace = null;
@@ -191,7 +271,7 @@ export function isSessionExpired(): boolean {
 type MaintenanceListener = (active: boolean) => void;
 const maintenanceListeners = new Set<MaintenanceListener>();
 
-/** Fired when the API answers 503 (true) and when it answers normally again (false): page K5. */
+/** Fired when the API answers a maintenance 503 (true; see `isMaintenance` in ./client) and when it answers anything else (false): page K5. */
 export function onMaintenance(listener: MaintenanceListener): () => void {
   maintenanceListeners.add(listener);
   return () => maintenanceListeners.delete(listener);

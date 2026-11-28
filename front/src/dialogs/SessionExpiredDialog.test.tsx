@@ -1,9 +1,12 @@
-import { act, screen, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { notifySessionExpired, setTokens } from '@/api/session';
+import { getSessionEmail, getTokens, notifySessionExpired, rememberSessionEmail, SESSION_EMAIL_STORAGE_KEY, setTokens } from '@/api/session';
 import { mockTokens } from '@/api/mocks/state';
 import { USER_IDS } from '@/api/mocks/seed';
-import { renderScenario, startMockApi } from '@/testing';
+import { LoginScreen, SESSION_ENDED } from '@/features/acceso/LoginScreen';
+import { RequireSession } from '@/shell/RequireSession';
+import { editDb, renderScenario, startMockApi } from '@/testing';
 import { SessionExpiredDialog } from './SessionExpiredDialog';
 
 vi.mock('next/navigation', () => ({
@@ -16,11 +19,24 @@ vi.mock('next/navigation', () => ({
 startMockApi();
 
 // New tokens end the "expired" state the test left in the session module.
-afterEach(() => setTokens(mockTokens(USER_IDS.lucia)));
+afterEach(() => {
+  setTokens(mockTokens(USER_IDS.lucia));
+  rememberSessionEmail(null);
+});
+
+/** D9 as the app has it: next to a screen that needs the session. */
+const APP = (
+  <>
+    <RequireSession>
+      <p>adentro</p>
+    </RequireSession>
+    <SessionExpiredDialog />
+  </>
+);
 
 describe('D9 · Sesión vencida', () => {
   it('cuando el token no se pudo renovar dice que la sesión venció', async () => {
-    renderScenario(<SessionExpiredDialog />);
+    renderScenario(APP);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     act(() => notifySessionExpired());
     const dialog = await screen.findByRole('dialog', { name: 'Tu sesión venció' });
@@ -29,7 +45,7 @@ describe('D9 · Sesión vencida', () => {
   });
 
   it('después de «cerrar sesión en todos los dispositivos» dice eso, no que venció', async () => {
-    renderScenario(<SessionExpiredDialog />);
+    renderScenario(APP);
     act(() => notifySessionExpired('revoked'));
     const dialog = await screen.findByRole('dialog', { name: 'Cerraste la sesión en todos tus dispositivos' });
     expect(within(dialog).getByText('Iniciá sesión de nuevo con tu contraseña para seguir. Esta pantalla queda como la dejaste.')).toBeInTheDocument();
@@ -37,5 +53,127 @@ describe('D9 · Sesión vencida', () => {
     // The way back in is the same: the password, on the same screen.
     expect(within(dialog).getByLabelText('Contraseña')).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'Continuar' })).toBeInTheDocument();
+  });
+
+  it('con el perfil cargado muestra de quién es la sesión, sin pedir el email', async () => {
+    renderScenario(APP);
+    expect(await screen.findByText('adentro')).toBeInTheDocument();
+    // The profile says whose session this browser holds.
+    await waitFor(() => expect(getSessionEmail()).toBe('lucia@estudionorte.com'));
+    act(() => notifySessionExpired());
+    const dialog = await screen.findByRole('dialog', { name: 'Tu sesión venció' });
+    expect(within(dialog).getByText('lucia@estudionorte.com')).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText('Email')).not.toBeInTheDocument();
+  });
+});
+
+/** A session stored long ago: the tokens are still in the browser, and the server no longer takes them. */
+const deadSession = () => editDb((db) => (db.flags.sessionExpired = true));
+
+describe('una sesión guardada que ya no sirve', () => {
+  it('en una pantalla de la app pide la contraseña con el email de esa cuenta ya escrito', async () => {
+    renderScenario(APP, {
+        prepare: () => {
+          deadSession();
+          rememberSessionEmail('lucia@estudionorte.com');
+        },
+    });
+    const dialog = await screen.findByRole('dialog', { name: 'Tu sesión venció' });
+    expect(within(dialog).getByLabelText('Email')).toHaveValue('lucia@estudionorte.com');
+    // The session is still there to be renewed with the password.
+    expect(getTokens()).not.toBeNull();
+    expect(screen.queryByText('adentro')).not.toBeInTheDocument();
+  });
+
+  it('en Iniciar sesión no abre el diálogo: avisa arriba del formulario, con el email ya escrito', async () => {
+    renderScenario(
+      <>
+        <LoginScreen />
+        <SessionExpiredDialog />
+      </>,
+      {
+        prepare: () => {
+          deadSession();
+          rememberSessionEmail('lucia@estudionorte.com');
+        },
+      },
+    );
+    expect(await screen.findByText(SESSION_ENDED.expired)).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Email')).toHaveValue('lucia@estudionorte.com');
+    // The dead session is gone, and with it whose it was.
+    expect(getTokens()).toBeNull();
+    expect(window.localStorage.getItem(SESSION_EMAIL_STORAGE_KEY)).toBeNull();
+  });
+
+  it('sin saber de quién era, avisa igual y deja el email para escribir', async () => {
+    renderScenario(
+      <>
+        <LoginScreen />
+        <SessionExpiredDialog />
+      </>,
+      { prepare: deadSession },
+    );
+    expect(await screen.findByText(SESSION_ENDED.expired)).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Email')).toHaveValue('');
+  });
+
+  it('no pisa el email que la persona ya estaba escribiendo ni el que trae el link', async () => {
+    renderScenario(
+      <>
+        <LoginScreen email="otra@ejemplo.com" />
+        <SessionExpiredDialog />
+      </>,
+      {
+        prepare: () => {
+          deadSession();
+          rememberSessionEmail('lucia@estudionorte.com');
+        },
+      },
+    );
+    expect(await screen.findByText(SESSION_ENDED.expired)).toBeInTheDocument();
+    expect(screen.getByLabelText('Email')).toHaveValue('otra@ejemplo.com');
+  });
+
+  it('al entrar de nuevo el aviso se va', async () => {
+    const user = userEvent.setup();
+    renderScenario(
+      <>
+        <LoginScreen />
+        <SessionExpiredDialog />
+      </>,
+      {
+        prepare: () => {
+          deadSession();
+          rememberSessionEmail('lucia@estudionorte.com');
+        },
+      },
+    );
+    expect(await screen.findByText(SESSION_ENDED.expired)).toBeInTheDocument();
+    editDb((db) => (db.flags.sessionExpired = false));
+    await user.type(screen.getByLabelText('Contraseña'), 'contrasena');
+    await user.click(screen.getByRole('button', { name: 'Iniciar sesión' }));
+    await waitFor(() => expect(getTokens()).not.toBeNull());
+    await waitFor(() => expect(screen.queryByText(SESSION_ENDED.expired)).not.toBeInTheDocument());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+});
+
+describe('una primera visita, sin sesión guardada', () => {
+  it('Iniciar sesión no dice nada de sesiones vencidas y el email queda vacío', async () => {
+    renderScenario(
+      <>
+        <LoginScreen />
+        <SessionExpiredDialog />
+      </>,
+      { prepare: () => setTokens(null) },
+    );
+    expect(await screen.findByRole('button', { name: 'Iniciar sesión' })).toBeInTheDocument();
+    // Long enough for a session check to have answered, if there were one.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByText(SESSION_ENDED.expired)).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Email')).toHaveValue('');
   });
 });

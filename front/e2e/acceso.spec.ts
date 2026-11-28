@@ -347,6 +347,31 @@ test.describe('Acceso (A1–A5) y Bienvenida (B1)', () => {
     expect(overflow).toBeLessThanOrEqual(0);
   });
 
+  test('una sesión vieja guardada: Iniciar sesión avisa arriba del formulario, sin diálogo, con el email ya escrito', async ({ page }) => {
+    await useScenario(page, 'sesion-vencida');
+    // What the app remembers of the session this browser had (it writes it when the profile loads).
+    await page.addInitScript(() => window.localStorage.setItem('oc.auth.email', 'lucia@estudionorte.com'));
+    await page.goto('/login');
+    await expect(page.getByText('Tu sesión venció. Iniciá sesión de nuevo.')).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByLabel('Email')).toHaveValue('lucia@estudionorte.com');
+    await expect(page).toHaveURL(/\/login$/);
+    // The dead session is gone from the browser.
+    expect(await page.evaluate(() => window.localStorage.getItem('oc.auth'))).toBeNull();
+  });
+
+  test('una primera visita a Iniciar sesión no dice nada de sesiones vencidas', async ({ page }) => {
+    await useScenario(page, 'sin-sesion');
+    const problems = watch(page);
+    await page.goto('/login');
+    await settle(page);
+    await expect(page.getByRole('button', { name: 'Iniciar sesión' })).toBeVisible();
+    await expect(page.getByText(/sesión venció/)).toHaveCount(0);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByLabel('Email')).toHaveValue('');
+    expectClean(problems, 'el login en una primera visita');
+  });
+
   test('sesión vencida: pide la contraseña sin perder la pantalla', async ({ page }) => {
     await useScenario(page, 'sesion-vencida');
     await page.goto('/uso');

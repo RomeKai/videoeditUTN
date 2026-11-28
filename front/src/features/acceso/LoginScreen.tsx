@@ -2,9 +2,10 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import { ApiError } from '@/api/errors';
 import { useLogin } from '@/api/hooks';
+import { getEndedSession, subscribeSession } from '@/api/session';
 import { AuthCard } from '@/shell/PublicShell';
 import { splitWorkspaceLink } from '@/shell/RequireSession';
 import { needsWelcome, useSession } from '@/shell/session';
@@ -13,6 +14,11 @@ import styles from './acceso.module.css';
 import { emailError, HOME, requestErrorMessage, safeNext } from './lib';
 
 export const WRONG_CREDENTIALS = 'El email o la contraseña no coinciden.';
+/** Above the form when the session stored in this browser had expired (it was dropped on arrival). */
+export const SESSION_ENDED = {
+  expired: 'Tu sesión venció. Iniciá sesión de nuevo.',
+  revoked: 'Cerraste la sesión en todos tus dispositivos. Iniciá sesión de nuevo.',
+} as const;
 
 export interface LoginScreenProps {
   /** `?siguiente=`: where the user was going when the app asked to sign in. */
@@ -32,6 +38,14 @@ export function LoginScreen({ next, email: initialEmail, verifyPending = false }
   const [password, setPassword] = useState('');
   const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
   const target = safeNext(next, { verifyLink: true });
+
+  // The session this browser had stored was dead (`dropExpiredSession`): say so, with the email of that
+  // account already written. Never on a visit without a stored session: there is nothing to say then.
+  const ended = useSyncExternalStore(subscribeSession, getEndedSession, () => null);
+  const endedEmail = ended?.email ?? null;
+  useEffect(() => {
+    if (endedEmail) setEmail((typed) => typed || endedEmail);
+  }, [endedEmail]);
 
   // With a session there is nothing to do here: after signing in (or when arriving already signed in)
   // go to the page that was asked for, or to the welcome when the account is brand new.
@@ -113,6 +127,8 @@ export function LoginScreen({ next, email: initialEmail, verifyPending = false }
           </Banner>
         ) : verifyPending ? (
           <Banner tone="info">Iniciá sesión para terminar de verificar tu email.</Banner>
+        ) : ended && !entering ? (
+          <Banner tone="info">{SESSION_ENDED[ended.reason]}</Banner>
         ) : null}
         <Field label="Email" error={errors.email}>
           <Input
