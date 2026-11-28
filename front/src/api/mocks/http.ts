@@ -6,7 +6,7 @@ import type { Role } from '../contracts/common';
 import type { AnyEndpoint, RequestBody, ResponseOf } from '../endpoint';
 import { isHybrid, routeOf } from '../routing';
 import type { MockDb, MockUser, MockWorkspace } from './db';
-import { adoptUserFromToken, adoptWorkspace, rememberLoginEmail, syncStandIns } from './hybrid';
+import { adoptUserFromToken, adoptWorkspace, forgetRealAnswers, rememberLoginEmail, syncStandIns } from './hybrid';
 import { roleIn, tick } from './sim';
 import { loadDb, saveDb, userIdFromToken } from './state';
 
@@ -108,7 +108,11 @@ export function route<E extends AnyEndpoint>(endpoint: E, resolver: Resolver<E>)
     if (routeOf(endpoint) === 'real') {
       if (endpoint.id === 'auth.login') await noteLogin(request);
       // The email kept for the mocked `/me` belongs to the session that is ending.
-      if (endpoint.id === 'auth.logout') rememberLoginEmail(null);
+      if (endpoint.id === 'auth.logout') {
+        rememberLoginEmail(null);
+        // …and so does what the backend answered to it.
+        forgetRealAnswers();
+      }
       return passthrough();
     }
     const response = await answer(endpoint, resolver, request, params as Record<string, string>);

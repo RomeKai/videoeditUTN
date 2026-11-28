@@ -706,6 +706,9 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 - **K3. Error del servidor (500):** "Algo falló de nuestro lado", con un botón Reintentar.
 - **K4. Sin conexión:** un banner fijo, "Sin conexión. Reintentando…", que se va solo.
 - **K5. Mantenimiento:** una página simple con el horario estimado.
+  - Aparece cuando el estado de la plataforma lo dice, o cuando la API responde el 503 del mantenimiento (solo `detail` en el cuerpo) o un 503 que no es JSON.
+  - No es mantenimiento un 503 o un 502 con `error` o `code` (el error de un pedido puntual, por ejemplo un proveedor que no respondió): se muestra donde se hizo ese pedido. Tampoco el 502 o el 504 en HTML de nginx cuando Django está caído: eso se ve como error del servidor (K3) o sin conexión.
+  - Mientras está a la vista, vuelve a preguntar el estado cada 10 s (una pestaña oculta no pregunta hasta volver al frente) y sale sola cuando el estado dice que terminó.
 
 ---
 
@@ -737,6 +740,7 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 - **Al volver:** muestra la cuenta conectada (deja de consultar las cuentas apenas aparece).
 - **Sin el plan:** si el plan no incluye conectar redes, muestra el candado con el plan que lo incluye y no abre la red.
 - **Errores con su mensaje:** el email sin verificar, y los que resuelve soporte (el tope de perfiles y un perfil a medio crear), muestran el mensaje del backend.
+- **Email sin verificar:** debajo del mensaje ofrece «Reenviar el email de verificación» a la dirección de la cuenta, con la misma espera de 60 s que «Reenviar» en A3 (comparten la cuenta regresiva). Con el link abierto, «Continuar» ya conecta, sin recargar.
 
 #### D7. Invitar miembro
 - **Qué pide:** email (uno o varios separados por coma) y rol. Muestra cuántos lugares quedan en el plan.
@@ -746,8 +750,12 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 - **Opciones:** **Descartar** o **Seguir editando**.
 
 #### D9. Sesión vencida
-- **Se abre:** cuando no se pudo renovar el token.
+- **Se abre:** cuando no se pudo renovar el token, sobre una pantalla que necesita la sesión o sobre cualquiera donde el perfil ya había cargado.
 - **Qué hace:** pide la contraseña sin perder la pantalla actual.
+- **Sin el perfil cargado** (el navegador tenía guardada una sesión que ya no sirve): pide también el email, ya escrito con el de esa cuenta si el navegador lo recuerda.
+- **No se abre** sobre Iniciar sesión ni sobre las páginas públicas. Ahí esa pestaña deja de usar la sesión vieja y el login avisa «Tu sesión venció. Iniciá sesión de nuevo.», con el email ya escrito. En una primera visita, sin sesión guardada, no aparece nada de esto.
+- **Varias pestañas:** la pestaña del login no borra la sesión guardada, así que otra pestaña con este diálogo abierto conserva su pantalla. Si la sesión desaparece del navegador (se cerró en otra pestaña), el diálogo se cierra y la app va al login.
+- **El email recordado:** el navegador guarda de quién es la sesión (`oc.auth.email`) cuando carga el perfil y lo borra al cerrar sesión. En una computadora compartida, si la persona nunca cerró sesión, su email aparece escrito una vez en el login o en este diálogo.
 
 ---
 

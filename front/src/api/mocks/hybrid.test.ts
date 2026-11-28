@@ -447,6 +447,19 @@ describe('modo híbrido: adopción de ids del backend', () => {
     await expect(apiCall(users.getMe, {})).resolves.toMatchObject({ email: 'usuario-4544e2e0@backend.invalid' });
   });
 
+  it('cerrar sesión olvida también lo que el backend le había respondido a esa sesión', async () => {
+    const project = real.project_completed_auto_render;
+    const clip = project.clips[0];
+    if (!clip) throw new Error('sin clip grabado');
+    noteRealAnswer(`${API_URL}/api/v1/projects/${project.id}/`, project);
+    backend = () => new Response(null, { status: 204 });
+    await apiCall(auth.logout, { body: { refresh: getTokens()?.refresh ?? '', all_devices: false } });
+    signInReal();
+    const db = loadDb();
+    adoptUserFromToken(db, getTokens()?.access ?? '', Date.now());
+    expect(adoptClip(db, BACKEND_DEFAULT_WORKSPACE_ID, clip.id)?.clip.title).toBe('Clip del backend');
+  });
+
   it('lo que no es un id del backend sigue siendo 404', async () => {
     expect((await fail(apiCall(projects.getProjectActivity, { params: { id: 'no-es-un-uuid' } }))).status).toBe(404);
     expect((await fail(apiCall(clips.getClip, { params: { id: 'tampoco' } }))).status).toBe(404);
