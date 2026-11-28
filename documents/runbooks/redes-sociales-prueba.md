@@ -183,4 +183,6 @@ Leída el 28/11 (docs.upload-post.com). Para revisar en la primera prueba real:
 - Que un caption vacío en TikTok o Instagram (sin `title`) no se rechace por «title required».
 - Que el 429 del tope mensual traiga siempre `usage` y nunca `Retry-After` (así lo distingue el backend del límite de pedidos), y que `tiktok_privacy_unavailable` llegue con ese código y no solo con texto.
 - Qué hace la página del link sin `redirect_url`: con Ayrshare, «Close» cierra la ventana; con Upload-Post no está documentado.
+- Si `platform_unavailable` («failed or timed out») pudo haber publicado: el backend sigue su «Retry later» y lo reintenta con clave nueva.
+- Si `handle` viene con o sin `@` (los ejemplos tienen los dos): el backend lo muestra siempre con `@`.
 - La forma del estado para un pedido con una sola red: los ejemplos son de varias.
