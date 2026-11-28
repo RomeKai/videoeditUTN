@@ -1,7 +1,7 @@
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getSessionEmail, getTokens, notifySessionExpired, rememberSessionEmail, SESSION_EMAIL_STORAGE_KEY, setTokens } from '@/api/session';
+import { AUTH_STORAGE_KEY, clearSession, getSessionEmail, getTokens, isSessionExpired, noteRefreshRejected, notifySessionExpired, rememberSessionEmail, SESSION_EMAIL_STORAGE_KEY, setTokens } from '@/api/session';
 import { mockTokens } from '@/api/mocks/state';
 import { USER_IDS } from '@/api/mocks/seed';
 import { LoginScreen, SESSION_ENDED } from '@/features/acceso/LoginScreen';
@@ -67,6 +67,17 @@ describe('D9 · Sesión vencida', () => {
   });
 });
 
+describe('D9 y las otras pestañas', () => {
+  it('si la sesión desaparece del navegador (otra pestaña la cerró), el diálogo se cierra: no queda arriba del login', async () => {
+    renderScenario(APP);
+    expect(await screen.findByText('adentro')).toBeInTheDocument();
+    act(() => notifySessionExpired());
+    expect(await screen.findByRole('dialog', { name: 'Tu sesión venció' })).toBeInTheDocument();
+    act(() => clearSession());
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+});
+
 /** A session stored long ago: the tokens are still in the browser, and the server no longer takes them. */
 const deadSession = () => editDb((db) => (db.flags.sessionExpired = true));
 
@@ -101,9 +112,49 @@ describe('una sesión guardada que ya no sirve', () => {
     expect(await screen.findByText(SESSION_ENDED.expired)).toBeInTheDocument();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Email')).toHaveValue('lucia@estudionorte.com');
-    // The dead session is gone, and with it whose it was.
+    // This tab has no session any more…
     expect(getTokens()).toBeNull();
-    expect(window.localStorage.getItem(SESSION_EMAIL_STORAGE_KEY)).toBeNull();
+    // …but the browser's storage is left alone: another tab may be asking for the password over a screen it keeps.
+    expect(window.localStorage.getItem(AUTH_STORAGE_KEY)).not.toBeNull();
+    expect(window.localStorage.getItem(SESSION_EMAIL_STORAGE_KEY)).toBe('lucia@estudionorte.com');
+  });
+
+  it('si otra pestaña ya renovó el par, Iniciar sesión no lo da por muerto: lee de nuevo con ese', async () => {
+    renderScenario(
+      <>
+        <LoginScreen />
+        <SessionExpiredDialog />
+      </>,
+    );
+    // The server refused the pair this tab had; meanwhile another tab stored a new one.
+    noteRefreshRejected('el-refresh-que-fallo');
+    act(() => notifySessionExpired());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(getTokens()).not.toBeNull();
+    expect(isSessionExpired()).toBe(false);
+    expect(screen.queryByText(SESSION_ENDED.expired)).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('otra pestaña que guarda un par nuevo le devuelve la sesión a la que la había dado por muerta', async () => {
+    renderScenario(
+      <>
+        <LoginScreen />
+        <SessionExpiredDialog />
+      </>,
+      { prepare: deadSession },
+    );
+    expect(await screen.findByText(SESSION_ENDED.expired)).toBeInTheDocument();
+    expect(getTokens()).toBeNull();
+    // Another tab signs in: it writes the storage, without going through this tab's `setTokens`.
+    editDb((db) => (db.flags.sessionExpired = false));
+    const pair = mockTokens(USER_IDS.lucia);
+    act(() => {
+      window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ ...pair, refresh: `${pair.refresh}-otra` }));
+      window.dispatchEvent(new StorageEvent('storage', { key: AUTH_STORAGE_KEY }));
+    });
+    expect(getTokens()).not.toBeNull();
+    await waitFor(() => expect(screen.queryByText(SESSION_ENDED.expired)).not.toBeInTheDocument());
   });
 
   it('sin saber de quién era, avisa igual y deja el email para escribir', async () => {

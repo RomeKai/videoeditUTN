@@ -33,7 +33,8 @@ function emit() {
   for (const listener of listeners) listener();
 }
 
-export function getTokens(): TokenPair | null {
+/** The pair in the browser's storage, whatever this tab thinks of it. */
+function storedTokens(): TokenPair | null {
   const store = storage();
   if (!store) return memoryTokens;
   try {
@@ -46,6 +47,15 @@ export function getTokens(): TokenPair | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The session this tab works with: the stored pair, unless this tab gave it up for dead
+ * (`dropExpiredSession`). Then there is none here until another pair is stored.
+ */
+export function getTokens(): TokenPair | null {
+  const tokens = storedTokens();
+  return tokens && ended && ended.refresh === tokens.refresh ? null : tokens;
 }
 
 /**
@@ -68,6 +78,7 @@ export function setTokens(tokens: TokenPair | null): void {
   expired = false;
   // Signing in (or out) is the end of "your session expired" as well.
   ended = null;
+  rejectedRefresh = null;
   const store = storage();
   if (store) {
     if (tokens) store.setItem(AUTH_STORAGE_KEY, JSON.stringify(tokens));
@@ -154,27 +165,50 @@ export function getSessionEmail(): string | null {
   }
 }
 
-/** A stored session that was dropped because it had expired: why, and whose it was when that is known. */
+/** A stored session this tab gave up for dead: why, whose it was when that is known, and which pair it was. */
 export interface EndedSession {
   reason: SessionEndReason;
   email: string | null;
+  /** The refresh token of the dead pair: another pair in the storage is another session, and a live one. */
+  refresh: string;
 }
 let ended: EndedSession | null = null;
+/** The refresh token the server last refused to renew (`noteRefreshRejected`). */
+let rejectedRefresh: string | null = null;
 
-/**
- * Drops a stored session that turned out to be dead on a screen that works without one (the login,
- * the public pages): there is nothing to keep on screen, so no "Sesión vencida" dialog. The login
- * says what happened and fills in the email (`getEndedSession`). Until the next sign in.
- */
-export function dropExpiredSession(reason: SessionEndReason = 'expired'): void {
-  const email = getSessionEmail();
-  clearSession();
-  ended = { reason, email };
-  emit();
+/** The client says which refresh token the server refused: that pair, and no other, is the dead one. */
+export function noteRefreshRejected(refresh: string): void {
+  rejectedRefresh = refresh;
 }
 
-/** The session `dropExpiredSession` dropped in this page, or null. Stable between changes (useSyncExternalStore). */
+/**
+ * Gives up, in this tab only, a stored session that turned out to be dead on a screen that works without
+ * one (the login, the public pages): there is nothing to keep on screen, so no "Sesión vencida" dialog. The
+ * login says what happened and fills in the email (`getEndedSession`).
+ *
+ * The storage is left alone: another tab may have the "Sesión vencida" dialog open over a screen it
+ * promised to keep, and taking the pair away would send it to the login. From here on this tab simply has
+ * no session (`getTokens` is null) until another pair is stored, here or in another tab.
+ *
+ * False, and nothing is given up, when the stored pair is no longer the one the server refused: another tab
+ * renewed it or signed in meanwhile, and that pair is good. The caller reads again with it.
+ */
+export function dropExpiredSession(reason: SessionEndReason = 'expired'): boolean {
+  const stored = storedTokens();
+  if (stored && rejectedRefresh !== null && stored.refresh !== rejectedRefresh) {
+    expired = false;
+    emit();
+    return false;
+  }
+  expired = false;
+  ended = stored ? { reason, email: getSessionEmail(), refresh: stored.refresh } : null;
+  emit();
+  return true;
+}
+
+/** The session `dropExpiredSession` gave up in this tab, while it is still the stored one; else null. Stable between changes (useSyncExternalStore). */
 export function getEndedSession(): EndedSession | null {
+  if (ended && storedTokens()?.refresh !== ended.refresh) ended = null;
   return ended;
 }
 
@@ -206,10 +240,8 @@ export function isSessionNeeded(): boolean {
 function onStorage(event: StorageEvent): void {
   if (event.key !== AUTH_STORAGE_KEY && event.key !== WORKSPACE_STORAGE_KEY) return;
   // Another tab signed in again (or out): this tab's "expired" state is over too.
-  if (event.key === AUTH_STORAGE_KEY) {
-    expired = false;
-    ended = null;
-  }
+  // (A session this tab gave up stays given up while the same dead pair is stored: `getEndedSession`.)
+  if (event.key === AUTH_STORAGE_KEY) expired = false;
   if (event.key === WORKSPACE_STORAGE_KEY) {
     // The other tab came back to this one's workspace: nothing is deferred any more.
     if (heldWorkspace !== null && event.newValue === heldWorkspace) heldWorkspace = null;

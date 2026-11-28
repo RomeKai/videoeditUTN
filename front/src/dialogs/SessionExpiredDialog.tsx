@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { SessionEndReason } from '@/api/errors';
-import { useLogin } from '@/api/hooks';
+import { useHasSession, useLogin } from '@/api/hooks';
 import { clearSession, dropExpiredSession, getSessionEmail, isSessionNeeded, onSessionExpired } from '@/api/session';
 import { useGuardedNavigation } from '@/shell/leaveGuard';
 import { useSession } from '@/shell/session';
@@ -42,9 +42,10 @@ export function SessionExpiredDialog() {
     () =>
       onSessionExpired((why) => {
         if (!known.current && !isSessionNeeded()) {
-          dropExpiredSession(why);
-          // The failed read of the profile goes with the session it was asked with.
-          queryClient.clear();
+          // Given up in this tab only: another tab may have this dialog open over a screen it is keeping.
+          if (dropExpiredSession(why)) queryClient.clear();
+          // The stored pair is not the one that was refused (another tab renewed it): read again with it.
+          else void queryClient.invalidateQueries();
           return;
         }
         // Not known from the profile: whose session it was the last time the profile loaded.
@@ -54,6 +55,13 @@ export function SessionExpiredDialog() {
       }),
     [queryClient],
   );
+
+  // The session is gone from the browser (signed out in another tab): there is nothing left to renew, and
+  // the screen underneath is already on its way to the login. The dialog does not stay on top of it.
+  const hasSession = useHasSession();
+  useEffect(() => {
+    if (!hasSession) setOpen(false);
+  }, [hasSession]);
 
   const knownEmail = me?.email ?? '';
   const submit = (event: FormEvent) => {

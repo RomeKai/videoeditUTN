@@ -8,6 +8,7 @@ import {
   getTokenGeneration,
   getTokens,
   isSessionExpired,
+  noteRefreshRejected,
   notifyMaintenance,
   notifySessionExpired,
   setTokens,
@@ -180,6 +181,8 @@ export function refreshAccessToken(): Promise<string> {
         // password change that revoked it): its pair is about to be stored.
         const other = await pairFromElsewhere(tokens.refresh, REFRESH_FALLBACK_WAIT_MS);
         if (other) return other.access;
+        // This pair, and no other, is the dead one (a public tab must not give up one another tab just renewed).
+        noteRefreshRejected(tokens.refresh);
         throw new SessionExpiredError(await endReason(response));
       }
       throw new ApiError(response.status, 'auth.refresh', await readBody(response, 'json'));
