@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 from django.core.exceptions import ImproperlyConfigured
 
 from .base import *  # noqa: F403
-from .base import AYRSHARE_BASE_URL, PAYMENTS_ALLOW_SIMULATED, PAYMENTS_PROVIDER, REST_FRAMEWORK, env
+from .base import AYRSHARE_BASE_URL, MEDIA_PUBLIC_BASE_URL, PAYMENTS_ALLOW_SIMULATED, PAYMENTS_PROVIDER, REST_FRAMEWORK, env
 
 # --- MODO PRODUCCIÓN ---
 # ¡CRÍTICO! Nunca True en producción, o te pueden robar las claves.
@@ -75,6 +75,12 @@ if _ayrshare.scheme != 'https' or not _ayrshare.hostname:
     raise ImproperlyConfigured(
         'AYRSHARE_BASE_URL must be an https URL in production (by default https://api.ayrshare.com/api); '
         'http is only for a local stand-in with DEBUG.'
+    )
+
+# The local files' origin (without R2) goes to browsers and to the publishing provider: never plain http.
+if MEDIA_PUBLIC_BASE_URL and urlsplit(MEDIA_PUBLIC_BASE_URL).scheme != 'https':
+    raise ImproperlyConfigured(
+        'MEDIA_PUBLIC_BASE_URL must be an https origin in production, or empty; http is only for a local setup.'
     )
 
 # --- SEGURIDAD (Hardening) ---

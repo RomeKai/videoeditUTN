@@ -2,6 +2,7 @@ import logging
 import os
 import shutil
 import uuid
+from urllib.parse import urlsplit
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -85,8 +86,11 @@ def provider_media_url(object_key: str, expiration_seconds: int = 3600) -> str:
     url = CloudflareR2Manager.generate_presigned_url(object_key, expiration_seconds=expiration_seconds)
     if '://' in url:
         return url
-    base = (getattr(settings, 'FRONTEND_URL', '') or '').rstrip('/')
-    return f"{base}/{url.lstrip('/')}" if base else url
+    # Its origin, never its path: a web app served under a path still has /media/ at the root.
+    web = urlsplit(getattr(settings, 'FRONTEND_URL', '') or '')
+    if web.scheme not in ('http', 'https') or not web.netloc:
+        return url
+    return f"{web.scheme}://{web.netloc}/{url.lstrip('/')}"
 
 
 class StoredFileCopyError(Exception):

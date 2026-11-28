@@ -116,6 +116,11 @@ class TestProviderUrl:
         settings.FRONTEND_URL = 'http://localhost:8195/'
         assert provider_media_url(source) == 'http://localhost:8195/media/videos/raw/source.mp4'
 
+    def test_only_the_origin_of_the_web_app_counts_not_its_path(self, source, settings):
+        # Review of #192: /media/ is at the root, also for a web app served under a path.
+        settings.FRONTEND_URL = 'https://app.example.com/onecreator/'
+        assert provider_media_url(source) == 'https://app.example.com/media/videos/raw/source.mp4'
+
     def test_the_setting_of_the_media_origin_wins(self, source, settings):
         settings.FRONTEND_URL = 'http://localhost:3000'
         settings.MEDIA_PUBLIC_BASE_URL = 'http://localhost:8000'

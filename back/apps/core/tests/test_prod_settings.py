@@ -80,3 +80,25 @@ def test_production_refuses_an_ayrshare_base_url_without_https(url):
 
     assert result.returncode != 0
     assert "ImproperlyConfigured: AYRSHARE_BASE_URL must be an https URL in production" in result.stderr
+
+
+def test_production_takes_an_https_media_origin():
+    """Review of #192: the origin of the local files goes to browsers and to the publishing provider."""
+    assert _load_prod(MEDIA_PUBLIC_BASE_URL="https://media.example.com/").returncode == 0
+
+    result = _load_prod(MEDIA_PUBLIC_BASE_URL="http://media.example.com")
+
+    assert result.returncode != 0
+    assert "ImproperlyConfigured: MEDIA_PUBLIC_BASE_URL must be an https origin in production" in result.stderr
+
+
+@pytest.mark.parametrize("value", ["localhost:8000", "ftp://media.example.com", "http://", "http://localhost:8000/media"])
+def test_every_environment_refuses_a_media_origin_that_is_not_one(value):
+    """Review of #192: `localhost:8000` gave http://<web>/localhost:8000/media/… instead of failing."""
+    env = {key: val for key, val in os.environ.items() if key != "MEDIA_PUBLIC_BASE_URL"}
+    env.update({"DJANGO_SETTINGS_MODULE": "backend.settings.ci", "MEDIA_PUBLIC_BASE_URL": value})
+    code = "import django; django.setup(); from django.conf import settings; print(settings.MEDIA_PUBLIC_BASE_URL)"
+    result = subprocess.run([sys.executable, "-c", code], env=env, cwd=BACK, capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert "ImproperlyConfigured: MEDIA_PUBLIC_BASE_URL=" in result.stderr
