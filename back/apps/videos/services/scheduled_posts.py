@@ -968,6 +968,10 @@ def fail_network_posts(workspace, platform):
         failed = ScheduledPost.objects.filter(pk__in=locked).update(
             status=Status.FAILED, error_log='account_not_connected (disconnected)', updated_at=Now(),
         )
+        # Once the change commits, outside this lock (apps.notifications); never raises.
+        from apps.notifications.services import notify_network_posts_failed
+
+        notify_network_posts_failed(locked)
     logger.info("posts.network_disconnected workspace_id=%s platform=%s failed=%d", workspace.pk, platform, failed)
     return failed
 

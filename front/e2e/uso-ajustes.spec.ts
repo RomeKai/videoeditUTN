@@ -291,9 +291,16 @@ test.describe('Ajustes y cuenta', () => {
     const toggle = page.getByRole('switch', { name: 'Email: El render terminó' });
     await toggle.click();
     await expect(page.getByText('Guardado. Ya no te avisamos por email cuando termina un render.')).toBeVisible();
+    // «Una publicación falló» is one more switch: on by default, and it saves like the others.
+    const postFailed = page.getByRole('switch', { name: 'Email: Una publicación falló' });
+    await expect(postFailed).toBeEnabled();
+    await expect(postFailed).toHaveAttribute('aria-checked', 'true');
+    await postFailed.click();
+    await expect(page.getByText('Guardado. Ya no te avisamos por email cuando una publicación falla.')).toBeVisible();
     await page.reload();
     await settle(page);
     await expect(page.getByRole('switch', { name: 'Email: El render terminó' })).toHaveAttribute('aria-checked', 'false');
+    await expect(page.getByRole('switch', { name: 'Email: Una publicación falló' })).toHaveAttribute('aria-checked', 'false');
     await page.goto('/perfil');
     await settle(page);
     expectClean(problems, 'Perfil');

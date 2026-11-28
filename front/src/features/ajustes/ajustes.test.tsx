@@ -552,32 +552,26 @@ describe('I2 · Notificaciones', () => {
     expect(render).toHaveAttribute('aria-checked', 'true');
   });
 
-  it('«Una publicación falló» todavía no está disponible: apagado, deshabilitado y sin prometer nada', async () => {
+  it('«Una publicación falló» se prende y se apaga como los demás, y la campana no depende del email', async () => {
     const user = userEvent.setup();
-    let patches = 0;
-    server.use(
-      http.patch(`${API_URL}/api/v1/me/notification-preferences/`, () => {
-        patches += 1;
-        return HttpResponse.json({ project_ready: true, render_finished: true, project_failed: true, post_failed: false, low_balance: true });
-      }),
-    );
     renderScreen(<NotificationsScreen />);
     const post = await screen.findByRole('switch', { name: 'Email: Una publicación falló' });
-    // The stored preference is on (the default), but no such email exists yet.
-    expect(loadDb().users.find((item) => item.name === 'Lucía Fernández')?.notification_preferences.post_failed).toBe(true);
-    expect(post).toBeDisabled();
-    expect(post).toHaveAttribute('aria-checked', 'false');
-    expect(screen.getByText('Todavía no avisamos de las publicaciones fallidas.')).toBeInTheDocument();
+    expect(post).toBeEnabled();
+    expect(post).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByText('Un clip no salió en una de tus redes, o no pudimos confirmar si salió. Te contamos qué pasó para que la reintentes.')).toBeInTheDocument();
+    expect(screen.queryByText('Todavía no avisamos de las publicaciones fallidas.')).not.toBeInTheDocument();
 
     await user.click(post);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(patches).toBe(0);
-    expect(screen.queryByText(/cuando una publicación falla/)).not.toBeInTheDocument();
+    expect(await screen.findByText('Guardado. Ya no te avisamos por email cuando una publicación falla.')).toBeInTheDocument();
+    expect(post).toHaveAttribute('aria-checked', 'false');
+    await waitFor(() => expect(loadDb().users.find((item) => item.name === 'Lucía Fernández')?.notification_preferences.post_failed).toBe(false));
+    await user.click(post);
+    expect(await screen.findByText('Guardado. Te avisamos por email cuando una publicación falla.')).toBeInTheDocument();
+    await waitFor(() => expect(loadDb().users.find((item) => item.name === 'Lucía Fernández')?.notification_preferences.post_failed).toBe(true));
 
-    // The other four still work, and the note about the bell only speaks of what exists.
-    expect(screen.getAllByRole('switch').filter((item) => !(item as HTMLButtonElement).disabled)).toHaveLength(4);
-    expect(screen.getByText('En la app, los avisos que ya están disponibles aparecen siempre en la campana, aunque apagues el email.')).toBeInTheDocument();
-    expect(screen.queryByText(/estos avisos aparecen siempre/)).not.toBeInTheDocument();
+    // Every switch works, and the note about the bell speaks of all of them.
+    expect(screen.getAllByRole('switch').filter((item) => !(item as HTMLButtonElement).disabled)).toHaveLength(5);
+    expect(screen.getByText('En la app, estos avisos aparecen siempre en la campana, aunque apagues el email.')).toBeInTheDocument();
   });
 
   it('dice a qué email llegan, o que no llegan hasta verificarlo', async () => {

@@ -29,3 +29,26 @@ export function failPublish(post: Pick<MockPost, 'platform' | 'status' | 'error_
   post.error_code = message ? code : 'publish_failed';
   post.error_message = message ? message(NETWORK_DISPLAY[post.platform]) : PUBLISH_FAILED_MESSAGE;
 }
+
+/** The codes that mean "it may be out" (back/apps/notifications/services.py · POST_MAYBE_OUT). */
+const MAYBE_OUT = new Set(['outcome_unknown', 'duplicate_content']);
+
+type FailedPost = Pick<MockPost, 'id' | 'platform' | 'error_code' | 'error_message'> & { clip: { title: string; project_id: string; project_title?: string } };
+
+/**
+ * The bell's `post_failed` of a post that just turned FAILED, as the backend writes it
+ * (apps/notifications/services.py · post_failed_message): the clip (its project when it has no
+ * title) and the network in the title, the API's `error_message` as the body.
+ */
+export function postFailedNotification(post: FailedPost): { type: 'post_failed'; title: string; body: string; project_id: string; post_id: string } {
+  const name = post.clip.title || post.clip.project_title || '';
+  const network = NETWORK_DISPLAY[post.platform];
+  const what = MAYBE_OUT.has(post.error_code ?? '') ? 'no sabemos si se publicó en' : 'no se pudo publicar en';
+  return { type: 'post_failed', title: `${name}: ${what} ${network}`, body: post.error_message ?? '', project_id: post.clip.project_id, post_id: post.id };
+}
+
+/** The one `post_failed` of a disconnected network with several posts that will not go out (network_disconnected_message). */
+export function networkDisconnectedNotification(platform: Platform, posts: number): { type: 'post_failed'; title: string; body: string } {
+  const network = NETWORK_DISPLAY[platform];
+  return { type: 'post_failed', title: `Se desconectó ${network}: ${posts} publicaciones no van a salir`, body: `Reconectá la cuenta de ${network} y reintentalas desde Publicaciones.` };
+}

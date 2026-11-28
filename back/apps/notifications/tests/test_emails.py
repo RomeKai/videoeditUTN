@@ -280,7 +280,7 @@ class TaskTests(EmailHarness):
         self.assertEqual(mail.outbox, [])
 
     def test_kinds_without_an_email_send_nothing(self):
-        for kind in ('payment_approved', 'payment_rejected', 'post_failed'):
+        for kind in ('payment_approved', 'payment_rejected'):
             send_notification_email(str(self.notification(self.ana, kind).pk))
 
         self.assertEqual(mail.outbox, [])

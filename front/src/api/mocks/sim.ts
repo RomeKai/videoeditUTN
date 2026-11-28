@@ -2,7 +2,7 @@ import { formatNumber, formatTokens, plural } from '@/lib/format';
 import type { Role } from '../contracts/common';
 import type { PipelineStage } from '../contracts/projects';
 import { KIND, mid, newId, type MockActivity, type MockClip, type MockDb, type MockProject, type MockTransaction, type MockWallet, type PaidRender } from './db';
-import { failPublish } from './publish-errors';
+import { failPublish, postFailedNotification } from './publish-errors';
 import { buildClips, PLAN_IDS, priceOf, stageStatusFor } from './seed';
 
 /** Pace of the simulated pipeline: slow enough to see each step with the 5 s polling, fast enough to click through. */
@@ -700,7 +700,7 @@ function tickPosts(db: MockDb, now: number): void {
     if (post._sim.fails) {
       post.retry_count += 1;
       failPublish(post, 'provider_rejected', 'ayrshare http=400 code=138');
-      notify(db, post.workspace, { type: 'post_failed', title: 'No pudimos publicar un clip', body: post.clip.title, project_id: post.clip.project_id, post_id: post.id }, now);
+      notify(db, post.workspace, postFailedNotification(post), now);
     } else {
       post.status = 'PUBLISHED';
       post.post_url = `https://example.com/${post.platform.toLowerCase()}/post/${post.id.slice(0, 8)}`;

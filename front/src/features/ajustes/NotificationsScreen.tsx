@@ -14,12 +14,8 @@ import styles from './ajustes.module.css';
 
 type PreferenceKey = keyof NotificationPreferences;
 
-/**
- * One switch per case of map 1.11. `when` completes "te avisamos por email cuando …".
- * `unavailable`: the backend does not write that notification yet, neither in the bell nor by
- * email. Its switch is shown off and disabled with this line, so the screen promises nothing.
- */
-export const NOTIFICATION_TYPES: Array<{ key: PreferenceKey; label: string; description: string; when: string; unavailable?: string }> = [
+/** One switch per case of map 1.11. `when` completes "te avisamos por email cuando …". */
+export const NOTIFICATION_TYPES: Array<{ key: PreferenceKey; label: string; description: string; when: string }> = [
   {
     key: 'project_ready',
     label: 'El proyecto está listo para revisar',
@@ -31,10 +27,8 @@ export const NOTIFICATION_TYPES: Array<{ key: PreferenceKey; label: string; desc
   {
     key: 'post_failed',
     label: 'Una publicación falló',
-    description: 'Un clip no se pudo publicar en una de tus redes.',
+    description: 'Un clip no salió en una de tus redes, o no pudimos confirmar si salió. Te contamos qué pasó para que la reintentes.',
     when: 'una publicación falla',
-    // Gap 16: nothing writes `post_failed` yet (back/apps/notifications/services.py).
-    unavailable: 'Todavía no avisamos de las publicaciones fallidas.',
   },
   { key: 'low_balance', label: 'Te queda poco saldo', description: 'El saldo está por debajo de lo que cuesta un video promedio.', when: 'te queda poco saldo' },
 ];
@@ -109,15 +103,11 @@ export function NotificationsScreen() {
             <div className={styles.label}>
               <span>{type.label}</span>
               <span className={styles.desc}>{type.description}</span>
-              {type.unavailable ? <span className={styles.desc}>{type.unavailable}</span> : null}
             </div>
             <span className={styles.swHit}>
               <Switch
-                checked={type.unavailable ? false : (optimistic[type.key] ?? preferences.data[type.key])}
-                onChange={(checked) => {
-                  if (!type.unavailable) toggle(type.key, type.when, checked);
-                }}
-                disabled={Boolean(type.unavailable)}
+                checked={optimistic[type.key] ?? preferences.data[type.key]}
+                onChange={(checked) => toggle(type.key, type.when, checked)}
                 ariaLabel={`Email: ${type.label}`}
               />
             </span>
@@ -137,7 +127,7 @@ export function NotificationsScreen() {
           ))}
         </div>
       )}
-      <p className={styles.note}>En la app, los avisos que ya están disponibles aparecen siempre en la campana, aunque apagues el email.</p>
+      <p className={styles.note}>En la app, estos avisos aparecen siempre en la campana, aunque apagues el email.</p>
     </section>
   );
 }

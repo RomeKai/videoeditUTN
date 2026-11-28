@@ -4,7 +4,7 @@ import { Id, IsoDateTime, NoContent } from './common';
 
 /**
  * The five cases of map 1.11, plus the result of a payment (only in the app, no email).
- * The backend writes today: `project_ready`, `render_finished`, `project_failed`, `payment_approved` and `payment_rejected`.
+ * The backend writes all of them (back/apps/notifications/services.py).
  */
 export const NotificationType = z.enum([
   'project_ready',
@@ -26,7 +26,7 @@ export const Notification = z.object({
   body: z.string(),
   created_at: IsoDateTime,
   read_at: IsoDateTime.nullable(),
-  /** Where it leads. */
+  /** Where it leads. A `post_failed` has its post (and the post's project); the one of a disconnected network with several posts has neither. */
   project_id: Id.nullable(),
   post_id: Id.nullable(),
 });
@@ -49,7 +49,7 @@ export const listNotifications = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/notifications/views.py · NotificationListView + NotificationSerializer (apps/notifications/serializers.py)',
-    note: 'Solo las del usuario en el workspace activo, para cualquier rol, de la más nueva a la más vieja. `unread_count` cuenta todas las no leídas. Las escribe `apps/notifications/services.py` cuando el cambio hace commit: listo para revisar, render terminado (completo o parcial) y proyecto fallido (con lo devuelto) para el dueño y los miembros activos del workspace; el render de un solo clip (desde su editor o un reintento) no avisa si sale bien y, si se devolvió entero, escribe un `render_finished` «<proyecto>: no se pudo renderizar un clip» con el texto de Actividad para ese render; saldo bajo (`low_balance`: una reserva dejó el saldo disponible por debajo de `low_balance_threshold`; una sola vez hasta que el saldo vuelve al umbral) para el dueño y los admins; pago aprobado o rechazado (`payment_approved`, `payment_rejected`) para quien lo inició. `post_failed` todavía no se escribe. Cada una, menos las de pagos, manda además su email a quien tiene prendido ese tipo en `/me/notification-preferences/` (`apps/notifications/emails.py`). Los links de esos emails llevan el workspace en `?espacio=<id>`: `RequireSession` cambia a ese workspace antes de mostrar la página. Se guardan las últimas 20 por usuario y workspace. `project_id` queda en null si el proyecto se borra. Sin workspace, la lista vacía.',
+    note: 'Solo las del usuario en el workspace activo, para cualquier rol, de la más nueva a la más vieja. `unread_count` cuenta todas las no leídas. Las escribe `apps/notifications/services.py` cuando el cambio hace commit: listo para revisar, render terminado (completo o parcial) y proyecto fallido (con lo devuelto) para el dueño y los miembros activos del workspace; el render de un solo clip (desde su editor o un reintento) no avisa si sale bien y, si se devolvió entero, escribe un `render_finished` «<proyecto>: no se pudo renderizar un clip» con el texto de Actividad para ese render; saldo bajo (`low_balance`: una reserva dejó el saldo disponible por debajo de `low_balance_threshold`; una sola vez hasta que el saldo vuelve al umbral) para el dueño y los admins; pago aprobado o rechazado (`payment_approved`, `payment_rejected`) para quien lo inició. Publicación fallida (`post_failed`): una publicación programada terminó `FAILED` (la red la rechazó, no se sabe si salió, se agotaron los reintentos, no había cuenta, o falló el texto con IA de una que iba a salir sin texto), para el dueño y los miembros activos, una vez por falla (si se reintenta y vuelve a fallar, avisa de nuevo); el título nombra el clip y la red («<clip>: no se pudo publicar en TikTok», o «<clip>: no sabemos si se publicó en TikTok» para `outcome_unknown` y `duplicate_content`), el cuerpo es el `error_message` de la publicación y `post_id` lleva a ella en Publicaciones. Al desconectar una red, si fallan varias publicaciones se escribe una sola («Se desconectó TikTok: 3 publicaciones no van a salir», sin `post_id`). Cada una, menos las de pagos, manda además su email a quien tiene prendido ese tipo en `/me/notification-preferences/` (`apps/notifications/emails.py`). Los links de esos emails llevan el workspace en `?espacio=<id>`: `RequireSession` cambia a ese workspace antes de mostrar la página. Se guardan las últimas 20 por usuario y workspace. `project_id` y `post_id` quedan en null si el proyecto o la publicación se borran. Sin workspace, la lista vacía.',
   },
   screens: ['J2', 'Barra'],
 });

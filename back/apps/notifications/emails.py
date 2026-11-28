@@ -9,21 +9,25 @@ notification yet.
 
 No email carries anything a user typed (the rule of the account emails, see
 ``apps.users.email_verification``): no project title, no workspace name, no
-person's name. The bell's title has the project's title, so it never goes in
-an email. What does go:
+person's name. The bell's title has the project's title (the clip's, for a
+post that failed), so it never goes in an email. What does go:
 
 - the notification's ``body``, which the events write without user text (how
   many clips, what was returned, with the same money texts as the bell);
 - for a ``render_finished`` with the reason ``Notification.CLIP_RENDER_FAILED``
   (one clip's render that was returned whole), its own subject and text: it
   does not say a render ended;
+- for ``post_failed``, its body is the API's `error_message` of the post
+  (what happened, by its code, with the network's name); its ``reason`` (the
+  code) picks the subject: "it may be out" never reads as "it failed";
 - for ``low_balance``, also its title (the balance: "Te quedan 300 tokens");
 - links built from ``FRONTEND_URL`` and ids. The paths are the web app's for
   each kind (``notificationHref`` in front/src/shell/nav.ts), with the
   notification's workspace in ``?espacio=<id>``: the web app moves to that
   workspace before it shows the page (RequireSession). Without it, a member
   who has another workspace active would open a project that is not there,
-  or buy tokens for the wrong workspace.
+  or buy tokens for the wrong workspace. A failed post leads to itself in
+  Publicaciones (``?publicacion=<id>``).
 
 Each email has a plain text part and a simple HTML part with the same words;
 everything that goes into the HTML is escaped.
@@ -39,12 +43,16 @@ Kind = Notification.Kind
 # The web app's screen with the switches (I2).
 PREFERENCES_PATH = '/perfil/notificaciones'
 BUY_TOKENS_PATH = '/uso/comprar'
+# Publicaciones (G1) and the parameter that opens one post (notificationHref).
+POSTS_PATH = '/publicaciones'
+POST_PARAM = 'publicacion'
 
 # kind → the label of its switch in I2. The preference field has the kind's name.
 EMAIL_KINDS = {
     Kind.PROJECT_READY: 'El proyecto está listo para revisar',
     Kind.RENDER_FINISHED: 'El render terminó',
     Kind.PROJECT_FAILED: 'El proyecto falló',
+    Kind.POST_FAILED: 'Una publicación falló',
     Kind.LOW_BALANCE: 'Te queda poco saldo',
 }
 
@@ -55,7 +63,7 @@ WORKSPACE_PARAM = 'espacio'
 
 def frontend_url(path, workspace_id=None):
     """``path`` in the web app; with ``workspace_id``, in that workspace."""
-    query = f'?{WORKSPACE_PARAM}={workspace_id}' if workspace_id else ''
+    query = f"{'&' if '?' in path else '?'}{WORKSPACE_PARAM}={workspace_id}" if workspace_id else ''
     return f"{settings.FRONTEND_URL.rstrip('/')}{path}{query}"
 
 
@@ -115,6 +123,40 @@ def _content(notification):
             ],
             'Ver el proyecto',
             _project_path(notification),
+        )
+    if kind == Kind.POST_FAILED:
+        from .services import NETWORK_DISCONNECTED, POST_MAYBE_OUT
+
+        path = f'{POSTS_PATH}?{POST_PARAM}={notification.post_id}' if notification.post_id else POSTS_PATH
+        if notification.reason == NETWORK_DISCONNECTED:
+            # The bell's title is ours here (a network and a count): no user text.
+            return (
+                'Hay publicaciones que no van a salir',
+                [
+                    f'{notification.title} en tu espacio de trabajo de OneCreator. {detail}'.strip(),
+                    'Hasta que alguien las reintente, quedan en error y no se publican.',
+                ],
+                'Ver publicaciones',
+                path,
+            )
+        if notification.reason in POST_MAYBE_OUT:
+            return (
+                'No sabemos si una publicación salió',
+                [
+                    f'No pudimos confirmar una publicación de tu espacio de trabajo en OneCreator. {detail}'.strip(),
+                    'Puede que ya esté publicada: mirá la cuenta de la red antes de reintentarla, para que no salga dos veces.',
+                ],
+                'Ver la publicación',
+                path,
+            )
+        return (
+            'Una publicación no salió',
+            [
+                f'No pudimos publicar un clip de tu espacio de trabajo en OneCreator. {detail}'.strip(),
+                'No se va a publicar sola: abrila para ver qué pasó y reintentarla.',
+            ],
+            'Ver la publicación',
+            path,
         )
     if kind == Kind.LOW_BALANCE:
         return (
