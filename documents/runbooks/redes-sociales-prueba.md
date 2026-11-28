@@ -1,11 +1,11 @@
-# Runbook: probar las redes con una key real de Ayrshare
+# Runbook: probar las redes con una key real de Ayrshare o Upload-Post
 
 > **Relacionado:** [05, SEO y publicación](../ia/05-seo-y-publicacion.md#flujo-conectar-redes), [ADR-005](../adrs/005-social-publishing-strategy.md), [registro de apps sociales](social-app-review.md)
 > **Comando:** `manage.py social_smoke` (`back/apps/integrations/management/commands/social_smoke.py`)
 
 ## Para qué sirve
 
-Las pruebas del repositorio nunca llaman a Ayrshare: reemplazan la red. Este runbook es la prueba de punta a punta con una cuenta real, antes de abrir conectar redes a los usuarios o después de cambiar algo de la capa de proveedores. Crea el perfil de un espacio en Ayrshare, da el link para conectar una red y lista las cuentas. No publica nada ni borra nada.
+Las pruebas del repositorio nunca llaman a Ayrshare ni a Upload-Post: reemplazan la red o hablan con un doble local. Este runbook es la prueba de punta a punta con una cuenta real, antes de abrir conectar redes a los usuarios o después de cambiar algo de la capa de proveedores. Crea el perfil de un espacio en el proveedor, da el link para conectar una red y lista las cuentas. No publica nada ni borra nada. Los pasos son los de Ayrshare; lo que cambia con Upload-Post está en «Proveedores».
 
 ## Antes de empezar
 
@@ -71,6 +71,57 @@ Para ensayar conectar y publicar de punta a punta sin una cuenta de Ayrshare, el
 - El doble responde lo que documenta Ayrshare: `POST /profiles` con `profileKey` y `refId`; `POST /profiles/generateJWT` con `url`; `GET /user` con `activeSocialAccounts` y `displayNames`; `POST /post` con `status` y `postIds` por red (ver `back/apps/integrations/social/ayrshare.py`).
 - Mejor en una base de datos propia del ensayo: los perfiles creados contra el doble guardan keys falsas. Al terminar, sacar `AYRSHARE_BASE_URL` del entorno; si se usó la base de siempre, borrar esos perfiles en el admin (Integrations › Perfiles de redes) antes de volver a la Ayrshare de verdad.
 
+## Proveedores: Ayrshare y Upload-Post
+
+Cada espacio publica por el proveedor de su perfil (`SocialProfile.provider`, «Proveedor» en el admin). `SOCIAL_PROVIDER` solo elige el de los perfiles que se crean de ahora en más: cambiarlo no mueve a ningún espacio que ya tenga perfil.
+
+**Pasar los espacios nuevos a Upload-Post.**
+
+1. En el entorno del backend y del worker: `UPLOAD_POST_API_KEY` (la key de la cuenta, del panel de Upload-Post, «API Keys») y `SOCIAL_PROVIDER=upload_post`. Reiniciar los dos.
+2. `SOCIAL_PROFILE_TITLE_PREFIX` sigue valiendo: el perfil se llama `<prefijo>-<id del espacio>` (el `username` de Upload-Post, que no se puede cambiar). Si dos entornos comparten la cuenta de Upload-Post con el mismo prefijo, el segundo usaría el perfil del primero: Upload-Post responde 409 a un `username` que existe, y OneCreator lo toma como el mismo perfil.
+3. `SOCIAL_MAX_PROFILES` tiene que entrar en el plan de Upload-Post (su página de precios, el 27/11: Basic 5, Professional 25, Advanced 75 perfiles). El plan gratis no publica en TikTok (responde 403, `provider_rejected`).
+4. Los espacios que ya tienen perfil en Ayrshare siguen publicando por Ayrshare, con `AYRSHARE_API_KEY`: no sacarla mientras quede alguno (el admin filtra por proveedor).
+
+**Pasar un solo espacio nuevo, sin tocar `SOCIAL_PROVIDER`.** Antes de su primer «Conectar», en el admin: Integrations › Perfiles de redes › Agregar, el espacio, «Proveedor» Upload-Post y sin referencia. Su primer «Conectar» crea el perfil en Upload-Post. Sirve también para una fila sin referencia que quedó de una creación fallida.
+
+**Un espacio que ya tiene perfil no cambia de proveedor desde el admin**: su referencia solo sirve en el suyo, y el formulario lo rechaza («Este perfil ya existe en …»). Para moverlo: desconectar sus redes, borrar el perfil en el proveedor viejo (en su panel) y la fila en el admin; el próximo «Conectar» lo crea con `SOCIAL_PROVIDER`. Lo programado por las redes desconectadas queda en error.
+
+**La prueba de este runbook con Upload-Post** es la misma, con estas diferencias:
+
+- La variable es `UPLOAD_POST_API_KEY`, y `UPLOAD_POST_BASE_URL` no se toca (por defecto `https://api.upload-post.com`).
+- El comando muestra `proveedor: upload_post · id: <prefijo>-<id del espacio>`: el `username`, que no es secreto (va en cada llamada junto con la API key).
+- El link (`access_url`) vale **48 horas** y abre la página de Upload-Post en castellano, solo con esa red y sin el calendario.
+- En el paso 3, comparar con `settings.UPLOAD_POST_API_KEY`: el link no tiene que llevarla. El `username` sí puede aparecer en el token.
+- En el paso 5, la red aparece con su `@handle`. Con TikTok conectado, `GET /api/v1/social-accounts/` trae en `tiktok.privacy_options` los niveles que esa cuenta permite (una cuenta privada no tiene `PUBLIC_TO_EVERYONE`): son los que ofrece el panel de publicar.
+- En el paso 7 vale la misma regla del backend: 60 s sin creerle un «conectada» a la red recién desconectada.
+
+## Ensayo con un Upload-Post falso
+
+`back/apps/integrations/tests/upload_post_stub.py` es un Upload-Post falso: el mismo que usan los tests de punta a punta (`test_upload_post_stub.py`). Solo usa la biblioteca estándar.
+
+1. Levantarlo en un puerto libre, con un log opcional:
+   ```
+   python back/apps/integrations/tests/upload_post_stub.py 8791 /tmp/upload-post.jsonl
+   ```
+2. En el backend y el worker (con `DEBUG`, `backend.settings.dev`): `UPLOAD_POST_BASE_URL=http://127.0.0.1:8791`, `UPLOAD_POST_API_KEY` con cualquier valor (el doble solo mira que venga `Authorization: Apikey …`) y `SOCIAL_PROVIDER=upload_post`. `backend.settings.prod` no arranca con una base `http` («UPLOAD_POST_BASE_URL must be an https URL in production»).
+3. Mejor en una base de datos propia del ensayo: los perfiles creados contra el doble no existen en Upload-Post.
+4. «Conectar» en la web (o `manage.py social_smoke`) da un link `http://127.0.0.1:8791/connect?token=…`: abrirlo conecta esa red como `@ana.demo`.
+5. Publicar. Sin R2, el backend le manda al doble la URL del clip con el origen de `MEDIA_PUBLIC_BASE_URL` o de `FRONTEND_URL`, como con Ayrshare (el doble no la descarga).
+6. Entre pasos, `GET http://127.0.0.1:8791/ctl?upload=<modo>` cambia lo que responde la próxima subida, y `GET /state` muestra los perfiles, los links pedidos y cada subida con sus campos y su `Idempotency-Key`:
+
+| Modo | Qué hace | Qué tiene que pasar |
+|------|----------|---------------------|
+| `sync` (por defecto) | El resultado de la red en la respuesta. | `PUBLISHED` con link. |
+| `async` (`&status_after=3`) | Solo un `request_id`; su estado dice «Queued» con `success: true` dos veces y después `completed`. | `PUBLISHED` recién con `completed`, sin otra subida. |
+| `pending` | Solo un `request_id`, y nunca termina. | A los 300 s, `FAILED` con `outcome_unknown`; una sola subida en `/state`. |
+| `gateway504` o `drop` | Un 504, o la conexión cerrada después de leer el pedido; la subida sigue. | El worker la busca por su `request_id` y queda `PUBLISHED`. |
+| `fail:<código>` | La red falló con ese `error_code` (por ejemplo `fail:account_reauth_required`). | `FAILED` con el código nuestro de la tabla del [doc 05](../ia/05-seo-y-publicacion.md#capa-de-proveedores). |
+| `http:<estado>` | Ese HTTP con una página HTML, sin publicar nada. | 500 se reintenta con la misma clave; 401, `provider_not_configured`. |
+
+También: `&privacy=FOLLOWER_OF_CREATOR,SELF_ONLY` cambia los niveles que TikTok permite (lo que ve el panel), y `&reauth=tiktok` hace que la cuenta pida reconectarse (`expired`).
+
+**Un `outcome_unknown` de Upload-Post.** El `error_log` termina en `request_id=onecreator-post-<id>-v<n>`: es nuestra clave, y Upload-Post guarda la subida con ese id. Con la key de la cuenta, `GET https://api.upload-post.com/api/uploadposts/status?request_id=<ese id>` dice si salió (o el historial de subidas del panel). Recién después, «Reintentar».
+
 ## Qué mirar si falla
 
 El comando termina con `El proveedor falló: <código> (<detalle>)`, o con `No se pudo: <código>. <mensaje>` cuando el backend mismo se niega (el tope, o el título tomado). Antes de llamar a Ayrshare puede terminar con «El plan del espacio (…) no incluye conectar redes» o «Se llegó al tope de perfiles de OneCreator»: no llamó a nadie ni creó nada. El detalle trae el HTTP y los códigos numéricos de Ayrshare, nunca su mensaje.
@@ -94,7 +145,7 @@ El comando termina con `El proveedor falló: <código> (<detalle>)`, o con `No s
 
 Después, una de dos:
 
-- copiar la key desde el panel de Ayrshare (cambiar al perfil, página «Profile Key») al admin de Django: Integrations › Perfiles de redes, el perfil del espacio, campo «Nueva key» (la key guardada nunca se muestra);
+- copiar la key desde el panel de Ayrshare (cambiar al perfil, página «Profile Key») al admin de Django: Integrations › Perfiles de redes, el perfil del espacio, campo «Nueva referencia» (la key guardada nunca se muestra);
 - o borrar ese perfil en el panel de Ayrshare y conectar de nuevo (desde la web o con el comando).
 
 ## Limpieza
@@ -121,3 +172,15 @@ Para revisar en esta prueba:
 - Si `DELETE /api/profiles` necesita algo más que el header `Profile-Key`. Hoy se manda un cuerpo vacío.
 - El código del rechazo por `idempotencyKey` repetida.
 - Los códigos de autorización vencida de TikTok, Instagram y YouTube al publicar.
+
+## Sin confirmar en la documentación de Upload-Post
+
+Leída el 28/11 (docs.upload-post.com). Para revisar en la primera prueba real:
+
+- Que acepte nuestro `request_id` (`onecreator-post-<id>-v<n>`) y lo devuelva en el estado. La documentación dice que acepta uno propio, pero no su formato.
+- Qué responde exactamente una clave repetida (`idempotent_replay`): si trae los `results` de la primera subida o solo su `request_id`. El backend acepta las dos formas.
+- Si un 429 del tope diario o un 400 de validación guardan la `Idempotency-Key` (hoy se reintenta con la misma).
+- Que un caption vacío en TikTok o Instagram (sin `title`) no se rechace por «title required».
+- Que el 429 del tope mensual traiga siempre `usage` y nunca `Retry-After` (así lo distingue el backend del límite de pedidos), y que `tiktok_privacy_unavailable` llegue con ese código y no solo con texto.
+- Qué hace la página del link sin `redirect_url`: con Ayrshare, «Close» cierra la ventana; con Upload-Post no está documentado.
+- La forma del estado para un pedido con una sola red: los ejemplos son de varias.
