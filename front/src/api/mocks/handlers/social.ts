@@ -396,6 +396,20 @@ export const socialHandlers = [
       return { data: serializePost(post) };
     }
     const project = db.projects.find((item) => item.id === post.clip.project_id);
+    const plan = planOf(db, workspace.id);
+    const noText = !(post.caption || post.generated_caption) && post.hashtags.length === 0 && !post.generated_hashtags?.length;
+    if (post.status === 'FAILED' && noText && project?.metadata.use_seo && (!plan || plan.has_seo_optimization) && post.seo_status !== 'pending') {
+      // retry_post: a post of a project with the AI text that would go out with no text (its AI text never came).
+      // Back to a draft that says so: the user writes it, regenerates it or confirms (`allow_empty_text`).
+      post.status = 'DRAFT';
+      post.seo_status = 'failed';
+      post.error_log = 'seo_text_missing';
+      post.error_code = null;
+      post.error_message = null;
+      post.updated_at = stamp;
+      delete post._sim;
+      return { data: serializePost(post) };
+    }
     const clip = project?.clips.find((item) => item.id === post.video_clip);
     if (clip && clip.status !== 'completed' && clip.status !== 'published') throw invalid('video_clip', 'El clip todavía no está renderizado.');
     if (post.platform === 'TIKTOK' && !post.tiktok) throw invalid('tiktok', TIKTOK_PRIVACY_MISSING);

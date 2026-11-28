@@ -197,6 +197,24 @@ describe('contrato de publicar: como el backend', () => {
     expect([sent.status, sent.caption]).toEqual(['SCHEDULED', '']);
   });
 
+  it('reintentar una fallida sin texto de un proyecto con SEO la vuelve a borrador que pregunta (segunda revisión de #192)', async () => {
+    const db = loadDb();
+    const failed = db.posts.find((post) => post.workspace === WORKSPACE_IDS.estudio && post.status === 'FAILED');
+    const project = db.projects.find((item) => item.id === failed?.clip.project_id);
+    if (!failed || !project) throw new Error('falta una publicación fallida');
+    project.metadata.use_seo = true;
+    Object.assign(failed, {
+      platform: 'INSTAGRAM_REELS', error_log: 'account_not_connected (disconnected)', seo_status: 'none',
+      caption: '', hashtags: [], generated_caption: null, generated_hashtags: null,
+    });
+    saveDb(db);
+
+    const draft = await apiCall(social.retryPost, { params: { id: failed.id } });
+
+    expect([draft.status, draft.seo_status]).toEqual(['DRAFT', 'failed']);
+    expect((await fail(apiCall(social.updatePost, { params: { id: draft.id }, body: { publish_at: null } }))).code).toBe('post_text_missing');
+  });
+
   it('mover a otra hora una programada sin texto no pregunta; vaciarle el texto sí (revisión de #192)', async () => {
     const db = loadDb();
     const scheduled = db.posts.find((post) => post.workspace === WORKSPACE_IDS.estudio && post.status === 'SCHEDULED');

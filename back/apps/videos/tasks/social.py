@@ -150,7 +150,8 @@ def upload_to_social_network(self, post_id):
     from apps.integrations import social
     from apps.integrations.social import errors as codes
     from apps.videos.services.scheduled_posts import (
-        LONGEST_RETRY_COUNTDOWN, SEO_REQUEST_EXPIRED_CODE, has_text, seo_request_expired, waits_for_ai_text,
+        LONGEST_RETRY_COUNTDOWN, SEO_REQUEST_EXPIRED_CODE, has_text, seo_request_expired, seo_request_window,
+        waits_for_ai_text,
     )
     from apps.videos.services.seo_engine import compose_caption
     from apps.videos.services.storage_service import provider_media_url
@@ -215,7 +216,9 @@ def upload_to_social_network(self, post_id):
             if post.status == ScheduledPost.Status.QUEUED and seo_request_expired(post) and not has_text(post):
                 # Its AI text was asked for after it was queued and never came (the message was lost): the
                 # failure of its text, as fail_lost_ai_texts records it, never a post sent empty.
-                _fail_seo_post(post.pk, SEO_REQUEST_EXPIRED_CODE, redispatch=False)
+                _fail_seo_post(
+                    post.pk, SEO_REQUEST_EXPIRED_CODE, redispatch=False, cutoff=timezone.now() - seo_request_window(),
+                )
                 logger.warning("publish.ai_text_lost post_id=%s", post_id)
                 return "AI text lost"
 
@@ -481,7 +484,7 @@ _SEO_FAILURE_CODES = (
 _SEO_FROZEN_STATUSES = (ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED)
 
 
-def _fail_seo_post(post_id, code, redispatch=True):
+def _fail_seo_post(post_id, code, redispatch=True, cutoff=None):
     """
     FAILED with a static code, unless publishing already started or finished:
     a post published with another caption must never turn FAILED because of SEO.
@@ -490,26 +493,45 @@ def _fail_seo_post(post_id, code, redispatch=True):
     (the API shows `seo_status: "failed"`): it was not going out, and the user
     writes the text and sends it. A post with a text of its own (a caption or
     hashtags: scheduled_posts.HAS_TEXT, the rule of the API's _check_has_text)
-    keeps its status too: it does not need the AI's. Either way the API request
-    is over (`seo_requested_at`). Without ``redispatch`` the caller is the
-    dispatcher (or the worker) and decides about sending it itself.
+    keeps its status too: it does not need the AI's. A post that FAILED to
+    publish (`outcome_unknown`, `account_not_connected`…) keeps that failure:
+    it is what the user must see before retrying («it may be out»). Either way
+    the API request is over (`seo_requested_at`). Without ``redispatch`` the
+    caller is the dispatcher (or the worker) and decides about sending it itself.
+
+    ``cutoff``: only a request asked for no later than that ends (the expired
+    ones of scheduled_posts.fail_lost_ai_texts). Each change is one UPDATE with
+    every condition in it, so a «Regenerar» (a newer request) or a text stored
+    between the caller's read and this write leaves the post alone. Returns
+    whether a request ended.
     """
     from apps.videos.services.scheduled_posts import HAS_TEXT, dispatch_after_ai_text
 
     posts = ScheduledPost.objects.filter(id=post_id).exclude(status__in=_SEO_FROZEN_STATUSES)
-    if posts.filter(generated_caption__gt='', generated_hashtags__isnull=False).exists():
+    if cutoff is not None:
+        posts = posts.filter(seo_requested_at__lte=cutoff)
+    earlier_text = Q(generated_caption__gt='', generated_hashtags__isnull=False)
+    seo_code = (
+        Q(error_log__in=_SEO_FAILURE_CODES) | Q(error_log__startswith='seo_') | Q(error_log__startswith='moderation_')
+    )
+    publish_failure = Q(status=ScheduledPost.Status.FAILED, error_log__isnull=False) & ~seo_code
+    if posts.filter(earlier_text).update(seo_requested_at=None):
         logger.warning("seo.regenerate_failed post_id=%s code=%s", post_id, code)
-        posts.update(seo_requested_at=None)
+        ended = True
+    elif posts.filter(publish_failure).update(seo_requested_at=None):
+        logger.warning("seo.failed_kept post_id=%s code=%s", post_id, code)
+        ended = True
     else:
         keeps = Q(status=ScheduledPost.Status.DRAFT) | HAS_TEXT
-        posts.update(
+        ended = bool(posts.exclude(earlier_text).exclude(publish_failure).update(
             status=Case(When(keeps, then=F('status')), default=Value(ScheduledPost.Status.FAILED)),
             error_log=code,
             seo_requested_at=None,
-        )
+        ))
     if redispatch:
         # A post that waited for the text and still goes out (its earlier text) does not wait for the beat.
         dispatch_after_ai_text(post_id)
+    return ended
 
 
 def _end_seo_request(post_id):

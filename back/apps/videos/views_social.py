@@ -271,7 +271,8 @@ class ScheduledPostViewSet(SpanishThrottleMixin, ActiveWorkspaceMixin, mixins.Li
         },
         description=(
             'Vuelve a encolar una publicación que falló, o una trabada en `PROCESSING`: queda `SCHEDULED` para '
-            'ahora. Si lo que falló fue el texto con IA, vuelve a `DRAFT`.'
+            'ahora. Si lo que falló fue el texto con IA, o si saldría sin texto en un proyecto con SEO (su texto '
+            'nunca llegó), vuelve a `DRAFT` con `seo_status: "failed"`.'
         ),
     )
     @action(detail=True, methods=['post'])

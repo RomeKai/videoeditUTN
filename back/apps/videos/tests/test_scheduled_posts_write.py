@@ -1067,6 +1067,113 @@ class TextMissingReviewTests(TextMissingHarness):
         self.dispatch.assert_called_once_with(retry=False)  # it goes out with its hashtags
 
 
+class LostAiTextRacesTests(TextMissingHarness):
+    """
+    Second review of #192: ending a lost AI text must never end a newer one, and a failure of
+    publishing (`outcome_unknown`: «it may be out») must survive a failure of the AI text.
+    """
+
+    def expired(self):
+        return timezone.now() - service.seo_request_window() - timedelta(minutes=1)
+
+    def lost(self, **fields):
+        fields.setdefault("status", Status.SCHEDULED)
+        post = self.make_post(clip=self.seo_clip, **fields)
+        ScheduledPost.objects.filter(pk=post.pk).update(seo_requested_at=self.expired())
+        return post
+
+    def race(self, meanwhile):
+        """fail_lost_ai_texts with ``meanwhile`` landing right after it read the expired ids."""
+        from apps.videos.tasks import social as social_tasks
+
+        real = social_tasks._fail_seo_post
+
+        def racing(post_id, code, **kwargs):
+            meanwhile(post_id)
+            return real(post_id, code, **kwargs)
+
+        with patch.object(social_tasks, "_fail_seo_post", racing):
+            return service.fail_lost_ai_texts(timezone.now())
+
+    def test_a_regenerar_that_lands_meanwhile_is_not_ended(self):
+        post = self.lost(publish_at=timezone.now() + timedelta(days=1))
+        asked = timezone.now()
+
+        ended = self.race(lambda post_id: ScheduledPost.objects.filter(pk=post_id).update(seo_requested_at=asked))
+
+        post.refresh_from_db()
+        self.assertEqual(ended, 0)
+        self.assertEqual((post.status, post.error_log, post.seo_requested_at), (Status.SCHEDULED, None, asked))
+
+    def test_a_text_stored_while_it_decides_is_kept(self):
+        # The SEO task stores its text right after the first statement _fail_seo_post runs on the post
+        # (it used to read «no text» first and then write FAILED over the text that had just landed).
+        from django.db import connection
+
+        post = self.lost(publish_at=timezone.now() + timedelta(days=1))
+        landed = []
+
+        def store_after_the_first_statement(execute, sql, params, many, context):
+            result = execute(sql, params, many, context)
+            if not landed and '"videos_scheduledpost"' in sql:
+                landed.append(sql.split()[0])
+                ScheduledPost.objects.filter(pk=post.pk).update(
+                    generated_caption="Llegó", generated_hashtags=["ia"], seo_requested_at=None,
+                )
+            return result
+
+        def meanwhile(post_id):
+            connection.execute_wrappers.append(store_after_the_first_statement)
+
+        try:
+            self.race(meanwhile)
+        finally:
+            if store_after_the_first_statement in connection.execute_wrappers:
+                connection.execute_wrappers.remove(store_after_the_first_statement)
+
+        self.assertTrue(landed)
+        post.refresh_from_db()
+        self.assertEqual((post.status, post.error_log, post.caption_to_publish()), (Status.SCHEDULED, None, "Llegó"))
+
+    def test_a_retry_with_no_text_goes_back_to_a_draft_that_asks(self):
+        # A failure of publishing kept its code; the lost request was only ended. Retried, it went out empty.
+        post = self.lost(status=Status.FAILED, error_log="account_not_connected (disconnected)")
+        dispatch_scheduled_posts_batch()
+        post.refresh_from_db()
+        self.assertEqual((post.status, post.error_log, post.seo_requested_at), (Status.FAILED, "account_not_connected (disconnected)", None))
+        version = post.publish_key_version
+
+        retried = self.sent(lambda: self.post_action(post, "retry"))
+
+        self.assertEqual(retried.status_code, 200, retried.content)
+        self.assertEqual((retried.json()["status"], retried.json()["seo_status"]), ("DRAFT", "failed"))
+        post.refresh_from_db()
+        self.assertEqual((post.error_log, post.publish_key_version), ("seo_text_missing", version + 1))
+        self.dispatch.assert_not_called()
+        self.assert_text_missing(self.sent(lambda: self.patch_post(post, publish_at=None)))
+        sent = self.sent(lambda: self.patch_post(post, publish_at=None, allow_empty_text=True))
+        self.assertEqual((sent.status_code, sent.json()["status"]), (200, "SCHEDULED"))
+
+    def test_a_retry_with_a_text_or_without_the_ai_text_goes_out_as_before(self):
+        with_text = self.make_post(clip=self.seo_clip, status=Status.FAILED, error_log="provider_unavailable", caption="Mío")
+        no_seo = self.make_post(platform=Platform.YOUTUBE_SHORTS, status=Status.FAILED, error_log="provider_unavailable")
+        for post in (with_text, no_seo):
+            with self.subTest(post=post.caption or "sin SEO"):
+                self.assertEqual(self.sent(lambda: self.post_action(post, "retry")).json()["status"], "SCHEDULED")
+
+    def test_a_failure_of_publishing_survives_a_failed_regenerar(self):
+        from apps.videos.tasks.social import _fail_seo_post
+
+        post = self.make_post(clip=self.seo_clip, status=Status.FAILED, error_log="outcome_unknown")
+        self.sent(lambda: self.post_action(post, "regenerate-seo"))
+
+        _fail_seo_post(post.pk, "seo_failed:RuntimeError")
+
+        post.refresh_from_db()
+        self.assertEqual((post.status, post.error_log, post.seo_requested_at), (Status.FAILED, "outcome_unknown", None))
+        self.assertEqual(self.client.get(detail(post), **self.ws).json()["error_code"], "outcome_unknown")
+
+
 class RegenerateTests(PostsWriteHarness):
     def setUp(self):
         super().setUp()

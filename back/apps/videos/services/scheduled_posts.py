@@ -122,6 +122,8 @@ TEXT_MISSING_CODE = 'post_text_missing'
 # outlived seo_request_window(), its message lost (fail_lost_ai_texts).
 SEO_DISPATCH_FAILED_CODE = 'seo_dispatch_failed'
 SEO_REQUEST_EXPIRED_CODE = 'seo_request_expired'
+# A failed post of a project with the AI text, retried with no text and none on its way (retry_post).
+SEO_TEXT_MISSING_CODE = 'seo_text_missing'
 LOCK_UNKNOWN = "No pudimos comprobar si la publicación sigue saliendo. Probá de nuevo en unos minutos."
 
 _CONFLICTS = {
@@ -620,18 +622,23 @@ def fail_lost_ai_texts(now):
     shows `seo_status: "failed"` and asks before it goes out, and one with a text of its own keeps it.
     dispatch_scheduled_posts_batch calls it before it queues anything. Returns how many it ended.
 
-    A FAILED post only gets its request ended: its `error_log` is the failure it already has (maybe one
-    of publishing, like `outcome_unknown`, that the user must still see before retrying).
+    A post that FAILED to publish keeps that failure (`outcome_unknown`…): only its request ends
+    (_fail_seo_post). The ids are read first and each post is written with the same cutoff in its
+    UPDATE, so a «Regenerar» or a text that lands in between is never ended by mistake.
     """
-    from apps.videos.tasks.social import _fail_seo_post
+    from apps.videos.tasks.social import _SEO_FROZEN_STATUSES, _fail_seo_post
 
-    expired = ScheduledPost.objects.filter(seo_requested_at__lte=now - seo_request_window())
-    expired.filter(status=Status.FAILED).update(seo_requested_at=None)
-    lost = list(expired.filter(status__in=(Status.DRAFT, Status.SCHEDULED, Status.QUEUED)).values_list('pk', flat=True))
+    cutoff = now - seo_request_window()
+    lost = list(
+        ScheduledPost.objects.filter(seo_requested_at__lte=cutoff).exclude(status__in=_SEO_FROZEN_STATUSES)
+        .values_list('pk', flat=True)
+    )
+    ended = 0
     for post_id in lost:
-        _fail_seo_post(post_id, SEO_REQUEST_EXPIRED_CODE, redispatch=False)
-        logger.warning("posts.ai_text_lost post_id=%s", post_id)
-    return len(lost)
+        if _fail_seo_post(post_id, SEO_REQUEST_EXPIRED_CODE, redispatch=False, cutoff=cutoff):
+            ended += 1
+            logger.warning("posts.ai_text_lost post_id=%s", post_id)
+    return ended
 
 
 def dispatch_after_ai_text(post_id):
@@ -862,6 +869,19 @@ def cancel_post(workspace, post_id):
 
 # --- Retry ---
 
+def _retried_without_text(post, now):
+    """
+    A failed post that a retry would send with no text, in a project with the AI text, and with no
+    text on its way: its AI text never came. A project without it promised none (it goes out as
+    before), and a text on its way is waited for (waits_for_ai_text).
+    """
+    from apps.videos.signals import seo_requested
+
+    if has_text(post) or seo_request_pending(post, now):
+        return False
+    return seo_requested(VideoProject.objects.select_related('workspace__subscription_plan').get(pk=post.video_clip.project_id))
+
+
 def retry_post(workspace, post_id):
     """
     A failed post, or one stuck in PROCESSING (is_stuck, with its publishing
@@ -891,6 +911,16 @@ def retry_post(workspace, post_id):
         if post.status == Status.FAILED and _seo_error_code(post):
             post.status = Status.DRAFT
             post.save(update_fields=['status', 'updated_at'])
+        elif post.status == Status.FAILED and _retried_without_text(post, now):
+            # Its AI text never came (the request was lost or the broker refused it while the post was
+            # FAILED, which kept its failure to publish): sent now it would go out empty without asking.
+            # Back to a draft that says so, as an AI text failure, with a new key (it may have reached
+            # the provider): the user writes the text, regenerates it or confirms (`allow_empty_text`).
+            post.status, post.error_log = Status.DRAFT, SEO_TEXT_MISSING_CODE
+            post.publish_key_version = F('publish_key_version') + 1
+            post.publish_key_unclear = False
+            post.save(update_fields=['status', 'error_log', 'publish_key_version', 'publish_key_unclear', 'updated_at'])
+            post.refresh_from_db(fields=['publish_key_version'])
         else:
             clip = post.video_clip
             _check_clip(clip)

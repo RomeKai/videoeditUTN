@@ -123,9 +123,12 @@ class PostsFixtureHarness:
         }, minutes=5), 200)
 
         with at(6):
+            # With its own text: retried with none, a post of a project with SEO goes back to a draft
+            # (retry_post), and this one is the plain retry.
             failed = ScheduledPost.objects.create(
                 video_clip=remontada, platform='INSTAGRAM_REELS', status=ScheduledPost.Status.FAILED,
                 publish_at=NOW - timedelta(hours=1), error_log='Failed after 4 attempts: upstream', retry_count=4,
+                caption='La remontada, de nuevo',
             )
             seo_failed = ScheduledPost.objects.create(
                 video_clip=remontada, platform='YOUTUBE_SHORTS', status=ScheduledPost.Status.FAILED,
