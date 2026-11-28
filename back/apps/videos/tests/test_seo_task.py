@@ -475,14 +475,20 @@ class DispatchReviewRegressionTests(SeoTaskHarness, TestCase):
     def test_a_regeneration_never_touches_a_post_that_is_publishing_or_published(self):
         for status in (ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED):
             with self.subTest(status=status):
+                # Each one with its own request (the one before ended the previous one).
                 ScheduledPost.objects.filter(pk=self.post.pk).update(
-                    status=status, generated_caption="OLD", generated_hashtags=TAGS,
+                    status=status, generated_caption="OLD", generated_hashtags=TAGS, seo_requested_at=timezone.now(),
                 )
 
-                self.assertEqual(self.run_task(regenerate=True), "SEO Skipped")
+                with self.assertLogs("apps.videos.tasks", level="INFO") as logs:
+                    self.assertEqual(self.run_task(regenerate=True), "SEO Skipped")
 
+                # The frozen status stopped it (and ended its request), not a missing request.
+                self.assertIn(f"reason={status}", "\n".join(logs.output))
                 self.post.refresh_from_db()
-                self.assertEqual((self.post.status, self.post.generated_caption), (status, "OLD"))
+                self.assertEqual(
+                    (self.post.status, self.post.generated_caption, self.post.seo_requested_at), (status, "OLD", None),
+                )
         self.generate.assert_not_called()
 
     def test_publishing_that_starts_during_the_generation_keeps_its_caption(self):
