@@ -3,9 +3,10 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import type { Platform } from '@/api/contracts/common';
-import { useConnectSocialAccount, usePlans, useSocialAccounts } from '@/api/hooks';
+import { useConnectSocialAccount, usePlans, useResendVerification, useSocialAccounts } from '@/api/hooks';
 import { ApiError } from '@/api/errors';
 import { keys } from '@/api/query';
+import { formatCountdown, retryAfterSeconds, useCooldown } from '@/lib/cooldown';
 import { errorMessage } from '@/lib/error-messages';
 import { firstPlanWith } from '@/lib/pricing';
 import { usePlan, useSession } from '@/shell/session';
@@ -15,6 +16,7 @@ import { PlanLock } from '@/ui/DataDisplay';
 import { Dialog } from '@/ui/Dialog';
 import { Icon } from '@/ui/Icon';
 import { NETWORKS, NetworkChip } from '@/ui/NetworkChip';
+import { Num } from '@/ui/Numeric';
 import styles from './Dialogs.module.css';
 
 /** How often the accounts are asked again after the network's window closed. */
@@ -26,6 +28,60 @@ function connectError(error: unknown): string {
     return error.message;
   }
   return errorMessage(error, 'No pudimos abrir la conexión.');
+}
+
+/**
+ * The way out of the 403 `email_not_verified`: the verification email again, to the address of the account.
+ * The same request and the same 60 s wait as «Reenviar» in A3 (they share the countdown: it is one email).
+ * Once the link is opened, «Continuar» works: the backend reads the account again on every try.
+ */
+function ResendVerification({ email }: { email: string }) {
+  const resend = useResendVerification();
+  const { secondsLeft, start } = useCooldown(email.toLowerCase());
+  const [sent, setSent] = useState(false);
+  const tooSoon = resend.error instanceof ApiError && resend.error.status === 429;
+  const send = () => {
+    if (resend.isPending || secondsLeft > 0) return;
+    resend.mutate(email, {
+      onSuccess: () => {
+        start(60);
+        setSent(true);
+      },
+      onError: (error) => {
+        // Asked too soon (here or in A3): the answer says how long is left.
+        if (error instanceof ApiError && error.status === 429) start(retryAfterSeconds(error));
+      },
+    });
+  };
+  return (
+    <div className={styles.resend}>
+      <p className="t-small muted" role="status">
+        {sent ? (
+          <>
+            Te mandamos el link a <span className={styles.strong}>{email}</span>. Abrilo y volvé a tocar «Continuar».
+          </>
+        ) : (
+          <>
+            El link llega a <span className={styles.strong}>{email}</span>. ¿No lo encontrás? Revisá el correo no deseado o pedí otro.
+          </>
+        )}
+      </p>
+      <Button variant="secondary" size="sm" onClick={send} disabled={secondsLeft > 0} loading={resend.isPending}>
+        {secondsLeft > 0 ? (
+          <>
+            Reenviar en <Num>{formatCountdown(secondsLeft)}</Num>
+          </>
+        ) : (
+          'Reenviar el email de verificación'
+        )}
+      </Button>
+      {resend.isError && !tooSoon ? (
+        <p className="t-small" style={{ color: 'var(--err)' }} role="alert">
+          {errorMessage(resend.error, 'No pudimos mandar el email. Probá de nuevo en un momento.')}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 export interface ConnectNetworkDialogProps {
@@ -40,7 +96,7 @@ export interface ConnectNetworkDialogProps {
  * Used from Publicar (E1) and Ajustes › Redes sociales (H3).
  */
 export function ConnectNetworkDialog({ platform, onClose }: ConnectNetworkDialogProps) {
-  const { workspace } = useSession();
+  const { workspace, me } = useSession();
   const connect = useConnectSocialAccount();
   const accounts = useSocialAccounts();
   const planInfo = usePlan();
@@ -194,6 +250,7 @@ export function ConnectNetworkDialog({ platform, onClose }: ConnectNetworkDialog
           {connectError(connect.error)}
         </p>
       ) : null}
+      {connect.error instanceof ApiError && connect.error.code === 'email_not_verified' && me ? <ResendVerification email={me.email} /> : null}
     </Dialog>
   );
 }

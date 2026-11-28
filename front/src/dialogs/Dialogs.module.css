@@ -123,3 +123,18 @@ a.planFit:hover {
   flex-direction: column;
   gap: 16px;
 }
+
+/* D6: the way out of "verificá tu email" (the verification email again). */
+.resend {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-subtle);
+}
+.resend p {
+  overflow-wrap: anywhere;
+}
