@@ -93,6 +93,7 @@ export const ScheduledPost = z.object({
   /**
    * Only when `FAILED`. Of the AI text: the `seo_*`, `moderation_*` and `content_blocked` codes. Of publishing:
    * `account_not_connected` and `account_expired` (reconnect, then retry), `tiktok_options_missing`, `quota_exceeded`,
+   * `clip_too_long` (shorten the clip, then retry),
    * `duplicate_content` and `outcome_unknown` (it may be out already: check the network before retrying),
    * `provider_rejected`, `provider_unavailable`, and `publish_failed` for anything else.
    */
@@ -156,7 +157,7 @@ export type UpdatePostRequest = z.infer<typeof UpdatePostRequest>;
 const planErrors = [
   {
     status: 400,
-    when: 'Por campo (`{campo: [mensaje]}`): texto por encima del límite de la red (`caption`), demasiados hashtags o uno inválido (`hashtags`), clip de otro espacio o sin renderizar (`video_clip`), fecha pasada (`publish_at`) o falta `tiktok.privacy_level` (`tiktok`). En /bulk/ va además `index`, la posición de la publicación con el error, y `posts` si el lote está vacío, pasa de 60 o repite un clip en la misma red. O `{error, code: "post_text_missing"}` (con `index` en /bulk/): una publicación que sale sin texto propio cuando el espacio ya pidió sus textos con IA de la hora; se escribe el texto o se manda con `allow_empty_text: true`.',
+    when: 'Por campo (`{campo: [mensaje]}`): texto por encima del límite de la red (`caption`), demasiados hashtags o uno inválido (`hashtags`), clip de otro espacio o sin renderizar (`video_clip`), clip más largo de lo que acepta la red (`video_clip`), fecha pasada (`publish_at`) o falta `tiktok.privacy_level` (`tiktok`). En /bulk/ va además `index`, la posición de la publicación con el error, y `posts` si el lote está vacío, pasa de 60 o repite un clip en la misma red. O `{error, code: "post_text_missing"}` (con `index` en /bulk/): una publicación que sale sin texto propio cuando el espacio ya pidió sus textos con IA de la hora; se escribe el texto o se manda con `allow_empty_text: true`.',
   },
   { status: 403, when: 'El plan no permite programar (`code: "scheduling"`) o publicar el clip en varias redes (`code: "crossposting"`): `{error, code}`. O el rol no publica: `{detail}`.' },
   {
@@ -240,7 +241,7 @@ export const disconnectSocialAccount = defineEndpoint({
 
 /** What the read endpoints still miss (DIST-03). */
 const PARTIAL_NOTE =
-  'Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. `clip.thumbnail_url` es la miniatura del clip (URL temporal de 1 h; `null` si no tiene). `post_url` lo guarda el publicador al publicar; en TikTok queda `null`, porque TikTok procesa el video después de aceptarlo (el link llega más tarde y todavía no se lee). Una publicación «ahora» queda `SCHEDULED` con `publish_at` en el pasado hasta que el despachador la toma (enseguida después del pedido; si no, el beat, hasta 5 min): la UI la consulta como si estuviera en cola.';
+  'Lectura lista: paginada (25, máximo 100), orden por `publish_at`, filtros `status`, `platform`, `from`, `to`, `project` y `clip`, y `status_counts` (cuenta todos los estados con los demás filtros). Solo trae los posts del workspace activo (`X-Workspace-Id`; 404 si el post es de otro). `caption`, `hashtags`, `seo_status`, `error_code` y `error_message` se derivan de lo que ya guarda el modelo. Si al publicar el clip supera el límite de la red, queda `FAILED` sin enviar al proveedor, con `error_code: "clip_too_long"`: hay que acortar el clip y reintentar. `clip.thumbnail_url` es la miniatura del clip (URL temporal de 1 h; `null` si no tiene). `post_url` lo guarda el publicador al publicar; en TikTok queda `null`, porque TikTok procesa el video después de aceptarlo (el link llega más tarde y todavía no se lee). Una publicación «ahora» queda `SCHEDULED` con `publish_at` en el pasado hasta que el despachador la toma (enseguida después del pedido; si no, el beat, hasta 5 min): la UI la consulta como si estuviera en cola.';
 
 export const listPosts = defineEndpoint({
   id: 'social.posts',
@@ -327,7 +328,7 @@ export const updatePost = defineEndpoint({
   errors: [
     {
       status: 400,
-      when: 'Texto por encima del límite, fecha en el pasado, clip que se está renderizando de nuevo, o falta `tiktok.privacy_level` al publicar un borrador de TikTok. O `{error, code: "post_text_missing"}`: falló el texto con IA (`seo_status: "failed"`) y la publicación, al mandar el borrador o al vaciarle el texto, saldría sin caption ni hashtags. El `error` sirve en cualquier pantalla («…escribilo o regeneralo.»); el panel E1 pregunta antes y manda `allow_empty_text: true`.',
+      when: 'Texto por encima del límite, fecha en el pasado, clip que se está renderizando de nuevo, clip más largo de lo que acepta la red (`video_clip`) al programar o mover la publicación, o falta `tiktok.privacy_level` al publicar un borrador de TikTok. O `{error, code: "post_text_missing"}`: falló el texto con IA (`seo_status: "failed"`) y la publicación, al mandar el borrador o al vaciarle el texto, saldría sin caption ni hashtags. El `error` sirve en cualquier pantalla («…escribilo o regeneralo.»); el panel E1 pregunta antes y manda `allow_empty_text: true`.',
     },
     { status: 403, when: 'El plan no permite programar (`code: "scheduling"`) o publicar el clip en otra red (`code: "crossposting"`), o el rol no publica.' },
     { status: 404, when: 'No existe o es de otro workspace.' },
@@ -371,7 +372,7 @@ export const retryPost = defineEndpoint({
   summary: 'Reintenta una publicación que falló (también una trabada en `PROCESSING`).',
   response: ScheduledPost,
   errors: [
-    { status: 400, when: 'El clip se está renderizando de nuevo, o es TikTok y le falta `tiktok.privacy_level`.' },
+    { status: 400, when: 'El clip se está renderizando de nuevo, clip más largo de lo que acepta la red (`video_clip`), o es TikTok y le falta `tiktok.privacy_level`.' },
     { status: 403, when: 'El plan no permite el clip en otra red (`code: "crossposting"`), o el rol no publica.' },
     { status: 404, when: 'No existe o es de otro workspace.' },
     {

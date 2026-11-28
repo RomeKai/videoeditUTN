@@ -174,8 +174,8 @@ def upload_to_social_network(self, post_id):
     from apps.integrations import social
     from apps.integrations.social import errors as codes
     from apps.videos.services.scheduled_posts import (
-        LONGEST_RETRY_COUNTDOWN, SEO_REQUEST_EXPIRED_CODE, has_text, seo_request_expired, seo_request_window,
-        waits_for_ai_text,
+        LONGEST_RETRY_COUNTDOWN, SEO_REQUEST_EXPIRED_CODE, has_text, overlong_clip_duration, seo_request_expired,
+        seo_request_window, waits_for_ai_text,
     )
     from apps.videos.services.seo_engine import compose_caption
     from apps.videos.services.storage_service import provider_media_url
@@ -249,6 +249,8 @@ def upload_to_social_network(self, post_id):
             failure, tiktok = None, None
             if profile is None:
                 failure = social.PermanentError(codes.ACCOUNT_NOT_CONNECTED, 'no profile')
+            elif overlong_clip_duration(clip, post.platform) is not None:
+                failure = social.PermanentError(codes.CLIP_TOO_LONG, 'clip exceeds network duration limit')
             elif post.platform == ScheduledPost.Platform.TIKTOK:
                 try:
                     tiktok = social.TikTokOptions.from_post(post.tiktok)

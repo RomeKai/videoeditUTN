@@ -34,6 +34,7 @@ from apps.videos.models import ScheduledPost, VideoClip, VideoProject
 from apps.videos.serializers_social import ScheduledPostSerializer
 from apps.videos.services.seo_engine import compose_caption
 from apps.videos.tasks import dispatch_scheduled_posts_batch, upload_to_social_network
+from apps.videos.tasks.shared import PostConfigurationError
 from apps.videos.tests.fakes import CapturedTaskFailures
 
 User = get_user_model()
@@ -77,6 +78,28 @@ class PublisherHarness(CapturedTaskFailures):
 
 
 class WhatGoesOutTests(PublisherHarness, TestCase):
+    def test_a_queued_post_fails_without_publishing_if_its_clip_grew_past_the_network_limit(self):
+        post = self.make_post(Platform.YOUTUBE_SHORTS)
+        VideoClip.objects.filter(pk=self.clip.pk).update(end_time=181)
+
+        with patch(PUBLISH, return_value=PUBLISHED) as publish, \
+                patch("apps.videos.tasks.social._notify_post_failed") as notify:
+            result = self.run_task(post)
+
+        publish.assert_not_called()
+        notify.assert_called_once_with(str(post.pk))
+        self.assertTrue(result.failed())
+        self.assertIsInstance(result.result, PostConfigurationError)
+        self.assertEqual(post.status, Status.FAILED)
+        self.assertTrue(post.error_log.startswith("clip_too_long"), post.error_log)
+        api = APIClient()
+        api.force_authenticate(self.user)
+        response = api.get(reverse("scheduled-post-detail", args=[post.pk]), HTTP_X_WORKSPACE_ID=str(self.workspace.pk))
+        self.assertEqual(response.status_code, 200, response.content)
+        row = response.json()
+        self.assertEqual(row["error_code"], "clip_too_long")
+        self.assertEqual(row["error_message"], "El clip dura más de lo que acepta YouTube Shorts. Acortalo y reintentá.")
+
     def test_the_users_text_and_hashtags_go_out(self):
         post = self.make_post(caption="Mirá esto", hashtags=["futbol", "gol"],
                               generated_caption="Texto de la IA", generated_hashtags=["ia"])

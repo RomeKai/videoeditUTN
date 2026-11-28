@@ -41,6 +41,7 @@ import logging
 import uuid
 import zlib
 from datetime import timedelta
+from math import floor
 
 from django.conf import settings
 from django.core.cache import cache, caches
@@ -63,6 +64,9 @@ NETWORK = {
 }
 # The most hashtags each network takes (YouTube ignores every hashtag past 15).
 HASHTAGS_MAX = {Platform.TIKTOK: 30, Platform.INSTAGRAM_REELS: 30, Platform.YOUTUBE_SHORTS: 15}
+# The longest video each network takes for these formats (Ayrshare's media guidelines: TikTok
+# 10 min through its API, Instagram Reels 15 min, YouTube Shorts 3 min).
+MAX_DURATION_SECONDS = {Platform.TIKTOK: 600, Platform.INSTAGRAM_REELS: 900, Platform.YOUTUBE_SHORTS: 180}
 # A `publish_at` this close to now is "now": the clocks of the browser and the server differ a little.
 NOW_TOLERANCE = timedelta(seconds=60)
 BULK_MAX = 60
@@ -370,6 +374,28 @@ def _check_account(workspace, platforms):
 def _check_clip(clip, index=None):
     if clip.status not in DELIVERABLE_CLIP:
         raise PostRefused.invalid('video_clip', CLIP_NOT_RENDERED, index)
+
+
+def overlong_clip_duration(clip, platform):
+    """Return the unrounded duration in seconds if it exceeds the network's limit, or None."""
+    duration = clip.end_time - clip.start_time
+    return duration if duration > MAX_DURATION_SECONDS[platform] else None
+
+
+def _format_duration(seconds):
+    # Match formatDuration in front/src/lib/format.ts (half seconds round up).
+    hours, remainder = divmod(floor(seconds + 0.5), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+
+
+def _check_duration(clip, platform, index=None):
+    duration = overlong_clip_duration(clip, platform)
+    if duration is not None:
+        limit = _format_duration(MAX_DURATION_SECONDS[platform])
+        raise PostRefused.invalid(
+            'video_clip', f"El clip dura {_format_duration(duration)} y {NETWORK[platform]} acepta hasta {limit}.", index,
+        )
 
 
 def _check_tiktok(platform, options, index=None):
@@ -704,6 +730,7 @@ def create_posts(workspace, items, *, key=None, print_=None, many=False):
                 raise PostRefused.invalid('video_clip', CLIP_MISSING, index_of(index))
             _check_clip(clip, index_of(index))
             platform = item['platform']
+            _check_duration(clip, platform, index_of(index))
             caption, hashtags = item.get('caption', ''), item.get('hashtags', [])
             check_text(platform, caption, hashtags, index_of(index))
             draft = item.get('draft', False)
@@ -813,6 +840,7 @@ def update_post(workspace, post_id, data):
             publish_at, later = _when(data['publish_at'], now)
             clip = post.video_clip
             _check_clip(clip)
+            _check_duration(clip, post.platform)
             _check_tiktok(post.platform, post.tiktok)
             plan = workspace.subscription_plan
             if later:
@@ -924,6 +952,7 @@ def retry_post(workspace, post_id):
         else:
             clip = post.video_clip
             _check_clip(clip)
+            _check_duration(clip, post.platform)
             _check_tiktok(post.platform, post.tiktok)
             _check_crossposting(workspace.subscription_plan, {clip.pk: {post.platform}}, exclude=[post.pk])
             _check_account(workspace, {post.platform})
