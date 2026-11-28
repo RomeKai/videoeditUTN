@@ -4,7 +4,7 @@ import { http } from 'msw';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { API_URL } from '@/api/config';
 import { server } from '@/api/mocks/server';
-import { AUTH_STORAGE_KEY, clearSession, getSessionEmail, getTokens, isSessionExpired, noteRefreshRejected, notifySessionExpired, rememberSessionEmail, SESSION_EMAIL_STORAGE_KEY, setTokens } from '@/api/session';
+import { AUTH_STORAGE_KEY, clearSession, getSessionEmail, getTokens, isSessionExpired, noteRefreshRejected, notifySessionExpired, rememberSessionEmail, SESSION_EMAIL_STORAGE_KEY, setTokens, tokenUser } from '@/api/session';
 import { mockTokens } from '@/api/mocks/state';
 import { USER_IDS } from '@/api/mocks/seed';
 import { LoginScreen, SESSION_ENDED } from '@/features/acceso/LoginScreen';
@@ -106,6 +106,63 @@ describe('D9 y las otras pestañas', () => {
     expect(screen.getByText('adentro')).toBeInTheDocument();
     await waitFor(() => expect(profile).toBeGreaterThan(asked));
     expect(isSessionExpired()).toBe(false);
+  });
+
+  it('no se adelanta al aviso de la otra pestaña: con el par nuevo ya guardado pero la sesión todavía marcada vencida, escribir no lo cierra', async () => {
+    const user = userEvent.setup();
+    renderScenario(APP);
+    expect(await screen.findByText('adentro')).toBeInTheDocument();
+    act(() => notifySessionExpired());
+    const dialog = await screen.findByRole('dialog', { name: 'Tu sesión venció' });
+    // The other tab already wrote its pair; this tab has not been told yet (the `storage` event is on its way).
+    const pair = mockTokens(USER_IDS.lucia);
+    window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ access: `${pair.access}-otra`, refresh: `${pair.refresh}-otra` }));
+    // A keystroke renders the dialog again. Closing now would read everything again with the session still
+    // counted as expired: every request fails at once and stays failed.
+    await user.type(within(dialog).getByLabelText('Contraseña'), 'abc');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(isSessionExpired()).toBe(true);
+    expect(screen.getByRole('dialog', { name: 'Tu sesión venció' })).toBeInTheDocument();
+    // The event arrives: now it closes.
+    act(() => {
+      window.dispatchEvent(new StorageEvent('storage', { key: AUTH_STORAGE_KEY }));
+    });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(isSessionExpired()).toBe(false);
+  });
+
+  it('si en la otra pestaña entra OTRA cuenta, el diálogo se queda: la pantalla de abajo es de esta', async () => {
+    let profile = 0;
+    server.use(
+      http.get(`${API_URL}/api/v1/me/`, () => {
+        profile += 1;
+        return undefined;
+      }),
+    );
+    renderScenario(APP);
+    expect(await screen.findByText('adentro')).toBeInTheDocument();
+    act(() => notifySessionExpired());
+    const dialog = await screen.findByRole('dialog', { name: 'Tu sesión venció' });
+    const asked = profile;
+    act(() => {
+      window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(mockTokens(USER_IDS.martin)));
+      window.dispatchEvent(new StorageEvent('storage', { key: AUTH_STORAGE_KEY }));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(screen.getByRole('dialog', { name: 'Tu sesión venció' })).toBeInTheDocument();
+    // Still asking for this account's password, and nothing was read again as the other one.
+    expect(within(dialog).getByText('lucia@estudionorte.com')).toBeInTheDocument();
+    expect(profile).toBe(asked);
+  });
+
+  it('de quién es un token: el `user_id` de un JWT, o su parte del medio cuando no es un JWT', () => {
+    const jwt = (claims: object) => `x.${btoa(JSON.stringify(claims)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}.y`;
+    expect(tokenUser(jwt({ user_id: 'u-1', exp: 1 }))).toBe('u-1');
+    expect(tokenUser(jwt({ user_id: 7 }))).toBe('7');
+    expect(tokenUser(jwt({ user_id: 'u-1', jti: 'otro' }))).toBe(tokenUser(jwt({ user_id: 'u-1' })));
+    expect(tokenUser(mockTokens(USER_IDS.lucia).access)).toBe(USER_IDS.lucia);
+    expect(tokenUser(mockTokens(USER_IDS.lucia).refresh)).not.toBe(tokenUser(mockTokens(USER_IDS.martin).refresh));
+    for (const nobody of [null, undefined, '', 'a', 'a.b']) expect(tokenUser(nobody)).toBeNull();
   });
 
   it('un evento de otra pestaña que deja el mismo par muerto no lo cierra', async () => {

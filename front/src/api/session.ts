@@ -313,6 +313,26 @@ export function notifyMaintenance(active: boolean): void {
   for (const listener of maintenanceListeners) listener(active);
 }
 
+/**
+ * Whose token it is, read from the token itself and never verified: the `user_id` simplejwt puts in the
+ * payload. A token whose middle part is not that (the mocks' carry the id in clear) gives that part as it is:
+ * two tokens of the same user still give the same answer, and anything unreadable is nobody's.
+ */
+export function tokenUser(token: string | null | undefined): string | null {
+  const parts = (token ?? '').split('.');
+  const claims = parts.length === 3 ? parts[1] : undefined;
+  if (!claims) return null;
+  try {
+    const base64 = claims.replace(/-/g, '+').replace(/_/g, '/');
+    const payload: unknown = JSON.parse(atob(base64 + '='.repeat((4 - (base64.length % 4)) % 4)));
+    const id = payload && typeof payload === 'object' ? (payload as { user_id?: unknown }).user_id : undefined;
+    if (typeof id === 'string' || typeof id === 'number') return String(id);
+  } catch {
+    // Not a JWT payload.
+  }
+  return claims;
+}
+
 /** Stable snapshot for useSyncExternalStore: the access token, or null without a session. */
 export function getAccessSnapshot(): string | null {
   return getTokens()?.access ?? null;
