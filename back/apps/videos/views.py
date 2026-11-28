@@ -133,8 +133,8 @@ class BrandKitViewSet(ActiveWorkspaceMixin, viewsets.ModelViewSet):
         Copies the kit and its files into the same workspace as «Copia de …»,
         numbered from the second one (brand_kit_service.duplicate_brand_kit). The copy is never the default.
         201 with the new kit; 502 ``brand_kit_copy_failed`` when a file could
-        not be copied, and then nothing is written. Not a 503: the web app
-        reads any 503 as maintenance.
+        not be copied, and then nothing is written. Not a 503: 503 is kept for
+        maintenance (page K5), and older builds of the web app read any 503 so.
         """
         from .services import brand_kit_service
 

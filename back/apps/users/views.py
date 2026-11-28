@@ -44,7 +44,8 @@ logger = logging.getLogger(__name__)
 class EmailNotSent(APIException):
     """
     The email server did not take the verification email: nothing was saved.
-    502, not 503: the web app reads any 503 as maintenance (page K5).
+    502, not 503: 503 is kept for maintenance (page K5, the middleware's `{detail}`),
+    and older builds of the web app read any 503 as maintenance.
     """
 
     status_code = 502

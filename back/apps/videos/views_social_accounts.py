@@ -84,7 +84,8 @@ def account_body(account):
 def _provider_failure(exc, network=None):
     """
     502 with a code, never the provider's message (it is not in the exception either). Not a 503:
-    the web app reads any 503 as OneCreator's own maintenance (page K5) and shows it for a minute.
+    503 is kept for OneCreator's own maintenance (page K5), and older builds of the web app read
+    any 503 so and showed K5 for a minute.
     """
     logger.warning("social.request_failed code=%s detail=%s", exc.code, exc.detail)
     message = PROVIDER_FAILED.format(network=network) if network else READ_FAILED
