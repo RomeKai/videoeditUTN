@@ -156,7 +156,7 @@ export const duplicateBrandKit = defineEndpoint({
   errors: [
     roleError,
     { status: 404, when: 'No existe o es de otro workspace.' },
-    { status: 502, when: 'No se pudo copiar un archivo del kit (`code: "brand_kit_copy_failed"`). No se crea nada: ni el kit ni archivos sueltos. No es 503: la app lee cualquier 503 como mantenimiento.' },
+    { status: 502, when: 'No se pudo copiar un archivo del kit (`code: "brand_kit_copy_failed"`). No se crea nada: ni el kit ni archivos sueltos. No es 503: el 503 queda para el mantenimiento (K5).' },
   ],
   backend: {
     status: 'exists',

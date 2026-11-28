@@ -636,7 +636,9 @@ CELERY_BEAT_SCHEDULE = {
     },
     # DIST-03: SCHEDULED posts due in the next hour (or already overdue) go to the
     # worker with their publish time as ETA. Needs one beat process (docker-compose
-    # `beat`); the task is idempotent, so a second one cannot publish twice.
+    # `beat`); the task is idempotent, so a second one cannot publish twice. A post
+    # due now does not wait for it: the write that left it so runs the task once
+    # (services/scheduled_posts.dispatch_if_due), and this run is the backstop.
     'dispatch-scheduled-posts': {
         'task': 'apps.videos.tasks.dispatch_scheduled_posts_batch',
         'schedule': 5 * 60,
@@ -748,3 +750,7 @@ SOCIAL_MAX_PROFILES = env.int('SOCIAL_MAX_PROFILES', default=10)
 # A profile no network was ever linked to is deleted after this many days (clean_social_profiles).
 SOCIAL_UNLINKED_PROFILE_DAYS = env.int('SOCIAL_UNLINKED_PROFILE_DAYS', default=7)
 AYRSHARE_API_KEY = env('AYRSHARE_API_KEY', default=None)
+# Ayrshare's API, with its /api path. Change it only to point at a local stand-in (a rehearsal
+# against a fake provider): every call carries AYRSHARE_API_KEY and a Profile-Key, so
+# backend.settings.prod refuses anything but https; http works with DEBUG and in the tests.
+AYRSHARE_BASE_URL = env('AYRSHARE_BASE_URL', default='https://api.ayrshare.com/api').strip().rstrip('/')

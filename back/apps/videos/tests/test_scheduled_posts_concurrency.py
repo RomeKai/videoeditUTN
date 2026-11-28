@@ -35,10 +35,27 @@ PRESIGN = "apps.videos.services.storage_service.CloudflareR2Manager.generate_pre
 UPLOAD = "apps.videos.tasks.upload_to_social_network.apply_async"
 SEO_DELAY = "apps.videos.tasks.process_video_seo.delay"
 SEO_APPLY_ASYNC = "apps.videos.tasks.process_video_seo.apply_async"
+DISPATCH = "apps.videos.tasks.dispatch_scheduled_posts_batch.apply_async"
 
 
 class PostRacesHarness(APITransactionTestCase):
+    # A write that leaves a post due now asks for a run of the dispatcher after its commit
+    # (scheduled_posts.dispatch_if_due). Here the commits are real and Celery runs eagerly, so that run
+    # would happen inside the request and send the post. Only DispatchAfterCommitRacesTests lets it run.
+    dispatch_after_commit = False
+
     def setUp(self):
+        if not self.dispatch_after_commit:
+            dispatch = patch(DISPATCH)
+            dispatch.start()
+            self.addCleanup(dispatch.stop)
+        else:
+            # An eager apply_async sets Celery's process-wide "join will block" flag and puts back the
+            # value it found: two requests doing it in two threads at once can leave it set, and every
+            # later `.get()` of an eager result in this process would then refuse to run.
+            from celery._state import _set_task_join_will_block, task_join_will_block
+
+            self.addCleanup(_set_task_join_will_block, task_join_will_block())
         self.alice = User.objects.create_user(username="alice", email="alice@test.com", password="pw")
         self.home = self.alice.owned_workspaces.get()
         Workspace.objects.filter(pk=self.home.pk).update(
@@ -92,15 +109,21 @@ class PostRacesHarness(APITransactionTestCase):
         thread.start()
         return thread, result
 
-    def wait_until_someone_waits_for_a_lock(self, timeout=10):
-        """Until a connection of this test database is waiting for a row lock."""
+    def wait_until_someone_waits_for_a_lock(self, timeout=10, count=1, on=None):
+        """
+        Until ``count`` connections of this test database wait for a lock; with ``on``, only those
+        whose statement selects from that table (pg_stat_activity cuts a long query, FOR UPDATE included).
+        """
         deadline = time.monotonic() + timeout
+        sql = "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'"
+        params = []
+        if on:
+            sql += " AND query LIKE %s"
+            params = [f'SELECT "{on}".%']
         with connection.cursor() as cursor:
             while time.monotonic() < deadline:
-                cursor.execute(
-                    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'"
-                )
-                if cursor.fetchone()[0]:
+                cursor.execute(sql, params)
+                if cursor.fetchone()[0] >= count:
                     return
                 time.sleep(0.02)
         self.fail("the request never waited for the post's row lock")
@@ -264,6 +287,236 @@ class RetryRacesTests(PostRacesHarness):
         send.assert_called_once()  # published once, by the worker
         post.refresh_from_db()
         self.assertEqual(post.status, Status.PUBLISHED)
+
+
+class DispatchAfterCommitRacesTests(PostRacesHarness):
+    """
+    Ensayo 5: a write that leaves a post due now runs the dispatcher once after its commit
+    (scheduled_posts.dispatch_if_due), here for real (eager Celery, real commits). Two such runs and
+    the beat's at the same time queue each post once: the dispatcher locks each post and checks its
+    status and window again.
+    """
+
+    dispatch_after_commit = True
+
+    def setUp(self):
+        super().setUp()
+        project = VideoProject.objects.create(
+            workspace=self.home, uploaded_by=self.alice, title="Otra", source_file="videos/raw/b.mp4",
+        )
+        self.other_clip = VideoClip.objects.create(
+            project=project, title="Otro clip", start_time=0, end_time=30, status=VideoClip.Status.COMPLETED,
+            s3_object_key="clips/b.mp4",
+        )
+
+    def test_publish_now_is_queued_right_after_the_commit(self):
+        queued = []
+        with patch(UPLOAD, side_effect=lambda *args, **kwargs: queued.append(kwargs)):
+            create, created = self.in_thread(self.request, "post", reverse("scheduled-post-list"), {
+                "video_clip": str(self.clip.pk), "platform": "INSTAGRAM_REELS", "caption": "Ya",
+            })
+            self.finish(create)
+
+        response = created["value"]
+        self.assertEqual(response.status_code, 201, response.content)
+        post = ScheduledPost.objects.get(pk=response.json()["id"])
+        self.assertEqual(post.status, Status.QUEUED)  # without waiting for the beat
+        self.assertEqual([(call["args"], call["eta"]) for call in queued], [([post.pk], post.publish_at)])
+
+    def test_two_requests_and_the_beat_at_once_queue_each_post_once(self):
+        long_ago = timezone.now() - timedelta(hours=1)
+        retried = [
+            ScheduledPost.objects.create(
+                video_clip=self.clip, platform=platform, status=Status.FAILED, publish_at=long_ago,
+                error_log="provider_unavailable",
+            )
+            for platform in ("INSTAGRAM_REELS", "YOUTUBE_SHORTS")
+        ]
+        # Due before the retried ones: every run of the dispatcher tries it first.
+        due = ScheduledPost.objects.create(
+            video_clip=self.other_clip, platform="INSTAGRAM_REELS", status=Status.SCHEDULED,
+            publish_at=timezone.now() - timedelta(minutes=1),
+        )
+        queued, taken, release = [], threading.Event(), threading.Event()
+        record = threading.Lock()
+
+        def queue(*args, **kwargs):
+            # Inside a dispatcher's transaction, with the post's row lock held. The first one waits.
+            with record:
+                queued.append(kwargs["args"][0])
+            if not taken.is_set():
+                taken.set()
+                release.wait(15)
+
+        with patch(UPLOAD, side_effect=queue):
+            beat, beaten = self.in_thread(dispatch_scheduled_posts_batch)
+            self.assertTrue(taken.wait(10), "the beat never queued the post")
+            runs = [
+                self.in_thread(self.request, "post", reverse("scheduled-post-retry", args=[post.pk]))
+                for post in retried
+            ]
+            # Each retry committed and its run of the dispatcher waits for the post the beat holds.
+            self.wait_until_someone_waits_for_a_lock(count=2, on=ScheduledPost._meta.db_table)
+            release.set()
+            self.finish(beat, *(thread for thread, _ in runs))
+
+            self.assertEqual(dispatch_scheduled_posts_batch(), "Queued 0 posts.")  # the next beat: nothing left
+
+        self.assertNotIn("error", beaten)
+        self.assertEqual(beaten["value"], "Queued 1 posts.")
+        self.assertEqual([result["value"].status_code for _, result in runs], [200, 200])
+        self.assertEqual(sorted(queued), sorted([due.pk, *(post.pk for post in retried)]))
+        self.assertEqual(
+            set(ScheduledPost.objects.filter(pk__in=[due.pk, *(post.pk for post in retried)]).values_list("status", flat=True)),
+            {Status.QUEUED},
+        )
+
+
+class AiTextBeforePublishingTests(PostRacesHarness):
+    """
+    Review of #189: «publicar ahora» with the AI text on its way. With the dispatcher running right
+    after the request, the post would be QUEUED with eta=now and go out with no text, and the text
+    would then be thrown away ("SEO Skipped"). It waits for the text instead (waits_for_ai_text): the
+    real eager dispatcher, the real SEO task with the LLM replaced, real commits.
+    """
+
+    dispatch_after_commit = True
+
+    def setUp(self):
+        super().setUp()
+        Workspace.objects.filter(pk=self.home.pk).update(
+            subscription_plan=SubscriptionPlan.objects.create(
+                name="Pro con SEO de despacho", allow_scheduling=True, allow_crossposting=True,
+                has_seo_optimization=True, max_video_duration_seconds=3600,
+            ),
+        )
+        VideoProject.objects.filter(pk=self.clip.project_id).update(
+            metadata={"use_seo": True}, transcript_data=[{"start": 1, "end": 2, "text": "hola"}],
+        )
+        self.queued = []
+        upload = patch(UPLOAD, side_effect=lambda *args, **kwargs: self.queued.append((kwargs["args"][0], kwargs["eta"])))
+        upload.start()
+        self.addCleanup(upload.stop)
+
+    def publish_now(self):
+        """POST «publicar ahora» without a caption; the SEO message is held (it runs when the test says)."""
+        with patch(SEO_DELAY) as seo:
+            create, created = self.in_thread(self.request, "post", reverse("scheduled-post-list"), {
+                "video_clip": str(self.clip.pk), "platform": "INSTAGRAM_REELS",
+            })
+            self.finish(create)
+        response = created["value"]
+        self.assertEqual(response.status_code, 201, response.content)
+        seo.assert_called_once()
+        return ScheduledPost.objects.get(pk=response.json()["id"])
+
+    @staticmethod
+    def run_seo(post, regenerate=False, meanwhile=None):
+        """process_video_seo with the LLM replaced; ``meanwhile`` runs while it "generates"."""
+        from apps.videos.tasks import process_video_seo
+        from apps.videos.tests.fakes import FakeRedis
+        from apps.videos.tests.test_seo_task import generated
+
+        def answer(*args, **kwargs):
+            if meanwhile:
+                meanwhile()
+            return generated()
+
+        with patch("apps.core.security.AI_Security_Shield.check_content_safety"), \
+                patch("apps.videos.services.ai.project_lock.get_redis_client", return_value=FakeRedis()), \
+                patch("apps.videos.services.seo_engine.SEOOptimizationService") as seo:
+            seo.return_value.generate_metadata.side_effect = answer
+            process_video_seo.push_request(retries=0)
+            try:
+                return process_video_seo.run(str(post.pk), regenerate=regenerate)
+            finally:
+                process_video_seo.pop_request()
+
+    def test_publish_now_waits_for_its_text_and_goes_out_once_it_lands(self):
+        from apps.videos.tests.test_seo_task import CAPTION
+
+        post = self.publish_now()
+        self.assertEqual((post.status, post.caption, post.generated_caption), (Status.SCHEDULED, "", None))
+        self.assertIsNotNone(post.seo_requested_at)
+        self.assertEqual(self.queued, [])
+        self.assertEqual(dispatch_scheduled_posts_batch(), "Queued 0 posts.")  # nor the beat
+
+        self.assertEqual(self.run_seo(post), "SEO Success")
+
+        post.refresh_from_db()
+        self.assertEqual((post.status, post.generated_caption, post.caption_to_publish()), (Status.QUEUED, CAPTION, CAPTION))
+        self.assertEqual(self.queued, [(post.pk, post.publish_at)])
+        self.assertEqual(dispatch_scheduled_posts_batch(), "Queued 0 posts.")
+        self.assertEqual(len(self.queued), 1)
+
+    def test_when_its_text_fails_it_fails_as_before_and_nothing_goes_out(self):
+        post = self.publish_now()
+        VideoProject.objects.filter(pk=self.clip.project_id).update(transcript_data=[])
+
+        self.assertEqual(self.run_seo(post), "No Transcript")
+
+        post.refresh_from_db()
+        # The documented fallback of a post with no text of its own: FAILED with the AI's code.
+        self.assertEqual((post.status, post.error_log, post.seo_requested_at), (Status.FAILED, "seo_no_clip_transcript", None))
+        self.assertEqual(self.queued, [])
+
+    def test_a_failed_regeneration_sends_it_with_its_earlier_text(self):
+        post = ScheduledPost.objects.create(
+            video_clip=self.clip, platform=ScheduledPost.Platform.INSTAGRAM_REELS, status=Status.SCHEDULED,
+            publish_at=timezone.now(), generated_caption="Viejo", generated_hashtags=["viejo"], seo_requested_at=timezone.now(),
+        )
+        self.assertEqual(dispatch_scheduled_posts_batch(), "Queued 0 posts.")  # it waits for the new text
+        VideoProject.objects.filter(pk=self.clip.project_id).update(transcript_data=[])
+
+        self.assertEqual(self.run_seo(post, regenerate=True), "No Transcript")
+
+        post.refresh_from_db()
+        self.assertEqual((post.status, post.generated_caption, post.seo_requested_at), (Status.QUEUED, "Viejo", None))
+        self.assertEqual(self.queued, [(post.pk, post.publish_at)])
+
+    def test_the_worker_does_not_send_a_queued_post_whose_text_is_on_its_way(self):
+        post = self.make_post(Status.QUEUED, publish_at=timezone.now())
+        ScheduledPost.objects.filter(pk=post.pk).update(seo_requested_at=timezone.now())  # a new text asked after it was queued
+        with patch(SEND) as send:
+            self.assertEqual(upload_to_social_network.apply(args=[post.pk]).get(), "Waiting for AI text")
+        send.assert_not_called()
+        post.refresh_from_db()
+        self.assertEqual(post.status, Status.SCHEDULED)
+        self.assertEqual(dispatch_scheduled_posts_batch(), "Queued 0 posts.")
+
+        self.assertEqual(self.run_seo(post), "SEO Success")
+
+        post.refresh_from_db()
+        self.assertEqual(post.status, Status.QUEUED)
+        self.assertEqual(self.queued, [(post.pk, post.publish_at)])
+
+    def test_a_post_being_published_is_not_held_and_its_skipped_request_ends(self):
+        post = self.make_post(Status.PROCESSING, publish_at=timezone.now())
+        ScheduledPost.objects.filter(pk=post.pk).update(seo_requested_at=timezone.now())
+        # A retry of the worker: its AI text never lands on a post that is publishing.
+        with patch(PRESIGN, return_value="https://media.test/a.mp4"), patch(SEND, return_value=PUBLISHED) as send:
+            self.assertEqual(upload_to_social_network.apply(args=[post.pk]).get(), "Published via Ayrshare: INSTAGRAM_REELS")
+        send.assert_called_once()
+
+        other = self.make_post(Status.PROCESSING, publish_at=timezone.now())
+        ScheduledPost.objects.filter(pk=other.pk).update(platform="YOUTUBE_SHORTS", seo_requested_at=timezone.now())
+        self.assertEqual(self.run_seo(other), "SEO Skipped")
+        other.refresh_from_db()
+        # Over: a retry of that post (back to SCHEDULED) does not wait for a text that never comes.
+        self.assertIsNone(other.seo_requested_at)
+
+        # The same when publishing starts while the text is being generated.
+        late = self.make_post(Status.SCHEDULED, publish_at=timezone.now() + timedelta(days=1))
+        ScheduledPost.objects.filter(pk=late.pk).update(
+            platform="TIKTOK", tiktok={"privacy_level": "SELF_ONLY"}, seo_requested_at=timezone.now(),
+        )
+
+        def publishing():
+            ScheduledPost.objects.filter(pk=late.pk).update(status=Status.PROCESSING)
+
+        self.assertEqual(self.run_seo(late, meanwhile=publishing), "SEO Skipped")
+        late.refresh_from_db()
+        self.assertEqual((late.generated_caption, late.seo_requested_at), (None, None))
 
 
 class CrosspostingRacesTests(PostRacesHarness):

@@ -6,7 +6,8 @@ nowhere else (never a log line, never error_log).
 What this module relies on, from Ayrshare's documentation (read on
 2026-11-27; the pages are under /docs/apis and /docs/errors):
 
-- Base URL https://api.ayrshare.com/api; `Authorization: Bearer AYRSHARE_API_KEY`.
+- Base URL https://api.ayrshare.com/api (the setting AYRSHARE_BASE_URL, which a
+  rehearsal may point at a local stand-in); `Authorization: Bearer AYRSHARE_API_KEY`.
 - POST /post with `post`, `platforms`, `mediaUrls`, `isVideo`, `idempotencyKey`,
   `tikTokOptions` and `youTubeOptions`. The answer can come wrapped in `posts`
   (one item per profile). Success is decided by the body, not by the HTTP
@@ -36,6 +37,7 @@ What this module relies on, from Ayrshare's documentation (read on
 """
 import logging
 from datetime import datetime, timezone as dt_timezone
+from urllib.parse import urlsplit
 
 import requests
 from django.conf import settings
@@ -77,8 +79,6 @@ from .errors import (
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = 'https://api.ayrshare.com/api'
-
 NETWORK = {TIKTOK: 'tiktok', INSTAGRAM_REELS: 'instagram', YOUTUBE_SHORTS: 'youtube'}
 # The contract's privacy levels as tikTokOptions.visibility.
 TIKTOK_VISIBILITY = {
@@ -109,6 +109,19 @@ def profile_title(workspace):
     return f"{settings.SOCIAL_PROFILE_TITLE_PREFIX}-{workspace.pk}"
 
 
+def _url(path):
+    """AYRSHARE_BASE_URL (https in production: backend.settings.prod checks it) and the endpoint's path."""
+    return f"{settings.AYRSHARE_BASE_URL.rstrip('/')}{path}"
+
+
+def _link_schemes():
+    """
+    The linking page opens in the user's browser: https only. A local stand-in served over http
+    (AYRSHARE_BASE_URL http, which only DEBUG and the tests allow) may answer an http page of its own.
+    """
+    return ('https://',) if urlsplit(settings.AYRSHARE_BASE_URL).scheme == 'https' else ('https://', 'http://')
+
+
 class AyrshareProvider(SocialProvider):
     name = 'ayrshare'
     display_name = 'Ayrshare'
@@ -130,7 +143,7 @@ class AyrshareProvider(SocialProvider):
             body['redirect'] = return_url
         data = self._call('post', '/profiles/generateJWT', 'connect_url', json=body)
         url = data.get('url')
-        if not isinstance(url, str) or not url.startswith('https://'):
+        if not isinstance(url, str) or not url.startswith(_link_schemes()):
             raise PermanentError(PROVIDER_REJECTED, 'ayrshare generateJWT answered no url')
         return url
 
@@ -237,7 +250,7 @@ class AyrshareProvider(SocialProvider):
         if profile_key is not None:
             headers['Profile-Key'] = profile_key
         try:
-            response = requests.request(method, f"{BASE_URL}{path}", json=json, headers=headers, timeout=timeout)
+            response = requests.request(method, _url(path), json=json, headers=headers, timeout=timeout)
         except requests.exceptions.RequestException as exc:
             detail = f'ayrshare {type(exc).__name__}'
             if _never_sent(exc):

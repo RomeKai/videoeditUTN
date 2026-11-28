@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.db import connection
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
@@ -136,12 +136,15 @@ class ListTests(SocialAccountsHarness, TestCase):
                 self.assertEqual(self.call("get", LIST).status_code, 200)
         accounts.assert_called_once()
 
-    def test_a_provider_failure_is_a_503_with_a_code(self):
+    def test_a_provider_failure_is_a_502_with_a_code(self):
+        """Ensayo 5: never a 503, which the web app reads as OneCreator's maintenance (K5)."""
         give_social_profile(self.workspace)
-        with patch(f"{PROVIDER}.accounts", side_effect=RetryableError(detail="ayrshare http=502")):
+        with patch(f"{PROVIDER}.accounts", side_effect=RetryableError(detail="ayrshare http=503")):
             response = self.call("get", LIST)
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["code"], "provider_unavailable")
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json(), {
+            "error": "No pudimos leer las redes conectadas. Probá de nuevo en unos minutos.", "code": "provider_unavailable",
+        })
 
     def test_a_profile_the_provider_does_not_find_is_kept_on_a_read(self):
         """Review of #187: any member reads; the key is given once: a read never forgets it, it only stops publishing."""
@@ -159,8 +162,8 @@ class ListTests(SocialAccountsHarness, TestCase):
         """Review of #187: a slow or failing provider must not take a web worker per request."""
         give_social_profile(self.workspace)
         with patch(f"{PROVIDER}.accounts", side_effect=RetryableError(detail="ayrshare ReadTimeout")) as asked:
-            self.assertEqual(self.call("get", LIST).status_code, 503)
-            self.assertEqual(self.call("get", LIST).status_code, 503)
+            self.assertEqual(self.call("get", LIST).status_code, 502)
+            self.assertEqual(self.call("get", LIST).status_code, 502)
         asked.assert_called_once()
         # With a last good answer, that one is served meanwhile.
         cache.clear()
@@ -168,7 +171,7 @@ class ListTests(SocialAccountsHarness, TestCase):
             self.call("get", LIST)
         cache.delete(f"social:accounts:{self.workspace.pk}")
         with patch(f"{PROVIDER}.accounts", side_effect=RetryableError(detail="ayrshare http=502")) as asked:
-            self.assertEqual(self.call("get", LIST).status_code, 503)
+            self.assertEqual(self.call("get", LIST).status_code, 502)
             again = self.call("get", LIST)
         asked.assert_called_once()
         self.assertEqual((again.status_code, again.json()[0]["username"]), (200, "@estudionorte"))
@@ -262,7 +265,7 @@ class ConnectTests(SocialAccountsHarness, TestCase):
     def test_a_provider_failure_creates_nothing_usable(self):
         with patch(f"{PROVIDER}.create_profile", side_effect=RetryableError(detail="ayrshare ConnectTimeout")):
             response = self.call("post", CONNECT, {"platform": "TIKTOK"})
-        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.status_code, 502)
         self.assertEqual(response.json(), {
             "error": "No pudimos hablar con TikTok. Probá de nuevo en unos minutos.", "code": "provider_unavailable",
         })
@@ -413,7 +416,10 @@ class DisconnectTests(SocialAccountsHarness, TestCase):
         post = self.post_in("TIKTOK", Status.SCHEDULED)
         with patch(f"{PROVIDER}.disconnect", side_effect=RetryableError(detail="ayrshare http=503")):
             response = self.call("delete", detail("TIKTOK"))
-        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json(), {
+            "error": "No pudimos hablar con TikTok. Probá de nuevo en unos minutos.", "code": "provider_unavailable",
+        })
         post.refresh_from_db()
         self.assertEqual(post.status, Status.SCHEDULED)
         self.assertEqual(self.profile().networks["TIKTOK"], "connected")
@@ -539,6 +545,54 @@ class SmokeCommandTests(SocialAccountsHarness, TestCase):
             output = self.run_command("--no-create")
         create.assert_not_called()
         self.assertIn("Sin perfil", output)
+
+    def on_free_plan(self):
+        Workspace.objects.filter(pk=self.workspace.pk).update(subscription_plan=SubscriptionPlan.objects.get(name="Gratis"))
+
+    def test_a_plan_without_networks_is_refused_before_calling_the_provider(self):
+        """Ensayo 5: on Gratis it created the paid profile the web app never would."""
+        self.on_free_plan()
+        with patch(f"{PROVIDER}.create_profile") as create, patch(f"{PROVIDER}.connect_url") as link, \
+                self.assertRaises(CommandError) as refused:
+            self.run_command()
+        self.assertEqual(refused.exception.returncode, 1)
+        self.assertIn("El plan del espacio (Gratis) no incluye conectar redes", str(refused.exception))
+        self.assertIn("--ignore-plan", str(refused.exception))
+        create.assert_not_called()
+        link.assert_not_called()
+        self.assertFalse(SocialProfile.objects.filter(workspace_id=self.workspace.pk).exists())
+        # Nor a link to reconnect a profile it kept from a paid plan, as in the web app.
+        give_social_profile(self.workspace)
+        with patch(f"{PROVIDER}.connect_url") as link, self.assertRaises(CommandError):
+            self.run_command()
+        link.assert_not_called()
+
+    def test_ignore_plan_goes_on_for_a_staff_test(self):
+        self.on_free_plan()
+        with patch(f"{PROVIDER}.create_profile", return_value=CreatedProfile("KEY", "ref-8")), \
+                patch(f"{PROVIDER}.connect_url", return_value=LINK), \
+                patch(f"{PROVIDER}.accounts", return_value=linked()):
+            output = self.run_command("--ignore-plan")
+        self.assertIn("--ignore-plan: el plan del espacio (Gratis) no incluye conectar redes; se sigue igual.", output)
+        self.assertIn("Perfil creado", output)
+        self.assertIn(LINK, output)
+
+    @override_settings(SOCIAL_MAX_PROFILES=1)
+    def test_the_profiles_cap_is_refused_before_anything_even_with_ignore_plan(self):
+        other = Workspace.objects.create(name="Otro", owner=self.owner)
+        give_social_profile(other, "KEY-OTHER")
+        for args in ((), ("--ignore-plan",)):
+            with self.subTest(args=args), patch(f"{PROVIDER}.create_profile") as create, \
+                    self.assertRaises(CommandError) as refused:
+                self.run_command(*args)
+            self.assertIn("Se llegó al tope de perfiles de OneCreator (SOCIAL_MAX_PROFILES=1)", str(refused.exception))
+            create.assert_not_called()
+        # Not even the empty row a creation claims first.
+        self.assertFalse(SocialProfile.objects.filter(workspace_id=self.workspace.pk).exists())
+        # A workspace that has its profile uses no new slot.
+        give_social_profile(self.workspace, "KEY-MINE")
+        with patch(f"{PROVIDER}.connect_url", return_value=LINK), patch(f"{PROVIDER}.accounts", return_value=linked()):
+            self.assertIn("Perfil existente", self.run_command())
 
 
 @override_settings(SOCIAL_PROFILE_TITLE_PREFIX="oc-test")

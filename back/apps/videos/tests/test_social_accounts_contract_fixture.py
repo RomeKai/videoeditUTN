@@ -27,7 +27,7 @@ PROVIDER = "apps.integrations.social.ayrshare.AyrshareProvider"
 BODIES = ('social_accounts_none', 'social_accounts', 'social_connect')
 ERRORS = (
     'social_400_return_url', 'social_403_connect', 'social_403_plan', 'social_403_email', 'social_409_profiles_limit',
-    'social_503_connect',
+    'social_502_connect',
 )
 LINK = "https://profile.ayrshare.com?session=ayr_ls_kJ8mQ2vX9pLn"
 
@@ -72,7 +72,7 @@ class SocialAccountsFixtureTests(APITestCase):
             'social_403_connect': err(call('post', reverse('social-account-connect'), {'platform': 'TIKTOK'}, user=carla), 403),
         }
         with patch(f'{PROVIDER}.connect_url', side_effect=RetryableError(detail='ayrshare http=502')):
-            errors['social_503_connect'] = err(call('post', reverse('social-account-connect'), {'platform': 'INSTAGRAM_REELS'}), 503)
+            errors['social_502_connect'] = err(call('post', reverse('social-account-connect'), {'platform': 'INSTAGRAM_REELS'}), 502)
         free = Workspace.objects.create(name='Gratis', owner=ana, subscription_plan=SubscriptionPlan.objects.get(name='Gratis'))
         errors['social_403_plan'] = err(call('post', reverse('social-account-connect'), {'platform': 'TIKTOK'}, workspace=free), 403)
         lucia = User.objects.create_user(username='lucia', email='lucia@test.com', password='pw')

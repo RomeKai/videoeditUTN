@@ -15,8 +15,9 @@ Las pruebas del repositorio nunca llaman a Ayrshare: reemplazan la red. Este run
   - `SOCIAL_PROVIDER=ayrshare` (es el valor por defecto).
   - `SOCIAL_PROFILE_TITLE_PREFIX`: uno distinto por entorno si comparten la cuenta de Ayrshare (por ejemplo `oc-staging`). Los perfiles se llaman `<prefijo>-<id del espacio>`, y Ayrshare no deja repetir un título.
   - `FRONTEND_URL`: la web. Con `--return-url` (que tiene que ser de esa web), el botón «Close» de Ayrshare lleva ahí; sin él, ese botón cierra la ventana si la abrió un script, como hace la web.
-  - `SOCIAL_MAX_PROFILES` (10): el tope de perfiles de OneCreator en la cuenta de Ayrshare, que tiene que entrar en el plan. Pasado el tope, conectar un espacio nuevo responde 409 `social_profiles_limit` (y el comando, «No se pudo conectar»).
-- **Un espacio de prueba**: su id está en el admin (Usuarios › Workspaces) o en `GET /api/v1/me/`. El comando no mira el plan ni el email (es de operación), pero la web sí: para el paso 6, el espacio tiene que estar en un plan pago (Creador, Pro o Estudio: `allow_social_accounts`) y el usuario, con el email verificado.
+  - `SOCIAL_MAX_PROFILES` (10): el tope de perfiles de OneCreator en la cuenta de Ayrshare, que tiene que entrar en el plan. Pasado el tope, conectar un espacio nuevo responde 409 `social_profiles_limit`, y el comando termina con error antes de crear nada («Se llegó al tope de perfiles de OneCreator»), también con `--ignore-plan`. Un espacio que ya tiene perfil no usa un lugar nuevo.
+  - `AYRSHARE_BASE_URL`: no se toca para esta prueba (por defecto `https://api.ayrshare.com/api`). Ver «Ensayo con un Ayrshare falso».
+- **Un espacio de prueba**: su id está en el admin (Usuarios › Workspaces) o en `GET /api/v1/me/`. Tiene que estar en un plan pago (Creador, Pro o Estudio: `allow_social_accounts`), como en la web: en un plan sin redes (Gratis) el comando termina con error antes de llamar a Ayrshare («El plan del espacio (Gratis) no incluye conectar redes»), porque cada perfil es un lugar pago. Para una prueba del staff con un espacio así está `--ignore-plan`, que saltea solo el plan. El comando no mira el email (es de operación), pero la web sí: para el paso 6, el usuario tiene que tener el email verificado.
 
 ## Pasos
 
@@ -58,16 +59,28 @@ Las pruebas del repositorio nunca llaman a Ayrshare: reemplazan la red. Este run
 6. En la web, con el modo híbrido apuntando a este backend (la lista por defecto de `NEXT_PUBLIC_API_REAL` ya manda las redes al backend), Ajustes › Redes sociales tiene que mostrar lo mismo.
 7. **Desconectar.** Desde Ajustes › Redes sociales, desconectar la red: tiene que quedar «Sin conectar» enseguida y seguir así aunque se recargue. Ayrshare puede seguir listándola hasta 60 s (su copia); el backend no le cree un «conectada» durante 60 s después de desconectar, así que recién pasado ese minuto la lista vuelve a ser la de Ayrshare. Si después de un minuto aparece conectada otra vez, Ayrshare no la desvinculó: revisar en su panel.
 
+## Ensayo con un Ayrshare falso
+
+Para ensayar conectar y publicar de punta a punta sin una cuenta de Ayrshare, el backend puede hablar con un doble local en vez de Ayrshare:
+
+- `AYRSHARE_BASE_URL` es la base de la API, con su `/api` (por ejemplo `http://127.0.0.1:8790/api`). El backend le agrega la ruta de cada llamada (`/profiles`, `/profiles/generateJWT`, `/user`, `/profiles/social`, `/post`) y manda los mismos headers que a Ayrshare: `Authorization: Bearer <AYRSHARE_API_KEY>` y, en las llamadas de un perfil, `Profile-Key`.
+- `AYRSHARE_API_KEY` tiene que tener algún valor (el doble no lo mira): sin key el backend ni llama.
+- Con `http`, el backend tiene que correr con `DEBUG` (`backend.settings.dev`). `backend.settings.prod` no arranca si la base no es `https` («AYRSHARE_BASE_URL must be an https URL in production»): cada llamada lleva la key de la cuenta y la del perfil.
+- Con una base `http`, el link que devuelve `/profiles/generateJWT` (el campo `url`) puede ser una página `http` del doble. Con la base `https` de siempre, un link que no es `https` se rechaza (`provider_rejected`).
+- El doble responde lo que documenta Ayrshare: `POST /profiles` con `profileKey` y `refId`; `POST /profiles/generateJWT` con `url`; `GET /user` con `activeSocialAccounts` y `displayNames`; `POST /post` con `status` y `postIds` por red (ver `back/apps/integrations/social/ayrshare.py`).
+- Mejor en una base de datos propia del ensayo: los perfiles creados contra el doble guardan keys falsas. Al terminar, sacar `AYRSHARE_BASE_URL` del entorno; si se usó la base de siempre, borrar esos perfiles en el admin (Integrations › Perfiles de redes) antes de volver a la Ayrshare de verdad.
+
 ## Qué mirar si falla
 
-El comando termina con `El proveedor falló: <código> (<detalle>)`, o con `No se pudo: <código>. <mensaje>` cuando el backend mismo se niega (el tope, o el título tomado). El detalle trae el HTTP y los códigos numéricos de Ayrshare, nunca su mensaje.
+El comando termina con `El proveedor falló: <código> (<detalle>)`, o con `No se pudo: <código>. <mensaje>` cuando el backend mismo se niega (el tope, o el título tomado). Antes de llamar a Ayrshare puede terminar con «El plan del espacio (…) no incluye conectar redes» o «Se llegó al tope de perfiles de OneCreator»: no llamó a nadie ni creó nada. El detalle trae el HTTP y los códigos numéricos de Ayrshare, nunca su mensaje.
 
 | Código y detalle | Qué es | Qué hacer |
 |---|---|---|
+| «El plan del espacio (Gratis) no incluye conectar redes» | El plan del espacio no tiene `allow_social_accounts`: la web tampoco lo deja conectar. | Usar un espacio en un plan pago, o `--ignore-plan` si es una prueba del staff (ocupa un lugar pago igual). |
 | `provider_not_configured (AYRSHARE_API_KEY missing)` o `http=401` | Falta la key o no es válida. | Revisar `AYRSHARE_API_KEY`. |
 | `No se pudo: profile_title_taken.` (en la web, 409 `profile_title_taken`; en los logs, `social.profile_title_taken`) | Ya hay un perfil con ese título en Ayrshare: una creación anterior llegó pero se perdió la respuesta, u otro entorno usa el mismo prefijo. Reintentar no lo arregla. | Ver abajo, «Perfil con el título tomado». |
 | El evento `social.profile_not_found` (la web ve las tres redes desconectadas) | Ayrshare no conoce la Profile-Key guardada (144): se borró el perfil en su panel, o el backend usa otra `AYRSHARE_API_KEY`. Leer no borra la key. | Si la API key es la correcta, conectar de nuevo (la web o el comando) arma otro perfil y deja `social.profile_lost`. Si no, corregir la API key: las redes vuelven solas. |
-| `No se pudo: social_profiles_limit.` (en la web, 409 `social_profiles_limit`; en los logs, `social.profiles_limit`) | Se llegó a `SOCIAL_MAX_PROFILES`. | Borrar perfiles de prueba que sobren (Limpieza) o ampliar el plan de Ayrshare y subir el número. |
+| «Se llegó al tope de perfiles de OneCreator», o `No se pudo: social_profiles_limit.` (en la web, 409 `social_profiles_limit`; en los logs, `social.profiles_limit`) | Se llegó a `SOCIAL_MAX_PROFILES`. | Borrar perfiles de prueba que sobren (Limpieza) o ampliar el plan de Ayrshare y subir el número. |
 | `provider_rejected` con otro código | Ayrshare rechazó el pedido (por ejemplo, el plan no tiene perfiles). | Buscar el código en https://www.ayrshare.com/docs/errors/errors-ayrshare. |
 | `provider_unavailable` | Ayrshare no respondió, o respondió 429 o 5xx. | Probar de nuevo en unos minutos. Son 300 pedidos cada 5 minutos por perfil. |
 | `outcome_unknown` al crear | No llegó la respuesta: el perfil pudo haberse creado. | Correr de nuevo. Si responde `profile_title_taken`, seguir «Perfil con el título tomado». |

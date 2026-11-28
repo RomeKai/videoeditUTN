@@ -408,7 +408,7 @@ class ProfileTests(SimpleTestCase):
 
 
 @override_settings(AYRSHARE_API_KEY="api-key")
-def test_a_real_connection_closed_after_the_request_is_not_sent_again(network_guard, monkeypatch):
+def test_a_real_connection_closed_after_the_request_is_not_sent_again(network_guard, monkeypatch, settings):
     """
     Review of #186, on a real socket: a server that reads the whole request and closes. Ayrshare
     downloads the video inside the request, so it may still be publishing: an unknown outcome, never
@@ -416,8 +416,6 @@ def test_a_real_connection_closed_after_the_request_is_not_sent_again(network_gu
     """
     import socket
     import threading
-
-    from apps.integrations.social import ayrshare
 
     for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
         monkeypatch.delenv(name, raising=False)
@@ -450,14 +448,95 @@ def test_a_real_connection_closed_after_the_request_is_not_sent_again(network_gu
     thread = threading.Thread(target=serve)
     thread.start()
     try:
-        monkeypatch.setattr(ayrshare, "BASE_URL", f"http://127.0.0.1:{port}/api")
+        settings.AYRSHARE_BASE_URL = f"http://127.0.0.1:{port}/api"
         with pytest.raises(OutcomeUnknownError):
             AyrshareProvider().publish(PROFILE, tiktok_request())
         thread.join(5)
         assert read["bytes"] > 0  # the server got the whole request
-        monkeypatch.setattr(ayrshare, "BASE_URL", f"http://127.0.0.1:{nobody}/api")
+        settings.AYRSHARE_BASE_URL = f"http://127.0.0.1:{nobody}/api"
         with pytest.raises(RetryableError) as caught:
             AyrshareProvider().publish(PROFILE, tiktok_request())
         assert (caught.value.key_spent, caught.value.maybe_sent) == (False, False)
     finally:
         server.close()
+
+
+@override_settings(AYRSHARE_API_KEY="api-key", SOCIAL_PROFILE_TITLE_PREFIX="oc-test")
+def test_a_local_stand_in_answers_every_call(network_guard, monkeypatch, settings):
+    """
+    Ensayo 5: AYRSHARE_BASE_URL points the provider at a local stand-in, so a rehearsal can connect
+    and publish against a fake Ayrshare. Over http (DEBUG or the tests) its linking page may be http too.
+    """
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    seen = []
+
+    class StandIn(BaseHTTPRequestHandler):
+        def answer(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(length) or b"{}")
+            seen.append((self.command, self.path, self.headers.get("Authorization"), self.headers.get("Profile-Key"), body))
+            port = self.server.server_address[1]
+            data = {
+                "/api/profiles": {"status": "success", "refId": "ref-local", "profileKey": "KEY-LOCAL"},
+                "/api/profiles/generateJWT": {"status": "success", "url": f"http://127.0.0.1:{port}/conectar"},
+                "/api/user": {"activeSocialAccounts": ["tiktok"], "displayNames": [
+                    {"platform": "tiktok", "username": "@local", "created": "2026-11-28T00:00:00Z"},
+                ]},
+                "/api/post": {"status": "success", "id": "local-1", "postIds": [
+                    {"status": "success", "platform": "tiktok", "id": "pending"},
+                ]},
+            }[self.path]
+            raw = json.dumps(data).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        do_GET = do_POST = answer
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), StandIn)
+    port = server.server_address[1]
+    monkeypatch.setattr(network_guard, "allowed_ports", frozenset({*network_guard.allowed_ports, port}))
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        settings.AYRSHARE_BASE_URL = f"http://127.0.0.1:{port}/api/"  # a trailing slash is fine
+        provider = AyrshareProvider()
+        created = provider.create_profile(SimpleNamespace(pk="ws-1"))
+        profile = SimpleNamespace(provider="ayrshare", provider_ref=created.ref)
+        link = provider.connect_url(profile, "TIKTOK")
+        accounts = provider.accounts(profile)
+        published = provider.publish(profile, tiktok_request())
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+
+    assert (created.ref, created.provider_id) == ("KEY-LOCAL", "ref-local")
+    assert link == f"http://127.0.0.1:{port}/conectar"
+    assert [(account.platform, account.status) for account in accounts][0] == ("TIKTOK", AccountStatus.CONNECTED)
+    assert published.external_id == "local-1"
+    assert [(method, path, auth, key) for method, path, auth, key, _ in seen] == [
+        ("POST", "/api/profiles", "Bearer api-key", None),
+        ("POST", "/api/profiles/generateJWT", "Bearer api-key", None),
+        ("GET", "/api/user", "Bearer api-key", "KEY-LOCAL"),
+        ("POST", "/api/post", "Bearer api-key", "KEY-LOCAL"),
+    ]
+
+
+@pytest.mark.parametrize("base", ["https://api.ayrshare.com/api", "HTTPS://api.ayrshare.com/api"])
+def test_with_https_the_linking_page_must_be_https(base):
+    with override_settings(AYRSHARE_API_KEY="api-key", AYRSHARE_BASE_URL=base), \
+            patch(REQUEST, return_value=answer(200, {"status": "success", "url": "http://profile.ayrshare.com?s=x"})), \
+            pytest.raises(PermanentError):
+        AyrshareProvider().connect_url(PROFILE, "TIKTOK")

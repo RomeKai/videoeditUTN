@@ -102,17 +102,28 @@ def forget_accounts(workspace_id):
 
 # --- Connecting ---
 
-def check_can_connect(workspace, user):
-    """
-    The plan includes it (`allow_social_accounts`; no plan means no plan limits,
-    as everywhere) and the user's email is verified. The global cap is checked
-    when a profile is created (ensure_profile).
-    """
+def check_plan(workspace):
+    """The plan includes connecting networks (`allow_social_accounts`; no plan means no plan limits, as everywhere)."""
     plan = workspace.subscription_plan
     if plan is not None and not plan.allow_social_accounts:
         raise ConnectRefused(403, 'social_accounts', PLAN_DENIED)
+
+
+def check_can_connect(workspace, user):
+    """
+    The plan includes it (check_plan) and the user's email is verified. The
+    global cap is checked when a profile is created (ensure_profile).
+    """
+    check_plan(workspace)
     if not getattr(user, 'is_email_verified', False):
         raise ConnectRefused(403, 'email_not_verified', EMAIL_NOT_VERIFIED)
+
+
+def profiles_cap_reached():
+    """Whether OneCreator already has SOCIAL_MAX_PROFILES profiles at the provider (the rows with a key)."""
+    from apps.integrations.models import SocialProfile
+
+    return SocialProfile.objects.exclude(provider_ref='').count() >= settings.SOCIAL_MAX_PROFILES
 
 
 def _lock_profile_creation():
@@ -173,10 +184,8 @@ def _create_at_provider(workspace, profile):
     under the row's lock, in ensure_profile's transaction: waits for the other
     creations (an advisory lock) and counts the profiles first.
     """
-    from apps.integrations.models import SocialProfile
-
     _lock_profile_creation()
-    if SocialProfile.objects.exclude(provider_ref='').count() >= settings.SOCIAL_MAX_PROFILES:
+    if profiles_cap_reached():
         logger.error("social.profiles_limit workspace_id=%s limit=%s", workspace.pk, settings.SOCIAL_MAX_PROFILES)
         raise ConnectRefused(409, 'social_profiles_limit', PROFILES_LIMIT)
     try:

@@ -80,24 +80,34 @@ def dispatch_scheduled_posts_batch():
     """
     Orchestrator: dispatches the SCHEDULED posts due within the next hour, and
     those already overdue (the beat or the worker was down), which go out at once.
-    Runs every 5 minutes via Celery Beat (CELERY_BEAT_SCHEDULE).
+    Runs every 5 minutes via Celery Beat (CELERY_BEAT_SCHEDULE), once after
+    each write of the posts API that leaves a post due now
+    (services/scheduled_posts.dispatch_if_due), and once when a post's AI text
+    lands or fails (dispatch_after_ai_text). Runs at the same time are safe:
+    each post is locked and checked again before it is queued.
+
+    A post with no caption of its own whose AI text is on its way waits for it
+    (scheduled_posts.waits_for_ai_text): it stays SCHEDULED.
     """
+    from apps.videos.services.scheduled_posts import waiting_for_ai_text
+
     now = timezone.now()
     window_end = now + timedelta(hours=1)
-    
+    waiting = waiting_for_ai_text(now)
+
     # Batch query: everything due by the end of the window, overdue posts included
     scheduled_posts = ScheduledPost.objects.filter(
         status=ScheduledPost.Status.SCHEDULED,
         publish_at__lte=window_end
-    )
+    ).exclude(waiting)
     
     count = 0
     for post in scheduled_posts:
         with transaction.atomic():
-            # Lock the row for update and check status again to prevent race conditions
+            # Lock the row for update and check status, window and text again to prevent race conditions
             post_to_queue = ScheduledPost.objects.select_for_update().filter(
                 id=post.id, status=ScheduledPost.Status.SCHEDULED, publish_at__lte=window_end,
-            ).first()
+            ).exclude(waiting).first()
             if post_to_queue is None:
                 continue
             post_to_queue.status = ScheduledPost.Status.QUEUED
@@ -136,7 +146,7 @@ def upload_to_social_network(self, post_id):
     """
     from apps.integrations import social
     from apps.integrations.social import errors as codes
-    from apps.videos.services.scheduled_posts import LONGEST_RETRY_COUNTDOWN
+    from apps.videos.services.scheduled_posts import LONGEST_RETRY_COUNTDOWN, waits_for_ai_text
     from apps.videos.services.seo_engine import compose_caption
     from apps.videos.services.storage_service import CloudflareR2Manager
 
@@ -187,6 +197,16 @@ def upload_to_social_network(self, post_id):
                 # queues it again, its AI text failed): a late copy never publishes it.
                 logger.warning("publish.skipped post_id=%s status=%s", post_id, post.status)
                 return "Skipped"
+            if post.status == ScheduledPost.Status.QUEUED and waits_for_ai_text(post):
+                # Queued while its AI text is on its way (a new text asked for after it was queued, or a
+                # dispatcher of an earlier release). Sent now it would go out with no text, and the text
+                # would be thrown away. Back to SCHEDULED, untouched otherwise: the dispatcher queues it
+                # again when the text lands or fails (dispatch_after_ai_text), or once the request passes
+                # seo_request_window(). A PROCESSING post is not held: its AI text never lands.
+                post.status = ScheduledPost.Status.SCHEDULED
+                post.save(update_fields=['status', 'updated_at'])
+                logger.info("publish.waiting_for_ai_text post_id=%s", post_id)
+                return "Waiting for AI text"
 
             clip = post.video_clip
             project = clip.project
@@ -386,7 +406,8 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
                 return "SEO Busy"
             post.refresh_from_db()
             if post.status in _SEO_FROZEN_STATUSES:
-                # Publishing started or finished: its caption is final.
+                # Publishing started or finished: its caption is final, and no text is on its way.
+                _end_seo_request(post_id)
                 logger.info("seo.skipped post_id=%s reason=%s", post_id, post.status)
                 return "SEO Skipped"
             if not regenerate and post.generated_caption and post.generated_hashtags:
@@ -459,17 +480,29 @@ def _fail_seo_post(post_id, code):
     status too: it does not need the AI's. Either way the API request is over
     (`seo_requested_at`).
     """
+    from apps.videos.services.scheduled_posts import dispatch_after_ai_text
+
     posts = ScheduledPost.objects.filter(id=post_id).exclude(status__in=_SEO_FROZEN_STATUSES)
     if posts.filter(generated_caption__gt='', generated_hashtags__isnull=False).exists():
         logger.warning("seo.regenerate_failed post_id=%s code=%s", post_id, code)
         posts.update(seo_requested_at=None)
-        return
-    keeps = Q(status=ScheduledPost.Status.DRAFT) | Q(caption__gt='')
-    posts.update(
-        status=Case(When(keeps, then=F('status')), default=Value(ScheduledPost.Status.FAILED)),
-        error_log=code,
-        seo_requested_at=None,
-    )
+    else:
+        keeps = Q(status=ScheduledPost.Status.DRAFT) | Q(caption__gt='')
+        posts.update(
+            status=Case(When(keeps, then=F('status')), default=Value(ScheduledPost.Status.FAILED)),
+            error_log=code,
+            seo_requested_at=None,
+        )
+    # A post that waited for the text and still goes out (its earlier text) does not wait for the beat.
+    dispatch_after_ai_text(post_id)
+
+
+def _end_seo_request(post_id):
+    """
+    No text is coming for a post that is publishing or out: its request ends, so a retry of that
+    post (back to SCHEDULED) does not wait for it (scheduled_posts.waits_for_ai_text).
+    """
+    ScheduledPost.objects.filter(id=post_id, status__in=_SEO_FROZEN_STATUSES).update(seo_requested_at=None)
 
 
 def _recover_seo_failed_post(post_id):
@@ -553,6 +586,7 @@ def _seo_pending_clear(post_id):
 def _generate_post_metadata(task, post, capacity_waited_s, regenerate=False):
     """Generates (or reuses the pending generation), moderates the output and stores it."""
     from apps.core.security import AI_Security_Shield, UnsafeContentError
+    from apps.videos.services.scheduled_posts import dispatch_after_ai_text
     from apps.videos.services.seo_engine import SocialMetadata
 
     pending = _seo_pending_get(post.id)
@@ -589,11 +623,14 @@ def _generate_post_metadata(task, post, capacity_waited_s, regenerate=False):
     if not stored:
         # Publishing started while this run generated: its caption is final.
         _seo_pending_clear(post.id)
+        _end_seo_request(post.id)
         logger.info("seo.skipped post_id=%s reason=publishing", post.id)
         return "SEO Skipped"
     _recover_seo_failed_post(post.id)
     _seo_pending_clear(post.id)
     logger.info("seo.persisted post_id=%s hashtags=%d", post.id, len(metadata.hashtags))
+    # A post that waited for this text to go out now (waits_for_ai_text) does not wait for the beat.
+    dispatch_after_ai_text(post.id)
     return "SEO Success"
 
 
