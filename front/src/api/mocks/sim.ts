@@ -661,9 +661,12 @@ const SEO_VARIANTS: Array<{ caption: (title: string) => string; hashtags: string
 
 function tickPosts(db: MockDb, now: number): void {
   for (const post of db.posts) {
-    // The beat: a scheduled post whose time arrived goes to the queue. "Publish now" is one of them too
-    // (the backend leaves it SCHEDULED for dispatch_scheduled_posts_batch): it keeps its clock and its fate.
-    if (post.status === 'SCHEDULED' && new Date(post.publish_at).getTime() <= now) {
+    // The dispatcher: a scheduled post whose time arrived goes to the queue. "Publish now" is one of them too
+    // (the backend leaves it SCHEDULED and runs dispatch_scheduled_posts_batch right after the request): it keeps
+    // its clock and its fate. A post with no caption of its own waits for its AI text (waits_for_ai_text): it goes
+    // on the tick after the text lands.
+    const waitsForText = post.seo_status === 'pending' && (!post.caption || post.caption === post.generated_caption);
+    if (post.status === 'SCHEDULED' && new Date(post.publish_at).getTime() <= now && !waitsForText) {
       post.status = 'QUEUED';
       post._sim = { ...post._sim, startedAt: post._sim?.startedAt ?? now };
     }

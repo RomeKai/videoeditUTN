@@ -79,6 +79,21 @@ describe('contrato de publicar: borradores y texto con IA', () => {
     expect((await apiCall(social.updatePost, { params: { id: third.id }, body: { caption: 'Solo texto' } })).status).toBe('DRAFT');
   });
 
+  it('«publicar ahora» sin texto propio espera el texto con IA, como el backend, y sale con él', async () => {
+    const tiktok = { privacy_level: 'SELF_ONLY', allow_comment: false, allow_duet: false, allow_stitch: false, brand_organic: false, branded_content: false } as const;
+    const post = await apiCall(social.createPost, { body: { video_clip: CLIPS.third, platform: 'TIKTOK', tiktok } });
+    expect([post.status, post.seo_status, post.caption]).toEqual(['SCHEDULED', 'pending', '']);
+    advance(0);
+    expect((await apiCall(social.getPost, { params: { id: post.id } })).status).toBe('SCHEDULED');
+
+    advance(3000); // the text lands
+    advance(0); // and the next tick queues it
+    const out = await apiCall(social.getPost, { params: { id: post.id } });
+    expect(out.seo_status).toBe('ready');
+    expect(out.status).not.toBe('SCHEDULED');
+    expect(out.caption).toBe(out.generated_caption);
+  });
+
   it('regenerar trae un texto distinto y pisa el que estaba', async () => {
     const draft = await apiCall(social.createPost, { body: { video_clip: CLIPS.first, platform: 'INSTAGRAM_REELS', draft: true } });
     advance(3000);

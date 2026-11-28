@@ -82,10 +82,14 @@ def account_body(account):
 
 
 def _provider_failure(exc, network=None):
-    """503 with a code, never the provider's message (it is not in the exception either)."""
+    """
+    502 with a code, never the provider's message (it is not in the exception either). Not a 503:
+    503 is kept for OneCreator's own maintenance (page K5), and older builds of the web app read
+    any 503 so and showed K5 for a minute.
+    """
     logger.warning("social.request_failed code=%s detail=%s", exc.code, exc.detail)
     message = PROVIDER_FAILED.format(network=network) if network else READ_FAILED
-    return Response({'error': message, 'code': exc.code}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    return Response({'error': message, 'code': exc.code}, status=status.HTTP_502_BAD_GATEWAY)
 
 
 class _SocialAccountsBase(SpanishThrottleMixin, APIView):
@@ -110,7 +114,7 @@ SOCIAL_ACCOUNT = inline_serializer('SocialAccount', {
 
 class SocialAccountListView(_SocialAccountsBase):
     @extend_schema(
-        responses={200: SOCIAL_ACCOUNT, 503: OpenApiResponse(description='El proveedor no respondió: `{error, code}`.')},
+        responses={200: SOCIAL_ACCOUNT, 502: OpenApiResponse(description='El proveedor no respondió: `{error, code}`.')},
         description='Una entrada por red (TikTok, Instagram Reels, YouTube Shorts) del espacio activo. Cualquier miembro.',
     )
     def get(self, request):
@@ -156,7 +160,7 @@ class SocialAccountConnectView(_SocialAccountsBase):
                 '`{error, code}`: no queda lugar para más perfiles (`social_profiles_limit`) o el perfil del espacio '
                 'quedó a medio crear en el proveedor (`profile_title_taken`): lo resuelve soporte.'
             )),
-            503: OpenApiResponse(description='El proveedor no respondió: `{error, code}`.'),
+            502: OpenApiResponse(description='El proveedor no respondió: `{error, code}`.'),
         },
         description=(
             'La URL de la página del proveedor para autorizar la red, que la web abre en una ventana aparte. '
@@ -193,7 +197,7 @@ class SocialAccountDetailView(_SocialAccountsBase):
             204: None,
             403: OpenApiResponse(description='El rol no desconecta redes: `{detail}`.'),
             404: OpenApiResponse(description='No es una de las redes.'),
-            503: OpenApiResponse(description='El proveedor no respondió: `{error, code}`; nada cambió.'),
+            502: OpenApiResponse(description='El proveedor no respondió: `{error, code}`; nada cambió.'),
         },
         description=(
             'Desconecta la red en el proveedor. Las publicaciones programadas o en cola en esa red quedan '

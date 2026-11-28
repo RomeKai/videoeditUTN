@@ -9,7 +9,8 @@ Reads: list and detail. Writes (Dueño, Admin and Editor: `post.publish`):
 create one post or a batch, edit, cancel, retry and regenerate the AI text.
 The rules, and how each write keeps out of the publisher's way, are in
 services/scheduled_posts.py. No endpoint calls a social network: publishing is
-dispatch_scheduled_posts_batch's (Celery Beat).
+dispatch_scheduled_posts_batch's (Celery Beat, and one run after a write that
+leaves a post due now).
 """
 from django.db.models import Count
 from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
@@ -181,7 +182,7 @@ class ScheduledPostViewSet(SpanishThrottleMixin, ActiveWorkspaceMixin, mixins.Li
         description=(
             'Crea una publicación. Con `draft: true` queda `DRAFT` (no publica nada y, si el proyecto pidió SEO, '
             'genera el texto con IA). Si no, queda `SCHEDULED` con su `publish_at` (ahora si es `null`): '
-            'el beat la encola. Acepta `Idempotency-Key`.'
+            'la encola el despachador, enseguida si es para ahora. Acepta `Idempotency-Key`.'
         ),
     )
     def create(self, request, *args, **kwargs):

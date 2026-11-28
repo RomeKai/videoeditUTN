@@ -57,7 +57,7 @@ PENDING_CHANGED = {
     'error': "Mientras tanto cambió lo que estaba pendiente. No cancelamos nada: revisá cómo quedó y, si querés, probá de nuevo.",
     'code': 'pending_changed',
 }
-# 501 and not 503: the web app reads any 503 as maintenance (K5).
+# 501 and not 503: 503 is kept for maintenance (K5), and older builds of the web app read any 503 so.
 PAYMENTS_UNAVAILABLE = {
     'error': "Los pagos todavía no están habilitados.",
     'code': 'payments_unavailable',

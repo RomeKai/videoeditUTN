@@ -3,8 +3,11 @@ Maintenance mode (page K5 of the web app).
 
 With MAINTENANCE_MODE=True in the environment, `GET /api/v1/status/` says so
 (with the window of MAINTENANCE_STARTS_AT and MAINTENANCE_ENDS_AT, ISO 8601,
-when both are set) and every other `/api/` request answers 503: the web app
-shows K5 on any 503 until the API answers normally again. The admin keeps
+when both are set) and every other `/api/` request answers 503 with only
+`{detail}`: the web app shows K5 on a 503 without `code` or `error` (this
+one) until the API answers normally again. Endpoints keep 503 out of their
+own errors (502, 501): older builds of the web app read any 503 as
+maintenance. The admin keeps
 working, and so do the paths of MAINTENANCE_EXEMPT_PATHS (webhooks, health
 checks).
 """

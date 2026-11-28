@@ -946,7 +946,7 @@ export function PublishPanel({ clipIds, platforms: initialPlatforms, onClose }: 
                   </>
                 ) : (
                   <p className={styles.hint}>
-                    {many ? `Los ${clips.length} clips salen` : 'Sale'} apenas confirmás: {selected.length > 1 ? 'cada red lo publica' : 'la red lo publica'} en unos segundos.
+                    {many ? `Los ${clips.length} clips salen` : 'Sale'} apenas confirmás: {selected.length > 1 ? 'cada red' : 'la red'} puede tardar unos minutos en {many ? 'mostrarlos' : 'mostrarlo'}.
                   </p>
                 )}
                 {many && when === 'later' ? (

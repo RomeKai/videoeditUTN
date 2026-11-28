@@ -12,8 +12,10 @@ tables makes the migration fail fast instead of queueing every request behind it
 
 Before the unique constraint, rows that share a provider profile (two
 workspaces with the same legacy ayrshare_profile_key: each one could publish
-to the other's accounts) keep it only in the oldest row; the others lose their
-ref and connect again.
+to the other's accounts) keep it only in the row of the oldest workspace (its
+created_at, then its id); the others lose their ref and connect again. Not the
+row's own created_at: 0002 made the rows in one go, in no given order, and
+two of them can share an instant, so the choice could change between runs.
 """
 import django.db.models.deletion
 from django.db import migrations, models
@@ -46,7 +48,8 @@ def keep_one_row_per_profile(apps, schema_editor):
     SocialProfile = apps.get_model('integrations', 'SocialProfile')
     seen, cleared = set(), 0
     for pk, provider, ref in (
-        SocialProfile.objects.exclude(provider_ref='').order_by('created_at', 'pk')
+        SocialProfile.objects.exclude(provider_ref='')
+        .order_by('workspace__created_at', 'workspace_id', 'created_at', 'pk')
         .values_list('pk', 'provider', 'provider_ref').iterator()
     ):
         if (provider, ref) in seen:

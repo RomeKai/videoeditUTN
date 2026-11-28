@@ -1,10 +1,11 @@
 import logging
 import os
+from urllib.parse import urlsplit
 
 from django.core.exceptions import ImproperlyConfigured
 
 from .base import *  # noqa: F403
-from .base import PAYMENTS_ALLOW_SIMULATED, PAYMENTS_PROVIDER, REST_FRAMEWORK, env
+from .base import AYRSHARE_BASE_URL, PAYMENTS_ALLOW_SIMULATED, PAYMENTS_PROVIDER, REST_FRAMEWORK, env
 
 # --- MODO PRODUCCIÓN ---
 # ¡CRÍTICO! Nunca True en producción, o te pueden robar las claves.
@@ -63,6 +64,17 @@ if PAYMENTS_PROVIDER == 'simulated':
         )
     logging.getLogger('backend.settings').warning(
         'payments.simulated_provider_on PAYMENTS_ALLOW_SIMULATED is set: payments are approved without charging'
+    )
+
+# --- REDES (publicación) ---
+# Every call to Ayrshare carries AYRSHARE_API_KEY and a workspace's Profile-Key: never over plain
+# http. Another host (a stand-in for a rehearsal) has to be https too; http needs DEBUG, which
+# production never has (backend.settings.dev).
+_ayrshare = urlsplit(AYRSHARE_BASE_URL)
+if _ayrshare.scheme != 'https' or not _ayrshare.hostname:
+    raise ImproperlyConfigured(
+        'AYRSHARE_BASE_URL must be an https URL in production (by default https://api.ayrshare.com/api); '
+        'http is only for a local stand-in with DEBUG.'
     )
 
 # --- SEGURIDAD (Hardening) ---

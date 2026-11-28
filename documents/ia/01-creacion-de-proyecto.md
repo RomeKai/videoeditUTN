@@ -88,7 +88,7 @@ El esquema OpenAPI declara el header en cada operación de una vista con `Worksp
 |------|-----------|
 | Kit de otro workspace | 404 |
 | Lector | 403 `{detail}` |
-| Falla la copia de un archivo (o el archivo original no está) | 502 `{"error", "code": "brand_kit_copy_failed"}`. Se borran las copias ya hechas y no se crea la fila. La limpieza nunca borra un nombre que usa el kit original. No es 503: la web lee cualquier 503 como mantenimiento |
+| Falla la copia de un archivo (o el archivo original no está) | 502 `{"error", "code": "brand_kit_copy_failed"}`. Se borran las copias ya hechas y no se crea la fila. La limpieza nunca borra un nombre que usa el kit original. No es 503: el 503 queda para el mantenimiento (K5) |
 
 Los dos kits no comparten archivos: borrar o reemplazar los de uno no toca los del otro. Borrar un kit no borra sus archivos del storage (igual que antes).
 
