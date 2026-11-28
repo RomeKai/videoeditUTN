@@ -5,8 +5,10 @@ cancel, retry, and ask the AI for a new text.
 
 None of them talks to a social network. A post that has to go out is left
 SCHEDULED with its `publish_at` (now, for "publish now"), and
-dispatch_scheduled_posts_batch (Celery Beat, every 5 minutes) queues it, as it
-does with every scheduled post. Publishing stays in tasks/social.py.
+dispatch_scheduled_posts_batch queues it, as it does with every scheduled post.
+Celery Beat runs it every 5 minutes; a write that leaves a post due now also
+asks for one run after its commit (dispatch_if_due), so "publish now" does not
+wait for the beat. Publishing stays in tasks/social.py.
 
 Races with the publisher. The dispatcher and upload_to_social_network change a
 post under its row lock (`select_for_update`) and check its status again. Every
@@ -20,8 +22,11 @@ or queued twice:
   then finds no post and ends ("Post Deleted"). PROCESSING and PUBLISHED are
   409.
 - Retry: FAILED, or PROCESSING stuck for POST_STUCK_AFTER with the
-  publishing lock free. It goes back to SCHEDULED for now, so the beat queues
-  it: a second retry finds it SCHEDULED and is a 409.
+  publishing lock free. It goes back to SCHEDULED for now, so the dispatcher
+  queues it: a second retry finds it SCHEDULED (or QUEUED) and is a 409.
+- Dispatch after the commit: the request only asks for a run of the
+  dispatcher, which locks and checks each post again like the beat's run. Two
+  runs at once (two requests, or a request and the beat) queue a post once.
 
 Lock order: project, clip, post (the same as the renders in views_clips), and
 only the post for the writes that do not need the clip. The AI text budget of
@@ -484,6 +489,38 @@ def _lock_post(workspace, post_id, with_clip):
     return post
 
 
+# --- Publishing now ---
+
+def _queue_dispatch():
+    """
+    One run of dispatch_scheduled_posts_batch, which queues the post as the
+    beat's run would. A broker that does not take it never fails the request:
+    the post stays SCHEDULED and the next beat run queues it.
+    """
+    from apps.videos.tasks import dispatch_scheduled_posts_batch
+
+    try:
+        dispatch_scheduled_posts_batch.delay()
+    except Exception as exc:
+        logger.warning("posts.dispatch_not_queued error=%s", type(exc).__name__)
+        return
+    logger.info("posts.dispatch_queued")
+
+
+def dispatch_if_due(posts, now):
+    """
+    Call inside the write's transaction. When one of ``posts`` is SCHEDULED
+    for now (`publish_at` no later than NOW_TOLERANCE from ``now``, what _when
+    calls "now"), the dispatcher runs once after the commit: "publish now"
+    and a retry go out without waiting for the beat (up to 5 minutes). One run
+    per request, however many posts. The dispatcher locks each post and checks
+    its status and window again, so a run of another request or of the beat at
+    the same time never queues it twice. Nothing runs if the transaction rolls back.
+    """
+    if any(post.status == Status.SCHEDULED and post.publish_at <= now + NOW_TOLERANCE for post in posts):
+        transaction.on_commit(_queue_dispatch)
+
+
 # --- Create ---
 
 def create_posts(workspace, items, *, key=None, print_=None, many=False):
@@ -585,6 +622,7 @@ def create_posts(workspace, items, *, key=None, print_=None, many=False):
         if key:
             claim.post_ids = [str(post.pk) for post in posts]
             claim.save(update_fields=['post_ids'])
+        dispatch_if_due(posts, now)
     return posts
 
 
@@ -645,6 +683,7 @@ def update_post(workspace, post_id, data):
         post.save(update_fields=fields)
         if edited:
             post.refresh_from_db(fields=['text_edited_at'])
+        dispatch_if_due([post], now)
     logger.info("posts.updated post_id=%s from=%s to=%s moved=%s", post.pk, was, post.status, moves)
     return post
 
@@ -680,10 +719,11 @@ def cancel_post(workspace, post_id):
 def retry_post(workspace, post_id):
     """
     A failed post, or one stuck in PROCESSING (is_stuck, with its publishing
-    lock free), goes back to SCHEDULED for now: the beat queues it. A post
-    whose AI text failed never went out: it goes back to DRAFT, with its
-    failure, for the user to write the text or ask for it again (ADR-013:
-    a post is never re-scheduled on its own).
+    lock free), goes back to SCHEDULED for now: the dispatcher queues it
+    after the commit (dispatch_if_due). A post whose AI text failed never
+    went out: it goes back to DRAFT, with its failure, for the user to write
+    the text or ask for it again (ADR-013: a post is never re-scheduled on
+    its own).
 
     Publishing again gets a new idempotency key (`publish_key_version`, and
     `publish_key_unclear` cleared): the provider refuses a used key forever,
@@ -718,6 +758,7 @@ def retry_post(workspace, post_id):
                 'status', 'publish_at', 'error_log', 'publish_key_version', 'publish_key_unclear', 'updated_at',
             ])
             post.refresh_from_db(fields=['publish_key_version'])
+        dispatch_if_due([post], now)
     logger.info("posts.retried post_id=%s from=%s to=%s", post.pk, was, post.status)
     return post
 

@@ -64,6 +64,8 @@ describe('E1 · Publicar', () => {
   it('no publica hasta elegir la privacidad de TikTok; después sale en las dos redes', async () => {
     const { panel, onClose } = await openPanel();
     expect(publishButton()).toBeDisabled();
+    // The backend queues it right after the request; the network may still take a while to show it.
+    expect(within(panel).getByText('Sale apenas confirmás: cada red puede tardar unos minutos en mostrarlo.')).toBeInTheDocument();
     expect(within(panel).getByText('Elegí la privacidad de TikTok')).toBeInTheDocument();
     expect(within(panel).getByLabelText('Requisitos de TikTok')).toHaveTextContent('3 de 4 requisitos · falta elegir quién puede ver el video');
     expect(within(panel).getByRole('tab', { name: /TikTok/ })).toHaveTextContent('Falta 1');

@@ -636,7 +636,9 @@ CELERY_BEAT_SCHEDULE = {
     },
     # DIST-03: SCHEDULED posts due in the next hour (or already overdue) go to the
     # worker with their publish time as ETA. Needs one beat process (docker-compose
-    # `beat`); the task is idempotent, so a second one cannot publish twice.
+    # `beat`); the task is idempotent, so a second one cannot publish twice. A post
+    # due now does not wait for it: the write that left it so runs the task once
+    # (services/scheduled_posts.dispatch_if_due), and this run is the backstop.
     'dispatch-scheduled-posts': {
         'task': 'apps.videos.tasks.dispatch_scheduled_posts_batch',
         'schedule': 5 * 60,

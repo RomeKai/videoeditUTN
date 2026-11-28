@@ -80,7 +80,10 @@ def dispatch_scheduled_posts_batch():
     """
     Orchestrator: dispatches the SCHEDULED posts due within the next hour, and
     those already overdue (the beat or the worker was down), which go out at once.
-    Runs every 5 minutes via Celery Beat (CELERY_BEAT_SCHEDULE).
+    Runs every 5 minutes via Celery Beat (CELERY_BEAT_SCHEDULE), and once after
+    each write of the posts API that leaves a post due now
+    (services/scheduled_posts.dispatch_if_due). Runs at the same time are safe:
+    each post is locked and checked again before it is queued.
     """
     now = timezone.now()
     window_end = now + timedelta(hours=1)

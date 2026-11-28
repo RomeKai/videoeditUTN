@@ -1,6 +1,6 @@
 # SEO y publicación social
 
-Este documento cubre la vida de una publicación (`ScheduledPost`): cómo la crea y la cambia la API, cómo se generan su caption y sus hashtags con IA (`process_video_seo`, [ADR-013](../adrs/013-ai-social-metadata.md)) y cómo se publica en TikTok, Instagram Reels o YouTube Shorts a través del proveedor de publicación del espacio (`upload_to_social_network` y la capa de proveedores `apps.integrations.social`, hoy con Ayrshare). La generación corre una vez por publicación, apenas se crea el `ScheduledPost`, y solo si el proyecto pagó el adicional de SEO; "Regenerar" la vuelve a pedir. La publicación corre cuando `dispatch_scheduled_posts_batch` encuentra posts `SCHEDULED` cuya `publish_at` ya llegó o cae dentro de la próxima hora. Ningún endpoint llama a la red.
+Este documento cubre la vida de una publicación (`ScheduledPost`): cómo la crea y la cambia la API, cómo se generan su caption y sus hashtags con IA (`process_video_seo`, [ADR-013](../adrs/013-ai-social-metadata.md)) y cómo se publica en TikTok, Instagram Reels o YouTube Shorts a través del proveedor de publicación del espacio (`upload_to_social_network` y la capa de proveedores `apps.integrations.social`, hoy con Ayrshare). La generación corre una vez por publicación, apenas se crea el `ScheduledPost`, y solo si el proyecto pagó el adicional de SEO; "Regenerar" la vuelve a pedir. La publicación corre cuando `dispatch_scheduled_posts_batch` encuentra posts `SCHEDULED` cuya `publish_at` ya llegó o cae dentro de la próxima hora. Lo corre el beat cada 5 minutos, y además una vez después de cada escritura de la API que deja un post para ahora. Ningún endpoint llama a la red.
 
 ## Componentes
 
@@ -9,7 +9,7 @@ Este documento cubre la vida de una publicación (`ScheduledPost`): cómo la cre
 | `ScheduledPost` (`Status`, `Platform`) | [models.py](../../back/apps/videos/models.py) | Estado de la publicación, `generated_caption`, `generated_hashtags`, `error_log`, `retry_count`, el texto del usuario (`caption`, `hashtags`, `tiktok`), `seo_requested_at`, lo que dejó el proveedor (`post_url`, `external_id`) y la versión de la clave de idempotencia (`publish_key_version`). `caption_to_publish` y `hashtags_to_publish` son la regla del texto que sale, la misma para la API y el publicador. |
 | `PostIdempotencyKey` | [models.py](../../back/apps/videos/models.py) | Qué publicaciones creó un pedido con `Idempotency-Key`, por workspace. |
 | `ScheduledPostViewSet` | [views_social.py](../../back/apps/videos/views_social.py) | `/api/v1/scheduled-posts/`: listar y ver, crear (una o en lote), editar, cancelar, reintentar y regenerar el texto. |
-| `create_posts`, `update_post`, `cancel_post`, `retry_post`, `regenerate_seo` | [services/scheduled_posts.py](../../back/apps/videos/services/scheduled_posts.py) | Las reglas de cada escritura: estados, plan, cuenta, locks y la regla de un post trabado. |
+| `create_posts`, `update_post`, `cancel_post`, `retry_post`, `regenerate_seo`, `dispatch_if_due` | [services/scheduled_posts.py](../../back/apps/videos/services/scheduled_posts.py) | Las reglas de cada escritura: estados, plan, cuenta, locks y la regla de un post trabado. `dispatch_if_due` corre el despachador después del commit cuando queda un post para ahora. |
 | `ScheduledPostSerializer`, `CreatePostSerializer`, `UpdatePostSerializer` | [serializers_social.py](../../back/apps/videos/serializers_social.py) | Lo que muestra la API (`seo_status`, `error_code`, `error_message` derivados) y lo que acepta. |
 | `generate_seo_for_new_post`, `seo_requested`, `queue_post_seo` | [signals.py](../../back/apps/videos/signals.py) | Receptor de `post_save`: encola la generación después del commit, solo con SEO contratado. |
 | `VideosConfig.ready` | [apps.py](../../back/apps/videos/apps.py) | Importa `signals` (y `checks`) para registrar el receptor. |
@@ -18,7 +18,7 @@ Este documento cubre la vida de una publicación (`ScheduledPost`): cómo la cre
 | `SEOOptimizationService`, `SocialMetadata`, `SocialMetadataRequest` | [services/seo_engine.py](../../back/apps/videos/services/seo_engine.py) | Llamada LiteLLM (primario y un fallback), prompt y contrato de salida. |
 | `clip_transcript`, `niche_slug`, `caption_limit`, `compose_caption` | [services/seo_engine.py](../../back/apps/videos/services/seo_engine.py) | Helpers puros: texto del clip, nicho como slug, límite por plataforma, caption final. |
 | `AI_Security_Shield.check_content_safety` | [core/security.py](../../back/apps/core/security.py) | Moderación de la entrada y de la salida ([ADR-011](../adrs/011-content-moderation.md)). |
-| `dispatch_scheduled_posts_batch` | [tasks/social.py](../../back/apps/videos/tasks/social.py) | Pasa a `QUEUED` los posts de la próxima hora y encola la publicación con ETA. |
+| `dispatch_scheduled_posts_batch` | [tasks/social.py](../../back/apps/videos/tasks/social.py) | Pasa a `QUEUED` los posts de la próxima hora y encola la publicación con ETA. Lo corren el beat y `dispatch_if_due`. |
 | `upload_to_social_network` | [tasks/social.py](../../back/apps/videos/tasks/social.py) | Publica a través del proveedor del espacio, con backoff ante errores reintentables y un código en `error_log` ante los demás. |
 | `SocialProfile` | [integrations/models.py](../../back/apps/integrations/models.py) | El perfil del espacio en el proveedor: `provider` (el que publica sus posts) y `provider_ref` (para Ayrshare, la Profile-Key, una credencial). Reemplaza a `Workspace.ayrshare_profile_key`, que queda deprecada. |
 | `SocialProvider`, `PublishRequest`, `PublishResult`, `TikTokOptions`, `idempotency_key` | [integrations/social/base.py](../../back/apps/integrations/social/base.py) | La interfaz de un proveedor, en nuestros términos (redes, opciones de TikTok) y los timeouts de publicar. |
@@ -196,7 +196,7 @@ Hueco 10 del mapa. `views_social_accounts.py` atiende `/api/v1/social-accounts/`
 
 ## Flujo: la API de publicaciones
 
-`ScheduledPostViewSet` ([views_social.py](../../back/apps/videos/views_social.py)) atiende `/api/v1/scheduled-posts/` sobre el workspace activo (`X-Workspace-Id`): un post de otro workspace es 404 y un clip de otro workspace es 400 (`"El clip no existe."`). Escribir pide `post.publish` (Dueño, Admin y Editor; un Lector recibe 403). Las reglas están en [services/scheduled_posts.py](../../back/apps/videos/services/scheduled_posts.py), y ninguna llama al proveedor de publicación: lo que tiene que salir queda `SCHEDULED` y lo encola el beat.
+`ScheduledPostViewSet` ([views_social.py](../../back/apps/videos/views_social.py)) atiende `/api/v1/scheduled-posts/` sobre el workspace activo (`X-Workspace-Id`): un post de otro workspace es 404 y un clip de otro workspace es 400 (`"El clip no existe."`). Escribir pide `post.publish` (Dueño, Admin y Editor; un Lector recibe 403). Las reglas están en [services/scheduled_posts.py](../../back/apps/videos/services/scheduled_posts.py), y ninguna llama al proveedor de publicación: lo que tiene que salir queda `SCHEDULED` y lo encola `dispatch_scheduled_posts_batch` (ver el punto 8).
 
 | Endpoint | Función | Qué hace |
 |----------|---------|----------|
@@ -222,12 +222,17 @@ Hueco 10 del mapa. `views_social_accounts.py` atiende `/api/v1/social-accounts/`
    - pedido (`queue_post_seo`) si queda lugar en `seo_budget`, contado bajo un advisory lock del espacio (`lock_ai_budget`: `pg_advisory_xact_lock` con un namespace propio), nunca bajo la fila del workspace: un render pago o un re-dispatch bloquean un proyecto y después su workspace, y borrar un workspace bloquea sus proyectos y después el workspace, así que nada puede bloquear la fila del workspace y después un proyecto. El límite es `AI_SEO_MAX_PER_WORKSPACE_PER_HOUR` (120) menos los pedidos en camino de la última hora y las filas `AIUsageRecord` de etapa `seo` (rol `primary`) de la última hora, que quedan aunque el post se borre;
    - sin lugar, el post se crea igual con `error_log` `seo_rate_limited` (`seo_status: "failed"`).
    "Regenerar" usa el mismo límite (429 `seo_rate_limited`) y además `THROTTLE_POST_SEO_REGENERATE` (30 por hora por usuario). Crear y `/bulk/` tienen `THROTTLE_POST_CREATE` (300 por hora por usuario, contando cada post del lote: `PostCreateThrottle`). Guardar el texto con `PATCH` escribe `text_edited_at` y deja `seo_requested_at` como está (el pedido sigue contando en `seo_budget`): `_generate_post_metadata` solo reemplaza el texto del usuario si el "Regenerar" se pidió después de esa edición. Las dos marcas salen del reloj de la base (`Now()`, que en PostgreSQL es `STATEMENT_TIMESTAMP()`) en una sentencia escrita con el lock de la fila del post tomado, así siguen el orden en que los dos pedidos tuvieron el post. El advisory lock es de transacción (`pg_advisory_xact_lock`): se suelta al terminar el pedido, también si se rechazó.
+8. **Ahora, sin esperar al beat (`dispatch_if_due`).** Crear, `/bulk/`, `PATCH` y `retry` miran, dentro de su transacción, si dejaron algún post `SCHEDULED` para ahora (`publish_at` hasta `NOW_TOLERANCE` después del momento del pedido, lo mismo que `_when` llama «ahora»). Si es así, registran con `transaction.on_commit` una sola corrida de `dispatch_scheduled_posts_batch.delay()`, aunque el lote tenga 60 posts. Un borrador, una fecha más adelante o un reintento que vuelve a `DRAFT` no la piden, y un pedido que se deshace tampoco.
+   - El pedido no encola el post: solo pide la corrida. El despachador vuelve a tomar cada post con `select_for_update` y el mismo filtro, así que dos corridas a la vez (dos pedidos, o un pedido y el beat) lo encolan una sola vez (`DispatchAfterCommitRacesTests`).
+   - Si el broker no toma la corrida, el pedido responde igual: se loguea `posts.dispatch_not_queued` con la clase del error y el post sale en la próxima corrida del beat. El beat sigue siendo el respaldo.
+   - La respuesta suele decir `SCHEDULED`; dice `QUEUED` si el despachador ya lo tomó antes de que el pedido leyera el post de nuevo.
 
 ## Flujo: publicación
 
 ```mermaid
 sequenceDiagram
     participant BEAT as Celery Beat
+    participant API as Escritura de la API
     participant D as dispatch_scheduled_posts_batch
     participant DB as PostgreSQL
     participant W as upload_to_social_network
@@ -235,7 +240,11 @@ sequenceDiagram
     participant R2 as Cloudflare R2
     participant P as Proveedor (AyrshareProvider)
 
-    BEAT->>D: ejecución periódica
+    alt cada 5 minutos
+        BEAT->>D: ejecución periódica
+    else quedó un post para ahora
+        API->>D: delay después del commit (dispatch_if_due)
+    end
     D->>DB: SCHEDULED con publish_at hasta la próxima hora
     loop cada post
         D->>DB: select_for_update con el mismo filtro y SCHEDULED a QUEUED
@@ -262,7 +271,7 @@ sequenceDiagram
     W->>C: borra el lock
 ```
 
-1. **Disparo periódico.** `CELERY_BEAT_SCHEDULE` (`dispatch-scheduled-posts`) lo corre cada 5 minutos, con el servicio `beat` de `docker-compose.yml`.
+1. **Disparo.** `CELERY_BEAT_SCHEDULE` (`dispatch-scheduled-posts`) lo corre cada 5 minutos, con el servicio `beat` de `docker-compose.yml`. Una escritura de la API que deja un post para ahora lo corre una vez más después de su commit (`dispatch_if_due`, punto 8 de la API): «publicar ahora» y reintentar no esperan al beat, que queda de respaldo.
 2. **Ventana.** Toma posts `SCHEDULED` con `publish_at` hasta ahora + 1 h, los vencidos incluidos (un "publicar ahora" de la API es uno). Cada post se re-lee con `select_for_update` y el mismo filtro (`SCHEDULED` y `publish_at` dentro de la ventana): si ya no coincide (se canceló, se borró o se reprogramó después de la consulta) se saltea; si coincide, pasa a `QUEUED` y se encola `upload_to_social_network` con `eta=publish_at`.
 3. **Lock de publicación.** `caches['locks'].add(f"lock_post_publish_{post_id}", ..., PUBLISH_LOCK_TTL_SECONDS)` (600 s: el timeout de lectura de publicar, 300 s, más 300 s) en el alias `locks` de la caché de Django, que con `CACHE_REDIS_URL` es el Redis que comparten todos los workers: ahí `add` es un `SET NX` atómico ([07](07-capacidad-costos-y-operacion.md#cache-compartida)). Si ya existe, termina con `"Locked"`. Ese alias no ignora errores: si Redis no contesta, no publica sin lock. Loguea `publish.lock_unavailable` y reintenta con `self.retry` a 60, 120 y 240 s (`max_retries=3`); al agotarse, el post pasa a `FAILED` con `error_log` `Lock unavailable after N attempts: <clase>`, en vez de quedar `QUEUED` sin tarea (el despachador solo toma `SCHEDULED`). Se libera en el `finally`; si soltarlo falla, `publish.lock_release_failed` y lo libera el TTL. `PUBLISH_LOCK_TTL_SECONDS` también fija `POST_PROCESSING_WINDOW` del borrado del espacio.
 4. **Validación, bajo el lock de la fila.** Un post `PUBLISHED` termina (`"Already Published"`). Uno que no está `QUEUED` ni `PROCESSING` termina con `"Skipped"` y `publish.skipped`: es un mensaje viejo de un post que siguió su camino (el usuario lo reintentó y el beat lo encola de nuevo, o falló su texto con IA), y nunca lo publica. Sin `SocialProfile` con `provider_ref` el post queda `FAILED` con `account_not_connected`; en TikTok, sin `tiktok.privacy_level`, con `tiktok_options_missing`. En los dos casos se levanta `PostConfigurationError` después del commit (no se reintenta) y no se llama al proveedor.
@@ -369,7 +378,9 @@ Van primero en `error_log` (`<código>` o `<código> (<detalle>)`); `ScheduledPo
 | No se pudo guardar la generación pendiente | `seo.pending_not_saved`; el resultado se usa igual, pero un reintento de moderación volvería a pagar. | `_seo_pending_set` |
 | Post creado con `bulk_create` | No hay señal: no se genera nada hasta llamar a `queue_post_seo`. | `generate_seo_for_new_post` |
 | Broker caído al encolar | `seo.dispatch_failed`; el post queda sin caption. Se reintenta con la acción del admin. | `queue_post_seo` |
-| Post con `publish_at` ya pasado | Se despacha en la próxima corrida y sale enseguida (es el caso de "publicar ahora"). | `dispatch_scheduled_posts_batch` |
+| Post con `publish_at` ya pasado | Se despacha en la próxima corrida y sale enseguida. "Publicar ahora" y reintentar no esperan esa corrida: la escritura corre el despachador después de su commit. | `dispatch_scheduled_posts_batch`, `dispatch_if_due` |
+| Dos corridas del despachador a la vez (dos pedidos "ahora", o un pedido y el beat) | Cada post se encola una vez: la segunda corrida espera el lock de la fila, vuelve a mirar el filtro y lo saltea. | `dispatch_scheduled_posts_batch`, `test_scheduled_posts_concurrency.py` |
+| El broker no toma la corrida que pide una escritura | El pedido responde igual (`posts.dispatch_not_queued`) y el post sale en la próxima corrida del beat. | `dispatch_if_due` |
 | Se borra un post mientras el despachador recorre la ventana | Cada post se vuelve a leer bajo su lock con el mismo filtro (`SCHEDULED` y dentro de la ventana): uno que ya no está se saltea y la corrida sigue. Pasa con `cancel`, con el borrado de un clip y con el admin. | `dispatch_scheduled_posts_batch`, `test_scheduled_dispatch_races.py` |
 | Se reprograma un post mientras el despachador recorre la ventana | El mismo filtro bajo el lock lo saltea si su `publish_at` nueva quedó fuera de la ventana: sigue `SCHEDULED` y editable, y sale en la corrida que le toca, nunca encolado días antes con una ETA que pasa el `visibility_timeout`. | `dispatch_scheduled_posts_batch`, `test_scheduled_dispatch_races.py` |
 | Workspace sin `SocialProfile` (o sin `provider_ref`) | `FAILED` con `account_not_connected (no profile)` y `PostConfigurationError`, sin reintento ni llamada al proveedor. | `upload_to_social_network` |

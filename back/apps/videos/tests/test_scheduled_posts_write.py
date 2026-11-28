@@ -4,8 +4,9 @@ Gap 8: the writes of /api/v1/scheduled-posts/ (contract `social.createPost`,
 `regeneratePostSeo`).
 
 None of them calls a social network: a post that goes out is left SCHEDULED
-and dispatch_scheduled_posts_batch takes it. The races with the dispatcher and
-the worker are in test_scheduled_posts_concurrency.py.
+and dispatch_scheduled_posts_batch takes it (right after the commit when it is
+due now). The races with the dispatcher and the worker are in
+test_scheduled_posts_concurrency.py.
 """
 import uuid
 from datetime import timedelta
@@ -32,6 +33,7 @@ BULK = reverse("scheduled-post-bulk")
 DELAY = "apps.videos.tasks.process_video_seo.delay"
 APPLY_ASYNC = "apps.videos.tasks.process_video_seo.apply_async"
 UPLOAD = "apps.videos.tasks.upload_to_social_network.apply_async"
+DISPATCH_DELAY = "apps.videos.tasks.dispatch_scheduled_posts_batch.delay"
 SEND = PUBLISH
 TIKTOK = {"privacy_level": "SELF_ONLY"}
 
@@ -136,7 +138,7 @@ class CreateTests(PostsWriteHarness):
         self.assertIsNotNone(post.seo_requested_at)
         self.seo_delay.assert_called_once_with(str(post.pk))
 
-    def test_publish_now_leaves_it_scheduled_for_the_beat_without_calling_a_network(self):
+    def test_publish_now_leaves_it_scheduled_for_the_dispatcher_without_calling_a_network(self):
         before = timezone.now()
         response = self.create(publish_at=None, caption="Mirá esto")
 
@@ -583,7 +585,7 @@ class RetryTests(PostsWriteHarness):
     def stale(self, post, by=timedelta(minutes=1)):
         ScheduledPost.objects.filter(pk=post.pk).update(updated_at=timezone.now() - service.POST_STUCK_AFTER - by)
 
-    def test_a_failed_post_goes_back_to_the_beat_for_now(self):
+    def test_a_failed_post_goes_back_to_the_dispatcher_for_now(self):
         post = self.make_post(status=Status.FAILED, publish_at=timezone.now() - timedelta(hours=1),
                               error_log="Failed after 4 attempts: x", retry_count=4)
 
@@ -698,6 +700,77 @@ class RetryTests(PostsWriteHarness):
         bob = User.objects.create_user(username="bob", email="bob@test.com", password="pw")
         _, theirs = self.make_clip(bob.owned_workspaces.get(), "Suyo")
         self.assertEqual(self.post_action(self.make_post(clip=theirs, status=Status.FAILED), "retry").status_code, 404)
+
+
+class DispatchNowTests(PostsWriteHarness):
+    """
+    Ensayo 5: a write that leaves a post due now asks for one run of the dispatcher after its
+    commit (scheduled_posts.dispatch_if_due), so "publish now" does not wait up to 5 minutes for
+    the beat. The races of that run with the beat are in test_scheduled_posts_concurrency.py.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.dispatch = self._patch(DISPATCH_DELAY)
+
+    def committed(self, write):
+        with self.captureOnCommitCallbacks(execute=True):
+            response = write()
+        self.assertLess(response.status_code, 300, response.content)
+        return response
+
+    def test_publish_now_runs_the_dispatcher_once_after_the_commit(self):
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            self.create(caption="Ya")
+        self.dispatch.assert_not_called()  # not before the commit
+        for callback in callbacks:
+            callback()
+        self.dispatch.assert_called_once_with()
+
+    def test_one_run_for_a_batch(self):
+        _, second = self.make_clip(self.home, "Segundo")
+        posts = [{"video_clip": str(clip.pk), "platform": Platform.INSTAGRAM_REELS} for clip in (self.clip, second)]
+        posts.append({"video_clip": str(self.clip.pk), "platform": Platform.YOUTUBE_SHORTS, "publish_at": self.later.isoformat()})
+        self.committed(lambda: self.client.post(BULK, {"posts": posts}, format="json", **self.ws))
+        self.dispatch.assert_called_once_with()
+
+    def test_a_minute_of_clock_skew_is_now(self):
+        soon = timezone.now() + timedelta(seconds=30)
+        self.committed(lambda: self.create(publish_at=soon.isoformat()))
+        self.dispatch.assert_called_once_with()
+
+    def test_drafts_and_later_posts_wait(self):
+        self.committed(lambda: self.create(draft=True))
+        self.committed(lambda: self.create(platform=Platform.YOUTUBE_SHORTS, publish_at=self.later.isoformat()))
+        self.committed(lambda: self.patch_post(self.make_post(), publish_at=(self.later + timedelta(hours=1)).isoformat()))
+        self.dispatch.assert_not_called()
+
+    def test_sending_a_draft_now_and_a_retry(self):
+        draft = self.make_post(status=Status.DRAFT)
+        self.committed(lambda: self.patch_post(draft, publish_at=None))
+        self.dispatch.assert_called_once_with()
+        failed = self.make_post(status=Status.FAILED, platform=Platform.YOUTUBE_SHORTS, publish_at=timezone.now() - timedelta(hours=1))
+        self.committed(lambda: self.post_action(failed, "retry"))
+        self.assertEqual(self.dispatch.call_count, 2)
+
+    def test_a_retry_back_to_draft_queues_nothing(self):
+        failed = self.make_post(status=Status.FAILED, error_log="seo_no_clip_transcript")
+        response = self.committed(lambda: self.post_action(failed, "retry"))
+        self.assertEqual(response.json()["status"], "DRAFT")
+        self.dispatch.assert_not_called()
+
+    def test_a_broker_that_does_not_take_it_does_not_fail_the_request(self):
+        from kombu.exceptions import OperationalError
+
+        self.dispatch.side_effect = OperationalError("broker down")
+        with self.assertLogs("apps.videos.services.scheduled_posts", level="WARNING") as logs:
+            response = self.committed(lambda: self.create(caption="Ya"))
+
+        self.assertEqual((response.status_code, response.json()["status"]), (201, "SCHEDULED"))
+        # Still SCHEDULED: the next beat run queues it.
+        self.assertEqual(ScheduledPost.objects.get(pk=response.json()["id"]).status, Status.SCHEDULED)
+        self.assertIn("posts.dispatch_not_queued error=OperationalError", "\n".join(logs.output))
+        self.assertNotIn("broker down", "\n".join(logs.output))
 
 
 class RegenerateTests(PostsWriteHarness):

@@ -132,7 +132,8 @@ function checkText(db: MockDb, workspaceId: string, platform: Platform, caption:
 /**
  * Validates a batch and creates the posts, all or nothing, in the backend's order (create_posts): each post's
  * 400s (with `index` in a batch), then the plan (403) and the account (409). A post that goes out is left
- * `SCHEDULED` (for now, or its date) and the beat of the simulation queues it, as dispatch_scheduled_posts_batch does.
+ * `SCHEDULED` (for now, or its date) and the simulation queues it on its next tick, as dispatch_scheduled_posts_batch
+ * does (right after the request for a post due now; the beat for the others).
  */
 function createPosts(db: MockDb, workspace: MockWorkspace, inputs: CreatePostInput[], userId: string, now: number, many = false): MockPost[] {
   const at = (index: number) => (many ? index : undefined);
@@ -312,7 +313,7 @@ export const socialHandlers = [
     checkText(db, workspace.id, post.platform, caption, hashtags);
     const stamp = new Date(now).toISOString();
     if (body.publish_at !== undefined) {
-      // `null` (or a date within a minute) publishes now; a later date schedules. Either way it waits for the beat.
+      // `null` (or a date within a minute) publishes now; a later date schedules. Either way the dispatcher queues it.
       const at = body.publish_at === null ? now : new Date(body.publish_at).getTime();
       if (at < now - NOW_TOLERANCE_MS) throw invalid('publish_at', 'La fecha ya pasó.');
       const immediate = at <= now + NOW_TOLERANCE_MS;
@@ -383,7 +384,7 @@ export const socialHandlers = [
     if (post.platform === 'TIKTOK' && !post.tiktok) throw invalid('tiktok', TIKTOK_PRIVACY_MISSING);
     checkCrossposting(db, workspace, new Map([[post.video_clip, new Set([post.platform])]]), post.id);
     checkAccount(db, workspace.id, post.platform);
-    // Back to the beat, for now: the simulation queues it on its next tick.
+    // Back to SCHEDULED, for now: the simulation queues it on its next tick, as the backend's dispatcher does after the retry.
     post.status = 'SCHEDULED';
     post.publish_at = stamp;
     post.error_log = null;

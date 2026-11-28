@@ -430,7 +430,7 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
   it('publicaciones: crear, en lote, editar, publicar un borrador, reintentar, regenerar y la lista', () => {
     const draft = parse(ScheduledPost, real.posts_create_draft) as ScheduledPost;
     expect([draft.status, draft.seo_status, draft.caption]).toEqual(['DRAFT', 'pending', '']);
-    // "Publish now" waits for the beat: SCHEDULED, for the time it was asked.
+    // "Publish now" answers SCHEDULED, for the time it was asked: the dispatcher queues it after the request.
     const now = parse(createPost.response, real.posts_create_now) as ScheduledPost;
     expect([now.status, now.publish_at]).toEqual(['SCHEDULED', '2026-11-27T15:02:00Z']);
     const scheduled = parse(createPost.response, real.posts_create_scheduled) as ScheduledPost;
