@@ -271,7 +271,7 @@ def change_plan(workspace_id, plan_id, *, user, return_url, now=None):
 
             if paid:
                 # Checked before anything changes: without a provider nothing is paid and nothing moves.
-                provider = require_payment_provider()
+                provider = require_payment_provider(for_plan=True)
                 reused, replaced = _drop_pending_upgrade(workspace, REPLACED, keep_plan=target)
                 if reused is not None:
                     logger.info('subscription.upgrade_payment_reused workspace=%s payment=%s', workspace.pk, reused.pk)

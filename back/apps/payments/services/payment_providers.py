@@ -1,10 +1,8 @@
 """
 Payments providers: who takes the money of a Payment (services/payments.py).
 
-``settings.PAYMENTS_PROVIDER`` names the provider. Empty (the default, and
-production until a real one exists): ``get_payment_provider()`` is None and
-starting a payment answers 501 ``payments_unavailable``. Nothing is ever
-faked in that case.
+``settings.PAYMENTS_PROVIDER`` names the provider. If empty (the default),
+starting a payment answers 501 ``payments_unavailable``.
 
 ``simulated`` stands in for a real provider in development and demos: its
 checkout is the web app's test page (``/dev/checkout``), and that page
@@ -13,10 +11,8 @@ runs with DEBUG or with PAYMENTS_ALLOW_SIMULATED=True; production settings
 refuse it without that flag (backend/settings/prod.py). Without DEBUG only
 staff and PAYMENTS_SIMULATE_ALLOWED_EMAILS may settle a payment (``may_simulate``).
 
-A real provider (PAY-02) implements ``PaymentProvider.start_checkout`` and,
-when its webhook confirms or rejects a payment, calls
-``services.payments.settle_payment``. Settling is idempotent, so a webhook
-that arrives twice changes nothing the second time.
+Stripe opens one-time token checkouts. Its signed webhook uses the same
+idempotent settlement service as the simulated provider.
 """
 from dataclasses import dataclass
 from urllib.parse import quote, urlsplit
@@ -24,6 +20,7 @@ from urllib.parse import quote, urlsplit
 from django.conf import settings
 
 SIMULATED = 'simulated'
+STRIPE = 'stripe'
 
 
 class PaymentsUnavailable(Exception):
@@ -49,6 +46,7 @@ class PaymentProvider:
     """
 
     name = ''
+    supports_plan_payments = True
 
     def start_checkout(self, payment, return_url):
         """
@@ -97,13 +95,18 @@ def may_simulate(user):
 
 def get_payment_provider():
     """The configured provider, or None when there is none (or it is not allowed here)."""
+    if settings.PAYMENTS_PROVIDER == STRIPE:
+        from .stripe_service import StripeProvider, stripe_configured, valid_checkout_ttl
+
+        if stripe_configured() and valid_checkout_ttl():
+            return StripeProvider()
     if simulated_payments_allowed():
         return SimulatedProvider()
     return None
 
 
-def require_payment_provider():
+def require_payment_provider(*, for_plan=False):
     provider = get_payment_provider()
-    if provider is None:
+    if provider is None or (for_plan and not provider.supports_plan_payments):
         raise PaymentsUnavailable()
     return provider

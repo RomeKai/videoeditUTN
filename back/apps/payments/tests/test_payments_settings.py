@@ -66,7 +66,8 @@ def test_a_demo_runs_the_simulated_provider_in_production_only_when_it_asks_and_
     ({"PAYMENTS_PROVIDER": "simulated", "PAYMENTS_ALLOW_SIMULATED": False, "DEBUG": False}, None),
     ({"PAYMENTS_PROVIDER": "simulated", "PAYMENTS_ALLOW_SIMULATED": False, "DEBUG": True}, "simulated"),
     ({"PAYMENTS_PROVIDER": "simulated", "PAYMENTS_ALLOW_SIMULATED": True, "DEBUG": False}, "simulated"),
-    ({"PAYMENTS_PROVIDER": "stripe", "PAYMENTS_ALLOW_SIMULATED": True, "DEBUG": True}, None),
+    ({"PAYMENTS_PROVIDER": "stripe", "STRIPE_SECRET_KEY": "", "STRIPE_WEBHOOK_SECRET": ""}, None),
+    ({"PAYMENTS_PROVIDER": "stripe", "STRIPE_SECRET_KEY": "key", "STRIPE_WEBHOOK_SECRET": "signing"}, "stripe"),
 ])
 def test_which_provider_runs(overrides, expected):
     with override_settings(**overrides):
@@ -80,6 +81,16 @@ def test_an_unknown_provider_stops_the_checks():
         ids = [message.id for message in run_checks()]
 
     assert "payments.E001" in ids
+
+
+@override_settings(
+    PAYMENTS_PROVIDER="stripe", STRIPE_SECRET_KEY="", STRIPE_WEBHOOK_SECRET="", PAYMENTS_CHECKOUT_TTL_SECONDS=1800,
+)
+def test_stripe_requires_both_secrets_and_a_compatible_checkout_ttl():
+    ids = {message.id for message in run_checks()}
+
+    assert {"payments.E002", "payments.E003"} <= ids
+    assert get_payment_provider() is None
 
 
 def test_the_deploy_check_warns_about_the_simulated_provider():
