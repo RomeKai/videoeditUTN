@@ -1,8 +1,11 @@
 """SocialProfile's data migration: the Ayrshare keys that existed become profiles, and the old column stays."""
+from datetime import timedelta
+
 from django.core.management import call_command
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
+from django.utils import timezone
 
 from apps.integrations.models import SocialProfile
 from apps.users.models import User, Workspace
@@ -86,6 +89,41 @@ class NetworksPerWorkspaceMigrationTests(TransactionTestCase):
         refs = dict(SocialProfile.objects.values_list("workspace_id", "provider_ref"))
         # Each one could publish to the other's accounts: the newer row connects again.
         self.assertEqual(refs, {first.pk: "SAME", second.pk: "", alone.pk: "OWN"})
+
+    def shared_key(self, workspaces_at, profiles_at):
+        """
+        Two workspaces with one key, their rows made in the opposite order (as 0002 may: it reads
+        the workspaces in no given order). Returns (the workspace ids by id, the refs after 0003).
+        """
+        old_apps = _migrate(self.before)
+        OldUser = old_apps.get_model("users", "User")
+        OldWorkspace = old_apps.get_model("users", "Workspace")
+        OldProfile = old_apps.get_model("integrations", "SocialProfile")
+        owner = OldUser.objects.create(username="mismo", email="mismo@test.com", password="x")
+        low, high = sorted(OldWorkspace.objects.create(name=name, owner=owner).pk for name in ("Uno", "Dos"))
+        for pk, at in zip((low, high), workspaces_at):
+            OldWorkspace.objects.filter(pk=pk).update(created_at=at)
+        for pk, at in zip((high, low), profiles_at):  # the later id gets the lower row pk
+            row = OldProfile.objects.create(workspace_id=pk, provider="ayrshare", provider_ref="SAME")
+            OldProfile.objects.filter(pk=row.pk).update(created_at=at)
+
+        _migrate(self.after)
+
+        return (low, high), dict(SocialProfile.objects.values_list("workspace_id", "provider_ref"))
+
+    def test_workspaces_of_the_same_instant_keep_the_key_in_the_one_with_the_lower_id(self):
+        """Ensayo 5: rows 0002 made in one go share an instant: the row's own order changed between runs."""
+        instant = timezone.now() - timedelta(days=30)
+        (low, high), refs = self.shared_key(workspaces_at=(instant, instant), profiles_at=(instant, instant))
+        self.assertEqual(refs, {low: "SAME", high: ""})
+
+    def test_the_oldest_workspace_keeps_the_key_whatever_the_order_of_the_rows(self):
+        old = timezone.now() - timedelta(days=30)
+        (low, high), refs = self.shared_key(
+            workspaces_at=(old + timedelta(days=1), old), profiles_at=(old + timedelta(seconds=1), old),
+        )
+        # `high` is the older workspace, though its row is the newer one.
+        self.assertEqual(refs, {low: "", high: "SAME"})
 
     def test_the_workspace_foreign_key_is_not_dropped_and_the_lock_wait_is_short(self):
         if connection.vendor != "postgresql":
