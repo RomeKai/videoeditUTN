@@ -37,7 +37,8 @@ class Notification(models.Model):
     title = models.CharField(max_length=300)
     body = models.CharField(max_length=300, blank=True, default='')
     # Which case of its kind it is, when the kind has more than one text for its
-    # email: a code this app writes (CLIP_RENDER_FAILED), never text. Empty: the
+    # email: a code this app writes (CLIP_RENDER_FAILED; for ``post_failed``, the
+    # post's error code or services.NETWORK_DISCONNECTED), never text. Empty: the
     # kind's own case. Not sent to the web app: the bell shows title and body.
     # db_default keeps the default in the database, so a worker running the
     # previous code (which does not know the column) can still write

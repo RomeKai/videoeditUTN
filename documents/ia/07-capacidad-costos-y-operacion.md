@@ -715,6 +715,8 @@ La campana lee `Notification` (`apps/notifications`). Solo las escribe `apps/not
 | Render del proyecto terminado, completo o parcial | `finalize_project_render` y `render_video_segments` | `notify_render_finished` | Dueño y miembros activos |
 | Render de un solo clip (su editor o un reintento) que no entregó nada | `finalize_project_render` | `notify_clip_render_finished` | Dueño y miembros activos |
 | Proyecto fallido | `_record_pipeline_failure`, `_fail_render`, `_recover_ingestion`, `_fail_unqueued_project` y el re-despacho sin saldo (`AutoRenderNotPaid`) | `notify_project_failed` | Dueño y miembros activos |
+| Publicación fallida | `upload_to_social_network` (`_fail_post` y el post sin cuenta o sin opciones de TikTok) y `_fail_seo_post` | `notify_post_failed` | Dueño y miembros activos |
+| Red desconectada con publicaciones por salir | `fail_network_posts` | `notify_network_posts_failed` | Dueño y miembros activos |
 | Pago aprobado o rechazado | `settle_payment` | `notify_payment_settled` | Quien inició el pago |
 | Saldo bajo | `reserve_funds` (por `track_low_balance`) | `notify_low_balance` | Dueño y admins activos |
 
@@ -725,6 +727,7 @@ La campana lee `Notification` (`apps/notifications`). Solo las escribe `apps/not
 - El re-despacho sin saldo (`AutoRenderNotPaid`) tiene su propio texto: «no alcanzó el saldo para renderizar».
 - Un render que termina completo pero devuelve tokens tuvo un clip que no se pudo volver a generar: el texto lo dice, y el clip quedó con el archivo que tenía.
 - El render de un solo clip (`clip_render_scope` `clip`, ver [06](06-render-caras-y-hablante.md#renders-que-pide-el-usuario)) no es el render del proyecto. Si entrega, no avisa a nadie: ni campana ni email. Si su reserva se devolvió entera, `notify_clip_render_finished` escribe un `render_finished` con el título «<proyecto>: no se pudo renderizar un clip» y, de cuerpo, el texto de Actividad para ese render, palabra por palabra (`refunded_render_text`): «No se pudo volver a renderizar: quedó el clip anterior. Te devolvimos N tokens.» o «No se pudo renderizar el clip: sigue con error. Te devolvimos N tokens.». El cuerpo no lleva el título del clip, así que el email tampoco. La notificación lleva `reason` `Notification.CLIP_RENDER_FAILED` (un código, no texto; no va a la web): con eso su email no dice que terminó un render, sino «No pudimos renderizar un clip de tu proyecto» en el asunto, y su propio texto.
+- Una publicación fallida (`post_failed`) se avisa una vez por falla: solo desde la escritura que pasa el post a `FAILED`, nunca desde una que escribe `FAILED` sobre `FAILED`. Un post que se reintenta y vuelve a fallar avisa de nuevo. El detalle está en [05](05-seo-y-publicacion.md#aviso-de-una-publicación-fallida).
 - Un pago rechazado solo se avisa si lo rechazó el proveedor. No se avisa si el checkout no abrió o venció, ni si la persona eligió otro plan o seguir con el suyo (`settle_payment(..., notify=False)`).
 - Quien ya no es miembro del workspace no recibe nada.
 - Se guardan las últimas 20 por usuario y workspace (`KEPT_PER_USER`): al escribir una se borran las más viejas. No hay tarea de limpieza.
@@ -751,13 +754,14 @@ Cada notificación de la campana que tiene email encola la tarea `apps.notificat
 | `project_ready` | `project_ready` | `/proyectos/:id/revision?espacio=:workspace` |
 | `render_finished` | `render_finished` | `/proyectos/:id/clips?espacio=:workspace` |
 | `project_failed` | `project_failed` | `/proyectos/:id?espacio=:workspace` |
+| `post_failed` | `post_failed` | `/publicaciones?detalle=:id&espacio=:workspace` (sin post: `/publicaciones?espacio=:workspace`) |
 | `low_balance` | `low_balance` | `/uso/comprar?espacio=:workspace` |
 
-- Los pagos (`payment_approved`, `payment_rejected`) no tienen email ni preferencia. `post_failed` tiene preferencia, pero todavía no se escribe esa notificación.
+- Los pagos (`payment_approved`, `payment_rejected`) no tienen email ni preferencia.
 - Lo reciben los mismos que la campana, si tienen prendido ese tipo en `GET/PATCH /api/v1/me/notification-preferences/`. Sin fila de preferencias, todo está prendido.
 - No se manda a una cuenta inactiva, a una sin el email verificado, ni a quien ya no está en el workspace.
 - **Ningún email lleva texto escrito por un usuario**: ni el título del proyecto, ni el nombre del workspace, ni nombres de personas. Es la misma regla que los emails de cuenta (`apps/users/email_verification.py`). El título de la campana lleva el título del proyecto, así que no va al email.
-- El email lleva el `body` de la notificación, que los eventos escriben sin texto de usuarios: cuántos clips hay y cuánto se devolvió, con el mismo texto que la campana. El de saldo bajo lleva también su título («Te quedan 300 tokens»).
+- El email lleva el `body` de la notificación, que los eventos escriben sin texto de usuarios: cuántos clips hay y cuánto se devolvió, con el mismo texto que la campana. El de saldo bajo lleva también su título («Te quedan 300 tokens»). El de una publicación fallida lleva su `body`, que es el `error_message` de la API para ese post (qué pasó, con el nombre de la red), y nunca su título, que nombra el clip. Su `reason` (el código del error) elige el asunto: «Una publicación no salió», o «No sabemos si una publicación salió» para `outcome_unknown` y `duplicate_content`. El de una red desconectada con varias publicaciones (`reason` `network_disconnected`) lleva también su título, que solo tiene la red y la cantidad; el de varias fallas seguidas (`reason` `several_posts_failed`), su título fijo.
 - Tiene una parte de texto y una de HTML simple, con las mismas palabras. Todo lo que entra al HTML se escapa. Los links salen de `FRONTEND_URL`.
 - Los links al proyecto y a Comprar tokens llevan el workspace de la notificación en `?espacio=<id>`. La web cambia a ese workspace antes de mostrar la página (`RequireSession`), si la persona es miembro. Sin sesión, el login conserva el link y cambia de workspace antes de ir a la página (`LoginScreen`). Si el workspace no es de la persona, la web se queda donde estaba y lo avisa. Sin eso, quien tiene otro workspace activo abriría un proyecto que no existe ahí, o compraría tokens para otro workspace.
 - Un envío que falla se registra como `notification_email.send_failed`, con ids y la clase del error, y no se reintenta: la notificación sigue en la campana. Si la cola rechaza el mensaje se registra `notifications.email_not_queued`. Ninguno de los dos cambia el evento ni la campana.

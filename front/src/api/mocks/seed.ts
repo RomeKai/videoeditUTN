@@ -18,7 +18,7 @@ import {
   type MockTransaction,
   type MockUser,
 } from './db';
-import { NETWORK_DISPLAY, PUBLISH_ERROR_MESSAGES } from './publish-errors';
+import { NETWORK_DISPLAY, postFailedNotification, PUBLISH_ERROR_MESSAGES } from './publish-errors';
 
 /* ── Reference data ─────────────────────────────────────────────────────── */
 
@@ -925,7 +925,7 @@ export function seedDb(options: SeedOptions, now: number = Date.now()): MockDb {
     const add = (n: number, item: Omit<MockNotification, 'id' | 'workspace' | 'user'>) =>
       notifications.push({ id: mid(KIND.notification, n), workspace: mainWorkspace, user: sessionUser, ...item });
     if (review) add(1, { type: 'project_ready', title: `${review.title.split(' — ')[0]} está listo para revisar`, body: `Encontramos ${review.clips.length} clips.`, created_at: iso(now - 12 * MIN), read_at: null, project_id: review.id, post_id: null });
-    if (failedPost) add(2, { type: 'post_failed', title: 'No pudimos publicar en TikTok', body: failedPost.clip.title, created_at: iso(now - 6 * HOUR), read_at: null, project_id: failedPost.clip.project_id, post_id: failedPost.id });
+    if (failedPost) add(2, { ...postFailedNotification(failedPost), created_at: iso(now - 6 * HOUR), read_at: null });
     if (done) add(3, { type: 'render_finished', title: `${done.title}: terminó el render`, body: `${done.clips.length} clips listos.`, created_at: iso(now - 1 * DAY), read_at: iso(now - 20 * HOUR), project_id: done.id, post_id: null });
     if (failed) add(4, { type: 'project_failed', title: `${failed.title} no se pudo procesar`, body: `Te devolvimos ${failed.cost?.amount ?? 0} tokens.`, created_at: iso(now - 3 * DAY), read_at: iso(now - 3 * DAY + HOUR), project_id: failed.id, post_id: null });
     if ((options.balance ?? balance) < 500) add(5, { type: 'low_balance', title: `Te quedan ${(options.balance ?? balance).toLocaleString('es-AR')} tokens`, body: 'El saldo quedó por debajo de lo que cuesta un video promedio.', created_at: iso(now - 2 * HOUR), read_at: null, project_id: null, post_id: null });

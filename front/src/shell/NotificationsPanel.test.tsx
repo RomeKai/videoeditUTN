@@ -60,13 +60,14 @@ const rows = () => screen.getAllByRole('button').filter((button) => button.class
 describe('J2 · la campana con las respuestas del backend', () => {
   beforeEach(() => forceRouting({ mode: 'hybrid', real: 'notifications' }));
 
-  it('muestra las seis, cuántas faltan leer y cuál ya está leída', async () => {
+  it('muestra las siete, cuántas faltan leer y cuál ya está leída', async () => {
     const api = backend();
     renderScreen(<NotificationsPanel />);
 
     expect(await screen.findByText('Podcast Ep. 42 está listo para revisar')).toBeInTheDocument();
-    expect(screen.getByText('5 sin leer')).toBeInTheDocument();
+    expect(screen.getByText('6 sin leer')).toBeInTheDocument();
     expect(rows().map((row) => within(row).getAllByText(/./)[0]?.textContent)).toEqual([
+      'Clip 0: no sabemos si se publicó en TikTok',
       'Te quedan 300 tokens',
       'Podcast Ep. 42 está listo para revisar',
       'No pudimos cobrar tu compra de 5.000 tokens',
@@ -75,7 +76,8 @@ describe('J2 · la campana con las respuestas del backend', () => {
       'Entrevista con Ana: terminó el render',
     ]);
     expect(screen.getByText('Te devolvimos 12,50 tokens.')).toBeInTheDocument();
-    expect(rows().map((row) => within(row).queryByText(/sin leer/) !== null)).toEqual([true, true, true, true, true, false]);
+    expect(screen.getByText('No sabemos si se publicó: TikTok no respondió a tiempo. Revisá la cuenta antes de reintentar.')).toBeInTheDocument();
+    expect(rows().map((row) => within(row).queryByText(/sin leer/) !== null)).toEqual([true, true, true, true, true, true, false]);
     expect(api.workspaces).toEqual([getActiveWorkspaceId()]);
   });
 
@@ -83,13 +85,18 @@ describe('J2 · la campana con las respuestas del backend', () => {
     const api = backend();
     const onNavigate = vi.fn();
     renderScreen(<NotificationsPanel onNavigate={onNavigate} />);
-    const [low, ready, rejected, , failed, finished] = LIST.results;
-    if (!low || !ready || !rejected || !failed || !finished) throw new Error('faltan notificaciones en el fixture');
+    const [post, low, ready, rejected, , failed, finished] = LIST.results;
+    if (!post || !low || !ready || !rejected || !failed || !finished) throw new Error('faltan notificaciones en el fixture');
 
     await userEvent.click(await screen.findByText(ready.title));
     expect(router.push).toHaveBeenLastCalledWith(`/proyectos/${ready.project_id}/revision`);
     expect(onNavigate).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(screen.getByText('4 sin leer')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('5 sin leer')).toBeInTheDocument());
+
+    // Una publicación fallida: a esa publicación en Publicaciones.
+    expect(post.type).toBe('post_failed');
+    await userEvent.click(screen.getByText(post.title));
+    expect(router.push).toHaveBeenLastCalledWith(`/publicaciones?detalle=${post.post_id}`);
 
     // Saldo bajo: a Comprar tokens.
     expect(low.type).toBe('low_balance');
@@ -105,7 +112,7 @@ describe('J2 · la campana con las respuestas del backend', () => {
     expect(router.push).toHaveBeenLastCalledWith(`/proyectos/${finished.project_id}/clips`);
 
     await waitFor(() => expect(screen.getByText('1 sin leer')).toBeInTheDocument());
-    expect(api.calls.filter((call) => call.startsWith('read'))).toEqual([`read ${ready.id}`, `read ${low.id}`, `read ${rejected.id}`, `read ${failed.id}`]);
+    expect(api.calls.filter((call) => call.startsWith('read'))).toEqual([`read ${ready.id}`, `read ${post.id}`, `read ${low.id}`, `read ${rejected.id}`, `read ${failed.id}`]);
   });
 
   it('«Marcar todo como leído» lo pide una vez y vuelve a leer la lista', async () => {

@@ -28,7 +28,8 @@ from apps.payments.models import Payment
 from apps.payments.services.payments import settle_payment
 from apps.payments.services.wallet_service import reserve_funds, rollback_reservation
 from apps.payments.tests.test_contract_fixture import FIXTURE, normalised
-from apps.videos.models import VideoClip, VideoProject
+from apps.videos.models import ScheduledPost, VideoClip, VideoProject
+from apps.videos.tasks.social import _fail_post
 from apps.videos.tests.test_ingestion_pipeline import fund_wallet
 
 from .helpers import make_user, team
@@ -91,6 +92,14 @@ class NotificationsFixtureHarness:
         with event(50):
             # 1.000 + 1.500 of the purchase − 2.200: under the 600 of the plan's threshold.
             reserve_funds(wallet.id, Decimal('2200'), project=ready)
+
+        with event(55):
+            # A post of the rendered project that the publisher left FAILED without knowing if it went out.
+            post = ScheduledPost.objects.create(
+                video_clip=rendered.clips.order_by('start_time').first(), platform=ScheduledPost.Platform.TIKTOK,
+                status=ScheduledPost.Status.QUEUED, publish_at=timezone.now(),
+            )
+            _fail_post(post.pk, error_log='outcome_unknown (ayrshare http=504)')
 
         self.client.force_authenticate(ana)
         ws = {'HTTP_X_WORKSPACE_ID': str(home.pk)}
