@@ -98,6 +98,10 @@ async function withRefreshLock<T>(run: (waited: boolean) => Promise<T>): Promise
   if (!locks) return run(false);
   let entered = false;
   // First without waiting: `run` has to know whether another tab held the lock before this one.
+  // This makes sending a rotated refresh token rarer, not impossible: a tab whose 401 arrives right
+  // after the other one let the lock go finds it free, reads the old pair (the new one is still on
+  // its way to this tab's storage) and sends it. The server answers 401 and the fallback of
+  // `refreshAccessToken` covers it: it waits `REFRESH_FALLBACK_WAIT_MS` for the other tab's pair.
   try {
     const free = await locks.request(REFRESH_LOCK_NAME, { ifAvailable: true }, async (lock) => {
       if (!lock) return null;

@@ -1006,7 +1006,9 @@ describe('renovar el token con varias pestañas', () => {
     expect(getTokens()).toEqual({ access: 'nuevo', refresh: 'refresh-2' });
   });
 
-  it('con el lock libre no espera a nadie: renueva en el momento', async () => {
+  // A regression guard, not a test of the fix: it passes without the handover wait too. It keeps that
+  // wait from ever being paid by a tab that had nobody to wait for.
+  it('guarda de regresión: con el lock libre no espera a nadie, renueva en el momento', async () => {
     const { locks } = fakeLocks();
     vi.stubGlobal('navigator', { ...navigator, locks });
     setTokens({ access: 'viejo', refresh: 'refresh-1' });
