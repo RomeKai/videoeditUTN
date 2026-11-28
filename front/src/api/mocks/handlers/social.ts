@@ -41,7 +41,7 @@ const CONNECT_PLAN_DENIED = 'Tu plan no incluye conectar redes. Pasate a un plan
 const CONNECT_EMAIL_NOT_VERIFIED = 'Verificá tu email para conectar redes.';
 const SEO_FAILURE = /^(seo_|moderation_)|^(content_blocked|generated_content_blocked|capacity_timeout)$/;
 /** services/scheduled_posts.TEXT_MISSING: the 400 of a post that would go out empty after its AI text failed. */
-const TEXT_MISSING = 'No pudimos generar el texto y la publicación no tiene texto. Escribilo vos, regeneralo o confirmá que sale sin texto.';
+const TEXT_MISSING = 'No pudimos generar el texto con IA y esta publicación no tiene texto: escribilo o regeneralo.';
 
 /**
  * services/scheduled_posts._check_has_text: a post that goes out after its AI text failed (`seo_status:
@@ -337,7 +337,8 @@ export const socialHandlers = [
       if (!immediate && plan && !plan.allow_scheduling) throw new MockHttpError(403, { error: SCHEDULING_DENIED, code: 'scheduling' });
       checkCrossposting(db, workspace, new Map([[post.video_clip, new Set([post.platform])]]), post.id);
       checkAccount(db, workspace.id, post.platform);
-      checkHasText(post, caption, hashtags, body.allow_empty_text);
+      // A draft that goes out, or a text that changes: moving a scheduled post sends the text it was accepted with.
+      if (post.status === 'DRAFT' || body.caption !== undefined || body.hashtags !== undefined) checkHasText(post, caption, hashtags, body.allow_empty_text);
       const wasDraft = post.status === 'DRAFT';
       post.publish_at = body.publish_at ?? stamp;
       post.status = 'SCHEDULED';

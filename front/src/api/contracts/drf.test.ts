@@ -512,7 +512,7 @@ describe('suscripción y compras: respuestas reales del backend (billing_*)', ()
     // Ensayo 6: a draft whose AI text failed does not go out empty unless the request says so.
     const textless = error('post_400_text_missing', 'social.updatePost');
     expect([textless.status, textless.code, errorMessage(textless)]).toEqual([
-      400, 'post_text_missing', 'No pudimos generar el texto y la publicación no tiene texto. Escribilo vos, regeneralo o confirmá que sale sin texto.',
+      400, 'post_text_missing', 'No pudimos generar el texto con IA y esta publicación no tiene texto: escribilo o regeneralo.',
     ]);
     expect(updatePost.errors?.find((item) => item.status === 400)?.when).toContain('post_text_missing');
     expect(error('post_409_account_not_connected', 'social.createPost').code).toBe('account_not_connected');

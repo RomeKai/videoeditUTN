@@ -113,8 +113,11 @@ class ScheduledPostSerializer(serializers.ModelSerializer):
         if post.generated_caption and post.generated_hashtags is not None:
             return 'ready'
         # A draft, or a post with the user's own text, keeps its status when its text fails
-        # (process_video_seo's _fail_seo_post); a limited request leaves the code too.
-        if _seo_error_code(post):
+        # (process_video_seo's _fail_seo_post); a limited request leaves the code too, and a request
+        # that outlived its window is a failure even before the dispatcher records it (ai_text_failed).
+        from .services.scheduled_posts import ai_text_failed
+
+        if ai_text_failed(post):
             return 'failed'
         return 'none'
 

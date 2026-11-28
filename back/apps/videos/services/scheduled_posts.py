@@ -114,11 +114,14 @@ SEO_LIMITED = (
 )
 # Error code a post keeps when its AI text was not asked for because of the limit (seo_status "failed").
 SEO_LIMITED_CODE = 'seo_rate_limited'
-TEXT_MISSING = (
-    "No pudimos generar el texto y la publicación no tiene texto. Escribilo vos, regeneralo "
-    "o confirmá que sale sin texto."
-)
+# Shown as it comes by every screen that sends a post (the panel asks its own question before it).
+TEXT_MISSING = "No pudimos generar el texto con IA y esta publicación no tiene texto: escribilo o regeneralo."
 TEXT_MISSING_CODE = 'post_text_missing'
+# Codes of an AI text that never came, with the `seo_` prefix the API reads as `seo_status: "failed"`
+# (and a later text clears): the broker did not take its task (signals.queue_post_seo), or its request
+# outlived seo_request_window(), its message lost (fail_lost_ai_texts).
+SEO_DISPATCH_FAILED_CODE = 'seo_dispatch_failed'
+SEO_REQUEST_EXPIRED_CODE = 'seo_request_expired'
 LOCK_UNKNOWN = "No pudimos comprobar si la publicación sigue saliendo. Probá de nuevo en unos minutos."
 
 _CONFLICTS = {
@@ -201,13 +204,48 @@ def seo_request_pending(post, now=None):
     return requested > (now or timezone.now()) - seo_request_window()
 
 
+def seo_request_expired(post, now=None):
+    """The AI text was asked for longer ago than seo_request_window() and never answered: its message was lost."""
+    requested = post.seo_requested_at
+    return requested is not None and requested <= (now or timezone.now()) - seo_request_window()
+
+
+def has_text(post):
+    """
+    What goes out has some text: a caption or hashtags, the user's or the AI's (caption_to_publish,
+    hashtags_to_publish). The one rule of "a post with text" for the API (_check_has_text) and for
+    the AI text's failure (tasks/social._fail_seo_post, with HAS_TEXT).
+    """
+    return bool(post.caption_to_publish() or post.hashtags_to_publish())
+
+
+# has_text as a filter, for the writers that decide in an UPDATE.
+HAS_TEXT = (
+    Q(caption__gt='') | Q(generated_caption__gt='') | ~Q(hashtags=[])
+    | (Q(generated_hashtags__isnull=False) & ~Q(generated_hashtags=[]))
+)
+
+
+def ai_text_failed(post, now=None):
+    """
+    The post's AI text failed (`seo_status: "failed"`): a code of SEO in `error_log`, the limit's
+    included, or a request that outlived its window with no earlier text to keep.
+    """
+    from apps.videos.serializers_social import _seo_error_code
+
+    if _seo_error_code(post):
+        return True
+    return seo_request_expired(post, now) and not (post.generated_caption and post.generated_hashtags is not None)
+
+
 def waits_for_ai_text(post, now=None):
     """
     A post with no caption of its own whose AI text is on its way (seo_request_pending) does not
     go out yet: sent now it would go out with no text (or the old one), and the text that lands
     later would be thrown away (process_video_seo never changes a post that is publishing). The
     dispatcher leaves it SCHEDULED (waiting_for_ai_text) until the text lands or its request ends
-    (dispatch_after_ai_text), or until the request passes seo_request_window() (its message was lost).
+    (dispatch_after_ai_text). A request that passes seo_request_window() (its message was lost) is a
+    failure of the text (fail_lost_ai_texts), never a reason to send the post empty.
     """
     return not post.caption and seo_request_pending(post, now)
 
@@ -341,18 +379,15 @@ def _check_tiktok(platform, options, index=None):
 
 def _check_has_text(post, allowed, now, index=None):
     """
-    A post that goes out after its AI text failed (`seo_status: "failed"`: the code in `error_log`,
-    the limit's included) with no text at all (no caption and no hashtags, the user's or the AI's)
+    A post that goes out after its AI text failed (ai_text_failed) with no text at all (has_text)
     is a 400 `post_text_missing`, unless the request says it may go out that way
     (`allow_empty_text`). Sent anyway it would go out with an empty text that nobody chose. A text
     still on its way is no failure: the post waits for it (waits_for_ai_text). A project without the
     AI text promised none, so its posts are not checked. On YouTube the title is the clip's either way.
     """
-    from apps.videos.serializers_social import _seo_error_code
-
-    if allowed or post.caption_to_publish() or post.hashtags_to_publish():
+    if allowed or has_text(post):
         return
-    if not _seo_error_code(post) or seo_request_pending(post, now):
+    if seo_request_pending(post, now) or not ai_text_failed(post, now):
         return
     body = {'error': TEXT_MISSING, 'code': TEXT_MISSING_CODE}
     if index is not None:
@@ -577,6 +612,28 @@ def dispatch_if_due(posts, now, waiting=()):
         transaction.on_commit(_queue_dispatch)
 
 
+def fail_lost_ai_texts(now):
+    """
+    The AI texts whose request outlived seo_request_window() (the message was lost, or the task died
+    without an answer) record their failure (SEO_REQUEST_EXPIRED_CODE), as a failed generation does
+    (tasks/social._fail_seo_post): a post with no text turns FAILED instead of going out empty, a draft
+    shows `seo_status: "failed"` and asks before it goes out, and one with a text of its own keeps it.
+    dispatch_scheduled_posts_batch calls it before it queues anything. Returns how many it ended.
+
+    A FAILED post only gets its request ended: its `error_log` is the failure it already has (maybe one
+    of publishing, like `outcome_unknown`, that the user must still see before retrying).
+    """
+    from apps.videos.tasks.social import _fail_seo_post
+
+    expired = ScheduledPost.objects.filter(seo_requested_at__lte=now - seo_request_window())
+    expired.filter(status=Status.FAILED).update(seo_requested_at=None)
+    lost = list(expired.filter(status__in=(Status.DRAFT, Status.SCHEDULED, Status.QUEUED)).values_list('pk', flat=True))
+    for post_id in lost:
+        _fail_seo_post(post_id, SEO_REQUEST_EXPIRED_CODE, redispatch=False)
+        logger.warning("posts.ai_text_lost post_id=%s", post_id)
+    return len(lost)
+
+
 def dispatch_after_ai_text(post_id):
     """
     process_video_seo stored the post's AI text, or its request ended without
@@ -687,6 +744,10 @@ def create_posts(workspace, items, *, key=None, print_=None, many=False):
             if status == Status.SCHEDULED:
                 # Past the limit, a post with no text of its own would go out empty.
                 _check_has_text(post, item.get('allow_empty_text', False), now, index_of(index))
+                if seo == 'limited' and item.get('allow_empty_text') and not has_text(post):
+                    # It goes out with no text because the request said so: the failure is over, as when
+                    # a draft is sent (update_post), and a later reschedule does not ask again.
+                    post.error_log = None
             post.save()
             if seo == 'asked':
                 queue_post_seo(post.pk)
@@ -751,7 +812,10 @@ def update_post(workspace, post_id, data):
                 _check_scheduling(plan)
             _check_crossposting(plan, {clip.pk: {post.platform}}, exclude=[post.pk])
             _check_account(workspace, {post.platform})
-            _check_has_text(post, data.get('allow_empty_text', False), now)
+            if post.status == Status.DRAFT or edited:
+                # A draft that goes out, or a text that changes. Moving a SCHEDULED post to another
+                # time sends the same text it was accepted with (a calendar drag asks nothing).
+                _check_has_text(post, data.get('allow_empty_text', False), now)
             post.status, post.publish_at = Status.SCHEDULED, publish_at
             fields += ['status', 'publish_at']
             if post.error_log:

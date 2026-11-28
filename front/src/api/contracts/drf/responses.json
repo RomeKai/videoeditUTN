@@ -2134,7 +2134,7 @@
     "post_400_text_missing": {
       "status": 400,
       "body": {
-        "error": "No pudimos generar el texto y la publicación no tiene texto. Escribilo vos, regeneralo o confirmá que sale sin texto.",
+        "error": "No pudimos generar el texto con IA y esta publicación no tiene texto: escribilo o regeneralo.",
         "code": "post_text_missing"
       }
     },

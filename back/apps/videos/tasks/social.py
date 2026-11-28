@@ -87,12 +87,15 @@ def dispatch_scheduled_posts_batch():
     each post is locked and checked again before it is queued.
 
     A post with no caption of its own whose AI text is on its way waits for it
-    (scheduled_posts.waits_for_ai_text): it stays SCHEDULED.
+    (scheduled_posts.waits_for_ai_text): it stays SCHEDULED. One whose request
+    outlived its window records the failure of its text first
+    (scheduled_posts.fail_lost_ai_texts): it never goes out empty because of it.
     """
-    from apps.videos.services.scheduled_posts import waiting_for_ai_text
+    from apps.videos.services.scheduled_posts import fail_lost_ai_texts, waiting_for_ai_text
 
     now = timezone.now()
     window_end = now + timedelta(hours=1)
+    fail_lost_ai_texts(now)
     waiting = waiting_for_ai_text(now)
 
     # Batch query: everything due by the end of the window, overdue posts included
@@ -146,7 +149,9 @@ def upload_to_social_network(self, post_id):
     """
     from apps.integrations import social
     from apps.integrations.social import errors as codes
-    from apps.videos.services.scheduled_posts import LONGEST_RETRY_COUNTDOWN, waits_for_ai_text
+    from apps.videos.services.scheduled_posts import (
+        LONGEST_RETRY_COUNTDOWN, SEO_REQUEST_EXPIRED_CODE, has_text, seo_request_expired, waits_for_ai_text,
+    )
     from apps.videos.services.seo_engine import compose_caption
     from apps.videos.services.storage_service import provider_media_url
 
@@ -207,6 +212,12 @@ def upload_to_social_network(self, post_id):
                 post.save(update_fields=['status', 'updated_at'])
                 logger.info("publish.waiting_for_ai_text post_id=%s", post_id)
                 return "Waiting for AI text"
+            if post.status == ScheduledPost.Status.QUEUED and seo_request_expired(post) and not has_text(post):
+                # Its AI text was asked for after it was queued and never came (the message was lost): the
+                # failure of its text, as fail_lost_ai_texts records it, never a post sent empty.
+                _fail_seo_post(post.pk, SEO_REQUEST_EXPIRED_CODE, redispatch=False)
+                logger.warning("publish.ai_text_lost post_id=%s", post_id)
+                return "AI text lost"
 
             clip = post.video_clip
             project = clip.project
@@ -470,32 +481,35 @@ _SEO_FAILURE_CODES = (
 _SEO_FROZEN_STATUSES = (ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED)
 
 
-def _fail_seo_post(post_id, code):
+def _fail_seo_post(post_id, code, redispatch=True):
     """
     FAILED with a static code, unless publishing already started or finished:
     a post published with another caption must never turn FAILED because of SEO.
     A failed regeneration keeps the caption it was replacing, and the post keeps
     its status: it can still be published. A DRAFT stays a DRAFT with the code
     (the API shows `seo_status: "failed"`): it was not going out, and the user
-    writes the text and sends it. A post with the user's own caption keeps its
-    status too: it does not need the AI's. Either way the API request is over
-    (`seo_requested_at`).
+    writes the text and sends it. A post with a text of its own (a caption or
+    hashtags: scheduled_posts.HAS_TEXT, the rule of the API's _check_has_text)
+    keeps its status too: it does not need the AI's. Either way the API request
+    is over (`seo_requested_at`). Without ``redispatch`` the caller is the
+    dispatcher (or the worker) and decides about sending it itself.
     """
-    from apps.videos.services.scheduled_posts import dispatch_after_ai_text
+    from apps.videos.services.scheduled_posts import HAS_TEXT, dispatch_after_ai_text
 
     posts = ScheduledPost.objects.filter(id=post_id).exclude(status__in=_SEO_FROZEN_STATUSES)
     if posts.filter(generated_caption__gt='', generated_hashtags__isnull=False).exists():
         logger.warning("seo.regenerate_failed post_id=%s code=%s", post_id, code)
         posts.update(seo_requested_at=None)
     else:
-        keeps = Q(status=ScheduledPost.Status.DRAFT) | Q(caption__gt='')
+        keeps = Q(status=ScheduledPost.Status.DRAFT) | HAS_TEXT
         posts.update(
             status=Case(When(keeps, then=F('status')), default=Value(ScheduledPost.Status.FAILED)),
             error_log=code,
             seo_requested_at=None,
         )
-    # A post that waited for the text and still goes out (its earlier text) does not wait for the beat.
-    dispatch_after_ai_text(post_id)
+    if redispatch:
+        # A post that waited for the text and still goes out (its earlier text) does not wait for the beat.
+        dispatch_after_ai_text(post_id)
 
 
 def _end_seo_request(post_id):

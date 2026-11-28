@@ -197,6 +197,23 @@ describe('contrato de publicar: como el backend', () => {
     expect([sent.status, sent.caption]).toEqual(['SCHEDULED', '']);
   });
 
+  it('mover a otra hora una programada sin texto no pregunta; vaciarle el texto sí (revisión de #192)', async () => {
+    const db = loadDb();
+    const scheduled = db.posts.find((post) => post.workspace === WORKSPACE_IDS.estudio && post.status === 'SCHEDULED');
+    if (!scheduled) throw new Error('falta una publicación programada');
+    Object.assign(scheduled, { platform: 'INSTAGRAM_REELS', seo_status: 'failed', caption: '', hashtags: [], generated_caption: null, generated_hashtags: null });
+    saveDb(db);
+    const later = new Date(Date.now() + 3 * 24 * 3600 * 1000).toISOString();
+
+    const moved = await apiCall(social.updatePost, { params: { id: scheduled.id }, body: { publish_at: later } });
+    expect(moved.status).toBe('SCHEDULED');
+    // (The move ends the failure, as in the backend: put it back to see the text edit asked about.)
+    const again = loadDb();
+    Object.assign(again.posts.find((post) => post.id === scheduled.id) ?? {}, { seo_status: 'failed' });
+    saveDb(again);
+    expect((await fail(apiCall(social.updatePost, { params: { id: scheduled.id }, body: { caption: '' } }))).code).toBe('post_text_missing');
+  });
+
   it('el lote dice cuál publicación tiene el error y no crea ninguna', async () => {
     const before = loadDb().posts.length;
     const error = await fail(

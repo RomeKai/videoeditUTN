@@ -826,14 +826,19 @@ class DispatchNowTests(PostsWriteHarness):
         failed = self.make_post(status=Status.FAILED, platform=Platform.YOUTUBE_SHORTS, seo_requested_at=timezone.now())
         self.committed(lambda: self.post_action(failed, "retry"))
         self.dispatch.assert_not_called()
-        # A caption of its own, or a request older than its window (its message was lost), goes now.
+        # A caption of its own goes now.
         other = self.make_post(status=Status.DRAFT, platform=Platform.TIKTOK, tiktok=TIKTOK, seo_requested_at=timezone.now())
         self.committed(lambda: self.patch_post(other, publish_at=None, caption="Mío"))
         self.assertEqual(self.dispatch.call_count, 1)
+        # Review of #192: a request older than its window (its message was lost) is a failure of the text,
+        # not a reason to send it empty: without a text it asks first, as any failure does.
         ScheduledPost.objects.filter(pk=draft.pk).update(
             status=Status.DRAFT, seo_requested_at=timezone.now() - service.seo_request_window() - timedelta(minutes=1),
         )
-        self.committed(lambda: self.patch_post(draft, publish_at=None))
+        self.assertEqual(self.client.get(detail(draft), **self.ws).json()["seo_status"], "failed")
+        refused = self.patch_post(draft, publish_at=None)
+        self.assertEqual((refused.status_code, refused.json()["code"]), (400, "post_text_missing"))
+        self.committed(lambda: self.patch_post(draft, publish_at=None, allow_empty_text=True))
         self.assertEqual(self.dispatch.call_count, 2)
 
     def test_the_dispatcher_leaves_a_post_waiting_for_its_ai_text(self):
@@ -847,20 +852,17 @@ class DispatchNowTests(PostsWriteHarness):
         _, other_clip = self.make_clip(self.home, "Otro")
         plain = self.make_post(clip=other_clip, publish_at=now)
 
-        self.assertEqual(dispatch_scheduled_posts_batch(), "Queued 3 posts.")
+        self.assertEqual(dispatch_scheduled_posts_batch(), "Queued 2 posts.")
 
         statuses = dict(ScheduledPost.objects.values_list("pk", "status"))
         self.assertEqual(statuses[waiting.pk], Status.SCHEDULED)
-        self.assertEqual({statuses[post.pk] for post in (own, lost, plain)}, {Status.QUEUED})
+        self.assertEqual({statuses[post.pk] for post in (own, plain)}, {Status.QUEUED})
+        # Review of #192: the one whose request outlived its window never goes out empty: its text failed.
+        lost.refresh_from_db()
+        self.assertEqual((lost.status, lost.error_log, lost.seo_requested_at), (Status.FAILED, "seo_request_expired", None))
 
 
-class TextMissingTests(PostsWriteHarness):
-    """
-    Ensayo 6: a draft whose AI text failed, sent with «Publicar ahora» and no text of its own,
-    went out with `post: ""` and nobody had chosen it. Now that is a 400 `post_text_missing`,
-    unless the request says it may go out without text (`allow_empty_text`).
-    """
-
+class TextMissingHarness(PostsWriteHarness):
     def setUp(self):
         super().setUp()
         self.dispatch = self._patch(DISPATCH)
@@ -886,6 +888,14 @@ class TextMissingTests(PostsWriteHarness):
         if index is not None:
             expected["index"] = index
         self.assertEqual(response.json(), expected)
+
+
+class TextMissingTests(TextMissingHarness):
+    """
+    Ensayo 6: a draft whose AI text failed, sent with «Publicar ahora» and no text of its own,
+    went out with `post: ""` and nobody had chosen it. Now that is a 400 `post_text_missing`,
+    unless the request says it may go out without text (`allow_empty_text`).
+    """
 
     def test_a_draft_whose_ai_text_failed_does_not_go_out_without_text(self):
         draft = self.failed_draft()
@@ -968,6 +978,93 @@ class TextMissingTests(PostsWriteHarness):
         self.assertEqual((allowed.status_code, allowed.json()["status"], allowed.json()["caption"]), (201, "SCHEDULED", ""))
         self.assertEqual(self.dispatch.call_count, 2)
         self.seo_delay.assert_not_called()
+
+
+class TextMissingReviewTests(TextMissingHarness):
+    """Review of #192: the paths around `post_text_missing` that the first version left open."""
+
+    @override_settings(AI_SEO_MAX_PER_WORKSPACE_PER_HOUR=0)
+    def test_a_post_confirmed_without_text_can_be_moved_in_the_calendar(self):
+        # Created past the limit with the confirmation; then dragged to another day (only `publish_at`).
+        created = self.sent(lambda: self.create(
+            video_clip=str(self.seo_clip.pk), publish_at=self.later.isoformat(), allow_empty_text=True,
+        ))
+        self.assertEqual(created.status_code, 201, created.content)
+        post = ScheduledPost.objects.get(pk=created.json()["id"])
+        self.assertIsNone(post.error_log)  # the failure was confirmed: it is over, as for a sent draft
+
+        moved = self.sent(lambda: self.patch_post(post, publish_at=(self.later + timedelta(days=1)).isoformat()))
+
+        self.assertEqual(moved.status_code, 200, moved.content)
+
+    def test_moving_a_scheduled_post_sends_the_text_it_was_accepted_with(self):
+        # Only a draft that goes out, or a text that changes, is asked about (emptying it still is:
+        # test_emptying_the_text_of_a_scheduled_post_whose_ai_text_failed).
+        post = self.failed_draft(status=Status.SCHEDULED)
+        moved = self.sent(lambda: self.patch_post(post, publish_at=(self.later + timedelta(hours=1)).isoformat()))
+        self.assertEqual(moved.status_code, 200, moved.content)
+
+    def test_a_broker_that_does_not_take_the_ai_text_is_a_failure_of_the_text(self):
+        # «Publicar ahora» with no text: it read `seo_status: "none"` and went out empty on the next run.
+        self.seo_delay.side_effect = OSError("broker down")
+        created = self.sent(lambda: self.create(video_clip=str(self.seo_clip.pk)))
+        post = ScheduledPost.objects.get(pk=created.json()["id"])
+        self.assertEqual((post.status, post.error_log, post.seo_requested_at), (Status.FAILED, "seo_dispatch_failed", None))
+        self.assertEqual(self.client.get(detail(post), **self.ws).json()["error_code"], "seo_dispatch_failed")
+        dispatch_scheduled_posts_batch()
+        self.upload.assert_not_called()
+
+        # The helper draft of the panel: its next read shows the failure, and sending it without text asks first.
+        created = self.sent(lambda: self.create(video_clip=str(self.seo_clip.pk), platform=Platform.YOUTUBE_SHORTS, draft=True))
+        draft = ScheduledPost.objects.get(pk=created.json()["id"])
+        shown = self.client.get(detail(draft), **self.ws).json()
+        self.assertEqual((shown["status"], shown["seo_status"]), ("DRAFT", "failed"))
+        self.assert_text_missing(self.sent(lambda: self.patch_post(draft, publish_at=None)))
+
+    def test_the_worker_does_not_send_a_queued_post_whose_ai_text_never_came(self):
+        from apps.videos.tasks import upload_to_social_network
+
+        post = self.make_post(clip=self.seo_clip, status=Status.QUEUED, publish_at=timezone.now())
+        ScheduledPost.objects.filter(pk=post.pk).update(
+            seo_requested_at=timezone.now() - service.seo_request_window() - timedelta(minutes=1),
+        )
+
+        self.assertEqual(upload_to_social_network.apply(args=[str(post.pk)]).get(), "AI text lost")
+
+        self.send_post.assert_not_called()
+        post.refresh_from_db()
+        self.assertEqual((post.status, post.error_log), (Status.FAILED, "seo_request_expired"))
+
+    def test_a_post_that_already_failed_keeps_its_own_failure(self):
+        # A failure of publishing tells the user to check the network: a lost AI text must not replace it.
+        expired = timezone.now() - service.seo_request_window() - timedelta(minutes=1)
+        lost = self.make_post(clip=self.seo_clip, status=Status.FAILED, error_log="outcome_unknown (read timeout)")
+        ScheduledPost.objects.filter(pk=lost.pk).update(seo_requested_at=expired)
+        dispatch_scheduled_posts_batch()
+        lost.refresh_from_db()
+        self.assertEqual((lost.status, lost.error_log, lost.seo_requested_at), (Status.FAILED, "outcome_unknown (read timeout)", None))
+
+        refused = self.make_post(clip=self.seo_clip, platform=Platform.YOUTUBE_SHORTS, status=Status.FAILED, error_log="outcome_unknown")
+        self.seo_apply_async.side_effect = OSError("broker down")
+        self.sent(lambda: self.post_action(refused, "regenerate-seo"))
+        refused.refresh_from_db()
+        self.assertEqual((refused.status, refused.error_log, refused.seo_requested_at), (Status.FAILED, "outcome_unknown", None))
+
+    def test_own_hashtags_are_a_text_of_its_own_when_the_ai_fails_too(self):
+        # The API lets a post with only its hashtags go out; a failure of the AI did not, and turned it FAILED.
+        from apps.videos.tasks.social import _fail_seo_post
+
+        created = self.sent(lambda: self.create(video_clip=str(self.seo_clip.pk), hashtags=["mio"]))
+        post = ScheduledPost.objects.get(pk=created.json()["id"])
+
+        self.dispatch.assert_not_called()  # it waits for the AI caption
+
+        with self.captureOnCommitCallbacks(execute=True):
+            _fail_seo_post(post.pk, "seo_failed:RuntimeError")
+
+        post.refresh_from_db()
+        self.assertEqual((post.status, post.error_log), (Status.SCHEDULED, "seo_failed:RuntimeError"))
+        self.dispatch.assert_called_once_with(retry=False)  # it goes out with its hashtags
 
 
 class RegenerateTests(PostsWriteHarness):

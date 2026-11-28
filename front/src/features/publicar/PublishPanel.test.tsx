@@ -783,7 +783,7 @@ describe('E1 · Publicar · el texto con IA falló', () => {
 
     const alert = await within(panel).findByRole('alert');
     expect(alert).toHaveTextContent('No pudimos publicar en TikTok');
-    expect(alert).toHaveTextContent('No pudimos generar el texto y la publicación no tiene texto.');
+    expect(alert).toHaveTextContent('No pudimos generar el texto con IA y esta publicación no tiene texto: escribilo o regeneralo.');
     expect(await within(panel).findByText('No pudimos generar el texto. Escribilo vos.')).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
     expect(db().posts.find((post) => post.id === draft.id)?.status).toBe('DRAFT');
