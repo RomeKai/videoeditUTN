@@ -32,7 +32,7 @@ import {
   type ProjectHeaderMeta,
 } from '@/ui';
 import { buildProjectTabs, costLabel, currentTab, describeProjectStatus, headerStatusText, isWholeVideo, projectDuration, sourceInfo, type ProjectTabKey } from './model';
-import { ProjectProvider, anyClipRendering } from './project-context';
+import { ProjectProvider, clipsChanging } from './project-context';
 import styles from './ProjectShell.module.css';
 import { ProjectTabs } from './ProjectTabs';
 import { recreateHref, useClipActions } from './useClipActions';
@@ -202,7 +202,7 @@ export function ProjectShell({ projectId, children }: { projectId: string; child
   const [deleted, setDeleted] = useState(false);
   // While the delete dialog is open, and for good once it deleted the project, nothing is fetched:
   // the screen keeps the last data until the list replaces it, instead of asking for a project that is gone.
-  const query = useProject(projectId, { enabled: !deleting && !deleted, pollWhile: anyClipRendering });
+  const query = useProject(projectId, { enabled: !deleting && !deleted, pollWhile: clipsChanging });
   const lastProject = useRef(query.data);
   if (query.data) lastProject.current = query.data;
   const pathname = usePathname() ?? '';

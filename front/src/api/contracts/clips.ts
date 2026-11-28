@@ -45,7 +45,7 @@ export const getClip = defineEndpoint({
   backend: {
     status: 'exists',
     source: 'back/apps/videos/views_clips.py · ClipDetailView.get + VideoClipSerializer',
-    note: 'Los mismos campos que el clip dentro del proyecto, con `preview_url` (reproduce el render; `null` si el clip no está `completed` o `published`) y `thumbnail_url` (`null` si no hay miniatura): URLs temporales de 1 h. Los extras propuestos (`error_code`, `posts`) todavía no llegan.',
+    note: 'Los mismos campos que el clip dentro del proyecto, con `preview_url` (reproduce el render; `null` si el clip no está `completed` o `published`) y `thumbnail_url` (`null` si no hay miniatura): URLs temporales de 1 h. `posts` trae cada publicación del clip, en cualquier estado (también borradores y fallidas), con `id`, `platform`, `status` y `publish_at`, ordenadas por `publish_at`: el clip dentro del proyecto, en la lista de proyectos y en `paper-edit-data` trae lo mismo, leído en una sola consulta para toda la respuesta. En el modo híbrido de la demo (clips reales, publicaciones en mocks) solo trae las publicaciones del backend: lo que se publica en la demo no las cambia. El extra propuesto `error_code` todavía no llega.',
   },
   screens: ['D4', 'E1'],
 });

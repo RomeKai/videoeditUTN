@@ -23,7 +23,7 @@ from django.conf import settings
 from apps.payments.models import Transaction
 from apps.payments.services import estimate, wallet_service
 from apps.payments.tests.test_contract_fixture import normalised
-from apps.videos.models import VideoClip, VideoProject
+from apps.videos.models import ScheduledPost, VideoClip, VideoProject
 from apps.videos.services.ai.pipeline_state import PipelineStage
 from apps.videos.tests.test_project_data import ProjectDataHarness, reserve
 
@@ -79,9 +79,14 @@ class ProjectListContractFixtureTests(ProjectDataHarness):
             # What a row leaves out (VideoProjectListSerializer).
             transcript_data=[{'word': 'Hola', 'start': 0.0, 'end': 0.4}], ai_rationale_log={'suggestions_count': 1},
         )
-        self.a_clip(
+        published = self.a_clip(
             ready, moment(10, 30), rendered=True, title='El error más común', status=VideoClip.Status.COMPLETED,
             virality_score=87, ai_reasoning='Gancho claro en los primeros segundos.',
+        )
+        # Where it went out: the card of D3 reads `posts` («Publicado», and the counts of the filters).
+        ScheduledPost.objects.create(
+            video_clip=published, platform=ScheduledPost.Platform.TIKTOK, status=ScheduledPost.Status.PUBLISHED,
+            publish_at=moment(10, 45),
         )
         review = self.a_project(
             moment(11), title='Clase 2: Ahorro', status=Status.AWAITING_APPROVAL,
