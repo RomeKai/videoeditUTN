@@ -105,8 +105,11 @@ test.describe('B2 · Proyectos', () => {
     await expect(page.getByRole('button', { name: 'Orden: título (a–z)' })).toBeVisible();
 
     // Back to the defaults: the URL is the plain one again.
+    // The search is written a moment after the last key: each step waits for its own URL before the next.
     await page.getByRole('searchbox', { name: 'Buscar proyectos por título' }).fill('');
+    await expect(page).toHaveURL(/\/proyectos\?orden=title&estado=ready$/);
     await filters.getByRole('button', { name: /Todos/ }).click();
+    await expect(page).toHaveURL(/\/proyectos\?orden=title$/);
     await page.getByRole('button', { name: 'Orden: título (a–z)' }).click();
     await page.getByRole('menuitemradio', { name: 'Más recientes' }).click();
     await expect(page).toHaveURL(/\/proyectos$/);

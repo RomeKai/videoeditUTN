@@ -23,6 +23,35 @@ const rowOf = async (title: string) => {
 };
 
 describe('B2 · Proyectos', () => {
+  it('vaciar el buscador y cambiar el orden enseguida no pierde ninguno de los dos cambios', async () => {
+    // As Next: the URL a `router.replace` asks for reaches the screen a moment later, not in the same task.
+    const router = (await import('next/navigation')).useRouter();
+    const replace = vi.spyOn(router, 'replace').mockImplementation((url: string) => {
+      setTimeout(() => nav.set(url.split('?')[1] ?? ''), 400);
+    });
+    try {
+      nav.set('orden=title&buscar=vlog');
+      startScenario('estudio-norte');
+      const user = userEvent.setup();
+      renderScreen(<ProjectsScreen />);
+      await table();
+
+      // The search is written 300 ms after the last key: the order changes in between, and neither URL has arrived yet.
+      await user.clear(screen.getByRole('searchbox', { name: 'Buscar proyectos por título' }));
+      await user.click(screen.getByRole('button', { name: 'Orden: título (a–z)' }));
+      await user.click(screen.getByRole('menuitemradio', { name: 'Más recientes' }));
+      await waitFor(() => expect(replace).toHaveBeenCalledTimes(2), { timeout: 3000 });
+      // Whichever was written last carries the other one: before, it wrote back what the other had changed.
+      expect(replace).toHaveBeenLastCalledWith('/proyectos', { scroll: false });
+      await waitFor(() => expect(nav.get()).toBe(''), { timeout: 3000 });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(nav.get()).toBe('');
+      expect(replace).toHaveBeenCalledTimes(2);
+    } finally {
+      replace.mockRestore();
+    }
+  });
+
   it('lista los proyectos con su estado de la sección 3 y su acción principal', async () => {
     startScenario('estudio-norte');
     renderScreen(<ProjectsScreen />);
