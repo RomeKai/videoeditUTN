@@ -378,6 +378,12 @@ class ScheduledPost(models.Model):
         ordering = ['publish_at']
         indexes = [
             models.Index(fields=['status', 'publish_at']),
+            # The posts whose AI text is on its way, a few rows: fail_lost_ai_texts reads them on every
+            # beat run and after every write that leaves a post due (services/scheduled_posts.py).
+            models.Index(
+                fields=['seo_requested_at'], name='post_seo_requested_idx',
+                condition=models.Q(seo_requested_at__isnull=False),
+            ),
         ]
 
     def __str__(self):
