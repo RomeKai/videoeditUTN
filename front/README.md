@@ -1,11 +1,12 @@
 # OneCreator · frontend
 
-App web de OneCreator: Next.js 15 (App Router), React 19 y TypeScript estricto. Todas las pantallas funcionan contra una API simulada en el navegador, y el contrato con el backend está definido en un solo lugar, así que conectar el Django real es apagar los mocks.
+App web de OneCreator: Next.js 15 (App Router), React 19 y TypeScript estricto. Todas las pantallas funcionan contra una API simulada en el navegador y también contra el Django real: el contrato con el backend está definido en un solo lugar, y el modo se elige al arrancar o al construir.
 
 - **Qué es cada pantalla:** [`documents/producto/mapa-de-pantallas.md`](../documents/producto/mapa-de-pantallas.md).
 - **Qué ruta tiene cada pantalla y quién la construye:** [`ROUTES.md`](ROUTES.md).
 - **Contrato de la API (para el equipo de backend):** [`src/api/CONTRACT.md`](src/api/CONTRACT.md).
 - **Cómo conectar el backend real, área por área (reglas, orden y quién hace qué):** [`documents/integracion/guia-conexion.md`](../documents/integracion/guia-conexion.md).
+- **La demo de punta a punta (Docker, modo híbrido):** [`documents/runbooks/demo.md`](../documents/runbooks/demo.md).
 - **Sistema visual:** [`documents/producto/diseno/`](../documents/producto/diseno/README.md), y todos los componentes en vivo en `/dev/kit`.
 
 ## Cómo correrlo
@@ -49,11 +50,13 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 (`NEXT_PUBLIC_API_MOCKS=false` sigue funcionando y significa lo mismo. Si están las dos variables, manda `NEXT_PUBLIC_API_MODE`.)
 
-Levantá el backend como dice [`back/README.md`](../back/README.md) y reiniciá `npm run dev`. Hoy el backend tiene 14 de los 80 endpoints del contrato, y 3 más en parte (login, proyectos, revisión, vista previa de clip y brand kits). Los otros 63 son propuestos para los huecos de la sección 8 del mapa. `src/api/CONTRACT.md` dice cuál es cuál, y [`documents/integracion/guia-conexion.md`](../documents/integracion/guia-conexion.md) cómo conectarlos.
+Levantá el backend como dice [`back/README.md`](../back/README.md) y reiniciá `npm run dev`. Hoy el backend tiene los 82 endpoints del contrato: 79 enteros y 3 en parte (el detalle del proyecto y las dos lecturas de publicaciones). No queda ninguno propuesto. `src/api/CONTRACT.md` dice cuál es cuál y qué le falta a cada parcial.
+
+En modo `real` no hay mocks, ni panel, ni `/dev/checkout`, ni `/dev/conectar-red`. Lo que pide un servicio de afuera necesita su configuración en el backend: conectar redes y publicar, una cuenta de Ayrshare (`AYRSHARE_API_KEY`); pagar, `PAYMENTS_PROVIDER` (ver `back/.env.example`).
 
 ### Modo híbrido: una parte real y el resto simulado
 
-Sirve para conectar la app al backend de a un dominio, sin romper lo que todavía no existe ahí. MSW sigue corriendo: deja pasar al backend los pedidos de los endpoints «reales» y responde él los demás.
+Sirve para usar el backend real en una parte y dejar simulado lo que no se puede o no se quiere usar de verdad (por ejemplo, las redes sin una cuenta de Ayrshare). Así corre la demo. MSW sigue corriendo: deja pasar al backend los pedidos de los endpoints «reales» y responde él los demás.
 
 ```bash
 # front/.env.development.local
@@ -75,12 +78,14 @@ El modo y la lista quedan fijos **al construir** (`env` en `next.config.ts`), en
 
 `NEXT_PUBLIC_API_REAL` acepta, en cualquier combinación:
 
-- **nada (vacío):** va al backend todo endpoint que el contrato marca `exists` o `partial`. Marcar un endpoint como `exists` en `src/api/contracts/` alcanza para que deje de simularse; no hay otra lista que tocar.
-- **dominios del contrato** (`users`, `workspaces`, `projects`, `clips`, `brandkits`, `billing`, `social`, `notifications`, `system`): el dominio va **entero** al backend, también lo que el contrato marca `proposed` (responderá 404 hasta que exista).
+- **nada (vacío):** va al backend todo endpoint que el contrato marca `exists` o `partial`. Hoy son todos: con la lista vacía ningún mock responde nada, aunque MSW y el panel siguen ahí. Para dejar algo simulado hay que escribir la lista.
+- **dominios del contrato** (`users`, `workspaces`, `projects`, `clips`, `brandkits`, `billing`, `social`, `notifications`, `system`): el dominio va **entero** al backend, también lo que el contrato marque `proposed` (respondería 404 hasta que exista; hoy no hay ninguno).
 - **ids de endpoint** (`billing.plans`, `users.me`): solo ese endpoint.
 - **`existing`:** lo mismo que la lista vacía, para sumarle algo: `NEXT_PUBLIC_API_REAL=existing,users.me`.
 
-Con una lista, lo que no está en ella se simula. Un nombre que no es un dominio ni un endpoint del contrato (un error de tipeo) se ignora, con un aviso en la consola y en el panel. `auth` va siempre al backend en híbrido y no hace falta nombrarlo: el backend no acepta los tokens simulados, así que la sesión tiene que ser real. Por eso en híbrido se entra con un usuario del backend (el registro y la recuperación de contraseña todavía no existen ahí y responden 404).
+La lista de la demo está en `docker-compose.demo.yml` (`DEMO_API_REAL`): todo real menos `social`. `src/api/demo-list.test.ts` revisa que no le falte ningún endpoint de un dominio nombrado de a uno.
+
+Con una lista, lo que no está en ella se simula. Un nombre que no es un dominio ni un endpoint del contrato (un error de tipeo) se ignora, con un aviso en la consola y en el panel. `auth` va siempre al backend en híbrido y no hace falta nombrarlo: el backend no acepta los tokens simulados, así que la sesión tiene que ser real. Por eso en híbrido se entra con un usuario del backend. Crear la cuenta, verificar el email y recuperar la contraseña también van al backend: con `backend.settings.dev` los emails salen por la consola del backend.
 
 El ruteo sale del registro del contrato (`src/api/routing.ts`); cada respuesta de un mock lleva la cabecera `X-OC-Mock: <id del endpoint>`, así que en la pestaña de red se ve quién contestó.
 
@@ -94,8 +99,8 @@ El ruteo sale del registro del contrato (`src/api/routing.ts`); cada respuesta d
 
 Los mocks y el backend no pueden discrepar sobre eso. Hay dos casos:
 
-- **`/me` real** (cuando exista en el backend: `NEXT_PUBLIC_API_REAL=existing,users.me`, o solo marcarlo `exists`). La app usa los workspaces reales y manda su id en `X-Workspace-Id`. Un dominio simulado que recibe un workspace que no conoce lo **adopta**: le crea una billetera con el saldo y el plan del escenario, las tres redes sin conectar y al usuario como miembro.
-- **`/me` simulado** (hoy). Es un **puente de desarrollo**, marcado como tal en el código (`src/api/mocks/hybrid.ts`, `BACKEND_DEFAULT_WORKSPACE_PREFIX` en `src/api/config.ts`): el mock lee el `user_id` del JWT real (sin poder verificar la firma), usa el email con el que se inició sesión y muestra un único workspace, «Workspace por defecto (backend)». Su id es un marcador: para ese id el cliente **no manda** `X-Workspace-Id` y el backend usa el workspace por defecto del usuario (`back/apps/core/workspace.py`). Con este puente solo se ve ese workspace: no hay forma de cambiar a otro hasta que `/me` sea real, y «Crear workspace» queda deshabilitado con el motivo (el nuevo existiría solo en los mocks y el backend respondería 404 a su id). El puente solo existe en modo híbrido: en `mock` y en `real` un id marcador que haya quedado en el navegador se descarta al arrancar, y también en híbrido en cuanto `/me` pasa a ser real.
+- **`/me` real** (hoy: `users.me` existe en el backend, así que va con la lista vacía, con `existing` o con `users` en la lista; la demo lo usa). La app usa los workspaces reales y manda su id en `X-Workspace-Id`. Un dominio simulado que recibe un workspace que no conoce lo **adopta**: le crea una billetera con el saldo y el plan del escenario, las tres redes sin conectar y al usuario como miembro.
+- **`/me` simulado** (solo si escribís una lista que no nombra `users` ni `users.me`). Es un **puente de desarrollo**, marcado como tal en el código (`src/api/mocks/hybrid.ts`, `BACKEND_DEFAULT_WORKSPACE_PREFIX` en `src/api/config.ts`): el mock lee el `user_id` del JWT real (sin poder verificar la firma), usa el email con el que se inició sesión y muestra un único workspace, «Workspace por defecto (backend)». Su id es un marcador: para ese id el cliente **no manda** `X-Workspace-Id` y el backend usa el workspace por defecto del usuario (`back/apps/core/workspace.py`). Con este puente solo se ve ese workspace: no hay forma de cambiar a otro mientras `/me` sea simulado, y «Crear workspace» queda deshabilitado con el motivo (el nuevo existiría solo en los mocks y el backend respondería 404 a su id). El puente solo existe en modo híbrido: en `mock` y en `real` un id marcador que haya quedado en el navegador se descarta al arrancar, y también en híbrido en cuanto `/me` pasa a ser real.
 
 Lo mismo pasa con proyectos y clips: si un endpoint simulado recibe el id de uno que solo existe en el backend (su actividad, publicarlo), crea un **doble** con ese id. Los ids de lo adoptado (billetera, membresía, proyecto de un clip) se derivan del id real, así que varios pedidos simultáneos adoptan lo mismo.
 
@@ -106,21 +111,22 @@ Lo mismo pasa con proyectos y clips: si un endpoint simulado recibe el id de uno
 - **Lo que todavía no se leyó:** si un endpoint simulado pide un clip o un proyecto del que la página no recibió nada (por ejemplo, se abre Publicar con un link directo y el clip también está simulado), el doble nace como «Clip del backend» en «Proyecto del backend», con el id del proyecto derivado del clip. En cuanto llega una respuesta real que lo nombra, toma sus datos, también en las publicaciones ya creadas (no cambia de proyecto: el id derivado queda).
 - **Qué se actualiza después:** solo la miniatura (su URL es temporal y cada respuesta trae una nueva). El título y los tiempos se copian una vez: si un endpoint simulado editó el doble, eso no se pisa.
 
-Lo que la página leyó se guarda en memoria, por pestaña; lo copiado queda en la base simulada (`localStorage`), así que sobrevive a una recarga. Una miniatura cuya URL venció se cae al dibujo de siempre, no a una imagen rota.
+Lo que la página leyó se guarda en memoria, por pestaña, y se olvida al cerrar sesión: la sesión siguiente no arma dobles con datos de la anterior. Lo copiado queda en la base simulada (`localStorage`), así que sobrevive a una recarga. Una miniatura cuya URL venció se cae al dibujo de siempre, no a una imagen rota.
 
 #### Qué combinaciones son coherentes
 
 | Combinación | ¿Coherente? | Detalle |
 |---|---|---|
-| Lecturas reales de proyectos y brand kits + todo lo demás simulado (el valor por defecto) | Sí, para ver y navegar | Las listas, el detalle, la revisión y los brand kits son los del backend. |
+| Todo real menos `social` (la lista de la demo) | Sí | Lo único simulado es Redes y Publicar. Ver «Clip real + publicación simulada». |
+| Lecturas reales de proyectos y brand kits + todo lo demás simulado | Sí, para ver y navegar | Las listas, el detalle, la revisión y los brand kits son los del backend. |
 | Subir un archivo a un endpoint real | Funciona, con límites | Ver «Subidas reales»: el progreso y el tiempo de espera no son los verdaderos. |
 | Crear un proyecto real + billetera simulada | **No** | El backend reserva y cobra en su billetera; la simulada no se entera. El saldo, los movimientos y la estimación de costo que muestra la app no reflejan los cobros reales, y el backend puede responder 402 con un saldo simulado que alcanza. |
 | Planes reales (`billing.plans`) + suscripción simulada | **No** | La suscripción simulada apunta a un plan sembrado, con otro id: «tu plan» no coincide con ninguno de la lista real. Los límites que aplica el backend son los del plan real. |
 | Proyecto real + endpoints simulados de ese proyecto o sus clips (actividad, re-render, editar, renderizar o borrar un clip) | **No**, solo no se rompe | Trabajan sobre el doble: lo que se cambia ahí no llega al proyecto real ni se ve en su detalle. |
-| Clip real + publicación simulada | A medias | Se puede recorrer el flujo de publicar y Publicaciones muestra el clip real (título, proyecto, duración, miniatura), pero no se publica nada y el clip real no muestra sus publicaciones. |
+| Clip real + publicación simulada | A medias | Se puede recorrer el flujo de publicar y Publicaciones muestra el clip real (título, proyecto, duración, miniatura), pero no se publica nada y el clip real no muestra sus publicaciones: Clips cuenta las del backend (`posts` de cada clip) y sigue en «Publicados 0 · Programados 0». |
 | Workspaces o miembros simulados + todo lo demás | **No** para roles | Los mocks no conocen el rol real: tratan al usuario como admin. El backend aplica el rol verdadero en lo que responde, así que la app puede ofrecer acciones que el backend rechaza con 403. |
 | `/me` simulado + `workspaces` real | **No** | El workspace que muestra `/me` es el marcador, que el backend no conoce: los endpoints `/workspaces/:id/…` responden 404. Pasá `users` (o `users.me`) a real antes que `workspaces`. |
-| Notificaciones simuladas | Sí, pero vacías | No hay eventos reales que las generen. |
+| Notificaciones simuladas | Sí, pero vacías | No hay eventos reales que las generen. Las reales (`notifications` en la lista) las escribe el backend. |
 | Dos usuarios reales en el mismo navegador | Sí | Cada uno tiene su usuario y su workspace marcador en la base simulada. |
 | Cambiar de modo en el mismo navegador | Sí | Al arrancar, la sesión del otro modo se descarta (un token simulado no sirve en el backend y uno real no sirve en los mocks). |
 
@@ -136,7 +142,18 @@ E2E_HYBRID_EMAIL=alguien@ejemplo.com E2E_HYBRID_PASSWORD=… \
 npm run test:e2e -- --project=hibrido
 ```
 
-Arma un tercer build (`.next-e2e-hybrid`) y lo sirve en `E2E_PORT + 2` (o en `E2E_HYBRID_PORT`). El usuario tiene que existir en el backend y ser dueño de un workspace con al menos un proyecto y un brand kit (sin datos, el smoke falla en vez de pasar sin comprobar nada). Comprueba que el login, `/me`, la lista de proyectos, los brand kits y la billetera y las cuentas de redes salgan del backend (un workspace sin perfil en el proveedor responde sus tres redes sin conectar, sin llamarlo); que el backend cree un borrador de publicación de un clip real (sin llamar a ninguna red); crea y borra un brand kit; cambia un dominio desde el panel; y corta el backend para ver el estado de error. `E2E_HYBRID_REAL` pasa una lista a `NEXT_PUBLIC_API_REAL` (el smoke asume la lista vacía).
+Arma un tercer build (`.next-e2e-hybrid`) y lo sirve en `E2E_PORT + 2` (o en `E2E_HYBRID_PORT`).
+
+- **El backend:** uno de desarrollo (`backend.settings.dev`, que acepta cualquier origen por CORS), con las migraciones corridas. No hace falta ninguna key: el smoke no llama a la IA ni a ninguna red.
+- **El usuario:** tiene que existir en el backend y ser dueño de un workspace con al menos un proyecto con clips y un brand kit. Sin datos, el smoke falla en vez de pasar sin comprobar nada. El de `seed_demo --with-projects` cumple con eso (`demo@onecreator.local`). No depende de cuántos proyectos tenga: la segunda página se prueba solo si hay más de 25.
+- **Qué comprueba,** con la lista vacía (hoy, todo real):
+  - el login, `/me`, la lista de proyectos (páginas, filtros, búsqueda y contadores), los brand kits, la billetera y las cuentas de redes salen del backend. Un workspace sin perfil en el proveedor responde sus tres redes sin conectar, sin llamarlo;
+  - el backend crea un borrador de publicación de un clip real, sin llamar a ninguna red, y el smoke lo cancela después;
+  - crea y borra un brand kit;
+  - cambia un dominio desde el panel;
+  - corta el backend para ver el estado de error, con lo simulado andando.
+- `E2E_HYBRID_REAL` pasa una lista a `NEXT_PUBLIC_API_REAL`. El smoke asume la lista vacía: con una lista, se saltea.
+- Los cinco tests corren en serie y cada uno inicia sesión dos veces (la página y un pedido directo al backend). El backend deja pasar 10 logins por minuto por IP (`THROTTLE_LOGIN`): correrlo dos veces seguidas puede dar 429. Esperá un minuto.
 
 ## Comandos
 
@@ -153,14 +170,35 @@ Arma un tercer build (`.next-e2e-hybrid`) y lo sirve en `E2E_PORT + 2` (o en `E2
 
 Antes de cada push tienen que pasar `lint`, `typecheck`, `test`, `build` y `test:e2e`. El job `Frontend` del CI corre lo mismo.
 
+```bash
+npm run lint && npm run typecheck && npm test && npm run build && npm run test:e2e
+```
+
+Para correr una parte:
+
+```bash
+npx vitest run src/features/publicar            # los tests de una carpeta
+npm run test:e2e -- e2e/publicar.spec.ts        # un spec de Playwright
+npm run test:e2e -- --project=sin-mocks         # solo el build sin mocks
+```
+
+**Playwright.** La primera vez, `npx playwright install chromium` (el CI instala el suyo). `PW_CHROMIUM_PATH` apunta a otro Chromium ya instalado. Fuera del CI, si en el puerto ya hay un servidor de una corrida anterior, lo reusa sin volver a construir: después de cambiar código, cortalo o cambiá `E2E_PORT`.
+
+**Tests de e2e que no fallan de a ratos.** Los helpers están en `e2e/helpers.ts`:
+
+- `watch(page)` y `expectClean(problems, dónde)`: juntan errores de consola, pedidos fallidos y respuestas que dio el lado equivocado, y fallan si hubo alguno.
+- `settle(page)`: espera a que no quede nada cargando (red quieta y ningún `aria-busy`). Va antes de mirar o tocar una pantalla recién abierta.
+- `follow(link, llegó)`: toca un link a una pantalla que carga su JavaScript a demanda y espera esa pantalla. Si la navegación quedó dormida, vuelve a tocar. Con la máquina cargada, React a veces pierde el aviso de que el código de la pantalla ya llegó: el clic se tomó, pero la pantalla vieja queda hasta el próximo cambio de la página. Esperar más no sirve; tocar de nuevo sí (y es lo que haría una persona). Pasa más o menos una vez cada cien corridas con diez workers en cuatro núcleos.
+- No comparar contra datos que cambian con el reloj o con otro test: elegí una hora que ninguna fila puede tener, y esperá el pedido (`expect.poll`) en vez de un total que puede coincidir de casualidad.
+
 **Un build en otra carpeta.** `NEXT_DIST_DIR=.next-ensayo npm run build` deja el build en esa carpeta en vez de `.next` (sirve para armar uno al lado de una app que está corriendo; así hace Playwright los suyos). Usá un nombre que empiece con `.next`: Git y ESLint ignoran cualquier `.next*`. Lo que no se puede evitar es que Next **reescriba `tsconfig.json`**: en cada build agrega `<carpeta>/types/**/*.ts` a `include` si no está escrita tal cual (compara el texto; un comodín como `.next*/types/**/*.ts` no le alcanza y la agrega igual). Las carpetas de siempre (`.next` y las tres de Playwright) ya están anotadas, así que esos builds no tocan el archivo. Con cualquier otra, descartá el cambio antes de commitear: `git checkout -- tsconfig.json`.
 
 ## Carpetas
 
 ```
 front/
-├── e2e/                  Smoke de Playwright
-├── scripts/              Generador de CONTRACT.md y ROUTES.md
+├── e2e/                  Tests de Playwright y sus helpers
+├── scripts/              Generador de CONTRACT.md y ROUTES.md, el parche del worker de MSW y sus tests
 └── src/
     ├── app/              Rutas (App Router)
     │   ├── (public)/     Acceso y Precios: sin sesión
@@ -215,7 +253,9 @@ front/
 - **Tema:** oscuro por defecto; la elección se guarda en `localStorage` (`oc.theme`) y se aplica antes de pintar.
 - **Sesión:** el par JWT vive en `localStorage` (`oc.auth`). Ante un 401 el cliente renueva una vez y repite; si no puede, se abre «Tu sesión venció» sin perder la pantalla. Si el 401 trae `code: "session_revoked"` (se cerró la sesión en todos los dispositivos desde otro), el mismo diálogo dice «Cerraste la sesión en todos tus dispositivos».
   - *Lo que se resigna:* un token en `localStorage` lo puede leer cualquier script que corra en la página, así que un XSS se lleva la sesión. Se eligió igual porque el backend entrega el par en el cuerpo de `POST /api/token/` (no hay cookie `HttpOnly`) y la app es de otro origen que la API. La defensa es no dejar entrar scripts ajenos: nada de `dangerouslySetInnerHTML` con datos del usuario, sin scripts de terceros, y una Content-Security-Policy estricta en producción (`script-src 'self'`). El único script inline es el del tema (`src/lib/theme-script.ts`): la CSP tiene que permitirlo con su hash o un nonce. Si el backend pasa a cookies `HttpOnly`, cambia solo `src/api/session.ts` y `src/api/client.ts`.
-  - Varias pestañas comparten la sesión: si una renueva o vuelve a iniciar sesión, las otras toman el par nuevo.
+  - Varias pestañas comparten la sesión: si una renueva o vuelve a iniciar sesión, las otras toman el par nuevo. La renovación va detrás de un lock del navegador (`navigator.locks`, `oc.auth.refresh`), para que dos pestañas no manden el mismo refresh: el backend rota el refresh y el segundo fallaría. Hace el doble refresh muy raro, no imposible: si el lock no llega a tiempo, la pestaña renueva sin él.
+  - «Tu sesión venció» se cierra solo cuando otra pestaña inicia sesión con la misma cuenta. Con otra cuenta queda abierto. Una sesión vieja guardada no lo abre sobre el login.
+- **Mantenimiento (K5):** solo saca la app el 503 del mantenimiento: el que trae únicamente `detail`, o uno que no es JSON, y siempre que `GET /status/` lo confirme o también responda 503. Un 503 o un 502 con `error` o `code` es el error de ese pedido y se muestra donde se hizo. Mientras K5 está a la vista, la app pregunta el estado cada 10 s (una pestaña oculta no pregunta) y, al terminar, vuelve a pedir lo que había fallado.
 - **Layout raíz:** `src/app/layout.tsx` es un Server Component y no importa valores (constantes, funciones) de módulos `'use client'`, solo componentes. Un valor así llega al navegador como referencia que espera el JS de ese módulo; dentro de `<head>` eso rompía la hidratación de toda la página cuando el JS llegaba tarde (error #418 de React, intermitente bajo carga). Por eso el script del tema vive en `src/lib/theme-script.ts`.
 - **Mocks y service worker:** con los mocks apagados la app da de baja el worker de MSW que haya quedado registrado en ese origen.
 - **El worker no toca los videos:** `public/mockServiceWorker.js` lo genera `msw init` (y el `postinstall` de MSW en cada `npm install`), así que no se edita a mano. `scripts/patch-msw-worker.mjs` le agrega, después de cada instalación (`postinstall`) y de `npm run msw:init`, una salida temprana para los pedidos con `Range`, los de un `<video>` o `<audio>` y todo lo que está bajo `/media/`. Sin eso el worker rearmaba el pedido sin el header `Range` y el servidor mandaba el archivo entero en cada salto del video. Para regenerar el worker se usa `npm run msw:init`, nunca `msw init` solo. `scripts/msw-worker.test.ts` falla si el worker que se sirve no tiene el bypass, y `e2e/media-rango.spec.ts` lo comprueba en Chromium.
