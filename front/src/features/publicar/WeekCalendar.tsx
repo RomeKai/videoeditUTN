@@ -3,8 +3,8 @@
 import { useMemo, useState, type DragEvent } from 'react';
 import type { ScheduledPost } from '@/api/contracts/social';
 import { formatTime, formatTimeZone } from '@/lib/format';
-import { VideoThumb, cx } from '@/ui';
-import { GroupNets, groupLabel } from './PostBits';
+import { cx } from '@/ui';
+import { GroupNets, PostThumb, groupLabel } from './PostBits';
 import styles from './Publicaciones.module.css';
 import { WEEK_DOW, addDays, dayKey, groupKind, groupPosts, isDraggable, sameDay, shortDay, type GroupKind, type PostGroup } from './posts';
 
@@ -152,7 +152,7 @@ export function WeekCalendar({ monday, posts, now, selectedId, onOpen, onMove, g
                         onDragEnd={endDrag}
                         onClick={() => onOpen?.(first)}
                       >
-                        <VideoThumb ratio="9:16" xs seed={group.clipId} className={styles.pthumb} />
+                        <PostThumb clip={first.clip} xs className={styles.pthumb} />
                         <span className={styles.pbody}>
                           <span className={styles.prow}>
                             <span className={cx(styles.ptime, 'num')}>{formatTime(group.at)}</span>

@@ -612,15 +612,22 @@
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+/* A block as wide as its cell (the table has fixed columns): the account name is cut with an ellipsis
+   instead of running over the Hora column. */
 .netname {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
+  max-width: 100%;
+}
+.netname > :first-child {
+  flex: none;
 }
 .netcol {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-width: 0;
 }
 .netcol > span {
@@ -729,13 +736,23 @@
   color: var(--fg-subtle);
 }
 .mNet {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
   font-size: 12px;
   line-height: 16px;
   color: var(--fg-muted);
   margin-top: 2px;
+}
+.mNet > :first-child {
+  flex: none;
+}
+.mNetName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .mTime {
   font-size: 13px;

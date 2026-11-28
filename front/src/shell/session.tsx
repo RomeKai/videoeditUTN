@@ -8,7 +8,7 @@ import type { Role } from '@/api/contracts/common';
 import type { Me, WorkspaceSummary } from '@/api/contracts/users';
 import { isScopedTo, isUnscoped, useActiveWorkspaceId, useMe, useSessionPresence, useSubscription, useUpdateMe } from '@/api/hooks';
 import { SessionExpiredError } from '@/api/errors';
-import { getActiveWorkspaceId, setActiveWorkspaceId } from '@/api/session';
+import { getActiveWorkspaceId, rememberSessionEmail, setActiveWorkspaceId } from '@/api/session';
 import { useGuardedNavigation } from './leaveGuard';
 import { can as canDo, NO_ACCESS_REASON, type Action, type PermissionContext } from '@/lib/permissions';
 
@@ -75,6 +75,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (workspace && getActiveWorkspaceId() !== workspace.id) setActiveWorkspaceId(workspace.id);
     else if (me && me.workspaces.length === 0 && getActiveWorkspaceId() !== null) setActiveWorkspaceId(null);
   }, [me, workspace]);
+
+  // Whose session this browser holds, for the day it is found dead before `/me` answers (dialog D9, login).
+  const sessionEmail = hasSession ? (me?.email ?? null) : null;
+  useEffect(() => {
+    if (sessionEmail) rememberSessionEmail(sessionEmail);
+  }, [sessionEmail]);
 
   const { mutateAsync: saveMe } = updateMe;
   const navigation = useGuardedNavigation();

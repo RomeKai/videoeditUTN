@@ -776,6 +776,56 @@ describe('sesión', () => {
   });
 });
 
+describe('503 y 502 que no son mantenimiento', () => {
+  /** What the maintenance listener heard while the endpoint answered `status` with `body`. */
+  async function heard(status: number, body: unknown): Promise<{ seen: boolean[]; error: unknown }> {
+    setTokens({ access: 'acceso-1', refresh: 'refresh-1' });
+    const seen: boolean[] = [];
+    const off = onMaintenance((active) => seen.push(active));
+    server.use(
+      http.get(`${API_URL}/api/v1/things/:id/`, () =>
+        typeof body === 'string' ? new HttpResponse(body, { status, headers: { 'Content-Type': 'text/html' } }) : HttpResponse.json(body as Record<string, unknown>, { status }),
+      ),
+    );
+    const error = await apiCall(getThing, { params: { id: '1' } }).catch((caught: unknown) => caught);
+    off();
+    return { seen, error };
+  }
+
+  it('el 503 del middleware de mantenimiento (`{detail}`) pasa a mantenimiento', async () => {
+    // back/apps/core/maintenance.py · MAINTENANCE_DETAIL
+    const { seen } = await heard(503, { detail: 'Estamos haciendo mantenimiento. Volvé en un rato.' });
+    expect(seen).toEqual([true]);
+  });
+
+  it('un 503 que no es JSON (un proxy con el backend caído) pasa a mantenimiento', async () => {
+    const { seen } = await heard(503, '<html><body>503 Service Unavailable</body></html>');
+    expect(seen).toEqual([true]);
+  });
+
+  it('un 503 con `code` es un error de ese pedido: no pasa a mantenimiento y llega como ApiError', async () => {
+    const { seen, error } = await heard(503, { error: 'No pudimos leer las redes conectadas. Probá de nuevo en unos minutos.', code: 'provider_not_configured' });
+    expect(seen).toEqual([false]);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(503);
+    expect((error as ApiError).code).toBe('provider_not_configured');
+    expect((error as ApiError).message).toBe('No pudimos leer las redes conectadas. Probá de nuevo en unos minutos.');
+  });
+
+  it('un 503 con `error` y sin `code` tampoco es mantenimiento', async () => {
+    const { seen } = await heard(503, { error: 'No pudimos volver a procesar el proyecto. Probá de nuevo en unos minutos.' });
+    expect(seen).toEqual([false]);
+  });
+
+  it('un 502 con `code` (el proveedor de redes no respondió) es un error normal', async () => {
+    const { seen, error } = await heard(502, { error: 'No pudimos leer las redes conectadas. Probá de nuevo en unos minutos.', code: 'provider_unavailable' });
+    expect(seen).toEqual([false]);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(502);
+    expect((error as ApiError).code).toBe('provider_unavailable');
+  });
+});
+
 describe('toFormData', () => {
   it('arma el formulario como lo espera DRF', () => {
     const file = new File(['x'], 'clase.mp4', { type: 'video/mp4' });

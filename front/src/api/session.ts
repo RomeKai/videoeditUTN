@@ -12,11 +12,14 @@ export interface TokenPair {
 
 export const AUTH_STORAGE_KEY = 'oc.auth';
 export const WORKSPACE_STORAGE_KEY = 'oc.workspace';
+/** The email of the account the stored session belongs to: kept and dropped with the session. */
+export const SESSION_EMAIL_STORAGE_KEY = 'oc.auth.email';
 
 type Listener = () => void;
 const listeners = new Set<Listener>();
 let memoryTokens: TokenPair | null = null;
 let memoryWorkspace: string | null = null;
+let memoryEmail: string | null = null;
 
 function storage(): Storage | null {
   try {
@@ -30,7 +33,8 @@ function emit() {
   for (const listener of listeners) listener();
 }
 
-export function getTokens(): TokenPair | null {
+/** The pair in the browser's storage, whatever this tab thinks of it. */
+function storedTokens(): TokenPair | null {
   const store = storage();
   if (!store) return memoryTokens;
   try {
@@ -43,6 +47,15 @@ export function getTokens(): TokenPair | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The session this tab works with: the stored pair, unless this tab gave it up for dead
+ * (`dropExpiredSession`). Then there is none here until another pair is stored.
+ */
+export function getTokens(): TokenPair | null {
+  const tokens = storedTokens();
+  return tokens && ended && ended.refresh === tokens.refresh ? null : tokens;
 }
 
 /**
@@ -63,6 +76,9 @@ export function setTokens(tokens: TokenPair | null): void {
   memoryTokens = tokens;
   // New tokens end the "expired" state; dropping them ends it too (there is nothing left to expire).
   expired = false;
+  // Signing in (or out) is the end of "your session expired" as well.
+  ended = null;
+  rejectedRefresh = null;
   const store = storage();
   if (store) {
     if (tokens) store.setItem(AUTH_STORAGE_KEY, JSON.stringify(tokens));
@@ -115,10 +131,105 @@ export function setActiveWorkspaceId(id: string | null): void {
   emit();
 }
 
-/** Signs out locally: tokens and the active workspace (it belongs to that user). */
+/** Signs out locally: tokens, the active workspace (it belongs to that user) and whose session it was. */
 export function clearSession(): void {
   setActiveWorkspaceId(null);
+  rememberSessionEmail(null);
   setTokens(null);
+}
+
+/**
+ * Whose session is stored: the profile says it once it loads (the token only carries the user's id).
+ * It is what the app knows of a session that turns out to be dead before the profile ever answered
+ * (the browser was closed for longer than the session lasts): enough to ask for the password of
+ * that account again without making the person type the email.
+ */
+export function rememberSessionEmail(email: string | null): void {
+  if (email === getSessionEmail()) return;
+  memoryEmail = email;
+  try {
+    const store = storage();
+    if (email) store?.setItem(SESSION_EMAIL_STORAGE_KEY, email);
+    else store?.removeItem(SESSION_EMAIL_STORAGE_KEY);
+  } catch {
+    // Kept in memory for this page.
+  }
+}
+
+export function getSessionEmail(): string | null {
+  try {
+    const store = storage();
+    return store ? store.getItem(SESSION_EMAIL_STORAGE_KEY) : memoryEmail;
+  } catch {
+    return memoryEmail;
+  }
+}
+
+/** A stored session this tab gave up for dead: why, whose it was when that is known, and which pair it was. */
+export interface EndedSession {
+  reason: SessionEndReason;
+  email: string | null;
+  /** The refresh token of the dead pair: another pair in the storage is another session, and a live one. */
+  refresh: string;
+}
+let ended: EndedSession | null = null;
+/** The refresh token the server last refused to renew (`noteRefreshRejected`). */
+let rejectedRefresh: string | null = null;
+
+/** The client says which refresh token the server refused: that pair, and no other, is the dead one. */
+export function noteRefreshRejected(refresh: string): void {
+  rejectedRefresh = refresh;
+}
+
+/**
+ * Gives up, in this tab only, a stored session that turned out to be dead on a screen that works without
+ * one (the login, the public pages): there is nothing to keep on screen, so no "Sesión vencida" dialog. The
+ * login says what happened and fills in the email (`getEndedSession`).
+ *
+ * The storage is left alone: another tab may have the "Sesión vencida" dialog open over a screen it
+ * promised to keep, and taking the pair away would send it to the login. From here on this tab simply has
+ * no session (`getTokens` is null) until another pair is stored, here or in another tab.
+ *
+ * False, and nothing is given up, when the stored pair is no longer the one the server refused: another tab
+ * renewed it or signed in meanwhile, and that pair is good. The caller reads again with it.
+ */
+export function dropExpiredSession(reason: SessionEndReason = 'expired'): boolean {
+  const stored = storedTokens();
+  if (stored && rejectedRefresh !== null && stored.refresh !== rejectedRefresh) {
+    expired = false;
+    emit();
+    return false;
+  }
+  expired = false;
+  ended = stored ? { reason, email: getSessionEmail(), refresh: stored.refresh } : null;
+  emit();
+  return true;
+}
+
+/** The session `dropExpiredSession` gave up in this tab, while it is still the stored one; else null. Stable between changes (useSyncExternalStore). */
+export function getEndedSession(): EndedSession | null {
+  if (ended && storedTokens()?.refresh !== ended.refresh) ended = null;
+  return ended;
+}
+
+let sessionNeeded = 0;
+
+/**
+ * A screen that cannot be shown without a session is up (`RequireSession`): if the session turns out
+ * to be dead, the person is asked for the password on top of it (dialog D9). Returns how to undo it.
+ */
+export function holdSessionNeeded(): () => void {
+  sessionNeeded += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    sessionNeeded -= 1;
+  };
+}
+
+export function isSessionNeeded(): boolean {
+  return sessionNeeded > 0;
 }
 
 /**
@@ -129,6 +240,7 @@ export function clearSession(): void {
 function onStorage(event: StorageEvent): void {
   if (event.key !== AUTH_STORAGE_KEY && event.key !== WORKSPACE_STORAGE_KEY) return;
   // Another tab signed in again (or out): this tab's "expired" state is over too.
+  // (A session this tab gave up stays given up while the same dead pair is stored: `getEndedSession`.)
   if (event.key === AUTH_STORAGE_KEY) expired = false;
   if (event.key === WORKSPACE_STORAGE_KEY) {
     // The other tab came back to this one's workspace: nothing is deferred any more.
@@ -191,7 +303,7 @@ export function isSessionExpired(): boolean {
 type MaintenanceListener = (active: boolean) => void;
 const maintenanceListeners = new Set<MaintenanceListener>();
 
-/** Fired when the API answers 503 (true) and when it answers normally again (false): page K5. */
+/** Fired when the API answers a maintenance 503 (true; see `isMaintenance` in ./client) and when it answers anything else (false): page K5. */
 export function onMaintenance(listener: MaintenanceListener): () => void {
   maintenanceListeners.add(listener);
   return () => maintenanceListeners.delete(listener);

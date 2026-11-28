@@ -8,8 +8,8 @@ import { seoPending, useUpdatePost } from '@/api/hooks';
 import { useBillingDialogs } from '@/dialogs';
 import { errorMessage } from '@/lib/error-messages';
 import { formatDateTime, formatNumber, formatTimeZone } from '@/lib/format';
-import { Badge, Banner, Button, Field, Input, NETWORKS, NetworkChip, Num, Skeleton, Textarea, VideoThumb, cx, useToast } from '@/ui';
-import { StatusBadge } from './PostBits';
+import { Badge, Banner, Button, Field, Input, NETWORKS, NetworkChip, Num, Skeleton, Textarea, cx, useToast } from '@/ui';
+import { PostThumb, StatusBadge } from './PostBits';
 import type { PostActions } from './PostList';
 import { forgetDraft } from './draftRegistry';
 import styles from './Publicaciones.module.css';
@@ -186,7 +186,7 @@ export function PostDetail({ post, siblings = [], accounts, actions, mode, onMod
     <div className={cx(inDrawer && styles.inDrawer)}>
       <div className={styles.detailBody}>
         <div className={styles.dclip}>
-          <VideoThumb ratio="9:16" seed={post.video_clip} duration={post.clip.duration_seconds} className={styles.dthumb} />
+          <PostThumb clip={post.clip} duration={post.clip.duration_seconds} className={styles.dthumb} />
           <div className={styles.dmeta}>
             <StatusBadge status={post.status} />
             <h3 className="t-h3">{post.clip.title}</h3>

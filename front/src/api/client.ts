@@ -8,6 +8,7 @@ import {
   getTokenGeneration,
   getTokens,
   isSessionExpired,
+  noteRefreshRejected,
   notifyMaintenance,
   notifySessionExpired,
   setTokens,
@@ -167,7 +168,7 @@ export function refreshAccessToken(): Promise<string> {
       if (replaced?.current) return replaced.current.access;
       throw new NetworkError('auth.refresh', cause, 'POST');
     }
-    if (response.status === 503) notifyMaintenance(true);
+    if (await isMaintenance(response)) notifyMaintenance(true);
     const replaced = replacedBy();
     if (replaced) {
       // Signed out meanwhile: nothing to renew, and nothing to bring back.
@@ -180,6 +181,8 @@ export function refreshAccessToken(): Promise<string> {
         // password change that revoked it): its pair is about to be stored.
         const other = await pairFromElsewhere(tokens.refresh, REFRESH_FALLBACK_WAIT_MS);
         if (other) return other.access;
+        // This pair, and no other, is the dead one (a public tab must not give up one another tab just renewed).
+        noteRefreshRejected(tokens.refresh);
         throw new SessionExpiredError(await endReason(response));
       }
       throw new ApiError(response.status, 'auth.refresh', await readBody(response, 'json'));
@@ -201,6 +204,28 @@ async function endReason(response: Response): Promise<SessionEndReason> {
     return data && typeof data === 'object' && (data as { code?: unknown }).code === SESSION_REVOKED_CODE ? 'revoked' : 'expired';
   } catch {
     return 'expired';
+  }
+}
+
+/**
+ * Whether a 503 means the platform is down (page K5) and not that this one request failed.
+ *
+ * The maintenance middleware answers `{ detail }` and nothing else (back/apps/core/maintenance.py), and
+ * a proxy in front of a backend that is down answers a 503 that is not even JSON. An endpoint that
+ * fails on its own says so the way every error of the API does, with `error` and usually a `code`
+ * (a provider that did not answer, storage that is down, a queue that did not take the job): that is
+ * an error of that request, shown where it was made, and the rest of the app keeps working.
+ * The body is read from a copy: the answer stays whole.
+ */
+async function isMaintenance(response: Response): Promise<boolean> {
+  if (response.status !== 503) return false;
+  try {
+    const data: unknown = await response.clone().json();
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return true;
+    const body = data as { code?: unknown; error?: unknown };
+    return typeof body.code !== 'string' && typeof body.error !== 'string';
+  } catch {
+    return true;
   }
 }
 
@@ -439,8 +464,9 @@ export async function apiCall<E extends AnyEndpoint>(endpoint: E, ...args: Args<
     }
   }
 
-  // 503: the platform is down for maintenance (page K5). Any other answer means it is back.
-  notifyMaintenance(response.status === 503);
+  // A 503 that is not an error of the endpoint itself: the platform is down for maintenance (page K5).
+  // Any other answer means it is back.
+  notifyMaintenance(await isMaintenance(response));
 
   if (!response.ok) {
     throw new ApiError(response.status, endpoint.id, await readBody(response, 'json'));

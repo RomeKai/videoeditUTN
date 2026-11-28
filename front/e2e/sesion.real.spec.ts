@@ -45,7 +45,8 @@ async function fakeApi(page: Page, overrides: Record<string, number> = {}): Prom
     if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
     calls.push({ method: request.method(), path, workspace: request.headers()['x-workspace-id'] });
     const status = overrides[path];
-    if (status) return route.fulfill({ status, headers: cors, json: { detail: 'Token is invalid or expired', code: 'token_not_valid' } });
+    // A 401 as simplejwt answers it; anything else as a server that is down does (no `code`: it is not an error of the endpoint).
+    if (status) return route.fulfill({ status, headers: cors, json: status === 401 ? { detail: 'Token is invalid or expired', code: 'token_not_valid' } : { detail: 'Service Unavailable' } });
     if (path === '/api/v1/me/') return route.fulfill({ headers: cors, json: me });
     if (path === '/api/v1/wallet/') return route.fulfill({ headers: cors, json: wallet });
     if (path === '/api/v1/notifications/') return route.fulfill({ headers: cors, json: { unread_count: 0, results: [] } });
@@ -143,11 +144,23 @@ test.describe('Sin mocks: la sesión contra el backend', () => {
   });
 
   test('el backend caído al renovar no cierra la sesión', async ({ page }) => {
-    await fakeApi(page, { '/api/v1/me/': 401, '/api/token/refresh/': 503 });
+    // The whole backend is down, the status endpoint included.
+    await fakeApi(page, { '/api/v1/me/': 401, '/api/token/refresh/': 503, '/api/v1/status/': 503 });
     await signedIn(page);
     await page.goto('/proyectos');
     // A 503 is the maintenance page, not the "session expired" dialog; the tokens stay.
     await expect(page.getByRole('heading', { name: /mantenimiento/i })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: /sesión venció/i })).toHaveCount(0);
+    expect(await page.evaluate(() => window.localStorage.getItem('oc.auth'))).toContain('"refresh":"r"');
+  });
+
+  test('un 503 al renovar con la plataforma en pie: es un error para reintentar, no mantenimiento ni «Sesión vencida»', async ({ page }) => {
+    // Only the renewal fails; the status endpoint says all is well.
+    await fakeApi(page, { '/api/v1/me/': 401, '/api/token/refresh/': 503 });
+    await signedIn(page);
+    await page.goto('/proyectos');
+    await expect(page.getByRole('button', { name: 'Reintentar' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /mantenimiento/i })).toHaveCount(0);
     await expect(page.getByRole('dialog', { name: /sesión venció/i })).toHaveCount(0);
     expect(await page.evaluate(() => window.localStorage.getItem('oc.auth'))).toContain('"refresh":"r"');
   });

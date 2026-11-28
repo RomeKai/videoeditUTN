@@ -15,7 +15,9 @@ import * as users from '../contracts/users';
 import { ApiError, NetworkError, SessionExpiredError } from '../errors';
 import { clearRouteOverrides, forceRouting, isBackendDefaultWorkspace, isOfWorkspace, setRouteOverride } from '../routing';
 import { getActiveWorkspaceId, getTokens, setActiveWorkspaceId, setTokens } from '../session';
-import { adoptClip, adoptUserFromToken, adoptWorkspace, readJwt, rememberLoginEmail } from './hybrid';
+import real from '../contracts/drf/responses.json';
+import { adoptClip, adoptUserFromToken, adoptWorkspace, forgetRealAnswers, noteRealAnswer, readJwt, rememberLoginEmail } from './hybrid';
+import { completeMockSocialConnect } from './control';
 import { MOCK_HEADER } from './http';
 import { PLAN_IDS, USER_IDS, WORKSPACE_IDS } from './seed';
 import { server } from './server';
@@ -84,6 +86,7 @@ beforeEach(() => {
   clearRouteOverrides();
   applyScenario('estudio-norte');
   rememberLoginEmail(null);
+  forgetRealAnswers();
   backendCalls.length = 0;
   backend = () => new Response('{}', { status: 404 });
   signInReal();
@@ -444,6 +447,19 @@ describe('modo híbrido: adopción de ids del backend', () => {
     await expect(apiCall(users.getMe, {})).resolves.toMatchObject({ email: 'usuario-4544e2e0@backend.invalid' });
   });
 
+  it('cerrar sesión olvida también lo que el backend le había respondido a esa sesión', async () => {
+    const project = real.project_completed_auto_render;
+    const clip = project.clips[0];
+    if (!clip) throw new Error('sin clip grabado');
+    noteRealAnswer(`${API_URL}/api/v1/projects/${project.id}/`, project);
+    backend = () => new Response(null, { status: 204 });
+    await apiCall(auth.logout, { body: { refresh: getTokens()?.refresh ?? '', all_devices: false } });
+    signInReal();
+    const db = loadDb();
+    adoptUserFromToken(db, getTokens()?.access ?? '', Date.now());
+    expect(adoptClip(db, BACKEND_DEFAULT_WORKSPACE_ID, clip.id)?.clip.title).toBe('Clip del backend');
+  });
+
   it('lo que no es un id del backend sigue siendo 404', async () => {
     expect((await fail(apiCall(projects.getProjectActivity, { params: { id: 'no-es-un-uuid' } }))).status).toBe(404);
     expect((await fail(apiCall(clips.getClip, { params: { id: 'tampoco' } }))).status).toBe(404);
@@ -467,6 +483,133 @@ describe('modo híbrido: adopción de ids del backend', () => {
     setActiveWorkspaceId(WORKSPACE_IDS.estudio);
     await expect(apiCall(billing.getWallet, {})).resolves.toMatchObject({ workspace: BACKEND_DEFAULT_WORKSPACE_ID });
     expect(loadDb().members.some((item) => item.workspace === WORKSPACE_IDS.estudio && item.user === REAL_USER)).toBe(false);
+  });
+});
+
+describe('modo híbrido: el doble se parece al real', () => {
+  /** A project the backend has, as it answers it (a recorded answer), and its rendered clip. */
+  const PROJECT = real.project_completed_auto_render;
+  const [CLIP, OTHER_CLIP] = PROJECT.clips as [(typeof PROJECT.clips)[number], (typeof PROJECT.clips)[number]];
+  const DURATION = Math.round((CLIP.end_time - CLIP.start_time) * 100) / 100;
+  /** The demo's shape: projects and their clips are the backend's, publishing is simulated. */
+  const DEMO = { mode: 'hybrid', real: 'projects.list,projects.detail,clips.detail' } as const;
+
+  /** The mocked network of the workspace in use, connected the way the fake authorization window does it. */
+  async function connect(platform: 'YOUTUBE_SHORTS' | 'TIKTOK' = 'YOUTUBE_SHORTS') {
+    await apiCall(social.listSocialAccounts, {});
+    const workspace = getActiveWorkspaceId() ?? BACKEND_DEFAULT_WORKSPACE_ID;
+    expect(completeMockSocialConnect(platform, workspace)).toBe(true);
+  }
+
+  const posts = async () => (await apiCall(social.listPosts, {})).results;
+
+  it('publicar en mock un clip real que la app ya leyó del backend: título, proyecto, duración y miniatura son los reales', async () => {
+    forceRouting(DEMO);
+    backend = (request) => (new URL(request.url).pathname === `/api/v1/projects/${PROJECT.id}/` ? Response.json(PROJECT) : new Response('{}', { status: 404 }));
+    // The clips screen read the project from the backend…
+    const project = await apiCall(projects.getProject, { params: { id: PROJECT.id } });
+    expect(project.title).toBe(PROJECT.title);
+    expect(backendCalls.map((call) => call.path)).toEqual([`/api/v1/projects/${PROJECT.id}/`]);
+    await connect();
+    // (MSW hands the backend's answer to the mocks right after the app gets it.)
+    await vi.waitFor(() => expect(adoptClip(JSON.parse(JSON.stringify(loadDb())) as ReturnType<typeof loadDb>, BACKEND_DEFAULT_WORKSPACE_ID, CLIP.id)?.clip.title).toBe(CLIP.title));
+    // …and publishing, which is simulated, shows that clip and not a made-up one.
+    const post = await apiCall(social.createPost, { body: { video_clip: CLIP.id, platform: 'YOUTUBE_SHORTS', caption: 'Hola', draft: true } });
+    expect(post.clip).toMatchObject({ id: CLIP.id, title: 'Clip 1', project_title: 'Clase 3: Finanzas personales', duration_seconds: DURATION });
+    // The project of the publication is the real one: its link opens a page the backend has.
+    expect(post.clip.project_id).toBe(PROJECT.id);
+    const [listed] = await posts();
+    expect(listed?.clip).toEqual({ id: CLIP.id, title: 'Clip 1', project_id: PROJECT.id, project_title: 'Clase 3: Finanzas personales', duration_seconds: DURATION, thumbnail_url: CLIP.thumbnail_url });
+    // Nothing else went to the backend to find that out.
+    expect(backendCalls).toHaveLength(1);
+  });
+
+  it('otro clip del mismo proyecto real cae en el mismo doble del proyecto', async () => {
+    noteRealAnswer(`${API_URL}/api/v1/projects/${PROJECT.id}/`, PROJECT);
+    const db = loadDb();
+    const first = adoptClip(db, BACKEND_DEFAULT_WORKSPACE_ID, CLIP.id);
+    const second = adoptClip(db, BACKEND_DEFAULT_WORKSPACE_ID, OTHER_CLIP.id);
+    expect(first?.project.id).toBe(PROJECT.id);
+    expect(second?.project).toBe(first?.project);
+    expect(db.projects.filter((item) => item.id === PROJECT.id)).toHaveLength(1);
+    expect(first?.project.clips.map((clip) => clip.title)).toEqual(['Clip 1', 'Clip 2']);
+    // A clip of that project asked from another mocked workspace is not that workspace's: no stand-in there.
+    const third = 'd3c1e2f4-5b6d-4e7f-8a9b-0c1d2e3f4a03';
+    noteRealAnswer(`${API_URL}/api/v1/clips/${third}/`, { ...CLIP, id: third });
+    expect(adoptClip(db, WORKSPACE_IDS.estudio, third)).toBeNull();
+    expect(db.projects.flatMap((item) => item.clips).some((clip) => clip.id === third)).toBe(false);
+  });
+
+  it('un doble hecho antes de que el backend dijera nada toma lo real cuando llega, también en lo ya publicado', async () => {
+    await connect();
+    await apiCall(social.createPost, { body: { video_clip: CLIP.id, platform: 'YOUTUBE_SHORTS', caption: 'Hola', draft: true } });
+    expect((await posts())[0]?.clip).toMatchObject({ title: 'Clip del backend', project_title: 'Proyecto del backend', thumbnail_url: null });
+    // The clip's own endpoint answers: it names its project, whose title comes with the list of projects.
+    noteRealAnswer(`${API_URL}/api/v1/clips/${CLIP.id}/`, CLIP);
+    expect((await posts())[0]?.clip).toMatchObject({ title: 'Clip 1', project_title: 'Proyecto del backend', duration_seconds: DURATION, thumbnail_url: CLIP.thumbnail_url });
+    noteRealAnswer(`${API_URL}/api/v1/projects/`, { count: 1, next: null, previous: null, results: [{ id: PROJECT.id, title: PROJECT.title }] });
+    expect((await posts())[0]?.clip).toMatchObject({ title: 'Clip 1', project_title: 'Clase 3: Finanzas personales', duration_seconds: DURATION, thumbnail_url: CLIP.thumbnail_url });
+    expect((await apiCall(clips.getClip, { params: { id: CLIP.id } })).title).toBe('Clip 1');
+  });
+
+  it('la miniatura sigue a la última respuesta (su URL vence); lo que un mock editó en el doble no se pisa', async () => {
+    noteRealAnswer(`${API_URL}/api/v1/projects/${PROJECT.id}/`, PROJECT);
+    await connect();
+    await apiCall(social.createPost, { body: { video_clip: CLIP.id, platform: 'YOUTUBE_SHORTS', caption: 'Hola', draft: true } });
+    // A mocked endpoint renamed the stand-in.
+    const db = loadDb();
+    const clip = db.projects.flatMap((item) => item.clips).find((item) => item.id === CLIP.id);
+    if (!clip) throw new Error('sin doble');
+    clip.title = 'Editado en el mock';
+    saveDb(db);
+    const fresh = 'https://r2.example.test/clips/x/1.jpg?X-Amz-Expires=3600&firma=nueva';
+    noteRealAnswer(`${API_URL}/api/v1/clips/${CLIP.id}/`, { ...CLIP, thumbnail_url: fresh });
+    expect((await posts())[0]?.clip.thumbnail_url).toBe(fresh);
+    const stored = await apiCall(clips.getClip, { params: { id: CLIP.id } });
+    expect(stored).toMatchObject({ title: 'Editado en el mock', thumbnail_url: fresh });
+  });
+
+  it('el workspace adoptado se llama como el real y la red conectada toma su nombre, no «@workspacedelbackend»', async () => {
+    setActiveWorkspaceId(REAL_WORKSPACE);
+    // Adopted and connected before the name was known: the placeholder's.
+    await connect('TIKTOK');
+    expect((await apiCall(social.listSocialAccounts, {})).find((item) => item.platform === 'TIKTOK')?.username).toBe('@workspacedelbackend');
+    // What the real `/me` says of the person's workspaces.
+    noteRealAnswer(`${API_URL}/api/v1/me/`, { id: REAL_USER, workspaces: [{ id: REAL_WORKSPACE, name: 'Demo OneCreator', role: 'admin' }] });
+    expect((await apiCall(social.listSocialAccounts, {})).find((item) => item.platform === 'TIKTOK')?.username).toBe('@demoonecreator');
+    expect(loadDb().workspaces.find((item) => item.id === REAL_WORKSPACE)?.name).toBe('Demo OneCreator');
+    // Connected after: the real name from the start.
+    await connect('YOUTUBE_SHORTS');
+    expect((await apiCall(social.listSocialAccounts, {})).find((item) => item.platform === 'YOUTUBE_SHORTS')?.username).toBe('@demoonecreator');
+  });
+
+  it('un workspace adoptado después de conocer su nombre nace con él', async () => {
+    noteRealAnswer(`${API_URL}/api/v1/workspaces/`, real.workspace_list);
+    const workspace = real.workspace_list[0];
+    if (!workspace) throw new Error('sin workspace grabado');
+    setActiveWorkspaceId(workspace.id);
+    await apiCall(billing.getWallet, {});
+    expect(loadDb().workspaces.find((item) => item.id === workspace.id)?.name).toBe('Espacio de tester');
+  });
+
+  it('una respuesta que no se entiende, o un error, no cambia nada', async () => {
+    noteRealAnswer(`${API_URL}/api/v1/projects/${PROJECT.id}/`, { detail: 'No encontrado.' });
+    noteRealAnswer(`${API_URL}/api/v1/clips/${CLIP.id}/`, { id: CLIP.id, title: 42 });
+    noteRealAnswer('no es una URL', PROJECT);
+    noteRealAnswer(`${API_URL}/api/v1/workspaces/${REAL_WORKSPACE}/members/`, [{ id: REAL_WORKSPACE, name: 'Una persona' }]);
+    forceRouting(DEMO);
+    backend = () => Response.json({ detail: 'No encontrado.' }, { status: 404 });
+    await fail(apiCall(projects.getProject, { params: { id: PROJECT.id } }));
+    const db = loadDb();
+    expect(adoptClip(db, BACKEND_DEFAULT_WORKSPACE_ID, CLIP.id)?.clip.title).toBe('Clip del backend');
+  });
+
+  it('en modo mock las respuestas no se miran', () => {
+    forceRouting({ mode: 'mock' });
+    noteRealAnswer(`${API_URL}/api/v1/projects/${PROJECT.id}/`, PROJECT);
+    forceRouting(HYBRID);
+    const db = loadDb();
+    expect(adoptClip(db, BACKEND_DEFAULT_WORKSPACE_ID, CLIP.id)?.clip.title).toBe('Clip del backend');
   });
 });
 

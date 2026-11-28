@@ -3,6 +3,7 @@
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Action } from '@/lib/permissions';
+import { holdSessionNeeded } from '@/api/session';
 import { GlobalLoading } from './GlobalLoading';
 import { needsWelcome, usePermissions, useSession } from './session';
 import { Button } from '@/ui/Button';
@@ -63,6 +64,9 @@ function Gate({ children }: { children: ReactNode }) {
   // From the router, not from `window.location`: while a client navigation renders (the login
   // sending the person to the link they asked for) the browser's URL is still the previous page's.
   const search = useSearchParams()?.toString() ?? '';
+
+  // This screen is nothing without a session: one that turns out to be dead is asked for again on top of it (D9).
+  useEffect(() => holdSessionNeeded(), []);
 
   useEffect(() => {
     if (status === 'anonymous') {

@@ -60,6 +60,8 @@ export function MonthCalendar({ month, posts, now, selectedId, onOpen, onMove, o
         className={cx(
           styles.mchip,
           KIND_CLASS[kind],
+          // A scheduled card that cannot be moved (a reader, or while another move is being saved) does not offer the grab.
+          kind === 'sched' && !movable && styles.notGrab,
           dragKey === group.key && styles.isDragging,
           group.posts.some((post) => post.id === selectedId) && styles.isSelected,
         )}

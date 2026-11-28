@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { http, HttpResponse } from 'msw';
 import { server } from '@/api/mocks/server';
 import { applyScenario } from '@/api/mocks/state';
-import { db, idle, renderScenario } from '@/testing';
+import { db, editDb, idle, renderScenario } from '@/testing';
 import { PublicacionesScreen } from './PublicacionesScreen';
 import { holdDraft, isRemembered, releaseDraft } from './draftRegistry';
 import { dayKey } from './posts';
@@ -107,6 +107,43 @@ describe('E2 · Publicaciones · lista', () => {
     // Counters of the filters come from the API.
     expect(screen.getByRole('button', { name: /Programados/ })).toHaveTextContent('2');
     expect(screen.getByRole('button', { name: /Con error/ })).toHaveTextContent('1');
+  });
+
+  it('muestra la miniatura del clip cuando la publicación la trae, y el dibujo de siempre cuando no o cuando su URL ya no carga', async () => {
+    const thumbnail = 'https://r2.example.test/clips/x/1.jpg?X-Amz-Expires=3600';
+    applyScenario('estudio-norte');
+    const published = postWith('PUBLISHED');
+    nav.set('vista=lista');
+    renderScenario(<PublicacionesScreen />, {
+      keep: true,
+      prepare: () =>
+        editDb((data) => {
+          for (const post of data.posts) if (post.id === published?.id) post.clip.thumbnail_url = thumbnail;
+        }),
+    });
+    const list = await table();
+    const images = () => Array.from(list.querySelectorAll('img'));
+    await waitFor(() => expect(images().map((image) => image.getAttribute('src'))).toEqual([thumbnail]));
+    // The temporary URL expired: no broken image is left on the row.
+    fireEvent.error(images()[0] as HTMLImageElement);
+    await waitFor(() => expect(images()).toHaveLength(0));
+  });
+
+  it('el nombre de la cuenta va entero en el tooltip: en la columna se corta, no se encima con la hora', async () => {
+    const long = '@unnombredecuentalarguisimoquenoentraenlacolumna';
+    applyScenario('estudio-norte');
+    nav.set('vista=lista');
+    renderScenario(<PublicacionesScreen />, {
+      keep: true,
+      prepare: () =>
+        editDb((data) => {
+          for (const account of data.socialAccounts) if (account.username) account.username = long;
+        }),
+    });
+    const list = await table();
+    const names = await within(list).findAllByText(long);
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) expect(name).toHaveAttribute('title', long);
   });
 
   it('«Programar» en un borrador abre el panel con esa red sola', async () => {
@@ -367,6 +404,71 @@ describe('E2 · Publicaciones · calendario', () => {
     await waitFor(() => expect(nav.get()).toMatch(/fecha=\d{4}-\d{2}-01/));
     fireEvent.click(screen.getByRole('button', { name: 'Hoy' }));
     await waitFor(() => expect(nav.get()).not.toMatch(/fecha=/));
+  });
+
+  /** The cell of a day in the month grid (the grid also shows the last days of the month before and the first of the next). */
+  const monthCell = (grid: HTMLElement, day: Date): HTMLElement => {
+    const first = new Date(day.getFullYear(), day.getMonth(), 1);
+    // Monday first: the grid starts on the Monday of the week of the 1st.
+    const index = ((first.getDay() + 6) % 7) + day.getDate() - 1;
+    const cell = within(grid).getAllByRole('gridcell')[index] as HTMLElement;
+    expect(cell.textContent?.startsWith(day.getDate() === 1 ? String(1) : String(day.getDate()))).toBe(true);
+    return cell;
+  };
+
+  it('en el mes, arrastrar una programada a otro día la reprograma a la misma hora; a un día que ya pasó no hace nada', async () => {
+    pinClock(new Date(2026, 10, 25, 10, 0, 0));
+    applyScenario('estudio-norte');
+    const scheduled = postWith('SCHEDULED');
+    const at = new Date(scheduled?.publish_at ?? 0);
+    expect(at.getMonth()).toBe(10);
+    let writes = 0;
+    server.events.on('request:start', ({ request }) => {
+      if (request.method === 'PATCH') writes += 1;
+    });
+    await open('vista=mes');
+    const grid = await screen.findByRole('grid', { name: /Publicaciones de noviembre de 2026/ });
+    expect(await screen.findByText('Arrastrá una publicación programada para cambiarle el día.')).toBeInTheDocument();
+    const name = new RegExp(`${scheduled?.clip.title}\\. TikTok: Programado`);
+    const card = await within(monthCell(grid, at)).findByRole('button', { name });
+    expect(card).toHaveAttribute('draggable', 'true');
+    const dataTransfer = { setData: vi.fn(), effectAllowed: '', dropEffect: '' };
+
+    // A day that already went by (what the rehearsal's script aimed at: the 2nd of the month shown, not of the next).
+    const past = monthCell(grid, new Date(2026, 10, 2));
+    fireEvent.dragStart(card, { dataTransfer });
+    fireEvent.dragOver(past, { dataTransfer });
+    fireEvent.drop(past, { dataTransfer });
+    fireEvent.dragEnd(card, { dataTransfer });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(writes).toBe(0);
+    expect(within(monthCell(grid, at)).getByRole('button', { name })).toBeInTheDocument();
+
+    // A day to come: same hour and minute, another day.
+    const expected = new Date(2026, 10, 30, at.getHours(), at.getMinutes(), 0, 0);
+    const target = monthCell(grid, expected);
+    fireEvent.dragStart(card, { dataTransfer });
+    fireEvent.dragOver(target, { dataTransfer });
+    fireEvent.drop(target, { dataTransfer });
+    expect(await screen.findByText(new RegExp(`«${scheduled?.clip.title}» pasó al`))).toBeInTheDocument();
+    await waitFor(() => expect(within(monthCell(grid, expected)).getByRole('button', { name: new RegExp(`${scheduled?.clip.title}\\. TikTok: Programado`) })).toBeInTheDocument());
+    await waitFor(() => expect(new Date(db().posts.find((post) => post.id === scheduled?.id)?.publish_at ?? 0).getTime()).toBe(expected.getTime()));
+    expect(writes).toBe(1);
+    server.events.removeAllListeners();
+  });
+
+  it('en el mes, lo que no se puede mover no se ofrece para arrastrar (publicadas; todo, para un Lector)', async () => {
+    await open('vista=mes');
+    const grid = await screen.findByRole('grid', { name: /Publicaciones de / });
+    const published = await within(grid).findAllByRole('button', { name: /Publicado/ });
+    for (const card of published) expect(card).toHaveAttribute('draggable', 'false');
+    cleanup();
+    await idle();
+    await open('vista=mes', 'rol-lector');
+    const readerGrid = await screen.findByRole('grid', { name: /Publicaciones de / });
+    const cards = await within(readerGrid).findAllByRole('button', { name: /Programado|Publicado|Error/ });
+    for (const card of cards) expect(card).toHaveAttribute('draggable', 'false');
+    expect(screen.queryByText(/Arrastrá una publicación programada/)).not.toBeInTheDocument();
   });
 
   it('sin publicaciones: una frase, una acción y nada más', async () => {
