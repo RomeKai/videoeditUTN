@@ -410,8 +410,12 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
     """
     from apps.core.security import ModerationError
 
+    # The request this run serves (the post's seo_requested_at as it read it): its failure ends that
+    # one, never a «Regenerar» that lands meanwhile (_fail_seo_post's cutoff).
+    served = _ANY_REQUEST
     try:
         post = ScheduledPost.objects.select_related('video_clip__project').get(id=post_id)
+        served = post.seo_requested_at
         if not regenerate and post.generated_caption and post.generated_hashtags:
             return "SEO Already Generated"
         with _seo_post_lock(post_id) as acquired:
@@ -420,6 +424,7 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
                 logger.info("seo.skipped post_id=%s reason=locked", post_id)
                 return "SEO Busy"
             post.refresh_from_db()
+            served = post.seo_requested_at
             if post.status in _SEO_FROZEN_STATUSES:
                 # Publishing started or finished: its caption is final, and no text is on its way.
                 _end_seo_request(post_id)
@@ -447,7 +452,7 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
         if mod_exc.retryable and self.request.retries < self.max_retries:
             raise self.retry(countdown=_retry_countdown(self.request.retries))
         # Static code only: never the provider message or any user text.
-        _fail_seo_post(post_id, mod_exc.code)
+        _fail_seo_post(post_id, mod_exc.code, cutoff=served)
         return "Moderation Failed"
 
     except AIError as exc:
@@ -458,7 +463,7 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
         )
         if will_retry:
             raise self.retry(countdown=_retry_countdown(self.request.retries))
-        _fail_seo_post(post_id, f"seo_generation_failed:{type(exc).__name__}")
+        _fail_seo_post(post_id, f"seo_generation_failed:{type(exc).__name__}", cutoff=served)
         return "SEO Failed"
 
     except Exception as exc:
@@ -470,7 +475,7 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False):
         )
         if will_retry:
             raise self.retry(countdown=_retry_countdown(self.request.retries))
-        _fail_seo_post(post_id, f"seo_failed:{type(exc).__name__}")
+        _fail_seo_post(post_id, f"seo_failed:{type(exc).__name__}", cutoff=served)
         raise
 
 
@@ -484,7 +489,11 @@ _SEO_FAILURE_CODES = (
 _SEO_FROZEN_STATUSES = (ScheduledPost.Status.PROCESSING, ScheduledPost.Status.PUBLISHED)
 
 
-def _fail_seo_post(post_id, code, redispatch=True, cutoff=None):
+# _fail_seo_post without a cutoff: whatever request the post has ends.
+_ANY_REQUEST = object()
+
+
+def _fail_seo_post(post_id, code, redispatch=True, cutoff=_ANY_REQUEST):
     """
     FAILED with a static code, unless publishing already started or finished:
     a post published with another caption must never turn FAILED because of SEO.
@@ -499,16 +508,20 @@ def _fail_seo_post(post_id, code, redispatch=True, cutoff=None):
     the API request is over (`seo_requested_at`). Without ``redispatch`` the
     caller is the dispatcher (or the worker) and decides about sending it itself.
 
-    ``cutoff``: only a request asked for no later than that ends (the expired
-    ones of scheduled_posts.fail_lost_ai_texts). Each change is one UPDATE with
-    every condition in it, so a «Regenerar» (a newer request) or a text stored
-    between the caller's read and this write leaves the post alone. Returns
-    whether a request ended.
+    ``cutoff``: only a request asked for no later than that ends: the expired
+    ones of scheduled_posts.fail_lost_ai_texts, or the one the caller served
+    (process_video_seo, a send the broker refused). None: the caller served no
+    request, and only a post that has none takes the failure. Each change is
+    one UPDATE with every condition in it, so a «Regenerar» (a newer request)
+    or a text stored between the caller's read and this write leaves the post
+    alone. Returns whether a request ended.
     """
     from apps.videos.services.scheduled_posts import HAS_TEXT, dispatch_after_ai_text
 
     posts = ScheduledPost.objects.filter(id=post_id).exclude(status__in=_SEO_FROZEN_STATUSES)
-    if cutoff is not None:
+    if cutoff is None:
+        posts = posts.filter(seo_requested_at__isnull=True)
+    elif cutoff is not _ANY_REQUEST:
         posts = posts.filter(seo_requested_at__lte=cutoff)
     earlier_text = Q(generated_caption__gt='', generated_hashtags__isnull=False)
     seo_code = (
@@ -640,7 +653,7 @@ def _generate_post_metadata(task, post, capacity_waited_s, regenerate=False):
     except UnsafeContentError:
         _seo_pending_clear(post.id)
         logger.error("seo.output_blocked post_id=%s", post.id)
-        _fail_seo_post(post.id, "generated_content_blocked")
+        _fail_seo_post(post.id, "generated_content_blocked", cutoff=post.seo_requested_at)
         return "Security Abort"
 
     fields = {'generated_caption': metadata.caption, 'generated_hashtags': metadata.hashtags, 'seo_requested_at': None}
@@ -690,7 +703,7 @@ def _generate_social_metadata(task, post, capacity_waited_s, regenerate=False):
     if not text:
         # Never the whole project transcript as a substitute (ADR-013).
         logger.warning("seo.no_clip_transcript post_id=%s", post.id)
-        _fail_seo_post(post.id, "seo_no_clip_transcript")
+        _fail_seo_post(post.id, "seo_no_clip_transcript", cutoff=post.seo_requested_at)
         return "No Transcript"
     request = SocialMetadataRequest(
         clip_transcript=text,
@@ -709,7 +722,8 @@ def _generate_social_metadata(task, post, capacity_waited_s, regenerate=False):
             reservation = gate.reserve(_seo_demand(models, request), stage='seo')
         except CapacityUnavailable as capacity_exc:
             return _seo_wait_for_capacity(
-                str(post.id), capacity_exc, capacity_waited_s, task.request.retries, regenerate
+                str(post.id), capacity_exc, capacity_waited_s, task.request.retries, regenerate,
+                served=post.seo_requested_at,
             )
 
     try:
@@ -717,7 +731,7 @@ def _generate_social_metadata(task, post, capacity_waited_s, regenerate=False):
     except UnsafeContentError:
         _release_seo_capacity(gate, reservation)
         logger.error("seo.input_blocked post_id=%s", post.id)
-        _fail_seo_post(post.id, "content_blocked")
+        _fail_seo_post(post.id, "content_blocked", cutoff=post.seo_requested_at)
         return "Security Abort"
     except ModerationError:
         _release_seo_capacity(gate, reservation)  # the LLM was never called
@@ -768,7 +782,7 @@ def _release_seo_capacity(gate, reservation):
         })
 
 
-def _seo_wait_for_capacity(post_id, exc, waited_s, retries, regenerate=False):
+def _seo_wait_for_capacity(post_id, exc, waited_s, retries, regenerate=False, served=_ANY_REQUEST):
     """
     Re-queues SEO generation after the capacity wait; fails the post past the max
     wait. The Celery retry count travels with the message: a call that keeps
@@ -776,7 +790,7 @@ def _seo_wait_for_capacity(post_id, exc, waited_s, retries, regenerate=False):
     """
     if waited_s + exc.wait_seconds > settings.AI_CAPACITY_MAX_WAIT_SECONDS:
         logger.error("seo.capacity_timeout post_id=%s waited_s=%.1f", post_id, waited_s)
-        _fail_seo_post(post_id, 'capacity_timeout')
+        _fail_seo_post(post_id, 'capacity_timeout', cutoff=served)
         return "Capacity Timeout"
     countdown = _capacity_countdown(exc.wait_seconds)
     logger.info("seo.pending_capacity post_id=%s countdown_s=%.1f", post_id, countdown)

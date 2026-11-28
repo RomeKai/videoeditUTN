@@ -1082,8 +1082,8 @@ class LostAiTextRacesTests(TextMissingHarness):
         ScheduledPost.objects.filter(pk=post.pk).update(seo_requested_at=self.expired())
         return post
 
-    def race(self, meanwhile):
-        """fail_lost_ai_texts with ``meanwhile`` landing right after it read the expired ids."""
+    def before_the_failure(self, meanwhile):
+        """``meanwhile`` lands right before _fail_seo_post writes, whoever calls it."""
         from apps.videos.tasks import social as social_tasks
 
         real = social_tasks._fail_seo_post
@@ -1092,7 +1092,11 @@ class LostAiTextRacesTests(TextMissingHarness):
             meanwhile(post_id)
             return real(post_id, code, **kwargs)
 
-        with patch.object(social_tasks, "_fail_seo_post", racing):
+        return patch.object(social_tasks, "_fail_seo_post", racing)
+
+    def race(self, meanwhile):
+        """fail_lost_ai_texts with ``meanwhile`` landing right after it read the expired ids."""
+        with self.before_the_failure(meanwhile):
             return service.fail_lost_ai_texts(timezone.now())
 
     def test_a_regenerar_that_lands_meanwhile_is_not_ended(self):
@@ -1104,6 +1108,29 @@ class LostAiTextRacesTests(TextMissingHarness):
         post.refresh_from_db()
         self.assertEqual(ended, 0)
         self.assertEqual((post.status, post.error_log, post.seo_requested_at), (Status.SCHEDULED, None, asked))
+
+    def test_a_regenerar_that_lands_while_the_broker_refuses_the_text_is_not_ended(self):
+        # Review of #194: the failure of a send the broker refused (queue_post_seo) ended whatever request
+        # the post had by then, a newer «Regenerar» too. It ends only the request that send served.
+        self.seo_delay.side_effect = OSError("broker down")
+        asked = []
+
+        def regenerar(post_id):
+            asked.append(timezone.now())
+            ScheduledPost.objects.filter(pk=post_id).update(seo_requested_at=asked[0])
+
+        with self.before_the_failure(regenerar):
+            created = self.sent(lambda: self.create(video_clip=str(self.seo_clip.pk)))
+
+        self.assertEqual(created.status_code, 201, created.content)
+        post = ScheduledPost.objects.get(pk=created.json()["id"])
+        self.assertEqual(len(asked), 1)
+        self.assertEqual((post.status, post.error_log, post.seo_requested_at), (Status.SCHEDULED, None, asked[0]))
+
+        # With no newer request, the one it served ends as a failure of the text, as before.
+        self.sent(lambda: self.create(video_clip=str(self.seo_clip.pk), platform=Platform.YOUTUBE_SHORTS))
+        refused = ScheduledPost.objects.get(video_clip=self.seo_clip, platform=Platform.YOUTUBE_SHORTS)
+        self.assertEqual((refused.status, refused.error_log, refused.seo_requested_at), (Status.FAILED, "seo_dispatch_failed", None))
 
     def test_a_text_stored_while_it_decides_is_kept(self):
         # The SEO task stores its text right after the first statement _fail_seo_post runs on the post

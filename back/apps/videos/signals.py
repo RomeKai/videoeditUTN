@@ -43,6 +43,9 @@ def queue_post_seo(post_id, regenerate=False):
     from django.db.models.functions import Now
 
     ScheduledPost.objects.filter(pk=post_id).update(seo_requested_at=Now())
+    # The request this send serves, as the database stamped it (the row is locked by that UPDATE):
+    # a broker that refuses it ends this one, never a «Regenerar» that lands meanwhile.
+    requested = ScheduledPost.objects.filter(pk=post_id).values_list('seo_requested_at', flat=True).first()
 
     def _send():
         from .tasks import process_video_seo
@@ -63,7 +66,7 @@ def queue_post_seo(post_id, regenerate=False):
             from .services.scheduled_posts import SEO_DISPATCH_FAILED_CODE
             from .tasks.social import _fail_seo_post
 
-            _fail_seo_post(post_id, SEO_DISPATCH_FAILED_CODE)
+            _fail_seo_post(post_id, SEO_DISPATCH_FAILED_CODE, cutoff=requested)
             return
         logger.info("seo.dispatched post_id=%s regenerate=%s", post_id, regenerate)
 
