@@ -9,7 +9,7 @@ import { onMaintenance } from '@/api/session';
 import { server } from '@/api/mocks/server';
 import { keys } from '@/api/query';
 import { renderScenario, startMockApi } from '@/testing';
-import { MaintenanceGate } from './MaintenanceGate';
+import { MAINTENANCE_RECHECK_MS, MaintenanceGate } from './MaintenanceGate';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() }),
@@ -101,5 +101,50 @@ describe('K5 · cuándo la app pasa a mantenimiento', () => {
     // Back without waiting for the 60 s poll: the gate asked the status when the 503 arrived.
     expect(await screen.findByText('adentro', undefined, { timeout: 2000 })).toBeInTheDocument();
     expect(screen.queryByText('Estamos en mantenimiento')).not.toBeInTheDocument();
+  });
+
+  it('mientras dura, vuelve a preguntar el estado cada 10 s; una pestaña oculta no pregunta hasta que vuelve al frente', async () => {
+    await renderGate();
+    const down = () => HttpResponse.json({ detail: 'Estamos haciendo mantenimiento. Volvé en un rato.' }, { status: 503 });
+    let asked = 0;
+    let over = false;
+    server.use(
+      http.get(ACCOUNTS, down),
+      http.get(STATUS, () => {
+        asked += 1;
+        return over ? HttpResponse.json({ maintenance: false, maintenance_window: null }) : down();
+      }),
+    );
+    const visibility = (state: 'visible' | 'hidden') => {
+      Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+    // (`waitFor` polls with setInterval, which is faked here: this one waits with real timeouts.)
+    const until = async (check: () => boolean) => {
+      for (let tries = 0; tries < 150 && !check(); tries += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(check()).toBe(true);
+    };
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      await apiCall(listSocialAccounts).catch(() => undefined);
+      expect(await screen.findByRole('heading', { name: 'Estamos en mantenimiento' })).toBeInTheDocument();
+      await until(() => asked === 1);
+      // Ten seconds later, still down: asked again.
+      vi.advanceTimersByTime(MAINTENANCE_RECHECK_MS);
+      await until(() => asked === 2);
+      // Hidden: the clock goes on and nothing is asked.
+      visibility('hidden');
+      vi.advanceTimersByTime(MAINTENANCE_RECHECK_MS * 3);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(asked).toBe(2);
+      // Back to the front, with the maintenance over: asked at once, and the app is back.
+      over = true;
+      visibility('visible');
+      expect(await screen.findByText('adentro')).toBeInTheDocument();
+      expect(asked).toBe(3);
+    } finally {
+      vi.useRealTimers();
+      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    }
   });
 });

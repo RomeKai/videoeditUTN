@@ -16,7 +16,7 @@ export const MAINTENANCE_RECHECK_MS = 10_000;
  * (also when the status endpoint itself is the one that is down). Dev routes stay reachable.
  *
  * A 503 somewhere else is checked against the status endpoint at once, and then every
- * `MAINTENANCE_RECHECK_MS` while the page is up: whatever that endpoint answers decides
+ * `MAINTENANCE_RECHECK_MS` while the page is up and the tab is visible: whatever that endpoint answers decides
  * (the client tells this gate about every answer, `onMaintenance`).
  */
 export function MaintenanceGate({ children }: { children: ReactNode }) {
@@ -29,9 +29,17 @@ export function MaintenanceGate({ children }: { children: ReactNode }) {
   const { refetch } = status;
   useEffect(() => {
     if (!closed) return;
-    void refetch();
-    const timer = window.setInterval(() => void refetch(), MAINTENANCE_RECHECK_MS);
-    return () => window.clearInterval(timer);
+    // Only a tab somebody is looking at keeps asking; one that comes back to the front asks at once.
+    const ask = () => {
+      if (document.visibilityState === 'visible') void refetch();
+    };
+    ask();
+    const timer = window.setInterval(ask, MAINTENANCE_RECHECK_MS);
+    document.addEventListener('visibilitychange', ask);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', ask);
+    };
   }, [closed, refetch]);
   if (closed && !pathname.startsWith('/dev')) {
     return <MaintenanceScreen startsAt={status.data?.maintenance_window?.starts_at} endsAt={status.data?.maintenance_window?.ends_at} />;
