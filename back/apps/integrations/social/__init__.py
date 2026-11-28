@@ -8,8 +8,8 @@ The provider of a workspace is the one recorded on its SocialProfile
 (apps/integrations/models.py): provider_for(profile). SOCIAL_PROVIDER only
 chooses the provider new profiles are created with (provider_for_new_profiles).
 
-Today: Ayrshare (ayrshare.py). A second provider (Upload-Post) implements
-SocialProvider and is added to _PROVIDERS.
+Providers: Ayrshare (ayrshare.py, the default) and Upload-Post (upload_post.py).
+Each implements SocialProvider and is listed in _providers().
 """
 from django.conf import settings
 
@@ -44,8 +44,9 @@ from .errors import (  # noqa: F401
 
 def _providers():
     from .ayrshare import AyrshareProvider
+    from .upload_post import UploadPostProvider
 
-    return {AyrshareProvider.name: AyrshareProvider}
+    return {provider.name: provider for provider in (AyrshareProvider, UploadPostProvider)}
 
 
 def get_provider(name):

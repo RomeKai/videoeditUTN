@@ -750,11 +750,11 @@ FONTS_DIR = os.path.join(BASE_DIR, 'assets', 'fonts')
 WATERMARK_PATH = os.path.join(BASE_DIR, 'assets', 'watermarks', 'onecreator_logo.png')
 
 # --- SOCIAL PUBLISHING (apps.integrations.social) ---
-# The provider new workspace profiles are created with. A workspace that already
-# has one keeps publishing through the provider recorded on it (SocialProfile.provider).
+# The provider new workspace profiles are created with: 'ayrshare' or 'upload_post'. A workspace
+# that already has one keeps publishing through the provider recorded on it (SocialProfile.provider).
 SOCIAL_PROVIDER = env('SOCIAL_PROVIDER', default='ayrshare')
-# Profiles are titled "<prefix>-<workspace id>" at the provider, where titles are
-# unique per account: give each environment that shares an account its own prefix.
+# Profiles are named "<prefix>-<workspace id>" at the provider (Ayrshare's title, Upload-Post's
+# username), unique per account: give each environment that shares an account its own prefix.
 SOCIAL_PROFILE_TITLE_PREFIX = env('SOCIAL_PROFILE_TITLE_PREFIX', default='onecreator')
 # Profiles at the provider are paid slots of the whole platform (Ayrshare's Launch plan has 10,
 # Business 30): connecting a new workspace stops at this many (409 social_profiles_limit).
@@ -766,3 +766,9 @@ AYRSHARE_API_KEY = env('AYRSHARE_API_KEY', default=None)
 # against a fake provider): every call carries AYRSHARE_API_KEY and a Profile-Key, so
 # backend.settings.prod refuses anything but https; http works with DEBUG and in the tests.
 AYRSHARE_BASE_URL = env('AYRSHARE_BASE_URL', default='https://api.ayrshare.com/api').strip().rstrip('/')
+# Upload-Post (apps.integrations.social.upload_post): the account's API key, sent as
+# `Authorization: Apikey <key>` on every call.
+UPLOAD_POST_API_KEY = env('UPLOAD_POST_API_KEY', default=None)
+# Upload-Post's API, without a path (the calls add /api/...). Change it only to point at a local
+# stand-in (a rehearsal): backend.settings.prod refuses anything but https, as for AYRSHARE_BASE_URL.
+UPLOAD_POST_BASE_URL = env('UPLOAD_POST_BASE_URL', default='https://api.upload-post.com').strip().rstrip('/')

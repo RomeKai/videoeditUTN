@@ -18,7 +18,7 @@ locks its projects, then the workspace, then this row).
 """
 import logging
 import zlib
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from datetime import timedelta
 
 from django.conf import settings
@@ -259,6 +259,23 @@ def connect_url(workspace, platform, return_url):
 
 # --- Reading the accounts ---
 
+# The fields every release's Account has: a process of the release before Account.tiktok reads the
+# same cache during a deploy, and Account(**item) fails on a key it does not know.
+_FIELDS_BEFORE_TIKTOK = ('platform', 'status', 'username', 'connected_at')
+
+
+def _stored(account):
+    """An Account as the cache keeps it: its extra fields only when set (Ayrshare never sets them)."""
+    item = asdict(account)
+    return {key: value for key, value in item.items() if key in _FIELDS_BEFORE_TIKTOK or value is not None}
+
+
+def _account(item):
+    """An Account from the cache, whatever release wrote it."""
+    known = {field.name for field in fields(Account)}
+    return Account(**{key: value for key, value in item.items() if key in known})
+
+
 def _all(status):
     return [Account(platform, status) for platform in PLATFORMS]
 
@@ -267,7 +284,7 @@ def _last_known(profile):
     """The last full answer, or the statuses kept on the profile (without names), or None."""
     last = _cache_get(_key(profile.workspace_id, 'accounts_last'))
     if isinstance(last, list) and len(last) == len(PLATFORMS):
-        return [Account(**item) for item in last]
+        return [_account(item) for item in last]
     if profile.networks is None:
         return None
     return [Account(platform, profile.networks.get(platform, AccountStatus.DISCONNECTED)) for platform in PLATFORMS]
@@ -288,7 +305,7 @@ def accounts(workspace, fresh=False):
     if not fresh:
         cached = _cache_get(_key(workspace.pk))
         if isinstance(cached, list) and len(cached) == len(PLATFORMS):
-            return [Account(**item) for item in cached]
+            return [_account(item) for item in cached]
         failed = _cache_get(_key(workspace.pk, 'accounts_failed'))
         if failed:
             last = _last_known(profile)
@@ -326,7 +343,7 @@ def accounts(workspace, fresh=False):
         except Exception:
             pass
     found = _keep(profile, found)
-    stored = [asdict(account) for account in found]
+    stored = [_stored(account) for account in found]
     _cache_set(_key(workspace.pk), stored, ACCOUNTS_CACHE_SECONDS)
     _cache_set(_key(workspace.pk, 'accounts_last'), stored, ACCOUNTS_LAST_SECONDS)
     return found

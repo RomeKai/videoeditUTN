@@ -12,8 +12,9 @@ documents/runbooks/redes-sociales-prueba.md):
    SOCIAL_MAX_PROFILES for more). The user's email is not asked.
 1. The workspace's profile at the provider: the existing one, or a new one
    (created as the first "Conectar" would; --no-create stops before that).
-2. A linking URL for --platform (TIKTOK by default), valid for 5 minutes:
-   open it in a browser and authorize the account.
+2. A linking URL for --platform (TIKTOK by default), valid for 5 minutes at
+   Ayrshare and 48 hours at Upload-Post: open it in a browser and authorize
+   the account.
 3. The accounts of each network, read now from the provider (not the cache).
 
 It never prints the profile key: only the provider, its non-secret id and
@@ -27,6 +28,9 @@ from apps.integrations import social
 from apps.integrations.social import accounts as social_accounts
 from apps.integrations.social.errors import SocialProviderError
 from apps.users.models import Workspace
+
+# How long each provider's linking URL lasts (their documentation).
+LINK_VALID_FOR = {'ayrshare': '5 minutos', 'upload_post': '48 horas'}
 
 
 class Command(BaseCommand):
@@ -64,7 +68,8 @@ class Command(BaseCommand):
             self.stdout.write(f"  proveedor: {profile.provider} · id: {profile.provider_id or '(sin id)'}")
 
             url = social_accounts.connect_url(workspace, options['platform'], options['return_url'] or None)
-            self.stdout.write(f"Link para conectar {options['platform']} (vale 5 minutos):")
+            valid_for = LINK_VALID_FOR.get(profile.provider, '')
+            self.stdout.write(f"Link para conectar {options['platform']}{f' (vale {valid_for})' if valid_for else ''}:")
             self.stdout.write(f"  {url}")
 
             self.stdout.write("Cuentas (leídas ahora del proveedor):")

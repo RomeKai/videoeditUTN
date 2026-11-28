@@ -48,12 +48,18 @@ class AccountStatus:
 
 @dataclass(frozen=True)
 class Account:
-    """One network of a profile. ``username`` as the network shows it ("@estudionorte"), when known."""
+    """
+    One network of a profile. ``username`` as the network shows it ("@estudionorte"), when known.
+    ``tiktok``: for a connected TikTok account, what TikTok lets it publish with, when the provider
+    says (TikTok's creator info): {privacy_options: [our privacy levels], comment_disabled,
+    duet_disabled, stitch_disabled}. None when the provider does not tell (Ayrshare).
+    """
 
     platform: str
     status: str
     username: Optional[str] = None
     connected_at: Optional[datetime] = None
+    tiktok: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -106,7 +112,9 @@ class PublishResult:
     ``external_id``: the post's id at the provider. ``post_url``: its public
     link, when the network gave one. ``pending``: the network accepted it and
     still processes it (TikTok answers so until it finishes, usually 1 or 2
-    minutes): the post is out of our hands, with no link yet.
+    minutes): the post is out of our hands, with no link yet. A provider
+    answers a PublishResult only once the network's own result says the post
+    went out; an upload the provider still has in its queue is never one.
     """
 
     external_id: Optional[str]
@@ -160,4 +168,8 @@ class SocialProvider(ABC):
 
     @abstractmethod
     def publish(self, profile, request):
-        """Publishes ``request`` (PublishRequest) and answers PublishResult."""
+        """
+        Publishes ``request`` (PublishRequest) and answers PublishResult. However many calls it
+        makes to learn the result, it waits no longer than one call with PUBLISH_TIMEOUT_SECONDS
+        would: PUBLISH_LOCK_TTL_SECONDS is sized for that.
+        """

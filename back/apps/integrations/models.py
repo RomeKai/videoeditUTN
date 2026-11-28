@@ -13,9 +13,11 @@ class SocialProfile(models.Model):
 
     `provider_ref` is what the provider needs to act on the profile. For
     Ayrshare it is the Profile-Key, a credential: it never goes to the web
-    app, to the logs or to error_log. Empty while the profile is being created.
+    app, to the logs or to error_log. For Upload-Post it is the profile's
+    username (not a secret: the calls carry the account's API key). Empty
+    while the profile is being created.
     `provider_id` is the provider's own id of the profile when it gives one
-    (Ayrshare's refId): not a secret, safe to log.
+    (Ayrshare's refId, Upload-Post's username): not a secret, safe to log.
 
     `networks` is what the provider said the last time it was read
     ({platform: connected | expired | disconnected}, apps.integrations.social.accounts):
@@ -42,6 +44,7 @@ class SocialProfile(models.Model):
 
     class Provider(models.TextChoices):
         AYRSHARE = 'ayrshare', 'Ayrshare'
+        UPLOAD_POST = 'upload_post', 'Upload-Post'
 
     workspace = models.OneToOneField(
         'users.Workspace', on_delete=models.SET_NULL, null=True, blank=True, related_name='social_profile',

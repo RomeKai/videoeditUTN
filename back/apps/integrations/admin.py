@@ -4,22 +4,39 @@ from django.contrib import admin
 from .models import SocialProfile
 
 
+PROVIDER_LOCKED = (
+    "Este perfil ya existe en {provider}: sus publicaciones salen por ahí. Para pasar el espacio a otro "
+    "proveedor, desconectá sus redes y borrá este perfil; el próximo «Conectar» lo crea con SOCIAL_PROVIDER."
+)
+
+
 class SocialProfileForm(forms.ModelForm):
     """
-    `provider_ref` is a credential (Ayrshare's Profile-Key): the form never
+    `provider_ref` can be a credential (Ayrshare's Profile-Key): the form never
     shows it, not even to staff who may only view. It can only be replaced: a
     key typed here is saved, an empty field keeps the one there.
+
+    The provider of a profile that exists at the provider (it has its ref)
+    does not change: its ref only means something there. A row without one
+    (before the first «Conectar») may take either provider.
     """
 
     new_provider_ref = forms.CharField(
-        label='Nueva Profile-Key', required=False, strip=True,
+        label='Nueva referencia', required=False, strip=True,
         widget=forms.PasswordInput(render_value=False, attrs={'autocomplete': 'off'}),
-        help_text='Se guarda sin mostrarse. Vacío deja la que está.',
+        help_text='La Profile-Key de Ayrshare o el usuario de Upload-Post. Se guarda sin mostrarse. Vacío deja la que está.',
     )
 
     class Meta:
         model = SocialProfile
         exclude = ('provider_ref',)
+
+    def clean_provider(self):
+        provider = self.cleaned_data['provider']
+        instance = self.instance
+        if instance.pk and instance.provider_ref and provider != instance.provider and not (self.data.get('new_provider_ref') or '').strip():
+            raise forms.ValidationError(PROVIDER_LOCKED.format(provider=instance.get_provider_display()))
+        return provider
 
     def save(self, commit=True):
         profile = super().save(commit=False)
@@ -42,6 +59,6 @@ class SocialProfileAdmin(admin.ModelAdmin):
     raw_id_fields = ('workspace',)
     readonly_fields = ('ready', 'created_at', 'updated_at')
 
-    @admin.display(boolean=True, description='Tiene Profile-Key')
+    @admin.display(boolean=True, description='Creado en el proveedor')
     def ready(self, profile):
         return profile.is_ready
