@@ -710,6 +710,11 @@ AI_SEO_CAPTION_MAX_CHARS = env.json('AI_SEO_CAPTION_MAX_CHARS', default={
 # "Regenerar"): each one is an LLM call, free for the wallet, on the capacity the ingestion of
 # every workspace shares (apps/videos/services/scheduled_posts.py · seo_budget).
 AI_SEO_MAX_PER_WORKSPACE_PER_HOUR = env.int('AI_SEO_MAX_PER_WORKSPACE_PER_HOUR', default=120)
+# How long a newer AI text request (a "Regenerar") waits for the post's lock while an older
+# generation holds it (apps/videos/tasks/social.py · _seo_wait_for_lock): longer than one
+# generation, the primary and the fallback call (AI_LLM_TIMEOUT_SECONDS each) and both
+# moderations. Then the request fails (`seo_busy`) and can be asked again.
+AI_SEO_LOCK_WAIT_SECONDS = env.int('AI_SEO_LOCK_WAIT_SECONDS', default=240)
 
 SPECTACULAR_SETTINGS = {
     'TITLE': 'OneCreator API',

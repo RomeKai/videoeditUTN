@@ -392,15 +392,16 @@ def upload_to_social_network(self, post_id):
 SEO_LOCK_TTL_SECONDS = 600
 SEO_PENDING_TTL_SECONDS = 3600
 # A newer request (a «Regenerar») that finds the lock held by a run serving an older one waits for
-# it (_seo_wait_for_lock): re-queued every SEO_BUSY_COUNTDOWN_SECONDS (up to 20 % more), at most
-# SEO_BUSY_MAX_WAITS times (about two minutes). Then its request ends as a failure (SEO_BUSY_CODE).
+# it (_seo_wait_for_lock): re-queued every SEO_BUSY_COUNTDOWN_SECONDS (up to 20 % more) until it
+# waited AI_SEO_LOCK_WAIT_SECONDS. Then its request ends as a failure (SEO_BUSY_CODE).
 SEO_BUSY_COUNTDOWN_SECONDS = 20
-SEO_BUSY_MAX_WAITS = 6
 SEO_BUSY_CODE = 'seo_busy'
 
 
 @celery_app.task(name='apps.videos.tasks.process_video_seo', bind=True, max_retries=3)
-def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False, busy_waits=0, request_at=None):
+def process_video_seo(
+    self, post_id, capacity_waited_s=0.0, regenerate=False, lock_waited_s=0.0, request_at=None, **unknown,
+):
     """
     Caption and hashtags for one ScheduledPost from the clip's own transcript,
     for the post's platform (AICORE-17, ADR-013).
@@ -408,8 +409,13 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False, bu
     - Idempotent: a post that already has them is not sent to the LLM again,
       unless ``regenerate`` (an explicit user request).
     - One generation at a time per post (Redis lock). A newer request than the
-      one the lock's holder serves waits for it (``busy_waits``, and
+      one the lock's holder serves waits for it (``lock_waited_s``, and
       ``request_at``: the request it waits with), instead of being dropped.
+    - Only for a request on record: every message comes from
+      signals.queue_post_seo, which stamps one, so a message delivered again
+      after its request ended (``acks_late``) generates nothing.
+    - Arguments it does not know (a message of a later release, during a
+      deploy) are ignored, so a new argument never breaks an older worker.
     - The clip transcript is moderated before the call; the generated text
       before it is stored.
     - Every attempt writes an AIUsageRecord with stage ``seo``.
@@ -420,26 +426,38 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False, bu
 
     from apps.core.security import ModerationError
 
+    if unknown:
+        logger.warning("seo.unknown_arguments post_id=%s names=%s", post_id, ",".join(sorted(unknown)))
+
     # The request this run serves (the post's seo_requested_at as it read it): its failure ends that
     # one, never a «Regenerar» that lands meanwhile (_fail_seo_post's cutoff).
     served = _ANY_REQUEST
+    waited_with = parse_datetime(request_at) if request_at else None
+
+    def request_over():
+        # No request for this message to serve. A message that waited for the lock serves the one it
+        # waited with; any other, the one on record (queue_post_seo stamped it before sending).
+        # Over: the run that held the lock served it, a newer one replaced it (with a message of its
+        # own), or it ended and this is the same message delivered again.
+        over = served != waited_with if request_at else served is None
+        if over:
+            logger.info("seo.skipped post_id=%s reason=request_over", post_id)
+        return over
+
     try:
         post = ScheduledPost.objects.select_related('video_clip__project').get(id=post_id)
         served = post.seo_requested_at
-        if request_at is not None and served != parse_datetime(request_at):
-            # It waited for the lock and its request is over: the run that held the lock served it,
-            # or a newer request replaced it (and has a message of its own).
-            logger.info("seo.skipped post_id=%s reason=request_over", post_id)
-            return "SEO Skipped"
         if not regenerate and post.generated_caption and post.generated_hashtags:
             return "SEO Already Generated"
+        if request_over():
+            return "SEO Skipped"
         with _seo_post_lock(post_id, served) as acquired:
             if not acquired:
                 holder = _seo_lock_serves(post_id)
-                if served is not None and holder is not _ANY_REQUEST and (holder is None or served > holder):
+                if holder is not _ANY_REQUEST and (holder is None or served > holder):
                     # A newer request than the one being generated (a «Regenerar» meanwhile): it waits.
                     return _seo_wait_for_lock(
-                        post_id, served, busy_waits, self.request.retries, regenerate, capacity_waited_s,
+                        post_id, served, lock_waited_s, self.request.retries, regenerate, capacity_waited_s,
                     )
                 # Another worker is generating this post, for this same request, right now.
                 logger.info("seo.skipped post_id=%s reason=locked", post_id)
@@ -453,6 +471,8 @@ def process_video_seo(self, post_id, capacity_waited_s=0.0, regenerate=False, bu
                 return "SEO Skipped"
             if not regenerate and post.generated_caption and post.generated_hashtags:
                 return "SEO Already Generated"  # finished by another run before the lock
+            if request_over():
+                return "SEO Skipped"  # served by another run before the lock
             if regenerate and self.request.retries == 0 and not capacity_waited_s:
                 _seo_pending_clear(post_id)  # a fresh request, not a retry of this one
             return _generate_post_metadata(self, post, capacity_waited_s, regenerate)
@@ -651,22 +671,22 @@ def _seo_lock_serves(post_id):
     return parse_datetime(stamp) if stamp else None
 
 
-def _seo_wait_for_lock(post_id, served, waits, retries, regenerate, capacity_waited_s):
+def _seo_wait_for_lock(post_id, served, waited_s, retries, regenerate, capacity_waited_s):
     """
     The run holding the post's lock serves an older request: this newer one
     (``served``) runs once that one is done, instead of being dropped. Re-queued
     after SEO_BUSY_COUNTDOWN_SECONDS plus up to 20 % jitter, with the request it
-    waits with (``request_at``: if that request is over by then, it stops). After
-    SEO_BUSY_MAX_WAITS its request ends as a failure (SEO_BUSY_CODE): the post
-    shows it failed, and «Regenerar» asks again.
+    waits with (``request_at``: if that request is over by then, it stops). Once
+    it waited AI_SEO_LOCK_WAIT_SECONDS its request ends as a failure
+    (SEO_BUSY_CODE): the post shows it failed, and «Regenerar» asks again.
     """
-    if waits >= SEO_BUSY_MAX_WAITS:
-        logger.warning("seo.lock_timeout post_id=%s waits=%d", post_id, waits)
+    if waited_s >= settings.AI_SEO_LOCK_WAIT_SECONDS:
+        logger.warning("seo.lock_timeout post_id=%s waited_s=%.1f", post_id, waited_s)
         _fail_seo_post(post_id, SEO_BUSY_CODE, cutoff=served)
         return "Lock Timeout"
     countdown = SEO_BUSY_COUNTDOWN_SECONDS * (1 + random.uniform(0, 0.2))
-    logger.info("seo.waiting_for_lock post_id=%s wait=%d countdown_s=%.1f", post_id, waits + 1, countdown)
-    kwargs = {'busy_waits': waits + 1, 'request_at': served.isoformat()}
+    logger.info("seo.waiting_for_lock post_id=%s waited_s=%.1f countdown_s=%.1f", post_id, waited_s, countdown)
+    kwargs = {'lock_waited_s': round(waited_s + countdown, 1), 'request_at': served.isoformat()}
     if regenerate:
         kwargs['regenerate'] = True
     if capacity_waited_s:

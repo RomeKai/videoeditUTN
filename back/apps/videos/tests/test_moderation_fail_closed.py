@@ -12,6 +12,7 @@ import openai
 from celery.exceptions import Retry
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
 
 from apps.core.security import (
     AI_Security_Shield,
@@ -181,6 +182,7 @@ class ProcessVideoSeoModerationTests(CapturedTaskFailures, TestCase):
             platform=ScheduledPost.Platform.TIKTOK,
             publish_at="2030-01-01T00:00:00Z",
             status=ScheduledPost.Status.QUEUED,
+            seo_requested_at=timezone.now(),  # asked for, as queue_post_seo leaves every post whose message runs
         )
         # The task locks the post in Redis (AICORE-17).
         redis_patch = patch(
@@ -227,7 +229,7 @@ class ProcessVideoSeoModerationTests(CapturedTaskFailures, TestCase):
         ):
             with self.subTest(code=code):
                 ScheduledPost.objects.filter(pk=self.post.pk).update(
-                    status=ScheduledPost.Status.QUEUED, error_log=None
+                    status=ScheduledPost.Status.QUEUED, error_log=None, seo_requested_at=timezone.now(),
                 )
                 with patch(self.CHECK, side_effect=exc), patch.object(
                     process_video_seo, "retry"
@@ -268,7 +270,7 @@ class ProcessVideoSeoModerationTests(CapturedTaskFailures, TestCase):
         ]
         for response in responses:
             ScheduledPost.objects.filter(pk=self.post.pk).update(
-                status=ScheduledPost.Status.QUEUED, error_log=None
+                status=ScheduledPost.Status.QUEUED, error_log=None, seo_requested_at=timezone.now(),
             )
             client = MagicMock()
             client.moderations.create.return_value = response
