@@ -25,6 +25,8 @@ const hybrid = { apiUrl: HYBRID_API_URL, real: HYBRID_REAL };
 interface Seen {
   method: string;
   path: string;
+  /** The query string, without the "?". */
+  query: string;
   status: number;
   /** Endpoint id when a mock answered; null when the backend did. */
   mock: string | null;
@@ -40,6 +42,7 @@ function record(page: Page): Seen[] {
     seen.push({
       method: request.method(),
       path: new URL(response.url()).pathname,
+      query: new URL(response.url()).search.slice(1),
       status: response.status(),
       mock: response.headers()['x-oc-mock'] ?? null,
       workspaceHeader: request.headers()['x-workspace-id'],
@@ -141,8 +144,16 @@ async function checkProjectsList(page: Page, api: Awaited<ReturnType<typeof back
   await expect(summary(found.count)).toBeVisible();
   await chip(/Todos/, found.status_counts.all);
 
+  // Each thing done on screen was asked to the backend, with its own query: the whole list, the filter, the
+  // search and, only when the user has more than a page of projects, the second page. (Not a count of requests:
+  // that depends on how many projects the user has.)
   const lists = answersOf(seen, 'GET', '/api/v1/projects/');
-  expect(lists.length).toBeGreaterThan(3);
+  const asked = (check: (query: URLSearchParams) => boolean) => lists.some((item) => check(new URLSearchParams(item.query)));
+  const firstPage = (query: URLSearchParams) => (query.get('page') ?? '1') === '1';
+  expect(asked((query) => !query.has('status_group') && !query.has('search') && firstPage(query)), 'la lista entera').toBe(true);
+  expect(asked((query) => query.get('status_group') === 'failed' && !query.has('search') && firstPage(query)), 'el filtro «Con error»').toBe(true);
+  expect(asked((query) => query.get('search')?.trim() === term.trim() && !query.has('status_group') && firstPage(query)), 'la búsqueda').toBe(true);
+  expect(asked((query) => query.get('page') === '2'), 'la segunda página, solo si hay más de una').toBe(Boolean(first.next));
   expect(lists.filter((item) => item.mock !== null || item.status !== 200)).toEqual([]);
   // Back to the whole list, for what the test checks next.
   await page.getByRole('searchbox', { name: 'Buscar proyectos por título' }).fill('');
