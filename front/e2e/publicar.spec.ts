@@ -122,6 +122,21 @@ test.describe('E1 · Publicar y E2 · Publicaciones', () => {
     expectClean(problems, 'lista de publicaciones');
   });
 
+  test('campana: «una publicación falló» abre el detalle de esa publicación', async ({ page }) => {
+    await useScenario(page, 'estudio-norte');
+    const problems = watch(page);
+    await page.goto('/proyectos');
+    await settle(page);
+    await page.getByRole('button', { name: /Notificaciones/ }).click();
+    const bell = page.getByRole('dialog', { name: 'Notificaciones' });
+    await bell.getByRole('button', { name: /no se pudo publicar en TikTok/ }).click();
+    await expect(page).toHaveURL(/\/publicaciones\?detalle=/);
+    const detail = page.getByRole('dialog', { name: 'Detalle de la publicación' });
+    await expect(detail).toBeVisible();
+    await expect(detail.getByText('TikTok rechazó la publicación. Revisá el video y el texto, y reintentá.')).toBeVisible();
+    expectClean(problems, 'Publicaciones desde la campana');
+  });
+
   test('semana, mes y vacío', async ({ page }) => {
     await useScenario(page, 'estudio-norte');
     const problems = watch(page);

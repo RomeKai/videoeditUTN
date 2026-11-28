@@ -138,14 +138,16 @@ def _fail_post(post_id, **changes):
     The post is FAILED with ``changes``, as one UPDATE by id wrote it before.
     When this write is the one that failed it (it was not FAILED: the first
     UPDATE says so by itself, with no lock), its people are told once.
-    Writing FAILED over FAILED changes the row and tells nobody.
+    Writing FAILED over FAILED changes the row and tells nobody; that second
+    UPDATE only matches a post that is still FAILED, so a post a retry moved
+    on in between is left alone instead of failing with nobody told.
     """
     posts = ScheduledPost.objects.filter(id=post_id)
     failed = ScheduledPost.Status.FAILED
     if posts.exclude(status=failed).update(status=failed, **changes):
         _notify_post_failed(post_id)
     else:
-        posts.update(status=failed, **changes)
+        posts.filter(status=failed).update(**changes)
 
 
 @celery_app.task(name='apps.videos.tasks.upload_to_social_network', bind=True, max_retries=3)
@@ -547,7 +549,8 @@ def _fail_seo_post(post_id, code, redispatch=True, cutoff=None):
         )
         if newly_failed:
             _notify_post_failed(post_id)
-        ended = newly_failed or bool(ending.update(
+        # Only a post that keeps its status (already FAILED, a draft, one with a text): never a new failure.
+        ended = newly_failed or bool(ending.filter(Q(status=ScheduledPost.Status.FAILED) | keeps).update(
             status=Case(When(keeps, then=F('status')), default=Value(ScheduledPost.Status.FAILED)),
             error_log=code,
             seo_requested_at=None,

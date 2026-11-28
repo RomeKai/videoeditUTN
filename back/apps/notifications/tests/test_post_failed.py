@@ -14,6 +14,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.core import mail
+from django.db.models.query import QuerySet
 from django.test import override_settings
 from django.utils import timezone
 
@@ -29,7 +30,7 @@ from apps.videos.tasks import upload_to_social_network
 from apps.videos.tasks.social import _fail_post, _fail_seo_post
 from apps.videos.tests.fakes import CapturedTaskFailures
 
-from .helpers import BellIsBroken, broken_bell, sent
+from .helpers import BellIsBroken, broken_bell, sent, team
 from .test_emails import whole
 from .test_events import EventHarness
 
@@ -76,6 +77,22 @@ class PostHarness(CapturedTaskFailures, EventHarness):
             result = self.committed(lambda: upload_to_social_network.apply(args=[str(post.pk)]))
         post.refresh_from_db()
         return result, publish
+
+    def retried_after_update(self, post, number=1):
+        """Right after the ``number``-th UPDATE of posts from now, a retry moves ``post`` back to SCHEDULED."""
+        real, calls = QuerySet.update, []
+
+        def update(queryset, **changes):
+            changed = real(queryset, **changes)
+            if queryset.model is ScheduledPost:
+                calls.append(changed)
+                if len(calls) == number:
+                    real(ScheduledPost.objects.filter(pk=post.pk), status=Status.SCHEDULED, error_log=None)
+            return changed
+
+        patcher = patch.object(QuerySet, 'update', update)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def assert_told_once_about(self, post, expected):
         self.assert_everyone_got(expected)
@@ -201,6 +218,17 @@ class PublisherTests(PostHarness):
         )
         self.assertEqual(Notification.objects.count(), 6)
 
+    def test_a_retry_between_the_two_writes_is_not_failed_in_silence(self):
+        """The first UPDATE found it FAILED; before the second one, «Reintentar» moved it on."""
+        post = self.make_post(status=Status.FAILED, error_log='provider_rejected')
+        self.retried_after_update(post)
+
+        self.committed(lambda: _fail_post(post.pk, error_log='outcome_unknown (critical KeyError)'))
+
+        post.refresh_from_db()
+        self.assertEqual((post.status, post.error_log), (Status.SCHEDULED, None))
+        self.assertEqual(sent(), {})
+
     def test_rolled_back_it_tells_nobody(self):
         post = self.make_post()
 
@@ -251,6 +279,17 @@ class AiTextTests(PostHarness):
         post.refresh_from_db()
         self.assertEqual((post.status, post.error_log), (Status.FAILED, 'seo_request_expired'))
         self.assert_told_once_about(post, NO_TEXT)
+
+    def test_a_retry_between_the_two_writes_is_not_failed_in_silence(self):
+        post = self.make_post(status=Status.FAILED, error_log='seo_dispatch_failed')
+        # After the UPDATE that looks for a post to fail (the third: an earlier text, a failure to publish, this one).
+        self.retried_after_update(post, 3)
+
+        self.assertFalse(self.committed(lambda: _fail_seo_post(post.pk, 'seo_request_expired', redispatch=False)))
+
+        post.refresh_from_db()
+        self.assertEqual((post.status, post.error_log), (Status.SCHEDULED, None))
+        self.assertEqual(sent(), {})
 
     def test_a_post_that_keeps_its_status_tells_nobody(self):
         draft = self.make_post(status=Status.DRAFT)
@@ -346,6 +385,75 @@ class DisconnectedNetworkTests(PostHarness):
         self.assertEqual((failed, post.status), (1, Status.FAILED))
 
 
+class BurstTests(PostHarness):
+    """Many posts failing at once (a broker or worker outage) never bury the bell."""
+
+    SEVERAL = (
+        'post_failed', 'Fallaron varias publicaciones en pocos minutos',
+        'No te avisamos de cada una: revisalas en Publicaciones y reintentalas.',
+    )
+
+    def posts(self, count, **fields):
+        clips = [VideoClip.objects.create(project=self.video, title=f'Clip {n}', start_time=0, end_time=5) for n in range(count)]
+        return [self.make_post(clip=clip, status=Status.SCHEDULED, **fields) for clip in clips]
+
+    def test_a_sweep_of_lost_ai_texts_tells_three_and_then_once_for_the_rest(self):
+        now = timezone.now()
+        self.posts(8)
+        ScheduledPost.objects.update(seo_requested_at=now - timedelta(days=1))
+
+        self.assertEqual(self.committed(lambda: scheduled_posts.fail_lost_ai_texts(now)), 8)
+
+        self.assertEqual(ScheduledPost.objects.filter(status=Status.FAILED).count(), 8)
+        for name in ('ana', 'edu', 'vera'):
+            self.assertEqual([title for _, title, _ in sent()[name]][3:], [self.SEVERAL[1]])
+            self.assertEqual(sent()[name][-1], self.SEVERAL)
+        self.assertEqual(Notification.objects.count(), 12)
+        self.assertEqual(Notification.objects.filter(post=None).count(), 3)
+        self.assertEqual(len(mail.outbox), 12)
+        self.assertEqual(mail.outbox[-1].subject, 'Fallaron varias publicaciones')
+        self.assertIn(f'https://app.onecreator.test/publicaciones?espacio={self.workspace.id}\n', mail.outbox[-1].body)
+
+    def test_a_broker_that_refuses_every_text_of_a_bulk_create_does_the_same(self):
+        from apps.videos.signals import queue_post_seo
+
+        posts = self.posts(6)
+
+        with patch('apps.videos.tasks.process_video_seo.delay', side_effect=ConnectionError('broker')):
+            self.committed(lambda: [queue_post_seo(post.pk) for post in posts])
+
+        self.assertEqual(ScheduledPost.objects.filter(status=Status.FAILED).count(), 6)
+        self.assertEqual(len(sent()['ana']), 4)
+        self.assertEqual(sent()['ana'][-1], self.SEVERAL)
+
+    def test_after_the_window_a_failure_is_told_on_its_own_again(self):
+        posts = self.posts(5)
+        for post in posts[:4]:
+            self.committed(lambda: _fail_post(post.pk, error_log='provider_rejected'))
+        Notification.objects.update(created_at=timezone.now() - timedelta(minutes=11))
+
+        self.committed(lambda: _fail_post(posts[4].pk, error_log='provider_rejected'))
+
+        self.assertEqual(sent()['ana'][-1][1], 'Clip 4: no se pudo publicar en Instagram Reels')
+        self.assertEqual(len(sent()['ana']), 5)
+
+    def test_the_same_post_failing_again_and_another_workspace_do_not_count(self):
+        post, other = self.posts(2)
+        for _ in range(4):
+            ScheduledPost.objects.filter(pk=post.pk).update(status=Status.QUEUED)
+            self.committed(lambda: _fail_post(post.pk, error_log='provider_rejected'))
+        elsewhere = team(self.otto, 'Otro')
+        for index in range(3):
+            Notification.objects.create(
+                user=self.otto, workspace=elsewhere, kind='post_failed', title='x', post=self.make_post(clip=other.video_clip),
+            )
+
+        self.committed(lambda: _fail_post(other.pk, error_log='provider_rejected'))
+
+        self.assertEqual([title for _, title, _ in sent(self.workspace)['ana']],
+                         ['Clip 0: no se pudo publicar en Instagram Reels'] * 4 + ['Clip 1: no se pudo publicar en Instagram Reels'])
+
+
 class PostFailedEmailTests(PostHarness):
     def assert_emails_to(self, *usernames):
         self.assertEqual(sorted(address for message in mail.outbox for address in message.to),
@@ -360,7 +468,7 @@ class PostFailedEmailTests(PostHarness):
         message = self.assert_emails_to('ana', 'edu', 'vera')
         self.assertEqual(message.subject, 'Una publicación no salió')
         self.assertIn(REJECTED[2], message.body)
-        link = f'https://app.onecreator.test/publicaciones?publicacion={post.pk}&espacio={self.workspace.id}'
+        link = f'https://app.onecreator.test/publicaciones?detalle={post.pk}&espacio={self.workspace.id}'
         self.assertIn(f'Ver la publicación:\n{link}\n', message.body)
         self.assertIn(f'href="{link.replace("&", "&amp;")}"', message.alternatives[0][0])
         self.assertIn('tenés activado el aviso «Una publicación falló»', message.body)

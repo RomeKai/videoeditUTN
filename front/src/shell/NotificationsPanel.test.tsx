@@ -96,7 +96,7 @@ describe('J2 · la campana con las respuestas del backend', () => {
     // Una publicación fallida: a esa publicación en Publicaciones.
     expect(post.type).toBe('post_failed');
     await userEvent.click(screen.getByText(post.title));
-    expect(router.push).toHaveBeenLastCalledWith(`/publicaciones?publicacion=${post.post_id}`);
+    expect(router.push).toHaveBeenLastCalledWith(`/publicaciones?detalle=${post.post_id}`);
 
     // Saldo bajo: a Comprar tokens.
     expect(low.type).toBe('low_balance');

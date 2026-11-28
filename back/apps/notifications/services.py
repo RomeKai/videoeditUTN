@@ -22,6 +22,7 @@ says; queueing never raises, and the bell is already written by then.
 """
 import logging
 import uuid
+from datetime import timedelta
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 
 from django.db import transaction
@@ -265,6 +266,13 @@ def low_balance_message(available):
 POST_MAYBE_OUT = ('outcome_unknown', 'duplicate_content')
 # ``reason`` of the one notification of a network that was disconnected with several posts to go.
 NETWORK_DISCONNECTED = 'network_disconnected'
+# A workspace is told of this many failed posts one by one within POST_BURST_WINDOW; the next one
+# writes a single notification for all that follow (``reason`` SEVERAL_POSTS_FAILED) and the rest
+# of the window is silent. A broker or worker outage can fail every post of a bulk create (60) or
+# of a sweep at once: one notification and one email each would empty the bell of everything else.
+POST_BURST_LIMIT = 3
+POST_BURST_WINDOW = timedelta(minutes=10)
+SEVERAL_POSTS_FAILED = 'several_posts_failed'
 
 
 def post_failed_message(post):
@@ -294,6 +302,14 @@ def network_disconnected_message(network, posts):
     return (
         f'Se desconectó {network}: {posts} publicaciones no van a salir',
         f'Reconectá la cuenta de {network} y reintentalas desde Publicaciones.',
+    )
+
+
+def several_posts_failed_message():
+    """(title, body) of the one ``post_failed`` that stands for the failures after POST_BURST_LIMIT."""
+    return (
+        'Fallaron varias publicaciones en pocos minutos',
+        'No te avisamos de cada una: revisalas en Publicaciones y reintentalas.',
     )
 
 
@@ -440,6 +456,17 @@ def _failed_post(post_id):
 def _write_post_failed(post):
     project = post.video_clip.project
     workspace = project.workspace
+    recent = Notification.objects.filter(
+        workspace=workspace, kind=Kind.POST_FAILED, created_at__gte=timezone.now() - POST_BURST_WINDOW,
+    )
+    if recent.filter(reason=SEVERAL_POSTS_FAILED).exists():
+        return  # already told that several are failing
+    if recent.exclude(post=None).values('post_id').distinct().count() >= POST_BURST_LIMIT:
+        _write(
+            workspace, recipients_of(workspace), Kind.POST_FAILED, *several_posts_failed_message(),
+            reason=SEVERAL_POSTS_FAILED,
+        )
+        return
     title, body, reason = post_failed_message(post)
     _write(workspace, recipients_of(workspace), Kind.POST_FAILED, title, body, project=project, post=post, reason=reason)
 
@@ -456,6 +483,10 @@ def notify_post_failed(post_id):
     fails again is a new failure and tells again. Nothing is written if the
     post is gone or no longer FAILED by the time the write commits (a retry
     was faster).
+
+    A burst is bounded: after POST_BURST_LIMIT posts of a workspace told one
+    by one within POST_BURST_WINDOW, the next failure writes one notification
+    for all that follow, and the rest of the window writes nothing.
     """
     def build():
         post = _failed_post(post_id)

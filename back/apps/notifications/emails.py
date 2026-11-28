@@ -4,8 +4,7 @@ The emails of the notifications (map 1.11, gap 21): what each one says.
 One email per notification of the bell whose kind is in ``EMAIL_KINDS``, for a
 user who has that kind on in Perfil › Notificaciones (``NotificationPreference``,
 a field with the kind's name). A payment has no email (map 1.11) and no
-preference. ``post_failed`` has its preference, but nothing writes that
-notification yet.
+preference.
 
 No email carries anything a user typed (the rule of the account emails, see
 ``apps.users.email_verification``): no project title, no workspace name, no
@@ -27,7 +26,8 @@ post that failed), so it never goes in an email. What does go:
   workspace before it shows the page (RequireSession). Without it, a member
   who has another workspace active would open a project that is not there,
   or buy tokens for the wrong workspace. A failed post leads to itself in
-  Publicaciones (``?publicacion=<id>``).
+  Publicaciones (``?detalle=<id>``, the parameter the screen opens a post's
+  detail with).
 
 Each email has a plain text part and a simple HTML part with the same words;
 everything that goes into the HTML is escaped.
@@ -43,9 +43,10 @@ Kind = Notification.Kind
 # The web app's screen with the switches (I2).
 PREFERENCES_PATH = '/perfil/notificaciones'
 BUY_TOKENS_PATH = '/uso/comprar'
-# Publicaciones (G1) and the parameter that opens one post (notificationHref).
+# Publicaciones and the parameter its screen opens one post's detail with
+# (front/src/features/publicar/PublicacionesScreen.tsx; notificationHref builds the same link).
 POSTS_PATH = '/publicaciones'
-POST_PARAM = 'publicacion'
+POST_PARAM = 'detalle'
 
 # kind → the label of its switch in I2. The preference field has the kind's name.
 EMAIL_KINDS = {
@@ -125,13 +126,14 @@ def _content(notification):
             _project_path(notification),
         )
     if kind == Kind.POST_FAILED:
-        from .services import NETWORK_DISCONNECTED, POST_MAYBE_OUT
+        from .services import NETWORK_DISCONNECTED, POST_MAYBE_OUT, SEVERAL_POSTS_FAILED
 
         path = f'{POSTS_PATH}?{POST_PARAM}={notification.post_id}' if notification.post_id else POSTS_PATH
-        if notification.reason == NETWORK_DISCONNECTED:
-            # The bell's title is ours here (a network and a count): no user text.
+        if notification.reason in (NETWORK_DISCONNECTED, SEVERAL_POSTS_FAILED):
+            # The bell's title is ours here (a network and a count, or a fixed sentence): no user text.
             return (
-                'Hay publicaciones que no van a salir',
+                'Hay publicaciones que no van a salir'
+                if notification.reason == NETWORK_DISCONNECTED else 'Fallaron varias publicaciones',
                 [
                     f'{notification.title} en tu espacio de trabajo de OneCreator. {detail}'.strip(),
                     'Hasta que alguien las reintente, quedan en error y no se publican.',
