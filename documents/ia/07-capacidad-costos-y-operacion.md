@@ -380,6 +380,7 @@ Todos los settings de IA de [settings/base.py](../../back/backend/settings/base.
 | `AI_CAPACITY_LLM_OUTPUT_TOKENS` | `4000` | Tokens de salida (visible y razonamiento) en cada reserva de LLM |
 | `AI_SEO_LANGUAGE` | `es` | Idioma del caption |
 | `AI_SEO_CAPTION_MAX_CHARS` | `{"TIKTOK": 2200, "INSTAGRAM_REELS": 2200, "YOUTUBE_SHORTS": 5000}` | Largo máximo de caption más hashtags por plataforma |
+| `AI_SEO_LOCK_WAIT_SECONDS` | `240` | Cuánto espera un «Regenerar» el lock del post mientras se genera un texto anterior; después falla con `seo_busy` ([ver 05](05-seo-y-publicacion.md#flujo-generación-de-caption-y-hashtags), punto 2) |
 | `AI_SEO_MAX_PER_WORKSPACE_PER_HOUR` | `120` | Textos con IA que la API de publicaciones pide por workspace y por hora (crear y «Regenerar»). Cada uno es una llamada al LLM, gratis para la billetera. Ver [05](05-seo-y-publicacion.md#configuración) |
 | `PAYMENTS_PROVIDER` | vacío (`simulated` en `settings/dev.py`) | Quién cobra las compras y las subidas de plan. Vacío: nadie, y empezar un pago responde 501 `payments_unavailable`. `simulated`: el checkout de prueba de la app web, que no cobra nada. Otro valor frena el arranque (`payments.E001`) |
 | `PAYMENTS_ALLOW_SIMULATED` | `False` | Deja correr `simulated` sin `DEBUG` (una demo). `settings/prod.py` no arranca con `simulated` sin esto, y con esto loguea `payments.simulated_provider_on` y `check --deploy` avisa `payments.W001` |
