@@ -402,12 +402,14 @@ No son de IA, pero se configuran en el mismo entorno. El detalle de los de redes
 | `MAINTENANCE_EXEMPT_PATHS` | `[]` | Rutas que siguen respondiendo en mantenimiento (webhooks, health checks), separadas por coma. Cada una cubre lo que está debajo |
 | `USE_R2` | `False` | `True`: los archivos van a Cloudflare R2 (`CLOUDFLARE_R2_*`). `False`: al disco, en `back/media` |
 | `MEDIA_PUBLIC_BASE_URL` | vacío | Solo con `USE_R2=False`: el origen de las URLs `/media/` que se arman sin un pedido (tareas de Celery). Vacío: quedan relativas, salvo la del clip que va al proveedor de redes, que usa el origen de `FRONTEND_URL`. Es un origen, sin ruta; si no, no arranca. En producción, `https` |
-| `SOCIAL_PROVIDER` | `ayrshare` | Proveedor con el que se crean los perfiles nuevos. Un workspace con perfil sigue con el de su perfil |
-| `SOCIAL_PROFILE_TITLE_PREFIX` | `onecreator` | Prefijo del título de cada perfil en el proveedor. Uno por entorno si comparten la cuenta |
+| `SOCIAL_PROVIDER` | `ayrshare` | Proveedor con el que se crean los perfiles nuevos: `ayrshare` o `upload_post`. Un workspace con perfil sigue con el de su perfil |
+| `SOCIAL_PROFILE_TITLE_PREFIX` | `onecreator` | Prefijo del nombre de cada perfil en el proveedor (el título en Ayrshare, el `username` en Upload-Post). Uno por entorno si comparten la cuenta |
 | `SOCIAL_MAX_PROFILES` | `10` | Tope de perfiles en la cuenta del proveedor. Pasado el tope, conectar un workspace nuevo responde 409 `social_profiles_limit` |
 | `SOCIAL_UNLINKED_PROFILE_DAYS` | `7` | Días tras los que `clean-social-profiles` borra un perfil al que nunca se le vinculó una red |
 | `AYRSHARE_API_KEY` | `None` | Key de la cuenta de Ayrshare. Sin ella, conectar responde 502 `provider_not_configured` y nada se publica |
 | `AYRSHARE_BASE_URL` | `https://api.ayrshare.com/api` | La API de Ayrshare. Se cambia solo para un doble local en un ensayo. `settings.prod` no arranca si no es `https` |
+| `UPLOAD_POST_API_KEY` | `None` | Key de la cuenta de Upload-Post. Sin ella, los workspaces con perfil en Upload-Post no conectan (502 `provider_not_configured`) ni publican |
+| `UPLOAD_POST_BASE_URL` | `https://api.upload-post.com` | La API de Upload-Post, sin ruta. Se cambia solo para un doble local en un ensayo. `settings.prod` no arranca si no es `https` |
 | `THROTTLE_POST_SEO_REGENERATE` / `THROTTLE_POST_CREATE` / `THROTTLE_SOCIAL_CONNECT` | `30/hour` / `300/hour` / `30/hour` | Por usuario: «Regenerar» el texto, crear publicaciones (cada una de un lote cuenta) y pedir el link para conectar una red |
 | `FRONTEND_URL` | `http://localhost:3000` | Origen de la web: los links de los emails abren ahí. Obligatorio en `settings.prod` |
 | `NUM_PROXIES` | `0` en dev | Proxies delante de Django que suman la IP del cliente a `X-Forwarded-For`. Obligatorio en `settings.prod`. La demo usa `1` |

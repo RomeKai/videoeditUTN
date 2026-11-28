@@ -45,8 +45,8 @@ MAX_DURATION_SECONDS = {
 }
 ASPECT_RATIOS = ['9:16']
 # TikTok's creator options (who may watch, comments, duets, stitches) come from TikTok's
-# creator_info, which Ayrshare does not expose. Until a provider gives them: the privacy levels
-# any account takes (FOLLOWER_OF_CREATOR needs a private account) and nothing turned off.
+# creator_info: Upload-Post gives them (Account.tiktok), Ayrshare does not. Without them: the
+# privacy levels any account takes (FOLLOWER_OF_CREATOR needs a private account) and nothing off.
 TIKTOK_CREATOR_DEFAULT = {
     'privacy_options': ['PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'SELF_ONLY'],
     'comment_disabled': False,
@@ -76,8 +76,16 @@ def account_body(account):
             'max_duration_seconds': MAX_DURATION_SECONDS[platform],
             'aspect_ratios': list(ASPECT_RATIOS),
         },
-        'tiktok': dict(TIKTOK_CREATOR_DEFAULT, privacy_options=list(TIKTOK_CREATOR_DEFAULT['privacy_options']))
-        if platform == ScheduledPost.Platform.TIKTOK and linked else None,
+        'tiktok': _tiktok_creator(account) if platform == ScheduledPost.Platform.TIKTOK and linked else None,
+    }
+
+
+def _tiktok_creator(account):
+    """The account's own options when the provider read them, else TIKTOK_CREATOR_DEFAULT."""
+    creator = account.tiktok or TIKTOK_CREATOR_DEFAULT
+    return {
+        'privacy_options': list(creator['privacy_options']),
+        **{flag: creator[flag] is True for flag in ('comment_disabled', 'duet_disabled', 'stitch_disabled')},
     }
 
 
