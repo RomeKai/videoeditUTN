@@ -410,6 +410,7 @@ Van primero en `error_log` (`<código>` o `<código> (<detalle>)`); `ScheduledPo
 | Código | Cuándo | Qué hace el usuario |
 |--------|--------|---------------------|
 | `account_not_connected` | El espacio no tiene perfil, o la red no está vinculada. | Conectar la cuenta y reintentar. |
+| `clip_too_long` | Al publicar, el clip supera la duración máxima de esa red. No se llama al proveedor. | Acortar y volver a renderizar el clip, y reintentar la publicación. |
 | `account_expired` | La red pide autorizar de nuevo. | Reconectar y reintentar. |
 | `tiktok_options_missing` | Un post de TikTok sin `tiktok.privacy_level`. | Cancelarlo y crearlo de nuevo (un `FAILED` no se edita). |
 | `quota_exceeded` | Se usó la cuota mensual de posts del proveedor. | Esperar. |
