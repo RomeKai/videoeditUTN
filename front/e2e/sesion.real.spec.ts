@@ -181,6 +181,21 @@ test.describe('Sin mocks: la sesión contra el backend', () => {
     await expect(page).toHaveURL(/\/uso\/movimientos$/);
   });
 
+  test('un 503 suelto en un pedido de la pantalla, con el estado en orden: la app sigue en pie y el pedido no se repite sin fin', async ({ page }) => {
+    // Only the wallet (asked by the shell, inside the maintenance gate) answers a 503 without `code`, every time.
+    const calls = await fakeApi(page, { '/api/v1/wallet/': 503 });
+    await signedIn(page);
+    await page.goto('/uso/movimientos');
+    await expect(page.getByRole('navigation', { name: 'Secciones', exact: true })).toBeVisible();
+    await page.waitForTimeout(3000);
+    // Taking the app away and bringing it back made every screen ask again: dozens of requests in these seconds.
+    // Now it is the request and the client's own retry of a 5xx, per query that reads the wallet.
+    expect(calls.filter((call) => call.path === '/api/v1/wallet/').length).toBeLessThanOrEqual(4);
+    expect(calls.filter((call) => call.path === '/api/v1/status/').length).toBeLessThanOrEqual(4);
+    await expect(page.getByRole('navigation', { name: 'Secciones', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /mantenimiento/i })).toHaveCount(0);
+  });
+
   test('un 503 al renovar con la plataforma en pie: es un error para reintentar, no mantenimiento ni «Sesión vencida»', async ({ page }) => {
     // Only the renewal fails; the status endpoint says all is well.
     await fakeApi(page, { '/api/v1/me/': 401, '/api/token/refresh/': 503 });

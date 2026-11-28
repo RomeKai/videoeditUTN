@@ -1,4 +1,6 @@
+import { useQuery } from '@tanstack/react-query';
 import { screen, waitFor } from '@testing-library/react';
+import { useEffect } from 'react';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, it, vi } from 'vitest';
 import { apiCall } from '@/api/client';
@@ -94,15 +96,114 @@ describe('K5 · cuándo la app pasa a mantenimiento', () => {
     expect(screen.getByRole('heading', { name: 'Estamos en mantenimiento' })).toBeInTheDocument();
   });
 
-  it('un 503 suelto con el estado en orden no deja la app en mantenimiento', async () => {
-    await renderGate();
-    // Only this endpoint answers the 503 of a proxy; the status endpoint (the mock's) says all is well.
-    server.use(http.get(ACCOUNTS, () => new HttpResponse('<html>503</html>', { status: 503, headers: { 'Content-Type': 'text/html' } })));
+  it('un 503 suelto con el estado en orden no saca la app: se pregunta el estado enseguida y la pantalla sigue montada', async () => {
+    let mounts = 0;
+    function Inside() {
+      useEffect(() => {
+        mounts += 1;
+      }, []);
+      return <p>adentro</p>;
+    }
+    const view = renderScenario(
+      <MaintenanceGate>
+        <Inside />
+      </MaintenanceGate>,
+    );
+    await waitFor(() => expect(view.queryClient.getQueryData(keys.system)).toEqual({ maintenance: false, maintenance_window: null }));
+    // Only this endpoint answers the 503 of a proxy; the status endpoint says all is well.
+    let asked = 0;
+    server.use(
+      http.get(ACCOUNTS, () => new HttpResponse('<html>503</html>', { status: 503, headers: { 'Content-Type': 'text/html' } })),
+      http.get(STATUS, () => {
+        asked += 1;
+        return undefined;
+      }),
+    );
+    let shown = false;
+    const observer = new MutationObserver(() => {
+      if (screen.queryByText('Estamos en mantenimiento')) shown = true;
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
     await apiCall(listSocialAccounts).catch(() => undefined);
-    expect(await screen.findByRole('heading', { name: 'Estamos en mantenimiento' })).toBeInTheDocument();
-    // Back without waiting for the 60 s poll: the gate asked the status when the 503 arrived.
-    expect(await screen.findByText('adentro', undefined, { timeout: 2000 })).toBeInTheDocument();
+    // The status was asked at once, not at the next poll…
+    await waitFor(() => expect(asked).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    observer.disconnect();
+    // …and it says all is well: the page never came up and the screen was never taken away.
+    expect(shown).toBe(false);
+    expect(screen.getByText('adentro')).toBeInTheDocument();
+    expect(mounts).toBe(1);
+    expect(asked).toBe(1);
+  });
+
+  it('una consulta de adentro que recibe siempre el 503 de un proxy no entra en un bucle de pedidos', async () => {
+    // The storm: the gate took the app away, the status brought it back, the screen mounted again and asked
+    // again, got the 503 again… This screen asks the way the app's do: it reads again when it mounts with an error.
+    let requests = 0;
+    let mounts = 0;
+    server.use(
+      http.get(ACCOUNTS, () => {
+        requests += 1;
+        return new HttpResponse('<html>503</html>', { status: 503, headers: { 'Content-Type': 'text/html' } });
+      }),
+    );
+    function Inside() {
+      useEffect(() => {
+        mounts += 1;
+      }, []);
+      const accounts = useQuery({ queryKey: ['prueba', 'redes'], queryFn: () => apiCall(listSocialAccounts) });
+      return <p>{accounts.isError ? 'no se pudo leer' : 'leyendo'}</p>;
+    }
+    renderScenario(
+      <MaintenanceGate>
+        <Inside />
+      </MaintenanceGate>,
+    );
+    expect(await screen.findByText('no se pudo leer')).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(screen.getByText('no se pudo leer')).toBeInTheDocument();
     expect(screen.queryByText('Estamos en mantenimiento')).not.toBeInTheDocument();
+    expect(requests).toBe(1);
+    expect(mounts).toBe(1);
+  });
+
+  it('al terminar el mantenimiento cada cosa se pide una vez: lo que la pantalla ya está pidiendo al volver no se corta para pedirlo de nuevo', async () => {
+    const down = () => HttpResponse.json({ detail: 'Estamos haciendo mantenimiento. Volvé en un rato.' }, { status: 503 });
+    let state: 'up' | 'down' = 'up';
+    let requests = 0;
+    server.use(
+      http.get(ACCOUNTS, () => {
+        requests += 1;
+        return state === 'up' ? undefined : down();
+      }),
+      http.get(STATUS, () => (state === 'up' ? undefined : down())),
+    );
+    // A screen with data from before, already old when it comes back: it reads again as it mounts.
+    const key = ['prueba', 'redes'];
+    function Inside() {
+      const accounts = useQuery({ queryKey: key, queryFn: () => apiCall(listSocialAccounts), staleTime: 0 });
+      return <p>{accounts.data ? `redes: ${accounts.data.length}` : 'leyendo'}</p>;
+    }
+    const view = renderScenario(
+      <MaintenanceGate>
+        <Inside />
+      </MaintenanceGate>,
+    );
+    expect(await screen.findByText(/^redes: \d/)).toBeInTheDocument();
+    expect(requests).toBe(1);
+
+    state = 'down';
+    await view.queryClient.refetchQueries({ queryKey: key });
+    expect(await screen.findByRole('heading', { name: 'Estamos en mantenimiento' })).toBeInTheDocument();
+    expect(requests).toBe(2);
+
+    state = 'up';
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(await screen.findByText(/^redes: \d/)).toBeInTheDocument();
+    await waitFor(() => expect(view.queryClient.isFetching()).toBe(0));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    // One more, not two: the one the screen made as it came back.
+    expect(requests).toBe(3);
   });
 
   it('mientras dura, vuelve a preguntar el estado cada 10 s; una pestaña oculta no pregunta hasta que vuelve al frente', async () => {
