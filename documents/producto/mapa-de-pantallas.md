@@ -755,7 +755,7 @@ Navegación por secciones a la izquierda dentro de la página; en el móvil, una
 - **Sin el perfil cargado** (el navegador tenía guardada una sesión que ya no sirve): pide también el email, ya escrito con el de esa cuenta si el navegador lo recuerda.
 - **No se abre** sobre Iniciar sesión ni sobre las páginas públicas. Ahí esa pestaña deja de usar la sesión vieja y el login avisa «Tu sesión venció. Iniciá sesión de nuevo.», con el email ya escrito. En una primera visita, sin sesión guardada, no aparece nada de esto.
 - **Varias pestañas:** la pestaña del login no borra la sesión guardada, así que otra pestaña con este diálogo abierto conserva su pantalla. Si la sesión desaparece del navegador (se cerró en otra pestaña), el diálogo se cierra y la app va al login.
-- **El email recordado:** el navegador guarda de quién es la sesión (`oc.auth.email`) cuando carga el perfil y lo borra al cerrar sesión. En una computadora compartida, si la persona nunca cerró sesión, su email aparece escrito una vez en el login o en este diálogo.
+- **El email recordado:** el navegador guarda de quién es la sesión (`oc.auth.email`) cuando carga el perfil y lo borra al cerrar sesión. En una computadora compartida, si la persona nunca cerró sesión, su email aparece escrito en el login o en este diálogo cada vez que alguien entra, hasta que alguien inicie o cierre sesión.
 
 ---
 
