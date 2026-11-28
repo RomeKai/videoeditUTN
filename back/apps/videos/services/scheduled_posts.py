@@ -63,6 +63,9 @@ NETWORK = {
 }
 # The most hashtags each network takes (YouTube ignores every hashtag past 15).
 HASHTAGS_MAX = {Platform.TIKTOK: 30, Platform.INSTAGRAM_REELS: 30, Platform.YOUTUBE_SHORTS: 15}
+# The longest video each network takes for these formats (Ayrshare's media guidelines: TikTok
+# 10 min through its API, Instagram Reels 15 min, YouTube Shorts 3 min).
+MAX_DURATION_SECONDS = {Platform.TIKTOK: 600, Platform.INSTAGRAM_REELS: 900, Platform.YOUTUBE_SHORTS: 180}
 # A `publish_at` this close to now is "now": the clocks of the browser and the server differ a little.
 NOW_TOLERANCE = timedelta(seconds=60)
 BULK_MAX = 60

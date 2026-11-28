@@ -93,6 +93,14 @@ class SocialAccountsHarness:
 
 
 class ListTests(SocialAccountsHarness, TestCase):
+    def test_duration_limits_by_network(self):
+        response = self.call("get", LIST)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual({
+            row["platform"]: row["limits"]["max_duration_seconds"] for row in response.json()
+        }, {"TIKTOK": 600, "INSTAGRAM_REELS": 900, "YOUTUBE_SHORTS": 180})
+
     def test_without_a_profile_every_network_is_disconnected_and_nobody_is_asked(self):
         with patch(f"{PROVIDER}.accounts") as accounts:
             response = self.call("get", LIST)

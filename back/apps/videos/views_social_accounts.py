@@ -30,19 +30,14 @@ from apps.users.throttles import AttemptThrottle, SpanishThrottleMixin
 
 from .models import ScheduledPost
 from .services import scheduled_posts
+from .services.scheduled_posts import MAX_DURATION_SECONDS
 from .services.seo_engine import caption_limit
 from .views import NO_WORKSPACE_ERROR, _active_workspace
 
 logger = logging.getLogger(__name__)
 
 NETWORK = scheduled_posts.NETWORK
-# The longest video each network takes for these formats (Ayrshare's media guidelines: TikTok
-# 10 min through its API, Instagram Reels 15 min, YouTube Shorts 3 min) and the format they want.
-MAX_DURATION_SECONDS = {
-    ScheduledPost.Platform.TIKTOK: 600,
-    ScheduledPost.Platform.INSTAGRAM_REELS: 900,
-    ScheduledPost.Platform.YOUTUBE_SHORTS: 180,
-}
+# The format every network wants for these clips (the longest video each takes is MAX_DURATION_SECONDS).
 ASPECT_RATIOS = ['9:16']
 # TikTok's creator options (who may watch, comments, duets, stitches) come from TikTok's
 # creator_info: Upload-Post gives them (Account.tiktok), Ayrshare does not. Without them: the
