@@ -73,6 +73,22 @@ def absolute_media_url(path: str, request=None) -> str:
     return f"{base}/{path.lstrip('/')}" if base else path
 
 
+def provider_media_url(object_key: str, expiration_seconds: int = 3600) -> str:
+    """
+    The URL a publishing provider downloads a clip from (upload_to_social_network).
+    With R2, the presigned GET, as always. With local files (USE_R2=False) the
+    worker has no request to take the origin from, and the provider cannot open
+    a relative /media/ path: the origin is MEDIA_PUBLIC_BASE_URL, or else
+    FRONTEND_URL, where the demo's proxy serves /media/ next to the web app.
+    Only a local or dev test of a provider gets here (a double of Ayrshare).
+    """
+    url = CloudflareR2Manager.generate_presigned_url(object_key, expiration_seconds=expiration_seconds)
+    if '://' in url:
+        return url
+    base = (getattr(settings, 'FRONTEND_URL', '') or '').rstrip('/')
+    return f"{base}/{url.lstrip('/')}" if base else url
+
+
 class StoredFileCopyError(Exception):
     """A stored file could not be copied (missing source, storage down)."""
 

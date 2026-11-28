@@ -7,9 +7,12 @@ video did not load. The origin is the one of the request (its ``Host``, also
 behind a proxy that forwards it). Without a request (a Celery task) it is
 ``MEDIA_PUBLIC_BASE_URL``, and without that the path stays relative, as before.
 R2 URLs are signed and absolute already: nothing changes for them.
+
+The one URL that is never relative is the one the publisher hands to the provider
+(provider_media_url): ensayo 6 saw a double of Ayrshare get ``/media/...``.
 """
 import os
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -21,7 +24,7 @@ from apps.users.models import Workspace
 from apps.videos.models import ClipPreview, VideoClip, VideoProject
 from apps.videos.services import storage_service
 from apps.videos.services.clip_preview import preview_url
-from apps.videos.services.storage_service import CloudflareR2Manager, absolute_media_url
+from apps.videos.services.storage_service import CloudflareR2Manager, absolute_media_url, provider_media_url
 
 pytestmark = pytest.mark.django_db
 
@@ -104,6 +107,51 @@ class TestUrlBuilder:
         client.generate_presigned_url.assert_called_once_with(
             'get_object', Params={'Bucket': 'test-bucket', 'Key': 'videos/a.mp4'}, ExpiresIn=120,
         )
+
+
+class TestProviderUrl:
+    """What upload_to_social_network sends the provider: a URL it can download, never a relative path."""
+
+    def test_local_files_take_the_web_origin_where_the_demo_serves_media(self, source, settings):
+        settings.FRONTEND_URL = 'http://localhost:8195/'
+        assert provider_media_url(source) == 'http://localhost:8195/media/videos/raw/source.mp4'
+
+    def test_the_setting_of_the_media_origin_wins(self, source, settings):
+        settings.FRONTEND_URL = 'http://localhost:3000'
+        settings.MEDIA_PUBLIC_BASE_URL = 'http://localhost:8000'
+        assert provider_media_url(source) == 'http://localhost:8000/media/videos/raw/source.mp4'
+
+    def test_r2_is_the_presigned_url_as_always(self, monkeypatch, settings):
+        settings.USE_R2 = True
+        settings.CLOUDFLARE_R2_BUCKET_NAME = 'test-bucket'
+        settings.FRONTEND_URL = 'http://localhost:8195'
+        client = MagicMock()
+        client.generate_presigned_url.return_value = 'https://r2.example.com/videos/a.mp4?X-Amz-Signature=abc'
+        monkeypatch.setattr(storage_service, '_get_r2_client', lambda: client)
+
+        assert provider_media_url('videos/a.mp4', expiration_seconds=3600) == client.generate_presigned_url.return_value
+        client.generate_presigned_url.assert_called_once_with(
+            'get_object', Params={'Bucket': 'test-bucket', 'Key': 'videos/a.mp4'}, ExpiresIn=3600,
+        )
+
+    def test_the_publisher_sends_the_absolute_url(self, project, source, settings):
+        from apps.integrations.tests.helpers import PUBLISH, PUBLISHED, give_social_profile
+        from apps.videos.models import ScheduledPost
+        from apps.videos.tasks import upload_to_social_network
+
+        settings.FRONTEND_URL = 'http://localhost:8195'
+        give_social_profile(project.workspace)
+        clip = VideoClip.objects.create(
+            project=project, title='Clip', start_time=0, end_time=10, status=VideoClip.Status.COMPLETED, s3_object_key=source,
+        )
+        post = ScheduledPost.objects.create(
+            video_clip=clip, platform=ScheduledPost.Platform.INSTAGRAM_REELS, status=ScheduledPost.Status.QUEUED,
+            publish_at=timezone.now(), caption='Hola',
+        )
+        with patch(PUBLISH, return_value=PUBLISHED) as publish:
+            upload_to_social_network.apply(args=[str(post.pk)]).get()
+
+        assert publish.call_args.args[1].media_url == 'http://localhost:8195/media/videos/raw/source.mp4'
 
 
 class TestApi:

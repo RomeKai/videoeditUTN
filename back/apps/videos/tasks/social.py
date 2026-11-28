@@ -148,7 +148,7 @@ def upload_to_social_network(self, post_id):
     from apps.integrations.social import errors as codes
     from apps.videos.services.scheduled_posts import LONGEST_RETRY_COUNTDOWN, waits_for_ai_text
     from apps.videos.services.seo_engine import compose_caption
-    from apps.videos.services.storage_service import CloudflareR2Manager
+    from apps.videos.services.storage_service import provider_media_url
 
     lock_id = f"lock_post_publish_{post_id}"
     # The cache that raises (apps/core/cache.py): with Redis down the task fails
@@ -238,11 +238,12 @@ def upload_to_social_network(self, post_id):
             logger.error("publish.not_sent post_id=%s code=%s", post_id, failure.code)
             raise PostConfigurationError(failure.code)
 
-        # 1. Presigned URL (valid for 1 hour): the provider downloads the video from it.
+        # 1. Presigned URL (valid for 1 hour): the provider downloads the video from it. Always
+        # absolute, local files included (provider_media_url).
         s3_key = clip.s3_object_key
         if not s3_key:
             raise Exception("No s3_object_key found for the video clip.")
-        media_url = CloudflareR2Manager.generate_presigned_url(s3_key, expiration_seconds=3600)
+        media_url = provider_media_url(s3_key, expiration_seconds=3600)
 
         # 2. What goes out: the API's caption and hashtags (the user's, or else the AI's, each on
         # its own: ScheduledPost.caption_to_publish), composed once here. Empty if there is none.
