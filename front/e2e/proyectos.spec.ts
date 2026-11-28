@@ -73,14 +73,17 @@ test.describe('B2 · Proyectos', () => {
     await page.getByRole('button', { name: 'Orden: más recientes' }).click();
     await page.getByRole('menuitemradio', { name: 'Título (A–Z)' }).click();
     await expect(page).toHaveURL(/\/proyectos\?orden=title$/);
-    // The first project of each page, by its title: the page before stays on screen until the next one arrives.
+    // The list before stays on screen until the next one arrives, while the URL and the range change at
+    // once: a row read from the screen right after a click can be of the list before. So each step waits
+    // for the project that heads that page of the scenario by title, by name.
     const firstTitle = page.getByRole('table', { name: 'Proyectos del workspace' }).getByRole('row').nth(1).getByRole('link').first();
-    const onPageOne = await firstTitle.innerText();
+    const onPageOne = /Charla 15$/;
+    const onPageTwo = /Podcast 17$/;
+    await expect(firstTitle).toHaveText(onPageOne);
     await page.getByRole('button', { name: 'Siguiente' }).click();
     await expect(page.getByText('26–50 de 64 proyectos')).toBeVisible();
     await expect(page).toHaveURL(/\/proyectos\?orden=title&pagina=2$/);
-    await expect(firstTitle).not.toHaveText(onPageOne);
-    const onPageTwo = await firstTitle.innerText();
+    await expect(firstTitle).toHaveText(onPageTwo);
 
     await page.reload();
     await settle(page);
