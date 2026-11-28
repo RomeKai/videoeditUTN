@@ -6,7 +6,9 @@ from django.conf import settings
 from django.core.checks import Error, Tags, Warning, register
 from django.db import DatabaseError
 
-KNOWN_PROVIDERS = ('', 'simulated')
+from .services.payment_providers import SIMULATED, STRIPE
+
+KNOWN_PROVIDERS = ('', SIMULATED, STRIPE)
 
 
 @register(Tags.compatibility)
@@ -15,9 +17,24 @@ def check_payments_provider(app_configs=None, **kwargs):
     if provider not in KNOWN_PROVIDERS:
         return [Error(
             f'PAYMENTS_PROVIDER={provider!r} is not a payments provider.',
-            hint="Use 'simulated' (development and demos) or leave it empty (no payments: they answer 501).",
+            hint="Use 'stripe', 'simulated' (development and demos), or leave it empty.",
             id='payments.E001',
         )]
+    if provider == STRIPE:
+        from .services.stripe_service import stripe_configured, valid_checkout_ttl
+
+        errors = []
+        if not stripe_configured():
+            errors.append(Error(
+                'Stripe needs STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET.',
+                id='payments.E002',
+            ))
+        if not valid_checkout_ttl():
+            errors.append(Error(
+                'Stripe checkout TTL must be between 1800 seconds plus the provider timeout and 5 seconds, and 86400 seconds.',
+                id='payments.E003',
+            ))
+        return errors
     return []
 
 

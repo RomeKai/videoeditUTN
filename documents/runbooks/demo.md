@@ -180,7 +180,7 @@ Otros riesgos:
 |---|---|
 | **Links de YouTube o Vimeo.** Esos sitios bloquean las descargas desde IPs de datacenter, y a veces también desde otras | Usá siempre **subir archivo**. No muestres «pegar un link» |
 | **Publicar en redes** necesita una cuenta y una key de Ayrshare, un plan pago y el email verificado | Es mock. Decilo en voz alta. Nada sale a ninguna red |
-| **Pagos**: Stripe no está integrado | Comprar tokens y cambiar de plan van al backend con el proveedor simulado: `/dev/checkout` hace de pasarela y no cobra nada |
+| **Pagos** | La demo usa el proveedor simulado para compras de tokens y cambios de plan. `/dev/checkout` hace de pasarela sin cobrar. Stripe se configura aparte para compras de tokens. [Runbook](stripe-checkout.md) |
 | **Un ensayo cambió el plan** | `seed_demo` vuelve a poner Pro de cortesía, sin período ni bajada programada. Los tokens comprados en el ensayo quedan |
 | **Un proveedor de IA tarda** | Probá las keys el mismo día, con el video de la demo |
 | **Cambiaste `back/.env`** | `demo up -d --force-recreate web worker beat`. Lo que cambia en `docker-compose.demo.yml` para `front` pide `--build`. El proxy encuentra solo a los contenedores recreados, en unos segundos |

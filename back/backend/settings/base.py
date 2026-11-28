@@ -124,7 +124,10 @@ MAINTENANCE_STARTS_AT = env('MAINTENANCE_STARTS_AT', default='')
 MAINTENANCE_ENDS_AT = env('MAINTENANCE_ENDS_AT', default='')
 # Paths that keep answering during maintenance besides /api/v1/status/
 # (webhooks, health checks), comma-separated; each one covers what is below it.
-MAINTENANCE_EXEMPT_PATHS = env.list('MAINTENANCE_EXEMPT_PATHS', default=[])
+MAINTENANCE_EXEMPT_PATHS = [
+    '/api/v1/payments/webhook/',
+    *env.list('MAINTENANCE_EXEMPT_PATHS', default=[]),
+]
 
 # --- EMAILS TO USERS ---
 # The links of the emails open the web app (the verification of a new email
@@ -382,6 +385,9 @@ if not re.fullmatch(r'\d+(\.\d+)?', TOKEN_PRICE_USD) or not float(TOKEN_PRICE_US
 # or rejects without charging anything. It only runs with DEBUG or with
 # PAYMENTS_ALLOW_SIMULATED=True (a demo); prod.py refuses it without that flag.
 PAYMENTS_PROVIDER = env('PAYMENTS_PROVIDER', default='').strip().lower()
+STRIPE_SECRET_KEY = env('STRIPE_SECRET_KEY', default='').strip()
+STRIPE_WEBHOOK_SECRET = env('STRIPE_WEBHOOK_SECRET', default='').strip()
+STRIPE_TOKEN_PRODUCT_ID = env('STRIPE_TOKEN_PRODUCT_ID', default='').strip()
 PAYMENTS_ALLOW_SIMULATED = env.bool('PAYMENTS_ALLOW_SIMULATED', default=False)
 # Without DEBUG (a demo on production settings) only staff and these emails may
 # approve or reject a simulated payment (POST /token-purchases/<id>/simulate/).

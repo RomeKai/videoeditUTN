@@ -26,9 +26,9 @@ Money rules:
   progress" for good. A row whose checkout was stored meanwhile is left alone.
 - A checkout that opened lives PAYMENTS_CHECKOUT_TTL_SECONDS from that same
   ``checkout_started_at``: past it, the beat task (expire_checkouts) decides
-  it again on the locked row (workspace, then payment), rejects it and closes
-  it at the provider. A row that a confirmation settled meanwhile is left
-  alone. An expired checkout is never handed out again.
+  it again. For Stripe, it confirms the provider's status before settling
+  the row, since a paid session's webhook may still be in flight. A row
+  already settled is left alone. An expired checkout is never handed out again.
 - A confirmation for a payment already rejected (replaced, canceled, expired,
   or its checkout failed) changes nothing: it is logged as
   ``payment.late_paid`` so staff can refund it by hand.
@@ -54,7 +54,7 @@ from apps.users.models import Workspace
 from apps.users.seats import seats_used
 
 from ..models import Payment, Transaction, Wallet
-from .payment_providers import get_payment_provider, require_payment_provider
+from .payment_providers import STRIPE, get_payment_provider, require_payment_provider
 from .plan_periods import PLAN_FIELDS, start_paid_period
 from .wallet_service import track_low_balance
 
@@ -207,11 +207,17 @@ def expire_checkout(payment, now=None):
     ``(payment, expired)``; ``payment`` is None if the row is gone.
     """
     payment_id = getattr(payment, 'pk', payment)
-    workspace_id = Payment.objects.filter(pk=payment_id).values_list('workspace_id', flat=True).first()
-    if workspace_id is None:
+    current = Payment.objects.filter(pk=payment_id).first()
+    if current is None:
         return None, False
+    if current.provider == STRIPE:
+        if not checkout_is_expired(current, now):
+            return current, False
+        from .stripe_service import reconcile_expired_checkout
+
+        return reconcile_expired_checkout(current)
     with transaction.atomic():
-        lock_workspace(workspace_id)
+        lock_workspace(current.workspace_id)
         locked = Payment.objects.select_for_update().get(pk=payment_id)
         if not checkout_is_expired(locked, now):
             return locked, False
