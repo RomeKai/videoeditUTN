@@ -4,8 +4,9 @@ import { http } from 'msw';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { API_URL } from '@/api/config';
 import { server } from '@/api/mocks/server';
-import { AUTH_STORAGE_KEY, clearSession, getSessionEmail, getTokens, isSessionExpired, noteRefreshRejected, notifySessionExpired, rememberSessionEmail, SESSION_EMAIL_STORAGE_KEY, setTokens, tokenUser } from '@/api/session';
+import { AUTH_STORAGE_KEY, clearSession, getSessionEmail, getTokens, isSessionExpired, noteRefreshRejected, notifySessionExpired, rememberSessionEmail, SESSION_EMAIL_STORAGE_KEY, setTokens, tokenUser, WORKSPACE_STORAGE_KEY } from '@/api/session';
 import { mockTokens } from '@/api/mocks/state';
+import { keys } from '@/api/query';
 import { USER_IDS } from '@/api/mocks/seed';
 import { LoginScreen, SESSION_ENDED } from '@/features/acceso/LoginScreen';
 import { RequireSession } from '@/shell/RequireSession';
@@ -153,6 +154,28 @@ describe('D9 y las otras pestañas', () => {
     // Still asking for this account's password, and nothing was read again as the other one.
     expect(within(dialog).getByText('lucia@estudionorte.com')).toBeInTheDocument();
     expect(profile).toBe(asked);
+  });
+
+  it('con otra cuenta en la otra pestaña sigue abierto aunque el perfil de abajo se lea de nuevo como esa cuenta y llegue otro aviso', async () => {
+    const view = renderScenario(APP);
+    expect(await screen.findByText('adentro')).toBeInTheDocument();
+    act(() => notifySessionExpired());
+    expect(await screen.findByRole('dialog', { name: 'Tu sesión venció' })).toBeInTheDocument();
+    // The other tab signs in as someone else…
+    act(() => {
+      window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(mockTokens(USER_IDS.martin)));
+      window.dispatchEvent(new StorageEvent('storage', { key: AUTH_STORAGE_KEY }));
+    });
+    // …the profile underneath is read again with that token (the window got the focus, it was old)…
+    await act(() => view.queryClient.refetchQueries({ queryKey: keys.me }));
+    await waitFor(() => expect(view.queryClient.getQueryData<{ id: string }>(keys.me)?.id).toBe(USER_IDS.martin));
+    // …and the session module speaks again (the other tab changed workspace, or renewed its pair).
+    act(() => {
+      window.dispatchEvent(new StorageEvent('storage', { key: WORKSPACE_STORAGE_KEY }));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    // The dialog opened over Lucía's screen: Martín's session does not close it.
+    expect(screen.getByRole('dialog', { name: 'Tu sesión venció' })).toBeInTheDocument();
   });
 
   it('de quién es un token: el `user_id` de un JWT, o su parte del medio cuando no es un JWT', () => {

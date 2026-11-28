@@ -52,8 +52,16 @@ export function SessionExpiredDialog() {
 
   const known = useRef(false);
   known.current = me !== null;
-  /** The session the dialog opened over: its access token, and how many pairs this tab had stored by then. */
-  const dead = useRef<{ access: string | null; generation: number } | null>(null);
+  /**
+   * The session the dialog opened over: its access token, how many pairs this tab had stored by then, and
+   * whose it was. Taken once, as the dialog opens: the profile underneath can be read again later with
+   * another account's token (another tab signed in as someone else), and it must not become the owner.
+   */
+  const dead = useRef<{ access: string | null; generation: number; owner: string | null } | null>(null);
+  const openRef = useRef(open);
+  openRef.current = open;
+  const meId = useRef<string | null>(null);
+  meId.current = me?.id ?? null;
   useEffect(
     () =>
       onSessionExpired((why) => {
@@ -67,7 +75,11 @@ export function SessionExpiredDialog() {
         // Not known from the profile: whose session it was the last time the profile loaded.
         if (!known.current) setEmail((typed) => typed || (getSessionEmail() ?? ''));
         setReason(why);
-        dead.current = { access: getAccessSnapshot(), generation: getTokenGeneration() };
+        // (The requests in flight report the same dead session one after another: the first one counts.)
+        if (!openRef.current) {
+          const access = getAccessSnapshot();
+          dead.current = { access, generation: getTokenGeneration(), owner: meId.current ?? tokenUser(access) };
+        }
         setOpen(true);
       }),
     [queryClient],
@@ -89,10 +101,6 @@ export function SessionExpiredDialog() {
   // request would fail at once, and stay failed). And only for the same account: the screen underneath is
   // that person's, with their workspace and maybe their unsaved changes. Another account's pair leaves the
   // dialog where it is.
-  const openRef = useRef(open);
-  openRef.current = open;
-  const owner = useRef<string | null>(null);
-  owner.current = me?.id ?? null;
   const { reset: resetLogin } = login;
   useEffect(
     () =>
@@ -101,8 +109,7 @@ export function SessionExpiredDialog() {
         if (!openRef.current || !was || isSessionExpired()) return;
         const access = getAccessSnapshot();
         if (access === null || access === was.access || getTokenGeneration() !== was.generation) return;
-        const expected = owner.current ?? tokenUser(was.access);
-        if (expected === null || tokenUser(access) !== expected) return;
+        if (was.owner === null || tokenUser(access) !== was.owner) return;
         setOpen(false);
         setPassword('');
         resetLogin();
