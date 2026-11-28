@@ -3,7 +3,7 @@ import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { apiCall, REFRESH_LOCK_NAME, REFRESH_LOCK_WAIT_MS, toFormData } from './client';
+import { apiCall, REFRESH_HANDOVER_WAIT_MS, REFRESH_LOCK_NAME, REFRESH_LOCK_WAIT_MS, toFormData } from './client';
 import { errorMessage } from '@/lib/error-messages';
 import { API_URL, REQUEST_TIMEOUT_MS, SLOW_REQUEST_TIMEOUT_MS, UPLOAD_STALL_TIMEOUT_MS, WORKSPACE_HEADER } from './config';
 import { exportTransactions } from './contracts/billing';
@@ -851,9 +851,16 @@ function fakeLocks() {
   const queues = new Map<string, Promise<unknown>>();
   const names: string[] = [];
   const signals: Array<AbortSignal | undefined> = [];
-  const request = <T,>(name: string, options: { signal?: AbortSignal }, run: () => Promise<T>): Promise<T> => {
+  /** Holders and waiters per name: with any, the lock is not available. */
+  const busy = new Map<string, number>();
+  const request = <T,>(name: string, options: { signal?: AbortSignal; ifAvailable?: boolean }, callback: (lock: object | null) => Promise<T>): Promise<T> => {
+    // As the browser: `ifAvailable` never waits; with the lock taken the callback runs at once, without it.
+    if (options.ifAvailable && (busy.get(name) ?? 0) > 0) return Promise.resolve().then(() => callback(null));
+    // The renewal asks twice when it has to wait (first with `ifAvailable`): the name is noted once it queues.
     names.push(name);
     signals.push(options.signal);
+    busy.set(name, (busy.get(name) ?? 0) + 1);
+    const run = () => callback({ name }).finally(() => busy.set(name, (busy.get(name) ?? 1) - 1));
     if (options.signal) {
       // As the browser: a request still waiting when its signal aborts is rejected.
       let granted = false;
@@ -863,7 +870,10 @@ function fakeLocks() {
           if (!granted) reject(new DOMException('Aborted', 'AbortError'));
         });
         const mine = previous.then(() => {
-          if (options.signal?.aborted) return undefined;
+          if (options.signal?.aborted) {
+            busy.set(name, (busy.get(name) ?? 1) - 1);
+            return undefined;
+          }
           granted = true;
           return run().then(resolve, reject);
         });
@@ -938,6 +948,72 @@ describe('renovar el token con varias pestañas', () => {
     expect(isSessionExpired()).toBe(false);
     expect(getTokens()).toEqual({ access: 'de-otra-pestaña', refresh: 'refresh-2' });
     off();
+  });
+
+  it('si el par de la otra pestaña llega al storage después que el lock, lo espera y no manda el refresh ya rotado', async () => {
+    const { locks } = fakeLocks();
+    vi.stubGlobal('navigator', { ...navigator, locks });
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    const expired = vi.fn();
+    const off = onSessionExpired(expired);
+    const used: unknown[] = [];
+    server.use(
+      thingNeedsToken('de-otra-pestaña'),
+      http.post(`${API_URL}/api/token/refresh/`, async ({ request }) => {
+        used.push(((await request.json()) as { refresh: string }).refresh);
+        return HttpResponse.json({ detail: 'Token is blacklisted', code: 'token_not_valid' }, { status: 401 });
+      }),
+    );
+    const otherTab = deferred();
+    const held = locks.request(REFRESH_LOCK_NAME, {}, () => otherTab.promise);
+    const call = apiCall(getThing, { params: { id: '1' } });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // The other tab stored its pair and let the lock go, but each tab reads its own copy of localStorage:
+    // here the lock arrives first and the pair a moment later.
+    otherTab.resolve();
+    await held;
+    setTimeout(() => otherTabStores({ access: 'de-otra-pestaña', refresh: 'refresh-2' }), 40);
+    await expect(call).resolves.toEqual({ id: 1, name: 'Ok' });
+    expect(used).toEqual([]);
+    expect(expired).not.toHaveBeenCalled();
+    expect(getTokens()).toEqual({ access: 'de-otra-pestaña', refresh: 'refresh-2' });
+    off();
+  });
+
+  it('si la otra pestaña soltó el lock sin renovar, pasada la espera renueva esta', async () => {
+    const { locks } = fakeLocks();
+    vi.stubGlobal('navigator', { ...navigator, locks });
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    const used: unknown[] = [];
+    server.use(
+      thingNeedsToken('nuevo'),
+      http.post(`${API_URL}/api/token/refresh/`, async ({ request }) => {
+        used.push(((await request.json()) as { refresh: string }).refresh);
+        return HttpResponse.json({ access: 'nuevo', refresh: 'refresh-2' });
+      }),
+    );
+    // The other tab's renewal failed (its network, a 503): it lets the lock go and stores nothing.
+    const otherTab = deferred();
+    const held = locks.request(REFRESH_LOCK_NAME, {}, () => otherTab.promise);
+    const call = apiCall(getThing, { params: { id: '1' } });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    otherTab.resolve();
+    await held;
+    const released = Date.now();
+    await expect(call).resolves.toEqual({ id: 1, name: 'Ok' });
+    expect(Date.now() - released).toBeGreaterThanOrEqual(REFRESH_HANDOVER_WAIT_MS - 20);
+    expect(used).toEqual(['refresh-1']);
+    expect(getTokens()).toEqual({ access: 'nuevo', refresh: 'refresh-2' });
+  });
+
+  it('con el lock libre no espera a nadie: renueva en el momento', async () => {
+    const { locks } = fakeLocks();
+    vi.stubGlobal('navigator', { ...navigator, locks });
+    setTokens({ access: 'viejo', refresh: 'refresh-1' });
+    server.use(thingNeedsToken('nuevo'), http.post(`${API_URL}/api/token/refresh/`, () => HttpResponse.json({ access: 'nuevo', refresh: 'refresh-2' })));
+    const started = Date.now();
+    await expect(apiCall(getThing, { params: { id: '1' } })).resolves.toEqual({ id: 1, name: 'Ok' });
+    expect(Date.now() - started).toBeLessThan(REFRESH_HANDOVER_WAIT_MS);
   });
 
   it('dos pestañas que renuevan a la vez mandan un solo refresh', async () => {
